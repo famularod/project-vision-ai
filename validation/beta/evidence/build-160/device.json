@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "releaseCandidate": {
+    "version": "1.0.160",
+    "build": "160",
+    "sourceRevision": null
+  },
+  "recordedAt": "2026-08-09T00:12:47Z",
+  "tester": "Codex read-only inventory; human behavior review pending",
+  "overallStatus": "pending",
+  "evidenceClassification": {
+    "installedDeviceMetadata": [
+      "iphone_bundle_version",
+      "ipad_bundle_version"
+    ],
+    "automatedSourceChecks": [
+      "accessibility_contract",
+      "performance_contract",
+      "offline_queue_contract",
+      "web_foundation_contract",
+      "outside_pilot_policy_contract",
+      "repository_check"
+    ],
+    "actualDeviceBehavior": [],
+    "humanBlocked": [
+      "physical_journeys_not_executed",
+      "assistive_technology_not_executed",
+      "offline_reconnect_not_executed",
+      "interactive_web_runtime_not_available",
+      "installed_source_revision_not_embedded"
+    ]
+  },
+  "platforms": {
+    "iphone": {
+      "status": "pending",
+      "deviceOrBrowser": "Physical iPhone 17 Pro Max",
+      "operatingSystem": "iOS 27.0 beta (24A5390f)",
+      "installedVersion": "1.0.160",
+      "installedBuild": "160",
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [
+        "validation/beta/evidence/build-160/device-observation.md"
+      ],
+      "behaviorEvidenceRefs": []
+    },
+    "ipad": {
+      "status": "pending",
+      "deviceOrBrowser": "Physical iPad Pro 13-inch (M5)",
+      "operatingSystem": "iPadOS 27.0 beta (24A5390f)",
+      "installedVersion": "1.0.160",
+      "installedBuild": "160",
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [
+        "validation/beta/evidence/build-160/device-observation.md"
+      ],
+      "behaviorEvidenceRefs": []
+    },
+    "web": {
+      "status": "pending",
+      "deviceOrBrowser": "No controllable browser session",
+      "operatingSystem": "Local web runtime unavailable on port 8097",
+      "installedVersion": null,
+      "installedBuild": null,
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [],
+      "behaviorEvidenceRefs": []
+    }
+  },
+  "accessibility": {
+    "iphone": {
+      "checks": {
+        "voice_over": "pending",
+        "dynamic_type": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending",
+        "touch_targets": "pending"
+      },
+      "evidenceRefs": []
+    },
+    "ipad": {
+      "checks": {
+        "voice_over": "pending",
+        "dynamic_type": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending",
+        "touch_targets": "pending"
+      },
+      "evidenceRefs": []
+    },
+    "web": {
+      "checks": {
+        "keyboard_navigation": "pending",
+        "screen_reader": "pending",
+        "zoom_200_percent": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending"
+      },
+      "evidenceRefs": []
+    }
+  },
+  "offlineAndRecovery": {
+    "scenarios": {
+      "offline_create_and_reconnect": "pending",
+      "background_foreground_resume": "pending",
+      "duplicate_write_prevention": "pending",
+      "sync_conflict_is_visible": "pending",
+      "restart_with_pending_work": "pending"
+    },
+    "evidenceRefs": []
+  },
+  "defects": [],
+  "notes": [
+    "An installed version/build inventory is not a physical-device behavior pass.",
+    "No outside-user invitation is authorized."
+  ]
+}

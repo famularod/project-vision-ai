@@ -1,0 +1,11 @@
+appId: ${APP_ID}
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- tapOn: ${PROJECT_NAME}
+- assertVisible: ${PROJECT_NAME}
+- assertVisible: "Tasks and Schedule"
+- assertVisible: "New Field Update"
+- takeScreenshot: "jarvis-project-overview"

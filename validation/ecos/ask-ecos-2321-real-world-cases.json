@@ -1,0 +1,378 @@
+{
+  "schemaVersion": "ecos-ask-live-acceptance/1.0",
+  "projectName": "2321 Compliance Project",
+  "minimumPassingCases": 19,
+  "requiredPassRate": 1,
+  "evidenceMaximumAgeHours": 24,
+  "benchmarkPurpose": "Independent 2321 beta reliability benchmark grounded only in the current 2321 drawing set.",
+  "cases": [
+    {
+      "id": "2321-hazmat-containment-assignments",
+      "question": "Which containment area is for corrosive or toxic material, and which is for flammable or combustible material at 2321?",
+      "expectedAnswer": "Architectural Sheet A-1.5A identifies Containment Area 2 for corrosive or toxic and non-hazardous storage, and Containment Area 1 for flammable or combustible and non-hazardous storage.",
+      "requiredAnswerPatterns": ["Containment Area 2", "corrosive.{0,30}toxic", "Containment Area 1", "flam(?:mable)?.{0,10}(?:comb|combustible)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "01.*2321.*ARCHITECTURAL",
+        "sheetNumberPatterns": ["^A-1\\.5A$"],
+        "pageNumberPatterns": ["^15$"],
+        "excerptPatterns": ["CONTAINMENT\\s+AREA\\s+2", "CORROSIVE.{0,30}TOXIC", "CONTAINMENT\\s+AREA\\s+1", "FLAM.{0,20}COMB"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-hazmat-canopy-area",
+      "question": "What area is shown for New Canopy 1 at the 2321 hazardous-material storage plan?",
+      "expectedAnswer": "Architectural Sheet A-1.5A labels New Canopy 1 as 6,496 square feet.",
+      "requiredAnswerPatterns": ["New Canopy 1", "6[,]?496\\s*(?:square feet|sq\\.?\\s*ft\\.?|s\\.?f\\.?|sf)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "01.*2321.*ARCHITECTURAL",
+        "sheetNumberPatterns": ["^A-1\\.5A$"],
+        "pageNumberPatterns": ["^15$"],
+        "excerptPatterns": ["NEW\\s+CANOPY\\s+1", "6[,]?496\\s*(?:S\\.?F\\.?|SF|SQUARE\\s+FEET)"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-canopy-foundation-slab",
+      "question": "What reinforced concrete slab thickness is specified for the new 2321 weather-protected hazardous-material storage addition?",
+      "expectedAnswer": "Structural Sheet SB-1.1 specifies a 6-inch-thick reinforced concrete slab for the addition.",
+      "requiredAnswerPatterns": ["6\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\"”])", "reinforced concrete(?: canopy)? slab"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "03.*2321.*STRUCTURAL",
+        "sheetNumberPatterns": ["^SB-1\\.1$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["6\\s*[-–—]?\\s*(?:INCH(?:ES)?|IN\\.?|[\"”])(?:\\s*[-–—]?\\s*TH(?:I|K|IC)?K?\\.?)?", "REINFORCED[\\s_]+CONCRETE[\\s_]+SLAB"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-canopy-footing-schedule",
+      "question": "What sizes and reinforcing are scheduled for footings F1, F2, and F3 at the new hazardous-material canopy?",
+      "expectedAnswer": "Structural Sheet SB-1.1 schedules F1 at 5 feet by 5 feet by 18 inches with 6 #5 bars each way top and bottom; F2 at 4 feet by 4 feet by 18 inches with 5 #5 bars each way top and bottom; and F3 at 3 feet by 3 feet by 18 inches with 4 #5 bars each way top and bottom.",
+      "requiredAnswerPatterns": ["F1.{0,80}5.{0,20}5.{0,20}18.{0,80}6.{0,20}#?5", "F2.{0,80}4.{0,20}4.{0,20}18.{0,80}5.{0,20}#?5", "F3.{0,80}3.{0,20}3.{0,20}18.{0,80}4.{0,20}#?5", "(?:each way|E\\.?W\\.?).{0,30}(?:top and bottom|T\\s*&\\s*B)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "03.*2321.*STRUCTURAL",
+        "sheetNumberPatterns": ["^SB-1\\.1$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["FOOTING\\s+SCHEDULE", "F1.{0,100}5.{0,20}5.{0,20}18", "F2.{0,100}4.{0,20}4.{0,20}18", "F3.{0,100}3.{0,20}3.{0,20}18"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-restroom-exhaust-fan",
+      "question": "What airflow is scheduled for exhaust fan EF-1, and which rooms does it serve at 2321?",
+      "expectedAnswer": "Mechanical Sheet MB-1.2 schedules EF-1 at 100 CFM and identifies it as typical for four restrooms and one janitor closet.",
+      "requiredAnswerPatterns": ["EF-?1", "100\\s*CFM", "(?:4|four)\\s+restrooms", "(?:1|one)\\s+jan(?:itor)?\\s+closet"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "04.*2321.*MECHANICAL",
+        "sheetNumberPatterns": ["^MB-1\\.2$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["EF-?1", "100\\s*CFM", "4\\s+RESTROOMS", "1\\s+JAN(?:ITOR)?\\s+CLOSET"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-control-room-exhaust-fans",
+      "question": "Compare the scheduled airflow and room coverage for exhaust fans EF-2 and EF-3 at 2321.",
+      "expectedAnswer": "Mechanical Sheet MB-1.2 schedules both EF-2 and EF-3 at 630 CFM. EF-2 is typical for three control rooms, while EF-3 is typical for two control rooms.",
+      "requiredAnswerPatterns": ["EF-?2.{0,100}630\\s*CFM", "EF-?3.{0,100}630\\s*CFM", "EF-?2.{0,120}(?:3|three)\\s+control\\s+rooms", "EF-?3.{0,120}(?:2|two)\\s+control\\s+rooms"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "04.*2321.*MECHANICAL",
+        "sheetNumberPatterns": ["^MB-1\\.2$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["EF-?2", "EF-?3", "630\\s*CFM", "CONTROL\\s+ROOMS"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-plumbing-fixture-unit-totals",
+      "question": "What cold-water fixture-unit totals are shown for the 2321 center breakroom and east side?",
+      "expectedAnswer": "Plumbing Sheet PB-1.2 shows the 2321 center breakroom at 35 cold-water fixture units and the 2321 east side at 30 cold-water fixture units.",
+      "requiredAnswerPatterns": ["center breakroom.{0,50}35", "east side.{0,50}30"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "05.*2321.*PLUMBING",
+        "sheetNumberPatterns": ["^PB-1\\.2$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["CENTER\\s+BREAKROOM", "35", "EAST\\s+SIDE", "30"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-panel-replacement-capacities",
+      "question": "What bus ratings and pole counts are required for the two existing electrical panel replacements on Sheet E-2.5?",
+      "expectedAnswer": "Electrical Sheet E-2.5 calls for one replacement panel with a 125-amp bus and 30 poles, and another replacement panel with a 225-amp bus and 42 poles.",
+      "requiredAnswerPatterns": ["125\\s*[- ]?\\s*(?:amp|A).{0,50}30\\s*[- ]?\\s*(?:pole|poles)", "225\\s*[- ]?\\s*(?:amp|A).{0,50}42\\s*[- ]?\\s*(?:pole|poles)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "06.*2321.*ELECTRICAL",
+        "sheetNumberPatterns": ["^E-2\\.5$"],
+        "pageNumberPatterns": ["^11$"],
+        "excerptPatterns": ["125\\s*(?:A|AMPS?|AMPERES?).{0,80}30\\s*POLES", "225\\s*(?:A|AMPS?|AMPERES?).{0,80}42\\s*POLES"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-site-photometric-statistics",
+      "question": "What average, maximum, and minimum light levels are listed for the 2321 site photometrics plan?",
+      "expectedAnswer": "Electrical Sheet E-2.7 lists an average of 2.6 foot-candles, a maximum of 21.1 foot-candles, and a minimum of 0.0 foot-candles for ALL site points.",
+      "requiredAnswerPatterns": ["2\\.6\\s*(?:fc|foot-candles?)", "21\\.1\\s*(?:fc|foot-candles?)", "0(?:\\.0)?\\s*(?:fc|foot-candles?)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "06.*2321.*ELECTRICAL",
+        "sheetNumberPatterns": ["^E-2\\.7$"],
+        "pageNumberPatterns": ["^13$"],
+        "excerptPatterns": ["ALL", "2\\.6\\s*fc", "21\\.1\\s*fc", "0\\.0\\s*fc"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-landscape-area-tabulation",
+      "question": "How much total landscape area and irrigated landscape area are shown for the 2321 site?",
+      "expectedAnswer": "Landscape Sheet L-1 shows 26,532 square feet of total landscape area and 21,104 square feet of total irrigated landscape area.",
+      "requiredAnswerPatterns": ["26[,]?532\\s*(?:square feet|sq\\.?\\s*ft\\.?|s\\.?f\\.?|sf)", "21[,]?104\\s*(?:square feet|sq\\.?\\s*ft\\.?|s\\.?f\\.?|sf)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "07.*2321.*LANDSCAPE",
+        "sheetNumberPatterns": ["^L-1$"],
+        "pageNumberPatterns": ["^1$"],
+        "excerptPatterns": ["TOTAL\\s+LANDSCAPE\\s+AREA.{0,40}26[,]?532", "TOTAL\\s+IRRIGATED\\s+LANDSCAPE\\s+AREA.{0,40}21[,]?104"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-tree-requirement-and-provision",
+      "question": "How many parking-lot trees are required and how many are provided on the 2321 landscape plan?",
+      "expectedAnswer": "Landscape Sheet L-1 requires 71 trees and provides 78 trees.",
+      "requiredAnswerPatterns": ["(?:requires?.{0,24}71.{0,24}trees?|71.{0,24}(?:required.{0,24}trees?|trees?.{0,24}required))", "(?:provides?.{0,24}78.{0,24}trees?|78.{0,24}(?:provided.{0,24}trees?|trees?.{0,24}provided))"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "07.*2321.*LANDSCAPE",
+        "sheetNumberPatterns": ["^L-1$"],
+        "pageNumberPatterns": ["^1$"],
+        "excerptPatterns": ["TREES\\s+REQUIRED.{0,20}71", "TREES\\s+PROVIDED.{0,20}78"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-irrigation-hydrozones",
+      "question": "What high-, medium-, and low-water hydrozone areas are listed on Irrigation Plan A for 2321?",
+      "expectedAnswer": "Landscape Sheet L-2 lists the high-water zone at 0 square feet, the medium-water zone at 146 square feet, and the low-water zone at 9,470 square feet.",
+      "requiredAnswerPatterns": ["high.{0,30}0\\s*(?:square feet|sq\\.?\\s*ft\\.?|s\\.?f\\.?|sf)", "medium.{0,30}146\\s*(?:square feet|sq\\.?\\s*ft\\.?|s\\.?f\\.?|sf)", "low.{0,30}9[,]?470\\s*(?:square feet|sq\\.?\\s*ft\\.?|s\\.?f\\.?|sf)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "07.*2321.*LANDSCAPE",
+        "sheetNumberPatterns": ["^L-2$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["HYDROZONE\\s+DATA", "HIGH.{0,20}(?:WATER\\s+ZONE|HYDROZONE).{0,40}0\\s*(?:s\\.?f\\.?|square feet)", "MEDIUM.{0,20}(?:WATER\\s+ZONE|HYDROZONE).{0,40}146\\s*(?:s\\.?f\\.?|square feet)", "LOW.{0,20}(?:WATER\\s+ZONE|HYDROZONE).{0,40}9[,]?470\\s*(?:s\\.?f\\.?|square feet)"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-irrigation-water-budget",
+      "question": "What ETWU and MAWA values are shown for the 2321 irrigation plan?",
+      "expectedAnswer": "Landscape Sheet L-2 shows an estimated total water use (ETWU) of 87,952 and a Maximum Allowed Water Allowance (MAWA) of 147,191.",
+      "requiredAnswerPatterns": ["ETWU.{0,40}87[,]?952", "MAWA.{0,40}147[,]?191"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "07.*2321.*LANDSCAPE",
+        "sheetNumberPatterns": ["^L-2$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["ETWU.{0,60}87[,]?952", "MAWA.{0,60}147[,]?191"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-plant-material-quantities",
+      "question": "How many Forest Pansy Redbud, Palo Verde, Lemon Scented Gum, and Golden Rain trees are listed on Planting Plan A?",
+      "expectedAnswer": "Landscape Sheet L-4 lists 6 Forest Pansy Redbud, 12 Palo Verde, 3 Lemon Scented Gum, and 9 Golden Rain trees.",
+      "requiredAnswerPatterns": ["6\\s+Forest Pansy Redbud", "12\\s+Palo Verde", "3\\s+Lemon Scented Gum", "9\\s+Golden Rain"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "07.*2321.*LANDSCAPE",
+        "sheetNumberPatterns": ["^L-4$"],
+        "pageNumberPatterns": ["^4$"],
+        "excerptPatterns": ["(?:6.{0,30}FOREST\\s+PANSY\\s+REDBUD|FOREST\\s+PANSY\\s+REDBUD.{0,30}6)", "(?:12.{0,30}PALO\\s+VERDE|PALO\\s+VERDE.{0,30}12)", "(?:3.{0,30}LEMON\\s+SCENTED\\s+GUM|LEMON\\s+SCENTED\\s+GUM.{0,30}3)", "(?:9.{0,30}GOLDEN\\s+RAIN|GOLDEN\\s+RAIN.{0,30}9)"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-cross-discipline-canopy-size-and-slab",
+      "question": "For the 2321 hazardous-material canopy, what plan area is shown and what slab thickness does the structural drawing require?",
+      "expectedAnswer": "Architectural Sheet A-1.5A shows New Canopy 1 at 6,496 square feet, and Structural Sheet SB-1.1 requires a 6-inch-thick reinforced concrete slab for the addition.",
+      "requiredAnswerPatterns": ["6[,]?496\\s*(?:square feet|sq\\.?\\s*ft\\.?|s\\.?f\\.?|sf)", "6\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\"”])", "reinforced concrete slab"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 2,
+      "minimumDistinctDocuments": 2,
+      "minimumDistinctSheets": 2,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "01.*2321.*ARCHITECTURAL",
+          "sheetNumberPatterns": ["^A-1\\.5A$"],
+          "pageNumberPatterns": ["^15$"],
+          "excerptPatterns": ["NEW\\s+CANOPY\\s+1", "6[,]?496"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        },
+        {
+          "documentNamePattern": "03.*2321.*STRUCTURAL",
+          "sheetNumberPatterns": ["^SB-1\\.1$"],
+          "pageNumberPatterns": ["^2$"],
+          "excerptPatterns": ["6\\s*[-–—]?\\s*(?:INCH(?:ES)?|IN\\.?|[\"”])(?:\\s*[-–—]?\\s*TH(?:I|K|IC)?K?\\.?)?", "REINFORCED[\\s_]+CONCRETE[\\s_]+SLAB"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "2321-cross-sheet-hazmat-plan-set",
+      "question": "Which current architectural sheets should a PM use together for the 2321 weather-protected canopy plan and its hazardous-material containment layout?",
+      "expectedAnswer": "Use Architectural Sheet A-1.5 for the weather-protected canopy plan and Sheet A-1.5A for the hazardous-material containment data plan; the two sheets should be reviewed together.",
+      "requiredAnswerPatterns": ["A-1\\.5\\b", "A-1\\.5A\\b", "(?:containment|hazardous material)"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 2,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 2,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "01.*2321.*ARCHITECTURAL",
+          "sheetNumberPatterns": ["^A-1\\.5$"],
+          "pageNumberPatterns": ["^14$"],
+          "excerptPatterns": ["WEATHER\\s+PROTECTED\\s+CANOPY\\s+PLAN"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        },
+        {
+          "documentNamePattern": "01.*2321.*ARCHITECTURAL",
+          "sheetNumberPatterns": ["^A-1\\.5A$"],
+          "pageNumberPatterns": ["^15$"],
+          "excerptPatterns": ["WEATHER\\s+PROTECTED\\s+CANOPY", "HAZARDOUS\\s+MATERIAL", "CONTAINMENT\\s+AREA"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "2321-installed-canopy-slab-negative-control",
+      "question": "Was the 2321 hazardous-material canopy slab actually poured at 6 inches thick in the field?",
+      "expectedAnswer": "Structural Sheet SB-1.1 specifies a 6-inch-thick reinforced concrete slab, but the design drawing does not verify the actual installed or poured field thickness.",
+      "requiredAnswerPatterns": ["6\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\"”])", "(?:drawing|design)", "(?:not|cannot|does not).{0,80}(?:verify|confirm|prove).{0,80}(?:installed|poured|actual|field)"],
+      "forbiddenAnswerPatterns": ["^(?!.*(?:not|cannot|does not).*(?:verify|confirm|prove)).*\\b(?:was|is)\\s+6\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\"”])"],
+      "requiredLimitationPatterns": ["(?:design|drawing)", "(?:installed|poured|actual|field|as-built)"],
+      "allowedAssuranceStatuses": ["verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "03.*2321.*STRUCTURAL",
+        "sheetNumberPatterns": ["^SB-1\\.1$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["6\\s*[-–—]?\\s*(?:INCH(?:ES)?|IN\\.?|[\"”])(?:\\s*[-–—]?\\s*TH(?:I|K|IC)?K?\\.?)?", "REINFORCED[\\s_]+CONCRETE[\\s_]+SLAB"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-installed-tree-count-negative-control",
+      "question": "Does the current landscape drawing prove that all 78 planned trees are installed at 2321?",
+      "expectedAnswer": "Landscape Sheet L-1 shows 78 trees provided by the plan, but the drawing does not verify or prove that all 78 trees are installed in the field.",
+      "requiredAnswerPatterns": ["78\\s+trees?", "(?:drawing|plan)", "(?:not|cannot|does not).{0,80}(?:verify|confirm|prove).{0,80}(?:installed|field)"],
+      "forbiddenAnswerPatterns": ["^(?!.*(?:not|cannot|does not).*(?:verify|confirm|prove)).*\\b78\\s+trees?\\s+(?:are|were)\\s+installed"],
+      "requiredLimitationPatterns": ["(?:drawing|plan)", "(?:installed|field|observation|as-built)"],
+      "allowedAssuranceStatuses": ["verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "07.*2321.*LANDSCAPE",
+        "sheetNumberPatterns": ["^L-1$"],
+        "pageNumberPatterns": ["^1$"],
+        "excerptPatterns": ["TREES\\s+PROVIDED.{0,20}78"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    },
+    {
+      "id": "2321-measured-airflow-negative-control",
+      "question": "What was the measured field air-balance reading for exhaust fan EF-1 at 2321?",
+      "expectedAnswer": "Mechanical Sheet MB-1.2 schedules EF-1 at 100 CFM, but the drawing does not contain or verify a measured field air-balance reading.",
+      "requiredAnswerPatterns": ["EF-?1", "100\\s*CFM", "(?:not|cannot|does not).{0,80}(?:contain|verify|confirm|provide).{0,80}(?:measured|field|air-balance|test)"],
+      "forbiddenAnswerPatterns": ["^(?!.*(?:not|cannot|does not).*(?:verify|confirm|contain|provide)).*\\bmeasured.{0,30}100\\s*CFM"],
+      "requiredLimitationPatterns": ["(?:schedule|drawing|design)", "(?:measured|field|air-balance|test)"],
+      "allowedAssuranceStatuses": ["verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [{
+        "documentNamePattern": "04.*2321.*MECHANICAL",
+        "sheetNumberPatterns": ["^MB-1\\.2$"],
+        "pageNumberPatterns": ["^2$"],
+        "excerptPatterns": ["EF-?1", "100\\s*CFM"],
+        "requireBoundedRegion": true,
+        "requireHighResolutionCoverage": true
+      }]
+    }
+  ]
+}

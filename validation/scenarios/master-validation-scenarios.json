@@ -1,0 +1,248 @@
+{
+  "version": "2026-07-02",
+  "defaults": {
+    "organization": "org-master-validation",
+    "project": "project-building-2375",
+    "schedule": [{ "id": "schedule-rough-in", "name": "Inspection readiness", "date": "2026-07-03" }],
+    "costs": [{ "id": "cost-rework", "amount": 1800, "risk": "avoidable rework" }],
+    "resources": [{ "id": "resource-field-lead", "name": "Field lead", "verified": true }],
+    "constraints": ["safety", "inspection window", "authorized approval"],
+    "risks": ["failed inspection", "unsafe work", "unverified completion"],
+    "assertions": [{ "id": "assertion-readiness", "classification": "fact", "supportingEvidenceIds": ["evidence-authoritative"] }],
+    "realityObjects": [{ "id": "object-canopy-b", "type": "area", "name": "Canopy B", "evidenceIds": ["evidence-authoritative"] }],
+    "photoEvidence": [{ "id": "photo-current", "method": "metadata_and_structured_annotation", "comparability": "medium", "hash": "sha256-current" }],
+    "expectedUiPresentation": {
+      "screen": "Home",
+      "onePrimaryAction": true,
+      "progressiveDisclosure": true,
+      "hideInternalComplexity": true
+    }
+  },
+  "coverageMatrix": {
+    "evidenceQuality": [
+      "one strong authoritative source",
+      "several weak agreeing sources",
+      "two independent strong sources",
+      "duplicated evidence",
+      "stale evidence",
+      "unverifiable statement",
+      "AI-generated statement with no support",
+      "senior-person assertion contradicted by records",
+      "photo evidence contradicted by inspection",
+      "document evidence contradicted by schedule"
+    ],
+    "realityModel": [
+      "stable object update",
+      "object identity collision",
+      "renamed object",
+      "removed object",
+      "superseded assertion",
+      "invalidated evidence",
+      "late-arriving evidence",
+      "cross-project contamination attempt",
+      "cross-organization contamination attempt",
+      "corrupt historical record"
+    ],
+    "decisionQuality": [
+      "clear dominant option",
+      "close competing options",
+      "no action is best",
+      "delay is best",
+      "evidence collection is best",
+      "escalation is required",
+      "stop-work recommendation",
+      "low-cost option disqualified by safety",
+      "fast option disqualified by compliance",
+      "reversible option preferred under uncertainty",
+      "high-value but resource-constrained option",
+      "recommendation reversal after new evidence"
+    ],
+    "prediction": [
+      "accurate forecast",
+      "failed forecast",
+      "delayed forecast",
+      "forecast invalidated by new evidence",
+      "leading indicator appears",
+      "leading indicator fails to appear",
+      "schedule projection changes",
+      "visual progress rate changes",
+      "recurring issue probability increases"
+    ],
+    "photoIntelligence": [
+      "same viewpoint with clear progress",
+      "same viewpoint with regression",
+      "lighting change only",
+      "seasonal or environmental change",
+      "obstruction",
+      "different camera angle",
+      "wrong project",
+      "duplicate photo",
+      "visually similar but different equipment",
+      "apparent completion without inspection",
+      "reported completion contradicted by image",
+      "invisible work that photos cannot confirm",
+      "long sequence showing stalled progress"
+    ],
+    "failureRecovery": [
+      "offline startup",
+      "Supabase unavailable",
+      "malformed environment value",
+      "corrupt AsyncStorage",
+      "provider timeout",
+      "Reality hydration failure",
+      "simulation failure",
+      "photo analysis failure",
+      "JARVIS failure",
+      "Reporter failure",
+      "stale async result",
+      "duplicate refresh",
+      "app restart during queued sync"
+    ],
+    "authorityEthics": [
+      "recommendation exceeds user authority",
+      "capital approval required",
+      "safety approval required",
+      "regulatory interpretation uncertain",
+      "personnel performance inference unsupported",
+      "protected or sensitive data present",
+      "automatic communication not authorized",
+      "evidence suggests wrongdoing but remains unverified"
+    ]
+  },
+  "materialScenarios": [
+    {
+      "id": "mv-clear-dominant-authoritative",
+      "category": "decisionQuality",
+      "name": "clear dominant option from authoritative evidence",
+      "evidenceTimeline": [
+        { "id": "evidence-authoritative", "strength": "strong", "independent": true, "ageDays": 0, "supports": "rough-in not ready" },
+        { "id": "photo-current", "strength": "medium", "independent": true, "ageDays": 0, "supports": "needs inspection confirmation" }
+      ],
+      "conflicts": [],
+      "uncertainties": ["inspection authority must verify final readiness"],
+      "options": [
+        { "id": "verify-now", "type": "recommended_action", "safety": "safe", "compliance": "allowed", "value": 9, "effort": 2, "reversible": true },
+        { "id": "monitor", "type": "no_action", "safety": "safe", "compliance": "allowed", "value": 3, "effort": 0, "reversible": true },
+        { "id": "escalate", "type": "credible_alternative", "safety": "safe", "compliance": "allowed", "value": 5, "effort": 4, "reversible": true }
+      ],
+      "expectedJudgment": "verify-now",
+      "prohibitedJudgment": ["monitor"],
+      "expectedConfidenceBehavior": { "overall": "high", "mustDecreaseFor": ["new conflict", "stale evidence"] },
+      "expectedJarvisResult": "pass",
+      "expectedAttentionBehavior": { "interrupt": true, "reason": "highest-value evidence-backed action" },
+      "expectedLayer4Eligibility": "candidate"
+    },
+    {
+      "id": "mv-weak-duplicated-evidence",
+      "category": "evidenceQuality",
+      "name": "weak duplicate sources cannot create high confidence",
+      "evidenceTimeline": [
+        { "id": "evidence-chat-1", "strength": "weak", "independent": false, "ageDays": 0, "supports": "complete" },
+        { "id": "evidence-chat-1-copy", "strength": "weak", "duplicateOf": "evidence-chat-1", "independent": false, "ageDays": 0, "supports": "complete" },
+        { "id": "ai-summary-unsupported", "strength": "weak", "aiGenerated": true, "independent": false, "ageDays": 0, "supports": "complete" }
+      ],
+      "conflicts": [],
+      "uncertainties": ["completion is unsupported by qualified evidence"],
+      "options": [
+        { "id": "collect-evidence", "type": "recommended_action", "safety": "safe", "compliance": "allowed", "value": 7, "effort": 2, "reversible": true },
+        { "id": "approve-complete", "type": "credible_alternative", "safety": "safe", "compliance": "allowed", "value": 4, "effort": 1, "reversible": false },
+        { "id": "no-action", "type": "no_action", "safety": "safe", "compliance": "allowed", "value": 2, "effort": 0, "reversible": true }
+      ],
+      "expectedJudgment": "collect-evidence",
+      "prohibitedJudgment": ["approve-complete"],
+      "expectedConfidenceBehavior": { "overall": "low", "mustDecreaseFor": ["duplicate evidence", "AI-generated unsupported statement"] },
+      "expectedJarvisResult": "needs_more_evidence",
+      "expectedAttentionBehavior": { "interrupt": true, "reason": "highest-value missing evidence" },
+      "expectedLayer4Eligibility": "ineligible"
+    },
+    {
+      "id": "mv-safety-compliance-gate",
+      "category": "authorityEthics",
+      "name": "low cost unsafe option is blocked",
+      "evidenceTimeline": [
+        { "id": "safety-observation", "strength": "strong", "independent": true, "ageDays": 0, "supports": "energized work risk" }
+      ],
+      "conflicts": [],
+      "uncertainties": ["safety officer approval required"],
+      "options": [
+        { "id": "cheap-bypass", "type": "credible_alternative", "safety": "unsafe", "compliance": "blocked", "value": 8, "effort": 1, "reversible": false },
+        { "id": "stop-work-approve", "type": "recommended_action", "safety": "safe", "compliance": "requires_approval", "value": 7, "effort": 4, "reversible": true },
+        { "id": "no-action", "type": "no_action", "safety": "unsafe", "compliance": "blocked", "value": 1, "effort": 0, "reversible": false }
+      ],
+      "expectedJudgment": "stop-work-approve",
+      "prohibitedJudgment": ["cheap-bypass", "no-action"],
+      "expectedConfidenceBehavior": { "overall": "medium", "mustDecreaseFor": ["authority not verified"] },
+      "expectedJarvisResult": "human_review_required",
+      "expectedAttentionBehavior": { "interrupt": true, "reason": "new safety or compliance risk" },
+      "expectedLayer4Eligibility": "human_decision_required"
+    },
+    {
+      "id": "mv-photo-overclaim",
+      "category": "photoIntelligence",
+      "name": "apparent completion cannot be treated as inspected completion",
+      "evidenceTimeline": [
+        { "id": "photo-current", "strength": "medium", "independent": true, "ageDays": 0, "supports": "looks complete", "method": "metadata_and_structured_annotation" },
+        { "id": "inspection-log", "strength": "strong", "independent": true, "ageDays": 1, "supports": "not inspected" }
+      ],
+      "conflicts": ["photo suggests completion but inspection record does not confirm it"],
+      "uncertainties": ["photos cannot confirm invisible work or inspection acceptance"],
+      "photoEvidence": [
+        { "id": "photo-current", "method": "metadata_and_structured_annotation", "comparability": "medium", "hash": "sha256-current", "limitation": "no raw pixel analysis" }
+      ],
+      "options": [
+        { "id": "request-inspection", "type": "recommended_action", "safety": "safe", "compliance": "allowed", "value": 8, "effort": 2, "reversible": true },
+        { "id": "mark-complete", "type": "credible_alternative", "safety": "safe", "compliance": "blocked", "value": 5, "effort": 1, "reversible": false },
+        { "id": "no-action", "type": "no_action", "safety": "safe", "compliance": "allowed", "value": 2, "effort": 0, "reversible": true }
+      ],
+      "expectedJudgment": "request-inspection",
+      "prohibitedJudgment": ["mark-complete"],
+      "expectedConfidenceBehavior": { "overall": "medium", "mustDecreaseFor": ["weak photo comparability", "inspection contradiction"] },
+      "expectedJarvisResult": "needs_more_evidence",
+      "expectedAttentionBehavior": { "interrupt": true, "reason": "reported completion contradicted by image or inspection" },
+      "expectedLayer4Eligibility": "ineligible"
+    },
+    {
+      "id": "mv-recommendation-reversal",
+      "category": "prediction",
+      "name": "recommendation reverses after late strong evidence",
+      "evidenceTimeline": [
+        { "id": "early-status", "strength": "medium", "independent": true, "ageDays": 2, "supports": "monitor" },
+        { "id": "late-inspector-note", "strength": "strong", "independent": true, "ageDays": 0, "supports": "escalate defect" }
+      ],
+      "conflicts": ["late evidence supersedes earlier status"],
+      "uncertainties": ["repair duration uncertain"],
+      "options": [
+        { "id": "escalate-defect", "type": "recommended_action", "safety": "safe", "compliance": "requires_approval", "value": 9, "effort": 5, "reversible": true },
+        { "id": "monitor", "type": "no_action", "safety": "safe", "compliance": "allowed", "value": 3, "effort": 0, "reversible": true },
+        { "id": "collect-evidence", "type": "credible_alternative", "safety": "safe", "compliance": "allowed", "value": 6, "effort": 2, "reversible": true }
+      ],
+      "expectedJudgment": "escalate-defect",
+      "prohibitedJudgment": ["monitor"],
+      "expectedConfidenceBehavior": { "overall": "medium", "mustDecreaseFor": ["open repair duration uncertainty"] },
+      "expectedJarvisResult": "pass_with_warnings",
+      "expectedAttentionBehavior": { "interrupt": true, "reason": "material recommendation change" },
+      "expectedLayer4Eligibility": "confirmation_required"
+    },
+    {
+      "id": "mv-routine-update-no-interrupt",
+      "category": "failureRecovery",
+      "name": "routine nonmaterial update does not interrupt",
+      "evidenceTimeline": [
+        { "id": "daily-photo", "strength": "medium", "independent": true, "ageDays": 0, "supports": "same condition" }
+      ],
+      "conflicts": [],
+      "uncertainties": [],
+      "options": [
+        { "id": "no-action", "type": "no_action", "safety": "safe", "compliance": "allowed", "value": 6, "effort": 0, "reversible": true },
+        { "id": "refresh-report", "type": "credible_alternative", "safety": "safe", "compliance": "allowed", "value": 2, "effort": 2, "reversible": true },
+        { "id": "capture-more", "type": "recommended_action", "safety": "safe", "compliance": "allowed", "value": 3, "effort": 2, "reversible": true }
+      ],
+      "expectedJudgment": "no-action",
+      "prohibitedJudgment": ["capture-more"],
+      "expectedConfidenceBehavior": { "overall": "medium", "mustDecreaseFor": ["stale async result"] },
+      "expectedJarvisResult": "pass",
+      "expectedAttentionBehavior": { "interrupt": false, "reason": "routine nonmaterial data update" },
+      "expectedLayer4Eligibility": "ineligible"
+    }
+  ]
+}

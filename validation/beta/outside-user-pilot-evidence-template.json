@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "releaseCandidate": {
+    "version": null,
+    "build": null,
+    "sourceRevision": null
+  },
+  "preflight": {
+    "recordedAt": null,
+    "approvedBy": null,
+    "pilotInvitationsAuthorized": false,
+    "askEcosMode": "disabled_for_pilot",
+    "askEcosAcceptanceStatus": "pending",
+    "askEcosMultiProjectAcceptanceStatus": "pending",
+    "askEcosExactProofStatus": "pending",
+    "askEcosNegativeControlStatus": "pending",
+    "askEcosAcceptedCandidate": {
+      "version": null,
+      "build": null,
+      "sourceRevision": null
+    },
+    "customerSurfaceConfirmedDisabled": false,
+    "askEcosEvidenceRefs": []
+  },
+  "overallStatus": "pending",
+  "startedAt": null,
+  "completedAt": null,
+  "sessions": [],
+  "sessionTemplate": {
+    "participantId": "PM_001",
+    "isProjectManager": true,
+    "helpedBuildProduct": false,
+    "consentRecorded": false,
+    "verbalSetupAssistance": false,
+    "providerCredentialRequested": false,
+    "providerSetupConfusion": false,
+    "onboardingCompleted": false,
+    "supportInterventions": 0,
+    "setupSecondsExcludingBackground": null,
+    "steps": {
+      "sign_in": "pending",
+      "create_project": "pending",
+      "add_project_documents": "pending",
+      "leave_and_return_during_processing": "pending",
+      "understand_ready_or_review_status": "pending",
+      "ask_supported_question": "not_applicable_disabled",
+      "open_exact_proof": "not_applicable_disabled"
+    },
+    "evidenceRefs": [],
+    "defectRefs": []
+  },
+  "defects": [],
+  "notes": []
+}
