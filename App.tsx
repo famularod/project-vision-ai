@@ -3,6 +3,7 @@ import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import { BottomNavigation } from './components/BottomNavigation';
 import { HomeDashboard } from './components/HomeDashboard';
 import { ProjectSelector } from './components/ProjectSelector';
+import { HistoryScreen } from './screens/HistoryScreen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -4383,7 +4384,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           )}
 
           {screen === 'SavedUpdates' && (
-            <SavedUpdatesScreen
+            <HistoryScreen
               contentStyle={contentStyle}
               updates={savedUpdates}
               projectAreas={projectAreas}
@@ -6557,173 +6558,6 @@ function RecipientRow({
         </View>
       ) : null}
     </View>
-  );
-}
-
-function SavedUpdatesScreen({
-  contentStyle,
-  updates,
-  projectAreas,
-  onOpen,
-  onDelete,
-  onNewUpdate,
-}: {
-  contentStyle: StyleProp<ViewStyle>;
-  updates: ProjectUpdate[];
-  projectAreas: ProjectArea[];
-  onOpen: (update: ProjectUpdate) => void;
-  onDelete: (updateId: string) => void;
-  onNewUpdate: () => void;
-}) {
-  const [areaFilterId, setAreaFilterId] = useState<string | null>(
-    null,
-  );
-
-  const filteredUpdates = areaFilterId
-    ? updates.filter(
-        update =>
-          update.selectedAreaId === areaFilterId ||
-          update.photos.some(
-            photo => photo.selectedAreaId === areaFilterId,
-          ),
-      )
-    : updates;
-
-  const renderUpdate = ({ item: update }: { item: ProjectUpdate }) => (
-    <View
-      key={update.id}
-      style={styles.savedRow}
-    >
-      <View style={styles.rowIconBubble}>
-        <Ionicons
-          name="document-text-outline"
-          size={20}
-          color={colors.primary}
-        />
-      </View>
-
-      <TouchableOpacity
-        style={styles.rowMain}
-        onPress={() =>
-          onOpen(update)
-        }
-      >
-        <Text style={styles.projectName}>
-          {update.projectName}
-        </Text>
-
-        <Text style={styles.rowSub}>
-          {formatDisplayDate(update.date)} - {countLabel(update.photos.length, 'photo')}
-        </Text>
-
-        {update.selectedAreaName ? (
-          <Text style={styles.rowSub}>
-            Area: {update.selectedAreaName}
-          </Text>
-        ) : null}
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={
-          styles.iconOnlyDangerButton
-        }
-        onPress={() =>
-          onDelete(update.id)
-        }
-      >
-        <Ionicons
-          name="trash-outline"
-          size={19}
-          color={colors.danger}
-        />
-      </TouchableOpacity>
-    </View>
-  );
-
-  return (
-    <FlatList
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-      data={filteredUpdates}
-      keyExtractor={update => update.id}
-      renderItem={renderUpdate}
-      ListHeaderComponent={
-        <>
-          <ScreenTitle
-            title="Saved Updates"
-            subtitle="Open a saved update to copy, send, or revise it."
-          />
-
-          <Text style={styles.sectionLabel}>
-            Filter by Area
-          </Text>
-
-          <View style={styles.areaChipWrap}>
-            <TouchableOpacity
-              style={[
-                styles.areaChip,
-                !areaFilterId && styles.areaChipSelected,
-              ]}
-              onPress={() => setAreaFilterId(null)}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  !areaFilterId && styles.areaChipTextSelected,
-                ]}
-              >
-                All Areas
-              </Text>
-            </TouchableOpacity>
-
-            {projectAreas.map(area => {
-              const selected = areaFilterId === area.id;
-
-              return (
-                <TouchableOpacity
-                  key={area.id}
-                  style={[
-                    styles.areaChip,
-                    selected && styles.areaChipSelected,
-                  ]}
-                  onPress={() => setAreaFilterId(area.id)}
-                >
-                  <Text
-                    style={[
-                      styles.areaChipText,
-                      selected && styles.areaChipTextSelected,
-                    ]}
-                  >
-                    {area.name}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </>
-      }
-      ListEmptyComponent={
-        updates.length === 0 ? (
-          <EmptyState
-            title="No saved updates"
-            text="Save an update after building the message preview."
-          />
-        ) : (
-          <EmptyState
-            title="No updates for this area"
-            text="Choose All Areas or save an update tagged to this project area."
-          />
-        )
-      }
-      ListFooterComponent={
-        <PrimaryButton
-          label="New Update"
-          icon="add-circle-outline"
-          onPress={onNewUpdate}
-        />
-      }
-    />
   );
 }
 
