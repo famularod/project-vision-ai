@@ -2,6 +2,8 @@ import { loadCloudProjects, saveCloudProject } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import { AppHeader } from './components/AppHeader';
 import { BottomNavigation } from './components/BottomNavigation';
+import { ExecutiveSummary } from './components/ExecutiveSummary';
+import { ProjectSelector } from './components/ProjectSelector';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -4203,7 +4205,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           )}
 
           {screen === 'SelectProject' && (
-            <SelectProjectScreen
+            <ProjectSelector
               contentStyle={contentStyle}
               projects={activeProjects}
               projectStatsByName={projectStatsByName}
@@ -4645,69 +4647,12 @@ function HomeScreen({
         </View>
       ) : null}
 
-      <View style={styles.dashboardSummaryCard}>
-        <View style={styles.dashboardSummaryHeader}>
-          <View>
-            <Text style={styles.panelTitle}>
-              Executive Summary
-            </Text>
-
-            <Text style={styles.bodyText}>
-              {projects.length} active project
-              {projects.length === 1 ? '' : 's'} under management
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.dashboardManageButton}
-            onPress={onViewProjects}
-          >
-            <Text style={styles.dashboardManageText}>
-              Manage
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.dashboardMetricGrid}>
-          <DashboardMetric
-            label="Open Issues"
-            value={totals.openActions}
-            icon="alert-circle-outline"
-            danger={totals.openActions > 0}
-          />
-
-          <DashboardMetric
-            label="Overdue"
-            value={totals.overdueActions}
-            icon="time-outline"
-            danger={totals.overdueActions > 0}
-          />
-
-          <DashboardMetric
-            label="Due 7 Days"
-            value={totals.dueThisWeek}
-            icon="calendar-outline"
-          />
-
-          <DashboardMetric
-            label="Photos"
-            value={totals.photos}
-            icon="images-outline"
-          />
-
-          <DashboardMetric
-            label="Updates"
-            value={totals.updates}
-            icon="document-text-outline"
-          />
-
-          <DashboardMetric
-            label="Documents"
-            value={referenceDocumentCount}
-            icon="documents-outline"
-          />
-        </View>
-      </View>
+      <ExecutiveSummary
+        projects={projects}
+        totals={totals}
+        referenceDocumentCount={referenceDocumentCount}
+        onViewProjects={onViewProjects}
+      />
 
       <Text style={styles.sectionLabel}>
         Quick Actions
@@ -4778,62 +4723,6 @@ function HomeScreen({
         ))
       )}
     </ScrollView>
-  );
-}
-
-function SelectProjectScreen({
-  contentStyle,
-  projects,
-  projectStatsByName,
-  onSelect,
-  onAddProject,
-}: {
-  contentStyle: StyleProp<ViewStyle>;
-  projects: string[];
-  projectStatsByName: Record<string, ProjectStats>;
-  onSelect: (projectName: string) => void;
-  onAddProject: (projectName: string) => boolean;
-}) {
-  const renderProject = ({ item: project }: { item: string }) => (
-    <ProjectDashboardCard
-      project={project}
-      stats={
-        projectStatsByName[project] || EMPTY_PROJECT_STATS
-      }
-      actionLabel="Select"
-      onPress={() => onSelect(project)}
-    />
-  );
-
-  return (
-    <FlatList
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-      data={projects}
-      keyExtractor={project => project}
-      renderItem={renderProject}
-      ListHeaderComponent={
-        <>
-          <ScreenTitle
-            title="Select Project"
-            subtitle="Choose the job this update belongs to."
-          />
-
-          <AddProjectCard
-            buttonLabel="Add and Start"
-            placeholder="Example: Building 2400 Roof"
-            onAdd={onAddProject}
-          />
-        </>
-      }
-      ListEmptyComponent={
-        <EmptyState
-          title="No active projects"
-          text="Add a project manually to start an update."
-        />
-      }
-    />
   );
 }
 
@@ -8235,103 +8124,6 @@ function ScheduleItemRow({
   );
 }
 
-function ProjectDashboardCard({
-  project,
-  stats,
-  actionLabel = 'Update',
-  onPress,
-  onClose,
-}: {
-  project: string;
-  stats: ProjectStats;
-  actionLabel?: string;
-  onPress: () => void;
-  onClose?: () => void;
-}) {
-  return (
-    <View style={styles.dashboardCard}>
-      <TouchableOpacity onPress={onPress}>
-        <View style={styles.dashboardHeader}>
-          <View style={styles.rowIconBubble}>
-            <Ionicons
-              name="business-outline"
-              size={20}
-              color={colors.primary}
-            />
-          </View>
-
-          <View style={styles.rowMain}>
-            <Text style={styles.projectName}>
-              {project}
-            </Text>
-
-            <Text style={styles.rowSub}>
-              Last update:{' '}
-              {stats.lastUpdate
-                ? formatDisplayDate(
-                    stats.lastUpdate,
-                  )
-                : 'None yet'}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.statsGrid}>
-          <MiniStat
-            label="Open Entries"
-            value={stats.openActions}
-          />
-
-          <MiniStat
-            label="Overdue"
-            value={stats.overdueActions}
-            danger={stats.overdueActions > 0}
-          />
-
-          <MiniStat
-            label="Due 7 Days"
-            value={stats.dueThisWeek}
-          />
-
-          <MiniStat
-            label="Photos"
-            value={stats.photos}
-          />
-        </View>
-      </TouchableOpacity>
-
-      <View style={styles.cardActions}>
-        <TouchableOpacity
-          style={styles.smallAction}
-          onPress={onPress}
-        >
-          <Text style={styles.smallActionText}>
-            {actionLabel}
-          </Text>
-        </TouchableOpacity>
-
-        {onClose ? (
-          <TouchableOpacity
-            style={[
-              styles.smallAction,
-              styles.smallActionDanger,
-            ]}
-            onPress={onClose}
-          >
-            <Text
-              style={
-                styles.smallActionDangerText
-              }
-            >
-              Close
-            </Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 function AddProjectCard({
   buttonLabel,
   placeholder,
@@ -8961,27 +8753,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  dashboardCard: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  dashboardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  statsGrid: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-
   miniStat: {
     flex: 1,
     backgroundColor: colors.fill,
@@ -9009,12 +8780,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     marginTop: 2,
-  },
-
-  cardActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
   },
 
   smallAction: {
@@ -9757,42 +9522,6 @@ const styles = StyleSheet.create({
   headerCompact: {
     paddingTop: 10,
     paddingBottom: 14,
-  },
-
-  dashboardSummaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  dashboardSummaryHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  dashboardManageButton: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-
-  dashboardManageText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  dashboardMetricGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
   },
 
   dashboardMetricCard: {
