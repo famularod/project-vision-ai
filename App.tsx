@@ -1,5 +1,6 @@
 import { loadCloudProjects, saveCloudProject } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
+import { AppHeader } from './components/AppHeader';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -4572,19 +4573,7 @@ function HomeScreen({
       contentContainerStyle={contentStyle}
       keyboardShouldPersistTaps="handled"
     >
-      <View style={styles.headerCompact}>
-        <Text style={styles.kicker}>
-          Project Photo Update Tool
-        </Text>
-
-        <Text style={styles.title}>
-          Dashboard
-        </Text>
-
-        <Text style={styles.subtitle}>
-          What needs attention right now.
-        </Text>
-      </View>
+      <AppHeader />
 
       {unfinishedDraft ? (
         <View style={styles.draftRecoveryCard}>
@@ -10268,5 +10257,4 @@ type ScheduleItem = {
   importedAt?: string | null;
   createdAt: string;
 };
-
 
