@@ -4,6 +4,7 @@ import { AppHeader } from './components/AppHeader';
 import { BottomNavigation } from './components/BottomNavigation';
 import { ExecutiveSummary } from './components/ExecutiveSummary';
 import { ProjectSelector } from './components/ProjectSelector';
+import { QuickActions } from './components/QuickActions';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -4654,36 +4655,12 @@ function HomeScreen({
         onViewProjects={onViewProjects}
       />
 
-      <Text style={styles.sectionLabel}>
-        Quick Actions
-      </Text>
-
-      <View style={styles.quickActionGrid}>
-        <QuickActionButton
-          label="New Update"
-          icon="camera-outline"
-          onPress={onNewUpdate}
-          primary
-        />
-
-        <QuickActionButton
-          label="Projects"
-          icon="search-outline"
-          onPress={onViewProjects}
-        />
-
-        <QuickActionButton
-          label="Documents"
-          icon="documents-outline"
-          onPress={onReferenceDocuments}
-        />
-
-        <QuickActionButton
-          label="Schedule"
-          icon="calendar-outline"
-          onPress={onSchedule}
-        />
-      </View>
+      <QuickActions
+        onNewUpdate={onNewUpdate}
+        onViewProjects={onViewProjects}
+        onReferenceDocuments={onReferenceDocuments}
+        onSchedule={onSchedule}
+      />
 
       <Text style={styles.sectionLabel}>
         Projects Needing Attention
@@ -7001,46 +6978,6 @@ function DashboardMetric({
         {label}
       </Text>
     </View>
-  );
-}
-
-function QuickActionButton({
-  label,
-  icon,
-  onPress,
-  primary = false,
-}: {
-  label: string;
-  icon: IconName;
-  onPress: () => void;
-  primary?: boolean;
-}) {
-  return (
-    <TouchableOpacity
-      style={[
-        styles.quickActionButton,
-        primary && styles.quickActionButtonPrimary,
-      ]}
-      onPress={onPress}
-    >
-      <Ionicons
-        name={icon}
-        size={22}
-        color={primary ? '#FFFFFF' : colors.primary}
-      />
-
-      <Text
-        style={[
-          styles.quickActionText,
-          primary && styles.quickActionTextPrimary,
-        ]}
-        numberOfLines={2}
-        adjustsFontSizeToFit
-        minimumFontScale={0.8}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
   );
 }
 
@@ -9561,43 +9498,6 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 12,
     fontWeight: '800',
-  },
-
-  quickActionGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  quickActionButton: {
-    width: '48%',
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-    minHeight: 76,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingHorizontal: 10,
-  },
-
-  quickActionButtonPrimary: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  quickActionText: {
-    color: colors.text,
-    fontSize: 14,
-    lineHeight: 17,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-
-  quickActionTextPrimary: {
-    color: '#FFFFFF',
   },
 
   attentionCard: {
