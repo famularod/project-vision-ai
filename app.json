@@ -1,25 +1,43 @@
 {
   "expo": {
-    "name": "project-photo-update-tool",
+    "name": "Project Photo Update Tool",
     "slug": "project-photo-update-tool",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.davidfamularo.projectphotoupdate",
+      "icon": "./assets/icon.png",
+      "infoPlist": {
+        "NSContactsUsageDescription": "Allow Project Photo Update Tool to choose update recipients from your contacts.",
+        "NSLocationWhenInUseUsageDescription": "This app uses your location to tag project photos and suggest the correct work area.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false
+      "package": "com.davidfamularo.projectphotoupdate",
+      "permissions": [
+        "READ_CONTACTS",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "This app uses your location to tag project photos and suggest the correct work area."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "38a9bd56-2943-4538-a9bf-1ac6818a3723"
+      }
     }
   }
 }

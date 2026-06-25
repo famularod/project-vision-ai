@@ -1,5 +1,3 @@
-import { loadCloudProjects, saveCloudProject } from './services/projectService';
-import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -350,12 +348,6 @@ const SCHEDULE_STATUSES: ScheduleStatus[] = [
   'In Progress',
   'Waiting',
   'Complete',
-];
-
-const SCHEDULE_PRIORITIES: SchedulePriority[] = [
-  'Low',
-  'Medium',
-  'High',
 ];
 
 const uid = () =>
@@ -1195,14 +1187,6 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
     finishDate: typeof value.finishDate === 'string' ? formatAppDate(value.finishDate) : '',
     milestone: typeof value.milestone === 'string' ? value.milestone : '',
     owner: typeof value.owner === 'string' ? value.owner : '',
-    contractor: typeof value.contractor === 'string' ? value.contractor : '',
-    percentComplete:
-      typeof value.percentComplete === 'number' && Number.isFinite(value.percentComplete)
-        ? Math.max(0, Math.min(100, Math.round(value.percentComplete)))
-        : 0,
-    priority: SCHEDULE_PRIORITIES.includes(value.priority as SchedulePriority)
-      ? (value.priority as SchedulePriority)
-      : 'Medium',
     status: SCHEDULE_STATUSES.includes(value.status as ScheduleStatus)
       ? (value.status as ScheduleStatus)
       : 'Not Started',
@@ -1443,9 +1427,6 @@ type AiScheduleExtractedItem = {
   dueDate?: string | null;
   milestone?: string | null;
   owner?: string | null;
-  contractor?: string | null;
-  percentComplete?: number | string | null;
-  priority?: string | null;
   status?: string | null;
   notes?: string | null;
   confidence?: string | null;
@@ -1465,52 +1446,6 @@ function normalizeAiScheduleStatus(value: unknown): ScheduleStatus {
   return 'Not Started';
 }
 
-function normalizeAiSchedulePriority(value: unknown, finishDate: string): SchedulePriority {
-  if (typeof value === 'string') {
-    const lower = value.trim().toLowerCase();
-
-    if (lower.includes('high')) return 'High';
-    if (lower.includes('low')) return 'Low';
-    if (lower.includes('medium') || lower.includes('normal')) return 'Medium';
-  }
-
-  const days = daysUntilDate(finishDate);
-
-  if (days !== null && days < 0) return 'High';
-  if (days !== null && days <= 7) return 'High';
-
-  return 'Medium';
-}
-
-function percentFromAiItem(item: AiScheduleExtractedItem) {
-  const direct = item.percentComplete;
-
-  if (typeof direct === 'number' && Number.isFinite(direct)) {
-    return Math.max(0, Math.min(100, Math.round(direct)));
-  }
-
-  const text = [direct, item.notes, item.status]
-    .filter(value => typeof value === 'string')
-    .join(' ');
-  const match = text.match(/(\d{1,3})\s*%/);
-
-  if (!match) return 0;
-
-  return Math.max(0, Math.min(100, Number(match[1])));
-}
-
-function contractorFromAiItem(item: AiScheduleExtractedItem) {
-  if (typeof item.contractor === 'string' && item.contractor.trim()) {
-    return item.contractor.trim();
-  }
-
-  if (typeof item.owner === 'string' && item.owner.trim()) {
-    return item.owner.trim();
-  }
-
-  return '';
-}
-
 function normalizeAiScheduleDate(value: unknown) {
   if (typeof value !== 'string') return '';
 
@@ -1522,7 +1457,7 @@ function normalizeAiScheduleDate(value: unknown) {
 
   if (!parsed) return '';
 
-  return `${zeroPad(parsed.getMonth() + 1)}/${zeroPad(parsed.getDate())}/${parsed.getFullYear()}`;
+  return formatAppDate(parsed);
 }
 
 function firstValidAiDate(...values: unknown[]) {
@@ -1555,8 +1490,6 @@ function scheduleItemsFromAiPayload(payload: unknown, sourceName: string) {
 
       const startDate = firstValidAiDate(item.startDate);
       const finishDate = firstValidAiDate(item.finishDate, item.dueDate, item.startDate);
-      const contractor = contractorFromAiItem(item);
-      const percentComplete = percentFromAiItem(item);
       const confidenceNote =
         typeof item.confidence === 'string' && item.confidence.trim()
           ? ` Confidence: ${item.confidence.trim()}.`
@@ -1574,9 +1507,6 @@ function scheduleItemsFromAiPayload(payload: unknown, sourceName: string) {
         finishDate,
         milestone: typeof item.milestone === 'string' ? item.milestone.trim() : '',
         owner: typeof item.owner === 'string' ? item.owner.trim() : '',
-        contractor,
-        percentComplete,
-        priority: normalizeAiSchedulePriority(item.priority, finishDate),
         status: normalizeAiScheduleStatus(item.status),
         notes:
           typeof item.notes === 'string' && item.notes.trim()
@@ -1606,39 +1536,31 @@ async function extractScheduleItemsWithAiEndpoint({
 
   if (!trimmedEndpoint) return [];
 
-  const formData = new FormData();
-
-  formData.append('file', {
-    uri: pdfUri,
-    name: fileName || 'schedule.pdf',
-    type: 'application/pdf',
-  } as any);
-
-  formData.append('projectName', projects[0] || '');
-  formData.append('timezone', 'America/Los_Angeles');
-  formData.append(
-    'locations',
-    JSON.stringify(projectAreas.map(area => area.name).filter(Boolean)),
-  );
+  const pdfBase64 = await FileSystem.readAsStringAsync(pdfUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
 
   const response = await fetch(trimmedEndpoint, {
     method: 'POST',
-    body: formData,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      fileName,
+      mimeType: 'application/pdf',
+      fileBase64: pdfBase64,
+      instruction:
+        'Extract Gantt schedule tasks and milestones. Return strict JSON with an items array. Each item should include taskName, projectName, locationName, startDate, finishDate, milestone, owner, status, and notes. Dates should be MM/DD/YYYY when possible.',
+      knownProjects: projects,
+      knownLocations: projectAreas.map(area => area.name),
+    }),
   });
 
-  const payload = await response.json();
-
   if (!response.ok) {
-    const message =
-      payload &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      typeof (payload as { error?: unknown }).error === 'string'
-        ? (payload as { error: string }).error
-        : `AI extractor failed with HTTP ${response.status}`;
-
-    throw new Error(message);
+    throw new Error(`AI extractor failed with HTTP ${response.status}`);
   }
+
+  const payload = await response.json();
 
   return scheduleItemsFromAiPayload(payload, fileName);
 }
@@ -2163,68 +2085,49 @@ function AppShell() {
 
   const photoCleanupRan = useRef(false);
 
-useEffect(() => {
-  async function loadSavedUpdates() {
-    try {
-      const localValue = await AsyncStorage.getItem(UPDATES_STORAGE_KEY);
-      const localParsed = localValue ? JSON.parse(localValue) : [];
-      const localUpdates = Array.isArray(localParsed)
-        ? localParsed.map(normalizeUpdate)
-        : [];
+  useEffect(() => {
+    AsyncStorage.getItem(UPDATES_STORAGE_KEY)
+      .then(value => {
+        if (!value) return;
 
-      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
+        const parsed = JSON.parse(value);
 
-      const merged = [
-        ...cloudUpdates.map(normalizeUpdate),
-        ...localUpdates,
-      ];
-      const seen = new Set<string>();
-      const deduped = merged.filter(update => {
-        if (seen.has(update.id)) return false;
-        seen.add(update.id);
-        return true;
-      });
-
-      setSavedUpdates(deduped);
-    } catch {
-      Alert.alert(
-        'Storage error',
-        'Saved updates could not be loaded.',
-      );
-    } finally {
-      setUpdatesLoaded(true);
-    }
-  }
-
-  void loadSavedUpdates();
-}, []);
-
-useEffect(() => {
-  async function loadProjects() {
-    try {
-      const localValue = await AsyncStorage.getItem(PROJECTS_STORAGE_KEY);
-      const localProjects = localValue ? JSON.parse(localValue) : [];
-      const cloudProjects = await loadCloudProjects();
-
-      setProjects(
-        mergeProjectNames(
-          DEFAULT_PROJECTS,
-          Array.isArray(localProjects) ? localProjects : [],
-          cloudProjects,
+        setSavedUpdates(
+          Array.isArray(parsed)
+            ? parsed.map(normalizeUpdate)
+            : [],
+        );
+      })
+      .catch(() =>
+        Alert.alert(
+          'Storage error',
+          'Saved updates could not be loaded.',
         ),
-      );
-    } catch {
-      Alert.alert(
-        'Storage error',
-        'Saved projects could not be loaded.',
-      );
-    } finally {
-      setProjectsLoaded(true);
-    }
-  }
+      )
+      .finally(() => setUpdatesLoaded(true));
+  }, []);
 
-  void loadProjects();
-}, []);
+  useEffect(() => {
+    AsyncStorage.getItem(PROJECTS_STORAGE_KEY)
+      .then(value => {
+        if (!value) return;
+
+        const parsed = JSON.parse(value);
+
+        if (Array.isArray(parsed)) {
+          setProjects(
+            mergeProjectNames(DEFAULT_PROJECTS, parsed),
+          );
+        }
+      })
+      .catch(() =>
+        Alert.alert(
+          'Storage error',
+          'Saved projects could not be loaded.',
+        ),
+      )
+      .finally(() => setProjectsLoaded(true));
+  }, []);
 
   useEffect(() => {
     AsyncStorage.getItem(ARCHIVED_PROJECTS_STORAGE_KEY)
@@ -2776,7 +2679,36 @@ useEffect(() => {
     );
   }
 
-  
+  function addProject(projectName: string) {
+    const trimmed = projectName.trim();
+
+    if (!trimmed) {
+      Alert.alert(
+        'Project name needed',
+        'Enter a project name first.',
+      );
+
+      return false;
+    }
+
+    const exists = projects.some(
+      project =>
+        project.toLowerCase() === trimmed.toLowerCase(),
+    );
+
+    if (exists) {
+      Alert.alert(
+        'Already added',
+        `${trimmed} is already in your project list.`,
+      );
+
+      return false;
+    }
+
+    setProjects(prev => [trimmed, ...prev]);
+
+    return true;
+  }
 
   function changeDraftProject(projectName: string) {
     setDraft(prev => ({
@@ -2785,38 +2717,7 @@ useEffect(() => {
     }));
     setScreen('AddPhotos');
   }
-function addProject(projectName: string) {
-  const trimmed = projectName.trim();
 
-  if (!trimmed) {
-    Alert.alert(
-      'Project name needed',
-      'Enter a project name first.',
-    );
-
-    return false;
-  }
-
-  const exists = projects.some(
-    project =>
-      project.toLowerCase() === trimmed.toLowerCase(),
-  );
-
-  if (exists) {
-    Alert.alert(
-      'Already added',
-      `${trimmed} is already in your project list.`,
-    );
-
-    return false;
-  }
-
-  setProjects(prev => [trimmed, ...prev]);
-
-  saveCloudProject(trimmed);
-
-  return true;
-}
   function addAndChangeDraftProject(projectName: string) {
     const added = addProject(projectName);
 
@@ -2998,31 +2899,7 @@ function addProject(projectName: string) {
     );
     setScreen('Contacts');
   }
-function hasPlzCorpRecipient(emails: string[]) {
-  return emails.some(email =>
-    email.toLowerCase().includes('@plzcorp.com'),
-  );
-}
 
-async function copyEmailDraftToClipboard(subject: string, body: string) {
-  await Clipboard.setStringAsync(`Subject: ${subject}\n\n${body}`);
-}
-
-function buildOutlookComposeUrl({
-  recipients,
-  subject,
-  body,
-}: {
-  recipients: string[];
-  subject: string;
-  body: string;
-}) {
-  const to = encodeURIComponent(recipients.join(';'));
-  const encodedSubject = encodeURIComponent(subject);
-  const encodedBody = encodeURIComponent(body);
-
-  return `ms-outlook://compose?to=${to}&subject=${encodedSubject}&body=${encodedBody}`;
-}
   function composeEmail(withPhotos = true) {
     return MailComposer.composeAsync({
       recipients: currentEmails,
@@ -3996,55 +3873,57 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function saveUpdate() {
-  if (!hasSavableUpdate(draft)) {
-    Alert.alert(
-      'Update is blank',
-      'Add a photo, update notes, field note, or action information before saving.',
+    if (!hasSavableUpdate(draft)) {
+      Alert.alert(
+        'Update is blank',
+        'Add a photo, update notes, field note, or action information before saving.',
+      );
+
+      return;
+    }
+
+    const invalidDueDateIndex = findInvalidDueDatePhoto(draft);
+
+    if (invalidDueDateIndex >= 0) {
+      Alert.alert(
+        'Invalid due date',
+        `Photo ${invalidDueDateIndex + 1} has a due date that is not in YYYY-MM-DD format.`,
+      );
+
+      return;
+    }
+
+    setSavedUpdates(prev => {
+      const saved = {
+        ...draft,
+        id: draft.id || uid(),
+      };
+
+      return [
+        saved,
+        ...prev.filter(
+          item => item.id !== saved.id,
+        ),
+      ];
+    });
+
+    const nextProject =
+      activeProjects[0] || DEFAULT_PROJECTS[0];
+
+    setDraft(createDraft(nextProject));
+    setDraftSavedAt(null);
+
+    AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
+      () => undefined,
     );
 
-    return;
-  }
-
-  const invalidDueDateIndex = findInvalidDueDatePhoto(draft);
-
-  if (invalidDueDateIndex >= 0) {
     Alert.alert(
-      'Invalid due date',
-      `Photo ${invalidDueDateIndex + 1} has a due date that is not in YYYY-MM-DD format.`,
+      'Saved',
+      'This project update was saved.',
     );
 
-    return;
+    setScreen('SavedUpdates');
   }
-
-  const saved = {
-    ...draft,
-    id: draft.id || uid(),
-  };
-
-  setSavedUpdates(prev => [
-    saved,
-    ...prev.filter(item => item.id !== saved.id),
-  ]);
-
-  saveCloudUpdate(saved);
-
-  const nextProject =
-    activeProjects[0] || DEFAULT_PROJECTS[0];
-
-  setDraft(createDraft(nextProject));
-  setDraftSavedAt(null);
-
-  AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
-    () => undefined,
-  );
-
-  Alert.alert(
-    'Saved',
-    'This project update was saved.',
-  );
-
-  setScreen('SavedUpdates');
-}
 
   function openSavedUpdate(update: ProjectUpdate) {
     if (hasDraftContent(draft)) {
@@ -4732,7 +4611,7 @@ function HomeScreen({
         />
 
         <QuickActionButton
-          label="Projects"
+          label="Find Project"
           icon="search-outline"
           onPress={onViewProjects}
         />
@@ -6266,13 +6145,104 @@ function DiagnosticsScreen({
   referenceDocuments: ReferenceDocument[];
   onBack: () => void;
 }) {
-  const areasWithGps = projectAreas.filter(area => hasSavedAreaLocation(area)).length;
+  const [results, setResults] = useState<DiagnosticResult[]>([]);
+  const [running, setRunning] = useState(false);
+  const [completedManualIds, setCompletedManualIds] = useState<string[]>([]);
+  const areaStats = projectAreaSetupStats(projectAreas);
+  const manualStats = manualChecklistStats(completedManualIds);
+  const rating = diagnosticsSummaryRating(results, projectAreas, completedManualIds);
+  const groupedTests = groupedManualTests();
+  const report = formatDiagnosticReport(results, projectAreas, completedManualIds, referenceDocuments);
+
+  useEffect(() => {
+    AsyncStorage.getItem(MANUAL_TEST_STORAGE_KEY)
+      .then(value => {
+        if (!value) return;
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) {
+          setCompletedManualIds(parsed.filter(id => typeof id === 'string'));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.setItem(
+      MANUAL_TEST_STORAGE_KEY,
+      JSON.stringify(completedManualIds),
+    ).catch(() => undefined);
+  }, [completedManualIds]);
+
+  async function runDiagnostics() {
+    setRunning(true);
+    try {
+      const nextResults = await runAdminDiagnostics(projectAreas, referenceDocuments);
+      setResults(nextResults);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function copyReport() {
+    await Clipboard.setStringAsync(report);
+    Alert.alert('Copied', 'The diagnostic report is ready to paste.');
+  }
+
+  async function emailReport() {
+    const available = await MailComposer.isAvailableAsync();
+    if (!available) {
+      Alert.alert('Email unavailable', 'Email composition is not available on this device.');
+      return;
+    }
+
+    await MailComposer.composeAsync({
+      subject: 'Project Photo Update Tool Diagnostic Report',
+      body: report,
+    });
+  }
+
+  async function testContactPicker() {
+    try {
+      const permission = await Contacts.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Contacts access needed', 'Allow contacts access in Settings, then run the contact picker test again.');
+        return;
+      }
+
+      const contact = await Contacts.presentContactPickerAsync();
+      setResults(prev => [
+        makeDiagnosticResult(
+          'Manual contact picker test',
+          'Pass',
+          contact ? 'Contact picker opened and a contact was selected.' : 'Contact picker opened and was cancelled without selecting a contact.',
+        ),
+        ...prev,
+      ]);
+    } catch {
+      setResults(prev => [
+        makeDiagnosticResult(
+          'Manual contact picker test',
+          'Fail',
+          'Contact picker could not be opened. Rebuild the app if native contact access was added recently.',
+        ),
+        ...prev,
+      ]);
+    }
+  }
+
+  function toggleManualCheck(id: string) {
+    setCompletedManualIds(prev =>
+      prev.includes(id)
+        ? prev.filter(item => item !== id)
+        : [...prev, id],
+    );
+  }
 
   return (
     <View>
       <ScreenTitle
         title="Admin Diagnostics"
-        subtitle="Basic setup status for locations, GPS, documents, and app data."
+        subtitle="Run phone-based checks and track manual function testing."
       />
 
       <SecondaryButton
@@ -6282,44 +6252,141 @@ function DiagnosticsScreen({
       />
 
       <View style={styles.panel}>
-        <Text style={styles.panelTitle}>System Check</Text>
+        <Text style={styles.panelTitle}>{rating}</Text>
         <Text style={styles.bodyText}>
-          Project areas configured: {projectAreas.length}
+          Project Area GPS Setup: {areaStats.saved} of {areaStats.total} saved ({areaStats.percent}%).
         </Text>
         <Text style={styles.bodyText}>
-          GPS locations saved: {areasWithGps} of {projectAreas.length}
-        </Text>
-        <Text style={styles.bodyText}>
-          Reference documents saved: {referenceDocuments.length}
-        </Text>
-        <Text style={styles.bodyText}>
-          Core navigation, storage, GPS setup, and document tracking are available.
+          Manual Testing: {manualStats.completed} of {manualStats.total} complete ({manualStats.percent}%).
         </Text>
       </View>
 
+      <PrimaryButton
+        label={running ? 'Running Diagnostics...' : 'Run Diagnostics'}
+        icon="pulse-outline"
+        onPress={() => {
+          void runDiagnostics();
+        }}
+        disabled={running}
+      />
+
+      <View style={styles.sendRow}>
+        <SecondaryButton
+          label="Copy Report"
+          icon="copy-outline"
+          onPress={() => {
+            void copyReport();
+          }}
+          compact
+        />
+        <SecondaryButton
+          label="Email Report"
+          icon="mail-outline"
+          onPress={() => {
+            void emailReport();
+          }}
+          compact
+        />
+      </View>
+
+      <SecondaryButton
+        label="Test Contact Picker"
+        icon="person-add-outline"
+        onPress={() => {
+          void testContactPicker();
+        }}
+      />
+
       <View style={styles.panel}>
-        <Text style={styles.panelTitle}>GPS Setup Status</Text>
-        {projectAreas.length === 0 ? (
-          <Text style={styles.bodyText}>No project areas have been created yet.</Text>
-        ) : (
-          projectAreas.map(area => (
-            <View key={area.id} style={styles.checklistRow}>
-              <Ionicons
-                name={hasSavedAreaLocation(area) ? 'checkmark-circle' : 'ellipse-outline'}
-                size={20}
-                color={hasSavedAreaLocation(area) ? colors.success : colors.warning}
-              />
-              <View style={styles.rowMain}>
-                <Text style={styles.projectName}>{area.name}</Text>
-                <Text style={styles.rowSub}>
-                  {hasSavedAreaLocation(area)
-                    ? `GPS saved | Radius ${formatFeet(area.radiusFeet)}`
-                    : `GPS missing | Radius ${formatFeet(area.radiusFeet)}`}
-                </Text>
-              </View>
+        <Text style={styles.panelTitle}>Project Area GPS Setup</Text>
+        <Text style={styles.bodyText}>
+          Stand in each work area and use Manage Areas to save the current GPS location. GPS suggestions use only areas that have saved GPS points.
+        </Text>
+        {projectAreas.map(area => (
+          <View key={area.id} style={styles.checklistRow}>
+            <Ionicons
+              name={hasSavedAreaLocation(area) ? 'checkmark-circle' : 'ellipse-outline'}
+              size={20}
+              color={hasSavedAreaLocation(area) ? colors.success : colors.warning}
+            />
+            <View style={styles.rowMain}>
+              <Text style={styles.projectName}>{area.name}</Text>
+              <Text style={styles.rowSub}>
+                {hasSavedAreaLocation(area)
+                  ? `GPS Saved | ${formatSavedTime(area.locationCapturedAt || null)} | Radius ${formatFeet(area.radiusFeet)}`
+                  : `GPS Missing | Radius ${formatFeet(area.radiusFeet)}`}
+              </Text>
             </View>
-          ))
-        )}
+          </View>
+        ))}
+      </View>
+
+      <Text style={styles.sectionLabel}>Automated Checks</Text>
+      {results.length === 0 ? (
+        <EmptyState
+          title="No diagnostics yet"
+          text="Tap Run Diagnostics to check storage, permissions, GPS, messaging, backup, and data validation."
+        />
+      ) : (
+        results.map(result => (
+          <View key={result.id} style={styles.savedRow}>
+            <View style={styles.rowIconBubble}>
+              <Ionicons
+                name={
+                  result.status === 'Pass'
+                    ? 'checkmark-circle-outline'
+                    : result.status === 'Warning'
+                      ? 'warning-outline'
+                      : 'close-circle-outline'
+                }
+                size={20}
+                color={
+                  result.status === 'Pass'
+                    ? colors.success
+                    : result.status === 'Warning'
+                      ? colors.warning
+                      : colors.danger
+                }
+              />
+            </View>
+            <View style={styles.rowMain}>
+              <Text style={styles.projectName}>{result.status}: {result.name}</Text>
+              <Text style={styles.rowSub}>{result.details}</Text>
+              <Text style={styles.rowSub}>{formatSavedTime(result.timestamp)}</Text>
+            </View>
+          </View>
+        ))
+      )}
+
+      <Text style={styles.sectionLabel}>Manual Function Test Checklist</Text>
+      {Object.keys(groupedTests).map(group => (
+        <View key={group} style={styles.panel}>
+          <Text style={styles.panelTitle}>{group}</Text>
+          {groupedTests[group].map(item => {
+            const checked = completedManualIds.includes(item.id);
+            return (
+              <TouchableOpacity
+                key={item.id}
+                style={styles.checklistRow}
+                onPress={() => toggleManualCheck(item.id)}
+              >
+                <Ionicons
+                  name={checked ? 'checkbox-outline' : 'square-outline'}
+                  size={22}
+                  color={checked ? colors.success : colors.muted}
+                />
+                <Text style={styles.checklistText}>{item.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ))}
+
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Run Full Test Update Helper</Text>
+        <Text style={styles.bodyText}>
+          Complete these steps in order: select or create project, select area, capture GPS, take or import photo, add caption, select category, add action item, assign owner, add due date, build update, save update, then open the saved update.
+        </Text>
       </View>
     </View>
   );
@@ -7155,9 +7222,6 @@ function QuickActionButton({
           styles.quickActionText,
           primary && styles.quickActionTextPrimary,
         ]}
-        numberOfLines={2}
-        adjustsFontSizeToFit
-        minimumFontScale={0.8}
       >
         {label}
       </Text>
@@ -7357,11 +7421,8 @@ function UpcomingScreen({
       projectName: string;
       locationName: string;
       owner: string;
-      contractor: string;
       dueDate: string;
       status: string;
-      percentComplete: number;
-      priority: SchedulePriority;
       notes: string;
       days: number | null;
     }>;
@@ -7378,11 +7439,8 @@ function UpcomingScreen({
         projectName: item.projectName,
         locationName: item.locationName,
         owner: item.owner,
-        contractor: item.contractor,
         dueDate: item.finishDate,
         status: item.status,
-        percentComplete: item.percentComplete,
-        priority: item.priority,
         notes: item.notes,
       })),
     ...actionItems.map(item => ({
@@ -7392,11 +7450,8 @@ function UpcomingScreen({
       projectName: item.projectName,
       locationName: item.locationName,
       owner: item.owner,
-      contractor: '',
       dueDate: item.finishDate,
       status: item.status,
-      percentComplete: 0,
-      priority: 'High' as SchedulePriority,
       notes: '',
     })),
   ];
@@ -7430,13 +7485,8 @@ function UpcomingScreen({
           {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
         </Text>
         <Text style={styles.rowSub}>
-          {dueStatusText(item.dueDate)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
+          {dueStatusText(item.dueDate)} • {item.source}{item.owner ? ` • ${item.owner}` : ''}
         </Text>
-        <View style={styles.scheduleMetaRow}>
-          <View style={[styles.statusPill, { backgroundColor: `${colors.primary}1A` }]}>
-            <Text style={styles.statusPillText}>{item.status} • {item.percentComplete}%</Text>
-          </View>
-        </View>
         {item.notes ? (
           <Text style={styles.rowSub} numberOfLines={2}>
             {item.notes}
@@ -7616,9 +7666,6 @@ function ScheduleScreen({
   const [finishDate, setFinishDate] = useState('');
   const [milestone, setMilestone] = useState('');
   const [owner, setOwner] = useState('');
-  const [contractor, setContractor] = useState('');
-  const [percentComplete, setPercentComplete] = useState('0');
-  const [priority, setPriority] = useState<SchedulePriority>('Medium');
   const [status, setStatus] = useState<ScheduleStatus>('Not Started');
   const [notes, setNotes] = useState('');
 
@@ -7659,9 +7706,6 @@ function ScheduleScreen({
     setFinishDate('');
     setMilestone('');
     setOwner('');
-    setContractor('');
-    setPercentComplete('0');
-    setPriority('Medium');
     setStatus('Not Started');
     setNotes('');
   }
@@ -7674,9 +7718,6 @@ function ScheduleScreen({
     setFinishDate('');
     setMilestone('From PDF Schedule');
     setOwner('');
-    setContractor('');
-    setPercentComplete('0');
-    setPriority('Medium');
     setStatus('Not Started');
     setNotes(`Source PDF: ${document.originalFileName}. Open the PDF, review the Gantt chart, then enter the task name, dates, owner, and location from the schedule.`);
     setShowAdd(true);
@@ -7706,9 +7747,6 @@ function ScheduleScreen({
       finishDate,
       milestone,
       owner,
-      contractor,
-      percentComplete: Number(percentComplete) || 0,
-      priority,
       status,
       notes,
     });
@@ -7931,52 +7969,9 @@ function ScheduleScreen({
                 style={styles.input}
                 value={owner}
                 onChangeText={setOwner}
-                placeholder="PLZ owner or internal owner"
+                placeholder="Owner / contractor"
                 placeholderTextColor={colors.muted}
               />
-
-              <Text style={styles.label}>Contractor</Text>
-              <TextInput
-                style={styles.input}
-                value={contractor}
-                onChangeText={setContractor}
-                placeholder="Contractor / responsible company"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Percent Complete</Text>
-              <TextInput
-                style={styles.input}
-                value={percentComplete}
-                onChangeText={value => setPercentComplete(value.replace(/[^0-9]/g, '').slice(0, 3))}
-                placeholder="0"
-                placeholderTextColor={colors.muted}
-                keyboardType="number-pad"
-                maxLength={3}
-              />
-
-              <Text style={styles.label}>Priority</Text>
-              <View style={styles.statusGrid}>
-                {SCHEDULE_PRIORITIES.map(itemPriority => (
-                  <TouchableOpacity
-                    key={itemPriority}
-                    style={[
-                      styles.statusButton,
-                      priority === itemPriority && styles.statusButtonActive,
-                    ]}
-                    onPress={() => setPriority(itemPriority)}
-                  >
-                    <Text
-                      style={[
-                        styles.statusButtonText,
-                        priority === itemPriority && styles.statusButtonTextActive,
-                      ]}
-                    >
-                      {itemPriority}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
 
               <Text style={styles.label}>Milestone</Text>
               <TextInput
@@ -8095,8 +8090,6 @@ function ScheduleItemRow({
   const days = daysUntilDate(item.finishDate);
   const isOverdue = days !== null && days < 0 && item.status !== 'Complete';
   const isDueSoon = days !== null && days >= 0 && days <= 7 && item.status !== 'Complete';
-  const priorityColor = item.priority === 'High' ? colors.danger : item.priority === 'Low' ? colors.success : colors.warning;
-  const statusColor = item.status === 'Complete' ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
 
   return (
     <View style={styles.savedRow}>
@@ -8120,22 +8113,8 @@ function ScheduleItemRow({
           {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
         </Text>
         <Text style={styles.rowSub}>
-          {item.finishDate ? dueStatusText(item.finishDate) : 'No finish date'}{item.contractor ? ` • ${item.contractor}` : ''}
+          {item.finishDate ? dueStatusText(item.finishDate) : 'No finish date'} • {item.status}
         </Text>
-
-        <View style={styles.scheduleMetaRow}>
-          <View style={[styles.statusPill, { backgroundColor: `${statusColor}1A` }]}>
-            <Text style={[styles.statusPillText, { color: statusColor }]}>{item.status}</Text>
-          </View>
-          <View style={[styles.statusPill, { backgroundColor: `${priorityColor}1A` }]}>
-            <Text style={[styles.statusPillText, { color: priorityColor }]}>{item.priority}</Text>
-          </View>
-          <Text style={styles.percentText}>{item.percentComplete}%</Text>
-        </View>
-
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${item.percentComplete}%` }]} />
-        </View>
 
         {expanded ? (
           <View style={styles.areaManagerCard}>
@@ -8155,52 +8134,9 @@ function ScheduleItemRow({
               style={styles.input}
               value={item.owner}
               onChangeText={owner => onUpdate({ owner })}
-              placeholder="PLZ owner / internal owner"
+              placeholder="Owner / contractor"
               placeholderTextColor={colors.muted}
             />
-
-            <Text style={styles.label}>Contractor</Text>
-            <TextInput
-              style={styles.input}
-              value={item.contractor}
-              onChangeText={contractor => onUpdate({ contractor })}
-              placeholder="Contractor / responsible company"
-              placeholderTextColor={colors.muted}
-            />
-
-            <Text style={styles.label}>Percent Complete</Text>
-            <TextInput
-              style={styles.input}
-              value={String(item.percentComplete)}
-              onChangeText={value => onUpdate({ percentComplete: Math.max(0, Math.min(100, Number(value.replace(/[^0-9]/g, '')) || 0)) })}
-              placeholder="0"
-              placeholderTextColor={colors.muted}
-              keyboardType="number-pad"
-              maxLength={3}
-            />
-
-            <Text style={styles.label}>Priority</Text>
-            <View style={styles.statusGrid}>
-              {SCHEDULE_PRIORITIES.map(priority => (
-                <TouchableOpacity
-                  key={priority}
-                  style={[
-                    styles.statusButton,
-                    item.priority === priority && styles.statusButtonActive,
-                  ]}
-                  onPress={() => onUpdate({ priority })}
-                >
-                  <Text
-                    style={[
-                      styles.statusButtonText,
-                      item.priority === priority && styles.statusButtonTextActive,
-                    ]}
-                  >
-                    {priority}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
 
             <Text style={styles.label}>Status</Text>
             <View style={styles.statusGrid}>
@@ -8553,9 +8489,6 @@ function PrimaryButton({
 
         <Text
           style={styles.primaryButtonText}
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.82}
         >
           {label}
         </Text>
@@ -8594,9 +8527,6 @@ function SecondaryButton({
 
         <Text
           style={styles.secondaryButtonText}
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.82}
         >
           {label}
         </Text>
@@ -8798,8 +8728,8 @@ const styles = StyleSheet.create({
   primaryButton: {
     backgroundColor: colors.primary,
     borderRadius: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
+    paddingVertical: 15,
+    paddingHorizontal: 16,
     alignItems: 'center',
     marginBottom: 10,
     minHeight: 54,
@@ -8811,8 +8741,8 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     borderWidth: 1,
     borderRadius: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
+    paddingVertical: 15,
+    paddingHorizontal: 16,
     alignItems: 'center',
     marginBottom: 10,
     minHeight: 54,
@@ -8821,7 +8751,7 @@ const styles = StyleSheet.create({
 
   compactButton: {
     flex: 1,
-    minHeight: 64,
+    minHeight: 62,
     marginBottom: 0,
   },
 
@@ -8833,8 +8763,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
-    maxWidth: '100%',
+    gap: 8,
   },
 
   primaryButtonText: {
@@ -8842,7 +8771,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     textAlign: 'center',
-    flexShrink: 1,
   },
 
   secondaryButtonText: {
@@ -8850,7 +8778,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     textAlign: 'center',
-    flexShrink: 1,
   },
 
   panel: {
@@ -8919,7 +8846,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 11,
   },
 
   areaChipSelected: {
@@ -8929,7 +8856,7 @@ const styles = StyleSheet.create({
 
   areaChipText: {
     color: colors.text,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
   },
 
@@ -9182,6 +9109,9 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderColor: colors.line,
     borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
 
 
@@ -9189,12 +9119,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    width: '100%',
   },
 
   deliveryChoiceBlock: {
     marginTop: 12,
-    width: '100%',
   },
 
   choiceChipWrap: {
@@ -9211,7 +9139,6 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 8,
     paddingHorizontal: 10,
-    flexShrink: 1,
   },
 
   deliveryChoiceChipActive: {
@@ -9223,7 +9150,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 12,
     fontWeight: '800',
-    maxWidth: 230,
   },
 
   deliveryChoiceTextActive: {
@@ -9680,7 +9606,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 14,
-    alignItems: 'stretch',
   },
 
   sectionLabelNoMargin: {
@@ -9901,9 +9826,7 @@ const styles = StyleSheet.create({
     width: '48%',
     backgroundColor: colors.fill,
     borderRadius: 11,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    minHeight: 86,
+    padding: 12,
     borderWidth: 1,
     borderColor: colors.line,
   },
@@ -9922,7 +9845,7 @@ const styles = StyleSheet.create({
 
   dashboardMetricValue: {
     color: colors.primary,
-    fontSize: 24,
+    fontSize: 25,
     fontWeight: '900',
   },
 
@@ -9938,22 +9861,21 @@ const styles = StyleSheet.create({
 
   quickActionGrid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 10,
     marginBottom: 14,
   },
 
   quickActionButton: {
-    width: '48%',
+    flex: 1,
     backgroundColor: colors.card,
     borderRadius: 12,
     borderColor: colors.line,
     borderWidth: 1,
-    minHeight: 76,
+    minHeight: 84,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
-    paddingHorizontal: 10,
+    gap: 8,
+    paddingHorizontal: 8,
   },
 
   quickActionButtonPrimary: {
@@ -9963,8 +9885,7 @@ const styles = StyleSheet.create({
 
   quickActionText: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 17,
+    fontSize: 13,
     fontWeight: '800',
     textAlign: 'center',
   },
@@ -10165,81 +10086,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginHorizontal: 6,
   },
-
-
-  dashboardGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  compactLocationRow: {
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  compactActionColumn: {
-    alignItems: 'flex-end',
-    gap: 6,
-    maxWidth: 96,
-  },
-
-  compactInlineAction: {
-    borderRadius: 999,
-    paddingVertical: 5,
-    paddingHorizontal: 9,
-    backgroundColor: colors.primarySoft,
-  },
-
-  compactInlineActionText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  scheduleMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 8,
-    flexWrap: 'wrap',
-  },
-  statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  statusPillText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  percentText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  progressTrack: {
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: colors.border,
-    overflow: 'hidden',
-    marginTop: 8,
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 999,
-    backgroundColor: colors.primary,
-  },
-
 });
 
 type ScheduleStatus =
@@ -10247,8 +10093,6 @@ type ScheduleStatus =
   | 'In Progress'
   | 'Waiting'
   | 'Complete';
-
-type SchedulePriority = 'Low' | 'Medium' | 'High';
 
 type ScheduleItem = {
   id: string;
@@ -10259,9 +10103,6 @@ type ScheduleItem = {
   finishDate: string;
   milestone: string;
   owner: string;
-  contractor: string;
-  percentComplete: number;
-  priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
   importedFrom?: string | null;
