@@ -10,6 +10,7 @@ export type Screen =
   | 'ReferenceDocuments'
   | 'Schedule'
   | 'Upcoming'
+  | 'MilestoneTracking'
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'

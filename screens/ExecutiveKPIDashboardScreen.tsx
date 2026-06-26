@@ -56,6 +56,7 @@ export function ExecutiveKPIDashboardScreen({
   onExecutiveBrief,
   onWeeklyReport,
   onConstructionTimeline,
+  onMilestoneTracking,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: {
@@ -70,6 +71,7 @@ export function ExecutiveKPIDashboardScreen({
   onExecutiveBrief?: () => void;
   onWeeklyReport?: () => void;
   onConstructionTimeline?: () => void;
+  onMilestoneTracking?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
@@ -170,6 +172,17 @@ export function ExecutiveKPIDashboardScreen({
                 compact
               />
             ) : null}
+          </View>
+        ) : null}
+
+        {onMilestoneTracking ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Milestones"
+              icon="flag-outline"
+              onPress={onMilestoneTracking}
+              compact
+            />
           </View>
         ) : null}
 

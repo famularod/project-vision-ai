@@ -41,6 +41,7 @@ export function ConstructionTimelineScreen({
   onBack,
   onProjectHealthDashboard,
   onExecutiveKPIDashboard,
+  onMilestoneTracking,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -51,6 +52,7 @@ export function ConstructionTimelineScreen({
   onBack: () => void;
   onProjectHealthDashboard?: () => void;
   onExecutiveKPIDashboard?: () => void;
+  onMilestoneTracking?: () => void;
 }) {
   const [selectedFilter, setSelectedFilter] =
     useState<ConstructionTimelineFilter>('All');
@@ -126,6 +128,17 @@ export function ConstructionTimelineScreen({
               label="KPI Dashboard"
               icon="stats-chart-outline"
               onPress={onExecutiveKPIDashboard}
+              compact
+            />
+          </View>
+        ) : null}
+
+        {onMilestoneTracking ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Milestones"
+              icon="flag-outline"
+              onPress={onMilestoneTracking}
               compact
             />
           </View>

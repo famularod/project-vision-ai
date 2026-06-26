@@ -51,12 +51,14 @@ export function UpcomingScreen({
   savedUpdates,
   onSchedule,
   onNewUpdate,
+  onMilestoneTracking,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   scheduleItems: ScheduleItem[];
   savedUpdates: ProjectUpdate[];
   onSchedule: () => void;
   onNewUpdate: () => void;
+  onMilestoneTracking?: () => void;
 }) {
   const [selectedSection, setSelectedSection] = useState<{
     title: string;
@@ -230,6 +232,14 @@ export function UpcomingScreen({
             compact
           />
         </View>
+
+        {onMilestoneTracking ? (
+          <SecondaryButton
+            label="Milestone Tracking"
+            icon="flag-outline"
+            onPress={onMilestoneTracking}
+          />
+        ) : null}
       </ScrollView>
 
       <Modal

@@ -359,6 +359,7 @@ export function ProjectHealthDashboard({
   onWeeklyReport,
   onExecutiveKPIDashboard,
   onConstructionTimeline,
+  onMilestoneTracking,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: {
@@ -374,6 +375,7 @@ export function ProjectHealthDashboard({
   onWeeklyReport?: () => void;
   onExecutiveKPIDashboard?: () => void;
   onConstructionTimeline?: () => void;
+  onMilestoneTracking?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
@@ -542,6 +544,17 @@ export function ProjectHealthDashboard({
                 compact
               />
             ) : null}
+          </View>
+        ) : null}
+
+        {onMilestoneTracking ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Milestones"
+              icon="flag-outline"
+              onPress={onMilestoneTracking}
+              compact
+            />
           </View>
         ) : null}
 

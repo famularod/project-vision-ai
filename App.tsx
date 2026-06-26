@@ -17,6 +17,7 @@ import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
 import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
+import { MilestoneTrackingScreen } from './screens/MilestoneTrackingScreen';
 import { PortfolioDashboardScreen } from './screens/PortfolioDashboardScreen';
 import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
 import { ProjectRiskMatrixScreen } from './screens/ProjectRiskMatrixScreen';
@@ -62,6 +63,7 @@ type Screen =
   | 'ReferenceDocuments'
   | 'Schedule'
   | 'Upcoming'
+  | 'MilestoneTracking'
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
@@ -4216,6 +4218,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4357,6 +4360,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onImport={importScheduleFile}
               scheduleAiExtractorUrl={scheduleAiExtractorUrl}
               onScheduleAiExtractorUrlChange={setScheduleAiExtractorUrl}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
             />
           )}
 
@@ -4367,6 +4371,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
               savedUpdates={savedUpdates}
               onSchedule={() => setScreen('Schedule')}
               onNewUpdate={() => createNewUpdate()}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
+            />
+          )}
+
+          {screen === 'MilestoneTracking' && (
+            <MilestoneTrackingScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onSchedule={() => setScreen('Schedule')}
+              onUpcoming={() => setScreen('Upcoming')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
             />
           )}
 
@@ -4411,6 +4432,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4458,6 +4480,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onBack={() => setScreen('Home')}
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
             />
           )}
 
@@ -4488,6 +4511,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />

@@ -19,6 +19,7 @@ type QuickActionsProps = {
   onWeeklyExecutiveReport: () => void;
   onExecutiveKPIDashboard: () => void;
   onConstructionTimeline: () => void;
+  onMilestoneTracking: () => void;
   onProjectRiskMatrix: () => void;
   onPortfolioDashboard: () => void;
 };
@@ -41,6 +42,7 @@ export function QuickActions({
   onWeeklyExecutiveReport,
   onExecutiveKPIDashboard,
   onConstructionTimeline,
+  onMilestoneTracking,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: QuickActionsProps) {
@@ -110,6 +112,12 @@ export function QuickActions({
           label="Timeline"
           icon="git-branch-outline"
           onPress={onConstructionTimeline}
+        />
+
+        <QuickActionButton
+          label="Milestones"
+          icon="flag-outline"
+          onPress={onMilestoneTracking}
         />
 
         <QuickActionButton

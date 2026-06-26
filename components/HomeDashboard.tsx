@@ -51,6 +51,7 @@ type HomeDashboardProps = {
   onWeeklyExecutiveReport: () => void;
   onExecutiveKPIDashboard: () => void;
   onConstructionTimeline: () => void;
+  onMilestoneTracking: () => void;
   onProjectRiskMatrix: () => void;
   onPortfolioDashboard: () => void;
 };
@@ -110,6 +111,7 @@ export function HomeDashboard({
   onWeeklyExecutiveReport,
   onExecutiveKPIDashboard,
   onConstructionTimeline,
+  onMilestoneTracking,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: HomeDashboardProps) {
@@ -253,6 +255,7 @@ export function HomeDashboard({
         onWeeklyExecutiveReport={onWeeklyExecutiveReport}
         onExecutiveKPIDashboard={onExecutiveKPIDashboard}
         onConstructionTimeline={onConstructionTimeline}
+        onMilestoneTracking={onMilestoneTracking}
         onProjectRiskMatrix={onProjectRiskMatrix}
         onPortfolioDashboard={onPortfolioDashboard}
       />

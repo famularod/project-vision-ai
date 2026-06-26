@@ -59,6 +59,7 @@ export function ScheduleScreen({
   onImport,
   scheduleAiExtractorUrl,
   onScheduleAiExtractorUrlChange,
+  onMilestoneTracking,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   scheduleItems: ScheduleItem[];
@@ -76,6 +77,7 @@ export function ScheduleScreen({
   onImport: () => void;
   scheduleAiExtractorUrl: string;
   onScheduleAiExtractorUrlChange: (value: string) => void;
+  onMilestoneTracking?: () => void;
 }) {
   const [showAdd, setShowAdd] = useState(false);
   const [taskName, setTaskName] = useState('');
@@ -203,6 +205,14 @@ export function ScheduleScreen({
             icon="arrow-back-outline"
             onPress={onBack}
           />
+
+          {onMilestoneTracking ? (
+            <SecondaryButton
+              label="Milestone Tracking"
+              icon="flag-outline"
+              onPress={onMilestoneTracking}
+            />
+          ) : null}
 
           <View style={styles.dashboardGrid}>
             <DashboardMetric
