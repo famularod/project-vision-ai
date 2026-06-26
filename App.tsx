@@ -4400,8 +4400,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projects={activeProjects}
               savedUpdates={savedUpdates}
               scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
               currentUpdate={draft}
               onBack={() => setScreen('Home')}
+              onAIProjectCoach={() => setScreen('AIProjectCoach')}
+              onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
+              onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
             />
           )}
 

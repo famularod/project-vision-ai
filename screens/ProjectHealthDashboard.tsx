@@ -31,15 +31,16 @@ import {
   UpcomingMilestonesCard,
 } from '../components/UpcomingMilestonesCard';
 import { analyzeProjectCoach } from '../services/AIProjectCoach';
+import { generateWeeklyExecutiveReport } from '../services/WeeklyExecutiveReportService';
 import type {
   ProjectUpdate,
+  ReferenceDocument,
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
 import {
   daysUntilDate,
   dueStatusText,
-  formatDisplayDate,
 } from '../utils/date';
 
 const UPCOMING_MILESTONE_WINDOW_DAYS = 14;
@@ -88,12 +89,6 @@ function countLabel(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function displayDate(date: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(date)
-    ? formatDisplayDate(date)
-    : date;
-}
-
 function daysSinceDate(dateValue: string) {
   const date = new Date(`${dateValue}T00:00:00`);
 
@@ -109,9 +104,11 @@ function uniqueItems(items: string[]) {
   const seen = new Set<string>();
 
   return items.filter(item => {
-    if (seen.has(item)) return false;
+    const key = item.trim().toLowerCase();
 
-    seen.add(item);
+    if (!key || seen.has(key)) return false;
+
+    seen.add(key);
     return true;
   });
 }
@@ -212,16 +209,23 @@ function openActionsFromUpdates(updates: ProjectUpdate[]): OpenActionSummary[] {
   return updates.flatMap(update =>
     update.photos
       .filter(isOpenAction)
-      .map(photo => ({
-        id: `${update.id}-${photo.id}`,
-        title: photo.actionRequired || photo.caption || photo.category,
-        projectName: update.projectName,
-        owner: photo.actionOwner,
-        dueLabel: photo.actionDueDate.trim()
-          ? dueStatusText(photo.actionDueDate)
-          : 'No due date',
-        status: photo.actionStatus,
-      })),
+      .map(photo => {
+        const daysUntilDue = photo.actionDueDate.trim()
+          ? daysUntilDate(photo.actionDueDate)
+          : null;
+
+        return {
+          id: `${update.id}-${photo.id}`,
+          title: photo.actionRequired || photo.caption || photo.category,
+          projectName: update.projectName,
+          owner: photo.actionOwner,
+          dueLabel: photo.actionDueDate.trim()
+            ? dueStatusText(photo.actionDueDate)
+            : 'No due date',
+          status: photo.actionStatus,
+          isOverdue: daysUntilDue !== null && daysUntilDue < 0,
+        };
+      }),
   );
 }
 
@@ -263,25 +267,6 @@ function upcomingMilestonesFromSchedule(
       status: item.status,
       percentComplete: item.percentComplete,
     }));
-}
-
-function recentUpdateItems(updates: ProjectUpdate[]) {
-  return [...updates]
-    .filter(update => update.date.trim())
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 5)
-    .map(update => {
-      const days = daysSinceDate(update.date);
-      const dateText = displayDate(update.date);
-      const ageText =
-        days === null
-          ? dateText
-          : days === 0
-            ? 'Today'
-            : `${countLabel(days, 'day')} ago`;
-
-      return `${update.projectName || 'No project'}: ${dateText} (${ageText}), ${countLabel(update.photos.length, 'photo')}.`;
-    });
 }
 
 function recentUpdatesCount(updates: ProjectUpdate[]) {
@@ -366,15 +351,23 @@ export function ProjectHealthDashboard({
   projects,
   savedUpdates,
   scheduleItems,
+  referenceDocuments,
   currentUpdate,
   onBack,
+  onAIProjectCoach,
+  onExecutiveBrief,
+  onWeeklyReport,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
   savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  referenceDocuments: ReferenceDocument[];
   currentUpdate: ProjectUpdate | null;
   onBack?: () => void;
+  onAIProjectCoach?: () => void;
+  onExecutiveBrief?: () => void;
+  onWeeklyReport?: () => void;
 }) {
   const dashboard = useMemo(() => {
     const projectNames = projectNamesFromData({
@@ -402,6 +395,7 @@ export function ProjectHealthDashboard({
     const score = averageScore(analyses);
     const previousScore = averageScore(savedOnlyAnalyses);
     const openActions = openActionsFromUpdates(allUpdates);
+    const overdueActions = openActions.filter(action => action.isOverdue);
     const safetyIssues = safetyIssuesFromUpdates(allUpdates);
     const upcomingMilestones = upcomingMilestonesFromSchedule(scheduleItems);
     const projectsAtRisk = analyses
@@ -409,30 +403,52 @@ export function ProjectHealthDashboard({
       .sort((a, b) => a.score - b.score)
       .slice(0, 5);
     const recentCount = recentUpdatesCount(allUpdates);
-    const priorities = executivePriorities({
-      projectsAtRisk,
-      openActions,
-      safetyIssues,
-      upcomingMilestones,
-      recentCount,
-      analyses,
+    const weeklyReport = generateWeeklyExecutiveReport({
+      projects,
+      updates: savedUpdates,
+      scheduleItems,
+      referenceDocuments,
+      currentUpdate,
     });
+    const priorities = uniqueItems([
+      ...weeklyReport.recommendedExecutiveActions,
+      ...executivePriorities({
+        projectsAtRisk,
+        openActions,
+        safetyIssues,
+        upcomingMilestones,
+        recentCount,
+        analyses,
+      }),
+    ]).slice(0, 5);
+
+    const priorityItems =
+      priorities.length > 0
+        ? priorities
+        : ['Continue the current update cadence and monitor project conditions.'];
 
     return {
-      analyses,
       projectNames,
       score,
       previousScore,
       openActions,
+      overdueActions,
       safetyIssues,
       upcomingMilestones,
       projectsAtRisk,
       recentCount,
-      recentItems: recentUpdateItems(allUpdates),
-      priorities,
+      priorities: priorityItems,
+      weeklyReport,
     };
-  }, [currentUpdate, projects, savedUpdates, scheduleItems]);
+  }, [
+    currentUpdate,
+    projects,
+    referenceDocuments,
+    savedUpdates,
+    scheduleItems,
+  ]);
 
+  const weeklyMetrics = dashboard.weeklyReport.metrics;
   const scoreDelta = dashboard.score - dashboard.previousScore;
   const deltaText =
     scoreDelta === 0
@@ -447,53 +463,122 @@ export function ProjectHealthDashboard({
     >
       <ScreenTitle
         title="Project Health Dashboard"
-        subtitle="Rule-based health summary generated from project updates, action items, safety concerns, and schedule data."
+        subtitle="Executive command center generated from project updates, schedule data, action items, safety concerns, and local AI Project Coach rules."
       />
 
-      {onBack ? (
-        <SecondaryButton
-          label="Back"
-          icon="arrow-back-outline"
-          onPress={onBack}
-        />
-      ) : null}
+      <View style={styles.commandPanel}>
+        <Text style={styles.commandTitle}>
+          Command Center
+        </Text>
+
+        <Text style={styles.commandSubtitle}>
+          Jump between executive views without changing project data.
+        </Text>
+
+        <View style={styles.commandRow}>
+          {onBack ? (
+            <SecondaryButton
+              label="Home"
+              icon="home-outline"
+              onPress={onBack}
+              compact
+            />
+          ) : null}
+
+          {onAIProjectCoach ? (
+            <SecondaryButton
+              label="AI Coach"
+              icon="bulb-outline"
+              onPress={onAIProjectCoach}
+              compact
+            />
+          ) : null}
+        </View>
+
+        <View style={styles.commandRow}>
+          {onExecutiveBrief ? (
+            <SecondaryButton
+              label="Exec Brief"
+              icon="briefcase-outline"
+              onPress={onExecutiveBrief}
+              compact
+            />
+          ) : null}
+
+          {onWeeklyReport ? (
+            <SecondaryButton
+              label="Weekly Report"
+              icon="newspaper-outline"
+              onPress={onWeeklyReport}
+              compact
+            />
+          ) : null}
+        </View>
+      </View>
 
       <HealthScoreGauge
         score={dashboard.score}
         title="Overall Health Score"
-        subtitle={`${countLabel(dashboard.projectNames.length, 'project')} analyzed with the existing AI Project Coach rules.`}
+        subtitle={`${countLabel(dashboard.projectNames.length, 'project')} analyzed with AI Project Coach rules and weekly executive report signals.`}
       />
+
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryLabel}>
+          Executive Readout
+        </Text>
+
+        <Text style={styles.summaryText}>
+          {dashboard.weeklyReport.executiveSummary}
+        </Text>
+      </View>
 
       <View style={styles.kpiGrid}>
         <KPICard
           label="Projects At Risk"
-          value={dashboard.projectsAtRisk.length}
-          subtitle="Projects scoring below 70"
+          value={weeklyMetrics.projectsNeedingAttention}
+          subtitle="Projects below attention threshold"
           icon="alert-circle-outline"
-          tone={dashboard.projectsAtRisk.length > 0 ? 'warning' : 'success'}
+          tone={weeklyMetrics.projectsNeedingAttention > 0 ? 'warning' : 'success'}
         />
 
         <KPICard
           label="Open Action Items"
-          value={dashboard.openActions.length}
+          value={weeklyMetrics.openActionItems}
           subtitle="Unresolved issue or safety actions"
           icon="checkbox-outline"
-          tone={dashboard.openActions.length > 0 ? 'warning' : 'success'}
+          tone={weeklyMetrics.openActionItems > 0 ? 'warning' : 'success'}
         />
 
         <KPICard
-          label="Safety Issues"
-          value={dashboard.safetyIssues.length}
+          label="Overdue Actions"
+          value={weeklyMetrics.overdueActionItems}
+          subtitle="Open items past due"
+          icon="timer-outline"
+          tone={weeklyMetrics.overdueActionItems > 0 ? 'danger' : 'success'}
+        />
+
+        <KPICard
+          label="Safety Concerns"
+          value={weeklyMetrics.safetyConcerns}
           subtitle="Open safety concern photos"
           icon="shield-checkmark-outline"
-          tone={dashboard.safetyIssues.length > 0 ? 'danger' : 'success'}
+          tone={weeklyMetrics.safetyConcerns > 0 ? 'danger' : 'success'}
         />
 
         <KPICard
           label="Upcoming Milestones"
-          value={dashboard.upcomingMilestones.length}
+          value={weeklyMetrics.upcomingMilestones}
           subtitle={`Due within ${UPCOMING_MILESTONE_WINDOW_DAYS} days`}
           icon="flag-outline"
+          tone={weeklyMetrics.upcomingMilestones > 0 ? 'warning' : 'neutral'}
+        />
+
+        <KPICard
+          label="Recent Updates"
+          value={weeklyMetrics.updatesThisWeek}
+          subtitle={`${weeklyMetrics.photosThisWeek.toLocaleString('en-US')} photos this week`}
+          icon="time-outline"
+          tone={weeklyMetrics.updatesThisWeek > 0 ? 'success' : 'warning'}
         />
       </View>
 
@@ -506,13 +591,13 @@ export function ProjectHealthDashboard({
 
       <TrendCard
         title="Recent Updates"
-        value={`${dashboard.recentCount} in the last ${RECENT_UPDATE_WINDOW_DAYS} days`}
-        detail="Latest saved updates and the current draft are included when they have content."
-        direction={dashboard.recentCount > 0 ? 'up' : 'flat'}
+        value={`${weeklyMetrics.updatesThisWeek} this week`}
+        detail={`Weekly report period: ${dashboard.weeklyReport.periodLabel}. Latest saved updates and the current draft are included when they have content.`}
+        direction={weeklyMetrics.updatesThisWeek > 0 ? 'up' : 'flat'}
         icon="time-outline"
         items={
-          dashboard.recentItems.length > 0
-            ? dashboard.recentItems
+          dashboard.weeklyReport.recentUpdates.length > 0
+            ? dashboard.weeklyReport.recentUpdates
             : ['No recent updates detected from the current local data.']
         }
       />
@@ -545,6 +630,14 @@ export function ProjectHealthDashboard({
         )}
       </View>
 
+      <OpenActionsCard
+        actions={dashboard.overdueActions.slice(0, 5)}
+        title="Overdue Action Items"
+        subtitle="Open action items with due dates before today."
+        emptyText="No overdue action items detected."
+        danger
+      />
+
       <UpcomingMilestonesCard
         milestones={dashboard.upcomingMilestones.slice(0, 5)}
       />
@@ -563,7 +656,7 @@ export function ProjectHealthDashboard({
         </Text>
 
         <Text style={styles.panelSubtitle}>
-          Deterministic priorities assembled from risks, open actions, safety issues, milestones, and update cadence.
+          Priorities assembled from Weekly Executive Report output, risks, open actions, safety issues, milestones, and update cadence.
         </Text>
 
         {dashboard.priorities.map((priority, index) => (
@@ -582,6 +675,61 @@ export function ProjectHealthDashboard({
 const styles = StyleSheet.create({
   appFrame: {
     flex: 1,
+  },
+
+  commandPanel: {
+    backgroundColor: colors.card,
+    borderRadius: 8,
+    padding: 15,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+
+  commandTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+
+  commandSubtitle: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+
+  commandRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    alignItems: 'stretch',
+  },
+
+  summaryCard: {
+    backgroundColor: colors.card,
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+
+  summaryLabel: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+
+  summaryText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '500',
   },
 
   kpiGrid: {

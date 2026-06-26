@@ -9,31 +9,45 @@ export type OpenActionSummary = {
   owner: string;
   dueLabel: string;
   status: string;
+  isOverdue?: boolean;
 };
 
 export function OpenActionsCard({
   actions,
+  title = 'Open Action Items',
+  subtitle = 'Unresolved field items with owner, status, or due-date context.',
+  emptyText = 'No open action items detected from saved updates.',
+  danger = false,
 }: {
   actions: OpenActionSummary[];
+  title?: string;
+  subtitle?: string;
+  emptyText?: string;
+  danger?: boolean;
 }) {
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
-        <View style={styles.iconBubble}>
+        <View
+          style={[
+            styles.iconBubble,
+            danger && styles.iconBubbleDanger,
+          ]}
+        >
           <Ionicons
-            name="checkbox-outline"
+            name={danger ? 'timer-outline' : 'checkbox-outline'}
             size={20}
-            color={colors.warning}
+            color={danger ? colors.danger : colors.warning}
           />
         </View>
 
         <View style={styles.rowMain}>
           <Text style={styles.title}>
-            Open Action Items
+            {title}
           </Text>
 
           <Text style={styles.subtitle}>
-            Unresolved field items with owner, status, or due-date context.
+            {subtitle}
           </Text>
         </View>
       </View>
@@ -56,13 +70,14 @@ export function OpenActionsCard({
               <Text style={styles.itemSub}>
                 {action.dueLabel}
                 {action.owner ? ` • ${action.owner}` : ''}
+                {action.isOverdue ? ' • Overdue' : ''}
               </Text>
             </View>
           </View>
         ))
       ) : (
         <Text style={styles.emptyText}>
-          No open action items detected from saved updates.
+          {emptyText}
         </Text>
       )}
     </View>
@@ -93,6 +108,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.warningSoft,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  iconBubbleDanger: {
+    backgroundColor: colors.dangerSoft,
   },
 
   rowMain: {
