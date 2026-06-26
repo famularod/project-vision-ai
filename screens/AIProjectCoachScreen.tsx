@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Text, View } from 'react-native';
 import { AICoachRecommendationCard } from '../components/AICoachRecommendationCard';
 import { AICoachSection } from '../components/AICoachSection';
@@ -8,17 +9,41 @@ import {
   SecondaryButton,
   styles,
 } from '../components/ProjectDetailsCard';
+import { analyzeProjectCoach } from '../services/AIProjectCoach';
+import type {
+  ProjectUpdate,
+  ScheduleItem,
+} from '../types';
 
 export function AIProjectCoachScreen({
+  projectName,
+  updates,
+  scheduleItems,
+  currentUpdate,
   onBack,
 }: {
+  projectName: string;
+  updates: ProjectUpdate[];
+  scheduleItems: ScheduleItem[];
+  currentUpdate: ProjectUpdate | null;
   onBack: () => void;
 }) {
+  const analysis = useMemo(
+    () =>
+      analyzeProjectCoach({
+        projectName,
+        updates,
+        scheduleItems,
+        currentUpdate,
+      }),
+    [currentUpdate, projectName, scheduleItems, updates],
+  );
+
   return (
     <View>
       <ScreenTitle
         title="AI Project Coach"
-        subtitle="UI-only v1 placeholder. Sample insights are shown here without connecting to an AI service."
+        subtitle={`Local deterministic analysis for ${projectName}. No external AI service is used.`}
       />
 
       <SecondaryButton
@@ -27,7 +52,11 @@ export function AIProjectCoachScreen({
         onPress={onBack}
       />
 
-      <AIProjectHealthCard />
+      <AIProjectHealthCard
+        score={analysis.score}
+        projectName={projectName}
+        summary={analysis.summary}
+      />
 
       <PrimaryButton
         label="Analyze Project"
@@ -37,65 +66,57 @@ export function AIProjectCoachScreen({
       />
 
       <Text style={styles.mutedNote}>
-        Analyze Project is disabled in v1. No OpenAI or external API call is made from this screen.
+        Analysis is generated locally from existing project data. The button remains disabled until an interactive analysis flow is added.
       </Text>
 
       <AICoachSection
         title="Accomplishments"
-        subtitle="Placeholder/sample content."
+        subtitle="Generated from captured updates, photos, action items, and schedule data."
       >
-        <AICoachRecommendationCard
-          title="Recent field progress"
-          text="Sample insight: recent updates suggest visible progress has been captured and documented for leadership review."
-          tone="success"
-        />
-
-        <AICoachRecommendationCard
-          title="Documentation momentum"
-          text="Sample insight: photos, notes, and saved updates would be summarized here once analysis is connected."
-          tone="success"
-        />
+        {analysis.accomplishments.map((item, index) => (
+          <AICoachRecommendationCard
+            key={item}
+            title={`Accomplishment ${index + 1}`}
+            text={item}
+            tone="success"
+          />
+        ))}
       </AICoachSection>
 
       <AICoachSection
         title="Risks"
-        subtitle="Placeholder/sample content."
+        subtitle="Generated from open action items, safety concerns, overdue schedule items, and update cadence."
       >
-        <AICoachRecommendationCard
-          title="Open issue watchlist"
-          text="Sample risk: unresolved action items and overdue tasks would be highlighted here for follow-up."
-          tone="warning"
-        />
-
-        <AICoachRecommendationCard
-          title="Schedule pressure"
-          text="Sample risk: items due soon would be compared against recent updates once analysis is enabled."
-          tone="warning"
-        />
+        {analysis.risks.map((item, index) => (
+          <AICoachRecommendationCard
+            key={item}
+            title={`Risk ${index + 1}`}
+            text={item}
+            tone="warning"
+          />
+        ))}
       </AICoachSection>
 
       <AICoachSection
         title="Recommended Actions"
-        subtitle="Placeholder/sample content."
+        subtitle="Generated with deterministic local rules."
       >
-        <AICoachRecommendationCard
-          title="Confirm owners for open actions"
-          text="Sample recommendation: assign owners and due dates for any unresolved field items before the next update."
-        />
-
-        <AICoachRecommendationCard
-          title="Prepare leadership summary"
-          text="Sample recommendation: turn the latest photos and notes into a short status brief when AI analysis is added."
-        />
+        {analysis.recommendations.map((item, index) => (
+          <AICoachRecommendationCard
+            key={item}
+            title={`Recommendation ${index + 1}`}
+            text={item}
+          />
+        ))}
       </AICoachSection>
 
       <AICoachSection
         title="Executive Summary"
-        subtitle="Placeholder/sample content."
+        subtitle="Generated from the same local analysis engine."
       >
         <AICoachRecommendationCard
-          title="Draft summary"
-          text="Sample executive summary: project activity appears active, with progress captured and several follow-up items to monitor. This is static placeholder text."
+          title="Project summary"
+          text={analysis.summary}
         />
       </AICoachSection>
     </View>

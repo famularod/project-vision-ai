@@ -4351,6 +4351,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'AIProjectCoach' && (
             <ScreenScroll contentStyle={contentStyle}>
               <AIProjectCoachScreen
+                projectName={draft.projectName}
+                updates={savedUpdates}
+                scheduleItems={scheduleItems}
+                currentUpdate={draft}
                 onBack={() => setScreen('Home')}
               />
             </ScreenScroll>

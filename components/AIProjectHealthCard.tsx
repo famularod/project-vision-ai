@@ -12,7 +12,15 @@ const colors = {
   warning: '#FF9500',
 };
 
-export function AIProjectHealthCard() {
+export function AIProjectHealthCard({
+  score,
+  projectName,
+  summary,
+}: {
+  score: number;
+  projectName: string;
+  summary: string;
+}) {
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
@@ -30,14 +38,14 @@ export function AIProjectHealthCard() {
           </Text>
 
           <Text style={styles.subtitle}>
-            Placeholder sample only. No AI analysis has run yet.
+            Deterministic local analysis for {projectName}.
           </Text>
         </View>
       </View>
 
       <View style={styles.scoreRow}>
         <Text style={styles.scoreValue}>
-          82
+          {score}
         </Text>
 
         <Text style={styles.scoreSuffix}>
@@ -46,11 +54,16 @@ export function AIProjectHealthCard() {
       </View>
 
       <View style={styles.scoreTrack}>
-        <View style={styles.scoreFill} />
+        <View
+          style={[
+            styles.scoreFill,
+            { width: `${score}%` },
+          ]}
+        />
       </View>
 
       <Text style={styles.bodyText}>
-        Sample status: steady progress with a few watch items. This score is static placeholder content for AI Project Coach v1.
+        {summary}
       </Text>
     </View>
   );
