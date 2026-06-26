@@ -11,6 +11,7 @@ import {
 } from './screens/BuildUpdateScreen';
 import { AIExecutiveBriefScreen } from './screens/AIExecutiveBriefScreen';
 import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
+import { ConstructionTimelineScreen } from './screens/ConstructionTimelineScreen';
 import { ContactsScreen } from './screens/ContactsScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
@@ -63,7 +64,8 @@ type Screen =
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
   | 'WeeklyExecutiveReport'
-  | 'ExecutiveKPIDashboard';
+  | 'ExecutiveKPIDashboard'
+  | 'ConstructionTimeline';
 
 type PhotoCategory =
   | 'Open Issue'
@@ -4209,6 +4211,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
             />
           )}
 
@@ -4313,6 +4316,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onDiagnostics={() => setScreen('Diagnostics')}
               onReferenceDocuments={() => setScreen('ReferenceDocuments')}
               onSchedule={() => setScreen('Schedule')}
+              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
             />
           )}
 
@@ -4398,6 +4402,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
+              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+            />
+          )}
+
+          {screen === 'ConstructionTimeline' && (
+            <ConstructionTimelineScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
             />
           )}
 
@@ -4426,6 +4445,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
             />
           )}
 

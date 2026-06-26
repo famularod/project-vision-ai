@@ -55,6 +55,7 @@ export function ExecutiveKPIDashboardScreen({
   onProjectHealthDashboard,
   onExecutiveBrief,
   onWeeklyReport,
+  onConstructionTimeline,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -66,6 +67,7 @@ export function ExecutiveKPIDashboardScreen({
   onProjectHealthDashboard?: () => void;
   onExecutiveBrief?: () => void;
   onWeeklyReport?: () => void;
+  onConstructionTimeline?: () => void;
 }) {
   const report = useMemo(
     () =>
@@ -144,6 +146,17 @@ export function ExecutiveKPIDashboardScreen({
             />
           ) : null}
         </View>
+
+        {onConstructionTimeline ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Timeline"
+              icon="git-branch-outline"
+              onPress={onConstructionTimeline}
+              compact
+            />
+          </View>
+        ) : null}
       </View>
 
       <KPITrendSummary

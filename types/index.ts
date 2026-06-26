@@ -14,7 +14,8 @@ export type Screen =
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
   | 'WeeklyExecutiveReport'
-  | 'ExecutiveKPIDashboard';
+  | 'ExecutiveKPIDashboard'
+  | 'ConstructionTimeline';
 
 export type PhotoCategory =
   | 'Open Issue'

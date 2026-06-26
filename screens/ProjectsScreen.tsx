@@ -51,6 +51,7 @@ export function ProjectsScreen({
   onDiagnostics,
   onReferenceDocuments,
   onSchedule,
+  onConstructionTimeline,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   activeProjects: string[];
@@ -71,6 +72,7 @@ export function ProjectsScreen({
   onDiagnostics: () => void;
   onReferenceDocuments: () => void;
   onSchedule: () => void;
+  onConstructionTimeline?: () => void;
 }) {
   const [searchText, setSearchText] = useState('');
   const [projectFilter, setProjectFilter] = useState<
@@ -303,6 +305,14 @@ export function ProjectsScreen({
             icon="documents-outline"
             onPress={onReferenceDocuments}
           />
+
+          {onConstructionTimeline ? (
+            <SecondaryButton
+              label="Construction Timeline"
+              icon="git-branch-outline"
+              onPress={onConstructionTimeline}
+            />
+          ) : null}
 
           <ManageAreasPanel
             projectAreas={projectAreas}

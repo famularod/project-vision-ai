@@ -358,6 +358,7 @@ export function ProjectHealthDashboard({
   onExecutiveBrief,
   onWeeklyReport,
   onExecutiveKPIDashboard,
+  onConstructionTimeline,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -370,6 +371,7 @@ export function ProjectHealthDashboard({
   onExecutiveBrief?: () => void;
   onWeeklyReport?: () => void;
   onExecutiveKPIDashboard?: () => void;
+  onConstructionTimeline?: () => void;
 }) {
   const dashboard = useMemo(() => {
     const projectNames = projectNamesFromData({
@@ -517,14 +519,25 @@ export function ProjectHealthDashboard({
           ) : null}
         </View>
 
-        {onExecutiveKPIDashboard ? (
+        {onExecutiveKPIDashboard || onConstructionTimeline ? (
           <View style={styles.commandRow}>
-            <SecondaryButton
-              label="KPI Dashboard"
-              icon="stats-chart-outline"
-              onPress={onExecutiveKPIDashboard}
-              compact
-            />
+            {onExecutiveKPIDashboard ? (
+              <SecondaryButton
+                label="KPI Dashboard"
+                icon="stats-chart-outline"
+                onPress={onExecutiveKPIDashboard}
+                compact
+              />
+            ) : null}
+
+            {onConstructionTimeline ? (
+              <SecondaryButton
+                label="Timeline"
+                icon="git-branch-outline"
+                onPress={onConstructionTimeline}
+                compact
+              />
+            ) : null}
           </View>
         ) : null}
       </View>
