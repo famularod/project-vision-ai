@@ -359,6 +359,7 @@ export function ProjectHealthDashboard({
   onWeeklyReport,
   onExecutiveKPIDashboard,
   onConstructionTimeline,
+  onProjectRiskMatrix,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -372,6 +373,7 @@ export function ProjectHealthDashboard({
   onWeeklyReport?: () => void;
   onExecutiveKPIDashboard?: () => void;
   onConstructionTimeline?: () => void;
+  onProjectRiskMatrix?: () => void;
 }) {
   const dashboard = useMemo(() => {
     const projectNames = projectNamesFromData({
@@ -519,7 +521,7 @@ export function ProjectHealthDashboard({
           ) : null}
         </View>
 
-        {onExecutiveKPIDashboard || onConstructionTimeline ? (
+        {onExecutiveKPIDashboard || onConstructionTimeline || onProjectRiskMatrix ? (
           <View style={styles.commandRow}>
             {onExecutiveKPIDashboard ? (
               <SecondaryButton
@@ -535,6 +537,15 @@ export function ProjectHealthDashboard({
                 label="Timeline"
                 icon="git-branch-outline"
                 onPress={onConstructionTimeline}
+                compact
+              />
+            ) : null}
+
+            {onProjectRiskMatrix ? (
+              <SecondaryButton
+                label="Risk Matrix"
+                icon="warning-outline"
+                onPress={onProjectRiskMatrix}
                 compact
               />
             ) : null}

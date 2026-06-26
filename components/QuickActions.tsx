@@ -19,6 +19,7 @@ type QuickActionsProps = {
   onWeeklyExecutiveReport: () => void;
   onExecutiveKPIDashboard: () => void;
   onConstructionTimeline: () => void;
+  onProjectRiskMatrix: () => void;
 };
 
 const colors = {
@@ -39,6 +40,7 @@ export function QuickActions({
   onWeeklyExecutiveReport,
   onExecutiveKPIDashboard,
   onConstructionTimeline,
+  onProjectRiskMatrix,
 }: QuickActionsProps) {
   return (
     <>
@@ -106,6 +108,12 @@ export function QuickActions({
           label="Timeline"
           icon="git-branch-outline"
           onPress={onConstructionTimeline}
+        />
+
+        <QuickActionButton
+          label="Risk Matrix"
+          icon="warning-outline"
+          onPress={onProjectRiskMatrix}
         />
       </View>
     </>

@@ -18,6 +18,7 @@ import { DocumentsScreen } from './screens/DocumentsScreen';
 import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
 import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
+import { ProjectRiskMatrixScreen } from './screens/ProjectRiskMatrixScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
 import { ScheduleScreen } from './screens/ScheduleScreen';
 import { UpcomingScreen } from './screens/UpcomingScreen';
@@ -65,7 +66,8 @@ type Screen =
   | 'ProjectHealthDashboard'
   | 'WeeklyExecutiveReport'
   | 'ExecutiveKPIDashboard'
-  | 'ConstructionTimeline';
+  | 'ConstructionTimeline'
+  | 'ProjectRiskMatrix';
 
 type PhotoCategory =
   | 'Open Issue'
@@ -4212,6 +4214,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
             />
           )}
 
@@ -4372,6 +4375,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 scheduleItems={scheduleItems}
                 currentUpdate={draft}
                 onBack={() => setScreen('Home')}
+                onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               />
             </ScreenScroll>
           )}
@@ -4403,6 +4407,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
+            />
+          )}
+
+          {screen === 'ProjectRiskMatrix' && (
+            <ProjectRiskMatrixScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onAIProjectCoach={() => setScreen('AIProjectCoach')}
             />
           )}
 
@@ -4446,6 +4466,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
             />
           )}
 

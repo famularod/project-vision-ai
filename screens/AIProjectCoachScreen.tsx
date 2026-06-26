@@ -21,12 +21,14 @@ export function AIProjectCoachScreen({
   scheduleItems,
   currentUpdate,
   onBack,
+  onProjectRiskMatrix,
 }: {
   projectName: string;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   currentUpdate: ProjectUpdate | null;
   onBack: () => void;
+  onProjectRiskMatrix?: () => void;
 }) {
   const analysis = useMemo(
     () =>
@@ -51,6 +53,14 @@ export function AIProjectCoachScreen({
         icon="arrow-back-outline"
         onPress={onBack}
       />
+
+      {onProjectRiskMatrix ? (
+        <SecondaryButton
+          label="Risk Matrix"
+          icon="warning-outline"
+          onPress={onProjectRiskMatrix}
+        />
+      ) : null}
 
       <AIProjectHealthCard
         score={analysis.score}
