@@ -10,7 +10,8 @@ export type Screen =
   | 'ReferenceDocuments'
   | 'Schedule'
   | 'Upcoming'
-  | 'AIProjectCoach';
+  | 'AIProjectCoach'
+  | 'AIExecutiveBrief';
 
 export type PhotoCategory =
   | 'Open Issue'

@@ -9,6 +9,7 @@ import {
   AddPhotosScreen,
   BuildUpdateScreen,
 } from './screens/BuildUpdateScreen';
+import { AIExecutiveBriefScreen } from './screens/AIExecutiveBriefScreen';
 import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
 import { ContactsScreen } from './screens/ContactsScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
@@ -55,7 +56,8 @@ type Screen =
   | 'ReferenceDocuments'
   | 'Schedule'
   | 'Upcoming'
-  | 'AIProjectCoach';
+  | 'AIProjectCoach'
+  | 'AIExecutiveBrief';
 
 type PhotoCategory =
   | 'Open Issue'
@@ -4197,6 +4199,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onReferenceDocuments={() => setScreen('ReferenceDocuments')}
               onSchedule={() => setScreen('Schedule')}
               onAIProjectCoach={() => setScreen('AIProjectCoach')}
+              onAIExecutiveBrief={() => setScreen('AIExecutiveBrief')}
             />
           )}
 
@@ -4351,6 +4354,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'AIProjectCoach' && (
             <ScreenScroll contentStyle={contentStyle}>
               <AIProjectCoachScreen
+                projectName={draft.projectName}
+                updates={savedUpdates}
+                scheduleItems={scheduleItems}
+                currentUpdate={draft}
+                onBack={() => setScreen('Home')}
+              />
+            </ScreenScroll>
+          )}
+
+          {screen === 'AIExecutiveBrief' && (
+            <ScreenScroll contentStyle={contentStyle}>
+              <AIExecutiveBriefScreen
                 projectName={draft.projectName}
                 updates={savedUpdates}
                 scheduleItems={scheduleItems}
