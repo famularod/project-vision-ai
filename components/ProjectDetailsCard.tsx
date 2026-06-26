@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 export type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -318,6 +318,38 @@ export function ProgressStat({
   );
 }
 
+export function MiniStat({
+  label,
+  value,
+  danger = false,
+}: {
+  label: string;
+  value: number;
+  danger?: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.miniStat,
+        danger && styles.miniStatDanger,
+      ]}
+    >
+      <Text
+        style={[
+          styles.miniStatValue,
+          danger && styles.miniStatValueDanger,
+        ]}
+      >
+        {value}
+      </Text>
+
+      <Text style={styles.miniStatLabel}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
 export function EmptyState({
   title,
   text,
@@ -485,6 +517,11 @@ export const styles = StyleSheet.create({
     flex: 1,
   },
 
+  content: {
+    padding: 18,
+    paddingBottom: 110,
+  },
+
   title: {
     color: colors.text,
     fontSize: 31,
@@ -511,6 +548,46 @@ export const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 10,
     textTransform: 'uppercase',
+  },
+
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 10,
+  },
+
+  countPill: {
+    minWidth: 34,
+    minHeight: 28,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  countPillDanger: {
+    backgroundColor: colors.dangerSoft,
+  },
+
+  countPillText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  countPillTextDanger: {
+    color: colors.danger,
+  },
+
+  mutedNote: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+    marginBottom: 16,
   },
 
   primaryButton: {
@@ -691,6 +768,149 @@ export const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
     marginTop: 4,
+  },
+
+  miniStat: {
+    flex: 1,
+    backgroundColor: colors.fill,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+
+  miniStatDanger: {
+    backgroundColor: colors.dangerSoft,
+  },
+
+  miniStatValue: {
+    color: colors.primary,
+    fontSize: 20,
+    fontWeight: '800',
+  },
+
+  miniStatValueDanger: {
+    color: colors.danger,
+  },
+
+  miniStatLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+
+  smallAction: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+  },
+
+  smallActionText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  smallActionDanger: {
+    backgroundColor: colors.dangerSoft,
+  },
+
+  smallActionDangerText: {
+    color: colors.danger,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  addProjectCard: {
+    backgroundColor: colors.card,
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+
+  savedRow: {
+    backgroundColor: colors.card,
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 10,
+    borderColor: colors.line,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+
+  contactRow: {
+    backgroundColor: colors.card,
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 10,
+    borderColor: colors.line,
+    borderWidth: 1,
+  },
+
+  contactRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: '100%',
+  },
+
+  deliveryChoiceBlock: {
+    marginTop: 12,
+    width: '100%',
+  },
+
+  choiceChipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+
+  deliveryChoiceChip: {
+    maxWidth: '100%',
+    backgroundColor: colors.fill,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    flexShrink: 1,
+  },
+
+  deliveryChoiceChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+
+  deliveryChoiceText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '800',
+    maxWidth: 230,
+  },
+
+  deliveryChoiceTextActive: {
+    color: '#FFFFFF',
+  },
+
+  projectName: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+
+  contactSelectText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  contactSelectTextSelected: {
+    color: colors.danger,
   },
 
   contactSummary: {
@@ -1027,5 +1247,492 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginBottom: 10,
+  },
+
+  dataActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+    alignItems: 'stretch',
+  },
+
+  sectionLabelNoMargin: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+
+  addLocationInlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+
+  addLocationInlineInput: {
+    flex: 1,
+    marginBottom: 0,
+  },
+
+  addLocationInlineButton: {
+    width: 52,
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  areaListCard: {
+    backgroundColor: colors.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+
+  areaListHeaderRow: {
+    minHeight: 44,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+
+  areaListRow: {
+    minHeight: 68,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+
+  areaStatusLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 3,
+  },
+
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  statusDotSaved: {
+    backgroundColor: colors.success,
+  },
+
+  statusDotMissing: {
+    backgroundColor: colors.tertiaryText,
+  },
+
+  areaListRadius: {
+    color: colors.muted,
+    fontSize: 14,
+    fontWeight: '700',
+    minWidth: 58,
+    textAlign: 'right',
+  },
+
+  areaManagerCard: {
+    backgroundColor: colors.fill,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 12,
+    marginTop: 12,
+  },
+
+  detailModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+
+  detailModalCard: {
+    backgroundColor: colors.card,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 18,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+
+  detailModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14,
+  },
+
+  detailCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.fill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  radiusEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+
+  radiusEditInput: {
+    flex: 1,
+  },
+
+  radiusEditUnit: {
+    color: colors.muted,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+
+  locationSummaryCard: {
+    backgroundColor: colors.fill,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 12,
+    marginBottom: 12,
+  },
+
+  setupProgressCard: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#CFE6FF',
+  },
+
+  checklistRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+  },
+
+  dashboardMetricCard: {
+    width: '48%',
+    backgroundColor: colors.fill,
+    borderRadius: 11,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    minHeight: 86,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+
+  dashboardMetricDanger: {
+    backgroundColor: colors.dangerSoft,
+    borderColor: '#FFD1D1',
+  },
+
+  dashboardMetricIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+
+  dashboardMetricValue: {
+    color: colors.primary,
+    fontSize: 24,
+    fontWeight: '900',
+  },
+
+  dashboardMetricValueDanger: {
+    color: colors.danger,
+  },
+
+  dashboardMetricLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  projectFinderPanel: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+    borderColor: colors.line,
+    borderWidth: 1,
+  },
+
+  projectSearchBox: {
+    backgroundColor: colors.fill,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 10,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    gap: 8,
+    marginBottom: 12,
+  },
+
+  projectSearchInput: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+    paddingVertical: 8,
+  },
+
+  projectFilterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+
+  projectFilterChip: {
+    backgroundColor: colors.fill,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 11,
+  },
+
+  projectFilterChipSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+
+  projectFilterText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  projectFilterTextSelected: {
+    color: '#FFFFFF',
+  },
+
+  projectFinderStatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+
+  projectFinderRow: {
+    backgroundColor: colors.card,
+    borderRadius: 11,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+
+  favoriteButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: colors.fill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  compactStatsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+    marginTop: 8,
+  },
+
+  compactStatText: {
+    color: colors.muted,
+    backgroundColor: colors.fill,
+    borderRadius: 999,
+    paddingVertical: 4,
+    paddingHorizontal: 7,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+
+  compactStatDanger: {
+    color: colors.danger,
+    backgroundColor: colors.dangerSoft,
+  },
+
+  projectFinderActions: {
+    alignItems: 'flex-end',
+    gap: 7,
+  },
+
+  dashboardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  compactLocationRow: {
+    backgroundColor: colors.card,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+    borderColor: colors.line,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+
+  compactActionColumn: {
+    alignItems: 'flex-end',
+    gap: 6,
+    maxWidth: 96,
+  },
+
+  compactInlineAction: {
+    borderRadius: 999,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    backgroundColor: colors.primarySoft,
+  },
+
+  compactInlineActionText: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+
+  scheduleMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+    flexWrap: 'wrap',
+  },
+
+  statusPill: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+
+  statusPillText: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  percentText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+
+  progressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: (colors as { border?: string }).border,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+  },
+
+  photoModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.96)',
+  },
+
+  photoModalSafeArea: {
+    flex: 1,
+  },
+
+  photoModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+  },
+
+  photoModalTitleWrap: {
+    flex: 1,
+  },
+
+  photoModalTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+
+  photoModalCaption: {
+    color: '#D1D1D6',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 3,
+  },
+
+  photoModalCloseButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  photoModalImage: {
+    flex: 1,
+    width: '100%',
+  },
+
+  photoModalBottomBar: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'ios' ? 12 : 16,
+  },
+
+  photoModalBottomCloseButton: {
+    minHeight: 54,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+
+  photoModalBottomCloseText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
   },
 });

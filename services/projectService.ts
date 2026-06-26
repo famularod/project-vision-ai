@@ -1,14 +1,8 @@
 import { supabase } from '../lib/supabase';
 
-const PROJECTS_TABLE = 'projects';
-
-type ProjectRow = {
-  name: string | null;
-};
-
-export async function loadCloudProjects(): Promise<string[]> {
+export async function loadCloudProjects() {
   const { data, error } = await supabase
-    .from(PROJECTS_TABLE)
+    .from('projects')
     .select('name')
     .eq('archived', false)
     .order('created_at', { ascending: false });
@@ -19,32 +13,31 @@ export async function loadCloudProjects(): Promise<string[]> {
   }
 
   return Array.isArray(data)
-    ? (data as ProjectRow[])
-        .map(row => row.name)
-        .filter((name): name is string =>
-          typeof name === 'string' && name.trim().length > 0,
-        )
+    ? data
+        .map(item => item.name)
+        .filter(name => typeof name === 'string' && name.trim())
     : [];
 }
 
-export async function saveCloudProject(projectName: string): Promise<void> {
-  const trimmed = projectName.trim();
-
-  if (!trimmed) return;
-
-  const { error } = await supabase
-    .from(PROJECTS_TABLE)
-    .insert({
-      name: trimmed,
-      status: 'Active',
-      archived: false,
-      is_favorite: false,
+export function saveCloudProject(projectName: string) {
+  Promise.resolve(
+    supabase
+      .from('projects')
+      .insert({
+        name: projectName,
+        status: 'Active',
+        archived: false,
+        is_favorite: false,
+      }),
+  )
+    .then(({ error }) => {
+      if (error) {
+        console.log('Supabase project save failed:', error.message);
+      } else {
+        console.log('Supabase project saved:', projectName);
+      }
+    })
+    .catch(error => {
+      console.log('Supabase project save exception:', error);
     });
-
-  if (error) {
-    console.log('Supabase project save failed:', error.message);
-    return;
-  }
-
-  console.log('Supabase project saved:', trimmed);
 }

@@ -2,5 +2,13 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true
-  }
+  },
+  "exclude": [
+    "App_backup.tsx",
+    "App_backup_before_schedule_fix.tsx",
+    "lib/project_photo_update_refactor_phase1/**",
+    "project_photo_update_refactor_phase1/**",
+    "exports/**",
+    "node_modules/**"
+  ]
 }
