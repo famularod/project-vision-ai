@@ -13,6 +13,7 @@ type QuickActionsProps = {
   onViewProjects: () => void;
   onReferenceDocuments: () => void;
   onSchedule: () => void;
+  onAIProjectCoach: () => void;
 };
 
 const colors = {
@@ -27,6 +28,7 @@ export function QuickActions({
   onViewProjects,
   onReferenceDocuments,
   onSchedule,
+  onAIProjectCoach,
 }: QuickActionsProps) {
   return (
     <>
@@ -58,6 +60,12 @@ export function QuickActions({
           label="Schedule"
           icon="calendar-outline"
           onPress={onSchedule}
+        />
+
+        <QuickActionButton
+          label="AI Coach"
+          icon="bulb-outline"
+          onPress={onAIProjectCoach}
         />
       </View>
     </>

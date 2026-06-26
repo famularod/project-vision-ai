@@ -9,7 +9,8 @@ export type Screen =
   | 'Diagnostics'
   | 'ReferenceDocuments'
   | 'Schedule'
-  | 'Upcoming';
+  | 'Upcoming'
+  | 'AIProjectCoach';
 
 export type PhotoCategory =
   | 'Open Issue'

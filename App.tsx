@@ -9,6 +9,7 @@ import {
   AddPhotosScreen,
   BuildUpdateScreen,
 } from './screens/BuildUpdateScreen';
+import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
 import { ContactsScreen } from './screens/ContactsScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
@@ -53,7 +54,8 @@ type Screen =
   | 'Diagnostics'
   | 'ReferenceDocuments'
   | 'Schedule'
-  | 'Upcoming';
+  | 'Upcoming'
+  | 'AIProjectCoach';
 
 type PhotoCategory =
   | 'Open Issue'
@@ -4194,6 +4196,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onViewProjects={() => setScreen('Projects')}
               onReferenceDocuments={() => setScreen('ReferenceDocuments')}
               onSchedule={() => setScreen('Schedule')}
+              onAIProjectCoach={() => setScreen('AIProjectCoach')}
             />
           )}
 
@@ -4343,6 +4346,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onSchedule={() => setScreen('Schedule')}
               onNewUpdate={() => createNewUpdate()}
             />
+          )}
+
+          {screen === 'AIProjectCoach' && (
+            <ScreenScroll contentStyle={contentStyle}>
+              <AIProjectCoachScreen
+                onBack={() => setScreen('Home')}
+              />
+            </ScreenScroll>
           )}
 
           {screen === 'Diagnostics' && (

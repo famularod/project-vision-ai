@@ -45,6 +45,7 @@ type HomeDashboardProps = {
   onViewProjects: () => void;
   onReferenceDocuments: () => void;
   onSchedule: () => void;
+  onAIProjectCoach: () => void;
 };
 
 const EMPTY_PROJECT_STATS: ProjectStats = {
@@ -96,6 +97,7 @@ export function HomeDashboard({
   onViewProjects,
   onReferenceDocuments,
   onSchedule,
+  onAIProjectCoach,
 }: HomeDashboardProps) {
   const totals = projects.reduce(
     (summary, project) => {
@@ -231,6 +233,7 @@ export function HomeDashboard({
         onViewProjects={onViewProjects}
         onReferenceDocuments={onReferenceDocuments}
         onSchedule={onSchedule}
+        onAIProjectCoach={onAIProjectCoach}
       />
 
       <AttentionCard
