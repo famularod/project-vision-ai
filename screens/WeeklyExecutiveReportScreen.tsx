@@ -4,7 +4,6 @@ import type {
   ViewStyle,
 } from 'react-native';
 import {
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -12,8 +11,11 @@ import {
 import { WeeklyReportActionList } from '../components/WeeklyReportActionList';
 import { WeeklyReportMetricCard } from '../components/WeeklyReportMetricCard';
 import { WeeklyReportSection } from '../components/WeeklyReportSection';
+import { Screen } from '../components/layout/Screen';
+import { ScreenCard } from '../components/layout/ScreenCard';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { ScreenMetricGrid } from '../components/layout/ScreenMetricGrid';
 import {
-  ScreenTitle,
   SecondaryButton,
   colors,
 } from '../components/ProjectDetailsCard';
@@ -69,20 +71,11 @@ export function WeeklyExecutiveReportScreen({
   );
 
   return (
-    <ScrollView
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-    >
-      <ScreenTitle
+    <Screen contentStyle={contentStyle}>
+      <ScreenHeader
         title="Weekly Executive Report"
         subtitle={`Rule-based report for ${report.periodLabel}. Generated locally from existing project data.`}
-      />
-
-      <SecondaryButton
-        label="Back to Home"
-        icon="arrow-back-outline"
-        onPress={onBack}
+        onBack={onBack}
       />
 
       {onPortfolioDashboard ? (
@@ -93,7 +86,7 @@ export function WeeklyExecutiveReportScreen({
         />
       ) : null}
 
-      <View style={styles.summaryCard}>
+      <ScreenCard style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>
           Executive Summary
         </Text>
@@ -101,9 +94,9 @@ export function WeeklyExecutiveReportScreen({
         <Text style={styles.summaryText}>
           {report.executiveSummary}
         </Text>
-      </View>
+      </ScreenCard>
 
-      <View style={styles.metricGrid}>
+      <ScreenMetricGrid>
         <WeeklyReportMetricCard
           label="Overall Health"
           value={`${report.metrics.overallHealthScore}/100`}
@@ -175,7 +168,7 @@ export function WeeklyExecutiveReportScreen({
           icon="documents-outline"
           tone={report.metrics.documentsThisWeek > 0 ? 'success' : 'neutral'}
         />
-      </View>
+      </ScreenMetricGrid>
 
       <WeeklyReportSection
         title="Recent Updates"
@@ -283,22 +276,13 @@ export function WeeklyExecutiveReportScreen({
           icon="flag-outline"
         />
       </WeeklyReportSection>
-    </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  appFrame: {
-    flex: 1,
-  },
-
   summaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
     marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
   },
 
   summaryLabel: {
@@ -316,10 +300,4 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  metricGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
 });

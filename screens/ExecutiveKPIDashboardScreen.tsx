@@ -4,7 +4,6 @@ import type {
   ViewStyle,
 } from 'react-native';
 import {
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -12,8 +11,10 @@ import {
 import { KPIGroupCard } from '../components/KPIGroupCard';
 import { KPIStatusRow } from '../components/KPIStatusRow';
 import { KPITrendSummary } from '../components/KPITrendSummary';
+import { Screen } from '../components/layout/Screen';
+import { ScreenCard } from '../components/layout/ScreenCard';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
 import {
-  ScreenTitle,
   SecondaryButton,
   colors,
 } from '../components/ProjectDetailsCard';
@@ -56,6 +57,7 @@ export function ExecutiveKPIDashboardScreen({
   onExecutiveBrief,
   onWeeklyReport,
   onConstructionTimeline,
+  onCriticalPath,
   onMilestoneTracking,
   onProjectRiskMatrix,
   onPortfolioDashboard,
@@ -71,6 +73,7 @@ export function ExecutiveKPIDashboardScreen({
   onExecutiveBrief?: () => void;
   onWeeklyReport?: () => void;
   onConstructionTimeline?: () => void;
+  onCriticalPath?: () => void;
   onMilestoneTracking?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
@@ -96,17 +99,14 @@ export function ExecutiveKPIDashboardScreen({
   const priorities = topPriorities(report.recommendedExecutiveActions);
 
   return (
-    <ScrollView
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-    >
-      <ScreenTitle
+    <Screen contentStyle={contentStyle}>
+      <ScreenHeader
         title="Executive KPI Dashboard"
         subtitle={`Performance dashboard for ${report.periodLabel}. Generated locally from project, update, schedule, document, action, and safety data.`}
+        onBack={onBack}
       />
 
-      <View style={styles.commandPanel}>
+      <ScreenCard style={styles.commandPanel}>
         <Text style={styles.commandTitle}>
           KPI Navigation
         </Text>
@@ -186,6 +186,17 @@ export function ExecutiveKPIDashboardScreen({
           </View>
         ) : null}
 
+        {onCriticalPath ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Critical Path"
+              icon="git-branch-outline"
+              onPress={onCriticalPath}
+              compact
+            />
+          </View>
+        ) : null}
+
         {onPortfolioDashboard ? (
           <View style={styles.commandRow}>
             {onPortfolioDashboard ? (
@@ -198,7 +209,7 @@ export function ExecutiveKPIDashboardScreen({
             ) : null}
           </View>
         ) : null}
-      </View>
+      </ScreenCard>
 
       <KPITrendSummary
         title="Average Project Health"
@@ -207,7 +218,7 @@ export function ExecutiveKPIDashboardScreen({
         direction={healthDirection(metrics.overallHealthScore)}
       />
 
-      <View style={styles.summaryCard}>
+      <ScreenCard style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>
           KPI Summary
         </Text>
@@ -215,7 +226,7 @@ export function ExecutiveKPIDashboardScreen({
         <Text style={styles.summaryText}>
           {report.executiveSummary}
         </Text>
-      </View>
+      </ScreenCard>
 
       <KPIGroupCard
         title="Portfolio Performance"
@@ -326,22 +337,13 @@ export function ExecutiveKPIDashboardScreen({
           />
         ))}
       </KPIGroupCard>
-    </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  appFrame: {
-    flex: 1,
-  },
-
   commandPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 15,
     marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
   },
 
   commandTitle: {
@@ -367,12 +369,7 @@ const styles = StyleSheet.create({
   },
 
   summaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
     marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
   },
 
   summaryLabel: {

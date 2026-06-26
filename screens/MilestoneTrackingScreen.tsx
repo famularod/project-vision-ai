@@ -5,7 +5,6 @@ import type {
   ViewStyle,
 } from 'react-native';
 import {
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -13,9 +12,11 @@ import {
 import { MilestoneCard } from '../components/MilestoneCard';
 import { MilestoneFilterBar } from '../components/MilestoneFilterBar';
 import { MilestoneSummaryCard } from '../components/MilestoneSummaryCard';
+import { Screen } from '../components/layout/Screen';
+import { ScreenCard } from '../components/layout/ScreenCard';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
 import {
   EmptyState,
-  ScreenTitle,
   SecondaryButton,
   colors,
 } from '../components/ProjectDetailsCard';
@@ -49,6 +50,7 @@ export function MilestoneTrackingScreen({
   onUpcoming,
   onProjectHealthDashboard,
   onExecutiveKPIDashboard,
+  onCriticalPath,
   onConstructionTimeline,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
@@ -61,6 +63,7 @@ export function MilestoneTrackingScreen({
   onUpcoming?: () => void;
   onProjectHealthDashboard?: () => void;
   onExecutiveKPIDashboard?: () => void;
+  onCriticalPath?: () => void;
   onConstructionTimeline?: () => void;
 }) {
   const [selectedFilter, setSelectedFilter] = useState<MilestoneFilter>('All');
@@ -94,17 +97,14 @@ export function MilestoneTrackingScreen({
   }
 
   return (
-    <ScrollView
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-    >
-      <ScreenTitle
+    <Screen contentStyle={contentStyle}>
+      <ScreenHeader
         title="Milestone Tracking"
         subtitle="Track scheduled milestones with local progress, action, photo, and update signals."
+        onBack={onBack}
       />
 
-      <View style={styles.commandPanel}>
+      <ScreenCard style={styles.commandPanel}>
         <Text style={styles.commandTitle}>
           Milestone Navigation
         </Text>
@@ -174,7 +174,18 @@ export function MilestoneTrackingScreen({
             ) : null}
           </View>
         ) : null}
-      </View>
+
+        {onCriticalPath ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Critical Path"
+              icon="git-branch-outline"
+              onPress={onCriticalPath}
+              compact
+            />
+          </View>
+        ) : null}
+      </ScreenCard>
 
       <MilestoneSummaryCard summary={tracking.summary} />
 
@@ -198,7 +209,7 @@ export function MilestoneTrackingScreen({
         />
       </View>
 
-      <View style={styles.breakdownCard}>
+      <ScreenCard style={styles.breakdownCard}>
         <Text style={styles.breakdownTitle}>
           Milestones by Project
         </Text>
@@ -215,9 +226,9 @@ export function MilestoneTrackingScreen({
             No project milestones are available yet.
           </Text>
         )}
-      </View>
+      </ScreenCard>
 
-      <View style={styles.breakdownCard}>
+      <ScreenCard style={styles.breakdownCard}>
         <Text style={styles.breakdownTitle}>
           Milestones by Area / Location
         </Text>
@@ -234,9 +245,9 @@ export function MilestoneTrackingScreen({
             No milestone locations are available yet.
           </Text>
         )}
-      </View>
+      </ScreenCard>
 
-      <View style={styles.recentCard}>
+      <ScreenCard style={styles.recentCard}>
         <Text style={styles.breakdownTitle}>
           Recent Milestone-Related Updates
         </Text>
@@ -253,7 +264,7 @@ export function MilestoneTrackingScreen({
             No saved updates are related to the current milestones yet.
           </Text>
         )}
-      </View>
+      </ScreenCard>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>
@@ -278,7 +289,7 @@ export function MilestoneTrackingScreen({
           text="Add schedule items with milestones or due dates to begin tracking progress here."
         />
       )}
-    </ScrollView>
+    </Screen>
   );
 }
 
@@ -343,17 +354,8 @@ function RecentUpdateRow({
 }
 
 const styles = StyleSheet.create({
-  appFrame: {
-    flex: 1,
-  },
-
   commandPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 15,
     marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
   },
 
   commandTitle: {
@@ -401,20 +403,10 @@ const styles = StyleSheet.create({
   },
 
   breakdownCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingHorizontal: 15,
     marginBottom: 14,
   },
 
   recentCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingHorizontal: 15,
     marginBottom: 14,
   },
 

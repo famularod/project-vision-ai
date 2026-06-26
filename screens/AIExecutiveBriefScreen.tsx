@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Text, View } from 'react-native';
+import type { StyleProp, ViewStyle } from 'react-native';
+import { Text } from 'react-native';
 import { AIAnalysisButton } from '../components/AIAnalysisButton';
 import { AIAnalysisResultCard } from '../components/AIAnalysisResultCard';
 import { ExecutiveBriefCard } from '../components/ExecutiveBriefCard';
 import { ExecutiveBriefSection } from '../components/ExecutiveBriefSection';
+import { Screen } from '../components/layout/Screen';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
 import {
-  ScreenTitle,
   SecondaryButton,
   styles,
 } from '../components/ProjectDetailsCard';
@@ -125,6 +127,7 @@ function firstItems(items: string[], count: number, fallback: string) {
 }
 
 export function AIExecutiveBriefScreen({
+  contentStyle,
   projectName,
   updates,
   scheduleItems,
@@ -134,6 +137,7 @@ export function AIExecutiveBriefScreen({
   onExecutiveKPIDashboard,
   onPortfolioDashboard,
 }: {
+  contentStyle?: StyleProp<ViewStyle>;
   projectName: string;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
@@ -185,16 +189,11 @@ export function AIExecutiveBriefScreen({
   }
 
   return (
-    <View>
-      <ScreenTitle
+    <Screen contentStyle={contentStyle}>
+      <ScreenHeader
         title="AI Executive Brief"
         subtitle={`Executive summary for ${displayProjectName}. Generated locally without an external AI service.`}
-      />
-
-      <SecondaryButton
-        label="Back to Home"
-        icon="arrow-back-outline"
-        onPress={onBack}
+        onBack={onBack}
       />
 
       {onWeeklyExecutiveReport ? (
@@ -283,6 +282,6 @@ export function AIExecutiveBriefScreen({
         items={recentChanges}
         icon="time-outline"
       />
-    </View>
+    </Screen>
   );
 }

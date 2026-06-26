@@ -13,6 +13,7 @@ import { AIExecutiveBriefScreen } from './screens/AIExecutiveBriefScreen';
 import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
 import { ConstructionTimelineScreen } from './screens/ConstructionTimelineScreen';
 import { ContactsScreen } from './screens/ContactsScreen';
+import { CriticalPathScreen } from './screens/CriticalPathScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
 import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScreen';
@@ -64,6 +65,7 @@ type Screen =
   | 'Schedule'
   | 'Upcoming'
   | 'MilestoneTracking'
+  | 'CriticalPath'
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
@@ -4387,36 +4389,36 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onUpcoming={() => setScreen('Upcoming')}
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onCriticalPath={() => setScreen('CriticalPath')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
             />
           )}
 
           {screen === 'AIProjectCoach' && (
-            <ScreenScroll contentStyle={contentStyle}>
-              <AIProjectCoachScreen
-                projectName={draft.projectName}
-                updates={savedUpdates}
-                scheduleItems={scheduleItems}
-                currentUpdate={draft}
-                onBack={() => setScreen('Home')}
-                onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
-              />
-            </ScreenScroll>
+            <AIProjectCoachScreen
+              contentStyle={contentStyle}
+              projectName={draft.projectName}
+              updates={savedUpdates}
+              scheduleItems={scheduleItems}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
+              onCriticalPath={() => setScreen('CriticalPath')}
+            />
           )}
 
           {screen === 'AIExecutiveBrief' && (
-            <ScreenScroll contentStyle={contentStyle}>
-              <AIExecutiveBriefScreen
-                projectName={draft.projectName}
-                updates={savedUpdates}
-                scheduleItems={scheduleItems}
-                currentUpdate={draft}
-                onBack={() => setScreen('Home')}
-                onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
-                onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
-                onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
-              />
-            </ScreenScroll>
+            <AIExecutiveBriefScreen
+              contentStyle={contentStyle}
+              projectName={draft.projectName}
+              updates={savedUpdates}
+              scheduleItems={scheduleItems}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
+            />
           )}
 
           {screen === 'ExecutiveKPIDashboard' && (
@@ -4432,6 +4434,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onCriticalPath={() => setScreen('CriticalPath')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
@@ -4512,8 +4515,24 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
+              onCriticalPath={() => setScreen('CriticalPath')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
+            />
+          )}
+
+          {screen === 'CriticalPath' && (
+            <CriticalPathScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onAIProjectCoach={() => setScreen('AIProjectCoach')}
             />
           )}
 

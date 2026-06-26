@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import type { StyleProp, ViewStyle } from 'react-native';
 import {
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -10,6 +9,7 @@ import {
 import { AppHeader } from './AppHeader';
 import { AttentionCard } from './AttentionCard';
 import { ExecutiveSummary } from './ExecutiveSummary';
+import { Screen } from './layout/Screen';
 import { QuickActions } from './QuickActions';
 import { RecentActivity } from './RecentActivity';
 
@@ -161,11 +161,7 @@ export function HomeDashboard({
     .slice(0, 5);
 
   return (
-    <ScrollView
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-    >
+    <Screen contentStyle={contentStyle}>
       <AppHeader />
 
       {unfinishedDraft ? (
@@ -266,15 +262,11 @@ export function HomeDashboard({
       />
 
       <RecentActivity updates={savedUpdates} />
-    </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  appFrame: {
-    flex: 1,
-  },
-
   draftRecoveryCard: {
     backgroundColor: colors.warningSoft,
     borderWidth: 1,

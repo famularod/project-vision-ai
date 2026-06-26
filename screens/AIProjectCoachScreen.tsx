@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
-import { Text, View } from 'react-native';
+import type { StyleProp, ViewStyle } from 'react-native';
+import { Text } from 'react-native';
 import { AIAnalysisButton } from '../components/AIAnalysisButton';
 import { AIAnalysisResultCard } from '../components/AIAnalysisResultCard';
 import { AICoachRecommendationCard } from '../components/AICoachRecommendationCard';
 import { AICoachSection } from '../components/AICoachSection';
 import { AIProjectHealthCard } from '../components/AIProjectHealthCard';
+import { Screen } from '../components/layout/Screen';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
 import {
-  ScreenTitle,
   SecondaryButton,
   styles,
 } from '../components/ProjectDetailsCard';
@@ -19,19 +21,23 @@ import type {
 } from '../types';
 
 export function AIProjectCoachScreen({
+  contentStyle,
   projectName,
   updates,
   scheduleItems,
   currentUpdate,
   onBack,
   onProjectRiskMatrix,
+  onCriticalPath,
 }: {
+  contentStyle?: StyleProp<ViewStyle>;
   projectName: string;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   currentUpdate: ProjectUpdate | null;
   onBack: () => void;
   onProjectRiskMatrix?: () => void;
+  onCriticalPath?: () => void;
 }) {
   const [aiLoading, setAILoading] = useState(false);
   const [aiResult, setAIResult] = useState<ProjectAIAnalysisResult | null>(null);
@@ -65,16 +71,11 @@ export function AIProjectCoachScreen({
   }
 
   return (
-    <View>
-      <ScreenTitle
+    <Screen contentStyle={contentStyle}>
+      <ScreenHeader
         title="AI Project Coach"
         subtitle={`Local deterministic analysis for ${projectName}. No external AI service is used.`}
-      />
-
-      <SecondaryButton
-        label="Back to Home"
-        icon="arrow-back-outline"
-        onPress={onBack}
+        onBack={onBack}
       />
 
       {onProjectRiskMatrix ? (
@@ -82,6 +83,14 @@ export function AIProjectCoachScreen({
           label="Risk Matrix"
           icon="warning-outline"
           onPress={onProjectRiskMatrix}
+        />
+      ) : null}
+
+      {onCriticalPath ? (
+        <SecondaryButton
+          label="Critical Path"
+          icon="git-branch-outline"
+          onPress={onCriticalPath}
         />
       ) : null}
 
@@ -156,6 +165,6 @@ export function AIProjectCoachScreen({
           text={analysis.summary}
         />
       </AICoachSection>
-    </View>
+    </Screen>
   );
 }

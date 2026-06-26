@@ -4,13 +4,16 @@ import type {
   ViewStyle,
 } from 'react-native';
 import {
-  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { HealthScoreGauge } from '../components/HealthScoreGauge';
 import { KPICard } from '../components/KPICard';
+import { Screen } from '../components/layout/Screen';
+import { ScreenCard } from '../components/layout/ScreenCard';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { ScreenMetricGrid } from '../components/layout/ScreenMetricGrid';
 import {
   OpenActionsCard,
   OpenActionSummary,
@@ -21,7 +24,6 @@ import {
   SafetyOverviewCard,
 } from '../components/SafetyOverviewCard';
 import {
-  ScreenTitle,
   SecondaryButton,
   colors,
 } from '../components/ProjectDetailsCard';
@@ -360,6 +362,7 @@ export function ProjectHealthDashboard({
   onExecutiveKPIDashboard,
   onConstructionTimeline,
   onMilestoneTracking,
+  onCriticalPath,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: {
@@ -376,6 +379,7 @@ export function ProjectHealthDashboard({
   onExecutiveKPIDashboard?: () => void;
   onConstructionTimeline?: () => void;
   onMilestoneTracking?: () => void;
+  onCriticalPath?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
@@ -466,17 +470,14 @@ export function ProjectHealthDashboard({
       : `${scoreDelta > 0 ? '+' : ''}${scoreDelta} pts`;
 
   return (
-    <ScrollView
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-    >
-      <ScreenTitle
+    <Screen contentStyle={contentStyle}>
+      <ScreenHeader
         title="Project Health Dashboard"
         subtitle="Executive command center generated from project updates, schedule data, action items, safety concerns, and local AI Project Coach rules."
+        onBack={onBack}
       />
 
-      <View style={styles.commandPanel}>
+      <ScreenCard style={styles.commandPanel}>
         <Text style={styles.commandTitle}>
           Command Center
         </Text>
@@ -558,6 +559,17 @@ export function ProjectHealthDashboard({
           </View>
         ) : null}
 
+        {onCriticalPath ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Critical Path"
+              icon="git-branch-outline"
+              onPress={onCriticalPath}
+              compact
+            />
+          </View>
+        ) : null}
+
         {onProjectRiskMatrix || onPortfolioDashboard ? (
           <View style={styles.commandRow}>
             {onProjectRiskMatrix ? (
@@ -579,7 +591,7 @@ export function ProjectHealthDashboard({
             ) : null}
           </View>
         ) : null}
-      </View>
+      </ScreenCard>
 
       <HealthScoreGauge
         score={dashboard.score}
@@ -587,7 +599,7 @@ export function ProjectHealthDashboard({
         subtitle={`${countLabel(dashboard.projectNames.length, 'project')} analyzed with AI Project Coach rules and weekly executive report signals.`}
       />
 
-      <View style={styles.summaryCard}>
+      <ScreenCard style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>
           Executive Readout
         </Text>
@@ -595,9 +607,9 @@ export function ProjectHealthDashboard({
         <Text style={styles.summaryText}>
           {dashboard.weeklyReport.executiveSummary}
         </Text>
-      </View>
+      </ScreenCard>
 
-      <View style={styles.kpiGrid}>
+      <ScreenMetricGrid>
         <KPICard
           label="Projects At Risk"
           value={weeklyMetrics.projectsNeedingAttention}
@@ -645,7 +657,7 @@ export function ProjectHealthDashboard({
           icon="time-outline"
           tone={weeklyMetrics.updatesThisWeek > 0 ? 'success' : 'warning'}
         />
-      </View>
+      </ScreenMetricGrid>
 
       <TrendCard
         title="Health Trend"
@@ -733,22 +745,13 @@ export function ProjectHealthDashboard({
           />
         ))}
       </View>
-    </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  appFrame: {
-    flex: 1,
-  },
-
   commandPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 15,
     marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
   },
 
   commandTitle: {
@@ -774,12 +777,7 @@ const styles = StyleSheet.create({
   },
 
   summaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
     marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
   },
 
   summaryLabel: {
@@ -795,13 +793,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     fontWeight: '500',
-  },
-
-  kpiGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
   },
 
   panel: {
