@@ -14,6 +14,13 @@ export type AIConfigurationStatus = {
   message: string;
 };
 
+export type AIEnvironmentStatus = {
+  providerDetected: AIProviderName;
+  modelDetected: string;
+  apiKeyPresent: boolean;
+  endpointDetected: string;
+};
+
 export type GenerateAITextParams = {
   instructions: string;
   input: string;
@@ -41,15 +48,28 @@ const DEFAULT_OPENAI_MODEL = 'gpt-5.5';
 const DEFAULT_OPENAI_RESPONSES_ENDPOINT = 'https://api.openai.com/v1/responses';
 
 function configuredProvider(): AIProviderName {
-  const value = process.env.EXPO_PUBLIC_AI_PROVIDER;
+  const value = process.env.EXPO_PUBLIC_AI_PROVIDER?.trim().toLowerCase();
 
   if (value === 'azure-openai' || value === 'custom') return value;
 
   return 'openai';
 }
 
+export function getAIEnvironmentStatus(): AIEnvironmentStatus {
+  return {
+    providerDetected: configuredProvider(),
+    modelDetected:
+      process.env.EXPO_PUBLIC_OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL,
+    apiKeyPresent: Boolean(process.env.EXPO_PUBLIC_OPENAI_API_KEY?.trim()),
+    endpointDetected:
+      process.env.EXPO_PUBLIC_OPENAI_RESPONSES_URL?.trim() ||
+      DEFAULT_OPENAI_RESPONSES_ENDPOINT,
+  };
+}
+
 export function getAIProviderConfig(): AIProviderConfig | null {
-  const provider = configuredProvider();
+  const environment = getAIEnvironmentStatus();
+  const provider = environment.providerDetected;
 
   if (provider !== 'openai') return null;
 
@@ -60,17 +80,15 @@ export function getAIProviderConfig(): AIProviderConfig | null {
   return {
     provider,
     apiKey,
-    model: process.env.EXPO_PUBLIC_OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL,
-    endpoint:
-      process.env.EXPO_PUBLIC_OPENAI_RESPONSES_URL?.trim() ||
-      DEFAULT_OPENAI_RESPONSES_ENDPOINT,
+    model: environment.modelDetected,
+    endpoint: environment.endpointDetected,
   };
 }
 
 export function getAIConfigurationStatus(): AIConfigurationStatus {
-  const provider = configuredProvider();
-  const model =
-    process.env.EXPO_PUBLIC_OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
+  const environment = getAIEnvironmentStatus();
+  const provider = environment.providerDetected;
+  const model = environment.modelDetected;
 
   if (provider !== 'openai') {
     return {
@@ -82,7 +100,7 @@ export function getAIConfigurationStatus(): AIConfigurationStatus {
     };
   }
 
-  if (!process.env.EXPO_PUBLIC_OPENAI_API_KEY?.trim()) {
+  if (!environment.apiKeyPresent) {
     return {
       configured: false,
       provider,

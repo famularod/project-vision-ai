@@ -24,6 +24,7 @@ type QuickActionsProps = {
   onContractorPerformance: () => void;
   onProjectRiskMatrix: () => void;
   onPortfolioDashboard: () => void;
+  onDiagnostics: () => void;
 };
 
 const colors = {
@@ -49,6 +50,7 @@ export function QuickActions({
   onContractorPerformance,
   onProjectRiskMatrix,
   onPortfolioDashboard,
+  onDiagnostics,
 }: QuickActionsProps) {
   return (
     <>
@@ -146,6 +148,12 @@ export function QuickActions({
           label="Portfolio"
           icon="albums-outline"
           onPress={onPortfolioDashboard}
+        />
+
+        <QuickActionButton
+          label="Diagnostics"
+          icon="pulse-outline"
+          onPress={onDiagnostics}
         />
       </View>
     </>

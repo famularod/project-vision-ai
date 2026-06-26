@@ -1,4 +1,8 @@
 import { loadCloudProjects, saveCloudProject } from './services/projectService';
+import {
+  testSupabaseConnection,
+  type SupabaseConnectionTestResult,
+} from './services/SupabaseService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import { BottomNavigation } from './components/BottomNavigation';
 import { HomeDashboard } from './components/HomeDashboard';
@@ -2135,6 +2139,12 @@ function AppShell() {
   const [contactsReturnScreen, setContactsReturnScreen] =
     useState<Screen>('Home');
 
+  const [diagnosticsReturnScreen, setDiagnosticsReturnScreen] =
+    useState<Screen>('Projects');
+
+  const [supabaseStartupConnection, setSupabaseStartupConnection] =
+    useState<SupabaseConnectionTestResult | null>(null);
+
   const [draft, setDraft] = useState<ProjectUpdate>(() =>
     createDraft(DEFAULT_PROJECTS[0]),
   );
@@ -2183,6 +2193,33 @@ function AppShell() {
   );
 
   const photoCleanupRan = useRef(false);
+
+useEffect(() => {
+  let active = true;
+
+  testSupabaseConnection()
+    .then(result => {
+      if (active) setSupabaseStartupConnection(result);
+    })
+    .catch(error => {
+      if (!active) return;
+
+      setSupabaseStartupConnection({
+        configured: true,
+        connected: false,
+        projectCount: null,
+        checkedAt: new Date().toISOString(),
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Supabase startup check failed.',
+      });
+    });
+
+  return () => {
+    active = false;
+  };
+}, []);
 
 useEffect(() => {
   async function loadSavedUpdates() {
@@ -3018,6 +3055,11 @@ function addProject(projectName: string) {
       screen === 'Contacts' ? 'Home' : screen,
     );
     setScreen('Contacts');
+  }
+
+  function openDiagnostics(returnScreen: Screen) {
+    setDiagnosticsReturnScreen(returnScreen);
+    setScreen('Diagnostics');
   }
 function hasPlzCorpRecipient(emails: string[]) {
   return emails.some(email =>
@@ -4229,6 +4271,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onContractorPerformance={() => setScreen('ContractorPerformance')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
+              onDiagnostics={() => openDiagnostics('Home')}
             />
           )}
 
@@ -4330,7 +4373,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onUseCurrentLocationForArea={
                 useCurrentLocationForArea
               }
-              onDiagnostics={() => setScreen('Diagnostics')}
+              onDiagnostics={() => openDiagnostics('Projects')}
               onReferenceDocuments={() => setScreen('ReferenceDocuments')}
               onSchedule={() => setScreen('Schedule')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
@@ -4587,7 +4630,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               <DiagnosticsScreen
                 projectAreas={projectAreas}
                 referenceDocuments={referenceDocuments}
-                onBack={() => setScreen('Projects')}
+                localProjects={activeProjects}
+                savedUpdates={savedUpdates}
+                scheduleItems={scheduleItems}
+                startupConnectionResult={supabaseStartupConnection}
+                onBack={() => setScreen(diagnosticsReturnScreen)}
               />
             </ScreenScroll>
           )}
