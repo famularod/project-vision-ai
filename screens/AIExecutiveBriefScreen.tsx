@@ -1,12 +1,17 @@
-import { useMemo } from 'react';
-import { View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { Text, View } from 'react-native';
+import { AIAnalysisButton } from '../components/AIAnalysisButton';
+import { AIAnalysisResultCard } from '../components/AIAnalysisResultCard';
 import { ExecutiveBriefCard } from '../components/ExecutiveBriefCard';
 import { ExecutiveBriefSection } from '../components/ExecutiveBriefSection';
 import {
   ScreenTitle,
   SecondaryButton,
+  styles,
 } from '../components/ProjectDetailsCard';
 import { analyzeProjectCoach } from '../services/AIProjectCoach';
+import { analyzeProjectWithAI } from '../services/ProjectAIAnalysisService';
+import type { ProjectAIAnalysisResult } from '../services/ProjectAIAnalysisService';
 import type {
   ProjectUpdate,
   ScheduleItem,
@@ -138,6 +143,8 @@ export function AIExecutiveBriefScreen({
   onExecutiveKPIDashboard?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
+  const [aiLoading, setAILoading] = useState(false);
+  const [aiResult, setAIResult] = useState<ProjectAIAnalysisResult | null>(null);
   const displayProjectName = projectName.trim() || 'Selected Project';
   const analysis = useMemo(
     () =>
@@ -158,6 +165,24 @@ export function AIExecutiveBriefScreen({
       }),
     [currentUpdate, displayProjectName, updates],
   );
+
+  async function runAIAnalysis() {
+    setAILoading(true);
+
+    try {
+      const result = await analyzeProjectWithAI({
+        projectName: displayProjectName,
+        updates,
+        scheduleItems,
+        currentUpdate,
+        mode: 'executive-brief',
+      });
+
+      setAIResult(result);
+    } finally {
+      setAILoading(false);
+    }
+  }
 
   return (
     <View>
@@ -201,6 +226,21 @@ export function AIExecutiveBriefScreen({
         projectName={displayProjectName}
         summary={analysis.summary}
       />
+
+      <AIAnalysisButton
+        loading={aiLoading}
+        onPress={() => {
+          void runAIAnalysis();
+        }}
+      />
+
+      <Text style={styles.mutedNote}>
+        Rule-based analysis is always available. Project data is sent to the configured AI provider only after you tap Analyze with AI.
+      </Text>
+
+      {aiResult ? (
+        <AIAnalysisResultCard result={aiResult} />
+      ) : null}
 
       <ExecutiveBriefSection
         title="Key Accomplishments"

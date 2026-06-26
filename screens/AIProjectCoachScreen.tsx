@@ -1,15 +1,18 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Text, View } from 'react-native';
+import { AIAnalysisButton } from '../components/AIAnalysisButton';
+import { AIAnalysisResultCard } from '../components/AIAnalysisResultCard';
 import { AICoachRecommendationCard } from '../components/AICoachRecommendationCard';
 import { AICoachSection } from '../components/AICoachSection';
 import { AIProjectHealthCard } from '../components/AIProjectHealthCard';
 import {
-  PrimaryButton,
   ScreenTitle,
   SecondaryButton,
   styles,
 } from '../components/ProjectDetailsCard';
 import { analyzeProjectCoach } from '../services/AIProjectCoach';
+import { analyzeProjectWithAI } from '../services/ProjectAIAnalysisService';
+import type { ProjectAIAnalysisResult } from '../services/ProjectAIAnalysisService';
 import type {
   ProjectUpdate,
   ScheduleItem,
@@ -30,6 +33,8 @@ export function AIProjectCoachScreen({
   onBack: () => void;
   onProjectRiskMatrix?: () => void;
 }) {
+  const [aiLoading, setAILoading] = useState(false);
+  const [aiResult, setAIResult] = useState<ProjectAIAnalysisResult | null>(null);
   const analysis = useMemo(
     () =>
       analyzeProjectCoach({
@@ -40,6 +45,24 @@ export function AIProjectCoachScreen({
       }),
     [currentUpdate, projectName, scheduleItems, updates],
   );
+
+  async function runAIAnalysis() {
+    setAILoading(true);
+
+    try {
+      const result = await analyzeProjectWithAI({
+        projectName,
+        updates,
+        scheduleItems,
+        currentUpdate,
+        mode: 'project-coach',
+      });
+
+      setAIResult(result);
+    } finally {
+      setAILoading(false);
+    }
+  }
 
   return (
     <View>
@@ -68,16 +91,20 @@ export function AIProjectCoachScreen({
         summary={analysis.summary}
       />
 
-      <PrimaryButton
-        label="Analyze Project"
-        icon="sparkles-outline"
-        onPress={() => undefined}
-        disabled
+      <AIAnalysisButton
+        loading={aiLoading}
+        onPress={() => {
+          void runAIAnalysis();
+        }}
       />
 
       <Text style={styles.mutedNote}>
-        Analysis is generated locally from existing project data. The button remains disabled until an interactive analysis flow is added.
+        Rule-based analysis is always available. Project data is sent to the configured AI provider only after you tap Analyze with AI.
       </Text>
+
+      {aiResult ? (
+        <AIAnalysisResultCard result={aiResult} />
+      ) : null}
 
       <AICoachSection
         title="Accomplishments"
