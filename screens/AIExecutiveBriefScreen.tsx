@@ -126,6 +126,7 @@ export function AIExecutiveBriefScreen({
   currentUpdate,
   onBack,
   onWeeklyExecutiveReport,
+  onExecutiveKPIDashboard,
 }: {
   projectName: string;
   updates: ProjectUpdate[];
@@ -133,6 +134,7 @@ export function AIExecutiveBriefScreen({
   currentUpdate: ProjectUpdate | null;
   onBack: () => void;
   onWeeklyExecutiveReport?: () => void;
+  onExecutiveKPIDashboard?: () => void;
 }) {
   const displayProjectName = projectName.trim() || 'Selected Project';
   const analysis = useMemo(
@@ -173,6 +175,14 @@ export function AIExecutiveBriefScreen({
           label="Weekly Report"
           icon="newspaper-outline"
           onPress={onWeeklyExecutiveReport}
+        />
+      ) : null}
+
+      {onExecutiveKPIDashboard ? (
+        <SecondaryButton
+          label="KPI Dashboard"
+          icon="stats-chart-outline"
+          onPress={onExecutiveKPIDashboard}
         />
       ) : null}
 

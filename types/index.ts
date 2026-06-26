@@ -13,7 +13,8 @@ export type Screen =
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
-  | 'WeeklyExecutiveReport';
+  | 'WeeklyExecutiveReport'
+  | 'ExecutiveKPIDashboard';
 
 export type PhotoCategory =
   | 'Open Issue'

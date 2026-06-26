@@ -14,6 +14,7 @@ import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
 import { ContactsScreen } from './screens/ContactsScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
+import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
 import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
 import { ProjectsScreen } from './screens/ProjectsScreen';
@@ -61,7 +62,8 @@ type Screen =
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
-  | 'WeeklyExecutiveReport';
+  | 'WeeklyExecutiveReport'
+  | 'ExecutiveKPIDashboard';
 
 type PhotoCategory =
   | 'Open Issue'
@@ -4206,6 +4208,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onAIExecutiveBrief={() => setScreen('AIExecutiveBrief')}
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
             />
           )}
 
@@ -4378,8 +4381,24 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 currentUpdate={draft}
                 onBack={() => setScreen('Home')}
                 onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
+                onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               />
             </ScreenScroll>
+          )}
+
+          {screen === 'ExecutiveKPIDashboard' && (
+            <ExecutiveKPIDashboardScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
+              onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
+            />
           )}
 
           {screen === 'WeeklyExecutiveReport' && (
@@ -4406,6 +4425,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onAIProjectCoach={() => setScreen('AIProjectCoach')}
               onExecutiveBrief={() => setScreen('AIExecutiveBrief')}
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
             />
           )}
 

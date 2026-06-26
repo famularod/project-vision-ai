@@ -49,6 +49,7 @@ type HomeDashboardProps = {
   onAIExecutiveBrief: () => void;
   onProjectHealthDashboard: () => void;
   onWeeklyExecutiveReport: () => void;
+  onExecutiveKPIDashboard: () => void;
 };
 
 const EMPTY_PROJECT_STATS: ProjectStats = {
@@ -104,6 +105,7 @@ export function HomeDashboard({
   onAIExecutiveBrief,
   onProjectHealthDashboard,
   onWeeklyExecutiveReport,
+  onExecutiveKPIDashboard,
 }: HomeDashboardProps) {
   const totals = projects.reduce(
     (summary, project) => {
@@ -243,6 +245,7 @@ export function HomeDashboard({
         onAIExecutiveBrief={onAIExecutiveBrief}
         onProjectHealthDashboard={onProjectHealthDashboard}
         onWeeklyExecutiveReport={onWeeklyExecutiveReport}
+        onExecutiveKPIDashboard={onExecutiveKPIDashboard}
       />
 
       <AttentionCard

@@ -357,6 +357,7 @@ export function ProjectHealthDashboard({
   onAIProjectCoach,
   onExecutiveBrief,
   onWeeklyReport,
+  onExecutiveKPIDashboard,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -368,6 +369,7 @@ export function ProjectHealthDashboard({
   onAIProjectCoach?: () => void;
   onExecutiveBrief?: () => void;
   onWeeklyReport?: () => void;
+  onExecutiveKPIDashboard?: () => void;
 }) {
   const dashboard = useMemo(() => {
     const projectNames = projectNamesFromData({
@@ -514,6 +516,17 @@ export function ProjectHealthDashboard({
             />
           ) : null}
         </View>
+
+        {onExecutiveKPIDashboard ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="KPI Dashboard"
+              icon="stats-chart-outline"
+              onPress={onExecutiveKPIDashboard}
+              compact
+            />
+          </View>
+        ) : null}
       </View>
 
       <HealthScoreGauge
