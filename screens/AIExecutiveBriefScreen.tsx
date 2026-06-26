@@ -125,12 +125,14 @@ export function AIExecutiveBriefScreen({
   scheduleItems,
   currentUpdate,
   onBack,
+  onWeeklyExecutiveReport,
 }: {
   projectName: string;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   currentUpdate: ProjectUpdate | null;
   onBack: () => void;
+  onWeeklyExecutiveReport?: () => void;
 }) {
   const displayProjectName = projectName.trim() || 'Selected Project';
   const analysis = useMemo(
@@ -165,6 +167,14 @@ export function AIExecutiveBriefScreen({
         icon="arrow-back-outline"
         onPress={onBack}
       />
+
+      {onWeeklyExecutiveReport ? (
+        <SecondaryButton
+          label="Weekly Report"
+          icon="newspaper-outline"
+          onPress={onWeeklyExecutiveReport}
+        />
+      ) : null}
 
       <ExecutiveBriefCard
         score={analysis.score}

@@ -11,7 +11,9 @@ export type Screen =
   | 'Schedule'
   | 'Upcoming'
   | 'AIProjectCoach'
-  | 'AIExecutiveBrief';
+  | 'AIExecutiveBrief'
+  | 'ProjectHealthDashboard'
+  | 'WeeklyExecutiveReport';
 
 export type PhotoCategory =
   | 'Open Issue'

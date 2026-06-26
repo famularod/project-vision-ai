@@ -15,6 +15,8 @@ type QuickActionsProps = {
   onSchedule: () => void;
   onAIProjectCoach: () => void;
   onAIExecutiveBrief: () => void;
+  onProjectHealthDashboard: () => void;
+  onWeeklyExecutiveReport: () => void;
 };
 
 const colors = {
@@ -31,6 +33,8 @@ export function QuickActions({
   onSchedule,
   onAIProjectCoach,
   onAIExecutiveBrief,
+  onProjectHealthDashboard,
+  onWeeklyExecutiveReport,
 }: QuickActionsProps) {
   return (
     <>
@@ -74,6 +78,18 @@ export function QuickActions({
           label="Exec Brief"
           icon="briefcase-outline"
           onPress={onAIExecutiveBrief}
+        />
+
+        <QuickActionButton
+          label="Health Dashboard"
+          icon="pulse-outline"
+          onPress={onProjectHealthDashboard}
+        />
+
+        <QuickActionButton
+          label="Weekly Report"
+          icon="newspaper-outline"
+          onPress={onWeeklyExecutiveReport}
         />
       </View>
     </>

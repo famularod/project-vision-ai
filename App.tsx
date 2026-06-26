@@ -15,9 +15,11 @@ import { ContactsScreen } from './screens/ContactsScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
+import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
 import { ProjectsScreen } from './screens/ProjectsScreen';
 import { ScheduleScreen } from './screens/ScheduleScreen';
 import { UpcomingScreen } from './screens/UpcomingScreen';
+import { WeeklyExecutiveReportScreen } from './screens/WeeklyExecutiveReportScreen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as Contacts from 'expo-contacts';
@@ -57,7 +59,9 @@ type Screen =
   | 'Schedule'
   | 'Upcoming'
   | 'AIProjectCoach'
-  | 'AIExecutiveBrief';
+  | 'AIExecutiveBrief'
+  | 'ProjectHealthDashboard'
+  | 'WeeklyExecutiveReport';
 
 type PhotoCategory =
   | 'Open Issue'
@@ -4200,6 +4204,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onSchedule={() => setScreen('Schedule')}
               onAIProjectCoach={() => setScreen('AIProjectCoach')}
               onAIExecutiveBrief={() => setScreen('AIExecutiveBrief')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
             />
           )}
 
@@ -4371,8 +4377,32 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 scheduleItems={scheduleItems}
                 currentUpdate={draft}
                 onBack={() => setScreen('Home')}
+                onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
               />
             </ScreenScroll>
+          )}
+
+          {screen === 'WeeklyExecutiveReport' && (
+            <WeeklyExecutiveReportScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+            />
+          )}
+
+          {screen === 'ProjectHealthDashboard' && (
+            <ProjectHealthDashboard
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+            />
           )}
 
           {screen === 'Diagnostics' && (
