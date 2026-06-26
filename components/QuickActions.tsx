@@ -20,6 +20,7 @@ type QuickActionsProps = {
   onExecutiveKPIDashboard: () => void;
   onConstructionTimeline: () => void;
   onProjectRiskMatrix: () => void;
+  onPortfolioDashboard: () => void;
 };
 
 const colors = {
@@ -41,6 +42,7 @@ export function QuickActions({
   onExecutiveKPIDashboard,
   onConstructionTimeline,
   onProjectRiskMatrix,
+  onPortfolioDashboard,
 }: QuickActionsProps) {
   return (
     <>
@@ -114,6 +116,12 @@ export function QuickActions({
           label="Risk Matrix"
           icon="warning-outline"
           onPress={onProjectRiskMatrix}
+        />
+
+        <QuickActionButton
+          label="Portfolio"
+          icon="albums-outline"
+          onPress={onPortfolioDashboard}
         />
       </View>
     </>

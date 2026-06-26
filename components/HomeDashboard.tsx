@@ -52,6 +52,7 @@ type HomeDashboardProps = {
   onExecutiveKPIDashboard: () => void;
   onConstructionTimeline: () => void;
   onProjectRiskMatrix: () => void;
+  onPortfolioDashboard: () => void;
 };
 
 const EMPTY_PROJECT_STATS: ProjectStats = {
@@ -110,6 +111,7 @@ export function HomeDashboard({
   onExecutiveKPIDashboard,
   onConstructionTimeline,
   onProjectRiskMatrix,
+  onPortfolioDashboard,
 }: HomeDashboardProps) {
   const totals = projects.reduce(
     (summary, project) => {
@@ -252,6 +254,7 @@ export function HomeDashboard({
         onExecutiveKPIDashboard={onExecutiveKPIDashboard}
         onConstructionTimeline={onConstructionTimeline}
         onProjectRiskMatrix={onProjectRiskMatrix}
+        onPortfolioDashboard={onPortfolioDashboard}
       />
 
       <AttentionCard

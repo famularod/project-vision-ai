@@ -39,6 +39,7 @@ export function WeeklyExecutiveReportScreen({
   referenceDocuments,
   currentUpdate,
   onBack,
+  onPortfolioDashboard,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -47,6 +48,7 @@ export function WeeklyExecutiveReportScreen({
   referenceDocuments: ReferenceDocument[];
   currentUpdate: ProjectUpdate | null;
   onBack: () => void;
+  onPortfolioDashboard?: () => void;
 }) {
   const report = useMemo(
     () =>
@@ -82,6 +84,14 @@ export function WeeklyExecutiveReportScreen({
         icon="arrow-back-outline"
         onPress={onBack}
       />
+
+      {onPortfolioDashboard ? (
+        <SecondaryButton
+          label="Portfolio"
+          icon="albums-outline"
+          onPress={onPortfolioDashboard}
+        />
+      ) : null}
 
       <View style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>

@@ -57,6 +57,7 @@ export function ExecutiveKPIDashboardScreen({
   onWeeklyReport,
   onConstructionTimeline,
   onProjectRiskMatrix,
+  onPortfolioDashboard,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -70,6 +71,7 @@ export function ExecutiveKPIDashboardScreen({
   onWeeklyReport?: () => void;
   onConstructionTimeline?: () => void;
   onProjectRiskMatrix?: () => void;
+  onPortfolioDashboard?: () => void;
 }) {
   const report = useMemo(
     () =>
@@ -165,6 +167,19 @@ export function ExecutiveKPIDashboardScreen({
                 label="Risk Matrix"
                 icon="warning-outline"
                 onPress={onProjectRiskMatrix}
+                compact
+              />
+            ) : null}
+          </View>
+        ) : null}
+
+        {onPortfolioDashboard ? (
+          <View style={styles.commandRow}>
+            {onPortfolioDashboard ? (
+              <SecondaryButton
+                label="Portfolio"
+                icon="albums-outline"
+                onPress={onPortfolioDashboard}
                 compact
               />
             ) : null}

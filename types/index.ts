@@ -16,7 +16,8 @@ export type Screen =
   | 'WeeklyExecutiveReport'
   | 'ExecutiveKPIDashboard'
   | 'ConstructionTimeline'
-  | 'ProjectRiskMatrix';
+  | 'ProjectRiskMatrix'
+  | 'PortfolioDashboard';
 
 export type PhotoCategory =
   | 'Open Issue'

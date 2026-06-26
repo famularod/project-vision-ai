@@ -17,6 +17,7 @@ import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
 import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
+import { PortfolioDashboardScreen } from './screens/PortfolioDashboardScreen';
 import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
 import { ProjectRiskMatrixScreen } from './screens/ProjectRiskMatrixScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
@@ -67,7 +68,8 @@ type Screen =
   | 'WeeklyExecutiveReport'
   | 'ExecutiveKPIDashboard'
   | 'ConstructionTimeline'
-  | 'ProjectRiskMatrix';
+  | 'ProjectRiskMatrix'
+  | 'PortfolioDashboard';
 
 type PhotoCategory =
   | 'Open Issue'
@@ -4215,6 +4217,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
+              onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
           )}
 
@@ -4390,6 +4393,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 onBack={() => setScreen('Home')}
                 onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
                 onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+                onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
               />
             </ScreenScroll>
           )}
@@ -4408,6 +4412,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onWeeklyReport={() => setScreen('WeeklyExecutiveReport')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
+              onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
+            />
+          )}
+
+          {screen === 'PortfolioDashboard' && (
+            <PortfolioDashboardScreen
+              contentStyle={contentStyle}
+              activeProjects={activeProjects}
+              archivedProjects={archivedProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
+              onAIExecutiveBrief={() => setScreen('AIExecutiveBrief')}
             />
           )}
 
@@ -4449,6 +4470,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               referenceDocuments={referenceDocuments}
               currentUpdate={draft}
               onBack={() => setScreen('Home')}
+              onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
           )}
 
@@ -4467,6 +4489,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
+              onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
           )}
 
