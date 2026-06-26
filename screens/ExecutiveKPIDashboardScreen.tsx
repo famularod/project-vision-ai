@@ -60,6 +60,7 @@ export function ExecutiveKPIDashboardScreen({
   onCriticalPath,
   onMilestoneTracking,
   onDelayAnalysis,
+  onContractorPerformance,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: {
@@ -77,6 +78,7 @@ export function ExecutiveKPIDashboardScreen({
   onCriticalPath?: () => void;
   onMilestoneTracking?: () => void;
   onDelayAnalysis?: () => void;
+  onContractorPerformance?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
@@ -207,6 +209,12 @@ export function ExecutiveKPIDashboardScreen({
               onPress={onDelayAnalysis}
               compact
             />
+          </View>
+        ) : null}
+
+        {onContractorPerformance ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton label="Contractors" icon="people-outline" onPress={onContractorPerformance} compact />
           </View>
         ) : null}
 

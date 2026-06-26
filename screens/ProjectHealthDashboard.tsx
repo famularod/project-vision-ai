@@ -364,6 +364,7 @@ export function ProjectHealthDashboard({
   onMilestoneTracking,
   onCriticalPath,
   onDelayAnalysis,
+  onContractorPerformance,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: {
@@ -382,6 +383,7 @@ export function ProjectHealthDashboard({
   onMilestoneTracking?: () => void;
   onCriticalPath?: () => void;
   onDelayAnalysis?: () => void;
+  onContractorPerformance?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
@@ -580,6 +582,12 @@ export function ProjectHealthDashboard({
               onPress={onDelayAnalysis}
               compact
             />
+          </View>
+        ) : null}
+
+        {onContractorPerformance ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton label="Contractors" icon="people-outline" onPress={onContractorPerformance} compact />
           </View>
         ) : null}
 

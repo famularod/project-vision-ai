@@ -42,6 +42,7 @@ export function CriticalPathScreen({
   onProjectHealthDashboard,
   onAIProjectCoach,
   onDelayAnalysis,
+  onContractorPerformance,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -54,6 +55,7 @@ export function CriticalPathScreen({
   onProjectHealthDashboard?: () => void;
   onAIProjectCoach?: () => void;
   onDelayAnalysis?: () => void;
+  onContractorPerformance?: () => void;
 }) {
   const analysis = useMemo(
     () =>
@@ -142,6 +144,12 @@ export function CriticalPathScreen({
               onPress={onDelayAnalysis}
               compact
             />
+          </View>
+        ) : null}
+
+        {onContractorPerformance ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton label="Contractors" icon="people-outline" onPress={onContractorPerformance} compact />
           </View>
         ) : null}
       </ScreenCard>

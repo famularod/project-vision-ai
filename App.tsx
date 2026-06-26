@@ -12,6 +12,7 @@ import {
 import { AIExecutiveBriefScreen } from './screens/AIExecutiveBriefScreen';
 import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
 import { ConstructionTimelineScreen } from './screens/ConstructionTimelineScreen';
+import { ContractorPerformanceScreen } from './screens/ContractorPerformanceScreen';
 import { ContactsScreen } from './screens/ContactsScreen';
 import { CriticalPathScreen } from './screens/CriticalPathScreen';
 import { DelayAnalysisScreen } from './screens/DelayAnalysisScreen';
@@ -68,6 +69,7 @@ type Screen =
   | 'MilestoneTracking'
   | 'CriticalPath'
   | 'DelayAnalysis'
+  | 'ContractorPerformance'
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
@@ -4224,6 +4226,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onDelayAnalysis={() => setScreen('DelayAnalysis')}
+              onContractorPerformance={() => setScreen('ContractorPerformance')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4441,6 +4444,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onCriticalPath={() => setScreen('CriticalPath')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onDelayAnalysis={() => setScreen('DelayAnalysis')}
+              onContractorPerformance={() => setScreen('ContractorPerformance')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4522,6 +4526,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onCriticalPath={() => setScreen('CriticalPath')}
               onDelayAnalysis={() => setScreen('DelayAnalysis')}
+              onContractorPerformance={() => setScreen('ContractorPerformance')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4540,6 +4545,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onAIProjectCoach={() => setScreen('AIProjectCoach')}
               onDelayAnalysis={() => setScreen('DelayAnalysis')}
+              onContractorPerformance={() => setScreen('ContractorPerformance')}
             />
           )}
 
@@ -4554,6 +4560,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onBack={() => setScreen('Home')}
               onCriticalPath={() => setScreen('CriticalPath')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+              onContractorPerformance={() => setScreen('ContractorPerformance')}
+            />
+          )}
+
+          {screen === 'ContractorPerformance' && (
+            <ContractorPerformanceScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onDelayAnalysis={() => setScreen('DelayAnalysis')}
+              onCriticalPath={() => setScreen('CriticalPath')}
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
             />

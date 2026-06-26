@@ -21,6 +21,7 @@ type QuickActionsProps = {
   onConstructionTimeline: () => void;
   onMilestoneTracking: () => void;
   onDelayAnalysis: () => void;
+  onContractorPerformance: () => void;
   onProjectRiskMatrix: () => void;
   onPortfolioDashboard: () => void;
 };
@@ -45,6 +46,7 @@ export function QuickActions({
   onConstructionTimeline,
   onMilestoneTracking,
   onDelayAnalysis,
+  onContractorPerformance,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: QuickActionsProps) {
@@ -126,6 +128,12 @@ export function QuickActions({
           label="Delay Analysis"
           icon="timer-outline"
           onPress={onDelayAnalysis}
+        />
+
+        <QuickActionButton
+          label="Contractors"
+          icon="people-outline"
+          onPress={onContractorPerformance}
         />
 
         <QuickActionButton

@@ -42,6 +42,7 @@ export function DelayAnalysisScreen({
   onMilestoneTracking,
   onProjectHealthDashboard,
   onExecutiveKPIDashboard,
+  onContractorPerformance,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -54,6 +55,7 @@ export function DelayAnalysisScreen({
   onMilestoneTracking?: () => void;
   onProjectHealthDashboard?: () => void;
   onExecutiveKPIDashboard?: () => void;
+  onContractorPerformance?: () => void;
 }) {
   const analysis = useMemo(
     () =>
@@ -125,6 +127,12 @@ export function DelayAnalysisScreen({
             />
           ) : null}
         </View>
+
+        {onContractorPerformance ? (
+          <View style={styles.navigationRow}>
+            <SecondaryButton label="Contractors" icon="people-outline" onPress={onContractorPerformance} compact />
+          </View>
+        ) : null}
       </ScreenCard>
 
       <DelaySummaryCard summary={analysis.summary} />

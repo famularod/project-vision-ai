@@ -53,6 +53,7 @@ type HomeDashboardProps = {
   onConstructionTimeline: () => void;
   onMilestoneTracking: () => void;
   onDelayAnalysis: () => void;
+  onContractorPerformance: () => void;
   onProjectRiskMatrix: () => void;
   onPortfolioDashboard: () => void;
 };
@@ -114,6 +115,7 @@ export function HomeDashboard({
   onConstructionTimeline,
   onMilestoneTracking,
   onDelayAnalysis,
+  onContractorPerformance,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: HomeDashboardProps) {
@@ -255,6 +257,7 @@ export function HomeDashboard({
         onConstructionTimeline={onConstructionTimeline}
         onMilestoneTracking={onMilestoneTracking}
         onDelayAnalysis={onDelayAnalysis}
+        onContractorPerformance={onContractorPerformance}
         onProjectRiskMatrix={onProjectRiskMatrix}
         onPortfolioDashboard={onPortfolioDashboard}
       />

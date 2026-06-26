@@ -13,6 +13,7 @@ export type Screen =
   | 'MilestoneTracking'
   | 'CriticalPath'
   | 'DelayAnalysis'
+  | 'ContractorPerformance'
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
