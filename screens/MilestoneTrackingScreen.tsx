@@ -51,6 +51,7 @@ export function MilestoneTrackingScreen({
   onProjectHealthDashboard,
   onExecutiveKPIDashboard,
   onCriticalPath,
+  onDelayAnalysis,
   onConstructionTimeline,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
@@ -64,6 +65,7 @@ export function MilestoneTrackingScreen({
   onProjectHealthDashboard?: () => void;
   onExecutiveKPIDashboard?: () => void;
   onCriticalPath?: () => void;
+  onDelayAnalysis?: () => void;
   onConstructionTimeline?: () => void;
 }) {
   const [selectedFilter, setSelectedFilter] = useState<MilestoneFilter>('All');
@@ -181,6 +183,17 @@ export function MilestoneTrackingScreen({
               label="Critical Path"
               icon="git-branch-outline"
               onPress={onCriticalPath}
+              compact
+            />
+          </View>
+        ) : null}
+
+        {onDelayAnalysis ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Delay Analysis"
+              icon="timer-outline"
+              onPress={onDelayAnalysis}
               compact
             />
           </View>

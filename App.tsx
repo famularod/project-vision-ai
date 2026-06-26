@@ -14,6 +14,7 @@ import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
 import { ConstructionTimelineScreen } from './screens/ConstructionTimelineScreen';
 import { ContactsScreen } from './screens/ContactsScreen';
 import { CriticalPathScreen } from './screens/CriticalPathScreen';
+import { DelayAnalysisScreen } from './screens/DelayAnalysisScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
 import { DocumentsScreen } from './screens/DocumentsScreen';
 import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScreen';
@@ -66,6 +67,7 @@ type Screen =
   | 'Upcoming'
   | 'MilestoneTracking'
   | 'CriticalPath'
+  | 'DelayAnalysis'
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
@@ -4221,6 +4223,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
+              onDelayAnalysis={() => setScreen('DelayAnalysis')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4390,6 +4393,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
               onCriticalPath={() => setScreen('CriticalPath')}
+              onDelayAnalysis={() => setScreen('DelayAnalysis')}
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
             />
           )}
@@ -4436,6 +4440,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onCriticalPath={() => setScreen('CriticalPath')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
+              onDelayAnalysis={() => setScreen('DelayAnalysis')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4516,6 +4521,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onConstructionTimeline={() => setScreen('ConstructionTimeline')}
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onCriticalPath={() => setScreen('CriticalPath')}
+              onDelayAnalysis={() => setScreen('DelayAnalysis')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
             />
@@ -4533,6 +4539,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onMilestoneTracking={() => setScreen('MilestoneTracking')}
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onAIProjectCoach={() => setScreen('AIProjectCoach')}
+              onDelayAnalysis={() => setScreen('DelayAnalysis')}
+            />
+          )}
+
+          {screen === 'DelayAnalysis' && (
+            <DelayAnalysisScreen
+              contentStyle={contentStyle}
+              projects={activeProjects}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              currentUpdate={draft}
+              onBack={() => setScreen('Home')}
+              onCriticalPath={() => setScreen('CriticalPath')}
+              onMilestoneTracking={() => setScreen('MilestoneTracking')}
+              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
+              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
             />
           )}
 

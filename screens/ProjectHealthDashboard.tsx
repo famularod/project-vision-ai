@@ -363,6 +363,7 @@ export function ProjectHealthDashboard({
   onConstructionTimeline,
   onMilestoneTracking,
   onCriticalPath,
+  onDelayAnalysis,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: {
@@ -380,6 +381,7 @@ export function ProjectHealthDashboard({
   onConstructionTimeline?: () => void;
   onMilestoneTracking?: () => void;
   onCriticalPath?: () => void;
+  onDelayAnalysis?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
@@ -565,6 +567,17 @@ export function ProjectHealthDashboard({
               label="Critical Path"
               icon="git-branch-outline"
               onPress={onCriticalPath}
+              compact
+            />
+          </View>
+        ) : null}
+
+        {onDelayAnalysis ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Delay Analysis"
+              icon="timer-outline"
+              onPress={onDelayAnalysis}
               compact
             />
           </View>

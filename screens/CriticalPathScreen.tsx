@@ -41,6 +41,7 @@ export function CriticalPathScreen({
   onMilestoneTracking,
   onProjectHealthDashboard,
   onAIProjectCoach,
+  onDelayAnalysis,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projects: string[];
@@ -52,6 +53,7 @@ export function CriticalPathScreen({
   onMilestoneTracking?: () => void;
   onProjectHealthDashboard?: () => void;
   onAIProjectCoach?: () => void;
+  onDelayAnalysis?: () => void;
 }) {
   const analysis = useMemo(
     () =>
@@ -121,17 +123,28 @@ export function CriticalPathScreen({
             </View>
           ) : null}
 
-          {onAIProjectCoach ? (
-            <View style={styles.commandRow}>
+        {onAIProjectCoach ? (
+          <View style={styles.commandRow}>
               <SecondaryButton
                 label="AI Coach"
                 icon="bulb-outline"
                 onPress={onAIProjectCoach}
                 compact
               />
-            </View>
-          ) : null}
-        </ScreenCard>
+          </View>
+        ) : null}
+
+        {onDelayAnalysis ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Delay Analysis"
+              icon="timer-outline"
+              onPress={onDelayAnalysis}
+              compact
+            />
+          </View>
+        ) : null}
+      </ScreenCard>
 
         <CriticalPathSummary summary={analysis.summary} />
 

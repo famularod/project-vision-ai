@@ -20,6 +20,7 @@ type QuickActionsProps = {
   onExecutiveKPIDashboard: () => void;
   onConstructionTimeline: () => void;
   onMilestoneTracking: () => void;
+  onDelayAnalysis: () => void;
   onProjectRiskMatrix: () => void;
   onPortfolioDashboard: () => void;
 };
@@ -43,6 +44,7 @@ export function QuickActions({
   onExecutiveKPIDashboard,
   onConstructionTimeline,
   onMilestoneTracking,
+  onDelayAnalysis,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: QuickActionsProps) {
@@ -118,6 +120,12 @@ export function QuickActions({
           label="Milestones"
           icon="flag-outline"
           onPress={onMilestoneTracking}
+        />
+
+        <QuickActionButton
+          label="Delay Analysis"
+          icon="timer-outline"
+          onPress={onDelayAnalysis}
         />
 
         <QuickActionButton

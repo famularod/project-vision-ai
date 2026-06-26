@@ -59,6 +59,7 @@ export function ExecutiveKPIDashboardScreen({
   onConstructionTimeline,
   onCriticalPath,
   onMilestoneTracking,
+  onDelayAnalysis,
   onProjectRiskMatrix,
   onPortfolioDashboard,
 }: {
@@ -75,6 +76,7 @@ export function ExecutiveKPIDashboardScreen({
   onConstructionTimeline?: () => void;
   onCriticalPath?: () => void;
   onMilestoneTracking?: () => void;
+  onDelayAnalysis?: () => void;
   onProjectRiskMatrix?: () => void;
   onPortfolioDashboard?: () => void;
 }) {
@@ -192,6 +194,17 @@ export function ExecutiveKPIDashboardScreen({
               label="Critical Path"
               icon="git-branch-outline"
               onPress={onCriticalPath}
+              compact
+            />
+          </View>
+        ) : null}
+
+        {onDelayAnalysis ? (
+          <View style={styles.commandRow}>
+            <SecondaryButton
+              label="Delay Analysis"
+              icon="timer-outline"
+              onPress={onDelayAnalysis}
               compact
             />
           </View>
