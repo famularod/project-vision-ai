@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import {
+  Alert,
   FlatList,
   StyleProp,
   Text,
@@ -42,6 +43,8 @@ export function ProjectsScreen({
   onAddProject,
   onCloseProject,
   onReopenProject,
+  onRenameProject,
+  onDeleteProject,
   onBackup,
   onRestore,
   onAddArea,
@@ -63,6 +66,8 @@ export function ProjectsScreen({
   onAddProject: (projectName: string) => boolean;
   onCloseProject: (projectName: string) => void;
   onReopenProject: (projectName: string) => void;
+  onRenameProject: (projectName: string, nextName: string) => boolean;
+  onDeleteProject: (projectName: string) => void;
   onBackup: () => void;
   onRestore: () => void;
   onAddArea: (name: string) => boolean;
@@ -117,6 +122,57 @@ export function ProjectsScreen({
 
       return [projectName, ...prev];
     });
+  }
+
+  function requestRenameProject(projectName: string) {
+    Alert.prompt(
+      'Rename Project',
+      `Enter a new name for ${projectName}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Save',
+          onPress: (value?: string) => {
+            const nextName = (value || '').trim();
+            const renamed = onRenameProject(projectName, nextName);
+
+            if (!renamed) return;
+
+            setFavoriteProjects(prev =>
+              prev.map(item =>
+                item.toLowerCase() === projectName.toLowerCase()
+                  ? nextName
+                  : item,
+              ),
+            );
+          },
+        },
+      ],
+      'plain-text',
+      projectName,
+    );
+  }
+
+  function requestDeleteProject(projectName: string) {
+    Alert.alert(
+      'Delete Project?',
+      `Project: ${projectName}\n\nThis cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setFavoriteProjects(prev =>
+              prev.filter(
+                item => item.toLowerCase() !== projectName.toLowerCase(),
+              ),
+            );
+            onDeleteProject(projectName);
+          },
+        },
+      ],
+    );
   }
 
   const activeProjectSet = new Set(
@@ -206,9 +262,14 @@ export function ProjectsScreen({
           item.archived ? onReopenProject(item.project) : onSelect(item.project)
         }
         onFavorite={() => toggleFavorite(item.project)}
+        onRename={() => requestRenameProject(item.project)}
         onClose={
           item.archived ? undefined : () => onCloseProject(item.project)
         }
+        onRestore={
+          item.archived ? () => onReopenProject(item.project) : undefined
+        }
+        onDelete={() => requestDeleteProject(item.project)}
       />
     );
   };

@@ -11,7 +11,10 @@ export function ProjectFinderRow({
   favorite,
   onPress,
   onFavorite,
+  onRename,
   onClose,
+  onRestore,
+  onDelete,
 }: {
   project: string;
   stats: ProjectStats;
@@ -19,7 +22,10 @@ export function ProjectFinderRow({
   favorite: boolean;
   onPress: () => void;
   onFavorite: () => void;
+  onRename: () => void;
   onClose?: () => void;
+  onRestore?: () => void;
+  onDelete: () => void;
 }) {
   return (
     <View style={styles.projectFinderRow}>
@@ -74,23 +80,41 @@ export function ProjectFinderRow({
       <View style={styles.projectFinderActions}>
         <TouchableOpacity
           style={styles.smallAction}
-          onPress={onPress}
+          onPress={archived ? onRestore || onPress : onPress}
         >
           <Text style={styles.smallActionText}>
-            {archived ? 'Reopen' : 'Update'}
+            {archived ? 'Restore' : 'Update'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.smallAction}
+          onPress={onRename}
+        >
+          <Text style={styles.smallActionText}>
+            Rename
           </Text>
         </TouchableOpacity>
 
         {onClose ? (
           <TouchableOpacity
-            style={[styles.smallAction, styles.smallActionDanger]}
+            style={styles.smallAction}
             onPress={onClose}
           >
-            <Text style={styles.smallActionDangerText}>
-              Close
+            <Text style={styles.smallActionText}>
+              Archive
             </Text>
           </TouchableOpacity>
         ) : null}
+
+        <TouchableOpacity
+          style={[styles.smallAction, styles.smallActionDanger]}
+          onPress={onDelete}
+        >
+          <Text style={styles.smallActionDangerText}>
+            Delete
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );

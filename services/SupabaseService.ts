@@ -24,7 +24,9 @@ export type SupabaseConfigurationStatus = {
   configured: boolean;
   urlConfigured: boolean;
   anonKeyConfigured: boolean;
+  rawProjectUrl: string | null;
   projectUrl: string | null;
+  createClientUrl: string | null;
   authStorage: 'AsyncStorage';
   message: string;
 };
@@ -43,6 +45,29 @@ export type SupabaseConnectionTestResult = {
   checkedAt: string;
   status?: number;
   error?: string;
+};
+
+export type SupabaseDiagnosticStep = {
+  label: string;
+  url: string;
+  ok: boolean;
+  reachedNetwork: boolean;
+  status?: number;
+  statusText?: string;
+  responsePreview?: string;
+  errorName?: string;
+  errorMessage?: string;
+  errorStack?: string;
+};
+
+export type SupabaseConnectionDiagnostics = {
+  checkedAt: string;
+  rawSupabaseUrl: string | null;
+  supabaseUrl: string | null;
+  createClientUrl: string | null;
+  clientInitialized: boolean;
+  rootFetch: SupabaseDiagnosticStep;
+  restFetch: SupabaseDiagnosticStep;
 };
 
 export type SupabaseServiceResult<T> = {
@@ -97,6 +122,10 @@ export type UpdateProjectParams = {
   data?: JsonValue | null;
 };
 
+export type DeleteProjectParams = {
+  name: string;
+};
+
 export type CloudProjectUpdate<TUpdate = JsonValue> = {
   id: string;
   projectName: string;
@@ -142,7 +171,8 @@ export type DownloadPhotoParams = {
   path: string;
 };
 
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() || '';
+const RAW_SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+const SUPABASE_URL = RAW_SUPABASE_URL.trim();
 const SUPABASE_ANON_KEY =
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() || '';
 const PROJECTS_TABLE = 'projects';
@@ -161,6 +191,8 @@ const supabaseAuthStorage = {
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
 
+  logSupabaseUrlBeforeNetworkRequest('createClient');
+
   return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
       storage: supabaseAuthStorage,
@@ -174,6 +206,7 @@ function createSupabaseClient(): SupabaseClient | null {
 export const supabase = createSupabaseClient();
 
 export function getSupabaseClient(): SupabaseClient | null {
+  logSupabaseUrlBeforeNetworkRequest('getSupabaseClient');
   return supabase;
 }
 
@@ -190,7 +223,9 @@ export function getSupabaseConfigurationStatus(): SupabaseConfigurationStatus {
     configured,
     urlConfigured,
     anonKeyConfigured,
+    rawProjectUrl: urlConfigured ? RAW_SUPABASE_URL : null,
     projectUrl: urlConfigured ? SUPABASE_URL : null,
+    createClientUrl: supabase ? SUPABASE_URL : null,
     authStorage: 'AsyncStorage',
     message: configured
       ? 'Supabase is configured from Expo public environment variables.'
@@ -241,6 +276,8 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
     };
   }
 
+  logSupabaseUrlBeforeNetworkRequest('testSupabaseConnection');
+
   const { count, error, status } = await client
     .from(PROJECTS_TABLE)
     .select('name', { count: 'exact' })
@@ -263,6 +300,46 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
     projectCount: typeof count === 'number' ? count : null,
     checkedAt,
     status,
+  };
+}
+
+export async function runSupabaseConnectionDiagnostics(): Promise<SupabaseConnectionDiagnostics> {
+  const supabaseUrl = SUPABASE_URL || null;
+  const rootUrl = supabaseUrl || 'Missing EXPO_PUBLIC_SUPABASE_URL';
+  const restUrl = supabaseUrl
+    ? `${withoutTrailingSlash(supabaseUrl)}/rest/v1/${PROJECTS_TABLE}?select=name&limit=1`
+    : 'Missing EXPO_PUBLIC_SUPABASE_URL';
+
+  const [rootFetch, restFetch] = await Promise.all([
+    supabaseUrl
+      ? fetchDiagnosticStep('Supabase URL root', rootUrl)
+      : Promise.resolve(missingUrlStep('Supabase URL root', rootUrl)),
+    supabaseUrl && SUPABASE_ANON_KEY
+      ? fetchDiagnosticStep('Supabase REST projects endpoint', restUrl, {
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+        })
+      : Promise.resolve(
+          missingUrlStep(
+            'Supabase REST projects endpoint',
+            restUrl,
+            supabaseUrl
+              ? 'Missing EXPO_PUBLIC_SUPABASE_ANON_KEY.'
+              : 'Missing EXPO_PUBLIC_SUPABASE_URL.',
+          ),
+        ),
+  ]);
+
+  return {
+    checkedAt: new Date().toISOString(),
+    rawSupabaseUrl: RAW_SUPABASE_URL || null,
+    supabaseUrl,
+    createClientUrl: getSupabaseClient() ? SUPABASE_URL : null,
+    clientInitialized: Boolean(getSupabaseClient()),
+    rootFetch,
+    restFetch,
   };
 }
 
@@ -422,6 +499,81 @@ export async function updateProject(
   if (error) return tableAwareErrorResult<CloudProject>(error.message, status);
 
   return okResult(normalizeProject(data), status);
+}
+
+export async function deleteProject({
+  name,
+}: DeleteProjectParams): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<null>();
+
+  const projectName = name.trim();
+
+  if (!projectName) return errorResult('Project delete requires a name.');
+
+  const errors: string[] = [];
+
+  const updatesResult = await client
+    .from(PROJECT_UPDATES_TABLE)
+    .delete()
+    .eq('project_name', projectName);
+  appendRelatedDeleteError(errors, 'project updates', updatesResult.error?.message);
+
+  const scheduleResult = await client
+    .from(SCHEDULE_ITEMS_TABLE)
+    .delete()
+    .eq('project_name', projectName);
+  appendRelatedDeleteError(errors, 'schedule items', scheduleResult.error?.message);
+
+  const relatedDocuments = await client
+    .from(REFERENCE_DOCUMENTS_TABLE)
+    .select('id, document_data');
+  appendRelatedDeleteError(
+    errors,
+    'reference documents',
+    relatedDocuments.error?.message,
+  );
+
+  if (!relatedDocuments.error && Array.isArray(relatedDocuments.data)) {
+    const relatedDocumentIds = relatedDocuments.data
+      .filter(row => recordMatchesProject(toRecord(row).document_data, projectName))
+      .map(row => toRecord(row).id)
+      .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+
+    if (relatedDocumentIds.length > 0) {
+      const documentDeleteResult = await client
+        .from(REFERENCE_DOCUMENTS_TABLE)
+        .delete()
+        .in('id', relatedDocumentIds);
+      appendRelatedDeleteError(
+        errors,
+        'reference documents',
+        documentDeleteResult.error?.message,
+      );
+    }
+  }
+
+  const projectResult = await client
+    .from(PROJECTS_TABLE)
+    .delete()
+    .eq('name', projectName);
+
+  if (projectResult.error) {
+    return tableAwareErrorResult<null>(
+      projectResult.error.message,
+      projectResult.status,
+    );
+  }
+
+  if (errors.length > 0) {
+    return errorResult(
+      `Project deleted, but related cloud cleanup had issues: ${errors.join(' | ')}`,
+      projectResult.status,
+    );
+  }
+
+  return okResult(null, projectResult.status);
 }
 
 export async function listProjects(): Promise<SupabaseServiceResult<CloudProject[]>> {
@@ -709,6 +861,107 @@ function isMissingTableError(message: string): boolean {
     normalized.includes('schema cache') ||
     normalized.includes('does not exist') ||
     normalized.includes('relation') && normalized.includes('not exist')
+  );
+}
+
+function appendRelatedDeleteError(
+  errors: string[],
+  label: string,
+  message?: string,
+) {
+  if (!message || isMissingTableError(message)) return;
+
+  errors.push(`${label}: ${message}`);
+}
+
+function recordMatchesProject(value: unknown, projectName: string): boolean {
+  const record = toRecord(value);
+  const expected = projectName.toLowerCase();
+  const candidates = [
+    record.projectName,
+    record.project_name,
+    record.project,
+    record.name,
+  ];
+
+  return candidates.some(
+    candidate =>
+      typeof candidate === 'string' &&
+      candidate.trim().toLowerCase() === expected,
+  );
+}
+
+async function fetchDiagnosticStep(
+  label: string,
+  url: string,
+  init?: RequestInit,
+): Promise<SupabaseDiagnosticStep> {
+  try {
+    logSupabaseUrlBeforeNetworkRequest(label);
+    const response = await fetch(url, init);
+    const responsePreview = await safeResponsePreview(response);
+    const statusText = response.statusText || '';
+
+    return {
+      label,
+      url,
+      ok: response.ok,
+      reachedNetwork: true,
+      status: response.status,
+      statusText,
+      responsePreview,
+      errorMessage: response.ok
+        ? undefined
+        : `HTTP ${response.status}${statusText ? ` ${statusText}` : ''}`,
+    };
+  } catch (error) {
+    return {
+      label,
+      url,
+      ok: false,
+      reachedNetwork: false,
+      errorName: error instanceof Error ? error.name : typeof error,
+      errorMessage:
+        error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined,
+    };
+  }
+}
+
+function missingUrlStep(
+  label: string,
+  url: string,
+  message = 'Missing EXPO_PUBLIC_SUPABASE_URL.',
+): SupabaseDiagnosticStep {
+  return {
+    label,
+    url,
+    ok: false,
+    reachedNetwork: false,
+    errorName: 'ConfigurationError',
+    errorMessage: message,
+  };
+}
+
+async function safeResponsePreview(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+
+    return text.trim().slice(0, 500);
+  } catch (error) {
+    return error instanceof Error
+      ? `Response body could not be read: ${error.message}`
+      : 'Response body could not be read.';
+  }
+}
+
+function withoutTrailingSlash(value: string) {
+  return value.replace(/\/+$/g, '');
+}
+
+function logSupabaseUrlBeforeNetworkRequest(context: string) {
+  console.log(
+    `[Supabase] ${context} using EXPO_PUBLIC_SUPABASE_URL=${SUPABASE_URL || 'Missing'}`,
   );
 }
 

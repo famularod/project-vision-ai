@@ -15,8 +15,11 @@ import {
 import {
   getSupabaseConfigurationStatus,
   getSupabaseConnectionStatus,
+  runSupabaseConnectionDiagnostics,
   testSupabaseConnection,
+  type SupabaseConnectionDiagnostics,
   type SupabaseConnectionTestResult,
+  type SupabaseDiagnosticStep,
   type SupabaseConnectionStatus,
 } from '../services/SupabaseService';
 import {
@@ -57,6 +60,8 @@ export function DiagnosticsScreen({
   const [connectionResult, setConnectionResult] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [syncProgress, setSyncProgress] = useState<string | null>(null);
+  const [networkDiagnostics, setNetworkDiagnostics] =
+    useState<SupabaseConnectionDiagnostics | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [connectionTest, setConnectionTest] =
@@ -106,7 +111,7 @@ export function DiagnosticsScreen({
   return (
     <View>
       <ScreenTitle
-        title="ADMIN DIAGNOSTICS TEST 9999"
+        title="Admin Diagnostics"
         subtitle="Basic setup status for locations, GPS, documents, and app data."
       />
 
@@ -160,6 +165,16 @@ export function DiagnosticsScreen({
           ok={supabaseStatus.urlConfigured}
         />
         <StatusRow
+          label="EXPO_PUBLIC_SUPABASE_URL"
+          value={supabaseStatus.rawProjectUrl || 'Missing'}
+          ok={supabaseStatus.urlConfigured}
+        />
+        <StatusRow
+          label="createClient URL"
+          value={supabaseStatus.createClientUrl || 'Not passed to createClient'}
+          ok={supabaseStatus.urlConfigured}
+        />
+        <StatusRow
           label="Supabase Anon Key Present"
           value={supabaseStatus.anonKeyConfigured ? 'Yes' : 'No'}
           ok={supabaseStatus.anonKeyConfigured}
@@ -168,11 +183,14 @@ export function DiagnosticsScreen({
         <StatusRow
           label="Supabase URL"
           value={
-            supabaseStatus.urlConfigured
-              ? 'Configured'
-              : 'Missing'
+            supabaseStatus.projectUrl || 'Missing'
           }
           ok={supabaseStatus.urlConfigured}
+        />
+        <StatusRow
+          label="Supabase Client Initialized"
+          value={supabaseStatus.clientReady ? 'Yes' : 'No'}
+          ok={supabaseStatus.clientReady}
         />
         <StatusRow
           label="Supabase Connected"
@@ -257,6 +275,70 @@ export function DiagnosticsScreen({
           <Text style={styles.bodyText}>{connectionResult}</Text>
         ) : null}
 
+        {networkDiagnostics ? (
+          <View>
+            <DiagnosticValueRow
+              label="rawSupabaseUrl"
+              value={networkDiagnostics.rawSupabaseUrl || 'Missing'}
+            />
+            <DiagnosticValueRow
+              label="supabaseUrl"
+              value={networkDiagnostics.supabaseUrl || 'Missing'}
+            />
+            <DiagnosticValueRow
+              label="createClientUrl"
+              value={
+                networkDiagnostics.createClientUrl ||
+                'Not passed to createClient'
+              }
+            />
+            <DiagnosticValueRow
+              label="rootFetch.url"
+              value={networkDiagnostics.rootFetch.url}
+            />
+            <DiagnosticValueRow
+              label="rootFetch.reachedNetwork"
+              value={networkDiagnostics.rootFetch.reachedNetwork ? 'Yes' : 'No'}
+            />
+            <DiagnosticValueRow
+              label="rootFetch.status"
+              value={formatDiagnosticStatus(networkDiagnostics.rootFetch)}
+            />
+            <DiagnosticValueRow
+              label="rootFetch.errorName"
+              value={networkDiagnostics.rootFetch.errorName || 'None'}
+            />
+            <DiagnosticValueRow
+              label="rootFetch.errorMessage"
+              value={networkDiagnostics.rootFetch.errorMessage || 'None'}
+            />
+            <DiagnosticValueRow
+              label="restFetch.url"
+              value={networkDiagnostics.restFetch.url}
+            />
+            <DiagnosticValueRow
+              label="restFetch.reachedNetwork"
+              value={networkDiagnostics.restFetch.reachedNetwork ? 'Yes' : 'No'}
+            />
+            <DiagnosticValueRow
+              label="restFetch.status"
+              value={formatDiagnosticStatus(networkDiagnostics.restFetch)}
+            />
+            <DiagnosticValueRow
+              label="restFetch.errorName"
+              value={networkDiagnostics.restFetch.errorName || 'None'}
+            />
+            <DiagnosticValueRow
+              label="restFetch.errorMessage"
+              value={networkDiagnostics.restFetch.errorMessage || 'None'}
+            />
+            <DiagnosticValueRow
+              label="restFetch.responsePreview"
+              value={networkDiagnostics.restFetch.responsePreview || 'None'}
+            />
+          </View>
+        ) : null}
+
         {syncResult ? (
           <Text style={styles.bodyText}>{syncResult}</Text>
         ) : null}
@@ -314,10 +396,13 @@ export function DiagnosticsScreen({
   async function handleTestConnection() {
     setIsTestingConnection(true);
     setConnectionResult('Testing Supabase connection...');
+    setNetworkDiagnostics(null);
 
     try {
-      const result = await testSupabaseConnection();
+      const diagnostics = await runSupabaseConnectionDiagnostics();
+      setNetworkDiagnostics(diagnostics);
 
+      const result = await testSupabaseConnection();
       setConnectionTest(result);
       setSupabaseConnected(result.connected);
       setCloudProjectCount(result.projectCount);
@@ -337,7 +422,7 @@ export function DiagnosticsScreen({
       setSupabaseConnected(false);
       setConnectionResult(
         error instanceof Error
-          ? `Supabase connection failed: ${error.message}`
+          ? `Supabase connection failed. Name: ${error.name}. Message: ${error.message}.${error.stack ? ` Stack: ${error.stack}` : ''}`
           : 'Supabase connection failed with an unknown error.',
       );
     } finally {
@@ -388,6 +473,28 @@ export function DiagnosticsScreen({
       setIsSyncing(false);
     }
   }
+}
+
+function DiagnosticValueRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.checklistRow}>
+      <Ionicons
+        name="information-circle-outline"
+        size={20}
+        color={colors.primary}
+      />
+      <View style={styles.rowMain}>
+        <Text style={styles.projectName}>{label}</Text>
+        <Text style={styles.rowSub}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
+function formatDiagnosticStatus(step: SupabaseDiagnosticStep) {
+  if (typeof step.status !== 'number') return 'Unavailable';
+
+  return `${step.status}${step.statusText ? ` ${step.statusText}` : ''}`;
 }
 
 function StatusRow({

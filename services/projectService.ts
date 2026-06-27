@@ -1,5 +1,10 @@
 import { listProjects } from './SupabaseService';
-import { queueProjectCreate, uploadPendingChanges } from './SyncService';
+import {
+  queueProjectCreate,
+  queueProjectDelete,
+  queueProjectUpdate,
+  uploadPendingChanges,
+} from './SyncService';
 
 export async function loadCloudProjects() {
   void uploadPendingChanges();
@@ -17,4 +22,16 @@ export async function loadCloudProjects() {
 
 export function saveCloudProject(projectName: string) {
   void queueProjectCreate(projectName);
+}
+
+export function renameCloudProject(previousName: string, name: string) {
+  void queueProjectUpdate({ previousName, name });
+}
+
+export function setCloudProjectArchived(projectName: string, archived: boolean) {
+  void queueProjectUpdate({ previousName: projectName, archived });
+}
+
+export function deleteCloudProject(projectName: string) {
+  void queueProjectDelete(projectName);
 }

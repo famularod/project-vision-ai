@@ -1,4 +1,10 @@
-import { loadCloudProjects, saveCloudProject } from './services/projectService';
+import {
+  deleteCloudProject,
+  loadCloudProjects,
+  renameCloudProject,
+  saveCloudProject,
+  setCloudProjectArchived,
+} from './services/projectService';
 import {
   testSupabaseConnection,
   type SupabaseConnectionTestResult,
@@ -13,6 +19,7 @@ import {
   AddPhotosScreen,
   BuildUpdateScreen,
 } from './screens/BuildUpdateScreen';
+import { AdminScreen } from './screens/AdminScreen';
 import { AIExecutiveBriefScreen } from './screens/AIExecutiveBriefScreen';
 import { AIProjectCoachScreen } from './screens/AIProjectCoachScreen';
 import { ConstructionTimelineScreen } from './screens/ConstructionTimelineScreen';
@@ -74,6 +81,7 @@ type Screen =
   | 'CriticalPath'
   | 'DelayAnalysis'
   | 'ContractorPerformance'
+  | 'Admin'
   | 'AIProjectCoach'
   | 'AIExecutiveBrief'
   | 'ProjectHealthDashboard'
@@ -225,6 +233,7 @@ type ProjectStats = {
 const UPDATES_STORAGE_KEY = 'projectPhotoUpdates.v2';
 const PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.projects.v2';
 const ARCHIVED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.archivedProjects.v2';
+const DELETED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.deletedProjects.v1';
 const CONTACTS_STORAGE_KEY = 'projectPhotoUpdate.contacts.v2';
 const DRAFT_STORAGE_KEY = 'projectPhotoUpdate.activeDraft.v2';
 const PROJECT_AREAS_STORAGE_KEY = 'projectPhotoUpdate.projectAreas.v1';
@@ -551,6 +560,34 @@ function mergeProjectNames(base: string[], ...lists: string[][]) {
   });
 
   return names;
+}
+
+function projectNameMatches(a: string, b: string) {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function removeProjectName(list: string[], projectName: string) {
+  return list.filter(project => !projectNameMatches(project, projectName));
+}
+
+function renameProjectNameInList(
+  list: string[],
+  previousName: string,
+  nextName: string,
+) {
+  return mergeProjectNames(
+    [],
+    list.map(project =>
+      projectNameMatches(project, previousName) ? nextName : project,
+    ),
+  );
+}
+
+function filterDeletedProjectNames(projects: string[], deletedProjects: string[]) {
+  return projects.filter(
+    project =>
+      !deletedProjects.some(deleted => projectNameMatches(project, deleted)),
+  );
 }
 
 function optionalNumber(value: unknown) {
@@ -2121,6 +2158,9 @@ function AppShell() {
   const [archivedProjects, setArchivedProjects] =
     useState<string[]>([]);
 
+  const [deletedProjects, setDeletedProjects] =
+    useState<string[]>([]);
+
   const [projectAreas, setProjectAreas] =
     useState<ProjectArea[]>(DEFAULT_PROJECT_AREAS);
 
@@ -2162,6 +2202,9 @@ function AppShell() {
     useState(false);
 
   const [archivedProjectsLoaded, setArchivedProjectsLoaded] =
+    useState(false);
+
+  const [deletedProjectsLoaded, setDeletedProjectsLoaded] =
     useState(false);
 
   const [projectAreasLoaded, setProjectAreasLoaded] =
@@ -2260,15 +2303,26 @@ useEffect(() => {
 useEffect(() => {
   async function loadProjects() {
     try {
-      const localValue = await AsyncStorage.getItem(PROJECTS_STORAGE_KEY);
+      const [localValue, deletedValue] = await Promise.all([
+        AsyncStorage.getItem(PROJECTS_STORAGE_KEY),
+        AsyncStorage.getItem(DELETED_PROJECTS_STORAGE_KEY),
+      ]);
       const localProjects = localValue ? JSON.parse(localValue) : [];
+      const deletedParsed = deletedValue ? JSON.parse(deletedValue) : [];
+      const deletedProjectNames = Array.isArray(deletedParsed)
+        ? normalizeStringList(deletedParsed)
+        : [];
       const cloudProjects = await loadCloudProjects();
+      setDeletedProjects(deletedProjectNames);
 
       setProjects(
-        mergeProjectNames(
-          DEFAULT_PROJECTS,
-          Array.isArray(localProjects) ? localProjects : [],
-          cloudProjects,
+        filterDeletedProjectNames(
+          mergeProjectNames(
+            DEFAULT_PROJECTS,
+            Array.isArray(localProjects) ? localProjects : [],
+            cloudProjects,
+          ),
+          deletedProjectNames,
         ),
       );
     } catch {
@@ -2278,6 +2332,7 @@ useEffect(() => {
       );
     } finally {
       setProjectsLoaded(true);
+      setDeletedProjectsLoaded(true);
     }
   }
 
@@ -2443,6 +2498,15 @@ useEffect(() => {
       JSON.stringify(archivedProjects),
     ).catch(() => undefined);
   }, [archivedProjects, archivedProjectsLoaded]);
+
+  useEffect(() => {
+    if (!deletedProjectsLoaded) return;
+
+    AsyncStorage.setItem(
+      DELETED_PROJECTS_STORAGE_KEY,
+      JSON.stringify(deletedProjects),
+    ).catch(() => undefined);
+  }, [deletedProjects, deletedProjectsLoaded]);
 
   useEffect(() => {
     if (!projectAreasLoaded) return;
@@ -2870,6 +2934,7 @@ function addProject(projectName: string) {
   }
 
   setProjects(prev => [trimmed, ...prev]);
+  setDeletedProjects(prev => removeProjectName(prev, trimmed));
 
   saveCloudProject(trimmed);
 
@@ -2885,9 +2950,80 @@ function addProject(projectName: string) {
     return added;
   }
 
+  function renameProject(previousName: string, nextName: string) {
+    const trimmed = nextName.trim();
+
+    if (!trimmed) {
+      Alert.alert(
+        'Project name needed',
+        'Enter a project name first.',
+      );
+
+      return false;
+    }
+
+    if (projectNameMatches(previousName, trimmed)) {
+      return true;
+    }
+
+    const exists = [...projects, ...archivedProjects].some(
+      project => projectNameMatches(project, trimmed),
+    );
+
+    if (exists) {
+      Alert.alert(
+        'Already added',
+        `${trimmed} is already in your project list.`,
+      );
+
+      return false;
+    }
+
+    const renamedUpdates = savedUpdates
+      .filter(update => projectNameMatches(update.projectName, previousName))
+      .map(update => ({
+        ...update,
+        projectName: trimmed,
+      }));
+
+    setProjects(prev =>
+      renameProjectNameInList(prev, previousName, trimmed),
+    );
+    setArchivedProjects(prev =>
+      renameProjectNameInList(prev, previousName, trimmed),
+    );
+    setDeletedProjects(prev => removeProjectName(prev, trimmed));
+    setSavedUpdates(prev =>
+      prev.map(update =>
+        projectNameMatches(update.projectName, previousName)
+          ? { ...update, projectName: trimmed }
+          : update,
+      ),
+    );
+    setScheduleItems(prev =>
+      prev.map(item =>
+        projectNameMatches(item.projectName, previousName)
+          ? { ...item, projectName: trimmed }
+          : item,
+      ),
+    );
+    setDraft(prev =>
+      projectNameMatches(prev.projectName, previousName)
+        ? { ...prev, projectName: trimmed }
+        : prev,
+    );
+
+    renameCloudProject(previousName, trimmed);
+    renamedUpdates.forEach(update => {
+      void saveCloudUpdate(update);
+    });
+
+    return true;
+  }
+
   function closeProject(projectName: string) {
     Alert.alert(
-      'Close project?',
+      'Archive project?',
       `${projectName} will move to Archived Projects.`,
       [
         {
@@ -2895,12 +3031,14 @@ function addProject(projectName: string) {
           style: 'cancel',
         },
         {
-          text: 'Close Project',
+          text: 'Archive',
           style: 'destructive',
-          onPress: () =>
+          onPress: () => {
             setArchivedProjects(prev =>
               mergeProjectNames(prev, [projectName]),
-            ),
+            );
+            setCloudProjectArchived(projectName, true);
+          },
         },
       ],
     );
@@ -2914,6 +3052,57 @@ function addProject(projectName: string) {
           projectName.toLowerCase(),
       ),
     );
+    setCloudProjectArchived(projectName, false);
+  }
+
+  function deleteProject(projectName: string) {
+    const projectUpdates = savedUpdates.filter(update =>
+      projectNameMatches(update.projectName, projectName),
+    );
+    const remainingUpdates = savedUpdates.filter(
+      update => !projectNameMatches(update.projectName, projectName),
+    );
+    const remainingProjects = removeProjectName(projects, projectName);
+    const remainingActiveProjects = remainingProjects.filter(
+      project =>
+        !archivedProjects.some(archived =>
+          projectNameMatches(archived, project),
+        ),
+    );
+
+    setProjects(remainingProjects);
+    setArchivedProjects(prev => removeProjectName(prev, projectName));
+    setDeletedProjects(prev => mergeProjectNames(prev, [projectName]));
+    setSavedUpdates(remainingUpdates);
+    setScheduleItems(prev =>
+      prev.filter(item => !projectNameMatches(item.projectName, projectName)),
+    );
+
+    if (projectNameMatches(draft.projectName, projectName)) {
+      const nextProject =
+        remainingActiveProjects[0] ||
+        remainingProjects[0] ||
+        DEFAULT_PROJECTS.find(
+          project => !projectNameMatches(project, projectName),
+        ) ||
+        '';
+
+      const deletedDraft = draft;
+      setDraft(createDraft(nextProject));
+      setDraftSavedAt(null);
+      AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
+        () => undefined,
+      );
+      void deleteUnreferencedPhotosFromUpdate(deletedDraft, remainingUpdates);
+    }
+
+    projectUpdates.forEach(update => {
+      void deleteUnreferencedPhotosFromUpdate(update, [
+        draft,
+        ...remainingUpdates,
+      ]);
+    });
+    deleteCloudProject(projectName);
   }
 
   function addProjectArea(name: string) {
@@ -4271,7 +4460,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onContractorPerformance={() => setScreen('ContractorPerformance')}
               onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
               onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
-              onDiagnostics={() => openDiagnostics('Home')}
+              onAdmin={() => setScreen('Admin')}
             />
           )}
 
@@ -4364,6 +4553,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onAddProject={addProject}
               onCloseProject={closeProject}
               onReopenProject={reopenProject}
+              onRenameProject={renameProject}
+              onDeleteProject={deleteProject}
               onBackup={exportBackup}
               onRestore={restoreBackup}
               projectAreas={projectAreas}
@@ -4622,6 +4813,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onCriticalPath={() => setScreen('CriticalPath')}
               onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
               onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
+            />
+          )}
+
+          {screen === 'Admin' && (
+            <AdminScreen
+              contentStyle={contentStyle}
+              localProjects={activeProjects}
+              savedUpdates={savedUpdates}
+              projectAreas={projectAreas}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              startupConnectionResult={supabaseStartupConnection}
+              onBack={() => setScreen('Home')}
+              onDiagnostics={() => openDiagnostics('Admin')}
+              onProjectManagement={() => setScreen('Projects')}
             />
           )}
 

@@ -1,6 +1,7 @@
 import {
   countCloudProjects,
   createProject,
+  deleteProject,
   getProjectUpdateSyncMetadata,
   getSupabaseConfigurationStatus,
   listProjectUpdates,
@@ -124,6 +125,10 @@ type ProjectUpdatePayload = {
   isFavorite?: boolean;
 };
 
+type ProjectDeletePayload = {
+  name: string;
+};
+
 type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   id: string;
   projectName?: string;
@@ -202,6 +207,15 @@ export async function queueProjectUpdate(
     entity: 'project',
     operation: 'update',
     payload,
+    changedAt: new Date().toISOString(),
+  });
+}
+
+export async function queueProjectDelete(name: string): Promise<void> {
+  await enqueuePendingChange<ProjectDeletePayload>({
+    entity: 'project',
+    operation: 'delete',
+    payload: { name },
     changedAt: new Date().toISOString(),
   });
 }
@@ -549,11 +563,15 @@ async function uploadQueueItem(
 async function uploadProjectQueueItem(
   item: SyncQueueItem,
 ): Promise<'uploaded' | string> {
-  const payload = item.payload as ProjectCreatePayload & ProjectUpdatePayload;
+  const payload = item.payload as ProjectCreatePayload &
+    ProjectUpdatePayload &
+    ProjectDeletePayload;
   const result =
     item.operation === 'create'
       ? await createProject({ name: payload.name || 'Untitled Project' })
-      : await updateProject(payload);
+      : item.operation === 'delete'
+        ? await deleteProject({ name: payload.name || payload.previousName || '' })
+        : await updateProject(payload);
 
   if (result.ok && !result.stubbed) return 'uploaded';
 

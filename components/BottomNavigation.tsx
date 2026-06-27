@@ -13,7 +13,7 @@ type BottomNavigationDestination =
   | 'Home'
   | 'Projects'
   | 'SavedUpdates'
-  | 'Upcoming';
+  | 'Admin';
 
 type BottomNavigationProps = {
   current: string;
@@ -43,36 +43,38 @@ export function BottomNavigation({
       />
 
       <TabButton
-        label="Locations"
-        icon="location-outline"
+        label="Projects"
+        icon="folder-outline"
         active={current === 'Projects'}
         onPress={() => onChange('Projects')}
       />
 
-      <TouchableOpacity
-        style={styles.newTabButton}
-        onPress={onNew}
-      >
-        <Ionicons
-          name="camera-outline"
-          size={24}
-          color="#FFFFFF"
-        />
-        <Text style={styles.newTabButtonText}>Capture</Text>
-      </TouchableOpacity>
+      <View style={styles.captureSlot}>
+        <TouchableOpacity
+          style={styles.captureButton}
+          onPress={onNew}
+        >
+          <Ionicons
+            name="camera-outline"
+            size={22}
+            color="#FFFFFF"
+          />
+          <Text style={styles.captureButtonText}>Capture</Text>
+        </TouchableOpacity>
+      </View>
 
       <TabButton
-        label="History"
-        icon="time-outline"
+        label="Reports"
+        icon="bar-chart-outline"
         active={current === 'SavedUpdates'}
         onPress={() => onChange('SavedUpdates')}
       />
 
       <TabButton
-        label="Upcoming"
-        icon="calendar-outline"
-        active={current === 'Upcoming'}
-        onPress={() => onChange('Upcoming')}
+        label="More"
+        icon="ellipsis-horizontal-circle-outline"
+        active={current === 'Admin'}
+        onPress={() => onChange('Admin')}
       />
     </View>
   );
@@ -133,11 +135,11 @@ const styles = StyleSheet.create({
       Platform.OS === 'ios' ? 24 : 10,
   },
 
-  newTabButtonText: {
+  captureButtonText: {
     color: '#FFFFFF',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '800',
-    marginTop: 2,
+    marginTop: 1,
   },
 
   tabButton: {
@@ -157,13 +159,20 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
 
-  newTabButton: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+  captureSlot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  captureButton: {
+    minWidth: 74,
+    minHeight: 50,
+    borderRadius: 14,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    marginHorizontal: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
 });
