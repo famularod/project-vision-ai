@@ -1,0 +1,17 @@
+appId: ${APP_ID}
+---
+- launchApp
+- assertVisible: "Home"
+- assertVisible: "Projects"
+- assertVisible: "Capture"
+- assertVisible: "Reports"
+- assertVisible: "More"
+- tapOn: "Projects"
+- assertVisible: "Projects"
+- tapOn: "Reports"
+- assertVisible: "Reports"
+- tapOn: "More"
+- assertVisible: "Admin"
+- tapOn: "Home"
+- assertVisible: "Home"
+

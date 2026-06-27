@@ -1,0 +1,7 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn: "Capture"
+- assertVisible: "Add Photos"
+- assertVisible: "Take Photo"
+- assertVisible: "Change Project"

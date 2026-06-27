@@ -14,6 +14,7 @@ import { BottomNavigation } from './components/BottomNavigation';
 import { HomeDashboard } from './components/HomeDashboard';
 import { PhotoPreviewModal } from './components/PhotoPreviewModal';
 import { ProjectSelector } from './components/ProjectSelector';
+import { PrimaryButton } from './components/ProjectDetailsCard';
 import { ScreenScroll } from './components/ScreenScroll';
 import {
   AddPhotosScreen,
@@ -33,6 +34,7 @@ import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScre
 import { HistoryScreen } from './screens/HistoryScreen';
 import { MilestoneTrackingScreen } from './screens/MilestoneTrackingScreen';
 import { PortfolioDashboardScreen } from './screens/PortfolioDashboardScreen';
+import { ProjectOverviewScreen } from './screens/ProjectOverviewScreen';
 import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
 import { ProjectRiskMatrixScreen } from './screens/ProjectRiskMatrixScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
@@ -73,6 +75,7 @@ type Screen =
   | 'AddPhotos'
   | 'BuildUpdate'
   | 'Projects'
+  | 'ProjectOverview'
   | 'Reports'
   | 'SavedUpdates'
   | 'Contacts'
@@ -412,7 +415,10 @@ const emptyRecipients = (): RecipientSelection => ({
   contactIds: [],
 });
 
-function createDraft(projectName: string): ProjectUpdate {
+function createDraft(
+  projectName: string,
+  selectedArea?: ProjectArea | null,
+): ProjectUpdate {
   return {
     id: uid(),
     projectName,
@@ -420,6 +426,8 @@ function createDraft(projectName: string): ProjectUpdate {
     photos: [],
     notes: '',
     recipients: emptyRecipients(),
+    selectedAreaId: selectedArea?.id || null,
+    selectedAreaName: selectedArea?.name || null,
   };
 }
 
@@ -2192,6 +2200,9 @@ function AppShell() {
     createDraft(DEFAULT_PROJECTS[0]),
   );
 
+  const [selectedProjectName, setSelectedProjectName] =
+    useState<string>(DEFAULT_PROJECTS[0]);
+
   const [previewPhoto, setPreviewPhoto] =
     useState<UpdatePhoto | null>(null);
 
@@ -2625,6 +2636,17 @@ useEffect(() => {
     [savedUpdates],
   );
 
+  const projectOverviewName =
+    activeProjects.find(project =>
+      projectNameMatches(project, selectedProjectName),
+    ) ||
+    projects.find(project =>
+      projectNameMatches(project, selectedProjectName),
+    ) ||
+    activeProjects[0] ||
+    projects[0] ||
+    DEFAULT_PROJECTS[0];
+
   const message = useMemo(
     () => buildMessage(draft),
     [draft],
@@ -2649,6 +2671,118 @@ useEffect(() => {
       null,
     [projectAreas, draft.selectedAreaId],
   );
+
+  function findActiveProjectName(
+    projectName?: string | null,
+  ): string | null {
+    if (!projectName?.trim()) return null;
+
+    return (
+      activeProjects.find(project =>
+        projectNameMatches(project, projectName),
+      ) ||
+      projects.find(project =>
+        projectNameMatches(project, projectName),
+      ) ||
+      null
+    );
+  }
+
+  function findProjectArea(
+    areaId?: string | null,
+    areaName?: string | null,
+  ): ProjectArea | null {
+    return (
+      (areaId
+        ? projectAreas.find(area => area.id === areaId)
+        : null) ||
+      (areaName
+        ? projectAreas.find(
+            area =>
+              area.name.trim().toLowerCase() ===
+              areaName.trim().toLowerCase(),
+          )
+        : null) ||
+      null
+    );
+  }
+
+  function findProjectAreaForUpdate(
+    update: ProjectUpdate,
+  ): ProjectArea | null {
+    const photoWithArea = update.photos.find(
+      photo => photo.selectedAreaId || photo.selectedAreaName,
+    );
+
+    return findProjectArea(
+      update.selectedAreaId || photoWithArea?.selectedAreaId,
+      update.selectedAreaName || photoWithArea?.selectedAreaName,
+    );
+  }
+
+  function getPreferredCaptureArea(
+    projectName: string,
+  ): ProjectArea | null {
+    if (projectNameMatches(draft.projectName, projectName)) {
+      const draftArea = findProjectArea(
+        draft.selectedAreaId,
+        draft.selectedAreaName,
+      );
+
+      if (draftArea) return draftArea;
+    }
+
+    for (const update of savedUpdates) {
+      if (!projectNameMatches(update.projectName, projectName)) {
+        continue;
+      }
+
+      const updateArea = findProjectAreaForUpdate(update);
+
+      if (updateArea) return updateArea;
+    }
+
+    return null;
+  }
+
+  function getPreferredCaptureProject(
+    projectName?: string,
+  ): string | null {
+    const recentProject = savedUpdates
+      .map(update => findActiveProjectName(update.projectName))
+      .find(Boolean);
+
+    const candidates = [
+      projectName,
+      hasDraftContent(draft) ? draft.projectName : null,
+      recentProject,
+      selectedProjectName,
+      activeProjects[0],
+      projects[0],
+      DEFAULT_PROJECTS[0],
+    ];
+
+    for (const candidate of candidates) {
+      const matched = findActiveProjectName(candidate);
+
+      if (matched) return matched;
+    }
+
+    return null;
+  }
+
+  function createCaptureDraft(projectName: string): ProjectUpdate {
+    return createDraft(projectName, getPreferredCaptureArea(projectName));
+  }
+
+  function resetCaptureLocationStatus(nextDraft: ProjectUpdate) {
+    setDraftAreaSuggestion(null);
+    setLocationStatus(
+      nextDraft.selectedAreaName
+        ? `Area remembered from last update: ${nextDraft.selectedAreaName}`
+        : null,
+    );
+  }
 
   function applyAreaAndLocationToDraft(
     area: ProjectArea | null,
@@ -2812,7 +2946,7 @@ useEffect(() => {
   }
 
   function createNewUpdate(projectName?: string) {
-    const target = projectName || activeProjects[0];
+    const target = getPreferredCaptureProject(projectName);
 
     if (!target) {
       Alert.alert(
@@ -2839,8 +2973,11 @@ useEffect(() => {
             style: 'destructive',
             onPress: () => {
               const discardedDraft = draft;
+              const nextDraft = createCaptureDraft(target);
 
-              setDraft(createDraft(target));
+              setDraft(nextDraft);
+              setSelectedProjectName(target);
+              resetCaptureLocationStatus(nextDraft);
               setScreen('AddPhotos');
 
               void deleteUnreferencedPhotosFromUpdate(
@@ -2855,8 +2992,26 @@ useEffect(() => {
       return;
     }
 
-    setDraft(createDraft(target));
+    const nextDraft = createCaptureDraft(target);
+
+    setDraft(nextDraft);
+    setSelectedProjectName(target);
+    resetCaptureLocationStatus(nextDraft);
     setScreen('AddPhotos');
+  }
+
+  function openProjectOverview(projectName: string) {
+    setSelectedProjectName(projectName);
+    setScreen('ProjectOverview');
+  }
+
+  function openProjectReport(projectName: string) {
+    setSelectedProjectName(projectName);
+    setDraft(prev => ({
+      ...prev,
+      projectName,
+    }));
+    setScreen('AIExecutiveBrief');
   }
 
   function resumeDraft() {
@@ -2882,9 +3037,12 @@ useEffect(() => {
           onPress: () => {
             const discardedDraft = draft;
             const projectName =
-              activeProjects[0] || DEFAULT_PROJECTS[0];
+              getPreferredCaptureProject() || DEFAULT_PROJECTS[0];
+            const nextDraft = createCaptureDraft(projectName);
 
-            setDraft(createDraft(projectName));
+            setDraft(nextDraft);
+            setSelectedProjectName(projectName);
+            resetCaptureLocationStatus(nextDraft);
             setDraftSavedAt(null);
 
             AsyncStorage.removeItem(
@@ -2904,10 +3062,29 @@ useEffect(() => {
   
 
   function changeDraftProject(projectName: string) {
+    const preferredArea = getPreferredCaptureArea(projectName);
+    const areaFields = {
+      selectedAreaId: preferredArea?.id || null,
+      selectedAreaName: preferredArea?.name || null,
+      distanceFromSelectedAreaFeet: null,
+    };
+
     setDraft(prev => ({
       ...prev,
       projectName,
+      ...areaFields,
+      photos: prev.photos.map(photo => ({
+        ...photo,
+        ...areaFields,
+      })),
     }));
+    setSelectedProjectName(projectName);
+    setDraftAreaSuggestion(null);
+    setLocationStatus(
+      preferredArea
+        ? `Area remembered from last update: ${preferredArea.name}`
+        : null,
+    );
     setScreen('AddPhotos');
   }
 function addProject(projectName: string) {
@@ -3015,6 +3192,9 @@ function addProject(projectName: string) {
         ? { ...prev, projectName: trimmed }
         : prev,
     );
+    setSelectedProjectName(prev =>
+      projectNameMatches(prev, previousName) ? trimmed : prev,
+    );
 
     renameCloudProject(previousName, trimmed);
     renamedUpdates.forEach(update => {
@@ -3097,6 +3277,15 @@ function addProject(projectName: string) {
         () => undefined,
       );
       void deleteUnreferencedPhotosFromUpdate(deletedDraft, remainingUpdates);
+    }
+
+    if (projectNameMatches(selectedProjectName, projectName)) {
+      setSelectedProjectName(
+        remainingActiveProjects[0] ||
+          remainingProjects[0] ||
+          DEFAULT_PROJECTS[0],
+      );
+      setScreen('Projects');
     }
 
     projectUpdates.forEach(update => {
@@ -4307,9 +4496,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
   saveCloudUpdate(saved);
 
   const nextProject =
-    activeProjects[0] || DEFAULT_PROJECTS[0];
+    findActiveProjectName(saved.projectName) ||
+    activeProjects[0] ||
+    DEFAULT_PROJECTS[0];
+  const nextDraft = createDraft(
+    nextProject,
+    findProjectAreaForUpdate(saved) || getPreferredCaptureArea(nextProject),
+  );
 
-  setDraft(createDraft(nextProject));
+  setDraft(nextDraft);
+  setSelectedProjectName(nextProject);
+  resetCaptureLocationStatus(nextDraft);
   setDraftSavedAt(null);
 
   AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
@@ -4468,26 +4665,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectStatsByName={projectStatsByName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
-              referenceDocumentCount={referenceDocuments.length}
               onResumeDraft={resumeDraft}
               onDiscardDraft={discardDraft}
               onNewUpdate={() => createNewUpdate()}
               onUpdateProject={createNewUpdate}
+              onOpenProject={openProjectOverview}
               onViewProjects={() => setScreen('Projects')}
-              onReferenceDocuments={() => setScreen('ReferenceDocuments')}
               onSchedule={() => setScreen('Schedule')}
               onAIProjectCoach={() => setScreen('AIProjectCoach')}
               onAIExecutiveBrief={() => setScreen('AIExecutiveBrief')}
-              onProjectHealthDashboard={() => setScreen('ProjectHealthDashboard')}
-              onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
-              onExecutiveKPIDashboard={() => setScreen('ExecutiveKPIDashboard')}
-              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
-              onMilestoneTracking={() => setScreen('MilestoneTracking')}
-              onDelayAnalysis={() => setScreen('DelayAnalysis')}
-              onContractorPerformance={() => setScreen('ContractorPerformance')}
-              onProjectRiskMatrix={() => setScreen('ProjectRiskMatrix')}
-              onPortfolioDashboard={() => setScreen('PortfolioDashboard')}
-              onAdmin={() => setScreen('Admin')}
             />
           )}
 
@@ -4533,38 +4719,62 @@ Note: This update was opened through Outlook because PLZ email security may reje
           )}
 
           {screen === 'BuildUpdate' && (
-            <ScreenScroll contentStyle={contentStyle}>
-              <BuildUpdateScreen
-                update={draft}
-                projectAreas={projectAreas}
-                selectedArea={currentDraftArea}
-                areaSuggestion={draftAreaSuggestion}
-                locationStatus={locationStatus}
-                subject={message.subject}
-                body={message.body}
-                contacts={currentContacts}
-                draftSavedAt={draftSavedAt}
-                onNotesChange={notes =>
-                  setDraft(prev => ({
-                    ...prev,
-                    notes,
-                  }))
-                }
-                onSendEmail={sendEmail}
-                onSendText={sendText}
-                onCopy={copyMessage}
-                onSave={saveUpdate}
-                onEditPhotos={() =>
-                  setScreen('AddPhotos')
-                }
-                onContacts={openContacts}
-                onConfirmArea={confirmSuggestedArea}
-                onChangeArea={changeDraftArea}
-                onRefreshLocation={() => {
-                  void refreshDraftLocation();
-                }}
-              />
-            </ScreenScroll>
+            <View style={styles.buildUpdateFrame}>
+              <ScreenScroll
+                contentStyle={[
+                  contentStyle,
+                  styles.buildUpdateContent,
+                ]}
+              >
+                <BuildUpdateScreen
+                  update={draft}
+                  projectAreas={projectAreas}
+                  selectedArea={currentDraftArea}
+                  areaSuggestion={draftAreaSuggestion}
+                  locationStatus={locationStatus}
+                  subject={message.subject}
+                  body={message.body}
+                  contacts={currentContacts}
+                  draftSavedAt={draftSavedAt}
+                  onNotesChange={notes =>
+                    setDraft(prev => ({
+                      ...prev,
+                      notes,
+                    }))
+                  }
+                  onSendEmail={sendEmail}
+                  onSendText={sendText}
+                  onCopy={copyMessage}
+                  onSave={saveUpdate}
+                  onEditPhotos={() =>
+                    setScreen('AddPhotos')
+                  }
+                  onContacts={openContacts}
+                  onConfirmArea={confirmSuggestedArea}
+                  onChangeArea={changeDraftArea}
+                  onRefreshLocation={() => {
+                    void refreshDraftLocation();
+                  }}
+                />
+              </ScreenScroll>
+
+              <View
+                style={[
+                  styles.stickySaveFooter,
+                  {
+                    bottom:
+                      insets.bottom +
+                      (Platform.OS === 'ios' ? 70 : 62),
+                  },
+                ]}
+              >
+                <PrimaryButton
+                  label="Save Update"
+                  icon="bookmark-outline"
+                  onPress={saveUpdate}
+                />
+              </View>
+            </View>
           )}
 
           {screen === 'Projects' && (
@@ -4574,28 +4784,35 @@ Note: This update was opened through Outlook because PLZ email security may reje
               archivedProjects={
                 archivedProjects
               }
-              savedUpdates={savedUpdates}
               scheduleItems={scheduleItems}
               projectStatsByName={projectStatsByName}
-              onSelect={createNewUpdate}
+              onSelect={openProjectOverview}
+              onUpdateProject={createNewUpdate}
               onAddProject={addProject}
               onCloseProject={closeProject}
               onReopenProject={reopenProject}
               onRenameProject={renameProject}
               onDeleteProject={deleteProject}
-              onBackup={exportBackup}
-              onRestore={restoreBackup}
-              projectAreas={projectAreas}
-              onAddArea={addProjectArea}
-              onUpdateArea={updateProjectArea}
-              onDeleteArea={deleteProjectArea}
-              onUseCurrentLocationForArea={
-                useCurrentLocationForArea
+            />
+          )}
+
+          {screen === 'ProjectOverview' && (
+            <ProjectOverviewScreen
+              contentStyle={contentStyle}
+              projectName={projectOverviewName}
+              stats={
+                projectStatsByName[projectOverviewName] ||
+                createEmptyProjectStats()
               }
-              onDiagnostics={() => openDiagnostics('Projects')}
-              onReferenceDocuments={() => setScreen('ReferenceDocuments')}
-              onSchedule={() => setScreen('Schedule')}
-              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
+              onBack={() => setScreen('Projects')}
+              onCaptureUpdate={() => createNewUpdate(projectOverviewName)}
+              onGenerateReport={() => openProjectReport(projectOverviewName)}
+              onViewTimeline={() => {
+                setSelectedProjectName(projectOverviewName);
+                setScreen('ConstructionTimeline');
+              }}
             />
           )}
 
@@ -4856,6 +5073,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onBack={() => setScreen('Home')}
               onDiagnostics={() => openDiagnostics('Admin')}
               onProjectManagement={() => setScreen('Projects')}
+              onReferenceDocuments={() => setScreen('ReferenceDocuments')}
+              onSchedule={() => setScreen('Schedule')}
+              onConstructionTimeline={() => setScreen('ConstructionTimeline')}
+              onBackup={exportBackup}
+              onRestore={restoreBackup}
+              onAddArea={addProjectArea}
+              onUpdateArea={updateProjectArea}
+              onDeleteArea={deleteProjectArea}
+              onUseCurrentLocationForArea={
+                useCurrentLocationForArea
+              }
             />
           )}
 
@@ -4953,9 +5181,36 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  buildUpdateFrame: {
+    flex: 1,
+  },
+
   content: {
     padding: 18,
     paddingBottom: 110,
+  },
+
+  buildUpdateContent: {
+    paddingBottom: 210,
+  },
+
+  stickySaveFooter: {
+    position: 'absolute',
+    left: 18,
+    right: 18,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    borderRadius: 12,
+    padding: 10,
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    elevation: 8,
   },
 });
 

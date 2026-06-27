@@ -11,13 +11,10 @@ import {
   ViewStyle,
 } from 'react-native';
 import { AddProjectCard } from '../components/AddProjectCard';
-import { ManageAreasPanel } from '../components/ManageAreasPanel';
 import { ProjectFinderRow } from '../components/ProjectFinderRow';
 import {
   EmptyState,
-  MiniStat,
   ScreenTitle,
-  SecondaryButton,
   colors,
   styles,
 } from '../components/ProjectDetailsCard';
@@ -27,9 +24,7 @@ import {
 } from '../services/StorageService';
 import {
   EMPTY_PROJECT_STATS,
-  ProjectArea,
   ProjectStats,
-  ProjectUpdate,
   ScheduleItem,
 } from '../types';
 import { buildScheduleSummary } from '../utils/schedule';
@@ -38,55 +33,33 @@ export function ProjectsScreen({
   contentStyle,
   activeProjects,
   archivedProjects,
-  savedUpdates,
   scheduleItems,
   projectStatsByName,
-  projectAreas,
   onSelect,
+  onUpdateProject,
   onAddProject,
   onCloseProject,
   onReopenProject,
   onRenameProject,
   onDeleteProject,
-  onBackup,
-  onRestore,
-  onAddArea,
-  onUpdateArea,
-  onDeleteArea,
-  onUseCurrentLocationForArea,
-  onDiagnostics,
-  onReferenceDocuments,
-  onSchedule,
-  onConstructionTimeline,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   activeProjects: string[];
   archivedProjects: string[];
-  savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   projectStatsByName: Record<string, ProjectStats>;
-  projectAreas: ProjectArea[];
   onSelect: (projectName: string) => void;
+  onUpdateProject?: (projectName: string) => void;
   onAddProject: (projectName: string) => boolean;
   onCloseProject: (projectName: string) => void;
   onReopenProject: (projectName: string) => void;
   onRenameProject: (projectName: string, nextName: string) => boolean;
   onDeleteProject: (projectName: string) => void;
-  onBackup: () => void;
-  onRestore: () => void;
-  onAddArea: (name: string) => boolean;
-  onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
-  onDeleteArea: (areaId: string) => void;
-  onUseCurrentLocationForArea: (areaId: string) => void;
-  onDiagnostics: () => void;
-  onReferenceDocuments: () => void;
-  onSchedule: () => void;
-  onConstructionTimeline?: () => void;
 }) {
   const [searchText, setSearchText] = useState('');
   const [projectFilter, setProjectFilter] = useState<
-    'All' | 'Favorites' | 'Open' | 'Overdue' | 'Due Soon' | 'Archived'
-  >('All');
+    'Active' | 'Favorites' | 'Archived'
+  >('Active');
   const [favoriteProjects, setFavoriteProjects] = useState<string[]>([]);
   const [favoritesLoaded, setFavoritesLoaded] = useState(false);
 
@@ -179,12 +152,6 @@ export function ProjectsScreen({
     );
   }
 
-  const activeProjectSet = new Set(
-    activeProjects.map(project => project.toLowerCase()),
-  );
-  const archivedProjectSet = new Set(
-    archivedProjects.map(project => project.toLowerCase()),
-  );
   const search = searchText.trim().toLowerCase();
 
   const projectRows = [
@@ -204,15 +171,9 @@ export function ProjectsScreen({
         project => project.toLowerCase() === item.project.toLowerCase(),
       );
 
+      if (projectFilter === 'Active' && item.archived) return false;
       if (projectFilter === 'Favorites' && !favorite) return false;
-      if (projectFilter === 'Open' && item.archived) return false;
       if (projectFilter === 'Archived' && !item.archived) return false;
-      if (projectFilter === 'Overdue' && item.stats.overdueActions === 0) {
-        return false;
-      }
-      if (projectFilter === 'Due Soon' && item.stats.dueThisWeek === 0) {
-        return false;
-      }
 
       if (!search) return true;
 
@@ -238,19 +199,6 @@ export function ProjectsScreen({
       return a.project.localeCompare(b.project);
     });
 
-  const totalPhotos = savedUpdates.reduce(
-    (sum, update) => sum + update.photos.length,
-    0,
-  );
-  const totalOpenActions = Object.values(projectStatsByName).reduce(
-    (sum, stats) => sum + stats.openActions,
-    0,
-  );
-  const totalOverdue = Object.values(projectStatsByName).reduce(
-    (sum, stats) => sum + stats.overdueActions,
-    0,
-  );
-
   const renderProject = ({ item }: { item: typeof projectRows[number] }) => {
     const favorite = favoriteProjects.some(
       project => project.toLowerCase() === item.project.toLowerCase(),
@@ -265,9 +213,8 @@ export function ProjectsScreen({
         })}
         archived={item.archived}
         favorite={favorite}
-        onPress={() =>
-          item.archived ? onReopenProject(item.project) : onSelect(item.project)
-        }
+        onPress={() => onSelect(item.project)}
+        onUpdate={() => onUpdateProject?.(item.project)}
         onFavorite={() => toggleFavorite(item.project)}
         onRename={() => requestRenameProject(item.project)}
         onClose={
@@ -293,7 +240,7 @@ export function ProjectsScreen({
         <>
           <ScreenTitle
             title="Projects"
-            subtitle="Search, favorite, update, archive, and manage project setup."
+            subtitle="Which project are you working on? Search, open an overview, or start an update."
           />
 
           <View style={styles.projectFinderPanel}>
@@ -325,7 +272,7 @@ export function ProjectsScreen({
             </View>
 
             <View style={styles.projectFilterRow}>
-              {(['All', 'Favorites', 'Open', 'Overdue', 'Due Soon', 'Archived'] as const).map(filter => {
+              {(['Active', 'Favorites', 'Archived'] as const).map(filter => {
                 const selected = projectFilter === filter;
 
                 return (
@@ -349,17 +296,6 @@ export function ProjectsScreen({
                 );
               })}
             </View>
-
-            <View style={styles.projectFinderStatsRow}>
-              <MiniStat label="Active" value={activeProjectSet.size} />
-              <MiniStat label="Archived" value={archivedProjectSet.size} />
-              <MiniStat label="Open" value={totalOpenActions} danger={totalOpenActions > 0} />
-              <MiniStat label="Overdue" value={totalOverdue} danger={totalOverdue > 0} />
-            </View>
-
-            <Text style={styles.locationDetailText}>
-              {projectRows.length} project{projectRows.length === 1 ? '' : 's'} shown | {totalPhotos.toLocaleString('en-US')} total photos
-            </Text>
           </View>
 
           <AddProjectCard
@@ -368,68 +304,8 @@ export function ProjectsScreen({
             onAdd={onAddProject}
           />
 
-          <SecondaryButton
-            label="Reference Documents"
-            icon="documents-outline"
-            onPress={onReferenceDocuments}
-          />
-
-          <SecondaryButton
-            label="Schedule"
-            icon="calendar-outline"
-            onPress={onSchedule}
-          />
-
-          {onConstructionTimeline ? (
-            <SecondaryButton
-              label="Construction Timeline"
-              icon="git-branch-outline"
-              onPress={onConstructionTimeline}
-            />
-          ) : null}
-
-          <ManageAreasPanel
-            projectAreas={projectAreas}
-            onAddArea={onAddArea}
-            onUpdateArea={onUpdateArea}
-            onDeleteArea={onDeleteArea}
-            onUseCurrentLocationForArea={onUseCurrentLocationForArea}
-          />
-
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>
-              Data Management
-            </Text>
-
-            <Text style={styles.bodyText}>
-              JSON backup protects project data and local photo references. It does not copy image files outside this app.
-            </Text>
-
-            <View style={styles.dataActionRow}>
-              <SecondaryButton
-                label="Backup"
-                icon="download-outline"
-                onPress={onBackup}
-                compact
-              />
-
-              <SecondaryButton
-                label="Restore"
-                icon="cloud-upload-outline"
-                onPress={onRestore}
-                compact
-              />
-            </View>
-
-            <SecondaryButton
-              label="Run Diagnostics"
-              icon="pulse-outline"
-              onPress={onDiagnostics}
-            />
-          </View>
-
           <Text style={styles.sectionLabel}>
-            Project Finder
+            Project Cards
           </Text>
         </>
       }

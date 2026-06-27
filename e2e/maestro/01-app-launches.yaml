@@ -1,0 +1,9 @@
+appId: ${APP_ID}
+---
+- launchApp
+- assertVisible: "Home"
+- assertVisible: "Projects"
+- assertVisible: "Capture"
+- assertVisible: "Reports"
+- assertVisible: "More"
+

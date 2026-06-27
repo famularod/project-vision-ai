@@ -34,6 +34,16 @@ type DashboardUpdate = {
   selectedAreaName?: string | null;
 };
 
+type IconName = keyof typeof Ionicons.glyphMap;
+
+type RecommendedAction = {
+  title: string;
+  detail: string;
+  actionLabel: string;
+  icon: IconName;
+  onPress: () => void;
+};
+
 type HomeDashboardProps = {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
@@ -42,26 +52,15 @@ type HomeDashboardProps = {
   projectStatsByName: Record<string, ProjectStats>;
   unfinishedDraft: DashboardUpdate | null;
   draftSavedAt: string | null;
-  referenceDocumentCount: number;
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
   onNewUpdate: () => void;
   onUpdateProject: (projectName: string) => void;
+  onOpenProject: (projectName: string) => void;
   onViewProjects: () => void;
-  onReferenceDocuments: () => void;
   onSchedule: () => void;
   onAIProjectCoach: () => void;
   onAIExecutiveBrief: () => void;
-  onProjectHealthDashboard: () => void;
-  onWeeklyExecutiveReport: () => void;
-  onExecutiveKPIDashboard: () => void;
-  onConstructionTimeline: () => void;
-  onMilestoneTracking: () => void;
-  onDelayAnalysis: () => void;
-  onContractorPerformance: () => void;
-  onProjectRiskMatrix: () => void;
-  onPortfolioDashboard: () => void;
-  onAdmin: () => void;
 };
 
 const EMPTY_PROJECT_STATS: ProjectStats = {
@@ -100,6 +99,181 @@ function formatSavedTime(value: string | null) {
   });
 }
 
+function formatProjectDate(value: string | null | undefined) {
+  if (!value) return 'No updates yet';
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function matchesProjectName(value: string, projectName: string) {
+  return value.trim().toLowerCase() === projectName.trim().toLowerCase();
+}
+
+function sortUpdatesNewestFirst(
+  left: DashboardUpdate,
+  right: DashboardUpdate,
+) {
+  return new Date(right.date).getTime() - new Date(left.date).getTime();
+}
+
+function getGreeting() {
+  const hour = new Date().getHours();
+
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+
+  return 'Good evening';
+}
+
+function getProjectHealth(
+  stats: ProjectStats,
+  scheduleSummary: ScheduleSummary | null,
+) {
+  const scheduleOverdue = scheduleSummary?.overdueCount ?? 0;
+  const scheduleDueSoon = scheduleSummary?.upcoming7Count ?? 0;
+
+  if (stats.overdueActions > 0 || scheduleOverdue > 0) {
+    return {
+      label: 'Red',
+      detail: 'Needs attention',
+      color: colors.danger,
+      backgroundColor: '#FFEDEC',
+    };
+  }
+
+  if (stats.openActions > 0 || stats.dueThisWeek > 0 || scheduleDueSoon > 0) {
+    return {
+      label: 'Yellow',
+      detail: 'Watch closely',
+      color: colors.warning,
+      backgroundColor: colors.warningSoft,
+    };
+  }
+
+  return {
+    label: 'Green',
+    detail: 'On track',
+    color: '#248A3D',
+    backgroundColor: '#EAF7ED',
+  };
+}
+
+function getNextMilestone(summary: ScheduleSummary | null) {
+  if (!summary) return null;
+
+  return summary.milestoneTasks.find(
+    task =>
+      !task.isCompleted &&
+      task.daysUntilDue !== null &&
+      task.daysUntilDue >= 0,
+  ) || null;
+}
+
+function buildRecommendedAction({
+  activeProjectName,
+  currentProjectStats,
+  currentProjectScheduleSummary,
+  unfinishedDraft,
+  projectsNeedingAttention,
+  scheduleSummary,
+  onResumeDraft,
+  onUpdateProject,
+  onOpenProject,
+  onViewProjects,
+  onSchedule,
+  onAIExecutiveBrief,
+}: {
+  activeProjectName: string | null;
+  currentProjectStats: ProjectStats;
+  currentProjectScheduleSummary: ScheduleSummary | null;
+  unfinishedDraft: DashboardUpdate | null;
+  projectsNeedingAttention: { project: string; stats: ProjectStats }[];
+  scheduleSummary: ScheduleSummary;
+  onResumeDraft: () => void;
+  onUpdateProject: (projectName: string) => void;
+  onOpenProject: (projectName: string) => void;
+  onViewProjects: () => void;
+  onSchedule: () => void;
+  onAIExecutiveBrief: () => void;
+}): RecommendedAction {
+  if (unfinishedDraft) {
+    return {
+      title: 'Resume unfinished update',
+      detail: `Continue the saved update for ${unfinishedDraft.projectName}.`,
+      actionLabel: 'Resume Draft',
+      icon: 'play-outline',
+      onPress: onResumeDraft,
+    };
+  }
+
+  if (!activeProjectName) {
+    return {
+      title: 'Open a project',
+      detail: 'Choose a project so updates and reports have context.',
+      actionLabel: 'View Projects',
+      icon: 'folder-open-outline',
+      onPress: onViewProjects,
+    };
+  }
+
+  if (
+    (currentProjectScheduleSummary?.overdueCount ?? 0) > 0 ||
+    scheduleSummary.overdueCount > 0
+  ) {
+    return {
+      title: 'Review overdue schedule items',
+      detail: 'Start with overdue work before capturing routine progress.',
+      actionLabel: 'View Schedule',
+      icon: 'calendar-outline',
+      onPress: onSchedule,
+    };
+  }
+
+  const attentionProject = projectsNeedingAttention[0]?.project;
+
+  if (
+    currentProjectStats.overdueActions > 0 ||
+    currentProjectStats.openActions > 0 ||
+    attentionProject
+  ) {
+    const projectToOpen = attentionProject || activeProjectName;
+
+    return {
+      title: 'Open Project Overview',
+      detail: `Review what needs attention on ${projectToOpen}.`,
+      actionLabel: 'Open Project',
+      icon: 'reader-outline',
+      onPress: () => onOpenProject(projectToOpen),
+    };
+  }
+
+  if (currentProjectStats.updates === 0) {
+    return {
+      title: "Capture today's progress",
+      detail: `Start the first update for ${activeProjectName}.`,
+      actionLabel: 'Capture Update',
+      icon: 'camera-outline',
+      onPress: () => onUpdateProject(activeProjectName),
+    };
+  }
+
+  return {
+    title: 'Generate executive report',
+    detail: 'Turn recent activity into a clear project communication.',
+    actionLabel: 'Generate Report',
+    icon: 'newspaper-outline',
+    onPress: onAIExecutiveBrief,
+  };
+}
+
 export function HomeDashboard({
   contentStyle,
   projects,
@@ -108,26 +282,15 @@ export function HomeDashboard({
   projectStatsByName,
   unfinishedDraft,
   draftSavedAt,
-  referenceDocumentCount,
   onResumeDraft,
   onDiscardDraft,
   onNewUpdate,
   onUpdateProject,
+  onOpenProject,
   onViewProjects,
-  onReferenceDocuments,
   onSchedule,
   onAIProjectCoach,
   onAIExecutiveBrief,
-  onProjectHealthDashboard,
-  onWeeklyExecutiveReport,
-  onExecutiveKPIDashboard,
-  onConstructionTimeline,
-  onMilestoneTracking,
-  onDelayAnalysis,
-  onContractorPerformance,
-  onProjectRiskMatrix,
-  onPortfolioDashboard,
-  onAdmin,
 }: HomeDashboardProps) {
   const projectsNeedingAttention = projects
     .map(project => ({
@@ -154,26 +317,124 @@ export function HomeDashboard({
     .slice(0, 5);
   const draftProject = projects.find(project =>
     unfinishedDraft?.projectName &&
-    project.toLowerCase() === unfinishedDraft.projectName.toLowerCase(),
+    matchesProjectName(project, unfinishedDraft.projectName),
   );
   const latestActivityProject = savedUpdates
     .map(update => update.projectName)
     .find(projectName =>
-      projects.some(project => project.toLowerCase() === projectName.toLowerCase()),
+      projects.some(project => matchesProjectName(project, projectName)),
     );
-  const currentProject =
-    draftProject ||
-    latestActivityProject ||
-    projects[0] ||
-    'No active project';
+  const activeProjectName =
+    draftProject || latestActivityProject || projects[0] || null;
+  const currentProject = activeProjectName || 'No active project';
   const currentProjectStats =
-    projectStatsByName[currentProject] || EMPTY_PROJECT_STATS;
-  const hasActiveProject = projects.length > 0;
+    activeProjectName
+      ? projectStatsByName[activeProjectName] || EMPTY_PROJECT_STATS
+      : EMPTY_PROJECT_STATS;
   const scheduleSummary = buildScheduleSummary(scheduleItems);
+  const currentProjectScheduleSummary = activeProjectName
+    ? buildScheduleSummary(scheduleItems, { projectName: activeProjectName })
+    : null;
+  const currentProjectUpdates = activeProjectName
+    ? savedUpdates
+        .filter(update =>
+          matchesProjectName(update.projectName, activeProjectName),
+        )
+        .sort(sortUpdatesNewestFirst)
+    : [];
+  const latestProjectUpdate = currentProjectUpdates[0] || null;
+  const latestUpdateDate =
+    currentProjectStats.lastUpdate || latestProjectUpdate?.date || null;
+  const projectHealth = activeProjectName
+    ? getProjectHealth(currentProjectStats, currentProjectScheduleSummary)
+    : {
+        label: 'Not Set',
+        detail: 'Open a project',
+        color: colors.muted,
+        backgroundColor: colors.fill,
+      };
+  const nextMilestone = getNextMilestone(currentProjectScheduleSummary);
+  const nextMilestoneText = nextMilestone
+    ? `${nextMilestone.title} | ${nextMilestone.dueLabel}`
+    : currentProjectScheduleSummary?.totalItems
+      ? 'No upcoming milestone'
+      : 'Schedule Required';
+  const recommendedAction = buildRecommendedAction({
+    activeProjectName,
+    currentProjectStats,
+    currentProjectScheduleSummary,
+    unfinishedDraft,
+    projectsNeedingAttention,
+    scheduleSummary,
+    onResumeDraft,
+    onUpdateProject,
+    onOpenProject,
+    onViewProjects,
+    onSchedule,
+    onAIExecutiveBrief,
+  });
+  const overdueScheduleLabel =
+    scheduleSummary.totalItems === 0
+      ? 'Schedule not imported yet'
+      : scheduleSummary.overdueCount === 0
+        ? 'No overdue schedule items'
+        : `${scheduleSummary.overdueCount} overdue schedule item${
+            scheduleSummary.overdueCount === 1 ? '' : 's'
+          }`;
+  const attentionLabel =
+    projectsNeedingAttention.length === 0
+      ? 'No projects need attention right now'
+      : `${projectsNeedingAttention.length} project${
+          projectsNeedingAttention.length === 1 ? '' : 's'
+        } need attention`;
+  const startCapture = () =>
+    activeProjectName ? onUpdateProject(activeProjectName) : onNewUpdate();
 
   return (
     <Screen contentStyle={contentStyle}>
       <AppHeader />
+
+      <View style={styles.morningBriefCard}>
+        <View style={styles.morningBriefHeader}>
+          <View style={styles.morningBriefIcon}>
+            <Ionicons
+              name="sunny-outline"
+              size={24}
+              color={colors.primary}
+            />
+          </View>
+
+          <View style={styles.rowMain}>
+            <Text style={styles.morningBriefGreeting}>
+              {getGreeting()}
+            </Text>
+
+            <Text style={styles.morningBriefSubtitle}>
+              Here is what needs your attention today.
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.briefLineList}>
+          <BriefLine
+            icon="alert-circle-outline"
+            label="Projects"
+            value={attentionLabel}
+          />
+
+          <BriefLine
+            icon="calendar-outline"
+            label="Schedule"
+            value={overdueScheduleLabel}
+          />
+
+          <BriefLine
+            icon={recommendedAction.icon}
+            label="Next"
+            value={recommendedAction.title}
+          />
+        </View>
+      </View>
 
       {unfinishedDraft ? (
         <View style={styles.draftRecoveryCard}>
@@ -244,84 +505,212 @@ export function HomeDashboard({
         </View>
       ) : null}
 
-      <View style={styles.workflowCard}>
-        <View style={styles.workflowHeader}>
-          <View style={styles.captureIcon}>
+      <TouchableOpacity
+        style={styles.captureHeroButton}
+        onPress={startCapture}
+      >
+        <View style={styles.captureHeroIcon}>
+          <Ionicons
+            name="camera-outline"
+            size={27}
+            color="#FFFFFF"
+          />
+        </View>
+
+        <View style={styles.rowMain}>
+          <Text style={styles.captureHeroTitle}>
+            Capture Update
+          </Text>
+
+          <Text
+            style={styles.captureHeroSubtitle}
+            numberOfLines={2}
+          >
+            {activeProjectName
+              ? `Start an update for ${activeProjectName}`
+              : 'Start a field update'}
+          </Text>
+        </View>
+
+        <Ionicons
+          name="chevron-forward"
+          size={24}
+          color="#FFFFFF"
+        />
+      </TouchableOpacity>
+
+      <View style={styles.currentProjectCard}>
+        <View style={styles.currentProjectHeader}>
+          <View style={styles.currentProjectIcon}>
             <Ionicons
-              name="camera-outline"
+              name="business-outline"
               size={24}
               color={colors.primary}
             />
           </View>
 
           <View style={styles.rowMain}>
-            <Text style={styles.workflowEyebrow}>
+            <Text style={styles.currentProjectEyebrow}>
               Current Project
             </Text>
 
             <Text
-              style={styles.workflowProject}
+              style={styles.currentProjectName}
               numberOfLines={2}
             >
               {currentProject}
             </Text>
+          </View>
+        </View>
 
-            <Text style={styles.workflowMeta}>
-              {currentProjectStats.updates} updates | {currentProjectStats.openActions} open | {currentProjectStats.overdueActions} overdue
+        <View style={styles.projectSignalList}>
+          <View style={styles.projectSignalRow}>
+            <Text style={styles.projectSignalLabel}>
+              Health
+            </Text>
+
+            <View
+              style={[
+                styles.healthBadge,
+                { backgroundColor: projectHealth.backgroundColor },
+              ]}
+            >
+              <View
+                style={[
+                  styles.healthDot,
+                  { backgroundColor: projectHealth.color },
+                ]}
+              />
+
+              <Text
+                style={[
+                  styles.healthBadgeText,
+                  { color: projectHealth.color },
+                ]}
+              >
+                {projectHealth.label} · {projectHealth.detail}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.projectSignalRow}>
+            <Text style={styles.projectSignalLabel}>
+              Last update
+            </Text>
+
+            <Text
+              style={styles.projectSignalValue}
+              numberOfLines={1}
+            >
+              {formatProjectDate(latestUpdateDate)}
+            </Text>
+          </View>
+
+          <View style={styles.projectSignalRow}>
+            <Text style={styles.projectSignalLabel}>
+              Next milestone
+            </Text>
+
+            <Text
+              style={styles.projectSignalValue}
+              numberOfLines={2}
+            >
+              {nextMilestoneText}
             </Text>
           </View>
         </View>
 
         <TouchableOpacity
-          style={styles.captureUpdateButton}
+          style={styles.openProjectButton}
           onPress={() =>
-            hasActiveProject
-              ? onUpdateProject(currentProject)
-              : onNewUpdate()
+            activeProjectName
+              ? onOpenProject(activeProjectName)
+              : onViewProjects()
           }
         >
           <Ionicons
-            name="camera-outline"
-            size={23}
+            name="folder-open-outline"
+            size={20}
             color="#FFFFFF"
           />
 
-          <Text style={styles.captureUpdateText}>
-            Capture Update
+          <Text style={styles.openProjectButtonText}>
+            {activeProjectName ? 'Open Project' : 'View Projects'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.recommendationCard}>
+        <View style={styles.recommendationHeader}>
+          <View style={styles.recommendationIcon}>
+            <Ionicons
+              name={recommendedAction.icon}
+              size={23}
+              color={colors.primary}
+            />
+          </View>
+
+          <View style={styles.rowMain}>
+            <Text style={styles.recommendationEyebrow}>
+              Recommended Next Action
+            </Text>
+
+            <Text style={styles.recommendationTitle}>
+              {recommendedAction.title}
+            </Text>
+
+            <Text style={styles.recommendationDetail}>
+              {recommendedAction.detail}
+            </Text>
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={styles.recommendationButton}
+          onPress={recommendedAction.onPress}
+        >
+          <Text style={styles.recommendationButtonText}>
+            {recommendedAction.actionLabel}
+          </Text>
+
+          <Ionicons
+            name="chevron-forward"
+            size={18}
+            color={colors.primary}
+          />
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.dailyActionRow}>
+        <TouchableOpacity
+          style={styles.dailyActionButton}
+          onPress={onAIExecutiveBrief}
+        >
+          <Ionicons
+            name="newspaper-outline"
+            size={20}
+            color={colors.primary}
+          />
+
+          <Text style={styles.dailyActionText}>
+            Generate Report
           </Text>
         </TouchableOpacity>
 
-        <View style={styles.dailyActionRow}>
-          <TouchableOpacity
-            style={styles.dailyActionButton}
-            onPress={onWeeklyExecutiveReport}
-          >
-            <Ionicons
-              name="newspaper-outline"
-              size={20}
-              color={colors.primary}
-            />
+        <TouchableOpacity
+          style={styles.dailyActionButton}
+          onPress={onAIProjectCoach}
+        >
+          <Ionicons
+            name="bulb-outline"
+            size={20}
+            color={colors.primary}
+          />
 
-            <Text style={styles.dailyActionText}>
-              Generate Report
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.dailyActionButton}
-            onPress={onAIProjectCoach}
-          >
-            <Ionicons
-              name="bulb-outline"
-              size={20}
-              color={colors.primary}
-            />
-
-            <Text style={styles.dailyActionText}>
-              AI Coach
-            </Text>
-          </TouchableOpacity>
-        </View>
+          <Text style={styles.dailyActionText}>
+            AI Coach
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <AttentionCard
@@ -336,6 +725,37 @@ export function HomeDashboard({
 
       <RecentActivity updates={savedUpdates} />
     </Screen>
+  );
+}
+
+function BriefLine({
+  icon,
+  label,
+  value,
+}: {
+  icon: IconName;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.briefLine}>
+      <Ionicons
+        name={icon}
+        size={18}
+        color={colors.primary}
+      />
+
+      <Text style={styles.briefLineLabel}>
+        {label}
+      </Text>
+
+      <Text
+        style={styles.briefLineValue}
+        numberOfLines={2}
+      >
+        {value}
+      </Text>
+    </View>
   );
 }
 
@@ -534,6 +954,290 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
+  morningBriefCard: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 16,
+    marginBottom: 14,
+  },
+
+  morningBriefHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 13,
+  },
+
+  morningBriefIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 11,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  morningBriefGreeting: {
+    color: colors.text,
+    fontSize: 21,
+    lineHeight: 26,
+    fontWeight: '900',
+  },
+
+  morningBriefSubtitle: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+
+  briefLineList: {
+    gap: 10,
+  },
+
+  briefLine: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+
+  briefLineLabel: {
+    width: 64,
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+
+  briefLineValue: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '800',
+  },
+
+  captureHeroButton: {
+    minHeight: 76,
+    borderRadius: 15,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 16,
+    marginBottom: 14,
+  },
+
+  captureHeroIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  captureHeroTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: '900',
+  },
+
+  captureHeroSubtitle: {
+    color: '#EAF4FF',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+
+  currentProjectCard: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 16,
+    marginBottom: 14,
+  },
+
+  currentProjectHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+  },
+
+  currentProjectIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 11,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  currentProjectEyebrow: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+
+  currentProjectName: {
+    color: colors.text,
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+
+  projectSignalList: {
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    paddingTop: 12,
+    gap: 11,
+  },
+
+  projectSignalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+
+  projectSignalLabel: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+
+  projectSignalValue: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+
+  healthBadge: {
+    minHeight: 30,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+
+  healthDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+
+  healthBadgeText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '900',
+  },
+
+  openProjectButton: {
+    minHeight: 50,
+    borderRadius: 12,
+    backgroundColor: colors.text,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 14,
+    marginTop: 15,
+  },
+
+  openProjectButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '900',
+  },
+
+  recommendationCard: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 16,
+    marginBottom: 14,
+  },
+
+  recommendationHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+
+  recommendationIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 11,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  recommendationEyebrow: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+
+  recommendationTitle: {
+    color: colors.text,
+    fontSize: 19,
+    lineHeight: 24,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+
+  recommendationDetail: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+    marginTop: 5,
+  },
+
+  recommendationButton: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 12,
+    marginTop: 14,
+  },
+
+  recommendationButtonText: {
+    color: colors.primary,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '900',
+  },
+
   workflowCard: {
     backgroundColor: colors.card,
     borderRadius: 14,
@@ -605,6 +1309,7 @@ const styles = StyleSheet.create({
   dailyActionRow: {
     flexDirection: 'row',
     gap: 10,
+    marginBottom: 16,
   },
 
   dailyActionButton: {

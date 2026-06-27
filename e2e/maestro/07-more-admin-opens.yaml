@@ -1,0 +1,9 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn: "More"
+- assertVisible: "Admin"
+- assertVisible: "Cloud Status"
+- assertVisible: "Admin Actions"
+- assertVisible: "Diagnostics"
+

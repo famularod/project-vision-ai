@@ -1,0 +1,9 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn: "Reports"
+- assertVisible: "Reports"
+- assertVisible: "Generate Executive Report"
+- assertVisible: "Weekly Executive Report"
+- assertVisible: "Saved Updates / History"
+

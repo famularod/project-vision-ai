@@ -24,8 +24,14 @@ export function SaveUpdateBar({
 }) {
   return (
     <>
+      <PrimaryButton
+        label="Save Update"
+        icon="bookmark-outline"
+        onPress={onSave}
+      />
+
       <View style={styles.sendRow}>
-        <PrimaryButton
+        <SecondaryButton
           label="Email"
           icon="mail-outline"
           onPress={onSendEmail}
@@ -49,18 +55,12 @@ export function SaveUpdateBar({
         />
 
         <SecondaryButton
-          label="Save"
-          icon="bookmark-outline"
-          onPress={onSave}
+          label="Edit Photos"
+          icon="images-outline"
+          onPress={onEditPhotos}
           compact
         />
       </View>
-
-      <SecondaryButton
-        label="Edit Photos"
-        icon="images-outline"
-        onPress={onEditPhotos}
-      />
 
       <View style={styles.previewCard}>
         <Text style={styles.previewLabel}>

@@ -51,17 +51,49 @@ export function PhotoCapturePanel({
   const captionedCount = update.photos.filter(
     photo => photo.caption.trim(),
   ).length;
+  const selectedAreaLabel =
+    selectedArea?.name || update.selectedAreaName || 'Area optional';
 
   return (
     <>
       <ScreenTitle
-        title="Add Photos"
-        subtitle={update.projectName}
+        title="Capture Update"
+        subtitle="What changed in the field?"
       />
 
       <DraftSavedIndicator
         savedAt={draftSavedAt}
       />
+
+      <View style={styles.captureContextPanel}>
+        <View style={styles.captureContextItem}>
+          <Text style={styles.captureContextLabel}>
+            Project
+          </Text>
+
+          <Text
+            style={styles.captureContextValue}
+            numberOfLines={1}
+          >
+            {update.projectName}
+          </Text>
+        </View>
+
+        <View style={styles.captureContextDivider} />
+
+        <View style={styles.captureContextItem}>
+          <Text style={styles.captureContextLabel}>
+            Area
+          </Text>
+
+          <Text
+            style={styles.captureContextValue}
+            numberOfLines={1}
+          >
+            {selectedAreaLabel}
+          </Text>
+        </View>
+      </View>
 
       <ProjectDetailsCard
         update={update}
@@ -88,9 +120,15 @@ export function PhotoCapturePanel({
       />
 
       <SecondaryButton
-        label="Choose From Library"
+        label="Add Photo From Library"
         icon="images-outline"
         onPress={onPickPhotos}
+      />
+
+      <SecondaryButton
+        label="Add Note Instead"
+        icon="create-outline"
+        onPress={onNext}
       />
 
       <TouchableOpacity

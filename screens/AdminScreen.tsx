@@ -16,6 +16,7 @@ import { ScreenHeader } from '../components/layout/ScreenHeader';
 import { ScreenMetric } from '../components/layout/ScreenMetric';
 import { ScreenMetricGrid } from '../components/layout/ScreenMetricGrid';
 import { ScreenSection } from '../components/layout/ScreenSection';
+import { ManageAreasPanel } from '../components/ManageAreasPanel';
 import {
   SecondaryButton,
 } from '../components/ProjectDetailsCard';
@@ -55,6 +56,15 @@ export function AdminScreen({
   onBack,
   onDiagnostics,
   onProjectManagement,
+  onReferenceDocuments,
+  onSchedule,
+  onConstructionTimeline,
+  onBackup,
+  onRestore,
+  onAddArea,
+  onUpdateArea,
+  onDeleteArea,
+  onUseCurrentLocationForArea,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   localProjects: string[];
@@ -66,6 +76,15 @@ export function AdminScreen({
   onBack: () => void;
   onDiagnostics: () => void;
   onProjectManagement: () => void;
+  onReferenceDocuments: () => void;
+  onSchedule: () => void;
+  onConstructionTimeline: () => void;
+  onBackup: () => void;
+  onRestore: () => void;
+  onAddArea: (name: string) => boolean;
+  onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
+  onDeleteArea: (areaId: string) => void;
+  onUseCurrentLocationForArea: (areaId: string) => void;
 }) {
   const aiStatus = getAIConfigurationStatus();
   const supabaseConfig = getSupabaseConfigurationStatus();
@@ -226,7 +245,7 @@ export function AdminScreen({
       <ScreenSection title="Project Management">
         <ScreenCard>
           <Text style={styles.cardText}>
-            Rename, archive, restore, delete, favorite, and search projects from the Project Management screen.
+            Rename, archive, restore, delete, favorite, and search projects from Projects.
           </Text>
 
           <SecondaryButton
@@ -237,13 +256,63 @@ export function AdminScreen({
         </ScreenCard>
       </ScreenSection>
 
-      <ScreenSection title="Admin Placeholders">
-        <AdminInfoCard
-          title="Backup / Restore"
-          text="Backup and restore are still available from Project Management > Data Management. This Admin shortcut can become the permanent home in a future cleanup."
-          icon="archive-outline"
-        />
+      <ScreenSection title="Project Resources">
+        <ScreenCard>
+          <Text style={styles.cardText}>
+            Documents, schedules, timeline tools, and backups stay available here so Projects can stay focused on finding and updating work.
+          </Text>
 
+          <View style={styles.actionGrid}>
+            <AdminActionButton
+              label="Documents"
+              icon="documents-outline"
+              onPress={onReferenceDocuments}
+            />
+
+            <AdminActionButton
+              label="Schedule"
+              icon="calendar-outline"
+              onPress={onSchedule}
+            />
+
+            <AdminActionButton
+              label="Timeline"
+              icon="git-branch-outline"
+              onPress={onConstructionTimeline}
+            />
+
+            <AdminActionButton
+              label="Backup"
+              icon="download-outline"
+              onPress={onBackup}
+            />
+
+            <AdminActionButton
+              label="Restore"
+              icon="cloud-upload-outline"
+              onPress={onRestore}
+            />
+          </View>
+        </ScreenCard>
+      </ScreenSection>
+
+      <ScreenSection title="Project Context">
+        <ScreenCard>
+          <Text style={styles.cardText}>
+            Location setup supports project context intelligence in the background. It is kept in More so it does not compete with daily project selection.
+          </Text>
+        </ScreenCard>
+
+        <ManageAreasPanel
+          projectAreas={projectAreas}
+          onAddArea={onAddArea}
+          onUpdateArea={onUpdateArea}
+          onDeleteArea={onDeleteArea}
+          onUseCurrentLocationForArea={onUseCurrentLocationForArea}
+        />
+      </ScreenSection>
+
+      <ScreenSection title="Admin Placeholders">
         <AdminInfoCard
           title="App Version / Build Info"
           text="Build metadata placeholder. Add EAS build profile, version, runtime version, and update channel here when release metadata is finalized."

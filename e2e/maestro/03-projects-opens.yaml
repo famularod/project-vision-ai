@@ -1,0 +1,8 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn: "Projects"
+- assertVisible: "Projects"
+- assertVisible: "Search projects"
+- assertVisible: "Project Finder"
+

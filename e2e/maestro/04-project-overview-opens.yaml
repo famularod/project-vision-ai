@@ -1,0 +1,12 @@
+appId: ${APP_ID}
+env:
+  PROJECT_NAME: ${PROJECT_NAME || "Building 2375 Compliance"}
+---
+- launchApp
+- tapOn: "Projects"
+- assertVisible: "Project Finder"
+- tapOn: ${PROJECT_NAME}
+- assertVisible: "Project Overview"
+- assertVisible: "Project Summary"
+- assertVisible: "Recommended Next Action"
+
