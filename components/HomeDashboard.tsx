@@ -8,9 +8,7 @@ import {
 } from 'react-native';
 import { AppHeader } from './AppHeader';
 import { AttentionCard } from './AttentionCard';
-import { ExecutiveSummary } from './ExecutiveSummary';
 import { Screen } from './layout/Screen';
-import { QuickActions } from './QuickActions';
 import { RecentActivity } from './RecentActivity';
 
 type ProjectStats = {
@@ -73,9 +71,11 @@ const colors = {
   muted: '#6E6E73',
   line: '#E5E5EA',
   primarySoft: '#EAF4FF',
+  primary: '#007AFF',
   warning: '#FF9500',
   warningSoft: '#FFF4E5',
   danger: '#FF3B30',
+  fill: '#F2F2F7',
 };
 
 function formatSavedTime(value: string | null) {
@@ -121,27 +121,6 @@ export function HomeDashboard({
   onPortfolioDashboard,
   onAdmin,
 }: HomeDashboardProps) {
-  const totals = projects.reduce(
-    (summary, project) => {
-      const stats = projectStatsByName[project] || EMPTY_PROJECT_STATS;
-
-      summary.updates += stats.updates;
-      summary.photos += stats.photos;
-      summary.openActions += stats.openActions;
-      summary.overdueActions += stats.overdueActions;
-      summary.dueThisWeek += stats.dueThisWeek;
-
-      return summary;
-    },
-    {
-      updates: 0,
-      photos: 0,
-      openActions: 0,
-      overdueActions: 0,
-      dueThisWeek: 0,
-    },
-  );
-
   const projectsNeedingAttention = projects
     .map(project => ({
       project,
@@ -165,6 +144,23 @@ export function HomeDashboard({
       return b.stats.openActions - a.stats.openActions;
     })
     .slice(0, 5);
+  const draftProject = projects.find(project =>
+    unfinishedDraft?.projectName &&
+    project.toLowerCase() === unfinishedDraft.projectName.toLowerCase(),
+  );
+  const latestActivityProject = savedUpdates
+    .map(update => update.projectName)
+    .find(projectName =>
+      projects.some(project => project.toLowerCase() === projectName.toLowerCase()),
+    );
+  const currentProject =
+    draftProject ||
+    latestActivityProject ||
+    projects[0] ||
+    'No active project';
+  const currentProjectStats =
+    projectStatsByName[currentProject] || EMPTY_PROJECT_STATS;
+  const hasActiveProject = projects.length > 0;
 
   return (
     <Screen contentStyle={contentStyle}>
@@ -239,31 +235,85 @@ export function HomeDashboard({
         </View>
       ) : null}
 
-      <ExecutiveSummary
-        projects={projects}
-        totals={totals}
-        referenceDocumentCount={referenceDocumentCount}
-        onViewProjects={onViewProjects}
-      />
+      <View style={styles.workflowCard}>
+        <View style={styles.workflowHeader}>
+          <View style={styles.captureIcon}>
+            <Ionicons
+              name="camera-outline"
+              size={24}
+              color={colors.primary}
+            />
+          </View>
 
-      <QuickActions
-        onNewUpdate={onNewUpdate}
-        onViewProjects={onViewProjects}
-        onReferenceDocuments={onReferenceDocuments}
-        onSchedule={onSchedule}
-        onAIProjectCoach={onAIProjectCoach}
-        onAIExecutiveBrief={onAIExecutiveBrief}
-        onProjectHealthDashboard={onProjectHealthDashboard}
-        onWeeklyExecutiveReport={onWeeklyExecutiveReport}
-        onExecutiveKPIDashboard={onExecutiveKPIDashboard}
-        onConstructionTimeline={onConstructionTimeline}
-        onMilestoneTracking={onMilestoneTracking}
-        onDelayAnalysis={onDelayAnalysis}
-        onContractorPerformance={onContractorPerformance}
-        onProjectRiskMatrix={onProjectRiskMatrix}
-        onPortfolioDashboard={onPortfolioDashboard}
-        onAdmin={onAdmin}
-      />
+          <View style={styles.rowMain}>
+            <Text style={styles.workflowEyebrow}>
+              Current Project
+            </Text>
+
+            <Text
+              style={styles.workflowProject}
+              numberOfLines={2}
+            >
+              {currentProject}
+            </Text>
+
+            <Text style={styles.workflowMeta}>
+              {currentProjectStats.updates} updates | {currentProjectStats.openActions} open | {currentProjectStats.overdueActions} overdue
+            </Text>
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={styles.captureUpdateButton}
+          onPress={() =>
+            hasActiveProject
+              ? onUpdateProject(currentProject)
+              : onNewUpdate()
+          }
+        >
+          <Ionicons
+            name="camera-outline"
+            size={23}
+            color="#FFFFFF"
+          />
+
+          <Text style={styles.captureUpdateText}>
+            Capture Update
+          </Text>
+        </TouchableOpacity>
+
+        <View style={styles.dailyActionRow}>
+          <TouchableOpacity
+            style={styles.dailyActionButton}
+            onPress={onWeeklyExecutiveReport}
+          >
+            <Ionicons
+              name="newspaper-outline"
+              size={20}
+              color={colors.primary}
+            />
+
+            <Text style={styles.dailyActionText}>
+              Generate Report
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.dailyActionButton}
+            onPress={onAIProjectCoach}
+          >
+            <Ionicons
+              name="bulb-outline"
+              size={20}
+              color={colors.primary}
+            />
+
+            <Text style={styles.dailyActionText}>
+              AI Coach
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
       <AttentionCard
         projectsNeedingAttention={projectsNeedingAttention}
@@ -369,6 +419,102 @@ const styles = StyleSheet.create({
     color: colors.danger,
     fontSize: 15,
     fontWeight: '800',
+  },
+
+  workflowCard: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 16,
+    marginBottom: 16,
+  },
+
+  workflowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 16,
+  },
+
+  captureIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 11,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  workflowEyebrow: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+
+  workflowProject: {
+    color: colors.text,
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+
+  workflowMeta: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '700',
+    marginTop: 5,
+  },
+
+  captureUpdateButton: {
+    minHeight: 58,
+    borderRadius: 13,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 9,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+
+  captureUpdateText: {
+    color: '#FFFFFF',
+    fontSize: 19,
+    lineHeight: 24,
+    fontWeight: '900',
+  },
+
+  dailyActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+
+  dailyActionButton: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.fill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 10,
+  },
+
+  dailyActionText: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '800',
+    textAlign: 'center',
+    flexShrink: 1,
   },
 
   rowMain: {
