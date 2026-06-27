@@ -36,6 +36,7 @@ import { PortfolioDashboardScreen } from './screens/PortfolioDashboardScreen';
 import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
 import { ProjectRiskMatrixScreen } from './screens/ProjectRiskMatrixScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
+import { ReportsScreen } from './screens/ReportsScreen';
 import { ScheduleScreen } from './screens/ScheduleScreen';
 import { UpcomingScreen } from './screens/UpcomingScreen';
 import { WeeklyExecutiveReportScreen } from './screens/WeeklyExecutiveReportScreen';
@@ -64,6 +65,7 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
+import { formatScheduleImportSummary } from './utils/schedule';
 
 type Screen =
   | 'Home'
@@ -71,6 +73,7 @@ type Screen =
   | 'AddPhotos'
   | 'BuildUpdate'
   | 'Projects'
+  | 'Reports'
   | 'SavedUpdates'
   | 'Contacts'
   | 'Diagnostics'
@@ -4102,6 +4105,26 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
+  function showScheduleImportSuccess(
+    title: string,
+    scheduleImportItems: ScheduleItem[],
+    detail: string,
+  ) {
+    Alert.alert(
+      title,
+      `${detail}\n\n${formatScheduleImportSummary(scheduleImportItems)}`,
+      [
+        {
+          text: 'View Schedule Summary',
+          onPress: () => setScreen('Schedule'),
+        },
+        {
+          text: 'OK',
+        },
+      ],
+    );
+  }
+
   async function importScheduleFile() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -4189,8 +4212,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
         if (extractedItems.length > 0) {
           setScheduleItems(prev => [...extractedItems, ...prev]);
-          Alert.alert(
+          showScheduleImportSuccess(
             'PDF schedule imported',
+            extractedItems,
             `${extractedItems.length} possible schedule item${extractedItems.length === 1 ? '' : 's'} extracted using ${extractionMethod || 'schedule extraction'}. Review the extracted items, then correct any task names, locations, or dates that do not match the Gantt chart.`,
           );
           return;
@@ -4213,8 +4237,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
         setScheduleItems(prev => [reviewItem, ...prev]);
 
-        Alert.alert(
+        showScheduleImportSuccess(
           'PDF schedule imported',
+          [reviewItem],
           scheduleAiExtractorUrl.trim()
             ? 'The PDF was saved, but no tasks were extracted. The AI/OCR endpoint did not return usable schedule items. Open the PDF from Schedule or check the extractor endpoint.'
             : 'The PDF was saved, but no readable dates/tasks were extracted. Add an AI/OCR extractor endpoint in Schedule Import for scanned or flattened Gantt charts, or open the PDF and tap Add Item to enter milestones manually.',
@@ -4235,8 +4260,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       setScheduleItems(prev => [...imported, ...prev]);
 
-      Alert.alert(
+      showScheduleImportSuccess(
         'Schedule imported',
+        imported,
         `${imported.length} schedule item${imported.length === 1 ? '' : 's'} imported.`,
       );
     } catch {
@@ -4438,6 +4464,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               contentStyle={contentStyle}
               projects={activeProjects}
               savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
               projectStatsByName={projectStatsByName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
@@ -4548,6 +4575,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 archivedProjects
               }
               savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
               projectStatsByName={projectStatsByName}
               onSelect={createNewUpdate}
               onAddProject={addProject}
@@ -4864,6 +4892,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 onUpdateContactDeliveryChoice={updateContactDeliveryChoice}
               />
             </ScreenScroll>
+          )}
+
+          {screen === 'Reports' && (
+            <ReportsScreen
+              contentStyle={contentStyle}
+              onGenerateExecutiveReport={() => setScreen('AIExecutiveBrief')}
+              onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
+              onProjectHealthReport={() => setScreen('ProjectHealthDashboard')}
+              onCriticalPathReport={() => setScreen('CriticalPath')}
+              onMilestoneReport={() => setScreen('MilestoneTracking')}
+              onSavedUpdates={() => setScreen('SavedUpdates')}
+            />
           )}
 
           {screen === 'SavedUpdates' && (

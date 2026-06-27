@@ -12,7 +12,7 @@ type IconName = keyof typeof Ionicons.glyphMap;
 type BottomNavigationDestination =
   | 'Home'
   | 'Projects'
-  | 'SavedUpdates'
+  | 'Reports'
   | 'Admin';
 
 type BottomNavigationProps = {
@@ -66,8 +66,8 @@ export function BottomNavigation({
       <TabButton
         label="Reports"
         icon="bar-chart-outline"
-        active={current === 'SavedUpdates'}
-        onPress={() => onChange('SavedUpdates')}
+        active={current === 'Reports'}
+        onPress={() => onChange('Reports')}
       />
 
       <TabButton

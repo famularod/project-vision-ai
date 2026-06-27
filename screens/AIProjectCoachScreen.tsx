@@ -19,6 +19,10 @@ import type {
   ProjectUpdate,
   ScheduleItem,
 } from '../types';
+import {
+  buildScheduleSummary,
+  scheduleSummaryHighlights,
+} from '../utils/schedule';
 
 export function AIProjectCoachScreen({
   contentStyle,
@@ -50,6 +54,13 @@ export function AIProjectCoachScreen({
         currentUpdate,
       }),
     [currentUpdate, projectName, scheduleItems, updates],
+  );
+  const scheduleSummary = useMemo(
+    () =>
+      buildScheduleSummary(scheduleItems, {
+        projectName,
+      }),
+    [projectName, scheduleItems],
   );
 
   async function runAIAnalysis() {
@@ -139,6 +150,28 @@ export function AIProjectCoachScreen({
             title={`Risk ${index + 1}`}
             text={item}
             tone="warning"
+          />
+        ))}
+      </AICoachSection>
+
+      <AICoachSection
+        title="Schedule Context"
+        subtitle="Schedule items used by AI Coach for risk and recommendation context."
+      >
+        {[
+          ...scheduleSummaryHighlights(scheduleSummary),
+          ...scheduleSummary.overdueTasks
+            .slice(0, 3)
+            .map(task => `Overdue: ${task.title} (${task.dueLabel}).`),
+          ...scheduleSummary.upcoming30Tasks
+            .slice(0, 3)
+            .map(task => `Upcoming: ${task.title} (${task.dueLabel}).`),
+        ].map((item, index) => (
+          <AICoachRecommendationCard
+            key={`${index}-${item}`}
+            title={`Schedule signal ${index + 1}`}
+            text={item}
+            tone={scheduleSummary.overdueCount > 0 ? 'warning' : 'neutral'}
           />
         ))}
       </AICoachSection>

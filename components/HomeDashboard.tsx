@@ -10,6 +10,12 @@ import { AppHeader } from './AppHeader';
 import { AttentionCard } from './AttentionCard';
 import { Screen } from './layout/Screen';
 import { RecentActivity } from './RecentActivity';
+import type { ScheduleItem } from '../types';
+import {
+  buildScheduleSummary,
+  type ScheduleSummary,
+  type ScheduleSummaryTask,
+} from '../utils/schedule';
 
 type ProjectStats = {
   updates: number;
@@ -32,6 +38,7 @@ type HomeDashboardProps = {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
   savedUpdates: DashboardUpdate[];
+  scheduleItems: ScheduleItem[];
   projectStatsByName: Record<string, ProjectStats>;
   unfinishedDraft: DashboardUpdate | null;
   draftSavedAt: string | null;
@@ -97,6 +104,7 @@ export function HomeDashboard({
   contentStyle,
   projects,
   savedUpdates,
+  scheduleItems,
   projectStatsByName,
   unfinishedDraft,
   draftSavedAt,
@@ -161,6 +169,7 @@ export function HomeDashboard({
   const currentProjectStats =
     projectStatsByName[currentProject] || EMPTY_PROJECT_STATS;
   const hasActiveProject = projects.length > 0;
+  const scheduleSummary = buildScheduleSummary(scheduleItems);
 
   return (
     <Screen contentStyle={contentStyle}>
@@ -320,8 +329,112 @@ export function HomeDashboard({
         onUpdateProject={onUpdateProject}
       />
 
+      <ScheduleAttentionCard
+        summary={scheduleSummary}
+        onSchedule={onSchedule}
+      />
+
       <RecentActivity updates={savedUpdates} />
     </Screen>
+  );
+}
+
+function ScheduleAttentionCard({
+  summary,
+  onSchedule,
+}: {
+  summary: ScheduleSummary;
+  onSchedule: () => void;
+}) {
+  if (summary.overdueCount === 0 && summary.upcoming30Count === 0) {
+    return null;
+  }
+
+  const upcomingTasks = summary.upcomingTasks.slice(0, 3);
+
+  return (
+    <View style={styles.scheduleAttentionCard}>
+      <View style={styles.scheduleAttentionHeader}>
+        <View style={styles.scheduleAttentionIcon}>
+          <Ionicons
+            name={summary.overdueCount > 0 ? 'alert-circle-outline' : 'time-outline'}
+            size={22}
+            color={summary.overdueCount > 0 ? colors.danger : colors.warning}
+          />
+        </View>
+
+        <View style={styles.rowMain}>
+          <Text style={styles.scheduleAttentionTitle}>
+            Schedule Attention
+          </Text>
+
+          <Text style={styles.scheduleAttentionMeta}>
+            {summary.overdueCount > 0
+              ? `${summary.overdueCount} overdue | `
+              : ''}
+            {summary.upcoming7Count} due in 7 days | {summary.upcoming30Count} due in 30 days
+          </Text>
+        </View>
+      </View>
+
+      {upcomingTasks.length > 0 ? (
+        <View style={styles.scheduleTaskList}>
+          {upcomingTasks.map(task => (
+            <ScheduleAttentionTask
+              key={task.item.id}
+              task={task}
+            />
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.scheduleEmptyText}>
+          No upcoming dated tasks. Review overdue items in Schedule.
+        </Text>
+      )}
+
+      <TouchableOpacity
+        style={styles.scheduleAttentionButton}
+        onPress={onSchedule}
+      >
+        <Ionicons
+          name="calendar-outline"
+          size={18}
+          color={colors.primary}
+        />
+
+        <Text style={styles.scheduleAttentionButtonText}>
+          View Schedule Summary
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function ScheduleAttentionTask({
+  task,
+}: {
+  task: ScheduleSummaryTask;
+}) {
+  return (
+    <View style={styles.scheduleTaskRow}>
+      <View style={styles.scheduleTaskBullet} />
+
+      <View style={styles.rowMain}>
+        <Text
+          style={styles.scheduleTaskTitle}
+          numberOfLines={1}
+        >
+          {task.title}
+        </Text>
+
+        <Text
+          style={styles.scheduleTaskMeta}
+          numberOfLines={1}
+        >
+          {task.projectName} | {task.dueLabel}
+        </Text>
+      </View>
+    </View>
   );
 }
 
@@ -519,5 +632,105 @@ const styles = StyleSheet.create({
 
   rowMain: {
     flex: 1,
+  },
+
+  scheduleAttentionCard: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 16,
+    marginBottom: 16,
+  },
+
+  scheduleAttentionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+
+  scheduleAttentionIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 11,
+    backgroundColor: colors.warningSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  scheduleAttentionTitle: {
+    color: colors.text,
+    fontSize: 18,
+    lineHeight: 23,
+    fontWeight: '900',
+  },
+
+  scheduleAttentionMeta: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+
+  scheduleTaskList: {
+    gap: 9,
+  },
+
+  scheduleTaskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+
+  scheduleTaskBullet: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: colors.warning,
+  },
+
+  scheduleTaskTitle: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '800',
+  },
+
+  scheduleTaskMeta: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+
+  scheduleEmptyText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+  },
+
+  scheduleAttentionButton: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 12,
+    marginTop: 13,
+  },
+
+  scheduleAttentionButtonText: {
+    color: colors.primary,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '900',
+    textAlign: 'center',
   },
 });

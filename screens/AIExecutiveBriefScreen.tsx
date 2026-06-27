@@ -20,6 +20,10 @@ import type {
   UpdatePhoto,
 } from '../types';
 import { formatDisplayDate } from '../utils/date';
+import {
+  buildScheduleSummary,
+  scheduleSummaryHighlights,
+} from '../utils/schedule';
 
 function isSameProject(projectName: string, nextProjectName: string) {
   return projectName.trim().toLowerCase() === nextProjectName.trim().toLowerCase();
@@ -169,6 +173,13 @@ export function AIExecutiveBriefScreen({
       }),
     [currentUpdate, displayProjectName, updates],
   );
+  const scheduleSummary = useMemo(
+    () =>
+      buildScheduleSummary(scheduleItems, {
+        projectName: displayProjectName,
+      }),
+    [displayProjectName, scheduleItems],
+  );
 
   async function runAIAnalysis() {
     setAILoading(true);
@@ -263,6 +274,26 @@ export function AIExecutiveBriefScreen({
         )}
         tone="warning"
         icon="warning-outline"
+      />
+
+      <ExecutiveBriefSection
+        title="Schedule Summary"
+        subtitle="Overdue work, upcoming milestones, mapping gaps, and schedule risks."
+        items={firstItems(
+          [
+            ...scheduleSummaryHighlights(scheduleSummary),
+            ...scheduleSummary.overdueTasks
+              .slice(0, 3)
+              .map(task => `Overdue: ${task.title} (${task.dueLabel}).`),
+            ...scheduleSummary.upcoming30Tasks
+              .slice(0, 3)
+              .map(task => `Upcoming: ${task.title} (${task.dueLabel}).`),
+          ],
+          6,
+          'No schedule items are available for this project yet.',
+        )}
+        tone={scheduleSummary.overdueCount > 0 ? 'warning' : 'success'}
+        icon="calendar-outline"
       />
 
       <ExecutiveBriefSection

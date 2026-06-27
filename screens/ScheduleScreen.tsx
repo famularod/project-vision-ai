@@ -39,8 +39,248 @@ import {
 } from '../utils/date';
 import {
   actionItemsFromUpdates,
+  buildScheduleSummary,
+  scheduleSummaryHighlights,
   sortedScheduleItems,
+  type ScheduleSummary,
+  type ScheduleSummaryGroup,
+  type ScheduleSummaryTask,
 } from '../utils/schedule';
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function taskMeta(task: ScheduleSummaryTask) {
+  return `${task.projectName}${task.areaName ? ` | ${task.areaName}` : ''} | ${task.dueLabel}`;
+}
+
+function ScheduleSummaryTaskList({
+  title,
+  tasks,
+  emptyText,
+  icon,
+  iconColor = colors.primary,
+}: {
+  title: string;
+  tasks: ScheduleSummaryTask[];
+  emptyText: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor?: string;
+}) {
+  return (
+    <View>
+      <Text style={styles.sectionLabel}>
+        {title}
+      </Text>
+
+      {tasks.length > 0 ? (
+        tasks.slice(0, 5).map(task => (
+          <View key={task.item.id} style={styles.compactLocationRow}>
+            <View style={styles.rowIconBubble}>
+              <Ionicons
+                name={icon}
+                size={20}
+                color={iconColor}
+              />
+            </View>
+
+            <View style={styles.rowMain}>
+              <Text style={styles.projectName}>
+                {task.title}
+              </Text>
+
+              <Text style={styles.rowSub}>
+                {taskMeta(task)}
+              </Text>
+
+              <Text style={styles.rowSub}>
+                {task.item.status} | {task.item.percentComplete}% complete | {task.item.priority} priority
+              </Text>
+            </View>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.bodyText}>
+          {emptyText}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function ScheduleGroupList({
+  title,
+  groups,
+  emptyText,
+}: {
+  title: string;
+  groups: ScheduleSummaryGroup[];
+  emptyText: string;
+}) {
+  return (
+    <View>
+      <Text style={styles.sectionLabel}>
+        {title}
+      </Text>
+
+      {groups.length > 0 ? (
+        groups.slice(0, 6).map(group => (
+          <View key={group.name} style={styles.compactLocationRow}>
+            <View style={styles.rowIconBubble}>
+              <Ionicons
+                name="folder-open-outline"
+                size={20}
+                color={colors.primary}
+              />
+            </View>
+
+            <View style={styles.rowMain}>
+              <Text style={styles.projectName}>
+                {group.name}
+              </Text>
+
+              <Text style={styles.rowSub}>
+                {countLabel(group.count, 'task')} | {group.upcoming30Count} upcoming | {group.overdueCount} overdue | {group.completedCount} complete
+              </Text>
+            </View>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.bodyText}>
+          {emptyText}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function ScheduleSummaryPanel({
+  summary,
+}: {
+  summary: ScheduleSummary;
+}) {
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.panelTitle}>
+        Schedule Summary
+      </Text>
+
+      {scheduleSummaryHighlights(summary).map(item => (
+        <Text key={item} style={styles.bodyText}>
+          {item}
+        </Text>
+      ))}
+
+      <View style={styles.dashboardGrid}>
+        <DashboardMetric
+          label="Milestones"
+          value={summary.milestoneCount}
+          icon="flag-outline"
+        />
+
+        <DashboardMetric
+          label="Overdue"
+          value={summary.overdueCount}
+          icon="alert-circle-outline"
+          danger={summary.overdueCount > 0}
+        />
+
+        <DashboardMetric
+          label="Next 7"
+          value={summary.upcoming7Count}
+          icon="time-outline"
+        />
+
+        <DashboardMetric
+          label="Next 14"
+          value={summary.upcoming14Count}
+          icon="calendar-outline"
+        />
+
+        <DashboardMetric
+          label="Next 30"
+          value={summary.upcoming30Count}
+          icon="calendar-number-outline"
+        />
+
+        <DashboardMetric
+          label="Missing Map"
+          value={summary.missingMappingCount}
+          icon="map-outline"
+          danger={summary.missingMappingCount > 0}
+        />
+      </View>
+
+      {summary.totalItems > 0 ? (
+        <>
+          <ScheduleSummaryTaskList
+            title="Upcoming Tasks"
+            tasks={summary.upcoming30Tasks}
+            emptyText="No upcoming schedule tasks are due in the next 30 days."
+            icon="time-outline"
+            iconColor={colors.warning}
+          />
+
+          <ScheduleSummaryTaskList
+            title="Overdue Tasks"
+            tasks={summary.overdueTasks}
+            emptyText="No overdue schedule tasks."
+            icon="alert-circle-outline"
+            iconColor={colors.danger}
+          />
+
+          <ScheduleSummaryTaskList
+            title="Completed Tasks"
+            tasks={summary.completedTasks}
+            emptyText="No completed schedule tasks yet."
+            icon="checkmark-circle-outline"
+            iconColor={colors.success}
+          />
+
+          <ScheduleSummaryTaskList
+            title="Milestones"
+            tasks={summary.milestoneTasks}
+            emptyText="No milestones were identified yet."
+            icon="flag-outline"
+          />
+
+          <ScheduleGroupList
+            title="Tasks By Project"
+            groups={summary.byProject}
+            emptyText="No project grouping is available."
+          />
+
+          <ScheduleGroupList
+            title="Tasks By Area"
+            groups={summary.byArea}
+            emptyText="No area grouping is available."
+          />
+
+          <ScheduleSummaryTaskList
+            title="Critical / High-Risk Items"
+            tasks={summary.criticalPathItems}
+            emptyText="No high-priority, waiting, or overdue schedule items are currently flagged."
+            icon="git-branch-outline"
+            iconColor={colors.danger}
+          />
+
+          <ScheduleSummaryTaskList
+            title="Missing Project / Area Mapping"
+            tasks={summary.missingMappingTasks}
+            emptyText="All schedule tasks have project and area mapping."
+            icon="map-outline"
+            iconColor={colors.warning}
+          />
+        </>
+      ) : (
+        <Text style={styles.bodyText}>
+          Import a PDF, CSV, or text schedule to populate upcoming tasks, milestones, overdue work, and project/area summaries.
+        </Text>
+      )}
+    </View>
+  );
+}
 
 export function ScheduleScreen({
   contentStyle,
@@ -96,22 +336,10 @@ export function ScheduleScreen({
   const actionItems = actionItemsFromUpdates(savedUpdates);
 
   const sortedItems = sortedScheduleItems(scheduleItems);
+  const scheduleSummary = buildScheduleSummary(scheduleItems);
 
-  const dueSoon = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
-
-    const days = daysUntilDate(item.finishDate);
-
-    return days !== null && days >= 0 && days <= 7;
-  });
-
-  const overdue = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
-
-    const days = daysUntilDate(item.finishDate);
-
-    return days !== null && days < 0;
-  });
+  const dueSoon = scheduleSummary.upcoming7Tasks.map(task => task.item);
+  const overdue = scheduleSummary.overdueTasks.map(task => task.item);
 
   function resetForm() {
     setTaskName('');
@@ -240,6 +468,8 @@ export function ScheduleScreen({
               icon="checkbox-outline"
             />
           </View>
+
+          <ScheduleSummaryPanel summary={scheduleSummary} />
 
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>Schedule Import</Text>

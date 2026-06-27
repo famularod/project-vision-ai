@@ -30,13 +30,16 @@ import {
   ProjectArea,
   ProjectStats,
   ProjectUpdate,
+  ScheduleItem,
 } from '../types';
+import { buildScheduleSummary } from '../utils/schedule';
 
 export function ProjectsScreen({
   contentStyle,
   activeProjects,
   archivedProjects,
   savedUpdates,
+  scheduleItems,
   projectStatsByName,
   projectAreas,
   onSelect,
@@ -60,6 +63,7 @@ export function ProjectsScreen({
   activeProjects: string[];
   archivedProjects: string[];
   savedUpdates: ProjectUpdate[];
+  scheduleItems: ScheduleItem[];
   projectStatsByName: Record<string, ProjectStats>;
   projectAreas: ProjectArea[];
   onSelect: (projectName: string) => void;
@@ -256,6 +260,9 @@ export function ProjectsScreen({
       <ProjectFinderRow
         project={item.project}
         stats={item.stats}
+        scheduleSummary={buildScheduleSummary(scheduleItems, {
+          projectName: item.project,
+        })}
         archived={item.archived}
         favorite={favorite}
         onPress={() =>
@@ -365,6 +372,12 @@ export function ProjectsScreen({
             label="Reference Documents"
             icon="documents-outline"
             onPress={onReferenceDocuments}
+          />
+
+          <SecondaryButton
+            label="Schedule"
+            icon="calendar-outline"
+            onPress={onSchedule}
           />
 
           {onConstructionTimeline ? (

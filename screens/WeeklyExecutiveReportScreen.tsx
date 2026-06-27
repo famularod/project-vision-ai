@@ -25,6 +25,10 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
+import {
+  buildScheduleSummary,
+  scheduleSummaryHighlights,
+} from '../utils/schedule';
 
 function healthTone(score: number) {
   if (score < 60) return 'danger';
@@ -68,6 +72,10 @@ export function WeeklyExecutiveReportScreen({
       savedUpdates,
       scheduleItems,
     ],
+  );
+  const scheduleSummary = useMemo(
+    () => buildScheduleSummary(scheduleItems),
+    [scheduleItems],
   );
 
   return (
@@ -162,6 +170,22 @@ export function WeeklyExecutiveReportScreen({
         />
 
         <WeeklyReportMetricCard
+          label="Schedule Overdue"
+          value={scheduleSummary.overdueCount}
+          subtitle="Incomplete tasks past due"
+          icon="alert-circle-outline"
+          tone={scheduleSummary.overdueCount > 0 ? 'danger' : 'success'}
+        />
+
+        <WeeklyReportMetricCard
+          label="Schedule Due 30"
+          value={scheduleSummary.upcoming30Count}
+          subtitle="Tasks due in 30 days"
+          icon="calendar-number-outline"
+          tone={scheduleSummary.upcoming30Count > 0 ? 'warning' : 'neutral'}
+        />
+
+        <WeeklyReportMetricCard
           label="Documents This Week"
           value={report.metrics.documentsThisWeek}
           subtitle="Reference documents updated"
@@ -169,6 +193,25 @@ export function WeeklyExecutiveReportScreen({
           tone={report.metrics.documentsThisWeek > 0 ? 'success' : 'neutral'}
         />
       </ScreenMetricGrid>
+
+      <WeeklyReportSection
+        title="Schedule Summary"
+        subtitle="Overdue tasks, upcoming milestones, mapping gaps, and schedule risk signals."
+      >
+        <WeeklyReportActionList
+          items={[
+            ...scheduleSummaryHighlights(scheduleSummary),
+            ...scheduleSummary.overdueTasks
+              .slice(0, 3)
+              .map(task => `Overdue: ${task.title} (${task.projectName}, ${task.dueLabel}).`),
+            ...scheduleSummary.upcoming30Tasks
+              .slice(0, 3)
+              .map(task => `Upcoming: ${task.title} (${task.projectName}, ${task.dueLabel}).`),
+          ]}
+          tone={scheduleSummary.overdueCount > 0 ? 'warning' : 'success'}
+          icon={scheduleSummary.overdueCount > 0 ? 'alert-circle-outline' : 'calendar-outline'}
+        />
+      </WeeklyReportSection>
 
       <WeeklyReportSection
         title="Recent Updates"
