@@ -1691,6 +1691,24 @@ export const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
+  projectLocationPanel: {
+    minHeight: 42,
+    borderRadius: 10,
+    backgroundColor: colors.primarySoft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+
+  projectLocationText: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+
   compactStatsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1719,11 +1737,15 @@ export const styles = StyleSheet.create({
     gap: 9,
   },
 
+  projectFinderActionPanel: {
+    gap: 9,
+  },
+
   projectFinderOverflow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    paddingTop: 2,
+    paddingTop: 1,
   },
 
   projectPrimaryAction: {
@@ -1741,15 +1763,26 @@ export const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 21,
     fontWeight: '900',
+    textAlign: 'center',
   },
 
   projectOverflowButton: {
-    width: 52,
+    width: 88,
     minHeight: 52,
     borderRadius: 12,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+  },
+
+  projectOverflowButtonText: {
+    color: colors.primary,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '900',
   },
 
   dashboardGrid: {

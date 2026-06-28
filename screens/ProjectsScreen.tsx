@@ -11,7 +11,10 @@ import {
   ViewStyle,
 } from 'react-native';
 import { AddProjectCard } from '../components/AddProjectCard';
-import { ProjectFinderRow } from '../components/ProjectFinderRow';
+import {
+  ProjectFinderRow,
+  type ProjectLocationContext,
+} from '../components/ProjectFinderRow';
 import {
   EmptyState,
   ScreenTitle,
@@ -24,7 +27,9 @@ import {
 } from '../services/StorageService';
 import {
   EMPTY_PROJECT_STATS,
+  ProjectArea,
   ProjectStats,
+  ProjectUpdate,
   ScheduleItem,
 } from '../types';
 import { buildScheduleSummary } from '../utils/schedule';
@@ -33,7 +38,9 @@ export function ProjectsScreen({
   contentStyle,
   activeProjects,
   archivedProjects,
+  savedUpdates,
   scheduleItems,
+  projectAreas,
   projectStatsByName,
   onSelect,
   onUpdateProject,
@@ -46,7 +53,9 @@ export function ProjectsScreen({
   contentStyle: StyleProp<ViewStyle>;
   activeProjects: string[];
   archivedProjects: string[];
+  savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  projectAreas: ProjectArea[];
   projectStatsByName: Record<string, ProjectStats>;
   onSelect: (projectName: string) => void;
   onUpdateProject?: (projectName: string) => void;
@@ -203,13 +212,21 @@ export function ProjectsScreen({
     const favorite = favoriteProjects.some(
       project => project.toLowerCase() === item.project.toLowerCase(),
     );
+    const scheduleSummary = buildScheduleSummary(scheduleItems, {
+      projectName: item.project,
+    });
 
     return (
       <ProjectFinderRow
         project={item.project}
         stats={item.stats}
-        scheduleSummary={buildScheduleSummary(scheduleItems, {
+        scheduleSummary={scheduleSummary}
+        locationContext={projectLocationContext({
           projectName: item.project,
+          savedUpdates,
+          scheduleItems,
+          projectAreas,
+          scheduleSummary,
         })}
         archived={item.archived}
         favorite={favorite}
@@ -317,4 +334,64 @@ export function ProjectsScreen({
       }
     />
   );
+}
+
+function projectLocationContext({
+  projectName,
+  savedUpdates,
+  scheduleItems,
+  projectAreas,
+  scheduleSummary,
+}: {
+  projectName: string;
+  savedUpdates: ProjectUpdate[];
+  scheduleItems: ScheduleItem[];
+  projectAreas: ProjectArea[];
+  scheduleSummary: ReturnType<typeof buildScheduleSummary>;
+}): ProjectLocationContext {
+  const projectKey = projectName.trim().toLowerCase();
+  const projectUpdates = savedUpdates
+    .filter(update => update.projectName.trim().toLowerCase() === projectKey)
+    .sort(
+      (left, right) =>
+        new Date(right.date).getTime() - new Date(left.date).getTime(),
+    );
+  const latestUpdateWithArea = projectUpdates.find(update =>
+    Boolean(update.selectedAreaName?.trim()),
+  );
+  const latestPhotoArea = projectUpdates
+    .flatMap(update => update.photos)
+    .find(photo => Boolean(photo.selectedAreaName?.trim()));
+  const scheduleArea =
+    scheduleSummary.byArea.find(area => area.name !== 'Unassigned area')?.name ||
+    scheduleItems.find(
+      item =>
+        item.projectName.trim().toLowerCase() === projectKey &&
+        item.locationName.trim(),
+    )?.locationName ||
+    null;
+  const areaName =
+    latestUpdateWithArea?.selectedAreaName?.trim() ||
+    latestPhotoArea?.selectedAreaName?.trim() ||
+    scheduleArea;
+  const matchedArea = areaName
+    ? projectAreas.find(area => area.name.trim().toLowerCase() === areaName.toLowerCase())
+    : null;
+
+  return {
+    areaName: areaName || null,
+    buildingName: matchedArea?.building?.trim() || null,
+    gpsSet: Boolean(
+      matchedArea?.locationCapturedAt ||
+        latestUpdateWithArea?.locationCapturedAt ||
+        latestPhotoArea?.locationCapturedAt,
+    ),
+    source: latestUpdateWithArea
+      ? 'update'
+      : scheduleArea
+        ? 'schedule'
+        : matchedArea
+          ? 'project-area'
+          : 'none',
+  };
 }

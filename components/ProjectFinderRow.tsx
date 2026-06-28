@@ -7,13 +7,12 @@ import type { ScheduleSummary } from '../utils/schedule';
 import { colors, styles } from './ProjectDetailsCard';
 
 function scheduleStatusLabel(summary: ScheduleSummary | undefined) {
-  if (!summary || summary.totalItems === 0) return 'Schedule Required';
-  if (summary.overdueCount > 0) return 'Schedule risk';
-  if (summary.upcoming7Count > 0) return 'Due this week';
-  if (summary.upcoming30Count > 0) return 'Upcoming';
-  if (summary.completedCount === summary.totalItems) return 'Complete';
+  if (!summary) return 'None';
+  if (summary.totalItems === 0) return 'Required';
+  if (summary.overdueCount > 0) return 'Behind';
+  if (summary.upcoming7Count > 0 || summary.upcoming30Count > 0) return 'Due Soon';
 
-  return 'Tracked';
+  return 'On Track';
 }
 
 function projectHealthLabel(
@@ -71,10 +70,18 @@ function nextMilestoneLabel(summary: ScheduleSummary | undefined) {
   return `${milestone.title} (${milestone.dueLabel})`;
 }
 
+export type ProjectLocationContext = {
+  areaName: string | null;
+  buildingName: string | null;
+  gpsSet: boolean;
+  source: 'update' | 'schedule' | 'project-area' | 'none';
+};
+
 export function ProjectFinderRow({
   project,
   stats,
   scheduleSummary,
+  locationContext,
   archived,
   favorite,
   onPress,
@@ -88,6 +95,7 @@ export function ProjectFinderRow({
   project: string;
   stats: ProjectStats;
   scheduleSummary?: ScheduleSummary;
+  locationContext?: ProjectLocationContext;
   archived: boolean;
   favorite: boolean;
   onPress: () => void;
@@ -166,7 +174,10 @@ export function ProjectFinderRow({
 
         <View style={styles.projectSignalGrid}>
           <View style={styles.projectSignalItem}>
-            <Text style={styles.projectSignalLabel}>
+            <Text
+              style={styles.projectSignalLabel}
+              numberOfLines={1}
+            >
               Health
             </Text>
 
@@ -179,7 +190,10 @@ export function ProjectFinderRow({
           </View>
 
           <View style={styles.projectSignalItem}>
-            <Text style={styles.projectSignalLabel}>
+            <Text
+              style={styles.projectSignalLabel}
+              numberOfLines={1}
+            >
               Open Issues
             </Text>
 
@@ -195,7 +209,10 @@ export function ProjectFinderRow({
           </View>
 
           <View style={styles.projectSignalItem}>
-            <Text style={styles.projectSignalLabel}>
+            <Text
+              style={styles.projectSignalLabel}
+              numberOfLines={1}
+            >
               Schedule
             </Text>
 
@@ -219,30 +236,43 @@ export function ProjectFinderRow({
             Next milestone: {nextMilestone}
           </Text>
         ) : null}
+
+        <ProjectLocationLine locationContext={locationContext} />
       </TouchableOpacity>
 
-      <View style={styles.projectFinderActions}>
-        <TouchableOpacity
-          style={styles.projectPrimaryAction}
-          onPress={primaryAction}
-        >
-          <Text style={styles.projectPrimaryActionText}>
-            {primaryLabel}
-          </Text>
-        </TouchableOpacity>
+      <View style={styles.projectFinderActionPanel}>
+        <View style={styles.projectFinderActions}>
+          <TouchableOpacity
+            style={styles.projectPrimaryAction}
+            onPress={primaryAction}
+          >
+            <Text
+              style={styles.projectPrimaryActionText}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.85}
+            >
+              {primaryLabel}
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.projectOverflowButton}
-          onPress={() => setMoreOpen(open => !open)}
-          accessibilityRole="button"
-          accessibilityLabel={`More actions for ${project}`}
-        >
-          <Ionicons
-            name="ellipsis-horizontal"
-            size={20}
-            color={colors.primary}
-          />
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.projectOverflowButton}
+            onPress={() => setMoreOpen(open => !open)}
+            accessibilityRole="button"
+            accessibilityLabel={`More actions for ${project}`}
+          >
+            <Ionicons
+              name="ellipsis-horizontal"
+              size={19}
+              color={colors.primary}
+            />
+
+            <Text style={styles.projectOverflowButtonText}>
+              More
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         {moreOpen ? (
           <View style={styles.projectFinderOverflow}>
@@ -296,6 +326,49 @@ export function ProjectFinderRow({
             </TouchableOpacity>
           </View>
         ) : null}
+      </View>
+    </View>
+  );
+}
+
+function ProjectLocationLine({
+  locationContext,
+}: {
+  locationContext?: ProjectLocationContext;
+}) {
+  const areaText = locationContext?.areaName
+    ? `Area: ${locationContext.areaName}`
+    : 'Area: GPS not set';
+  const locationText = locationContext?.buildingName
+    ? `Location: ${locationContext.buildingName}`
+    : locationContext?.gpsSet
+      ? 'Location: GPS set'
+      : null;
+
+  return (
+    <View style={styles.projectLocationPanel}>
+      <Ionicons
+        name="location-outline"
+        size={16}
+        color={colors.primary}
+      />
+
+      <View style={styles.rowMain}>
+        {locationText ? (
+          <Text
+            style={styles.projectLocationText}
+            numberOfLines={1}
+          >
+            {locationText}
+          </Text>
+        ) : null}
+
+        <Text
+          style={styles.projectLocationText}
+          numberOfLines={1}
+        >
+          {areaText}
+        </Text>
       </View>
     </View>
   );

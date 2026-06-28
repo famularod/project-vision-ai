@@ -4,6 +4,7 @@ export type Screen =
   | 'AddPhotos'
   | 'BuildUpdate'
   | 'Projects'
+  | 'ProjectAssistant'
   | 'SavedUpdates'
   | 'Contacts'
   | 'Diagnostics'

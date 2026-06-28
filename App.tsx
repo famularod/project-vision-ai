@@ -9,6 +9,10 @@ import {
   testSupabaseConnection,
   type SupabaseConnectionTestResult,
 } from './services/SupabaseService';
+import {
+  getSyncStatus,
+  type SyncStatus,
+} from './services/SyncService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import { BottomNavigation } from './components/BottomNavigation';
 import { HomeDashboard } from './components/HomeDashboard';
@@ -34,6 +38,7 @@ import { ExecutiveKPIDashboardScreen } from './screens/ExecutiveKPIDashboardScre
 import { HistoryScreen } from './screens/HistoryScreen';
 import { MilestoneTrackingScreen } from './screens/MilestoneTrackingScreen';
 import { PortfolioDashboardScreen } from './screens/PortfolioDashboardScreen';
+import { ProjectAssistantScreen } from './screens/ProjectAssistantScreen';
 import { ProjectOverviewScreen } from './screens/ProjectOverviewScreen';
 import { ProjectHealthDashboard } from './screens/ProjectHealthDashboard';
 import { ProjectRiskMatrixScreen } from './screens/ProjectRiskMatrixScreen';
@@ -76,6 +81,7 @@ type Screen =
   | 'BuildUpdate'
   | 'Projects'
   | 'ProjectOverview'
+  | 'ProjectAssistant'
   | 'Reports'
   | 'SavedUpdates'
   | 'Contacts'
@@ -2196,6 +2202,9 @@ function AppShell() {
   const [supabaseStartupConnection, setSupabaseStartupConnection] =
     useState<SupabaseConnectionTestResult | null>(null);
 
+  const [syncStatus, setSyncStatus] =
+    useState<SyncStatus | null>(null);
+
   const [draft, setDraft] = useState<ProjectUpdate>(() =>
     createDraft(DEFAULT_PROJECTS[0]),
   );
@@ -2277,6 +2286,26 @@ useEffect(() => {
     active = false;
   };
 }, []);
+
+useEffect(() => {
+  let active = true;
+
+  getSyncStatus()
+    .then(status => {
+      if (active) setSyncStatus(status);
+    })
+    .catch(() => undefined);
+
+  return () => {
+    active = false;
+  };
+}, [
+  projects.length,
+  projectAreas.length,
+  referenceDocuments.length,
+  savedUpdates.length,
+  scheduleItems.length,
+]);
 
 useEffect(() => {
   async function loadSavedUpdates() {
@@ -3003,6 +3032,11 @@ useEffect(() => {
   function openProjectOverview(projectName: string) {
     setSelectedProjectName(projectName);
     setScreen('ProjectOverview');
+  }
+
+  function openProjectAssistant() {
+    setSelectedProjectName(projectOverviewName);
+    setScreen('ProjectAssistant');
   }
 
   function openProjectReport(projectName: string) {
@@ -4672,6 +4706,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onOpenProject={openProjectOverview}
               onViewProjects={() => setScreen('Projects')}
               onSchedule={() => setScreen('Schedule')}
+              onProjectAssistant={openProjectAssistant}
               onAIProjectCoach={() => setScreen('AIProjectCoach')}
               onAIExecutiveBrief={() => setScreen('AIExecutiveBrief')}
             />
@@ -4784,7 +4819,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
               archivedProjects={
                 archivedProjects
               }
+              savedUpdates={savedUpdates}
               scheduleItems={scheduleItems}
+              projectAreas={projectAreas}
               projectStatsByName={projectStatsByName}
               onSelect={openProjectOverview}
               onUpdateProject={createNewUpdate}
@@ -4806,6 +4843,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }
               savedUpdates={savedUpdates}
               scheduleItems={scheduleItems}
+              projectAreas={projectAreas}
+              contacts={contactBook}
+              referenceDocuments={referenceDocuments}
+              syncMetadata={syncStatus}
               onBack={() => setScreen('Projects')}
               onCaptureUpdate={() => createNewUpdate(projectOverviewName)}
               onGenerateReport={() => openProjectReport(projectOverviewName)}
@@ -4813,6 +4854,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 setSelectedProjectName(projectOverviewName);
                 setScreen('ConstructionTimeline');
               }}
+            />
+          )}
+
+          {screen === 'ProjectAssistant' && (
+            <ProjectAssistantScreen
+              contentStyle={contentStyle}
+              projectName={projectOverviewName}
+              hasProject={activeProjects.length > 0}
+              updates={savedUpdates}
+              scheduleItems={scheduleItems}
+              currentUpdate={draft}
+              projectAreas={projectAreas}
+              contacts={contactBook}
+              referenceDocuments={referenceDocuments}
+              syncMetadata={syncStatus}
+              onBack={() => setScreen('Home')}
+              onChooseProject={() => setScreen('Projects')}
             />
           )}
 

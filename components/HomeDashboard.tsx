@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useState } from 'react';
 import type { StyleProp, ViewStyle } from 'react-native';
 import {
   StyleSheet,
@@ -59,6 +60,7 @@ type HomeDashboardProps = {
   onOpenProject: (projectName: string) => void;
   onViewProjects: () => void;
   onSchedule: () => void;
+  onProjectAssistant: () => void;
   onAIProjectCoach: () => void;
   onAIExecutiveBrief: () => void;
 };
@@ -289,9 +291,11 @@ export function HomeDashboard({
   onOpenProject,
   onViewProjects,
   onSchedule,
+  onProjectAssistant,
   onAIProjectCoach,
   onAIExecutiveBrief,
 }: HomeDashboardProps) {
+  const [secondaryActionsOpen, setSecondaryActionsOpen] = useState(false);
   const projectsNeedingAttention = projects
     .map(project => ({
       project,
@@ -430,9 +434,34 @@ export function HomeDashboard({
 
           <BriefLine
             icon={recommendedAction.icon}
-            label="Next"
+            label="Next Action"
             value={recommendedAction.title}
           />
+        </View>
+      </View>
+
+      <View style={styles.pieInsightCard}>
+        <View style={styles.pieInsightHeader}>
+          <View style={styles.pieInsightIcon}>
+            <Ionicons
+              name="sparkles-outline"
+              size={20}
+              color={colors.primary}
+            />
+          </View>
+
+          <View style={styles.rowMain}>
+            <Text style={styles.pieInsightLabel}>
+              PIE Insight
+            </Text>
+
+            <Text
+              style={styles.pieInsightText}
+              numberOfLines={2}
+            >
+              PIE recommends: {recommendedAction.title}.
+            </Text>
+          </View>
         </View>
       </View>
 
@@ -681,36 +710,95 @@ export function HomeDashboard({
         </TouchableOpacity>
       </View>
 
-      <View style={styles.dailyActionRow}>
+      <View style={styles.secondaryActionsPanel}>
         <TouchableOpacity
-          style={styles.dailyActionButton}
-          onPress={onAIExecutiveBrief}
+          style={styles.assistantActionButton}
+          onPress={onProjectAssistant}
         >
           <Ionicons
-            name="newspaper-outline"
+            name="chatbubble-ellipses-outline"
+            size={21}
+            color={colors.primary}
+          />
+
+          <View style={styles.rowMain}>
+            <Text
+              style={styles.secondaryActionTitle}
+              numberOfLines={1}
+            >
+              Project Assistant
+            </Text>
+
+            <Text
+              style={styles.secondaryActionDetail}
+              numberOfLines={1}
+            >
+              Ask PIE about status, risks, or next steps.
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.moreActionsButton}
+          onPress={() => setSecondaryActionsOpen(open => !open)}
+          accessibilityRole="button"
+          accessibilityLabel="Show more Home actions"
+        >
+          <Ionicons
+            name="ellipsis-horizontal"
             size={20}
             color={colors.primary}
           />
 
-          <Text style={styles.dailyActionText}>
-            Generate Report
+          <Text
+            style={styles.moreActionsText}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.82}
+          >
+            More
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.dailyActionButton}
-          onPress={onAIProjectCoach}
-        >
-          <Ionicons
-            name="bulb-outline"
-            size={20}
-            color={colors.primary}
-          />
+        {secondaryActionsOpen ? (
+          <View style={styles.secondaryActionMenu}>
+            <TouchableOpacity
+              style={styles.secondaryMenuAction}
+              onPress={onAIExecutiveBrief}
+            >
+              <Ionicons
+                name="newspaper-outline"
+                size={18}
+                color={colors.primary}
+              />
 
-          <Text style={styles.dailyActionText}>
-            AI Coach
-          </Text>
-        </TouchableOpacity>
+              <Text
+                style={styles.secondaryMenuText}
+                numberOfLines={1}
+              >
+                Generate Report
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.secondaryMenuAction}
+              onPress={onAIProjectCoach}
+            >
+              <Ionicons
+                name="bulb-outline"
+                size={18}
+                color={colors.primary}
+              />
+
+              <Text
+                style={styles.secondaryMenuText}
+                numberOfLines={1}
+              >
+                AI Coach
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </View>
 
       <AttentionCard
@@ -739,22 +827,29 @@ function BriefLine({
 }) {
   return (
     <View style={styles.briefLine}>
-      <Ionicons
-        name={icon}
-        size={18}
-        color={colors.primary}
-      />
+      <View style={styles.briefLineIcon}>
+        <Ionicons
+          name={icon}
+          size={18}
+          color={colors.primary}
+        />
+      </View>
 
-      <Text style={styles.briefLineLabel}>
-        {label}
-      </Text>
+      <View style={styles.briefLineContent}>
+        <Text
+          style={styles.briefLineLabel}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
 
-      <Text
-        style={styles.briefLineValue}
-        numberOfLines={2}
-      >
-        {value}
-      </Text>
+        <Text
+          style={styles.briefLineValue}
+          numberOfLines={2}
+        >
+          {value}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -999,27 +1094,82 @@ const styles = StyleSheet.create({
   },
 
   briefLine: {
-    minHeight: 34,
+    minHeight: 50,
     flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    borderRadius: 11,
+    backgroundColor: colors.fill,
+    padding: 10,
+  },
+
+  briefLineIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: colors.primarySoft,
     alignItems: 'center',
-    gap: 9,
+    justifyContent: 'center',
+  },
+
+  briefLineContent: {
+    flex: 1,
+    minWidth: 0,
   },
 
   briefLineLabel: {
-    width: 64,
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
     fontWeight: '900',
-    textTransform: 'uppercase',
   },
 
   briefLineValue: {
-    flex: 1,
     color: colors.text,
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '800',
+    marginTop: 2,
+  },
+
+  pieInsightCard: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#CFE7FF',
+    padding: 14,
+    marginBottom: 14,
+  },
+
+  pieInsightHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+
+  pieInsightIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  pieInsightLabel: {
+    color: colors.primary,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+
+  pieInsightText: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '800',
+    marginTop: 3,
   },
 
   captureHeroButton: {
@@ -1306,15 +1456,79 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
 
-  dailyActionRow: {
+  secondaryActionsPanel: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
     marginBottom: 16,
   },
 
-  dailyActionButton: {
+  assistantActionButton: {
     flex: 1,
-    minHeight: 52,
+    minWidth: 210,
+    minHeight: 58,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.fill,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+
+  secondaryActionTitle: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '900',
+    minWidth: 0,
+  },
+
+  secondaryActionDetail: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
+    marginTop: 2,
+    minWidth: 0,
+  },
+
+  moreActionsButton: {
+    width: 86,
+    minHeight: 58,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 9,
+  },
+
+  moreActionsText: {
+    color: colors.primary,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '900',
+    minWidth: 0,
+  },
+
+  secondaryActionMenu: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+
+  secondaryMenuAction: {
+    flexGrow: 1,
+    minWidth: 148,
+    minHeight: 48,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.line,
@@ -1323,16 +1537,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 7,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
   },
 
-  dailyActionText: {
+  secondaryMenuText: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 19,
-    fontWeight: '800',
-    textAlign: 'center',
-    flexShrink: 1,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '900',
+    minWidth: 0,
   },
 
   rowMain: {

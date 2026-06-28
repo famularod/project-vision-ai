@@ -19,21 +19,31 @@ import {
   spacing,
   typography,
 } from '../theme';
+import {
+  analyzeProjectIntelligence,
+  type ProjectCommunicationReadiness,
+  type ProjectConfidenceSignal,
+  type ProjectHealthSignal,
+  type ProjectIntelligenceSummary,
+  type ProjectSyncFreshnessMetadata,
+  type ProjectNextAction,
+  type ProjectRiskSignal,
+} from '../services/ProjectIntelligenceEngine';
 import type {
+  ContactBook,
+  ProjectArea,
   ProjectStats,
   ProjectUpdate,
+  ReferenceDocument,
   ScheduleItem,
 } from '../types';
 import { formatDisplayDate } from '../utils/date';
-import {
-  buildScheduleSummary,
-  type ScheduleSummary,
-} from '../utils/schedule';
+import { buildScheduleSummary } from '../utils/schedule';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
 type Health = {
-  label: 'Green' | 'Yellow' | 'Red';
+  label: string;
   color: string;
   backgroundColor: string;
 };
@@ -61,9 +71,12 @@ type FocusItem = {
 export function ProjectOverviewScreen({
   contentStyle,
   projectName,
-  stats,
   savedUpdates,
   scheduleItems,
+  projectAreas,
+  contacts,
+  referenceDocuments,
+  syncMetadata,
   onBack,
   onCaptureUpdate,
   onGenerateReport,
@@ -74,6 +87,10 @@ export function ProjectOverviewScreen({
   stats: ProjectStats;
   savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  projectAreas?: ProjectArea[];
+  contacts?: ContactBook;
+  referenceDocuments?: ReferenceDocument[];
+  syncMetadata?: ProjectSyncFreshnessMetadata | null;
   onBack: () => void;
   onCaptureUpdate: () => void;
   onGenerateReport: () => void;
@@ -82,18 +99,23 @@ export function ProjectOverviewScreen({
   const projectUpdates = savedUpdates
     .filter(update => projectMatches(update.projectName, projectName))
     .sort(compareUpdatesNewestFirst);
+  const intelligence = analyzeProjectIntelligence({
+    projectName,
+    updates: savedUpdates,
+    scheduleItems,
+    projectAreas,
+    contacts,
+    referenceDocuments,
+    syncMetadata,
+  });
   const scheduleSummary = buildScheduleSummary(scheduleItems, {
     projectName,
   });
-  const projectScheduleItems = scheduleItems.filter(item =>
-    projectMatches(item.projectName, projectName),
-  );
-  const health = projectHealth(stats, scheduleSummary);
-  const progress = projectProgress(projectScheduleItems);
-  const scheduleStatus = scheduleStatusLabel(scheduleSummary);
-  const safety = safetyStatus(projectUpdates);
-  const criticalIssues = criticalIssueCount(stats, scheduleSummary);
-  const latestUpdate = projectUpdates[0] || null;
+  const health = projectHealthFromPIE(intelligence.healthSignal);
+  const progress = intelligence.metrics.averageScheduleProgress;
+  const scheduleStatus = scheduleStatusLabelFromPIE(intelligence);
+  const safety = safetyStatusFromPIE(intelligence);
+  const criticalIssues = criticalIssueCountFromPIE(intelligence);
   const upcomingMilestones = scheduleSummary.milestoneTasks
     .filter(
       task =>
@@ -103,10 +125,6 @@ export function ProjectOverviewScreen({
     )
     .slice(0, 3);
   const nextMilestone = upcomingMilestones[0] || null;
-  const latestActivityAt = latestProjectActivity(
-    projectUpdates,
-    projectScheduleItems,
-  );
   const projectPhotos = projectUpdates
     .flatMap(update =>
       update.photos.map(photo => ({
@@ -114,41 +132,17 @@ export function ProjectOverviewScreen({
         updateDate: update.date,
       })),
     );
-  const issuePhotos = projectPhotos.filter(
-    photo =>
-      photo.category === 'Open Issue' ||
-      photo.category === 'Safety Concern' ||
-      Boolean(photo.actionRequired.trim()),
-  );
   const recentPhotos = projectPhotos.slice(0, 3);
   const recentUpdates = projectUpdates.slice(0, 3);
-  const confidence = projectConfidence({
-    scheduleSummary,
-    projectUpdates,
-    projectPhotos,
-    issuePhotos,
-    latestActivityAt,
-  });
-  const todaysFocus = todayFocusItems({
-    stats,
-    scheduleSummary,
-    latestUpdate,
-    safetyLabel: safety.label,
-    nextMilestone: nextMilestone
-      ? `${nextMilestone.title} | ${nextMilestone.dueLabel}`
-      : '',
-  });
-  const changedItems = whatsChangedItems({
-    latestUpdate,
-    scheduleSummary,
-  });
-  const recommendation = recommendedNextAction({
-    stats,
-    scheduleSummary,
-    safetyLabel: safety.label,
-    nextMilestone: nextMilestone?.title || '',
-    latestUpdate,
-  });
+  const confidence = projectConfidenceFromPIE(intelligence.confidence);
+  const todaysFocus = todayFocusItems(intelligence);
+  const changedItems = whatsChangedItems(intelligence);
+  const recommendation = recommendedNextActionFromPIE(
+    intelligence.recommendedNextAction,
+  );
+  const communicationReadiness = communicationReadinessSummary(
+    intelligence.communicationReadiness,
+  );
 
   return (
     <Screen contentStyle={contentStyle}>
@@ -162,9 +156,17 @@ export function ProjectOverviewScreen({
         style={styles.healthCard}
         elevated
       >
-        <Text style={styles.sectionTitle}>
-          Project Summary
-        </Text>
+        <View style={styles.sectionTitleRow}>
+          <Text style={styles.sectionTitle}>
+            Project Summary
+          </Text>
+
+          <View style={styles.pieBadge}>
+            <Text style={styles.pieBadgeText}>
+              Powered by PIE
+            </Text>
+          </View>
+        </View>
 
         <View style={styles.healthHeader}>
           <View>
@@ -219,9 +221,9 @@ export function ProjectOverviewScreen({
           />
           <SummaryMetric
             label="Open Issues"
-            value={stats.openActions.toString()}
+            value={intelligence.metrics.openIssueCount.toString()}
             icon="alert-circle-outline"
-            danger={stats.openActions > 0}
+            danger={intelligence.metrics.openIssueCount > 0}
           />
           <SummaryMetric
             label="Critical Issues"
@@ -246,12 +248,38 @@ export function ProjectOverviewScreen({
           />
           <SummaryMetric
             label="Last Update"
-            value={formatOverviewActivity(latestActivityAt)}
+            value={formatPieLastUpdate(intelligence.lastUpdate)}
             icon="time-outline"
           />
         </View>
 
         <ProjectConfidencePanel confidence={confidence} />
+      </ScreenCard>
+
+      <ScreenCard style={styles.pieInsightCard}>
+        <View style={styles.pieInsightHeader}>
+          <View style={styles.pieInsightIcon}>
+            <Ionicons
+              name="sparkles-outline"
+              size={22}
+              color={colors.primary}
+            />
+          </View>
+
+          <View style={styles.recommendationTextGroup}>
+            <Text style={styles.pieInsightLabel}>
+              PIE Insight
+            </Text>
+
+            <Text style={styles.pieInsightTitle}>
+              PIE recommends: {intelligence.recommendedNextAction.label}
+            </Text>
+
+            <Text style={styles.pieInsightDetail}>
+              {intelligence.recommendedNextAction.description}
+            </Text>
+          </View>
+        </View>
       </ScreenCard>
 
       <OverviewSection title="Today's Focus">
@@ -300,6 +328,10 @@ export function ProjectOverviewScreen({
 
             <Text style={styles.recommendationDetail}>
               {recommendation.detail}
+            </Text>
+
+            <Text style={styles.recommendationDetail}>
+              {communicationReadiness}
             </Text>
           </View>
         </View>
@@ -666,102 +698,54 @@ function compareUpdatesNewestFirst(left: ProjectUpdate, right: ProjectUpdate) {
   return right.date.localeCompare(left.date);
 }
 
-function projectHealth(
-  stats: ProjectStats,
-  scheduleSummary: ScheduleSummary,
-): Health {
-  if (
-    stats.overdueActions > 0 ||
-    scheduleSummary.overdueCount > 0 ||
-    scheduleSummary.criticalPathItems.length > 2
-  ) {
+function projectHealthFromPIE(healthSignal: ProjectHealthSignal): Health {
+  if (healthSignal.status === 'at-risk') {
     return {
-      label: 'Red',
+      label: 'At Risk',
       color: colors.danger,
       backgroundColor: colors.dangerSoft,
     };
   }
 
-  if (
-    stats.openActions > 0 ||
-    stats.dueThisWeek > 0 ||
-    scheduleSummary.upcoming7Count > 0 ||
-    scheduleSummary.criticalPathItems.length > 0
-  ) {
+  if (healthSignal.status === 'watch') {
     return {
-      label: 'Yellow',
+      label: 'Watch',
       color: colors.warning,
       backgroundColor: colors.warningSoft,
     };
   }
 
+  if (healthSignal.status === 'unknown') {
+    return {
+      label: 'Unknown',
+      color: colors.tertiaryText,
+      backgroundColor: colors.surfaceMuted,
+    };
+  }
+
   return {
-    label: 'Green',
+    label: 'Healthy',
     color: colors.success,
     backgroundColor: colors.successSoft,
   };
 }
 
-function projectProgress(scheduleItems: ScheduleItem[]) {
-  if (scheduleItems.length === 0) return null;
-
-  const totalPercent = scheduleItems.reduce(
-    (sum, item) => sum + item.percentComplete,
-    0,
-  );
-
-  return Math.round(totalPercent / scheduleItems.length);
-}
-
-function scheduleStatusLabel(summary: ScheduleSummary) {
-  if (summary.totalItems === 0) return 'No schedule';
-  if (summary.overdueCount > 0) return 'At Risk';
-  if (summary.criticalPathItems.length > 0) return 'Watch';
-  if (summary.upcoming7Count > 0) return 'Due This Week';
-  if (summary.completedCount === summary.totalItems) return 'Complete';
+function scheduleStatusLabelFromPIE(intelligence: ProjectIntelligenceSummary) {
+  if (intelligence.scheduleStatus === 'not-available') return 'No schedule';
+  if (intelligence.scheduleStatus === 'overdue') return 'At Risk';
+  if (intelligence.scheduleStatus === 'due-soon') return 'Due Soon';
+  if (intelligence.scheduleStatus === 'complete') return 'Complete';
 
   return 'On Track';
 }
 
-function criticalIssueCount(
-  stats: ProjectStats,
-  scheduleSummary: ScheduleSummary,
-) {
-  return (
-    stats.overdueActions +
-    scheduleSummary.overdueCount +
-    scheduleSummary.criticalPathItems.length
-  );
-}
+function safetyStatusFromPIE(intelligence: ProjectIntelligenceSummary) {
+  const openSafety = intelligence.metrics.safetyConcernCount;
 
-function safetyStatus(projectUpdates: ProjectUpdate[]) {
-  const safetyPhotos = projectUpdates.flatMap(update =>
-    update.photos.filter(photo => photo.category === 'Safety Concern'),
-  );
-  const openSafety = safetyPhotos.filter(
-    photo => photo.actionStatus !== 'Closed',
-  );
-  const overdueSafety = openSafety.filter(photo => {
-    if (!photo.actionDueDate.trim()) return false;
-
-    const dueDate = new Date(photo.actionDueDate);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    return !Number.isNaN(dueDate.getTime()) && dueDate < today;
-  });
-
-  if (overdueSafety.length > 0) {
+  if (openSafety > 0) {
     return {
-      label: `${overdueSafety.length} Critical`,
+      label: `${openSafety} Open`,
       danger: true,
-    };
-  }
-
-  if (openSafety.length > 0) {
-    return {
-      label: `${openSafety.length} Open`,
-      danger: false,
     };
   }
 
@@ -771,370 +755,206 @@ function safetyStatus(projectUpdates: ProjectUpdate[]) {
   };
 }
 
-function projectConfidence({
-  scheduleSummary,
-  projectUpdates,
-  projectPhotos,
-  issuePhotos,
-  latestActivityAt,
-}: {
-  scheduleSummary: ScheduleSummary;
-  projectUpdates: ProjectUpdate[];
-  projectPhotos: ProjectUpdate['photos'];
-  issuePhotos: ProjectUpdate['photos'];
-  latestActivityAt: Date | null;
-}): ProjectConfidence {
-  const hasSchedule = scheduleSummary.totalItems > 0;
-  const hasPhotos = projectPhotos.length > 0;
-  const hasUpdates = projectUpdates.length > 0;
-  const hasRecentActivity = isRecentActivity(latestActivityAt);
-  const hasIssues = issuePhotos.length > 0;
-  const hasTimelineSignals =
-    scheduleSummary.milestoneCount > 0 ||
-    scheduleSummary.criticalPathItems.length > 0;
-  const signals: ConfidenceSignal[] = [
-    {
-      label: 'Schedule',
-      met: hasSchedule,
-      detail: hasSchedule
-        ? `${scheduleSummary.totalItems} schedule item${scheduleSummary.totalItems === 1 ? '' : 's'}`
-        : 'Schedule Required',
-    },
-    {
-      label: 'Photos',
-      met: hasPhotos,
-      detail: hasPhotos
-        ? `${projectPhotos.length} photo${projectPhotos.length === 1 ? '' : 's'}`
-        : 'No project photos yet',
-    },
-    {
-      label: 'Updates',
-      met: hasUpdates,
-      detail: hasUpdates
-        ? `${projectUpdates.length} saved update${projectUpdates.length === 1 ? '' : 's'}`
-        : 'No saved updates yet',
-    },
-    {
-      label: 'Recent Activity',
-      met: hasRecentActivity,
-      detail: latestActivityAt
-        ? formatOverviewActivity(latestActivityAt)
-        : 'No project activity yet',
-    },
-    {
-      label: 'Issues',
-      met: hasIssues,
-      detail: hasIssues
-        ? `${issuePhotos.length} issue signal${issuePhotos.length === 1 ? '' : 's'}`
-        : 'No issue history yet',
-    },
-    {
-      label: 'Timeline',
-      met: hasTimelineSignals,
-      detail: hasTimelineSignals
-        ? `${scheduleSummary.milestoneCount} milestone${scheduleSummary.milestoneCount === 1 ? '' : 's'}`
-        : 'No milestone signals yet',
-    },
-  ];
-  const metCount = signals.filter(signal => signal.met).length;
-  const score = Math.round((metCount / signals.length) * 100);
+function criticalIssueCountFromPIE(intelligence: ProjectIntelligenceSummary) {
+  return intelligence.riskSignals
+    .filter(signal => signal.severity === 'critical')
+    .reduce((total, signal) => total + (signal.count ?? 1), 0);
+}
 
-  if (score >= 80) {
-    return {
-      score,
-      label: 'Strong Context',
-      detail: 'Project data is complete enough for confident status decisions.',
-      signals,
-    };
-  }
-
-  if (score >= 50) {
-    return {
-      score,
-      label: 'Building Context',
-      detail: 'Project status is usable, but more schedule, photo, or update data would improve confidence.',
-      signals,
-    };
-  }
-
+function projectConfidenceFromPIE(
+  confidence: ProjectConfidenceSignal,
+): ProjectConfidence {
   return {
-    score,
-    label: 'Limited Context',
-    detail: 'Add a schedule, photos, or field updates to improve project confidence.',
-    signals,
+    score: confidence.score,
+    label: confidenceLevelLabel(confidence.level),
+    detail: confidence.message,
+    signals: confidence.factors.map(factor => ({
+      label: factor.label,
+      met: factor.present,
+      detail: factor.message,
+    })),
   };
 }
 
-function todayFocusItems({
-  stats,
-  scheduleSummary,
-  latestUpdate,
-  safetyLabel,
-  nextMilestone,
-}: {
-  stats: ProjectStats;
-  scheduleSummary: ScheduleSummary;
-  latestUpdate: ProjectUpdate | null;
-  safetyLabel: string;
-  nextMilestone: string;
-}): FocusItem[] {
+function confidenceLevelLabel(level: ProjectConfidenceSignal['level']) {
+  if (level === 'high') return 'Strong Context';
+  if (level === 'medium') return 'Building Context';
+
+  return 'Limited Context';
+}
+
+function todayFocusItems(intelligence: ProjectIntelligenceSummary): FocusItem[] {
   const items: FocusItem[] = [];
-  const overdueTask = scheduleSummary.overdueTasks[0];
-  const latestUpdateDate = latestUpdate
-    ? normalizeActivityDate(latestUpdate.date)
-    : null;
 
-  if (safetyLabel !== 'Clear') {
-    items.push({
-      title: 'Review open safety concerns',
-      detail: `Safety status: ${safetyLabel}. Assign owners before field work continues.`,
-      icon: 'shield-checkmark-outline',
-      danger: safetyLabel.includes('Critical'),
+  intelligence.riskSignals.slice(0, 2).forEach(risk => {
+    addFocusItem(items, {
+      title: risk.label,
+      detail: `${risk.message} ${risk.suggestedAction}`,
+      icon: iconForRisk(risk),
+      danger: risk.severity === 'critical',
     });
-  }
+  });
 
-  if (overdueTask) {
-    items.push({
-      title: 'Resolve overdue schedule item',
-      detail: `${overdueTask.title} | ${overdueTask.dueLabel}`,
-      icon: 'calendar-outline',
-      danger: true,
-    });
-  }
+  addFocusItem(items, {
+    title: intelligence.recommendedNextAction.label,
+    detail: intelligence.recommendedNextAction.description,
+    icon: iconForNextAction(intelligence.recommendedNextAction.action),
+    danger: intelligence.recommendedNextAction.priority === 'high',
+  });
 
-  if (!isRecentActivity(latestUpdateDate)) {
-    items.push({
-      title: "Capture today's progress",
-      detail: latestUpdateDate
-        ? `Last saved update was ${formatOverviewActivity(latestUpdateDate)}.`
-        : 'No saved update exists for this project yet.',
-      icon: 'camera-outline',
-    });
-  }
-
-  if (stats.openActions > 0) {
-    items.push({
-      title: 'Review open project issues',
-      detail: `${stats.openActions} open issue${stats.openActions === 1 ? '' : 's'} need owner or status review.`,
-      icon: 'alert-circle-outline',
-      danger: stats.overdueActions > 0,
-    });
-  }
-
-  if (nextMilestone) {
-    items.push({
-      title: 'Prepare next milestone',
-      detail: nextMilestone,
-      icon: 'flag-outline',
-    });
-  }
-
-  if (scheduleSummary.totalItems === 0) {
-    items.push({
-      title: 'Add or review the schedule',
-      detail: 'Schedule data is required for progress, milestones, and critical path confidence.',
-      icon: 'calendar-outline',
+  if (
+    intelligence.communicationReadiness.level !== 'ready' &&
+    items.length < 3
+  ) {
+    addFocusItem(items, {
+      title: 'Improve communication context',
+      detail: intelligence.communicationReadiness.message,
+      icon: 'document-text-outline',
     });
   }
 
   if (items.length === 0) {
-    items.push({
-      title: 'Generate executive report',
-      detail: 'Project data is current enough to prepare a concise status report.',
-      icon: 'document-text-outline',
+    addFocusItem(items, {
+      title: 'Continue monitoring project status',
+      detail: 'PIE does not see urgent local project risks right now.',
+      icon: 'checkmark-circle-outline',
     });
   }
 
   return items.slice(0, 3);
 }
 
-function whatsChangedItems({
-  latestUpdate,
-  scheduleSummary,
-}: {
-  latestUpdate: ProjectUpdate | null;
-  scheduleSummary: ScheduleSummary;
-}) {
-  const latestPhotos = latestUpdate?.photos || [];
-  const newIssues = latestPhotos.filter(photo => photo.category === 'Open Issue');
-  const closedIssues = latestPhotos.filter(
-    photo => photo.actionStatus === 'Closed',
-  );
-  const safetyUpdates = latestPhotos.filter(
-    photo => photo.category === 'Safety Concern',
-  );
-  const hasLatestUpdate = Boolean(latestUpdate);
-  const hasSchedule = scheduleSummary.totalItems > 0;
+function addFocusItem(items: FocusItem[], item: FocusItem) {
+  if (items.some(existing => existing.title === item.title)) return;
 
+  items.push(item);
+}
+
+function whatsChangedItems(intelligence: ProjectIntelligenceSummary) {
   return [
     {
-      label: 'New Photos',
-      value: hasLatestUpdate
-        ? latestPhotos.length.toString()
-        : 'No recent update',
-      placeholder: !hasLatestUpdate,
+      label: 'Photos Captured',
+      value:
+        intelligence.photoCount > 0
+          ? intelligence.photoCount.toString()
+          : 'No photos yet',
+      placeholder: intelligence.photoCount === 0,
     },
     {
-      label: 'Completed Tasks',
-      value: hasSchedule
-        ? scheduleSummary.completedCount.toString()
-        : 'Schedule Required',
-      placeholder: !hasSchedule,
+      label: 'Saved Updates',
+      value:
+        intelligence.updateCount > 0
+          ? intelligence.updateCount.toString()
+          : 'No updates yet',
+      placeholder: intelligence.updateCount === 0,
     },
     {
-      label: 'New Issues',
-      value: hasLatestUpdate
-        ? newIssues.length.toString()
-        : 'No update history',
-      placeholder: !hasLatestUpdate,
+      label: 'Progress Status',
+      value: progressStatusLabel(intelligence),
+      placeholder: intelligence.progressStatus === 'not-calculated',
     },
     {
-      label: 'Closed Issues',
-      value: hasLatestUpdate
-        ? closedIssues.length.toString()
-        : 'No update history',
-      placeholder: !hasLatestUpdate,
+      label: 'Open Issues',
+      value:
+        intelligence.metrics.openIssueCount > 0
+          ? intelligence.metrics.openIssueCount.toString()
+          : 'None open',
+      placeholder: intelligence.metrics.openIssueCount === 0,
     },
     {
-      label: 'Safety Updates',
-      value: hasLatestUpdate
-        ? safetyUpdates.length.toString()
-        : 'No safety updates',
-      placeholder: !hasLatestUpdate,
-    },
-    {
-      label: 'Latest Update Time',
-      value: latestUpdate
-        ? formatDisplayDate(latestUpdate.date)
-        : 'No saved update yet',
-      placeholder: !latestUpdate,
+      label: 'Latest Update',
+      value: formatPieLastUpdate(intelligence.lastUpdate),
+      placeholder: !intelligence.lastUpdate,
     },
   ];
 }
 
-function recommendedNextAction({
-  stats,
-  scheduleSummary,
-  safetyLabel,
-  nextMilestone,
-  latestUpdate,
-}: {
-  stats: ProjectStats;
-  scheduleSummary: ScheduleSummary;
-  safetyLabel: string;
-  nextMilestone: string;
-  latestUpdate: ProjectUpdate | null;
-}) {
-  if (safetyLabel !== 'Clear') {
-    return {
-      title: 'Review open safety issues',
-      detail: 'Clear or assign safety concerns before additional field work.',
-      icon: 'shield-checkmark-outline' as IconName,
-    };
+function progressStatusLabel(intelligence: ProjectIntelligenceSummary) {
+  const progress = intelligence.metrics.averageScheduleProgress;
+
+  if (progress === null) return 'Schedule Required';
+  if (intelligence.progressStatus === 'blocked') return 'Blocked';
+  if (intelligence.progressStatus === 'complete') return 'Complete';
+  if (intelligence.progressStatus === 'near-complete') {
+    return `${progress}% | Near Complete`;
+  }
+  if (intelligence.progressStatus === 'not-started') {
+    return `${progress}% | Not Started`;
   }
 
-  if (scheduleSummary.overdueCount > 0) {
-    return {
-      title: 'Review overdue schedule items',
-      detail: 'Confirm owners, recovery dates, and blockers for overdue work.',
-      icon: 'calendar-outline' as IconName,
-    };
-  }
+  return `${progress}% | In Progress`;
+}
 
-  if (stats.openActions > 0) {
-    return {
-      title: 'Review open project issues',
-      detail: 'Confirm owners, due dates, and closeout status for open items.',
-      icon: 'alert-circle-outline' as IconName,
-    };
-  }
-
-  if (
-    !isRecentActivity(
-      latestUpdate ? normalizeActivityDate(latestUpdate.date) : null,
-    )
-  ) {
-    return {
-      title: 'Capture today\'s progress',
-      detail: 'Refresh the project record with current field status and photos.',
-      icon: 'camera-outline' as IconName,
-    };
-  }
-
-  if (nextMilestone) {
-    return {
-      title: 'Prepare next milestone',
-      detail: `Review readiness before ${nextMilestone} becomes the next checkpoint.`,
-      icon: 'flag-outline' as IconName,
-    };
-  }
-
+function recommendedNextActionFromPIE(action: ProjectNextAction) {
   return {
-    title: 'Generate executive report',
-    detail: 'Create a current status summary for leadership or customer communication.',
-    icon: 'document-text-outline' as IconName,
+    title: action.label,
+    detail: action.description,
+    icon: iconForNextAction(action.action),
   };
 }
 
-function latestProjectActivity(
-  projectUpdates: ProjectUpdate[],
-  scheduleItems: ScheduleItem[],
-) {
-  const updateDates = projectUpdates
-    .map(update => normalizeActivityDate(update.date))
-    .filter((date): date is Date => Boolean(date));
-  const scheduleDates = scheduleItems
-    .flatMap(item => [item.importedAt || '', item.createdAt || ''])
-    .map(normalizeActivityDate)
-    .filter((date): date is Date => Boolean(date));
-  const dates = [...updateDates, ...scheduleDates];
-
-  if (dates.length === 0) return null;
-
-  return dates.sort((left, right) => right.getTime() - left.getTime())[0];
-}
-
-function normalizeActivityDate(value: string) {
-  const trimmed = value.trim();
-
-  if (!trimmed) return null;
-
-  const isoDateOnly = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-
-  if (isoDateOnly) {
-    const date = new Date(
-      Number(isoDateOnly[1]),
-      Number(isoDateOnly[2]) - 1,
-      Number(isoDateOnly[3]),
-    );
-
-    return Number.isNaN(date.getTime()) ? null : date;
+function iconForRisk(risk: ProjectRiskSignal): IconName {
+  if (risk.id === 'open-safety') return 'shield-checkmark-outline';
+  if (risk.source === 'schedule') return 'calendar-outline';
+  if (
+    risk.source === 'photo' ||
+    risk.source === 'photo-action' ||
+    risk.source === 'photo-caption' ||
+    risk.source === 'photo-category'
+  ) {
+    return 'alert-circle-outline';
   }
+  if (risk.source === 'document-metadata') return 'document-text-outline';
+  if (risk.source === 'project-area') return 'location-outline';
+  if (risk.source === 'sync-cloud') return 'cloud-upload-outline';
+  if (risk.source === 'project-event') return 'git-branch-outline';
 
-  const date = new Date(trimmed);
-
-  return Number.isNaN(date.getTime()) ? null : date;
+  return 'camera-outline';
 }
 
-function isRecentActivity(value: Date | null) {
-  if (!value) return false;
+function iconForNextAction(action: ProjectNextAction['action']): IconName {
+  if (action === 'review-safety') return 'shield-checkmark-outline';
+  if (
+    action === 'review-overdue-schedule' ||
+    action === 'review-upcoming-schedule' ||
+    action === 'add-schedule'
+  ) {
+    return 'calendar-outline';
+  }
+  if (action === 'review-open-issues') return 'alert-circle-outline';
+  if (
+    action === 'review-photo-actions' ||
+    action === 'assign-action-owner'
+  ) {
+    return 'alert-circle-outline';
+  }
+  if (action === 'review-project-areas') return 'location-outline';
+  if (action === 'review-documents') return 'document-text-outline';
+  if (action === 'sync-project') return 'cloud-upload-outline';
+  if (action === 'review-decisions') return 'git-branch-outline';
+  if (action === 'capture-update') return 'camera-outline';
+  if (action === 'generate-report') return 'document-text-outline';
 
-  const now = new Date();
-  const diffMs = now.getTime() - value.getTime();
-  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
-
-  return diffMs >= 0 && diffMs <= sevenDaysMs;
+  return 'checkmark-circle-outline';
 }
 
-function formatOverviewActivity(value: Date | null) {
-  if (!value) return 'No project activity yet';
+function communicationReadinessSummary(
+  communication: ProjectCommunicationReadiness,
+) {
+  const label =
+    communication.level === 'ready'
+      ? 'Ready'
+      : communication.level === 'needs-context'
+        ? 'Needs Context'
+        : 'Not Ready';
 
-  return value.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return `Communication: ${label} (${communication.score}%).`;
+}
+
+function formatPieLastUpdate(value: string | null) {
+  if (!value) return 'No saved update yet';
+
+  return formatDisplayDate(value);
 }
 
 const styles = StyleSheet.create({
@@ -1460,8 +1280,70 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
 
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    flexWrap: 'wrap',
+  },
+
   sectionTitle: {
     ...typography.h2,
+  },
+
+  pieBadge: {
+    borderRadius: 8,
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+
+  pieBadgeText: {
+    color: colors.primary,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+
+  pieInsightCard: {
+    backgroundColor: colors.primarySoft,
+    gap: spacing.sm,
+  },
+
+  pieInsightHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+
+  pieInsightIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  pieInsightLabel: {
+    ...typography.label,
+    color: colors.primary,
+  },
+
+  pieInsightTitle: {
+    color: colors.text,
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: '900',
+  },
+
+  pieInsightDetail: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   photoRow: {
