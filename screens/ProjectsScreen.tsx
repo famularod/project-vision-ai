@@ -11,16 +11,14 @@ import {
   ViewStyle,
 } from 'react-native';
 import { AddProjectCard } from '../components/AddProjectCard';
-import {
-  ProjectFinderRow,
-  type ProjectLocationContext,
-} from '../components/ProjectFinderRow';
+import { ProjectFinderRow } from '../components/ProjectFinderRow';
 import {
   EmptyState,
   ScreenTitle,
   colors,
   styles,
 } from '../components/ProjectDetailsCard';
+import { analyzeProjectLocationIntelligence } from '../services/LocationIntelligenceService';
 import {
   getStoredJson,
   setStoredJson,
@@ -221,12 +219,11 @@ export function ProjectsScreen({
         project={item.project}
         stats={item.stats}
         scheduleSummary={scheduleSummary}
-        locationContext={projectLocationContext({
+        locationContext={analyzeProjectLocationIntelligence({
           projectName: item.project,
-          savedUpdates,
+          updates: savedUpdates,
           scheduleItems,
           projectAreas,
-          scheduleSummary,
         })}
         archived={item.archived}
         favorite={favorite}
@@ -334,64 +331,4 @@ export function ProjectsScreen({
       }
     />
   );
-}
-
-function projectLocationContext({
-  projectName,
-  savedUpdates,
-  scheduleItems,
-  projectAreas,
-  scheduleSummary,
-}: {
-  projectName: string;
-  savedUpdates: ProjectUpdate[];
-  scheduleItems: ScheduleItem[];
-  projectAreas: ProjectArea[];
-  scheduleSummary: ReturnType<typeof buildScheduleSummary>;
-}): ProjectLocationContext {
-  const projectKey = projectName.trim().toLowerCase();
-  const projectUpdates = savedUpdates
-    .filter(update => update.projectName.trim().toLowerCase() === projectKey)
-    .sort(
-      (left, right) =>
-        new Date(right.date).getTime() - new Date(left.date).getTime(),
-    );
-  const latestUpdateWithArea = projectUpdates.find(update =>
-    Boolean(update.selectedAreaName?.trim()),
-  );
-  const latestPhotoArea = projectUpdates
-    .flatMap(update => update.photos)
-    .find(photo => Boolean(photo.selectedAreaName?.trim()));
-  const scheduleArea =
-    scheduleSummary.byArea.find(area => area.name !== 'Unassigned area')?.name ||
-    scheduleItems.find(
-      item =>
-        item.projectName.trim().toLowerCase() === projectKey &&
-        item.locationName.trim(),
-    )?.locationName ||
-    null;
-  const areaName =
-    latestUpdateWithArea?.selectedAreaName?.trim() ||
-    latestPhotoArea?.selectedAreaName?.trim() ||
-    scheduleArea;
-  const matchedArea = areaName
-    ? projectAreas.find(area => area.name.trim().toLowerCase() === areaName.toLowerCase())
-    : null;
-
-  return {
-    areaName: areaName || null,
-    buildingName: matchedArea?.building?.trim() || null,
-    gpsSet: Boolean(
-      matchedArea?.locationCapturedAt ||
-        latestUpdateWithArea?.locationCapturedAt ||
-        latestPhotoArea?.locationCapturedAt,
-    ),
-    source: latestUpdateWithArea
-      ? 'update'
-      : scheduleArea
-        ? 'schedule'
-        : matchedArea
-          ? 'project-area'
-          : 'none',
-  };
 }

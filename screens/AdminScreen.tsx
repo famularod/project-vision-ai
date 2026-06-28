@@ -299,7 +299,7 @@ export function AdminScreen({
       <ScreenSection title="Project Context">
         <ScreenCard>
           <Text style={styles.cardText}>
-            Location setup supports project context intelligence in the background. It is kept in More so it does not compete with daily project selection.
+            Project Area setup supports location intelligence in the background. It stays in More so daily project work stays focused on Projects, Capture, Reports, and Assistant.
           </Text>
         </ScreenCard>
 

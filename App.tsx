@@ -13,6 +13,7 @@ import {
   getSyncStatus,
   type SyncStatus,
 } from './services/SyncService';
+import { detectLikelyActiveProjectByLocation } from './services/LocationIntelligenceService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import { BottomNavigation } from './components/BottomNavigation';
 import { HomeDashboard } from './components/HomeDashboard';
@@ -2665,6 +2666,18 @@ useEffect(() => {
     [savedUpdates],
   );
 
+  const locationDetectedProject = useMemo(
+    () =>
+      detectLikelyActiveProjectByLocation({
+        projectNames: activeProjects,
+        updates: savedUpdates,
+        scheduleItems,
+        currentUpdate: draft,
+        projectAreas,
+      }),
+    [activeProjects, savedUpdates, scheduleItems, draft, projectAreas],
+  );
+
   const projectOverviewName =
     activeProjects.find(project =>
       projectNameMatches(project, selectedProjectName),
@@ -2672,6 +2685,9 @@ useEffect(() => {
     projects.find(project =>
       projectNameMatches(project, selectedProjectName),
     ) ||
+    (locationDetectedProject?.confidence === 'high'
+      ? locationDetectedProject.projectName
+      : null) ||
     activeProjects[0] ||
     projects[0] ||
     DEFAULT_PROJECTS[0];

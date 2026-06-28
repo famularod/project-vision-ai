@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useState } from 'react';
 import { Text, TouchableOpacity, View } from 'react-native';
+import type { ProjectLocationIntelligence } from '../services/LocationIntelligenceService';
 import type { ProjectStats } from '../types';
 import { formatDisplayDate } from '../utils/date';
 import type { ScheduleSummary } from '../utils/schedule';
@@ -70,13 +71,6 @@ function nextMilestoneLabel(summary: ScheduleSummary | undefined) {
   return `${milestone.title} (${milestone.dueLabel})`;
 }
 
-export type ProjectLocationContext = {
-  areaName: string | null;
-  buildingName: string | null;
-  gpsSet: boolean;
-  source: 'update' | 'schedule' | 'project-area' | 'none';
-};
-
 export function ProjectFinderRow({
   project,
   stats,
@@ -95,7 +89,7 @@ export function ProjectFinderRow({
   project: string;
   stats: ProjectStats;
   scheduleSummary?: ScheduleSummary;
-  locationContext?: ProjectLocationContext;
+  locationContext?: ProjectLocationIntelligence;
   archived: boolean;
   favorite: boolean;
   onPress: () => void;
@@ -334,16 +328,19 @@ export function ProjectFinderRow({
 function ProjectLocationLine({
   locationContext,
 }: {
-  locationContext?: ProjectLocationContext;
+  locationContext?: ProjectLocationIntelligence;
 }) {
-  const areaText = locationContext?.areaName
-    ? `Area: ${locationContext.areaName}`
-    : 'Area: GPS not set';
-  const locationText = locationContext?.buildingName
-    ? `Location: ${locationContext.buildingName}`
-    : locationContext?.gpsSet
-      ? 'Location: GPS set'
-      : null;
+  const currentArea = locationContext?.currentArea || 'Not detected';
+  const gpsStatus = locationContext?.gpsStatus || 'GPS not available';
+  const lastKnownLocation =
+    locationContext?.lastKnownLocation &&
+    locationContext.lastKnownLocation !== 'Unknown'
+      ? locationContext.lastKnownLocation
+      : 'Not available';
+  const presence = locationContext?.presenceLabel || 'Unknown';
+  const confidence = locationContext
+    ? `${locationContext.confidenceScore}% ${locationContext.confidence}`
+    : 'Low';
 
   return (
     <View style={styles.projectLocationPanel}>
@@ -354,20 +351,39 @@ function ProjectLocationLine({
       />
 
       <View style={styles.rowMain}>
-        {locationText ? (
-          <Text
-            style={styles.projectLocationText}
-            numberOfLines={1}
-          >
-            {locationText}
-          </Text>
-        ) : null}
+        <Text
+          style={styles.projectLocationText}
+          numberOfLines={1}
+        >
+          Location Intelligence
+        </Text>
 
         <Text
           style={styles.projectLocationText}
           numberOfLines={1}
         >
-          {areaText}
+          Current Area: {currentArea}
+        </Text>
+
+        <Text
+          style={styles.projectLocationText}
+          numberOfLines={1}
+        >
+          GPS: {gpsStatus} | {presence}
+        </Text>
+
+        <Text
+          style={styles.projectLocationText}
+          numberOfLines={1}
+        >
+          Last Known: {lastKnownLocation}
+        </Text>
+
+        <Text
+          style={styles.projectLocationText}
+          numberOfLines={1}
+        >
+          Confidence: {confidence}
         </Text>
       </View>
     </View>

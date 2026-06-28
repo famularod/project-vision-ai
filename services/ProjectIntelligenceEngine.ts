@@ -20,6 +20,10 @@ import {
   type ProjectEvent,
   type ProjectStory,
 } from './ProjectEventService';
+import {
+  analyzeProjectLocationIntelligence,
+  type ProjectLocationIntelligence,
+} from './LocationIntelligenceService';
 
 // PIE is intentionally rule-based today. It will later feed Project Overview,
 // Project Assistant, Reports, Morning Brief, Customer Updates, and Executive Updates.
@@ -192,6 +196,7 @@ export type ProjectIntelligenceSummary = {
   updateCount: number;
   recentEvents: ProjectEvent[];
   projectStory: ProjectStory;
+  locationIntelligence: ProjectLocationIntelligence;
   overdueScheduleItems: number;
   upcomingScheduleItems: number;
   confidence: ProjectConfidenceSignal;
@@ -213,6 +218,7 @@ export type ProjectIntelligenceSummary = {
     unassignedPhotoActionCount: number;
     areaSignalCount: number;
     gpsSignalCount: number;
+    locationConfidenceScore: number;
     scheduleOwnerCount: number;
     scheduleContractorCount: number;
     highPriorityScheduleItemCount: number;
@@ -242,6 +248,7 @@ export type AnalyzeProjectIntelligenceParams = {
   reportHistory?: ProjectReportHistoryMetadata[];
   syncMetadata?: ProjectSyncFreshnessMetadata | null;
   projectEvents?: ProjectEvent[];
+  locationIntelligence?: ProjectLocationIntelligence | null;
   now?: Date;
 };
 
@@ -256,6 +263,7 @@ export type AnalyzeProjectsIntelligenceParams = {
   reportHistory?: ProjectReportHistoryMetadata[];
   syncMetadata?: ProjectSyncFreshnessMetadata | null;
   projectEvents?: ProjectEvent[];
+  locationIntelligenceByProject?: Record<string, ProjectLocationIntelligence>;
   now?: Date;
 };
 
@@ -746,6 +754,7 @@ function confidenceSignal({
   photoActionCount,
   areaSignalCount,
   gpsSignalCount,
+  locationConfidenceScore,
   scheduleOwnerCount,
   scheduleContractorCount,
   documentCount,
@@ -765,6 +774,7 @@ function confidenceSignal({
   photoActionCount: number;
   areaSignalCount: number;
   gpsSignalCount: number;
+  locationConfidenceScore: number;
   scheduleOwnerCount: number;
   scheduleContractorCount: number;
   documentCount: number;
@@ -889,6 +899,17 @@ function confidenceSignal({
       source: 'project-area' as const,
     },
     {
+      id: 'location-intelligence',
+      label: 'Location intelligence',
+      present: locationConfidenceScore >= 45,
+      weight: 5,
+      message:
+        locationConfidenceScore >= 45
+          ? `PIE has ${locationConfidenceScore}% location confidence.`
+          : 'PIE location confidence is low.',
+      source: 'project-area' as const,
+    },
+    {
       id: 'documents',
       label: 'Document metadata',
       present: documentCount > 0,
@@ -977,6 +998,8 @@ function healthSignal({
   overduePhotoActionCount,
   unassignedPhotoActionCount,
   areaSignalCount,
+  locationConfidenceScore,
+  locationNeedsConfirmation,
   documentCount,
   highPriorityScheduleItemCount,
   waitingScheduleItemCount,
@@ -999,6 +1022,8 @@ function healthSignal({
   overduePhotoActionCount: number;
   unassignedPhotoActionCount: number;
   areaSignalCount: number;
+  locationConfidenceScore: number;
+  locationNeedsConfirmation: boolean;
   documentCount: number;
   highPriorityScheduleItemCount: number;
   waitingScheduleItemCount: number;
@@ -1111,6 +1136,16 @@ function healthSignal({
   if (areaSignalCount > 0) {
     score += 2;
     evidence.push(`${areaSignalCount} project area signal${areaSignalCount === 1 ? '' : 's'} available.`);
+    sources.push('project-area');
+  }
+
+  if (locationConfidenceScore >= 75) {
+    score += 3;
+    evidence.push(`PIE location confidence is ${locationConfidenceScore}%.`);
+    sources.push('project-area');
+  } else if (locationNeedsConfirmation) {
+    score -= 3;
+    evidence.push(`PIE location confidence is ${locationConfidenceScore}% and needs confirmation.`);
     sources.push('project-area');
   }
 
@@ -1236,6 +1271,9 @@ function riskSignals({
   waitingScheduleItemCount,
   areaSignalCount,
   projectAreaCount,
+  locationConfidenceScore,
+  locationNeedsConfirmation,
+  locationConfirmationPrompt,
   documentCount,
   currentDocumentCount,
   scheduleDocumentCount,
@@ -1257,6 +1295,9 @@ function riskSignals({
   waitingScheduleItemCount: number;
   areaSignalCount: number;
   projectAreaCount: number;
+  locationConfidenceScore: number;
+  locationNeedsConfirmation: boolean;
+  locationConfirmationPrompt: string | null;
   documentCount: number;
   currentDocumentCount: number;
   scheduleDocumentCount: number;
@@ -1428,6 +1469,22 @@ function riskSignals({
     }));
   }
 
+  if (locationNeedsConfirmation) {
+    risks.push(createRiskSignal({
+      id: 'location-needs-confirmation',
+      label: 'Location needs confirmation',
+      severity: 'warning',
+      message:
+        locationConfirmationPrompt ||
+        'PIE has a location guess, but confidence is not high enough to rely on it automatically.',
+      source: 'project-area',
+      sources: ['project-area'],
+      confidence: 'medium',
+      evidence: [`Location confidence is ${locationConfidenceScore}%.`],
+      suggestedAction: 'Confirm the detected project area before relying on location-aware recommendations.',
+    }));
+  }
+
   if (documentCount === 0 && scheduleItemCount > 0) {
     risks.push(createRiskSignal({
       id: 'missing-document-context',
@@ -1548,6 +1605,8 @@ function communicationReadiness({
   currentDocumentCount,
   reportHistoryCount,
   daysSinceLastSync,
+  locationConfidenceScore,
+  locationNeedsConfirmation,
 }: {
   projectName: string;
   projectUpdates: ProjectUpdate[];
@@ -1563,6 +1622,8 @@ function communicationReadiness({
   currentDocumentCount: number;
   reportHistoryCount: number;
   daysSinceLastSync: number | null;
+  locationConfidenceScore: number;
+  locationNeedsConfirmation: boolean;
 }): ProjectCommunicationReadiness {
   const hasNarrative = noteCount > 0 || captionCount > 0;
   const strengths: string[] = [];
@@ -1629,6 +1690,15 @@ function communicationReadiness({
     score += currentDocumentCount > 0 ? 5 : 2;
     strengths.push(`${documentCount} related document${documentCount === 1 ? '' : 's'} available for reference.`);
     sources.push('document-metadata');
+  }
+
+  if (locationConfidenceScore >= 75) {
+    score += 4;
+    strengths.push('Location intelligence is confident enough for project context.');
+    sources.push('project-area');
+  } else if (locationNeedsConfirmation) {
+    missingItems.push('Confirm the detected project area before sending location-aware communication.');
+    sources.push('project-area');
   }
 
   if (currentDocumentCount === 0 && documentCount > 0) {
@@ -1817,11 +1887,16 @@ function recommendations({
           risk.confidence,
         ),
       );
-    } else if (risk.id === 'missing-area-context') {
+    } else if (
+      risk.id === 'missing-area-context' ||
+      risk.id === 'location-needs-confirmation'
+    ) {
       items.push(
         recommendation(
           'review-project-areas',
-          'Add project area context',
+          risk.id === 'location-needs-confirmation'
+            ? 'Confirm detected project area'
+            : 'Add project area context',
           risk.message,
           'medium',
           'review-project-areas',
@@ -1963,6 +2038,7 @@ export function analyzeProjectIntelligence({
   reportHistory,
   syncMetadata,
   projectEvents,
+  locationIntelligence,
   now = new Date(),
 }: AnalyzeProjectIntelligenceParams): ProjectIntelligenceSummary {
   const projectUpdates = relatedProjectUpdates({
@@ -1980,6 +2056,16 @@ export function analyzeProjectIntelligence({
     projectUpdates,
     scheduleItems: projectScheduleItems,
   });
+  const projectLocationIntelligence =
+    locationIntelligence ??
+    analyzeProjectLocationIntelligence({
+      projectName,
+      updates,
+      scheduleItems,
+      currentUpdate,
+      projectAreas,
+      now,
+    });
   const recipients = recipientStats({
     projectUpdates,
     contacts,
@@ -2079,6 +2165,7 @@ export function analyzeProjectIntelligence({
     photoActionCount: photoActions.actionCount,
     areaSignalCount: areaContext.areaSignalCount,
     gpsSignalCount: areaContext.gpsSignalCount,
+    locationConfidenceScore: projectLocationIntelligence.confidenceScore,
     scheduleOwnerCount: scheduleContext.ownerCount,
     scheduleContractorCount: scheduleContext.contractorCount,
     documentCount: documents.documentCount,
@@ -2101,6 +2188,8 @@ export function analyzeProjectIntelligence({
     overduePhotoActionCount: photoActions.overdueActionCount,
     unassignedPhotoActionCount: photoActions.unassignedActionCount,
     areaSignalCount: areaContext.areaSignalCount,
+    locationConfidenceScore: projectLocationIntelligence.confidenceScore,
+    locationNeedsConfirmation: projectLocationIntelligence.needsConfirmation,
     documentCount: documents.documentCount,
     highPriorityScheduleItemCount: scheduleContext.highPriorityOpenCount,
     waitingScheduleItemCount: scheduleContext.waitingCount,
@@ -2123,6 +2212,9 @@ export function analyzeProjectIntelligence({
     waitingScheduleItemCount: scheduleContext.waitingCount,
     areaSignalCount: areaContext.areaSignalCount,
     projectAreaCount: areaContext.configuredAreaCount,
+    locationConfidenceScore: projectLocationIntelligence.confidenceScore,
+    locationNeedsConfirmation: projectLocationIntelligence.needsConfirmation,
+    locationConfirmationPrompt: projectLocationIntelligence.confirmationPrompt,
     documentCount: documents.documentCount,
     currentDocumentCount: documents.currentDocumentCount,
     scheduleDocumentCount: documents.scheduleDocumentCount,
@@ -2146,6 +2238,8 @@ export function analyzeProjectIntelligence({
     currentDocumentCount: documents.currentDocumentCount,
     reportHistoryCount: reports.reportHistoryCount,
     daysSinceLastSync: sync.daysSinceLastSync,
+    locationConfidenceScore: projectLocationIntelligence.confidenceScore,
+    locationNeedsConfirmation: projectLocationIntelligence.needsConfirmation,
   });
   const projectRecommendations = recommendations({
     risks,
@@ -2165,6 +2259,7 @@ export function analyzeProjectIntelligence({
     updateCount: projectUpdates.length,
     recentEvents,
     projectStory,
+    locationIntelligence: projectLocationIntelligence,
     overdueScheduleItems: overdueScheduleItems.length,
     upcomingScheduleItems: upcomingScheduleItems.length,
     confidence,
@@ -2186,6 +2281,7 @@ export function analyzeProjectIntelligence({
       unassignedPhotoActionCount: photoActions.unassignedActionCount,
       areaSignalCount: areaContext.areaSignalCount,
       gpsSignalCount: areaContext.gpsSignalCount,
+      locationConfidenceScore: projectLocationIntelligence.confidenceScore,
       scheduleOwnerCount: scheduleContext.ownerCount,
       scheduleContractorCount: scheduleContext.contractorCount,
       highPriorityScheduleItemCount: scheduleContext.highPriorityOpenCount,
@@ -2216,6 +2312,7 @@ export function analyzeProjectsIntelligence({
   reportHistory,
   syncMetadata,
   projectEvents,
+  locationIntelligenceByProject,
   now = new Date(),
 }: AnalyzeProjectsIntelligenceParams): ProjectIntelligenceSummary[] {
   return projectNames.map(projectName =>
@@ -2230,6 +2327,7 @@ export function analyzeProjectsIntelligence({
       reportHistory,
       syncMetadata,
       projectEvents,
+      locationIntelligence: locationIntelligenceByProject?.[projectName],
       now,
     }),
   );

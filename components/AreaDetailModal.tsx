@@ -55,25 +55,25 @@ export function AreaDetailModal({
         <View style={styles.detailModalCard}>
           <View style={styles.detailModalHeader}>
             <View>
-              <Text style={styles.panelTitle}>Location Details</Text>
+              <Text style={styles.panelTitle}>Project Area Details</Text>
               <Text style={styles.rowSub}>{area.name}</Text>
             </View>
 
             <TouchableOpacity
               style={styles.detailCloseButton}
               onPress={onClose}
-              accessibilityLabel="Close location details"
+              accessibilityLabel="Close project area details"
             >
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.label}>Location name</Text>
+          <Text style={styles.label}>Area name</Text>
           <TextInput
             style={styles.input}
             value={area.name}
             onChangeText={name => onUpdate({ name })}
-            placeholder="Location name"
+            placeholder="Area name"
             placeholderTextColor={colors.muted}
           />
 
@@ -116,7 +116,7 @@ export function AreaDetailModal({
               </>
             ) : (
               <Text style={styles.rowSub}>
-                Stand in this location and tap Update GPS.
+                Stand in this project area and tap Update GPS.
               </Text>
             )}
           </View>

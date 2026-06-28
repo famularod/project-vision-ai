@@ -140,6 +140,11 @@ export function ProjectOverviewScreen({
   const recommendation = recommendedNextActionFromPIE(
     intelligence.recommendedNextAction,
   );
+  const locationIntelligence = intelligence.locationIntelligence;
+  const locationDetail =
+    locationIntelligence.lastKnownLocation !== 'Unknown'
+      ? `${locationIntelligence.lastKnownLocation} | ${locationIntelligence.presenceLabel} | ${locationIntelligence.confidenceScore}% confidence`
+      : `${locationIntelligence.gpsStatus} | ${locationIntelligence.confidenceScore}% confidence`;
   const communicationReadiness = communicationReadinessSummary(
     intelligence.communicationReadiness,
   );
@@ -278,6 +283,16 @@ export function ProjectOverviewScreen({
             <Text style={styles.pieInsightDetail}>
               {intelligence.recommendedNextAction.description}
             </Text>
+
+            <Text style={styles.pieInsightDetail}>
+              Location Intelligence: {locationDetail}
+            </Text>
+
+            {locationIntelligence.confirmationPrompt ? (
+              <Text style={styles.pieInsightDetail}>
+                {locationIntelligence.confirmationPrompt}
+              </Text>
+            ) : null}
           </View>
         </View>
       </ScreenCard>

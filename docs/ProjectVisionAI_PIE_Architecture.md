@@ -404,6 +404,53 @@ Reports should use memory to explain current status in context, not just list cu
 
 Walk the Project should eventually use memory to guide field review. It can remind the user of open gaps, unresolved questions, overdue work, missing inspection status, and areas where the project record has not been updated recently.
 
+## PIE Location Intelligence
+
+Location is not a primary user workflow. ProjectVisionAI users think in projects, updates, and decisions; PIE should think in project areas, GPS context, and location confidence in the background.
+
+The first location intelligence layer should turn existing app data into a structured project location read:
+
+- Current Area
+- GPS Status
+- Last Known Location
+- On Site / Off Site / Unknown
+- Location Confidence
+- Source evidence
+- Confirmation prompt when confidence is not high
+
+### Inputs
+
+PIE Location Intelligence should use existing local data only:
+
+- Selected project area on saved updates.
+- Selected project area on photos.
+- GPS coordinates and captured-at metadata on updates and photos.
+- Distance from selected project area when available.
+- Project Area configuration from More -> Admin -> Project Areas.
+- Schedule item location names when update/photo location is missing.
+
+### Product Rule
+
+The app should not require the user to manually select Locations as a daily workflow. Manual Project Area setup belongs in More -> Admin -> Project Areas, and manual correction should appear only when PIE confidence is low or the user chooses to correct the detected area.
+
+When confidence is not high but PIE has a plausible area, the app should ask for review instead of silently trusting the guess:
+
+> I believe you're at Building 2375 - Canopy B. Is that correct?
+
+### How Location Improves PIE
+
+Location intelligence supports:
+
+- Active project detection when no explicit project is selected.
+- Area detection for Capture Update and Project Walk.
+- Project Overview context so recommendations include where the work is happening.
+- Project Assistant answers that can explain whether location confidence is strong or needs confirmation.
+- Future Walk the Project guidance by matching where the user is standing to open risks, missing updates, and unresolved questions for that area.
+
+### Future Path
+
+Future versions should persist location confidence history, map project areas to projects more explicitly, and compare live GPS against project area boundaries. This should happen after the current rule-based layer is stable and after users can review or correct low-confidence location guesses.
+
 ## PIE Processing Stages
 
 ### 1. Project Data Selection

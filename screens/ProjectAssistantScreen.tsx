@@ -33,6 +33,17 @@ import {
   type PIEProjectTimelineSegment,
 } from '../services/PIEMemoryEngine';
 import {
+  buildPIEDecisionQueue,
+  getCommunicationDecisions,
+  getCriticalDecisions,
+  getNextBestAction,
+  getProjectWalkDecision,
+  getUserApprovalRequiredDecisions,
+  type PIEDecision,
+  type PIEDecisionQueue,
+  type PIENextBestAction,
+} from '../services/PIEDecisionEngine';
+import {
   buildPIEReasoning,
   getPIEConcerns,
   getPIEQuestions,
@@ -70,6 +81,9 @@ type AssistantQuestionId =
   | 'schedule'
   | 'boss'
   | 'customer'
+  | 'approval'
+  | 'priority'
+  | 'communicate'
   | 'walk'
   | 'next'
   | 'story'
@@ -95,6 +109,31 @@ type AssistantMemoryContext = {
 };
 
 const SUGGESTED_QUESTIONS: SuggestedQuestion[] = [
+  {
+    id: 'next',
+    label: 'What should I do next?',
+    icon: 'arrow-forward-circle-outline',
+  },
+  {
+    id: 'approval',
+    label: 'What decisions need approval?',
+    icon: 'shield-checkmark-outline',
+  },
+  {
+    id: 'priority',
+    label: 'What is the highest priority?',
+    icon: 'flag-outline',
+  },
+  {
+    id: 'communicate',
+    label: 'What should I communicate?',
+    icon: 'megaphone-outline',
+  },
+  {
+    id: 'walk',
+    label: 'Should I walk the project?',
+    icon: 'walk-outline',
+  },
   {
     id: 'status',
     label: 'What is the current project status?',
@@ -146,21 +185,14 @@ const SUGGESTED_QUESTIONS: SuggestedQuestion[] = [
     icon: 'chatbubble-ellipses-outline',
   },
   {
-    id: 'next',
-    label: 'What is the next action?',
-    icon: 'arrow-forward-circle-outline',
-  },
-  {
     id: 'remember',
     label: 'What does PIE remember about this project?',
     icon: 'archive-outline',
   },
-  {
-    id: 'walk',
-    label: 'Walk the Project',
-    icon: 'walk-outline',
-  },
 ];
+
+const NO_URGENT_DECISIONS_MESSAGE =
+  "PIE does not see any urgent decisions right now. Continue monitoring or capture today's progress.";
 
 export function ProjectAssistantScreen({
   contentStyle,
@@ -219,6 +251,66 @@ export function ProjectAssistantScreen({
       updates,
     ],
   );
+  const reasoning = useMemo(
+    () =>
+      buildPIEReasoning({
+        projectName: displayProjectName,
+        intelligence,
+        updates,
+        scheduleItems,
+        referenceDocuments,
+      }),
+    [
+      displayProjectName,
+      intelligence,
+      referenceDocuments,
+      scheduleItems,
+      updates,
+    ],
+  );
+  const memoryContext = useMemo(
+    () =>
+      buildAssistantMemoryContext({
+        projectName: displayProjectName,
+        intelligence,
+        reasoning,
+        updates,
+        scheduleItems,
+        referenceDocuments,
+        reportHistory,
+      }),
+    [
+      displayProjectName,
+      intelligence,
+      reasoning,
+      referenceDocuments,
+      reportHistory,
+      scheduleItems,
+      updates,
+    ],
+  );
+  const decisionQueue = useMemo(
+    () =>
+      buildPIEDecisionQueue({
+        projectName: displayProjectName,
+        intelligence,
+        reasoning,
+        memory: memoryContext.memory,
+        projectEvents: intelligence.recentEvents,
+      }),
+    [
+      displayProjectName,
+      intelligence,
+      memoryContext.memory,
+      reasoning,
+    ],
+  );
+  const nextBestAction = getNextBestAction(decisionQueue);
+  const criticalDecisions = getCriticalDecisions(decisionQueue);
+  const communicationDecisions = getCommunicationDecisions(decisionQueue);
+  const projectWalkDecision = getProjectWalkDecision(decisionQueue);
+  const approvalRequiredDecisions =
+    getUserApprovalRequiredDecisions(decisionQueue);
 
   function answerQuestion(question: string) {
     const latestIntelligence = analyzeProjectIntelligence({
@@ -248,11 +340,19 @@ export function ProjectAssistantScreen({
       referenceDocuments,
       reportHistory,
     });
+    const latestDecisionQueue = buildPIEDecisionQueue({
+      projectName: displayProjectName,
+      intelligence: latestIntelligence,
+      reasoning: latestReasoning,
+      memory: latestMemory.memory,
+      projectEvents: latestIntelligence.recentEvents,
+    });
     const response = buildAssistantResponse(
       question,
       latestIntelligence,
       latestReasoning,
       latestMemory,
+      latestDecisionQueue,
     );
 
     setConversation(previous => [
@@ -348,6 +448,18 @@ export function ProjectAssistantScreen({
         <Text style={styles.bodyText}>
           Using the active or last opened project.
         </Text>
+
+        <Text style={styles.bodyText}>
+          Location: {intelligence.locationIntelligence.lastKnownLocation === 'Unknown'
+            ? intelligence.locationIntelligence.gpsStatus
+            : intelligence.locationIntelligence.lastKnownLocation} | {intelligence.locationIntelligence.presenceLabel} | {intelligence.locationIntelligence.confidenceScore}% confidence.
+        </Text>
+
+        {intelligence.locationIntelligence.confirmationPrompt ? (
+          <Text style={styles.bodyText}>
+            {intelligence.locationIntelligence.confirmationPrompt}
+          </Text>
+        ) : null}
       </ScreenCard>
 
       <ScreenCard style={styles.briefCard}>
@@ -389,16 +501,55 @@ export function ProjectAssistantScreen({
 
         <View style={styles.nextActionPanel}>
           <Text style={styles.label}>
-            PIE Insight
+            Next Best Action
           </Text>
 
           <Text style={styles.nextActionTitle}>
-            PIE recommends: {intelligence.recommendedNextAction.label}
+            {nextBestAction.title}
           </Text>
 
           <Text style={styles.bodyText}>
-            {intelligence.recommendedNextAction.description}
+            {nextBestActionPanelText(nextBestAction, decisionQueue)}
           </Text>
+
+          <Text style={styles.bodyText}>
+            {approvalText(nextBestAction.userApprovalRequired)}
+          </Text>
+        </View>
+
+        <View style={styles.decisionStack}>
+          <DecisionSummaryPanel
+            title="Critical Decisions"
+            text={decisionPanelText(
+              criticalDecisions,
+              'No critical decisions right now.',
+            )}
+          />
+
+          <DecisionSummaryPanel
+            title="Communication Decisions"
+            text={decisionPanelText(
+              communicationDecisions,
+              'No communication decision ready yet.',
+            )}
+          />
+
+          <DecisionSummaryPanel
+            title="Project Walk Recommendation"
+            text={
+              projectWalkDecision
+                ? `${priorityLabel(projectWalkDecision.priority)}: ${projectWalkDecision.title}`
+                : 'No project walk recommendation right now.'
+            }
+          />
+
+          <DecisionSummaryPanel
+            title="User Approval Required"
+            text={decisionPanelText(
+              approvalRequiredDecisions,
+              'No approval-required decisions right now.',
+            )}
+          />
         </View>
       </ScreenCard>
 
@@ -534,6 +685,26 @@ function BriefMetric({
   );
 }
 
+function DecisionSummaryPanel({
+  title,
+  text,
+}: {
+  title: string;
+  text: string;
+}) {
+  return (
+    <View style={styles.decisionPanel}>
+      <Text style={styles.decisionPanelTitle}>
+        {title}
+      </Text>
+
+      <Text style={styles.decisionPanelText}>
+        {text}
+      </Text>
+    </View>
+  );
+}
+
 function AssistantBubble({ text }: { text: string }) {
   return (
     <View style={styles.assistantBubble}>
@@ -611,6 +782,7 @@ function buildAssistantResponse(
   intelligence: ProjectIntelligenceSummary,
   reasoning: PIEReasoningResult,
   memory: AssistantMemoryContext,
+  decisionQueue: PIEDecisionQueue,
 ) {
   const kind = classifyQuestion(question);
 
@@ -624,13 +796,18 @@ function buildAssistantResponse(
     return recurringIssueResponse(intelligence, reasoning, memory);
   }
   if (kind === 'schedule') return scheduleResponse(intelligence, reasoning);
-  if (kind === 'boss') return bossResponse(intelligence, reasoning);
-  if (kind === 'customer') return customerResponse(intelligence, reasoning);
-  if (kind === 'next') return nextResponse(intelligence, reasoning);
-  if (kind === 'remember') return rememberResponse(intelligence, memory);
-  if (kind === 'walk') {
-    return "Project Walk Mode is coming soon.\n\nEventually you'll be able to walk the project while talking naturally with Project Assistant.";
+  if (kind === 'boss') return bossResponse(intelligence, reasoning, decisionQueue);
+  if (kind === 'customer') {
+    return customerResponse(intelligence, reasoning, decisionQueue);
   }
+  if (kind === 'approval') return approvalDecisionsResponse(decisionQueue);
+  if (kind === 'priority') return priorityDecisionResponse(decisionQueue);
+  if (kind === 'communicate') {
+    return communicationDecisionResponse(decisionQueue);
+  }
+  if (kind === 'next') return nextResponse(decisionQueue);
+  if (kind === 'remember') return rememberResponse(intelligence, memory);
+  if (kind === 'walk') return projectWalkDecisionResponse(decisionQueue);
 
   return "I don't know how to answer that yet, but I'll be able to in a future version.";
 }
@@ -640,6 +817,28 @@ function classifyQuestion(question: string): AssistantQuestionId {
 
   if (!normalized) return 'unknown';
   if (normalized.includes('walk')) return 'walk';
+  if (
+    normalized.includes('approval') ||
+    normalized.includes('approve') ||
+    normalized.includes('decisions need') ||
+    normalized.includes('need approval')
+  ) {
+    return 'approval';
+  }
+  if (
+    normalized.includes('highest priority') ||
+    normalized.includes('top priority') ||
+    normalized.includes('priority')
+  ) {
+    return 'priority';
+  }
+  if (
+    normalized.includes('communicate') ||
+    normalized.includes('communication') ||
+    normalized.includes('message stakeholders')
+  ) {
+    return 'communicate';
+  }
   if (normalized.includes('story')) return 'story';
   if (
     normalized.includes('over time') ||
@@ -674,6 +873,13 @@ function classifyQuestion(question: string): AssistantQuestionId {
   }
   if (normalized.includes('boss') || normalized.includes('executive')) return 'boss';
   if (normalized.includes('customer') || normalized.includes('client')) return 'customer';
+  if (
+    normalized.includes('what should i do') ||
+    normalized.includes('do next') ||
+    normalized.includes('next best')
+  ) {
+    return 'next';
+  }
   if (normalized.includes('status') || normalized.includes('current')) return 'status';
   if (normalized.includes('change') || normalized.includes('recent')) return 'change';
   if (
@@ -712,12 +918,26 @@ function statusResponse(
     `Health: ${healthLabel(intelligence)}.`,
     `Progress: ${progressLabel(intelligence)}.`,
     `Schedule: ${scheduleLabel(intelligence)}.`,
+    locationIntelligenceLine(intelligence),
     `Why: ${thought?.summary || intelligence.healthSignal.message}`,
     evidenceLine(thought?.evidence.map(item => `${item.title}: ${item.detail}`)),
     concern ? `Watch item: ${concern.title} - ${concern.summary}` : 'Watch item: no urgent concern surfaced from current data.',
     `Confidence: ${confidenceText(thought?.confidence || intelligence.confidence.level)}.`,
     `Suggested next action: ${recommendation?.suggestedNextAction || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
+}
+
+function locationIntelligenceLine(intelligence: ProjectIntelligenceSummary) {
+  const location = intelligence.locationIntelligence;
+  const locationName =
+    location.lastKnownLocation === 'Unknown'
+      ? location.gpsStatus
+      : location.lastKnownLocation;
+  const confirmation = location.confirmationPrompt
+    ? ` Confirm: ${location.confirmationPrompt}`
+    : '';
+
+  return `Location: ${locationName}; ${location.presenceLabel}; ${location.confidenceScore}% confidence.${confirmation}`;
 }
 
 function changeResponse(
@@ -974,30 +1194,37 @@ function scheduleResponse(
 function bossResponse(
   intelligence: ProjectIntelligenceSummary,
   reasoning: PIEReasoningResult,
+  decisionQueue: PIEDecisionQueue,
 ) {
   if (hasNoProjectData(intelligence)) return emptyProjectDataResponse();
 
   const concerns = getPIEConcerns(reasoning);
   const recommendation = getPIERecommendations(reasoning)[0];
   const talkingPoints = reasoning.communicationInsight.talkingPoints.slice(0, 3);
+  const communicationDecision = getCommunicationDecisions(decisionQueue)[0];
 
   return [
     'Boss update:',
     ...talkingPoints.map(point => `- ${point}`),
     concerns[0] ? `- Main watch item: ${concerns[0].title}.` : '- Main watch item: none urgent in current data.',
-    `Why: ${recommendation?.why || reasoning.communicationInsight.summary}`,
-    evidenceLine(recommendation?.evidence),
-    `Confidence: ${confidenceText(recommendation?.confidence || reasoning.communicationInsight.confidence)}.`,
-    `Suggested next action: ${recommendation?.suggestedNextAction || intelligence.recommendedNextAction.label}.`,
+    communicationDecision
+      ? `Decision: ${communicationDecision.title}. Approval: ${approvalText(communicationDecision.userApproval.required)}`
+      : 'Decision: no communication decision is ready for approval yet.',
+    `Why: ${communicationDecision?.reason.why || recommendation?.why || reasoning.communicationInsight.summary}`,
+    evidenceLine(communicationDecision?.evidence || recommendation?.evidence),
+    `Confidence: ${confidenceText(communicationDecision?.confidence || recommendation?.confidence || reasoning.communicationInsight.confidence)}.`,
+    `Suggested next action: ${communicationDecision?.suggestedNextAction || recommendation?.suggestedNextAction || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
 }
 
 function customerResponse(
   intelligence: ProjectIntelligenceSummary,
   reasoning: PIEReasoningResult,
+  decisionQueue: PIEDecisionQueue,
 ) {
   const readiness = communicationLabel(intelligence);
   const recommendation = getPIERecommendations(reasoning)[0];
+  const communicationDecision = getCommunicationDecisions(decisionQueue)[0];
 
   if (intelligence.communicationReadiness.level === 'not-ready') {
     return [
@@ -1014,40 +1241,187 @@ function customerResponse(
 
   return [
     `Customer-ready summary: ${intelligence.projectName} is being actively tracked. Current health is ${healthLabel(intelligence).toLowerCase()}, and the next focus is ${intelligence.recommendedNextAction.label.toLowerCase()}.`,
+    communicationDecision
+      ? `Decision: ${communicationDecision.title}. Approval: ${approvalText(communicationDecision.userApproval.required)}`
+      : 'Decision: review the update manually before sharing.',
     `Why: ${reasoning.communicationInsight.summary}`,
     `Communication readiness: ${readiness}.`,
-    evidenceLine(evidenceForIds(reasoning, reasoning.communicationInsight.evidenceIds)),
-    `Confidence: ${confidenceText(reasoning.communicationInsight.confidence)}.`,
-    `Suggested next action: ${recommendation?.suggestedNextAction || 'review the wording before sending.'}`,
+    evidenceLine(
+      communicationDecision?.evidence ||
+        evidenceForIds(reasoning, reasoning.communicationInsight.evidenceIds),
+    ),
+    `Confidence: ${confidenceText(communicationDecision?.confidence || reasoning.communicationInsight.confidence)}.`,
+    `Suggested next action: ${communicationDecision?.suggestedNextAction || recommendation?.suggestedNextAction || 'review the wording before sending.'}`,
   ].join('\n');
 }
 
-function nextResponse(
-  intelligence: ProjectIntelligenceSummary,
-  reasoning: PIEReasoningResult,
-) {
-  const recommendation =
-    topRecommendation(reasoning, intelligence.recommendedNextAction.action) ||
-    getPIERecommendations(reasoning)[0];
+function nextResponse(decisionQueue: PIEDecisionQueue) {
+  const action = getNextBestAction(decisionQueue);
 
-  if (!recommendation) {
+  if (!hasActionableDecision(decisionQueue)) {
     return [
-      `Next action: ${intelligence.recommendedNextAction.label}.`,
-      `Why: ${intelligence.recommendedNextAction.description}`,
-      'Evidence: current PIE summary only.',
-      `Confidence: ${confidenceText(intelligence.recommendedNextAction.confidence)}.`,
-      `Suggested next action: ${intelligence.recommendedNextAction.label}.`,
+      NO_URGENT_DECISIONS_MESSAGE,
+      `Why: ${action.why}`,
+      evidenceLine(action.evidence),
+      `Confidence: ${confidenceText(action.confidence)}.`,
+      `Suggested next action: ${action.suggestedNextAction}.`,
     ].join('\n');
   }
 
   return [
-    `Next action: ${recommendation.title}.`,
-    `Why: ${recommendation.why}`,
-    `Impact: ${recommendation.impact}`,
-    evidenceLine(recommendation.evidence),
-    `Confidence: ${confidenceText(recommendation.confidence)}.`,
-    `Suggested next action: ${recommendation.suggestedNextAction}.`,
+    `Next best action: ${action.title}.`,
+    `Why: ${action.why}`,
+    `Impact: ${action.impact.description}`,
+    evidenceLine(action.evidence),
+    `Confidence: ${confidenceText(action.confidence)}.`,
+    `Approval: ${approvalText(action.userApprovalRequired)}`,
+    `Suggested next action: ${action.suggestedNextAction}.`,
   ].join('\n');
+}
+
+function approvalDecisionsResponse(decisionQueue: PIEDecisionQueue) {
+  const decisions = getUserApprovalRequiredDecisions(decisionQueue);
+
+  if (decisions.length === 0) {
+    return [
+      hasActionableDecision(decisionQueue)
+        ? 'I do not see any decisions that require approval right now.'
+        : NO_URGENT_DECISIONS_MESSAGE,
+      'Why: PIE is only recommending review or monitoring from the current decision queue.',
+      evidenceLine(getNextBestAction(decisionQueue).evidence),
+      `Confidence: ${confidenceText(decisionQueue.confidence)}.`,
+      'Suggested next action: keep monitoring, or capture today\'s progress if the field condition changed.',
+    ].join('\n');
+  }
+
+  const first = decisions[0];
+
+  return [
+    'These decisions need your approval:',
+    ...decisions.slice(0, 4).map(decision => `- ${decision.title}: ${decision.summary}`),
+    `Why: ${first.userApproval.reason}`,
+    evidenceLine(first.evidence),
+    `Confidence: ${confidenceText(first.confidence)}.`,
+    `Suggested next action: ${first.suggestedNextAction}.`,
+  ].join('\n');
+}
+
+function priorityDecisionResponse(decisionQueue: PIEDecisionQueue) {
+  const decision = decisionQueue.decisions[0];
+
+  if (!decision || !hasActionableDecision(decisionQueue)) {
+    return [
+      NO_URGENT_DECISIONS_MESSAGE,
+      `Why: ${decision?.reason.why || 'No higher-priority local PIE signal is available.'}`,
+      evidenceLine(decision?.evidence),
+      `Confidence: ${confidenceText(decision?.confidence || decisionQueue.confidence)}.`,
+      'Suggested next action: continue monitoring or capture today\'s progress.',
+    ].join('\n');
+  }
+
+  return [
+    `Highest priority: ${decision.title}.`,
+    `Priority: ${priorityLabel(decision.priority)}.`,
+    `Why: ${decision.reason.why}`,
+    `Impact: ${decision.impact.description}`,
+    evidenceLine(decision.evidence),
+    `Confidence: ${confidenceText(decision.confidence)}.`,
+    `Approval: ${approvalText(decision.userApproval.required)}`,
+    `Suggested next action: ${decision.suggestedNextAction}.`,
+  ].join('\n');
+}
+
+function communicationDecisionResponse(decisionQueue: PIEDecisionQueue) {
+  const decisions = getCommunicationDecisions(decisionQueue);
+
+  if (decisions.length === 0) {
+    return [
+      hasActionableDecision(decisionQueue)
+        ? 'I do not see a communication decision ready right now.'
+        : NO_URGENT_DECISIONS_MESSAGE,
+      'Why: PIE needs enough current project context before it recommends stakeholder communication.',
+      evidenceLine(getNextBestAction(decisionQueue).evidence),
+      `Confidence: ${confidenceText(decisionQueue.confidence)}.`,
+      'Suggested next action: capture current progress or fill missing context, then review communication readiness.',
+    ].join('\n');
+  }
+
+  const first = decisions[0];
+
+  return [
+    'Communication decision:',
+    ...decisions.slice(0, 3).map(decision => `- ${decision.title}: ${decision.summary}`),
+    `Why: ${first.reason.why}`,
+    `Impact: ${first.impact.description}`,
+    evidenceLine(first.evidence),
+    `Confidence: ${confidenceText(first.confidence)}.`,
+    `Approval: ${approvalText(first.userApproval.required)}`,
+    `Suggested next action: ${first.suggestedNextAction}.`,
+  ].join('\n');
+}
+
+function projectWalkDecisionResponse(decisionQueue: PIEDecisionQueue) {
+  const decision = getProjectWalkDecision(decisionQueue);
+
+  if (!decision) {
+    return [
+      hasActionableDecision(decisionQueue)
+        ? 'PIE does not see a project walk as the highest-value move right now.'
+        : NO_URGENT_DECISIONS_MESSAGE,
+      'Why: the current decision queue points to another action first.',
+      evidenceLine(getNextBestAction(decisionQueue).evidence),
+      `Confidence: ${confidenceText(decisionQueue.confidence)}.`,
+      'Suggested next action: follow the next best action, or capture today\'s progress if field conditions changed.',
+    ].join('\n');
+  }
+
+  return [
+    'Yes. PIE recommends walking the project.',
+    `Why: ${decision.reason.why}`,
+    `Impact: ${decision.impact.description}`,
+    evidenceLine(decision.evidence),
+    `Confidence: ${confidenceText(decision.confidence)}.`,
+    `Approval: ${approvalText(decision.userApproval.required)}`,
+    'Project Walk Mode is coming soon; for now, walk the site and use Capture Update to save reviewed field notes.',
+  ].join('\n');
+}
+
+function nextBestActionPanelText(
+  action: PIENextBestAction,
+  decisionQueue: PIEDecisionQueue,
+) {
+  if (!hasActionableDecision(decisionQueue)) {
+    return NO_URGENT_DECISIONS_MESSAGE;
+  }
+
+  return `${action.summary} ${action.suggestedNextAction}`;
+}
+
+function decisionPanelText(decisions: PIEDecision[], emptyText: string) {
+  if (decisions.length === 0) return emptyText;
+
+  return decisions
+    .slice(0, 3)
+    .map(decision => `${priorityLabel(decision.priority)}: ${decision.title}`)
+    .join('\n');
+}
+
+function hasActionableDecision(decisionQueue: PIEDecisionQueue) {
+  return decisionQueue.decisions.some(
+    decision => decision.action !== 'continue-monitoring',
+  );
+}
+
+function priorityLabel(priority: PIEDecision['priority']) {
+  if (priority === 'critical') return 'Critical';
+  if (priority === 'high') return 'High';
+  if (priority === 'medium') return 'Medium';
+
+  return 'Low';
+}
+
+function approvalText(required: boolean) {
+  return required ? 'User approval required.' : 'No approval required.';
 }
 
 function hasNoProjectData(intelligence: ProjectIntelligenceSummary) {
@@ -1396,6 +1770,33 @@ const styles = StyleSheet.create({
     fontSize: 18,
     lineHeight: 23,
     fontWeight: '900',
+  },
+
+  decisionStack: {
+    gap: spacing.sm,
+  },
+
+  decisionPanel: {
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    padding: spacing.sm,
+    gap: spacing.xxs,
+  },
+
+  decisionPanelTitle: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+
+  decisionPanelText: {
+    color: colors.mutedText,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '700',
   },
 
   questionStack: {
