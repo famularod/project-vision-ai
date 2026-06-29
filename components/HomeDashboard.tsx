@@ -11,7 +11,17 @@ import { AppHeader } from './AppHeader';
 import { AttentionCard } from './AttentionCard';
 import { Screen } from './layout/Screen';
 import { RecentActivity } from './RecentActivity';
-import type { ScheduleItem } from '../types';
+import {
+  type ProjectSyncFreshnessMetadata,
+} from '../services/ProjectIntelligenceEngine';
+import { buildRuntime } from '../services/PIERuntime';
+import type {
+  ContactBook,
+  ProjectArea,
+  ProjectUpdate,
+  ReferenceDocument,
+  ScheduleItem,
+} from '../types';
 import {
   buildScheduleSummary,
   type ScheduleSummary,
@@ -27,14 +37,6 @@ type ProjectStats = {
   lastUpdate?: string;
 };
 
-type DashboardUpdate = {
-  id: string;
-  projectName: string;
-  date: string;
-  photos: unknown[];
-  selectedAreaName?: string | null;
-};
-
 type IconName = keyof typeof Ionicons.glyphMap;
 
 type RecommendedAction = {
@@ -48,10 +50,14 @@ type RecommendedAction = {
 type HomeDashboardProps = {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
-  savedUpdates: DashboardUpdate[];
+  savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  projectAreas?: ProjectArea[];
+  contacts?: ContactBook;
+  referenceDocuments?: ReferenceDocument[];
+  syncMetadata?: ProjectSyncFreshnessMetadata | null;
   projectStatsByName: Record<string, ProjectStats>;
-  unfinishedDraft: DashboardUpdate | null;
+  unfinishedDraft: ProjectUpdate | null;
   draftSavedAt: string | null;
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
@@ -120,8 +126,8 @@ function matchesProjectName(value: string, projectName: string) {
 }
 
 function sortUpdatesNewestFirst(
-  left: DashboardUpdate,
-  right: DashboardUpdate,
+  left: ProjectUpdate,
+  right: ProjectUpdate,
 ) {
   return new Date(right.date).getTime() - new Date(left.date).getTime();
 }
@@ -196,7 +202,7 @@ function buildRecommendedAction({
   activeProjectName: string | null;
   currentProjectStats: ProjectStats;
   currentProjectScheduleSummary: ScheduleSummary | null;
-  unfinishedDraft: DashboardUpdate | null;
+  unfinishedDraft: ProjectUpdate | null;
   projectsNeedingAttention: { project: string; stats: ProjectStats }[];
   scheduleSummary: ScheduleSummary;
   onResumeDraft: () => void;
@@ -276,11 +282,22 @@ function buildRecommendedAction({
   };
 }
 
+function confidenceLabel(level: 'low' | 'medium' | 'high') {
+  if (level === 'high') return 'strong';
+  if (level === 'medium') return 'usable';
+
+  return 'limited';
+}
+
 export function HomeDashboard({
   contentStyle,
   projects,
   savedUpdates,
   scheduleItems,
+  projectAreas,
+  contacts,
+  referenceDocuments,
+  syncMetadata,
   projectStatsByName,
   unfinishedDraft,
   draftSavedAt,
@@ -331,6 +348,18 @@ export function HomeDashboard({
   const activeProjectName =
     draftProject || latestActivityProject || projects[0] || null;
   const currentProject = activeProjectName || 'No active project';
+  const runtime = buildRuntime({
+    projectName: activeProjectName || currentProject,
+    projectNames: projects,
+    updates: savedUpdates,
+    scheduleItems,
+    currentUpdate: unfinishedDraft,
+    projectAreas,
+    contacts,
+    referenceDocuments,
+    syncMetadata,
+    surface: 'home',
+  });
   const currentProjectStats =
     activeProjectName
       ? projectStatsByName[activeProjectName] || EMPTY_PROJECT_STATS
@@ -377,20 +406,31 @@ export function HomeDashboard({
     onSchedule,
     onAIExecutiveBrief,
   });
-  const overdueScheduleLabel =
-    scheduleSummary.totalItems === 0
-      ? 'Schedule not imported yet'
-      : scheduleSummary.overdueCount === 0
-        ? 'No overdue schedule items'
-        : `${scheduleSummary.overdueCount} overdue schedule item${
-            scheduleSummary.overdueCount === 1 ? '' : 's'
-          }`;
-  const attentionLabel =
-    projectsNeedingAttention.length === 0
-      ? 'No projects need attention right now'
-      : `${projectsNeedingAttention.length} project${
-          projectsNeedingAttention.length === 1 ? '' : 's'
-        } need attention`;
+  const topPriority =
+    runtime.priorityQueue.currentPriority?.title ||
+    runtime.nextBestAction.title ||
+    recommendedAction.title;
+  const currentConfidence =
+    `${runtime.intelligence.confidence.score}% ${confidenceLabel(runtime.overallConfidence)}`;
+  const currentMission = runtime.currentMission;
+  const missionBlockers =
+    runtime.missionBlockers.length > 0
+      ? runtime.missionBlockers
+          .slice(0, 2)
+          .map(blocker => blocker.title)
+          .join(' | ')
+      : 'No mission blockers from current evidence';
+  const todayPriorities = [
+    topPriority,
+    runtime.currentMission.recommendedActions[0]?.recommendation,
+    runtime.nextBestAction.suggestedNextAction,
+  ].filter((item, index, items): item is string =>
+    Boolean(item && items.indexOf(item) === index),
+  ).slice(0, 3);
+  const attentionProjectNames =
+    projectsNeedingAttention.length > 0
+      ? projectsNeedingAttention.map(item => item.project).slice(0, 3)
+      : ['No project currently needs high attention from local evidence'];
   const startCapture = () =>
     activeProjectName ? onUpdateProject(activeProjectName) : onNewUpdate();
 
@@ -402,7 +442,7 @@ export function HomeDashboard({
         <View style={styles.morningBriefHeader}>
           <View style={styles.morningBriefIcon}>
             <Ionicons
-              name="sunny-outline"
+              name="sparkles-outline"
               size={24}
               color={colors.primary}
             />
@@ -414,55 +454,172 @@ export function HomeDashboard({
             </Text>
 
             <Text style={styles.morningBriefSubtitle}>
-              Here is what needs your attention today.
+              PIE Briefing: here is what matters today.
             </Text>
           </View>
         </View>
 
         <View style={styles.briefLineList}>
           <BriefLine
-            icon="alert-circle-outline"
-            label="Projects"
-            value={attentionLabel}
+            icon="flag-outline"
+            label="Current Mission"
+            value={`${currentMission.title}: ${currentMission.purpose}`}
           />
 
           <BriefLine
-            icon="calendar-outline"
-            label="Schedule"
-            value={overdueScheduleLabel}
+            icon="trending-up-outline"
+            label="Mission Progress"
+            value={`${runtime.missionProgress.score}% - ${runtime.missionProgress.summary}`}
+          />
+
+          <BriefLine
+            icon="ban-outline"
+            label="Mission Blockers"
+            value={missionBlockers}
+          />
+
+          <BriefLine
+            icon="shield-checkmark-outline"
+            label="Trust Score"
+            value={`${runtime.trustScore.overallScore}% ${confidenceLabel(runtime.trustScore.level)}`}
+          />
+
+          <BriefLine
+            icon="bulb-outline"
+            label="Understanding"
+            value={`${runtime.understandingScore.score}% ${confidenceLabel(runtime.understandingScore.level)}`}
+          />
+
+          <BriefLine
+            icon="pulse-outline"
+            label="Confidence"
+            value={currentConfidence}
+          />
+
+          <BriefLine
+            icon="briefcase-outline"
+            label="Preparedness"
+            value={`${runtime.preparednessScore.score}% ${confidenceLabel(runtime.preparednessScore.level)}`}
           />
 
           <BriefLine
             icon={recommendedAction.icon}
-            label="Next Action"
-            value={recommendedAction.title}
+            label="Top Priority"
+            value={topPriority}
+          />
+
+          <BriefLine
+            icon="git-branch-outline"
+            label="What Changed"
+            value={runtime.response.whatChanged}
+          />
+
+          <BriefLine
+            icon="alert-circle-outline"
+            label="What Concerns PIE"
+            value={runtime.response.whatConcernsPIE}
+          />
+
+          <BriefLine
+            icon="checkmark-circle-outline"
+            label="What PIE Recommends"
+            value={runtime.response.whatPIERecommends}
+          />
+
+          <BriefLine
+            icon="hand-left-outline"
+            label="What PIE Needs"
+            value={runtime.response.whatPIENeedsFromYou}
           />
         </View>
       </View>
 
-      <View style={styles.pieInsightCard}>
-        <View style={styles.pieInsightHeader}>
-          <View style={styles.pieInsightIcon}>
-            <Ionicons
-              name="sparkles-outline"
-              size={20}
-              color={colors.primary}
-            />
-          </View>
+      <HomePieListCard
+        title="Today's Priorities"
+        icon="flag-outline"
+        items={todayPriorities}
+      />
 
-          <View style={styles.rowMain}>
-            <Text style={styles.pieInsightLabel}>
-              PIE Insight
-            </Text>
+      <HomePieListCard
+        title="Projects Needing Attention"
+        icon="alert-circle-outline"
+        items={attentionProjectNames}
+      />
 
-            <Text
-              style={styles.pieInsightText}
-              numberOfLines={2}
-            >
-              PIE recommends: {recommendedAction.title}.
-            </Text>
-          </View>
+      <TouchableOpacity
+        style={styles.captureHeroButton}
+        onPress={startCapture}
+      >
+        <View style={styles.captureHeroIcon}>
+          <Ionicons
+            name="camera-outline"
+            size={27}
+            color="#FFFFFF"
+          />
         </View>
+
+        <View style={styles.rowMain}>
+          <Text style={styles.captureHeroTitle}>
+            Begin Project Walk
+          </Text>
+
+          <Text
+            style={styles.captureHeroSubtitle}
+            numberOfLines={2}
+          >
+            {activeProjectName
+              ? `Walk ${activeProjectName} and capture what changed`
+              : 'Choose a project and capture what changed'}
+          </Text>
+        </View>
+
+        <Ionicons
+          name="chevron-forward"
+          size={24}
+          color="#FFFFFF"
+        />
+      </TouchableOpacity>
+
+      <View style={styles.todaySecondaryActions}>
+        <TouchableOpacity
+          style={styles.todaySecondaryButton}
+          onPress={onAIExecutiveBrief}
+        >
+          <Ionicons
+            name="newspaper-outline"
+            size={18}
+            color={colors.primary}
+          />
+
+          <Text
+            style={styles.todaySecondaryText}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.84}
+          >
+            Review Prepared Updates
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.todaySecondaryButton}
+          onPress={onViewProjects}
+        >
+          <Ionicons
+            name="folder-open-outline"
+            size={18}
+            color={colors.primary}
+          />
+
+          <Text
+            style={styles.todaySecondaryText}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.84}
+          >
+            View Projects
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {unfinishedDraft ? (
@@ -533,40 +690,6 @@ export function HomeDashboard({
           </View>
         </View>
       ) : null}
-
-      <TouchableOpacity
-        style={styles.captureHeroButton}
-        onPress={startCapture}
-      >
-        <View style={styles.captureHeroIcon}>
-          <Ionicons
-            name="camera-outline"
-            size={27}
-            color="#FFFFFF"
-          />
-        </View>
-
-        <View style={styles.rowMain}>
-          <Text style={styles.captureHeroTitle}>
-            Capture Update
-          </Text>
-
-          <Text
-            style={styles.captureHeroSubtitle}
-            numberOfLines={2}
-          >
-            {activeProjectName
-              ? `Start an update for ${activeProjectName}`
-              : 'Start a field update'}
-          </Text>
-        </View>
-
-        <Ionicons
-          name="chevron-forward"
-          size={24}
-          color="#FFFFFF"
-        />
-      </TouchableOpacity>
 
       <View style={styles.currentProjectCard}>
         <View style={styles.currentProjectHeader}>
@@ -660,7 +783,7 @@ export function HomeDashboard({
           <Ionicons
             name="folder-open-outline"
             size={20}
-            color="#FFFFFF"
+            color={colors.primary}
           />
 
           <Text style={styles.openProjectButtonText}>
@@ -669,75 +792,7 @@ export function HomeDashboard({
         </TouchableOpacity>
       </View>
 
-      <View style={styles.recommendationCard}>
-        <View style={styles.recommendationHeader}>
-          <View style={styles.recommendationIcon}>
-            <Ionicons
-              name={recommendedAction.icon}
-              size={23}
-              color={colors.primary}
-            />
-          </View>
-
-          <View style={styles.rowMain}>
-            <Text style={styles.recommendationEyebrow}>
-              Recommended Next Action
-            </Text>
-
-            <Text style={styles.recommendationTitle}>
-              {recommendedAction.title}
-            </Text>
-
-            <Text style={styles.recommendationDetail}>
-              {recommendedAction.detail}
-            </Text>
-          </View>
-        </View>
-
-        <TouchableOpacity
-          style={styles.recommendationButton}
-          onPress={recommendedAction.onPress}
-        >
-          <Text style={styles.recommendationButtonText}>
-            {recommendedAction.actionLabel}
-          </Text>
-
-          <Ionicons
-            name="chevron-forward"
-            size={18}
-            color={colors.primary}
-          />
-        </TouchableOpacity>
-      </View>
-
       <View style={styles.secondaryActionsPanel}>
-        <TouchableOpacity
-          style={styles.assistantActionButton}
-          onPress={onProjectAssistant}
-        >
-          <Ionicons
-            name="chatbubble-ellipses-outline"
-            size={21}
-            color={colors.primary}
-          />
-
-          <View style={styles.rowMain}>
-            <Text
-              style={styles.secondaryActionTitle}
-              numberOfLines={1}
-            >
-              Project Assistant
-            </Text>
-
-            <Text
-              style={styles.secondaryActionDetail}
-              numberOfLines={1}
-            >
-              Ask PIE about status, risks, or next steps.
-            </Text>
-          </View>
-        </TouchableOpacity>
-
         <TouchableOpacity
           style={styles.moreActionsButton}
           onPress={() => setSecondaryActionsOpen(open => !open)}
@@ -762,6 +817,24 @@ export function HomeDashboard({
 
         {secondaryActionsOpen ? (
           <View style={styles.secondaryActionMenu}>
+            <TouchableOpacity
+              style={styles.secondaryMenuAction}
+              onPress={onProjectAssistant}
+            >
+              <Ionicons
+                name="chatbubble-ellipses-outline"
+                size={18}
+                color={colors.primary}
+              />
+
+              <Text
+                style={styles.secondaryMenuText}
+                numberOfLines={1}
+              >
+                Project Assistant
+              </Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.secondaryMenuAction}
               onPress={onAIExecutiveBrief}
@@ -849,6 +922,51 @@ function BriefLine({
         >
           {value}
         </Text>
+      </View>
+    </View>
+  );
+}
+
+function HomePieListCard({
+  title,
+  icon,
+  items,
+}: {
+  title: string;
+  icon: IconName;
+  items: string[];
+}) {
+  return (
+    <View style={styles.homePieListCard}>
+      <View style={styles.homePieListHeader}>
+        <View style={styles.homePieListIcon}>
+          <Ionicons
+            name={icon}
+            size={20}
+            color={colors.primary}
+          />
+        </View>
+
+        <View style={styles.rowMain}>
+          <Text style={styles.homePieListTitle}>
+            {title}
+          </Text>
+
+          <View style={styles.homePieList}>
+            {items.map(item => (
+              <View
+                key={item}
+                style={styles.homePieListItem}
+              >
+                <View style={styles.homePieListBullet} />
+
+                <Text style={styles.homePieListText}>
+                  {item}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </View>
       </View>
     </View>
   );
@@ -1132,7 +1250,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  pieInsightCard: {
+  homePieListCard: {
     backgroundColor: colors.primarySoft,
     borderRadius: 14,
     borderWidth: 1,
@@ -1141,13 +1259,13 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
-  pieInsightHeader: {
+  homePieListHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
   },
 
-  pieInsightIcon: {
+  homePieListIcon: {
     width: 38,
     height: 38,
     borderRadius: 10,
@@ -1156,7 +1274,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  pieInsightLabel: {
+  homePieListTitle: {
     color: colors.primary,
     fontSize: 12,
     lineHeight: 16,
@@ -1164,12 +1282,31 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
 
-  pieInsightText: {
+  homePieList: {
+    gap: 8,
+    marginTop: 5,
+  },
+
+  homePieListItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+
+  homePieListBullet: {
+    width: 7,
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+    marginTop: 8,
+  },
+
+  homePieListText: {
     color: colors.text,
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '800',
-    marginTop: 3,
+    flex: 1,
   },
 
   captureHeroButton: {
@@ -1205,6 +1342,34 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     fontWeight: '700',
     marginTop: 3,
+  },
+
+  todaySecondaryActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  todaySecondaryButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#CFE7FF',
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 10,
+  },
+
+  todaySecondaryText: {
+    color: colors.primary,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+    flexShrink: 1,
   },
 
   currentProjectCard: {
@@ -1303,7 +1468,9 @@ const styles = StyleSheet.create({
   openProjectButton: {
     minHeight: 50,
     borderRadius: 12,
-    backgroundColor: colors.text,
+    borderWidth: 1,
+    borderColor: colors.primarySoft,
+    backgroundColor: colors.fill,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -1313,7 +1480,7 @@ const styles = StyleSheet.create({
   },
 
   openProjectButtonText: {
-    color: '#FFFFFF',
+    color: colors.primary,
     fontSize: 16,
     lineHeight: 21,
     fontWeight: '900',

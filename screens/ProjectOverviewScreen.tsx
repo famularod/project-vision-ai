@@ -14,13 +14,13 @@ import {
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { PIEPanel } from '../components/PIEPanel';
 import {
   colors,
   spacing,
   typography,
 } from '../theme';
 import {
-  analyzeProjectIntelligence,
   type ProjectCommunicationReadiness,
   type ProjectConfidenceSignal,
   type ProjectHealthSignal,
@@ -29,6 +29,10 @@ import {
   type ProjectNextAction,
   type ProjectRiskSignal,
 } from '../services/ProjectIntelligenceEngine';
+import {
+  buildRuntime,
+  type PIERuntimeState,
+} from '../services/PIERuntime';
 import type {
   ContactBook,
   ProjectArea,
@@ -99,15 +103,19 @@ export function ProjectOverviewScreen({
   const projectUpdates = savedUpdates
     .filter(update => projectMatches(update.projectName, projectName))
     .sort(compareUpdatesNewestFirst);
-  const intelligence = analyzeProjectIntelligence({
+  const runtime = buildRuntime({
     projectName,
+    projectNames: [projectName],
     updates: savedUpdates,
     scheduleItems,
+    currentUpdate: projectUpdates[0] || null,
     projectAreas,
     contacts,
     referenceDocuments,
     syncMetadata,
+    surface: 'project-overview',
   });
+  const intelligence = runtime.intelligence;
   const scheduleSummary = buildScheduleSummary(scheduleItems, {
     projectName,
   });
@@ -148,22 +156,34 @@ export function ProjectOverviewScreen({
   const communicationReadiness = communicationReadinessSummary(
     intelligence.communicationReadiness,
   );
-
   return (
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
-        eyebrow="Project Overview"
+        eyebrow="Project Workspace"
         title={projectName}
         onBack={onBack}
       />
 
+      <PIEPanel
+        projectName={projectName}
+        updates={savedUpdates}
+        scheduleItems={scheduleItems}
+        projectAreas={projectAreas}
+        contacts={contacts}
+        referenceDocuments={referenceDocuments}
+        syncMetadata={syncMetadata}
+        title="PIE understands this project"
+        subtitle="What I know, what changed, concerns, recommendations, and needed information."
+      />
+
+      <RuntimeProjectSummaryCard runtime={runtime} />
+
       <ScreenCard
         style={styles.healthCard}
-        elevated
       >
         <View style={styles.sectionTitleRow}>
           <Text style={styles.sectionTitle}>
-            Project Summary
+            Supporting Signals
           </Text>
 
           <View style={styles.pieBadge}>
@@ -420,13 +440,13 @@ export function ProjectOverviewScreen({
       <OverviewSection title="Quick Actions">
         <View style={styles.actionStack}>
           <OverviewActionButton
-            label="Capture Update"
+            label="Begin Project Walk"
             icon="camera-outline"
             onPress={onCaptureUpdate}
             primary
           />
           <OverviewActionButton
-            label="Generate Report"
+            label="Review Prepared Update"
             icon="document-text-outline"
             onPress={onGenerateReport}
           />
@@ -438,6 +458,185 @@ export function ProjectOverviewScreen({
         </View>
       </OverviewSection>
     </Screen>
+  );
+}
+
+function RuntimeProjectSummaryCard({
+  runtime,
+}: {
+  runtime: PIERuntimeState;
+}) {
+  const questions = runtime.reasoning.questions.slice(0, 3);
+  const unknowns = runtime.unknowns.slice(0, 3);
+  const recommendations = runtime.recommendations.slice(0, 3);
+  const story = runtime.memory.story;
+  const priority =
+    runtime.priorityQueue.currentPriority?.title ||
+    runtime.nextBestAction.title;
+
+  return (
+    <ScreenCard style={styles.runtimeCard}>
+      <View style={styles.runtimeHeader}>
+        <View style={styles.runtimeIcon}>
+          <Ionicons
+            name="sparkles-outline"
+            size={23}
+            color={colors.primary}
+          />
+        </View>
+
+        <View style={styles.recommendationTextGroup}>
+          <Text style={styles.runtimeEyebrow}>
+            PIE currently understands this project
+          </Text>
+
+          <Text style={styles.runtimeTitle}>
+            {runtime.projectName}
+          </Text>
+
+          <Text style={styles.runtimeDetail}>
+            {runtime.response.whatPIEKnows}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.runtimeScoreGrid}>
+        <RuntimeScorePill
+          label="Understanding"
+          value={`${runtime.understandingScore.score}%`}
+          detail={scoreLevel(runtime.understandingScore.level)}
+        />
+        <RuntimeScorePill
+          label="Trust"
+          value={`${runtime.trustScore.overallScore}%`}
+          detail={scoreLevel(runtime.trustScore.level)}
+        />
+        <RuntimeScorePill
+          label="Confidence"
+          value={`${runtime.intelligence.confidence.score}%`}
+          detail={scoreLevel(runtime.overallConfidence)}
+        />
+        <RuntimeScorePill
+          label="Priority"
+          value={priority}
+          detail="Next focus"
+        />
+      </View>
+
+      <RuntimeTextBlock
+        label="Current Mission"
+        text={`${runtime.currentMission.title}: ${runtime.currentMission.purpose}`}
+      />
+      <RuntimeTextBlock
+        label="Mission Progress"
+        text={`${runtime.missionProgress.score}% - ${runtime.missionProgress.summary}`}
+      />
+      <RuntimeTextBlock
+        label="Current Story"
+        text={story.whatHappened || runtime.projectStory.summary}
+      />
+      <RuntimeTextBlock
+        label="Next Best Action"
+        text={`${runtime.nextBestAction.title}: ${runtime.nextBestAction.suggestedNextAction}`}
+      />
+      <RuntimeTextBlock
+        label="Recommendations"
+        text={
+          recommendations.length > 0
+            ? recommendations.map(item => item.title).join(' | ')
+            : runtime.response.whatPIERecommends
+        }
+      />
+      <RuntimeTextBlock
+        label="Unknowns"
+        text={
+          unknowns.length > 0
+            ? unknowns.map(item => item.summary).join(' | ')
+            : 'PIE does not see major unknowns in the current runtime state.'
+        }
+      />
+      <RuntimeTextBlock
+        label="Questions"
+        text={
+          questions.length > 0
+            ? questions.map(item => item.question).join(' | ')
+            : 'PIE does not have an open question for the project manager right now.'
+        }
+      />
+      <RuntimeTextBlock
+        label="Prepared Updates"
+        text={
+          runtime.executivePreparations.length > 0
+            ? runtime.executivePreparations.map(item => item.title).slice(0, 3).join(' | ')
+            : 'PIE has not prepared a communication package from the current evidence yet.'
+        }
+      />
+      <RuntimeTextBlock
+        label="Decisions"
+        text={
+          runtime.priorityQueue.approvalRequired.length > 0
+            ? `${runtime.priorityQueue.approvalRequired.length} item${runtime.priorityQueue.approvalRequired.length === 1 ? '' : 's'} require user approval.`
+            : 'No approval-required decisions are pending from current evidence.'
+        }
+      />
+    </ScreenCard>
+  );
+}
+
+function RuntimeScorePill({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <View style={styles.runtimeScorePill}>
+      <Text
+        style={styles.runtimeScoreLabel}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+
+      <Text
+        style={styles.runtimeScoreValue}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+        minimumFontScale={0.75}
+      >
+        {value}
+      </Text>
+
+      <Text
+        style={styles.runtimeScoreDetail}
+        numberOfLines={1}
+      >
+        {detail}
+      </Text>
+    </View>
+  );
+}
+
+function RuntimeTextBlock({
+  label,
+  text,
+}: {
+  label: string;
+  text: string;
+}) {
+  return (
+    <View style={styles.runtimeTextBlock}>
+      <Text style={styles.runtimeTextLabel}>
+        {label}
+      </Text>
+
+      <Text style={styles.runtimeTextValue}>
+        {text}
+      </Text>
+    </View>
   );
 }
 
@@ -703,6 +902,13 @@ function EmptyOverviewText({ text }: { text: string }) {
       {text}
     </Text>
   );
+}
+
+function scoreLevel(level: 'low' | 'medium' | 'high') {
+  if (level === 'high') return 'Strong';
+  if (level === 'medium') return 'Usable';
+
+  return 'Limited';
 }
 
 function projectMatches(left: string, right: string) {
@@ -973,6 +1179,99 @@ function formatPieLastUpdate(value: string | null) {
 }
 
 const styles = StyleSheet.create({
+  runtimeCard: {
+    gap: spacing.md,
+  },
+
+  runtimeHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+
+  runtimeIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  runtimeEyebrow: {
+    ...typography.label,
+    color: colors.primary,
+  },
+
+  runtimeTitle: {
+    color: colors.text,
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: '900',
+  },
+
+  runtimeDetail: {
+    color: colors.mutedText,
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '700',
+  },
+
+  runtimeScoreGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+
+  runtimeScorePill: {
+    width: '48%',
+    minWidth: 138,
+    flexGrow: 1,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    gap: spacing.xxs,
+  },
+
+  runtimeScoreLabel: {
+    ...typography.label,
+    color: colors.tertiaryText,
+  },
+
+  runtimeScoreValue: {
+    color: colors.text,
+    fontSize: 20,
+    lineHeight: 25,
+    fontWeight: '900',
+  },
+
+  runtimeScoreDetail: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '800',
+  },
+
+  runtimeTextBlock: {
+    borderRadius: 8,
+    backgroundColor: colors.surfaceMuted,
+    padding: spacing.sm,
+    gap: spacing.xxs,
+  },
+
+  runtimeTextLabel: {
+    ...typography.label,
+    color: colors.tertiaryText,
+  },
+
+  runtimeTextValue: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '700',
+  },
+
   healthCard: {
     gap: spacing.md,
   },

@@ -96,6 +96,7 @@ export function AdminScreen({
     useState<SupabaseConnectionTestResult | null>(startupConnectionResult);
   const [actionResult, setActionResult] = useState<string | null>(null);
   const [syncProgress, setSyncProgress] = useState<string | null>(null);
+  const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -296,20 +297,28 @@ export function AdminScreen({
         </ScreenCard>
       </ScreenSection>
 
-      <ScreenSection title="Project Context">
+      <ScreenSection title="Advanced Configuration">
         <ScreenCard>
           <Text style={styles.cardText}>
-            Project Area setup supports location intelligence in the background. It stays in More so daily project work stays focused on Projects, Capture, Reports, and Assistant.
+            Area Mapping is an advanced setup tool for PIE location intelligence. Daily project work should happen from Today, Projects, Walk, and Review.
           </Text>
+
+          <SecondaryButton
+            label={advancedConfigOpen ? 'Hide Area Mapping' : 'Open Area Mapping'}
+            icon={advancedConfigOpen ? 'chevron-up-outline' : 'map-outline'}
+            onPress={() => setAdvancedConfigOpen(open => !open)}
+          />
         </ScreenCard>
 
-        <ManageAreasPanel
-          projectAreas={projectAreas}
-          onAddArea={onAddArea}
-          onUpdateArea={onUpdateArea}
-          onDeleteArea={onDeleteArea}
-          onUseCurrentLocationForArea={onUseCurrentLocationForArea}
-        />
+        {advancedConfigOpen ? (
+          <ManageAreasPanel
+            projectAreas={projectAreas}
+            onAddArea={onAddArea}
+            onUpdateArea={onUpdateArea}
+            onDeleteArea={onDeleteArea}
+            onUseCurrentLocationForArea={onUseCurrentLocationForArea}
+          />
+        ) : null}
       </ScreenSection>
 
       <ScreenSection title="Admin Placeholders">

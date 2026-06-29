@@ -36,7 +36,7 @@ export function BottomNavigation({
   return (
     <View style={styles.bottomTabs}>
       <TabButton
-        label="Home"
+        label="Today"
         icon="home-outline"
         active={current === 'Home'}
         onPress={() => onChange('Home')}
@@ -51,32 +51,77 @@ export function BottomNavigation({
 
       <View style={styles.captureSlot}>
         <TouchableOpacity
-          style={styles.captureButton}
+          style={[
+            styles.captureButton,
+            isWalkActive(current) && styles.captureButtonActive,
+          ]}
           onPress={onNew}
         >
           <Ionicons
-            name="camera-outline"
+            name="walk-outline"
             size={22}
             color="#FFFFFF"
           />
-          <Text style={styles.captureButtonText}>Capture</Text>
+          <Text
+            style={styles.captureButtonText}
+            numberOfLines={1}
+          >
+            Walk
+          </Text>
         </TouchableOpacity>
       </View>
 
       <TabButton
-        label="Reports"
+        label="Review"
         icon="bar-chart-outline"
-        active={current === 'Reports'}
+        active={isReviewActive(current)}
         onPress={() => onChange('Reports')}
       />
 
       <TabButton
         label="More"
         icon="ellipsis-horizontal-circle-outline"
-        active={current === 'Admin'}
+        active={isMoreActive(current)}
         onPress={() => onChange('Admin')}
       />
     </View>
+  );
+}
+
+function isWalkActive(current: string) {
+  return (
+    current === 'SelectProject' ||
+    current === 'AddPhotos' ||
+    current === 'BuildUpdate'
+  );
+}
+
+function isReviewActive(current: string) {
+  return (
+    current === 'Reports' ||
+    current === 'SavedUpdates' ||
+    current === 'AIExecutiveBrief' ||
+    current === 'WeeklyExecutiveReport' ||
+    current === 'ProjectHealthDashboard' ||
+    current === 'ExecutiveKPIDashboard' ||
+    current === 'CriticalPath' ||
+    current === 'MilestoneTracking'
+  );
+}
+
+function isMoreActive(current: string) {
+  return (
+    current === 'Admin' ||
+    current === 'Diagnostics' ||
+    current === 'ReferenceDocuments' ||
+    current === 'Schedule' ||
+    current === 'Upcoming' ||
+    current === 'ConstructionTimeline' ||
+    current === 'DelayAnalysis' ||
+    current === 'ContractorPerformance' ||
+    current === 'ProjectRiskMatrix' ||
+    current === 'PortfolioDashboard' ||
+    current === 'AIProjectCoach'
   );
 }
 
@@ -111,6 +156,7 @@ function TabButton({
           styles.tabText,
           active && styles.tabTextActive,
         ]}
+        numberOfLines={1}
       >
         {label}
       </Text>
@@ -174,5 +220,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 10,
     paddingVertical: 6,
+  },
+
+  captureButtonActive: {
+    backgroundColor: '#005BBB',
   },
 });

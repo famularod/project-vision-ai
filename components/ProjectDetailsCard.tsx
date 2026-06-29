@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useState } from 'react';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 export type IconName = keyof typeof Ionicons.glyphMap;
@@ -389,6 +390,7 @@ export function ProjectDetailsCard({
   onChangeArea: (areaId: string) => void;
   onRefreshLocation: () => void;
 }) {
+  const [showAreaCorrection, setShowAreaCorrection] = useState(false);
   const hasGps =
     update.gpsLatitude !== null &&
     update.gpsLatitude !== undefined &&
@@ -401,13 +403,13 @@ export function ProjectDetailsCard({
 
   const suggestionText = areaSuggestion
     ? areaSuggestion.withinRadius
-      ? `Suggested Area: ${areaSuggestion.area.name}`
-      : `Closest Area: ${areaSuggestion.area.name}, but you are outside the saved radius.`
+      ? `PIE believes this is ${areaSuggestion.area.name}. Confirm if correct.`
+      : `PIE found ${areaSuggestion.area.name}, but your GPS is outside the saved radius.`
     : savedAreaLocationCount === 0
-      ? 'No GPS points are saved for project areas yet. You can still select the area manually.'
+      ? 'PIE is using remembered area context. Area Mapping GPS can be configured from Advanced Configuration.'
       : savedAreaLocationCount < projectAreas.length
-        ? 'Refresh GPS Location or choose an area manually. GPS suggestions use only areas that have saved GPS points.'
-        : 'Refresh GPS Location or choose an area manually.';
+        ? 'PIE can suggest areas with saved GPS points. Correct the area only if PIE is wrong.'
+        : 'PIE can refresh GPS when the area needs verification.';
 
   return (
     <View style={styles.locationPanel}>
@@ -422,7 +424,7 @@ export function ProjectDetailsCard({
 
         <View style={styles.rowMain}>
           <Text style={styles.panelTitle}>
-            Project Area
+            PIE Location Context
           </Text>
 
           <Text style={styles.rowSub}>
@@ -461,13 +463,14 @@ export function ProjectDetailsCard({
       ) : null}
 
       <View style={styles.locationActionRow}>
-        <PrimaryButton
-          label="Confirm Area"
-          icon="checkmark-circle-outline"
-          onPress={onConfirmArea}
-          disabled={!areaSuggestion}
-          compact
-        />
+        {areaSuggestion ? (
+          <PrimaryButton
+            label="Confirm PIE Area"
+            icon="checkmark-circle-outline"
+            onPress={onConfirmArea}
+            compact
+          />
+        ) : null}
 
         <SecondaryButton
           label="Refresh GPS"
@@ -477,37 +480,58 @@ export function ProjectDetailsCard({
         />
       </View>
 
-      <Text style={styles.sectionLabel}>
-        Change Area
-      </Text>
+      {projectAreas.length > 0 ? (
+        <TouchableOpacity
+          style={styles.inlineLink}
+          onPress={() => setShowAreaCorrection(open => !open)}
+        >
+          <Ionicons
+            name={showAreaCorrection ? 'chevron-up-outline' : 'create-outline'}
+            size={17}
+            color={colors.primary}
+          />
 
-      <View style={styles.areaChipWrap}>
-        {projectAreas.map(area => {
-          const selected =
-            area.id === update.selectedAreaId ||
-            area.id === selectedArea?.id;
+          <Text style={styles.inlineLinkText}>
+            {showAreaCorrection ? 'Hide Correction Choices' : 'Correct Area'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
 
-          return (
-            <TouchableOpacity
-              key={area.id}
-              style={[
-                styles.areaChip,
-                selected && styles.areaChipSelected,
-              ]}
-              onPress={() => onChangeArea(area.id)}
-            >
-              <Text
+      {showAreaCorrection ? (
+        <>
+          <Text style={styles.sectionLabel}>
+            Correction Choices
+          </Text>
+
+          <View style={styles.areaChipWrap}>
+            {projectAreas.map(area => {
+              const selected =
+                area.id === update.selectedAreaId ||
+                area.id === selectedArea?.id;
+
+              return (
+                <TouchableOpacity
+                  key={area.id}
                 style={[
-                  styles.areaChipText,
-                  selected && styles.areaChipTextSelected,
+                    styles.areaChip,
+                    selected && styles.areaChipSelected,
                 ]}
+                  onPress={() => onChangeArea(area.id)}
               >
-                {area.name}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+                  <Text
+                    style={[
+                      styles.areaChipText,
+                      selected && styles.areaChipTextSelected,
+                    ]}
+                  >
+                    {area.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </>
+      ) : null}
     </View>
   );
 }
@@ -1731,6 +1755,47 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.dangerSoft,
   },
 
+  captureMissionPanel: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#CFE7FF',
+    padding: 14,
+    gap: 9,
+    marginBottom: 12,
+  },
+
+  captureMissionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+
+  captureMissionTitle: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '900',
+  },
+
+  captureMissionText: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '800',
+  },
+
+  captureMissionList: {
+    gap: 7,
+  },
+
+  captureMissionItem: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+
   projectFinderActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1766,8 +1831,29 @@ export const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  projectSecondaryAction: {
+    width: 74,
+    minHeight: 52,
+    borderRadius: 12,
+    backgroundColor: colors.fill,
+    borderWidth: 1,
+    borderColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 5,
+    paddingHorizontal: 8,
+  },
+
+  projectSecondaryActionText: {
+    color: colors.primary,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+
   projectOverflowButton: {
-    width: 88,
+    width: 78,
     minHeight: 52,
     borderRadius: 12,
     backgroundColor: colors.primarySoft,

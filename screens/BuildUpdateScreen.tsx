@@ -1,6 +1,7 @@
 import { StyleProp, View, ViewStyle } from 'react-native';
 import { PhotoCapturePanel } from '../components/PhotoCapturePanel';
 import { PhotoGallery } from '../components/PhotoGallery';
+import { PIEPanel } from '../components/PIEPanel';
 import {
   AreaSuggestion,
   DraftSavedIndicator,
@@ -14,11 +15,22 @@ import {
 import { RecipientsCard } from '../components/RecipientsCard';
 import { SaveUpdateBar } from '../components/SaveUpdateBar';
 import { UpdateNotesCard } from '../components/UpdateNotesCard';
+import type { ProjectSyncFreshnessMetadata } from '../services/ProjectIntelligenceEngine';
+import type {
+  ContactBook,
+  ReferenceDocument,
+  ScheduleItem,
+} from '../types';
 
 export function AddPhotosScreen({
   contentStyle,
   update,
+  savedUpdates,
+  scheduleItems,
   projectAreas,
+  contacts,
+  referenceDocuments,
+  syncMetadata,
   selectedArea,
   areaSuggestion,
   locationStatus,
@@ -39,7 +51,12 @@ export function AddPhotosScreen({
 }: {
   contentStyle: StyleProp<ViewStyle>;
   update: ProjectUpdate;
+  savedUpdates: ProjectUpdate[];
+  scheduleItems: ScheduleItem[];
   projectAreas: ProjectArea[];
+  contacts?: ContactBook;
+  referenceDocuments?: ReferenceDocument[];
+  syncMetadata?: ProjectSyncFreshnessMetadata | null;
   selectedArea: ProjectArea | null;
   areaSuggestion: AreaSuggestion | null;
   locationStatus: string | null;
@@ -69,23 +86,39 @@ export function AddPhotosScreen({
       contentStyle={contentStyle}
       update={update}
       header={
-        <PhotoCapturePanel
-          update={update}
-          projectAreas={projectAreas}
-          selectedArea={selectedArea}
-          areaSuggestion={areaSuggestion}
-          locationStatus={locationStatus}
-          recipientCount={recipientCount}
-          draftSavedAt={draftSavedAt}
-          onPickPhotos={onPickPhotos}
-          onTakePhoto={onTakePhoto}
-          onNext={onNext}
-          onChangeProject={onChangeProject}
-          onContacts={onContacts}
-          onConfirmArea={onConfirmArea}
-          onChangeArea={onChangeArea}
-          onRefreshLocation={onRefreshLocation}
-        />
+        <>
+          <PIEPanel
+            projectName={update.projectName}
+            updates={savedUpdates}
+            scheduleItems={scheduleItems}
+            currentUpdate={update}
+            projectAreas={projectAreas}
+            contacts={contacts}
+            referenceDocuments={referenceDocuments}
+            syncMetadata={syncMetadata}
+            title="PIE Walk Prep"
+            subtitle="PIE believes this is the project and area for your field walk."
+            compact
+          />
+
+          <PhotoCapturePanel
+            update={update}
+            projectAreas={projectAreas}
+            selectedArea={selectedArea}
+            areaSuggestion={areaSuggestion}
+            locationStatus={locationStatus}
+            recipientCount={recipientCount}
+            draftSavedAt={draftSavedAt}
+            onPickPhotos={onPickPhotos}
+            onTakePhoto={onTakePhoto}
+            onNext={onNext}
+            onChangeProject={onChangeProject}
+            onContacts={onContacts}
+            onConfirmArea={onConfirmArea}
+            onChangeArea={onChangeArea}
+            onRefreshLocation={onRefreshLocation}
+          />
+        </>
       }
       onUpdatePhoto={onUpdatePhoto}
       onRemovePhoto={onRemovePhoto}
@@ -150,7 +183,7 @@ export function BuildUpdateScreen({
   return (
     <View>
       <ScreenTitle
-        title="Build Update"
+        title="Save Walk Update"
         subtitle={
           hasPhotos
             ? `${update.projectName} - ${update.photos.length} photos`

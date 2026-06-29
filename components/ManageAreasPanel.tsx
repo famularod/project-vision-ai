@@ -62,14 +62,14 @@ export function ManageAreasPanel({
 
   return (
     <View style={styles.panel}>
-      <Text style={styles.panelTitle}>Project Areas</Text>
+      <Text style={styles.panelTitle}>Area Mapping</Text>
 
       <Text style={styles.bodyText}>
         Configure work areas and save GPS points for PIE location intelligence.
       </Text>
 
       <View style={styles.setupProgressCard}>
-        <Text style={styles.projectName}>Project Area GPS Setup</Text>
+        <Text style={styles.projectName}>Area Mapping GPS Setup</Text>
         <Text style={styles.rowSub}>
           {stats.saved} of {stats.total} areas have GPS saved ({stats.percent}%).
         </Text>
@@ -89,7 +89,7 @@ export function ManageAreasPanel({
         compact
       />
 
-      <Text style={styles.sectionLabel}>New Project Area</Text>
+      <Text style={styles.sectionLabel}>New Area Mapping</Text>
       <View style={styles.addLocationInlineRow}>
         <TextInput
           style={[styles.input, styles.addLocationInlineInput]}
@@ -113,7 +113,7 @@ export function ManageAreasPanel({
 
       <View style={styles.areaListCard}>
         <View style={styles.areaListHeaderRow}>
-          <Text style={styles.sectionLabelNoMargin}>Project Areas</Text>
+          <Text style={styles.sectionLabelNoMargin}>Area Mapping</Text>
           <Text style={styles.rowSub}>{projectAreas.length} total</Text>
         </View>
 

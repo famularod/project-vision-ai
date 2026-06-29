@@ -1,60 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useState } from 'react';
 import { Text, TouchableOpacity, View } from 'react-native';
-import type { ProjectLocationIntelligence } from '../services/LocationIntelligenceService';
+import type { PIERuntimeState } from '../services/PIERuntime';
 import type { ProjectStats } from '../types';
 import { formatDisplayDate } from '../utils/date';
 import type { ScheduleSummary } from '../utils/schedule';
 import { colors, styles } from './ProjectDetailsCard';
-
-function scheduleStatusLabel(summary: ScheduleSummary | undefined) {
-  if (!summary) return 'None';
-  if (summary.totalItems === 0) return 'Required';
-  if (summary.overdueCount > 0) return 'Behind';
-  if (summary.upcoming7Count > 0 || summary.upcoming30Count > 0) return 'Due Soon';
-
-  return 'On Track';
-}
-
-function projectHealthLabel(
-  stats: ProjectStats,
-  summary: ScheduleSummary | undefined,
-  archived: boolean,
-) {
-  if (archived) {
-    return {
-      label: 'Archived',
-      detail: 'Stored',
-      tone: 'neutral' as const,
-    };
-  }
-
-  if (stats.overdueActions > 0 || (summary?.overdueCount ?? 0) > 0) {
-    return {
-      label: 'Red',
-      detail: 'Needs attention',
-      tone: 'danger' as const,
-    };
-  }
-
-  if (
-    stats.openActions > 0 ||
-    stats.dueThisWeek > 0 ||
-    (summary?.upcoming7Count ?? 0) > 0
-  ) {
-    return {
-      label: 'Yellow',
-      detail: 'Watch closely',
-      tone: 'warning' as const,
-    };
-  }
-
-  return {
-    label: 'Green',
-    detail: 'On track',
-    tone: 'success' as const,
-  };
-}
 
 function nextMilestoneLabel(summary: ScheduleSummary | undefined) {
   if (!summary || summary.totalItems === 0) return null;
@@ -71,11 +22,69 @@ function nextMilestoneLabel(summary: ScheduleSummary | undefined) {
   return `${milestone.title} (${milestone.dueLabel})`;
 }
 
+function confidenceLabel(level: 'low' | 'medium' | 'high') {
+  if (level === 'high') return 'Strong';
+  if (level === 'medium') return 'Usable';
+
+  return 'Limited';
+}
+
+function healthLabel(status: PIERuntimeState['intelligence']['healthStatus']) {
+  if (status === 'healthy') return 'Healthy';
+  if (status === 'watch') return 'Watch';
+  if (status === 'at-risk') return 'At Risk';
+
+  return 'Unknown';
+}
+
+function runtimeHealthTone(
+  status: PIERuntimeState['intelligence']['healthStatus'],
+  archived: boolean,
+) {
+  if (archived) {
+    return {
+      label: 'Archived',
+      detail: 'Stored',
+      tone: 'neutral' as const,
+    };
+  }
+
+  if (status === 'at-risk') {
+    return {
+      label: 'At Risk',
+      detail: 'Needs attention',
+      tone: 'danger' as const,
+    };
+  }
+
+  if (status === 'watch') {
+    return {
+      label: 'Watch',
+      detail: 'Watch closely',
+      tone: 'warning' as const,
+    };
+  }
+
+  if (status === 'healthy') {
+    return {
+      label: 'Healthy',
+      detail: 'On track',
+      tone: 'success' as const,
+    };
+  }
+
+  return {
+    label: 'Unknown',
+    detail: 'Needs context',
+    tone: 'neutral' as const,
+  };
+}
+
 export function ProjectFinderRow({
   project,
   stats,
   scheduleSummary,
-  locationContext,
+  runtime,
   archived,
   favorite,
   onPress,
@@ -89,7 +98,7 @@ export function ProjectFinderRow({
   project: string;
   stats: ProjectStats;
   scheduleSummary?: ScheduleSummary;
-  locationContext?: ProjectLocationIntelligence;
+  runtime: PIERuntimeState;
   archived: boolean;
   favorite: boolean;
   onPress: () => void;
@@ -101,11 +110,38 @@ export function ProjectFinderRow({
   onDelete: () => void;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
-  const scheduleStatus = scheduleStatusLabel(scheduleSummary);
   const nextMilestone = nextMilestoneLabel(scheduleSummary);
-  const health = projectHealthLabel(stats, scheduleSummary, archived);
-  const primaryAction = archived ? onPress : onUpdate || onPress;
-  const primaryLabel = archived ? 'Open' : 'Update';
+  const health = runtimeHealthTone(runtime.intelligence.healthStatus, archived);
+  const primaryAction = onPress;
+  const primaryLabel = 'Open Project';
+  const secondaryAction = archived ? undefined : onUpdate;
+  const location = runtime.intelligence.locationIntelligence;
+  const currentMission =
+    runtime.currentMission?.title ||
+    runtime.nextMission?.toMission?.replace(/-/g, ' ') ||
+    'Monitor project';
+  const currentArea =
+    location.currentArea ||
+    'GPS not set';
+  const gpsStatus = location.gpsStatus || 'GPS not available';
+  const lastKnownLocation =
+    location.lastKnownLocation &&
+    location.lastKnownLocation !== 'Unknown'
+      ? location.lastKnownLocation
+      : 'Not available';
+  const pieConfidence =
+    `${runtime.intelligence.confidence.score}% ${confidenceLabel(runtime.overallConfidence)}`;
+  const understanding =
+    `${runtime.understandingScore.score}% ${confidenceLabel(runtime.understandingScore.level)}`;
+  const nextBestAction =
+    runtime.nextBestAction.title ||
+    (archived ? 'Open project record' : 'Capture today\'s progress');
+  const currentConcern =
+    runtime.response.whatConcernsPIE ||
+    (runtime.intelligence.healthStatus === 'healthy'
+      ? 'No urgent concern from current evidence'
+      : 'Capture more context for PIE');
+  const pieHealth = healthLabel(runtime.intelligence.healthStatus);
 
   function runMoreAction(action: () => void) {
     setMoreOpen(false);
@@ -138,7 +174,7 @@ export function ProjectFinderRow({
             </View>
 
             <Text style={styles.rowSub}>
-              Last update:{' '}
+              Mission: {currentMission} · Last update:{' '}
               {stats.lastUpdate
                 ? formatDisplayDate(stats.lastUpdate)
                 : 'No updates yet'}
@@ -166,6 +202,70 @@ export function ProjectFinderRow({
           </View>
         </View>
 
+        <Text
+          style={styles.projectMilestoneText}
+          numberOfLines={2}
+        >
+          Next PIE Recommendation: {nextBestAction}
+        </Text>
+
+        <Text
+          style={styles.projectMilestoneText}
+          numberOfLines={2}
+        >
+          Current concern: {currentConcern}
+        </Text>
+
+        <View style={styles.projectSignalGrid}>
+          <View style={styles.projectSignalItem}>
+            <Text
+              style={styles.projectSignalLabel}
+              numberOfLines={1}
+            >
+              Area
+            </Text>
+
+            <Text
+              style={styles.projectSignalValue}
+              numberOfLines={1}
+            >
+              {currentArea}
+            </Text>
+          </View>
+
+          <View style={styles.projectSignalItem}>
+            <Text
+              style={styles.projectSignalLabel}
+              numberOfLines={1}
+            >
+              GPS
+            </Text>
+
+            <Text
+              style={styles.projectSignalValue}
+              numberOfLines={1}
+            >
+              {gpsStatus}
+            </Text>
+          </View>
+
+          <View style={styles.projectSignalItem}>
+            <Text
+              style={styles.projectSignalLabel}
+              numberOfLines={1}
+            >
+              Last Known
+            </Text>
+
+            <Text
+              style={styles.projectSignalValue}
+              numberOfLines={1}
+            >
+              {lastKnownLocation}
+            </Text>
+          </View>
+        </View>
+
         <View style={styles.projectSignalGrid}>
           <View style={styles.projectSignalItem}>
             <Text
@@ -176,10 +276,29 @@ export function ProjectFinderRow({
             </Text>
 
             <Text
+              style={[
+                styles.projectSignalValue,
+                runtime.intelligence.healthStatus === 'at-risk' && styles.projectSignalDanger,
+              ]}
+              numberOfLines={1}
+            >
+              {pieHealth}
+            </Text>
+          </View>
+
+          <View style={styles.projectSignalItem}>
+            <Text
+              style={styles.projectSignalLabel}
+              numberOfLines={1}
+            >
+              PIE
+            </Text>
+
+            <Text
               style={styles.projectSignalValue}
               numberOfLines={1}
             >
-              {health.detail}
+              {pieConfidence}
             </Text>
           </View>
 
@@ -188,36 +307,14 @@ export function ProjectFinderRow({
               style={styles.projectSignalLabel}
               numberOfLines={1}
             >
-              Open Issues
+              Understanding
             </Text>
 
             <Text
-              style={[
-                styles.projectSignalValue,
-                stats.openActions > 0 && styles.projectSignalDanger,
-              ]}
+              style={styles.projectSignalValue}
               numberOfLines={1}
             >
-              {stats.openActions}
-            </Text>
-          </View>
-
-          <View style={styles.projectSignalItem}>
-            <Text
-              style={styles.projectSignalLabel}
-              numberOfLines={1}
-            >
-              Schedule
-            </Text>
-
-            <Text
-              style={[
-                styles.projectSignalValue,
-                scheduleSummary?.overdueCount ? styles.projectSignalDanger : null,
-              ]}
-              numberOfLines={1}
-            >
-              {scheduleStatus}
+              {understanding}
             </Text>
           </View>
         </View>
@@ -230,8 +327,6 @@ export function ProjectFinderRow({
             Next milestone: {nextMilestone}
           </Text>
         ) : null}
-
-        <ProjectLocationLine locationContext={locationContext} />
       </TouchableOpacity>
 
       <View style={styles.projectFinderActionPanel}>
@@ -249,6 +344,28 @@ export function ProjectFinderRow({
               {primaryLabel}
             </Text>
           </TouchableOpacity>
+
+          {secondaryAction ? (
+            <TouchableOpacity
+              style={styles.projectSecondaryAction}
+              onPress={secondaryAction}
+            >
+              <Ionicons
+                name="walk-outline"
+                size={18}
+                color={colors.primary}
+              />
+
+              <Text
+                style={styles.projectSecondaryActionText}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.84}
+              >
+                Walk
+              </Text>
+            </TouchableOpacity>
+          ) : null}
 
           <TouchableOpacity
             style={styles.projectOverflowButton}
@@ -320,71 +437,6 @@ export function ProjectFinderRow({
             </TouchableOpacity>
           </View>
         ) : null}
-      </View>
-    </View>
-  );
-}
-
-function ProjectLocationLine({
-  locationContext,
-}: {
-  locationContext?: ProjectLocationIntelligence;
-}) {
-  const currentArea = locationContext?.currentArea || 'Not detected';
-  const gpsStatus = locationContext?.gpsStatus || 'GPS not available';
-  const lastKnownLocation =
-    locationContext?.lastKnownLocation &&
-    locationContext.lastKnownLocation !== 'Unknown'
-      ? locationContext.lastKnownLocation
-      : 'Not available';
-  const presence = locationContext?.presenceLabel || 'Unknown';
-  const confidence = locationContext
-    ? `${locationContext.confidenceScore}% ${locationContext.confidence}`
-    : 'Low';
-
-  return (
-    <View style={styles.projectLocationPanel}>
-      <Ionicons
-        name="location-outline"
-        size={16}
-        color={colors.primary}
-      />
-
-      <View style={styles.rowMain}>
-        <Text
-          style={styles.projectLocationText}
-          numberOfLines={1}
-        >
-          Location Intelligence
-        </Text>
-
-        <Text
-          style={styles.projectLocationText}
-          numberOfLines={1}
-        >
-          Current Area: {currentArea}
-        </Text>
-
-        <Text
-          style={styles.projectLocationText}
-          numberOfLines={1}
-        >
-          GPS: {gpsStatus} | {presence}
-        </Text>
-
-        <Text
-          style={styles.projectLocationText}
-          numberOfLines={1}
-        >
-          Last Known: {lastKnownLocation}
-        </Text>
-
-        <Text
-          style={styles.projectLocationText}
-          numberOfLines={1}
-        >
-          Confidence: {confidence}
-        </Text>
       </View>
     </View>
   );

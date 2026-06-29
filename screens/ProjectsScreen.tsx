@@ -18,7 +18,7 @@ import {
   colors,
   styles,
 } from '../components/ProjectDetailsCard';
-import { analyzeProjectLocationIntelligence } from '../services/LocationIntelligenceService';
+import { buildRuntime } from '../services/PIERuntime';
 import {
   getStoredJson,
   setStoredJson,
@@ -193,15 +193,32 @@ export function ProjectsScreen({
       const bFavorite = favoriteProjects.some(
         project => project.toLowerCase() === b.project.toLowerCase(),
       );
+      const aSchedule = buildScheduleSummary(scheduleItems, {
+        projectName: a.project,
+      });
+      const bSchedule = buildScheduleSummary(scheduleItems, {
+        projectName: b.project,
+      });
+      const aPriority =
+        a.stats.overdueActions * 80 +
+        aSchedule.overdueCount * 80 +
+        a.stats.dueThisWeek * 35 +
+        aSchedule.upcoming7Count * 35 +
+        a.stats.openActions * 25 +
+        (aFavorite ? 5 : 0) -
+        (a.archived ? 1000 : 0);
+      const bPriority =
+        b.stats.overdueActions * 80 +
+        bSchedule.overdueCount * 80 +
+        b.stats.dueThisWeek * 35 +
+        bSchedule.upcoming7Count * 35 +
+        b.stats.openActions * 25 +
+        (bFavorite ? 5 : 0) -
+        (b.archived ? 1000 : 0);
 
-      if (aFavorite !== bFavorite) return aFavorite ? -1 : 1;
+      if (bPriority !== aPriority) return bPriority - aPriority;
       if (a.archived !== b.archived) return a.archived ? 1 : -1;
-      if (b.stats.overdueActions !== a.stats.overdueActions) {
-        return b.stats.overdueActions - a.stats.overdueActions;
-      }
-      if (b.stats.openActions !== a.stats.openActions) {
-        return b.stats.openActions - a.stats.openActions;
-      }
+      if (aFavorite !== bFavorite) return aFavorite ? -1 : 1;
 
       return a.project.localeCompare(b.project);
     });
@@ -213,18 +230,21 @@ export function ProjectsScreen({
     const scheduleSummary = buildScheduleSummary(scheduleItems, {
       projectName: item.project,
     });
+    const runtime = buildRuntime({
+      projectName: item.project,
+      projectNames: [...activeProjects, ...archivedProjects],
+      updates: savedUpdates,
+      scheduleItems,
+      projectAreas,
+      surface: 'projects',
+    });
 
     return (
       <ProjectFinderRow
         project={item.project}
         stats={item.stats}
         scheduleSummary={scheduleSummary}
-        locationContext={analyzeProjectLocationIntelligence({
-          projectName: item.project,
-          updates: savedUpdates,
-          scheduleItems,
-          projectAreas,
-        })}
+        runtime={runtime}
         archived={item.archived}
         favorite={favorite}
         onPress={() => onSelect(item.project)}
@@ -254,7 +274,7 @@ export function ProjectsScreen({
         <>
           <ScreenTitle
             title="Projects"
-            subtitle="Which project are you working on? Search, open an overview, or start an update."
+            subtitle="PIE-ranked work. Open the project that needs attention, or start the update PIE recommends."
           />
 
           <View style={styles.projectFinderPanel}>
@@ -319,7 +339,7 @@ export function ProjectsScreen({
           />
 
           <Text style={styles.sectionLabel}>
-            Project Cards
+            PIE-ranked project cards
           </Text>
         </>
       }

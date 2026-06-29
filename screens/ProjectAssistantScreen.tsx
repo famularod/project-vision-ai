@@ -11,6 +11,7 @@ import {
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { PIEPanel } from '../components/PIEPanel';
 import {
   analyzeProjectIntelligence,
   type ProjectIntelligenceSummary,
@@ -434,6 +435,41 @@ export function ProjectAssistantScreen({
       />
 
       <ScreenCard
+        style={styles.integrationCard}
+        elevated
+      >
+        <View style={styles.sectionTitleRow}>
+          <Text style={styles.cardTitle}>
+            Project Assistant is now integrated throughout Project Vision AI.
+          </Text>
+
+          <View style={styles.engineBadge}>
+            <Text style={styles.engineBadgeText}>
+              Powered by PIE
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.bodyText}>
+          I analyzed this project. The same intelligence now appears on Home, Projects, Project Overview, Capture, and Reports.
+        </Text>
+      </ScreenCard>
+
+      <PIEPanel
+        projectName={displayProjectName}
+        updates={updates}
+        scheduleItems={scheduleItems}
+        currentUpdate={currentUpdate}
+        projectAreas={projectAreas}
+        contacts={contacts}
+        referenceDocuments={referenceDocuments}
+        reportHistory={reportHistory}
+        syncMetadata={syncMetadata}
+        title="PIE Read"
+        subtitle="The assistant experience is now part of every major workflow."
+      />
+
+      <ScreenCard
         style={styles.currentProjectCard}
         elevated
       >
@@ -587,7 +623,13 @@ export function ProjectAssistantScreen({
 
         <View style={styles.messageStack}>
           {conversation.length === 0 ? (
-            <AssistantBubble text="Ask one of the suggested questions, or type your own. I will answer from current project information and project memory." />
+            <AssistantBubble
+              text={assistantOpeningBrief(
+                intelligence,
+                reasoning,
+                decisionQueue,
+              )}
+            />
           ) : (
             conversation.map(message =>
               message.role === 'assistant' ? (
@@ -810,6 +852,32 @@ function buildAssistantResponse(
   if (kind === 'walk') return projectWalkDecisionResponse(decisionQueue);
 
   return "I don't know how to answer that yet, but I'll be able to in a future version.";
+}
+
+function assistantOpeningBrief(
+  intelligence: ProjectIntelligenceSummary,
+  reasoning: PIEReasoningResult,
+  decisionQueue: PIEDecisionQueue,
+) {
+  const concerns = getPIEConcerns(reasoning).slice(0, 2);
+  const recommendations = getPIERecommendations(reasoning).slice(0, 2);
+  const questions = getPIEQuestions(reasoning).slice(0, 2);
+  const nextAction = getNextBestAction(decisionQueue);
+
+  return [
+    'I analyzed this project.',
+    `Summary: ${healthLabel(intelligence)} health, ${progressLabel(intelligence)}, ${scheduleLabel(intelligence)} schedule, ${intelligence.confidence.score}% confidence.`,
+    concerns.length > 0
+      ? `Concerns: ${concerns.map(concern => concern.title).join('; ')}.`
+      : 'Concerns: no urgent concern surfaced from current local evidence.',
+    recommendations.length > 0
+      ? `Recommendations: ${recommendations.map(recommendation => recommendation.title).join('; ')}.`
+      : `Recommendations: ${intelligence.recommendedNextAction.label}.`,
+    questions.length > 0
+      ? `Questions for you: ${questions.map(question => question.question).join(' ')}`
+      : 'Questions for you: none right now unless field conditions changed.',
+    `Suggested next action: ${nextAction.title}. ${approvalText(nextAction.userApprovalRequired)}`,
+  ].join('\n');
 }
 
 function classifyQuestion(question: string): AssistantQuestionId {
@@ -1382,7 +1450,7 @@ function projectWalkDecisionResponse(decisionQueue: PIEDecisionQueue) {
     evidenceLine(decision.evidence),
     `Confidence: ${confidenceText(decision.confidence)}.`,
     `Approval: ${approvalText(decision.userApproval.required)}`,
-    'Project Walk Mode is coming soon; for now, walk the site and use Capture Update to save reviewed field notes.',
+    'Project Walk Mode is coming soon; for now, begin a project walk and save reviewed field notes through the capture flow.',
   ].join('\n');
 }
 
@@ -1649,6 +1717,10 @@ function lastUpdateLabel(intelligence: ProjectIntelligenceSummary) {
 const styles = StyleSheet.create({
   promptCard: {
     gap: spacing.md,
+  },
+
+  integrationCard: {
+    gap: spacing.sm,
   },
 
   currentProjectCard: {

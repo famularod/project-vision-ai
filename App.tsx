@@ -2909,7 +2909,7 @@ useEffect(() => {
       if (!snapshot) {
         setDraftAreaSuggestion(null);
         setLocationStatus(
-          'Location permission denied. Choose Project Area manually.',
+          'Location permission denied. Correct the area only if PIE is wrong.',
         );
         return null;
       }
@@ -2944,7 +2944,7 @@ useEffect(() => {
     } catch {
       setDraftAreaSuggestion(null);
       setLocationStatus(
-        'GPS could not be captured. Choose Project Area manually.',
+        'GPS could not be captured. Correct the area only if PIE is wrong.',
       );
       return null;
     }
@@ -2975,7 +2975,7 @@ useEffect(() => {
         : null;
 
     applyAreaAndLocationToDraft(draftAreaSuggestion.area, snapshot);
-    setLocationStatus('Project Area confirmed');
+    setLocationStatus('Area confirmed');
   }
 
   function changeDraftArea(areaId: string) {
@@ -2985,8 +2985,8 @@ useEffect(() => {
     applyAreaAndLocationToDraft(area);
     setLocationStatus(
       area
-        ? `Project Area set to ${area.name}`
-        : 'Project Area cleared',
+        ? `Area set to ${area.name}`
+        : 'Area cleared',
     );
   }
 
@@ -4712,6 +4712,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projects={activeProjects}
               savedUpdates={savedUpdates}
               scheduleItems={scheduleItems}
+              projectAreas={projectAreas}
+              contacts={contactBook}
+              referenceDocuments={referenceDocuments}
+              syncMetadata={syncStatus}
               projectStatsByName={projectStatsByName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
@@ -4742,7 +4746,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <AddPhotosScreen
               contentStyle={contentStyle}
               update={draft}
+              savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
               projectAreas={projectAreas}
+              contacts={contactBook}
+              referenceDocuments={referenceDocuments}
+              syncMetadata={syncStatus}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
               locationStatus={locationStatus}
@@ -5199,6 +5208,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'Reports' && (
             <ReportsScreen
               contentStyle={contentStyle}
+              projectName={projectOverviewName}
+              updates={savedUpdates}
+              scheduleItems={scheduleItems}
+              currentUpdate={draft}
+              projectAreas={projectAreas}
+              contacts={contactBook}
+              referenceDocuments={referenceDocuments}
+              syncMetadata={syncStatus}
               onGenerateExecutiveReport={() => setScreen('AIExecutiveBrief')}
               onWeeklyExecutiveReport={() => setScreen('WeeklyExecutiveReport')}
               onProjectHealthReport={() => setScreen('ProjectHealthDashboard')}

@@ -55,14 +55,14 @@ export function AreaDetailModal({
         <View style={styles.detailModalCard}>
           <View style={styles.detailModalHeader}>
             <View>
-              <Text style={styles.panelTitle}>Project Area Details</Text>
+              <Text style={styles.panelTitle}>Area Mapping Details</Text>
               <Text style={styles.rowSub}>{area.name}</Text>
             </View>
 
             <TouchableOpacity
               style={styles.detailCloseButton}
               onPress={onClose}
-              accessibilityLabel="Close project area details"
+              accessibilityLabel="Close area mapping details"
             >
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>

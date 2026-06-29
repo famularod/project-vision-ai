@@ -57,8 +57,8 @@ export function PhotoCapturePanel({
   return (
     <>
       <ScreenTitle
-        title="Capture Update"
-        subtitle="What changed in the field?"
+        title="Begin Project Walk"
+        subtitle="PIE believes you're at:"
       />
 
       <DraftSavedIndicator
@@ -105,6 +105,38 @@ export function PhotoCapturePanel({
         onChangeArea={onChangeArea}
         onRefreshLocation={onRefreshLocation}
       />
+
+      <View style={styles.captureMissionPanel}>
+        <View style={styles.captureMissionHeader}>
+          <Ionicons
+            name="flag-outline"
+            size={19}
+            color={colors.primary}
+          />
+
+          <Text style={styles.captureMissionTitle}>
+            Walk Mission
+          </Text>
+        </View>
+
+        <Text style={styles.captureMissionText}>
+          Verify the project and area, capture current field evidence, and answer what changed since the last update.
+        </Text>
+
+        <View style={styles.captureMissionList}>
+          <Text style={styles.captureMissionItem}>
+            What PIE wants to verify: current work, open issues, safety concerns, and inspection status.
+          </Text>
+
+          <Text style={styles.captureMissionItem}>
+            Evidence PIE needs: photos, captions, notes, and any action owner or due date.
+          </Text>
+
+          <Text style={styles.captureMissionItem}>
+            Questions PIE wants answered: what changed, what is blocked, and what should happen next.
+          </Text>
+        </View>
+      </View>
 
       <RecipientsCard
         summary={`${recipientCount} recipient${
@@ -162,7 +194,7 @@ export function PhotoCapturePanel({
 
       {update.photos.length > 0 ? (
         <PrimaryButton
-          label="Build Update"
+          label="Save Walk Update"
           icon="document-text-outline"
           onPress={onNext}
         />
