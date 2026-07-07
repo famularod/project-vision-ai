@@ -5,6 +5,7 @@ const root = process.cwd();
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, 'services/PIEPhotoVisionMobileWorkflow.ts'), 'utf8');
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
+const envExample = fs.readFileSync(path.join(root, '.env.example'), 'utf8');
 
 function assert(condition, message) {
   if (!condition) {
@@ -39,9 +40,23 @@ assert(
 assert(
   app.includes('function PhotoIntelligenceSignInModal') &&
     app.includes('Sign in to enable photo intelligence') &&
+    app.includes('Use a Supabase Auth email and password') &&
+    app.includes('Do not use Apple Developer, Expo, or TestFlight credentials') &&
     app.includes('onSignInRequired') &&
     app.includes('pieResultRequiresSupabaseSignIn'),
   'sign-in-required PIE state includes a sign-in action, not only Retry',
+);
+
+assert(
+  supabase.includes('export async function signUp') &&
+    supabase.includes('client.auth.signUp') &&
+    app.includes('EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP') &&
+    app.includes('developmentSignupEnabled') &&
+    app.includes('Create or sign in development account') &&
+    envExample.includes('EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP=false') &&
+    !app.includes('SUPABASE_SERVICE_ROLE_KEY') &&
+    !supabase.includes('SUPABASE_SERVICE_ROLE_KEY'),
+  'development-only test user creation uses Supabase anon auth and no service-role key in mobile code',
 );
 
 assert(

@@ -4,6 +4,7 @@ import { uploadLocalPhoto, uploadPendingChanges } from './services/SyncService';
 import {
   getCurrentSessionAccessToken,
   signIn,
+  signUp,
   uploadPhoto,
 } from './services/SupabaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -466,6 +467,8 @@ const PIE_STATUS_COPY = {
 
 const PIE_AUTH_HYDRATION_RETRY_COUNT = 3;
 const PIE_AUTH_HYDRATION_RETRY_DELAY_MS = 750;
+const ENABLE_DEV_AUTH_SIGNUP =
+  process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
 
 const ATTENTION_PRIORITY = {
   safety: 0,
@@ -6165,6 +6168,53 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
+  async function submitPhotoIntelligenceDevelopmentSignUp() {
+    if (!photoAuthRequest) return;
+
+    const email = photoAuthEmail.trim();
+    if (!email || !photoAuthPassword) {
+      setPhotoAuthMessage('Enter an email and password for the development Supabase account.');
+      return;
+    }
+
+    setPhotoAuthSubmitting(true);
+    setPhotoAuthMessage(null);
+
+    try {
+      const created = await signUp({ email, password: photoAuthPassword });
+      let authResult = created;
+
+      if (!created.ok && /already|registered|exists/i.test(created.error || '')) {
+        authResult = await signIn({ email, password: photoAuthPassword });
+      }
+
+      if (!authResult.ok) {
+        setPhotoAuthMessage(authResult.error || 'Development account sign-up failed.');
+        return;
+      }
+
+      const tokenResult = await getCurrentSessionAccessToken();
+      const tokenLookup = tokenResult.data;
+
+      if (!tokenResult.ok || tokenLookup?.status !== 'token_present') {
+        setPhotoAuthMessage(
+          tokenLookup?.missingReason === 'auth_loading'
+            ? PIE_STATUS_COPY.preparingSecureAnalysis
+            : 'Development account was created, but Supabase did not return a signed-in session. If email confirmation is enabled, confirm the email and sign in.',
+        );
+        return;
+      }
+
+      const pending = photoAuthRequest;
+      setPhotoAuthRequest(null);
+      setPhotoAuthPassword('');
+      setPhotoAuthMessage(null);
+      await runPhotoAnalysisRetry(pending.update, pending.photo);
+    } finally {
+      setPhotoAuthSubmitting(false);
+    }
+  }
+
   async function runPhotoAnalysisRetry(update: ProjectUpdate, photo: UpdatePhoto) {
     applyPhotoIntelligenceResult(photo.id, buildAnalyzingPhotoIntelligenceState());
 
@@ -7657,6 +7707,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
             onSubmit={() => {
               void submitPhotoIntelligenceSignIn();
             }}
+            developmentSignupEnabled={ENABLE_DEV_AUTH_SIGNUP}
+            onDevelopmentSignUp={() => {
+              void submitPhotoIntelligenceDevelopmentSignUp();
+            }}
             onClose={closePhotoIntelligenceSignIn}
           />
 
@@ -8252,9 +8306,11 @@ function PhotoIntelligenceSignInModal({
   password,
   message,
   submitting,
+  developmentSignupEnabled,
   onEmailChange,
   onPasswordChange,
   onSubmit,
+  onDevelopmentSignUp,
   onClose,
 }: {
   visible: boolean;
@@ -8262,9 +8318,11 @@ function PhotoIntelligenceSignInModal({
   password: string;
   message: string | null;
   submitting: boolean;
+  developmentSignupEnabled: boolean;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onSubmit: () => void;
+  onDevelopmentSignUp: () => void;
   onClose: () => void;
 }) {
   return (
@@ -8276,6 +8334,9 @@ function PhotoIntelligenceSignInModal({
               <Text style={styles.panelTitle}>Sign in to enable photo intelligence</Text>
               <Text style={styles.rowSub}>
                 PIE photo comparison needs a signed-in cloud session before it can analyze photos.
+              </Text>
+              <Text style={styles.rowSub}>
+                Use a Supabase Auth email and password. Do not use Apple Developer, Expo, or TestFlight credentials.
               </Text>
             </View>
             <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
@@ -8316,6 +8377,13 @@ function PhotoIntelligenceSignInModal({
             onPress={onSubmit}
             disabled={submitting || !email.trim() || !password}
           />
+          {developmentSignupEnabled ? (
+            <SecondaryButton
+              label="Create or sign in development account"
+              icon="flask-outline"
+              onPress={onDevelopmentSignUp}
+            />
+          ) : null}
           <SecondaryButton
             label="Not now"
             icon="close-outline"

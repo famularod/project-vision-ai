@@ -98,6 +98,8 @@ export type SignInParams = {
   password: string;
 };
 
+export type SignUpParams = SignInParams;
+
 export type AuthResult = {
   user: User | null;
   session: Session | null;
@@ -441,6 +443,33 @@ export async function signIn({
 
   lastAuthEvent = 'SIGNED_IN';
   authHydrationCompleted = true;
+
+  return okResult({
+    user: data.user,
+    session: data.session,
+  });
+}
+
+export async function signUp({
+  email,
+  password,
+}: SignUpParams): Promise<SupabaseServiceResult<AuthResult>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<AuthResult>();
+
+  lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
+
+  const { data, error } = await client.auth.signUp({
+    email,
+    password,
+  });
+
+  if (error) return errorResult(error.message);
+
+  authHydrationCompleted = true;
+  if (data.session) lastAuthEvent = 'SIGNED_IN';
+  else lastAuthEvent = 'USER_UPDATED';
 
   return okResult({
     user: data.user,
