@@ -192,6 +192,8 @@ type FieldUpdateSyncFailureCategory =
   | 'malformed_payload'
   | 'unknown';
 
+type FieldUpdateSyncStepResult = 'success' | 'failed' | 'skipped';
+
 type FieldUpdateSyncDiagnostics = {
   networkState: 'online' | 'offline' | 'unknown';
   connectionType: 'wifi' | 'cellular' | 'none' | 'unknown';
@@ -199,6 +201,12 @@ type FieldUpdateSyncDiagnostics = {
   lastSyncAttemptAt: string | null;
   lastSyncResult: 'success' | 'failed' | 'skipped' | null;
   lastSyncFailureCategory: FieldUpdateSyncFailureCategory | null;
+  cloudUpdateInsertAttempted: boolean;
+  photoStorageUploadAttempted: boolean;
+  storageUploadResult: FieldUpdateSyncStepResult;
+  databaseUpsertResult: FieldUpdateSyncStepResult;
+  rlsOrAuthFailureDetected: boolean;
+  retryAvailable: boolean;
   queuedUpdateCount: number;
   projectRollupsIncludeQueuedUpdates: boolean;
   projectCardWorkspaceSameSource: boolean;
@@ -1180,6 +1188,22 @@ function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDia
         ? value.lastSyncResult
         : null,
     lastSyncFailureCategory: failureCategory,
+    cloudUpdateInsertAttempted: value.cloudUpdateInsertAttempted === true,
+    photoStorageUploadAttempted: value.photoStorageUploadAttempted === true,
+    storageUploadResult:
+      value.storageUploadResult === 'success' ||
+      value.storageUploadResult === 'failed' ||
+      value.storageUploadResult === 'skipped'
+        ? value.storageUploadResult
+        : 'skipped',
+    databaseUpsertResult:
+      value.databaseUpsertResult === 'success' ||
+      value.databaseUpsertResult === 'failed' ||
+      value.databaseUpsertResult === 'skipped'
+        ? value.databaseUpsertResult
+        : 'skipped',
+    rlsOrAuthFailureDetected: value.rlsOrAuthFailureDetected === true,
+    retryAvailable: value.retryAvailable !== false,
     queuedUpdateCount:
       typeof value.queuedUpdateCount === 'number' &&
       Number.isFinite(value.queuedUpdateCount)
@@ -2882,6 +2906,76 @@ function syncUpdatePhotosToCloud(update: ProjectUpdate) {
   });
 }
 
+async function uploadUpdatePhotosForSync(
+  update: ProjectUpdate,
+): Promise<Pick<
+  FieldUpdateSyncWorkAttempt,
+  'photoStorageUploadAttempted' | 'storageUploadResult' | 'errors'
+>> {
+  if (update.photos.length === 0) {
+    return {
+      photoStorageUploadAttempted: false,
+      storageUploadResult: 'skipped',
+      errors: [],
+    };
+  }
+
+  const results = await Promise.all(
+    update.photos.map(photo => uploadLocalPhoto(update, photo)),
+  );
+  const failures = results.filter(
+    result => result !== 'uploaded' && result !== null,
+  );
+
+  if (failures.length > 0) {
+    return {
+      photoStorageUploadAttempted: true,
+      storageUploadResult: 'failed',
+      errors: failures.map(result =>
+        result === 'missing'
+          ? 'Photo storage upload failed: photo file unavailable.'
+          : `Photo storage upload failed: ${result}`,
+      ),
+    };
+  }
+
+  return {
+    photoStorageUploadAttempted: true,
+    storageUploadResult: 'success',
+    errors: [],
+  };
+}
+
+async function runFieldUpdateCloudSync(
+  update: ProjectUpdate,
+): Promise<{
+  syncResult: SyncUploadResult;
+  workAttempt: FieldUpdateSyncWorkAttempt;
+}> {
+  const photoAttempt = await uploadUpdatePhotosForSync(update);
+  const workAttempt: FieldUpdateSyncWorkAttempt = {
+    cloudUpdateInsertAttempted: false,
+    photoStorageUploadAttempted: photoAttempt.photoStorageUploadAttempted,
+    storageUploadResult: photoAttempt.storageUploadResult,
+    databaseUpsertResult: 'skipped',
+    errors: [...photoAttempt.errors],
+  };
+
+  await saveCloudUpdate(update);
+  workAttempt.cloudUpdateInsertAttempted = true;
+
+  const syncResult = await uploadPendingChanges();
+  workAttempt.databaseUpsertResult =
+    syncResult.configured && syncResult.errors.length === 0 && syncResult.queued === 0
+      ? 'success'
+      : 'failed';
+
+  return {
+    syncResult,
+    workAttempt,
+  };
+}
+
 function projectDocumentStatusDetail(document: ProjectDocument) {
   if (document.status === 'failed') {
     return 'Document upload failed · Retry';
@@ -3395,12 +3489,22 @@ function classifySyncFailureCategory(
   if (!message.trim()) return 'unknown';
   if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(message)) return 'offline';
   if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
-  if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
   if (/row level|rls|policy|permission denied|42501|violates row-level/.test(message)) return 'rls_denied';
   if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';
+  if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
   if (/malformed|invalid|schema|column|not null|constraint|payload/.test(message)) return 'malformed_payload';
   if (/database|insert|upsert|postgres|postgrest|supabase/.test(message)) return 'database_insert_failed';
   return 'unknown';
+}
+
+function syncCategoryIsRlsOrAuth(
+  category: FieldUpdateSyncFailureCategory | null,
+) {
+  return (
+    category === 'signed_out' ||
+    category === 'auth' ||
+    category === 'rls_denied'
+  );
 }
 
 function buildSkippedSyncDiagnostics(
@@ -3416,28 +3520,64 @@ function buildSkippedSyncDiagnostics(
     lastSyncAttemptAt: attemptedAt,
     lastSyncResult: 'skipped',
     lastSyncFailureCategory: category,
+    cloudUpdateInsertAttempted: false,
+    photoStorageUploadAttempted: false,
+    storageUploadResult: 'skipped',
+    databaseUpsertResult: 'skipped',
+    rlsOrAuthFailureDetected: syncCategoryIsRlsOrAuth(category),
+    retryAvailable: true,
     queuedUpdateCount,
     projectRollupsIncludeQueuedUpdates: true,
     projectCardWorkspaceSameSource: true,
   };
 }
 
+type FieldUpdateSyncWorkAttempt = {
+  cloudUpdateInsertAttempted: boolean;
+  photoStorageUploadAttempted: boolean;
+  storageUploadResult: FieldUpdateSyncStepResult;
+  databaseUpsertResult: FieldUpdateSyncStepResult;
+  errors: string[];
+};
+
+const SKIPPED_SYNC_WORK_ATTEMPT: FieldUpdateSyncWorkAttempt = {
+  cloudUpdateInsertAttempted: false,
+  photoStorageUploadAttempted: false,
+  storageUploadResult: 'skipped',
+  databaseUpsertResult: 'skipped',
+  errors: [],
+};
+
 function buildSyncDiagnosticsFromUpload(
   syncResult: SyncUploadResult,
   attemptedAt: string,
   sessionTokenPresent: boolean | null,
+  workAttempt: FieldUpdateSyncWorkAttempt = SKIPPED_SYNC_WORK_ATTEMPT,
 ): FieldUpdateSyncDiagnostics {
+  const databaseUpsertResult: FieldUpdateSyncStepResult =
+    workAttempt.databaseUpsertResult !== 'skipped'
+      ? workAttempt.databaseUpsertResult
+      : syncResult.configured &&
+          syncResult.errors.length === 0 &&
+          syncResult.queued === 0
+        ? 'success'
+        : 'failed';
   const success =
     syncResult.configured &&
     syncResult.errors.length === 0 &&
-    syncResult.queued === 0;
+    syncResult.queued === 0 &&
+    workAttempt.storageUploadResult !== 'failed' &&
+    databaseUpsertResult === 'success';
+  const combinedErrors = [...workAttempt.errors, ...syncResult.errors];
   const failureCategory = success
     ? null
-    : classifySyncFailureCategory(
-        syncResult.errors.length > 0
-          ? syncResult.errors
-          : [syncResult.configured ? 'queued upload remains after sync' : 'Supabase is not configured'],
-      );
+    : workAttempt.storageUploadResult === 'failed'
+      ? 'storage_upload_failed'
+      : classifySyncFailureCategory(
+          combinedErrors.length > 0
+            ? combinedErrors
+            : [syncResult.configured ? 'queued upload remains after sync' : 'Supabase is not configured'],
+        );
 
   return {
     networkState: failureCategory === 'offline' ? 'offline' : 'online',
@@ -3448,6 +3588,12 @@ function buildSyncDiagnosticsFromUpload(
     lastSyncAttemptAt: attemptedAt,
     lastSyncResult: success ? 'success' : 'failed',
     lastSyncFailureCategory: failureCategory,
+    cloudUpdateInsertAttempted: workAttempt.cloudUpdateInsertAttempted,
+    photoStorageUploadAttempted: workAttempt.photoStorageUploadAttempted,
+    storageUploadResult: workAttempt.storageUploadResult,
+    databaseUpsertResult,
+    rlsOrAuthFailureDetected: syncCategoryIsRlsOrAuth(failureCategory),
+    retryAvailable: !success,
     queuedUpdateCount: syncResult.queued,
     projectRollupsIncludeQueuedUpdates: true,
     projectCardWorkspaceSameSource: true,
@@ -3465,6 +3611,11 @@ function statusForSyncDiagnostics(
 function queuedStatusCopyForUpdate(update: ProjectUpdate) {
   const category = update.syncDiagnostics?.lastSyncFailureCategory;
   if (category === 'signed_out') return 'Sign in required to send';
+  if (category === 'auth') return 'Session expired · Sign in again';
+  if (category === 'rls_denied') return 'Sync failed · Permission issue';
+  if (category === 'storage_upload_failed') return 'Sync failed · Photo upload issue';
+  if (category === 'database_insert_failed') return 'Sync failed · Update save issue';
+  if (category === 'malformed_payload') return 'Sync failed · App data issue';
   if (category && category !== 'offline') return 'Sync failed · Retry';
   return "Queued — will send when you're back online";
 }
@@ -5443,7 +5594,7 @@ useEffect(() => {
       if (!sessionTokenPresent) {
         const resolvedAt = new Date().toISOString();
         const skippedDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out' || tokenLookup?.missingReason === 'expired_session'
+          tokenLookup?.missingReason === 'signed_out'
             ? 'signed_out'
             : 'auth',
           now,
@@ -5471,10 +5622,13 @@ useEffect(() => {
         return;
       }
 
-      await saveCloudUpdate(queuedUpdate);
-      syncUpdatePhotosToCloud(queuedUpdate);
-      const syncResult = await uploadPendingChanges();
-      const syncDiagnostics = buildSyncDiagnosticsFromUpload(syncResult, now, sessionTokenPresent);
+      const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
+      const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+        syncResult,
+        now,
+        sessionTokenPresent,
+        workAttempt,
+      );
       const resolvedAt = new Date().toISOString();
       const finalUpdate: ProjectUpdate = {
         ...queuedUpdate,
@@ -5551,7 +5705,7 @@ useEffect(() => {
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out' || tokenLookup?.missingReason === 'expired_session'
+          tokenLookup?.missingReason === 'signed_out'
             ? 'signed_out'
             : 'auth',
           now,
@@ -5574,10 +5728,13 @@ useEffect(() => {
         return;
       }
 
-      await saveCloudUpdate(retryUpdate);
-      syncUpdatePhotosToCloud(retryUpdate);
-      const syncResult = await uploadPendingChanges();
-      const syncDiagnostics = buildSyncDiagnosticsFromUpload(syncResult, now, sessionTokenPresent);
+      const { syncResult, workAttempt } = await runFieldUpdateCloudSync(retryUpdate);
+      const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+        syncResult,
+        now,
+        sessionTokenPresent,
+        workAttempt,
+      );
       const finalUpdate: ProjectUpdate = {
         ...retryUpdate,
         status: statusForSyncDiagnostics(syncDiagnostics),
@@ -5623,38 +5780,69 @@ useEffect(() => {
     queuedHydrationInFlight.current = true;
 
     try {
-      for (const update of queuedUpdates) {
-        await saveCloudUpdate(update);
-        syncUpdatePhotosToCloud(update);
-      }
-
-      const syncResult = await uploadPendingChanges();
       const tokenResult = await getCurrentSessionAccessToken();
-      const syncDiagnostics = buildSyncDiagnosticsFromUpload(
-        syncResult,
-        new Date().toISOString(),
-        tokenResult.data?.status === 'token_present',
-      );
+      const tokenLookup = tokenResult.data;
+      const sessionTokenPresent = tokenLookup?.status === 'token_present';
 
       const resolvedAt = new Date().toISOString();
-      const queuedIds = new Set(queuedUpdates.map(update => update.id));
 
-      setSavedUpdates(prev =>
-        prev.map(update =>
-          queuedIds.has(update.id)
-            ? {
-                ...update,
-                status: statusForSyncDiagnostics(syncDiagnostics),
-                syncDiagnostics,
-                workflowTimestamps: {
-                  ...(update.workflowTimestamps || {}),
-                  sendResolvedAt:
-                    update.workflowTimestamps?.sendResolvedAt || resolvedAt,
-                },
-              }
-            : update,
-        ),
-      );
+      if (!sessionTokenPresent) {
+        const syncDiagnostics = buildSkippedSyncDiagnostics(
+          tokenLookup?.missingReason === 'signed_out'
+            ? 'signed_out'
+            : 'auth',
+          resolvedAt,
+          queuedUpdates.length,
+          false,
+        );
+        const queuedIds = new Set(queuedUpdates.map(update => update.id));
+
+        setSavedUpdates(prev =>
+          prev.map(update =>
+            queuedIds.has(update.id)
+              ? {
+                  ...update,
+                  status: 'failed',
+                  syncDiagnostics,
+                  workflowTimestamps: {
+                    ...(update.workflowTimestamps || {}),
+                    sendResolvedAt:
+                      update.workflowTimestamps?.sendResolvedAt || resolvedAt,
+                  },
+                }
+              : update,
+          ),
+        );
+        return;
+      }
+
+      for (const update of queuedUpdates) {
+        const attemptStartedAt = new Date().toISOString();
+        const { syncResult, workAttempt } = await runFieldUpdateCloudSync(update);
+        const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+          syncResult,
+          attemptStartedAt,
+          sessionTokenPresent,
+          workAttempt,
+        );
+
+        setSavedUpdates(prev =>
+          prev.map(item =>
+            item.id === update.id
+              ? {
+                  ...item,
+                  status: statusForSyncDiagnostics(syncDiagnostics),
+                  syncDiagnostics,
+                  workflowTimestamps: {
+                    ...(item.workflowTimestamps || {}),
+                    sendResolvedAt:
+                      item.workflowTimestamps?.sendResolvedAt || resolvedAt,
+                  },
+                }
+              : item,
+          ),
+        );
+      }
     } finally {
       queuedHydrationInFlight.current = false;
     }
@@ -12940,7 +13128,7 @@ function UpdateHistoryCard({
         ) : null}
         {__DEV__ && update.syncDiagnostics ? (
           <Text style={styles.locationDetailText}>
-            Sync diagnostics: network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
+            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
           </Text>
         ) : null}
         {onRetry ? (

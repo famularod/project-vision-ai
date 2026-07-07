@@ -15,6 +15,13 @@ function includes(source, marker, message) {
 
 includes(app, 'FieldUpdateSyncDiagnostics', 'updates must persist safe sync diagnostics');
 includes(app, 'lastSyncFailureCategory', 'sync diagnostics must include safe failure category');
+includes(app, 'lastSyncAttemptAt', 'sync diagnostics must include latest attempt timestamp');
+includes(app, 'cloudUpdateInsertAttempted', 'sync diagnostics must show whether cloud update insert was attempted');
+includes(app, 'photoStorageUploadAttempted', 'sync diagnostics must show whether photo upload was attempted');
+includes(app, 'storageUploadResult', 'sync diagnostics must show storage upload result');
+includes(app, 'databaseUpsertResult', 'sync diagnostics must show database insert/update result');
+includes(app, 'rlsOrAuthFailureDetected', 'sync diagnostics must show safe RLS/auth detection');
+includes(app, 'retryAvailable', 'sync diagnostics must show retry availability');
 includes(app, "'offline'", 'sync diagnostics must include offline category');
 includes(app, "'signed_out'", 'sync diagnostics must include signed_out category');
 includes(app, "'rls_denied'", 'sync diagnostics must include rls_denied category');
@@ -30,11 +37,34 @@ includes(app, 'statusForSyncDiagnostics', 'sync result must decide sent/queued/f
 includes(app, "if (diagnostics.lastSyncFailureCategory === 'offline') return 'queued';", 'only offline failures should remain queued');
 includes(app, "return 'failed';", 'online sync failures should become failed and retryable');
 includes(app, "Sign in required to send", 'signed-out send state must be explicit');
+includes(app, "Session expired · Sign in again", 'expired/auth send state must ask for sign-in again');
+includes(app, "Sync failed · Permission issue", 'RLS failures must use permission copy');
+includes(app, "Sync failed · Photo upload issue", 'storage failures must use photo upload copy');
+includes(app, "Sync failed · Update save issue", 'database failures must use update save copy');
+includes(app, "Sync failed · App data issue", 'malformed payload failures must use app data copy');
 includes(app, "Sync failed · Retry", 'online sync failure must show retryable copy');
 includes(app, "Queued — will send when you're back online", 'offline queued copy must be specific');
 includes(app, 'onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}', 'queued/failed cards must expose retry');
 includes(app, 'void hydrateQueuedUpdates();', 'sync worker must run after save/sign-in or queue wake-up');
 includes(app, "AppState.addEventListener('change'", 'sync worker must run on app foreground');
+includes(app, 'runFieldUpdateCloudSync', 'send/retry must run structured cloud sync work');
+includes(app, 'update.photos.map(photo => uploadLocalPhoto(update, photo))', 'sync retry must await photo upload work');
+includes(app, 'await saveCloudUpdate(update)', 'sync retry must queue the update for cloud insert/update');
+includes(app, 'await uploadPendingChanges()', 'sync retry must attempt database insert/update work');
+assert(
+  app.indexOf('const tokenResult = await getCurrentSessionAccessToken();') <
+    app.indexOf('const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);'),
+  'send must fetch fresh session state before invoking sync work',
+);
+const retryStart = app.indexOf('async function retryQueuedUpdate');
+assert(
+  app.indexOf('const tokenResult = await getCurrentSessionAccessToken();', retryStart) <
+    app.indexOf('const { syncResult, workAttempt } = await runFieldUpdateCloudSync(retryUpdate);', retryStart),
+  'retry must fetch fresh session state before invoking sync work',
+);
+includes(app, 'cloud insert attempted', 'dev diagnostics must expose cloud insert attempt safely');
+includes(app, 'photo upload attempted', 'dev diagnostics must expose photo upload attempt safely');
+includes(app, 'rls/auth', 'dev diagnostics must expose RLS/auth detection safely');
 
 includes(app, '...localUpdates,', 'local updates must be merged before cloud updates');
 assert(
