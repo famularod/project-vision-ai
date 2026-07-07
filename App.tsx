@@ -214,6 +214,18 @@ type FieldUpdateSyncDiagnostics = {
   storageFailureCategory: PhotoStorageUploadFailureCategory | null;
   storageHttpStatus: number | null;
   storageErrorCode: string | null;
+  failedOperationName: string | null;
+  failedLogicalTarget: string | null;
+  rlsDenied: boolean;
+  authenticatedUserIdPresent: boolean | null;
+  projectIdPresent: boolean | null;
+  organizationIdPresent: boolean | null;
+  membershipCheckResult:
+    | 'present'
+    | 'missing_or_denied'
+    | 'not_checked'
+    | 'unavailable'
+    | null;
   queuedUpdateCount: number;
   projectRollupsIncludeQueuedUpdates: boolean;
   projectCardWorkspaceSameSource: boolean;
@@ -1236,6 +1248,28 @@ function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDia
         ? value.storageHttpStatus
         : null,
     storageErrorCode: optionalString(value.storageErrorCode),
+    failedOperationName: optionalString(value.failedOperationName),
+    failedLogicalTarget: optionalString(value.failedLogicalTarget),
+    rlsDenied: value.rlsDenied === true,
+    authenticatedUserIdPresent:
+      typeof value.authenticatedUserIdPresent === 'boolean'
+        ? value.authenticatedUserIdPresent
+        : null,
+    projectIdPresent:
+      typeof value.projectIdPresent === 'boolean'
+        ? value.projectIdPresent
+        : null,
+    organizationIdPresent:
+      typeof value.organizationIdPresent === 'boolean'
+        ? value.organizationIdPresent
+        : null,
+    membershipCheckResult:
+      value.membershipCheckResult === 'present' ||
+      value.membershipCheckResult === 'missing_or_denied' ||
+      value.membershipCheckResult === 'not_checked' ||
+      value.membershipCheckResult === 'unavailable'
+        ? value.membershipCheckResult
+        : null,
     queuedUpdateCount:
       typeof value.queuedUpdateCount === 'number' &&
       Number.isFinite(value.queuedUpdateCount)
@@ -3578,6 +3612,85 @@ function syncCategoryIsRlsOrAuth(
   );
 }
 
+type FieldUpdatePermissionAttempt = Pick<
+  FieldUpdateSyncDiagnostics,
+  | 'failedOperationName'
+  | 'failedLogicalTarget'
+  | 'rlsDenied'
+  | 'authenticatedUserIdPresent'
+  | 'projectIdPresent'
+  | 'organizationIdPresent'
+  | 'membershipCheckResult'
+>;
+
+function emptyPermissionAttempt(): FieldUpdatePermissionAttempt {
+  return {
+    failedOperationName: null,
+    failedLogicalTarget: null,
+    rlsDenied: false,
+    authenticatedUserIdPresent: null,
+    projectIdPresent: null,
+    organizationIdPresent: null,
+    membershipCheckResult: 'not_checked',
+  };
+}
+
+function inferPermissionAttemptFromFailure({
+  syncResult,
+  workAttempt,
+  failureCategory,
+  sessionTokenPresent,
+}: {
+  syncResult: SyncUploadResult;
+  workAttempt: FieldUpdateSyncWorkAttempt;
+  failureCategory: FieldUpdateSyncFailureCategory | null;
+  sessionTokenPresent: boolean | null;
+}): FieldUpdatePermissionAttempt {
+  const attempt = emptyPermissionAttempt();
+  const errors = [...workAttempt.errors, ...syncResult.errors];
+  const message = errors.join(' ').toLowerCase();
+
+  attempt.authenticatedUserIdPresent =
+    typeof sessionTokenPresent === 'boolean' ? sessionTokenPresent : null;
+
+  if (workAttempt.storageUploadResult === 'failed') {
+    attempt.failedOperationName = 'photo_storage_upload';
+    attempt.failedLogicalTarget = workAttempt.storageBucketName || 'project-photos';
+    attempt.rlsDenied = workAttempt.storageFailureCategory === 'rls_denied';
+    attempt.projectIdPresent = null;
+    attempt.organizationIdPresent = null;
+    attempt.membershipCheckResult = attempt.rlsDenied
+      ? 'missing_or_denied'
+      : 'not_checked';
+    return attempt;
+  }
+
+  if (/project update database select failed/.test(message)) {
+    attempt.failedOperationName = 'project_update_metadata_select';
+    attempt.failedLogicalTarget = 'project_updates';
+  } else if (/project update database upsert failed/.test(message)) {
+    attempt.failedOperationName = 'project_update_upsert';
+    attempt.failedLogicalTarget = 'project_updates';
+  } else if (/project sync failed|project database/.test(message)) {
+    attempt.failedOperationName = 'project_record_sync';
+    attempt.failedLogicalTarget = 'projects';
+  }
+
+  if (attempt.failedLogicalTarget === 'project_updates') {
+    attempt.projectIdPresent = true;
+    attempt.organizationIdPresent = null;
+  }
+
+  attempt.rlsDenied = failureCategory === 'rls_denied';
+  attempt.membershipCheckResult = attempt.rlsDenied
+    ? 'missing_or_denied'
+    : attempt.failedOperationName
+      ? 'unavailable'
+      : 'not_checked';
+
+  return attempt;
+}
+
 function buildSkippedSyncDiagnostics(
   category: FieldUpdateSyncFailureCategory,
   attemptedAt: string,
@@ -3602,6 +3715,12 @@ function buildSkippedSyncDiagnostics(
     storageFailureCategory: null,
     storageHttpStatus: null,
     storageErrorCode: null,
+    ...emptyPermissionAttempt(),
+    rlsDenied: category === 'rls_denied',
+    authenticatedUserIdPresent: sessionTokenPresent,
+    membershipCheckResult: syncCategoryIsRlsOrAuth(category)
+      ? 'missing_or_denied'
+      : 'not_checked',
     queuedUpdateCount,
     projectRollupsIncludeQueuedUpdates: true,
     projectCardWorkspaceSameSource: true,
@@ -3664,6 +3783,12 @@ function buildSyncDiagnosticsFromUpload(
             ? combinedErrors
             : [syncResult.configured ? 'queued upload remains after sync' : 'Supabase is not configured'],
         );
+  const permissionAttempt = inferPermissionAttemptFromFailure({
+    syncResult,
+    workAttempt,
+    failureCategory,
+    sessionTokenPresent,
+  });
 
   return {
     networkState: failureCategory === 'offline' ? 'offline' : 'online',
@@ -3685,6 +3810,7 @@ function buildSyncDiagnosticsFromUpload(
     storageFailureCategory: workAttempt.storageFailureCategory,
     storageHttpStatus: workAttempt.storageHttpStatus,
     storageErrorCode: workAttempt.storageErrorCode,
+    ...permissionAttempt,
     queuedUpdateCount: syncResult.queued,
     projectRollupsIncludeQueuedUpdates: true,
     projectCardWorkspaceSameSource: true,
@@ -3703,6 +3829,12 @@ function queuedStatusCopyForUpdate(update: ProjectUpdate) {
   const category = update.syncDiagnostics?.lastSyncFailureCategory;
   if (category === 'signed_out') return 'Sign in required to send';
   if (category === 'auth') return 'Session expired · Sign in again';
+  if (
+    category === 'rls_denied' &&
+    update.syncDiagnostics?.membershipCheckResult === 'missing_or_denied'
+  ) {
+    return 'Project access required to sync';
+  }
   if (category === 'rls_denied') return 'Sync failed · Permission issue';
   if (category === 'storage_upload_failed') return 'Sync failed · Photo upload issue';
   if (category === 'database_insert_failed') return 'Sync failed · Update save issue';
@@ -13219,7 +13351,7 @@ function UpdateHistoryCard({
         ) : null}
         {__DEV__ && update.syncDiagnostics ? (
           <Text style={styles.locationDetailText}>
-            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
+            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | failed operation {update.syncDiagnostics.failedOperationName || 'none'} | target {update.syncDiagnostics.failedLogicalTarget || 'none'} | RLS denied {update.syncDiagnostics.rlsDenied ? 'yes' : 'no'} | user id present {update.syncDiagnostics.authenticatedUserIdPresent === null ? 'unknown' : update.syncDiagnostics.authenticatedUserIdPresent ? 'yes' : 'no'} | project id present {update.syncDiagnostics.projectIdPresent === null ? 'unknown' : update.syncDiagnostics.projectIdPresent ? 'yes' : 'no'} | organization id present {update.syncDiagnostics.organizationIdPresent === null ? 'unknown' : update.syncDiagnostics.organizationIdPresent ? 'yes' : 'no'} | membership {update.syncDiagnostics.membershipCheckResult || 'unknown'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
           </Text>
         ) : null}
         {onRetry ? (

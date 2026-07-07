@@ -16,6 +16,10 @@ const authenticatedStorageMigration = fs.readFileSync(
   path.join(root, 'supabase/migrations/20260707010000_project_storage_authenticated_policies.sql'),
   'utf8',
 );
+const membershipSetup = fs.readFileSync(
+  path.join(root, 'scripts/create-dev-project-member.js'),
+  'utf8',
+);
 const pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
 
 function includes(source, marker, message) {
@@ -36,6 +40,13 @@ includes(app, 'storageBucketExists', 'sync diagnostics must include bucket exist
 includes(app, 'storageFailureCategory', 'sync diagnostics must include safe storage failure category');
 includes(app, 'storageHttpStatus', 'sync diagnostics must include storage HTTP/status code when available');
 includes(app, 'storageErrorCode', 'sync diagnostics must include Supabase storage error code when available');
+includes(app, 'failedOperationName', 'sync diagnostics must include failed operation name');
+includes(app, 'failedLogicalTarget', 'sync diagnostics must include failed table/bucket name');
+includes(app, 'rlsDenied', 'sync diagnostics must show RLS denial safely');
+includes(app, 'authenticatedUserIdPresent', 'sync diagnostics must show whether an authenticated user id exists');
+includes(app, 'projectIdPresent', 'sync diagnostics must show whether a project id is available');
+includes(app, 'organizationIdPresent', 'sync diagnostics must show whether organization id is available');
+includes(app, 'membershipCheckResult', 'sync diagnostics must show membership check result');
 includes(app, "'offline'", 'sync diagnostics must include offline category');
 includes(app, "'signed_out'", 'sync diagnostics must include signed_out category');
 includes(app, "'rls_denied'", 'sync diagnostics must include rls_denied category');
@@ -53,6 +64,7 @@ includes(app, "return 'failed';", 'online sync failures should become failed and
 includes(app, "Sign in required to send", 'signed-out send state must be explicit');
 includes(app, "Session expired · Sign in again", 'expired/auth send state must ask for sign-in again');
 includes(app, "Sync failed · Permission issue", 'RLS failures must use permission copy');
+includes(app, "Project access required to sync", 'missing project membership must use project access copy');
 includes(app, "Sync failed · Photo upload issue", 'storage failures must use photo upload copy');
 includes(app, "Sync failed · Update save issue", 'database failures must use update save copy');
 includes(app, "Sync failed · App data issue", 'malformed payload failures must use app data copy');
@@ -83,6 +95,13 @@ includes(app, 'bucket exists', 'dev diagnostics must expose bucket existence saf
 includes(app, 'storage category', 'dev diagnostics must expose storage failure category safely');
 includes(app, 'storage status', 'dev diagnostics must expose storage status safely');
 includes(app, 'storage code', 'dev diagnostics must expose storage code safely');
+includes(app, 'failed operation', 'dev diagnostics must expose failed operation safely');
+includes(app, 'target', 'dev diagnostics must expose failed logical target safely');
+includes(app, 'RLS denied', 'dev diagnostics must expose RLS denial safely');
+includes(app, 'user id present', 'dev diagnostics must expose user id presence safely');
+includes(app, 'project id present', 'dev diagnostics must expose project id presence safely');
+includes(app, 'organization id present', 'dev diagnostics must expose organization id presence safely');
+includes(app, 'membership', 'dev diagnostics must expose membership result safely');
 includes(app, 'rls/auth', 'dev diagnostics must expose RLS/auth detection safely');
 
 includes(sync, "const PROJECT_PHOTOS_BUCKET = 'project-photos';", 'field update photo uploads must use the project-photos bucket');
@@ -99,6 +118,11 @@ includes(sync, 'unsupported_content_type', 'unsupported MIME types must have a s
 includes(app, "if (category === 'auth_missing') return 'auth';", 'storage auth failures must route to auth UI');
 includes(app, "if (category === 'rls_denied') return 'rls_denied';", 'storage RLS failures must route to permission UI');
 includes(app, "if (category === 'network') return 'offline';", 'storage network failures must route to queued/offline UI');
+includes(sync, 'Project update database select failed', 'project update metadata permission failures must identify failed operation');
+includes(sync, 'Project update database upsert failed', 'project update upsert permission failures must identify failed operation');
+includes(app, 'project_update_metadata_select', 'database select failure must map to safe operation diagnostic');
+includes(app, 'project_update_upsert', 'database upsert failure must map to safe operation diagnostic');
+includes(app, "'missing_or_denied'", 'authenticated user without membership must map to missing_or_denied');
 includes(supabase, 'base64ToArrayBuffer(base64)', 'mobile upload payload must convert local file base64 to binary bytes');
 includes(supabase, 'contentType', 'mobile upload must send content type to Supabase Storage');
 includes(supabase, 'errorRecord.statusCode', 'storage upload must preserve safe status code when available');
@@ -122,8 +146,14 @@ assert(!projectCard.includes('All projects on track — nothing needs your atten
 assert(!projectCard.includes('Needs Review'), 'project card status must not use Needs Review');
 
 includes(sync, "id: `project-update-${update.id}`", 'queued update retry must remain idempotent');
+assert(!app.includes('SUPABASE_SERVICE_ROLE_KEY'), 'mobile app must not reference service-role env');
 assert(!app.includes('EXPO_PUBLIC_OPENAI_API_KEY'), 'mobile app must not reference public OpenAI API key');
 assert(!app.match(/service[_-]?role/i), 'mobile app must not contain service-role references');
 includes(pkg, 'local-sync-consistency-test.js', 'test:ui must run local/sync consistency regression');
+includes(pkg, 'dev:create-project-member', 'package must expose local-only project membership setup command');
+includes(membershipSetup, "const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];", 'membership setup must require local service-role env');
+includes(membershipSetup, 'service.auth.admin.listUsers', 'membership setup must find the Supabase Auth user server-side');
+includes(membershipSetup, "from('organization_memberships')", 'membership setup must create organization membership rows');
+includes(membershipSetup, "'project_manager'", 'membership setup default role must allow sync permission');
 
 console.log('Local sync consistency tests passed.');

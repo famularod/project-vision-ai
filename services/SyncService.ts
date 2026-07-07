@@ -860,6 +860,10 @@ async function uploadProjectUpdateQueueItem(
   const payload = item.payload as ProjectUpdateRecordPayload;
   const remoteMetadata = await getProjectUpdateSyncMetadata(payload.id);
 
+  if (!remoteMetadata.ok && remoteMetadata.error) {
+    return `Project update database select failed: ${remoteMetadata.error}`;
+  }
+
   if (
     remoteMetadata.ok &&
     remoteMetadata.data?.updatedAt &&
@@ -891,7 +895,9 @@ async function uploadProjectUpdateQueueItem(
 
   if (result.ok && !result.stubbed) return 'uploaded';
 
-  return result.error || result.message || 'Project update sync is waiting for Supabase.';
+  return result.error
+    ? `Project update database upsert failed: ${result.error}`
+    : result.message || 'Project update sync is waiting for Supabase.';
 }
 
 async function recordConflict(conflict: SyncConflict): Promise<void> {
