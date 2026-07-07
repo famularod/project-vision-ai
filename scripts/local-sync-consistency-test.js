@@ -7,6 +7,15 @@ const assert = require('assert');
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
+const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
+const storageMigration = fs.readFileSync(
+  path.join(root, 'supabase/migrations/20260707000000_project_storage_buckets.sql'),
+  'utf8',
+);
+const authenticatedStorageMigration = fs.readFileSync(
+  path.join(root, 'supabase/migrations/20260707010000_project_storage_authenticated_policies.sql'),
+  'utf8',
+);
 const pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
 
 function includes(source, marker, message) {
@@ -22,6 +31,11 @@ includes(app, 'storageUploadResult', 'sync diagnostics must show storage upload 
 includes(app, 'databaseUpsertResult', 'sync diagnostics must show database insert/update result');
 includes(app, 'rlsOrAuthFailureDetected', 'sync diagnostics must show safe RLS/auth detection');
 includes(app, 'retryAvailable', 'sync diagnostics must show retry availability');
+includes(app, 'storageBucketName', 'sync diagnostics must include safe bucket name');
+includes(app, 'storageBucketExists', 'sync diagnostics must include bucket existence result');
+includes(app, 'storageFailureCategory', 'sync diagnostics must include safe storage failure category');
+includes(app, 'storageHttpStatus', 'sync diagnostics must include storage HTTP/status code when available');
+includes(app, 'storageErrorCode', 'sync diagnostics must include Supabase storage error code when available');
 includes(app, "'offline'", 'sync diagnostics must include offline category');
 includes(app, "'signed_out'", 'sync diagnostics must include signed_out category');
 includes(app, "'rls_denied'", 'sync diagnostics must include rls_denied category');
@@ -48,7 +62,7 @@ includes(app, 'onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update)
 includes(app, 'void hydrateQueuedUpdates();', 'sync worker must run after save/sign-in or queue wake-up');
 includes(app, "AppState.addEventListener('change'", 'sync worker must run on app foreground');
 includes(app, 'runFieldUpdateCloudSync', 'send/retry must run structured cloud sync work');
-includes(app, 'update.photos.map(photo => uploadLocalPhoto(update, photo))', 'sync retry must await photo upload work');
+includes(app, 'update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo))', 'sync retry must await photo upload work with diagnostics');
 includes(app, 'await saveCloudUpdate(update)', 'sync retry must queue the update for cloud insert/update');
 includes(app, 'await uploadPendingChanges()', 'sync retry must attempt database insert/update work');
 assert(
@@ -64,7 +78,31 @@ assert(
 );
 includes(app, 'cloud insert attempted', 'dev diagnostics must expose cloud insert attempt safely');
 includes(app, 'photo upload attempted', 'dev diagnostics must expose photo upload attempt safely');
+includes(app, 'storage bucket', 'dev diagnostics must expose bucket name safely');
+includes(app, 'bucket exists', 'dev diagnostics must expose bucket existence safely');
+includes(app, 'storage category', 'dev diagnostics must expose storage failure category safely');
+includes(app, 'storage status', 'dev diagnostics must expose storage status safely');
+includes(app, 'storage code', 'dev diagnostics must expose storage code safely');
 includes(app, 'rls/auth', 'dev diagnostics must expose RLS/auth detection safely');
+
+includes(sync, "const PROJECT_PHOTOS_BUCKET = 'project-photos';", 'field update photo uploads must use the project-photos bucket');
+includes(storageMigration, "('project-photos', 'project-photos', false)", 'base migration must create private project-photos bucket');
+includes(authenticatedStorageMigration, "('project-photos', 'project-photos', false)", 'authenticated migration must preserve private project-photos bucket');
+includes(authenticatedStorageMigration, 'to authenticated', 'signed-in users must have authenticated Storage policies');
+includes(authenticatedStorageMigration, "with check (bucket_id = 'project-photos')", 'authenticated upload policy must target project-photos bucket');
+includes(sync, 'bucket_missing', 'missing bucket must have a safe storage category');
+includes(sync, 'rls_denied', 'Storage RLS failures must have a safe category');
+includes(sync, 'auth_missing', 'Storage auth failures must have a safe category');
+includes(sync, 'invalid_path', 'invalid object paths must have a safe category');
+includes(sync, 'invalid_payload', 'invalid upload payloads must have a safe category');
+includes(sync, 'unsupported_content_type', 'unsupported MIME types must have a safe category');
+includes(app, "if (category === 'auth_missing') return 'auth';", 'storage auth failures must route to auth UI');
+includes(app, "if (category === 'rls_denied') return 'rls_denied';", 'storage RLS failures must route to permission UI');
+includes(app, "if (category === 'network') return 'offline';", 'storage network failures must route to queued/offline UI');
+includes(supabase, 'base64ToArrayBuffer(base64)', 'mobile upload payload must convert local file base64 to binary bytes');
+includes(supabase, 'contentType', 'mobile upload must send content type to Supabase Storage');
+includes(supabase, 'errorRecord.statusCode', 'storage upload must preserve safe status code when available');
+includes(supabase, 'errorRecord.code', 'storage upload must preserve safe Supabase error code when available');
 
 includes(app, '...localUpdates,', 'local updates must be merged before cloud updates');
 assert(

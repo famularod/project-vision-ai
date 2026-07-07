@@ -2,7 +2,9 @@ import { loadCloudProjects, saveCloudProject } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import {
   uploadLocalPhoto,
+  uploadLocalPhotoWithDiagnostics,
   uploadPendingChanges,
+  type PhotoStorageUploadFailureCategory,
   type SyncUploadResult,
 } from './services/SyncService';
 import {
@@ -207,6 +209,11 @@ type FieldUpdateSyncDiagnostics = {
   databaseUpsertResult: FieldUpdateSyncStepResult;
   rlsOrAuthFailureDetected: boolean;
   retryAvailable: boolean;
+  storageBucketName: string | null;
+  storageBucketExists: 'yes' | 'no' | 'unknown';
+  storageFailureCategory: PhotoStorageUploadFailureCategory | null;
+  storageHttpStatus: number | null;
+  storageErrorCode: string | null;
   queuedUpdateCount: number;
   projectRollupsIncludeQueuedUpdates: boolean;
   projectCardWorkspaceSameSource: boolean;
@@ -1204,6 +1211,31 @@ function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDia
         : 'skipped',
     rlsOrAuthFailureDetected: value.rlsOrAuthFailureDetected === true,
     retryAvailable: value.retryAvailable !== false,
+    storageBucketName: optionalString(value.storageBucketName),
+    storageBucketExists:
+      value.storageBucketExists === 'yes' ||
+      value.storageBucketExists === 'no' ||
+      value.storageBucketExists === 'unknown'
+        ? value.storageBucketExists
+        : 'unknown',
+    storageFailureCategory:
+      value.storageFailureCategory === 'bucket_missing' ||
+      value.storageFailureCategory === 'rls_denied' ||
+      value.storageFailureCategory === 'auth_missing' ||
+      value.storageFailureCategory === 'invalid_path' ||
+      value.storageFailureCategory === 'invalid_payload' ||
+      value.storageFailureCategory === 'unsupported_content_type' ||
+      value.storageFailureCategory === 'file_unreadable' ||
+      value.storageFailureCategory === 'network' ||
+      value.storageFailureCategory === 'unknown_storage_error'
+        ? value.storageFailureCategory
+        : null,
+    storageHttpStatus:
+      typeof value.storageHttpStatus === 'number' &&
+      Number.isFinite(value.storageHttpStatus)
+        ? value.storageHttpStatus
+        : null,
+    storageErrorCode: optionalString(value.storageErrorCode),
     queuedUpdateCount:
       typeof value.queuedUpdateCount === 'number' &&
       Number.isFinite(value.queuedUpdateCount)
@@ -2910,31 +2942,51 @@ async function uploadUpdatePhotosForSync(
   update: ProjectUpdate,
 ): Promise<Pick<
   FieldUpdateSyncWorkAttempt,
-  'photoStorageUploadAttempted' | 'storageUploadResult' | 'errors'
+  | 'photoStorageUploadAttempted'
+  | 'storageUploadResult'
+  | 'storageBucketName'
+  | 'storageBucketExists'
+  | 'storageFailureCategory'
+  | 'storageHttpStatus'
+  | 'storageErrorCode'
+  | 'errors'
 >> {
   if (update.photos.length === 0) {
     return {
       photoStorageUploadAttempted: false,
       storageUploadResult: 'skipped',
+      storageBucketName: null,
+      storageBucketExists: 'unknown',
+      storageFailureCategory: null,
+      storageHttpStatus: null,
+      storageErrorCode: null,
       errors: [],
     };
   }
 
   const results = await Promise.all(
-    update.photos.map(photo => uploadLocalPhoto(update, photo)),
+    update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo)),
   );
   const failures = results.filter(
-    result => result !== 'uploaded' && result !== null,
+    result => result.result !== 'uploaded' && result.result !== 'skipped',
   );
+  const representativeDiagnostic =
+    failures[0]?.diagnostic || results[0]?.diagnostic || null;
 
   if (failures.length > 0) {
     return {
       photoStorageUploadAttempted: true,
       storageUploadResult: 'failed',
+      storageBucketName: representativeDiagnostic?.bucketName || null,
+      storageBucketExists: representativeDiagnostic?.bucketExists || 'unknown',
+      storageFailureCategory:
+        representativeDiagnostic?.failureCategory || 'unknown_storage_error',
+      storageHttpStatus: representativeDiagnostic?.httpStatus ?? null,
+      storageErrorCode: representativeDiagnostic?.errorCode ?? null,
       errors: failures.map(result =>
-        result === 'missing'
+        result.result === 'missing'
           ? 'Photo storage upload failed: photo file unavailable.'
-          : `Photo storage upload failed: ${result}`,
+          : `Photo storage upload failed: ${result.message || 'unknown storage error'}`,
       ),
     };
   }
@@ -2942,6 +2994,11 @@ async function uploadUpdatePhotosForSync(
   return {
     photoStorageUploadAttempted: true,
     storageUploadResult: 'success',
+    storageBucketName: representativeDiagnostic?.bucketName || null,
+    storageBucketExists: representativeDiagnostic?.bucketExists || 'yes',
+    storageFailureCategory: null,
+    storageHttpStatus: null,
+    storageErrorCode: null,
     errors: [],
   };
 }
@@ -2958,6 +3015,11 @@ async function runFieldUpdateCloudSync(
     photoStorageUploadAttempted: photoAttempt.photoStorageUploadAttempted,
     storageUploadResult: photoAttempt.storageUploadResult,
     databaseUpsertResult: 'skipped',
+    storageBucketName: photoAttempt.storageBucketName,
+    storageBucketExists: photoAttempt.storageBucketExists,
+    storageFailureCategory: photoAttempt.storageFailureCategory,
+    storageHttpStatus: photoAttempt.storageHttpStatus,
+    storageErrorCode: photoAttempt.storageErrorCode,
     errors: [...photoAttempt.errors],
   };
 
@@ -3497,6 +3559,15 @@ function classifySyncFailureCategory(
   return 'unknown';
 }
 
+function syncCategoryForStorageFailure(
+  category: PhotoStorageUploadFailureCategory | null,
+): FieldUpdateSyncFailureCategory {
+  if (category === 'auth_missing') return 'auth';
+  if (category === 'rls_denied') return 'rls_denied';
+  if (category === 'network') return 'offline';
+  return 'storage_upload_failed';
+}
+
 function syncCategoryIsRlsOrAuth(
   category: FieldUpdateSyncFailureCategory | null,
 ) {
@@ -3526,6 +3597,11 @@ function buildSkippedSyncDiagnostics(
     databaseUpsertResult: 'skipped',
     rlsOrAuthFailureDetected: syncCategoryIsRlsOrAuth(category),
     retryAvailable: true,
+    storageBucketName: null,
+    storageBucketExists: 'unknown',
+    storageFailureCategory: null,
+    storageHttpStatus: null,
+    storageErrorCode: null,
     queuedUpdateCount,
     projectRollupsIncludeQueuedUpdates: true,
     projectCardWorkspaceSameSource: true,
@@ -3537,6 +3613,11 @@ type FieldUpdateSyncWorkAttempt = {
   photoStorageUploadAttempted: boolean;
   storageUploadResult: FieldUpdateSyncStepResult;
   databaseUpsertResult: FieldUpdateSyncStepResult;
+  storageBucketName: string | null;
+  storageBucketExists: 'yes' | 'no' | 'unknown';
+  storageFailureCategory: PhotoStorageUploadFailureCategory | null;
+  storageHttpStatus: number | null;
+  storageErrorCode: string | null;
   errors: string[];
 };
 
@@ -3545,6 +3626,11 @@ const SKIPPED_SYNC_WORK_ATTEMPT: FieldUpdateSyncWorkAttempt = {
   photoStorageUploadAttempted: false,
   storageUploadResult: 'skipped',
   databaseUpsertResult: 'skipped',
+  storageBucketName: null,
+  storageBucketExists: 'unknown',
+  storageFailureCategory: null,
+  storageHttpStatus: null,
+  storageErrorCode: null,
   errors: [],
 };
 
@@ -3572,7 +3658,7 @@ function buildSyncDiagnosticsFromUpload(
   const failureCategory = success
     ? null
     : workAttempt.storageUploadResult === 'failed'
-      ? 'storage_upload_failed'
+      ? syncCategoryForStorageFailure(workAttempt.storageFailureCategory)
       : classifySyncFailureCategory(
           combinedErrors.length > 0
             ? combinedErrors
@@ -3594,6 +3680,11 @@ function buildSyncDiagnosticsFromUpload(
     databaseUpsertResult,
     rlsOrAuthFailureDetected: syncCategoryIsRlsOrAuth(failureCategory),
     retryAvailable: !success,
+    storageBucketName: workAttempt.storageBucketName,
+    storageBucketExists: workAttempt.storageBucketExists,
+    storageFailureCategory: workAttempt.storageFailureCategory,
+    storageHttpStatus: workAttempt.storageHttpStatus,
+    storageErrorCode: workAttempt.storageErrorCode,
     queuedUpdateCount: syncResult.queued,
     projectRollupsIncludeQueuedUpdates: true,
     projectCardWorkspaceSameSource: true,
@@ -13128,7 +13219,7 @@ function UpdateHistoryCard({
         ) : null}
         {__DEV__ && update.syncDiagnostics ? (
           <Text style={styles.locationDetailText}>
-            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
+            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
           </Text>
         ) : null}
         {onRetry ? (

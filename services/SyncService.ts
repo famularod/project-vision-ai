@@ -126,6 +126,35 @@ export type SyncStorageCleanupResult = {
   missingPhotosRemoved: number;
 };
 
+export type PhotoStorageUploadFailureCategory =
+  | 'bucket_missing'
+  | 'rls_denied'
+  | 'auth_missing'
+  | 'invalid_path'
+  | 'invalid_payload'
+  | 'unsupported_content_type'
+  | 'file_unreadable'
+  | 'network'
+  | 'unknown_storage_error';
+
+export type PhotoStorageUploadDiagnostic = {
+  bucketName: string;
+  bucketExists: 'yes' | 'no' | 'unknown';
+  uploadAttempted: boolean;
+  uploadResult: 'success' | 'failed' | 'skipped';
+  failureCategory: PhotoStorageUploadFailureCategory | null;
+  httpStatus: number | null;
+  errorCode: string | null;
+};
+
+export type LocalPhotoUploadResult = {
+  result: 'uploaded' | 'missing' | 'failed' | 'skipped';
+  message: string | null;
+  diagnostic: PhotoStorageUploadDiagnostic;
+};
+
+const PROJECT_PHOTOS_BUCKET = 'project-photos';
+
 export function sanitizeUserFacingSyncMessage(message: string): string {
   if (!message.trim()) return message;
 
@@ -931,25 +960,137 @@ export async function uploadLocalPhoto(
   update: ProjectUpdate,
   photo: UpdatePhoto,
 ): Promise<'uploaded' | 'missing' | string | null> {
-  if (!photo.uri) return null;
+  const detailed = await uploadLocalPhotoWithDiagnostics(update, photo);
+
+  if (detailed.result === 'uploaded') return 'uploaded';
+  if (detailed.result === 'missing') return 'missing';
+  if (detailed.result === 'skipped') return null;
+
+  return detailed.message || 'Photo sync could not finish.';
+}
+
+export async function uploadLocalPhotoWithDiagnostics(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+): Promise<LocalPhotoUploadResult> {
+  const diagnosticBase: PhotoStorageUploadDiagnostic = {
+    bucketName: PROJECT_PHOTOS_BUCKET,
+    bucketExists: 'unknown',
+    uploadAttempted: false,
+    uploadResult: 'skipped',
+    failureCategory: null,
+    httpStatus: null,
+    errorCode: null,
+  };
+
+  if (!photo.uri) {
+    return {
+      result: 'skipped',
+      message: null,
+      diagnostic: diagnosticBase,
+    };
+  }
 
   const available = await isPhotoFileAvailable(photo.uri);
 
-  if (!available) return 'missing';
+  if (!available) {
+    return {
+      result: 'missing',
+      message: 'Photo storage upload failed: photo file unreadable.',
+      diagnostic: {
+        ...diagnosticBase,
+        uploadResult: 'failed',
+        failureCategory: 'file_unreadable',
+      },
+    };
+  }
 
   try {
+    const path = photoUploadPath(update, photo);
+    const contentType = photo.mimeType || 'image/jpeg';
+    const invalidPath = validatePhotoStoragePath(path);
+    const unsupportedContentType = validatePhotoContentType(contentType);
+
+    if (invalidPath) {
+      return {
+        result: 'failed',
+        message: invalidPath,
+        diagnostic: {
+          ...diagnosticBase,
+          uploadAttempted: false,
+          uploadResult: 'failed',
+          failureCategory: 'invalid_path',
+        },
+      };
+    }
+
+    if (unsupportedContentType) {
+      return {
+        result: 'failed',
+        message: unsupportedContentType,
+        diagnostic: {
+          ...diagnosticBase,
+          uploadAttempted: false,
+          uploadResult: 'failed',
+          failureCategory: 'unsupported_content_type',
+        },
+      };
+    }
+
     const result = await uploadPhoto({
-      path: photoUploadPath(update, photo),
+      bucket: PROJECT_PHOTOS_BUCKET,
+      path,
       uri: photo.uri,
-      contentType: photo.mimeType || 'image/jpeg',
+      contentType,
       upsert: true,
     });
 
-    if (result.ok && !result.stubbed) return 'uploaded';
+    if (result.ok && !result.stubbed) {
+      return {
+        result: 'uploaded',
+        message: null,
+        diagnostic: {
+          ...diagnosticBase,
+          bucketExists: 'yes',
+          uploadAttempted: true,
+          uploadResult: 'success',
+        },
+      };
+    }
 
-    return result.error || result.message || 'Photo sync could not finish.';
-  } catch {
-    return 'Photo sync could not finish.';
+    const message = result.error || result.message || 'Photo sync could not finish.';
+    const failureCategory = classifyPhotoStorageUploadFailure(
+      message,
+      result.status ?? null,
+      result.code ?? null,
+    );
+
+    return {
+      result: 'failed',
+      message,
+      diagnostic: {
+        ...diagnosticBase,
+        bucketExists: failureCategory === 'bucket_missing' ? 'no' : 'unknown',
+        uploadAttempted: true,
+        uploadResult: 'failed',
+        failureCategory,
+        httpStatus: result.status ?? null,
+        errorCode: result.code ?? null,
+      },
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Photo sync could not finish.';
+    return {
+      result: 'failed',
+      message,
+      diagnostic: {
+        ...diagnosticBase,
+        uploadAttempted: true,
+        uploadResult: 'failed',
+        failureCategory: classifyPhotoStorageUploadFailure(message, null, null),
+      },
+    };
   }
 }
 
@@ -1037,6 +1178,60 @@ function mimeExtension(mimeType: string | null | undefined) {
   if (mimeType === 'image/heic') return 'heic';
   if (mimeType === 'image/heif') return 'heif';
   return 'jpg';
+}
+
+function validatePhotoStoragePath(path: string) {
+  if (!path.trim()) return 'Photo storage upload failed: invalid object path.';
+  if (path.includes('..') || path.includes('//')) {
+    return 'Photo storage upload failed: invalid object path.';
+  }
+  if (/undefined|null/i.test(path)) {
+    return 'Photo storage upload failed: invalid object path.';
+  }
+
+  return null;
+}
+
+function validatePhotoContentType(contentType: string) {
+  if (/^image\/(jpeg|jpg|png|heic|heif|webp)$/i.test(contentType)) return null;
+
+  return 'Photo storage upload failed: unsupported content type.';
+}
+
+function classifyPhotoStorageUploadFailure(
+  message: string,
+  status: number | null,
+  code: string | null,
+): PhotoStorageUploadFailureCategory {
+  const combined = `${message} ${code || ''}`.toLowerCase();
+
+  if (/bucket.*not.*found|bucket.*missing|not_found|no such bucket/.test(combined)) {
+    return 'bucket_missing';
+  }
+  if (/row level|rls|policy|permission denied|violates row-level|42501/.test(combined)) {
+    return 'rls_denied';
+  }
+  if (status === 401 || /jwt|token|unauthorized|auth|session/.test(combined)) {
+    return 'auth_missing';
+  }
+  if (status === 403 || /forbidden/.test(combined)) return 'rls_denied';
+  if (/invalid.*path|object.*name|path|undefined|null/.test(combined)) {
+    return 'invalid_path';
+  }
+  if (/payload|body|arraybuffer|blob|base64|invalid.*upload/.test(combined)) {
+    return 'invalid_payload';
+  }
+  if (/content.?type|mime|unsupported/.test(combined)) {
+    return 'unsupported_content_type';
+  }
+  if (/readasstringasync|file|unreadable|no such file|not found|missing/.test(combined)) {
+    return 'file_unreadable';
+  }
+  if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(combined)) {
+    return 'network';
+  }
+
+  return 'unknown_storage_error';
 }
 
 function sanitizePathSegment(value: string) {

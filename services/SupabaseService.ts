@@ -90,6 +90,7 @@ export type SupabaseServiceResult<T> = {
   error?: string;
   message?: string;
   status?: number;
+  code?: string;
   stubbed?: boolean;
 };
 
@@ -597,7 +598,23 @@ export async function uploadPhoto({
       upsert,
     });
 
-  if (error) return errorResult(error.message);
+  if (error) {
+    const errorRecord = error as unknown as Record<string, unknown>;
+    const status =
+      typeof errorRecord.statusCode === 'number'
+        ? errorRecord.statusCode
+        : typeof errorRecord.status === 'number'
+          ? errorRecord.status
+          : undefined;
+    const code =
+      typeof errorRecord.error === 'string'
+        ? errorRecord.error
+        : typeof errorRecord.code === 'string'
+          ? errorRecord.code
+          : undefined;
+
+    return errorResult(error.message, status, code);
+  }
 
   return okResult({
     bucket,
@@ -1845,6 +1862,7 @@ function notConfiguredResult<T>(): SupabaseServiceResult<T> {
 function errorResult<T>(
   error: string,
   status?: number,
+  code?: string,
 ): SupabaseServiceResult<T> {
   return {
     ok: false,
@@ -1852,6 +1870,7 @@ function errorResult<T>(
     data: null,
     error,
     status,
+    code,
   };
 }
 
