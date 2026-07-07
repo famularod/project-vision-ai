@@ -1,6 +1,6 @@
 import { loadCloudProjects, saveCloudProject } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
-import { uploadPendingChanges } from './services/SyncService';
+import { uploadLocalPhoto, uploadPendingChanges } from './services/SyncService';
 import { uploadPhoto } from './services/SupabaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -400,6 +400,7 @@ const REFERENCE_DOCUMENTS_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${REFERENCE_DOCUMENTS_FOLDER}/`
   : null;
 const PROJECT_DOCUMENT_UPLOAD_FOLDER = 'project-documents';
+const EMPTY_SELECTED_PROJECTS: Set<string> = new Set();
 const LARGE_PROJECT_DOCUMENT_BYTES = 15 * 1024 * 1024;
 const GPS_CAPTURE_ENABLED = true;
 
@@ -2752,6 +2753,17 @@ function buildProjectDocumentStoragePath(
   )}/${documentId}/${sanitizeFilename(fileName)}`;
 }
 
+// Backs up each photo's actual image file to the project-photos bucket.
+// saveCloudUpdate() only writes the update's metadata (caption, category,
+// the photo's local-device file path) to the database - without this, a
+// photo's image never leaves the phone it was taken on. Fire-and-forget per
+// photo: a slow or failed upload shouldn't block the update save/send flow.
+function syncUpdatePhotosToCloud(update: ProjectUpdate) {
+  update.photos.forEach(photo => {
+    void uploadLocalPhoto(update, photo);
+  });
+}
+
 function projectDocumentStatusDetail(document: ProjectDocument) {
   if (document.status === 'failed') {
     return 'Document upload failed · Retry';
@@ -3785,6 +3797,16 @@ function AppShell() {
   const [previewPhoto, setPreviewPhoto] =
     useState<UpdatePhoto | null>(null);
 
+  const [documentUploadRequest, setDocumentUploadRequest] = useState<{
+    asset: {
+      uri: string;
+      name?: string | null;
+      mimeType?: string | null;
+      size?: number | null;
+    };
+    selected: Set<string>;
+  } | null>(null);
+
   const [selectedDetailUpdate, setSelectedDetailUpdate] =
     useState<ProjectUpdate | null>(null);
 
@@ -4774,6 +4796,71 @@ useEffect(() => {
     void retryProjectDocumentUpload(document.id, document);
   }
 
+  function promptDocumentProjectSelection(
+    asset: {
+      uri: string;
+      name?: string | null;
+      mimeType?: string | null;
+      size?: number | null;
+    },
+    defaultProjectName: string,
+  ) {
+    setDocumentUploadRequest({
+      asset,
+      selected: new Set([defaultProjectName]),
+    });
+  }
+
+  function toggleDocumentUploadProject(projectName: string) {
+    setDocumentUploadRequest(prev => {
+      if (!prev) return prev;
+
+      const nextSelected = new Set(prev.selected);
+
+      if (nextSelected.has(projectName)) {
+        nextSelected.delete(projectName);
+      } else {
+        nextSelected.add(projectName);
+      }
+
+      return { ...prev, selected: nextSelected };
+    });
+  }
+
+  function cancelDocumentProjectSelection() {
+    setDocumentUploadRequest(null);
+  }
+
+  function confirmDocumentProjectSelection() {
+    if (!documentUploadRequest) return;
+
+    const { asset, selected } = documentUploadRequest;
+
+    setDocumentUploadRequest(null);
+
+    // Same picked file, one ProjectDocument record per selected project -
+    // each project keeps its own independent upload/retry/status lifecycle,
+    // matching how documents already work everywhere else in this screen.
+    selected.forEach(projectName => {
+      const document = createProjectDocumentFromAsset(asset, {
+        projectName,
+        areaId: null,
+        updateId: null,
+      });
+      const duplicate = duplicateProjectDocumentForAsset(
+        projectDocuments,
+        document.projectId,
+        {
+          name: document.name,
+          mimeType: document.mimeType,
+          size: document.sizeBytes,
+        },
+      );
+
+      confirmAndAttachProjectDocument(document, duplicate, false);
+    });
+  }
+
   async function importFieldUpdateDocument() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -4857,30 +4944,15 @@ useEffect(() => {
         );
       }
 
-      const document = createProjectDocumentFromAsset(
+      promptDocumentProjectSelection(
         {
           uri: asset.uri,
           name: asset.name,
           mimeType: asset.mimeType,
           size: asset.size,
         },
-        {
-          projectName,
-          areaId: null,
-          updateId: null,
-        },
+        projectName,
       );
-      const duplicate = duplicateProjectDocumentForAsset(
-        projectDocuments,
-        document.projectId,
-        {
-          name: document.name,
-          mimeType: document.mimeType,
-          size: document.sizeBytes,
-        },
-      );
-
-      confirmAndAttachProjectDocument(document, duplicate, false);
     } catch {
       Alert.alert(
         'Document unavailable',
@@ -4915,18 +4987,25 @@ useEffect(() => {
 
       if (!asset) return;
 
-      const document = createProjectDocumentFromAsset({
+      const photoAsset = {
         uri: asset.uri,
         name: asset.fileName || `document-photo-${Date.now()}.jpg`,
         mimeType: asset.mimeType || 'image/jpeg',
         size: asset.fileSize || null,
-      }, {
+      };
+
+      if (!attachToDraft) {
+        promptDocumentProjectSelection(photoAsset, projectName);
+        return;
+      }
+
+      const document = createProjectDocumentFromAsset(photoAsset, {
         projectName,
-        areaId: attachToDraft ? draft.selectedAreaId || null : null,
-        updateId: attachToDraft ? draft.id : null,
+        areaId: draft.selectedAreaId || null,
+        updateId: draft.id,
       });
 
-      confirmAndAttachProjectDocument(document, null, attachToDraft);
+      confirmAndAttachProjectDocument(document, null, true);
     } catch {
       Alert.alert(
         'Document photo unavailable',
@@ -4975,6 +5054,7 @@ useEffect(() => {
       ...prev.filter(item => item.id !== saved.id),
     ]);
     saveCloudUpdate(saved);
+    syncUpdatePhotosToCloud(saved);
     setSelectedWorkspaceProject(saved.projectName);
     Alert.alert('Draft saved', 'This field update was saved as a draft.');
     setScreen('ProjectWorkspace');
@@ -5039,6 +5119,7 @@ useEffect(() => {
 
     try {
       await saveCloudUpdate(queuedUpdate);
+      syncUpdatePhotosToCloud(queuedUpdate);
       const syncResult = await uploadPendingChanges();
       const sent =
         syncResult.configured &&
@@ -5104,6 +5185,7 @@ useEffect(() => {
 
     try {
       await saveCloudUpdate(retryUpdate);
+      syncUpdatePhotosToCloud(retryUpdate);
       const syncResult = await uploadPendingChanges();
       const finalUpdate: ProjectUpdate = {
         ...retryUpdate,
@@ -5145,6 +5227,7 @@ useEffect(() => {
     try {
       for (const update of queuedUpdates) {
         await saveCloudUpdate(update);
+        syncUpdatePhotosToCloud(update);
       }
 
       const syncResult = await uploadPendingChanges();
@@ -6839,6 +6922,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   ]);
 
   saveCloudUpdate(saved);
+  syncUpdatePhotosToCloud(saved);
 
   const nextProject =
     activeProjects[0] || DEFAULT_PROJECTS[0];
@@ -7095,7 +7179,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
               draftSavedAt={draftSavedAt}
               onPickPhotos={pickPhotos}
               onTakePhoto={takePhoto}
+              onUpdatePhoto={updatePhoto}
               onRemovePhoto={removePhoto}
+              onMovePhoto={movePhoto}
               onPreviewPhoto={setPreviewPhoto}
               onNext={requestBuildUpdate}
               onContacts={openContacts}
@@ -7416,6 +7502,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
               </SafeAreaView>
             </View>
           </Modal>
+
+          <DocumentProjectSelectionSheet
+            visible={Boolean(documentUploadRequest)}
+            projects={activeProjects}
+            selected={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
+            onToggle={toggleDocumentUploadProject}
+            onConfirm={confirmDocumentProjectSelection}
+            onClose={cancelDocumentProjectSelection}
+          />
 
           <BottomTabs
             current={screen}
@@ -8145,7 +8240,9 @@ function AddPhotosScreen({
   draftSavedAt,
   onPickPhotos,
   onTakePhoto,
+  onUpdatePhoto,
   onRemovePhoto,
+  onMovePhoto,
   onPreviewPhoto,
   onNext,
   onContacts,
@@ -8165,7 +8262,9 @@ function AddPhotosScreen({
   draftSavedAt: string | null;
   onPickPhotos: () => void;
   onTakePhoto: () => void;
+  onUpdatePhoto: (photoId: string, next: Partial<UpdatePhoto>) => void;
   onRemovePhoto: (photoId: string) => void;
+  onMovePhoto: (photoId: string, direction: 'up' | 'down') => void;
   onPreviewPhoto: (photo: UpdatePhoto) => void;
   onNext: () => void;
   onContacts: () => void;
@@ -8232,15 +8331,22 @@ function AddPhotosScreen({
         <ProgressStat number={documents.length} label="Documents" />
       </View>
 
-      {update.photos.length > 0 ? (
-        <View style={styles.phase3ThumbRow}>
-          {update.photos.map(photo => (
-            <TouchableOpacity key={photo.id} onPress={() => onPreviewPhoto(photo)}>
-              <Image source={{ uri: photo.uri }} style={styles.phase3Thumb} />
-            </TouchableOpacity>
-          ))}
-        </View>
-      ) : null}
+      {update.photos.map((photo, index) => (
+        <PhotoCard
+          key={photo.id}
+          projectName={update.projectName}
+          photo={photo}
+          index={index}
+          onUpdate={next => onUpdatePhoto(photo.id, next)}
+          onRemove={() => onRemovePhoto(photo.id)}
+          onMoveUp={() => onMovePhoto(photo.id, 'up')}
+          onMoveDown={() => onMovePhoto(photo.id, 'down')}
+          onPreview={() => onPreviewPhoto(photo)}
+          onRetryAnalysis={() => onRetryPhotoAnalysis(photo)}
+          canMoveUp={index > 0}
+          canMoveDown={index < update.photos.length - 1}
+        />
+      ))}
 
       {documents.length > 0 ? (
         documents.map(document => (
@@ -8418,16 +8524,10 @@ function AreaSelectionSheet({
   const [searchText, setSearchText] = useState('');
   const [showAll, setShowAll] = useState(false);
   const search = searchText.trim().toLowerCase();
-  const suggested = [
-    suggestedArea,
-    ...projectAreas.slice(0, 2),
-  ].filter(Boolean) as ProjectArea[];
-  const uniqueSuggestedIds = new Set<string>();
-  const suggestedRows = suggested.filter(area => {
-    if (uniqueSuggestedIds.has(area.id)) return false;
-    uniqueSuggestedIds.add(area.id);
-    return true;
-  });
+  // Only the actual GPS/location-based suggestion belongs under "Suggested" -
+  // padding this out with arbitrary areas (e.g. the first two in the list)
+  // mislabels them as relevant when they aren't.
+  const suggestedRows = suggestedArea ? [suggestedArea] : [];
   const allRows = projectAreas.filter(area => {
     if (!search) return true;
     return area.name.toLowerCase().includes(search);
@@ -8508,6 +8608,50 @@ function AreaSelectionRow({
         <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
       ) : null}
     </TouchableOpacity>
+  );
+}
+
+function DocumentProjectSelectionSheet({
+  visible,
+  projects,
+  selected,
+  onToggle,
+  onConfirm,
+  onClose,
+}: {
+  visible: boolean;
+  projects: string[];
+  selected: Set<string>;
+  onToggle: (projectName: string) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <ProjectActionSheet visible={visible} title="Select Projects" onClose={onClose}>
+      <Text style={styles.bodyText}>
+        This document will be added to every project you select below.
+      </Text>
+
+      {projects.map(projectName => (
+        <AreaSelectionRow
+          key={projectName}
+          name={projectName}
+          selected={selected.has(projectName)}
+          onPress={() => onToggle(projectName)}
+        />
+      ))}
+
+      <PrimaryButton
+        label={
+          selected.size > 0
+            ? `Add to ${selected.size} Project${selected.size === 1 ? '' : 's'}`
+            : 'Select at least one project'
+        }
+        icon="checkmark-done-outline"
+        onPress={onConfirm}
+        disabled={selected.size === 0}
+      />
+    </ProjectActionSheet>
   );
 }
 
@@ -11166,9 +11310,15 @@ function AreaDetailModal({
 }) {
   const [radiusText, setRadiusText] = useState(area ? String(area.radiusFeet) : '250');
 
+  // Deliberately keyed on area?.id only, not area?.radiusFeet: this field is
+  // actively edited via onUpdate -> a parent state update -> a new `area`
+  // prop on every keystroke. Re-syncing whenever radiusFeet changes fights
+  // the user's own typing (e.g. a trailing "." gets parsed and echoed back
+  // as a whole number, wiping out the decimal they're mid-typing). Only
+  // resync when switching to a different area entirely.
   useEffect(() => {
     if (area) setRadiusText(String(area.radiusFeet));
-  }, [area?.id, area?.radiusFeet]);
+  }, [area?.id]);
 
   if (!area) return null;
 
@@ -11674,14 +11824,21 @@ function SavedUpdatesScreen({
       return;
     }
 
-    const failedPhoto =
+    // updateCanInlineRetry() also allows retry when PIE is merely stuck
+    // ('analyzing' for too long), not just failed - so the target photo can
+    // have status 'analyzing' rather than one of the two failure statuses.
+    // Matching only the failure statuses here meant a stuck-but-not-failed
+    // photo was never found, silently falling back to photos[0] and retrying
+    // the wrong photo whenever the stuck one wasn't first in the list.
+    const targetPhoto =
       update.photos.find(
         photo =>
           photo.photoIntelligence?.status === 'analysis_failed_retry' ||
-          photo.photoIntelligence?.status === 'comparison_unavailable',
+          photo.photoIntelligence?.status === 'comparison_unavailable' ||
+          photo.photoIntelligence?.status === 'analyzing',
       ) || update.photos[0];
 
-    if (failedPhoto) onRetryPhotoAnalysis(update, failedPhoto);
+    if (targetPhoto) onRetryPhotoAnalysis(update, targetPhoto);
   }
 
   const renderUpdate = ({ item: update }: { item: ProjectUpdate }) => (
@@ -11840,7 +11997,7 @@ function UpdateFilterSheet({
         selected={!filters.areaId}
         onPress={() => onChange({ ...filters, areaId: null })}
       />
-      {projectAreas.slice(0, 8).map(area => (
+      {projectAreas.map(area => (
         <FilterOption
           key={area.id}
           label={area.name}

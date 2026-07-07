@@ -129,8 +129,15 @@ export type SyncStorageCleanupResult = {
 export function sanitizeUserFacingSyncMessage(message: string): string {
   if (!message.trim()) return message;
 
+  // Deliberately narrow to signals that only appear in a genuine local
+  // file-read failure (native path segments, the file-read API name, the
+  // photo storage folder, the image extension). Generic phrases like "does
+  // not exist", "Caused by", or "Sync failed:" were removed from this check
+  // because they also appear in real Postgres/PostgREST schema errors (e.g.
+  // "column ... does not exist") - matching on them mislabeled a permanent
+  // backend/schema failure as a harmless missing-photo-file notice.
   if (
-    /readAsStringAsync|readAsString|\/var\/mobile|Containers\/Data\/Application|project-photos|\.heic|does not exist|Caused by|Sync failed:/i.test(message)
+    /readAsStringAsync|readAsString|\/var\/mobile|Containers\/Data\/Application|project-photos|\.heic/i.test(message)
   ) {
     return 'Some photos could not be synced because the original files are no longer available. The remaining items will continue syncing.';
   }
@@ -306,7 +313,39 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   });
 }
 
+let uploadPendingChangesInFlight: Promise<SyncUploadResult> | null = null;
+let anotherUploadPassRequested = false;
+
+// enqueuePendingChange() fires this off fire-and-forget every time something
+// is queued, so overlapping calls are the common case (e.g. saving an update
+// while a background timer-driven sync is already running). Without this
+// guard, two overlapping runs each read their own snapshot of the queue and
+// later blindly overwrite storage with what they think is "remaining" -
+// whichever run finishes last wins, silently erasing anything the other run
+// already uploaded or anything enqueued in between. Serializing here so only
+// one pass actually reads+writes the queue at a time, and queuing a single
+// follow-up pass so a change enqueued mid-run still gets picked up promptly.
 export async function uploadPendingChanges(): Promise<SyncUploadResult> {
+  if (uploadPendingChangesInFlight) {
+    anotherUploadPassRequested = true;
+    return uploadPendingChangesInFlight;
+  }
+
+  uploadPendingChangesInFlight = runUploadPendingChanges();
+
+  try {
+    return await uploadPendingChangesInFlight;
+  } finally {
+    uploadPendingChangesInFlight = null;
+
+    if (anotherUploadPassRequested) {
+      anotherUploadPassRequested = false;
+      void uploadPendingChanges();
+    }
+  }
+}
+
+async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
   const queue = await getOfflineQueue();
 
@@ -320,7 +359,8 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
     };
   }
 
-  const remaining: SyncQueueItem[] = [];
+  const resolvedIds = new Set<string>();
+  const retriedItemsById = new Map<string, SyncQueueItem>();
   const errors: string[] = [];
   let uploaded = 0;
 
@@ -329,22 +369,32 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
     if (result === 'uploaded') {
       uploaded += 1;
+      resolvedIds.add(item.id);
       continue;
     }
 
     if (result === 'conflict') {
+      resolvedIds.add(item.id);
       continue;
     }
 
     const sanitizedResult = sanitizeUserFacingSyncMessage(result);
 
-    remaining.push({
+    retriedItemsById.set(item.id, {
       ...item,
       retryCount: item.retryCount + 1,
       lastError: sanitizedResult,
     });
     errors.push(sanitizedResult);
   }
+
+  // Reconcile against the queue as it stands right now, not the snapshot
+  // read at the top of this function - anything enqueued while the uploads
+  // above were in flight needs to survive this write.
+  const currentQueue = await getOfflineQueue();
+  const remaining = currentQueue
+    .filter(item => !resolvedIds.has(item.id))
+    .map(item => retriedItemsById.get(item.id) ?? item);
 
   await setStoredJson(SYNC_QUEUE_STORAGE_KEY, remaining);
 
@@ -877,7 +927,7 @@ function projectUpdateIdempotencyKey(
   return stableKey;
 }
 
-async function uploadLocalPhoto(
+export async function uploadLocalPhoto(
   update: ProjectUpdate,
   photo: UpdatePhoto,
 ): Promise<'uploaded' | 'missing' | string | null> {

@@ -1670,11 +1670,16 @@ async function upsertJsonRecord<T>({
 function isMissingTableError(message: string): boolean {
   const normalized = message.toLowerCase();
 
+  // Deliberately narrow: only PostgREST's "missing table" message (PGRST205,
+  // "Could not find the table 'x' in the schema cache") and Postgres's own
+  // "relation ... does not exist" (42P01). A bare "schema cache" or "does not
+  // exist" check also matches PGRST204 ("Could not find the 'x' column of
+  // 'y' in the schema cache") and "column ... does not exist" - i.e. a real,
+  // permanent schema-drift error - which must NOT be treated as a soft
+  // "table not available yet" stub or it silently masks broken writes.
   return (
     normalized.includes('could not find the table') ||
-    normalized.includes('schema cache') ||
-    normalized.includes('does not exist') ||
-    normalized.includes('relation') && normalized.includes('not exist')
+    (normalized.includes('relation') && normalized.includes('does not exist'))
   );
 }
 
