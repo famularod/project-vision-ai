@@ -4203,6 +4203,129 @@ function buildPIEBriefText(
   return 'All projects on track — nothing needs your attention.';
 }
 
+type PIEProjectBriefObservation = {
+  id: string;
+  update: ProjectUpdate;
+  text: string;
+  context: string;
+  observedTier: true;
+};
+
+type PIEProjectBriefModel = {
+  summary: string;
+  observations: PIEProjectBriefObservation[];
+  latestUpdate: ProjectUpdate | null;
+  lowDetailFallback: boolean;
+  analysisUnavailable: boolean;
+};
+
+function buildPIEProjectBriefModel(
+  projectName: string,
+  savedUpdates: ProjectUpdate[],
+): PIEProjectBriefModel {
+  const scopedUpdates = savedUpdates
+    .filter(update => projectMatchesScope(update, projectName))
+    .sort((a, b) => updateSortTime(b) - updateSortTime(a));
+  const failedCount = scopedUpdates.reduce(
+    (sum, update) =>
+      sum +
+      update.photos.filter(
+        photo =>
+          photo.photoIntelligence?.status === 'analysis_failed_retry' ||
+          photo.photoIntelligence?.status === 'comparison_unavailable',
+      ).length,
+    0,
+  );
+  const observations = scopedUpdates.flatMap(update =>
+    observedFindingsForUpdateBrief(update).map((text, index) => ({
+      id: `${update.id}-observed-${index}`,
+      update,
+      text,
+      context: update.selectedAreaName || update.photos[0]?.selectedAreaName || update.projectName,
+      observedTier: true as const,
+    })),
+  );
+  const latestUpdate = observations[0]?.update || latestUpdateWithVisualChange(scopedUpdates);
+  const changeCount = scopedUpdates.reduce(
+    (sum, update) => sum + update.photos.filter(photoHasVisualChange).length,
+    0,
+  );
+
+  if (observations.length > 0) {
+    return {
+      summary: `${changeCount || observations.length} possible visual change${(changeCount || observations.length) === 1 ? '' : 's'} found.`,
+      observations: observations.slice(0, 3),
+      latestUpdate,
+      lowDetailFallback: false,
+      analysisUnavailable: false,
+    };
+  }
+
+  if (changeCount > 0) {
+    return {
+      summary: 'Possible visual changes found. Open details to review the photos.',
+      observations: [],
+      latestUpdate,
+      lowDetailFallback: true,
+      analysisUnavailable: false,
+    };
+  }
+
+  if (failedCount > 0) {
+    return {
+      summary: 'Analysis unavailable · Retry',
+      observations: [],
+      latestUpdate: scopedUpdates.find(update =>
+        update.photos.some(photo =>
+          photo.photoIntelligence?.status === 'analysis_failed_retry' ||
+          photo.photoIntelligence?.status === 'comparison_unavailable',
+        ),
+      ) || null,
+      lowDetailFallback: false,
+      analysisUnavailable: true,
+    };
+  }
+
+  return {
+    summary: buildPIEBriefText(projectName, savedUpdates),
+    observations: [],
+    latestUpdate: null,
+    lowDetailFallback: false,
+    analysisUnavailable: false,
+  };
+}
+
+function observedFindingsForUpdateBrief(update: ProjectUpdate) {
+  return uniqueStrings([
+    ...(update.observedFindings || []),
+    ...pieResultsForUpdate(update).flatMap(result => observedFindingsForPIEResult(result)),
+  ]).filter(isSafeObservedBriefFinding);
+}
+
+function isSafeObservedBriefFinding(finding: string) {
+  const normalized = finding.trim().toLowerCase();
+  if (!normalized) return false;
+  if (/work completed|progress increased|finished|quality issue|schedule.*risk|at risk|completed/.test(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+function latestUpdateWithVisualChange(updates: ProjectUpdate[]) {
+  return updates.find(update => update.photos.some(photoHasVisualChange)) || null;
+}
+
+function updateSortTime(update: ProjectUpdate) {
+  const time = new Date(
+    update.workflowTimestamps?.sendResolvedAt ||
+      update.workflowTimestamps?.sendTappedAt ||
+      update.workflowTimestamps?.firstPhotoAddedAt ||
+      update.locationCapturedAt ||
+      update.date,
+  ).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
 function buildProjectCardPIEStatus(
   projectName: string,
   savedUpdates: ProjectUpdate[],
@@ -8288,6 +8411,20 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setScreen(screenForUpdateResume(update));
   }
 
+  function openLatestProjectPhotoDifference(projectName: string) {
+    const brief = buildPIEProjectBriefModel(projectName, savedUpdates);
+    const targetUpdate = brief.latestUpdate;
+
+    if (!targetUpdate) {
+      setScreen('SavedUpdates');
+      return;
+    }
+
+    setSelectedWorkspaceProject(projectName);
+    setSelectedDetailUpdate(targetUpdate);
+    setScreen('UpdateDetail');
+  }
+
   function deleteSavedUpdate(updateId: string) {
     const update = savedUpdates.find(item => item.id === updateId);
 
@@ -8644,6 +8781,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onBack={() => setScreen('Projects')}
               onNewFieldUpdate={createNewUpdate}
               onOpenUpdates={() => setScreen('SavedUpdates')}
+              onOpenPhotoDifferences={openLatestProjectPhotoDifference}
               onOpenDocuments={() => setScreen('ProjectDocuments')}
               onRetryQueuedUpdate={retryQueuedUpdate}
             />
@@ -8780,6 +8918,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                       }
                     : undefined
                 }
+                onRetryPhotoAnalysis={(update, photo) => {
+                  void retryPhotoAnalysis(update, photo);
+                }}
               />
             </ScreenScroll>
           )}
@@ -11634,15 +11775,34 @@ function ReadOnlyUpdateDetailScreen({
   update,
   onBack,
   onRetry,
+  onRetryPhotoAnalysis,
 }: {
   update: ProjectUpdate;
   onBack: () => void;
   onRetry?: () => void;
+  onRetryPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
 }) {
   const lifecycle = lifecycleStatusForUpdate(update);
   const pieStatus = updatePIEAnalysisStatus(update);
   const documents = update.documents || [];
   const timing = flowTimingForUpdate(update);
+  const pieResults = pieResultsForUpdate(update);
+  const firstResult = pieResults[0];
+  const observedFindings = uniqueStrings([
+    ...(update.observedFindings || []),
+    ...pieResults.flatMap(result => observedFindingsForPIEResult(result)),
+  ]);
+  const possibleInterpretations = uniqueStrings([
+    ...(updateSupportsPIEInterpretations(update, summarizePIEStatusForUpdate(update))
+      ? update.possibleInterpretations || []
+      : []),
+    ...pieResults.flatMap(result => possibleInterpretationsForPIEResult(result)),
+  ]);
+  const failedPhoto = update.photos.find(
+    photo =>
+      photo.photoIntelligence?.status === 'analysis_failed_retry' ||
+      photo.photoIntelligence?.status === 'comparison_unavailable',
+  );
 
   return (
     <View>
@@ -11669,6 +11829,49 @@ function ReadOnlyUpdateDetailScreen({
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry Send</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>PIE Summary</Text>
+        <Text style={styles.projectName}>
+          {summarizePIEStatusForUpdate(update).summary}
+        </Text>
+        {firstResult?.comparisonConfidence ? (
+          <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
+        ) : null}
+        {observedFindings.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabelNoMargin}>Observed findings</Text>
+            {observedFindings.slice(0, 4).map(finding => (
+              <PIEFindingRow
+                key={finding}
+                role="possibleFinding"
+                title={`Observed: ${finding}`}
+              />
+            ))}
+          </>
+        ) : null}
+        {possibleInterpretations.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabelNoMargin}>Possible interpretations</Text>
+            {possibleInterpretations.map(interpretation => (
+              <PIEFindingRow
+                key={interpretation}
+                role="interpretation"
+                title={interpretation}
+                detail="PIE suggestion only. Confirm before using as a message claim."
+              />
+            ))}
+          </>
+        ) : null}
+        {failedPhoto && onRetryPhotoAnalysis ? (
+          <TouchableOpacity
+            style={styles.photoControlButton}
+            onPress={() => onRetryPhotoAnalysis(update, failedPhoto)}
+          >
+            <Ionicons name="refresh-outline" size={17} color={colors.primary} />
+            <Text style={styles.photoControlText}>Retry Analysis</Text>
           </TouchableOpacity>
         ) : null}
       </View>
@@ -11924,6 +12127,7 @@ function ProjectWorkspaceScreen({
   onBack,
   onNewFieldUpdate,
   onOpenUpdates,
+  onOpenPhotoDifferences,
   onOpenDocuments,
   onRetryQueuedUpdate,
 }: {
@@ -11936,6 +12140,7 @@ function ProjectWorkspaceScreen({
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
   onOpenUpdates: () => void;
+  onOpenPhotoDifferences: (projectName: string) => void;
   onOpenDocuments: () => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
 }) {
@@ -11950,7 +12155,7 @@ function ProjectWorkspaceScreen({
   );
   const notesCount = projectUpdates.filter(update => update.notes.trim()).length;
   const issuesCount = projectStats.openActions + projectStats.overdueActions;
-  const pieBrief = buildPIEBriefText(projectName, savedUpdates);
+  const pieBrief = buildPIEProjectBriefModel(projectName, savedUpdates);
   const documentBrief = buildProjectDocumentMetadataBrief(projectName, projectDocuments);
 
   return (
@@ -11975,7 +12180,39 @@ function ProjectWorkspaceScreen({
         </View>
         <View style={styles.rowMain}>
           <Text style={styles.panelTitle}>PIE Project Brief</Text>
-          <Text style={styles.bodyText}>{pieBrief}</Text>
+          <Text style={styles.bodyText}>{pieBrief.summary}</Text>
+          {pieBrief.observations.length > 0 ? (
+            <>
+              <Text style={styles.sectionLabelNoMargin}>Latest observations</Text>
+              {pieBrief.observations.map(observation => (
+                <TouchableOpacity
+                  key={observation.id}
+                  style={styles.projectSelectorRow}
+                  onPress={() => onOpenPhotoDifferences(projectName)}
+                >
+                  <View style={styles.rowMain}>
+                    <Text style={styles.locationDetailText}>
+                      Observed: {observation.context} — {observation.text}
+                    </Text>
+                  </View>
+                  <Text style={styles.dashboardManageText}>View</Text>
+                </TouchableOpacity>
+              ))}
+            </>
+          ) : pieBrief.lowDetailFallback ? (
+            <Text style={styles.locationDetailText}>
+              Possible visual changes found. Review details before using in an update.
+            </Text>
+          ) : null}
+          {(pieBrief.observations.length > 0 || pieBrief.lowDetailFallback || pieBrief.analysisUnavailable) ? (
+            <TouchableOpacity
+              style={styles.photoControlButton}
+              onPress={() => onOpenPhotoDifferences(projectName)}
+            >
+              <Ionicons name="git-compare-outline" size={17} color={colors.primary} />
+              <Text style={styles.photoControlText}>View photo differences</Text>
+            </TouchableOpacity>
+          ) : null}
           <Text style={styles.locationDetailText}>{documentBrief}</Text>
         </View>
       </View>
