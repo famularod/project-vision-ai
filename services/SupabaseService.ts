@@ -118,16 +118,25 @@ export type SupabaseAuthSessionState =
   | 'expired'
   | 'unknown';
 
+export type SupabaseAppAuthMode =
+  | 'supabase_authenticated'
+  | 'local_only'
+  | 'unknown';
+
 export type SupabaseSessionTokenLookupResult = {
   status: 'token_present' | 'token_missing';
   accessToken: string | null;
   missingReason: SupabaseSessionMissingReason | null;
   authState: SupabaseAuthSessionState;
+  appAuthMode: SupabaseAppAuthMode;
   authHydrationCompleted: boolean;
   storageAvailable: boolean;
   signInClientSource: string;
   tokenLookupClientSource: string;
   clientMismatch: boolean;
+  supabaseUserIdPresent: boolean;
+  sessionTokenPresent: boolean;
+  lastAuthEvent: string;
   userId: string | null;
   userEmail: string | null;
   expiresAt: number | null;
@@ -247,6 +256,7 @@ const AUTH_STORAGE_PROBE_KEY = 'projectVisionAI.supabaseAuthStorage.probe';
 
 let authHydrationCompleted = false;
 let lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
+let lastAuthEvent = 'UNKNOWN';
 let authAutoRefreshSubscriptionStarted = false;
 
 const supabaseAuthStorage = {
@@ -429,6 +439,9 @@ export async function signIn({
 
   if (error) return errorResult(error.message);
 
+  lastAuthEvent = 'SIGNED_IN';
+  authHydrationCompleted = true;
+
   return okResult({
     user: data.user,
     session: data.session,
@@ -443,6 +456,9 @@ export async function signOut(): Promise<SupabaseServiceResult<null>> {
   const { error } = await client.auth.signOut();
 
   if (error) return errorResult(error.message);
+
+  lastAuthEvent = 'SIGNED_OUT';
+  authHydrationCompleted = true;
 
   return okResult(null);
 }
@@ -1672,13 +1688,16 @@ function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
   void client.auth.getSession()
     .then(() => {
       authHydrationCompleted = true;
+      if (lastAuthEvent === 'UNKNOWN') lastAuthEvent = 'INITIAL_SESSION';
     })
     .catch(() => {
       authHydrationCompleted = true;
+      if (lastAuthEvent === 'UNKNOWN') lastAuthEvent = 'INITIAL_SESSION';
     });
 
-  client.auth.onAuthStateChange(() => {
+  client.auth.onAuthStateChange(event => {
     authHydrationCompleted = true;
+    lastAuthEvent = event;
   });
 
   if (authAutoRefreshSubscriptionStarted) return;
@@ -1736,17 +1755,29 @@ function buildSessionTokenLookup({
     missingReason === null && session?.access_token
       ? session.access_token
       : null;
+  const sessionTokenPresent = Boolean(accessToken);
+  const supabaseUserIdPresent = Boolean(session?.user?.id);
+  const appAuthMode =
+    sessionTokenPresent && supabaseUserIdPresent
+      ? 'supabase_authenticated'
+      : missingReason === 'auth_loading' || clientMismatch
+        ? 'unknown'
+        : 'local_only';
 
   return {
-    status: accessToken ? 'token_present' : 'token_missing',
+    status: sessionTokenPresent ? 'token_present' : 'token_missing',
     accessToken,
     missingReason: clientMismatch ? 'client_mismatch' : missingReason,
     authState: clientMismatch ? 'unknown' : authState,
+    appAuthMode,
     authHydrationCompleted,
     storageAvailable,
     signInClientSource: lastSignInClientSource,
     tokenLookupClientSource,
     clientMismatch,
+    supabaseUserIdPresent,
+    sessionTokenPresent,
+    lastAuthEvent,
     userId: session?.user?.id ?? null,
     userEmail: session?.user?.email ?? null,
     expiresAt: typeof session?.expires_at === 'number' ? session.expires_at : null,

@@ -1,7 +1,11 @@
 import { loadCloudProjects, saveCloudProject } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import { uploadLocalPhoto, uploadPendingChanges } from './services/SyncService';
-import { uploadPhoto } from './services/SupabaseService';
+import {
+  getCurrentSessionAccessToken,
+  signIn,
+  uploadPhoto,
+} from './services/SupabaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -2878,6 +2882,11 @@ function authStatusCopyForPIEResult(result: PIEPhotoIntelligenceDisplayState) {
   return null;
 }
 
+function pieResultRequiresSupabaseSignIn(result: PIEPhotoIntelligenceDisplayState | null | undefined) {
+  const reason = result?.diagnostics?.tokenMissingReason;
+  return reason === 'signed_out' || reason === 'expired_session';
+}
+
 function authStatusCopyForPIEResults(results: PIEPhotoIntelligenceDisplayState[]) {
   const loading = results.find(result => result.diagnostics?.tokenMissingReason === 'auth_loading');
   if (loading) return PIE_STATUS_COPY.preparingSecureAnalysis;
@@ -3924,6 +3933,14 @@ function AppShell() {
 
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
+  const [photoAuthRequest, setPhotoAuthRequest] = useState<{
+    update: ProjectUpdate;
+    photo: UpdatePhoto;
+  } | null>(null);
+  const [photoAuthEmail, setPhotoAuthEmail] = useState('');
+  const [photoAuthPassword, setPhotoAuthPassword] = useState('');
+  const [photoAuthMessage, setPhotoAuthMessage] = useState<string | null>(null);
+  const [photoAuthSubmitting, setPhotoAuthSubmitting] = useState(false);
 
 useEffect(() => {
   async function loadSavedUpdates() {
@@ -6066,7 +6083,89 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setSavedUpdates(prev => prev.map(applyToUpdate));
   }
 
-  async function retryPhotoAnalysis(update: ProjectUpdate, photo: UpdatePhoto) {
+  function requestPhotoIntelligenceSignIn(update: ProjectUpdate, photo: UpdatePhoto) {
+    markPhotoAnalysisRetryRoutedToSignIn(photo.id);
+    setPhotoAuthRequest({ update, photo });
+    setPhotoAuthMessage(null);
+  }
+
+  function closePhotoIntelligenceSignIn() {
+    if (photoAuthSubmitting) return;
+    setPhotoAuthRequest(null);
+    setPhotoAuthPassword('');
+    setPhotoAuthMessage(null);
+  }
+
+  function markPhotoAnalysisRetryRoutedToSignIn(photoId: string) {
+    const applyToUpdate = (update: ProjectUpdate): ProjectUpdate => ({
+      ...update,
+      photos: update.photos.map(photo => {
+        if (photo.id !== photoId || !photo.photoIntelligence?.diagnostics) return photo;
+
+        return {
+          ...photo,
+          photoIntelligence: {
+            ...photo.photoIntelligence,
+            diagnostics: {
+              ...photo.photoIntelligence.diagnostics,
+              retryRoutedToSignIn: true,
+              edgeFunctionInvoked: false,
+              edgeFunctionStatus: 'not invoked',
+            },
+          },
+        };
+      }),
+    });
+
+    setDraft(prev => applyToUpdate(prev));
+    setSavedUpdates(prev => prev.map(applyToUpdate));
+  }
+
+  async function submitPhotoIntelligenceSignIn() {
+    if (!photoAuthRequest) return;
+
+    const email = photoAuthEmail.trim();
+    if (!email || !photoAuthPassword) {
+      setPhotoAuthMessage('Enter the Supabase account email and password.');
+      return;
+    }
+
+    setPhotoAuthSubmitting(true);
+    setPhotoAuthMessage(null);
+
+    try {
+      const result = await signIn({ email, password: photoAuthPassword });
+
+      if (!result.ok) {
+        setPhotoAuthMessage(result.error || 'Sign in failed.');
+        return;
+      }
+
+      const tokenResult = await getCurrentSessionAccessToken();
+      const tokenLookup = tokenResult.data;
+
+      if (!tokenResult.ok || tokenLookup?.status !== 'token_present') {
+        setPhotoAuthMessage(
+          tokenLookup?.missingReason === 'auth_loading'
+            ? PIE_STATUS_COPY.preparingSecureAnalysis
+            : tokenLookup?.missingReason === 'expired_session'
+              ? PIE_STATUS_COPY.sessionExpired
+              : 'Sign in completed, but the session token is not available yet.',
+        );
+        return;
+      }
+
+      const pending = photoAuthRequest;
+      setPhotoAuthRequest(null);
+      setPhotoAuthPassword('');
+      setPhotoAuthMessage(null);
+      await runPhotoAnalysisRetry(pending.update, pending.photo);
+    } finally {
+      setPhotoAuthSubmitting(false);
+    }
+  }
+
+  async function runPhotoAnalysisRetry(update: ProjectUpdate, photo: UpdatePhoto) {
     applyPhotoIntelligenceResult(photo.id, buildAnalyzingPhotoIntelligenceState());
 
     await analyzePhotoWithAuthHydrationRetry({
@@ -6078,6 +6177,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
       priorUpdates: savedUpdates.filter(item => item.id !== update.id),
       retryAttempt: true,
     });
+  }
+
+  async function retryPhotoAnalysis(update: ProjectUpdate, photo: UpdatePhoto) {
+    const tokenResult = await getCurrentSessionAccessToken();
+    const tokenLookup = tokenResult.data;
+
+    if (
+      !tokenResult.ok ||
+      tokenLookup?.missingReason === 'signed_out' ||
+      tokenLookup?.missingReason === 'expired_session' ||
+      tokenLookup?.missingReason === 'storage_unavailable'
+    ) {
+      requestPhotoIntelligenceSignIn(update, photo);
+      return;
+    }
+
+    await runPhotoAnalysisRetry(update, photo);
   }
 
   function removePhoto(photoId: string) {
@@ -7530,6 +7646,20 @@ Note: This update was opened through Outlook because PLZ email security may reje
             </ScreenScroll>
           )}
 
+          <PhotoIntelligenceSignInModal
+            visible={Boolean(photoAuthRequest)}
+            email={photoAuthEmail}
+            password={photoAuthPassword}
+            message={photoAuthMessage}
+            submitting={photoAuthSubmitting}
+            onEmailChange={setPhotoAuthEmail}
+            onPasswordChange={setPhotoAuthPassword}
+            onSubmit={() => {
+              void submitPhotoIntelligenceSignIn();
+            }}
+            onClose={closePhotoIntelligenceSignIn}
+          />
+
           <Modal
             visible={Boolean(previewPhoto)}
             animationType="fade"
@@ -8116,6 +8246,87 @@ function ProjectActionSheet({
   );
 }
 
+function PhotoIntelligenceSignInModal({
+  visible,
+  email,
+  password,
+  message,
+  submitting,
+  onEmailChange,
+  onPasswordChange,
+  onSubmit,
+  onClose,
+}: {
+  visible: boolean;
+  email: string;
+  password: string;
+  message: string | null;
+  submitting: boolean;
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.detailModalBackdrop}>
+        <View style={styles.detailModalCard}>
+          <View style={styles.detailModalHeader}>
+            <View style={styles.rowMain}>
+              <Text style={styles.panelTitle}>Sign in to enable photo intelligence</Text>
+              <Text style={styles.rowSub}>
+                PIE photo comparison needs a signed-in cloud session before it can analyze photos.
+              </Text>
+            </View>
+            <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
+              <Ionicons name="close-outline" size={22} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.label}>Email</Text>
+          <TextInput
+            style={styles.input}
+            value={email}
+            onChangeText={onEmailChange}
+            placeholder="you@example.com"
+            placeholderTextColor={colors.muted}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            textContentType="username"
+          />
+
+          <Text style={styles.label}>Password</Text>
+          <TextInput
+            style={styles.input}
+            value={password}
+            onChangeText={onPasswordChange}
+            placeholder="Password"
+            placeholderTextColor={colors.muted}
+            secureTextEntry
+            textContentType="password"
+          />
+
+          {message ? (
+            <Text style={styles.dateHelpError}>{message}</Text>
+          ) : null}
+
+          <PrimaryButton
+            label={submitting ? 'Signing in…' : 'Sign in to enable photo intelligence'}
+            icon="person-circle-outline"
+            onPress={onSubmit}
+            disabled={submitting || !email.trim() || !password}
+          />
+          <SecondaryButton
+            label="Not now"
+            icon="close-outline"
+            onPress={onClose}
+          />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function ProjectSelectorRow({
   label,
   detail,
@@ -8437,6 +8648,7 @@ function AddPhotosScreen({
           onMoveDown={() => onMovePhoto(photo.id, 'down')}
           onPreview={() => onPreviewPhoto(photo)}
           onRetryAnalysis={() => onRetryPhotoAnalysis(photo)}
+          onSignInForAnalysis={() => onRetryPhotoAnalysis(photo)}
           canMoveUp={index > 0}
           canMoveDown={index < update.photos.length - 1}
         />
@@ -8932,6 +9144,7 @@ function PhotoCard({
   onMoveDown,
   onPreview,
   onRetryAnalysis,
+  onSignInForAnalysis,
   canMoveUp,
   canMoveDown,
 }: {
@@ -8946,6 +9159,7 @@ function PhotoCard({
   onMoveDown: () => void;
   onPreview: () => void;
   onRetryAnalysis: () => void;
+  onSignInForAnalysis: () => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
 }) {
@@ -9003,6 +9217,11 @@ function PhotoCard({
             photo.photoIntelligence.status === 'analysis_failed_retry' ||
             photo.photoIntelligence.status === 'comparison_unavailable'
               ? onRetryAnalysis
+              : undefined
+          }
+          onSignInRequired={
+            pieResultRequiresSupabaseSignIn(photo.photoIntelligence)
+              ? onSignInForAnalysis
               : undefined
           }
         />
@@ -9250,11 +9469,13 @@ function RootPhotoIntelligenceCard({
   projectName,
   photo,
   onRetry,
+  onSignInRequired,
 }: {
   result: PIEPhotoIntelligenceDisplayState;
   projectName?: string;
   photo?: UpdatePhoto;
   onRetry?: () => void;
+  onSignInRequired?: () => void;
 }) {
   const progress =
     result.projectProgress === 'supported'
@@ -9360,6 +9581,17 @@ function RootPhotoIntelligenceCard({
         </TouchableOpacity>
       ) : null}
 
+      {onSignInRequired ? (
+        <TouchableOpacity
+          style={styles.photoControlButton}
+          onPress={onSignInRequired}
+          accessibilityLabel="Sign in to enable PIE photo intelligence"
+        >
+          <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
+          <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
+        </TouchableOpacity>
+      ) : null}
+
       {__DEV__ && result.diagnostics ? (
         <View style={styles.setupProgressCard}>
           <Text style={styles.sectionLabel}>PIE diagnostics</Text>
@@ -9389,6 +9621,24 @@ function RootPhotoIntelligenceCard({
           </Text>
           <Text style={styles.locationDetailText}>
             Failure category: {result.diagnostics.failureCategory || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            App auth mode: {result.diagnostics.appAuthMode || 'unknown'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Supabase user id present: {result.diagnostics.supabaseUserIdPresent === null ? 'unknown' : result.diagnostics.supabaseUserIdPresent ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Session token present: {result.diagnostics.sessionTokenPresent === null ? 'unknown' : result.diagnostics.sessionTokenPresent ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Last auth event: {result.diagnostics.lastAuthEvent || 'unknown'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Reached without Supabase auth: {result.diagnostics.screenReachedWithoutSupabaseAuth === null ? 'unknown' : result.diagnostics.screenReachedWithoutSupabaseAuth ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Retry routed to sign-in: {result.diagnostics.retryRoutedToSignIn === null ? 'unknown' : result.diagnostics.retryRoutedToSignIn ? 'yes' : 'no'}
           </Text>
           <Text style={styles.locationDetailText}>
             Supabase auth state: {result.diagnostics.supabaseAuthState || 'unknown'}
@@ -9501,9 +9751,11 @@ function PIEFindingRow({
 function UpdatePIEStatusSection({
   update,
   onRetryPhotoAnalysis,
+  onSignInForPhotoAnalysis,
 }: {
   update: ProjectUpdate;
   onRetryPhotoAnalysis: (photo: UpdatePhoto) => void;
+  onSignInForPhotoAnalysis?: (photo: UpdatePhoto) => void;
 }) {
   const photosWithPIE = update.photos.filter(photo => photo.photoIntelligence);
 
@@ -9527,6 +9779,11 @@ function UpdatePIEStatusSection({
                 ? () => onRetryPhotoAnalysis(photo)
                 : undefined
             }
+            onSignInRequired={
+              pieResultRequiresSupabaseSignIn(photo.photoIntelligence)
+                ? () => (onSignInForPhotoAnalysis || onRetryPhotoAnalysis)(photo)
+                : undefined
+            }
           />
         ))
       )}
@@ -9537,9 +9794,11 @@ function UpdatePIEStatusSection({
 function SavedUpdatePIESummary({
   update,
   onRetryPhotoAnalysis,
+  onSignInForPhotoAnalysis,
 }: {
   update: ProjectUpdate;
   onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
+  onSignInForPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
 }) {
   const firstResult = update.photos.find(photo => photo.photoIntelligence)?.photoIntelligence;
   const failedPhoto = update.photos.find(
@@ -9579,6 +9838,16 @@ function SavedUpdatePIESummary({
         >
           <Ionicons name="refresh-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Retry Analysis</Text>
+        </TouchableOpacity>
+      ) : null}
+      {firstResult && pieResultRequiresSupabaseSignIn(firstResult) && failedPhoto ? (
+        <TouchableOpacity
+          style={styles.photoControlButton}
+          onPress={() => (onSignInForPhotoAnalysis || onRetryPhotoAnalysis)(update, failedPhoto)}
+          accessibilityLabel="Sign in to enable PIE photo intelligence"
+        >
+          <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
+          <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
         </TouchableOpacity>
       ) : null}
     </View>

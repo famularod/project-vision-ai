@@ -21,7 +21,7 @@ function indexOfRequired(source, needle, message) {
 }
 
 assert(
-  supabase.includes("status: accessToken ? 'token_present' : 'token_missing'") &&
+  supabase.includes("status: sessionTokenPresent ? 'token_present' : 'token_missing'") &&
     supabase.includes('? session.access_token') &&
     supabase.includes("authState: 'signed_in'"),
   'signed-in Supabase session returns token_present with the current access token',
@@ -30,8 +30,25 @@ assert(
 assert(
   supabase.includes("missingReason: storageAvailable ? 'signed_out' : 'storage_unavailable'") &&
     workflow.includes("'Sign in required for photo intelligence'") &&
+    supabase.includes("appAuthMode") &&
+    supabase.includes("'local_only'") &&
     !workflow.includes('Photo intelligence needs a signed-in cloud session before comparing photos.'),
-  'signed-out token lookup returns signed_out instead of a generic connection failure',
+  'main UI can operate local-only and signed-out token lookup returns signed_out instead of a generic connection failure',
+);
+
+assert(
+  app.includes('function PhotoIntelligenceSignInModal') &&
+    app.includes('Sign in to enable photo intelligence') &&
+    app.includes('onSignInRequired') &&
+    app.includes('pieResultRequiresSupabaseSignIn'),
+  'sign-in-required PIE state includes a sign-in action, not only Retry',
+);
+
+assert(
+  app.includes('const result = await signIn({ email, password: photoAuthPassword });') &&
+    app.includes('const tokenResult = await getCurrentSessionAccessToken();') &&
+    app.includes("tokenLookup?.status !== 'token_present'"),
+  'after sign-in, getCurrentSessionAccessToken is checked for token_present',
 );
 
 assert(
@@ -44,9 +61,11 @@ assert(
 
 assert(
   app.includes('retryAttempt: true') &&
+    app.includes('requestPhotoIntelligenceSignIn') &&
+    app.includes('runPhotoAnalysisRetry') &&
     workflow.includes('retryFetchedFreshToken: retryAttempt') &&
     workflow.includes('const sessionTokenResult = await getCurrentSessionAccessToken();'),
-  'Retry Analysis fetches a fresh Supabase session token',
+  'Retry Analysis routes to sign-in while signed out and fetches a fresh Supabase session token after sign-in',
 );
 
 const tokenLookupIndex = indexOfRequired(
@@ -82,6 +101,12 @@ assert(
 
 assert(
   app.includes('Supabase auth state:') &&
+    app.includes('App auth mode:') &&
+    app.includes('Supabase user id present:') &&
+    app.includes('Session token present:') &&
+    app.includes('Last auth event:') &&
+    app.includes('Reached without Supabase auth:') &&
+    app.includes('Retry routed to sign-in:') &&
     app.includes('Token lookup result:') &&
     app.includes('Token missing reason:') &&
     app.includes('Sign-in client source:') &&
@@ -91,4 +116,10 @@ assert(
     app.includes('Edge Function invoked:') &&
     app.includes('Edge Function status:'),
   'development diagnostics expose auth/session state without secret values',
+);
+
+assert(
+  app.includes("if (reason === 'expired_session') return PIE_STATUS_COPY.sessionExpired;") &&
+    app.includes("tokenLookup?.missingReason === 'expired_session'"),
+  'expired sessions show Session expired and route to sign-in before retry',
 );

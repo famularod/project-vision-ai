@@ -84,6 +84,12 @@ export type PIEPhotoVisionDiagnostics = {
   supabaseAuthState: 'loading' | 'signed_in' | 'signed_out' | 'expired' | 'unknown';
   tokenLookupResult: 'token_present' | 'token_missing' | null;
   tokenMissingReason: SupabaseSessionMissingReason | null;
+  appAuthMode: 'supabase_authenticated' | 'local_only' | 'unknown';
+  supabaseUserIdPresent: boolean | null;
+  sessionTokenPresent: boolean | null;
+  lastAuthEvent: string | null;
+  screenReachedWithoutSupabaseAuth: boolean | null;
+  retryRoutedToSignIn: boolean | null;
   signInClientSource: string | null;
   pieAnalysisClientSource: string | null;
   authHydrationCompleted: boolean | null;
@@ -921,6 +927,14 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     supabaseAuthState: input.tokenLookup?.authState ?? 'unknown',
     tokenLookupResult: input.tokenLookup?.status ?? null,
     tokenMissingReason: input.tokenLookup?.missingReason ?? null,
+    appAuthMode: input.tokenLookup?.appAuthMode ?? 'unknown',
+    supabaseUserIdPresent: input.tokenLookup?.supabaseUserIdPresent ?? null,
+    sessionTokenPresent: input.tokenLookup?.sessionTokenPresent ?? null,
+    lastAuthEvent: input.tokenLookup?.lastAuthEvent ?? null,
+    screenReachedWithoutSupabaseAuth: input.tokenLookup
+      ? input.tokenLookup.appAuthMode !== 'supabase_authenticated'
+      : null,
+    retryRoutedToSignIn: false,
     signInClientSource: input.tokenLookup?.signInClientSource ?? null,
     pieAnalysisClientSource: input.tokenLookup?.tokenLookupClientSource ?? null,
     authHydrationCompleted: input.tokenLookup?.authHydrationCompleted ?? null,
