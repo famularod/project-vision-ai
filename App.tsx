@@ -2907,6 +2907,33 @@ function photoIntelligenceNeedsAuthHydrationRetry(result: PIEPhotoIntelligenceDi
   return result.diagnostics?.tokenMissingReason === 'auth_loading';
 }
 
+function priorUpdateUsedForPIEResult(result: PIEPhotoIntelligenceDisplayState | null | undefined) {
+  if (!result?.priorUpdateUsed) return null;
+  const diagnostics = result.diagnostics;
+  const imagePrepFailure = diagnostics?.imagePrepareFailureReason || '';
+  const currentPrepFailed = diagnostics?.currentPhotoPrepStatus === 'failed';
+  const priorPrepFailed = diagnostics?.priorPhotoPrepStatus === 'failed';
+  const currentOrPriorNotChecked =
+    diagnostics &&
+    (diagnostics.currentPhotoPrepStatus !== 'ready' || diagnostics.priorPhotoPrepStatus !== 'ready');
+  const stalePersistedPrepFailure =
+    !diagnostics &&
+    (result.status === 'analysis_failed_retry' || result.status === 'comparison_unavailable') &&
+    result.captureLimitations.some(item => /image could not be prepared/i.test(item));
+
+  if (
+    imagePrepFailure ||
+    currentPrepFailed ||
+    priorPrepFailed ||
+    currentOrPriorNotChecked ||
+    stalePersistedPrepFailure
+  ) {
+    return null;
+  }
+
+  return result.priorUpdateUsed;
+}
+
 function waitForPIEAuthHydrationRetry() {
   return new Promise(resolve => setTimeout(resolve, PIE_AUTH_HYDRATION_RETRY_DELAY_MS));
 }
@@ -9545,6 +9572,7 @@ function RootPhotoIntelligenceCard({
   onRetry?: () => void;
   onSignInRequired?: () => void;
 }) {
+  const priorUpdateUsed = priorUpdateUsedForPIEResult(result);
   const progress =
     result.projectProgress === 'supported'
       ? 'Project progress may be supported'
@@ -9628,8 +9656,8 @@ function RootPhotoIntelligenceCard({
         <PIEDetailLine label="Confidence" value={result.comparisonConfidence} />
       ) : null}
 
-      {result.priorUpdateUsed ? (
-        <PIEDetailLine label="Prior update used" value={result.priorUpdateUsed} />
+      {priorUpdateUsed ? (
+        <PIEDetailLine label="Prior update used" value={priorUpdateUsed} />
       ) : null}
 
       <PIEDetailLine label="Analysis time" value={analysisTimeTextForPIEResult(result.updatedAt)} />
@@ -9677,6 +9705,33 @@ function RootPhotoIntelligenceCard({
           </Text>
           <Text style={styles.locationDetailText}>
             Prior asset: {result.diagnostics.priorPhotoAssetId || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Current prep: {result.diagnostics.currentPhotoPrepStatus}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Current prep reason: {result.diagnostics.currentPhotoPrepReason || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Prior prep: {result.diagnostics.priorPhotoPrepStatus}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Prior prep reason: {result.diagnostics.priorPhotoPrepReason || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Current readable: {result.diagnostics.currentPhotoReadable === null ? 'unknown' : result.diagnostics.currentPhotoReadable ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Prior readable: {result.diagnostics.priorPhotoReadable === null ? 'unknown' : result.diagnostics.priorPhotoReadable ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Usable prior found: {result.diagnostics.usablePriorCandidateFound === null ? 'unknown' : result.diagnostics.usablePriorCandidateFound ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Skipped prior candidates: {result.diagnostics.skippedPriorCandidateCount}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Image prep failure: {result.diagnostics.imagePrepareFailureReason || 'none'}
           </Text>
           <Text style={styles.locationDetailText}>
             Distinct hashes: {String(result.diagnostics.imageHashesDifferent)}
@@ -9869,6 +9924,7 @@ function SavedUpdatePIESummary({
   onSignInForPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
 }) {
   const firstResult = update.photos.find(photo => photo.photoIntelligence)?.photoIntelligence;
+  const firstPriorUpdateUsed = priorUpdateUsedForPIEResult(firstResult);
   const failedPhoto = update.photos.find(
     photo =>
       photo.photoIntelligence?.status === 'analysis_failed_retry' ||
@@ -9893,9 +9949,9 @@ function SavedUpdatePIESummary({
           Confidence: {firstResult.comparisonConfidence}
         </Text>
       ) : null}
-      {firstResult?.priorUpdateUsed ? (
+      {firstPriorUpdateUsed ? (
         <Text style={styles.locationDetailText}>
-          Prior update used: {firstResult.priorUpdateUsed}
+          Prior update used: {firstPriorUpdateUsed}
         </Text>
       ) : null}
       {failedPhoto ? (
@@ -9963,8 +10019,9 @@ function PIEAnalysisStepScreen({
   onRetry: () => void;
 }) {
   const documents = update.documents || [];
-  const firstPrior = update.photos.find(photo => photo.photoIntelligence?.priorUpdateUsed)
-    ?.photoIntelligence?.priorUpdateUsed;
+  const firstPrior = update.photos
+    .map(photo => priorUpdateUsedForPIEResult(photo.photoIntelligence))
+    .find(Boolean);
 
   return (
     <View>
@@ -10125,6 +10182,7 @@ function BuildUpdateScreen({
     'Unassigned / Unknown Area';
   const pieResults = pieResultsForUpdate(update);
   const firstResult = pieResults[0];
+  const firstPriorUpdateUsed = priorUpdateUsedForPIEResult(firstResult);
   const hasSafety = updateHasSafetyConcern(update);
   const hasBlocker = updateHasBlocker(update);
   const previewLine = buildPreviewLine(update, contacts);
@@ -10264,8 +10322,8 @@ function BuildUpdateScreen({
             {firstResult?.comparisonConfidence ? (
               <PIEDetailLine label="Confidence" value={firstResult.comparisonConfidence} />
             ) : null}
-            {firstResult?.priorUpdateUsed ? (
-              <PIEDetailLine label="Prior update used" value={firstResult.priorUpdateUsed} />
+            {firstPriorUpdateUsed ? (
+              <PIEDetailLine label="Prior update used" value={firstPriorUpdateUsed} />
             ) : null}
             {firstResult?.updatedAt ? (
               <PIEDetailLine label="Analysis timestamp" value={analysisTimeTextForPIEResult(firstResult.updatedAt)} />

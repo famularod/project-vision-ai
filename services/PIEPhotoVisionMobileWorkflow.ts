@@ -2,7 +2,6 @@ import * as FileSystem from 'expo-file-system/legacy';
 import {
   getCurrentSessionAccessToken,
   getSupabaseClient,
-  uploadPhoto,
   type JsonValue,
   type SupabaseSessionMissingReason,
   type SupabaseSessionTokenLookupResult,
@@ -65,6 +64,50 @@ type StagedPhotoEvidence = {
   sizeBytes: number;
 };
 
+export type PIEPhotoPrepDiagnosticReason =
+  | 'current_photo_missing'
+  | 'current_photo_unreadable'
+  | 'current_photo_zero_bytes'
+  | 'current_photo_encoding_failed'
+  | 'current_photo_upload_missing'
+  | 'current_photo_storage_missing'
+  | 'current_photo_unsupported_type'
+  | 'prior_photo_missing'
+  | 'prior_photo_unreadable'
+  | 'prior_photo_zero_bytes'
+  | 'prior_photo_encoding_failed'
+  | 'prior_photo_upload_missing'
+  | 'prior_photo_storage_missing'
+  | 'prior_photo_stale_or_invalid'
+  | 'prior_photo_wrong_area'
+  | 'prior_photo_unsupported_type';
+
+export type PIEImagePrepareFailureReason =
+  | PIEPhotoPrepDiagnosticReason
+  | 'edge_payload_invalid'
+  | 'unknown_image_prepare_failure';
+
+type PhotoPrepRole = 'current' | 'prior';
+
+type PreparedPhotoFile =
+  | {
+      ok: true;
+      role: PhotoPrepRole;
+      uri: string;
+      mimeType: string;
+      extension: string;
+      sizeBytes: number;
+      sha256: string;
+      base64: string;
+    }
+  | {
+      ok: false;
+      role: PhotoPrepRole;
+      reason: PIEPhotoPrepDiagnosticReason;
+      sizeBytes: number | null;
+      detail?: string;
+    };
+
 export type PIEPhotoVisionDiagnostics = {
   currentPhotoAssetId: string | null;
   priorPhotoAssetId: string | null;
@@ -76,6 +119,17 @@ export type PIEPhotoVisionDiagnostics = {
   priorImageByteSize: number | null;
   currentImageSha256: string | null;
   priorImageSha256: string | null;
+  currentPhotoPrepStatus: 'not_checked' | 'ready' | 'failed';
+  priorPhotoPrepStatus: 'not_checked' | 'ready' | 'failed';
+  currentPhotoPrepReason: PIEPhotoPrepDiagnosticReason | null;
+  priorPhotoPrepReason: PIEPhotoPrepDiagnosticReason | null;
+  currentPhotoReadable: boolean | null;
+  priorPhotoReadable: boolean | null;
+  currentPhotoUploadReady: boolean | null;
+  priorPhotoUploadReady: boolean | null;
+  usablePriorCandidateFound: boolean | null;
+  skippedPriorCandidateCount: number;
+  imagePrepareFailureReason: PIEImagePrepareFailureReason | null;
   imageHashesDifferent: boolean | null;
   signedUrlsGenerated: boolean | null;
   providerInvocationId: string | null;
@@ -159,11 +213,13 @@ export function buildPreparingSecurePhotoAnalysisState(
   };
 }
 
-export function buildNoSuitablePriorPhotoIntelligenceState(): PIEPhotoIntelligenceDisplayState {
+export function buildNoSuitablePriorPhotoIntelligenceState(
+  summary = 'PIE needs a prior photo from this project area before it can compare visible changes.',
+): PIEPhotoIntelligenceDisplayState {
   return {
     status: 'no_suitable_prior_photo',
     title: 'No suitable prior photo',
-    summary: 'PIE needs a prior photo from this project area before it can compare visible changes.',
+    summary,
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
@@ -188,16 +244,41 @@ export async function analyzeProjectPhotoWithVision({
   priorUpdates,
   retryAttempt = false,
 }: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
-  const priorSelection = findPriorComparablePhoto(update, photo, priorUpdates);
+  const currentPrepared = await preparePhotoFileForVision(photo, 'current');
+  if (!currentPrepared.ok) {
+    return failedRetryState('Photo saved. Visual comparison unavailable.', {
+      currentPhotoPrep: currentPrepared,
+      providerResponseStatus: currentPrepared.reason,
+      imagePrepareFailureReason: currentPrepared.reason,
+      failureCategory: 'malformed_response',
+      selectedPriorPhotoId: null,
+      priorUpdateUsed: null,
+      selectionCandidateCount: priorUpdates.reduce((total, item) => total + item.photos.length, 0),
+      selectedPriorReason: null,
+      rejectedPriorReasons: [`current photo rejected: ${currentPrepared.reason}`],
+      executedStages: ['camera_capture', 'local_image_uri', 'current_photo_preparation_failed'],
+      resultProvenance: 'unsupported',
+      retryFetchedFreshToken: retryAttempt,
+    });
+  }
+
+  const priorSelection = await findPriorComparablePhoto(update, photo, priorUpdates);
   if (!priorSelection.selected) {
     return {
-      ...buildNoSuitablePriorPhotoIntelligenceState(),
+      ...buildNoSuitablePriorPhotoIntelligenceState(
+        priorSelection.candidateCount > 0
+          ? 'No reliable prior photo to compare'
+          : 'No earlier photo is available for comparison.',
+      ),
       diagnostics: buildDiagnostics({
+        currentPhotoPrep: currentPrepared,
         selectedPriorPhotoId: null,
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: null,
         rejectedPriorReasons: priorSelection.rejectedReasons,
-        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection'],
+        usablePriorCandidateFound: false,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
+        executedStages: ['camera_capture', 'local_image_uri', 'current_photo_prepared', 'prior_photo_selection'],
         resultProvenance: 'unsupported',
       }),
     };
@@ -251,6 +332,7 @@ export async function analyzeProjectPhotoWithVision({
       update: priorSelection.selected.update,
       photo: priorSelection.selected.photo,
       captureSource: 'library',
+      preparedFile: priorSelection.selected.preparedFile,
     });
     executedStages.push('prior_photo_uploaded', 'prior_evidence_record_created');
     currentEvidence = await stagePhotoEvidence({
@@ -259,6 +341,7 @@ export async function analyzeProjectPhotoWithVision({
       update,
       photo,
       captureSource: 'camera',
+      preparedFile: currentPrepared,
     });
     executedStages.push('current_photo_uploaded', 'current_evidence_record_created');
 
@@ -298,6 +381,10 @@ export async function analyzeProjectPhotoWithVision({
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: priorSelection.selected.reason,
         rejectedPriorReasons: priorSelection.rejectedReasons,
+        currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorSelection.selected.preparedFile,
+        usablePriorCandidateFound: true,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
         executedStages,
         tokenLookup,
         retryFetchedFreshToken: retryAttempt,
@@ -340,6 +427,10 @@ export async function analyzeProjectPhotoWithVision({
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: priorSelection.selected.reason,
         rejectedPriorReasons: priorSelection.rejectedReasons,
+        currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorSelection.selected.preparedFile,
+        usablePriorCandidateFound: true,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
         executedStages,
         tokenLookup,
         retryFetchedFreshToken: retryAttempt,
@@ -363,6 +454,10 @@ export async function analyzeProjectPhotoWithVision({
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: priorSelection.selected.reason,
         rejectedPriorReasons: priorSelection.rejectedReasons,
+        currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorSelection.selected.preparedFile,
+        usablePriorCandidateFound: true,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
         executedStages,
         resultPairMatchesRequestedPair: false,
         tokenLookup,
@@ -382,22 +477,63 @@ export async function analyzeProjectPhotoWithVision({
       selectionCandidateCount: priorSelection.candidateCount,
       selectedPriorReason: priorSelection.selected.reason,
       rejectedPriorReasons: priorSelection.rejectedReasons,
+      currentPhotoPrep: currentPrepared,
+      priorPhotoPrep: priorSelection.selected.preparedFile,
+      usablePriorCandidateFound: true,
+      skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
       executedStages,
       resultPairMatchesRequestedPair: true,
       tokenLookup,
       retryFetchedFreshToken: retryAttempt,
     });
   } catch (error) {
+    const prepError = error instanceof PhotoPreparationError ? error : null;
+    if (prepError?.role === 'prior') {
+      return {
+        ...buildNoSuitablePriorPhotoIntelligenceState('Prior photo unavailable'),
+        diagnostics: buildDiagnostics({
+          baselineEvidence,
+          currentEvidence,
+          currentPhotoPrep: currentPrepared,
+          priorPhotoPrep: prepError.toPreparedFailure(),
+          providerResponseStatus: prepError.reason,
+          imagePrepareFailureReason: prepError.reason,
+          failureCategory: classifyThrownError(error),
+          selectedPriorPhotoId: null,
+          priorUpdateUsed: null,
+          selectionCandidateCount: priorSelection.candidateCount,
+          selectedPriorReason: null,
+          rejectedPriorReasons: [
+            ...priorSelection.rejectedReasons,
+            `${priorSelection.selected.update.id || 'update'}:${priorSelection.selected.photo.id || 'photo'} rejected: ${prepError.reason}`,
+          ],
+          usablePriorCandidateFound: false,
+          skippedPriorCandidateCount: priorSelection.skippedCandidateCount + 1,
+          executedStages,
+          tokenLookup,
+          retryFetchedFreshToken: retryAttempt,
+          resultProvenance: 'unsupported',
+        }),
+      };
+    }
+
     return failedRetryState('Photo saved. Visual comparison unavailable.', {
       baselineEvidence,
       currentEvidence,
       providerResponseStatus: error instanceof Error ? error.message : 'analysis_exception',
+      imagePrepareFailureReason: imagePrepareFailureReasonForError(error),
       failureCategory: classifyThrownError(error),
       selectedPriorPhotoId: priorSelection.selected.photo.id,
-      priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+      priorUpdateUsed: baselineEvidence && currentEvidence
+        ? priorSelection.selected.update.date || priorSelection.selected.update.id
+        : null,
       selectionCandidateCount: priorSelection.candidateCount,
       selectedPriorReason: priorSelection.selected.reason,
       rejectedPriorReasons: priorSelection.rejectedReasons,
+      currentPhotoPrep: prepError?.role === 'current' ? prepError.toPreparedFailure() : currentPrepared,
+      priorPhotoPrep: priorSelection.selected.preparedFile,
+      usablePriorCandidateFound: true,
+      skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
       executedStages,
       tokenLookup,
       retryFetchedFreshToken: retryAttempt,
@@ -405,7 +541,7 @@ export async function analyzeProjectPhotoWithVision({
   }
 }
 
-function findPriorComparablePhoto(
+async function findPriorComparablePhoto(
   update: ProjectUpdate,
   photo: UpdatePhoto,
   priorUpdates: ProjectUpdate[],
@@ -413,9 +549,16 @@ function findPriorComparablePhoto(
   const projectKey = normalizeKey(update.projectName);
   const areaKey = normalizeKey(photo.selectedAreaName || update.selectedAreaName || '');
   const currentTime = timestampMs(photo.locationCapturedAt || update.date);
-  const accepted: Array<{ update: ProjectUpdate; photo: UpdatePhoto; reason: string; capturedAt: number }> = [];
+  const accepted: Array<{
+    update: ProjectUpdate;
+    photo: UpdatePhoto;
+    reason: string;
+    capturedAt: number;
+    preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
+  }> = [];
   const rejectedReasons: string[] = [];
   let candidateCount = 0;
+  let skippedCandidateCount = 0;
 
   for (const candidateUpdate of priorUpdates) {
     for (const candidatePhoto of candidateUpdate.photos) {
@@ -435,11 +578,13 @@ function findPriorComparablePhoto(
         continue;
       }
       if (!uri || /^placeholder:/i.test(uri)) {
-        rejectedReasons.push(`${label} rejected: missing or placeholder asset`);
+        rejectedReasons.push(`${label} rejected: prior_photo_missing`);
+        skippedCandidateCount += 1;
         continue;
       }
       if (areaKey && candidateAreaKey !== areaKey) {
-        rejectedReasons.push(`${label} rejected: different area`);
+        rejectedReasons.push(`${label} rejected: prior_photo_wrong_area`);
+        skippedCandidateCount += 1;
         continue;
       }
       if (Number.isFinite(currentTime) && Number.isFinite(candidateTime) && candidateTime >= currentTime) {
@@ -447,10 +592,18 @@ function findPriorComparablePhoto(
         continue;
       }
 
+      const preparedFile = await preparePhotoFileForVision(candidatePhoto, 'prior');
+      if (!preparedFile.ok) {
+        rejectedReasons.push(`${label} rejected: ${preparedFile.reason}`);
+        skippedCandidateCount += 1;
+        continue;
+      }
+
       accepted.push({
         update: candidateUpdate,
         photo: candidatePhoto,
         capturedAt: Number.isFinite(candidateTime) ? candidateTime : 0,
+        preparedFile,
         reason: areaKey
           ? 'most recent valid earlier photo from same project and area'
           : 'most recent valid earlier photo from same project',
@@ -462,6 +615,7 @@ function findPriorComparablePhoto(
   return {
     selected: accepted[0] ?? null,
     candidateCount,
+    skippedCandidateCount,
     rejectedReasons,
   };
 }
@@ -472,22 +626,22 @@ async function stagePhotoEvidence({
   update,
   photo,
   captureSource,
+  preparedFile,
 }: {
   organizationId: string;
   projectId: string;
   update: ProjectUpdate;
   photo: UpdatePhoto;
   captureSource: 'camera' | 'library';
+  preparedFile: PreparedPhotoFile;
 }) {
   const client = getSupabaseClient();
   if (!client) throw new Error('Supabase unavailable');
 
-  const fileInfo = await readPhotoFileDigest(photo.uri);
-  if (!fileInfo.exists) throw new Error('photo_file_missing');
-  if (fileInfo.sizeBytes <= 0) throw new Error('photo_file_empty');
+  if (!preparedFile.ok) throw new PhotoPreparationError(preparedFile.role, preparedFile.reason, preparedFile.detail);
 
-  const mimeType = photo.mimeType || 'image/jpeg';
-  const extension = mimeExtension(mimeType);
+  const mimeType = preparedFile.mimeType;
+  const extension = preparedFile.extension;
   const evidenceId = `pie-mobile-photo-${stableHash([
     organizationId,
     projectId,
@@ -497,18 +651,21 @@ async function stagePhotoEvidence({
   const assetId = evidenceId;
   const storagePath = `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
   const storagePathHash = stableHash(storagePath);
-  const contentHash = `sha256:${fileInfo.sha256}`;
+  const contentHash = `sha256:${preparedFile.sha256}`;
 
-  const uploadResult = await uploadPhoto({
+  const uploadResult = await uploadPreparedPhoto({
     bucket: PIE_EVIDENCE_BUCKET,
     path: storagePath,
-    uri: photo.uri,
-    contentType: mimeType,
+    preparedFile,
     upsert: true,
   });
 
   if (!uploadResult.ok) {
-    throw new Error(uploadResult.error || uploadResult.message || 'Photo evidence upload failed');
+    throw new PhotoPreparationError(
+      preparedFile.role,
+      prepReason(preparedFile.role, 'upload_missing'),
+      uploadResult.error || 'Photo evidence upload failed',
+    );
   }
 
   const { data: userData } = await client.auth.getUser();
@@ -518,8 +675,8 @@ async function stagePhotoEvidence({
     path: storagePath,
     variant: 'original',
     mimeType,
-    sizeBytes: fileInfo.sizeBytes,
-    sha256: fileInfo.sha256,
+    sizeBytes: preparedFile.sizeBytes,
+    sha256: preparedFile.sha256,
   }];
 
   const evidencePayload = {
@@ -560,7 +717,9 @@ async function stagePhotoEvidence({
     .from('pie_evidence_records')
     .upsert(evidencePayload);
 
-  if (evidenceError) throw new Error(evidenceError.message);
+  if (evidenceError) {
+    throw new PhotoPreparationError(preparedFile.role, prepReason(preparedFile.role, 'storage_missing'), evidenceError.message);
+  }
 
   const { error: assetError } = await client
     .from('pie_photo_assets')
@@ -576,7 +735,7 @@ async function stagePhotoEvidence({
       width: null,
       height: null,
       mime_type: mimeType,
-      size_bytes: fileInfo.sizeBytes,
+      size_bytes: preparedFile.sizeBytes,
       capture_source: captureSource,
       captured_at: photo.locationCapturedAt || update.date || receivedAt,
       exif: {},
@@ -585,7 +744,9 @@ async function stagePhotoEvidence({
       hidden_from_normal_queries: false,
     });
 
-  if (assetError) throw new Error(assetError.message);
+  if (assetError) {
+    throw new PhotoPreparationError(preparedFile.role, prepReason(preparedFile.role, 'storage_missing'), assetError.message);
+  }
 
   return {
     assetId,
@@ -593,7 +754,7 @@ async function stagePhotoEvidence({
     storagePath,
     storagePathHash,
     contentHash,
-    sizeBytes: fileInfo.sizeBytes,
+    sizeBytes: preparedFile.sizeBytes,
   };
 }
 
@@ -857,9 +1018,161 @@ function projectIdForPhotoVision(projectName: string) {
 
 function mimeExtension(mimeType: string | null | undefined) {
   if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
   if (mimeType === 'image/heic') return 'heic';
   if (mimeType === 'image/heif') return 'heif';
   return 'jpg';
+}
+
+function normalizedPhotoMimeType(photo: UpdatePhoto): string | null {
+  const mimeType = (photo.mimeType || '').trim().toLowerCase();
+  if (!mimeType) return 'image/jpeg';
+  if (['image/jpeg', 'image/jpg', 'image/png', 'image/heic', 'image/heif', 'image/webp'].includes(mimeType)) {
+    return mimeType === 'image/jpg' ? 'image/jpeg' : mimeType;
+  }
+  return null;
+}
+
+function prepReason(
+  role: PhotoPrepRole,
+  kind:
+    | 'missing'
+    | 'unreadable'
+    | 'zero_bytes'
+    | 'encoding_failed'
+    | 'upload_missing'
+    | 'storage_missing'
+    | 'stale_or_invalid'
+    | 'wrong_area'
+    | 'unsupported_type',
+): PIEPhotoPrepDiagnosticReason {
+  return `${role}_photo_${kind}` as PIEPhotoPrepDiagnosticReason;
+}
+
+async function uploadPreparedPhoto({
+  bucket,
+  path,
+  preparedFile,
+  upsert,
+}: {
+  bucket: string;
+  path: string;
+  preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
+  upsert: boolean;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const client = getSupabaseClient();
+  if (!client) return { ok: false, error: 'Supabase unavailable' };
+
+  try {
+    const bytes = base64ToBytes(preparedFile.base64);
+    const { error } = await client.storage
+      .from(bucket)
+      .upload(path, bytes, {
+        cacheControl: '3600',
+        contentType: preparedFile.mimeType,
+        upsert,
+      });
+
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'prepared_photo_upload_failed',
+    };
+  }
+}
+
+class PhotoPreparationError extends Error {
+  role: PhotoPrepRole;
+  reason: PIEPhotoPrepDiagnosticReason;
+
+  constructor(role: PhotoPrepRole, reason: PIEPhotoPrepDiagnosticReason, detail?: string) {
+    super(detail ? `${reason}: ${detail}` : reason);
+    this.name = 'PhotoPreparationError';
+    this.role = role;
+    this.reason = reason;
+  }
+
+  toPreparedFailure(): PreparedPhotoFile {
+    return {
+      ok: false,
+      role: this.role,
+      reason: this.reason,
+      sizeBytes: null,
+      detail: this.message,
+    };
+  }
+}
+
+async function preparePhotoFileForVision(photo: UpdatePhoto, role: PhotoPrepRole): Promise<PreparedPhotoFile> {
+  const uri = (photo.uri || '').trim();
+  if (!uri || /^placeholder:/i.test(uri)) {
+    return { ok: false, role, reason: prepReason(role, 'missing'), sizeBytes: null };
+  }
+
+  const mimeType = normalizedPhotoMimeType(photo);
+  if (!mimeType) {
+    return { ok: false, role, reason: prepReason(role, 'unsupported_type'), sizeBytes: null };
+  }
+
+  let info: Awaited<ReturnType<typeof FileSystem.getInfoAsync>>;
+  try {
+    info = await FileSystem.getInfoAsync(uri);
+  } catch (error) {
+    return {
+      ok: false,
+      role,
+      reason: prepReason(role, 'unreadable'),
+      sizeBytes: null,
+      detail: error instanceof Error ? error.message : 'file_info_failed',
+    };
+  }
+
+  if (!info.exists) {
+    return {
+      ok: false,
+      role,
+      reason: role === 'prior' ? 'prior_photo_stale_or_invalid' : 'current_photo_missing',
+      sizeBytes: null,
+    };
+  }
+
+  if (typeof info.size !== 'number') {
+    return { ok: false, role, reason: prepReason(role, 'unreadable'), sizeBytes: null };
+  }
+
+  if (info.size <= 0) {
+    return { ok: false, role, reason: prepReason(role, 'zero_bytes'), sizeBytes: info.size };
+  }
+
+  try {
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    if (!base64) {
+      return { ok: false, role, reason: prepReason(role, 'encoding_failed'), sizeBytes: info.size };
+    }
+
+    return {
+      ok: true,
+      role,
+      uri,
+      mimeType,
+      extension: mimeExtension(mimeType),
+      sizeBytes: info.size,
+      sha256: sha256(base64),
+      base64,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      role,
+      reason: prepReason(role, 'encoding_failed'),
+      sizeBytes: info.size,
+      detail: error instanceof Error ? error.message : 'base64_read_failed',
+    };
+  }
 }
 
 async function readPhotoFileDigest(uri: string): Promise<{ exists: boolean; sizeBytes: number; sha256: string }> {
@@ -884,6 +1197,8 @@ async function readPhotoFileDigest(uri: string): Promise<{ exists: boolean; size
 type PIEPhotoVisionDiagnosticInput = {
   baselineEvidence: StagedPhotoEvidence | null;
   currentEvidence: StagedPhotoEvidence | null;
+  currentPhotoPrep: PreparedPhotoFile | null;
+  priorPhotoPrep: PreparedPhotoFile | null;
   requestId: string | null;
   analysisRequestId: string | null;
   semanticComparisonResultId: string | null;
@@ -899,14 +1214,21 @@ type PIEPhotoVisionDiagnosticInput = {
   signedUrlsGenerated: boolean | null;
   tokenLookup: SupabaseSessionTokenLookupResult | null;
   retryFetchedFreshToken: boolean | null;
+  usablePriorCandidateFound: boolean | null;
+  skippedPriorCandidateCount: number;
+  imagePrepareFailureReason: PIEImagePrepareFailureReason | null;
   executedStages: string[];
 };
 
 function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPhotoVisionDiagnostics {
   const baseline = input.baselineEvidence ?? null;
   const current = input.currentEvidence ?? null;
-  const currentSha = current?.contentHash.replace(/^sha256:/, '') ?? null;
-  const priorSha = baseline?.contentHash.replace(/^sha256:/, '') ?? null;
+  const currentPrep = input.currentPhotoPrep ?? null;
+  const priorPrep = input.priorPhotoPrep ?? null;
+  const currentSha = current?.contentHash.replace(/^sha256:/, '') ?? (currentPrep?.ok ? currentPrep.sha256 : null);
+  const priorSha = baseline?.contentHash.replace(/^sha256:/, '') ?? (priorPrep?.ok ? priorPrep.sha256 : null);
+  const currentByteSize = current?.sizeBytes ?? (currentPrep?.ok ? currentPrep.sizeBytes : currentPrep?.sizeBytes ?? null);
+  const priorByteSize = baseline?.sizeBytes ?? (priorPrep?.ok ? priorPrep.sizeBytes : priorPrep?.sizeBytes ?? null);
 
   return {
     currentPhotoAssetId: current?.assetId ?? null,
@@ -915,10 +1237,21 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     priorEvidenceId: baseline?.evidenceId ?? null,
     currentStoragePathHash: current?.storagePathHash ?? null,
     priorStoragePathHash: baseline?.storagePathHash ?? null,
-    currentImageByteSize: current?.sizeBytes ?? null,
-    priorImageByteSize: baseline?.sizeBytes ?? null,
+    currentImageByteSize: currentByteSize,
+    priorImageByteSize: priorByteSize,
     currentImageSha256: currentSha,
     priorImageSha256: priorSha,
+    currentPhotoPrepStatus: prepStatus(currentPrep),
+    priorPhotoPrepStatus: prepStatus(priorPrep),
+    currentPhotoPrepReason: prepFailureReason(currentPrep),
+    priorPhotoPrepReason: prepFailureReason(priorPrep),
+    currentPhotoReadable: prepReadable(currentPrep),
+    priorPhotoReadable: prepReadable(priorPrep),
+    currentPhotoUploadReady: Boolean(current),
+    priorPhotoUploadReady: Boolean(baseline),
+    usablePriorCandidateFound: input.usablePriorCandidateFound ?? null,
+    skippedPriorCandidateCount: input.skippedPriorCandidateCount ?? 0,
+    imagePrepareFailureReason: input.imagePrepareFailureReason ?? imagePrepareFailureReasonFromPrep(currentPrep, priorPrep),
     imageHashesDifferent: currentSha && priorSha ? currentSha !== priorSha : null,
     signedUrlsGenerated: input.signedUrlsGenerated ?? null,
     providerInvocationId: input.requestId ?? input.analysisRequestId ?? null,
@@ -951,6 +1284,38 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     resultProvenance: input.resultProvenance ?? 'unsupported',
     executedStages: input.executedStages ?? [],
   };
+}
+
+function prepStatus(prep: PreparedPhotoFile | null): 'not_checked' | 'ready' | 'failed' {
+  if (!prep) return 'not_checked';
+  return prep.ok ? 'ready' : 'failed';
+}
+
+function prepFailureReason(prep: PreparedPhotoFile | null): PIEPhotoPrepDiagnosticReason | null {
+  return prep && !prep.ok ? prep.reason : null;
+}
+
+function prepReadable(prep: PreparedPhotoFile | null): boolean | null {
+  if (!prep) return null;
+  return prep.ok;
+}
+
+function imagePrepareFailureReasonFromPrep(
+  currentPrep: PreparedPhotoFile | null,
+  priorPrep: PreparedPhotoFile | null,
+): PIEImagePrepareFailureReason | null {
+  if (currentPrep && !currentPrep.ok) return currentPrep.reason;
+  if (priorPrep && !priorPrep.ok) return priorPrep.reason;
+  return null;
+}
+
+function imagePrepareFailureReasonForError(error: unknown): PIEImagePrepareFailureReason {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || '').toLowerCase();
+  if (/same_evidence|same_asset|identical|empty|missing|zero|payload|pair/.test(message)) return 'edge_payload_invalid';
+  if (/upload/.test(message)) return 'unknown_image_prepare_failure';
+  if (/storage|evidence|asset/.test(message)) return 'unknown_image_prepare_failure';
+  if (/file|image|photo|base64|encoding|read/.test(message)) return 'unknown_image_prepare_failure';
+  return 'unknown_image_prepare_failure';
 }
 
 function providerStatus(value: unknown): string {

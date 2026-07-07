@@ -102,6 +102,17 @@ export type PhotoIntelligenceDisplayState = {
     priorImageByteSize: number | null;
     currentImageSha256: string | null;
     priorImageSha256: string | null;
+    currentPhotoPrepStatus?: 'not_checked' | 'ready' | 'failed';
+    priorPhotoPrepStatus?: 'not_checked' | 'ready' | 'failed';
+    currentPhotoPrepReason?: string | null;
+    priorPhotoPrepReason?: string | null;
+    currentPhotoReadable?: boolean | null;
+    priorPhotoReadable?: boolean | null;
+    currentPhotoUploadReady?: boolean | null;
+    priorPhotoUploadReady?: boolean | null;
+    usablePriorCandidateFound?: boolean | null;
+    skippedPriorCandidateCount?: number;
+    imagePrepareFailureReason?: string | null;
     imageHashesDifferent: boolean | null;
     signedUrlsGenerated: boolean | null;
     providerInvocationId: string | null;
