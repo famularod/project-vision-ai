@@ -17,6 +17,8 @@ import {
   type CloudProjectUpdate,
   type SupabaseConfigurationStatus,
 } from './SupabaseService';
+import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getStoredJson, setStoredJson } from './StorageService';
 import type {
   ProjectArea,
@@ -99,6 +101,7 @@ export type FullSyncResult = {
   cloudProjectCount: number | null;
   lastSyncAt: string | null;
   errors: string[];
+  missingPhotos: MissingSyncPhoto[];
   details: {
     queuedUploads: number;
     projectsUploaded: number;
@@ -111,6 +114,67 @@ export type FullSyncResult = {
     cloudUpdatesDownloaded: number;
   };
 };
+
+export type MissingSyncPhoto = {
+  updateId: string;
+  photoId: string;
+};
+
+export type SyncStorageCleanupResult = {
+  cleaned: boolean;
+  keysChecked: string[];
+  missingPhotosRemoved: number;
+};
+
+export function sanitizeUserFacingSyncMessage(message: string): string {
+  if (!message.trim()) return message;
+
+  if (
+    /readAsStringAsync|readAsString|\/var\/mobile|Containers\/Data\/Application|project-photos|\.heic|does not exist|Caused by|Sync failed:/i.test(message)
+  ) {
+    return 'Some photos could not be synced because the original files are no longer available. The remaining items will continue syncing.';
+  }
+
+  return message;
+}
+
+export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageCleanupResult> {
+  const keys = await AsyncStorage.getAllKeys();
+  const syncKeys = keys.filter(isSyncStorageKey);
+  let cleaned = false;
+  let missingPhotosRemoved = 0;
+
+  for (const key of syncKeys) {
+    const value = await AsyncStorage.getItem(key);
+
+    if (value === null) continue;
+
+    if (key === SYNC_QUEUE_STORAGE_KEY) {
+      const result = await cleanupSyncQueueValue(value);
+
+      if (result.value !== value) {
+        await AsyncStorage.setItem(key, result.value);
+        cleaned = true;
+      }
+
+      missingPhotosRemoved += result.missingPhotosRemoved;
+      continue;
+    }
+
+    const nextValue = sanitizeStoredSyncValue(value);
+
+    if (nextValue !== value) {
+      await AsyncStorage.setItem(key, nextValue);
+      cleaned = true;
+    }
+  }
+
+  return {
+    cleaned,
+    keysChecked: syncKeys,
+    missingPhotosRemoved,
+  };
+}
 
 type ProjectCreatePayload = {
   name: string;
@@ -185,7 +249,10 @@ export async function enqueuePendingChange<TPayload>(
     lastError: null,
   };
 
-  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, [...queue, queueItem]);
+  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, [
+    ...queue.filter(item => item.id !== queueItem.id),
+    queueItem,
+  ]);
   void uploadPendingChanges();
 
   return queueItem;
@@ -226,6 +293,7 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   selectedAreaName?: string | null;
 }>(update: TUpdate): Promise<void> {
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
+    id: `project-update-${update.id}`,
     entity: 'project_update',
     operation: 'update',
     payload: {
@@ -268,12 +336,14 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
       continue;
     }
 
+    const sanitizedResult = sanitizeUserFacingSyncMessage(result);
+
     remaining.push({
       ...item,
       retryCount: item.retryCount + 1,
-      lastError: result,
+      lastError: sanitizedResult,
     });
-    errors.push(result);
+    errors.push(sanitizedResult);
   }
 
   await setStoredJson(SYNC_QUEUE_STORAGE_KEY, remaining);
@@ -331,6 +401,7 @@ export async function synchronizeLocalData(
 ): Promise<FullSyncResult> {
   const configuration = getSupabaseConfigurationStatus();
   const errors: string[] = [];
+  const missingPhotos: MissingSyncPhoto[] = [];
   const details = {
     queuedUploads: 0,
     projectsUploaded: 0,
@@ -368,6 +439,7 @@ export async function synchronizeLocalData(
       cloudProjectCount: null,
       lastSyncAt: null,
       errors: [configuration.message],
+      missingPhotos,
       details,
     };
   }
@@ -386,6 +458,7 @@ export async function synchronizeLocalData(
       cloudProjectCount: connection.projectCount,
       lastSyncAt: null,
       errors: [connection.error || 'Supabase connection failed.'],
+      missingPhotos,
       details,
     };
   }
@@ -447,11 +520,16 @@ export async function synchronizeLocalData(
 
       if (result === 'uploaded') {
         details.photosUploaded += 1;
+      } else if (result === 'missing') {
+        missingPhotos.push({
+          updateId: update.id,
+          photoId: photo.id,
+        });
       } else if (result) {
-        errors.push(result);
+        errors.push(sanitizeSyncError(result));
       }
 
-      progress(`Photo synced: ${photo.caption || photo.id}`);
+      progress(result === 'missing' ? 'Photo skipped: unavailable' : 'Photo synced');
     }
   }
 
@@ -533,8 +611,127 @@ export async function synchronizeLocalData(
         : connection.projectCount,
     lastSyncAt,
     errors,
+    missingPhotos,
     details,
   };
+}
+
+export async function removeMissingPhotosFromSyncQueue(
+  missingPhotos: MissingSyncPhoto[],
+): Promise<void> {
+  if (missingPhotos.length === 0) return;
+
+  const missingPhotoIds = new Set(
+    missingPhotos.map(photo => photo.photoId),
+  );
+  const queue = await getOfflineQueue();
+  const nextQueue = queue
+    .filter(item => {
+      const entity = (item as SyncQueueItem & { entity: string }).entity;
+
+      return String(entity) !== 'photo' || !missingPhotoIds.has(item.id);
+    })
+    .map(item => {
+      if (item.entity !== 'project_update') return item;
+
+      const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
+      const updateData = payload.updateData;
+
+      if (!Array.isArray(updateData?.photos)) return item;
+
+      const nextPhotos = updateData.photos.filter(
+        photo => !missingPhotoIds.has(photo.id),
+      );
+
+      return {
+        ...item,
+        payload: {
+          ...payload,
+          updateData: {
+            ...updateData,
+            photos: nextPhotos,
+          },
+        },
+        lastError: null,
+      };
+    });
+
+  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, nextQueue);
+}
+
+async function cleanupSyncQueueValue(value: string) {
+  try {
+    const queue = JSON.parse(value) as SyncQueueItem[];
+
+    if (!Array.isArray(queue)) {
+      return {
+        value: sanitizeStoredSyncValue(value),
+        missingPhotosRemoved: 0,
+      };
+    }
+
+    let missingPhotosRemoved = 0;
+    const nextQueue: SyncQueueItem[] = [];
+
+    for (const item of queue) {
+      let nextItem: SyncQueueItem = {
+        ...item,
+        lastError:
+          typeof item.lastError === 'string'
+            ? sanitizeUserFacingSyncMessage(item.lastError)
+            : item.lastError,
+      };
+
+      if (item.entity === 'project_update') {
+        const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
+        const updateData = payload.updateData;
+
+        if (Array.isArray(updateData?.photos)) {
+          const nextPhotos: UpdatePhoto[] = [];
+
+          for (const photo of updateData.photos) {
+            const available = photo.uri
+              ? await isPhotoFileAvailable(photo.uri)
+              : false;
+
+            if (!available) {
+              missingPhotosRemoved += 1;
+              continue;
+            }
+
+            nextPhotos.push(photo);
+          }
+
+          nextItem = {
+            ...nextItem,
+            payload: {
+              ...payload,
+              updateData: {
+                ...updateData,
+                photos: nextPhotos,
+              },
+            },
+            lastError:
+              nextPhotos.length === updateData.photos.length
+                ? nextItem.lastError
+                : null,
+          };
+        }
+      }
+
+      nextQueue.push(nextItem);
+    }
+
+    return {
+      value: JSON.stringify(nextQueue),
+      missingPhotosRemoved,
+    };
+  } catch {
+    return {
+      value: sanitizeStoredSyncValue(value),
+      missingPhotosRemoved: 0,
+    };
+  }
 }
 
 export async function clearResolvedConflict(conflictId: string): Promise<void> {
@@ -664,19 +861,89 @@ function createQueueId(entity: string, createdAt: string): string {
 async function uploadLocalPhoto(
   update: ProjectUpdate,
   photo: UpdatePhoto,
-): Promise<'uploaded' | string | null> {
+): Promise<'uploaded' | 'missing' | string | null> {
   if (!photo.uri) return null;
 
-  const result = await uploadPhoto({
-    path: photoUploadPath(update, photo),
-    uri: photo.uri,
-    contentType: photo.mimeType || 'image/jpeg',
-    upsert: true,
-  });
+  const available = await isPhotoFileAvailable(photo.uri);
 
-  if (result.ok && !result.stubbed) return 'uploaded';
+  if (!available) return 'missing';
 
-  return result.error || result.message || `Photo sync failed: ${photo.id}`;
+  try {
+    const result = await uploadPhoto({
+      path: photoUploadPath(update, photo),
+      uri: photo.uri,
+      contentType: photo.mimeType || 'image/jpeg',
+      upsert: true,
+    });
+
+    if (result.ok && !result.stubbed) return 'uploaded';
+
+    return result.error || result.message || 'Photo sync could not finish.';
+  } catch {
+    return 'Photo sync could not finish.';
+  }
+}
+
+async function isPhotoFileAvailable(uri: string): Promise<boolean> {
+  if (!uri.trim()) return false;
+  if (/^https?:\/\//i.test(uri)) return true;
+
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+
+    return info.exists;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeSyncError(value: string) {
+  if (
+    /readAsStringAsync|file:|\/var\/|\/data\/|stack|internal|exception|documentDirectory|cacheDirectory/i.test(value)
+  ) {
+    return sanitizeUserFacingSyncMessage(value);
+  }
+
+  return sanitizeUserFacingSyncMessage(value);
+}
+
+function isSyncStorageKey(key: string) {
+  return /sync|admin|status|diagnostic|cloud|queue|lastSync/i.test(key);
+}
+
+function sanitizeStoredSyncValue(value: string) {
+  const sanitizedDirect = sanitizeUserFacingSyncMessage(value);
+
+  try {
+    const parsed = JSON.parse(value);
+    const sanitizedParsed = sanitizeStoredSyncJson(parsed);
+    const nextValue = JSON.stringify(sanitizedParsed);
+
+    return nextValue === value ? sanitizedDirect : nextValue;
+  } catch {
+    return sanitizedDirect;
+  }
+}
+
+function sanitizeStoredSyncJson(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return sanitizeUserFacingSyncMessage(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeStoredSyncJson(item));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        sanitizeStoredSyncJson(item),
+      ]),
+    );
+  }
+
+  return value;
 }
 
 function countPhotos(updates: ProjectUpdate[]) {

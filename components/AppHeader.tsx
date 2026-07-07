@@ -4,7 +4,7 @@ export function AppHeader() {
   return (
     <ScreenHeader
       eyebrow="Project Photo Update Tool"
-      title="Dashboard TEST"
+      title="Overview"
       subtitle="What needs attention right now."
     />
   );

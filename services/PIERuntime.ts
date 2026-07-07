@@ -88,6 +88,37 @@ import {
   type PIEMissionSummary,
   type PIEMissionTransition,
 } from './PIEMissionEngine';
+import {
+  buildFusedEvidence,
+  type PIEFusedEvidence,
+  type PIEEvidenceFusionSummary,
+  type PIEIntelligentSummary,
+  type PIEvidenceConflict,
+  type PIEvidenceGap,
+} from './PIEEvidenceFusion';
+import {
+  buildScheduleIntelligence,
+  type PIEScheduleIntelligence,
+  type PIENormalizedScheduleTask,
+} from './PIEScheduleIntelligence';
+import {
+  buildPhotoProgress,
+  type PIEPhotoProgressComparison,
+  type PIEPhotoProgressResult,
+} from './PIEPhotoProgress';
+import {
+  buildPIEReportDraft,
+  type PIEReportActionItem,
+  type PIEReportDraft,
+} from './PIEReporter';
+import {
+  buildPIEReflection,
+  type PIEBeliefChange,
+  type PIEConfidenceChange,
+  type PIELessonLearned,
+  type PIEReflection,
+  type PIEReflectionSummary,
+} from './PIEReflectionEngine';
 
 export type PIERuntimeSurface =
   | 'home'
@@ -106,6 +137,8 @@ export type PIERuntimeContext = PIEConversationContext & {
 export type PIERuntimeSource =
   | 'evidence-engine'
   | 'event-engine'
+  | 'evidence-fusion'
+  | 'photo-progress'
   | 'knowledge-graph'
   | 'intelligence-engine'
   | 'reasoning-engine'
@@ -316,6 +349,44 @@ export type PIERuntimeGraphOutputs = {
   relationshipConfidence: PIERuntimeRelationshipConfidence;
 };
 
+export type PIERuntimeEvidenceFusionOutputs = {
+  fusedEvidence: PIEFusedEvidence;
+  evidenceFusionSummary: PIEEvidenceFusionSummary;
+  intelligentSummary: PIEIntelligentSummary;
+  evidenceGaps: PIEvidenceGap[];
+  evidenceConflicts: PIEvidenceConflict[];
+};
+
+export type PIERuntimeScheduleOutputs = {
+  scheduleIntelligence: PIEScheduleIntelligence;
+  scheduleSummary: PIEScheduleIntelligence['scheduleSummary'];
+  upcomingTasks: PIENormalizedScheduleTask[];
+  overdueTasks: PIENormalizedScheduleTask[];
+  criticalTasks: PIENormalizedScheduleTask[];
+  milestones: PIENormalizedScheduleTask[];
+  recommendedWalkAreas: string[];
+  scheduleConfidence: PIEScheduleIntelligence['scheduleConfidence'];
+};
+
+export type PIERuntimePhotoProgressOutputs = {
+  photoProgress: PIEPhotoProgressResult;
+  photoProgressSummary: string;
+  lastComparison: PIEPhotoProgressComparison | null;
+  comparisonConfidence: PIEPhotoProgressResult['comparisonConfidence'];
+  visualProgressEstimate: PIEPhotoProgressResult['visualProgressEstimate'];
+  comparisonNeedsReview: boolean;
+};
+
+export type PIERuntimeReflectionOutputs = {
+  reflection: PIEReflection;
+  reflectionSummary: PIEReflectionSummary;
+  lessonsLearned: PIELessonLearned[];
+  beliefChanges: PIEBeliefChange[];
+  confidenceChanges: PIEConfidenceChange[];
+  recommendedEvidence: string[];
+  reflectionConfidence: ProjectConfidenceLevel;
+};
+
 export type PIERuntimeExecutiveOutputs = {
   pieExecutiveBrief: PIEExecutiveBrief;
   executivePriorities: PIEExecutivePriority[];
@@ -356,6 +427,7 @@ export type PIECurrentUnderstanding = {
   preparednessScore: PIEPreparednessScore;
   relationshipConfidence: PIERuntimeRelationshipConfidence;
   currentMission: PIEMission;
+  intelligentSummary: PIEIntelligentSummary;
   projectUnderstandingScore: number;
   currentPriority: PIERecommendation | null;
   evidenceCount: number;
@@ -394,6 +466,8 @@ export type PIEBriefing = {
   understandingScore: PIEUnderstandingScore;
   preparednessScore: PIEPreparednessScore;
   relationshipConfidence: PIERuntimeRelationshipConfidence;
+  evidenceFusionSummary: PIEEvidenceFusionSummary;
+  intelligentSummary: PIEIntelligentSummary;
   priorityQueue: PIEPriorityQueue;
   nextBestAction: PIENextBestAction;
   currentPriority: PIERecommendation | null;
@@ -430,6 +504,28 @@ export type PIERuntimeSummary = {
   graphInsightCount: number;
   graphGapCount: number;
   blockedItemCount: number;
+  evidenceGapCount: number;
+  evidenceConflictCount: number;
+  evidenceFusionTrust: number;
+  photoProgressSummary: string;
+  comparisonConfidence: PIEPhotoProgressResult['comparisonConfidence'];
+  visualProgressEstimate: PIEPhotoProgressResult['visualProgressEstimate'];
+  comparisonNeedsReview: boolean;
+  scheduleConfidence: PIEScheduleIntelligence['scheduleConfidence'];
+  upcomingTaskCount: number;
+  overdueTaskCount: number;
+  criticalTaskCount: number;
+  milestoneCount: number;
+  recommendedWalkAreas: string[];
+  reportReadiness: PIEReportDraft['reportReadiness'];
+  reportNeedsReview: boolean;
+  reportActionItemCount: number;
+  reflectionSummary: string;
+  lessonCount: number;
+  beliefChangeCount: number;
+  confidenceChangeCount: number;
+  recommendedEvidence: string[];
+  reflectionConfidence: ProjectConfidenceLevel;
   recommendationCount: number;
   insightCount: number;
   unknownCount: number;
@@ -454,6 +550,35 @@ export type PIERuntimeContractSections = {
   evidenceForRecommendations: PIERuntimeRecommendationEvidence[];
   areaLinkedRisks: PIERuntimeAreaLinkedRisk[];
   relationshipConfidence: PIERuntimeRelationshipConfidence;
+  fusedEvidence: PIEFusedEvidence;
+  evidenceFusionSummary: PIEEvidenceFusionSummary;
+  intelligentSummary: PIEIntelligentSummary;
+  evidenceGaps: PIEvidenceGap[];
+  evidenceConflicts: PIEvidenceConflict[];
+  scheduleIntelligence: PIEScheduleIntelligence;
+  scheduleSummary: PIEScheduleIntelligence['scheduleSummary'];
+  upcomingTasks: PIENormalizedScheduleTask[];
+  overdueTasks: PIENormalizedScheduleTask[];
+  criticalTasks: PIENormalizedScheduleTask[];
+  milestones: PIENormalizedScheduleTask[];
+  recommendedWalkAreas: string[];
+  scheduleConfidence: PIEScheduleIntelligence['scheduleConfidence'];
+  photoProgress: PIEPhotoProgressResult;
+  photoProgressSummary: string;
+  lastComparison: PIEPhotoProgressComparison | null;
+  comparisonConfidence: PIEPhotoProgressResult['comparisonConfidence'];
+  visualProgressEstimate: PIEPhotoProgressResult['visualProgressEstimate'];
+  comparisonNeedsReview: boolean;
+  reportDraft: PIEReportDraft;
+  reportReadiness: PIEReportDraft['reportReadiness'];
+  reportNeedsReview: boolean;
+  reportActionItems: PIEReportActionItem[];
+  reflectionSummary: PIEReflectionSummary;
+  lessonsLearned: PIELessonLearned[];
+  beliefChanges: PIEBeliefChange[];
+  confidenceChanges: PIEConfidenceChange[];
+  recommendedEvidence: string[];
+  reflectionConfidence: ProjectConfidenceLevel;
   pieExecutiveBrief: PIEExecutiveBrief;
   executivePriorities: PIEExecutivePriority[];
   projectsNeedingAttention: PIEExecutiveAttentionItem[];
@@ -501,6 +626,35 @@ export type PIERuntimeResponse = {
   evidenceForRecommendations: PIERuntimeRecommendationEvidence[];
   areaLinkedRisks: PIERuntimeAreaLinkedRisk[];
   relationshipConfidence: PIERuntimeRelationshipConfidence;
+  fusedEvidence: PIEFusedEvidence;
+  evidenceFusionSummary: PIEEvidenceFusionSummary;
+  intelligentSummary: PIEIntelligentSummary;
+  evidenceGaps: PIEvidenceGap[];
+  evidenceConflicts: PIEvidenceConflict[];
+  scheduleIntelligence: PIEScheduleIntelligence;
+  scheduleSummary: PIEScheduleIntelligence['scheduleSummary'];
+  upcomingTasks: PIENormalizedScheduleTask[];
+  overdueTasks: PIENormalizedScheduleTask[];
+  criticalTasks: PIENormalizedScheduleTask[];
+  milestones: PIENormalizedScheduleTask[];
+  recommendedWalkAreas: string[];
+  scheduleConfidence: PIEScheduleIntelligence['scheduleConfidence'];
+  photoProgress: PIEPhotoProgressResult;
+  photoProgressSummary: string;
+  lastComparison: PIEPhotoProgressComparison | null;
+  comparisonConfidence: PIEPhotoProgressResult['comparisonConfidence'];
+  visualProgressEstimate: PIEPhotoProgressResult['visualProgressEstimate'];
+  comparisonNeedsReview: boolean;
+  reportDraft: PIEReportDraft;
+  reportReadiness: PIEReportDraft['reportReadiness'];
+  reportNeedsReview: boolean;
+  reportActionItems: PIEReportActionItem[];
+  reflectionSummary: PIEReflectionSummary;
+  lessonsLearned: PIELessonLearned[];
+  beliefChanges: PIEBeliefChange[];
+  confidenceChanges: PIEConfidenceChange[];
+  recommendedEvidence: string[];
+  reflectionConfidence: ProjectConfidenceLevel;
   pieExecutiveBrief: PIEExecutiveBrief;
   executivePriorities: PIEExecutivePriority[];
   projectsNeedingAttention: PIEExecutiveAttentionItem[];
@@ -536,6 +690,9 @@ export type PIERuntimeEngines = {
   memory: PIEMemorySnapshot;
   decisions: PIEDecisionQueue;
   conversation: PIEConversation;
+  evidenceFusion: PIEFusedEvidence;
+  scheduleIntelligence: PIEScheduleIntelligence;
+  photoProgress: PIEPhotoProgressResult;
   knowledgeGraph: PIEGraph;
   executive: PIEExecutiveBrief;
   mission: PIEMissionSummary;
@@ -589,6 +746,31 @@ export type PIERuntimeState = {
   evidenceForRecommendations: PIERuntimeRecommendationEvidence[];
   areaLinkedRisks: PIERuntimeAreaLinkedRisk[];
   relationshipConfidence: PIERuntimeRelationshipConfidence;
+  fusedEvidence: PIEFusedEvidence;
+  evidenceFusionSummary: PIEEvidenceFusionSummary;
+  intelligentSummary: PIEIntelligentSummary;
+  evidenceGaps: PIEvidenceGap[];
+  evidenceConflicts: PIEvidenceConflict[];
+  scheduleIntelligence: PIEScheduleIntelligence;
+  scheduleSummary: PIEScheduleIntelligence['scheduleSummary'];
+  upcomingTasks: PIENormalizedScheduleTask[];
+  overdueTasks: PIENormalizedScheduleTask[];
+  criticalTasks: PIENormalizedScheduleTask[];
+  milestones: PIENormalizedScheduleTask[];
+  recommendedWalkAreas: string[];
+  scheduleConfidence: PIEScheduleIntelligence['scheduleConfidence'];
+  photoProgress: PIEPhotoProgressResult;
+  photoProgressSummary: string;
+  lastComparison: PIEPhotoProgressComparison | null;
+  comparisonConfidence: PIEPhotoProgressResult['comparisonConfidence'];
+  visualProgressEstimate: PIEPhotoProgressResult['visualProgressEstimate'];
+  comparisonNeedsReview: boolean;
+  reflectionSummary: PIEReflectionSummary;
+  lessonsLearned: PIELessonLearned[];
+  beliefChanges: PIEBeliefChange[];
+  confidenceChanges: PIEConfidenceChange[];
+  recommendedEvidence: string[];
+  reflectionConfidence: ProjectConfidenceLevel;
   nextBestAction: PIENextBestAction;
   currentPriority: PIERecommendation | null;
   evidence: PIEEvidence[];
@@ -599,6 +781,7 @@ export type PIERuntimeState = {
   memory: PIEMemorySnapshot;
   decisionQueue: PIEDecisionQueue;
   conversation: PIEConversation;
+  evidenceFusion: PIEFusedEvidence;
   knowledgeGraph: PIEGraph;
   mission: PIEMissionSummary;
   engines: PIERuntimeEngines;
@@ -613,6 +796,9 @@ type RuntimeBuildParts = {
   unknowns: PIEUnknown[];
   currentBeliefs: PIEBelief[];
   graphOutputs: PIERuntimeGraphOutputs;
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs;
+  scheduleOutputs: PIERuntimeScheduleOutputs;
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs;
   executiveOutputs: PIERuntimeExecutiveOutputs;
   missionOutputs: PIERuntimeMissionOutputs;
   overallConfidence: ProjectConfidenceLevel;
@@ -627,10 +813,27 @@ export function buildRuntime(
 ): PIERuntimeState {
   const conversation = buildConversation(context);
   const engineState = conversation.state;
-  const baseRecommendations = buildRecommendationsFromState(
+  const photoProgressOutputs = buildPhotoProgressOutputsFromState(
+    context,
     engineState,
-    conversation.response,
   );
+  const evidenceFusionOutputs = buildEvidenceFusionOutputsFromState(
+    context,
+    engineState,
+    photoProgressOutputs,
+  );
+  const scheduleOutputs = buildScheduleOutputsFromState(
+    context,
+    engineState,
+  );
+  const baseRecommendations = sortRecommendations(dedupeRecommendations([
+    ...buildRecommendationsFromState(
+      engineState,
+      conversation.response,
+    ),
+    ...buildEvidenceFusionRecommendations(evidenceFusionOutputs),
+    ...buildPhotoProgressRecommendations(photoProgressOutputs),
+  ]));
   const graphOutputs = buildGraphOutputsFromState(
     context,
     engineState,
@@ -639,11 +842,13 @@ export function buildRuntime(
   const executiveOutputs = buildExecutiveOutputsFromState(
     engineState,
     graphOutputs,
+    photoProgressOutputs,
   );
   const missionOutputs = buildMissionOutputsFromState(
     engineState,
     graphOutputs,
     executiveOutputs,
+    photoProgressOutputs,
   );
   const recommendations = sortRecommendations(dedupeRecommendations([
     ...baseRecommendations,
@@ -663,23 +868,29 @@ export function buildRuntime(
     conversation.response,
     graphOutputs,
     executiveOutputs,
+    evidenceFusionOutputs,
+    photoProgressOutputs,
   );
   const unknowns = buildUnknownsFromState(
     engineState,
     graphOutputs,
     missionOutputs,
+    evidenceFusionOutputs,
+    photoProgressOutputs,
   );
   const trustScore = buildTrustScoreFromState(
     engineState,
     unknowns,
     graphOutputs,
     missionOutputs,
+    evidenceFusionOutputs,
   );
   const understandingScore = buildUnderstandingScoreFromState(
     engineState,
     unknowns,
     graphOutputs,
     missionOutputs,
+    evidenceFusionOutputs,
   );
   const overallConfidence = resolveOverallConfidence(
     engineState,
@@ -687,6 +898,7 @@ export function buildRuntime(
     trustScore,
     graphOutputs,
     missionOutputs,
+    evidenceFusionOutputs,
   );
   const currentPriority = recommendations[0] ?? null;
   const currentBeliefs = buildBeliefsFromState(
@@ -696,6 +908,7 @@ export function buildRuntime(
     unknowns,
     graphOutputs,
     missionOutputs,
+    evidenceFusionOutputs,
   );
   const preparednessScore = buildPreparednessScoreFromState(
     engineState,
@@ -704,6 +917,7 @@ export function buildRuntime(
     trustScore,
     understandingScore,
     missionOutputs,
+    evidenceFusionOutputs,
   );
   const parts: RuntimeBuildParts = {
     conversation,
@@ -714,6 +928,9 @@ export function buildRuntime(
     unknowns,
     currentBeliefs,
     graphOutputs,
+    evidenceFusionOutputs,
+    scheduleOutputs,
+    photoProgressOutputs,
     executiveOutputs,
     missionOutputs,
     overallConfidence,
@@ -752,6 +969,37 @@ export function buildRuntime(
       engineState.intelligence.communicationReadiness.missingItems[0] ||
       currentUnderstanding.whatPIENeedsFromYou,
   });
+  const reportDraft = buildPIEReportDraft({
+    reportType:
+      context.projectNames && context.projectNames.length > 1
+        ? 'combined_project_update'
+        : 'daily_project_update',
+    audience: 'internal_team',
+    currentUpdate: context.currentUpdate,
+    savedUpdates: context.updates,
+    scheduleItems: context.scheduleItems,
+    projectAreas: context.projectAreas,
+    contacts: context.contacts,
+    selectedProjectNames: context.projectNames,
+    runtime: {
+      intelligentSummary: evidenceFusionOutputs.intelligentSummary,
+      fusedEvidence: evidenceFusionOutputs.fusedEvidence,
+      photoProgressSummary: photoProgressOutputs.photoProgressSummary,
+      recommendedWalkAreas: scheduleOutputs.recommendedWalkAreas,
+    },
+    generatedAt: new Date(engineState.generatedAt),
+  });
+  const reflectionOutputs = buildReflectionOutputsFromState({
+    state: engineState,
+    currentBeliefs,
+    evidenceFusionOutputs,
+    scheduleOutputs,
+    photoProgressOutputs,
+    trustScore,
+    understandingScore,
+    overallConfidence,
+    reportDraft,
+  });
   const response = makeRuntimeResponse(
     engineState,
     currentUnderstanding,
@@ -761,6 +1009,11 @@ export function buildRuntime(
     unknowns,
     currentBeliefs,
     graphOutputs,
+    evidenceFusionOutputs,
+    scheduleOutputs,
+    photoProgressOutputs,
+    reportDraft,
+    reflectionOutputs,
     executiveOutputs,
     missionOutputs,
   );
@@ -774,6 +1027,11 @@ export function buildRuntime(
     insights,
     unknowns,
     graphOutputs,
+    evidenceFusionOutputs,
+    scheduleOutputs,
+    photoProgressOutputs,
+    reportDraft,
+    reflectionOutputs,
     executiveOutputs,
     missionOutputs,
   );
@@ -822,6 +1080,31 @@ export function buildRuntime(
     evidenceForRecommendations: graphOutputs.evidenceForRecommendations,
     areaLinkedRisks: graphOutputs.areaLinkedRisks,
     relationshipConfidence: graphOutputs.relationshipConfidence,
+    fusedEvidence: evidenceFusionOutputs.fusedEvidence,
+    evidenceFusionSummary: evidenceFusionOutputs.evidenceFusionSummary,
+    intelligentSummary: evidenceFusionOutputs.intelligentSummary,
+    evidenceGaps: evidenceFusionOutputs.evidenceGaps,
+    evidenceConflicts: evidenceFusionOutputs.evidenceConflicts,
+    scheduleIntelligence: scheduleOutputs.scheduleIntelligence,
+    scheduleSummary: scheduleOutputs.scheduleSummary,
+    upcomingTasks: scheduleOutputs.upcomingTasks,
+    overdueTasks: scheduleOutputs.overdueTasks,
+    criticalTasks: scheduleOutputs.criticalTasks,
+    milestones: scheduleOutputs.milestones,
+    recommendedWalkAreas: scheduleOutputs.recommendedWalkAreas,
+    scheduleConfidence: scheduleOutputs.scheduleConfidence,
+    photoProgress: photoProgressOutputs.photoProgress,
+    photoProgressSummary: photoProgressOutputs.photoProgressSummary,
+    lastComparison: photoProgressOutputs.lastComparison,
+    comparisonConfidence: photoProgressOutputs.comparisonConfidence,
+    visualProgressEstimate: photoProgressOutputs.visualProgressEstimate,
+    comparisonNeedsReview: photoProgressOutputs.comparisonNeedsReview,
+    reflectionSummary: reflectionOutputs.reflectionSummary,
+    lessonsLearned: reflectionOutputs.lessonsLearned,
+    beliefChanges: reflectionOutputs.beliefChanges,
+    confidenceChanges: reflectionOutputs.confidenceChanges,
+    recommendedEvidence: reflectionOutputs.recommendedEvidence,
+    reflectionConfidence: reflectionOutputs.reflectionConfidence,
     overallConfidence,
     trustScore,
     understandingScore,
@@ -836,6 +1119,7 @@ export function buildRuntime(
     memory: engineState.memory,
     decisionQueue: engineState.decisionQueue,
     conversation,
+    evidenceFusion: evidenceFusionOutputs.fusedEvidence,
     knowledgeGraph: graphOutputs.graph,
     mission: missionOutputs.missionSummary,
     engines: {
@@ -846,6 +1130,9 @@ export function buildRuntime(
       memory: engineState.memory,
       decisions: engineState.decisionQueue,
       conversation,
+      evidenceFusion: evidenceFusionOutputs.fusedEvidence,
+      scheduleIntelligence: scheduleOutputs.scheduleIntelligence,
+      photoProgress: photoProgressOutputs.photoProgress,
       knowledgeGraph: graphOutputs.graph,
       executive: executiveOutputs.pieExecutiveBrief,
       mission: missionOutputs.missionSummary,
@@ -937,9 +1224,137 @@ export function buildPreparednessScore(
   return normalizeRuntime(input).preparednessScore;
 }
 
+function buildEvidenceFusionOutputsFromState(
+  context: PIERuntimeContext,
+  state: PIEConversationState,
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
+): PIERuntimeEvidenceFusionOutputs {
+  const fusedEvidence = buildFusedEvidence({
+    projectName: state.projectName,
+    projectNames: state.projectNames,
+    updates: context.updates,
+    currentUpdate: context.currentUpdate,
+    photoProgressEvidence: photoProgressOutputs.photoProgress.acceptedEvidence,
+    scheduleItems: context.scheduleItems,
+    projectAreas: context.projectAreas,
+    referenceDocuments: context.referenceDocuments,
+    reportHistory: context.reportHistory,
+    syncMetadata: context.syncMetadata,
+    now: new Date(state.generatedAt),
+  });
+
+  return {
+    fusedEvidence,
+    evidenceFusionSummary: fusedEvidence.evidenceFusionSummary,
+    intelligentSummary: fusedEvidence.intelligentSummary,
+    evidenceGaps: fusedEvidence.gaps,
+    evidenceConflicts: fusedEvidence.conflicts,
+  };
+}
+
+function buildScheduleOutputsFromState(
+  context: PIERuntimeContext,
+  state: PIEConversationState,
+): PIERuntimeScheduleOutputs {
+  const projectScheduleIntelligence = buildScheduleIntelligence({
+    scheduleItems: context.scheduleItems,
+    projectName: state.projectName,
+    now: new Date(state.generatedAt),
+  });
+  const scheduleIntelligence =
+    projectScheduleIntelligence.scheduleSummary.totalItems === 0 &&
+    (context.scheduleItems?.length ?? 0) > 0
+      ? buildScheduleIntelligence({
+          scheduleItems: context.scheduleItems,
+          projectName: null,
+          now: new Date(state.generatedAt),
+        })
+      : projectScheduleIntelligence;
+
+  return {
+    scheduleIntelligence,
+    scheduleSummary: scheduleIntelligence.scheduleSummary,
+    upcomingTasks: scheduleIntelligence.upcomingTasks,
+    overdueTasks: scheduleIntelligence.overdueTasks,
+    criticalTasks: scheduleIntelligence.criticalTasks,
+    milestones: scheduleIntelligence.milestones,
+    recommendedWalkAreas: scheduleIntelligence.recommendedWalkAreas,
+    scheduleConfidence: scheduleIntelligence.scheduleConfidence,
+  };
+}
+
+function buildPhotoProgressOutputsFromState(
+  context: PIERuntimeContext,
+  state: PIEConversationState,
+): PIERuntimePhotoProgressOutputs {
+  const photoProgress = buildPhotoProgress({
+    projectName: state.projectName,
+    updates: context.updates,
+    currentUpdate: context.currentUpdate,
+    now: new Date(state.generatedAt),
+  });
+
+  return {
+    photoProgress,
+    photoProgressSummary: photoProgress.photoProgressSummary,
+    lastComparison: photoProgress.lastComparison,
+    comparisonConfidence: photoProgress.comparisonConfidence,
+    visualProgressEstimate: photoProgress.visualProgressEstimate,
+    comparisonNeedsReview: photoProgress.comparisonNeedsReview,
+  };
+}
+
+function buildReflectionOutputsFromState({
+  state,
+  currentBeliefs,
+  evidenceFusionOutputs,
+  scheduleOutputs,
+  photoProgressOutputs,
+  trustScore,
+  understandingScore,
+  overallConfidence,
+  reportDraft,
+}: {
+  state: PIEConversationState;
+  currentBeliefs: PIEBelief[];
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs;
+  scheduleOutputs: PIERuntimeScheduleOutputs;
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs;
+  trustScore: PIETrustScore;
+  understandingScore: PIEUnderstandingScore;
+  overallConfidence: ProjectConfidenceLevel;
+  reportDraft: PIEReportDraft;
+}): PIERuntimeReflectionOutputs {
+  const reflection = buildPIEReflection({
+    generatedAt: state.generatedAt,
+    projectName: state.projectName,
+    currentBeliefs,
+    evidenceFusionSummary: evidenceFusionOutputs.evidenceFusionSummary,
+    intelligentSummary: evidenceFusionOutputs.intelligentSummary,
+    evidenceGaps: evidenceFusionOutputs.evidenceGaps,
+    scheduleIntelligence: scheduleOutputs.scheduleIntelligence,
+    photoProgress: photoProgressOutputs.photoProgress,
+    trustScore,
+    understandingScore,
+    overallConfidence,
+    reportDraft,
+  });
+
+  return {
+    reflection,
+    reflectionSummary: reflection.reflectionSummary,
+    lessonsLearned: reflection.lessonsLearned,
+    beliefChanges: reflection.beliefChanges,
+    confidenceChanges: reflection.confidenceChanges,
+    recommendedEvidence: reflection.reflectionSummary.recommendedEvidence,
+    reflectionConfidence: reflection.reflectionSummary.reflectionConfidence,
+  };
+}
+
 function buildExecutiveOutputsFromState(
   state: PIEConversationState,
   graphOutputs: PIERuntimeGraphOutputs,
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
 ): PIERuntimeExecutiveOutputs {
   const now = new Date(state.generatedAt);
   const executiveParams = {
@@ -952,14 +1367,57 @@ function buildExecutiveOutputsFromState(
     now,
   };
   const pieExecutiveBrief = buildPIEExecutiveBrief(executiveParams);
+  const photoProgressPreparation: PIEExecutivePreparation | null =
+    photoProgressOutputs.lastComparison
+      ? {
+          id: `photo-progress-prep-${runtimeSlug(photoProgressOutputs.lastComparison.id)}`,
+          projectName: state.projectName,
+          title: photoProgressOutputs.comparisonNeedsReview
+            ? 'Verify photo progress comparison'
+            : 'Accepted photo progress ready for review',
+          purpose: photoProgressOutputs.photoProgressSummary,
+          preparedFor: 'project-walk',
+          evidence: [
+            photoProgressOutputs.photoProgressSummary,
+            ...photoProgressOutputs.photoProgress.acceptedEvidence.map(
+              item => item.summary,
+            ),
+          ],
+          confidence: photoProgressOutputs.comparisonConfidence,
+          userApprovalRequired: photoProgressOutputs.comparisonNeedsReview,
+          suggestedNextAction: photoProgressOutputs.comparisonNeedsReview
+            ? 'Does this summary look correct? Accept, edit, or reject.'
+            : 'Use accepted photo progress in Review and Combined Update.',
+        }
+      : null;
+  const photoProgressQuestion: PIEExecutiveQuestion | null =
+    photoProgressOutputs.comparisonNeedsReview &&
+    photoProgressOutputs.lastComparison
+      ? {
+          id: `photo-progress-question-${runtimeSlug(photoProgressOutputs.lastComparison.id)}`,
+          projectName: state.projectName,
+          question: 'Does this summary look correct?',
+          reason:
+            'PIE needs user verification before using photo comparison as project evidence.',
+          priority: 'medium',
+          confidence: photoProgressOutputs.comparisonConfidence,
+          evidence: [photoProgressOutputs.photoProgressSummary],
+        }
+      : null;
 
   return {
     pieExecutiveBrief,
     executivePriorities: buildExecutivePriorities(executiveParams),
     projectsNeedingAttention: getProjectsNeedingAttention(executiveParams),
     executiveEscalations: getExecutiveEscalations(executiveParams),
-    executivePreparations: getExecutivePreparations(executiveParams),
-    executiveQuestions: getExecutiveQuestions(executiveParams),
+    executivePreparations: [
+      ...getExecutivePreparations(executiveParams),
+      ...(photoProgressPreparation ? [photoProgressPreparation] : []),
+    ],
+    executiveQuestions: [
+      ...getExecutiveQuestions(executiveParams),
+      ...(photoProgressQuestion ? [photoProgressQuestion] : []),
+    ],
     executiveDailyRoutine: getExecutiveDailyRoutine(executiveParams),
     recommendedOperatingMode: getRecommendedOperatingMode(executiveParams),
   };
@@ -969,6 +1427,7 @@ function buildMissionOutputsFromState(
   state: PIEConversationState,
   graphOutputs: PIERuntimeGraphOutputs,
   executiveOutputs: PIERuntimeExecutiveOutputs,
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
 ): PIERuntimeMissionOutputs {
   const missionParams = {
     projectName: state.projectName,
@@ -989,25 +1448,72 @@ function buildMissionOutputsFromState(
   const dailyMission = buildDailyMission(missionParams);
   const projectMission = buildProjectMission(missionParams);
   const missionSummary = buildMissionSummary(missionParamsWithType);
+  const photoProgressMissionEvidence = photoProgressOutputs.photoProgress.missionFeed.evidence
+    .slice(0, 3)
+    .map((detail, index): PIEMissionEvidence => ({
+      id: `photo-progress-mission-evidence-${index}`,
+      title: 'Photo Progress Evidence',
+      detail,
+      source: 'mission-engine',
+      confidence: photoProgressOutputs.comparisonConfidence,
+      occurredAt: photoProgressOutputs.photoProgress.generatedAt,
+      relatedRecordId: photoProgressOutputs.lastComparison?.id || null,
+    }));
+  const photoProgressMissionRecommendations = photoProgressOutputs.photoProgress.missionFeed.recommendedActions
+    .slice(0, 2)
+    .map((recommendation, index): PIEMissionRecommendation => ({
+      id: `photo-progress-mission-recommendation-${index}`,
+      missionType: currentMission.missionType,
+      title: 'Verify Photo Progress',
+      recommendation,
+      why: photoProgressOutputs.photoProgressSummary,
+      evidence: photoProgressMissionEvidence.map(item => item.detail),
+      confidence: photoProgressOutputs.comparisonConfidence,
+      priority: photoProgressOutputs.comparisonNeedsReview ? 'medium' : 'low',
+      expectedImpact:
+        'Accepted photo comparison can improve Mission, Executive, Evidence Fusion, Knowledge Graph, Review, and Combined Update context.',
+      userApprovalRequired: photoProgressOutputs.comparisonNeedsReview,
+      source: 'mission-engine',
+    }));
+  const enrichedCurrentMission: PIEMission = {
+    ...currentMission,
+    evidenceCollected: [
+      ...currentMission.evidenceCollected,
+      ...photoProgressMissionEvidence,
+    ],
+    recommendedActions: [
+      ...currentMission.recommendedActions,
+      ...photoProgressMissionRecommendations,
+    ],
+  };
+  const enrichedMissionSummary: PIEMissionSummary = {
+    ...missionSummary,
+    currentMission: enrichedCurrentMission,
+    activeBlockers: missionSummary.activeBlockers,
+    recommendedActions: [
+      ...missionSummary.recommendedActions,
+      ...photoProgressMissionRecommendations,
+    ],
+  };
 
   return {
-    currentMission,
+    currentMission: enrichedCurrentMission,
     dailyMission,
     projectMission,
     missionSummary: {
-      ...missionSummary,
-      currentMission,
+      ...enrichedMissionSummary,
+      currentMission: enrichedCurrentMission,
       dailyMission,
       projectMission,
     },
-    missionObjective: getMissionObjective(currentMission),
-    missionProgress: getMissionProgress(currentMission),
-    missionBlockers: getMissionBlockers(currentMission),
-    missionEvidence: getMissionEvidence(currentMission),
-    missionRecommendations: getMissionRecommendations(currentMission),
-    missionSuccessCriteria: getMissionSuccessCriteria(currentMission),
-    missionComplete: isMissionComplete(currentMission),
-    nextMission: getNextMission(currentMission),
+    missionObjective: getMissionObjective(enrichedCurrentMission),
+    missionProgress: getMissionProgress(enrichedCurrentMission),
+    missionBlockers: getMissionBlockers(enrichedCurrentMission),
+    missionEvidence: getMissionEvidence(enrichedCurrentMission),
+    missionRecommendations: getMissionRecommendations(enrichedCurrentMission),
+    missionSuccessCriteria: getMissionSuccessCriteria(enrichedCurrentMission),
+    missionComplete: isMissionComplete(enrichedCurrentMission),
+    nextMission: getNextMission(enrichedCurrentMission),
   };
 }
 
@@ -1268,18 +1774,109 @@ function buildRecommendationsFromState(
   ]));
 }
 
+function buildEvidenceFusionRecommendations(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): PIERecommendation[] {
+  const summary = evidenceFusionOutputs.intelligentSummary;
+  const fusion = evidenceFusionOutputs.evidenceFusionSummary;
+  const firstConflict = evidenceFusionOutputs.evidenceConflicts[0];
+  const firstHighGap =
+    evidenceFusionOutputs.evidenceGaps.find(
+      gap => gap.severity === 'high' || gap.severity === 'critical',
+    ) || evidenceFusionOutputs.evidenceGaps[0];
+
+  if (
+    summary.nextAction === 'Continue monitoring' &&
+    !firstConflict &&
+    !firstHighGap
+  ) {
+    return [];
+  }
+
+  return [{
+    id: `runtime-evidence-fusion-${runtimeSlug(summary.nextAction)}`,
+    projectName: summary.projectName,
+    title: summary.nextAction,
+    summary: firstConflict?.summary || firstHighGap?.summary || summary.pieRecommendation,
+    priority: firstConflict
+      ? evidenceSeverityToPriority(firstConflict.severity)
+      : firstHighGap
+        ? evidenceSeverityToPriority(firstHighGap.severity)
+        : summary.projectStatus === 'At Risk'
+          ? 'high'
+          : 'medium',
+    source: 'evidence-fusion',
+    sources: fusion.sources,
+    confidence: summary.confidence,
+    evidence: uniqueText([
+      summary.scheduleStatus,
+      summary.photoEvidenceSummary,
+      summary.gpsLocationConfidence,
+      summary.userUpdateSummary,
+      summary.risksAndIssues,
+      summary.safetySummary,
+    ]),
+    impact:
+      firstConflict?.summary ||
+      firstHighGap?.summary ||
+      'Fused evidence improves PIE reliability across schedule, field photos, GPS, and updates.',
+    suggestedNextAction:
+      firstConflict?.suggestedAction ||
+      firstHighGap?.suggestedAction ||
+      summary.nextAction,
+    requiresApproval: true,
+  }];
+}
+
+function buildPhotoProgressRecommendations(
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
+): PIERecommendation[] {
+  const progress = photoProgressOutputs.photoProgress;
+  const comparison = progress.lastComparison;
+
+  if (!comparison) return [];
+
+  return [{
+    id: `runtime-photo-progress-${runtimeSlug(comparison.id)}`,
+    projectName: comparison.project,
+    title: progress.comparisonNeedsReview
+      ? 'Review photo progress comparison'
+      : 'Use accepted photo progress as evidence',
+    summary: progress.photoProgressSummary,
+    priority: progress.comparisonNeedsReview ? 'medium' : 'low',
+    source: 'photo-progress',
+    sources: ['photo-progress'],
+    confidence: progress.comparisonConfidence,
+    evidence: uniqueText([
+      ...comparison.matchReasons,
+      ...comparison.structuredSummary.evidence,
+      ...progress.acceptedEvidence.map(item => item.summary),
+    ]),
+    impact:
+      'Photo progress comparison can explain what changed between current and previous project photos after user verification.',
+    suggestedNextAction: progress.comparisonNeedsReview
+      ? 'Ask: Does this summary look correct? Accept, edit, or reject before using it as project evidence.'
+      : 'Include accepted photo progress in Review and Combined Update context.',
+    requiresApproval: progress.comparisonNeedsReview,
+  }];
+}
+
 function buildInsightsFromState(
   state: PIEConversationState,
   response: PIEConversationResponse,
   graphOutputs: PIERuntimeGraphOutputs,
   executiveOutputs: PIERuntimeExecutiveOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
 ): PIEInsight[] {
   const memoryInsights = state.memoryInsights.map(memoryInsightToInsight);
   const graphInsights = graphOutputs.graphInsights.map(graphInsightToInsight);
+  const fusionInsight = evidenceFusionToInsight(evidenceFusionOutputs);
   const executiveInsight = executiveBriefToInsight(
     executiveOutputs.pieExecutiveBrief,
     state.projectName,
   );
+  const photoProgressInsight = photoProgressToInsight(photoProgressOutputs);
   const risks = state.intelligence.riskSignals.map(risk => ({
     id: `runtime-risk-${risk.id}`,
     projectName: state.projectName,
@@ -1321,6 +1918,8 @@ function buildInsightsFromState(
 
   return sortInsights(dedupeInsights([
     ...(executiveInsight ? [executiveInsight] : []),
+    ...(photoProgressInsight ? [photoProgressInsight] : []),
+    fusionInsight,
     ...graphInsights,
     ...risks,
     ...concerns,
@@ -1334,9 +1933,31 @@ function buildUnknownsFromState(
   state: PIEConversationState,
   graphOutputs: PIERuntimeGraphOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
 ): PIEUnknown[] {
   const memoryUnknowns = state.memoryGaps.map(memoryGapToUnknown);
   const graphUnknowns = graphOutputs.graphGaps.map(graphGapToUnknown);
+  const fusionUnknowns = [
+    ...evidenceFusionOutputs.evidenceGaps.map(evidenceGapToUnknown),
+    ...evidenceFusionOutputs.evidenceConflicts.map(evidenceConflictToUnknown),
+  ];
+  const photoProgressUnknowns =
+    photoProgressOutputs.comparisonNeedsReview &&
+    photoProgressOutputs.lastComparison
+      ? [{
+          id: `runtime-photo-progress-review-${runtimeSlug(photoProgressOutputs.lastComparison.id)}`,
+          projectName: photoProgressOutputs.lastComparison.project,
+          title: 'Photo Progress Needs Review',
+          summary: photoProgressOutputs.photoProgressSummary,
+          impact:
+            'PIE should not treat photo comparison output as project evidence until the user accepts or edits it.',
+          suggestedAction: 'Does this summary look correct? Accept, edit, or reject.',
+          source: 'photo-progress' as const,
+          confidence: photoProgressOutputs.comparisonConfidence,
+          priority: 'medium' as const,
+        }]
+      : [];
   const questionUnknowns = state.questions.map(questionToUnknown);
   const communicationUnknowns =
     state.intelligence.communicationReadiness.missingItems.map(
@@ -1416,6 +2037,8 @@ function buildUnknownsFromState(
     ...emptyEvidenceUnknown,
     ...missionUnknowns,
     ...locationUnknown,
+    ...fusionUnknowns,
+    ...photoProgressUnknowns,
     ...graphUnknowns,
     ...memoryUnknowns,
     ...questionUnknowns,
@@ -1430,6 +2053,7 @@ function buildBeliefsFromState(
   unknowns: PIEUnknown[],
   graphOutputs: PIERuntimeGraphOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
 ): PIEBelief[] {
   const uncertainty = unknowns.slice(0, 4).map(unknown => unknown.summary);
   const contradictingEvidence = contradictingBeliefEvidence(state, unknowns);
@@ -1441,7 +2065,56 @@ function buildBeliefsFromState(
   const currentConcern = insights[0];
   const relationshipConfidence = graphOutputs.relationshipConfidence;
   const currentMission = missionOutputs.currentMission;
+  const fusedSummary = evidenceFusionOutputs.evidenceFusionSummary;
+  const intelligentSummary = evidenceFusionOutputs.intelligentSummary;
   const beliefs = [
+    makeBelief({
+      id: 'belief-evidence-fusion',
+      projectName: state.projectName,
+      statement: `PIE fused schedule, photo, GPS, and update evidence into a ${intelligentSummary.projectStatus.toLowerCase()} summary.`,
+      confidence: fusedSummary.confidence,
+      supportingEvidence: [
+        runtimeBeliefEvidence({
+          id: 'belief-evidence-fusion-summary',
+          title: 'Evidence Fusion Summary',
+          detail: fusedSummary.summary,
+          source: 'evidence-fusion',
+          confidence: fusedSummary.confidence,
+          occurredAt: fusedSummary.generatedAt,
+        }),
+        ...textBeliefEvidence(
+          'belief-evidence-fusion-sources',
+          [
+            intelligentSummary.scheduleStatus,
+            intelligentSummary.photoEvidenceSummary,
+            intelligentSummary.gpsLocationConfidence,
+            intelligentSummary.userUpdateSummary,
+          ],
+          'evidence-fusion',
+          fusedSummary.confidence,
+          fusedSummary.generatedAt,
+        ),
+      ],
+      contradictingEvidence: evidenceFusionOutputs.evidenceConflicts
+        .slice(0, 3)
+        .map(item =>
+          runtimeBeliefEvidence({
+            id: `belief-evidence-conflict-${item.id}`,
+            title: item.title,
+            detail: item.summary,
+            source: 'evidence-fusion',
+            confidence: item.confidence,
+            occurredAt: fusedSummary.generatedAt,
+            relatedRecordId: item.id,
+          }),
+        ),
+      remainingUncertainty: uniqueText([
+        ...evidenceFusionOutputs.evidenceGaps.slice(0, 4).map(item => item.summary),
+        ...intelligentSummary.missingInformation,
+      ]),
+      createdAt: fusedSummary.generatedAt,
+      source: 'runtime',
+    }),
     makeBelief({
       id: 'belief-current-mission',
       projectName: state.projectName,
@@ -1734,6 +2407,7 @@ function buildPreparednessScoreFromState(
   trustScore: PIETrustScore,
   understandingScore: PIEUnderstandingScore,
   missionOutputs: PIERuntimeMissionOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
 ): PIEPreparednessScore {
   const factors = [
     executiveMeetingPreparednessFactor(
@@ -1747,6 +2421,7 @@ function buildPreparednessScoreFromState(
     reportPreparednessFactor(state, unknowns, trustScore, understandingScore),
     decisionPreparednessFactor(state, recommendations, unknowns, trustScore),
     missionPreparednessFactor(missionOutputs),
+    evidenceFusionPreparednessFactor(evidenceFusionOutputs),
   ];
   const totalWeight = factors.reduce((sum, factor) => sum + factor.weight, 0);
   const score = clamp(
@@ -2207,6 +2882,35 @@ function missionPreparednessFactor(
   });
 }
 
+function evidenceFusionPreparednessFactor(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): PIEPreparednessScoreFactor {
+  const summary = evidenceFusionOutputs.evidenceFusionSummary;
+  const gapItems = evidenceFusionOutputs.evidenceGaps
+    .slice(0, 4)
+    .map(gap => gap.summary);
+  const conflictItems = evidenceFusionOutputs.evidenceConflicts
+    .slice(0, 4)
+    .map(conflict => conflict.summary);
+
+  return preparednessFactor({
+    id: 'preparedness-evidence-fusion',
+    area: 'project-walk',
+    label: 'Evidence Fusion Readiness',
+    score: summary.trustScore,
+    weight: 1,
+    reason: `${summary.sourceCount} fused evidence source${summary.sourceCount === 1 ? '' : 's'} with ${summary.gapCount} gap${summary.gapCount === 1 ? '' : 's'} and ${summary.conflictCount} conflict${summary.conflictCount === 1 ? '' : 's'}.`,
+    missingItems: uniqueText([...conflictItems, ...gapItems]),
+    improvementSuggestions: uniqueText([
+      evidenceFusionOutputs.evidenceConflicts[0]?.suggestedAction,
+      evidenceFusionOutputs.evidenceGaps[0]?.suggestedAction,
+      summary.trustScore >= 70
+        ? null
+        : 'Add or review schedule, photos, GPS, and typed updates before relying on the prepared output.',
+    ]),
+  });
+}
+
 function preparednessFactor(
   input: Omit<PIEPreparednessScoreFactor, 'level'>,
 ): PIEPreparednessScoreFactor {
@@ -2238,6 +2942,9 @@ function makeCurrentUnderstanding(
   const graphNeed = graphNeedLine(graphOutputs);
   const missionLine = currentMissionLine(parts.missionOutputs);
   const missionNeed = missionNeedLine(parts.missionOutputs);
+  const fusionKnowledge = evidenceFusionKnowledgeLine(parts.evidenceFusionOutputs);
+  const fusionConcern = evidenceFusionConcernLine(parts.evidenceFusionOutputs);
+  const fusionNeed = evidenceFusionNeedLine(parts.evidenceFusionOutputs);
   const executiveBrief = parts.executiveOutputs.pieExecutiveBrief;
   const executiveConcern =
     parts.executiveOutputs.executiveEscalations[0]?.reason ||
@@ -2257,11 +2964,19 @@ function makeCurrentUnderstanding(
     projectName: state.projectName,
     generatedAt: state.generatedAt,
     whatPIEKnows: compactSentence(
-      uniqueText([response.whatPIEKnows, graphKnowledge, missionLine]).join(' '),
+      uniqueText([
+        response.whatPIEKnows,
+        fusionKnowledge,
+        graphKnowledge,
+        missionLine,
+      ]).join(' '),
     ),
-    whatChanged: response.whatChanged,
+    whatChanged:
+      parts.evidenceFusionOutputs.intelligentSummary.whatChanged ||
+      response.whatChanged,
     whatConcernsPIE:
       executiveConcern ||
+      fusionConcern ||
       graphConcern ||
       firstConcern?.summary ||
       response.whatConcernsPIE ||
@@ -2270,6 +2985,7 @@ function makeCurrentUnderstanding(
     whatPIENeedsFromYou:
       executiveNeed ||
       missionNeed ||
+      fusionNeed ||
       graphNeed ||
       firstNeed?.suggestedAction ||
       response.whatPIENeedsFromYou ||
@@ -2280,6 +2996,7 @@ function makeCurrentUnderstanding(
     preparednessScore: parts.preparednessScore,
     relationshipConfidence: parts.graphOutputs.relationshipConfidence,
     currentMission: parts.missionOutputs.currentMission,
+    intelligentSummary: parts.evidenceFusionOutputs.intelligentSummary,
     projectUnderstandingScore: parts.understandingScore.score,
     currentPriority: parts.currentPriority,
     evidenceCount: state.evidence.length,
@@ -2400,6 +3117,8 @@ function makeBrief(
     understandingScore: parts.understandingScore,
     preparednessScore: parts.preparednessScore,
     relationshipConfidence: parts.graphOutputs.relationshipConfidence,
+    evidenceFusionSummary: parts.evidenceFusionOutputs.evidenceFusionSummary,
+    intelligentSummary: parts.evidenceFusionOutputs.intelligentSummary,
     priorityQueue,
     nextBestAction: priorityQueue.nextBestAction,
     currentPriority: parts.currentPriority,
@@ -2419,6 +3138,11 @@ function makeRuntimeResponse(
   unknowns: PIEUnknown[],
   currentBeliefs: PIEBelief[],
   graphOutputs: PIERuntimeGraphOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+  scheduleOutputs: PIERuntimeScheduleOutputs,
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
+  reportDraft: PIEReportDraft,
+  reflectionOutputs: PIERuntimeReflectionOutputs,
   executiveOutputs: PIERuntimeExecutiveOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
 ): PIERuntimeResponse {
@@ -2446,6 +3170,35 @@ function makeRuntimeResponse(
     evidenceForRecommendations: graphOutputs.evidenceForRecommendations,
     areaLinkedRisks: graphOutputs.areaLinkedRisks,
     relationshipConfidence: graphOutputs.relationshipConfidence,
+    fusedEvidence: evidenceFusionOutputs.fusedEvidence,
+    evidenceFusionSummary: evidenceFusionOutputs.evidenceFusionSummary,
+    intelligentSummary: evidenceFusionOutputs.intelligentSummary,
+    evidenceGaps: evidenceFusionOutputs.evidenceGaps,
+    evidenceConflicts: evidenceFusionOutputs.evidenceConflicts,
+    scheduleIntelligence: scheduleOutputs.scheduleIntelligence,
+    scheduleSummary: scheduleOutputs.scheduleSummary,
+    upcomingTasks: scheduleOutputs.upcomingTasks,
+    overdueTasks: scheduleOutputs.overdueTasks,
+    criticalTasks: scheduleOutputs.criticalTasks,
+    milestones: scheduleOutputs.milestones,
+    recommendedWalkAreas: scheduleOutputs.recommendedWalkAreas,
+    scheduleConfidence: scheduleOutputs.scheduleConfidence,
+    photoProgress: photoProgressOutputs.photoProgress,
+    photoProgressSummary: photoProgressOutputs.photoProgressSummary,
+    lastComparison: photoProgressOutputs.lastComparison,
+    comparisonConfidence: photoProgressOutputs.comparisonConfidence,
+    visualProgressEstimate: photoProgressOutputs.visualProgressEstimate,
+    comparisonNeedsReview: photoProgressOutputs.comparisonNeedsReview,
+    reportDraft,
+    reportReadiness: reportDraft.reportReadiness,
+    reportNeedsReview: reportDraft.needsReview,
+    reportActionItems: reportDraft.actionItems,
+    reflectionSummary: reflectionOutputs.reflectionSummary,
+    lessonsLearned: reflectionOutputs.lessonsLearned,
+    beliefChanges: reflectionOutputs.beliefChanges,
+    confidenceChanges: reflectionOutputs.confidenceChanges,
+    recommendedEvidence: reflectionOutputs.recommendedEvidence,
+    reflectionConfidence: reflectionOutputs.reflectionConfidence,
     pieExecutiveBrief: executiveOutputs.pieExecutiveBrief,
     executivePriorities: executiveOutputs.executivePriorities,
     projectsNeedingAttention: executiveOutputs.projectsNeedingAttention,
@@ -2493,6 +3246,35 @@ function makeRuntimeResponse(
     evidenceForRecommendations: graphOutputs.evidenceForRecommendations,
     areaLinkedRisks: graphOutputs.areaLinkedRisks,
     relationshipConfidence: graphOutputs.relationshipConfidence,
+    fusedEvidence: evidenceFusionOutputs.fusedEvidence,
+    evidenceFusionSummary: evidenceFusionOutputs.evidenceFusionSummary,
+    intelligentSummary: evidenceFusionOutputs.intelligentSummary,
+    evidenceGaps: evidenceFusionOutputs.evidenceGaps,
+    evidenceConflicts: evidenceFusionOutputs.evidenceConflicts,
+    scheduleIntelligence: scheduleOutputs.scheduleIntelligence,
+    scheduleSummary: scheduleOutputs.scheduleSummary,
+    upcomingTasks: scheduleOutputs.upcomingTasks,
+    overdueTasks: scheduleOutputs.overdueTasks,
+    criticalTasks: scheduleOutputs.criticalTasks,
+    milestones: scheduleOutputs.milestones,
+    recommendedWalkAreas: scheduleOutputs.recommendedWalkAreas,
+    scheduleConfidence: scheduleOutputs.scheduleConfidence,
+    photoProgress: photoProgressOutputs.photoProgress,
+    photoProgressSummary: photoProgressOutputs.photoProgressSummary,
+    lastComparison: photoProgressOutputs.lastComparison,
+    comparisonConfidence: photoProgressOutputs.comparisonConfidence,
+    visualProgressEstimate: photoProgressOutputs.visualProgressEstimate,
+    comparisonNeedsReview: photoProgressOutputs.comparisonNeedsReview,
+    reportDraft,
+    reportReadiness: reportDraft.reportReadiness,
+    reportNeedsReview: reportDraft.needsReview,
+    reportActionItems: reportDraft.actionItems,
+    reflectionSummary: reflectionOutputs.reflectionSummary,
+    lessonsLearned: reflectionOutputs.lessonsLearned,
+    beliefChanges: reflectionOutputs.beliefChanges,
+    confidenceChanges: reflectionOutputs.confidenceChanges,
+    recommendedEvidence: reflectionOutputs.recommendedEvidence,
+    reflectionConfidence: reflectionOutputs.reflectionConfidence,
     pieExecutiveBrief: executiveOutputs.pieExecutiveBrief,
     executivePriorities: executiveOutputs.executivePriorities,
     projectsNeedingAttention: executiveOutputs.projectsNeedingAttention,
@@ -2514,6 +3296,7 @@ function makeRuntimeResponse(
     trustExplanation: runtimeTrustExplanation(
       executiveOutputs,
       missionOutputs,
+      evidenceFusionOutputs,
     ),
     priorityQueue,
     nextBestAction: priorityQueue.nextBestAction,
@@ -2534,6 +3317,11 @@ function makeRuntimeSummary(
   insights: PIEInsight[],
   unknowns: PIEUnknown[],
   graphOutputs: PIERuntimeGraphOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+  scheduleOutputs: PIERuntimeScheduleOutputs,
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
+  reportDraft: PIEReportDraft,
+  reflectionOutputs: PIERuntimeReflectionOutputs,
   executiveOutputs: PIERuntimeExecutiveOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
 ): PIERuntimeSummary {
@@ -2557,6 +3345,7 @@ function makeRuntimeSummary(
     trustExplanation: runtimeTrustExplanation(
       executiveOutputs,
       missionOutputs,
+      evidenceFusionOutputs,
     ),
     recommendedOperatingMode: executiveOutputs.recommendedOperatingMode,
     currentMissionTitle: missionOutputs.currentMission.title,
@@ -2570,6 +3359,29 @@ function makeRuntimeSummary(
     graphInsightCount: graphOutputs.graphInsights.length,
     graphGapCount: graphOutputs.graphGaps.length,
     blockedItemCount: graphOutputs.blockedItems.length,
+    evidenceGapCount: evidenceFusionOutputs.evidenceGaps.length,
+    evidenceConflictCount: evidenceFusionOutputs.evidenceConflicts.length,
+    evidenceFusionTrust:
+      evidenceFusionOutputs.evidenceFusionSummary.trustScore,
+    photoProgressSummary: photoProgressOutputs.photoProgressSummary,
+    comparisonConfidence: photoProgressOutputs.comparisonConfidence,
+    visualProgressEstimate: photoProgressOutputs.visualProgressEstimate,
+    comparisonNeedsReview: photoProgressOutputs.comparisonNeedsReview,
+    scheduleConfidence: scheduleOutputs.scheduleConfidence,
+    upcomingTaskCount: scheduleOutputs.upcomingTasks.length,
+    overdueTaskCount: scheduleOutputs.overdueTasks.length,
+    criticalTaskCount: scheduleOutputs.criticalTasks.length,
+    milestoneCount: scheduleOutputs.milestones.length,
+    recommendedWalkAreas: scheduleOutputs.recommendedWalkAreas,
+    reportReadiness: reportDraft.reportReadiness,
+    reportNeedsReview: reportDraft.needsReview,
+    reportActionItemCount: reportDraft.actionItems.length,
+    reflectionSummary: reflectionOutputs.reflectionSummary.summary,
+    lessonCount: reflectionOutputs.lessonsLearned.length,
+    beliefChangeCount: reflectionOutputs.beliefChanges.length,
+    confidenceChangeCount: reflectionOutputs.confidenceChanges.length,
+    recommendedEvidence: reflectionOutputs.recommendedEvidence,
+    reflectionConfidence: reflectionOutputs.reflectionConfidence,
     recommendationCount: recommendations.length,
     insightCount: insights.length,
     unknownCount: unknowns.length,
@@ -2579,13 +3391,15 @@ function makeRuntimeSummary(
 function runtimeTrustExplanation(
   executiveOutputs: PIERuntimeExecutiveOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
 ): string {
   const mission = missionOutputs.currentMission;
   const missionEvidenceCount = missionOutputs.missionEvidence.length;
   const blockerCount = missionOutputs.missionBlockers.length;
+  const fusionSummary = evidenceFusionOutputs.evidenceFusionSummary;
 
   return compactSentence(
-    `${executiveOutputs.pieExecutiveBrief.trustExplanation} Current Mission: ${mission.title}. Mission trust is ${mission.trust} with ${missionEvidenceCount} evidence signal${missionEvidenceCount === 1 ? '' : 's'} and ${blockerCount} blocker${blockerCount === 1 ? '' : 's'}.`,
+    `${executiveOutputs.pieExecutiveBrief.trustExplanation} Evidence Fusion trust is ${fusionSummary.trustScore}% from ${fusionSummary.sourceCount} source${fusionSummary.sourceCount === 1 ? '' : 's'}, ${fusionSummary.gapCount} gap${fusionSummary.gapCount === 1 ? '' : 's'}, and ${fusionSummary.conflictCount} conflict${fusionSummary.conflictCount === 1 ? '' : 's'}. Current Mission: ${mission.title}. Mission trust is ${mission.trust} with ${missionEvidenceCount} evidence signal${missionEvidenceCount === 1 ? '' : 's'} and ${blockerCount} blocker${blockerCount === 1 ? '' : 's'}.`,
   );
 }
 
@@ -2769,6 +3583,70 @@ function graphInsightToInsight(insight: PIEGraphInsight): PIEInsight {
   };
 }
 
+function evidenceFusionToInsight(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): PIEInsight {
+  const summary = evidenceFusionOutputs.evidenceFusionSummary;
+  const intelligentSummary = evidenceFusionOutputs.intelligentSummary;
+
+  return {
+    id: `runtime-evidence-fusion-${runtimeSlug(summary.projectName)}`,
+    projectName: summary.projectName,
+    title: 'Evidence Fusion Summary',
+    summary:
+      'PIE combined schedule, photos, GPS, and updates into this summary.',
+    whyItMatters: intelligentSummary.pieRecommendation,
+    source: 'evidence-fusion',
+    confidence: summary.confidence,
+    priority:
+      summary.conflictCount > 0 || summary.overdueScheduleCount > 0
+        ? 'high'
+        : summary.gapCount > 0
+          ? 'medium'
+          : 'low',
+    evidence: uniqueText([
+      intelligentSummary.scheduleStatus,
+      intelligentSummary.photoEvidenceSummary,
+      intelligentSummary.gpsLocationConfidence,
+      intelligentSummary.userUpdateSummary,
+      intelligentSummary.risksAndIssues,
+      intelligentSummary.safetySummary,
+    ]),
+    suggestedNextAction: intelligentSummary.nextAction,
+  };
+}
+
+function photoProgressToInsight(
+  photoProgressOutputs: PIERuntimePhotoProgressOutputs,
+): PIEInsight | null {
+  const comparison = photoProgressOutputs.lastComparison;
+
+  if (!comparison) return null;
+
+  return {
+    id: `runtime-photo-progress-insight-${runtimeSlug(comparison.id)}`,
+    projectName: comparison.project,
+    title: 'Photo Progress Comparison',
+    summary: photoProgressOutputs.photoProgressSummary,
+    whyItMatters: photoProgressOutputs.comparisonNeedsReview
+      ? 'PIE needs user verification before treating this comparison as project evidence.'
+      : 'Accepted photo progress can support Review, Executive, Mission, Knowledge Graph, and Combined Update context.',
+    source: 'photo-progress',
+    confidence: photoProgressOutputs.comparisonConfidence,
+    priority: photoProgressOutputs.comparisonNeedsReview ? 'medium' : 'low',
+    evidence: uniqueText([
+      ...comparison.matchReasons,
+      ...comparison.structuredSummary.evidence,
+      ...photoProgressOutputs.photoProgress.acceptedEvidence.map(
+        item => item.summary,
+      ),
+    ]),
+    suggestedNextAction: photoProgressOutputs.comparisonNeedsReview
+      ? 'Does this summary look correct? Accept, edit, or reject.'
+      : 'Use the accepted comparison in the project review.',
+  };
+}
+
 function concernToInsight(concern: PIEConcern): PIEInsight {
   return {
     id: `runtime-concern-${concern.id}`,
@@ -2810,6 +3688,36 @@ function graphGapToUnknown(gap: PIEGraphGap): PIEUnknown {
     source: 'knowledge-graph',
     confidence: gap.confidence,
     priority: gap.severity,
+  };
+}
+
+function evidenceGapToUnknown(gap: PIEvidenceGap): PIEUnknown {
+  return {
+    id: `runtime-evidence-gap-${gap.id}`,
+    projectName: gap.projectName,
+    title: gap.title,
+    summary: gap.summary,
+    impact:
+      'PIE has weaker fused evidence until this missing input is resolved.',
+    suggestedAction: gap.suggestedAction,
+    source: 'evidence-fusion',
+    confidence: gap.confidence,
+    priority: evidenceSeverityToPriority(gap.severity),
+  };
+}
+
+function evidenceConflictToUnknown(conflict: PIEvidenceConflict): PIEUnknown {
+  return {
+    id: `runtime-evidence-conflict-${conflict.id}`,
+    projectName: conflict.projectName,
+    title: conflict.title,
+    summary: conflict.summary,
+    impact:
+      'PIE should not overstate the recommendation until this evidence conflict is resolved.',
+    suggestedAction: conflict.suggestedAction,
+    source: 'evidence-fusion',
+    confidence: conflict.confidence,
+    priority: evidenceSeverityToPriority(conflict.severity),
   };
 }
 
@@ -2918,11 +3826,49 @@ function graphNeedLine(graphOutputs: PIERuntimeGraphOutputs): string | null {
   return highGap?.suggestedAction ?? null;
 }
 
+function evidenceFusionKnowledgeLine(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): string | null {
+  const summary = evidenceFusionOutputs.evidenceFusionSummary;
+
+  if (summary.sourceCount === 0) return null;
+
+  return `PIE combined schedule, photos, GPS, and updates into this summary with ${summary.trustScore}% fusion trust.`;
+}
+
+function evidenceFusionConcernLine(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): string | null {
+  const conflict = evidenceFusionOutputs.evidenceConflicts[0];
+  if (conflict) return conflict.summary;
+
+  const summary = evidenceFusionOutputs.evidenceFusionSummary;
+  if (summary.overdueScheduleCount > 0) {
+    return `${summary.overdueScheduleCount} overdue schedule item${summary.overdueScheduleCount === 1 ? '' : 's'} appear in fused evidence.`;
+  }
+
+  const highGap =
+    evidenceFusionOutputs.evidenceGaps.find(
+      gap => gap.severity === 'high' || gap.severity === 'critical',
+    ) || null;
+
+  return highGap?.summary ?? null;
+}
+
+function evidenceFusionNeedLine(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): string | null {
+  return evidenceFusionOutputs.evidenceConflicts[0]?.suggestedAction ||
+    evidenceFusionOutputs.evidenceGaps[0]?.suggestedAction ||
+    null;
+}
+
 function buildTrustScoreFromState(
   state: PIEConversationState,
   unknowns: PIEUnknown[],
   graphOutputs: PIERuntimeGraphOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
 ): PIETrustScore {
   const factors = [
     evidenceFreshnessFactor(state),
@@ -2933,6 +3879,7 @@ function buildTrustScoreFromState(
     openQuestionsFactor(state, unknowns),
     conflictingEvidenceFactor(state, unknowns),
     inspectionStatusFactor(state),
+    evidenceFusionTrustFactor(evidenceFusionOutputs),
     relationshipEvidenceFactor(graphOutputs),
     missionTrustFactor(missionOutputs),
   ];
@@ -3317,6 +4264,29 @@ function inspectionStatusFactor(
   });
 }
 
+function evidenceFusionTrustFactor(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): PIETrustScoreFactor {
+  const summary = evidenceFusionOutputs.evidenceFusionSummary;
+  const conflictCount = evidenceFusionOutputs.evidenceConflicts.length;
+  const highGap = evidenceFusionOutputs.evidenceGaps.find(
+    gap => gap.severity === 'high' || gap.severity === 'critical',
+  );
+
+  return trustFactor({
+    id: 'evidence-fusion',
+    label: 'Evidence Fusion',
+    score: summary.trustScore,
+    weight: 1.1,
+    status: conflictCount > 0 ? 'conflicting' : statusFromScore(summary.trustScore),
+    reason: `${summary.sourceCount} fused source${summary.sourceCount === 1 ? '' : 's'} with ${summary.gapCount} gap${summary.gapCount === 1 ? '' : 's'} and ${summary.conflictCount} conflict${summary.conflictCount === 1 ? '' : 's'}.`,
+    improvementSuggestion:
+      evidenceFusionOutputs.evidenceConflicts[0]?.suggestedAction ||
+      highGap?.suggestedAction ||
+      'Keep schedule, photo, GPS, and typed update evidence current.',
+  });
+}
+
 function relationshipEvidenceFactor(
   graphOutputs: PIERuntimeGraphOutputs,
 ): PIETrustScoreFactor {
@@ -3405,6 +4375,7 @@ function buildUnderstandingScoreFromState(
   unknowns: PIEUnknown[],
   graphOutputs: PIERuntimeGraphOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
 ): PIEUnderstandingScore {
   const factors = [
     understandingEvidenceCoverageFactor(state),
@@ -3415,6 +4386,7 @@ function buildUnderstandingScoreFromState(
     understandingOpenQuestionsFactor(state),
     understandingUnknownsFactor(unknowns),
     understandingConflictingEvidenceFactor(state, unknowns),
+    understandingEvidenceFusionFactor(evidenceFusionOutputs),
     understandingRelationshipCoverageFactor(graphOutputs),
     understandingMissionCoverageFactor(missionOutputs),
   ];
@@ -3743,6 +4715,31 @@ function understandingConflictingEvidenceFactor(
   });
 }
 
+function understandingEvidenceFusionFactor(
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
+): PIEUnderstandingScoreFactor {
+  const summary = evidenceFusionOutputs.evidenceFusionSummary;
+  const firstGap = evidenceFusionOutputs.evidenceGaps[0];
+  const firstConflict = evidenceFusionOutputs.evidenceConflicts[0];
+
+  return understandingFactor({
+    id: 'understanding-evidence-fusion',
+    label: 'Evidence Fusion',
+    score: summary.trustScore,
+    weight: 1,
+    present: summary.trustScore >= 70 && summary.conflictCount === 0,
+    reason: `PIE fused schedule (${summary.scheduleItemCount}), photos (${summary.photoCount}), GPS (${summary.gpsAvailable ? 'available' : 'missing'}), and updates (${summary.userUpdateCount}).`,
+    missingInformation:
+      firstConflict?.summary ||
+      firstGap?.summary ||
+      (summary.trustScore >= 70 ? null : 'Fused evidence coverage is incomplete.'),
+    improvementSuggestion:
+      firstConflict?.suggestedAction ||
+      firstGap?.suggestedAction ||
+      'Keep schedule, photos, GPS, and update notes connected.',
+  });
+}
+
 function understandingRelationshipCoverageFactor(
   graphOutputs: PIERuntimeGraphOutputs,
 ): PIEUnderstandingScoreFactor {
@@ -3820,6 +4817,7 @@ function resolveOverallConfidence(
   trustScore: PIETrustScore,
   graphOutputs: PIERuntimeGraphOutputs,
   missionOutputs: PIERuntimeMissionOutputs,
+  evidenceFusionOutputs: PIERuntimeEvidenceFusionOutputs,
 ): ProjectConfidenceLevel {
   const confidenceValues: ProjectConfidenceLevel[] = [
     state.intelligence.confidence.level,
@@ -3838,6 +4836,14 @@ function resolveOverallConfidence(
     return 'low';
   }
   if (trustScore.level === 'low') return 'low';
+  if (
+    evidenceFusionOutputs.evidenceFusionSummary.confidence === 'low' &&
+    evidenceFusionOutputs.evidenceGaps.some(
+      gap => gap.severity === 'high' || gap.severity === 'critical',
+    )
+  ) {
+    return 'low';
+  }
   if (
     missionOutputs.currentMission.confidence === 'low' &&
     missionOutputs.missionBlockers.some(
@@ -3866,6 +4872,7 @@ function runtimeSources(
   return uniqueText([
     state.evidence.length > 0 ? 'evidence-engine' : null,
     state.projectEvents.length > 0 ? 'event-engine' : null,
+    'evidence-fusion',
     graphOutputs.graph.relationships.length > 0 ? 'knowledge-graph' : null,
     'intelligence-engine',
     'reasoning-engine',
@@ -4075,6 +5082,16 @@ function signalSeverityToPriority(
   if (severity === 'critical') return 'critical';
   if (severity === 'warning') return 'high';
   if (severity === 'neutral') return 'medium';
+
+  return 'low';
+}
+
+function evidenceSeverityToPriority(
+  severity: PIEvidenceGap['severity'],
+): PIEDecisionPriority {
+  if (severity === 'critical') return 'critical';
+  if (severity === 'high') return 'high';
+  if (severity === 'medium') return 'medium';
 
   return 'low';
 }

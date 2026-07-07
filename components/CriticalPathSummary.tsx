@@ -21,13 +21,19 @@ export function CriticalPathSummary({
       </Text>
 
       <Text style={styles.subtitle}>
-        Sequence and completion confidence are inferred locally from schedule dates, progress, actions, and update freshness.
+        Sequence and completion readiness are inferred locally from schedule dates, progress, actions, and update freshness.
       </Text>
 
       <View style={styles.primaryRow}>
         <SummaryMetric
-          label="Schedule Confidence"
-          value={`${summary.scheduleConfidenceScore}/100`}
+          label="Schedule Readiness"
+          value={
+            summary.scheduleConfidenceScore >= 80
+              ? 'Strong'
+              : summary.scheduleConfidenceScore >= 60
+                ? 'Needs Review'
+                : 'Uncertain'
+          }
           color={confidenceColor}
         />
         <SummaryMetric

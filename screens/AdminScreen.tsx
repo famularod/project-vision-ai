@@ -5,6 +5,7 @@ import type {
   ViewStyle,
 } from 'react-native';
 import {
+  Alert,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -20,7 +21,7 @@ import { ManageAreasPanel } from '../components/ManageAreasPanel';
 import {
   SecondaryButton,
 } from '../components/ProjectDetailsCard';
-import { getAIConfigurationStatus } from '../services/OpenAIService';
+import { getAIConfigurationStatus } from '../services/AIClientBoundaryService';
 import {
   getSupabaseConfigurationStatus,
   getSupabaseConnectionStatus,
@@ -29,9 +30,8 @@ import {
   type SupabaseConnectionTestResult,
 } from '../services/SupabaseService';
 import {
-  getSyncStatus,
   synchronizeLocalData,
-  type SyncStatus,
+  type MissingSyncPhoto,
 } from '../services/SyncService';
 import type {
   ProjectArea,
@@ -53,11 +53,13 @@ export function AdminScreen({
   scheduleItems,
   referenceDocuments,
   startupConnectionResult,
+  syncCleanupNotice,
   onBack,
   onDiagnostics,
   onProjectManagement,
   onReferenceDocuments,
   onSchedule,
+  onHistory,
   onConstructionTimeline,
   onBackup,
   onRestore,
@@ -65,6 +67,7 @@ export function AdminScreen({
   onUpdateArea,
   onDeleteArea,
   onUseCurrentLocationForArea,
+  onRemoveMissingPhotos,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   localProjects: string[];
@@ -73,11 +76,13 @@ export function AdminScreen({
   scheduleItems: ScheduleItem[];
   referenceDocuments: ReferenceDocument[];
   startupConnectionResult: SupabaseConnectionTestResult | null;
+  syncCleanupNotice?: string | null;
   onBack: () => void;
   onDiagnostics: () => void;
   onProjectManagement: () => void;
   onReferenceDocuments: () => void;
   onSchedule: () => void;
+  onHistory: () => void;
   onConstructionTimeline: () => void;
   onBackup: () => void;
   onRestore: () => void;
@@ -85,17 +90,16 @@ export function AdminScreen({
   onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
   onDeleteArea: (areaId: string) => void;
   onUseCurrentLocationForArea: (areaId: string) => void;
+  onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
 }) {
   const aiStatus = getAIConfigurationStatus();
   const supabaseConfig = getSupabaseConfigurationStatus();
   const [connectionStatus, setConnectionStatus] =
     useState<SupabaseConnectionStatus | null>(null);
-  const [syncStatus, setSyncStatus] =
-    useState<SyncStatus | null>(null);
   const [testResult, setTestResult] =
     useState<SupabaseConnectionTestResult | null>(startupConnectionResult);
-  const [actionResult, setActionResult] = useState<string | null>(null);
-  const [syncProgress, setSyncProgress] = useState<string | null>(null);
+  const [adminActionSummary, setAdminActionSummary] =
+    useState('Cloud sync tools are available.');
   const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -110,15 +114,11 @@ export function AdminScreen({
     };
 
     async function refreshStatus() {
-      const [connection, sync] = await Promise.all([
-        getSupabaseConnectionStatus(),
-        getSyncStatus(),
-      ]);
+      const connection = await getSupabaseConnectionStatus();
 
       if (!active) return;
 
       setConnectionStatus(connection);
-      setSyncStatus(sync);
     }
   }, []);
 
@@ -128,23 +128,33 @@ export function AdminScreen({
     setTestResult(startupConnectionResult);
   }, [startupConnectionResult]);
 
+  useEffect(() => {
+    if (!syncCleanupNotice) return;
+
+    setAdminActionSummary('Sync status cleaned up.');
+  }, [syncCleanupNotice]);
+
   const connected = testResult?.connected ?? false;
   const cloudProjectCount = testResult?.projectCount;
 
   return (
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
-        title="Admin"
-        subtitle="Cloud, diagnostics, sync, and project management tools."
+        title="More"
+        subtitle="Projects, schedule, documents, history, settings, admin, and developer tools."
         onBack={onBack}
       />
 
-      <ScreenSection title="Cloud Status">
+      <ScreenSection title="System Status">
         <ScreenMetricGrid>
           <ScreenMetric
-            label="Supabase"
-            value={supabaseConfig.configured ? 'Configured' : 'Missing'}
-            detail={supabaseConfig.projectUrl || supabaseConfig.message}
+            label="Cloud"
+            value={supabaseConfig.configured ? 'Ready' : 'Needs Setup'}
+            detail={
+              supabaseConfig.configured
+                ? 'Cloud configuration is ready.'
+                : 'Cloud setup needs review.'
+            }
             tone={supabaseConfig.configured ? 'success' : 'warning'}
             icon={<Ionicons name="cloud-outline" size={18} color={colors.primary} />}
           />
@@ -152,7 +162,11 @@ export function AdminScreen({
           <ScreenMetric
             label="Connected"
             value={connected ? 'Yes' : 'No'}
-            detail={testResult?.error || formatCheckedAt(testResult?.checkedAt)}
+            detail={
+              connected
+                ? formatCheckedAt(testResult?.checkedAt)
+                : 'Cloud connection needs review.'
+            }
             tone={connected ? 'success' : 'warning'}
             icon={<Ionicons name="wifi-outline" size={18} color={colors.primary} />}
           />
@@ -160,25 +174,25 @@ export function AdminScreen({
           <ScreenMetric
             label="Cloud Projects"
             value={cloudProjectCount === null || cloudProjectCount === undefined ? 'Unknown' : cloudProjectCount}
-            detail="Projects visible through Supabase REST"
+            detail="Projects synced through cloud"
             tone={cloudProjectCount === null || cloudProjectCount === undefined ? 'warning' : 'default'}
             icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />}
           />
 
           <ScreenMetric
-            label="Sync Queue"
-            value={syncStatus?.queuedChanges ?? 0}
-            detail={syncStatus?.message || 'Loading sync status'}
-            tone={(syncStatus?.queuedChanges ?? 0) > 0 ? 'warning' : 'success'}
-            icon={<Ionicons name="sync-outline" size={18} color={colors.primary} />}
+            label="PIE Assist"
+            value="Server Routed"
+            detail={aiStatus.message}
+            tone="success"
+            icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />}
           />
 
           <ScreenMetric
-            label="OpenAI"
-            value={aiStatus.configured ? 'Configured' : 'Missing'}
-            detail={`${aiStatus.provider} / ${aiStatus.model}`}
-            tone={aiStatus.configured ? 'success' : 'warning'}
-            icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />}
+            label="Build"
+            value="22"
+            detail="True Photo Intelligence"
+            tone="success"
+            icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />}
           />
 
           <ScreenMetric
@@ -193,28 +207,14 @@ export function AdminScreen({
 
       <ScreenCard>
         <Text style={styles.cardTitle}>
-          Admin Actions
+          Admin
         </Text>
 
         <Text style={styles.cardText}>
-          Run diagnostics, test cloud connectivity, or sync pending local data.
+          Cloud sync, backup, and restore tools are available.
         </Text>
 
         <View style={styles.actionGrid}>
-          <AdminActionButton
-            label="Diagnostics"
-            icon="pulse-outline"
-            onPress={onDiagnostics}
-          />
-
-          <AdminActionButton
-            label={isTesting ? 'Testing...' : 'Test Connection'}
-            icon="cloud-done-outline"
-            onPress={handleTestConnection}
-            disabled={isTesting}
-            primary
-          />
-
           <AdminActionButton
             label={isSyncing ? 'Syncing...' : 'Sync Now'}
             icon="sync-outline"
@@ -224,43 +224,41 @@ export function AdminScreen({
           />
 
           <AdminActionButton
-            label="Projects"
-            icon="folder-open-outline"
-            onPress={onProjectManagement}
+            label="Backup"
+            icon="download-outline"
+            onPress={onBackup}
+          />
+
+          <AdminActionButton
+            label="Restore"
+            icon="cloud-upload-outline"
+            onPress={onRestore}
           />
         </View>
 
-        {actionResult ? (
-          <Text style={styles.resultText}>
-            {actionResult}
-          </Text>
-        ) : null}
-
-        {syncProgress ? (
-          <Text style={styles.progressText}>
-            {syncProgress}
-          </Text>
-        ) : null}
+        <Text style={styles.resultText}>
+          {adminActionSummary}
+        </Text>
       </ScreenCard>
 
-      <ScreenSection title="Project Management">
+      <ScreenSection title="Projects">
         <ScreenCard>
           <Text style={styles.cardText}>
             Rename, archive, restore, delete, favorite, and search projects from Projects.
           </Text>
 
           <SecondaryButton
-            label="Open Project Management"
+            label="Projects"
             icon="folder-outline"
             onPress={onProjectManagement}
           />
         </ScreenCard>
       </ScreenSection>
 
-      <ScreenSection title="Project Resources">
+      <ScreenSection title="Schedule, Documents, and History">
         <ScreenCard>
           <Text style={styles.cardText}>
-            Documents, schedules, timeline tools, and backups stay available here so Projects can stay focused on finding and updating work.
+            Documents, schedules, timeline tools, and saved history stay available here so PIE and Capture can stay focused.
           </Text>
 
           <View style={styles.actionGrid}>
@@ -283,24 +281,30 @@ export function AdminScreen({
             />
 
             <AdminActionButton
-              label="Backup"
-              icon="download-outline"
-              onPress={onBackup}
-            />
-
-            <AdminActionButton
-              label="Restore"
-              icon="cloud-upload-outline"
-              onPress={onRestore}
+              label="History"
+              icon="time-outline"
+              onPress={onHistory}
             />
           </View>
         </ScreenCard>
       </ScreenSection>
 
-      <ScreenSection title="Advanced Configuration">
+      <ScreenSection title="Settings">
+        <AdminInfoCard
+          title="Settings"
+          text="Settings placeholder for future preferences, defaults, and app behavior controls."
+          icon="settings-outline"
+        />
+      </ScreenSection>
+
+      <ScreenSection title="Developer Tools">
         <ScreenCard>
+          <Text style={styles.cardTitle}>
+            Advanced Configuration
+          </Text>
+
           <Text style={styles.cardText}>
-            Area Mapping is an advanced setup tool for PIE location intelligence. Daily project work should happen from Today, Projects, Walk, and Review.
+            Area Mapping is an advanced setup tool for PIE location intelligence. Daily project work should happen from PIE, Capture, and Review.
           </Text>
 
           <SecondaryButton
@@ -308,6 +312,32 @@ export function AdminScreen({
             icon={advancedConfigOpen ? 'chevron-up-outline' : 'map-outline'}
             onPress={() => setAdvancedConfigOpen(open => !open)}
           />
+        </ScreenCard>
+
+        <ScreenCard>
+          <Text style={styles.cardTitle}>
+            Developer Support
+          </Text>
+
+          <Text style={styles.cardText}>
+            Diagnostics, raw cloud diagnostics, connection tests, and debug data are support tools for troubleshooting.
+          </Text>
+
+          <View style={styles.actionGrid}>
+            <AdminActionButton
+              label="Diagnostics"
+              icon="pulse-outline"
+              onPress={onDiagnostics}
+            />
+
+            <AdminActionButton
+              label={isTesting ? 'Testing...' : 'Test Connection'}
+              icon="cloud-done-outline"
+              onPress={handleTestConnection}
+              disabled={isTesting}
+              primary
+            />
+          </View>
         </ScreenCard>
 
         {advancedConfigOpen ? (
@@ -321,30 +351,20 @@ export function AdminScreen({
         ) : null}
       </ScreenSection>
 
-      <ScreenSection title="Admin Placeholders">
+      <ScreenSection title="Build Information">
         <AdminInfoCard
           title="App Version / Build Info"
           text="Build metadata placeholder. Add EAS build profile, version, runtime version, and update channel here when release metadata is finalized."
           icon="information-circle-outline"
-        />
-
-        <AdminInfoCard
-          title="Developer Tools"
-          text="Developer tools placeholder for future logs, feature flags, environment checks, and support exports."
-          icon="hammer-outline"
         />
       </ScreenSection>
     </Screen>
   );
 
   async function refreshAdminStatus(nextTest?: SupabaseConnectionTestResult) {
-    const [connection, sync] = await Promise.all([
-      getSupabaseConnectionStatus(),
-      getSyncStatus(),
-    ]);
+    const connection = await getSupabaseConnectionStatus();
 
     setConnectionStatus(connection);
-    setSyncStatus(sync);
 
     if (nextTest) {
       setTestResult(nextTest);
@@ -353,22 +373,20 @@ export function AdminScreen({
 
   async function handleTestConnection() {
     setIsTesting(true);
-    setActionResult('Testing Supabase connection...');
+    setAdminActionSummary('Cloud sync tools are available.');
 
     try {
       const result = await testSupabaseConnection();
       await refreshAdminStatus(result);
 
-      setActionResult(
+      setAdminActionSummary(
         result.connected
-          ? `Connected. Cloud project count: ${result.projectCount ?? 'Unknown'}.`
-          : `Supabase read failed${result.status ? ` (${result.status})` : ''}: ${result.error || 'Unknown error'}`,
+          ? 'Cloud connection available.'
+          : 'Cloud connection could not be verified right now. Developer details are available under Advanced Configuration > Developer Support > Diagnostics.',
       );
-    } catch (error) {
-      setActionResult(
-        error instanceof Error
-          ? `Supabase connection failed: ${error.message}`
-          : 'Supabase connection failed with an unknown error.',
+    } catch {
+      setAdminActionSummary(
+        'Cloud connection could not be verified right now.',
       );
     } finally {
       setIsTesting(false);
@@ -377,8 +395,7 @@ export function AdminScreen({
 
   async function handleSyncNow() {
     setIsSyncing(true);
-    setActionResult('Syncing pending local and cloud data...');
-    setSyncProgress('Starting sync...');
+    setAdminActionSummary('Cloud sync tools are available.');
 
     try {
       const result = await synchronizeLocalData(
@@ -389,39 +406,67 @@ export function AdminScreen({
           scheduleItems,
           referenceDocuments,
         },
-        event => {
-          setSyncProgress(
-            `${event.message} (${event.completed}/${event.total})`,
-          );
-        },
       );
-      const errorText = result.errors.length
-        ? ` Errors: ${result.errors.join(' | ')}`
-        : '';
 
-      setActionResult(
-        `Sync complete. Uploaded ${result.uploaded} record${result.uploaded === 1 ? '' : 's'}. Downloaded ${result.downloaded} record${result.downloaded === 1 ? '' : 's'}.${errorText}`,
-      );
-      setSyncProgress(
-        `Projects ${result.details.projectsUploaded}, updates ${result.details.updatesUploaded}, photos ${result.details.photosUploaded}, areas ${result.details.areasUploaded}, schedules ${result.details.schedulesUploaded}, documents ${result.details.documentsUploaded}.`,
+      setAdminActionSummary(
+        'Sync completed. Some unavailable photos may be skipped.',
       );
       await refreshAdminStatus({
         configured: result.configured,
         connected: result.connected,
         projectCount: result.cloudProjectCount,
         checkedAt: result.lastSyncAt || new Date().toISOString(),
-        error: result.errors[0],
+        error: result.errors.length ? 'Some records could not sync and will be retried.' : undefined,
       });
-    } catch (error) {
-      setActionResult(
-        error instanceof Error
-          ? `Sync failed: ${error.message}`
-          : 'Sync failed with an unknown error.',
+
+      if (result.missingPhotos.length > 0) {
+        showMissingPhotoSyncAlert(result.missingPhotos);
+      }
+    } catch {
+      setAdminActionSummary(
+        'Sync completed. Some unavailable photos may be skipped.',
       );
     } finally {
       setIsSyncing(false);
     }
   }
+
+  function showMissingPhotoSyncAlert(missingPhotos: MissingSyncPhoto[]) {
+    const count = missingPhotos.length;
+
+    Alert.alert(
+      'Photo not available',
+      formatMissingPhotoSyncMessage(count) ||
+        'A photo could not be synced because it is no longer available.',
+      [
+        {
+          text: 'Remove Missing Photo',
+          style: 'destructive',
+          onPress: () => {
+            void onRemoveMissingPhotos(missingPhotos).then(() => {
+              setAdminActionSummary('Sync completed. Some unavailable photos may be skipped.');
+            });
+          },
+        },
+        {
+          text: 'Retry',
+          onPress: () => {
+            void handleSyncNow();
+          },
+        },
+        {
+          text: 'Dismiss',
+          style: 'cancel',
+        },
+      ],
+    );
+  }
+}
+
+function formatMissingPhotoSyncMessage(count: number) {
+  if (count <= 0) return null;
+
+  return `${count} photo${count === 1 ? '' : 's'} could not be synced because ${count === 1 ? 'it is' : 'they are'} no longer available.`;
 }
 
 function AdminInfoCard({

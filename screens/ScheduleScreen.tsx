@@ -210,10 +210,25 @@ function ScheduleSummaryPanel({
           icon="map-outline"
           danger={summary.missingMappingCount > 0}
         />
+
+        <DashboardMetric
+          label="Review"
+          value={summary.needsReviewCount}
+          icon="create-outline"
+          danger={summary.needsReviewCount > 0}
+        />
       </View>
 
       {summary.totalItems > 0 ? (
         <>
+          <ScheduleSummaryTaskList
+            title="Needs Review"
+            tasks={summary.needsReviewTasks}
+            emptyText="No imported schedule items need review."
+            icon="create-outline"
+            iconColor={colors.warning}
+          />
+
           <ScheduleSummaryTaskList
             title="Upcoming Tasks"
             tasks={summary.upcoming30Tasks}
@@ -297,6 +312,8 @@ export function ScheduleScreen({
   onUpdate,
   onDelete,
   onImport,
+  onTestOcrEndpoint,
+  onUseDemoOcrResult,
   scheduleAiExtractorUrl,
   onScheduleAiExtractorUrlChange,
   onMilestoneTracking,
@@ -315,6 +332,8 @@ export function ScheduleScreen({
   onUpdate: (itemId: string, next: Partial<ScheduleItem>) => void;
   onDelete: (itemId: string) => void;
   onImport: () => void;
+  onTestOcrEndpoint: () => void;
+  onUseDemoOcrResult: () => void;
   scheduleAiExtractorUrl: string;
   onScheduleAiExtractorUrlChange: (value: string) => void;
   onMilestoneTracking?: () => void;
@@ -332,11 +351,17 @@ export function ScheduleScreen({
   const [priority, setPriority] = useState<SchedulePriority>('Medium');
   const [status, setStatus] = useState<ScheduleStatus>('Not Started');
   const [notes, setNotes] = useState('');
+  const [showAdvancedExtractionSettings, setShowAdvancedExtractionSettings] =
+    useState(false);
 
   const actionItems = actionItemsFromUpdates(savedUpdates);
 
   const sortedItems = sortedScheduleItems(scheduleItems);
   const scheduleSummary = buildScheduleSummary(scheduleItems);
+  const ocrEndpointConfigured = Boolean(scheduleAiExtractorUrl.trim());
+  const importMode = ocrEndpointConfigured
+    ? 'advanced extraction first, then PDF text fallback'
+    : 'PDF text fallback only';
 
   const dueSoon = scheduleSummary.upcoming7Tasks.map(task => task.item);
   const overdue = scheduleSummary.overdueTasks.map(task => task.item);
@@ -474,24 +499,102 @@ export function ScheduleScreen({
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>Schedule Import</Text>
             <Text style={styles.bodyText}>
-              Import a PDF Gantt chart. The app will first use your AI/OCR extractor endpoint if one is saved, then fall back to readable PDF text extraction. Scanned or flattened Gantt charts usually require AI/OCR.
+              Import a PDF Gantt chart, CSV, or text schedule. If advanced extraction is ready, PDF import can read more schedule details. Scanned or flattened Gantt charts may need manual review.
             </Text>
 
-            <Text style={styles.label}>AI/OCR extractor endpoint</Text>
-            <TextInput
-              style={styles.input}
-              value={scheduleAiExtractorUrl}
-              onChangeText={onScheduleAiExtractorUrlChange}
-              placeholder="https://your-secure-schedule-extractor.example.com/extract"
-              placeholderTextColor={colors.muted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
+            <View
+              style={[
+                styles.endpointStatusPill,
+                ocrEndpointConfigured && styles.endpointStatusPillReady,
+              ]}
+            >
+              <Ionicons
+                name={ocrEndpointConfigured ? 'checkmark-circle-outline' : 'information-circle-outline'}
+                size={17}
+                color={ocrEndpointConfigured ? colors.success : colors.warning}
+              />
+
+              <Text
+                style={[
+                  styles.endpointStatusText,
+                  ocrEndpointConfigured && styles.endpointStatusTextReady,
+                ]}
+                numberOfLines={2}
+              >
+                {ocrEndpointConfigured
+                  ? 'Ready. PDF import can try advanced extraction before fallback.'
+                  : 'Not set up. PDF import will use best-effort text extraction only.'}
+              </Text>
+            </View>
+
+            <SecondaryButton
+              label={
+                showAdvancedExtractionSettings
+                  ? 'Hide Advanced Extraction'
+                  : 'Advanced Extraction Settings'
+              }
+              icon={
+                showAdvancedExtractionSettings
+                  ? 'chevron-up-outline'
+                  : 'settings-outline'
+              }
+              onPress={() => setShowAdvancedExtractionSettings(open => !open)}
+              compact
             />
 
-            <Text style={styles.mutedNote}>
-              For scanned Gantt PDFs, connect a secure OCR/AI endpoint that accepts the PDF and returns JSON schedule items. Leave blank to use best-effort PDF text extraction only.
-            </Text>
+            {showAdvancedExtractionSettings ? (
+              <>
+                <Text style={styles.label}>Secure extraction service</Text>
+
+                <TextInput
+                  style={styles.input}
+                  value={scheduleAiExtractorUrl}
+                  onChangeText={onScheduleAiExtractorUrlChange}
+                  placeholder="https://your-secure-schedule-extractor.example.com/extract"
+                  placeholderTextColor={colors.muted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                />
+
+                <Text style={styles.mutedNote}>
+                  This optional support tool helps convert imported PDFs into draft schedule activities. Current import mode: {importMode}.
+                </Text>
+
+                <Text style={styles.sectionLabelNoMargin}>
+                  Draft activity example
+                </Text>
+
+                <Text style={styles.schemaText}>
+                  Project: Building 2375{'\n'}
+                  Task: Electrical rough-in{'\n'}
+                  Area: Canopy B{'\n'}
+                  Due: 2026-07-10{'\n'}
+                  Status: Not Started{'\n'}
+                  Owner: Electrical Contractor
+                </Text>
+
+                <Text style={styles.mutedNote}>
+                  Use Demo Schedule Result to test schedule behavior without advanced extraction.
+                </Text>
+
+                <View style={styles.dataActionRow}>
+                  <SecondaryButton
+                    label="Test Extraction"
+                    icon="pulse-outline"
+                    onPress={onTestOcrEndpoint}
+                    compact
+                  />
+
+                  <SecondaryButton
+                    label="Use Demo Schedule"
+                    icon="flask-outline"
+                    onPress={onUseDemoOcrResult}
+                    compact
+                  />
+                </View>
+              </>
+            ) : null}
 
             <View style={styles.dataActionRow}>
               <PrimaryButton
@@ -508,6 +611,7 @@ export function ScheduleScreen({
                 compact
               />
             </View>
+
           </View>
 
           {scheduleDocuments.length ? (
@@ -770,6 +874,9 @@ export function ScheduleScreen({
           ) : null}
 
           <Text style={styles.sectionLabel}>Timeline Items</Text>
+          <Text style={styles.mutedNote}>
+            Tap any imported schedule item below to review and correct task name, project, area, dates, owner, contractor, status, priority, percent complete, milestone, or notes.
+          </Text>
         </>
       }
       ListEmptyComponent={

@@ -14,7 +14,13 @@ import { RecentActivity } from './RecentActivity';
 import {
   type ProjectSyncFreshnessMetadata,
 } from '../services/ProjectIntelligenceEngine';
-import { buildRuntime } from '../services/PIERuntime';
+import { usePIELiveAuthority } from '../providers/PIELiveAuthorityProvider';
+import { buildPIEAttentionState } from '../services/PIEAttentionEngine';
+import {
+  buildPIEExperience,
+  type PIEExperienceAction,
+  type PIEExperienceOutput,
+} from '../services/PIEExperienceEngine';
 import type {
   ContactBook,
   ProjectArea,
@@ -69,6 +75,7 @@ type HomeDashboardProps = {
   onProjectAssistant: () => void;
   onAIProjectCoach: () => void;
   onAIExecutiveBrief: () => void;
+  onMoreTools: () => void;
 };
 
 const EMPTY_PROJECT_STATS: ProjectStats = {
@@ -282,11 +289,53 @@ function buildRecommendedAction({
   };
 }
 
-function confidenceLabel(level: 'low' | 'medium' | 'high') {
-  if (level === 'high') return 'strong';
-  if (level === 'medium') return 'usable';
+function readinessLabel(level: 'low' | 'medium' | 'high') {
+  if (level === 'high') return 'Ready';
+  if (level === 'medium') return 'Needs Verification';
 
-  return 'limited';
+  return 'Uncertain';
+}
+
+function missionStatusLabel(status: string) {
+  if (status === 'blocked') return 'Blocked';
+  if (status === 'ready-for-approval' || status === 'complete') return 'Ready';
+  if (status === 'active' || status === 'monitoring') return 'Needs Verification';
+
+  return 'Uncertain';
+}
+
+function missionActionLabel(action: PIEExperienceAction) {
+  if (action === 'capture') return 'Begin Capture';
+  if (action === 'review') return 'Review Draft';
+  if (action === 'approve') return 'Approve';
+  if (action === 'communicate') return 'Communicate';
+  if (action === 'correct') return 'Correct Context';
+  if (action === 'wait') return 'Monitor';
+
+  return 'Confirm';
+}
+
+function buildTodayScheduleSummary({
+  scheduleItems,
+  scheduleSummary,
+  runtimeSummary,
+}: {
+  scheduleItems: ScheduleItem[];
+  scheduleSummary: ScheduleSummary;
+  runtimeSummary: string;
+}) {
+  if (scheduleItems.length === 0) return runtimeSummary;
+
+  const loadedCount =
+    scheduleSummary.totalItems > 0
+      ? scheduleSummary.totalItems
+      : scheduleItems.length;
+
+  if (scheduleSummary.totalItems === 0) {
+    return `Schedule loaded: ${loadedCount} activities. PIE is preparing schedule insights.`;
+  }
+
+  return `Schedule loaded: ${loadedCount} activities. ${scheduleSummary.upcoming7Count} upcoming in 7 days, ${scheduleSummary.upcoming14Count} upcoming in 14 days, ${scheduleSummary.overdueCount} overdue, ${scheduleSummary.criticalPathItems.length} critical.`;
 }
 
 export function HomeDashboard({
@@ -311,8 +360,10 @@ export function HomeDashboard({
   onProjectAssistant,
   onAIProjectCoach,
   onAIExecutiveBrief,
+  onMoreTools,
 }: HomeDashboardProps) {
   const [secondaryActionsOpen, setSecondaryActionsOpen] = useState(false);
+  const liveAuthority = usePIELiveAuthority();
   const projectsNeedingAttention = projects
     .map(project => ({
       project,
@@ -348,18 +399,24 @@ export function HomeDashboard({
   const activeProjectName =
     draftProject || latestActivityProject || projects[0] || null;
   const currentProject = activeProjectName || 'No active project';
-  const runtime = buildRuntime({
-    projectName: activeProjectName || currentProject,
-    projectNames: projects,
-    updates: savedUpdates,
-    scheduleItems,
-    currentUpdate: unfinishedDraft,
-    projectAreas,
-    contacts,
-    referenceDocuments,
-    syncMetadata,
-    surface: 'home',
-  });
+  const runtime = liveAuthority.runtime;
+  if (!runtime) {
+    return (
+      <Screen contentStyle={contentStyle}>
+        <AppHeader />
+
+        <View style={styles.morningBriefCard}>
+          <Text style={styles.morningBriefGreeting}>
+            {getGreeting()}, David.
+          </Text>
+
+          <Text style={styles.morningBriefSubtitle}>
+            {liveAuthority.policy.userMessage}
+          </Text>
+        </View>
+      </Screen>
+    );
+  }
   const currentProjectStats =
     activeProjectName
       ? projectStatsByName[activeProjectName] || EMPTY_PROJECT_STATS
@@ -410,9 +467,12 @@ export function HomeDashboard({
     runtime.priorityQueue.currentPriority?.title ||
     runtime.nextBestAction.title ||
     recommendedAction.title;
-  const currentConfidence =
-    `${runtime.intelligence.confidence.score}% ${confidenceLabel(runtime.overallConfidence)}`;
   const currentMission = runtime.currentMission;
+  const scheduleBriefSummary = buildTodayScheduleSummary({
+    scheduleItems,
+    scheduleSummary,
+    runtimeSummary: runtime.scheduleIntelligence.executiveSummary,
+  });
   const missionBlockers =
     runtime.missionBlockers.length > 0
       ? runtime.missionBlockers
@@ -420,8 +480,39 @@ export function HomeDashboard({
           .map(blocker => blocker.title)
           .join(' | ')
       : 'No mission blockers from current evidence';
+  const criticalItemsSummary = [
+    scheduleSummary.criticalPathItems.length > 0
+      ? `${scheduleSummary.criticalPathItems.length} critical schedule item${scheduleSummary.criticalPathItems.length === 1 ? '' : 's'}.`
+      : null,
+    scheduleSummary.overdueCount > 0
+      ? `${scheduleSummary.overdueCount} overdue.`
+      : null,
+    projectsNeedingAttention.length > 0
+      ? `${projectsNeedingAttention.length} project${projectsNeedingAttention.length === 1 ? '' : 's'} need attention.`
+      : null,
+  ].filter(Boolean).join(' ') || 'No critical item from current evidence.';
+  const reportReadySummary =
+    runtime.response.reportNeedsReview
+      ? 'Report needs review before communication.'
+      : runtime.response.reportReadiness === 'high'
+        ? 'Report is ready for review.'
+        : 'Report is not ready yet.';
+  const evidenceNeededSummary =
+    runtime.recommendedEvidence[0] ||
+    runtime.response.whatPIENeedsFromYou ||
+    missionBlockers;
+  const readinessSummary = [
+    `Trust: ${readinessLabel(runtime.trustScore.level)}`,
+    `Understanding: ${readinessLabel(runtime.understandingScore.level)}`,
+    `Preparedness: ${readinessLabel(runtime.preparednessScore.level)}`,
+  ];
+  const missionReadinessSummary =
+    `${missionStatusLabel(runtime.missionProgress.status)} | ${readinessSummary.join(' | ')}`;
   const todayPriorities = [
     topPriority,
+    runtime.scheduleIntelligence.recommendedWalkAreas[0]
+      ? `Walk ${runtime.scheduleIntelligence.recommendedWalkAreas[0]} based on imported schedule.`
+      : null,
     runtime.currentMission.recommendedActions[0]?.recommendation,
     runtime.nextBestAction.suggestedNextAction,
   ].filter((item, index, items): item is string =>
@@ -433,16 +524,139 @@ export function HomeDashboard({
       : ['No project currently needs high attention from local evidence'];
   const startCapture = () =>
     activeProjectName ? onUpdateProject(activeProjectName) : onNewUpdate();
+  const attentionState = liveAuthority.attention || buildPIEAttentionState({
+    runtime,
+  });
+  const experienceOutput = liveAuthority.experience || buildPIEExperience({
+    runtime,
+    attentionState,
+    context: {
+      surface: 'today',
+      hasRecentGreeting: true,
+      locationEvidenceNeeded: runtime.recommendedWalkAreas.length > 0,
+    },
+  });
+  const missionSupportingItems = [
+    liveAuthority.degraded ? liveAuthority.policy.userMessage : null,
+    experienceOutput.reason,
+    runtime.recommendedEvidence[0],
+    scheduleSummary.upcoming7Count > 0
+      ? `${scheduleSummary.upcoming7Count} schedule item${scheduleSummary.upcoming7Count === 1 ? '' : 's'} due within 7 days.`
+      : null,
+  ].filter((item): item is string => Boolean(item));
+  const photoProgressCard =
+    liveAuthority.core?.longitudinalPhotoIntelligence.conciseProgressCard;
+  const photoProgressEvent =
+    liveAuthority.core?.photoProgressEvents[0] || null;
+  const handleExperienceAction = (action: PIEExperienceAction) => {
+    if (action === 'capture') {
+      startCapture();
+      return;
+    }
 
+    if (
+      action === 'approve' ||
+      action === 'communicate' ||
+      action === 'review'
+    ) {
+      onAIExecutiveBrief();
+      return;
+    }
+
+    if (action === 'correct') {
+      onViewProjects();
+      return;
+    }
+
+    if (action === 'wait') {
+      onProjectAssistant();
+      return;
+    }
+
+    if (activeProjectName) {
+      onOpenProject(activeProjectName);
+      return;
+    }
+
+    onViewProjects();
+  };
   return (
     <Screen contentStyle={contentStyle}>
       <AppHeader />
+
+      <PIEMissionCard
+        experience={experienceOutput}
+        greeting={`${getGreeting()}, David.`}
+        missionTitle={currentMission.title || recommendedAction.title}
+        missionPurpose={currentMission.purpose || experienceOutput.primaryMessage}
+        supportingItems={missionSupportingItems}
+        onPrimaryAction={() =>
+          handleExperienceAction(experienceOutput.primaryAction)
+        }
+        onSecondaryAction={
+          experienceOutput.secondaryAction
+            ? () => handleExperienceAction(experienceOutput.secondaryAction!)
+            : undefined
+        }
+      />
+
+      {photoProgressCard?.visible ? (
+        <View style={styles.morningBriefCard}>
+          <View style={styles.morningBriefHeader}>
+            <View style={styles.morningBriefIcon}>
+              <Ionicons
+                name="images-outline"
+                size={24}
+                color={colors.primary}
+              />
+            </View>
+
+            <View style={styles.rowMain}>
+              <Text style={styles.morningBriefGreeting}>
+                {photoProgressCard.title}
+              </Text>
+
+              <Text style={styles.morningBriefSubtitle}>
+                {photoProgressCard.summary}
+              </Text>
+            </View>
+          </View>
+
+          {photoProgressEvent ? (
+            <View style={styles.briefLineList}>
+              <Text style={styles.briefLine}>
+                Observation: {photoProgressEvent.observation}
+              </Text>
+
+              <Text style={styles.briefLine}>
+                Verification: {photoProgressEvent.reviewStatus.replace(/_/g, ' ')}
+              </Text>
+            </View>
+          ) : null}
+
+          <TouchableOpacity
+            style={styles.scheduleAttentionButton}
+            onPress={() => activeProjectName ? onOpenProject(activeProjectName) : onViewProjects()}
+            activeOpacity={0.85}
+          >
+            <Ionicons
+              name="arrow-forward-outline"
+              size={18}
+              color={colors.primary}
+            />
+
+            <Text style={styles.scheduleAttentionButtonText}>
+              {photoProgressCard.primaryAction}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <View style={styles.morningBriefCard}>
         <View style={styles.morningBriefHeader}>
           <View style={styles.morningBriefIcon}>
             <Ionicons
-              name="sparkles-outline"
+              name="list-outline"
               size={24}
               color={colors.primary}
             />
@@ -450,86 +664,84 @@ export function HomeDashboard({
 
           <View style={styles.rowMain}>
             <Text style={styles.morningBriefGreeting}>
-              {getGreeting()}
+              Supporting Summary
             </Text>
 
             <Text style={styles.morningBriefSubtitle}>
-              PIE Briefing: here is what matters today.
+              Small signals behind today's mission.
             </Text>
           </View>
         </View>
 
         <View style={styles.briefLineList}>
           <BriefLine
-            icon="flag-outline"
-            label="Current Mission"
-            value={`${currentMission.title}: ${currentMission.purpose}`}
-          />
-
-          <BriefLine
-            icon="trending-up-outline"
-            label="Mission Progress"
-            value={`${runtime.missionProgress.score}% - ${runtime.missionProgress.summary}`}
-          />
-
-          <BriefLine
-            icon="ban-outline"
-            label="Mission Blockers"
-            value={missionBlockers}
-          />
-
-          <BriefLine
-            icon="shield-checkmark-outline"
-            label="Trust Score"
-            value={`${runtime.trustScore.overallScore}% ${confidenceLabel(runtime.trustScore.level)}`}
-          />
-
-          <BriefLine
-            icon="bulb-outline"
-            label="Understanding"
-            value={`${runtime.understandingScore.score}% ${confidenceLabel(runtime.understandingScore.level)}`}
-          />
-
-          <BriefLine
-            icon="pulse-outline"
-            label="Confidence"
-            value={currentConfidence}
-          />
-
-          <BriefLine
-            icon="briefcase-outline"
-            label="Preparedness"
-            value={`${runtime.preparednessScore.score}% ${confidenceLabel(runtime.preparednessScore.level)}`}
-          />
-
-          <BriefLine
-            icon={recommendedAction.icon}
-            label="Top Priority"
-            value={topPriority}
-          />
-
-          <BriefLine
-            icon="git-branch-outline"
-            label="What Changed"
-            value={runtime.response.whatChanged}
-          />
-
-          <BriefLine
             icon="alert-circle-outline"
-            label="What Concerns PIE"
-            value={runtime.response.whatConcernsPIE}
+            label="Critical Items"
+            value={criticalItemsSummary}
+            onPress={
+              scheduleSummary.criticalPathItems.length > 0 ||
+              scheduleSummary.overdueCount > 0
+                ? onSchedule
+                : onViewProjects
+            }
+            detailItems={[
+              ...scheduleSummary.criticalPathItems.slice(0, 3).map(task =>
+                `${task.title} | ${task.dueLabel} | ${task.item.owner || 'Owner not set'} | Schedule impact | Review schedule evidence.`,
+              ),
+              ...projectsNeedingAttention.slice(0, 3).map(item =>
+                `${item.project} | Needs attention | ${item.stats.openActions} open action${item.stats.openActions === 1 ? '' : 's'} | Open project.`,
+              ),
+            ]}
           />
 
           <BriefLine
-            icon="checkmark-circle-outline"
-            label="What PIE Recommends"
-            value={runtime.response.whatPIERecommends}
+            icon="newspaper-outline"
+            label="Report Ready"
+            value={reportReadySummary}
+            onPress={onAIExecutiveBrief}
+            detailItems={[
+              runtime.response.reportNeedsReview
+                ? 'Report needs review | Correct uncertain items | Approve before sharing.'
+                : 'Report ready | Review draft | Approve before sharing.',
+            ]}
+          />
+
+          <BriefLine
+            icon="calendar-outline"
+            label="Schedule Loaded"
+            value={scheduleBriefSummary}
+            onPress={onSchedule}
+            detailItems={[
+              ...scheduleSummary.overdueTasks.slice(0, 3).map(task =>
+                `${task.title} | ${task.dueLabel} | ${task.item.owner || 'Owner not set'} | Overdue schedule item | Review schedule.`,
+              ),
+              ...scheduleSummary.upcomingTasks.slice(0, 3).map(task =>
+                `${task.title} | ${task.dueLabel} | ${task.item.owner || 'Owner not set'} | Upcoming work | Capture evidence if needed.`,
+              ),
+            ]}
           />
 
           <BriefLine
             icon="hand-left-outline"
-            label="What PIE Needs"
-            value={runtime.response.whatPIENeedsFromYou}
+            label="Evidence Needed"
+            value={evidenceNeededSummary}
+            onPress={startCapture}
+            detailItems={[
+              runtime.recommendedEvidence[0] || 'Capture one current photo or note for the active project.',
+              runtime.response.whatPIENeedsFromYou || 'PIE will infer project, area, evidence type, and related schedule item where possible.',
+            ]}
+          />
+
+          <BriefLine
+            icon="shield-checkmark-outline"
+            label="Readiness"
+            value={missionReadinessSummary}
+            onPress={onProjectAssistant}
+            detailItems={[
+              `Project status: ${projectHealth.label} - ${projectHealth.detail}.`,
+              `Mission status: ${missionStatusLabel(runtime.missionProgress.status)}.`,
+              'Open details to see why PIE recommends the next action.',
+            ]}
           />
         </View>
       </View>
@@ -855,10 +1067,10 @@ export function HomeDashboard({
 
             <TouchableOpacity
               style={styles.secondaryMenuAction}
-              onPress={onAIProjectCoach}
+              onPress={onMoreTools}
             >
               <Ionicons
-                name="bulb-outline"
+                name="ellipsis-horizontal-circle-outline"
                 size={18}
                 color={colors.primary}
               />
@@ -867,7 +1079,7 @@ export function HomeDashboard({
                 style={styles.secondaryMenuText}
                 numberOfLines={1}
               >
-                AI Coach
+                More Tools
               </Text>
             </TouchableOpacity>
           </View>
@@ -889,41 +1101,201 @@ export function HomeDashboard({
   );
 }
 
+function PIEMissionCard({
+  experience,
+  greeting,
+  missionTitle,
+  missionPurpose,
+  supportingItems,
+  onPrimaryAction,
+  onSecondaryAction,
+}: {
+  experience: PIEExperienceOutput;
+  greeting: string;
+  missionTitle: string;
+  missionPurpose: string;
+  supportingItems: string[];
+  onPrimaryAction: () => void;
+  onSecondaryAction?: () => void;
+}) {
+  const nextStepState = experience.nextState;
+
+  return (
+    <View style={styles.missionCard}>
+      <View style={styles.missionHeader}>
+        <View style={styles.missionIcon}>
+          <Ionicons
+            name="sparkles-outline"
+            size={22}
+            color={colors.primary}
+          />
+        </View>
+
+        <View style={styles.rowMain}>
+          <Text style={styles.missionGreeting}>
+            {greeting}
+          </Text>
+
+          <Text style={styles.missionSubtitle}>
+            What should I do now?
+          </Text>
+        </View>
+      </View>
+
+      <Text style={styles.missionLabel}>
+        Today's mission
+      </Text>
+
+      <Text style={styles.missionTitle}>
+        {missionTitle}
+      </Text>
+
+      <Text style={styles.missionPurpose}>
+        {missionPurpose || experience.primaryMessage}
+      </Text>
+
+      <View style={styles.missionWhyBlock}>
+        <Text style={styles.missionWhyTitle}>
+          Why
+        </Text>
+
+        {[experience.reason, ...supportingItems]
+          .filter((item, index, items) => item.trim() && items.indexOf(item) === index)
+          .slice(0, 3)
+          .map((item, index) => (
+            <View
+              key={`${item}-${index}`}
+              style={styles.missionWhyRow}
+            >
+              <View style={styles.missionWhyDot} />
+
+              <Text style={styles.missionWhyText}>
+                {item}
+              </Text>
+            </View>
+          ))}
+      </View>
+
+      <TouchableOpacity
+        style={styles.missionPrimaryButton}
+        onPress={onPrimaryAction}
+        accessibilityRole="button"
+        accessibilityLabel={missionActionLabel(experience.primaryAction)}
+        accessibilityHint={`Next: ${nextStepState.replace('_', ' ')}`}
+      >
+        <Text style={styles.missionPrimaryText}>
+          {missionActionLabel(experience.primaryAction)}
+        </Text>
+
+        <Ionicons
+          name="arrow-forward-outline"
+          size={18}
+          color="#FFFFFF"
+        />
+      </TouchableOpacity>
+
+      {experience.secondaryAction && onSecondaryAction ? (
+        <TouchableOpacity
+          style={styles.missionSecondaryButton}
+          onPress={onSecondaryAction}
+          accessibilityRole="button"
+          accessibilityLabel={missionActionLabel(experience.secondaryAction)}
+        >
+          <Text style={styles.missionSecondaryText}>
+            {missionActionLabel(experience.secondaryAction)}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
 function BriefLine({
   icon,
   label,
   value,
+  onPress,
+  detailItems = [],
 }: {
   icon: IconName;
   label: string;
   value: string;
+  onPress?: () => void;
+  detailItems?: string[];
 }) {
-  return (
-    <View style={styles.briefLine}>
-      <View style={styles.briefLineIcon}>
+  const [open, setOpen] = useState(false);
+  const content = (
+    <>
+      <View style={styles.briefLineMain}>
+        <View style={styles.briefLineIcon}>
+          <Ionicons
+            name={icon}
+            size={18}
+            color={colors.primary}
+          />
+        </View>
+
+        <View style={styles.briefLineContent}>
+          <Text
+            style={styles.briefLineLabel}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+
+          <Text
+            style={styles.briefLineValue}
+            numberOfLines={2}
+          >
+            {value}
+          </Text>
+        </View>
+
         <Ionicons
-          name={icon}
+          name={open ? 'chevron-up-outline' : 'chevron-down-outline'}
           size={18}
-          color={colors.primary}
+          color={colors.muted}
         />
       </View>
 
-      <View style={styles.briefLineContent}>
-        <Text
-          style={styles.briefLineLabel}
-          numberOfLines={1}
-        >
-          {label}
-        </Text>
+      {open && detailItems.length > 0 ? (
+        <View style={styles.briefDetailList}>
+          {detailItems.slice(0, 4).map(item => (
+            <Text
+              key={item}
+              style={styles.briefDetailText}
+            >
+              {item}
+            </Text>
+          ))}
 
-        <Text
-          style={styles.briefLineValue}
-          numberOfLines={2}
-        >
-          {value}
-        </Text>
-      </View>
-    </View>
+          {onPress ? (
+            <TouchableOpacity
+              style={styles.briefDetailButton}
+              onPress={onPress}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${label} details`}
+            >
+              <Text style={styles.briefDetailButtonText}>
+                Open Details
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
+    </>
+  );
+
+  return (
+    <TouchableOpacity
+      style={styles.briefLine}
+      onPress={() => setOpen(value => !value)}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${value}`}
+      accessibilityHint="Shows the items behind this summary"
+    >
+      {content}
+    </TouchableOpacity>
   );
 }
 
@@ -1072,6 +1444,141 @@ function ScheduleAttentionTask({
 }
 
 const styles = StyleSheet.create({
+  missionCard: {
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 14,
+  },
+
+  missionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 16,
+  },
+
+  missionIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 11,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  missionGreeting: {
+    color: colors.text,
+    fontSize: 21,
+    lineHeight: 26,
+    fontWeight: '900',
+  },
+
+  missionSubtitle: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+
+  missionLabel: {
+    color: colors.primary,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    marginBottom: 5,
+  },
+
+  missionTitle: {
+    color: colors.text,
+    fontSize: 28,
+    lineHeight: 34,
+    fontWeight: '900',
+    marginBottom: 7,
+  },
+
+  missionPurpose: {
+    color: colors.muted,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700',
+    marginBottom: 15,
+  },
+
+  missionWhyBlock: {
+    borderRadius: 12,
+    backgroundColor: colors.fill,
+    padding: 12,
+    gap: 8,
+    marginBottom: 15,
+  },
+
+  missionWhyTitle: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '900',
+  },
+
+  missionWhyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+
+  missionWhyDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+    marginTop: 7,
+  },
+
+  missionWhyText: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
+    flex: 1,
+  },
+
+  missionPrimaryButton: {
+    minHeight: 52,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+  },
+
+  missionPrimaryText: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: '900',
+  },
+
+  missionSecondaryButton: {
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    marginTop: 8,
+  },
+
+  missionSecondaryText: {
+    color: colors.primary,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+
   draftRecoveryCard: {
     backgroundColor: colors.warningSoft,
     borderWidth: 1,
@@ -1213,12 +1720,15 @@ const styles = StyleSheet.create({
 
   briefLine: {
     minHeight: 50,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
     borderRadius: 11,
     backgroundColor: colors.fill,
     padding: 10,
+  },
+
+  briefLineMain: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
   },
 
   briefLineIcon: {
@@ -1248,6 +1758,37 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '800',
     marginTop: 2,
+  },
+
+  briefDetailList: {
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    marginTop: 10,
+    paddingTop: 10,
+    gap: 8,
+  },
+
+  briefDetailText: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+
+  briefDetailButton: {
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: 12,
+  },
+
+  briefDetailButtonText: {
+    color: colors.primary,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
   },
 
   homePieListCard: {

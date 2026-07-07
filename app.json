@@ -2,15 +2,19 @@
   "expo": {
     "name": "Project Photo Update Tool",
     "slug": "project-photo-update-tool",
-    "version": "1.0.0",
+    "version": "1.0.22",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.png",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.davidfamularo.projectphotoupdate",
+      "buildNumber": "22",
       "icon": "./assets/icon.png",
       "infoPlist": {
+        "NSCameraUsageDescription": "Allow Project Photo Update Tool to capture project photos as field evidence.",
+        "NSPhotoLibraryUsageDescription": "Allow Project Photo Update Tool to select project photos and supporting evidence from your photo library.",
+        "NSPhotoLibraryAddUsageDescription": "Allow Project Photo Update Tool to save captured project photos to your photo library when requested.",
         "NSContactsUsageDescription": "Allow Project Photo Update Tool to choose update recipients from your contacts.",
         "NSLocationWhenInUseUsageDescription": "This app uses your location to tag project photos and suggest the correct work area.",
         "ITSAppUsesNonExemptEncryption": false
@@ -18,6 +22,7 @@
     },
     "android": {
       "package": "com.davidfamularo.projectphotoupdate",
+      "versionCode": 22,
       "permissions": [
         "READ_CONTACTS",
         "ACCESS_COARSE_LOCATION",
@@ -35,6 +40,7 @@
       ]
     ],
     "extra": {
+      "buildLabel": "Build 22",
       "eas": {
         "projectId": "38a9bd56-2943-4538-a9bf-1ac6818a3723"
       }

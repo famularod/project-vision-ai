@@ -25,6 +25,7 @@ export type ScheduleSummaryTask = {
   isUpcoming30: boolean;
   isMissingProject: boolean;
   isMissingArea: boolean;
+  isNeedsReview: boolean;
 };
 
 export type ScheduleSummaryGroup = {
@@ -46,6 +47,7 @@ export type ScheduleSummary = {
   missingProjectCount: number;
   missingAreaCount: number;
   missingMappingCount: number;
+  needsReviewCount: number;
   upcomingTasks: ScheduleSummaryTask[];
   upcoming7Tasks: ScheduleSummaryTask[];
   upcoming14Tasks: ScheduleSummaryTask[];
@@ -55,6 +57,7 @@ export type ScheduleSummary = {
   milestoneTasks: ScheduleSummaryTask[];
   criticalPathItems: ScheduleSummaryTask[];
   missingMappingTasks: ScheduleSummaryTask[];
+  needsReviewTasks: ScheduleSummaryTask[];
   byProject: ScheduleSummaryGroup[];
   byArea: ScheduleSummaryGroup[];
 };
@@ -218,6 +221,14 @@ export function buildScheduleSummary(
     const isUpcoming30 = !isCompleted && days !== null && days >= 0 && days <= 30;
     const isMissingProject = !item.projectName.trim();
     const isMissingArea = !item.locationName.trim();
+    const isNeedsReview =
+      isMissingProject ||
+      isMissingArea ||
+      !item.finishDate.trim() ||
+      item.notes.toLowerCase().includes('review') ||
+      item.notes.toLowerCase().includes('demo/test') ||
+      item.notes.toLowerCase().includes('best-effort') ||
+      item.notes.toLowerCase().includes('ai/ocr');
 
     return {
       item,
@@ -234,6 +245,7 @@ export function buildScheduleSummary(
       isUpcoming30,
       isMissingProject,
       isMissingArea,
+      isNeedsReview,
     };
   });
   const upcomingTasks = tasks
@@ -260,6 +272,7 @@ export function buildScheduleSummary(
   const missingMappingTasks = tasks.filter(
     task => task.isMissingProject || task.isMissingArea,
   );
+  const needsReviewTasks = tasks.filter(task => task.isNeedsReview);
 
   return {
     totalItems: tasks.length,
@@ -272,6 +285,7 @@ export function buildScheduleSummary(
     missingProjectCount: tasks.filter(task => task.isMissingProject).length,
     missingAreaCount: tasks.filter(task => task.isMissingArea).length,
     missingMappingCount: missingMappingTasks.length,
+    needsReviewCount: needsReviewTasks.length,
     upcomingTasks,
     upcoming7Tasks: tasks.filter(task => task.isUpcoming7).sort(sortSummaryTasks),
     upcoming14Tasks: tasks.filter(task => task.isUpcoming14).sort(sortSummaryTasks),
@@ -281,6 +295,7 @@ export function buildScheduleSummary(
     milestoneTasks,
     criticalPathItems,
     missingMappingTasks,
+    needsReviewTasks,
     byProject: groupTasks(tasks, task => task.item.projectName, 'Unassigned project'),
     byArea: groupTasks(tasks, task => task.item.locationName, 'Unassigned area'),
   };
@@ -296,6 +311,9 @@ export function formatScheduleImportSummary(scheduleItems: ScheduleItem[]) {
     `Upcoming next 7 days: ${summary.upcoming7Count}`,
     `Upcoming next 14 days: ${summary.upcoming14Count}`,
     `Upcoming next 30 days: ${summary.upcoming30Count}`,
+    `Items missing project: ${summary.missingProjectCount}`,
+    `Items missing area: ${summary.missingAreaCount}`,
+    `Items needing review: ${summary.needsReviewCount}`,
   ].join('\n');
 }
 

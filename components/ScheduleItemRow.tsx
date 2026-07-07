@@ -70,6 +70,44 @@ export function ScheduleItemRow({
 
         {expanded ? (
           <View style={styles.areaManagerCard}>
+            <Text style={styles.label}>Task or milestone</Text>
+            <TextInput
+              style={styles.input}
+              value={item.taskName}
+              onChangeText={taskName => onUpdate({ taskName })}
+              placeholder="Task name"
+              placeholderTextColor={colors.muted}
+            />
+
+            <Text style={styles.label}>Project</Text>
+            <TextInput
+              style={styles.input}
+              value={item.projectName}
+              onChangeText={projectName => onUpdate({ projectName })}
+              placeholder="Project name"
+              placeholderTextColor={colors.muted}
+            />
+
+            <Text style={styles.label}>Area</Text>
+            <TextInput
+              style={styles.input}
+              value={item.locationName}
+              onChangeText={locationName => onUpdate({ locationName })}
+              placeholder="Area / location"
+              placeholderTextColor={colors.muted}
+            />
+
+            <Text style={styles.label}>Start Date</Text>
+            <TextInput
+              style={styles.input}
+              value={item.startDate}
+              onChangeText={startDate => onUpdate({ startDate: normalizeDateInput(startDate) })}
+              placeholder="MM/DD/YYYY"
+              placeholderTextColor={colors.muted}
+              keyboardType="numbers-and-punctuation"
+              maxLength={10}
+            />
+
             <Text style={styles.label}>Finish / Due Date</Text>
             <TextInput
               style={styles.input}
@@ -79,6 +117,15 @@ export function ScheduleItemRow({
               placeholderTextColor={colors.muted}
               keyboardType="numbers-and-punctuation"
               maxLength={10}
+            />
+
+            <Text style={styles.label}>Milestone</Text>
+            <TextInput
+              style={styles.input}
+              value={item.milestone}
+              onChangeText={milestone => onUpdate({ milestone })}
+              placeholder="Milestone label"
+              placeholderTextColor={colors.muted}
             />
 
             <Text style={styles.label}>Owner</Text>

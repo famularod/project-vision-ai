@@ -1,0 +1,162 @@
+ M App.tsx
+ M app.json
+ M components/AppHeader.tsx
+ M components/BottomNavigation.tsx
+ M components/CriticalPathSummary.tsx
+ M components/HomeDashboard.tsx
+ M components/PIEPanel.tsx
+ M components/PhotoCapturePanel.tsx
+ M components/ProjectDetailsCard.tsx
+ M components/ProjectFinderRow.tsx
+ M components/ScheduleItemRow.tsx
+ M docs/PIE_MasterArchitecture.md
+ M docs/ProjectVisionAI_JARVIS_QA.md
+ M eas.json
+ M lib/project_photo_update_refactor_phase1/lib/supabase.ts
+ M package.json
+ M project_photo_update_refactor_phase1/lib/supabase.ts
+ M screens/AIExecutiveBriefScreen.tsx
+ M screens/AIProjectCoachScreen.tsx
+ M screens/AdminScreen.tsx
+ M screens/BuildUpdateScreen.tsx
+ M screens/DiagnosticsScreen.tsx
+ M screens/ProjectAssistantScreen.tsx
+ M screens/ProjectOverviewScreen.tsx
+ M screens/ReportsScreen.tsx
+ M screens/ScheduleScreen.tsx
+ D services/OpenAIService.ts
+ M services/PIEReflectionEngine.ts
+ M services/PIERuntime.ts
+ M services/ProjectAIAnalysisService.ts
+ M services/SupabaseService.ts
+ M services/SyncService.ts
+ M tsconfig.json
+ M types/index.ts
+ M utils/schedule.ts
+?? .env.example
+?? app.config.js
+?? components/PIEConductorCard.tsx
+?? components/StartupErrorBoundary.tsx
+?? docs/ECOS_CognitiveFramework.md
+?? docs/ECOS_DomainAdapterModel.md
+?? docs/PIE_AdaptiveIntelligenceModel.md
+?? docs/PIE_Attention_Model.md
+?? docs/PIE_BeliefModel.md
+?? docs/PIE_CognitiveArchitecture.md
+?? docs/PIE_CognitiveConstitution.md
+?? docs/PIE_Conductor_Manifesto.md
+?? docs/PIE_ContinuousLearningModel.md
+?? docs/PIE_Conversation_Model.md
+?? docs/PIE_CoreIntelligencePlan.md
+?? docs/PIE_DecisionMemoryModel.md
+?? docs/PIE_DeliberationModel.md
+?? docs/PIE_EvidenceFusionModel.md
+?? docs/PIE_EvidenceQualityModel.md
+?? docs/PIE_EvidenceTimelineModel.md
+?? docs/PIE_ExecutiveJudgmentModel.md
+?? docs/PIE_ExecutiveReasoningModel.md
+?? docs/PIE_ExperienceConstitution.md
+?? docs/PIE_Experience_StateMachine.md
+?? docs/PIE_JARVIS_ExperienceQA.md
+?? docs/PIE_MasterValidationReport.md
+?? docs/PIE_MemoryRecallModel.md
+?? docs/PIE_MissingEvidenceModel.md
+?? docs/PIE_MultimodalEvidenceArchitecture.md
+?? docs/PIE_PatternIntelligenceModel.md
+?? docs/PIE_PhysicalDeviceValidation.md
+?? docs/PIE_PredictiveRealityModel.md
+?? docs/PIE_PredictiveSimulationModel.md
+?? docs/PIE_ProductOperatingPlan.md
+?? docs/PIE_RealityModel.md
+?? docs/PIE_RealityModelPersistence.md
+?? docs/PIE_SituationIntelligenceModel.md
+?? docs/PIE_TruePhotoIntelligence.md
+?? docs/PIE_VisualValidationPlan.md
+?? pie_current_git_status.txt
+?? providers/
+?? scripts/attention-authority-test.js
+?? scripts/decision-intelligence-test.js
+?? scripts/e2e-core-flow-test.js
+?? scripts/experience-authority-test.js
+?? scripts/jarvis-qa.js
+?? scripts/layer4-automation-test.js
+?? scripts/layer4-decision-ledger-test.js
+?? scripts/layer4-rls-static-test.js
+?? scripts/layer4-trust-boundary-test.js
+?? scripts/live-provider-mouse-acceptance.js
+?? scripts/live-provider-test.js
+?? scripts/live-reality-authority-test.js
+?? scripts/live-rls-test.js
+?? scripts/multimodal-evidence-test.js
+?? scripts/phase2-project-screens-test.js
+?? scripts/phase3-field-update-flow-test.js
+?? scripts/phase4-update-preview-test.js
+?? scripts/phase5-updates-screen-test.js
+?? scripts/phase6-documents-foundation-test.js
+?? scripts/phase7-final-validation-test.js
+?? scripts/photo-progress-intelligence-test.js
+?? scripts/photo-rls-policy-regression-test.js
+?? scripts/pie-intelligence-upgrades-test.js
+?? scripts/pie-master-validation-test.js
+?? scripts/pie-ui-follow-up-test.js
+?? scripts/pie-vision-evaluation-harness.js
+?? scripts/production-secret-guard.js
+?? scripts/reality-model-test.js
+?? scripts/reporter-authority-test.js
+?? scripts/startup-recovery-test.js
+?? scripts/ui-simplification-test.js
+?? services/AIClientBoundaryService.ts
+?? services/ECOSCognitiveFramework.ts
+?? services/ECOSDomainAdapter.ts
+?? services/PIEAdaptiveIntelligence.ts
+?? services/PIEAttentionEngine.ts
+?? services/PIEBeliefEngine.ts
+?? services/PIEConfidenceDecomposition.ts
+?? services/PIECoreIntelligence.ts
+?? services/PIEDecisionLedger.ts
+?? services/PIEDecisionLedgerStorage.ts
+?? services/PIEDecisionLedgerSync.ts
+?? services/PIEDecisionMemory.ts
+?? services/PIEDecisionSimulation.ts
+?? services/PIEDeliberationEngine.ts
+?? services/PIEDomainAdapter.ts
+?? services/PIEEvidenceFusion.ts
+?? services/PIEEvidenceQuality.ts
+?? services/PIEEvidenceTimeline.ts
+?? services/PIEEvidenceValuePrioritization.ts
+?? services/PIEExecutiveJudgment.ts
+?? services/PIEExecutiveJudgmentRepository.ts
+?? services/PIEExecutiveReasoning.ts
+?? services/PIEExperienceEngine.ts
+?? services/PIEJarvisReasoningValidation.ts
+?? services/PIELayer4Automation.ts
+?? services/PIELayer4Identity.ts
+?? services/PIELearningEngine.ts
+?? services/PIEMemoryRecall.ts
+?? services/PIEMissingEvidence.ts
+?? services/PIEMultimodalEvidence.ts
+?? services/PIEPatternEngine.ts
+?? services/PIEPhotoProgress.ts
+?? services/PIEPhotoProgressIntelligence.ts
+?? services/PIEPhotoProgressIntelligenceStorage.ts
+?? services/PIEPhotoVisionMobileWorkflow.ts
+?? services/PIEPhotoVisionPipeline.ts
+?? services/PIEPredictiveEngine.ts
+?? services/PIEPredictiveReality.ts
+?? services/PIERealityModel.ts
+?? services/PIERealityModelGuards.ts
+?? services/PIERealityModelOrchestrator.ts
+?? services/PIERealityModelRepository.ts
+?? services/PIERealityModelStorage.ts
+?? services/PIERealityModelSynchronization.ts
+?? services/PIERecommendationChallenge.ts
+?? services/PIEReporter.ts
+?? services/PIEScheduleIntelligence.ts
+?? services/PIEScientificMethod.ts
+?? services/PIESituationIntelligence.ts
+?? services/PIETraceability.ts
+?? services/SixtySecondFlowInstrumentation.ts
+?? services/StartupDiagnostics.ts
+?? services/StartupRecovery.ts
+?? supabase/
+?? validation/

@@ -12,13 +12,11 @@ type IconName = keyof typeof Ionicons.glyphMap;
 type BottomNavigationDestination =
   | 'Home'
   | 'Projects'
-  | 'Reports'
-  | 'Admin';
+  | 'SavedUpdates';
 
 type BottomNavigationProps = {
   current: string;
   onChange: (screen: BottomNavigationDestination) => void;
-  onNew: () => void;
 };
 
 const colors = {
@@ -31,12 +29,11 @@ const colors = {
 export function BottomNavigation({
   current,
   onChange,
-  onNew,
 }: BottomNavigationProps) {
   return (
     <View style={styles.bottomTabs}>
       <TabButton
-        label="Today"
+        label="Overview"
         icon="home-outline"
         active={current === 'Home'}
         onPress={() => onChange('Home')}
@@ -44,84 +41,33 @@ export function BottomNavigation({
 
       <TabButton
         label="Projects"
-        icon="folder-outline"
-        active={current === 'Projects'}
+        icon="folder-open-outline"
+        active={isProjectsActive(current)}
         onPress={() => onChange('Projects')}
       />
 
-      <View style={styles.captureSlot}>
-        <TouchableOpacity
-          style={[
-            styles.captureButton,
-            isWalkActive(current) && styles.captureButtonActive,
-          ]}
-          onPress={onNew}
-        >
-          <Ionicons
-            name="walk-outline"
-            size={22}
-            color="#FFFFFF"
-          />
-          <Text
-            style={styles.captureButtonText}
-            numberOfLines={1}
-          >
-            Walk
-          </Text>
-        </TouchableOpacity>
-      </View>
-
       <TabButton
-        label="Review"
-        icon="bar-chart-outline"
-        active={isReviewActive(current)}
-        onPress={() => onChange('Reports')}
-      />
-
-      <TabButton
-        label="More"
-        icon="ellipsis-horizontal-circle-outline"
-        active={isMoreActive(current)}
-        onPress={() => onChange('Admin')}
+        label="Updates"
+        icon="document-text-outline"
+        active={isUpdatesActive(current)}
+        onPress={() => onChange('SavedUpdates')}
       />
     </View>
   );
 }
 
-function isWalkActive(current: string) {
+function isProjectsActive(current: string) {
   return (
-    current === 'SelectProject' ||
-    current === 'AddPhotos' ||
-    current === 'BuildUpdate'
+    current === 'Projects' ||
+    current === 'ProjectWorkspace' ||
+    current === 'ProjectDocuments'
   );
 }
 
-function isReviewActive(current: string) {
+function isUpdatesActive(current: string) {
   return (
-    current === 'Reports' ||
     current === 'SavedUpdates' ||
-    current === 'AIExecutiveBrief' ||
-    current === 'WeeklyExecutiveReport' ||
-    current === 'ProjectHealthDashboard' ||
-    current === 'ExecutiveKPIDashboard' ||
-    current === 'CriticalPath' ||
-    current === 'MilestoneTracking'
-  );
-}
-
-function isMoreActive(current: string) {
-  return (
-    current === 'Admin' ||
-    current === 'Diagnostics' ||
-    current === 'ReferenceDocuments' ||
-    current === 'Schedule' ||
-    current === 'Upcoming' ||
-    current === 'ConstructionTimeline' ||
-    current === 'DelayAnalysis' ||
-    current === 'ContractorPerformance' ||
-    current === 'ProjectRiskMatrix' ||
-    current === 'PortfolioDashboard' ||
-    current === 'AIProjectCoach'
+    current === 'UpdateDetail'
   );
 }
 
@@ -140,6 +86,10 @@ function TabButton({
     <TouchableOpacity
       style={styles.tabButton}
       onPress={onPress}
+      hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+      accessibilityRole="tab"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={label}
     >
       <Ionicons
         name={icon}
@@ -181,13 +131,6 @@ const styles = StyleSheet.create({
       Platform.OS === 'ios' ? 24 : 10,
   },
 
-  captureButtonText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '800',
-    marginTop: 1,
-  },
-
   tabButton: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -205,24 +148,4 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
 
-  captureSlot: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  captureButton: {
-    minWidth: 74,
-    minHeight: 50,
-    borderRadius: 14,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-
-  captureButtonActive: {
-    backgroundColor: '#005BBB',
-  },
 });

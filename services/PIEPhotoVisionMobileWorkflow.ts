@@ -1,0 +1,1033 @@
+import * as FileSystem from 'expo-file-system/legacy';
+import {
+  getCurrentSessionAccessToken,
+  getCurrentUser,
+  getSupabaseClient,
+  uploadPhoto,
+  type JsonValue,
+} from './SupabaseService';
+import type { ProjectUpdate, UpdatePhoto } from '../types';
+
+export type PIEPhotoIntelligenceStatus =
+  | 'analyzing'
+  | 'analysis_complete'
+  | 'completed_with_limitations'
+  | 'comparison_unavailable'
+  | 'analysis_failed_retry'
+  | 'no_suitable_prior_photo';
+
+export type PIEPhotoIntelligenceDisplayState = {
+  status: PIEPhotoIntelligenceStatus;
+  title: string;
+  summary: string;
+  visibleChange: string | null;
+  location: string | null;
+  comparisonConfidence: string | null;
+  captureLimitations: string[];
+  projectProgress: 'supported' | 'unsupported' | 'unable_to_determine';
+  repeatPhotoGuidance: string | null;
+  authorityMessage: string;
+  currentObservation?: string | null;
+  changedFromPrior?: string | null;
+  additions?: string[];
+  removals?: string[];
+  possibleProgress?: string | null;
+  possibleConcerns?: string[];
+  priorUpdateUsed?: string | null;
+  requestId?: string | null;
+  comparisonId?: string | null;
+  analysisRequestId?: string | null;
+  currentPhotoAssetId?: string | null;
+  priorPhotoAssetId?: string | null;
+  currentEvidenceId?: string | null;
+  priorEvidenceId?: string | null;
+  semanticComparisonResultId?: string | null;
+  provenance?: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
+  visualGroundingRegions?: string[];
+  diagnostics?: PIEPhotoVisionDiagnostics | null;
+  updatedAt: string;
+};
+
+type AnalyzeInput = {
+  update: ProjectUpdate;
+  photo: UpdatePhoto;
+  priorUpdates: ProjectUpdate[];
+};
+
+type StagedPhotoEvidence = {
+  assetId: string;
+  evidenceId: string;
+  storagePath: string;
+  storagePathHash: string;
+  contentHash: string;
+  sizeBytes: number;
+};
+
+export type PIEPhotoVisionDiagnostics = {
+  currentPhotoAssetId: string | null;
+  priorPhotoAssetId: string | null;
+  currentEvidenceId: string | null;
+  priorEvidenceId: string | null;
+  currentStoragePathHash: string | null;
+  priorStoragePathHash: string | null;
+  currentImageByteSize: number | null;
+  priorImageByteSize: number | null;
+  currentImageSha256: string | null;
+  priorImageSha256: string | null;
+  imageHashesDifferent: boolean | null;
+  signedUrlsGenerated: boolean | null;
+  providerInvocationId: string | null;
+  providerResponseStatus: string | null;
+  failureCategory: 'network' | 'auth' | 'malformed_response' | 'provider_side' | 'unknown' | null;
+  analysisRequestId: string | null;
+  semanticComparisonResultId: string | null;
+  selectedPriorPhotoId: string | null;
+  selectionCandidateCount: number;
+  selectedPriorReason: string | null;
+  rejectedPriorReasons: string[];
+  resultPairMatchesRequestedPair: boolean | null;
+  resultProvenance: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
+  executedStages: string[];
+};
+
+const PIE_EVIDENCE_BUCKET = 'pie-project-evidence';
+
+export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisplayState {
+  return {
+    status: 'analyzing',
+    title: 'Analyzing photo comparison',
+    summary: 'PIE is comparing this photo with prior project evidence.',
+    visibleChange: null,
+    location: null,
+    comparisonConfidence: null,
+    captureLimitations: [],
+    projectProgress: 'unable_to_determine',
+    repeatPhotoGuidance: null,
+    authorityMessage: 'Visual observations will not update project progress unless the evidence supports it.',
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function buildNoSuitablePriorPhotoIntelligenceState(): PIEPhotoIntelligenceDisplayState {
+  return {
+    status: 'no_suitable_prior_photo',
+    title: 'No suitable prior photo',
+    summary: 'PIE needs a prior photo from this project area before it can compare visible changes.',
+    visibleChange: null,
+    location: null,
+    comparisonConfidence: null,
+    captureLimitations: ['No prior photo was available for a reliable comparison.'],
+    projectProgress: 'unable_to_determine',
+    repeatPhotoGuidance: 'Capture a repeat photo from a similar angle when there is prior evidence to compare.',
+    authorityMessage: 'No project progress was inferred from this photo alone.',
+    currentObservation: 'PIE saved this as the first visual baseline for this area.',
+    changedFromPrior: null,
+    additions: [],
+    removals: [],
+    possibleProgress: null,
+    possibleConcerns: ['No earlier photo is available for comparison.'],
+    priorUpdateUsed: null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function analyzeProjectPhotoWithVision({
+  update,
+  photo,
+  priorUpdates,
+}: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
+  const priorSelection = findPriorComparablePhoto(update, photo, priorUpdates);
+  if (!priorSelection.selected) {
+    return {
+      ...buildNoSuitablePriorPhotoIntelligenceState(),
+      diagnostics: buildDiagnostics({
+        selectedPriorPhotoId: null,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: null,
+        rejectedPriorReasons: priorSelection.rejectedReasons,
+        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection'],
+        resultProvenance: 'unsupported',
+      }),
+    };
+  }
+
+  const client = getSupabaseClient();
+  if (!client) {
+    return unavailableState('Photo intelligence is unavailable until Supabase is configured.', 'unknown');
+  }
+
+  const userResult = await getCurrentUser();
+  if (!userResult.ok || !userResult.data) {
+    return unavailableState('Photo intelligence needs a signed-in cloud session before comparing photos.', 'auth');
+  }
+
+  const sessionTokenResult = await getCurrentSessionAccessToken();
+  if (!sessionTokenResult.ok || !sessionTokenResult.data) {
+    return unavailableState('Photo intelligence needs an active signed-in session before comparing photos.', 'auth');
+  }
+
+  const organizationId = userResult.data.id;
+  const projectId = projectIdForPhotoVision(update.projectName);
+  let baselineEvidence: StagedPhotoEvidence | null = null;
+  let currentEvidence: StagedPhotoEvidence | null = null;
+  const executedStages = [
+    'camera_capture',
+    'local_image_uri',
+    'local_file_readable',
+    'current_photo_saved',
+    'prior_photo_selected',
+  ];
+
+  try {
+    baselineEvidence = await stagePhotoEvidence({
+      organizationId,
+      projectId,
+      update: priorSelection.selected.update,
+      photo: priorSelection.selected.photo,
+      captureSource: 'library',
+    });
+    executedStages.push('prior_photo_uploaded', 'prior_evidence_record_created');
+    currentEvidence = await stagePhotoEvidence({
+      organizationId,
+      projectId,
+      update,
+      photo,
+      captureSource: 'camera',
+    });
+    executedStages.push('current_photo_uploaded', 'current_evidence_record_created');
+
+    assertComparableEvidencePair(baselineEvidence, currentEvidence);
+
+    const requestId = `pie-mobile-photo-pair-${stableHash([
+      organizationId,
+      projectId,
+      baselineEvidence.evidenceId,
+      currentEvidence.evidenceId,
+    ].join(':'))}`;
+
+    const { data: functionData, error } = await client.functions.invoke('pie-photo-vision', {
+      headers: {
+        Authorization: `Bearer ${sessionTokenResult.data}`,
+      },
+      body: {
+        requestId,
+        mode: 'photo_pair',
+        organizationId,
+        projectId,
+        baselineEvidenceId: baselineEvidence.evidenceId,
+        currentEvidenceId: currentEvidence.evidenceId,
+      },
+    });
+    executedStages.push('edge_function_invoked');
+
+    if (error) {
+      return failedRetryState('Photo intelligence could not finish. PIE will retry when cloud sync runs.', {
+        baselineEvidence,
+        currentEvidence,
+        requestId,
+        providerResponseStatus: 'function_error',
+        failureCategory: classifyFunctionError(error),
+        selectedPriorPhotoId: priorSelection.selected.photo.id,
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: priorSelection.selected.reason,
+        rejectedPriorReasons: priorSelection.rejectedReasons,
+        executedStages,
+      });
+    }
+
+    const { data, error: queryError } = await client
+      .from('pie_photo_semantic_comparison_results')
+      .select([
+        'id',
+        'request_id',
+        'baseline_evidence_id',
+        'current_evidence_id',
+        'comparability_classification',
+        'conclusion',
+        'confidence',
+        'limitations',
+        'repeat_photo_guidance',
+        'object_additions',
+        'object_removals',
+        'material_or_structural_changes',
+        'deterministic_metrics',
+        'jarvis_result',
+      ].join(','))
+      .eq('request_id', requestId)
+      .eq('baseline_evidence_id', baselineEvidence.evidenceId)
+      .eq('current_evidence_id', currentEvidence.evidenceId)
+      .maybeSingle();
+    executedStages.push('semantic_comparison_persisted');
+
+    if (queryError || !data) {
+      return failedRetryState('Photo intelligence finished, but the result is not available on this device yet.', {
+        baselineEvidence,
+        currentEvidence,
+        requestId,
+        providerResponseStatus: providerStatus(functionData),
+        failureCategory: 'malformed_response',
+        selectedPriorPhotoId: priorSelection.selected.photo.id,
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: priorSelection.selected.reason,
+        rejectedPriorReasons: priorSelection.rejectedReasons,
+        executedStages,
+      });
+    }
+
+    const row = toRecord(data);
+    const pairMatches =
+      row.baseline_evidence_id === baselineEvidence.evidenceId &&
+      row.current_evidence_id === currentEvidence.evidenceId;
+
+    if (!pairMatches) {
+      return failedRetryState('Photo intelligence returned a stale comparison for a different photo pair.', {
+        baselineEvidence,
+        currentEvidence,
+        requestId,
+        providerResponseStatus: providerStatus(functionData),
+        failureCategory: 'malformed_response',
+        selectedPriorPhotoId: priorSelection.selected.photo.id,
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: priorSelection.selected.reason,
+        rejectedPriorReasons: priorSelection.rejectedReasons,
+        executedStages,
+        resultPairMatchesRequestedPair: false,
+      });
+    }
+
+    executedStages.push('jarvis_result_persisted', 'mobile_result_hydrated', 'user_card_render_ready');
+
+    return buildDisplayStateFromComparison(row, {
+      baselineEvidence,
+      currentEvidence,
+      requestId,
+      providerResponseStatus: providerStatus(functionData),
+      selectedPriorPhotoId: priorSelection.selected.photo.id,
+      priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+      selectionCandidateCount: priorSelection.candidateCount,
+      selectedPriorReason: priorSelection.selected.reason,
+      rejectedPriorReasons: priorSelection.rejectedReasons,
+      executedStages,
+      resultPairMatchesRequestedPair: true,
+    });
+  } catch (error) {
+    return failedRetryState('Photo saved. Visual comparison unavailable.', {
+      baselineEvidence,
+      currentEvidence,
+      providerResponseStatus: error instanceof Error ? error.message : 'analysis_exception',
+      failureCategory: classifyThrownError(error),
+      selectedPriorPhotoId: priorSelection.selected.photo.id,
+      priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+      selectionCandidateCount: priorSelection.candidateCount,
+      selectedPriorReason: priorSelection.selected.reason,
+      rejectedPriorReasons: priorSelection.rejectedReasons,
+      executedStages,
+    });
+  }
+}
+
+function findPriorComparablePhoto(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+  priorUpdates: ProjectUpdate[],
+) {
+  const projectKey = normalizeKey(update.projectName);
+  const areaKey = normalizeKey(photo.selectedAreaName || update.selectedAreaName || '');
+  const currentTime = timestampMs(photo.locationCapturedAt || update.date);
+  const accepted: Array<{ update: ProjectUpdate; photo: UpdatePhoto; reason: string; capturedAt: number }> = [];
+  const rejectedReasons: string[] = [];
+  let candidateCount = 0;
+
+  for (const candidateUpdate of priorUpdates) {
+    for (const candidatePhoto of candidateUpdate.photos) {
+      candidateCount += 1;
+      const label = `${candidateUpdate.id || 'update'}:${candidatePhoto.id || 'photo'}`;
+      const candidateProjectKey = normalizeKey(candidateUpdate.projectName);
+      const candidateAreaKey = normalizeKey(candidatePhoto.selectedAreaName || candidateUpdate.selectedAreaName || '');
+      const candidateTime = timestampMs(candidatePhoto.locationCapturedAt || candidateUpdate.date);
+      const uri = candidatePhoto.uri || '';
+
+      if (candidateProjectKey !== projectKey) {
+        rejectedReasons.push(`${label} rejected: different project`);
+        continue;
+      }
+      if (candidatePhoto.id === photo.id || candidateUpdate.id === update.id) {
+        rejectedReasons.push(`${label} rejected: current photo/update`);
+        continue;
+      }
+      if (!uri || /^placeholder:/i.test(uri)) {
+        rejectedReasons.push(`${label} rejected: missing or placeholder asset`);
+        continue;
+      }
+      if (areaKey && candidateAreaKey !== areaKey) {
+        rejectedReasons.push(`${label} rejected: different area`);
+        continue;
+      }
+      if (Number.isFinite(currentTime) && Number.isFinite(candidateTime) && candidateTime >= currentTime) {
+        rejectedReasons.push(`${label} rejected: not earlier than current photo`);
+        continue;
+      }
+
+      accepted.push({
+        update: candidateUpdate,
+        photo: candidatePhoto,
+        capturedAt: Number.isFinite(candidateTime) ? candidateTime : 0,
+        reason: areaKey
+          ? 'most recent valid earlier photo from same project and area'
+          : 'most recent valid earlier photo from same project',
+      });
+    }
+  }
+
+  accepted.sort((a, b) => b.capturedAt - a.capturedAt);
+  return {
+    selected: accepted[0] ?? null,
+    candidateCount,
+    rejectedReasons,
+  };
+}
+
+async function stagePhotoEvidence({
+  organizationId,
+  projectId,
+  update,
+  photo,
+  captureSource,
+}: {
+  organizationId: string;
+  projectId: string;
+  update: ProjectUpdate;
+  photo: UpdatePhoto;
+  captureSource: 'camera' | 'library';
+}) {
+  const client = getSupabaseClient();
+  if (!client) throw new Error('Supabase unavailable');
+
+  const fileInfo = await readPhotoFileDigest(photo.uri);
+  if (!fileInfo.exists) throw new Error('photo_file_missing');
+  if (fileInfo.sizeBytes <= 0) throw new Error('photo_file_empty');
+
+  const mimeType = photo.mimeType || 'image/jpeg';
+  const extension = mimeExtension(mimeType);
+  const evidenceId = `pie-mobile-photo-${stableHash([
+    organizationId,
+    projectId,
+    update.id,
+    photo.id,
+  ].join(':'))}`;
+  const assetId = evidenceId;
+  const storagePath = `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
+  const storagePathHash = stableHash(storagePath);
+  const contentHash = `sha256:${fileInfo.sha256}`;
+
+  const uploadResult = await uploadPhoto({
+    bucket: PIE_EVIDENCE_BUCKET,
+    path: storagePath,
+    uri: photo.uri,
+    contentType: mimeType,
+    upsert: true,
+  });
+
+  if (!uploadResult.ok) {
+    throw new Error(uploadResult.error || uploadResult.message || 'Photo evidence upload failed');
+  }
+
+  const { data: userData } = await client.auth.getUser();
+  const receivedAt = new Date().toISOString();
+  const storageRefs: JsonValue = [{
+    bucket: PIE_EVIDENCE_BUCKET,
+    path: storagePath,
+    variant: 'original',
+    mimeType,
+    sizeBytes: fileInfo.sizeBytes,
+    sha256: fileInfo.sha256,
+  }];
+
+  const evidencePayload = {
+    id: evidenceId,
+    organization_id: organizationId,
+    project_id: projectId,
+    evidence_type: 'photo',
+    source: 'mobile_photo_update',
+    source_system: 'project_photo_update_tool',
+    captured_at: photo.locationCapturedAt || update.date || receivedAt,
+    effective_at: update.date || receivedAt,
+    received_at: receivedAt,
+    author_id: userData.user?.id ?? null,
+    storage_refs: storageRefs,
+    content_hash: contentHash,
+    mime_type: mimeType,
+    evidence_version: 1,
+    authority: 'supporting',
+    processing_state: 'queued',
+    analyzer_id: 'pie-production-photo-vision',
+    analyzer_version: null,
+    lineage: {
+      parentEvidenceIds: [],
+      derivedEvidenceIds: [],
+      analyzerRunIds: [],
+      correctionIds: [],
+    },
+    associations: [{
+      type: 'location',
+      id: photo.selectedAreaId || update.selectedAreaId || projectId,
+      role: photo.selectedAreaName || update.selectedAreaName || update.projectName,
+    }],
+    related_evidence_ids: [],
+    hidden_from_normal_queries: false,
+  };
+
+  const { error: evidenceError } = await client
+    .from('pie_evidence_records')
+    .upsert(evidencePayload);
+
+  if (evidenceError) throw new Error(evidenceError.message);
+
+  const { error: assetError } = await client
+    .from('pie_photo_assets')
+    .upsert({
+      evidence_id: evidenceId,
+      organization_id: organizationId,
+      project_id: projectId,
+      original_storage_path: storagePath,
+      analysis_derivative_path: null,
+      thumbnail_path: null,
+      content_hash: contentHash,
+      duplicate_of_evidence_id: null,
+      width: null,
+      height: null,
+      mime_type: mimeType,
+      size_bytes: fileInfo.sizeBytes,
+      capture_source: captureSource,
+      captured_at: photo.locationCapturedAt || update.date || receivedAt,
+      exif: {},
+      analysis_status: 'queued',
+      current_analysis_version: null,
+      hidden_from_normal_queries: false,
+    });
+
+  if (assetError) throw new Error(assetError.message);
+
+  return {
+    assetId,
+    evidenceId,
+    storagePath,
+    storagePathHash,
+    contentHash,
+    sizeBytes: fileInfo.sizeBytes,
+  };
+}
+
+function buildDisplayStateFromComparison(
+  row: Record<string, unknown>,
+  diagnosticInput: Partial<PIEPhotoVisionDiagnosticInput>,
+): PIEPhotoIntelligenceDisplayState {
+  const jarvis = toRecord(row.jarvis_result);
+  const metrics = toRecord(row.deterministic_metrics);
+  const additions = arrayRecords(row.object_additions);
+  const removals = arrayRecords(row.object_removals);
+  const materialChanges = stringArray(row.material_or_structural_changes);
+  const additionLabels = describeObjects(additions);
+  const removalLabels = describeObjects(removals);
+  const spatialFinding = arrayRecords(metrics.normalizedSpatialFindings)[0] ?? null;
+  const visualGroundingRegions = describeGroundingRegions(
+    arrayRecords(metrics.normalizedSpatialFindings),
+  );
+  const visibleChange = describeVisibleChange(additions, removals, materialChanges);
+  const location = describeLocation(spatialFinding, additions[0]);
+  const limitations = stringArray(row.limitations);
+  const observationAccepted = jarvis.observationAccepted === true;
+  const status = limitations.length > 0
+    ? 'completed_with_limitations'
+    : 'analysis_complete';
+  const progress = progressStatus(String(row.conclusion || ''), String(jarvis.progressDisposition || ''));
+  const provenance = visibleChange ? 'visual_only' : 'unsupported';
+  const title = observationAccepted
+    ? status === 'completed_with_limitations'
+      ? 'Analysis complete with limitations'
+      : 'Analysis complete'
+    : 'Comparison unavailable';
+
+  return {
+    status: observationAccepted ? status : 'comparison_unavailable',
+    title,
+    summary: visibleChange
+      ? `${visibleChange}${location ? ` ${location}.` : '.'}`
+      : 'PIE did not find a supported visible change in this comparison.',
+    visibleChange,
+    location,
+    comparisonConfidence: String(row.comparability_classification || row.confidence || 'unknown'),
+    captureLimitations: limitations,
+    projectProgress: progress,
+    repeatPhotoGuidance: stringArray(row.repeat_photo_guidance)[0] ?? null,
+    authorityMessage: progress === 'supported'
+      ? 'PIE found visual evidence that may support progress, but project status still requires normal evidence checks.'
+      : 'This is a visual observation only. PIE did not create a milestone, schedule, cost, compliance, or status update.',
+    currentObservation: visibleChange || materialChanges[0] || 'PIE compared the current photo with prior visual evidence.',
+    changedFromPrior: visibleChange || 'No reliable visual change was detected.',
+    additions: additionLabels,
+    removals: removalLabels,
+    possibleProgress: progress === 'supported'
+      ? 'Possible progress observed. Verify against project scope before using it as project status.'
+      : progress === 'unsupported'
+        ? 'No verified project progress was inferred from this visual comparison.'
+        : 'Project progress could not be determined from this visual comparison.',
+    possibleConcerns: limitations,
+    priorUpdateUsed: diagnosticInput.priorUpdateUsed ?? null,
+    requestId: typeof row.request_id === 'string' ? row.request_id : null,
+    comparisonId: typeof row.id === 'string' ? row.id : null,
+    analysisRequestId: typeof row.request_id === 'string' ? row.request_id : null,
+    currentPhotoAssetId: diagnosticInput.currentEvidence?.assetId ?? null,
+    priorPhotoAssetId: diagnosticInput.baselineEvidence?.assetId ?? null,
+    currentEvidenceId: typeof row.current_evidence_id === 'string' ? row.current_evidence_id : null,
+    priorEvidenceId: typeof row.baseline_evidence_id === 'string' ? row.baseline_evidence_id : null,
+    semanticComparisonResultId: typeof row.id === 'string' ? row.id : null,
+    provenance,
+    visualGroundingRegions,
+    diagnostics: buildDiagnostics({
+      ...diagnosticInput,
+      analysisRequestId: typeof row.request_id === 'string' ? row.request_id : null,
+      semanticComparisonResultId: typeof row.id === 'string' ? row.id : null,
+      resultProvenance: provenance,
+      signedUrlsGenerated: true,
+    }),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function unavailableState(
+  summary: string,
+  failureCategory: NonNullable<PIEPhotoVisionDiagnostics['failureCategory']>,
+): PIEPhotoIntelligenceDisplayState {
+  return {
+    status: 'comparison_unavailable',
+    title: 'Photo intelligence unavailable',
+    summary,
+    visibleChange: null,
+    location: null,
+    comparisonConfidence: null,
+    captureLimitations: ['Cloud photo intelligence is unavailable.'],
+    projectProgress: 'unable_to_determine',
+    repeatPhotoGuidance: null,
+    authorityMessage: 'The app will continue saving photos and notes without photo intelligence.',
+    currentObservation: null,
+    changedFromPrior: null,
+    additions: [],
+    removals: [],
+    possibleProgress: null,
+    possibleConcerns: [safeUnavailableReason(summary)],
+    priorUpdateUsed: null,
+    diagnostics: buildDiagnostics({
+      providerResponseStatus: safeUnavailableReason(summary),
+      failureCategory,
+      executedStages: ['cloud_configuration_check'],
+      resultProvenance: 'unsupported',
+    }),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function failedRetryState(
+  summary: string,
+  diagnosticInput: Partial<PIEPhotoVisionDiagnosticInput> = {},
+): PIEPhotoIntelligenceDisplayState {
+  return {
+    status: 'analysis_failed_retry',
+    title: 'Visual comparison unavailable',
+    summary,
+    visibleChange: null,
+    location: null,
+    comparisonConfidence: null,
+    captureLimitations: ['Photo comparison could not be completed.'],
+    projectProgress: 'unable_to_determine',
+    repeatPhotoGuidance: 'Keep the photo. PIE can retry from cloud evidence later.',
+    authorityMessage: 'No project progress was inferred while analysis was unavailable.',
+    currentObservation: null,
+    changedFromPrior: null,
+    additions: [],
+    removals: [],
+    possibleProgress: null,
+    possibleConcerns: [safeUnavailableReason(summary)],
+    priorUpdateUsed: diagnosticInput.priorUpdateUsed ?? null,
+    analysisRequestId: diagnosticInput.requestId ?? null,
+    currentPhotoAssetId: diagnosticInput.currentEvidence?.assetId ?? null,
+    priorPhotoAssetId: diagnosticInput.baselineEvidence?.assetId ?? null,
+    currentEvidenceId: diagnosticInput.currentEvidence?.evidenceId ?? null,
+    priorEvidenceId: diagnosticInput.baselineEvidence?.evidenceId ?? null,
+    semanticComparisonResultId: null,
+    provenance: 'unsupported',
+    diagnostics: buildDiagnostics({
+      ...diagnosticInput,
+      resultProvenance: 'unsupported',
+      signedUrlsGenerated: false,
+    }),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function assertComparableEvidencePair(
+  baselineEvidence: StagedPhotoEvidence,
+  currentEvidence: StagedPhotoEvidence,
+) {
+  if (baselineEvidence.evidenceId === currentEvidence.evidenceId) throw new Error('photo_pair_same_evidence_id');
+  if (baselineEvidence.assetId === currentEvidence.assetId) throw new Error('photo_pair_same_asset_id');
+  if (baselineEvidence.contentHash === currentEvidence.contentHash) throw new Error('photo_pair_identical_sha256');
+  if (baselineEvidence.sizeBytes <= 0 || currentEvidence.sizeBytes <= 0) throw new Error('photo_pair_empty_file');
+}
+
+function describeVisibleChange(
+  additions: Record<string, unknown>[],
+  removals: Record<string, unknown>[],
+  materialChanges: string[],
+) {
+  const added = additions[0];
+  if (added) {
+    const object = String(added.object || added.normalizedObjectName || 'A visible object');
+    return `${capitalize(object)} appears in the newer photo`;
+  }
+  const removed = removals[0];
+  if (removed) {
+    const object = String(removed.object || removed.normalizedObjectName || 'A visible object');
+    return `${capitalize(object)} is no longer visible`;
+  }
+  return materialChanges[0] ?? null;
+}
+
+function describeObjects(items: Record<string, unknown>[]) {
+  return items
+    .map(item => String(item.object || item.normalizedObjectName || item.label || '').trim())
+    .filter(Boolean);
+}
+
+function safeUnavailableReason(summary: string) {
+  const normalized = summary.toLowerCase();
+  if (normalized.includes('previous') || normalized.includes('prior')) return 'previous photo unavailable';
+  if (normalized.includes('file') || normalized.includes('image') || normalized.includes('photo saved')) return 'image could not be prepared';
+  if (normalized.includes('connection') || normalized.includes('session') || normalized.includes('supabase')) return 'connection unavailable';
+  if (normalized.includes('service') || normalized.includes('function') || normalized.includes('cloud')) return 'analysis service unavailable';
+  if (normalized.includes('result') || normalized.includes('stale')) return 'comparison returned no usable result';
+  return 'comparison returned no usable result';
+}
+
+function describeLocation(
+  spatialFinding: Record<string, unknown> | null,
+  fallback: Record<string, unknown> | undefined,
+) {
+  const horizontal = String(spatialFinding?.imageHorizontalRegion || '').replace('unknown', '');
+  const vertical = String(spatialFinding?.imageVerticalRegion || '').replace('unknown', '');
+  const surface = String(spatialFinding?.surfaceOrArea || '').replace('unknown', '');
+  const rawLocation = String(spatialFinding?.rawLocationText || fallback?.location || '').trim();
+  const normalized = [vertical, horizontal, surface].filter(Boolean).join(' ');
+
+  if (normalized) return `Location: ${normalized}`;
+  if (rawLocation) return `Location: ${rawLocation}`;
+  return null;
+}
+
+function describeGroundingRegions(items: Record<string, unknown>[]) {
+  return items
+    .map(item =>
+      [
+        String(item.normalizedObjectName || item.object || '').trim(),
+        String(item.imageVerticalRegion || '').replace('unknown', '').trim(),
+        String(item.imageHorizontalRegion || '').replace('unknown', '').trim(),
+        String(item.surfaceOrArea || '').replace('unknown', '').trim(),
+      ].filter(Boolean).join(' - '),
+    )
+    .filter(Boolean);
+}
+
+function progressStatus(
+  conclusion: string,
+  disposition: string,
+): PIEPhotoIntelligenceDisplayState['projectProgress'] {
+  if (disposition === 'supported' || conclusion === 'progress_visible' || conclusion === 'partial_progress_visible') {
+    return 'supported';
+  }
+  if (disposition === 'unsupported' || conclusion === 'no_material_visible_change' || conclusion === 'no_progress_visible') {
+    return 'unsupported';
+  }
+  return 'unable_to_determine';
+}
+
+function projectIdForPhotoVision(projectName: string) {
+  return `project-${projectName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'unassigned'}`;
+}
+
+function mimeExtension(mimeType: string | null | undefined) {
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/heic') return 'heic';
+  if (mimeType === 'image/heif') return 'heif';
+  return 'jpg';
+}
+
+async function readPhotoFileDigest(uri: string): Promise<{ exists: boolean; sizeBytes: number; sha256: string }> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists || typeof info.size !== 'number') {
+      return { exists: false, sizeBytes: 0, sha256: '' };
+    }
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return {
+      exists: true,
+      sizeBytes: info.size,
+      sha256: sha256(base64),
+    };
+  } catch {
+    return { exists: false, sizeBytes: 0, sha256: '' };
+  }
+}
+
+type PIEPhotoVisionDiagnosticInput = {
+  baselineEvidence: StagedPhotoEvidence | null;
+  currentEvidence: StagedPhotoEvidence | null;
+  requestId: string | null;
+  analysisRequestId: string | null;
+  semanticComparisonResultId: string | null;
+  providerResponseStatus: string | null;
+  failureCategory: PIEPhotoVisionDiagnostics['failureCategory'];
+  selectedPriorPhotoId: string | null;
+  priorUpdateUsed: string | null;
+  selectionCandidateCount: number;
+  selectedPriorReason: string | null;
+  rejectedPriorReasons: string[];
+  resultPairMatchesRequestedPair: boolean | null;
+  resultProvenance: PIEPhotoVisionDiagnostics['resultProvenance'];
+  signedUrlsGenerated: boolean | null;
+  executedStages: string[];
+};
+
+function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPhotoVisionDiagnostics {
+  const baseline = input.baselineEvidence ?? null;
+  const current = input.currentEvidence ?? null;
+  const currentSha = current?.contentHash.replace(/^sha256:/, '') ?? null;
+  const priorSha = baseline?.contentHash.replace(/^sha256:/, '') ?? null;
+
+  return {
+    currentPhotoAssetId: current?.assetId ?? null,
+    priorPhotoAssetId: baseline?.assetId ?? null,
+    currentEvidenceId: current?.evidenceId ?? null,
+    priorEvidenceId: baseline?.evidenceId ?? null,
+    currentStoragePathHash: current?.storagePathHash ?? null,
+    priorStoragePathHash: baseline?.storagePathHash ?? null,
+    currentImageByteSize: current?.sizeBytes ?? null,
+    priorImageByteSize: baseline?.sizeBytes ?? null,
+    currentImageSha256: currentSha,
+    priorImageSha256: priorSha,
+    imageHashesDifferent: currentSha && priorSha ? currentSha !== priorSha : null,
+    signedUrlsGenerated: input.signedUrlsGenerated ?? null,
+    providerInvocationId: input.requestId ?? input.analysisRequestId ?? null,
+    providerResponseStatus: input.providerResponseStatus ?? null,
+    failureCategory: input.failureCategory ?? null,
+    analysisRequestId: input.analysisRequestId ?? input.requestId ?? null,
+    semanticComparisonResultId: input.semanticComparisonResultId ?? null,
+    selectedPriorPhotoId: input.selectedPriorPhotoId ?? null,
+    selectionCandidateCount: input.selectionCandidateCount ?? 0,
+    selectedPriorReason: input.selectedPriorReason ?? null,
+    rejectedPriorReasons: input.rejectedPriorReasons ?? [],
+    resultPairMatchesRequestedPair: input.resultPairMatchesRequestedPair ?? null,
+    resultProvenance: input.resultProvenance ?? 'unsupported',
+    executedStages: input.executedStages ?? [],
+  };
+}
+
+function providerStatus(value: unknown): string {
+  const record = toRecord(value);
+  return typeof record.status === 'string' ? record.status : 'unknown';
+}
+
+function classifyFunctionError(error: unknown): NonNullable<PIEPhotoVisionDiagnostics['failureCategory']> {
+  const message = JSON.stringify(error || {}).toLowerCase();
+
+  if (/auth|jwt|token|permission|unauthorized|forbidden|401|403/.test(message)) return 'auth';
+  if (/network|fetch|timeout|offline|connection|unreachable/.test(message)) return 'network';
+  if (/provider|openai|vision|model|secret|api key|upstream/.test(message)) return 'provider_side';
+
+  return 'unknown';
+}
+
+function classifyThrownError(error: unknown): NonNullable<PIEPhotoVisionDiagnostics['failureCategory']> {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || '').toLowerCase();
+
+  if (/auth|jwt|token|permission|unauthorized|forbidden|401|403/.test(message)) return 'auth';
+  if (/network|fetch|timeout|offline|connection|unreachable|supabase/.test(message)) return 'network';
+  if (/provider|openai|vision|model|secret|api key|upstream|function/.test(message)) return 'provider_side';
+  if (/stale|result|pair|same_evidence|same_asset|identical|empty|missing|file/.test(message)) return 'malformed_response';
+
+  return 'unknown';
+}
+
+function timestampMs(value: string | null | undefined): number {
+  const time = value ? new Date(value).getTime() : Number.NaN;
+  return Number.isFinite(time) ? time : Number.NaN;
+}
+
+function stableHash(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function sha256(base64: string): string {
+  const bytes = base64ToBytes(base64);
+  const bitLength = bytes.length * 8;
+  const withOne = bytes.length + 1;
+  const paddedLength = withOne + ((64 - ((withOne + 8) % 64)) % 64) + 8;
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000));
+  view.setUint32(paddedLength - 4, bitLength >>> 0);
+
+  let h0 = 0x6a09e667;
+  let h1 = 0xbb67ae85;
+  let h2 = 0x3c6ef372;
+  let h3 = 0xa54ff53a;
+  let h4 = 0x510e527f;
+  let h5 = 0x9b05688c;
+  let h6 = 0x1f83d9ab;
+  let h7 = 0x5be0cd19;
+  const words = new Uint32Array(64);
+
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let index = 0; index < 16; index += 1) {
+      words[index] = view.getUint32(offset + index * 4);
+    }
+    for (let index = 16; index < 64; index += 1) {
+      words[index] = (smallSigma1(words[index - 2]) + words[index - 7] + smallSigma0(words[index - 15]) + words[index - 16]) >>> 0;
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
+
+    for (let index = 0; index < 64; index += 1) {
+      const t1 = (h + bigSigma1(e) + choose(e, f, g) + SHA256_K[index] + words[index]) >>> 0;
+      const t2 = (bigSigma0(a) + majority(a, b, c)) >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = (d + t1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (t1 + t2) >>> 0;
+    }
+
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+    h5 = (h5 + f) >>> 0;
+    h6 = (h6 + g) >>> 0;
+    h7 = (h7 + h) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4, h5, h6, h7]
+    .map(value => value.toString(16).padStart(8, '0'))
+    .join('');
+}
+
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function base64ToBytes(base64: string): Uint8Array {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  const sanitized = base64.replace(/[^A-Za-z0-9+/=]/g, '');
+  const output: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+
+  for (let index = 0; index < sanitized.length; index += 1) {
+    const value = chars.indexOf(sanitized.charAt(index));
+    if (value < 0 || value === 64) continue;
+    buffer = (buffer << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output.push((buffer >> bits) & 0xff);
+    }
+  }
+
+  return new Uint8Array(output);
+}
+
+function rotateRight(value: number, bits: number): number {
+  return (value >>> bits) | (value << (32 - bits));
+}
+
+function choose(x: number, y: number, z: number): number {
+  return (x & y) ^ (~x & z);
+}
+
+function majority(x: number, y: number, z: number): number {
+  return (x & y) ^ (x & z) ^ (y & z);
+}
+
+function bigSigma0(value: number): number {
+  return rotateRight(value, 2) ^ rotateRight(value, 13) ^ rotateRight(value, 22);
+}
+
+function bigSigma1(value: number): number {
+  return rotateRight(value, 6) ^ rotateRight(value, 11) ^ rotateRight(value, 25);
+}
+
+function smallSigma0(value: number): number {
+  return rotateRight(value, 7) ^ rotateRight(value, 18) ^ (value >>> 3);
+}
+
+function smallSigma1(value: number): number {
+  return rotateRight(value, 17) ^ rotateRight(value, 19) ^ (value >>> 10);
+}
+
+function normalizeKey(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function arrayRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && !Array.isArray(item)),
+      )
+    : [];
+}
+
+function stringArray(value: unknown): string[] {
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  return Array.isArray(value)
+    ? value.map(String).filter(item => item.trim().length > 0)
+    : [];
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function capitalize(value: string) {
+  if (!value) return value;
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}

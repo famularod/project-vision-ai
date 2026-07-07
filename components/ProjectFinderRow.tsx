@@ -130,9 +130,9 @@ export function ProjectFinderRow({
       ? location.lastKnownLocation
       : 'Not available';
   const pieConfidence =
-    `${runtime.intelligence.confidence.score}% ${confidenceLabel(runtime.overallConfidence)}`;
+    confidenceLabel(runtime.overallConfidence);
   const understanding =
-    `${runtime.understandingScore.score}% ${confidenceLabel(runtime.understandingScore.level)}`;
+    confidenceLabel(runtime.understandingScore.level);
   const nextBestAction =
     runtime.nextBestAction.title ||
     (archived ? 'Open project record' : 'Capture today\'s progress');
