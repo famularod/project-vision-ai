@@ -796,7 +796,9 @@ function testBuild22MobilePhotoVisionIntegration() {
   assertContains(workflow, ".from('pie_evidence_records')", 'mobile workflow must create PIE evidence records');
   assertContains(workflow, ".from('pie_photo_assets')", 'mobile workflow must create PIE photo asset records');
   assertContains(workflow, ".from('pie_photo_semantic_comparison_results')", 'mobile workflow must hydrate persisted semantic comparison results');
-  assertContains(workflow, 'getCurrentUser', 'mobile workflow must require a signed-in Supabase user without blocking before Edge Function auth');
+  assertContains(workflow, 'getCurrentSessionAccessToken', 'mobile workflow must read the current Supabase auth session before Edge Function auth');
+  assertContains(workflow, "tokenLookup.status !== 'token_present'", 'mobile workflow must require token_present before Edge Function auth');
+  assertContains(workflow, '!tokenLookup.userId', 'mobile workflow must require the signed-in session user id before staging evidence');
   assertContains(workflow, 'sha256:', 'mobile workflow must store real SHA-256 content hashes');
   assertContains(workflow, 'readPhotoFileDigest', 'mobile workflow must verify local file readability and byte size');
   assertContains(workflow, 'FileSystem.readAsStringAsync', 'mobile workflow must read normal iPhone image URIs as bytes');

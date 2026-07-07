@@ -450,12 +450,18 @@ const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
 
 const PIE_STATUS_COPY = {
   checking: 'PIE checking photos…',
+  preparingSecureAnalysis: 'Preparing secure photo analysis…',
+  signInRequired: 'Sign in required for photo intelligence',
+  sessionExpired: 'Session expired · Sign in again',
   possibleChanges: 'Possible visual changes found',
   noReliableChange: 'No reliable visual change',
   noPriorPhoto: 'No prior photo to compare',
   unavailableRetry: 'Analysis unavailable · Retry',
   timeoutRetry: 'Analysis taking longer than expected · Retry',
 } as const;
+
+const PIE_AUTH_HYDRATION_RETRY_COUNT = 3;
+const PIE_AUTH_HYDRATION_RETRY_DELAY_MS = 750;
 
 const ATTENTION_PRIORITY = {
   safety: 0,
@@ -746,6 +752,20 @@ function formatSavedTime(value: string | null) {
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) return 'Recently';
+
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function analysisTimeTextForPIEResult(value: string | null | undefined) {
+  if (!value) return 'Analysis time unavailable';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Analysis time unavailable';
 
   return date.toLocaleString('en-US', {
     month: 'short',
@@ -2842,6 +2862,43 @@ function photoHasVisualChange(photo: UpdatePhoto) {
   );
 }
 
+function isPreparingSecurePhotoAnalysisResult(result: PIEPhotoIntelligenceDisplayState) {
+  return (
+    result.status === 'analyzing' &&
+    result.diagnostics?.tokenMissingReason === 'auth_loading'
+  );
+}
+
+function authStatusCopyForPIEResult(result: PIEPhotoIntelligenceDisplayState) {
+  const reason = result.diagnostics?.tokenMissingReason;
+
+  if (reason === 'auth_loading') return PIE_STATUS_COPY.preparingSecureAnalysis;
+  if (reason === 'signed_out') return PIE_STATUS_COPY.signInRequired;
+  if (reason === 'expired_session') return PIE_STATUS_COPY.sessionExpired;
+  return null;
+}
+
+function authStatusCopyForPIEResults(results: PIEPhotoIntelligenceDisplayState[]) {
+  const loading = results.find(result => result.diagnostics?.tokenMissingReason === 'auth_loading');
+  if (loading) return PIE_STATUS_COPY.preparingSecureAnalysis;
+
+  const expired = results.find(result => result.diagnostics?.tokenMissingReason === 'expired_session');
+  if (expired) return PIE_STATUS_COPY.sessionExpired;
+
+  const signedOut = results.find(result => result.diagnostics?.tokenMissingReason === 'signed_out');
+  if (signedOut) return PIE_STATUS_COPY.signInRequired;
+
+  return null;
+}
+
+function photoIntelligenceNeedsAuthHydrationRetry(result: PIEPhotoIntelligenceDisplayState) {
+  return result.diagnostics?.tokenMissingReason === 'auth_loading';
+}
+
+function waitForPIEAuthHydrationRetry() {
+  return new Promise(resolve => setTimeout(resolve, PIE_AUTH_HYDRATION_RETRY_DELAY_MS));
+}
+
 function pieStatusForUpdate(update: ProjectUpdate) {
   if (update.status === 'queued') return 'Queued to send';
   if (update.status === 'failed') return 'Send failed';
@@ -2849,6 +2906,9 @@ function pieStatusForUpdate(update: ProjectUpdate) {
   const intelligence = update.photos
     .map(photo => photo.photoIntelligence)
     .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
+
+  const authCopy = authStatusCopyForPIEResults(intelligence);
+  if (authCopy) return authCopy;
 
   if (intelligence.some(result => result.status === 'analyzing')) {
     return PIE_STATUS_COPY.checking;
@@ -2897,7 +2957,16 @@ function summarizePIEStatusForUpdate(update: ProjectUpdate): {
     .map(photo => photo.photoIntelligence)
     .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
 
-  if (results.length === 0 || results.some(result => result.status === 'analyzing')) {
+  const authCopy = authStatusCopyForPIEResults(results);
+
+  if (results.length === 0 || results.some(isPreparingSecurePhotoAnalysisResult)) {
+    return {
+      status: 'analyzing',
+      summary: authCopy || PIE_STATUS_COPY.preparingSecureAnalysis,
+    };
+  }
+
+  if (results.some(result => result.status === 'analyzing')) {
     return {
       status: 'analyzing',
       summary: PIE_STATUS_COPY.checking,
@@ -2920,7 +2989,7 @@ function summarizePIEStatusForUpdate(update: ProjectUpdate): {
   ) {
     return {
       status: 'failed',
-      summary: PIE_STATUS_COPY.unavailableRetry,
+      summary: authCopy || PIE_STATUS_COPY.unavailableRetry,
     };
   }
 
@@ -5914,13 +5983,39 @@ Note: This update was opened through Outlook because PLZ email security may reje
     photos: UpdatePhoto[],
   ) {
     for (const addedPhoto of photos) {
-      const result = await analyzeProjectPhotoWithVision({
+      await analyzePhotoWithAuthHydrationRetry({
         update: updateSnapshot,
         photo: addedPhoto,
         priorUpdates: savedUpdates,
       });
+    }
+  }
 
-      applyPhotoIntelligenceResult(addedPhoto.id, result);
+  async function analyzePhotoWithAuthHydrationRetry({
+    update,
+    photo,
+    priorUpdates,
+    retryAttempt = false,
+  }: {
+    update: ProjectUpdate;
+    photo: UpdatePhoto;
+    priorUpdates: ProjectUpdate[];
+    retryAttempt?: boolean;
+  }) {
+    for (let attempt = 0; attempt <= PIE_AUTH_HYDRATION_RETRY_COUNT; attempt += 1) {
+      const result = await analyzeProjectPhotoWithVision({
+        update,
+        photo,
+        priorUpdates,
+        retryAttempt,
+      });
+
+      applyPhotoIntelligenceResult(photo.id, result);
+
+      if (!photoIntelligenceNeedsAuthHydrationRetry(result)) return;
+      if (attempt === PIE_AUTH_HYDRATION_RETRY_COUNT) return;
+
+      await waitForPIEAuthHydrationRetry();
     }
   }
 
@@ -5974,16 +6069,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
   async function retryPhotoAnalysis(update: ProjectUpdate, photo: UpdatePhoto) {
     applyPhotoIntelligenceResult(photo.id, buildAnalyzingPhotoIntelligenceState());
 
-    const result = await analyzeProjectPhotoWithVision({
+    await analyzePhotoWithAuthHydrationRetry({
       update,
       photo: {
         ...photo,
         photoIntelligence: buildAnalyzingPhotoIntelligenceState(),
       },
       priorUpdates: savedUpdates.filter(item => item.id !== update.id),
+      retryAttempt: true,
     });
-
-    applyPhotoIntelligenceResult(photo.id, result);
   }
 
   function removePhoto(photoId: string) {
@@ -9249,7 +9343,7 @@ function RootPhotoIntelligenceCard({
         <PIEDetailLine label="Prior update used" value={result.priorUpdateUsed} />
       ) : null}
 
-      <PIEDetailLine label="Analysis time" value={formatDisplayDate(result.updatedAt)} />
+      <PIEDetailLine label="Analysis time" value={analysisTimeTextForPIEResult(result.updatedAt)} />
 
       <Text style={styles.locationDetailText}>
         {result.authorityMessage}
@@ -9295,6 +9389,33 @@ function RootPhotoIntelligenceCard({
           </Text>
           <Text style={styles.locationDetailText}>
             Failure category: {result.diagnostics.failureCategory || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Supabase auth state: {result.diagnostics.supabaseAuthState || 'unknown'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Token lookup result: {result.diagnostics.tokenLookupResult || 'unknown'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Token missing reason: {result.diagnostics.tokenMissingReason || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Sign-in client source: {result.diagnostics.signInClientSource || 'unknown'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            PIE analysis client source: {result.diagnostics.pieAnalysisClientSource || 'unknown'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Auth hydration completed: {result.diagnostics.authHydrationCompleted === null ? 'unknown' : result.diagnostics.authHydrationCompleted ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Retry fetched fresh token: {result.diagnostics.retryFetchedFreshToken === null ? 'unknown' : result.diagnostics.retryFetchedFreshToken ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Edge Function invoked: {result.diagnostics.edgeFunctionInvoked ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Edge Function status: {result.diagnostics.edgeFunctionStatus || 'not invoked'}
           </Text>
           <Text style={styles.locationDetailText}>
             Comparison persisted: {String(Boolean(result.diagnostics.semanticComparisonResultId))}
@@ -9465,6 +9586,9 @@ function SavedUpdatePIESummary({
 }
 
 function pieUserStatus(result: PIEPhotoIntelligenceDisplayState) {
+  const authCopy = authStatusCopyForPIEResult(result);
+  if (authCopy) return authCopy;
+
   if (result.status === 'analyzing') return PIE_STATUS_COPY.checking;
   if (result.status === 'no_suitable_prior_photo') return PIE_STATUS_COPY.noPriorPhoto;
   if (result.status === 'analysis_failed_retry' || result.status === 'comparison_unavailable') {
@@ -9807,7 +9931,7 @@ function BuildUpdateScreen({
               <PIEDetailLine label="Prior update used" value={firstResult.priorUpdateUsed} />
             ) : null}
             {firstResult?.updatedAt ? (
-              <PIEDetailLine label="Analysis timestamp" value={formatSavedTime(firstResult.updatedAt)} />
+              <PIEDetailLine label="Analysis timestamp" value={analysisTimeTextForPIEResult(firstResult.updatedAt)} />
             ) : null}
             {(firstResult?.visualGroundingRegions || []).length > 0 ? (
               <PIEDetailLine

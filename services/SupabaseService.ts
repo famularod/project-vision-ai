@@ -2,6 +2,7 @@ import 'react-native-url-polyfill/auto';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { AppState } from 'react-native';
 import {
   createClient,
   type Session,
@@ -100,6 +101,37 @@ export type SignInParams = {
 export type AuthResult = {
   user: User | null;
   session: Session | null;
+};
+
+export type SupabaseSessionMissingReason =
+  | 'auth_loading'
+  | 'signed_out'
+  | 'expired_session'
+  | 'storage_unavailable'
+  | 'client_mismatch'
+  | 'unknown';
+
+export type SupabaseAuthSessionState =
+  | 'loading'
+  | 'signed_in'
+  | 'signed_out'
+  | 'expired'
+  | 'unknown';
+
+export type SupabaseSessionTokenLookupResult = {
+  status: 'token_present' | 'token_missing';
+  accessToken: string | null;
+  missingReason: SupabaseSessionMissingReason | null;
+  authState: SupabaseAuthSessionState;
+  authHydrationCompleted: boolean;
+  storageAvailable: boolean;
+  signInClientSource: string;
+  tokenLookupClientSource: string;
+  clientMismatch: boolean;
+  userId: string | null;
+  userEmail: string | null;
+  expiresAt: number | null;
+  checkedAt: string;
 };
 
 export type CloudProject = {
@@ -208,6 +240,14 @@ const PIE_REALITY_CONFLICTS_TABLE = 'pie_reality_conflicts';
 const PIE_REALITY_UNCERTAINTIES_TABLE = 'pie_reality_uncertainties';
 const PIE_EXECUTIVE_JUDGMENTS_TABLE = 'pie_executive_judgments';
 const PROJECT_PHOTOS_BUCKET = 'project-photos';
+const SUPABASE_CLIENT_SOURCE = 'SupabaseService.singleton';
+const AUTH_HYDRATION_WAIT_MS = 1500;
+const AUTH_HYDRATION_POLL_MS = 50;
+const AUTH_STORAGE_PROBE_KEY = 'projectVisionAI.supabaseAuthStorage.probe';
+
+let authHydrationCompleted = false;
+let lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
+let authAutoRefreshSubscriptionStarted = false;
 
 const supabaseAuthStorage = {
   getItem: (key: string) => AsyncStorage.getItem(key),
@@ -231,6 +271,8 @@ function createSupabaseClient(): SupabaseClient | null {
 }
 
 export const supabase = createSupabaseClient();
+
+startSupabaseAuthLifecycle(supabase);
 
 export function getSupabaseClient(): SupabaseClient | null {
   logSupabaseUrlBeforeNetworkRequest('getSupabaseClient');
@@ -378,6 +420,8 @@ export async function signIn({
 
   if (!client) return notConfiguredResult<AuthResult>();
 
+  lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
+
   const { data, error } = await client.auth.signInWithPassword({
     email,
     password,
@@ -415,16 +459,72 @@ export async function getCurrentUser(): Promise<SupabaseServiceResult<User | nul
   return okResult(data.user ?? null);
 }
 
-export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceResult<string | null>> {
+export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceResult<SupabaseSessionTokenLookupResult>> {
   const client = getSupabaseClient();
+  const storageAvailable = await probeAuthStorage();
 
-  if (!client) return notConfiguredResult<string | null>();
+  if (!client) {
+    return {
+      ok: false,
+      configured: false,
+      data: buildSessionTokenLookup({
+        storageAvailable,
+        authState: 'unknown',
+        missingReason: 'client_mismatch',
+      }),
+      error:
+        'Supabase client is not available to read the current auth session.',
+    };
+  }
+
+  await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
+
+  if (!authHydrationCompleted) {
+    return okResult(buildSessionTokenLookup({
+      storageAvailable,
+      authState: 'loading',
+      missingReason: 'auth_loading',
+    }));
+  }
 
   const { data, error } = await client.auth.getSession();
 
-  if (error) return errorResult(error.message);
+  if (error) {
+    return okResult(buildSessionTokenLookup({
+      storageAvailable,
+      authState: 'unknown',
+      missingReason: storageAvailable ? 'unknown' : 'storage_unavailable',
+    }), undefined, error.message);
+  }
 
-  return okResult(data.session?.access_token ?? null);
+  const session = data.session ?? null;
+  const expiresAt = typeof session?.expires_at === 'number' ? session.expires_at : null;
+  const expired = Boolean(expiresAt && expiresAt * 1000 <= Date.now());
+
+  if (expired) {
+    return okResult(buildSessionTokenLookup({
+      session,
+      storageAvailable,
+      authState: 'expired',
+      missingReason: 'expired_session',
+    }));
+  }
+
+  if (!session?.access_token) {
+    return okResult(buildSessionTokenLookup({
+      session,
+      storageAvailable,
+      authState: 'signed_out',
+      missingReason: storageAvailable ? 'signed_out' : 'storage_unavailable',
+    }));
+  }
+
+  return okResult(buildSessionTokenLookup({
+    session,
+    storageAvailable,
+    authState: 'signed_in',
+    missingReason: null,
+  }));
 }
 
 export async function uploadPhoto({
@@ -1564,6 +1664,98 @@ function normalizePIEDecisionPayload(payload: unknown): PIEDecisionRecord {
     return record as PIEDecisionRecord;
   }
   return normalizePIEDecisionRow(record);
+}
+
+function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
+  if (!client) return;
+
+  void client.auth.getSession()
+    .then(() => {
+      authHydrationCompleted = true;
+    })
+    .catch(() => {
+      authHydrationCompleted = true;
+    });
+
+  client.auth.onAuthStateChange(() => {
+    authHydrationCompleted = true;
+  });
+
+  if (authAutoRefreshSubscriptionStarted) return;
+  authAutoRefreshSubscriptionStarted = true;
+
+  if (AppState.currentState === 'active') {
+    client.auth.startAutoRefresh();
+  }
+
+  AppState.addEventListener('change', state => {
+    if (state === 'active') {
+      client.auth.startAutoRefresh();
+    } else {
+      client.auth.stopAutoRefresh();
+    }
+  });
+}
+
+async function waitForAuthHydration(timeoutMs: number) {
+  if (authHydrationCompleted) return true;
+
+  const startedAt = Date.now();
+  while (!authHydrationCompleted && Date.now() - startedAt < timeoutMs) {
+    await delay(AUTH_HYDRATION_POLL_MS);
+  }
+
+  return authHydrationCompleted;
+}
+
+async function probeAuthStorage(): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
+    const stored = await AsyncStorage.getItem(AUTH_STORAGE_PROBE_KEY);
+    await AsyncStorage.removeItem(AUTH_STORAGE_PROBE_KEY);
+    return stored === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+function buildSessionTokenLookup({
+  session = null,
+  storageAvailable,
+  authState,
+  missingReason,
+}: {
+  session?: Session | null;
+  storageAvailable: boolean;
+  authState: SupabaseAuthSessionState;
+  missingReason: SupabaseSessionMissingReason | null;
+}): SupabaseSessionTokenLookupResult {
+  const tokenLookupClientSource = SUPABASE_CLIENT_SOURCE;
+  const clientMismatch = lastSignInClientSource !== tokenLookupClientSource;
+  const accessToken =
+    missingReason === null && session?.access_token
+      ? session.access_token
+      : null;
+
+  return {
+    status: accessToken ? 'token_present' : 'token_missing',
+    accessToken,
+    missingReason: clientMismatch ? 'client_mismatch' : missingReason,
+    authState: clientMismatch ? 'unknown' : authState,
+    authHydrationCompleted,
+    storageAvailable,
+    signInClientSource: lastSignInClientSource,
+    tokenLookupClientSource,
+    clientMismatch,
+    userId: session?.user?.id ?? null,
+    userEmail: session?.user?.email ?? null,
+    expiresAt: typeof session?.expires_at === 'number' ? session.expires_at : null,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function okResult<T>(

@@ -1,10 +1,11 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import {
   getCurrentSessionAccessToken,
-  getCurrentUser,
   getSupabaseClient,
   uploadPhoto,
   type JsonValue,
+  type SupabaseSessionMissingReason,
+  type SupabaseSessionTokenLookupResult,
 } from './SupabaseService';
 import type { ProjectUpdate, UpdatePhoto } from '../types';
 
@@ -52,6 +53,7 @@ type AnalyzeInput = {
   update: ProjectUpdate;
   photo: UpdatePhoto;
   priorUpdates: ProjectUpdate[];
+  retryAttempt?: boolean;
 };
 
 type StagedPhotoEvidence = {
@@ -79,6 +81,15 @@ export type PIEPhotoVisionDiagnostics = {
   providerInvocationId: string | null;
   providerResponseStatus: string | null;
   failureCategory: 'network' | 'auth' | 'malformed_response' | 'provider_side' | 'unknown' | null;
+  supabaseAuthState: 'loading' | 'signed_in' | 'signed_out' | 'expired' | 'unknown';
+  tokenLookupResult: 'token_present' | 'token_missing' | null;
+  tokenMissingReason: SupabaseSessionMissingReason | null;
+  signInClientSource: string | null;
+  pieAnalysisClientSource: string | null;
+  authHydrationCompleted: boolean | null;
+  retryFetchedFreshToken: boolean | null;
+  edgeFunctionInvoked: boolean;
+  edgeFunctionStatus: string | null;
   analysisRequestId: string | null;
   semanticComparisonResultId: string | null;
   selectedPriorPhotoId: string | null;
@@ -104,6 +115,40 @@ export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisp
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: null,
     authorityMessage: 'Visual observations will not update project progress unless the evidence supports it.',
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function buildPreparingSecurePhotoAnalysisState(
+  tokenLookup?: SupabaseSessionTokenLookupResult | null,
+  retryFetchedFreshToken: boolean | null = null,
+): PIEPhotoIntelligenceDisplayState {
+  return {
+    status: 'analyzing',
+    title: 'Preparing secure photo analysis',
+    summary: 'Preparing secure photo analysis…',
+    visibleChange: null,
+    location: null,
+    comparisonConfidence: null,
+    captureLimitations: [],
+    projectProgress: 'unable_to_determine',
+    repeatPhotoGuidance: null,
+    authorityMessage: 'PIE will compare the photos after the signed-in session is ready.',
+    currentObservation: null,
+    changedFromPrior: null,
+    additions: [],
+    removals: [],
+    possibleProgress: null,
+    possibleConcerns: [],
+    priorUpdateUsed: null,
+    diagnostics: buildDiagnostics({
+      failureCategory: 'auth',
+      providerResponseStatus: 'auth_loading',
+      executedStages: ['auth_session_lookup'],
+      resultProvenance: 'unsupported',
+      tokenLookup,
+      retryFetchedFreshToken,
+    }),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -135,6 +180,7 @@ export async function analyzeProjectPhotoWithVision({
   update,
   photo,
   priorUpdates,
+  retryAttempt = false,
 }: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
   const priorSelection = findPriorComparablePhoto(update, photo, priorUpdates);
   if (!priorSelection.selected) {
@@ -156,17 +202,31 @@ export async function analyzeProjectPhotoWithVision({
     return unavailableState('Photo intelligence is unavailable until Supabase is configured.', 'unknown');
   }
 
-  const userResult = await getCurrentUser();
-  if (!userResult.ok || !userResult.data) {
-    return unavailableState('Photo intelligence needs a signed-in cloud session before comparing photos.', 'auth');
-  }
-
   const sessionTokenResult = await getCurrentSessionAccessToken();
-  if (!sessionTokenResult.ok || !sessionTokenResult.data) {
-    return unavailableState('Photo intelligence needs an active signed-in session before comparing photos.', 'auth');
+  const tokenLookup = sessionTokenResult.data;
+  if (!sessionTokenResult.ok || !tokenLookup) {
+    return unavailableState(
+      'Photo intelligence cannot access the signed-in session.',
+      'auth',
+      tokenLookup ?? null,
+      retryAttempt,
+    );
   }
 
-  const organizationId = userResult.data.id;
+  if (tokenLookup.status !== 'token_present' || !tokenLookup.accessToken || !tokenLookup.userId) {
+    if (tokenLookup.missingReason === 'auth_loading') {
+      return buildPreparingSecurePhotoAnalysisState(tokenLookup, retryAttempt);
+    }
+
+    return unavailableState(
+      messageForTokenMissingReason(tokenLookup.missingReason),
+      'auth',
+      tokenLookup,
+      retryAttempt,
+    );
+  }
+
+  const organizationId = tokenLookup.userId;
   const projectId = projectIdForPhotoVision(update.projectName);
   let baselineEvidence: StagedPhotoEvidence | null = null;
   let currentEvidence: StagedPhotoEvidence | null = null;
@@ -207,7 +267,7 @@ export async function analyzeProjectPhotoWithVision({
 
     const { data: functionData, error } = await client.functions.invoke('pie-photo-vision', {
       headers: {
-        Authorization: `Bearer ${sessionTokenResult.data}`,
+        Authorization: `Bearer ${tokenLookup.accessToken}`,
       },
       body: {
         requestId,
@@ -233,6 +293,8 @@ export async function analyzeProjectPhotoWithVision({
         selectedPriorReason: priorSelection.selected.reason,
         rejectedPriorReasons: priorSelection.rejectedReasons,
         executedStages,
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
       });
     }
 
@@ -273,6 +335,8 @@ export async function analyzeProjectPhotoWithVision({
         selectedPriorReason: priorSelection.selected.reason,
         rejectedPriorReasons: priorSelection.rejectedReasons,
         executedStages,
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
       });
     }
 
@@ -295,6 +359,8 @@ export async function analyzeProjectPhotoWithVision({
         rejectedPriorReasons: priorSelection.rejectedReasons,
         executedStages,
         resultPairMatchesRequestedPair: false,
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
       });
     }
 
@@ -312,6 +378,8 @@ export async function analyzeProjectPhotoWithVision({
       rejectedPriorReasons: priorSelection.rejectedReasons,
       executedStages,
       resultPairMatchesRequestedPair: true,
+      tokenLookup,
+      retryFetchedFreshToken: retryAttempt,
     });
   } catch (error) {
     return failedRetryState('Photo saved. Visual comparison unavailable.', {
@@ -325,6 +393,8 @@ export async function analyzeProjectPhotoWithVision({
       selectedPriorReason: priorSelection.selected.reason,
       rejectedPriorReasons: priorSelection.rejectedReasons,
       executedStages,
+      tokenLookup,
+      retryFetchedFreshToken: retryAttempt,
     });
   }
 }
@@ -601,6 +671,8 @@ function buildDisplayStateFromComparison(
 function unavailableState(
   summary: string,
   failureCategory: NonNullable<PIEPhotoVisionDiagnostics['failureCategory']>,
+  tokenLookup: SupabaseSessionTokenLookupResult | null = null,
+  retryFetchedFreshToken: boolean | null = null,
 ): PIEPhotoIntelligenceDisplayState {
   return {
     status: 'comparison_unavailable',
@@ -626,8 +698,10 @@ function unavailableState(
     diagnostics: buildDiagnostics({
       providerResponseStatus: safeUnavailableReason(summary),
       failureCategory,
-      executedStages: ['cloud_configuration_check'],
+      executedStages: tokenLookup ? ['auth_session_lookup'] : ['cloud_configuration_check'],
       resultProvenance: 'unsupported',
+      tokenLookup,
+      retryFetchedFreshToken,
     }),
     updatedAt: new Date().toISOString(),
   };
@@ -712,10 +786,22 @@ function safeUnavailableReason(summary: string) {
   const normalized = summary.toLowerCase();
   if (normalized.includes('previous') || normalized.includes('prior')) return 'previous photo unavailable';
   if (normalized.includes('file') || normalized.includes('image') || normalized.includes('photo saved')) return 'image could not be prepared';
-  if (normalized.includes('connection') || normalized.includes('session') || normalized.includes('supabase')) return 'connection unavailable';
+  if (normalized.includes('sign in') || normalized.includes('signed-in')) return 'sign in required';
+  if (normalized.includes('expired')) return 'session expired';
+  if (normalized.includes('session') || normalized.includes('supabase')) return 'session unavailable';
+  if (normalized.includes('connection')) return 'connection unavailable';
   if (normalized.includes('service') || normalized.includes('function') || normalized.includes('cloud')) return 'analysis service unavailable';
   if (normalized.includes('result') || normalized.includes('stale')) return 'comparison returned no usable result';
   return 'comparison returned no usable result';
+}
+
+function messageForTokenMissingReason(reason: SupabaseSessionMissingReason | null) {
+  if (reason === 'signed_out') return 'Sign in required for photo intelligence';
+  if (reason === 'expired_session') return 'Session expired · Sign in again';
+  if (reason === 'auth_loading') return 'Preparing secure photo analysis…';
+  if (reason === 'storage_unavailable') return 'Photo intelligence cannot read the saved sign-in session.';
+  if (reason === 'client_mismatch') return 'Photo intelligence cannot access the signed-in session.';
+  return 'Photo intelligence cannot access the signed-in session.';
 }
 
 function describeLocation(
@@ -805,6 +891,8 @@ type PIEPhotoVisionDiagnosticInput = {
   resultPairMatchesRequestedPair: boolean | null;
   resultProvenance: PIEPhotoVisionDiagnostics['resultProvenance'];
   signedUrlsGenerated: boolean | null;
+  tokenLookup: SupabaseSessionTokenLookupResult | null;
+  retryFetchedFreshToken: boolean | null;
   executedStages: string[];
 };
 
@@ -830,6 +918,15 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     providerInvocationId: input.requestId ?? input.analysisRequestId ?? null,
     providerResponseStatus: input.providerResponseStatus ?? null,
     failureCategory: input.failureCategory ?? null,
+    supabaseAuthState: input.tokenLookup?.authState ?? 'unknown',
+    tokenLookupResult: input.tokenLookup?.status ?? null,
+    tokenMissingReason: input.tokenLookup?.missingReason ?? null,
+    signInClientSource: input.tokenLookup?.signInClientSource ?? null,
+    pieAnalysisClientSource: input.tokenLookup?.tokenLookupClientSource ?? null,
+    authHydrationCompleted: input.tokenLookup?.authHydrationCompleted ?? null,
+    retryFetchedFreshToken: input.retryFetchedFreshToken ?? null,
+    edgeFunctionInvoked: Boolean(input.executedStages?.includes('edge_function_invoked')),
+    edgeFunctionStatus: input.providerResponseStatus ?? null,
     analysisRequestId: input.analysisRequestId ?? input.requestId ?? null,
     semanticComparisonResultId: input.semanticComparisonResultId ?? null,
     selectedPriorPhotoId: input.selectedPriorPhotoId ?? null,

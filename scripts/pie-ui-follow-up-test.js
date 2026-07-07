@@ -31,16 +31,16 @@ assert(
   'No-prior-photo updates must display No prior photo to compare.',
 );
 assert(
-  workflow.includes('client.functions.invoke') &&
+    workflow.includes('client.functions.invoke') &&
     workflow.includes("'pie-photo-vision'") &&
     app.includes('async function retryPhotoAnalysis') &&
-    app.includes('const result = await analyzeProjectPhotoWithVision({'),
+    app.includes('await analyzePhotoWithAuthHydrationRetry({'),
   'Retry must rerun the same pie-photo-vision workflow path.',
 );
 assert(
   workflow.includes('getCurrentSessionAccessToken') &&
-    workflow.includes('sessionTokenResult.data') &&
-    workflow.includes('Authorization: `Bearer ${sessionTokenResult.data}`') &&
+    workflow.includes('tokenLookup.accessToken') &&
+    workflow.includes('Authorization: `Bearer ${tokenLookup.accessToken}`') &&
     !workflow.includes('Authorization: `Bearer ${SUPABASE_ANON_KEY}`'),
   'pie-photo-vision invocation must attach the signed-in user session token, not the anon key.',
 );

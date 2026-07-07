@@ -46,7 +46,7 @@
     "test:live-provider": "node scripts/live-provider-test.js",
     "test:live-provider-mouse": "node scripts/live-provider-mouse-acceptance.js",
     "test:reality": "node scripts/reality-model-test.js && node scripts/live-reality-authority-test.js",
-    "test:ui": "node scripts/ui-simplification-test.js && node scripts/phase2-project-screens-test.js && node scripts/phase3-field-update-flow-test.js && node scripts/phase4-update-preview-test.js && node scripts/phase5-updates-screen-test.js && node scripts/phase6-documents-foundation-test.js && node scripts/phase7-final-validation-test.js && node scripts/project-sheet-scrolling-test.js && node scripts/pie-interpretation-error-boundary-test.js && node scripts/pie-ui-follow-up-test.js && node scripts/pie-intelligence-upgrades-test.js",
+    "test:ui": "node scripts/ui-simplification-test.js && node scripts/phase2-project-screens-test.js && node scripts/phase3-field-update-flow-test.js && node scripts/phase4-update-preview-test.js && node scripts/phase5-updates-screen-test.js && node scripts/phase6-documents-foundation-test.js && node scripts/phase7-final-validation-test.js && node scripts/project-sheet-scrolling-test.js && node scripts/pie-interpretation-error-boundary-test.js && node scripts/pie-auth-session-test.js && node scripts/pie-ui-follow-up-test.js && node scripts/pie-intelligence-upgrades-test.js",
     "test:e2e-core-flow": "node scripts/e2e-core-flow-test.js",
     "test:offline-queue-idempotency": "node scripts/offline-queue-idempotency-test.js",
     "test:simulation": "node scripts/decision-intelligence-test.js simulation",
