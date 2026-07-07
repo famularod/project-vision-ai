@@ -609,7 +609,10 @@ function unavailableState(
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
-    captureLimitations: ['Cloud photo intelligence is unavailable.'],
+    captureLimitations: [
+      'Cloud photo intelligence is unavailable.',
+      safeUnavailableReason(summary),
+    ],
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: null,
     authorityMessage: 'The app will continue saving photos and notes without photo intelligence.',
@@ -618,7 +621,7 @@ function unavailableState(
     additions: [],
     removals: [],
     possibleProgress: null,
-    possibleConcerns: [safeUnavailableReason(summary)],
+    possibleConcerns: [],
     priorUpdateUsed: null,
     diagnostics: buildDiagnostics({
       providerResponseStatus: safeUnavailableReason(summary),
@@ -641,7 +644,10 @@ function failedRetryState(
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
-    captureLimitations: ['Photo comparison could not be completed.'],
+    captureLimitations: [
+      'Photo comparison could not be completed.',
+      safeUnavailableReason(summary),
+    ],
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: 'Keep the photo. PIE can retry from cloud evidence later.',
     authorityMessage: 'No project progress was inferred while analysis was unavailable.',
@@ -650,7 +656,7 @@ function failedRetryState(
     additions: [],
     removals: [],
     possibleProgress: null,
-    possibleConcerns: [safeUnavailableReason(summary)],
+    possibleConcerns: [],
     priorUpdateUsed: diagnosticInput.priorUpdateUsed ?? null,
     analysisRequestId: diagnosticInput.requestId ?? null,
     currentPhotoAssetId: diagnosticInput.currentEvidence?.assetId ?? null,
@@ -844,19 +850,21 @@ function providerStatus(value: unknown): string {
 function classifyFunctionError(error: unknown): NonNullable<PIEPhotoVisionDiagnostics['failureCategory']> {
   const message = JSON.stringify(error || {}).toLowerCase();
 
-  if (/auth|jwt|token|permission|unauthorized|forbidden|401|403/.test(message)) return 'auth';
-  if (/network|fetch|timeout|offline|connection|unreachable/.test(message)) return 'network';
-  if (/provider|openai|vision|model|secret|api key|upstream/.test(message)) return 'provider_side';
-
-  return 'unknown';
+  return classifyPIEPhotoVisionFailureMessage(message);
 }
 
 function classifyThrownError(error: unknown): NonNullable<PIEPhotoVisionDiagnostics['failureCategory']> {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error || '').toLowerCase();
 
+  return classifyPIEPhotoVisionFailureMessage(message);
+}
+
+export function classifyPIEPhotoVisionFailureMessage(
+  message: string,
+): NonNullable<PIEPhotoVisionDiagnostics['failureCategory']> {
   if (/auth|jwt|token|permission|unauthorized|forbidden|401|403/.test(message)) return 'auth';
-  if (/network|fetch|timeout|offline|connection|unreachable|supabase/.test(message)) return 'network';
   if (/provider|openai|vision|model|secret|api key|upstream|function/.test(message)) return 'provider_side';
+  if (/network|fetch|timeout|offline|connection|unreachable|supabase/.test(message)) return 'network';
   if (/stale|result|pair|same_evidence|same_asset|identical|empty|missing|file/.test(message)) return 'malformed_response';
 
   return 'unknown';

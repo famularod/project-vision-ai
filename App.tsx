@@ -45,6 +45,7 @@ import {
   KeyboardAvoidingView,
   Linking,
   Modal,
+  PanResponder,
   Platform,
   ScrollView,
   StyleProp,
@@ -2942,12 +2943,35 @@ function observedFindingsForPIEResult(
 function possibleInterpretationsForPIEResult(
   result: PIEPhotoIntelligenceDisplayState | undefined,
 ) {
-  if (!result) return [];
+  if (!result || !pieResultSupportsInterpretations(result)) return [];
 
   return uniqueStrings([
     result.possibleProgress || '',
     ...(result.possibleConcerns || []),
   ]);
+}
+
+function pieResultSupportsInterpretations(
+  result: PIEPhotoIntelligenceDisplayState | undefined,
+) {
+  return Boolean(
+    result &&
+      ![
+        'analysis_failed_retry',
+        'comparison_unavailable',
+        'analyzing',
+        'no_suitable_prior_photo',
+      ].includes(result.status),
+  );
+}
+
+function updateSupportsPIEInterpretations(
+  update: ProjectUpdate,
+  summary: Pick<ReturnType<typeof summarizePIEStatusForUpdate>, 'status'>,
+) {
+  if (summary.status !== 'complete') return false;
+
+  return pieResultsForUpdate(update).some(pieResultSupportsInterpretations);
 }
 
 function buildSuggestedObservedNote(observedFindings: string[]) {
@@ -5836,7 +5860,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ...observedFindingsForPIEResult(result),
       ]);
       const possibleInterpretations = uniqueStrings([
-        ...(update.possibleInterpretations || []),
+        ...(summary.status === 'complete' ? update.possibleInterpretations || [] : []),
         ...possibleInterpretationsForPIEResult(result),
       ]);
       const suggestedNote = buildSuggestedObservedNote(observedFindings);
@@ -7809,49 +7833,94 @@ function ProjectSelectorSheet({
   onClose: () => void;
 }) {
   return (
+    <ProjectActionSheet visible={visible} title="Choose Project" onClose={onClose}>
+      {narrowed ? (
+        <Text style={styles.bodyText}>
+          GPS found multiple nearby projects. Choose one of these likely matches.
+        </Text>
+      ) : null}
+
+      {detectedProjectName ? (
+        <ProjectSelectorRow
+          label={`Detected: ${detectedProjectName}`}
+          detail="Use the project nearest your current location."
+          selected={selectedProjectName === detectedProjectName}
+          onPress={() => onSelect(detectedProjectName)}
+        />
+      ) : null}
+
+      <ProjectSelectorRow
+        label="All Projects"
+        detail="Show the full portfolio overview."
+        selected={selectedProjectName === null}
+        onPress={() => onSelect(null)}
+      />
+
+      {projects.map(project => (
+        <ProjectSelectorRow
+          key={project}
+          label={project}
+          detail="Open this project overview."
+          selected={selectedProjectName === project}
+          onPress={() => onSelect(project)}
+        />
+      ))}
+    </ProjectActionSheet>
+  );
+}
+
+function ProjectActionSheet({
+  visible,
+  title,
+  children,
+  onClose,
+}: {
+  visible: boolean;
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  const dragResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          gesture.dy > 10 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2,
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dy > 52) {
+            onClose();
+          }
+        },
+      }),
+    [onClose],
+  );
+
+  return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.projectSelectorBackdrop}>
         <TouchableOpacity style={styles.projectSelectorScrim} onPress={onClose} />
         <View style={styles.projectSelectorSheet}>
-          <View style={styles.projectSelectorHandle} />
+          <View
+            style={styles.projectSelectorDragHandleArea}
+            {...dragResponder.panHandlers}
+          >
+            <View style={styles.projectSelectorHandle} />
+          </View>
           <View style={styles.sectionHeaderRow}>
-            <Text style={styles.panelTitle}>Choose Project</Text>
+            <Text style={styles.panelTitle}>{title}</Text>
             <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
               <Ionicons name="close-outline" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
 
-          {narrowed ? (
-            <Text style={styles.bodyText}>
-              GPS found multiple nearby projects. Choose one of these likely matches.
-            </Text>
-          ) : null}
-
-          {detectedProjectName ? (
-            <ProjectSelectorRow
-              label={`Detected: ${detectedProjectName}`}
-              detail="Use the project nearest your current location."
-              selected={selectedProjectName === detectedProjectName}
-              onPress={() => onSelect(detectedProjectName)}
-            />
-          ) : null}
-
-          <ProjectSelectorRow
-            label="All Projects"
-            detail="Show the full portfolio overview."
-            selected={selectedProjectName === null}
-            onPress={() => onSelect(null)}
-          />
-
-          {projects.map(project => (
-            <ProjectSelectorRow
-              key={project}
-              label={project}
-              detail="Open this project overview."
-              selected={selectedProjectName === project}
-              onPress={() => onSelect(project)}
-            />
-          ))}
+          <ScrollView
+            style={styles.projectSelectorScroll}
+            contentContainerStyle={styles.projectSelectorScrollContent}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+            showsVerticalScrollIndicator
+          >
+            {children}
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -8365,36 +8434,37 @@ function AreaSelectionSheet({
   });
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.projectSelectorBackdrop}>
-        <TouchableOpacity style={styles.projectSelectorScrim} onPress={onClose} />
-        <View style={styles.projectSelectorSheet}>
-          <View style={styles.projectSelectorHandle} />
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.panelTitle}>Change Area</Text>
-            <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
-              <Ionicons name="close-outline" size={22} color={colors.text} />
-            </TouchableOpacity>
-          </View>
+    <ProjectActionSheet visible={visible} title="Change Area" onClose={onClose}>
+      <View style={styles.projectSearchBox}>
+        <Ionicons name="search-outline" size={19} color={colors.muted} />
+        <TextInput
+          style={styles.projectSearchInput}
+          value={searchText}
+          onChangeText={setSearchText}
+          placeholder="Search area"
+          placeholderTextColor={colors.muted}
+        />
+      </View>
 
-          <View style={styles.projectSearchBox}>
-            <Ionicons name="search-outline" size={19} color={colors.muted} />
-            <TextInput
-              style={styles.projectSearchInput}
-              value={searchText}
-              onChangeText={setSearchText}
-              placeholder="Search area"
-              placeholderTextColor={colors.muted}
-            />
-          </View>
+      <Text style={styles.sectionLabel}>Suggested</Text>
+      <AreaSelectionRow
+        name="Unassigned / Unknown Area"
+        selected={!selectedAreaId}
+        onPress={() => onSelect('')}
+      />
+      {suggestedRows.map(area => (
+        <AreaSelectionRow
+          key={area.id}
+          name={area.name}
+          selected={selectedAreaId === area.id}
+          onPress={() => onSelect(area.id)}
+        />
+      ))}
 
-          <Text style={styles.sectionLabel}>Suggested</Text>
-          <AreaSelectionRow
-            name="Unassigned / Unknown Area"
-            selected={!selectedAreaId}
-            onPress={() => onSelect('')}
-          />
-          {suggestedRows.map(area => (
+      {showAll || search ? (
+        <>
+          <Text style={styles.sectionLabel}>All Areas</Text>
+          {allRows.map(area => (
             <AreaSelectionRow
               key={area.id}
               name={area.name}
@@ -8402,29 +8472,15 @@ function AreaSelectionSheet({
               onPress={() => onSelect(area.id)}
             />
           ))}
-
-          {showAll || search ? (
-            <>
-              <Text style={styles.sectionLabel}>All Areas</Text>
-              {allRows.map(area => (
-                <AreaSelectionRow
-                  key={area.id}
-                  name={area.name}
-                  selected={selectedAreaId === area.id}
-                  onPress={() => onSelect(area.id)}
-                />
-              ))}
-            </>
-          ) : (
-            <SecondaryButton
-              label="Show All Areas"
-              icon="list-outline"
-              onPress={() => setShowAll(true)}
-            />
-          )}
-        </View>
-      </View>
-    </Modal>
+        </>
+      ) : (
+        <SecondaryButton
+          label="Show All Areas"
+          icon="list-outline"
+          onPress={() => setShowAll(true)}
+        />
+      )}
+    </ProjectActionSheet>
   );
 }
 
@@ -8469,32 +8525,20 @@ function RecipientSelectionSheet({
   onClose: () => void;
 }) {
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.projectSelectorBackdrop}>
-        <TouchableOpacity style={styles.projectSelectorScrim} onPress={onClose} />
-        <View style={styles.projectSelectorSheet}>
-          <View style={styles.projectSelectorHandle} />
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.panelTitle}>Recipients</Text>
-            <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
-              <Ionicons name="close-outline" size={22} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.bodyText}>
-            Project defaults, area defaults, email contacts, text contacts, and recent recipients use the saved contact list.
-          </Text>
-          <View style={styles.compactStatsRow}>
-            <Text style={styles.compactStatText}>{recipientCount} selected</Text>
-            <Text style={styles.compactStatText}>{contacts.length} recent</Text>
-          </View>
-          <SecondaryButton
-            label="Open Contacts"
-            icon="people-outline"
-            onPress={onOpenContacts}
-          />
-        </View>
+    <ProjectActionSheet visible={visible} title="Recipients" onClose={onClose}>
+      <Text style={styles.bodyText}>
+        Project defaults, area defaults, email contacts, text contacts, and recent recipients use the saved contact list.
+      </Text>
+      <View style={styles.compactStatsRow}>
+        <Text style={styles.compactStatText}>{recipientCount} selected</Text>
+        <Text style={styles.compactStatText}>{contacts.length} recent</Text>
       </View>
-    </Modal>
+      <SecondaryButton
+        label="Open Contacts"
+        icon="people-outline"
+        onPress={onOpenContacts}
+      />
+    </ProjectActionSheet>
   );
 }
 
@@ -8983,7 +9027,14 @@ function RootPhotoIntelligenceCard({
 
   const additions = result.additions || [];
   const removals = result.removals || [];
-  const concerns = result.possibleConcerns || result.captureLimitations;
+  const concerns =
+    result.possibleConcerns && result.possibleConcerns.length > 0
+      ? result.possibleConcerns
+      : result.captureLimitations;
+  const concernsLabel =
+    result.possibleConcerns && result.possibleConcerns.length > 0
+      ? 'Possible concerns'
+      : 'Limitations';
 
   return (
     <View style={styles.locationPanel}>
@@ -9039,7 +9090,7 @@ function RootPhotoIntelligenceCard({
       ) : null}
 
       {concerns.length > 0 ? (
-        <PIEDetailLine label="Possible concerns" value={concerns.join(' ')} />
+        <PIEDetailLine label={concernsLabel} value={concerns.join(' ')} />
       ) : null}
 
       {result.location ? (
@@ -9483,7 +9534,9 @@ function BuildUpdateScreen({
     ...observedFindingsForPIEResult(firstResult),
   ]);
   const possibleInterpretations = uniqueStrings([
-    ...(update.possibleInterpretations || []),
+    ...(updateSupportsPIEInterpretations(update, pieStatus)
+      ? update.possibleInterpretations || []
+      : []),
     ...possibleInterpretationsForPIEResult(firstResult),
   ]);
   const confirmedInterpretations = new Set(update.confirmedInterpretations || []);
@@ -9781,29 +9834,17 @@ function MoreOptionsSheet({
   }
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.projectSelectorBackdrop}>
-        <TouchableOpacity style={styles.projectSelectorScrim} onPress={onClose} />
-        <View style={styles.projectSelectorSheet}>
-          <View style={styles.projectSelectorHandle} />
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.panelTitle}>More Options</Text>
-            <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
-              <Ionicons name="close-outline" size={22} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-          <MoreOptionRow label="Email" icon="mail-outline" onPress={() => run(onEmail)} />
-          <MoreOptionRow label="Text" icon="chatbubble-outline" onPress={() => run(onText)} />
-          <MoreOptionRow label="Copy" icon="copy-outline" onPress={() => run(onCopy)} />
-          <MoreOptionRow label="Save Draft" icon="bookmark-outline" onPress={() => run(onSaveDraft)} />
-          <MoreOptionRow label="Edit Photos" icon="images-outline" onPress={() => run(onEditPhotos)} />
-          <MoreOptionRow label="Add Document" icon="document-attach-outline" onPress={() => run(onAddDocument)} />
-          {Platform.OS === 'ios' ? (
-            <MoreOptionRow label="iOS Share Sheet" icon="share-outline" onPress={() => run(onShareSheet)} />
-          ) : null}
-        </View>
-      </View>
-    </Modal>
+    <ProjectActionSheet visible={visible} title="More Options" onClose={onClose}>
+      <MoreOptionRow label="Email" icon="mail-outline" onPress={() => run(onEmail)} />
+      <MoreOptionRow label="Text" icon="chatbubble-outline" onPress={() => run(onText)} />
+      <MoreOptionRow label="Copy" icon="copy-outline" onPress={() => run(onCopy)} />
+      <MoreOptionRow label="Save Draft" icon="bookmark-outline" onPress={() => run(onSaveDraft)} />
+      <MoreOptionRow label="Edit Photos" icon="images-outline" onPress={() => run(onEditPhotos)} />
+      <MoreOptionRow label="Add Document" icon="document-attach-outline" onPress={() => run(onAddDocument)} />
+      {Platform.OS === 'ios' ? (
+        <MoreOptionRow label="iOS Share Sheet" icon="share-outline" onPress={() => run(onShareSheet)} />
+      ) : null}
+    </ProjectActionSheet>
   );
 }
 
@@ -11777,89 +11818,73 @@ function UpdateFilterSheet({
   );
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.projectSelectorBackdrop}>
-        <TouchableOpacity style={styles.projectSelectorScrim} onPress={onClose} />
-        <View style={styles.projectSelectorSheet}>
-          <View style={styles.projectSelectorHandle} />
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.panelTitle}>Filter Updates</Text>
-            <TouchableOpacity
-              style={styles.iconOnlyButton}
-              onPress={onClose}
-            >
-              <Ionicons name="close-outline" size={22} color={colors.text} />
-            </TouchableOpacity>
-          </View>
+    <ProjectActionSheet visible={visible} title="Filter Updates" onClose={onClose}>
+      <Text style={styles.sectionLabel}>Project</Text>
+      <FilterOption
+        label="All Projects"
+        selected={!filters.project}
+        onPress={() => onChange({ ...filters, project: null })}
+      />
+      {projects.map(project => (
+        <FilterOption
+          key={project}
+          label={project}
+          selected={filters.project === project}
+          onPress={() => onChange({ ...filters, project })}
+        />
+      ))}
 
-          <Text style={styles.sectionLabel}>Project</Text>
-          <FilterOption
-            label="All Projects"
-            selected={!filters.project}
-            onPress={() => onChange({ ...filters, project: null })}
-          />
-          {projects.map(project => (
-            <FilterOption
-              key={project}
-              label={project}
-              selected={filters.project === project}
-              onPress={() => onChange({ ...filters, project })}
-            />
-          ))}
+      <Text style={styles.sectionLabel}>Area</Text>
+      <FilterOption
+        label="All Areas"
+        selected={!filters.areaId}
+        onPress={() => onChange({ ...filters, areaId: null })}
+      />
+      {projectAreas.slice(0, 8).map(area => (
+        <FilterOption
+          key={area.id}
+          label={area.name}
+          selected={filters.areaId === area.id}
+          onPress={() => onChange({ ...filters, areaId: area.id })}
+        />
+      ))}
 
-          <Text style={styles.sectionLabel}>Area</Text>
-          <FilterOption
-            label="All Areas"
-            selected={!filters.areaId}
-            onPress={() => onChange({ ...filters, areaId: null })}
-          />
-          {projectAreas.slice(0, 8).map(area => (
-            <FilterOption
-              key={area.id}
-              label={area.name}
-              selected={filters.areaId === area.id}
-              onPress={() => onChange({ ...filters, areaId: area.id })}
-            />
-          ))}
+      <Text style={styles.sectionLabel}>Lifecycle status</Text>
+      {(['draft', 'ready_to_send', 'queued', 'sent', 'failed'] as FieldUpdateStatus[]).map(status => (
+        <FilterOption
+          key={status}
+          label={status}
+          selected={filters.lifecycleStatus === status}
+          onPress={() => onChange({ ...filters, lifecycleStatus: status })}
+        />
+      ))}
 
-          <Text style={styles.sectionLabel}>Lifecycle status</Text>
-          {(['draft', 'ready_to_send', 'queued', 'sent', 'failed'] as FieldUpdateStatus[]).map(status => (
-            <FilterOption
-              key={status}
-              label={status}
-              selected={filters.lifecycleStatus === status}
-              onPress={() => onChange({ ...filters, lifecycleStatus: status })}
-            />
-          ))}
+      <Text style={styles.sectionLabel}>PIE status</Text>
+      {pieStatuses.map(status => (
+        <FilterOption
+          key={status}
+          label={status}
+          selected={filters.pieStatus === status}
+          onPress={() => onChange({ ...filters, pieStatus: status })}
+        />
+      ))}
 
-          <Text style={styles.sectionLabel}>PIE status</Text>
-          {pieStatuses.map(status => (
-            <FilterOption
-              key={status}
-              label={status}
-              selected={filters.pieStatus === status}
-              onPress={() => onChange({ ...filters, pieStatus: status })}
-            />
-          ))}
+      <Text style={styles.sectionLabel}>Photo status</Text>
+      <Text style={styles.bodyText}>Photo status, document status, date, and sent/draft status use the same saved update records and lifecycle fields.</Text>
 
-          <Text style={styles.sectionLabel}>Photo status</Text>
-          <Text style={styles.bodyText}>Photo status, document status, date, and sent/draft status use the same saved update records and lifecycle fields.</Text>
-
-          <SecondaryButton
-            label="Clear Filters"
-            icon="close-circle-outline"
-            onPress={() =>
-              onChange({
-                project: null,
-                areaId: null,
-                pieStatus: null,
-                lifecycleStatus: null,
-              })
-            }
-          />
-        </View>
-      </View>
-    </Modal>
+      <SecondaryButton
+        label="Clear Filters"
+        icon="close-circle-outline"
+        onPress={() =>
+          onChange({
+            project: null,
+            areaId: null,
+            pieStatus: null,
+            lifecycleStatus: null,
+          })
+        }
+      />
+    </ProjectActionSheet>
   );
 }
 
@@ -15041,11 +15066,17 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingTop: 6,
     paddingBottom: 28,
     borderColor: colors.line,
     borderWidth: 1,
     maxHeight: '82%',
+  },
+
+  projectSelectorDragHandleArea: {
+    minHeight: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   projectSelectorHandle: {
@@ -15054,7 +15085,16 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: colors.line,
     alignSelf: 'center',
-    marginBottom: 12,
+  },
+
+  projectSelectorScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+
+  projectSelectorScrollContent: {
+    paddingTop: 2,
+    paddingBottom: 8,
   },
 
   projectSelectorRow: {

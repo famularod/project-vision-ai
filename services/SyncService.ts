@@ -805,6 +805,7 @@ async function uploadProjectUpdateQueueItem(
     id: payload.id,
     projectName: payload.projectName || 'Unassigned Project',
     areaName: payload.selectedAreaName || '',
+    idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
     updateData: payload.updateData,
     updatedAt: item.changedAt,
   });
@@ -856,6 +857,24 @@ function isRemoteNewer(remoteUpdatedAt: string, localChangedAt: string): boolean
 
 function createQueueId(entity: string, createdAt: string): string {
   return `${entity}-${createdAt}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function projectUpdateIdempotencyKey(
+  updateData: unknown,
+  fallbackId: string,
+): string {
+  const update =
+    updateData && typeof updateData === 'object' && !Array.isArray(updateData)
+      ? (updateData as Record<string, unknown>)
+      : {};
+  const stableKey =
+    typeof update.idempotencyKey === 'string' && update.idempotencyKey.trim()
+      ? update.idempotencyKey.trim()
+      : typeof update.stableSendId === 'string' && update.stableSendId.trim()
+        ? update.stableSendId.trim()
+        : fallbackId;
+
+  return stableKey;
 }
 
 async function uploadLocalPhoto(

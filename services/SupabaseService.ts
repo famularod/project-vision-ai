@@ -142,6 +142,7 @@ export type CloudProjectUpdate<TUpdate = JsonValue> = {
   id: string;
   projectName: string;
   areaName: string;
+  idempotencyKey?: string | null;
   updateData: TUpdate;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -152,6 +153,7 @@ export type SaveProjectUpdateParams<TUpdate> = {
   id: string;
   projectName: string;
   areaName?: string | null;
+  idempotencyKey?: string | null;
   updateData: TUpdate;
   updatedAt?: string;
   ownerId?: string | null;
@@ -648,6 +650,7 @@ export async function saveProjectUpdate<TUpdate>({
   id,
   projectName,
   areaName,
+  idempotencyKey,
   updateData,
   updatedAt = new Date().toISOString(),
 }: SaveProjectUpdateParams<TUpdate>): Promise<
@@ -657,17 +660,22 @@ export async function saveProjectUpdate<TUpdate>({
 
   if (!client) return notConfiguredResult<CloudProjectUpdate<TUpdate>>();
 
+  const stableIdempotencyKey =
+    sanitizeIdempotencyKey(idempotencyKey) ||
+    extractProjectUpdateIdempotencyKey(updateData) ||
+    id;
   const payload = {
     id,
     project_name: projectName || 'Unassigned Project',
     area_name: areaName || '',
+    idempotency_key: stableIdempotencyKey,
     update_data: updateData,
     updated_at: updatedAt,
   };
 
   const { data, error, status } = await client
     .from(PROJECT_UPDATES_TABLE)
-    .upsert(payload)
+    .upsert(payload, { onConflict: 'id' })
     .select('*')
     .single();
 
@@ -1809,11 +1817,29 @@ function normalizeProjectUpdate<TUpdate>(
         ? row.project_name
         : 'Unassigned Project',
     areaName: typeof row.area_name === 'string' ? row.area_name : '',
+    idempotencyKey:
+      typeof row.idempotency_key === 'string' ? row.idempotency_key : null,
     updateData: row.update_data as TUpdate,
     createdAt: typeof row.created_at === 'string' ? row.created_at : null,
     updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
     ownerId: typeof row.owner_id === 'string' ? row.owner_id : null,
   };
+}
+
+function extractProjectUpdateIdempotencyKey(updateData: unknown): string | null {
+  const update = toRecord(updateData);
+
+  return (
+    sanitizeIdempotencyKey(update.idempotencyKey) ||
+    sanitizeIdempotencyKey(update.stableSendId)
+  );
+}
+
+function sanitizeIdempotencyKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
