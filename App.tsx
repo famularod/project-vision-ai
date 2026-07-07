@@ -214,6 +214,14 @@ type FieldUpdateSyncDiagnostics = {
   storageFailureCategory: PhotoStorageUploadFailureCategory | null;
   storageHttpStatus: number | null;
   storageErrorCode: string | null;
+  retryAttemptNumber: number | null;
+  localFileExists: boolean | null;
+  localFileReadable: boolean | null;
+  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
+  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
+  storageContentType: string | null;
+  objectPathCategory: string | null;
+  databaseSyncRanAfterUpload: boolean | null;
   failedOperationName: string | null;
   failedLogicalTarget: string | null;
   rlsDenied: boolean;
@@ -1238,6 +1246,7 @@ function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDia
       value.storageFailureCategory === 'invalid_payload' ||
       value.storageFailureCategory === 'unsupported_content_type' ||
       value.storageFailureCategory === 'file_unreadable' ||
+      value.storageFailureCategory === 'stale_local_uri' ||
       value.storageFailureCategory === 'network' ||
       value.storageFailureCategory === 'unknown_storage_error'
         ? value.storageFailureCategory
@@ -1248,6 +1257,38 @@ function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDia
         ? value.storageHttpStatus
         : null,
     storageErrorCode: optionalString(value.storageErrorCode),
+    retryAttemptNumber:
+      typeof value.retryAttemptNumber === 'number' &&
+      Number.isFinite(value.retryAttemptNumber)
+        ? value.retryAttemptNumber
+        : null,
+    localFileExists:
+      typeof value.localFileExists === 'boolean'
+        ? value.localFileExists
+        : null,
+    localFileReadable:
+      typeof value.localFileReadable === 'boolean'
+        ? value.localFileReadable
+        : null,
+    fileByteSizeCategory:
+      value.fileByteSizeCategory === 'zero' ||
+      value.fileByteSizeCategory === 'nonzero' ||
+      value.fileByteSizeCategory === 'unknown'
+        ? value.fileByteSizeCategory
+        : 'unknown',
+    uploadPayloadType:
+      value.uploadPayloadType === 'ArrayBuffer' ||
+      value.uploadPayloadType === 'Blob' ||
+      value.uploadPayloadType === 'base64' ||
+      value.uploadPayloadType === 'unknown'
+        ? value.uploadPayloadType
+        : 'unknown',
+    storageContentType: optionalString(value.storageContentType),
+    objectPathCategory: optionalString(value.objectPathCategory),
+    databaseSyncRanAfterUpload:
+      typeof value.databaseSyncRanAfterUpload === 'boolean'
+        ? value.databaseSyncRanAfterUpload
+        : null,
     failedOperationName: optionalString(value.failedOperationName),
     failedLogicalTarget: optionalString(value.failedLogicalTarget),
     rlsDenied: value.rlsDenied === true,
@@ -2983,6 +3024,13 @@ async function uploadUpdatePhotosForSync(
   | 'storageFailureCategory'
   | 'storageHttpStatus'
   | 'storageErrorCode'
+  | 'localFileExists'
+  | 'localFileReadable'
+  | 'fileByteSizeCategory'
+  | 'uploadPayloadType'
+  | 'storageContentType'
+  | 'objectPathCategory'
+  | 'databaseSyncRanAfterUpload'
   | 'errors'
 >> {
   if (update.photos.length === 0) {
@@ -2994,6 +3042,13 @@ async function uploadUpdatePhotosForSync(
       storageFailureCategory: null,
       storageHttpStatus: null,
       storageErrorCode: null,
+      localFileExists: null,
+      localFileReadable: null,
+      fileByteSizeCategory: 'unknown',
+      uploadPayloadType: 'unknown',
+      storageContentType: null,
+      objectPathCategory: null,
+      databaseSyncRanAfterUpload: false,
       errors: [],
     };
   }
@@ -3017,6 +3072,14 @@ async function uploadUpdatePhotosForSync(
         representativeDiagnostic?.failureCategory || 'unknown_storage_error',
       storageHttpStatus: representativeDiagnostic?.httpStatus ?? null,
       storageErrorCode: representativeDiagnostic?.errorCode ?? null,
+      localFileExists: representativeDiagnostic?.localFileExists ?? null,
+      localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
+      fileByteSizeCategory:
+        representativeDiagnostic?.fileByteSizeCategory || 'unknown',
+      uploadPayloadType: representativeDiagnostic?.uploadPayloadType || 'unknown',
+      storageContentType: representativeDiagnostic?.contentType || null,
+      objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
+      databaseSyncRanAfterUpload: false,
       errors: failures.map(result =>
         result.result === 'missing'
           ? 'Photo storage upload failed: photo file unavailable.'
@@ -3033,6 +3096,14 @@ async function uploadUpdatePhotosForSync(
     storageFailureCategory: null,
     storageHttpStatus: null,
     storageErrorCode: null,
+    localFileExists: representativeDiagnostic?.localFileExists ?? null,
+    localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
+    fileByteSizeCategory:
+      representativeDiagnostic?.fileByteSizeCategory || 'unknown',
+    uploadPayloadType: representativeDiagnostic?.uploadPayloadType || 'unknown',
+    storageContentType: representativeDiagnostic?.contentType || null,
+    objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
+    databaseSyncRanAfterUpload: false,
     errors: [],
   };
 }
@@ -3054,6 +3125,13 @@ async function runFieldUpdateCloudSync(
     storageFailureCategory: photoAttempt.storageFailureCategory,
     storageHttpStatus: photoAttempt.storageHttpStatus,
     storageErrorCode: photoAttempt.storageErrorCode,
+    localFileExists: photoAttempt.localFileExists,
+    localFileReadable: photoAttempt.localFileReadable,
+    fileByteSizeCategory: photoAttempt.fileByteSizeCategory,
+    uploadPayloadType: photoAttempt.uploadPayloadType,
+    storageContentType: photoAttempt.storageContentType,
+    objectPathCategory: photoAttempt.objectPathCategory,
+    databaseSyncRanAfterUpload: false,
     errors: [...photoAttempt.errors],
   };
 
@@ -3061,6 +3139,7 @@ async function runFieldUpdateCloudSync(
   workAttempt.cloudUpdateInsertAttempted = true;
 
   const syncResult = await uploadPendingChanges();
+  workAttempt.databaseSyncRanAfterUpload = workAttempt.storageUploadResult === 'success';
   workAttempt.databaseUpsertResult =
     syncResult.configured && syncResult.errors.length === 0 && syncResult.queued === 0
       ? 'success'
@@ -3715,6 +3794,14 @@ function buildSkippedSyncDiagnostics(
     storageFailureCategory: null,
     storageHttpStatus: null,
     storageErrorCode: null,
+    retryAttemptNumber: null,
+    localFileExists: null,
+    localFileReadable: null,
+    fileByteSizeCategory: 'unknown',
+    uploadPayloadType: 'unknown',
+    storageContentType: null,
+    objectPathCategory: null,
+    databaseSyncRanAfterUpload: false,
     ...emptyPermissionAttempt(),
     rlsDenied: category === 'rls_denied',
     authenticatedUserIdPresent: sessionTokenPresent,
@@ -3737,6 +3824,13 @@ type FieldUpdateSyncWorkAttempt = {
   storageFailureCategory: PhotoStorageUploadFailureCategory | null;
   storageHttpStatus: number | null;
   storageErrorCode: string | null;
+  localFileExists: boolean | null;
+  localFileReadable: boolean | null;
+  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
+  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
+  storageContentType: string | null;
+  objectPathCategory: string | null;
+  databaseSyncRanAfterUpload: boolean | null;
   errors: string[];
 };
 
@@ -3750,6 +3844,13 @@ const SKIPPED_SYNC_WORK_ATTEMPT: FieldUpdateSyncWorkAttempt = {
   storageFailureCategory: null,
   storageHttpStatus: null,
   storageErrorCode: null,
+  localFileExists: null,
+  localFileReadable: null,
+  fileByteSizeCategory: 'unknown',
+  uploadPayloadType: 'unknown',
+  storageContentType: null,
+  objectPathCategory: null,
+  databaseSyncRanAfterUpload: false,
   errors: [],
 };
 
@@ -3758,6 +3859,7 @@ function buildSyncDiagnosticsFromUpload(
   attemptedAt: string,
   sessionTokenPresent: boolean | null,
   workAttempt: FieldUpdateSyncWorkAttempt = SKIPPED_SYNC_WORK_ATTEMPT,
+  retryAttemptNumber: number | null = null,
 ): FieldUpdateSyncDiagnostics {
   const databaseUpsertResult: FieldUpdateSyncStepResult =
     workAttempt.databaseUpsertResult !== 'skipped'
@@ -3810,6 +3912,14 @@ function buildSyncDiagnosticsFromUpload(
     storageFailureCategory: workAttempt.storageFailureCategory,
     storageHttpStatus: workAttempt.storageHttpStatus,
     storageErrorCode: workAttempt.storageErrorCode,
+    retryAttemptNumber,
+    localFileExists: workAttempt.localFileExists,
+    localFileReadable: workAttempt.localFileReadable,
+    fileByteSizeCategory: workAttempt.fileByteSizeCategory,
+    uploadPayloadType: workAttempt.uploadPayloadType,
+    storageContentType: workAttempt.storageContentType,
+    objectPathCategory: workAttempt.objectPathCategory,
+    databaseSyncRanAfterUpload: workAttempt.databaseSyncRanAfterUpload,
     ...permissionAttempt,
     queuedUpdateCount: syncResult.queued,
     projectRollupsIncludeQueuedUpdates: true,
@@ -3836,6 +3946,13 @@ function queuedStatusCopyForUpdate(update: ProjectUpdate) {
     return 'Project access required to sync';
   }
   if (category === 'rls_denied') return 'Sync failed · Permission issue';
+  if (
+    category === 'storage_upload_failed' &&
+    (update.syncDiagnostics?.storageFailureCategory === 'stale_local_uri' ||
+      update.syncDiagnostics?.storageFailureCategory === 'file_unreadable')
+  ) {
+    return 'Photo unavailable · retake or replace photo';
+  }
   if (category === 'storage_upload_failed') return 'Sync failed · Photo upload issue';
   if (category === 'database_insert_failed') return 'Sync failed · Update save issue';
   if (category === 'malformed_payload') return 'Sync failed · App data issue';
@@ -5851,6 +5968,7 @@ useEffect(() => {
         now,
         sessionTokenPresent,
         workAttempt,
+        queuedUpdate.sendAttempts || 1,
       );
       const resolvedAt = new Date().toISOString();
       const finalUpdate: ProjectUpdate = {
@@ -5957,6 +6075,7 @@ useEffect(() => {
         now,
         sessionTokenPresent,
         workAttempt,
+        retryUpdate.sendAttempts || 1,
       );
       const finalUpdate: ProjectUpdate = {
         ...retryUpdate,
@@ -6047,6 +6166,7 @@ useEffect(() => {
           attemptStartedAt,
           sessionTokenPresent,
           workAttempt,
+          update.sendAttempts || null,
         );
 
         setSavedUpdates(prev =>
@@ -10422,6 +10542,42 @@ function RootPhotoIntelligenceCard({
             Usable prior found: {result.diagnostics.usablePriorCandidateFound === null ? 'unknown' : result.diagnostics.usablePriorCandidateFound ? 'yes' : 'no'}
           </Text>
           <Text style={styles.locationDetailText}>
+            Current project key: {result.diagnostics.currentProjectKey || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Current area key: {result.diagnostics.currentAreaKey || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Prior candidates total: {result.diagnostics.totalPriorCandidateCount}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            After same project: {result.diagnostics.priorCandidatesAfterSameProject}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            After same area: {result.diagnostics.priorCandidatesAfterSameArea}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            After timestamp: {result.diagnostics.priorCandidatesAfterTimestamp}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            After excluding current: {result.diagnostics.priorCandidatesAfterExcludingCurrent}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            After usable image: {result.diagnostics.priorCandidatesAfterUsableImage}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Selected prior update: {result.diagnostics.selectedPriorUpdateId ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Selected prior photo: {result.diagnostics.selectedPriorPhotoId ? 'yes' : 'no'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Selected prior date: {result.diagnostics.selectedPriorDate || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            No prior reason: {result.diagnostics.noPriorReason || 'none'}
+          </Text>
+          <Text style={styles.locationDetailText}>
             Skipped prior candidates: {result.diagnostics.skippedPriorCandidateCount}
           </Text>
           <Text style={styles.locationDetailText}>
@@ -13351,7 +13507,7 @@ function UpdateHistoryCard({
         ) : null}
         {__DEV__ && update.syncDiagnostics ? (
           <Text style={styles.locationDetailText}>
-            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | failed operation {update.syncDiagnostics.failedOperationName || 'none'} | target {update.syncDiagnostics.failedLogicalTarget || 'none'} | RLS denied {update.syncDiagnostics.rlsDenied ? 'yes' : 'no'} | user id present {update.syncDiagnostics.authenticatedUserIdPresent === null ? 'unknown' : update.syncDiagnostics.authenticatedUserIdPresent ? 'yes' : 'no'} | project id present {update.syncDiagnostics.projectIdPresent === null ? 'unknown' : update.syncDiagnostics.projectIdPresent ? 'yes' : 'no'} | organization id present {update.syncDiagnostics.organizationIdPresent === null ? 'unknown' : update.syncDiagnostics.organizationIdPresent ? 'yes' : 'no'} | membership {update.syncDiagnostics.membershipCheckResult || 'unknown'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
+            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | retry attempt {update.syncDiagnostics.retryAttemptNumber ?? 'unknown'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | failed operation {update.syncDiagnostics.failedOperationName || 'none'} | target {update.syncDiagnostics.failedLogicalTarget || 'none'} | RLS denied {update.syncDiagnostics.rlsDenied ? 'yes' : 'no'} | user id present {update.syncDiagnostics.authenticatedUserIdPresent === null ? 'unknown' : update.syncDiagnostics.authenticatedUserIdPresent ? 'yes' : 'no'} | project id present {update.syncDiagnostics.projectIdPresent === null ? 'unknown' : update.syncDiagnostics.projectIdPresent ? 'yes' : 'no'} | organization id present {update.syncDiagnostics.organizationIdPresent === null ? 'unknown' : update.syncDiagnostics.organizationIdPresent ? 'yes' : 'no'} | membership {update.syncDiagnostics.membershipCheckResult || 'unknown'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | local file exists {update.syncDiagnostics.localFileExists === null ? 'unknown' : update.syncDiagnostics.localFileExists ? 'yes' : 'no'} | local file readable {update.syncDiagnostics.localFileReadable === null ? 'unknown' : update.syncDiagnostics.localFileReadable ? 'yes' : 'no'} | byte size {update.syncDiagnostics.fileByteSizeCategory} | payload {update.syncDiagnostics.uploadPayloadType} | content type {update.syncDiagnostics.storageContentType || 'unknown'} | path category {update.syncDiagnostics.objectPathCategory || 'unknown'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database after upload {update.syncDiagnostics.databaseSyncRanAfterUpload === null ? 'unknown' : update.syncDiagnostics.databaseSyncRanAfterUpload ? 'yes' : 'no'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
           </Text>
         ) : null}
         {onRetry ? (

@@ -148,6 +148,15 @@ export type ProjectUpdate = {
   gpsAccuracy?: number | null;
   distanceFromSelectedAreaFeet?: number | null;
   locationCapturedAt?: string | null;
+  pieStartedAt?: string | null;
+  workflowTimestamps?: {
+    startedAt?: string;
+    cameraActionStartedAt?: string;
+    firstPhotoAddedAt?: string;
+    reviewOpenedAt?: string;
+    sendTappedAt?: string;
+    sendResolvedAt?: string;
+  };
 };
 
 export type ProjectContact = {

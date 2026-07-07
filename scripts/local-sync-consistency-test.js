@@ -16,8 +16,16 @@ const authenticatedStorageMigration = fs.readFileSync(
   path.join(root, 'supabase/migrations/20260707010000_project_storage_authenticated_policies.sql'),
   'utf8',
 );
+const authenticatedProjectSyncMigration = fs.readFileSync(
+  path.join(root, 'supabase/migrations/20260707020000_project_sync_authenticated_policies.sql'),
+  'utf8',
+);
 const membershipSetup = fs.readFileSync(
   path.join(root, 'scripts/create-dev-project-member.js'),
+  'utf8',
+);
+const storageSmoke = fs.readFileSync(
+  path.join(root, 'scripts/storage-smoke-test.js'),
   'utf8',
 );
 const pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
@@ -40,6 +48,14 @@ includes(app, 'storageBucketExists', 'sync diagnostics must include bucket exist
 includes(app, 'storageFailureCategory', 'sync diagnostics must include safe storage failure category');
 includes(app, 'storageHttpStatus', 'sync diagnostics must include storage HTTP/status code when available');
 includes(app, 'storageErrorCode', 'sync diagnostics must include Supabase storage error code when available');
+includes(app, 'retryAttemptNumber', 'sync diagnostics must include retry attempt number');
+includes(app, 'localFileExists', 'sync diagnostics must include local file existence');
+includes(app, 'localFileReadable', 'sync diagnostics must include local file readability');
+includes(app, 'fileByteSizeCategory', 'sync diagnostics must include safe byte-size category');
+includes(app, 'uploadPayloadType', 'sync diagnostics must include upload payload type');
+includes(app, 'storageContentType', 'sync diagnostics must include upload content type');
+includes(app, 'objectPathCategory', 'sync diagnostics must include object path category');
+includes(app, 'databaseSyncRanAfterUpload', 'sync diagnostics must show whether database sync ran after upload');
 includes(app, 'failedOperationName', 'sync diagnostics must include failed operation name');
 includes(app, 'failedLogicalTarget', 'sync diagnostics must include failed table/bucket name');
 includes(app, 'rlsDenied', 'sync diagnostics must show RLS denial safely');
@@ -65,6 +81,7 @@ includes(app, "Sign in required to send", 'signed-out send state must be explici
 includes(app, "Session expired · Sign in again", 'expired/auth send state must ask for sign-in again');
 includes(app, "Sync failed · Permission issue", 'RLS failures must use permission copy');
 includes(app, "Project access required to sync", 'missing project membership must use project access copy');
+includes(app, "Photo unavailable · retake or replace photo", 'stale local photos must not show generic upload copy');
 includes(app, "Sync failed · Photo upload issue", 'storage failures must use photo upload copy');
 includes(app, "Sync failed · Update save issue", 'database failures must use update save copy');
 includes(app, "Sync failed · App data issue", 'malformed payload failures must use app data copy');
@@ -95,6 +112,14 @@ includes(app, 'bucket exists', 'dev diagnostics must expose bucket existence saf
 includes(app, 'storage category', 'dev diagnostics must expose storage failure category safely');
 includes(app, 'storage status', 'dev diagnostics must expose storage status safely');
 includes(app, 'storage code', 'dev diagnostics must expose storage code safely');
+includes(app, 'retry attempt', 'dev diagnostics must expose retry attempt safely');
+includes(app, 'local file exists', 'dev diagnostics must expose local file existence safely');
+includes(app, 'local file readable', 'dev diagnostics must expose local file readability safely');
+includes(app, 'byte size', 'dev diagnostics must expose byte-size category safely');
+includes(app, 'payload', 'dev diagnostics must expose payload type safely');
+includes(app, 'content type', 'dev diagnostics must expose content type safely');
+includes(app, 'path category', 'dev diagnostics must expose object path category safely');
+includes(app, 'database after upload', 'dev diagnostics must expose whether DB sync ran after upload');
 includes(app, 'failed operation', 'dev diagnostics must expose failed operation safely');
 includes(app, 'target', 'dev diagnostics must expose failed logical target safely');
 includes(app, 'RLS denied', 'dev diagnostics must expose RLS denial safely');
@@ -109,15 +134,26 @@ includes(storageMigration, "('project-photos', 'project-photos', false)", 'base 
 includes(authenticatedStorageMigration, "('project-photos', 'project-photos', false)", 'authenticated migration must preserve private project-photos bucket');
 includes(authenticatedStorageMigration, 'to authenticated', 'signed-in users must have authenticated Storage policies');
 includes(authenticatedStorageMigration, "with check (bucket_id = 'project-photos')", 'authenticated upload policy must target project-photos bucket');
+includes(authenticatedProjectSyncMigration, 'project_updates_authenticated_write', 'authenticated users must be able to sync project updates');
+includes(authenticatedProjectSyncMigration, 'projects_authenticated_read', 'authenticated users must be able to read legacy project rows');
+includes(authenticatedProjectSyncMigration, 'project_areas_authenticated_read', 'authenticated users must be able to read legacy project areas');
+includes(authenticatedProjectSyncMigration, 'reference_documents_authenticated_write', 'authenticated users must be able to sync reference documents');
+includes(authenticatedProjectSyncMigration, 'schedule_items_authenticated_write', 'authenticated users must be able to sync schedule items');
 includes(sync, 'bucket_missing', 'missing bucket must have a safe storage category');
 includes(sync, 'rls_denied', 'Storage RLS failures must have a safe category');
 includes(sync, 'auth_missing', 'Storage auth failures must have a safe category');
+includes(sync, 'file_unreadable', 'Storage file-read failures must have a safe category');
+includes(sync, 'stale_local_uri', 'stale local photo retry must have a safe category');
 includes(sync, 'invalid_path', 'invalid object paths must have a safe category');
 includes(sync, 'invalid_payload', 'invalid upload payloads must have a safe category');
 includes(sync, 'unsupported_content_type', 'unsupported MIME types must have a safe category');
 includes(app, "if (category === 'auth_missing') return 'auth';", 'storage auth failures must route to auth UI');
 includes(app, "if (category === 'rls_denied') return 'rls_denied';", 'storage RLS failures must route to permission UI');
 includes(app, "if (category === 'network') return 'offline';", 'storage network failures must route to queued/offline UI');
+includes(sync, 'inspectPhotoFileForUpload', 'retry must inspect local photo files before upload');
+includes(sync, "byteSizeCategory: 'zero'", 'zero-byte files must be diagnosed before upload');
+includes(sync, "uploadPayloadType: 'ArrayBuffer'", 'mobile upload diagnostics must record ArrayBuffer payloads');
+includes(sync, 'photoObjectPathCategory', 'object paths must be categorized without exposing full path');
 includes(sync, 'Project update database select failed', 'project update metadata permission failures must identify failed operation');
 includes(sync, 'Project update database upsert failed', 'project update upsert permission failures must identify failed operation');
 includes(app, 'project_update_metadata_select', 'database select failure must map to safe operation diagnostic');
@@ -151,9 +187,20 @@ assert(!app.includes('EXPO_PUBLIC_OPENAI_API_KEY'), 'mobile app must not referen
 assert(!app.match(/service[_-]?role/i), 'mobile app must not contain service-role references');
 includes(pkg, 'local-sync-consistency-test.js', 'test:ui must run local/sync consistency regression');
 includes(pkg, 'dev:create-project-member', 'package must expose local-only project membership setup command');
+includes(pkg, 'dev:storage-smoke-test', 'package must expose normal-user storage smoke test command');
 includes(membershipSetup, "const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];", 'membership setup must require local service-role env');
 includes(membershipSetup, 'service.auth.admin.listUsers', 'membership setup must find the Supabase Auth user server-side');
 includes(membershipSetup, "from('organization_memberships')", 'membership setup must create organization membership rows');
+includes(membershipSetup, "const areaName = String(args['area-name'] || '').trim();", 'membership setup must accept an area name');
+includes(membershipSetup, 'findOrganizationForProjectName', 'membership setup must resolve organization by project name');
+includes(membershipSetup, 'findOrganizationForAreaName', 'membership setup must resolve organization by area name');
+includes(membershipSetup, 'organizationIdFromRecord', 'membership setup must resolve organization id from project/area JSON');
 includes(membershipSetup, "'project_manager'", 'membership setup default role must allow sync permission');
+includes(storageSmoke, "const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_ANON_KEY'];", 'storage smoke test must use anon user auth env only');
+includes(storageSmoke, 'signInWithPassword', 'storage smoke test must sign in as a normal Supabase user');
+includes(storageSmoke, "const bucket = 'project-photos';", 'storage smoke test must target project-photos bucket');
+includes(storageSmoke, 'object path category: project/update/photo-file', 'storage smoke test must report path category without full path');
+includes(storageSmoke, '.remove([path])', 'storage smoke test must clean up successful uploads');
+assert(!storageSmoke.includes('SUPABASE_SERVICE_ROLE_KEY'), 'storage smoke test must not use service-role env');
 
 console.log('Local sync consistency tests passed.');

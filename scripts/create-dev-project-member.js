@@ -9,7 +9,7 @@ if (missingEnv.length > 0) {
   console.log('EXTERNAL EXECUTION REQUIRED');
   console.log(`Missing environment variables: ${missingEnv.join(', ')}`);
   console.log(
-    'Required command: SUPABASE_URL=<url> SUPABASE_SERVICE_ROLE_KEY=<service-role-key> node scripts/create-dev-project-member.js --email <user-email> --organization-id <organization-id>',
+    'Required command: SUPABASE_URL=<url> SUPABASE_SERVICE_ROLE_KEY=<service-role-key> node scripts/create-dev-project-member.js --email <user-email> --project-name <project-name>',
   );
   process.exit(1);
 }
@@ -18,6 +18,7 @@ const args = parseArgs(process.argv.slice(2));
 const email = String(args.email || '').trim().toLowerCase();
 const organizationIdInput = String(args['organization-id'] || '').trim();
 const projectName = String(args['project-name'] || '').trim();
+const areaName = String(args['area-name'] || '').trim();
 const role = String(args.role || 'project_manager').trim();
 
 if (!email) fail('Missing required --email <user-email>.');
@@ -40,14 +41,21 @@ main().catch(error => {
 async function main() {
   const user = await findAuthUserByEmail(email);
   let organizationId = organizationIdInput;
+  let matched = null;
 
   if (!organizationId && projectName) {
-    organizationId = await findOrganizationIdForProject(projectName);
+    matched = await findOrganizationForProjectName(projectName);
+    organizationId = matched.organizationId;
+  }
+
+  if (!organizationId && areaName) {
+    matched = await findOrganizationForAreaName(areaName);
+    organizationId = matched.organizationId;
   }
 
   if (!organizationId) {
     fail(
-      'Missing organization id. Pass --organization-id, or pass --project-name for a project row that has organization_id.',
+      'Missing organization id. Pass --organization-id, or pass --project-name/--area-name for a row that contains organizationId in project_data/area_data.',
     );
   }
 
@@ -58,7 +66,14 @@ async function main() {
   console.log(`Email: ${email}`);
   console.log(`Organization: ${organizationId}`);
   console.log(`Role: ${role}`);
-  if (projectName) console.log(`Project lookup: ${projectName}`);
+  if (matched) {
+    console.log(`Matched ${matched.source}: ${matched.name}`);
+    console.log(`Matched row id: ${matched.id}`);
+  } else if (projectName) {
+    console.log(`Project lookup: ${projectName}`);
+  } else if (areaName) {
+    console.log(`Area lookup: ${areaName}`);
+  }
 }
 
 async function findAuthUserByEmail(targetEmail) {
@@ -82,10 +97,10 @@ async function findAuthUserByEmail(targetEmail) {
   throw new Error(`No Supabase Auth user found for ${targetEmail}. Sign in or sign up in the app first.`);
 }
 
-async function findOrganizationIdForProject(name) {
+async function findOrganizationForProjectName(name) {
   const { data, error } = await service
     .from('projects')
-    .select('name, organization_id')
+    .select('id, name, owner_id, project_data')
     .eq('name', name)
     .maybeSingle();
 
@@ -95,18 +110,57 @@ async function findOrganizationIdForProject(name) {
     );
   }
 
-  const organizationId =
-    data && typeof data.organization_id === 'string'
-      ? data.organization_id.trim()
-      : '';
+  if (!data) {
+    throw new Error(`No project row found for "${name}".`);
+  }
+
+  const organizationId = organizationIdFromRecord(data.project_data);
 
   if (!organizationId) {
     throw new Error(
-      `Project "${name}" does not expose organization_id. Pass --organization-id explicitly.`,
+      `Project "${name}" does not expose organizationId in project_data. Pass --organization-id explicitly.`,
     );
   }
 
-  return organizationId;
+  return {
+    source: 'project',
+    id: data.id,
+    name: data.name,
+    organizationId,
+  };
+}
+
+async function findOrganizationForAreaName(name) {
+  const { data, error } = await service
+    .from('project_areas')
+    .select('id, name, area_data')
+    .eq('name', name)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Area organization lookup failed. Pass --organization-id explicitly. Detail: ${safeError(error)}`,
+    );
+  }
+
+  if (!data) {
+    throw new Error(`No project area row found for "${name}".`);
+  }
+
+  const organizationId = organizationIdFromRecord(data.area_data);
+
+  if (!organizationId) {
+    throw new Error(
+      `Area "${name}" does not expose organizationId in area_data. Pass --organization-id explicitly.`,
+    );
+  }
+
+  return {
+    source: 'area',
+    id: data.id,
+    name: data.name,
+    organizationId,
+  };
 }
 
 async function upsertOrganization(organizationId) {
@@ -152,6 +206,25 @@ function parseArgs(argv) {
   }
 
   return parsed;
+}
+
+function organizationIdFromRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+
+  const candidates = [
+    value.organizationId,
+    value.organization_id,
+    value.orgId,
+    value.org_id,
+    value.teamId,
+    value.team_id,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+
+  return '';
 }
 
 function safeError(error) {

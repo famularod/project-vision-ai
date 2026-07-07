@@ -152,9 +152,20 @@ export type PIEPhotoVisionDiagnostics = {
   edgeFunctionStatus: string | null;
   analysisRequestId: string | null;
   semanticComparisonResultId: string | null;
+  currentProjectKey: string | null;
+  currentAreaKey: string | null;
+  totalPriorCandidateCount: number;
+  priorCandidatesAfterSameProject: number;
+  priorCandidatesAfterSameArea: number;
+  priorCandidatesAfterTimestamp: number;
+  priorCandidatesAfterExcludingCurrent: number;
+  priorCandidatesAfterUsableImage: number;
+  selectedPriorUpdateId: string | null;
   selectedPriorPhotoId: string | null;
+  selectedPriorDate: string | null;
   selectionCandidateCount: number;
   selectedPriorReason: string | null;
+  noPriorReason: PIEPriorNoPriorReason | null;
   rejectedPriorReasons: string[];
   resultPairMatchesRequestedPair: boolean | null;
   resultProvenance: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
@@ -162,6 +173,41 @@ export type PIEPhotoVisionDiagnostics = {
 };
 
 const PIE_EVIDENCE_BUCKET = 'pie-project-evidence';
+
+export type PIEPriorNoPriorReason =
+  | 'no_same_project'
+  | 'no_same_area'
+  | 'no_earlier_photo'
+  | 'only_current_photo'
+  | 'no_usable_image'
+  | 'missing_project_key'
+  | 'missing_area_key'
+  | 'timestamp_invalid'
+  | 'unknown';
+
+export type PIEPriorPhotoMatchKey = {
+  normalizedProjectKey: string | null;
+  normalizedAreaKey: string | null;
+  capturedOrSavedAt: string | null;
+  timestampMs: number | null;
+  updateId: string | null;
+  photoId: string | null;
+};
+
+type PriorSelectionDiagnostics = {
+  currentProjectKey: string | null;
+  currentAreaKey: string | null;
+  totalPriorCandidateCount: number;
+  afterSameProject: number;
+  afterSameArea: number;
+  afterTimestamp: number;
+  afterExcludingCurrent: number;
+  afterUsableImage: number;
+  selectedPriorUpdateId: string | null;
+  selectedPriorPhotoId: string | null;
+  selectedPriorDate: string | null;
+  noPriorReason: PIEPriorNoPriorReason | null;
+};
 
 export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisplayState {
   return {
@@ -255,6 +301,10 @@ export async function analyzeProjectPhotoWithVision({
       priorUpdateUsed: null,
       selectionCandidateCount: priorUpdates.reduce((total, item) => total + item.photos.length, 0),
       selectedPriorReason: null,
+      priorSelectionDiagnostics: buildEmptyPriorSelectionDiagnostics(update, photo, {
+        candidateCount: priorUpdates.reduce((total, item) => total + item.photos.length, 0),
+        noPriorReason: 'unknown',
+      }),
       rejectedPriorReasons: [`current photo rejected: ${currentPrepared.reason}`],
       executedStages: ['camera_capture', 'local_image_uri', 'current_photo_preparation_failed'],
       resultProvenance: 'unsupported',
@@ -275,6 +325,7 @@ export async function analyzeProjectPhotoWithVision({
         selectedPriorPhotoId: null,
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: null,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
         rejectedPriorReasons: priorSelection.rejectedReasons,
         usablePriorCandidateFound: false,
         skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
@@ -380,6 +431,7 @@ export async function analyzeProjectPhotoWithVision({
         priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: priorSelection.selected.reason,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
         rejectedPriorReasons: priorSelection.rejectedReasons,
         currentPhotoPrep: currentPrepared,
         priorPhotoPrep: priorSelection.selected.preparedFile,
@@ -426,6 +478,7 @@ export async function analyzeProjectPhotoWithVision({
         priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: priorSelection.selected.reason,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
         rejectedPriorReasons: priorSelection.rejectedReasons,
         currentPhotoPrep: currentPrepared,
         priorPhotoPrep: priorSelection.selected.preparedFile,
@@ -453,6 +506,7 @@ export async function analyzeProjectPhotoWithVision({
         priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
         selectionCandidateCount: priorSelection.candidateCount,
         selectedPriorReason: priorSelection.selected.reason,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
         rejectedPriorReasons: priorSelection.rejectedReasons,
         currentPhotoPrep: currentPrepared,
         priorPhotoPrep: priorSelection.selected.preparedFile,
@@ -476,6 +530,7 @@ export async function analyzeProjectPhotoWithVision({
       priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
       selectionCandidateCount: priorSelection.candidateCount,
       selectedPriorReason: priorSelection.selected.reason,
+      priorSelectionDiagnostics: priorSelection.diagnostics,
       rejectedPriorReasons: priorSelection.rejectedReasons,
       currentPhotoPrep: currentPrepared,
       priorPhotoPrep: priorSelection.selected.preparedFile,
@@ -503,6 +558,13 @@ export async function analyzeProjectPhotoWithVision({
           priorUpdateUsed: null,
           selectionCandidateCount: priorSelection.candidateCount,
           selectedPriorReason: null,
+          priorSelectionDiagnostics: {
+            ...priorSelection.diagnostics,
+            selectedPriorUpdateId: null,
+            selectedPriorPhotoId: null,
+            selectedPriorDate: null,
+            noPriorReason: 'no_usable_image',
+          },
           rejectedPriorReasons: [
             ...priorSelection.rejectedReasons,
             `${priorSelection.selected.update.id || 'update'}:${priorSelection.selected.photo.id || 'photo'} rejected: ${prepError.reason}`,
@@ -529,6 +591,7 @@ export async function analyzeProjectPhotoWithVision({
         : null,
       selectionCandidateCount: priorSelection.candidateCount,
       selectedPriorReason: priorSelection.selected.reason,
+      priorSelectionDiagnostics: priorSelection.diagnostics,
       rejectedPriorReasons: priorSelection.rejectedReasons,
       currentPhotoPrep: prepError?.role === 'current' ? prepError.toPreparedFailure() : currentPrepared,
       priorPhotoPrep: priorSelection.selected.preparedFile,
@@ -546,49 +609,78 @@ async function findPriorComparablePhoto(
   photo: UpdatePhoto,
   priorUpdates: ProjectUpdate[],
 ) {
-  const projectKey = normalizeKey(update.projectName);
-  const areaKey = normalizeKey(photo.selectedAreaName || update.selectedAreaName || '');
-  const currentTime = timestampMs(photo.locationCapturedAt || update.date);
+  const currentKey = buildPIEPriorPhotoMatchKey(update, photo);
   const accepted: Array<{
     update: ProjectUpdate;
     photo: UpdatePhoto;
     reason: string;
     capturedAt: number;
+    candidateIndex: number;
     preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
   }> = [];
   const rejectedReasons: string[] = [];
   let candidateCount = 0;
   let skippedCandidateCount = 0;
+  let afterSameProject = 0;
+  let afterSameArea = 0;
+  let afterTimestamp = 0;
+  let afterExcludingCurrent = 0;
+  let afterUsableImage = 0;
+
+  if (!currentKey.normalizedProjectKey) {
+    const diagnostics = buildPriorSelectionDiagnostics(currentKey, {
+      candidateCount,
+      afterSameProject,
+      afterSameArea,
+      afterTimestamp,
+      afterExcludingCurrent,
+      afterUsableImage,
+      selected: null,
+      noPriorReason: 'missing_project_key',
+    });
+    return { selected: null, candidateCount, skippedCandidateCount, rejectedReasons, diagnostics };
+  }
 
   for (const candidateUpdate of priorUpdates) {
     for (const candidatePhoto of candidateUpdate.photos) {
       candidateCount += 1;
       const label = `${candidateUpdate.id || 'update'}:${candidatePhoto.id || 'photo'}`;
-      const candidateProjectKey = normalizeKey(candidateUpdate.projectName);
-      const candidateAreaKey = normalizeKey(candidatePhoto.selectedAreaName || candidateUpdate.selectedAreaName || '');
-      const candidateTime = timestampMs(candidatePhoto.locationCapturedAt || candidateUpdate.date);
+      const candidateKey = buildPIEPriorPhotoMatchKey(candidateUpdate, candidatePhoto);
       const uri = candidatePhoto.uri || '';
 
-      if (candidateProjectKey !== projectKey) {
+      if (candidateKey.normalizedProjectKey !== currentKey.normalizedProjectKey) {
         rejectedReasons.push(`${label} rejected: different project`);
         continue;
       }
-      if (candidatePhoto.id === photo.id || candidateUpdate.id === update.id) {
-        rejectedReasons.push(`${label} rejected: current photo/update`);
-        continue;
-      }
-      if (!uri || /^placeholder:/i.test(uri)) {
-        rejectedReasons.push(`${label} rejected: prior_photo_missing`);
-        skippedCandidateCount += 1;
-        continue;
-      }
-      if (areaKey && candidateAreaKey !== areaKey) {
+      afterSameProject += 1;
+
+      if (currentKey.normalizedAreaKey && candidateKey.normalizedAreaKey !== currentKey.normalizedAreaKey) {
         rejectedReasons.push(`${label} rejected: prior_photo_wrong_area`);
         skippedCandidateCount += 1;
         continue;
       }
-      if (Number.isFinite(currentTime) && Number.isFinite(candidateTime) && candidateTime >= currentTime) {
+      afterSameArea += 1;
+
+      const timestampComparison = comparePriorCandidateTime(candidateKey, currentKey, candidateCount);
+      if (timestampComparison === 'invalid_current') {
+        rejectedReasons.push(`${label} rejected: timestamp_invalid`);
+        continue;
+      }
+      if (timestampComparison === 'not_earlier') {
         rejectedReasons.push(`${label} rejected: not earlier than current photo`);
+        continue;
+      }
+      afterTimestamp += 1;
+
+      if (candidatePhoto.id === photo.id || candidateUpdate.id === update.id) {
+        rejectedReasons.push(`${label} rejected: current photo/update`);
+        continue;
+      }
+      afterExcludingCurrent += 1;
+
+      if (!uri || /^placeholder:/i.test(uri)) {
+        rejectedReasons.push(`${label} rejected: prior_photo_missing`);
+        skippedCandidateCount += 1;
         continue;
       }
 
@@ -598,25 +690,181 @@ async function findPriorComparablePhoto(
         skippedCandidateCount += 1;
         continue;
       }
+      afterUsableImage += 1;
 
       accepted.push({
         update: candidateUpdate,
         photo: candidatePhoto,
-        capturedAt: Number.isFinite(candidateTime) ? candidateTime : 0,
+        capturedAt: candidateKey.timestampMs ?? 0,
+        candidateIndex: candidateCount,
         preparedFile,
-        reason: areaKey
+        reason: currentKey.normalizedAreaKey
           ? 'most recent valid earlier photo from same project and area'
           : 'most recent valid earlier photo from same project',
       });
     }
   }
 
-  accepted.sort((a, b) => b.capturedAt - a.capturedAt);
+  accepted.sort((a, b) => b.capturedAt - a.capturedAt || a.candidateIndex - b.candidateIndex);
+  const selected = accepted[0] ?? null;
+  const noPriorReason = selected
+    ? null
+    : noPriorReasonFromCounters({
+        currentKey,
+        candidateCount,
+        afterSameProject,
+        afterSameArea,
+        afterTimestamp,
+        afterExcludingCurrent,
+        afterUsableImage,
+      });
+
   return {
-    selected: accepted[0] ?? null,
+    selected,
     candidateCount,
     skippedCandidateCount,
     rejectedReasons,
+    diagnostics: buildPriorSelectionDiagnostics(currentKey, {
+      candidateCount,
+      afterSameProject,
+      afterSameArea,
+      afterTimestamp,
+      afterExcludingCurrent,
+      afterUsableImage,
+      selected,
+      noPriorReason,
+    }),
+  };
+}
+
+export function buildPIEPriorPhotoMatchKey(
+  update: ProjectUpdate,
+  photo?: UpdatePhoto | null,
+): PIEPriorPhotoMatchKey {
+  const capturedOrSavedAt = firstNonEmptyString([
+    update.workflowTimestamps?.firstPhotoAddedAt,
+    update.workflowTimestamps?.sendTappedAt,
+    update.workflowTimestamps?.sendResolvedAt,
+    photo?.locationCapturedAt,
+    update.locationCapturedAt,
+    update.pieStartedAt,
+    update.date,
+  ]);
+
+  return {
+    normalizedProjectKey: normalizedMatchKey(update.projectName),
+    normalizedAreaKey: normalizedMatchKey(
+      photo?.selectedAreaId ||
+      update.selectedAreaId ||
+      photo?.selectedAreaName ||
+      update.selectedAreaName ||
+      '',
+    ),
+    capturedOrSavedAt,
+    timestampMs: timestampMsOrNull(capturedOrSavedAt),
+    updateId: update.id || null,
+    photoId: photo?.id || null,
+  };
+}
+
+function comparePriorCandidateTime(
+  candidateKey: PIEPriorPhotoMatchKey,
+  currentKey: PIEPriorPhotoMatchKey,
+  candidateIndex: number,
+): 'earlier' | 'not_earlier' | 'invalid_current' {
+  if (currentKey.timestampMs === null) return 'invalid_current';
+  if (candidateKey.timestampMs === null) return candidateIndex > 0 ? 'earlier' : 'not_earlier';
+  if (candidateKey.timestampMs < currentKey.timestampMs) return 'earlier';
+  if (candidateKey.timestampMs === currentKey.timestampMs) {
+    return candidateKey.updateId !== currentKey.updateId || candidateKey.photoId !== currentKey.photoId
+      ? 'earlier'
+      : 'not_earlier';
+  }
+  return 'not_earlier';
+}
+
+function noPriorReasonFromCounters({
+  currentKey,
+  candidateCount,
+  afterSameProject,
+  afterSameArea,
+  afterTimestamp,
+  afterExcludingCurrent,
+  afterUsableImage,
+}: {
+  currentKey: PIEPriorPhotoMatchKey;
+  candidateCount: number;
+  afterSameProject: number;
+  afterSameArea: number;
+  afterTimestamp: number;
+  afterExcludingCurrent: number;
+  afterUsableImage: number;
+}): PIEPriorNoPriorReason {
+  if (!currentKey.normalizedProjectKey) return 'missing_project_key';
+  if (!currentKey.normalizedAreaKey) return 'missing_area_key';
+  if (currentKey.timestampMs === null) return 'timestamp_invalid';
+  if (candidateCount === 0) return 'no_earlier_photo';
+  if (afterSameProject === 0) return 'no_same_project';
+  if (afterSameArea === 0) return 'no_same_area';
+  if (afterTimestamp === 0) return 'no_earlier_photo';
+  if (afterExcludingCurrent === 0) return 'only_current_photo';
+  if (afterUsableImage === 0) return 'no_usable_image';
+  return 'unknown';
+}
+
+function buildEmptyPriorSelectionDiagnostics(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+  options: { candidateCount: number; noPriorReason: PIEPriorNoPriorReason },
+): PriorSelectionDiagnostics {
+  return buildPriorSelectionDiagnostics(buildPIEPriorPhotoMatchKey(update, photo), {
+    candidateCount: options.candidateCount,
+    afterSameProject: 0,
+    afterSameArea: 0,
+    afterTimestamp: 0,
+    afterExcludingCurrent: 0,
+    afterUsableImage: 0,
+    selected: null,
+    noPriorReason: options.noPriorReason,
+  });
+}
+
+function buildPriorSelectionDiagnostics(
+  currentKey: PIEPriorPhotoMatchKey,
+  input: {
+    candidateCount: number;
+    afterSameProject: number;
+    afterSameArea: number;
+    afterTimestamp: number;
+    afterExcludingCurrent: number;
+    afterUsableImage: number;
+    selected: {
+      update: ProjectUpdate;
+      photo: UpdatePhoto;
+      capturedAt: number;
+    } | null;
+    noPriorReason: PIEPriorNoPriorReason | null;
+  },
+): PriorSelectionDiagnostics {
+  return {
+    currentProjectKey: currentKey.normalizedProjectKey,
+    currentAreaKey: currentKey.normalizedAreaKey,
+    totalPriorCandidateCount: input.candidateCount,
+    afterSameProject: input.afterSameProject,
+    afterSameArea: input.afterSameArea,
+    afterTimestamp: input.afterTimestamp,
+    afterExcludingCurrent: input.afterExcludingCurrent,
+    afterUsableImage: input.afterUsableImage,
+    selectedPriorUpdateId: input.selected?.update.id || null,
+    selectedPriorPhotoId: input.selected?.photo.id || null,
+    selectedPriorDate: input.selected
+      ? firstNonEmptyString([
+          input.selected.photo.locationCapturedAt,
+          input.selected.update.workflowTimestamps?.firstPhotoAddedAt,
+          input.selected.update.date,
+        ])
+      : null,
+    noPriorReason: input.noPriorReason,
   };
 }
 
@@ -1208,6 +1456,7 @@ type PIEPhotoVisionDiagnosticInput = {
   priorUpdateUsed: string | null;
   selectionCandidateCount: number;
   selectedPriorReason: string | null;
+  priorSelectionDiagnostics: PriorSelectionDiagnostics | null;
   rejectedPriorReasons: string[];
   resultPairMatchesRequestedPair: boolean | null;
   resultProvenance: PIEPhotoVisionDiagnostics['resultProvenance'];
@@ -1276,9 +1525,20 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     edgeFunctionStatus: input.providerResponseStatus ?? null,
     analysisRequestId: input.analysisRequestId ?? input.requestId ?? null,
     semanticComparisonResultId: input.semanticComparisonResultId ?? null,
+    currentProjectKey: input.priorSelectionDiagnostics?.currentProjectKey ?? null,
+    currentAreaKey: input.priorSelectionDiagnostics?.currentAreaKey ?? null,
+    totalPriorCandidateCount: input.priorSelectionDiagnostics?.totalPriorCandidateCount ?? input.selectionCandidateCount ?? 0,
+    priorCandidatesAfterSameProject: input.priorSelectionDiagnostics?.afterSameProject ?? 0,
+    priorCandidatesAfterSameArea: input.priorSelectionDiagnostics?.afterSameArea ?? 0,
+    priorCandidatesAfterTimestamp: input.priorSelectionDiagnostics?.afterTimestamp ?? 0,
+    priorCandidatesAfterExcludingCurrent: input.priorSelectionDiagnostics?.afterExcludingCurrent ?? 0,
+    priorCandidatesAfterUsableImage: input.priorSelectionDiagnostics?.afterUsableImage ?? 0,
+    selectedPriorUpdateId: input.priorSelectionDiagnostics?.selectedPriorUpdateId ?? null,
     selectedPriorPhotoId: input.selectedPriorPhotoId ?? null,
+    selectedPriorDate: input.priorSelectionDiagnostics?.selectedPriorDate ?? null,
     selectionCandidateCount: input.selectionCandidateCount ?? 0,
     selectedPriorReason: input.selectedPriorReason ?? null,
+    noPriorReason: input.priorSelectionDiagnostics?.noPriorReason ?? null,
     rejectedPriorReasons: input.rejectedPriorReasons ?? [],
     resultPairMatchesRequestedPair: input.resultPairMatchesRequestedPair ?? null,
     resultProvenance: input.resultProvenance ?? 'unsupported',
@@ -1349,6 +1609,11 @@ export function classifyPIEPhotoVisionFailureMessage(
 function timestampMs(value: string | null | undefined): number {
   const time = value ? new Date(value).getTime() : Number.NaN;
   return Number.isFinite(time) ? time : Number.NaN;
+}
+
+function timestampMsOrNull(value: string | null | undefined): number | null {
+  const time = timestampMs(value);
+  return Number.isFinite(time) ? time : null;
 }
 
 function stableHash(value: string) {
@@ -1488,6 +1753,22 @@ function smallSigma1(value: number): number {
 
 function normalizeKey(value: string) {
   return value.trim().toLowerCase();
+}
+
+function normalizedMatchKey(value: string | null | undefined) {
+  const key = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return key || null;
+}
+
+function firstNonEmptyString(values: Array<string | null | undefined>) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 function arrayRecords(value: unknown): Record<string, unknown>[] {

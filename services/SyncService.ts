@@ -134,6 +134,7 @@ export type PhotoStorageUploadFailureCategory =
   | 'invalid_payload'
   | 'unsupported_content_type'
   | 'file_unreadable'
+  | 'stale_local_uri'
   | 'network'
   | 'unknown_storage_error';
 
@@ -145,6 +146,12 @@ export type PhotoStorageUploadDiagnostic = {
   failureCategory: PhotoStorageUploadFailureCategory | null;
   httpStatus: number | null;
   errorCode: string | null;
+  localFileExists: boolean | null;
+  localFileReadable: boolean | null;
+  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
+  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
+  contentType: string | null;
+  objectPathCategory: string | null;
 };
 
 export type LocalPhotoUploadResult = {
@@ -769,11 +776,11 @@ async function cleanupSyncQueueValue(value: string) {
           const nextPhotos: UpdatePhoto[] = [];
 
           for (const photo of updateData.photos) {
-            const available = photo.uri
-              ? await isPhotoFileAvailable(photo.uri)
-              : false;
+            const fileState = photo.uri
+              ? await inspectPhotoFileForUpload(photo.uri)
+              : { exists: false, readable: false };
 
-            if (!available) {
+            if (!fileState.exists || !fileState.readable) {
               missingPhotosRemoved += 1;
               continue;
             }
@@ -987,6 +994,12 @@ export async function uploadLocalPhotoWithDiagnostics(
     failureCategory: null,
     httpStatus: null,
     errorCode: null,
+    localFileExists: null,
+    localFileReadable: null,
+    fileByteSizeCategory: 'unknown',
+    uploadPayloadType: 'unknown',
+    contentType: photo.mimeType || 'image/jpeg',
+    objectPathCategory: null,
   };
 
   if (!photo.uri) {
@@ -997,16 +1010,49 @@ export async function uploadLocalPhotoWithDiagnostics(
     };
   }
 
-  const available = await isPhotoFileAvailable(photo.uri);
+  const fileState = await inspectPhotoFileForUpload(photo.uri);
 
-  if (!available) {
+  if (!fileState.exists) {
     return {
       result: 'missing',
+      message: 'Photo storage upload failed: stale local photo URI.',
+      diagnostic: {
+        ...diagnosticBase,
+        localFileExists: false,
+        localFileReadable: false,
+        fileByteSizeCategory: fileState.byteSizeCategory,
+        uploadResult: 'failed',
+        failureCategory: 'stale_local_uri',
+      },
+    };
+  }
+
+  if (!fileState.readable) {
+    return {
+      result: 'failed',
       message: 'Photo storage upload failed: photo file unreadable.',
       diagnostic: {
         ...diagnosticBase,
+        localFileExists: true,
+        localFileReadable: false,
+        fileByteSizeCategory: fileState.byteSizeCategory,
         uploadResult: 'failed',
         failureCategory: 'file_unreadable',
+      },
+    };
+  }
+
+  if (fileState.byteSizeCategory === 'zero') {
+    return {
+      result: 'failed',
+      message: 'Photo storage upload failed: empty photo payload.',
+      diagnostic: {
+        ...diagnosticBase,
+        localFileExists: true,
+        localFileReadable: true,
+        fileByteSizeCategory: 'zero',
+        uploadResult: 'failed',
+        failureCategory: 'invalid_payload',
       },
     };
   }
@@ -1014,6 +1060,7 @@ export async function uploadLocalPhotoWithDiagnostics(
   try {
     const path = photoUploadPath(update, photo);
     const contentType = photo.mimeType || 'image/jpeg';
+    const objectPathCategory = photoObjectPathCategory(path);
     const invalidPath = validatePhotoStoragePath(path);
     const unsupportedContentType = validatePhotoContentType(contentType);
 
@@ -1023,6 +1070,11 @@ export async function uploadLocalPhotoWithDiagnostics(
         message: invalidPath,
         diagnostic: {
           ...diagnosticBase,
+          localFileExists: true,
+          localFileReadable: true,
+          fileByteSizeCategory: fileState.byteSizeCategory,
+          contentType,
+          objectPathCategory,
           uploadAttempted: false,
           uploadResult: 'failed',
           failureCategory: 'invalid_path',
@@ -1036,6 +1088,11 @@ export async function uploadLocalPhotoWithDiagnostics(
         message: unsupportedContentType,
         diagnostic: {
           ...diagnosticBase,
+          localFileExists: true,
+          localFileReadable: true,
+          fileByteSizeCategory: fileState.byteSizeCategory,
+          contentType,
+          objectPathCategory,
           uploadAttempted: false,
           uploadResult: 'failed',
           failureCategory: 'unsupported_content_type',
@@ -1058,6 +1115,12 @@ export async function uploadLocalPhotoWithDiagnostics(
         diagnostic: {
           ...diagnosticBase,
           bucketExists: 'yes',
+          localFileExists: true,
+          localFileReadable: true,
+          fileByteSizeCategory: fileState.byteSizeCategory,
+          uploadPayloadType: 'ArrayBuffer',
+          contentType,
+          objectPathCategory,
           uploadAttempted: true,
           uploadResult: 'success',
         },
@@ -1077,6 +1140,12 @@ export async function uploadLocalPhotoWithDiagnostics(
       diagnostic: {
         ...diagnosticBase,
         bucketExists: failureCategory === 'bucket_missing' ? 'no' : 'unknown',
+        localFileExists: true,
+        localFileReadable: true,
+        fileByteSizeCategory: fileState.byteSizeCategory,
+        uploadPayloadType: 'ArrayBuffer',
+        contentType,
+        objectPathCategory,
         uploadAttempted: true,
         uploadResult: 'failed',
         failureCategory,
@@ -1092,6 +1161,10 @@ export async function uploadLocalPhotoWithDiagnostics(
       message,
       diagnostic: {
         ...diagnosticBase,
+        localFileExists: fileState.exists,
+        localFileReadable: fileState.readable,
+        fileByteSizeCategory: fileState.byteSizeCategory,
+        uploadPayloadType: 'ArrayBuffer',
         uploadAttempted: true,
         uploadResult: 'failed',
         failureCategory: classifyPhotoStorageUploadFailure(message, null, null),
@@ -1100,16 +1173,39 @@ export async function uploadLocalPhotoWithDiagnostics(
   }
 }
 
-async function isPhotoFileAvailable(uri: string): Promise<boolean> {
-  if (!uri.trim()) return false;
-  if (/^https?:\/\//i.test(uri)) return true;
+async function inspectPhotoFileForUpload(uri: string): Promise<{
+  exists: boolean;
+  readable: boolean;
+  byteSizeCategory: 'zero' | 'nonzero' | 'unknown';
+}> {
+  if (!uri.trim()) {
+    return { exists: false, readable: false, byteSizeCategory: 'unknown' };
+  }
+
+  if (/^https?:\/\//i.test(uri)) {
+    return { exists: true, readable: true, byteSizeCategory: 'unknown' };
+  }
 
   try {
     const info = await FileSystem.getInfoAsync(uri);
 
-    return info.exists;
+    if (!info.exists) {
+      return { exists: false, readable: false, byteSizeCategory: 'unknown' };
+    }
+
+    const size =
+      'size' in info && typeof info.size === 'number' && Number.isFinite(info.size)
+        ? info.size
+        : null;
+
+    return {
+      exists: true,
+      readable: true,
+      byteSizeCategory:
+        size === null ? 'unknown' : size > 0 ? 'nonzero' : 'zero',
+    };
   } catch {
-    return false;
+    return { exists: true, readable: false, byteSizeCategory: 'unknown' };
   }
 }
 
@@ -1198,6 +1294,14 @@ function validatePhotoStoragePath(path: string) {
   return null;
 }
 
+function photoObjectPathCategory(path: string) {
+  const segments = path.split('/').filter(Boolean);
+
+  if (segments.length === 3) return 'project/update/photo-file';
+  if (segments.length === 0) return 'empty';
+  return `${segments.length}-segment-photo-path`;
+}
+
 function validatePhotoContentType(contentType: string) {
   if (/^image\/(jpeg|jpg|png|heic|heif|webp)$/i.test(contentType)) return null;
 
@@ -1231,6 +1335,7 @@ function classifyPhotoStorageUploadFailure(
     return 'unsupported_content_type';
   }
   if (/readasstringasync|file|unreadable|no such file|not found|missing/.test(combined)) {
+    if (/stale|no such file|not found|missing/.test(combined)) return 'stale_local_uri';
     return 'file_unreadable';
   }
   if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(combined)) {

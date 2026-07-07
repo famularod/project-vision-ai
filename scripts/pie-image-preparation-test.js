@@ -109,6 +109,67 @@ assertIncludes(
   'diagnostics must include skipped prior candidate count',
 );
 assertIncludes(
+  workflow,
+  'buildPIEPriorPhotoMatchKey',
+  'prior lookup must use a shared project/area/timestamp key helper',
+);
+assertIncludes(
+  workflow,
+  'normalizedProjectKey',
+  'prior lookup diagnostics must expose normalized project keys',
+);
+assertIncludes(
+  workflow,
+  'normalizedAreaKey',
+  'prior lookup diagnostics must expose normalized area keys',
+);
+assertIncludes(
+  workflow,
+  'update.workflowTimestamps?.firstPhotoAddedAt',
+  'prior lookup must use saved-photo timestamps, not only date labels',
+);
+assertIncludes(
+  workflow,
+  'candidateKey.timestampMs === currentKey.timestampMs',
+  'same-day or equal timestamp prior candidates must not be rejected solely by equal timestamps',
+);
+assertIncludes(
+  workflow,
+  'candidatePhoto.id === photo.id || candidateUpdate.id === update.id',
+  'prior lookup must exclude the current photo/update from matching',
+);
+assertIncludes(
+  workflow,
+  "noPriorReason: 'no_usable_image'",
+  'stale or broken prior image candidates must resolve to a specific no-usable-image reason',
+);
+[
+  'no_same_project',
+  'no_same_area',
+  'no_earlier_photo',
+  'only_current_photo',
+  'no_usable_image',
+  'missing_project_key',
+  'missing_area_key',
+  'timestamp_invalid',
+].forEach(reason => {
+  assertIncludes(workflow, reason, `missing prior-selection no-prior reason ${reason}`);
+});
+[
+  'Prior candidates total:',
+  'After same project:',
+  'After same area:',
+  'After timestamp:',
+  'After excluding current:',
+  'After usable image:',
+  'Selected prior update:',
+  'Selected prior photo:',
+  'Selected prior date:',
+  'No prior reason:',
+].forEach(label => {
+  assertIncludes(app, label, `development diagnostics must show ${label}`);
+});
+assertIncludes(
   app,
   'Current prep:',
   'development diagnostics must expose current image preparation status',

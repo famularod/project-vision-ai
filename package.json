@@ -86,6 +86,7 @@
     "test:production-vision-pipeline": "node scripts/multimodal-evidence-test.js production",
     "test:photo-corrections": "node scripts/multimodal-evidence-test.js corrections",
     "dev:create-project-member": "node scripts/create-dev-project-member.js",
+    "dev:storage-smoke-test": "node scripts/storage-smoke-test.js",
     "test:startup": "node scripts/startup-recovery-test.js startup",
     "test:startup-upgrade": "node scripts/startup-recovery-test.js upgrade",
     "test:startup-recovery": "node scripts/startup-recovery-test.js recovery",
