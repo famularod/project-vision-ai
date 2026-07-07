@@ -1,6 +1,10 @@
 import { loadCloudProjects, saveCloudProject } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
-import { uploadLocalPhoto, uploadPendingChanges } from './services/SyncService';
+import {
+  uploadLocalPhoto,
+  uploadPendingChanges,
+  type SyncUploadResult,
+} from './services/SyncService';
 import {
   getCurrentSessionAccessToken,
   signIn,
@@ -45,6 +49,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  AppState,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -154,6 +159,7 @@ type ProjectUpdate = {
   idempotencyKey?: string | null;
   sendAttempts?: number;
   lastSendAttemptAt?: string | null;
+  syncDiagnostics?: FieldUpdateSyncDiagnostics | null;
   generatedMessage?: string | null;
   archivedAt?: string | null;
   isArchived?: boolean;
@@ -175,6 +181,28 @@ type FieldUpdateStatus =
   | 'queued'
   | 'sent'
   | 'failed';
+
+type FieldUpdateSyncFailureCategory =
+  | 'offline'
+  | 'signed_out'
+  | 'auth'
+  | 'rls_denied'
+  | 'storage_upload_failed'
+  | 'database_insert_failed'
+  | 'malformed_payload'
+  | 'unknown';
+
+type FieldUpdateSyncDiagnostics = {
+  networkState: 'online' | 'offline' | 'unknown';
+  connectionType: 'wifi' | 'cellular' | 'none' | 'unknown';
+  sessionTokenPresent: boolean | null;
+  lastSyncAttemptAt: string | null;
+  lastSyncResult: 'success' | 'failed' | 'skipped' | null;
+  lastSyncFailureCategory: FieldUpdateSyncFailureCategory | null;
+  queuedUpdateCount: number;
+  projectRollupsIncludeQueuedUpdates: boolean;
+  projectCardWorkspaceSameSource: boolean;
+};
 
 type FieldUpdatePIEStatus =
   | 'not_started'
@@ -1112,6 +1140,56 @@ function normalizeInterpretationDecisionLog(
     .filter(Boolean) as PIEInterpretationDecisionLogEntry[];
 }
 
+function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDiagnostics | null {
+  if (!isRecord(value)) return null;
+  const failureCategory =
+    value.lastSyncFailureCategory === 'offline' ||
+    value.lastSyncFailureCategory === 'signed_out' ||
+    value.lastSyncFailureCategory === 'auth' ||
+    value.lastSyncFailureCategory === 'rls_denied' ||
+    value.lastSyncFailureCategory === 'storage_upload_failed' ||
+    value.lastSyncFailureCategory === 'database_insert_failed' ||
+    value.lastSyncFailureCategory === 'malformed_payload' ||
+    value.lastSyncFailureCategory === 'unknown'
+      ? value.lastSyncFailureCategory
+      : null;
+
+  return {
+    networkState:
+      value.networkState === 'online' ||
+      value.networkState === 'offline' ||
+      value.networkState === 'unknown'
+        ? value.networkState
+        : 'unknown',
+    connectionType:
+      value.connectionType === 'wifi' ||
+      value.connectionType === 'cellular' ||
+      value.connectionType === 'none' ||
+      value.connectionType === 'unknown'
+        ? value.connectionType
+        : 'unknown',
+    sessionTokenPresent:
+      typeof value.sessionTokenPresent === 'boolean'
+        ? value.sessionTokenPresent
+        : null,
+    lastSyncAttemptAt: optionalString(value.lastSyncAttemptAt),
+    lastSyncResult:
+      value.lastSyncResult === 'success' ||
+      value.lastSyncResult === 'failed' ||
+      value.lastSyncResult === 'skipped'
+        ? value.lastSyncResult
+        : null,
+    lastSyncFailureCategory: failureCategory,
+    queuedUpdateCount:
+      typeof value.queuedUpdateCount === 'number' &&
+      Number.isFinite(value.queuedUpdateCount)
+        ? value.queuedUpdateCount
+        : 0,
+    projectRollupsIncludeQueuedUpdates: value.projectRollupsIncludeQueuedUpdates !== false,
+    projectCardWorkspaceSameSource: value.projectCardWorkspaceSameSource !== false,
+  };
+}
+
 function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
   const updateId = typeof update.id === 'string' ? update.id : uid();
   const projectName =
@@ -1201,6 +1279,7 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
         ? update.sendAttempts
         : 0,
     lastSendAttemptAt: optionalString(update.lastSendAttemptAt),
+    syncDiagnostics: normalizeFieldUpdateSyncDiagnostics(update.syncDiagnostics),
     generatedMessage: optionalString(update.generatedMessage),
     archivedAt: optionalString(update.archivedAt),
     isArchived: Boolean(update.isArchived),
@@ -2697,8 +2776,9 @@ function buildProjectStatsByName(savedUpdates: ProjectUpdate[]) {
   const statsByProject: Record<string, ProjectStats> = {};
 
   savedUpdates.forEach(update => {
+    const projectKey = projectRollupKey(update.projectName);
     const stats =
-      statsByProject[update.projectName] ||
+      statsByProject[projectKey] ||
       createEmptyProjectStats();
 
     stats.updates += 1;
@@ -2714,14 +2794,25 @@ function buildProjectStatsByName(savedUpdates: ProjectUpdate[]) {
       stats.lastUpdate = update.date;
     }
 
-    statsByProject[update.projectName] = stats;
+    statsByProject[projectKey] = stats;
   });
 
   return statsByProject;
 }
 
+function projectRollupKey(projectName: string | null | undefined) {
+  return (projectName || '').trim().toLowerCase();
+}
+
+function projectStatsForName(
+  projectStatsByName: Record<string, ProjectStats>,
+  projectName: string,
+) {
+  return projectStatsByName[projectRollupKey(projectName)] || EMPTY_PROJECT_STATS;
+}
+
 function projectMatchesScope(update: ProjectUpdate, projectName: string | null) {
-  return !projectName || update.projectName === projectName;
+  return !projectName || projectRollupKey(update.projectName) === projectRollupKey(projectName);
 }
 
 function documentCountForProject(
@@ -2939,8 +3030,8 @@ function waitForPIEAuthHydrationRetry() {
 }
 
 function pieStatusForUpdate(update: ProjectUpdate) {
-  if (update.status === 'queued') return 'Queued to send';
-  if (update.status === 'failed') return 'Send failed';
+  if (update.status === 'queued') return queuedStatusCopyForUpdate(update);
+  if (update.status === 'failed') return queuedStatusCopyForUpdate(update);
 
   const intelligence = update.photos
     .map(photo => photo.photoIntelligence)
@@ -3285,6 +3376,99 @@ function updateCanInlineRetry(update: ProjectUpdate) {
   );
 }
 
+function updateNeedsAutomaticSyncRetry(update: ProjectUpdate) {
+  const lifecycle = lifecycleStatusForUpdate(update);
+  const category = update.syncDiagnostics?.lastSyncFailureCategory;
+
+  return (
+    lifecycle === 'queued' ||
+    (lifecycle === 'failed' &&
+      (category === 'signed_out' || category === 'auth' || category === 'offline'))
+  );
+}
+
+function classifySyncFailureCategory(
+  errors: string[],
+): FieldUpdateSyncFailureCategory {
+  const message = errors.join(' ').toLowerCase();
+
+  if (!message.trim()) return 'unknown';
+  if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(message)) return 'offline';
+  if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
+  if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
+  if (/row level|rls|policy|permission denied|42501|violates row-level/.test(message)) return 'rls_denied';
+  if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';
+  if (/malformed|invalid|schema|column|not null|constraint|payload/.test(message)) return 'malformed_payload';
+  if (/database|insert|upsert|postgres|postgrest|supabase/.test(message)) return 'database_insert_failed';
+  return 'unknown';
+}
+
+function buildSkippedSyncDiagnostics(
+  category: FieldUpdateSyncFailureCategory,
+  attemptedAt: string,
+  queuedUpdateCount: number,
+  sessionTokenPresent: boolean | null,
+): FieldUpdateSyncDiagnostics {
+  return {
+    networkState: category === 'offline' ? 'offline' : 'unknown',
+    connectionType: category === 'offline' ? 'none' : 'unknown',
+    sessionTokenPresent,
+    lastSyncAttemptAt: attemptedAt,
+    lastSyncResult: 'skipped',
+    lastSyncFailureCategory: category,
+    queuedUpdateCount,
+    projectRollupsIncludeQueuedUpdates: true,
+    projectCardWorkspaceSameSource: true,
+  };
+}
+
+function buildSyncDiagnosticsFromUpload(
+  syncResult: SyncUploadResult,
+  attemptedAt: string,
+  sessionTokenPresent: boolean | null,
+): FieldUpdateSyncDiagnostics {
+  const success =
+    syncResult.configured &&
+    syncResult.errors.length === 0 &&
+    syncResult.queued === 0;
+  const failureCategory = success
+    ? null
+    : classifySyncFailureCategory(
+        syncResult.errors.length > 0
+          ? syncResult.errors
+          : [syncResult.configured ? 'queued upload remains after sync' : 'Supabase is not configured'],
+      );
+
+  return {
+    networkState: failureCategory === 'offline' ? 'offline' : 'online',
+    // Unknown connection type must not be interpreted as offline; cellular is
+    // therefore never blocked client-side.
+    connectionType: 'unknown',
+    sessionTokenPresent,
+    lastSyncAttemptAt: attemptedAt,
+    lastSyncResult: success ? 'success' : 'failed',
+    lastSyncFailureCategory: failureCategory,
+    queuedUpdateCount: syncResult.queued,
+    projectRollupsIncludeQueuedUpdates: true,
+    projectCardWorkspaceSameSource: true,
+  };
+}
+
+function statusForSyncDiagnostics(
+  diagnostics: FieldUpdateSyncDiagnostics,
+): FieldUpdateStatus {
+  if (diagnostics.lastSyncResult === 'success') return 'sent';
+  if (diagnostics.lastSyncFailureCategory === 'offline') return 'queued';
+  return 'failed';
+}
+
+function queuedStatusCopyForUpdate(update: ProjectUpdate) {
+  const category = update.syncDiagnostics?.lastSyncFailureCategory;
+  if (category === 'signed_out') return 'Sign in required to send';
+  if (category && category !== 'offline') return 'Sync failed · Retry';
+  return "Queued — will send when you're back online";
+}
+
 function flowTimingForUpdate(update: ProjectUpdate): SixtySecondFlowTimingResult {
   return buildSixtySecondFlowTimingResult({
     timestamps: update.workflowTimestamps,
@@ -3359,6 +3543,12 @@ function buildProjectCardPIEStatus(
     return 'Safety item needs review';
   }
 
+  const failedSync = scopedUpdates.find(update => lifecycleStatusForUpdate(update) === 'failed');
+  if (failedSync) return queuedStatusCopyForUpdate(failedSync);
+
+  const queuedSync = scopedUpdates.find(update => lifecycleStatusForUpdate(update) === 'queued');
+  if (queuedSync) return '1 update pending sync';
+
   const failedAnalysisCount = scopedUpdates.reduce(
     (sum, update) =>
       sum +
@@ -3386,14 +3576,6 @@ function buildProjectCardPIEStatus(
       : `${analyzingCount} updates analyzing`;
   }
 
-  if (scopedUpdates.some(update => lifecycleStatusForUpdate(update) === 'queued')) {
-    return 'Queued update waiting to send';
-  }
-
-  if (scopedUpdates.some(update => lifecycleStatusForUpdate(update) === 'failed')) {
-    return 'Send failed · Retry';
-  }
-
   const latest = scopedUpdates[0];
   if (!latest) return 'No recent updates';
 
@@ -3401,11 +3583,19 @@ function buildProjectCardPIEStatus(
     return `Last update sent ${relativeUpdateDateLabel(latest.date)}`;
   }
 
+  if (lifecycleStatusForUpdate(latest) === 'queued') {
+    return `Last local update ${relativeUpdateDateLabel(latest.date)}`;
+  }
+
+  if (lifecycleStatusForUpdate(latest) === 'failed') {
+    return queuedStatusCopyForUpdate(latest);
+  }
+
   if (lifecycleStatusForUpdate(latest) === 'ready_to_send') {
     return 'Draft ready to send';
   }
 
-  return 'No recent updates';
+  return `Last local update ${relativeUpdateDateLabel(latest.date)}`;
 }
 
 function relativeUpdateDateLabel(value: string) {
@@ -3553,7 +3743,7 @@ function buildPhase2AttentionItems(
               actionTarget: 'retry_send' as const,
               projectName: update.projectName,
               title: 'Queued update waiting to send',
-              detail: 'Saved — will send when you’re back online.',
+              detail: queuedStatusCopyForUpdate(update),
               areaLabel: update.selectedAreaName || 'No area selected',
               dateLabel: formatDisplayDate(update.date),
               priority: ATTENTION_PRIORITY.sendIssue,
@@ -3568,8 +3758,11 @@ function buildPhase2AttentionItems(
               updateId: update.id,
               actionTarget: 'retry_send' as const,
               projectName: update.projectName,
-              title: 'Send failed · Retry',
-              detail: 'The update is saved locally and can be retried.',
+              title: queuedStatusCopyForUpdate(update),
+              detail:
+                update.syncDiagnostics?.lastSyncFailureCategory === 'signed_out'
+                  ? 'Sign in required to send. The update is saved locally and can be retried.'
+                  : 'Sync failed · Retry. The update is saved locally and can be retried.',
               areaLabel: update.selectedAreaName || 'No area selected',
               dateLabel: formatDisplayDate(update.date),
               priority: ATTENTION_PRIORITY.sendIssue,
@@ -3836,7 +4029,7 @@ function projectThumbnailUri(
   savedUpdates: ProjectUpdate[],
 ) {
   return savedUpdates.find(
-    update => update.projectName === projectName && update.photos[0]?.uri,
+    update => projectMatchesScope(update, projectName) && update.photos[0]?.uri,
   )?.photos[0]?.uri;
 }
 
@@ -3984,8 +4177,8 @@ useEffect(() => {
       const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
 
       const merged = [
-        ...cloudUpdates.map(normalizeUpdate),
         ...localUpdates,
+        ...cloudUpdates.map(normalizeUpdate),
       ];
       const seen = new Set<string>();
       const deduped = merged.filter(update => {
@@ -4321,9 +4514,7 @@ useEffect(() => {
   useEffect(() => {
     if (!updatesLoaded) return;
 
-    const hasQueued = savedUpdates.some(
-      update => lifecycleStatusForUpdate(update) === 'queued',
-    );
+    const hasQueued = savedUpdates.some(update => updateNeedsAutomaticSyncRetry(update));
 
     if (!hasQueued) return;
 
@@ -4334,6 +4525,18 @@ useEffect(() => {
     void hydrateQueuedUpdates();
 
     return () => clearInterval(timer);
+  }, [updatesLoaded, savedUpdates]);
+
+  useEffect(() => {
+    if (!updatesLoaded) return;
+
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') {
+        void hydrateQueuedUpdates();
+      }
+    });
+
+    return () => subscription.remove();
   }, [updatesLoaded, savedUpdates]);
 
   const activeProjects = useMemo(
@@ -5234,17 +5437,49 @@ useEffect(() => {
     setSelectedWorkspaceProject(queuedUpdate.projectName);
 
     try {
+      const tokenResult = await getCurrentSessionAccessToken();
+      const tokenLookup = tokenResult.data;
+      const sessionTokenPresent = tokenLookup?.status === 'token_present';
+      if (!sessionTokenPresent) {
+        const resolvedAt = new Date().toISOString();
+        const skippedDiagnostics = buildSkippedSyncDiagnostics(
+          tokenLookup?.missingReason === 'signed_out' || tokenLookup?.missingReason === 'expired_session'
+            ? 'signed_out'
+            : 'auth',
+          now,
+          1,
+          false,
+        );
+        const finalUpdate: ProjectUpdate = {
+          ...queuedUpdate,
+          status: 'failed',
+          syncDiagnostics: skippedDiagnostics,
+          workflowTimestamps: {
+            ...(queuedUpdate.workflowTimestamps || {}),
+            sendResolvedAt: resolvedAt,
+          },
+        };
+        setSavedUpdates(prev => [
+          finalUpdate,
+          ...prev.filter(item => item.id !== finalUpdate.id),
+        ]);
+        Alert.alert(queuedStatusCopyForUpdate(finalUpdate));
+        setDraft(createDraft(queuedUpdate.projectName));
+        setDraftSavedAt(null);
+        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
+        setScreen('ProjectWorkspace');
+        return;
+      }
+
       await saveCloudUpdate(queuedUpdate);
       syncUpdatePhotosToCloud(queuedUpdate);
       const syncResult = await uploadPendingChanges();
-      const sent =
-        syncResult.configured &&
-        syncResult.errors.length === 0 &&
-        syncResult.queued === 0;
+      const syncDiagnostics = buildSyncDiagnosticsFromUpload(syncResult, now, sessionTokenPresent);
       const resolvedAt = new Date().toISOString();
       const finalUpdate: ProjectUpdate = {
         ...queuedUpdate,
-        status: sent ? 'sent' : 'queued',
+        status: statusForSyncDiagnostics(syncDiagnostics),
+        syncDiagnostics,
         workflowTimestamps: {
           ...(queuedUpdate.workflowTimestamps || {}),
           sendResolvedAt: resolvedAt,
@@ -5256,25 +5491,36 @@ useEffect(() => {
         ...prev.filter(item => item.id !== finalUpdate.id),
       ]);
 
-      if (sent) {
+      if (finalUpdate.status === 'sent') {
         Alert.alert('Update sent', 'The field update was saved and added to the project workspace.');
       } else {
-        Alert.alert('Saved — will send when you’re back online.');
+        Alert.alert(queuedStatusCopyForUpdate(finalUpdate));
       }
-    } catch {
+    } catch (error) {
       const resolvedAt = new Date().toISOString();
-      const offlineQueuedUpdate: ProjectUpdate = {
+      const failureCategory = classifySyncFailureCategory([
+        error instanceof Error ? error.message : 'unknown sync error',
+      ]);
+      const syncDiagnostics = buildSkippedSyncDiagnostics(
+        failureCategory,
+        now,
+        1,
+        null,
+      );
+      const failedOrQueuedUpdate: ProjectUpdate = {
         ...queuedUpdate,
+        status: statusForSyncDiagnostics(syncDiagnostics),
+        syncDiagnostics,
         workflowTimestamps: {
           ...(queuedUpdate.workflowTimestamps || {}),
           sendResolvedAt: resolvedAt,
         },
       };
       setSavedUpdates(prev => [
-        offlineQueuedUpdate,
-        ...prev.filter(item => item.id !== offlineQueuedUpdate.id),
+        failedOrQueuedUpdate,
+        ...prev.filter(item => item.id !== failedOrQueuedUpdate.id),
       ]);
-      Alert.alert('Saved — will send when you’re back online.');
+      Alert.alert(queuedStatusCopyForUpdate(failedOrQueuedUpdate));
     }
 
     setDraft(createDraft(queuedUpdate.projectName));
@@ -5300,17 +5546,42 @@ useEffect(() => {
     ]);
 
     try {
+      const tokenResult = await getCurrentSessionAccessToken();
+      const tokenLookup = tokenResult.data;
+      const sessionTokenPresent = tokenLookup?.status === 'token_present';
+      if (!sessionTokenPresent) {
+        const syncDiagnostics = buildSkippedSyncDiagnostics(
+          tokenLookup?.missingReason === 'signed_out' || tokenLookup?.missingReason === 'expired_session'
+            ? 'signed_out'
+            : 'auth',
+          now,
+          1,
+          false,
+        );
+        const finalUpdate: ProjectUpdate = {
+          ...retryUpdate,
+          status: 'failed',
+          syncDiagnostics,
+          workflowTimestamps: {
+            ...(retryUpdate.workflowTimestamps || {}),
+            sendResolvedAt: new Date().toISOString(),
+          },
+        };
+        setSavedUpdates(prev => [
+          finalUpdate,
+          ...prev.filter(item => item.id !== finalUpdate.id),
+        ]);
+        return;
+      }
+
       await saveCloudUpdate(retryUpdate);
       syncUpdatePhotosToCloud(retryUpdate);
       const syncResult = await uploadPendingChanges();
+      const syncDiagnostics = buildSyncDiagnosticsFromUpload(syncResult, now, sessionTokenPresent);
       const finalUpdate: ProjectUpdate = {
         ...retryUpdate,
-        status:
-          syncResult.configured &&
-          syncResult.errors.length === 0 &&
-          syncResult.queued === 0
-            ? 'sent'
-            : 'queued',
+        status: statusForSyncDiagnostics(syncDiagnostics),
+        syncDiagnostics,
         workflowTimestamps: {
           ...(retryUpdate.workflowTimestamps || {}),
           sendResolvedAt: new Date().toISOString(),
@@ -5321,10 +5592,23 @@ useEffect(() => {
         finalUpdate,
         ...prev.filter(item => item.id !== finalUpdate.id),
       ]);
-    } catch {
+    } catch (error) {
+      const syncDiagnostics = buildSkippedSyncDiagnostics(
+        classifySyncFailureCategory([
+          error instanceof Error ? error.message : 'unknown sync error',
+        ]),
+        now,
+        1,
+        null,
+      );
+      const failedOrQueuedUpdate: ProjectUpdate = {
+        ...retryUpdate,
+        status: statusForSyncDiagnostics(syncDiagnostics),
+        syncDiagnostics,
+      };
       setSavedUpdates(prev => [
-        retryUpdate,
-        ...prev.filter(item => item.id !== retryUpdate.id),
+        failedOrQueuedUpdate,
+        ...prev.filter(item => item.id !== failedOrQueuedUpdate.id),
       ]);
     }
   }
@@ -5332,9 +5616,7 @@ useEffect(() => {
   async function hydrateQueuedUpdates() {
     if (queuedHydrationInFlight.current) return;
 
-    const queuedUpdates = savedUpdates.filter(
-      update => lifecycleStatusForUpdate(update) === 'queued',
-    );
+    const queuedUpdates = savedUpdates.filter(updateNeedsAutomaticSyncRetry);
 
     if (queuedUpdates.length === 0) return;
 
@@ -5347,14 +5629,12 @@ useEffect(() => {
       }
 
       const syncResult = await uploadPendingChanges();
-
-      if (
-        !syncResult.configured ||
-        syncResult.errors.length > 0 ||
-        syncResult.queued > 0
-      ) {
-        return;
-      }
+      const tokenResult = await getCurrentSessionAccessToken();
+      const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+        syncResult,
+        new Date().toISOString(),
+        tokenResult.data?.status === 'token_present',
+      );
 
       const resolvedAt = new Date().toISOString();
       const queuedIds = new Set(queuedUpdates.map(update => update.id));
@@ -5364,7 +5644,8 @@ useEffect(() => {
           queuedIds.has(update.id)
             ? {
                 ...update,
-                status: 'sent',
+                status: statusForSyncDiagnostics(syncDiagnostics),
+                syncDiagnostics,
                 workflowTimestamps: {
                   ...(update.workflowTimestamps || {}),
                   sendResolvedAt:
@@ -6189,6 +6470,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setPhotoAuthRequest(null);
       setPhotoAuthPassword('');
       setPhotoAuthMessage(null);
+      void hydrateQueuedUpdates();
       await runPhotoAnalysisRetry(pending.update, pending.photo);
     } finally {
       setPhotoAuthSubmitting(false);
@@ -6236,6 +6518,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setPhotoAuthRequest(null);
       setPhotoAuthPassword('');
       setPhotoAuthMessage(null);
+      void hydrateQueuedUpdates();
       await runPhotoAnalysisRetry(pending.update, pending.photo);
     } finally {
       setPhotoAuthSubmitting(false);
@@ -7579,7 +7862,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               savedUpdates={savedUpdates}
               projectDocuments={projectDocuments}
               contactBook={contactBook}
-              projectStats={projectStatsByName[selectedWorkspaceProject] || EMPTY_PROJECT_STATS}
+              projectStats={projectStatsForName(projectStatsByName, selectedWorkspaceProject)}
               onBack={() => setScreen('Projects')}
               onNewFieldUpdate={createNewUpdate}
               onOpenUpdates={() => setScreen('SavedUpdates')}
@@ -8561,7 +8844,7 @@ function SelectProjectScreen({
     <ProjectDashboardCard
       project={project}
       stats={
-        projectStatsByName[project] || EMPTY_PROJECT_STATS
+        projectStatsForName(projectStatsByName, project)
       }
       actionLabel="Select"
       onPress={() => onSelect(project)}
@@ -10642,7 +10925,7 @@ function ProjectsScreen({
   const projectRows = activeProjects
     .map(project => ({
       project,
-      stats: projectStatsByName[project] || EMPTY_PROJECT_STATS,
+      stats: projectStatsForName(projectStatsByName, project),
       thumbnailUri: projectThumbnailUri(project, savedUpdates),
       documentCount: projectDocumentCountForProject(project, projectDocuments),
       contactCount: contactBook.contacts.length,
@@ -10805,6 +11088,11 @@ function Phase2ProjectCard({
           {item.stats.photos} photo{item.stats.photos === 1 ? '' : 's'} | {item.documentCount} document{item.documentCount === 1 ? '' : 's'} | {item.stats.openActions} open item{item.stats.openActions === 1 ? '' : 's'}
         </Text>
         <Text style={styles.bodyText}>{item.pieBrief}</Text>
+        {__DEV__ ? (
+          <Text style={styles.locationDetailText}>
+            Rollup source: local-first saved updates | queued included: yes | workspace/card shared: yes
+          </Text>
+        ) : null}
       </View>
 
       <Ionicons name="chevron-forward" size={22} color={colors.muted} />
@@ -10838,7 +11126,7 @@ function ProjectWorkspaceScreen({
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
 }) {
   const projectUpdates = savedUpdates.filter(
-    update => update.projectName === projectName,
+    update => projectMatchesScope(update, projectName),
   );
   const projectDocumentCount = projectDocumentCountForProject(projectName, projectDocuments);
   const projectActivity = buildPhase2ActivityItems(
@@ -12615,11 +12903,11 @@ function UpdateHistoryCard({
   const thumbnail = update.photos[0]?.uri;
   const statusLine =
     lifecycle === 'queued'
-      ? 'Queued — will send when online'
+      ? queuedStatusCopyForUpdate(update)
       : lifecycle === 'ready_to_send'
         ? 'Ready to send'
         : lifecycle === 'failed'
-          ? 'Send failed'
+          ? queuedStatusCopyForUpdate(update)
           : pieStatus ||
             (update.photos.length === 0
               ? update.notes.trim() || (documents.length > 0 ? countLabel(documents.length, 'document') : 'No photos attached')
@@ -12649,6 +12937,11 @@ function UpdateHistoryCard({
         </Text>
         {statusLine ? (
           <Text style={styles.bodyText}>{statusLine}</Text>
+        ) : null}
+        {__DEV__ && update.syncDiagnostics ? (
+          <Text style={styles.locationDetailText}>
+            Sync diagnostics: network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
+          </Text>
         ) : null}
         {onRetry ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>

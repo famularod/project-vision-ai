@@ -26,7 +26,7 @@ const updatesScreen = app.slice(
   'No updates yet.',
   'lifecycleStatusForUpdate',
   'updatePIEAnalysisStatus',
-  'Queued — will send when online',
+  "Queued — will send when you're back online",
   'Ready to send',
   'Analysis unavailable · Retry',
   'Analysis taking longer than expected · Retry',

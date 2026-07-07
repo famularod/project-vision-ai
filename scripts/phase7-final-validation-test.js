@@ -100,10 +100,12 @@ assert(elapsedSeconds === 42, 'Mock one-photo flow timing should be deterministi
 
 assert(
   app.includes('hydrateQueuedUpdates') &&
-    app.includes("status: 'sent'") &&
+    app.includes('statusForSyncDiagnostics(syncDiagnostics)') &&
+    app.includes("if (diagnostics.lastSyncResult === 'success') return 'sent';") &&
+    app.includes("if (diagnostics.lastSyncFailureCategory === 'offline') return 'queued';") &&
     app.includes('queuedHydrationInFlight') &&
     app.includes('uploadPendingChanges()'),
-  'Queued updates should hydrate to sent through the idempotent pending-change path.',
+  'Queued updates should hydrate through the idempotent pending-change path and preserve sent/queued/failed outcomes.',
 );
 
 assert(
