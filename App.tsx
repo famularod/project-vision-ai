@@ -4,6 +4,7 @@ import {
   uploadLocalPhoto,
   uploadLocalPhotoWithDiagnostics,
   uploadPendingChanges,
+  removeProjectUpdateFromSyncQueue,
   type PhotoStorageUploadFailureCategory,
   type SyncUploadResult,
 } from './services/SyncService';
@@ -162,6 +163,7 @@ type ProjectUpdate = {
   sendAttempts?: number;
   lastSendAttemptAt?: string | null;
   syncDiagnostics?: FieldUpdateSyncDiagnostics | null;
+  deleteDiagnostics?: FieldUpdateDeleteDiagnostics | null;
   generatedMessage?: string | null;
   archivedAt?: string | null;
   isArchived?: boolean;
@@ -237,6 +239,27 @@ type FieldUpdateSyncDiagnostics = {
   queuedUpdateCount: number;
   projectRollupsIncludeQueuedUpdates: boolean;
   projectCardWorkspaceSameSource: boolean;
+};
+
+type FieldUpdateDeleteDiagnostics = {
+  updateId: string;
+  localId: string;
+  cloudIdPresent: boolean;
+  lifecycleStatus: FieldUpdateStatus;
+  pendingSync: boolean;
+  tombstoned: boolean;
+  deletedAt: string | null;
+  sourceAfterReload: 'local' | 'cloud' | 'pending' | 'orphaned-photo' | 'unknown';
+  mergeDecision: 'included' | 'excluded' | 'tombstoned';
+  orphanedPhotoCountIgnored: number;
+};
+
+type DeletedUpdateTombstone = FieldUpdateDeleteDiagnostics & {
+  action:
+    | 'delete_failed_update'
+    | 'remove_from_device'
+    | 'archive_sent_update'
+    | 'hide_cloud_update';
 };
 
 type FieldUpdatePIEStatus =
@@ -445,6 +468,7 @@ type ProjectStats = {
 };
 
 const UPDATES_STORAGE_KEY = 'projectPhotoUpdates.v2';
+const DELETED_UPDATES_STORAGE_KEY = 'projectPhotoUpdate.deletedUpdates.v1';
 const PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.projects.v2';
 const ARCHIVED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.archivedProjects.v2';
 const CONTACTS_STORAGE_KEY = 'projectPhotoUpdate.contacts.v2';
@@ -1321,6 +1345,78 @@ function normalizeFieldUpdateSyncDiagnostics(value: unknown): FieldUpdateSyncDia
   };
 }
 
+function normalizeFieldUpdateDeleteDiagnostics(value: unknown): FieldUpdateDeleteDiagnostics | null {
+  if (!isRecord(value)) return null;
+
+  const lifecycleStatus =
+    value.lifecycleStatus === 'draft' ||
+    value.lifecycleStatus === 'ready_to_send' ||
+    value.lifecycleStatus === 'queued' ||
+    value.lifecycleStatus === 'sent' ||
+    value.lifecycleStatus === 'failed'
+      ? value.lifecycleStatus
+      : 'draft';
+  const sourceAfterReload =
+    value.sourceAfterReload === 'local' ||
+    value.sourceAfterReload === 'cloud' ||
+    value.sourceAfterReload === 'pending' ||
+    value.sourceAfterReload === 'orphaned-photo' ||
+    value.sourceAfterReload === 'unknown'
+      ? value.sourceAfterReload
+      : 'unknown';
+  const mergeDecision =
+    value.mergeDecision === 'included' ||
+    value.mergeDecision === 'excluded' ||
+    value.mergeDecision === 'tombstoned'
+      ? value.mergeDecision
+      : 'included';
+
+  return {
+    updateId: optionalString(value.updateId) || optionalString(value.localId) || 'unknown',
+    localId: optionalString(value.localId) || optionalString(value.updateId) || 'unknown',
+    cloudIdPresent: value.cloudIdPresent === true,
+    lifecycleStatus,
+    pendingSync: value.pendingSync === true,
+    tombstoned: value.tombstoned === true,
+    deletedAt: optionalString(value.deletedAt),
+    sourceAfterReload,
+    mergeDecision,
+    orphanedPhotoCountIgnored:
+      typeof value.orphanedPhotoCountIgnored === 'number' &&
+      Number.isFinite(value.orphanedPhotoCountIgnored)
+        ? value.orphanedPhotoCountIgnored
+        : 0,
+  };
+}
+
+function normalizeDeletedUpdateTombstones(value: unknown): DeletedUpdateTombstone[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item): DeletedUpdateTombstone | null => {
+      const diagnostics = normalizeFieldUpdateDeleteDiagnostics(item);
+      if (!diagnostics || diagnostics.updateId === 'unknown') return null;
+      const record = isRecord(item) ? item : {};
+      const action =
+        record.action === 'delete_failed_update' ||
+        record.action === 'remove_from_device' ||
+        record.action === 'archive_sent_update' ||
+        record.action === 'hide_cloud_update'
+          ? record.action
+          : diagnostics.lifecycleStatus === 'sent'
+            ? 'archive_sent_update'
+            : 'remove_from_device';
+
+      return {
+        ...diagnostics,
+        tombstoned: true,
+        mergeDecision: 'tombstoned',
+        action,
+      };
+    })
+    .filter((item): item is DeletedUpdateTombstone => Boolean(item));
+}
+
 function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
   const updateId = typeof update.id === 'string' ? update.id : uid();
   const projectName =
@@ -1411,6 +1507,7 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
         : 0,
     lastSendAttemptAt: optionalString(update.lastSendAttemptAt),
     syncDiagnostics: normalizeFieldUpdateSyncDiagnostics(update.syncDiagnostics),
+    deleteDiagnostics: normalizeFieldUpdateDeleteDiagnostics(update.deleteDiagnostics),
     generatedMessage: optionalString(update.generatedMessage),
     archivedAt: optionalString(update.archivedAt),
     isArchived: Boolean(update.isArchived),
@@ -3656,6 +3753,90 @@ function updateNeedsAutomaticSyncRetry(update: ProjectUpdate) {
   );
 }
 
+function mergeSavedUpdatesWithTombstones({
+  localUpdates,
+  cloudUpdates,
+  tombstones,
+}: {
+  localUpdates: ProjectUpdate[];
+  cloudUpdates: ProjectUpdate[];
+  tombstones: DeletedUpdateTombstone[];
+}) {
+  const tombstoneById = new Map(tombstones.map(item => [item.updateId, item]));
+  const seen = new Set<string>();
+  const merged: ProjectUpdate[] = [];
+
+  const considerUpdate = (
+    update: ProjectUpdate,
+    sourceAfterReload: FieldUpdateDeleteDiagnostics['sourceAfterReload'],
+  ) => {
+    const tombstone = tombstoneById.get(update.id);
+    const localArchiveCanStayHidden =
+      tombstone?.action === 'archive_sent_update' && sourceAfterReload === 'local';
+
+    if (tombstone && !localArchiveCanStayHidden) return;
+    if (seen.has(update.id)) return;
+
+    seen.add(update.id);
+
+    const lifecycleStatus = lifecycleStatusForUpdate(update);
+    merged.push({
+      ...update,
+      isArchived: update.isArchived || tombstone?.action === 'archive_sent_update',
+      archivedAt: update.archivedAt || tombstone?.deletedAt || null,
+      deleteDiagnostics: {
+        updateId: update.id,
+        localId: update.stableSendId || update.id,
+        cloudIdPresent: sourceAfterReload === 'cloud' || lifecycleStatus === 'sent',
+        lifecycleStatus,
+        pendingSync: updateNeedsAutomaticSyncRetry(update),
+        tombstoned: Boolean(tombstone),
+        deletedAt: tombstone?.deletedAt || null,
+        sourceAfterReload,
+        mergeDecision: tombstone ? 'tombstoned' : 'included',
+        orphanedPhotoCountIgnored: tombstone?.orphanedPhotoCountIgnored || 0,
+      },
+    });
+  };
+
+  localUpdates.forEach(update => considerUpdate(update, 'local'));
+  cloudUpdates.forEach(update => considerUpdate(update, 'cloud'));
+
+  return merged;
+}
+
+function buildUpdateTombstone(
+  update: ProjectUpdate,
+  action: DeletedUpdateTombstone['action'],
+  deletedAt = new Date().toISOString(),
+): DeletedUpdateTombstone {
+  const lifecycleStatus = lifecycleStatusForUpdate(update);
+
+  return {
+    updateId: update.id,
+    localId: update.stableSendId || update.id,
+    cloudIdPresent: lifecycleStatus === 'sent',
+    lifecycleStatus,
+    pendingSync: updateNeedsAutomaticSyncRetry(update),
+    tombstoned: true,
+    deletedAt,
+    sourceAfterReload: updateNeedsAutomaticSyncRetry(update) ? 'pending' : 'local',
+    mergeDecision: 'tombstoned',
+    orphanedPhotoCountIgnored: update.photos.length,
+    action,
+  };
+}
+
+function upsertDeletedUpdateTombstone(
+  tombstones: DeletedUpdateTombstone[],
+  tombstone: DeletedUpdateTombstone,
+) {
+  return [
+    tombstone,
+    ...tombstones.filter(item => item.updateId !== tombstone.updateId),
+  ];
+}
+
 function classifySyncFailureCategory(
   errors: string[],
 ): FieldUpdateSyncFailureCategory {
@@ -4554,6 +4735,8 @@ function AppShell() {
     useState<OverviewDetectionStatus>('checking');
 
   const [savedUpdates, setSavedUpdates] = useState<ProjectUpdate[]>([]);
+  const [deletedUpdateTombstones, setDeletedUpdateTombstones] =
+    useState<DeletedUpdateTombstone[]>([]);
 
   const [projects, setProjects] =
     useState<string[]>(DEFAULT_PROJECTS);
@@ -4607,6 +4790,8 @@ function AppShell() {
 
   const [updatesLoaded, setUpdatesLoaded] =
     useState(false);
+  const [deletedUpdateTombstonesLoaded, setDeletedUpdateTombstonesLoaded] =
+    useState(false);
 
   const [projectsLoaded, setProjectsLoaded] =
     useState(false);
@@ -4659,26 +4844,31 @@ function AppShell() {
 useEffect(() => {
   async function loadSavedUpdates() {
     try {
-      const localValue = await AsyncStorage.getItem(UPDATES_STORAGE_KEY);
+      const [localValue, tombstoneValue] = await Promise.all([
+        AsyncStorage.getItem(UPDATES_STORAGE_KEY),
+        AsyncStorage.getItem(DELETED_UPDATES_STORAGE_KEY),
+      ]);
       const localParsed = localValue ? JSON.parse(localValue) : [];
       const localUpdates = Array.isArray(localParsed)
         ? localParsed.map(normalizeUpdate)
         : [];
+      const tombstones = normalizeDeletedUpdateTombstones(
+        tombstoneValue ? JSON.parse(tombstoneValue) : [],
+      );
+      setDeletedUpdateTombstones(tombstones);
+      await Promise.all(
+        tombstones.map(tombstone =>
+          removeProjectUpdateFromSyncQueue(tombstone.updateId),
+        ),
+      );
 
       const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
 
-      const merged = [
-        ...localUpdates,
-        ...cloudUpdates.map(normalizeUpdate),
-      ];
-      const seen = new Set<string>();
-      const deduped = merged.filter(update => {
-        if (seen.has(update.id)) return false;
-        seen.add(update.id);
-        return true;
-      });
-
-      setSavedUpdates(deduped);
+      setSavedUpdates(mergeSavedUpdatesWithTombstones({
+        localUpdates,
+        cloudUpdates: cloudUpdates.map(normalizeUpdate),
+        tombstones,
+      }));
     } catch {
       Alert.alert(
         'Storage error',
@@ -4686,6 +4876,7 @@ useEffect(() => {
       );
     } finally {
       setUpdatesLoaded(true);
+      setDeletedUpdateTombstonesLoaded(true);
     }
   }
 
@@ -4878,6 +5069,15 @@ useEffect(() => {
       JSON.stringify(savedUpdates),
     ).catch(() => undefined);
   }, [savedUpdates, updatesLoaded]);
+
+  useEffect(() => {
+    if (!deletedUpdateTombstonesLoaded) return;
+
+    AsyncStorage.setItem(
+      DELETED_UPDATES_STORAGE_KEY,
+      JSON.stringify(deletedUpdateTombstones),
+    ).catch(() => undefined);
+  }, [deletedUpdateTombstones, deletedUpdateTombstonesLoaded]);
 
   useEffect(() => {
     if (!projectsLoaded) return;
@@ -8095,17 +8295,27 @@ Note: This update was opened through Outlook because PLZ email security may reje
       archiveSavedUpdate(updateId);
       return;
     }
+    const lifecycle = update ? lifecycleStatusForUpdate(update) : 'draft';
+    const deleteTitle = lifecycle === 'failed'
+      ? 'Delete failed update?'
+      : 'Remove update from device?';
+    const deleteCopy = lifecycle === 'failed'
+      ? 'This removes the failed local update from this device and stops retrying it.'
+      : 'This removes the local saved copy from this device.';
+    const deleteAction = lifecycle === 'failed'
+      ? 'Delete failed update'
+      : 'Remove from device';
 
     Alert.alert(
-      'Delete saved update?',
-      'This removes the saved copy from this phone.',
+      deleteTitle,
+      deleteCopy,
       [
         {
           text: 'Cancel',
           style: 'cancel',
         },
         {
-          text: 'Delete',
+          text: deleteAction,
           style: 'destructive',
           onPress: () => {
             const deletedUpdate = savedUpdates.find(
@@ -8114,6 +8324,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
             const remainingUpdates = savedUpdates.filter(
               update => update.id !== updateId,
             );
+
+            if (deletedUpdate) {
+              const tombstone = buildUpdateTombstone(
+                deletedUpdate,
+                lifecycleStatusForUpdate(deletedUpdate) === 'failed'
+                  ? 'delete_failed_update'
+                  : 'remove_from_device',
+              );
+              setDeletedUpdateTombstones(prev =>
+                upsertDeletedUpdateTombstone(prev, tombstone),
+              );
+              void removeProjectUpdateFromSyncQueue(deletedUpdate.id);
+            }
 
             setSavedUpdates(remainingUpdates);
 
@@ -8142,10 +8365,34 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Archive',
           onPress: () => {
             const archivedAt = new Date().toISOString();
+            const update = savedUpdates.find(item => item.id === updateId);
+            if (update) {
+              const tombstone = buildUpdateTombstone(update, 'archive_sent_update', archivedAt);
+              setDeletedUpdateTombstones(prev =>
+                upsertDeletedUpdateTombstone(prev, tombstone),
+              );
+              void removeProjectUpdateFromSyncQueue(update.id);
+            }
             setSavedUpdates(prev =>
               prev.map(update =>
                 update.id === updateId
-                  ? { ...update, isArchived: true, archivedAt }
+                  ? {
+                      ...update,
+                      isArchived: true,
+                      archivedAt,
+                      deleteDiagnostics: {
+                        updateId: update.id,
+                        localId: update.stableSendId || update.id,
+                        cloudIdPresent: true,
+                        lifecycleStatus: lifecycleStatusForUpdate(update),
+                        pendingSync: false,
+                        tombstoned: true,
+                        deletedAt: archivedAt,
+                        sourceAfterReload: 'local',
+                        mergeDecision: 'tombstoned',
+                        orphanedPhotoCountIgnored: 0,
+                      },
+                    }
                   : update,
               ),
             );
@@ -13510,6 +13757,11 @@ function UpdateHistoryCard({
             Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | retry attempt {update.syncDiagnostics.retryAttemptNumber ?? 'unknown'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | failed operation {update.syncDiagnostics.failedOperationName || 'none'} | target {update.syncDiagnostics.failedLogicalTarget || 'none'} | RLS denied {update.syncDiagnostics.rlsDenied ? 'yes' : 'no'} | user id present {update.syncDiagnostics.authenticatedUserIdPresent === null ? 'unknown' : update.syncDiagnostics.authenticatedUserIdPresent ? 'yes' : 'no'} | project id present {update.syncDiagnostics.projectIdPresent === null ? 'unknown' : update.syncDiagnostics.projectIdPresent ? 'yes' : 'no'} | organization id present {update.syncDiagnostics.organizationIdPresent === null ? 'unknown' : update.syncDiagnostics.organizationIdPresent ? 'yes' : 'no'} | membership {update.syncDiagnostics.membershipCheckResult || 'unknown'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | local file exists {update.syncDiagnostics.localFileExists === null ? 'unknown' : update.syncDiagnostics.localFileExists ? 'yes' : 'no'} | local file readable {update.syncDiagnostics.localFileReadable === null ? 'unknown' : update.syncDiagnostics.localFileReadable ? 'yes' : 'no'} | byte size {update.syncDiagnostics.fileByteSizeCategory} | payload {update.syncDiagnostics.uploadPayloadType} | content type {update.syncDiagnostics.storageContentType || 'unknown'} | path category {update.syncDiagnostics.objectPathCategory || 'unknown'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database after upload {update.syncDiagnostics.databaseSyncRanAfterUpload === null ? 'unknown' : update.syncDiagnostics.databaseSyncRanAfterUpload ? 'yes' : 'no'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
           </Text>
         ) : null}
+        {__DEV__ && update.deleteDiagnostics ? (
+          <Text style={styles.locationDetailText}>
+            Delete diagnostics: update id {update.deleteDiagnostics.updateId} | local id {update.deleteDiagnostics.localId} | cloud id present {update.deleteDiagnostics.cloudIdPresent ? 'yes' : 'no'} | lifecycle {update.deleteDiagnostics.lifecycleStatus} | pending sync {update.deleteDiagnostics.pendingSync ? 'yes' : 'no'} | tombstoned {update.deleteDiagnostics.tombstoned ? 'yes' : 'no'} | deleted at {update.deleteDiagnostics.deletedAt || 'none'} | source after reload {update.deleteDiagnostics.sourceAfterReload} | merge decision {update.deleteDiagnostics.mergeDecision} | orphaned photo count ignored {update.deleteDiagnostics.orphanedPhotoCountIgnored}
+          </Text>
+        ) : null}
         {onRetry ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
@@ -13552,6 +13804,9 @@ function UpdateOverflowMenu({
   onArchive: () => void;
 }) {
   const sent = lifecycle === 'sent';
+  const deleteLabel = lifecycle === 'failed'
+    ? 'Delete failed update'
+    : 'Remove from device';
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
@@ -13575,7 +13830,7 @@ function UpdateOverflowMenu({
             />
           ) : (
             <MoreOptionRow
-              label="Delete update"
+              label={deleteLabel}
               icon="trash-outline"
               onPress={() => {
                 onClose();

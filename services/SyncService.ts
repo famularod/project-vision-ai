@@ -349,6 +349,23 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   });
 }
 
+export async function removeProjectUpdateFromSyncQueue(updateId: string): Promise<number> {
+  if (!updateId.trim()) return 0;
+
+  const queue = await getOfflineQueue();
+  const nextQueue = queue.filter(item => {
+    if (item.entity !== 'project_update') return true;
+
+    const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+    return payload.id !== updateId;
+  });
+
+  if (nextQueue.length === queue.length) return 0;
+
+  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, nextQueue);
+  return queue.length - nextQueue.length;
+}
+
 let uploadPendingChangesInFlight: Promise<SyncUploadResult> | null = null;
 let anotherUploadPassRequested = false;
 

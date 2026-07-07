@@ -164,11 +164,15 @@ includes(supabase, 'contentType', 'mobile upload must send content type to Supab
 includes(supabase, 'errorRecord.statusCode', 'storage upload must preserve safe status code when available');
 includes(supabase, 'errorRecord.code', 'storage upload must preserve safe Supabase error code when available');
 
-includes(app, '...localUpdates,', 'local updates must be merged before cloud updates');
+includes(app, 'mergeSavedUpdatesWithTombstones', 'local/cloud update merge must honor tombstones');
 assert(
-  app.indexOf('...localUpdates,') < app.indexOf('...cloudUpdates.map(normalizeUpdate),'),
+  app.indexOf('localUpdates.forEach') < app.indexOf('cloudUpdates.forEach'),
   'local updates must win over stale cloud rows when deduping',
 );
+includes(app, 'DELETED_UPDATES_STORAGE_KEY', 'deleted update tombstones must persist in AsyncStorage');
+includes(app, "if (tombstone && !localArchiveCanStayHidden) return;", 'cloud/local merge must not resurrect tombstoned updates');
+includes(app, 'removeProjectUpdateFromSyncQueue(tombstone.updateId)', 'startup load must remove tombstoned updates from pending sync queue before cloud load');
+includes(app, 'orphanedPhotoCountIgnored: update.photos.length', 'failed update tombstones must record ignored orphaned photo metadata');
 includes(app, 'projectRollupKey(update.projectName)', 'project rollups must normalize saved update project names');
 includes(app, 'projectStatsForName(projectStatsByName, project)', 'project card must use normalized local-first stats');
 includes(app, 'projectStatsForName(projectStatsByName, selectedWorkspaceProject)', 'workspace must use the same stats source as project card');

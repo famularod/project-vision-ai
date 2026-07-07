@@ -34,6 +34,11 @@ const updatesScreen = app.slice(
   'Retry',
   'stableSendId',
   'Archive sent update',
+  'Delete failed update',
+  'Remove from device',
+  'DELETED_UPDATES_STORAGE_KEY',
+  'mergeSavedUpdatesWithTombstones',
+  'removeProjectUpdateFromSyncQueue',
   'ReadOnlyUpdateDetailScreen',
   'screenForUpdateResume(update)',
   'ANALYSIS_TIMEOUT_SECONDS',
@@ -57,6 +62,25 @@ assert(
 assert(
   app.includes("lifecycle === 'sent'") && app.includes('archiveSavedUpdate'),
   'Sent updates should archive instead of permanently deleting.',
+);
+assert(
+  app.includes('const tombstone = buildUpdateTombstone(') &&
+    app.includes('deletedUpdate,') &&
+    app.includes("action === 'archive_sent_update'") &&
+    app.includes("mergeDecision: 'tombstoned'"),
+  'Deleted and archived updates must record local tombstones to prevent resurrection.',
+);
+assert(
+  app.includes('Delete diagnostics: update id') &&
+    app.includes('source after reload') &&
+    app.includes('orphaned photo count ignored'),
+  'Developer diagnostics must expose safe delete/merge state without raw cloud details.',
+);
+assert(
+  sync.includes('removeProjectUpdateFromSyncQueue') &&
+    sync.includes("item.entity !== 'project_update'") &&
+    sync.includes('payload.id !== updateId'),
+  'Deleting a failed update must remove matching project_update work from the pending sync queue.',
 );
 assert(
   app.includes('recipientNames') && app.includes('contactNamesById'),
