@@ -3316,14 +3316,37 @@ function photoHasVisualChange(photo: UpdatePhoto) {
   const result = photo.photoIntelligence;
 
   if (!result) return false;
+  if (!pieResultHasCompletedVisualComparison(result)) return false;
 
   return Boolean(
     result.visibleChange ||
       (result.additions?.length || 0) > 0 ||
       (result.removals?.length || 0) > 0 ||
-      result.possibleProgress ||
-      (result.possibleConcerns?.length || 0) > 0,
+      observedFindingsForPIEResult(result).length > 0,
   );
+}
+
+function pieResultHasCompletedVisualComparison(
+  result: PIEPhotoIntelligenceDisplayState | null | undefined,
+) {
+  return Boolean(
+    result &&
+      (
+        result.status === 'analysis_complete' ||
+        result.status === 'completed_with_limitations'
+      ) &&
+      Boolean(result.priorUpdateUsed || result.priorEvidenceId || result.diagnostics?.selectedPriorPhotoId),
+  );
+}
+
+function pieResultIsBaselineOnly(
+  result: PIEPhotoIntelligenceDisplayState | null | undefined,
+) {
+  return result?.status === 'no_suitable_prior_photo';
+}
+
+function isBaselineInfoFinding(finding: string) {
+  return /first visual baseline|baseline saved|no earlier photo|no prior photo|future comparison/i.test(finding);
 }
 
 function isPreparingSecurePhotoAnalysisResult(result: PIEPhotoIntelligenceDisplayState) {
@@ -3508,13 +3531,13 @@ function pieResultsForUpdate(update: ProjectUpdate) {
 function observedFindingsForPIEResult(
   result: PIEPhotoIntelligenceDisplayState | undefined,
 ) {
-  if (!result) return [];
+  if (!result || !pieResultHasCompletedVisualComparison(result) || pieResultIsBaselineOnly(result)) return [];
 
   return uniqueStrings([
     result.currentObservation || '',
     ...(result.additions || []),
     ...(result.removals || []),
-  ]);
+  ]).filter(finding => !isBaselineInfoFinding(finding));
 }
 
 function possibleInterpretationsForPIEResult(
@@ -4245,16 +4268,22 @@ function buildPIEProjectBriefModel(
       observedTier: true as const,
     })),
   );
-  const latestUpdate = observations[0]?.update || latestUpdateWithVisualChange(scopedUpdates);
+  const dedupedObservations = dedupePIEProjectBriefObservations(observations);
+  const latestUpdate = dedupedObservations[0]?.update || latestUpdateWithVisualChange(scopedUpdates);
   const changeCount = scopedUpdates.reduce(
     (sum, update) => sum + update.photos.filter(photoHasVisualChange).length,
     0,
   );
+  const baselineCount = scopedUpdates.reduce(
+    (sum, update) =>
+      sum + update.photos.filter(photo => pieResultIsBaselineOnly(photo.photoIntelligence)).length,
+    0,
+  );
 
-  if (observations.length > 0) {
+  if (dedupedObservations.length > 0 && changeCount > 0) {
     return {
       summary: `${changeCount || observations.length} possible visual change${(changeCount || observations.length) === 1 ? '' : 's'} found.`,
-      observations: observations.slice(0, 3),
+      observations: dedupedObservations.slice(0, 3),
       latestUpdate,
       lowDetailFallback: false,
       analysisUnavailable: false,
@@ -4286,6 +4315,16 @@ function buildPIEProjectBriefModel(
     };
   }
 
+  if (baselineCount > 0) {
+    return {
+      summary: `No visual changes compared yet.\n${baselineCount} baseline photo${baselineCount === 1 ? '' : 's'} saved for future comparisons.`,
+      observations: [],
+      latestUpdate: null,
+      lowDetailFallback: false,
+      analysisUnavailable: false,
+    };
+  }
+
   return {
     summary: buildPIEBriefText(projectName, savedUpdates),
     observations: [],
@@ -4296,6 +4335,11 @@ function buildPIEProjectBriefModel(
 }
 
 function observedFindingsForUpdateBrief(update: ProjectUpdate) {
+  const hasCompletedComparison = update.photos.some(photo =>
+    pieResultHasCompletedVisualComparison(photo.photoIntelligence),
+  );
+  if (!hasCompletedComparison) return [];
+
   return uniqueStrings([
     ...(update.observedFindings || []),
     ...pieResultsForUpdate(update).flatMap(result => observedFindingsForPIEResult(result)),
@@ -4305,10 +4349,23 @@ function observedFindingsForUpdateBrief(update: ProjectUpdate) {
 function isSafeObservedBriefFinding(finding: string) {
   const normalized = finding.trim().toLowerCase();
   if (!normalized) return false;
+  if (isBaselineInfoFinding(finding)) return false;
   if (/work completed|progress increased|finished|quality issue|schedule.*risk|at risk|completed/.test(normalized)) {
     return false;
   }
   return true;
+}
+
+function dedupePIEProjectBriefObservations(
+  observations: PIEProjectBriefObservation[],
+) {
+  const seen = new Set<string>();
+  return observations.filter(observation => {
+    const key = observation.text.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function latestUpdateWithVisualChange(updates: ProjectUpdate[]) {
@@ -11431,7 +11488,7 @@ function BuildUpdateScreen({
       photo.photoIntelligence?.status === 'comparison_unavailable',
   );
   const observedFindings = uniqueStrings([
-    ...(update.observedFindings || []),
+    ...observedFindingsForUpdateBrief(update),
     ...observedFindingsForPIEResult(firstResult),
   ]);
   const possibleInterpretations = uniqueStrings([
@@ -11786,18 +11843,17 @@ function ReadOnlyUpdateDetailScreen({
   const pieStatus = updatePIEAnalysisStatus(update);
   const documents = update.documents || [];
   const timing = flowTimingForUpdate(update);
+  const pieSummary = summarizePIEStatusForUpdate(update);
   const pieResults = pieResultsForUpdate(update);
   const firstResult = pieResults[0];
-  const observedFindings = uniqueStrings([
-    ...(update.observedFindings || []),
-    ...pieResults.flatMap(result => observedFindingsForPIEResult(result)),
-  ]);
+  const observedFindings = observedFindingsForUpdateBrief(update);
   const possibleInterpretations = uniqueStrings([
-    ...(updateSupportsPIEInterpretations(update, summarizePIEStatusForUpdate(update))
+    ...(updateSupportsPIEInterpretations(update, pieSummary)
       ? update.possibleInterpretations || []
       : []),
     ...pieResults.flatMap(result => possibleInterpretationsForPIEResult(result)),
   ]);
+  const baselineOnly = pieSummary.status === 'no_prior_photo';
   const failedPhoto = update.photos.find(
     photo =>
       photo.photoIntelligence?.status === 'analysis_failed_retry' ||
@@ -11835,10 +11891,18 @@ function ReadOnlyUpdateDetailScreen({
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>PIE Summary</Text>
         <Text style={styles.projectName}>
-          {summarizePIEStatusForUpdate(update).summary}
+          {pieSummary.summary}
         </Text>
         {firstResult?.comparisonConfidence ? (
           <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
+        ) : null}
+        {baselineOnly ? (
+          <>
+            <Text style={styles.sectionLabelNoMargin}>Information</Text>
+            <Text style={styles.locationDetailText}>
+              Baseline saved for future comparison.
+            </Text>
+          </>
         ) : null}
         {observedFindings.length > 0 ? (
           <>
