@@ -6,8 +6,11 @@ import type {
 } from 'react-native';
 import {
   Alert,
+  Modal,
+  Platform,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -19,12 +22,18 @@ import { ScreenMetricGrid } from '../components/layout/ScreenMetricGrid';
 import { ScreenSection } from '../components/layout/ScreenSection';
 import { ManageAreasPanel } from '../components/ManageAreasPanel';
 import {
+  PrimaryButton,
   SecondaryButton,
 } from '../components/ProjectDetailsCard';
 import { getAIConfigurationStatus } from '../services/AIClientBoundaryService';
 import {
+  getCurrentSessionAccessToken,
   getSupabaseConfigurationStatus,
   getSupabaseConnectionStatus,
+  signIn,
+  signOut,
+  signUp,
+  subscribeToAuthStateChange,
   testSupabaseConnection,
   type SupabaseConnectionStatus,
   type SupabaseConnectionTestResult,
@@ -44,6 +53,9 @@ import {
   spacing,
   typography,
 } from '../theme';
+
+const ENABLE_DEV_AUTH_SIGNUP =
+  process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
 
 export function AdminScreen({
   contentStyle,
@@ -103,6 +115,12 @@ export function AdminScreen({
   const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [signInModalVisible, setSignInModalVisible] = useState(false);
+  const [signInEmail, setSignInEmail] = useState('');
+  const [signInPassword, setSignInPassword] = useState('');
+  const [signInMessage, setSignInMessage] = useState<string | null>(null);
+  const [signInSubmitting, setSignInSubmitting] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -133,6 +151,14 @@ export function AdminScreen({
 
     setAdminActionSummary('Sync status cleaned up.');
   }, [syncCleanupNotice]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToAuthStateChange(() => {
+      void refreshAdminStatus();
+    });
+
+    return unsubscribe;
+  }, []);
 
   const connected = testResult?.connected ?? false;
   const cloudProjectCount = testResult?.projectCount;
@@ -290,12 +316,65 @@ export function AdminScreen({
       </ScreenSection>
 
       <ScreenSection title="Settings">
-        <AdminInfoCard
-          title="Settings"
-          text="Settings placeholder for future preferences, defaults, and app behavior controls."
-          icon="settings-outline"
-        />
+        <ScreenCard>
+          <View style={styles.infoHeader}>
+            <Ionicons
+              name="person-circle-outline"
+              size={20}
+              color={colors.primary}
+            />
+
+            <Text style={styles.cardTitle}>
+              Account
+            </Text>
+          </View>
+
+          {connectionStatus?.authenticated ? (
+            <>
+              <Text style={styles.cardText}>
+                Signed in as {connectionStatus.userEmail || 'your account'}.
+              </Text>
+
+              <SecondaryButton
+                label={signingOut ? 'Signing out…' : 'Sign Out'}
+                icon="log-out-outline"
+                onPress={handleSignOut}
+                disabled={signingOut}
+              />
+            </>
+          ) : (
+            <>
+              <Text style={styles.cardText}>
+                Sign in to enable cloud sync and photo intelligence.
+              </Text>
+
+              <SecondaryButton
+                label="Sign In"
+                icon="log-in-outline"
+                onPress={openSignInModal}
+              />
+            </>
+          )}
+        </ScreenCard>
       </ScreenSection>
+
+      <SignInModal
+        visible={signInModalVisible}
+        email={signInEmail}
+        password={signInPassword}
+        message={signInMessage}
+        submitting={signInSubmitting}
+        developmentSignupEnabled={ENABLE_DEV_AUTH_SIGNUP}
+        onEmailChange={setSignInEmail}
+        onPasswordChange={setSignInPassword}
+        onSubmit={() => {
+          void submitSignIn();
+        }}
+        onDevelopmentSignUp={() => {
+          void submitDevelopmentSignUp();
+        }}
+        onClose={closeSignInModal}
+      />
 
       <ScreenSection title="Developer Tools">
         <ScreenCard>
@@ -431,6 +510,134 @@ export function AdminScreen({
     }
   }
 
+  function openSignInModal() {
+    setSignInMessage(null);
+    setSignInModalVisible(true);
+  }
+
+  function closeSignInModal() {
+    if (signInSubmitting) return;
+
+    setSignInModalVisible(false);
+    setSignInPassword('');
+    setSignInMessage(null);
+  }
+
+  async function submitSignIn() {
+    const email = signInEmail.trim();
+
+    if (!email || !signInPassword) {
+      setSignInMessage('Enter your account email and password.');
+      return;
+    }
+
+    setSignInSubmitting(true);
+    setSignInMessage(null);
+
+    try {
+      const result = await signIn({ email, password: signInPassword });
+
+      if (!result.ok) {
+        setSignInMessage(result.error || 'Sign in failed.');
+        return;
+      }
+
+      const tokenResult = await getCurrentSessionAccessToken();
+
+      if (!tokenResult.ok || tokenResult.data?.status !== 'token_present') {
+        setSignInMessage(
+          tokenResult.data?.missingReason === 'auth_loading'
+            ? 'Preparing secure session…'
+            : 'Sign in completed, but the session token is not available yet.',
+        );
+        return;
+      }
+
+      setSignInModalVisible(false);
+      setSignInEmail('');
+      setSignInPassword('');
+      setSignInMessage(null);
+      await refreshAdminStatus();
+    } finally {
+      setSignInSubmitting(false);
+    }
+  }
+
+  async function submitDevelopmentSignUp() {
+    const email = signInEmail.trim();
+
+    if (!email || !signInPassword) {
+      setSignInMessage('Enter an email and password for the development account.');
+      return;
+    }
+
+    setSignInSubmitting(true);
+    setSignInMessage(null);
+
+    try {
+      const created = await signUp({ email, password: signInPassword });
+      let authResult = created;
+
+      if (!created.ok && /already|registered|exists/i.test(created.error || '')) {
+        authResult = await signIn({ email, password: signInPassword });
+      }
+
+      if (!authResult.ok) {
+        setSignInMessage(authResult.error || 'Development account sign-up failed.');
+        return;
+      }
+
+      const tokenResult = await getCurrentSessionAccessToken();
+
+      if (!tokenResult.ok || tokenResult.data?.status !== 'token_present') {
+        setSignInMessage(
+          tokenResult.data?.missingReason === 'auth_loading'
+            ? 'Preparing secure session…'
+            : 'Development account was created, but Supabase did not return a signed-in session. If email confirmation is enabled, confirm the email and sign in.',
+        );
+        return;
+      }
+
+      setSignInModalVisible(false);
+      setSignInEmail('');
+      setSignInPassword('');
+      setSignInMessage(null);
+      await refreshAdminStatus();
+    } finally {
+      setSignInSubmitting(false);
+    }
+  }
+
+  function handleSignOut() {
+    const queuedCount = savedUpdates.filter(update => update.status === 'queued').length;
+    const message =
+      queuedCount > 0
+        ? `${queuedCount} update${queuedCount === 1 ? '' : 's'} still queued to sync will keep failing until you sign in again. Sign out anyway?`
+        : 'You will need to sign in again to resume cloud sync and photo intelligence.';
+
+    Alert.alert('Sign Out', message, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: () => {
+          void performSignOut();
+        },
+      },
+    ]);
+  }
+
+  async function performSignOut() {
+    setSigningOut(true);
+
+    try {
+      await signOut();
+      await refreshAdminStatus();
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
   function showMissingPhotoSyncAlert(missingPhotos: MissingSyncPhoto[]) {
     const count = missingPhotos.length;
 
@@ -541,6 +748,112 @@ function AdminActionButton({
   );
 }
 
+function SignInModal({
+  visible,
+  email,
+  password,
+  message,
+  submitting,
+  developmentSignupEnabled,
+  onEmailChange,
+  onPasswordChange,
+  onSubmit,
+  onDevelopmentSignUp,
+  onClose,
+}: {
+  visible: boolean;
+  email: string;
+  password: string;
+  message: string | null;
+  submitting: boolean;
+  developmentSignupEnabled: boolean;
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onSubmit: () => void;
+  onDevelopmentSignUp: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <View style={styles.modalHeaderText}>
+              <Text style={styles.cardTitle}>
+                Sign In
+              </Text>
+
+              <Text style={styles.cardText}>
+                Use a Supabase Auth email and password to enable cloud sync and photo intelligence.
+              </Text>
+            </View>
+
+            <TouchableOpacity style={styles.modalCloseButton} onPress={onClose}>
+              <Ionicons name="close-outline" size={22} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.modalLabel}>
+            Email
+          </Text>
+          <TextInput
+            style={styles.modalInput}
+            value={email}
+            onChangeText={onEmailChange}
+            placeholder="you@example.com"
+            placeholderTextColor={colors.mutedText}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            textContentType="username"
+          />
+
+          <Text style={styles.modalLabel}>
+            Password
+          </Text>
+          <TextInput
+            style={styles.modalInput}
+            value={password}
+            onChangeText={onPasswordChange}
+            placeholder="Password"
+            placeholderTextColor={colors.mutedText}
+            secureTextEntry
+            textContentType="password"
+          />
+
+          {message ? (
+            <Text style={styles.modalErrorText}>
+              {message}
+            </Text>
+          ) : null}
+
+          <PrimaryButton
+            label={submitting ? 'Signing in…' : 'Sign In'}
+            icon="log-in-outline"
+            onPress={onSubmit}
+            disabled={submitting || !email.trim() || !password}
+          />
+
+          {developmentSignupEnabled ? (
+            <SecondaryButton
+              label="Create or sign in development account"
+              icon="flask-outline"
+              onPress={onDevelopmentSignUp}
+              disabled={submitting}
+            />
+          ) : null}
+
+          <SecondaryButton
+            label="Cancel"
+            icon="close-outline"
+            onPress={onClose}
+            disabled={submitting}
+          />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function formatCheckedAt(value: string | undefined) {
   if (!value) return 'No connection test has run yet';
 
@@ -626,5 +939,69 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
+  },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+
+  modalCard: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: spacing.lg,
+    paddingBottom: Platform.OS === 'ios' ? 34 : spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+
+  modalHeaderText: {
+    flex: 1,
+  },
+
+  modalCloseButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  modalLabel: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: spacing.xs,
+  },
+
+  modalInput: {
+    minHeight: 46,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    color: colors.text,
+    fontSize: 15,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+
+  modalErrorText: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: spacing.sm,
   },
 });
