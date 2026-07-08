@@ -29,10 +29,8 @@ import {
   type ProjectNextAction,
   type ProjectRiskSignal,
 } from '../services/ProjectIntelligenceEngine';
-import {
-  buildRuntime,
-  type PIERuntimeState,
-} from '../services/PIERuntime';
+import type { PIERuntimeState } from '../services/PIERuntime';
+import { usePIELiveAuthority } from '../providers/PIELiveAuthorityProvider';
 import type {
   ContactBook,
   ProjectArea,
@@ -100,21 +98,11 @@ export function ProjectOverviewScreen({
   onGenerateReport: () => void;
   onViewTimeline: () => void;
 }) {
+  const liveAuthority = usePIELiveAuthority();
   const projectUpdates = savedUpdates
     .filter(update => projectMatches(update.projectName, projectName))
     .sort(compareUpdatesNewestFirst);
-  const runtime = buildRuntime({
-    projectName,
-    projectNames: [projectName],
-    updates: savedUpdates,
-    scheduleItems,
-    currentUpdate: projectUpdates[0] || null,
-    projectAreas,
-    contacts,
-    referenceDocuments,
-    syncMetadata,
-    surface: 'project-overview',
-  });
+  const runtime = liveAuthority.runtime;
   const intelligence = runtime.intelligence;
   const scheduleSummary = buildScheduleSummary(scheduleItems, {
     projectName,
@@ -145,14 +133,20 @@ export function ProjectOverviewScreen({
   const confidence = projectConfidenceFromPIE(intelligence.confidence);
   const todaysFocus = todayFocusItems(intelligence);
   const changedItems = whatsChangedItems(intelligence);
-  const recommendation = recommendedNextActionFromPIE(
-    intelligence.recommendedNextAction,
-  );
+  const recommendation = liveAuthority.core
+    ? {
+        title: liveAuthority.core.bestNextStep || liveAuthority.core.highestValueAction?.action || 'Review project status',
+        detail: liveAuthority.core.recommendationWhy || liveAuthority.policy.userMessage,
+        icon: 'sparkles-outline' as IconName,
+      }
+    : recommendedNextActionFromPIE(
+        intelligence.recommendedNextAction,
+      );
   const locationIntelligence = intelligence.locationIntelligence;
   const locationDetail =
     locationIntelligence.lastKnownLocation !== 'Unknown'
-      ? `${locationIntelligence.lastKnownLocation} | ${locationIntelligence.presenceLabel} | ${locationIntelligence.confidenceScore}% confidence`
-      : `${locationIntelligence.gpsStatus} | ${locationIntelligence.confidenceScore}% confidence`;
+      ? `${locationIntelligence.lastKnownLocation} | ${locationIntelligence.presenceLabel}`
+      : locationIntelligence.gpsStatus;
   const communicationReadiness = communicationReadinessSummary(
     intelligence.communicationReadiness,
   );
@@ -176,7 +170,7 @@ export function ProjectOverviewScreen({
         subtitle="What I know, what changed, concerns, recommendations, and needed information."
       />
 
-      <RuntimeProjectSummaryCard runtime={runtime} />
+      <ProjectSummaryCard runtime={runtime} />
 
       <ScreenCard
         style={styles.healthCard}
@@ -278,7 +272,7 @@ export function ProjectOverviewScreen({
           />
         </View>
 
-        <ProjectConfidencePanel confidence={confidence} />
+        <ProjectReadinessPanel confidence={confidence} />
       </ScreenCard>
 
       <ScreenCard style={styles.pieInsightCard}>
@@ -305,7 +299,7 @@ export function ProjectOverviewScreen({
             </Text>
 
             <Text style={styles.pieInsightDetail}>
-              Location Intelligence: {locationDetail}
+              Location: {locationDetail}
             </Text>
 
             {locationIntelligence.confirmationPrompt ? (
@@ -461,7 +455,7 @@ export function ProjectOverviewScreen({
   );
 }
 
-function RuntimeProjectSummaryCard({
+function ProjectSummaryCard({
   runtime,
 }: {
   runtime: PIERuntimeState;
@@ -503,17 +497,17 @@ function RuntimeProjectSummaryCard({
       <View style={styles.runtimeScoreGrid}>
         <RuntimeScorePill
           label="Understanding"
-          value={`${runtime.understandingScore.score}%`}
+          value={scoreLevel(runtime.understandingScore.level)}
           detail={scoreLevel(runtime.understandingScore.level)}
         />
         <RuntimeScorePill
-          label="Trust"
-          value={`${runtime.trustScore.overallScore}%`}
+          label="Ready"
+          value={scoreLevel(runtime.trustScore.level)}
           detail={scoreLevel(runtime.trustScore.level)}
         />
         <RuntimeScorePill
-          label="Confidence"
-          value={`${runtime.intelligence.confidence.score}%`}
+          label="Needs"
+          value={scoreLevel(runtime.overallConfidence)}
           detail={scoreLevel(runtime.overallConfidence)}
         />
         <RuntimeScorePill
@@ -529,7 +523,7 @@ function RuntimeProjectSummaryCard({
       />
       <RuntimeTextBlock
         label="Mission Progress"
-        text={`${runtime.missionProgress.score}% - ${runtime.missionProgress.summary}`}
+        text={runtime.missionProgress.summary}
       />
       <RuntimeTextBlock
         label="Current Story"
@@ -552,7 +546,7 @@ function RuntimeProjectSummaryCard({
         text={
           unknowns.length > 0
             ? unknowns.map(item => item.summary).join(' | ')
-            : 'PIE does not see major unknowns in the current runtime state.'
+            : 'PIE does not see major unknowns in the current project record.'
         }
       />
       <RuntimeTextBlock
@@ -685,7 +679,7 @@ function SummaryMetric({
   );
 }
 
-function ProjectConfidencePanel({
+function ProjectReadinessPanel({
   confidence,
 }: {
   confidence: ProjectConfidence;
@@ -695,7 +689,7 @@ function ProjectConfidencePanel({
       <View style={styles.confidenceHeader}>
         <View style={styles.confidenceTextGroup}>
           <Text style={styles.label}>
-            Project Confidence
+            Project Readiness
           </Text>
 
           <Text style={styles.confidenceTitle}>
@@ -705,18 +699,9 @@ function ProjectConfidencePanel({
 
         <View style={styles.confidenceScoreBadge}>
           <Text style={styles.confidenceScore}>
-            {confidence.score}%
+            {confidence.label}
           </Text>
         </View>
-      </View>
-
-      <View style={styles.confidenceTrack}>
-        <View
-          style={[
-            styles.confidenceFill,
-            { width: `${confidence.score}%` },
-          ]}
-        />
       </View>
 
       <Text style={styles.confidenceDetail}>

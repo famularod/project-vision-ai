@@ -33,6 +33,70 @@ export type UpdatePhoto = {
   gpsAccuracy?: number | null;
   distanceFromSelectedAreaFeet?: number | null;
   locationCapturedAt?: string | null;
+  photoIntelligence?: PhotoIntelligenceDisplayState | null;
+};
+
+export type PhotoIntelligenceStatus =
+  | 'analyzing'
+  | 'analysis_complete'
+  | 'completed_with_limitations'
+  | 'comparison_unavailable'
+  | 'analysis_failed_retry'
+  | 'no_suitable_prior_photo';
+
+export type PhotoIntelligenceDisplayState = {
+  status: PhotoIntelligenceStatus;
+  title: string;
+  summary: string;
+  visibleChange: string | null;
+  location: string | null;
+  comparisonConfidence: string | null;
+  captureLimitations: string[];
+  projectProgress: 'supported' | 'unsupported' | 'unable_to_determine';
+  repeatPhotoGuidance: string | null;
+  authorityMessage: string;
+  currentObservation?: string | null;
+  changedFromPrior?: string | null;
+  additions?: string[];
+  removals?: string[];
+  possibleProgress?: string | null;
+  possibleConcerns?: string[];
+  priorUpdateUsed?: string | null;
+  requestId?: string | null;
+  comparisonId?: string | null;
+  analysisRequestId?: string | null;
+  currentPhotoAssetId?: string | null;
+  priorPhotoAssetId?: string | null;
+  currentEvidenceId?: string | null;
+  priorEvidenceId?: string | null;
+  semanticComparisonResultId?: string | null;
+  provenance?: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
+  diagnostics?: {
+    currentPhotoAssetId: string | null;
+    priorPhotoAssetId: string | null;
+    currentEvidenceId: string | null;
+    priorEvidenceId: string | null;
+    currentStoragePathHash: string | null;
+    priorStoragePathHash: string | null;
+    currentImageByteSize: number | null;
+    priorImageByteSize: number | null;
+    currentImageSha256: string | null;
+    priorImageSha256: string | null;
+    imageHashesDifferent: boolean | null;
+    signedUrlsGenerated: boolean | null;
+    providerInvocationId: string | null;
+    providerResponseStatus: string | null;
+    analysisRequestId: string | null;
+    semanticComparisonResultId: string | null;
+    selectedPriorPhotoId: string | null;
+    selectionCandidateCount: number;
+    selectedPriorReason: string | null;
+    rejectedPriorReasons: string[];
+    resultPairMatchesRequestedPair: boolean | null;
+    resultProvenance: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
+    executedStages: string[];
+  } | null;
+  updatedAt: string;
 };
 
 export type ProjectUpdate = {
@@ -448,12 +512,12 @@ export function ProjectDetailsCard({
 
       <Text style={styles.locationDetailText}>
         {hasGps
-          ? `GPS Captured${
+          ? `Area auto-detected${
               update.gpsAccuracy
                 ? ` | Accuracy ${formatFeet(update.gpsAccuracy)}`
                 : ''
             }`
-          : locationStatus || 'GPS not captured yet'}
+          : locationStatus || 'Area suggested'}
       </Text>
 
       {locationStatus && hasGps ? (
@@ -612,6 +676,52 @@ export const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '600',
     marginBottom: 16,
+  },
+
+  endpointStatusPill: {
+    minHeight: 42,
+    borderRadius: 10,
+    backgroundColor: colors.warningSoft,
+    borderWidth: 1,
+    borderColor: '#FFD8A3',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+
+  endpointStatusPillReady: {
+    backgroundColor: colors.successSoft,
+    borderColor: '#CBEBD2',
+  },
+
+  endpointStatusText: {
+    color: colors.warning,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '800',
+    flex: 1,
+  },
+
+  endpointStatusTextReady: {
+    color: '#248A3D',
+  },
+
+  schemaText: {
+    color: colors.text,
+    backgroundColor: colors.fill,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+    marginTop: 8,
+    marginBottom: 12,
   },
 
   primaryButton: {

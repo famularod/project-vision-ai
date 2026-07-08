@@ -9,6 +9,7 @@
     "lib/project_photo_update_refactor_phase1/**",
     "project_photo_update_refactor_phase1/**",
     "exports/**",
+    "supabase/functions/**",
     "node_modules/**"
   ]
 }

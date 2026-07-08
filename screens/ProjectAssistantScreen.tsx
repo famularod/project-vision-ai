@@ -58,6 +58,7 @@ import {
   spacing,
   typography,
 } from '../theme';
+import { usePIELiveAuthority } from '../providers/PIELiveAuthorityProvider';
 import type {
   ContactBook,
   ProjectArea,
@@ -224,6 +225,7 @@ export function ProjectAssistantScreen({
   onBack: () => void;
   onChooseProject: () => void;
 }) {
+  const liveAuthority = usePIELiveAuthority();
   const [conversation, setConversation] = useState<ConversationMessage[]>([]);
   const [typedQuestion, setTypedQuestion] = useState('');
   const displayProjectName = projectName.trim() || 'Selected Project';
@@ -307,6 +309,12 @@ export function ProjectAssistantScreen({
     ],
   );
   const nextBestAction = getNextBestAction(decisionQueue);
+  const authorityNextBestAction =
+    liveAuthority.core?.bestNextStep || nextBestAction.title;
+  const authorityNextBestActionReason =
+    liveAuthority.core?.recommendationWhy ||
+    liveAuthority.policy.userMessage ||
+    nextBestActionPanelText(nextBestAction, decisionQueue);
   const criticalDecisions = getCriticalDecisions(decisionQueue);
   const communicationDecisions = getCommunicationDecisions(decisionQueue);
   const projectWalkDecision = getProjectWalkDecision(decisionQueue);
@@ -488,7 +496,7 @@ export function ProjectAssistantScreen({
         <Text style={styles.bodyText}>
           Location: {intelligence.locationIntelligence.lastKnownLocation === 'Unknown'
             ? intelligence.locationIntelligence.gpsStatus
-            : intelligence.locationIntelligence.lastKnownLocation} | {intelligence.locationIntelligence.presenceLabel} | {intelligence.locationIntelligence.confidenceScore}% confidence.
+            : intelligence.locationIntelligence.lastKnownLocation} | {intelligence.locationIntelligence.presenceLabel}.
         </Text>
 
         {intelligence.locationIntelligence.confirmationPrompt ? (
@@ -524,8 +532,8 @@ export function ProjectAssistantScreen({
             icon="stats-chart-outline"
           />
           <BriefMetric
-            label="Confidence"
-            value={`${intelligence.confidence.score}% ${confidenceLabel(intelligence)}`}
+            label="Readiness"
+            value={confidenceLabel(intelligence)}
             icon="checkmark-circle-outline"
           />
           <BriefMetric
@@ -541,11 +549,11 @@ export function ProjectAssistantScreen({
           </Text>
 
           <Text style={styles.nextActionTitle}>
-            {nextBestAction.title}
+            {authorityNextBestAction}
           </Text>
 
           <Text style={styles.bodyText}>
-            {nextBestActionPanelText(nextBestAction, decisionQueue)}
+            {authorityNextBestActionReason}
           </Text>
 
           <Text style={styles.bodyText}>
@@ -866,7 +874,7 @@ function assistantOpeningBrief(
 
   return [
     'I analyzed this project.',
-    `Summary: ${healthLabel(intelligence)} health, ${progressLabel(intelligence)}, ${scheduleLabel(intelligence)} schedule, ${intelligence.confidence.score}% confidence.`,
+    `Summary: ${healthLabel(intelligence)} health, ${progressLabel(intelligence)}, ${scheduleLabel(intelligence)} schedule, ${confidenceLabel(intelligence)} readiness.`,
     concerns.length > 0
       ? `Concerns: ${concerns.map(concern => concern.title).join('; ')}.`
       : 'Concerns: no urgent concern surfaced from current local evidence.',
@@ -990,7 +998,7 @@ function statusResponse(
     `Why: ${thought?.summary || intelligence.healthSignal.message}`,
     evidenceLine(thought?.evidence.map(item => `${item.title}: ${item.detail}`)),
     concern ? `Watch item: ${concern.title} - ${concern.summary}` : 'Watch item: no urgent concern surfaced from current data.',
-    `Confidence: ${confidenceText(thought?.confidence || intelligence.confidence.level)}.`,
+    `Readiness: ${confidenceText(thought?.confidence || intelligence.confidence.level)}.`,
     `Suggested next action: ${recommendation?.suggestedNextAction || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
 }
@@ -1005,7 +1013,7 @@ function locationIntelligenceLine(intelligence: ProjectIntelligenceSummary) {
     ? ` Confirm: ${location.confirmationPrompt}`
     : '';
 
-  return `Location: ${locationName}; ${location.presenceLabel}; ${location.confidenceScore}% confidence.${confirmation}`;
+  return `Location: ${locationName}; ${location.presenceLabel}.${confirmation}`;
 }
 
 function changeResponse(
@@ -1026,7 +1034,7 @@ function changeResponse(
       'I do not see recent project history yet.',
       'Why: there are no saved updates, photo notes, or project events available for this project.',
       'Evidence: no recent event evidence found.',
-      'Confidence: Low.',
+      'Readiness: Low.',
       'Suggested next action: capture a field update to establish the recent project story.',
     ].join('\n');
   }
@@ -1034,7 +1042,7 @@ function changeResponse(
   return [
     `Recently: ${thought?.summary || intelligence.projectStory.summary}`,
     evidenceLine(recentEvidence.map(item => `${item.title}: ${item.detail}`)),
-    `Confidence: ${confidenceText(thought?.confidence || confidenceFromEvidence(recentEvidence.length))}.`,
+    `Readiness: ${confidenceText(thought?.confidence || confidenceFromEvidence(recentEvidence.length))}.`,
     `Suggested next action: ${topRecommendation(reasoning, 'capture-update')?.suggestedNextAction || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
 }
@@ -1057,7 +1065,7 @@ function projectStoryResponse(
     `Likely next step: ${story.likelyNextStep}.`,
     memoryInsightLine(memory),
     evidenceLine(memoryEvidence(memory)),
-    `Confidence: ${confidenceText(story.confidence)}.`,
+    `Readiness: ${confidenceText(story.confidence)}.`,
   ].join('\n');
 }
 
@@ -1074,7 +1082,7 @@ function overTimeResponse(
       'I do not have enough timeline history to compare change over time yet.',
       'Why: project memory needs dated updates, photos, schedule items, documents, reports, or events before trends are reliable.',
       evidenceLine(memoryEvidence(memory)),
-      `Confidence: ${confidenceText(memory.memory.confidence)}.`,
+      `Readiness: ${confidenceText(memory.memory.confidence)}.`,
       'Suggested next action: capture a fresh field update and add schedule or document context.',
     ].join('\n');
   }
@@ -1092,9 +1100,9 @@ function overTimeResponse(
     timelineLine,
     pattern
       ? `Pattern: ${pattern.title} - ${pattern.summary}`
-      : 'Pattern: no recurring pattern is strong enough yet.',
+      : 'Pattern: no recurring pattern is ready enough yet.',
     evidenceLine(activeSegments.slice(-3).map(segment => `${segment.title}: ${segment.summary}`)),
-    `Confidence: ${confidenceText(memory.memory.confidence)}.`,
+    `Readiness: ${confidenceText(memory.memory.confidence)}.`,
     `Suggested next action: ${topMemoryAction(memory) || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
 }
@@ -1110,7 +1118,7 @@ function missingMemoryResponse(
       'I do not see major project-memory gaps right now.',
       'Why: updates, schedule, photos, documents, inspections, and reports have enough coverage for the current rule-based read.',
       evidenceLine(memoryEvidence(memory)),
-      `Confidence: ${confidenceText(memory.memory.confidence)}.`,
+      `Readiness: ${confidenceText(memory.memory.confidence)}.`,
       `Suggested next action: ${intelligence.recommendedNextAction.label}.`,
     ].join('\n');
   }
@@ -1120,8 +1128,8 @@ function missingMemoryResponse(
     ...gaps
       .slice(0, 6)
       .map(gap => `- ${gap.title}: ${gap.summary} Impact: ${gap.impact}`),
-    `Why: missing history lowers confidence and can weaken reports, status reads, and future project-walk guidance.`,
-    `Confidence: ${confidenceText(gaps[0].confidence)}.`,
+    `Why: missing history lowers readiness and can weaken reports, status reads, and future project-walk guidance.`,
+    `Readiness: ${confidenceText(gaps[0].confidence)}.`,
     `Suggested next action: ${gaps[0].suggestedAction}.`,
   ].join('\n');
 }
@@ -1148,7 +1156,7 @@ function recurringIssueResponse(
       'I do not see a recurring issue pattern yet.',
       'Why: PIE memory needs repeated issues, schedule movement, safety observations, or photo actions before it can call something recurring.',
       evidenceLine(memoryEvidence(memory)),
-      `Confidence: ${confidenceText(memory.memory.confidence)}.`,
+      `Readiness: ${confidenceText(memory.memory.confidence)}.`,
       'Suggested next action: keep capturing updates with issue, owner, and due-date context so patterns can form.',
     ].join('\n');
   }
@@ -1164,7 +1172,7 @@ function recurringIssueResponse(
     `Why: ${topPattern.summary}`,
     evidenceLine(topPattern.evidence),
     concern ? `Related concern: ${concern.title} - ${concern.summary}` : 'Related concern: none urgent beyond the pattern itself.',
-    `Confidence: ${confidenceText(topPattern.confidence)}.`,
+    `Readiness: ${confidenceText(topPattern.confidence)}.`,
     `Suggested next action: ${topMemoryAction(memory) || topPattern.summary}.`,
   ].join('\n');
 }
@@ -1184,7 +1192,7 @@ function rememberResponse(
     topInsight
       ? `Best memory insight: ${topInsight.summary}`
       : 'Best memory insight: project memory is still forming.',
-    `Confidence: ${confidenceText(memory.memory.confidence)}.`,
+    `Readiness: ${confidenceText(memory.memory.confidence)}.`,
     `Suggested next action: ${topMemoryAction(memory) || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
 }
@@ -1203,7 +1211,7 @@ function attentionResponse(
       'I do not see urgent attention items in the current project data.',
       `Why: ${intelligence.healthSignal.message}`,
       evidenceLine(reasoning.evidence.map(item => `${item.title}: ${item.detail}`)),
-      `Confidence: ${confidenceText(intelligence.healthSignal.confidence)}.`,
+      `Readiness: ${confidenceText(intelligence.healthSignal.confidence)}.`,
       `Suggested next action: ${intelligence.recommendedNextAction.label}.`,
     ].join('\n');
   }
@@ -1219,7 +1227,7 @@ function attentionResponse(
     `Why: ${concerns[0].impact}`,
     evidenceLine(evidenceForIds(reasoning, concerns[0].evidenceIds)),
     firstQuestion ? `Open question: ${firstQuestion.question}` : 'Open question: none surfaced yet.',
-    `Confidence: ${confidenceText(concerns[0].confidence)}.`,
+    `Readiness: ${confidenceText(concerns[0].confidence)}.`,
     `Suggested next action: ${concerns[0].suggestedNextAction}.`,
   ].join('\n');
 }
@@ -1240,7 +1248,7 @@ function scheduleResponse(
       'I do not see schedule data for this project yet.',
       'Why: PIE does not have schedule items to compare planned work, overdue work, or progress.',
       'Evidence: no schedule item evidence found.',
-      'Confidence: Low.',
+      'Readiness: Low.',
       'Suggested next action: add or import schedule items so I can identify overdue work, upcoming work, and progress.',
     ].join('\n');
   }
@@ -1254,7 +1262,7 @@ function scheduleResponse(
       : `Schedule read: ${scheduleLabel(intelligence)} with ${progressLabel(intelligence)} progress context.`,
     `Why: ${scheduleThought?.summary || 'Schedule evidence is available for this project.'}`,
     evidenceLine(scheduleEvidence),
-    `Confidence: ${confidenceText(scheduleThought?.confidence || confidenceFromEvidence(intelligence.metrics.scheduleItemCount))}.`,
+    `Readiness: ${confidenceText(scheduleThought?.confidence || confidenceFromEvidence(intelligence.metrics.scheduleItemCount))}.`,
     `Suggested next action: ${concern?.suggestedNextAction || topRecommendation(reasoning, 'review-upcoming-schedule')?.suggestedNextAction || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
 }
@@ -1280,7 +1288,7 @@ function bossResponse(
       : 'Decision: no communication decision is ready for approval yet.',
     `Why: ${communicationDecision?.reason.why || recommendation?.why || reasoning.communicationInsight.summary}`,
     evidenceLine(communicationDecision?.evidence || recommendation?.evidence),
-    `Confidence: ${confidenceText(communicationDecision?.confidence || recommendation?.confidence || reasoning.communicationInsight.confidence)}.`,
+    `Readiness: ${confidenceText(communicationDecision?.confidence || recommendation?.confidence || reasoning.communicationInsight.confidence)}.`,
     `Suggested next action: ${communicationDecision?.suggestedNextAction || recommendation?.suggestedNextAction || intelligence.recommendedNextAction.label}.`,
   ].join('\n');
 }
@@ -1302,7 +1310,7 @@ function customerResponse(
         ? `Missing context: ${reasoning.communicationInsight.missingContext.slice(0, 3).join(' ')}`
         : 'Missing context: capture more current field or schedule detail.',
       evidenceLine(evidenceForIds(reasoning, reasoning.communicationInsight.evidenceIds)),
-      `Confidence: ${confidenceText(reasoning.communicationInsight.confidence)}.`,
+      `Readiness: ${confidenceText(reasoning.communicationInsight.confidence)}.`,
       'Suggested next action: capture a recent update, add notes or photos, and confirm schedule context before sending.',
     ].join('\n');
   }
@@ -1318,7 +1326,7 @@ function customerResponse(
       communicationDecision?.evidence ||
         evidenceForIds(reasoning, reasoning.communicationInsight.evidenceIds),
     ),
-    `Confidence: ${confidenceText(communicationDecision?.confidence || reasoning.communicationInsight.confidence)}.`,
+    `Readiness: ${confidenceText(communicationDecision?.confidence || reasoning.communicationInsight.confidence)}.`,
     `Suggested next action: ${communicationDecision?.suggestedNextAction || recommendation?.suggestedNextAction || 'review the wording before sending.'}`,
   ].join('\n');
 }
@@ -1331,7 +1339,7 @@ function nextResponse(decisionQueue: PIEDecisionQueue) {
       NO_URGENT_DECISIONS_MESSAGE,
       `Why: ${action.why}`,
       evidenceLine(action.evidence),
-      `Confidence: ${confidenceText(action.confidence)}.`,
+      `Readiness: ${confidenceText(action.confidence)}.`,
       `Suggested next action: ${action.suggestedNextAction}.`,
     ].join('\n');
   }
@@ -1341,7 +1349,7 @@ function nextResponse(decisionQueue: PIEDecisionQueue) {
     `Why: ${action.why}`,
     `Impact: ${action.impact.description}`,
     evidenceLine(action.evidence),
-    `Confidence: ${confidenceText(action.confidence)}.`,
+    `Readiness: ${confidenceText(action.confidence)}.`,
     `Approval: ${approvalText(action.userApprovalRequired)}`,
     `Suggested next action: ${action.suggestedNextAction}.`,
   ].join('\n');
@@ -1357,7 +1365,7 @@ function approvalDecisionsResponse(decisionQueue: PIEDecisionQueue) {
         : NO_URGENT_DECISIONS_MESSAGE,
       'Why: PIE is only recommending review or monitoring from the current decision queue.',
       evidenceLine(getNextBestAction(decisionQueue).evidence),
-      `Confidence: ${confidenceText(decisionQueue.confidence)}.`,
+      `Readiness: ${confidenceText(decisionQueue.confidence)}.`,
       'Suggested next action: keep monitoring, or capture today\'s progress if the field condition changed.',
     ].join('\n');
   }
@@ -1369,7 +1377,7 @@ function approvalDecisionsResponse(decisionQueue: PIEDecisionQueue) {
     ...decisions.slice(0, 4).map(decision => `- ${decision.title}: ${decision.summary}`),
     `Why: ${first.userApproval.reason}`,
     evidenceLine(first.evidence),
-    `Confidence: ${confidenceText(first.confidence)}.`,
+    `Readiness: ${confidenceText(first.confidence)}.`,
     `Suggested next action: ${first.suggestedNextAction}.`,
   ].join('\n');
 }
@@ -1382,7 +1390,7 @@ function priorityDecisionResponse(decisionQueue: PIEDecisionQueue) {
       NO_URGENT_DECISIONS_MESSAGE,
       `Why: ${decision?.reason.why || 'No higher-priority local PIE signal is available.'}`,
       evidenceLine(decision?.evidence),
-      `Confidence: ${confidenceText(decision?.confidence || decisionQueue.confidence)}.`,
+      `Readiness: ${confidenceText(decision?.confidence || decisionQueue.confidence)}.`,
       'Suggested next action: continue monitoring or capture today\'s progress.',
     ].join('\n');
   }
@@ -1393,7 +1401,7 @@ function priorityDecisionResponse(decisionQueue: PIEDecisionQueue) {
     `Why: ${decision.reason.why}`,
     `Impact: ${decision.impact.description}`,
     evidenceLine(decision.evidence),
-    `Confidence: ${confidenceText(decision.confidence)}.`,
+    `Readiness: ${confidenceText(decision.confidence)}.`,
     `Approval: ${approvalText(decision.userApproval.required)}`,
     `Suggested next action: ${decision.suggestedNextAction}.`,
   ].join('\n');
@@ -1409,7 +1417,7 @@ function communicationDecisionResponse(decisionQueue: PIEDecisionQueue) {
         : NO_URGENT_DECISIONS_MESSAGE,
       'Why: PIE needs enough current project context before it recommends stakeholder communication.',
       evidenceLine(getNextBestAction(decisionQueue).evidence),
-      `Confidence: ${confidenceText(decisionQueue.confidence)}.`,
+      `Readiness: ${confidenceText(decisionQueue.confidence)}.`,
       'Suggested next action: capture current progress or fill missing context, then review communication readiness.',
     ].join('\n');
   }
@@ -1422,7 +1430,7 @@ function communicationDecisionResponse(decisionQueue: PIEDecisionQueue) {
     `Why: ${first.reason.why}`,
     `Impact: ${first.impact.description}`,
     evidenceLine(first.evidence),
-    `Confidence: ${confidenceText(first.confidence)}.`,
+    `Readiness: ${confidenceText(first.confidence)}.`,
     `Approval: ${approvalText(first.userApproval.required)}`,
     `Suggested next action: ${first.suggestedNextAction}.`,
   ].join('\n');
@@ -1438,7 +1446,7 @@ function projectWalkDecisionResponse(decisionQueue: PIEDecisionQueue) {
         : NO_URGENT_DECISIONS_MESSAGE,
       'Why: the current decision queue points to another action first.',
       evidenceLine(getNextBestAction(decisionQueue).evidence),
-      `Confidence: ${confidenceText(decisionQueue.confidence)}.`,
+      `Readiness: ${confidenceText(decisionQueue.confidence)}.`,
       'Suggested next action: follow the next best action, or capture today\'s progress if field conditions changed.',
     ].join('\n');
   }
@@ -1448,7 +1456,7 @@ function projectWalkDecisionResponse(decisionQueue: PIEDecisionQueue) {
     `Why: ${decision.reason.why}`,
     `Impact: ${decision.impact.description}`,
     evidenceLine(decision.evidence),
-    `Confidence: ${confidenceText(decision.confidence)}.`,
+    `Readiness: ${confidenceText(decision.confidence)}.`,
     `Approval: ${approvalText(decision.userApproval.required)}`,
     'Project Walk Mode is coming soon; for now, begin a project walk and save reviewed field notes through the capture flow.',
   ].join('\n');
@@ -1506,7 +1514,7 @@ function emptyProjectDataResponse() {
     'I do not have enough project data yet for a reliable answer.',
     'Why: I do not see saved updates, photos, schedule items, or project event history for this project.',
     'Evidence: no project evidence is available yet.',
-    'Confidence: Low.',
+    'Readiness: Low.',
     'Suggested next action: capture a field update or add/import schedule items to establish the project record.',
   ].join('\n');
 }
@@ -1698,11 +1706,11 @@ function confidenceLabel(intelligence: ProjectIntelligenceSummary) {
 
 function communicationLabel(intelligence: ProjectIntelligenceSummary) {
   if (intelligence.communicationReadiness.level === 'ready') {
-    return `${intelligence.communicationReadiness.score}% ready`;
+    return 'Ready';
   }
 
   if (intelligence.communicationReadiness.level === 'needs-context') {
-    return `${intelligence.communicationReadiness.score}% and needs context`;
+    return 'Needs context';
   }
 
   return `${intelligence.communicationReadiness.score}% and not ready`;

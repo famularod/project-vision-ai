@@ -17,6 +17,7 @@ import {
   buildRuntime,
   type PIERuntimeState,
 } from '../services/PIERuntime';
+import { useOptionalPIELiveAuthority } from '../providers/PIELiveAuthorityProvider';
 import {
   colors,
   radius,
@@ -69,11 +70,12 @@ export function PIEPanel({
   subtitle = 'Project Intelligence Engine',
   compact = false,
 }: PIEPanelProps) {
+  const liveAuthority = useOptionalPIELiveAuthority();
   const resolvedProjectName =
     projectName?.trim() ||
     currentUpdate?.projectName.trim() ||
     'Selected Project';
-  const runtime = useMemo(() => buildRuntime({
+  const fallbackRuntime = useMemo(() => buildRuntime({
       projectName: resolvedProjectName,
       updates,
       scheduleItems,
@@ -95,6 +97,7 @@ export function PIEPanel({
     syncMetadata,
     updates,
   ]);
+  const runtime = liveAuthority?.runtime || fallbackRuntime;
   const sections = buildPanelSections(runtime);
 
   return (
@@ -125,18 +128,18 @@ export function PIEPanel({
 
       <View style={styles.metaRow}>
         <InfoPill
-          label="Confidence"
-          value={`${runtime.intelligence.confidence.score}% ${confidenceLabel(runtime.overallConfidence)}`}
+          label="Ready"
+          value={confidenceLabel(runtime.overallConfidence)}
         />
 
         <InfoPill
-          label="Trust"
-          value={`${runtime.trustScore.overallScore}% ${confidenceLabel(runtime.trustScore.level)}`}
+          label="Verified"
+          value={confidenceLabel(runtime.trustScore.level)}
         />
 
         <InfoPill
           label="Understanding"
-          value={`${runtime.understandingScore.score}% ${confidenceLabel(runtime.understandingScore.level)}`}
+          value={confidenceLabel(runtime.understandingScore.level)}
         />
 
         <InfoPill
@@ -203,7 +206,7 @@ function buildPanelSections(runtime: PIERuntimeState): PIEPanelSection[] {
       detail: runtime.response.whatPIEKnows || [
         `${healthLabel(runtime.intelligence.healthStatus)} health`,
         `${progressLabel(runtime.intelligence.progressStatus)} progress`,
-        `${runtime.intelligence.confidence.score}% confidence`,
+        `${confidenceLabel(runtime.overallConfidence)} readiness`,
         locationSummary(runtime.intelligence.locationIntelligence),
       ].join(' | '),
     },
@@ -304,7 +307,7 @@ function locationSummary(location: {
 }) {
   const area = location.currentArea || 'area not confirmed';
 
-  return `${area}; ${location.gpsStatus}; ${location.confidenceScore}% location confidence`;
+  return `${area}; ${location.gpsStatus}`;
 }
 
 function formatGeneratedAt(value: string | null) {

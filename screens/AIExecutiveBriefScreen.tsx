@@ -245,7 +245,7 @@ export function AIExecutiveBriefScreen({
       />
 
       <Text style={styles.mutedNote}>
-        Rule-based analysis is always available. Project data is sent to the configured AI provider only after you tap Analyze with AI.
+        Rule-based analysis is always available on device. Photo intelligence runs through the Supabase Edge Function.
       </Text>
 
       {aiResult ? (

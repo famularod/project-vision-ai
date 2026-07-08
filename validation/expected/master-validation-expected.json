@@ -1,0 +1,89 @@
+{
+  "requiredScenarioFields": [
+    "organization",
+    "project",
+    "evidenceTimeline",
+    "realityObjects",
+    "assertions",
+    "conflicts",
+    "uncertainties",
+    "schedule",
+    "costs",
+    "resources",
+    "risks",
+    "constraints",
+    "photoEvidence",
+    "expectedJudgment",
+    "prohibitedJudgment",
+    "expectedConfidenceBehavior",
+    "expectedJarvisResult",
+    "expectedAttentionBehavior",
+    "expectedUiPresentation",
+    "expectedLayer4Eligibility"
+  ],
+  "confidenceComponents": [
+    "evidence",
+    "identity",
+    "reality_model",
+    "causal",
+    "forecast",
+    "option_generation",
+    "option_comparison",
+    "simulation",
+    "execution",
+    "photo_evidence",
+    "outcome_measurement",
+    "overall_recommendation"
+  ],
+  "calibrationMeaning": {
+    "high": "Independent qualified evidence supports the recommendation, conflicts are resolved or nonmaterial, and authority is clear.",
+    "medium": "Recommendation is usable with disclosed uncertainty, bounded claims, or confirmation requirements.",
+    "low": "Recommendation should collect evidence, request review, or avoid high-impact action."
+  },
+  "learning": {
+    "minimumActivatedSampleSize": 3,
+    "allowedAdaptiveAreas": [
+      "evidence_reliability",
+      "forecasting_calibration",
+      "simulation_weights",
+      "expected_duration_ranges",
+      "risk_likelihood_estimates",
+      "evidence_value_rankings",
+      "escalation_thresholds",
+      "attention_thresholds",
+      "implementation_risk_estimates"
+    ],
+    "protectedAreas": [
+      "truth_seeking_principles",
+      "anti_fabrication_rules",
+      "evidence_requirements",
+      "human_authority_boundaries",
+      "safety_gates",
+      "compliance_gates",
+      "audit_requirements",
+      "uncertainty_disclosure",
+      "organization_isolation"
+    ]
+  },
+  "photoCapability": {
+    "implemented": [
+      "metadata comparison",
+      "structured annotation comparison"
+    ],
+    "notImplemented": [
+      "raw image pixel processing",
+      "model-generated semantic image analysis",
+      "perceptual hash comparison",
+      "object detection",
+      "image registration",
+      "region-level comparison"
+    ],
+    "requiredConclusionFields": [
+      "analysis method",
+      "source image hashes",
+      "comparison confidence",
+      "limitations",
+      "corroboration requirement"
+    ]
+  }
+}

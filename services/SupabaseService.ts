@@ -2,6 +2,7 @@ import 'react-native-url-polyfill/auto';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { AppState } from 'react-native';
 import {
   createClient,
   type Session,
@@ -13,6 +14,18 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
+import type {
+  PIEActor,
+  PIEActualOutcomeRecord,
+  PIEAuditEvent,
+  PIEDecisionRecord,
+  PIEDecisionVersion,
+} from './PIEDecisionLedger';
+import type {
+  PIERealityModel,
+  PIERealityObject,
+} from './PIERealityModel';
+import type { PIEExecutiveJudgmentRecord } from './PIEExecutiveJudgmentRepository';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
@@ -77,6 +90,7 @@ export type SupabaseServiceResult<T> = {
   error?: string;
   message?: string;
   status?: number;
+  code?: string;
   stubbed?: boolean;
 };
 
@@ -85,9 +99,51 @@ export type SignInParams = {
   password: string;
 };
 
+export type SignUpParams = SignInParams;
+
 export type AuthResult = {
   user: User | null;
   session: Session | null;
+};
+
+export type SupabaseSessionMissingReason =
+  | 'auth_loading'
+  | 'signed_out'
+  | 'expired_session'
+  | 'storage_unavailable'
+  | 'client_mismatch'
+  | 'unknown';
+
+export type SupabaseAuthSessionState =
+  | 'loading'
+  | 'signed_in'
+  | 'signed_out'
+  | 'expired'
+  | 'unknown';
+
+export type SupabaseAppAuthMode =
+  | 'supabase_authenticated'
+  | 'local_only'
+  | 'unknown';
+
+export type SupabaseSessionTokenLookupResult = {
+  status: 'token_present' | 'token_missing';
+  accessToken: string | null;
+  missingReason: SupabaseSessionMissingReason | null;
+  authState: SupabaseAuthSessionState;
+  appAuthMode: SupabaseAppAuthMode;
+  authHydrationCompleted: boolean;
+  storageAvailable: boolean;
+  signInClientSource: string;
+  tokenLookupClientSource: string;
+  clientMismatch: boolean;
+  supabaseUserIdPresent: boolean;
+  sessionTokenPresent: boolean;
+  lastAuthEvent: string;
+  userId: string | null;
+  userEmail: string | null;
+  expiresAt: number | null;
+  checkedAt: string;
 };
 
 export type CloudProject = {
@@ -130,6 +186,7 @@ export type CloudProjectUpdate<TUpdate = JsonValue> = {
   id: string;
   projectName: string;
   areaName: string;
+  idempotencyKey?: string | null;
   updateData: TUpdate;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -140,6 +197,7 @@ export type SaveProjectUpdateParams<TUpdate> = {
   id: string;
   projectName: string;
   areaName?: string | null;
+  idempotencyKey?: string | null;
   updateData: TUpdate;
   updatedAt?: string;
   ownerId?: string | null;
@@ -180,7 +238,29 @@ const PROJECT_UPDATES_TABLE = 'project_updates';
 const PROJECT_AREAS_TABLE = 'project_areas';
 const SCHEDULE_ITEMS_TABLE = 'schedule_items';
 const REFERENCE_DOCUMENTS_TABLE = 'reference_documents';
+const PIE_DECISION_RECORDS_TABLE = 'pie_decision_records';
+const PIE_DECISION_VERSIONS_TABLE = 'pie_decision_versions';
+const PIE_DECISION_OUTCOMES_TABLE = 'pie_decision_outcomes';
+const PIE_DECISION_AUDIT_EVENTS_TABLE = 'pie_decision_audit_events';
+const PIE_REALITY_MODELS_TABLE = 'pie_reality_models';
+const PIE_REALITY_OBJECTS_TABLE = 'pie_reality_objects';
+const PIE_REALITY_ASSERTIONS_TABLE = 'pie_reality_assertions';
+const PIE_REALITY_RELATIONSHIPS_TABLE = 'pie_reality_relationships';
+const PIE_REALITY_OBJECT_HISTORY_TABLE = 'pie_reality_object_history';
+const PIE_REALITY_MODEL_SNAPSHOTS_TABLE = 'pie_reality_model_snapshots';
+const PIE_REALITY_CONFLICTS_TABLE = 'pie_reality_conflicts';
+const PIE_REALITY_UNCERTAINTIES_TABLE = 'pie_reality_uncertainties';
+const PIE_EXECUTIVE_JUDGMENTS_TABLE = 'pie_executive_judgments';
 const PROJECT_PHOTOS_BUCKET = 'project-photos';
+const SUPABASE_CLIENT_SOURCE = 'SupabaseService.singleton';
+const AUTH_HYDRATION_WAIT_MS = 1500;
+const AUTH_HYDRATION_POLL_MS = 50;
+const AUTH_STORAGE_PROBE_KEY = 'projectVisionAI.supabaseAuthStorage.probe';
+
+let authHydrationCompleted = false;
+let lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
+let lastAuthEvent = 'UNKNOWN';
+let authAutoRefreshSubscriptionStarted = false;
 
 const supabaseAuthStorage = {
   getItem: (key: string) => AsyncStorage.getItem(key),
@@ -204,6 +284,8 @@ function createSupabaseClient(): SupabaseClient | null {
 }
 
 export const supabase = createSupabaseClient();
+
+startSupabaseAuthLifecycle(supabase);
 
 export function getSupabaseClient(): SupabaseClient | null {
   logSupabaseUrlBeforeNetworkRequest('getSupabaseClient');
@@ -351,12 +433,44 @@ export async function signIn({
 
   if (!client) return notConfiguredResult<AuthResult>();
 
+  lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
+
   const { data, error } = await client.auth.signInWithPassword({
     email,
     password,
   });
 
   if (error) return errorResult(error.message);
+
+  lastAuthEvent = 'SIGNED_IN';
+  authHydrationCompleted = true;
+
+  return okResult({
+    user: data.user,
+    session: data.session,
+  });
+}
+
+export async function signUp({
+  email,
+  password,
+}: SignUpParams): Promise<SupabaseServiceResult<AuthResult>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<AuthResult>();
+
+  lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
+
+  const { data, error } = await client.auth.signUp({
+    email,
+    password,
+  });
+
+  if (error) return errorResult(error.message);
+
+  authHydrationCompleted = true;
+  if (data.session) lastAuthEvent = 'SIGNED_IN';
+  else lastAuthEvent = 'USER_UPDATED';
 
   return okResult({
     user: data.user,
@@ -373,6 +487,9 @@ export async function signOut(): Promise<SupabaseServiceResult<null>> {
 
   if (error) return errorResult(error.message);
 
+  lastAuthEvent = 'SIGNED_OUT';
+  authHydrationCompleted = true;
+
   return okResult(null);
 }
 
@@ -386,6 +503,74 @@ export async function getCurrentUser(): Promise<SupabaseServiceResult<User | nul
   if (error) return errorResult(error.message);
 
   return okResult(data.user ?? null);
+}
+
+export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceResult<SupabaseSessionTokenLookupResult>> {
+  const client = getSupabaseClient();
+  const storageAvailable = await probeAuthStorage();
+
+  if (!client) {
+    return {
+      ok: false,
+      configured: false,
+      data: buildSessionTokenLookup({
+        storageAvailable,
+        authState: 'unknown',
+        missingReason: 'client_mismatch',
+      }),
+      error:
+        'Supabase client is not available to read the current auth session.',
+    };
+  }
+
+  await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
+
+  if (!authHydrationCompleted) {
+    return okResult(buildSessionTokenLookup({
+      storageAvailable,
+      authState: 'loading',
+      missingReason: 'auth_loading',
+    }));
+  }
+
+  const { data, error } = await client.auth.getSession();
+
+  if (error) {
+    return okResult(buildSessionTokenLookup({
+      storageAvailable,
+      authState: 'unknown',
+      missingReason: storageAvailable ? 'unknown' : 'storage_unavailable',
+    }), undefined, error.message);
+  }
+
+  const session = data.session ?? null;
+  const expiresAt = typeof session?.expires_at === 'number' ? session.expires_at : null;
+  const expired = Boolean(expiresAt && expiresAt * 1000 <= Date.now());
+
+  if (expired) {
+    return okResult(buildSessionTokenLookup({
+      session,
+      storageAvailable,
+      authState: 'expired',
+      missingReason: 'expired_session',
+    }));
+  }
+
+  if (!session?.access_token) {
+    return okResult(buildSessionTokenLookup({
+      session,
+      storageAvailable,
+      authState: 'signed_out',
+      missingReason: storageAvailable ? 'signed_out' : 'storage_unavailable',
+    }));
+  }
+
+  return okResult(buildSessionTokenLookup({
+    session,
+    storageAvailable,
+    authState: 'signed_in',
+    missingReason: null,
+  }));
 }
 
 export async function uploadPhoto({
@@ -413,7 +598,23 @@ export async function uploadPhoto({
       upsert,
     });
 
-  if (error) return errorResult(error.message);
+  if (error) {
+    const errorRecord = error as unknown as Record<string, unknown>;
+    const status =
+      typeof errorRecord.statusCode === 'number'
+        ? errorRecord.statusCode
+        : typeof errorRecord.status === 'number'
+          ? errorRecord.status
+          : undefined;
+    const code =
+      typeof errorRecord.error === 'string'
+        ? errorRecord.error
+        : typeof errorRecord.code === 'string'
+          ? errorRecord.code
+          : undefined;
+
+    return errorResult(error.message, status, code);
+  }
 
   return okResult({
     bucket,
@@ -611,6 +812,7 @@ export async function saveProjectUpdate<TUpdate>({
   id,
   projectName,
   areaName,
+  idempotencyKey,
   updateData,
   updatedAt = new Date().toISOString(),
 }: SaveProjectUpdateParams<TUpdate>): Promise<
@@ -620,17 +822,22 @@ export async function saveProjectUpdate<TUpdate>({
 
   if (!client) return notConfiguredResult<CloudProjectUpdate<TUpdate>>();
 
+  const stableIdempotencyKey =
+    sanitizeIdempotencyKey(idempotencyKey) ||
+    extractProjectUpdateIdempotencyKey(updateData) ||
+    id;
   const payload = {
     id,
     project_name: projectName || 'Unassigned Project',
     area_name: areaName || '',
+    idempotency_key: stableIdempotencyKey,
     update_data: updateData,
     updated_at: updatedAt,
   };
 
   const { data, error, status } = await client
     .from(PROJECT_UPDATES_TABLE)
-    .upsert(payload)
+    .upsert(payload, { onConflict: 'id' })
     .select('*')
     .single();
 
@@ -752,6 +959,882 @@ export async function upsertReferenceDocument(
   });
 }
 
+export async function loadPIERealityModelCloud(
+  organizationId: string,
+  projectId: string,
+): Promise<SupabaseServiceResult<PIERealityModel | null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<PIERealityModel | null>();
+
+  const { data, error, status } = await client
+    .from(PIE_REALITY_MODEL_SNAPSHOTS_TABLE)
+    .select('snapshot')
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .order('model_version', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return tableAwareErrorResult<PIERealityModel | null>(error.message, status);
+  if (!data) return okResult(null, status);
+
+  return okResult(toRecord(data).snapshot as PIERealityModel, status);
+}
+
+export async function savePIERealityModelCloud(
+  model: PIERealityModel,
+  reason = 'Reality Model synchronized from live PIE authority.',
+): Promise<SupabaseServiceResult<PIERealityModel>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<PIERealityModel>();
+
+  const modelId = `reality-model-${model.organizationId}-${model.projectId}`;
+  const generatedAt = model.generatedAt || new Date().toISOString();
+  const modelResult = await upsertJsonRecord<PIERealityModel>({
+    table: PIE_REALITY_MODELS_TABLE,
+    payload: {
+      id: modelId,
+      organization_id: model.organizationId,
+      project_id: model.projectId,
+      model_version: model.version,
+      status: model.evidenceConflicts.length > 0 ? 'conflicted' : 'authoritative',
+      generated_at: generatedAt,
+      last_synchronized_at: new Date().toISOString(),
+      source_evidence_cutoff_at: model.sourceEvidenceCutoffAt,
+      confidence: model.confidence,
+      readiness: model.readiness,
+      expected_future_state: model.expectedFutureState,
+      summary: toJsonValue(model.summary),
+    },
+    data: model,
+  });
+
+  if (!modelResult.ok) return modelResult;
+
+  const detailResults = await Promise.all([
+    savePIERealityObjectsCloud(modelId, model),
+    savePIERealityAssertionsCloud(model),
+    savePIERealityRelationshipsCloud(modelId, model),
+    savePIERealityHistoryCloud(model),
+    savePIERealitySnapshotCloud(modelId, model, reason),
+    savePIERealityConflictsCloud(model),
+    savePIERealityUncertaintiesCloud(model),
+  ]);
+  const failed = detailResults.find(result => !result.ok);
+  if (failed) {
+    return tableAwareErrorResult<PIERealityModel>(
+      failed.error || failed.message || 'Reality Model cloud detail save failed.',
+      failed.status,
+    );
+  }
+
+  return modelResult;
+}
+
+export async function listPIEExecutiveJudgmentsCloud(
+  organizationId: string,
+  projectId: string,
+): Promise<SupabaseServiceResult<PIEExecutiveJudgmentRecord[]>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<PIEExecutiveJudgmentRecord[]>();
+
+  const { data, error, status } = await client
+    .from(PIE_EXECUTIVE_JUDGMENTS_TABLE)
+    .select('*')
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .order('judgment_time', { ascending: false });
+
+  if (error) return tableAwareListResult<PIEExecutiveJudgmentRecord>(error.message, status);
+  return okResult(
+    Array.isArray(data) ? data.map(normalizePIEExecutiveJudgmentRow) : [],
+    status,
+  );
+}
+
+export async function getActivePIEExecutiveJudgmentCloud(
+  organizationId: string,
+  projectId: string,
+): Promise<SupabaseServiceResult<PIEExecutiveJudgmentRecord | null>> {
+  const result = await listPIEExecutiveJudgmentsCloud(organizationId, projectId);
+  if (!result.ok) {
+    return {
+      ok: false,
+      configured: result.configured,
+      data: null,
+      error: result.error,
+      message: result.message,
+      status: result.status,
+      stubbed: result.stubbed,
+    };
+  }
+  return okResult(result.data?.[0] || null, result.status);
+}
+
+export async function savePIEExecutiveJudgmentCloud(
+  record: PIEExecutiveJudgmentRecord,
+): Promise<SupabaseServiceResult<PIEExecutiveJudgmentRecord>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<PIEExecutiveJudgmentRecord>();
+
+  const payload = {
+    id: record.id,
+    organization_id: record.organizationId,
+    project_id: record.projectId,
+    reality_model_id: record.realityModelId,
+    reality_model_version: record.realityModelVersion,
+    reality_snapshot_id: record.realitySnapshotId,
+    judgment_time: record.judgmentTime,
+    situation_summary: record.situationSummary,
+    primary_recommendation: record.primaryRecommendation,
+    alternatives_considered: toJsonValue(record.alternativesConsidered),
+    tradeoffs: toJsonValue(record.tradeoffs),
+    risks: toJsonValue(record.risks),
+    constraints: toJsonValue(record.constraints),
+    opportunities: toJsonValue(record.opportunities),
+    resource_considerations: toJsonValue(record.resourceConsiderations),
+    priority_rationale: record.priorityRationale,
+    escalation_rationale: record.escalationRationale,
+    authority_requirement: record.authorityRequirement,
+    no_action_option: record.noActionOption,
+    confidence: record.confidence,
+    uncertainty: toJsonValue(record.uncertainty),
+    supporting_reality_object_ids: toJsonValue(record.supportingRealityObjectIds),
+    supporting_assertion_ids: toJsonValue(record.supportingAssertionIds),
+    active_conflict_ids: toJsonValue(record.activeConflictIds),
+    active_uncertainty_ids: toJsonValue(record.activeUncertaintyIds),
+    evidence_cutoff_time: record.evidenceCutoffTime,
+    conditions_that_would_change_recommendation: toJsonValue(record.conditionsThatWouldChangeRecommendation),
+    superseded_by: record.supersededBy,
+    superseded_at: record.supersededAt,
+    immutable: true,
+  };
+  const { error, status } = await client
+    .from(PIE_EXECUTIVE_JUDGMENTS_TABLE)
+    .insert(payload);
+
+  if (error) {
+    if (isDuplicateKeyError(error.message)) return okResult(record, status, 'Executive Judgment already exists in cloud.');
+    return tableAwareErrorResult<PIEExecutiveJudgmentRecord>(error.message, status);
+  }
+
+  return okResult(record, status);
+}
+
+async function savePIERealityObjectsCloud(
+  modelId: string,
+  model: PIERealityModel,
+): Promise<SupabaseServiceResult<null>> {
+  if (model.objects.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = model.objects.map(object => ({
+    id: object.identity.id,
+    model_id: modelId,
+    organization_id: model.organizationId,
+    project_id: model.projectId,
+    stable_object_id: object.stableObjectId,
+    object_type: object.type,
+    name: object.name,
+    description: object.description,
+    current_state: toJsonValue(object.currentState),
+    prior_state: object.priorState ? toJsonValue(object.priorState) : null,
+    expected_state: object.expectedState ? toJsonValue(object.expectedState) : null,
+    owner: object.owner,
+    location: object.location,
+    area_name: object.areaName,
+    readiness: object.readiness,
+    risk: object.risk,
+    confidence: toJsonValue(object.confidence),
+    next_best_action: toJsonValue(object.nextBestAction),
+    source_evidence_references: toJsonValue(object.sourceEvidenceReferences),
+    last_observed_at: object.lastObservedAt,
+    last_changed_at: object.lastChangedAt,
+    last_updated_at: object.lastUpdated,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_REALITY_OBJECTS_TABLE)
+    .upsert(payload, { onConflict: 'id' });
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+async function savePIERealityAssertionsCloud(
+  model: PIERealityModel,
+): Promise<SupabaseServiceResult<null>> {
+  const assertions = model.objects.flatMap(object => object.assertions);
+  if (assertions.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = assertions.map(assertion => ({
+    id: assertion.id,
+    organization_id: assertion.organizationId,
+    project_id: assertion.projectId,
+    object_id: assertion.objectId,
+    statement: assertion.statement,
+    classification: assertion.classification,
+    supporting_evidence_ids: toJsonValue(assertion.supportingEvidenceIds),
+    contradicting_evidence_ids: toJsonValue(assertion.contradictingEvidenceIds),
+    confidence: assertion.confidence,
+    source: assertion.source,
+    created_at: assertion.createdAt,
+    last_reviewed_at: assertion.lastReviewedAt,
+    review_at: assertion.reviewAt,
+    expires_at: assertion.expiresAt,
+    assumptions: toJsonValue(assertion.assumptions),
+    expected_timeframe: assertion.expectedTimeframe,
+    explanation: assertion.explanation,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_REALITY_ASSERTIONS_TABLE)
+    .upsert(payload, { onConflict: 'id' });
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+async function savePIERealityRelationshipsCloud(
+  modelId: string,
+  model: PIERealityModel,
+): Promise<SupabaseServiceResult<null>> {
+  const relationships = model.objects.flatMap(object =>
+    object.relationships.map(relationship => ({
+      relationship,
+      sourceObjectId: object.identity.id,
+    })),
+  );
+  if (relationships.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = relationships.map(({ relationship, sourceObjectId }) => ({
+    id: relationship.id,
+    model_id: modelId,
+    organization_id: model.organizationId,
+    project_id: model.projectId,
+    source_object_id: sourceObjectId,
+    target_object_id: relationship.targetObjectId,
+    relationship_type: relationship.type,
+    summary: relationship.summary,
+    confidence: relationship.confidence,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_REALITY_RELATIONSHIPS_TABLE)
+    .upsert(payload, { onConflict: 'id' });
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+async function savePIERealityHistoryCloud(
+  model: PIERealityModel,
+): Promise<SupabaseServiceResult<null>> {
+  const events = model.objects.flatMap(object =>
+    object.history.map(event => ({
+      event,
+      objectId: object.identity.id,
+    })),
+  );
+  if (events.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = events.map(({ event, objectId }) => ({
+    id: event.id,
+    organization_id: model.organizationId,
+    project_id: model.projectId,
+    object_id: objectId,
+    occurred_at: event.occurredAt,
+    event_type: event.eventType,
+    summary: event.summary,
+    previous_status: event.previousStatus,
+    next_status: event.nextStatus,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_REALITY_OBJECT_HISTORY_TABLE)
+    .upsert(payload, { onConflict: 'id' });
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+async function savePIERealitySnapshotCloud(
+  modelId: string,
+  model: PIERealityModel,
+  reason: string,
+): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = {
+    id: `reality-snapshot-${model.organizationId}-${model.projectId}-v${model.version}`,
+    model_id: modelId,
+    organization_id: model.organizationId,
+    project_id: model.projectId,
+    model_version: model.version,
+    source_evidence_cutoff_at: model.sourceEvidenceCutoffAt,
+    snapshot: toJsonValue(model),
+    reason,
+    created_at: model.generatedAt || new Date().toISOString(),
+  };
+
+  const { error, status } = await client
+    .from(PIE_REALITY_MODEL_SNAPSHOTS_TABLE)
+    .insert(payload);
+
+  if (error) {
+    if (isDuplicateKeyError(error.message)) return okResult(null, status);
+    return tableAwareErrorResult<null>(error.message, status);
+  }
+  return okResult(null, status);
+}
+
+async function savePIERealityConflictsCloud(
+  model: PIERealityModel,
+): Promise<SupabaseServiceResult<null>> {
+  if (model.evidenceConflicts.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = model.evidenceConflicts.map(conflict => ({
+    id: conflict.id,
+    organization_id: conflict.organizationId,
+    project_id: conflict.projectId,
+    affected_object_ids: toJsonValue(conflict.affectedObjectIds),
+    affected_assertion_ids: toJsonValue(conflict.affectedAssertionIds),
+    supporting_evidence_side_a: toJsonValue(conflict.supportingEvidenceSideA),
+    supporting_evidence_side_b: toJsonValue(conflict.supportingEvidenceSideB),
+    conflict_type: conflict.conflictType,
+    severity: conflict.severity,
+    confidence: conflict.confidence,
+    status: conflict.status,
+    resolution_owner: conflict.resolutionOwner,
+    recommended_next_evidence: toJsonValue(conflict.recommendedNextEvidence),
+    created_at: conflict.createdAt,
+    resolved_at: conflict.resolvedAt,
+    resolution_explanation: conflict.resolutionExplanation,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_REALITY_CONFLICTS_TABLE)
+    .upsert(payload, { onConflict: 'id' });
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+async function savePIERealityUncertaintiesCloud(
+  model: PIERealityModel,
+): Promise<SupabaseServiceResult<null>> {
+  if (model.activeUncertainties.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = model.activeUncertainties.map(uncertainty => ({
+    id: uncertainty.id,
+    organization_id: uncertainty.organizationId,
+    project_id: uncertainty.projectId,
+    affected_object_id: uncertainty.affectedObjectId,
+    affected_assertion_id: uncertainty.affectedAssertionId,
+    description: uncertainty.description,
+    category: uncertainty.category,
+    severity: uncertainty.severity,
+    confidence_impact: uncertainty.confidenceImpact,
+    evidence_needed: toJsonValue(uncertainty.evidenceNeeded),
+    likely_source_of_evidence: uncertainty.likelySourceOfEvidence,
+    owner: uncertainty.owner,
+    review_at: uncertainty.reviewAt,
+    status: uncertainty.status,
+    created_at: uncertainty.createdAt,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_REALITY_UNCERTAINTIES_TABLE)
+    .upsert(payload, { onConflict: 'id' });
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+export async function savePIEDecisionRecord(
+  decision: PIEDecisionRecord,
+): Promise<SupabaseServiceResult<PIEDecisionRecord>> {
+  return savePIEDecisionRecordAtomic(decision, decision.createdBy);
+}
+
+export async function savePIEDecisionRecordAtomic(
+  decision: PIEDecisionRecord,
+  actor: PIEActor,
+): Promise<SupabaseServiceResult<PIEDecisionRecord>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<PIEDecisionRecord>();
+
+  if (!actor.cloudTrusted) {
+    return errorResult('Decision ledger cloud save requires verified organization membership.');
+  }
+
+  const { data, error, status } = await client.rpc(
+    'save_pie_decision_record_atomic',
+    {
+      decision_payload: toJsonValue(decision),
+      actor_payload: toJsonValue(actor),
+    },
+  );
+
+  if (error) return tableAwareErrorResult<PIEDecisionRecord>(error.message, status);
+  return okResult(
+    data ? normalizePIEDecisionPayload(data) : decision,
+    status,
+  );
+}
+
+export async function savePIEDecisionRecordNonAtomicForTesting(
+  decision: PIEDecisionRecord,
+): Promise<SupabaseServiceResult<PIEDecisionRecord>> {
+  const recordResult = await upsertJsonRecord<PIEDecisionRecord>({
+    table: PIE_DECISION_RECORDS_TABLE,
+    payload: {
+      id: decision.id,
+      organization_id: decision.organizationId,
+      project_id: decision.projectId,
+      current_status: decision.currentStatus,
+      current_version: decision.currentVersion,
+      immutable_snapshot: toJsonValue(decision.immutableSnapshot),
+      outcome_plan: decision.outcomePlan ? toJsonValue(decision.outcomePlan) : null,
+      implementation_assessment: decision.implementationAssessment
+        ? toJsonValue(decision.implementationAssessment)
+        : null,
+      created_by: toJsonValue(decision.createdBy),
+      created_at: decision.createdAt,
+      updated_at: decision.updatedAt,
+      close_blockers: toJsonValue(decision.closeBlockers),
+    },
+    data: decision,
+  });
+
+  if (!recordResult.ok) return recordResult;
+
+  const [versionsResult, outcomesResult, auditResult] = await Promise.all([
+    savePIEDecisionVersions(decision.versions, decision),
+    savePIEDecisionOutcomes(decision.actualOutcomes),
+    savePIEDecisionAuditEvents(decision.auditHistory),
+  ]);
+
+  const failed = [versionsResult, outcomesResult, auditResult]
+    .find(result => !result.ok);
+
+  if (failed) {
+    return tableAwareErrorResult<PIEDecisionRecord>(
+      failed.error || failed.message || 'Decision ledger detail save failed.',
+      failed.status,
+    );
+  }
+
+  return recordResult;
+}
+
+export async function listPIEDecisionRecords(
+  organizationId: string,
+  projectId?: string | null,
+): Promise<SupabaseServiceResult<PIEDecisionRecord[]>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<PIEDecisionRecord[]>();
+
+  let query = client
+    .from(PIE_DECISION_RECORDS_TABLE)
+    .select('*, pie_decision_versions(*), pie_decision_outcomes(*), pie_decision_audit_events(*)')
+    .eq('organization_id', organizationId)
+    .order('created_at', { ascending: false });
+
+  if (projectId) query = query.eq('project_id', projectId);
+
+  const { data, error, status } = await query;
+  if (error) return tableAwareListResult<PIEDecisionRecord>(error.message, status);
+
+  return okResult(
+    Array.isArray(data) ? data.map(row => normalizePIEDecisionRow(row)) : [],
+    status,
+  );
+}
+
+async function savePIEDecisionVersions(
+  versions: PIEDecisionVersion[],
+  decision: PIEDecisionRecord,
+): Promise<SupabaseServiceResult<null>> {
+  if (versions.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = versions.map(version => ({
+    decision_id: decision.id,
+    organization_id: decision.organizationId,
+    project_id: decision.projectId,
+    version: version.version,
+    snapshot: toJsonValue(version.snapshot),
+    created_by: toJsonValue(version.createdBy),
+    created_at: version.createdAt,
+    reason: version.reason,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_DECISION_VERSIONS_TABLE)
+    .upsert(payload, { onConflict: 'decision_id,version' });
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+async function savePIEDecisionOutcomes(
+  outcomes: PIEActualOutcomeRecord[],
+): Promise<SupabaseServiceResult<null>> {
+  if (outcomes.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = outcomes.map(outcome => ({
+    id: outcome.id,
+    decision_id: outcome.decisionId,
+    organization_id: outcome.organizationId,
+    project_id: outcome.projectId,
+    classification: outcome.classification,
+    summary: outcome.summary,
+    actual_results: toJsonValue(outcome.actualResults),
+    measured_values: toJsonValue(outcome.measuredValues),
+    prediction_comparisons: toJsonValue(outcome.predictionComparisons),
+    evidence_references: toJsonValue(outcome.evidenceReferences),
+    unintended_consequences: toJsonValue(outcome.unintendedConsequences),
+    confounding_factors: toJsonValue(outcome.confoundingFactors),
+    observation_period: toJsonValue(outcome.observationPeriod),
+    validation_status: outcome.validationStatus,
+    validator: outcome.validator ? toJsonValue(outcome.validator) : null,
+    validation_date: outcome.validationDate,
+    created_by: toJsonValue(outcome.createdBy),
+    created_at: outcome.createdAt,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_DECISION_OUTCOMES_TABLE)
+    .upsert(payload);
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+async function savePIEDecisionAuditEvents(
+  auditEvents: PIEAuditEvent[],
+): Promise<SupabaseServiceResult<null>> {
+  if (auditEvents.length === 0) return okResult(null);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+
+  const payload = auditEvents.map(event => ({
+    id: event.id,
+    decision_id: event.decisionId,
+    organization_id: event.organizationId,
+    project_id: event.projectId,
+    field: event.field,
+    previous_value: event.previousValue,
+    new_value: event.newValue,
+    changed_by: toJsonValue(event.changedBy),
+    reason: event.reason,
+    source: event.source,
+    linked_evidence: toJsonValue(event.linkedEvidence),
+    automation: event.automation ? toJsonValue(event.automation) : null,
+    created_at: event.timestamp,
+  }));
+
+  const { error, status } = await client
+    .from(PIE_DECISION_AUDIT_EVENTS_TABLE)
+    .upsert(payload);
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+function normalizePIEDecisionRow(row: unknown): PIEDecisionRecord {
+  const record = toRecord(row);
+  const snapshot = toRecord(record.immutable_snapshot) as PIEDecisionRecord['immutableSnapshot'];
+  const createdBy = toRecord(record.created_by) as PIEDecisionRecord['createdBy'];
+  const versions = Array.isArray(record.pie_decision_versions)
+    ? record.pie_decision_versions.map(normalizePIEDecisionVersion)
+    : [];
+  const outcomes = Array.isArray(record.pie_decision_outcomes)
+    ? record.pie_decision_outcomes.map(normalizePIEDecisionOutcome)
+    : [];
+  const auditEvents = Array.isArray(record.pie_decision_audit_events)
+    ? record.pie_decision_audit_events.map(normalizePIEDecisionAuditEvent)
+    : [];
+  return {
+    id: String(record.id || ''),
+    organizationId: String(record.organization_id || ''),
+    projectId: String(record.project_id || ''),
+    currentStatus: String(record.current_status || 'proposed') as PIEDecisionRecord['currentStatus'],
+    currentVersion: typeof record.current_version === 'number' ? record.current_version : 1,
+    immutableSnapshot: snapshot,
+    versions,
+    outcomePlan: record.outcome_plan
+      ? toRecord(record.outcome_plan) as PIEDecisionRecord['outcomePlan']
+      : null,
+    implementationAssessment: record.implementation_assessment
+      ? toRecord(record.implementation_assessment) as PIEDecisionRecord['implementationAssessment']
+      : null,
+    actualOutcomes: outcomes,
+    auditHistory: auditEvents,
+    createdAt: typeof record.created_at === 'string' ? record.created_at : new Date().toISOString(),
+    createdBy,
+    updatedAt: typeof record.updated_at === 'string' ? record.updated_at : new Date().toISOString(),
+    closeBlockers: Array.isArray(record.close_blockers)
+      ? record.close_blockers.map(String)
+      : [],
+  };
+}
+
+function normalizePIEDecisionVersion(row: unknown): PIEDecisionVersion {
+  const record = toRecord(row);
+  return {
+    version: typeof record.version === 'number' ? record.version : Number(record.version || 1),
+    snapshot: toRecord(record.snapshot) as PIEDecisionVersion['snapshot'],
+    createdAt: typeof record.created_at === 'string' ? record.created_at : new Date().toISOString(),
+    createdBy: toRecord(record.created_by) as PIEDecisionVersion['createdBy'],
+    reason: String(record.reason || 'Decision version.'),
+  };
+}
+
+function normalizePIEDecisionOutcome(row: unknown): PIEActualOutcomeRecord {
+  const record = toRecord(row);
+  return {
+    id: String(record.id || ''),
+    decisionId: String(record.decision_id || ''),
+    organizationId: String(record.organization_id || ''),
+    projectId: String(record.project_id || ''),
+    classification: String(record.classification || 'inconclusive') as PIEActualOutcomeRecord['classification'],
+    summary: String(record.summary || ''),
+    actualResults: Array.isArray(record.actual_results) ? record.actual_results.map(String) : [],
+    measuredValues: toRecord(record.measured_values) as PIEActualOutcomeRecord['measuredValues'],
+    predictionComparisons: Array.isArray(record.prediction_comparisons)
+      ? record.prediction_comparisons as PIEActualOutcomeRecord['predictionComparisons']
+      : [],
+    evidenceReferences: Array.isArray(record.evidence_references)
+      ? record.evidence_references as PIEActualOutcomeRecord['evidenceReferences']
+      : [],
+    unintendedConsequences: Array.isArray(record.unintended_consequences)
+      ? record.unintended_consequences.map(String)
+      : [],
+    confoundingFactors: Array.isArray(record.confounding_factors)
+      ? record.confounding_factors.map(String)
+      : [],
+    observationPeriod: toRecord(record.observation_period) as PIEActualOutcomeRecord['observationPeriod'],
+    validationStatus: String(record.validation_status || 'unvalidated') as PIEActualOutcomeRecord['validationStatus'],
+    validator: record.validator ? toRecord(record.validator) as PIEActualOutcomeRecord['validator'] : null,
+    validationDate: typeof record.validation_date === 'string' ? record.validation_date : null,
+    createdAt: typeof record.created_at === 'string' ? record.created_at : new Date().toISOString(),
+    createdBy: toRecord(record.created_by) as PIEActualOutcomeRecord['createdBy'],
+  };
+}
+
+function normalizePIEDecisionAuditEvent(row: unknown): PIEAuditEvent {
+  const record = toRecord(row);
+  return {
+    id: String(record.id || ''),
+    decisionId: String(record.decision_id || ''),
+    organizationId: String(record.organization_id || ''),
+    projectId: String(record.project_id || ''),
+    field: String(record.field || ''),
+    previousValue: typeof record.previous_value === 'string' ? record.previous_value : null,
+    newValue: typeof record.new_value === 'string' ? record.new_value : null,
+    timestamp: typeof record.created_at === 'string' ? record.created_at : new Date().toISOString(),
+    changedBy: toRecord(record.changed_by) as PIEAuditEvent['changedBy'],
+    reason: String(record.reason || ''),
+    source: String(record.source || 'sync') as PIEAuditEvent['source'],
+    linkedEvidence: Array.isArray(record.linked_evidence)
+      ? record.linked_evidence as PIEAuditEvent['linkedEvidence']
+      : [],
+    automation: record.automation ? toRecord(record.automation) as PIEAuditEvent['automation'] : null,
+  };
+}
+
+function normalizePIEExecutiveJudgmentRow(row: unknown): PIEExecutiveJudgmentRecord {
+  const record = toRecord(row);
+  return {
+    id: String(record.id || ''),
+    organizationId: String(record.organization_id || ''),
+    projectId: String(record.project_id || ''),
+    realityModelId: String(record.reality_model_id || ''),
+    realityModelVersion: typeof record.reality_model_version === 'number'
+      ? record.reality_model_version
+      : Number(record.reality_model_version || 1),
+    realitySnapshotId: String(record.reality_snapshot_id || ''),
+    judgmentTime: typeof record.judgment_time === 'string'
+      ? record.judgment_time
+      : new Date().toISOString(),
+    situationSummary: String(record.situation_summary || ''),
+    primaryRecommendation: String(record.primary_recommendation || ''),
+    alternativesConsidered: Array.isArray(record.alternatives_considered)
+      ? record.alternatives_considered.map(String)
+      : [],
+    tradeoffs: toRecord(record.tradeoffs) as PIEExecutiveJudgmentRecord['tradeoffs'],
+    risks: Array.isArray(record.risks) ? record.risks as PIEExecutiveJudgmentRecord['risks'] : [],
+    constraints: Array.isArray(record.constraints)
+      ? record.constraints as PIEExecutiveJudgmentRecord['constraints']
+      : [],
+    opportunities: Array.isArray(record.opportunities)
+      ? record.opportunities as PIEExecutiveJudgmentRecord['opportunities']
+      : [],
+    resourceConsiderations: Array.isArray(record.resource_considerations)
+      ? record.resource_considerations.map(String)
+      : [],
+    priorityRationale: String(record.priority_rationale || ''),
+    escalationRationale: String(record.escalation_rationale || ''),
+    authorityRequirement: String(record.authority_requirement || 'User'),
+    noActionOption: String(record.no_action_option || ''),
+    confidence: String(record.confidence || 'medium') as PIEExecutiveJudgmentRecord['confidence'],
+    uncertainty: Array.isArray(record.uncertainty) ? record.uncertainty.map(String) : [],
+    supportingRealityObjectIds: Array.isArray(record.supporting_reality_object_ids)
+      ? record.supporting_reality_object_ids.map(String)
+      : [],
+    supportingAssertionIds: Array.isArray(record.supporting_assertion_ids)
+      ? record.supporting_assertion_ids.map(String)
+      : [],
+    activeConflictIds: Array.isArray(record.active_conflict_ids)
+      ? record.active_conflict_ids.map(String)
+      : [],
+    activeUncertaintyIds: Array.isArray(record.active_uncertainty_ids)
+      ? record.active_uncertainty_ids.map(String)
+      : [],
+    evidenceCutoffTime: typeof record.evidence_cutoff_time === 'string'
+      ? record.evidence_cutoff_time
+      : new Date().toISOString(),
+    conditionsThatWouldChangeRecommendation: Array.isArray(record.conditions_that_would_change_recommendation)
+      ? record.conditions_that_would_change_recommendation.map(String)
+      : [],
+    supersededBy: typeof record.superseded_by === 'string' ? record.superseded_by : null,
+    supersededAt: typeof record.superseded_at === 'string' ? record.superseded_at : null,
+    immutable: true,
+  };
+}
+
+function normalizePIEDecisionPayload(payload: unknown): PIEDecisionRecord {
+  const record = toRecord(payload);
+  if ('organizationId' in record && 'immutableSnapshot' in record) {
+    return record as PIEDecisionRecord;
+  }
+  return normalizePIEDecisionRow(record);
+}
+
+function startSupabaseAuthLifecycle(client: SupabaseClient | null) {
+  if (!client) return;
+
+  void client.auth.getSession()
+    .then(() => {
+      authHydrationCompleted = true;
+      if (lastAuthEvent === 'UNKNOWN') lastAuthEvent = 'INITIAL_SESSION';
+    })
+    .catch(() => {
+      authHydrationCompleted = true;
+      if (lastAuthEvent === 'UNKNOWN') lastAuthEvent = 'INITIAL_SESSION';
+    });
+
+  client.auth.onAuthStateChange(event => {
+    authHydrationCompleted = true;
+    lastAuthEvent = event;
+  });
+
+  if (authAutoRefreshSubscriptionStarted) return;
+  authAutoRefreshSubscriptionStarted = true;
+
+  if (AppState.currentState === 'active') {
+    client.auth.startAutoRefresh();
+  }
+
+  AppState.addEventListener('change', state => {
+    if (state === 'active') {
+      client.auth.startAutoRefresh();
+    } else {
+      client.auth.stopAutoRefresh();
+    }
+  });
+}
+
+async function waitForAuthHydration(timeoutMs: number) {
+  if (authHydrationCompleted) return true;
+
+  const startedAt = Date.now();
+  while (!authHydrationCompleted && Date.now() - startedAt < timeoutMs) {
+    await delay(AUTH_HYDRATION_POLL_MS);
+  }
+
+  return authHydrationCompleted;
+}
+
+async function probeAuthStorage(): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
+    const stored = await AsyncStorage.getItem(AUTH_STORAGE_PROBE_KEY);
+    await AsyncStorage.removeItem(AUTH_STORAGE_PROBE_KEY);
+    return stored === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+function buildSessionTokenLookup({
+  session = null,
+  storageAvailable,
+  authState,
+  missingReason,
+}: {
+  session?: Session | null;
+  storageAvailable: boolean;
+  authState: SupabaseAuthSessionState;
+  missingReason: SupabaseSessionMissingReason | null;
+}): SupabaseSessionTokenLookupResult {
+  const tokenLookupClientSource = SUPABASE_CLIENT_SOURCE;
+  const clientMismatch = lastSignInClientSource !== tokenLookupClientSource;
+  const accessToken =
+    missingReason === null && session?.access_token
+      ? session.access_token
+      : null;
+  const sessionTokenPresent = Boolean(accessToken);
+  const supabaseUserIdPresent = Boolean(session?.user?.id);
+  const appAuthMode =
+    sessionTokenPresent && supabaseUserIdPresent
+      ? 'supabase_authenticated'
+      : missingReason === 'auth_loading' || clientMismatch
+        ? 'unknown'
+        : 'local_only';
+
+  return {
+    status: sessionTokenPresent ? 'token_present' : 'token_missing',
+    accessToken,
+    missingReason: clientMismatch ? 'client_mismatch' : missingReason,
+    authState: clientMismatch ? 'unknown' : authState,
+    appAuthMode,
+    authHydrationCompleted,
+    storageAvailable,
+    signInClientSource: lastSignInClientSource,
+    tokenLookupClientSource,
+    clientMismatch,
+    supabaseUserIdPresent,
+    sessionTokenPresent,
+    lastAuthEvent,
+    userId: session?.user?.id ?? null,
+    userEmail: session?.user?.email ?? null,
+    expiresAt: typeof session?.expires_at === 'number' ? session.expires_at : null,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function okResult<T>(
   data: T | null,
   status?: number,
@@ -779,6 +1862,7 @@ function notConfiguredResult<T>(): SupabaseServiceResult<T> {
 function errorResult<T>(
   error: string,
   status?: number,
+  code?: string,
 ): SupabaseServiceResult<T> {
   return {
     ok: false,
@@ -786,6 +1870,7 @@ function errorResult<T>(
     data: null,
     error,
     status,
+    code,
   };
 }
 
@@ -856,11 +1941,25 @@ async function upsertJsonRecord<T>({
 function isMissingTableError(message: string): boolean {
   const normalized = message.toLowerCase();
 
+  // Deliberately narrow: only PostgREST's "missing table" message (PGRST205,
+  // "Could not find the table 'x' in the schema cache") and Postgres's own
+  // "relation ... does not exist" (42P01). A bare "schema cache" or "does not
+  // exist" check also matches PGRST204 ("Could not find the 'x' column of
+  // 'y' in the schema cache") and "column ... does not exist" - i.e. a real,
+  // permanent schema-drift error - which must NOT be treated as a soft
+  // "table not available yet" stub or it silently masks broken writes.
   return (
     normalized.includes('could not find the table') ||
-    normalized.includes('schema cache') ||
-    normalized.includes('does not exist') ||
-    normalized.includes('relation') && normalized.includes('not exist')
+    (normalized.includes('relation') && normalized.includes('does not exist'))
+  );
+}
+
+function isDuplicateKeyError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('duplicate key') ||
+    normalized.includes('already exists') ||
+    normalized.includes('unique constraint')
   );
 }
 
@@ -994,11 +2093,29 @@ function normalizeProjectUpdate<TUpdate>(
         ? row.project_name
         : 'Unassigned Project',
     areaName: typeof row.area_name === 'string' ? row.area_name : '',
+    idempotencyKey:
+      typeof row.idempotency_key === 'string' ? row.idempotency_key : null,
     updateData: row.update_data as TUpdate,
     createdAt: typeof row.created_at === 'string' ? row.created_at : null,
     updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
     ownerId: typeof row.owner_id === 'string' ? row.owner_id : null,
   };
+}
+
+function extractProjectUpdateIdempotencyKey(updateData: unknown): string | null {
+  const update = toRecord(updateData);
+
+  return (
+    sanitizeIdempotencyKey(update.idempotencyKey) ||
+    sanitizeIdempotencyKey(update.stableSendId)
+  );
+}
+
+function sanitizeIdempotencyKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function toRecord(value: unknown): Record<string, unknown> {

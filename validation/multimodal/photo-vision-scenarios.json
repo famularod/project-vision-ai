@@ -1,0 +1,301 @@
+{
+  "version": "2026.07.02",
+  "purpose": "Validation dataset for PIE raw-photo intelligence safeguards. These scenarios assert what photo evidence can and cannot claim.",
+  "scenarios": [
+    {
+      "id": "visible-progress-with-limitations",
+      "evidenceType": "photo",
+      "expectedOutcome": "supported_with_limitations",
+      "mustInclude": ["observations", "limitations", "visualFindings"],
+      "mustNotClaim": ["hidden work", "code compliance", "inspection pass", "exact progress percentage"]
+    },
+    {
+      "id": "hidden-condition-rejected",
+      "evidenceType": "photo",
+      "expectedOutcome": "blocked",
+      "unsafeClaim": "inside the conduit is complete",
+      "mustReject": true
+    },
+    {
+      "id": "comparison-not-comparable",
+      "evidenceType": "photo",
+      "expectedOutcome": "blocked",
+      "comparability": "not_comparable",
+      "mustRejectChangeInference": true
+    },
+    {
+      "id": "project-boundary-mismatch",
+      "evidenceType": "photo",
+      "expectedOutcome": "blocked",
+      "mustReject": "child project differs from parent project"
+    },
+    {
+      "id": "user-correction-preserved",
+      "evidenceType": "photo",
+      "expectedOutcome": "human_correction_recorded",
+      "mustPreserveOriginalAnalysis": true
+    },
+    {
+      "id": "object_added_generic",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "probable",
+        "objectAdditions": [{"object": "newly visible object", "location": "visible work area", "confidence": "medium"}],
+        "conclusion": "unable_to_determine",
+        "limitations": ["Visible object addition requires project-scope corroboration."]
+      }
+    },
+    {
+      "id": "object_removed_generic",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "probable",
+        "objectRemovals": [{"object": "previously visible object", "location": "visible work area", "confidence": "medium"}],
+        "conclusion": "unable_to_determine",
+        "limitations": ["Removal is visible but cause and project meaning are not proven."]
+      }
+    },
+    {
+      "id": "no_visible_change",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "strong",
+        "objectAdditions": [],
+        "objectRemovals": [],
+        "materialOrStructuralChanges": [],
+        "conclusion": "no_material_visible_change",
+        "limitations": ["Work may have occurred outside the photographed area."]
+      }
+    },
+    {
+      "id": "lighting_only_change",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "probable",
+        "lightingDifferences": ["Lighting changed between photos."],
+        "materialOrStructuralChanges": [],
+        "conclusion": "unable_to_determine",
+        "limitations": ["Lighting change must not be interpreted as progress."]
+      }
+    },
+    {
+      "id": "viewpoint_only_change",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "weak",
+        "viewpointAssessment": "Viewpoint changed materially.",
+        "conclusion": "unable_to_determine",
+        "repeatPhotoGuidance": ["Retake from the prior viewpoint before judging progress."]
+      }
+    },
+    {
+      "id": "obstruction_present",
+      "evidenceType": "photo",
+      "expectedStructuredOutput": {
+        "imageQuality": {"obstruction": "low"},
+        "directObservations": ["A visible obstruction limits evaluation."],
+        "confidence": "low",
+        "recommendedFollowUpEvidence": ["Retake the photo without the obstruction."]
+      }
+    },
+    {
+      "id": "blurred_image",
+      "evidenceType": "photo",
+      "expectedStructuredOutput": {
+        "imageQuality": {"focus": "low"},
+        "confidence": "low",
+        "limitations": ["Blur prevents reliable visual analysis."],
+        "recommendedFollowUpEvidence": ["Capture a sharper image."]
+      }
+    },
+    {
+      "id": "different_subject",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "not_comparable",
+        "sameSubjectProbability": 0,
+        "conclusion": "unable_to_determine",
+        "limitations": ["Photos show different subjects."]
+      }
+    },
+    {
+      "id": "different_project",
+      "evidenceType": "photo_comparison",
+      "expectedOutcome": "blocked",
+      "expectedStructuredOutput": {
+        "jarvisRejectedClaims": ["cross-project comparison rejected"],
+        "conclusion": "unable_to_determine"
+      }
+    },
+    {
+      "id": "partial_visible_progress",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "strong",
+        "materialOrStructuralChanges": ["A scope-linked element appears partially installed."],
+        "conclusion": "partial_progress_visible",
+        "limitations": ["Visible progress requires scope and inspection corroboration."]
+      }
+    },
+    {
+      "id": "possible_regression",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "strong",
+        "possibleRegression": ["A previously visible condition appears removed or degraded."],
+        "conclusion": "possible_regression",
+        "limitations": ["Regression requires human review before action."]
+      }
+    },
+    {
+      "id": "photo_contradicts_written_status",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "probable",
+        "visibleConcerns": ["Visible condition may conflict with written complete status."],
+        "conclusion": "unable_to_determine",
+        "limitations": ["Written status may be stronger or newer evidence."]
+      }
+    },
+    {
+      "id": "photo_corroborates_written_status",
+      "evidenceType": "photo_comparison",
+      "expectedStructuredOutput": {
+        "comparabilityClassification": "strong",
+        "unchangedConditions": ["Visible condition aligns with written status."],
+        "conclusion": "progress_visible",
+        "limitations": ["Photo corroborates visible scope only."]
+      }
+    },
+    {
+      "id": "mouse_added_to_table",
+      "caseName": "mouse_added_to_table",
+      "evidenceType": "photo_comparison",
+      "description": "Two photographs show the same general desk and laptop area. The second image contains a black computer mouse on the lower-right side of the table. The first image does not. The camera position, framing, and distance changed slightly between images, but the same primary scene and major objects remain visible.",
+      "physicalDeviceStatus": "failed_build_21",
+      "acceptanceStatus": "required_for_true_photo_intelligence",
+      "completionStatus": "pending_production_vision_pipeline_physical_device_pass",
+      "fixtures": {
+        "directory": "validation/multimodal/fixtures/mouse_added_to_table",
+        "originalEarlierImage": "mouse_added_to_table_before.jpeg",
+        "originalLaterImage": "mouse_added_to_table_after.jpeg",
+        "preserveOriginals": true,
+        "hashes": {
+          "exactSha256": {
+            "earlier": "f6fd751f3869845c1f7910eaa87fdf5ef2a2e46f97ecb8cc33c1a9fa5ab5dd21",
+            "later": "ddc221e78b324367dc7d7cf70070bea2be24cce244e8d535216e64e98324b15e",
+            "status": "calculated"
+          },
+          "perceptualHash": {
+            "earlier": null,
+            "later": null,
+            "status": "calculated_by_local_deterministic_regression_pending_production_vision_pipeline"
+          }
+        }
+      },
+      "requiredProcessing": [
+        "preserve_original_images",
+        "calculate_exact_hashes",
+        "calculate_perceptual_hashes",
+        "assess_viewpoint_similarity",
+        "assess_scene_similarity",
+        "run_raw_pixel_semantic_comparison",
+        "detect_newly_visible_mouse",
+        "distinguish_visible_change_from_project_progress",
+        "persist_comparison_result"
+      ],
+      "expected": {
+        "comparability": "probable",
+        "sameGeneralScene": true,
+        "materialVisibleChange": true,
+        "changeType": "object_added",
+        "addedObject": "black computer mouse",
+        "approximateRegion": "lower-right portion of the table",
+        "progressConclusion": "unable_to_determine",
+        "projectStatusImpact": "none unless the mouse is linked to a defined project scope",
+        "confidence": "medium_or_higher",
+        "limitations": ["viewpoint and framing changed"],
+        "jarvisMustPreventProjectProgressConclusion": true,
+        "userFacingSummary": "A black computer mouse appears in the newer photo. The viewpoint also changed slightly. This is a visible scene change, but it does not establish project progress."
+      }
+    },
+    {
+      "id": "mouse_removed_from_table_blank_caption",
+      "caseName": "mouse_present_to_mouse_absent",
+      "evidenceType": "photo_comparison",
+      "description": "Same project and same area. The baseline image contains a black computer mouse on the table; the current image does not. Captions are blank.",
+      "acceptanceStatus": "required_for_build_22_device_failure_regression",
+      "captionPolicy": {
+        "baselineCaption": "",
+        "currentCaption": "",
+        "captionsMaySupportVisualClaims": false,
+        "requiredProvenance": "visual_only"
+      },
+      "fixtures": {
+        "directory": "validation/multimodal/fixtures/mouse_added_to_table",
+        "originalEarlierImage": "mouse_added_to_table_after.jpeg",
+        "originalLaterImage": "mouse_added_to_table_before.jpeg",
+        "preserveOriginals": true
+      },
+      "expected": {
+        "comparability": "probable",
+        "sameGeneralScene": true,
+        "materialVisibleChange": true,
+        "changeType": "object_removed",
+        "removedObject": "black computer mouse",
+        "progressConclusion": "unable_to_determine",
+        "projectStatusImpact": "none unless the mouse is linked to a defined project scope",
+        "provenance": "visual_only",
+        "captionProvenance": null
+      }
+    },
+    {
+      "id": "papers_added_to_table_blank_caption",
+      "caseName": "papers_absent_to_papers_present",
+      "evidenceType": "photo_comparison",
+      "description": "Same project and same area. The current image contains a stack of papers that is not present in the baseline image. Captions are blank.",
+      "acceptanceStatus": "required_for_build_22_device_failure_regression",
+      "captionPolicy": {
+        "baselineCaption": "",
+        "currentCaption": "",
+        "captionsMaySupportVisualClaims": false,
+        "requiredProvenance": "visual_only"
+      },
+      "requiredLiveFixture": true,
+      "expected": {
+        "comparability": "probable",
+        "sameGeneralScene": true,
+        "materialVisibleChange": true,
+        "changeType": "object_added",
+        "addedObject": "stack of papers",
+        "progressConclusion": "unable_to_determine",
+        "provenance": "visual_only",
+        "captionProvenance": null
+      }
+    },
+    {
+      "id": "papers_removed_from_table_blank_caption",
+      "caseName": "papers_present_to_papers_absent",
+      "evidenceType": "photo_comparison",
+      "description": "Same project and same area. The baseline image contains a stack of papers; the current image does not. Captions are blank.",
+      "acceptanceStatus": "required_for_build_22_device_failure_regression",
+      "captionPolicy": {
+        "baselineCaption": "",
+        "currentCaption": "",
+        "captionsMaySupportVisualClaims": false,
+        "requiredProvenance": "visual_only"
+      },
+      "requiredLiveFixture": true,
+      "expected": {
+        "comparability": "probable",
+        "sameGeneralScene": true,
+        "materialVisibleChange": true,
+        "changeType": "object_removed",
+        "removedObject": "stack of papers",
+        "progressConclusion": "unable_to_determine",
+        "provenance": "visual_only",
+        "captionProvenance": null
+      }
+    }
+  ]
+}

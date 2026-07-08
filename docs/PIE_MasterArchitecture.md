@@ -2,15 +2,39 @@
 
 ## 1. Vision
 
+ECOS stands for Executive Cognitive Operating System.
+
 PIE stands for Project Intelligence Engine.
 
 PIE is the intelligence layer that understands projects, reasons about them, remembers them, and helps project managers make better decisions.
+
+PIE is the first domain intelligence engine inside ECOS. ECOS owns the domain-independent Cognitive Framework; PIE applies that framework to project evidence, project decisions, project recommendations, and project reports.
 
 The mobile app exists primarily to collect information for PIE and present PIE's intelligence back to the user.
 
 Project Vision AI is not only a project update app, a photo log, a reporting tool, or a chatbot. It is an AI-powered Project Operating System whose central product asset is PIE.
 
 PIE should become the place where project reality is captured, normalized, remembered, explained, and turned into practical next actions.
+
+## Product Operating Plan Alignment
+
+The controlling product operating plan is `docs/PIE_ProductOperatingPlan.md`.
+
+Project Vision AI must align PIE, the App, and the User into one simple ecosystem:
+
+```text
+User -> App Evidence Capture -> PIE Processing -> App Output -> User Approval
+```
+
+PIE owns project understanding: it greets the user, knows where the user most likely is, processes photos, GPS, documents, schedules, typed notes, and talk-to-text notes, connects evidence, identifies critical items, and prepares David-style reports with supporting photos.
+
+Experience Engine owns attention and user flow: it turns PIE Runtime, Mission, Executive, Schedule Intelligence, Evidence Fusion, Photo Progress, GPS Walk recommendation, Reporter readiness, and Attention output into one user-facing experience state with a clear message, reason, action, transition, and confidence.
+
+The App owns fast capture and clear presentation: photo capture, GPS capture, document upload, typed/talk-to-text input, clean Apple-like UI, minimal choices, clear PIE output, and hidden technical/admin complexity.
+
+The User owns verification and communication: provide evidence quickly, confirm or correct PIE, approve reports, and communicate final outputs.
+
+Every sprint must improve PIE, evidence capture, or output clarity. Every feature must reduce user effort or improve project understanding. Normal workflows should expose one primary action, no raw diagnostics, no unnecessary options, and clear reviewable outputs. Future UI should render experience state, not raw engine outputs.
 
 ## 2. Product Mission
 
@@ -54,6 +78,37 @@ When confidence is low, PIE should ask a clear question instead of pretending to
 
 Project Vision AI is composed of three systems that must stay distinct even as they work together.
 
+## ECOS Cognitive Framework
+
+The domain-independent architecture is:
+
+```text
+User
+  -> App / Interface
+  -> ECOS
+  -> Cognitive Framework
+  -> Domain Intelligence Engine
+  -> Recommendations / Decisions / Reports
+```
+
+ECOS is the reusable thinking platform. The Cognitive Framework provides Observation, Evidence Review, Interpretation, Memory Recall, Pattern Recognition, Hypothesis Formation, Self-Challenge, Belief Formation, Deliberation, Prediction, Decision Scoring, Recommendation, Explanation, Reflection, Learning, and Uncertainty Reduction.
+
+The ECOS Domain Adapter sits between the Cognitive Framework and each Domain Intelligence Engine:
+
+```text
+Domain Evidence -> Domain Adapter -> ECOS Cognitive Framework -> Domain Adapter -> Domain Intelligence Output
+```
+
+PIE uses `PIEDomainAdapter` as the first adapter implementation. PIE data flows through the adapter before entering ECOS, and ECOS output flows through the adapter before becoming project beliefs, project risks, project decisions, project recommendations, project uncertainty, project next best actions, or report insights.
+
+Rule:
+
+- If a capability is domain-independent, it belongs to ECOS Cognitive Framework.
+- If a capability translates between domain evidence and ECOS cognition, it belongs to an ECOS Domain Adapter.
+- If it is project-specific, it belongs to PIE.
+
+PIE as first domain engine means PIE remains the first domain intelligence engine. Future engines may include MIE for manufacturing, SIE for safety, CIE for compliance, and FIE for facilities.
+
 ### PIE
 
 PIE is the intelligence system.
@@ -61,6 +116,49 @@ PIE is the intelligence system.
 PIE acts as the project manager, reasoning layer, and project understanding engine inside the product. It observes project evidence, converts that evidence into structured understanding, reasons about concerns and decisions, remembers project history, builds the Project Story, recommends next actions, and prepares communication.
 
 PIE owns project intelligence. It should answer what is known, what changed, what is concerning, what is recommended, what evidence supports that recommendation, what is unknown, and what needs user approval.
+
+### PIE Core Intelligence Layer
+
+PIE Core Intelligence is the reusable intelligence brain that can power this project app and future applications.
+
+Apps do not own intelligence. Apps collect input and display PIE output. PIE owns review, interpretation, analysis, belief, opinion, decision, recommendation, explanation, reflection, and learning.
+
+PIE uses past experience to interpret new evidence. Memory Recall retrieves relevant past project events, updates, photos, schedule items, recommendations, report history, user corrections, Reflection lessons, and prior Core beliefs or opinions before PIE forms new interpretations, beliefs, opinions, recommendations, explanations, attention items, or experience states.
+
+PIE Cognitive Abilities:
+
+- Observation
+- Understanding
+- Memory
+- Reflection
+- Causal Reasoning
+- Self-Challenge
+- Trade-Off Analysis
+- Constraint Awareness
+- Decision Scoring
+- Goal Awareness
+- Scenario Simulation
+- Strategic Memory
+- Meta-Cognition
+- Deliberation
+
+PIE should not recommend important actions without deliberating. Deliberation should identify assumptions, contradictions, missing evidence, alternatives, trade-offs, readiness, and what would change the recommendation.
+
+The Core Intelligence Layer exposes a stable output contract for:
+
+- Evidence Review: what data PIE received.
+- Interpretation: what the data means.
+- Relationship Analysis: how facts are connected.
+- Belief Formation: what PIE believes is true.
+- Opinion Formation: what PIE strongly thinks should happen.
+- Decision Support: what decision is needed.
+- Recommendation: what the user should do next.
+- Explanation: why PIE recommends it.
+- Reflection: whether PIE was right or wrong.
+- Learning: what PIE should do better next time.
+- Memory Recall: what PIE remembers from similar past evidence and how that should influence interpretation.
+
+The current domain is project intelligence, but PIE Core should remain domain-adaptable for maintenance, manufacturing, safety, compliance, operations, facilities, and logistics.
 
 ### JARVIS
 
@@ -88,52 +186,152 @@ Every future feature must improve at least one of:
 
 ## 4. Cognitive Architecture
 
+### Layer 1: Perception And Evidence Quality
+
+Layer 1 Perception starts by judging evidence quality before higher reasoning treats evidence as support.
+
+`PIEEvidenceQuality` scores evidence freshness, reliability, completeness, relevance, conflicts, and usefulness. PIE should prefer recent, project-tied, area-tied, GPS-confirmed, photo-supported, schedule-supported, user-confirmed evidence that matches prior evidence.
+
+Weak evidence includes old evidence, missing project or area context, missing timestamps, missing supporting photos, contradictions with newer evidence, unreviewed OCR, and evidence corrected by the user previously.
+
+Evidence Quality feeds Belief Formation, Scientific Method, Deliberation, and PIE Core Intelligence. PIE Core exposes evidenceQuality, strongEvidence, weakEvidence, conflictingEvidence, staleEvidence, and evidenceReadiness.
+
+`PIEMissingEvidence` identifies what PIE does not know. It detects missing photos, current photos, locations, schedules, owners, decisions, inspection status, safety confirmation, progress notes, documents, report review, and user confirmation. Missing Evidence turns uncertainty into the minimum evidence request that would improve understanding.
+
+Missing Evidence feeds Attention, Experience, and PIE Core Intelligence. PIE Core exposes missingEvidence, highestImpactEvidenceGap, recommendedEvidenceRequests, and uncertaintyReductionActions so higher layers can ask for the smallest useful evidence item instead of presenting weak recommendations as certain.
+
+`PIEEvidenceTimeline` teaches PIE to understand evidence over time. It builds chronological events for photos, notes, schedule imports, schedule changes, GPS confirmation, user corrections, issues, decisions, reports, and inspection updates. It groups events by project, area, work package, issue, schedule item, and decision.
+
+Evidence Timeline feeds Pattern Intelligence, Belief Formation, and PIE Core Intelligence. PIE Core exposes evidenceTimeline, timelineGaps, staleAreas, momentumSignals, and recentChanges so higher layers can reason about what changed, when it changed, whether progress is increasing or slowing, whether the same issue is repeating, and whether an area is going stale.
+
+### Layer 2: Reality Modeling
+
+Layer 2 is Reality Modeling.
+
+`PIERealityModel` is PIE's single current representation of project reality. Evidence updates the Reality Model. Judgment, prediction, reporting, attention, and experience read from the Reality Model.
+
+Durable Reality Modeling extends this into an organization-scoped and project-scoped authoritative model. The persisted model records model version, model status, creation time, synchronization time, source evidence cutoff, Reality Objects, relationships, dependencies, goals, active risks, active uncertainties, evidence conflicts, expected future state, confidence, readiness, and change history.
+
+Reality Model persistence is centralized in `PIERealityModelStorage`, `PIERealityModelRepository`, and `PIERealityModelSynchronization`. Normal workflows should synchronize qualified Layer 1 evidence into the authoritative model and then run Situation Intelligence, Predictive Reality, and Executive Judgment from that updated model. Reporter, UI components, and Layer 4 should not update Reality Objects directly.
+
+Live Reality authority is centralized in `PIERealityModelOrchestrator`. Normal execution must resolve organization/project identity, load the latest persisted Reality Model, classify evidence deltas, synchronize only new/changed/removed/invalidated evidence, persist a new version only for meaningful changes, and return model version, snapshot ID, evidence cutoff, conflicts, uncertainties, and persistence status before downstream cognition runs.
+
+`buildLivePIECoreIntelligence(...)` is the production-authoritative Core path. The synchronous Core builder remains only for compatibility, recovery, migration, testing, or explicit administrative repair. Executive Judgment must receive authoritative Reality Model metadata and should fail rather than silently rebuild project truth from raw Runtime evidence.
+
+Executive Judgment records are immutable structured Layer 3 outputs. Reporter is communication-only in the live path: it consumes persisted Executive Judgment and Reality Model references, while raw evidence is used only for citation and supporting examples. Layer 4 decision candidates must come from persisted Executive Judgment records, not report text or UI draft state.
+
+The Reality Model maintains an object registry for projects, buildings, areas, work packages, schedule activities, milestones, inspections, contractors, issues, risks, decisions, documents, photos, safety observations, reports, and owner actions.
+
+Each reality object has a stable id, type, name, project, area or location when available, current state, current status, evidence links, knowledge links, history, last updated, confidence/readiness placeholder, and next action placeholder.
+
+Reality object statuses include unknown, not_started, in_progress, ready, needs_verification, blocked, at_risk, contradicted, complete, and retired.
+
+PIE Core exposes realityModel, realityModelSummary, realityObjects, realitySummary, objectsNeedingVerification, objectsAtRisk, objectsBlocked, objectsRecentlyUpdated, objectsReady, objectsUncertain, objectsWithHighRisk, objectNextActions, objectNextBestActions, and objectRelationshipSummary.
+
+Reality Objects are intelligent. Each object should know goalsSupported, relationships, dependencies, confidence, readiness, riskLevel, momentum, nextBestAction, uncertainty, and ownerNeeded. Object Intelligence lets Judgment, Prediction, Reporter, Attention, Experience, and Beliefs prefer the current Reality Model over scattered evidence.
+
+Reality assertions must be classified as fact, assumption, inference, or prediction. Facts require evidence, assumptions remain labeled, inferences explain how they were derived, and predictions preserve assumptions and expected timeframe. Conflicting evidence and uncertainty are first-class records and must not be flattened into one status value.
+
+Layer 2 must answer what the current project reality is, what changed recently, which objects matter, what is ready, what is blocked, what is uncertain, what supports the current goal, what is likely to happen next, and what evidence would improve the model.
+
+### Situation Intelligence
+
+Situation Intelligence summarizes the Reality Model and Object Intelligence into the current executive situation: what is happening, why the user is likely here, what changed, what matters, what is blocked, what is ready, and what needs verification.
+
+Situation Intelligence includes Intent Recognition. PIE should infer whether the user is walking daily progress, preparing for inspection, preparing an executive update, reviewing schedule risk, resolving an issue, or reviewing documents. That intent shapes what evidence matters, what unknowns matter, what PIE recommends next, and what Reporter should say.
+
+PIE Core Intelligence exposes currentSituation, situationIntent, situationState, situationChanges, situationRisks, situationOpportunities, situationUnknowns, situationBlockers, situationPriorities, and situationSummary. Executive Reasoning, Predictive Simulation, Reporter, Attention, and Experience should consume Situation Intelligence where practical.
+
+### Predictive Reality
+
+Predictive Reality projects how the Reality Model is likely to evolve. It forecasts future object states, readiness forecasts, cascading effects, no-action forecasts, recovery forecasts, risks, opportunities, and a predictiveRealitySummary.
+
+Predictive Reality consumes Reality Model, Object Intelligence, Situation Intelligence, Evidence Timeline, Beliefs, Patterns, Predictive Simulation outputs, and Missing Evidence. It answers which object may become blocked, which object may become ready, what risk grows if nothing changes, what uncertainty matters tomorrow, what recovery action changes the forecast, and what should be verified before relying on the forecast.
+
+PIE Core Intelligence exposes predictiveReality, futureObjectStates, readinessForecasts, cascadingEffects, cascadingRealityEffects, noActionForecast, noActionOutcomes, recoveryForecast, recoveryPaths, and predictiveRealitySummary. Executive Reasoning should use Predictive Reality for decision scoring, Attention should prioritize high-impact future risks, Experience should request evidence that changes the forecast, and Reporter should mention future impact only when confidence is strong enough.
+
+Reporter, Attention, Experience, Prediction, and Executive Reasoning should not rebuild raw context when the Reality Model is available.
+
+### Layer 3: Executive Judgment
+
+Layer 3 is Executive Judgment.
+
+`PIEExecutiveJudgment` converts the Reality Model into a highest-value executive action. It consumes Reality Model, Object Intelligence, Situation Intelligence, Predictive Reality, Evidence Quality, Missing Evidence, Beliefs, Patterns, Evidence Timeline, risks, opportunities, tradeoffs, goals, and readiness forecasts.
+
+Executive Judgment answers what matters most, what decision is needed, what creates the greatest value, what reduces the most uncertainty, what reduces the most risk, what can wait, what should be escalated, what should not be escalated, what to do when evidence is incomplete, and when no action is correct.
+
+Layer 3.2 adds Tradeoff Intelligence, Escalation Intelligence, No-Action Reasoning, Wait-for-Evidence Reasoning, Opportunity Cost, and Decision Timing. PIE evaluates speed_vs_quality, cost_vs_schedule, risk_vs_progress, evidence_vs_time, safety_vs_productivity, communication_vs_noise, short_term_vs_long_term, and escalation_vs_local_resolution before recommending action. PIE must explain what is gained, what is lost, what happens if the user waits, what happens if the user escalates, what happens if the user does nothing, which option creates the best total outcome, which option reduces uncertainty most efficiently, which option protects the project goal, and which option creates unnecessary noise.
+
+Escalation is only valid when a trigger is present: blocked decision, missing owner, safety risk, meaningful schedule impact, repeated unresolved issue, failed lower-level action, timing that requires leadership action, and evidence strong enough to justify escalation. If evidence is weak, PIE should usually recommend wait_for_evidence, verify, capture_evidence, monitor, or no_action instead of escalation.
+
+Every major recommendation includes decision governance: recommendation, why, supporting evidence, assumptions, uncertainty, alternatives considered, why alternatives lost, tradeoffs, expected outcome, success measure, and what would change the recommendation.
+
+Layer 3.3 completes Executive Judgment with a final action safety check and a single plain-language recommendation surface. PIE verifies that the recommendation is evidence-backed, aligned with the current situation, not contradicted by the Reality Model, not overstating predictions, escalation-justified, no-action-aware, missing-evidence-aware, and safe for report wording.
+
+PIE Core Intelligence exposes executiveJudgment, executiveJudgmentResult, executiveJudgmentExplanation, executiveJudgmentHighestValueAction, executiveDecisions, executiveJudgmentPriorities, executiveRisks, executiveOpportunities, executiveConstraints, tradeoffAnalysis, escalationAnalysis, opportunityCost, decisionTiming, noActionReasoning, waitForEvidenceReasoning, actionSafetyCheck, executiveJudgmentReadiness, executiveJudgmentSummary, bestNextStep, whatCanWait, whatNotToDo, decisionNeeded, escalationRecommendation, recommendationWhy, recommendationAlternatives, and recommendationSuccessMeasure. Attention should use bestNextStep without over-prioritizing low-value escalation, Experience should guide to bestNextStep and request evidence when wait-for-evidence is best, and Reporter should use recommendationWhy and decisionNeeded in executive summary language without exposing internal scoring data.
+
+### Layer 4: Adaptive Intelligence
+
+Layer 4 is Adaptive Intelligence.
+
+Adaptive Intelligence is not just learning. It improves how PIE thinks, decides, recommends, communicates, and calibrates confidence based on outcomes, corrections, approvals, rejected recommendations, edited reports, prediction outcomes, decision outcomes, and reality changes.
+
+Adaptive Intelligence consumes Learning, Reflection, Memory Recall, user corrections, report approvals and edits, recommendation outcomes, prediction outcomes, decision outcomes, Executive Judgment outcomes, and Reality changes.
+
+Adaptive Intelligence separates constitutional principles from adaptive policies. Constitutional principles do not change: seek truth, separate evidence from assumptions, do not fabricate, challenge conclusions, explain reasoning, identify uncertainty, and prefer decision quality over appearance. Adaptive policies may change: preferred report style, preferred evidence sequence, escalation threshold, risk threshold, confidence calibration, user communication style, and inspection readiness threshold.
+
+PIE Core Intelligence exposes adaptiveIntelligence, outcomeIntelligence, calibrationIntelligence, strategyAdjustments, communicationAdjustments, trustAssessment, adaptiveLessons, and adaptivePolicyUpdates. Executive Judgment consumes adaptive policies where practical.
+
+### Layer 4: Decision Memory and Executive Wisdom
+
+Decision Memory is part of Layer 4 Adaptive Intelligence.
+
+Decision Memory remembers decisions, recommendations, outcomes, failures, successes, wisdom lessons, and when not to act. It tracks what PIE recommended, why it recommended it, evidence used, assumptions, alternatives considered, uncertainty, user action, actual outcome, whether the recommendation was correct, impact, lesson learned, and future adjustment.
+
+Decision Memory identifies when not to act: evidence too weak, issue already resolving, escalation creates unnecessary noise, waiting reduces risk, action is irreversible, decision impact is low, user correction history suggests caution, prediction confidence is low, or a constitutional principle requires truth over speed.
+
+PIE Core Intelligence exposes decisionMemory, decisionHistory, wisdomLessons, whenNotToActReasons, wisdomRecommendations, and trustCalibrationHistory. Executive Judgment consults Decision Memory before recommending action. Reporter avoids overstating recommendations when wisdom says wait, Attention does not push low-value action, and Experience asks for evidence when wisdom recommends verification.
+
 PIE should process project reality through a transparent cognitive flow:
 
 ```text
-Raw Inputs
+Evidence
   |
   v
-Evidence Engine
+Evidence Fusion
+  |
+  v
+Reality Model
   |
   v
 Knowledge Graph
   |
   v
-Reasoning Engine
+Reflection
   |
   v
-Memory Engine
+Beliefs
   |
   v
-Decision Engine
+Project Objects
   |
   v
-Behavior Layer
+Prediction
   |
   v
-PIE Executive
+Core Brain
   |
   v
-Mission Engine
+Experience
   |
   v
-PIE Reflection
+Reporter
   |
   v
-PIE Runtime
-  |
-  v
-Conversation Engine
-  |
-  v
-Product Surfaces
-  |
-  v
-User
+App
 ```
 
-This flow keeps PIE explainable. Raw inputs should become evidence before they become facts. The Knowledge Graph should connect evidence, events, areas, people, schedule items, documents, issues, decisions, recommendations, and unknowns so PIE can reason about relationships instead of isolated records. Reasoning should turn evidence into facts, concerns, questions, and recommendations. Memory should turn repeated events and thoughts into a project story. The Decision Engine should prioritize candidate actions. The Behavior Layer should decide whether PIE should monitor, brief, ask, recommend, escalate, prepare, wait, or learn. PIE Executive should decide what deserves management attention. The Mission Engine should decide what PIE is trying to accomplish right now so every recommendation, briefing, walk, report, and question supports a clear purpose. PIE Reflection should audit Mission, Executive, Runtime, and other PIE output for weak evidence, missing support, confidence problems, and verification needs before product surfaces overstate certainty. The PIE Runtime should become the single UI-facing orchestration layer that turns all engine output into one unified state. The Conversation Engine should express that Runtime-backed state in concise project-manager language for Home, Project Overview, Project Assistant compatibility, Reports, and future Project Walk. Product surfaces should present that intelligence in project-manager language.
+This flow keeps PIE explainable. Raw inputs should become evidence before they become facts. Evidence Fusion should combine schedule, photos, GPS, typed updates, issues, safety, documents, reports, and sync freshness into one honest view of what evidence agrees, what is missing, and what conflicts. The Knowledge Graph should connect evidence, events, areas, people, schedule items, documents, issues, decisions, recommendations, and unknowns so PIE can reason about relationships instead of isolated records. Reflection is the first self-improving layer: it does not analyze the project directly, but evaluates whether new evidence made PIE's beliefs stronger or weaker, whether PIE was correct or wrong, what still needs verification, and what evidence should be collected next. Beliefs become the stable working understanding that Project Objects, Prediction, Core Brain, Experience, Reporter, and App surfaces can use without overstating certainty. Experience turns Runtime and Attention into user-facing state, mode, action, transition, and flow. Reporter turns approved understanding into David-style communication. The App presents that intelligence in project-manager language.
 
 The user completes the loop by verifying, correcting, approving, and adding new information.
 
@@ -175,6 +373,63 @@ Future roadmap:
 - Link evidence to project IDs instead of only project names.
 - Add confidence decay when evidence becomes stale.
 - Support AI-assisted extraction from voice, documents, email, and meeting notes after user review.
+
+### Evidence Fusion
+
+Purpose:
+
+Combine separate evidence sources into one coherent project evidence view before PIE reasons from them.
+
+Evidence Fusion answers what the schedule says, what photos show through metadata and captions, what GPS suggests, what typed updates say, what issues or safety concerns appear, what evidence is missing, and where evidence conflicts.
+
+Inputs:
+
+- Schedule items from CSV, PDF text extraction, AI/OCR endpoint output, and demo OCR schedule imports.
+- Photo captions, categories, action required, action owner, action due date, action status, area, timestamp, and GPS metadata.
+- Typed update notes, project, area, date/time, recipients, blockers, decisions, safety mentions, and next steps.
+- GPS metadata from updates and photos.
+- Project area mapping.
+- Documents metadata.
+- Report history metadata.
+- Sync/cloud freshness metadata.
+
+Outputs:
+
+- `PIEFusedEvidence`.
+- `PIEEvidenceFusionSummary`.
+- `PIEIntelligentSummary`.
+- Schedule evidence.
+- Photo evidence.
+- GPS evidence.
+- User update evidence.
+- Issue evidence.
+- Safety evidence.
+- Evidence gaps.
+- Evidence conflicts.
+
+Dependencies:
+
+- Existing local app data.
+- Schedule summary utilities.
+- Project and area matching.
+- Source attribution.
+- Confidence and trust scoring.
+
+Schedule priority:
+
+Schedule is the primary source for milestones, overdue/upcoming work, schedule risk, next work, priority, and executive summary context. Imported PDF/OCR/demo schedule items should feed PIE as normal schedule items so Runtime, Mission, Knowledge Graph, Decision, Today priorities, project cards, Project Workspace, and Review can all reason from the same data.
+
+Runtime integration:
+
+Runtime consumes Evidence Fusion and exposes `fusedEvidence`, `evidenceFusionSummary`, `intelligentSummary`, `evidenceGaps`, and `evidenceConflicts`. Runtime uses these outputs to strengthen what PIE knows, what changed, what concerns PIE, what PIE recommends, what PIE needs from the user, Trust Score, Understanding Score, Preparedness Score, recommendations, and unknowns.
+
+Future roadmap:
+
+- Persist user-reviewed evidence records.
+- Connect fused evidence more deeply to Knowledge Graph nodes and relationships.
+- Add inspection, safety observation, voice, weather, calendar, email, equipment, and external system evidence.
+- Track user corrections so future fusion confidence improves.
+- Add optional AI-assisted extraction only after rule-based evidence handling remains reliable.
 
 ### Event Engine
 
@@ -1198,6 +1453,33 @@ Runtime uses graph relationships to:
 
 Graph-backed evidence improves trust because recommendations can point to connected updates, photos, schedule items, documents, events, decisions, or unknowns instead of only repeating a summary. Missing relationships reduce confidence and become actionable gaps.
 
+Evidence Fusion -> Runtime integration:
+
+The Runtime consumes Evidence Fusion as the coherent evidence-audit layer. Evidence Fusion tells Runtime whether schedule, photos, GPS, typed updates, issues, safety, documents, reports, and sync metadata support the same story or whether PIE should reduce confidence and ask for verification.
+
+Runtime exposes:
+
+- `fusedEvidence`.
+- `evidenceFusionSummary`.
+- `intelligentSummary`.
+- `evidenceGaps`.
+- `evidenceConflicts`.
+
+Runtime uses fused evidence to strengthen:
+
+- What PIE knows.
+- What changed.
+- What concerns PIE.
+- What PIE recommends.
+- What PIE needs from the user.
+- Trust Score.
+- Understanding Score.
+- Preparedness Score.
+- Runtime recommendations.
+- Runtime unknowns.
+
+Product surfaces should consume these fields through Runtime. Pages should not independently recalculate schedule/photo/GPS/update fusion.
+
 Future Prediction integration:
 
 The Runtime should become the place where future Prediction Engine output is reconciled with current evidence, memory, decisions, and Trust Score.
@@ -1861,3 +2143,241 @@ In five years:
 The final product should feel like an experienced project manager is always prepared: aware of the field, aware of the schedule, aware of the risks, aware of history, and careful enough to ask when it is not sure.
 
 Project Vision AI succeeds when project teams see clearly, decide wisely, communicate confidently, and move work forward with less effort.
+
+## 16. PIE Scientific Method
+
+PIE uses the Scientific Method as its thinking foundation.
+
+The cognitive loop is:
+
+```text
+Question -> Observe -> Collect Evidence -> Interpret -> Recall Similar Situations -> Generate Hypotheses -> Challenge Hypotheses -> Evaluate Alternatives -> Predict Outcomes -> Select Best Decision -> Explain -> Monitor Result -> Reflect -> Learn
+```
+
+The architecture now treats Scientific Method as the bridge between Memory, Deliberation, Reflection, and Core Intelligence.
+
+Important recommendations must include:
+
+- Evidence trace.
+- Hypothesis.
+- Self-challenge.
+- Uncertainty statement.
+- Explanation.
+- Uncertainty reduction action when confidence is not strong.
+
+PIE should not make important recommendations without evidence, hypothesis, self-challenge, uncertainty statement, and explanation.
+
+Scientific Method adds these architecture responsibilities:
+
+- Uncertainty Reduction: identify what is not known and what evidence would reduce uncertainty.
+- Hypothesis Testing: compare multiple possible explanations or actions.
+- Self-Challenge: identify what could make PIE wrong, contradicting evidence, the weakest assumption, and what should be verified first.
+- Decision Quality: score traceability, hypothesis strength, self-challenge strength, uncertainty reduction, and explanation clarity.
+
+The Cognitive Constitution controls this behavior. The App remains responsible only for capture, review, approval, and display.
+
+## 17. PIE Pattern Intelligence
+
+Pattern Intelligence lets PIE recognize situations it has seen before.
+
+Pattern Intelligence consumes Memory Recall and Reflection context, including prior evidence, lessons learned, user corrections, past recommendations, report history, recurring issues, and historical project events.
+
+Pattern Intelligence detects:
+
+- Recurring Pattern Detection.
+- Early Warning Signals.
+- Historical Recovery Patterns.
+- Failed recommendation patterns.
+- Repeated user corrections.
+- Missing evidence patterns.
+
+Pattern output feeds Scientific Method, Core Intelligence, and Reporter:
+
+- Scientific Method uses pattern matches in recalled memory, hypotheses, challenges, predictions, and uncertainty reduction actions.
+- Core Intelligence exposes patternIntelligence, patternMatches, earlyWarnings, recurringPatterns, patternBasedRecommendations, and patternConfidence.
+- Reporter may use pattern context when it improves clarity, but should not overuse history or dump raw pattern analysis into reports.
+
+## 18. PIE Belief And Confidence System
+
+The Belief System transforms evidence, memory, patterns, reflection, and Scientific Method output into explainable beliefs.
+
+PIE separates Evidence vs Belief:
+
+- Evidence is an observed input.
+- A belief is PIE's current interpretation of what is probably true.
+
+The Belief System supports:
+
+- Belief Formation.
+- Belief Revision.
+- Belief Readiness.
+- Belief Explainability.
+- Supporting evidence and contradicting evidence.
+- Weakest assumption detection.
+- Belief strengthening, weakening, challenging, retiring, and verification.
+
+Scientific Method hypotheses can become beliefs. Pattern Intelligence can strengthen or weaken beliefs. Memory Recall can retrieve prior related beliefs. Reflection produces belief changes and lessons.
+
+Core Intelligence exposes beliefs, beliefChanges, strongestBeliefs, challengedBeliefs, beliefsNeedingVerification, beliefReadiness, and beliefExplanations.
+
+Attention should prioritize high-impact beliefs with low readiness. Experience should ask users to verify weak beliefs. Reporter should use beliefs to improve narrative clarity without presenting beliefs as final truth.
+
+## 19. PIE Executive Reasoning
+
+Executive Reasoning teaches PIE to think like an executive instead of a data summarizer.
+
+Executive Reasoning determines:
+
+- Executive Judgment.
+- Executive Risk.
+- Executive Priorities.
+- Executive Decision Needs.
+- Executive Opportunities.
+- Executive Concerns.
+- Executive Tradeoffs.
+- Highest-Value Action.
+- Executive Briefing Points.
+- Executive Readiness.
+
+Decision Scoring evaluates expected value, risk reduction, uncertainty reduction, schedule impact, safety impact, communication impact, effort level, readiness, and why recommended.
+
+Executive Reasoning consumes Belief Engine output, including strongest beliefs, challenged beliefs, beliefs needing verification, belief readiness, and contradicting evidence. It also consumes Pattern Intelligence, Memory Recall, Scientific Method, and Deliberation so executive judgment is grounded in recurring patterns, historical lessons, hypotheses, alternatives, tradeoffs, uncertainty, and decision quality signals.
+
+Core Intelligence exposes executiveReasoning, executivePriorities, biggestRisk, highestValueAction, decisionsNeeded, executiveBriefingPoints, and executiveReadiness.
+
+Attention should prioritize the biggest executive risk. Experience should use the highest-value action. Reporter should use Executive Reasoning to improve executive summaries, confidence wording, action recommendations, and review warnings without exposing raw internal reasoning.
+
+## 20. PIE Predictive Simulation
+
+Predictive Simulation teaches PIE to simulate what may happen next.
+
+Predictive Simulation supports:
+
+- Scenario Analysis.
+- No-Action Simulation.
+- Best Case Simulation.
+- Most Likely Simulation.
+- Worst Case Simulation.
+- Cascading Impact detection.
+- Schedule impact prediction.
+- Inspection impact prediction.
+- Contractor impact prediction.
+- Dependency awareness.
+- Recovery Planning.
+
+Dependencies include schedule predecessor/successor, inspection dependency, contractor dependency, material dependency, approval dependency, safety dependency, and evidence dependency.
+
+Predictive Simulation consumes Runtime, schedule intelligence, graph gaps and blocked relationships, beliefs and belief readiness, recurring patterns, Scientific Method hypotheses and uncertainty, Deliberation alternatives and tradeoffs, and Executive Reasoning where available.
+
+Core Intelligence exposes predictions, mostLikelyOutcome, bestCaseOutcome, worstCaseOutcome, noActionOutcome, cascadingImpacts, recoveryActions, and predictionConfidence.
+
+Executive Reasoning should account for predicted schedule impact, risk propagation, recovery action value, and no-action consequence when choosing the highest-value action.
+
+Attention should elevate high-impact predictions. Experience should prioritize urgent predicted risks when confidence is strong enough. Reporter should mention predicted impact only when evidence is strong and should avoid overstating weak predictions.
+
+## 21. PIE Continuous Learning
+
+Continuous Learning teaches PIE to improve over time.
+
+Learning is not project analysis. Learning evaluates whether PIE's behavior improved after user corrections, report approvals, report edits, recommendation outcomes, prediction outcomes, Reflection lessons, pattern matches, schedule changes, photo evidence, GPS corrections, and decision outcomes.
+
+Continuous Learning supports:
+
+- Learning Signals.
+- Learning Events.
+- Outcome-Based Learning.
+- Confidence Calibration.
+- Pattern Updates.
+- Belief Updates.
+- Recommendation Improvements.
+- Memory Consolidation.
+- Future Adjustments.
+- Decision Quality Learning.
+- Report Style Learning.
+
+Architecture sequence:
+
+Evidence
+-> Evidence Fusion
+-> Knowledge Graph
+-> Reflection
+-> Learning
+-> Memory
+-> Patterns
+-> Beliefs
+-> Prediction
+-> Core Intelligence
+-> Experience
+-> Reporter
+-> App
+
+Continuous Learning consumes Reflection, Runtime, Belief, Pattern, Prediction, Executive Reasoning, and Reporter context. It feeds Memory Recall, Pattern Intelligence, Belief System, Prediction, Core Intelligence, and Reporter.
+
+Core Intelligence exposes learningResult, learningSignals, lessonsLearned, confidenceCalibration, futureAdjustments, memoryConsolidation, and decisionQualityLearning.
+
+Reporter may use Continuous Learning to improve report style, confidence wording, review warnings, action recommendations, and David-style phrasing. Reporter must not expose raw learning internals in the email body by default.
+
+PIE should learn only from evidence, corrections, approvals, edits, outcomes, and Reflection lessons. It should not invent learning.
+
+## 22. PIE Decision Intelligence Advancement
+
+Decision Intelligence improves PIE's ability to test competing interpretations and alternatives before important recommendations reach the user.
+
+Architecture sequence:
+
+Evidence
+-> Authoritative Reality Model
+-> Executive Judgment
+-> Decision Simulation
+-> Recommendation Challenge
+-> JARVIS Reasoning Validation
+-> Confidence Decomposition
+-> Evidence Value Prioritization
+-> Attention / Experience / Reporter
+-> User
+
+Decision Simulation evaluates credible options, including the recommended action, a real alternative, no action, delay-and-gather-evidence, and escalation when authority or risk requires it. Each option preserves expected outcome, prerequisites, impacts, assumptions, risks, uncertainty, authority, scenario results, scoring components, sensitivity analysis, and provenance. Longitudinal Photo Intelligence enters the simulation as qualified photo progress events, conflicts, and estimates; visual evidence can lower confidence or trigger a targeted evidence request, but it cannot prove completion by itself.
+
+Recommendation Challenge must state the strongest argument against the preferred option, identify disconfirming evidence, review stakeholders and dependencies, test implementation failure, compare no-action and delay, enforce authority boundaries, detect overstated confidence, challenge visual evidence overinterpretation, test whether a different reasonable assumption changes the answer, and record whether the preferred option changed.
+
+JARVIS Reasoning Validation is a rule-based release gate. It validates Reality authority, evidence traceability, assertion classification, fact support, conflicts, uncertainty disclosure, option completeness, no-action, tradeoffs, score and simulation reproducibility, sensitivity, authority boundaries, robustness, photo-evidence interpretation, causal reasoning, challenge completeness, explanation quality, fabricated-fact prevention, hidden assumptions, and consistency between PIE's recommendation and the user-facing summary.
+
+Confidence Decomposition breaks recommendation confidence into evidence, Reality Model, identity, causal, forecast, option-comparison, execution, outcome-measurement, and overall recommendation confidence. PIE must explain the weakest component rather than imply false precision.
+
+Evidence Value Prioritization ranks missing evidence by decision value and returns one highest-value evidence request first. PIE should not present a generic checklist when one targeted evidence request will reduce the most uncertainty.
+
+Normal UI must not expose buttons for simulation, challenge, JARVIS validation, confidence recalculation, forecast refresh, option comparison, or evidence linking. These steps run automatically in the background and only surface one recommendation, the important uncertainty, and the next useful action.
+
+## 23. Longitudinal Photo Intelligence
+
+PIE reviews project photos over time as an automatic intelligence layer behind ECOS.
+
+Architecture sequence:
+
+Photo evidence + metadata + Reality Model + schedule/action/issue context
+-> PIEPhotoProgressIntelligence
+-> Photo Sequences
+-> Comparability Assessment
+-> Conservative Progress Events
+-> Visual JARVIS Validation
+-> Qualified Reality Evidence
+-> Core / Executive Judgment / Predictions / Experience
+-> User
+
+Longitudinal Photo Intelligence groups photos into stable sequences by organization, project, building, area, room, Reality Object, subject, approximate viewpoint, and capture date. PIE must not compare two images merely because they belong to the same project.
+
+Comparability is classified as strong match, probable match, weak match, or not comparable. Weak and non-comparable images do not create confident progress claims.
+
+Original photos are never modified. Normalization operations are recorded as derived analysis metadata only.
+
+Photo progress records separate:
+
+- Observation: what is directly visible or supported by photo metadata and captions.
+- Inference: what the observation may mean.
+- Verification status: whether completion is supported by photos, inspection evidence, project update, schedule status, action-item closure, or human confirmation.
+
+Completion, regression, and safety claims require corroboration or human/JARVIS validation. Photo evidence never silently overrides inspections, documents, schedules, or human-confirmed records. Conflicts become uncertainty or review items.
+
+Photo progress enters Reality only as qualified visual observations through the established Layer 1-to-Reality evidence path. The photo-analysis service does not mutate Reality Objects directly.
+
+Capture may show repeat-photo guidance only when a comparable update has high evidence value. Home may show one concise progress card when PIE has a useful visual signal. Normal UI must not expose internal controls such as Compare Photos, Analyze Progress, Run Visual Review, Calculate Progress, or Validate Image.

@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
-import { Text, View } from 'react-native';
+import { Alert, Text, View } from 'react-native';
 import {
   PrimaryButton,
   ScreenTitle,
@@ -11,7 +11,7 @@ import {
 import {
   getAIEnvironmentStatus,
   getAIConfigurationStatus,
-} from '../services/OpenAIService';
+} from '../services/AIClientBoundaryService';
 import {
   getSupabaseConfigurationStatus,
   getSupabaseConnectionStatus,
@@ -24,7 +24,9 @@ import {
 } from '../services/SupabaseService';
 import {
   getSyncStatus,
+  sanitizeUserFacingSyncMessage,
   synchronizeLocalData,
+  type MissingSyncPhoto,
   type SyncStatus,
 } from '../services/SyncService';
 import type {
@@ -42,7 +44,9 @@ export function DiagnosticsScreen({
   savedUpdates,
   scheduleItems,
   startupConnectionResult,
+  syncCleanupNotice,
   onBack,
+  onRemoveMissingPhotos,
 }: {
   projectAreas: ProjectArea[];
   referenceDocuments: ReferenceDocument[];
@@ -50,7 +54,9 @@ export function DiagnosticsScreen({
   savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   startupConnectionResult: SupabaseConnectionTestResult | null;
+  syncCleanupNotice?: string | null;
   onBack: () => void;
+  onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
 }) {
   const areasWithGps = projectAreas.filter(area => hasSavedAreaLocation(area)).length;
   const aiEnvironment = getAIEnvironmentStatus();
@@ -108,11 +114,17 @@ export function DiagnosticsScreen({
     setCloudProjectCount(startupConnectionResult.projectCount);
   }, [startupConnectionResult]);
 
+  useEffect(() => {
+    if (!syncCleanupNotice) return;
+
+    setSyncResult(sanitizeUserFacingSyncMessage(syncCleanupNotice));
+  }, [syncCleanupNotice]);
+
   return (
     <View>
       <ScreenTitle
-        title="Admin Diagnostics"
-        subtitle="Basic setup status for locations, GPS, documents, and app data."
+        title="Raw Diagnostics"
+        subtitle="Developer Support details for connection tests, raw cloud diagnostics, and debug data."
       />
 
       <SecondaryButton
@@ -145,19 +157,19 @@ export function DiagnosticsScreen({
         </Text>
 
         <StatusRow
-          label="OpenAI Provider detected"
+          label="AI Route detected"
           value={aiEnvironment.providerDetected}
           ok={Boolean(aiEnvironment.providerDetected)}
         />
         <StatusRow
-          label="OpenAI Model detected"
+          label="Vision Model detected"
           value={aiEnvironment.modelDetected}
           ok={Boolean(aiEnvironment.modelDetected)}
         />
         <StatusRow
-          label="OpenAI API Key Present"
+          label="Client API Key Present"
           value={aiEnvironment.apiKeyPresent ? 'Yes' : 'No'}
-          ok={aiEnvironment.apiKeyPresent}
+          ok={!aiEnvironment.apiKeyPresent}
         />
         <StatusRow
           label="Supabase URL Present"
@@ -215,17 +227,17 @@ export function DiagnosticsScreen({
           ok={supabaseStatus.configured}
         />
         <StatusRow
-          label="OpenAI Configured"
-          value={aiStatus.configured ? 'Yes' : 'No'}
-          ok={aiStatus.configured}
+          label="Client AI Disabled"
+          value="Yes"
+          ok
         />
         <StatusRow
-          label="AI Provider"
+          label="Photo Intelligence Route"
           value={aiStatus.provider}
-          ok={aiStatus.provider === 'openai'}
+          ok={aiStatus.provider === 'edge-function-only'}
         />
         <StatusRow
-          label="OpenAI Model"
+          label="Vision Model"
           value={aiStatus.model}
           ok={Boolean(aiStatus.model)}
         />
@@ -251,7 +263,7 @@ export function DiagnosticsScreen({
         />
 
         <Text style={styles.bodyText}>
-          {syncStatus?.message ?? supabaseStatus.message} {aiStatus.message}
+          {sanitizeUserFacingSyncMessage(syncStatus?.message ?? supabaseStatus.message)} {aiStatus.message}
         </Text>
 
         <View style={styles.dataActionRow}>
@@ -340,11 +352,11 @@ export function DiagnosticsScreen({
         ) : null}
 
         {syncResult ? (
-          <Text style={styles.bodyText}>{syncResult}</Text>
+          <Text style={styles.bodyText}>{sanitizeUserFacingSyncMessage(syncResult)}</Text>
         ) : null}
 
         {syncProgress ? (
-          <Text style={styles.rowSub}>{syncProgress}</Text>
+          <Text style={styles.rowSub}>{sanitizeUserFacingSyncMessage(syncProgress)}</Text>
         ) : null}
 
         <Text style={styles.rowSub}>
@@ -421,9 +433,7 @@ export function DiagnosticsScreen({
     } catch (error) {
       setSupabaseConnected(false);
       setConnectionResult(
-        error instanceof Error
-          ? `Supabase connection failed. Name: ${error.name}. Message: ${error.message}.${error.stack ? ` Stack: ${error.stack}` : ''}`
-          : 'Supabase connection failed with an unknown error.',
+        'Supabase connection could not be verified right now.',
       );
     } finally {
       setIsTestingConnection(false);
@@ -432,8 +442,8 @@ export function DiagnosticsScreen({
 
   async function handleSyncNow() {
     setIsSyncing(true);
-    setSyncResult('Syncing pending local and cloud data...');
-    setSyncProgress('Starting sync...');
+    setSyncResult(sanitizeUserFacingSyncMessage('Syncing pending local and cloud data...'));
+    setSyncProgress(sanitizeUserFacingSyncMessage('Starting sync...'));
 
     try {
       const result = await synchronizeLocalData(
@@ -446,33 +456,91 @@ export function DiagnosticsScreen({
         },
         event => {
           setSyncProgress(
-            `${event.message} (${event.completed}/${event.total})`,
+            sanitizeUserFacingSyncMessage(
+              `${event.message} (${event.completed}/${event.total})`,
+            ),
           );
         },
       );
-      const errorText = result.errors.length
-        ? ` Errors: ${result.errors.join(' | ')}`
-        : '';
+      const reviewedCount =
+        result.uploaded + result.downloaded + result.queued;
+      const missingPhotoText = formatMissingPhotoSyncMessage(
+        result.missingPhotos.length,
+      );
+      const resultTitle =
+        result.errors.length || result.missingPhotos.length
+          ? 'Cloud Sync\nPartial sync complete.'
+          : 'Cloud Sync\nSync complete.';
 
       setCloudProjectCount(result.cloudProjectCount);
       setSupabaseConnected(result.connected);
       setSyncResult(
-        `Sync complete. Uploaded ${result.uploaded} record${result.uploaded === 1 ? '' : 's'}. Downloaded ${result.downloaded} record${result.downloaded === 1 ? '' : 's'}. Queue ${result.queued}. Conflicts ${result.conflicts}.${errorText}`,
+        sanitizeUserFacingSyncMessage([
+          resultTitle,
+          `${reviewedCount} item${reviewedCount === 1 ? '' : 's'} reviewed.`,
+          missingPhotoText,
+          result.errors.length
+            ? 'Some records could not sync and will be retried.'
+            : null,
+        ]
+          .filter(Boolean)
+          .join('\n')),
       );
       setSyncProgress(
-        `Projects ${result.details.projectsUploaded}, updates ${result.details.updatesUploaded}, photos ${result.details.photosUploaded}, areas ${result.details.areasUploaded}, schedules ${result.details.schedulesUploaded}, documents ${result.details.documentsUploaded}.`,
+        sanitizeUserFacingSyncMessage(
+          `Projects ${result.details.projectsUploaded}, updates ${result.details.updatesUploaded}, photos ${result.details.photosUploaded}, areas ${result.details.areasUploaded}, schedules ${result.details.schedulesUploaded}, documents ${result.details.documentsUploaded}.`,
+        ),
       );
       await refreshCloudStatus();
+
+      if (result.missingPhotos.length > 0) {
+        showMissingPhotoSyncAlert(result.missingPhotos);
+      }
     } catch (error) {
-      setSyncResult(
-        error instanceof Error
-          ? `Sync failed: ${error.message}`
-          : 'Sync failed with an unknown error.',
-      );
+      setSyncResult(sanitizeUserFacingSyncMessage('Sync could not finish. Retry when you have a stable connection.'));
     } finally {
       setIsSyncing(false);
     }
   }
+
+  function showMissingPhotoSyncAlert(missingPhotos: MissingSyncPhoto[]) {
+    const count = missingPhotos.length;
+
+    Alert.alert(
+      'Photo not available',
+      formatMissingPhotoSyncMessage(count) ||
+        'A photo could not be synced because it is no longer available.',
+      [
+        {
+          text: 'Remove Missing Photo',
+          style: 'destructive',
+          onPress: () => {
+            void onRemoveMissingPhotos(missingPhotos).then(() => {
+              setSyncResult(
+                `${count} missing photo${count === 1 ? '' : 's'} removed from local updates and sync queue.`,
+              );
+            });
+          },
+        },
+        {
+          text: 'Retry',
+          onPress: () => {
+            void handleSyncNow();
+          },
+        },
+        {
+          text: 'Dismiss',
+          style: 'cancel',
+        },
+      ],
+    );
+  }
+}
+
+function formatMissingPhotoSyncMessage(count: number) {
+  if (count <= 0) return null;
+
+  return `${count} photo${count === 1 ? '' : 's'} could not be synced because ${count === 1 ? 'it is' : 'they are'} no longer available.`;
 }
 
 function DiagnosticValueRow({ label, value }: { label: string; value: string }) {

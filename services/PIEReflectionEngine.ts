@@ -1,1783 +1,751 @@
 import type {
-  PIEDecision,
-  PIEDecisionPriority,
-  PIEDecisionQueue,
-} from './PIEDecisionEngine';
-import type { PIEExecutiveBrief } from './PIEExecutive';
-import type {
-  PIEGraph,
-  PIEGraphGap,
-  PIEGraphRelationship,
-} from './PIEKnowledgeGraph';
-import type { PIEMemoryGap, PIEMemorySnapshot } from './PIEMemoryEngine';
-import type {
-  PIEQuestion,
-  PIEReasoningResult,
-  PIEThoughtRecommendation,
-} from './PIEReasoningEngine';
-import type {
-  ProjectConfidenceLevel,
-  ProjectIntelligenceSummary,
-} from './ProjectIntelligenceEngine';
-import type { ProjectEvent } from './ProjectEventService';
-import type {
   PIEBelief,
-  PIERecommendation,
-  PIERuntimeResponse,
-  PIERuntimeState,
+  PIETrustScore,
+  PIEUnderstandingScore,
 } from './PIERuntime';
+import type {
+  PIEEvidenceFusionSummary,
+  PIEIntelligentSummary,
+  PIEvidenceGap,
+} from './PIEEvidenceFusion';
+import type { PIEPhotoProgressResult } from './PIEPhotoProgress';
+import type { PIEReportDraft } from './PIEReporter';
+import type { PIEScheduleIntelligence } from './PIEScheduleIntelligence';
+import type { PIEMemoryRecallResult } from './PIEMemoryRecall';
+import type { PIELearningSignal } from './PIELearningEngine';
+import type { PIEDecisionOutcome } from './PIEScientificMethod';
+import type { PIEAdaptiveLesson, PIEAdaptivePolicy } from './PIEAdaptiveIntelligence';
+import type { PIEExecutiveWisdomLesson, PIEWhenNotToActReason } from './PIEDecisionMemory';
+import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
 
-export type PIEReflectionPriority = 'low' | 'medium' | 'high' | 'critical';
+export type PIEReflectionEvent =
+  | 'schedule_import'
+  | 'accepted_photo'
+  | 'accepted_note'
+  | 'gps_correction'
+  | 'project_correction'
+  | 'area_correction'
+  | 'report_approval'
+  | 'walk_completion'
+  | 'daily_reflection';
 
-export type PIEReflectionSource =
-  | 'pie-runtime'
-  | 'pie-runtime-response'
-  | 'pie-executive'
-  | 'pie-decision'
-  | 'pie-reasoning'
-  | 'pie-memory'
-  | 'pie-knowledge-graph'
-  | 'project-event'
-  | 'project-intelligence'
-  | 'pie-reflection';
+export type PIELessonLearned = {
+  id: string;
+  event: PIEReflectionEvent;
+  lesson: string;
+  whatPIEShouldDoDifferently: string;
+  confidence: ProjectConfidenceLevel;
+};
+
+export type PIEBeliefChange = {
+  id: string;
+  beliefId: string;
+  previousBelief: string;
+  updatedBelief: string;
+  direction: 'strengthened' | 'weakened' | 'unchanged' | 'corrected';
+  wasPIEWrong: boolean;
+  wasPIECorrect: boolean;
+  reason: string;
+  verificationNeeded: string | null;
+};
+
+export type PIEConfidenceChange = {
+  id: string;
+  source: string;
+  previousConfidence: ProjectConfidenceLevel;
+  updatedConfidence: ProjectConfidenceLevel;
+  direction: 'increased' | 'decreased' | 'unchanged';
+  reason: string;
+};
+
+export type PIERecommendationImprovement = {
+  id: string;
+  recommendation: string;
+  reason: string;
+  recommendedNextEvidence: string;
+};
+
+export type PIEReflectionSummary = {
+  summary: string;
+  whatChanged: string[];
+  previousBeliefs: string[];
+  beliefsStrengthened: string[];
+  beliefsWeakened: string[];
+  outstandingUnknowns: string[];
+  recommendedEvidence: string[];
+  reflectionConfidence: ProjectConfidenceLevel;
+};
+
+export type PIEReflection = {
+  id: string;
+  generatedAt: string;
+  event: PIEReflectionEvent;
+  reflectionSummary: PIEReflectionSummary;
+  lessonsLearned: PIELessonLearned[];
+  beliefChanges: PIEBeliefChange[];
+  confidenceChanges: PIEConfidenceChange[];
+  recommendationImprovements: PIERecommendationImprovement[];
+  learningSignals: PIELearningSignal[];
+  updatedBeliefs: PIEBelief[];
+};
 
 export type PIEReflectionFinding = {
   id: string;
-  projectName: string;
   title: string;
   summary: string;
-  priority: PIEReflectionPriority;
-  confidence: ProjectConfidenceLevel;
-  source: PIEReflectionSource;
   evidence: string[];
-  suggestedAction: string;
+  confidence: ProjectConfidenceLevel;
+  priority: 'low' | 'medium' | 'high' | 'critical';
   createdAt: string;
 };
 
-export type PIEReflectionRisk = {
+export type PIEReflectionQuestion = {
   id: string;
-  projectName: string;
-  title: string;
-  risk: string;
-  impact: string;
-  priority: PIEReflectionPriority;
-  confidence: ProjectConfidenceLevel;
+  question: string;
+  reason: string;
   evidence: string[];
-  suggestedVerification: string;
-  createdAt: string;
+  confidence: ProjectConfidenceLevel;
+  priority: 'low' | 'medium' | 'high' | 'critical';
 };
 
 export type PIEReflectionGap = {
   id: string;
-  projectName: string;
   title: string;
   summary: string;
-  missingEvidenceType:
-    | 'photo'
-    | 'schedule'
-    | 'inspection'
-    | 'update'
-    | 'document'
-    | 'relationship'
-    | 'owner'
-    | 'confidence'
-    | 'unknown';
-  impact: string;
-  priority: PIEReflectionPriority;
-  confidence: ProjectConfidenceLevel;
   evidence: string[];
-  relatedRecommendationIds: string[];
   suggestedAction: string;
-  createdAt: string;
+  confidence: ProjectConfidenceLevel;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  missingEvidenceType: 'document' | 'photo' | 'update' | 'schedule' | 'gps' | 'report';
 };
 
-export type PIEReflectionWeakRecommendation = {
+export type PIEReflectionRisk = {
   id: string;
-  projectName: string;
-  recommendationId: string;
   title: string;
+  risk: string;
   summary: string;
-  weakness: string[];
-  evidenceCount: number;
-  confidence: ProjectConfidenceLevel;
-  priority: PIEReflectionPriority;
-  source: PIEReflectionSource;
-  userApprovalRequired: boolean;
+  evidence: string[];
   suggestedAction: string;
-};
-
-export type PIEReflectionVerificationQuestion = {
-  id: string;
-  projectName: string;
-  question: string;
-  reason: string;
-  priority: PIEReflectionPriority;
+  suggestedVerification: string;
   confidence: ProjectConfidenceLevel;
-  evidence: string[];
-  source: PIEReflectionSource;
+  priority: 'low' | 'medium' | 'high' | 'critical';
 };
 
-export type PIEReflectionConfidenceAdjustment = {
-  id: string;
-  targetId: string;
-  targetType:
-    | 'runtime'
-    | 'belief'
-    | 'recommendation'
-    | 'decision'
-    | 'executive-priority'
-    | 'project-intelligence';
-  currentConfidence: ProjectConfidenceLevel;
-  suggestedConfidence: ProjectConfidenceLevel;
-  reason: string;
-  evidence: string[];
-};
-
-export type PIEReflectionConfidenceAudit = {
-  score: number;
-  level: ProjectConfidenceLevel;
-  summary: string;
-  suggestedAdjustments: PIEReflectionConfidenceAdjustment[];
-  factors: Array<{
-    id: string;
-    label: string;
-    score: number;
-    reason: string;
-  }>;
-};
-
-export type PIEReflectionEvidenceAudit = {
-  score: number;
-  level: ProjectConfidenceLevel;
-  summary: string;
-  totalEvidenceCount: number;
-  freshEvidenceCount: number;
-  staleEvidenceCount: number;
-  strongestEvidence: string[];
-  weakestEvidence: string[];
-  missingEvidence: PIEReflectionGap[];
-  contradictions: string[];
-  recommendationSupport: Array<{
-    recommendationId: string;
-    title: string;
-    evidenceCount: number;
-    confidence: ProjectConfidenceLevel;
-  }>;
-};
-
-export type PIEReflectionResult = {
-  id: string;
-  projectName: string;
-  generatedAt: string;
-  overallReflectionScore: number;
-  reflectionLevel: ProjectConfidenceLevel;
-  reflectionSummary: string;
-  strongestSupportedBelief: PIEBelief | null;
-  weakestSupportedBelief: PIEBelief | null;
+export type PIEReflectionResult = PIEReflection & {
   findings: PIEReflectionFinding[];
-  risks: PIEReflectionRisk[];
+  verificationQuestions: PIEReflectionQuestion[];
   gaps: PIEReflectionGap[];
-  weakRecommendations: PIEReflectionWeakRecommendation[];
-  verificationQuestions: PIEReflectionVerificationQuestion[];
-  confidenceAudit: PIEReflectionConfidenceAudit;
-  evidenceAudit: PIEReflectionEvidenceAudit;
-  suggestedConfidenceAdjustments: PIEReflectionConfidenceAdjustment[];
-  whatPIEShouldVerifyFirst: string;
-  userFacingExplanation: string;
-  priority: PIEReflectionPriority;
-  sources: PIEReflectionSource[];
+  risks: PIEReflectionRisk[];
+  whatPIEShouldVerifyFirst: string | null;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  reflectionLevel: ProjectConfidenceLevel;
+  evidenceAudit: {
+    level: ProjectConfidenceLevel;
+    summary: string;
+  };
 };
 
-export type BuildPIEReflectionParams = {
-  runtime?: PIERuntimeState | null;
-  runtimeResponse?: PIERuntimeResponse | null;
-  executiveBrief?: PIEExecutiveBrief | null;
-  decisionQueue?: PIEDecisionQueue | null;
-  reasoning?: PIEReasoningResult | null;
-  memory?: PIEMemorySnapshot | null;
-  knowledgeGraph?: PIEGraph | null;
-  projectEvents?: ProjectEvent[];
-  intelligence?: ProjectIntelligenceSummary | null;
-  now?: Date;
-};
-
-type ReflectionInput = PIEReflectionResult | BuildPIEReflectionParams;
-
-type ReflectionContext = {
+export type PIEReflectionInput = {
+  event?: PIEReflectionEvent;
+  generatedAt?: string;
   projectName: string;
-  generatedAt: string;
-  runtime: PIERuntimeState | null;
-  runtimeResponse: PIERuntimeResponse | null;
-  executiveBrief: PIEExecutiveBrief | null;
-  decisionQueue: PIEDecisionQueue | null;
-  reasoning: PIEReasoningResult | null;
-  memory: PIEMemorySnapshot | null;
-  knowledgeGraph: PIEGraph | null;
-  projectEvents: ProjectEvent[];
-  intelligence: ProjectIntelligenceSummary | null;
-  recommendations: ReflectionRecommendation[];
-  beliefs: PIEBelief[];
-  questions: PIEQuestion[];
-  memoryGaps: PIEMemoryGap[];
-  graphGaps: PIEGraphGap[];
-  graphContradictions: PIEGraphRelationship[];
+  currentBeliefs: PIEBelief[];
+  evidenceFusionSummary: PIEEvidenceFusionSummary;
+  intelligentSummary: PIEIntelligentSummary;
+  evidenceGaps: PIEvidenceGap[];
+  scheduleIntelligence: PIEScheduleIntelligence;
+  photoProgress: PIEPhotoProgressResult;
+  trustScore: PIETrustScore;
+  understandingScore: PIEUnderstandingScore;
+  overallConfidence: ProjectConfidenceLevel;
+  reportDraft?: PIEReportDraft | null;
+  memoryRecall?: PIEMemoryRecallResult | null;
+  decisionOutcomes?: PIEDecisionOutcome[];
+  adaptiveLessons?: PIEAdaptiveLesson[];
+  adaptivePolicies?: PIEAdaptivePolicy[];
+  wisdomLessons?: PIEExecutiveWisdomLesson[];
+  whenNotToActReasons?: PIEWhenNotToActReason[];
 };
 
-type ReflectionRecommendation = {
-  id: string;
-  projectName: string;
-  title: string;
-  summary: string;
-  evidence: string[];
-  confidence: ProjectConfidenceLevel;
-  priority: PIEReflectionPriority;
-  source: PIEReflectionSource;
-  userApprovalRequired: boolean;
-  suggestedAction: string;
-};
+export const PIE_REFLECTION_QUESTIONS = [
+  'What changed?',
+  'What did PIE previously believe?',
+  'Did new evidence strengthen or weaken that belief?',
+  'Was PIE wrong?',
+  'Was PIE correct?',
+  'What still needs verification?',
+  'What should PIE do differently next time?',
+] as const;
 
 export function buildPIEReflection(
-  params: BuildPIEReflectionParams = {},
+  input: PIEReflectionInput,
 ): PIEReflectionResult {
-  const context = buildReflectionContext(params);
-  const gaps = findReflectionGaps(context);
-  const weakRecommendations = findWeakRecommendations(context);
-  const risks = getReflectionRisks(context);
-  const verificationQuestions = getVerificationQuestions({
-    ...context,
-    gaps,
-    weakRecommendations,
-    risks,
-  });
-  const evidenceAudit = auditPIEEvidence({
-    ...context,
-    gaps,
-  });
-  const confidenceAudit = auditPIEConfidence({
-    ...context,
-    gaps,
-    weakRecommendations,
-    risks,
-    evidenceAudit,
-  });
-  const findings = buildFindings({
-    context,
-    gaps,
-    weakRecommendations,
-    risks,
-    confidenceAudit,
-    evidenceAudit,
-  });
-  const overallReflectionScore = reflectionScore({
-    confidenceAudit,
-    evidenceAudit,
-    gaps,
-    weakRecommendations,
-    risks,
-  });
-  const reflectionLevel = confidenceFromScore(overallReflectionScore);
-  const priority = getReflectionPriority({
-    ...context,
-    gaps,
-    weakRecommendations,
-    risks,
-  });
-  const strongestSupportedBelief = strongestBelief(context.beliefs);
-  const weakestSupportedBelief = weakestBelief(context.beliefs);
-  const whatPIEShouldVerifyFirst =
-    verificationQuestions[0]?.question ||
-    gaps[0]?.suggestedAction ||
-    weakRecommendations[0]?.suggestedAction ||
-    'Continue monitoring; PIE does not see a specific verification need.';
-
-  return {
-    id: `pie-reflection:${slug(context.projectName)}:${context.generatedAt}`,
-    projectName: context.projectName,
-    generatedAt: context.generatedAt,
-    overallReflectionScore,
-    reflectionLevel,
-    reflectionSummary: reflectionSummary({
-      context,
-      reflectionLevel,
-      gaps,
-      weakRecommendations,
-      risks,
-    }),
-    strongestSupportedBelief,
-    weakestSupportedBelief,
-    findings,
-    risks,
-    gaps,
-    weakRecommendations,
-    verificationQuestions,
-    confidenceAudit,
-    evidenceAudit,
-    suggestedConfidenceAdjustments: confidenceAudit.suggestedAdjustments,
-    whatPIEShouldVerifyFirst,
-    userFacingExplanation: userFacingExplanation({
-      reflectionLevel,
-      weakRecommendations,
-      gaps,
-      whatPIEShouldVerifyFirst,
-    }),
-    priority,
-    sources: reflectionSources(context),
-  };
-}
-
-export function auditPIEConfidence(
-  input: ReflectionInput & {
-    gaps?: PIEReflectionGap[];
-    weakRecommendations?: PIEReflectionWeakRecommendation[];
-    risks?: PIEReflectionRisk[];
-    evidenceAudit?: PIEReflectionEvidenceAudit;
-  } = {},
-): PIEReflectionConfidenceAudit {
-  const result = asReflectionResult(input);
-  if (result) return result.confidenceAudit;
-
-  const context = buildReflectionContext(input as BuildPIEReflectionParams);
-  const gaps = input.gaps ?? findReflectionGaps(context);
-  const weakRecommendations =
-    input.weakRecommendations ?? findWeakRecommendations(context);
-  const risks = input.risks ?? getReflectionRisks(context);
-  const evidenceAudit =
-    input.evidenceAudit ?? auditPIEEvidence({ ...context, gaps });
-  const trustScore = context.runtime?.trustScore.overallScore ??
-    context.intelligence?.confidence.score ??
-    scoreForConfidence(context.runtime?.overallConfidence ?? 'medium');
-  const understandingScore = context.runtime?.understandingScore.score ??
-    scoreForConfidence(context.memory?.confidence ?? 'medium');
-  const contradictionCount = evidenceAudit.contradictions.length;
-  const lowConfidenceCount = [
-    context.runtime?.overallConfidence,
-    context.executiveBrief?.confidence,
-    context.decisionQueue?.confidence,
-    context.reasoning?.communicationInsight.confidence,
-    context.memory?.confidence,
-    context.intelligence?.confidence.level,
-  ].filter(value => value === 'low').length;
-  const score = clamp(
-    Math.round(
-      trustScore * 0.3 +
-      understandingScore * 0.25 +
-      evidenceAudit.score * 0.25 +
-      (100 - Math.min(100, weakRecommendations.length * 18)) * 0.1 +
-      (100 - Math.min(100, gaps.length * 12 + contradictionCount * 18)) * 0.1,
-    ) - lowConfidenceCount * 4,
-    0,
-    100,
+  const event = input.event || inferReflectionEvent(input);
+  const generatedAt = input.generatedAt || new Date().toISOString();
+  const beliefChanges = buildBeliefChanges(input, event);
+  const confidenceChanges = buildConfidenceChanges(input);
+  const lessonsLearned = buildLessonsLearned(input, event, beliefChanges);
+  const recommendationImprovements = buildRecommendationImprovements(input);
+  const learningSignals = buildReflectionLearningSignals(
+    lessonsLearned,
+    beliefChanges,
+    confidenceChanges,
+    recommendationImprovements,
   );
-  const suggestedAdjustments = buildConfidenceAdjustments({
-    context,
-    gaps,
-    weakRecommendations,
-    risks,
-    evidenceAudit,
-  });
-
-  return {
-    score,
-    level: confidenceFromScore(score),
-    summary:
-      suggestedAdjustments.length > 0
-        ? `${suggestedAdjustments.length} confidence adjustment${suggestedAdjustments.length === 1 ? '' : 's'} should be considered.`
-        : 'PIE confidence appears consistent with current supporting evidence.',
-    suggestedAdjustments,
-    factors: [
-      {
-        id: 'reflection-trust',
-        label: 'Runtime Trust',
-        score: trustScore,
-        reason: context.runtime
-          ? `Runtime Trust Score is ${context.runtime.trustScore.overallScore}.`
-          : 'Runtime Trust Score is not available.',
-      },
-      {
-        id: 'reflection-understanding',
-        label: 'Runtime Understanding',
-        score: understandingScore,
-        reason: context.runtime
-          ? `Runtime Understanding Score is ${context.runtime.understandingScore.score}.`
-          : 'Runtime Understanding Score is not available.',
-      },
-      {
-        id: 'reflection-evidence',
-        label: 'Evidence Support',
-        score: evidenceAudit.score,
-        reason: evidenceAudit.summary,
-      },
-      {
-        id: 'reflection-weak-recommendations',
-        label: 'Weak Recommendations',
-        score: 100 - Math.min(100, weakRecommendations.length * 18),
-        reason: `${weakRecommendations.length} weak recommendation${weakRecommendations.length === 1 ? '' : 's'} found.`,
-      },
-      {
-        id: 'reflection-contradictions',
-        label: 'Contradictions',
-        score: 100 - Math.min(100, contradictionCount * 25),
-        reason: `${contradictionCount} contradiction signal${contradictionCount === 1 ? '' : 's'} found.`,
-      },
-    ],
-  };
-}
-
-export function auditPIEEvidence(
-  input: ReflectionInput & {
-    gaps?: PIEReflectionGap[];
-  } = {},
-): PIEReflectionEvidenceAudit {
-  const result = asReflectionResult(input);
-  if (result) return result.evidenceAudit;
-
-  const context = buildReflectionContext(input as BuildPIEReflectionParams);
-  const gaps = input.gaps ?? findReflectionGaps(context);
-  const evidence = collectEvidence(context);
-  const freshEvidence = evidence.filter(item => !item.isStale);
-  const staleEvidence = evidence.filter(item => item.isStale);
-  const contradictions = uniqueText([
-    ...context.beliefs.flatMap(belief =>
-      belief.contradictingEvidence.map(item => item.detail),
-    ),
-    ...context.graphContradictions.map(item => item.summary),
-    context.intelligence?.metrics.syncConflictCount
-      ? `${context.intelligence.metrics.syncConflictCount} sync conflict signal${context.intelligence.metrics.syncConflictCount === 1 ? '' : 's'} detected.`
-      : null,
-  ]);
-  const recommendationSupport = context.recommendations.map(recommendation => ({
-    recommendationId: recommendation.id,
-    title: recommendation.title,
-    evidenceCount: uniqueText(recommendation.evidence).length,
-    confidence: recommendation.confidence,
-  }));
-  const supportAverage =
-    recommendationSupport.length === 0
-      ? 45
-      : recommendationSupport.reduce(
-          (sum, item) => sum + Math.min(100, item.evidenceCount * 35),
-          0,
-        ) / recommendationSupport.length;
-  const score = clamp(
-    Math.round(
-      Math.min(100, evidence.length * 8) * 0.3 +
-      (evidence.length === 0
-        ? 0
-        : (freshEvidence.length / evidence.length) * 100) * 0.25 +
-      supportAverage * 0.25 +
-      (100 - Math.min(100, gaps.length * 12 + contradictions.length * 20)) * 0.2,
-    ),
-    0,
-    100,
+  const reflectionSummary = buildReflectionSummary(
+    input,
+    beliefChanges,
+    confidenceChanges,
+    recommendationImprovements,
   );
 
-  return {
-    score,
-    level: confidenceFromScore(score),
-    summary:
-      evidence.length === 0
-        ? 'PIE Reflection found no supporting evidence in the supplied PIE outputs.'
-        : `${evidence.length} evidence signal${evidence.length === 1 ? '' : 's'} reviewed; ${freshEvidence.length} appear current and ${staleEvidence.length} appear stale.`,
-    totalEvidenceCount: evidence.length,
-    freshEvidenceCount: freshEvidence.length,
-    staleEvidenceCount: staleEvidence.length,
-    strongestEvidence: evidence
-      .filter(item => item.confidence === 'high' && !item.isStale)
-      .slice(0, 5)
-      .map(item => item.detail),
-    weakestEvidence: uniqueText([
-      ...staleEvidence.slice(0, 5).map(item => item.detail),
-      ...context.recommendations
-        .filter(recommendation => recommendation.evidence.length === 0)
-        .slice(0, 3)
-        .map(recommendation => `${recommendation.title} has no attached evidence.`),
-    ]),
-    missingEvidence: gaps,
-    contradictions,
-    recommendationSupport,
-  };
-}
-
-export function findWeakRecommendations(
-  input: ReflectionInput,
-): PIEReflectionWeakRecommendation[] {
-  const result = asReflectionResult(input);
-  if (result) return result.weakRecommendations;
-
-  const context = buildReflectionContext(input as BuildPIEReflectionParams);
-
-  return sortWeakRecommendations(dedupeWeakRecommendations(
-    context.recommendations.flatMap(recommendation => {
-      const evidence = uniqueText(recommendation.evidence);
-      const weakness = uniqueText([
-        evidence.length === 0 ? 'No supporting evidence is attached.' : null,
-        evidence.length === 1 ? 'Only one supporting evidence item is attached.' : null,
-        recommendation.confidence === 'low'
-          ? 'Recommendation confidence is low.'
-          : null,
-        recommendation.priority === 'critical' && evidence.length < 2
-          ? 'Critical recommendation has fewer than two evidence items.'
-          : null,
-        recommendation.priority === 'high' && evidence.length < 2
-          ? 'High-priority recommendation has weak support.'
-          : null,
-        textContains(recommendationText(recommendation), ['inspection']) &&
-          !hasInspectionEvidence(context)
-          ? 'Inspection recommendation is missing inspection status evidence.'
-          : null,
-        textContains(recommendationText(recommendation), ['schedule', 'overdue']) &&
-          !hasScheduleEvidence(context)
-          ? 'Schedule recommendation is missing schedule support.'
-          : null,
-        hasStaleUpdateRisk(context) &&
-          textContains(recommendationText(recommendation), ['status', 'progress'])
-          ? 'Project status recommendation may rely on stale update evidence.'
-          : null,
-      ]);
-
-      if (weakness.length === 0) return [];
-
-      return [{
-        id: `reflection-weak-recommendation-${slug(recommendation.id)}`,
-        projectName: recommendation.projectName,
-        recommendationId: recommendation.id,
-        title: recommendation.title,
-        summary: recommendation.summary,
-        weakness,
-        evidenceCount: evidence.length,
-        confidence: recommendation.confidence,
-        priority: recommendation.priority,
-        source: recommendation.source,
-        userApprovalRequired: recommendation.userApprovalRequired,
-        suggestedAction: `Verify support for: ${recommendation.suggestedAction}`,
-      }];
-    }),
-  ));
-}
-
-export function findReflectionGaps(
-  input: ReflectionInput,
-): PIEReflectionGap[] {
-  const result = asReflectionResult(input);
-  if (result) return result.gaps;
-
-  const context = buildReflectionContext(input as BuildPIEReflectionParams);
-  const generatedAt = context.generatedAt;
-  const gaps: PIEReflectionGap[] = [];
-
-  if (hasStaleUpdateRisk(context)) {
-    gaps.push(reflectionGap({
-      id: 'stale-update',
-      context,
-      title: 'Recent update is stale or missing',
-      summary: staleUpdateSummary(context),
-      missingEvidenceType: 'update',
-      impact:
-        'PIE may be reasoning from outdated project status and should verify current field conditions.',
-      priority: 'high',
-      confidence: 'high',
-      evidence: [staleUpdateSummary(context)],
-      suggestedAction: 'Capture or verify the latest project update.',
-      createdAt: generatedAt,
-    }));
-  }
-
-  if (!hasPhotoEvidence(context)) {
-    gaps.push(reflectionGap({
-      id: 'missing-photos',
-      context,
-      title: 'Photo evidence is missing',
-      summary: 'PIE does not see field photos in current project evidence.',
-      missingEvidenceType: 'photo',
-      impact:
-        'Visual confirmation is weak; progress, quality, safety, and completion conclusions may be less reliable.',
-      priority: 'medium',
-      confidence: 'high',
-      evidence: ['No photo evidence detected.'],
-      suggestedAction: 'Capture current field photos with captions.',
-      createdAt: generatedAt,
-    }));
-  }
-
-  if (!hasScheduleEvidence(context)) {
-    gaps.push(reflectionGap({
-      id: 'missing-schedule',
-      context,
-      title: 'Schedule support is missing',
-      summary: 'PIE does not see schedule items or schedule relationship evidence.',
-      missingEvidenceType: 'schedule',
-      impact:
-        'Schedule risk, overdue work, and next milestone recommendations may stay broad.',
-      priority: 'medium',
-      confidence: 'high',
-      evidence: ['No schedule evidence detected.'],
-      suggestedAction: 'Import or enter schedule items before relying on schedule conclusions.',
-      createdAt: generatedAt,
-    }));
-  }
-
-  if (needsInspectionStatus(context)) {
-    gaps.push(reflectionGap({
-      id: 'missing-inspection-status',
-      context,
-      title: 'Inspection status needs verification',
-      summary:
-        'Inspection is mentioned or implied, but PIE does not see a clear inspection status.',
-      missingEvidenceType: 'inspection',
-      impact:
-        'Completion or communication recommendations may be premature without inspection status.',
-      priority: 'high',
-      confidence: 'medium',
-      evidence: matchingContextEvidence(context, ['inspection']),
-      suggestedAction: 'Verify and record the current inspection status.',
-      createdAt: generatedAt,
-    }));
-  }
-
-  context.graphGaps.slice(0, 4).forEach(gap => {
-    gaps.push(reflectionGap({
-      id: `graph-${gap.id}`,
-      context,
-      title: gap.title,
-      summary: gap.summary,
-      missingEvidenceType: graphGapType(gap),
-      impact:
-        'PIE has weaker relationship confidence until this missing relationship evidence is resolved.',
-      priority: gap.severity,
-      confidence: gap.confidence,
-      evidence: [gap.summary],
-      suggestedAction: gap.suggestedAction,
-      createdAt: generatedAt,
-    }));
-  });
-
-  context.memoryGaps.slice(0, 4).forEach(gap => {
-    gaps.push(reflectionGap({
-      id: `memory-${gap.id}`,
-      context,
-      title: gap.title,
-      summary: gap.summary,
-      missingEvidenceType: memoryGapType(gap),
-      impact: gap.impact,
-      priority: gap.priority,
-      confidence: gap.confidence,
-      evidence: [gap.summary],
-      suggestedAction: gap.suggestedAction,
-      createdAt: generatedAt,
-    }));
-  });
-
-  return sortGaps(dedupeGaps(gaps));
-}
-
-export function getVerificationQuestions(
-  input: ReflectionInput & {
-    gaps?: PIEReflectionGap[];
-    weakRecommendations?: PIEReflectionWeakRecommendation[];
-    risks?: PIEReflectionRisk[];
-  },
-): PIEReflectionVerificationQuestion[] {
-  const result = asReflectionResult(input);
-  if (result) return result.verificationQuestions;
-
-  const context = buildReflectionContext(input as BuildPIEReflectionParams);
-  const gaps = input.gaps ?? findReflectionGaps(context);
-  const weakRecommendations =
-    input.weakRecommendations ?? findWeakRecommendations(context);
-  const risks = input.risks ?? getReflectionRisks(context);
-  const questions: PIEReflectionVerificationQuestion[] = [
-    ...context.questions.slice(0, 4).map(question => ({
-      id: `reflection-question-${question.id}`,
-      projectName: question.projectName,
-      question: question.question,
-      reason: question.reason,
-      priority: question.priority,
-      confidence: question.confidence,
-      evidence: question.evidenceIds,
-      source: 'pie-reasoning' as const,
-    })),
-    ...gaps.slice(0, 4).map(gap => ({
-      id: `reflection-gap-question-${gap.id}`,
-      projectName: gap.projectName,
-      question: questionForGap(gap),
-      reason: gap.impact,
-      priority: gap.priority,
-      confidence: gap.confidence,
-      evidence: gap.evidence,
-      source: 'pie-reflection' as const,
-    })),
-    ...weakRecommendations.slice(0, 3).map(recommendation => ({
-      id: `reflection-weak-question-${recommendation.id}`,
-      projectName: recommendation.projectName,
-      question: `What evidence confirms "${recommendation.title}"?`,
-      reason: recommendation.weakness.join(' '),
-      priority: recommendation.priority,
-      confidence: recommendation.confidence,
-      evidence: recommendation.weakness,
-      source: 'pie-reflection' as const,
-    })),
-    ...risks.slice(0, 3).map(risk => ({
-      id: `reflection-risk-question-${risk.id}`,
-      projectName: risk.projectName,
-      question: risk.suggestedVerification,
-      reason: risk.impact,
-      priority: risk.priority,
-      confidence: risk.confidence,
-      evidence: risk.evidence,
-      source: 'pie-reflection' as const,
-    })),
-  ];
-
-  return dedupeQuestions(sortQuestions(questions));
-}
-
-export function getReflectionRisks(
-  input: ReflectionInput,
-): PIEReflectionRisk[] {
-  const result = asReflectionResult(input);
-  if (result) return result.risks;
-
-  const context = buildReflectionContext(input as BuildPIEReflectionParams);
-  const risks: PIEReflectionRisk[] = [];
-
-  context.decisionQueue?.decisions
-    .filter(decision =>
-      ['high', 'critical'].includes(decision.priority) &&
-      (decision.evidence.length < 2 || decision.confidence === 'low'),
-    )
-    .forEach(decision => {
-      risks.push(reflectionRisk({
-        id: `weak-high-priority-decision-${decision.id}`,
-        context,
-        title: 'High-priority decision has weak support',
-        risk: decision.title,
-        impact:
-          'PIE may be asking for urgent action before enough evidence is attached.',
-        priority: decision.priority,
-        confidence: decision.confidence,
-        evidence: decision.evidence,
-        suggestedVerification: `Verify evidence before acting on: ${decision.suggestedNextAction}`,
-      }));
-    });
-
-  if (context.graphContradictions.length > 0) {
-    risks.push(reflectionRisk({
-      id: 'contradicting-graph-evidence',
-      context,
-      title: 'Contradicting evidence exists',
-      risk: 'Knowledge Graph contains contradiction relationships.',
-      impact:
-        'PIE should reduce confidence until contradicting project evidence is resolved.',
-      priority: 'high',
-      confidence: 'medium',
-      evidence: context.graphContradictions.map(item => item.summary),
-      suggestedVerification: 'Resolve the contradictory evidence before relying on affected recommendations.',
-    }));
-  }
-
-  if (context.beliefs.some(belief => belief.status === 'contested')) {
-    const contested = context.beliefs.filter(belief => belief.status === 'contested');
-    risks.push(reflectionRisk({
-      id: 'contested-runtime-beliefs',
-      context,
-      title: 'Runtime beliefs are contested',
-      risk: `${contested.length} belief${contested.length === 1 ? '' : 's'} include contradicting evidence.`,
-      impact:
-        'PIE should explain uncertainty before presenting these beliefs as reliable.',
-      priority: 'high',
-      confidence: 'high',
-      evidence: contested.map(belief => belief.statement),
-      suggestedVerification: 'Review contested beliefs and resolve contradicting evidence.',
-    }));
-  }
-
-  if (hasStaleUpdateRisk(context) && context.recommendations.length > 0) {
-    risks.push(reflectionRisk({
-      id: 'stale-update-risk',
-      context,
-      title: 'Recommendations may rely on stale updates',
-      risk: staleUpdateSummary(context),
-      impact:
-        'PIE should verify current field status before recommending communication or status decisions.',
-      priority: 'medium',
-      confidence: 'high',
-      evidence: [staleUpdateSummary(context)],
-      suggestedVerification: 'Capture or verify current project progress.',
-    }));
-  }
-
-  return sortRisks(dedupeRisks(risks));
-}
-
-export function getReflectionPriority(
-  input: ReflectionInput & {
-    gaps?: PIEReflectionGap[];
-    weakRecommendations?: PIEReflectionWeakRecommendation[];
-    risks?: PIEReflectionRisk[];
-  },
-): PIEReflectionPriority {
-  const result = asReflectionResult(input);
-  if (result) return result.priority;
-
-  const context = buildReflectionContext(input as BuildPIEReflectionParams);
-  const gaps = input.gaps ?? findReflectionGaps(context);
-  const weakRecommendations =
-    input.weakRecommendations ?? findWeakRecommendations(context);
-  const risks = input.risks ?? getReflectionRisks(context);
-  const priorities = [
-    ...gaps.map(gap => gap.priority),
-    ...weakRecommendations.map(recommendation => recommendation.priority),
-    ...risks.map(risk => risk.priority),
-  ];
-
-  if (priorities.includes('critical')) return 'critical';
-  if (priorities.includes('high')) return 'high';
-  if (priorities.includes('medium')) return 'medium';
-
-  return 'low';
-}
-
-function buildReflectionContext(params: BuildPIEReflectionParams): ReflectionContext {
-  const runtime = params.runtime ?? null;
-  const runtimeResponse = params.runtimeResponse ?? runtime?.response ?? null;
-  const executiveBrief =
-    params.executiveBrief ?? runtime?.pieExecutiveBrief ?? null;
-  const decisionQueue =
-    params.decisionQueue ?? runtime?.decisionQueue ?? null;
-  const reasoning = params.reasoning ?? runtime?.reasoning ?? null;
-  const memory = params.memory ?? runtime?.memory ?? null;
-  const knowledgeGraph =
-    params.knowledgeGraph ?? runtime?.knowledgeGraph ?? null;
-  const projectEvents =
-    params.projectEvents ?? runtime?.projectEvents ?? [];
-  const intelligence =
-    params.intelligence ?? runtime?.intelligence ?? null;
-  const generatedAt =
-    runtime?.generatedAt ||
-    runtimeResponse?.generatedAt ||
-    executiveBrief?.generatedAt ||
-    decisionQueue?.generatedAt ||
-    reasoning?.generatedAt ||
-    memory?.generatedAt ||
-    knowledgeGraph?.generatedAt ||
-    intelligence?.generatedAt ||
-    projectEvents[0]?.occurredAt ||
-    (params.now ?? new Date()).toISOString();
-  const projectName =
-    runtime?.projectName ||
-    runtimeResponse?.projectName ||
-    decisionQueue?.projectName ||
-    reasoning?.projectName ||
-    memory?.projectName ||
-    knowledgeGraph?.projectName ||
-    intelligence?.projectName ||
-    projectEvents[0]?.projectName ||
-    'Unassigned Project';
-  const recommendations = collectRecommendations({
-    projectName,
-    runtime,
-    runtimeResponse,
-    executiveBrief,
-    decisionQueue,
-    reasoning,
-    intelligence,
-  });
-  const beliefs = runtime?.currentBeliefs ??
-    runtimeResponse?.currentBeliefs ??
-    [];
-  const questions = [
-    ...(reasoning?.questions ?? []),
-    ...(runtime?.reasoning.questions ?? []),
-  ];
-  const memoryGaps = [
-    ...(memory?.gaps ?? []),
-    ...(runtime?.memory.gaps ?? []),
-  ];
-  const graphGaps = [
-    ...(knowledgeGraph?.gaps ?? []),
-    ...(runtime?.graphGaps ?? []),
-    ...(runtimeResponse?.graphGaps ?? []),
-  ];
-  const graphContradictions = [
-    ...(knowledgeGraph?.relationships.filter(
-      relationship => relationship.edgeType === 'contradicts',
-    ) ?? []),
-    ...(runtime?.knowledgeGraph.relationships.filter(
-      relationship => relationship.edgeType === 'contradicts',
-    ) ?? []),
-  ];
+  const findings = buildReflectionFindings(beliefChanges, confidenceChanges);
+  const gaps = buildReflectionGaps(input);
+  const verificationQuestions = buildVerificationQuestions(beliefChanges, gaps);
+  const risks = buildReflectionRisks(input, beliefChanges);
 
   return {
-    projectName,
+    id: `reflection-${slug(input.projectName)}-${Date.parse(generatedAt) || Date.now()}`,
     generatedAt,
-    runtime,
-    runtimeResponse,
-    executiveBrief,
-    decisionQueue,
-    reasoning,
-    memory,
-    knowledgeGraph,
-    projectEvents,
-    intelligence,
-    recommendations: dedupeReflectionRecommendations(recommendations),
-    beliefs: dedupeBeliefs(beliefs),
-    questions: dedupeReasoningQuestions(questions),
-    memoryGaps: dedupeMemoryGaps(memoryGaps),
-    graphGaps: dedupeGraphGaps(graphGaps),
-    graphContradictions: dedupeRelationships(graphContradictions),
+    event,
+    reflectionSummary,
+    lessonsLearned,
+    beliefChanges,
+    confidenceChanges,
+    recommendationImprovements,
+    learningSignals,
+    updatedBeliefs: prepareUpdatedBeliefs(input.currentBeliefs, beliefChanges),
+    findings,
+    verificationQuestions,
+    gaps,
+    risks,
+    whatPIEShouldVerifyFirst:
+      verificationQuestions[0]?.question ||
+      gaps[0]?.suggestedAction ||
+      null,
+    priority: risks.some(risk => risk.priority === 'critical' || risk.priority === 'high')
+      ? 'high'
+      : gaps.length > 0
+        ? 'medium'
+        : 'low',
+    reflectionLevel: reflectionSummary.reflectionConfidence,
+    evidenceAudit: {
+      level: reflectionSummary.reflectionConfidence,
+      summary: reflectionSummary.summary,
+    },
   };
 }
 
-function collectRecommendations({
-  projectName,
-  runtime,
-  runtimeResponse,
-  executiveBrief,
-  decisionQueue,
-  reasoning,
-  intelligence,
-}: {
-  projectName: string;
-  runtime: PIERuntimeState | null;
-  runtimeResponse: PIERuntimeResponse | null;
-  executiveBrief: PIEExecutiveBrief | null;
-  decisionQueue: PIEDecisionQueue | null;
-  reasoning: PIEReasoningResult | null;
-  intelligence: ProjectIntelligenceSummary | null;
-}): ReflectionRecommendation[] {
+function buildReflectionLearningSignals(
+  lessonsLearned: PIELessonLearned[],
+  beliefChanges: PIEBeliefChange[],
+  confidenceChanges: PIEConfidenceChange[],
+  recommendationImprovements: PIERecommendationImprovement[],
+): PIELearningSignal[] {
   return [
-    ...(runtime?.recommendations ?? []).map(runtimeRecommendationToReflection),
-    ...(runtimeResponse?.recommendations ?? []).map(runtimeRecommendationToReflection),
-    ...(executiveBrief?.recommendations ?? []).map(recommendation => ({
-      id: recommendation.id,
-      projectName: recommendation.projectName,
-      title: recommendation.recommendation,
-      summary: recommendation.why,
-      evidence: recommendation.evidence,
-      confidence: recommendation.confidence,
-      priority: recommendation.urgency,
-      source: 'pie-executive' as const,
-      userApprovalRequired: recommendation.userApprovalRequired,
-      suggestedAction: recommendation.recommendation,
+    ...lessonsLearned.slice(0, 4).map(lesson => ({
+      id: `reflection-learning-${lesson.id}`,
+      source: 'reflection_lesson' as const,
+      outcome: 'confirmed' as const,
+      signal: lesson.lesson,
+      whatPIELearned: lesson.lesson,
+      shouldTrustMore: ['reflection lesson', 'current evidence'],
+      shouldTrustLess: lesson.whatPIEShouldDoDifferently ? ['previous behavior before this reflection'] : [],
+      futureBehavior: lesson.whatPIEShouldDoDifferently || 'Apply this reflection when similar evidence appears.',
+      confidence: lesson.confidence,
     })),
-    ...(decisionQueue?.decisions ?? []).map(decisionToReflectionRecommendation),
-    ...(reasoning?.recommendations ?? []).map(reasoningRecommendationToReflection),
-    ...(intelligence?.recommendations ?? []).map(recommendation => ({
-      id: `intelligence-${recommendation.id}`,
-      projectName,
-      title: recommendation.title,
-      summary: recommendation.reason,
-      evidence: [recommendation.reason],
-      confidence: recommendation.confidence,
-      priority: recommendation.priority,
-      source: 'project-intelligence' as const,
-      userApprovalRequired: true,
-      suggestedAction: recommendation.title,
+    ...beliefChanges
+      .filter(change => change.wasPIEWrong || change.direction === 'corrected' || change.direction === 'weakened')
+      .slice(0, 3)
+      .map(change => ({
+        id: `reflection-learning-belief-${change.id}`,
+        source: change.wasPIEWrong ? 'user_correction' as const : 'reflection_lesson' as const,
+        outcome: change.wasPIEWrong ? 'corrected' as const : 'partially_worked' as const,
+        signal: change.reason,
+        whatPIELearned: `Belief changed from "${change.previousBelief}" to "${change.updatedBelief}".`,
+        shouldTrustMore: change.wasPIECorrect ? ['supporting evidence'] : ['verification evidence'],
+        shouldTrustLess: change.wasPIEWrong ? ['unsupported belief'] : [],
+        futureBehavior: change.verificationNeeded || 'Verify similar beliefs before recommending action.',
+        confidence: 'medium' as const,
+      })),
+    ...confidenceChanges
+      .filter(change => change.direction === 'decreased')
+      .slice(0, 2)
+      .map(change => ({
+        id: `reflection-learning-confidence-${change.id}`,
+        source: 'reflection_lesson' as const,
+        outcome: 'corrected' as const,
+        signal: change.reason,
+        whatPIELearned: `Confidence for ${change.source} should be calibrated down when this pattern repeats.`,
+        shouldTrustMore: ['fresh evidence'],
+        shouldTrustLess: [change.source],
+        futureBehavior: `Lower confidence for ${change.source} until verified.`,
+        confidence: change.updatedConfidence,
+      })),
+    ...recommendationImprovements.slice(0, 2).map(improvement => ({
+      id: `reflection-learning-recommendation-${improvement.id}`,
+      source: 'reflection_lesson' as const,
+      outcome: 'confirmed' as const,
+      signal: improvement.recommendation,
+      whatPIELearned: improvement.reason,
+      shouldTrustMore: ['recommendation improvement'],
+      shouldTrustLess: [],
+      futureBehavior: improvement.recommendedNextEvidence,
+      confidence: 'medium' as const,
     })),
   ];
 }
 
-function runtimeRecommendationToReflection(
-  recommendation: PIERecommendation,
-): ReflectionRecommendation {
+export function buildDailyReflection(
+  input: Omit<PIEReflectionInput, 'event'>,
+): PIEReflectionResult {
+  return buildPIEReflection({
+    ...input,
+    event: 'daily_reflection',
+  });
+}
+
+export function inferReflectionEvent(
+  input: PIEReflectionInput,
+): PIEReflectionEvent {
+  if (input.reportDraft?.needsReview === false && input.reportDraft?.confidence === 'high') {
+    return 'report_approval';
+  }
+
+  if (input.photoProgress.acceptedEvidence.length > 0) return 'accepted_photo';
+  if (input.photoProgress.lastComparison) return 'accepted_photo';
+  if (input.scheduleIntelligence.scheduleSummary.totalItems > 0) {
+    return 'schedule_import';
+  }
+  if (input.evidenceFusionSummary.gpsAvailable) return 'gps_correction';
+
+  return 'daily_reflection';
+}
+
+function buildBeliefChanges(
+  input: PIEReflectionInput,
+  event: PIEReflectionEvent,
+): PIEBeliefChange[] {
+  const firstGap = input.evidenceGaps[0];
+  const scheduleLoaded = input.scheduleIntelligence.scheduleSummary.totalItems > 0;
+  const photoAccepted = input.photoProgress.acceptedEvidence.length > 0;
+  const trustImproved =
+    input.trustScore.level !== 'low' &&
+    input.evidenceFusionSummary.sourceCount > 1;
+  const beliefs = input.currentBeliefs.slice(0, 6);
+
+  return beliefs.map((belief, index) => {
+    const weakened =
+      Boolean(firstGap) ||
+      belief.status === 'uncertain' ||
+      belief.status === 'contested';
+    const strengthened =
+      !weakened &&
+      (scheduleLoaded || photoAccepted || trustImproved);
+    const direction = weakened
+      ? 'weakened'
+      : strengthened
+        ? 'strengthened'
+        : 'unchanged';
+
+    return {
+      id: `belief-change-${index}`,
+      beliefId: belief.id,
+      previousBelief: belief.statement,
+      updatedBelief: strengthened
+        ? `${belief.statement} This belief is better supported after ${event.replace(/_/g, ' ')}.`
+        : weakened
+          ? `${belief.statement} This belief needs verification before PIE relies on it.`
+          : belief.statement,
+      direction,
+      wasPIEWrong: direction === 'weakened' && belief.status === 'contested',
+      wasPIECorrect: direction === 'strengthened',
+      reason: strengthened
+        ? 'New evidence aligns with existing PIE understanding.'
+        : weakened
+          ? firstGap?.summary || 'New evidence exposed uncertainty in the current belief.'
+          : 'New evidence did not materially change this belief.',
+      verificationNeeded: weakened
+        ? firstGap?.suggestedAction || 'Collect confirming evidence before acting on this belief.'
+        : null,
+    };
+  });
+}
+
+function buildConfidenceChanges(
+  input: PIEReflectionInput,
+): PIEConfidenceChange[] {
+  const trustDirection = compareConfidence(
+    input.overallConfidence,
+    input.trustScore.level,
+  );
+  const understandingDirection = compareConfidence(
+    input.overallConfidence,
+    input.understandingScore.level,
+  );
+  const reportConfidence = input.reportDraft?.confidence || input.overallConfidence;
+
+  return [
+    {
+      id: 'confidence-trust',
+      source: 'Trust Score',
+      previousConfidence: input.overallConfidence,
+      updatedConfidence: input.trustScore.level,
+      direction: trustDirection,
+      reason: input.trustScore.reasons[0] || 'Trust was recalculated after new evidence.',
+    },
+    {
+      id: 'confidence-understanding',
+      source: 'Understanding Score',
+      previousConfidence: input.overallConfidence,
+      updatedConfidence: input.understandingScore.level,
+      direction: understandingDirection,
+      reason: input.understandingScore.improvementSuggestions[0] ||
+        'Understanding was recalculated from evidence gaps and coverage.',
+    },
+    {
+      id: 'confidence-report',
+      source: 'Reporter',
+      previousConfidence: input.overallConfidence,
+      updatedConfidence: reportConfidence,
+      direction: compareConfidence(input.overallConfidence, reportConfidence),
+      reason: input.reportDraft?.reviewFlags[0] ||
+        'Reporter confidence reflects whether the current evidence is communication-ready.',
+    },
+  ];
+}
+
+function buildLessonsLearned(
+  input: PIEReflectionInput,
+  event: PIEReflectionEvent,
+  beliefChanges: PIEBeliefChange[],
+): PIELessonLearned[] {
+  const weakened = beliefChanges.filter(item => item.direction === 'weakened');
+  const missingEvidence = input.evidenceGaps[0]?.suggestedAction;
+  const lessons: PIELessonLearned[] = [];
+
+  if (weakened.length > 0 || missingEvidence) {
+    lessons.push({
+      id: 'lesson-verify-before-recommend',
+      event,
+      lesson: 'New evidence exposed at least one belief that needs verification.',
+      whatPIEShouldDoDifferently:
+        missingEvidence || 'Ask for confirming evidence before prioritizing this recommendation again.',
+      confidence: 'medium',
+    });
+  }
+
+  if (input.photoProgress.comparisonNeedsReview) {
+    lessons.push({
+      id: 'lesson-photo-progress-review',
+      event,
+      lesson: 'Photo progress is useful but still needs user verification.',
+      whatPIEShouldDoDifferently:
+        'Prioritize a review prompt before using visual progress as project evidence.',
+      confidence: input.photoProgress.comparisonConfidence,
+    });
+  }
+
+  if (input.reportDraft?.needsReview) {
+    lessons.push({
+      id: 'lesson-report-review',
+      event,
+      lesson: 'Report readiness depends on resolving review flags first.',
+      whatPIEShouldDoDifferently:
+        input.reportDraft.reviewFlags[0] || 'Ask for the missing report evidence before communication.',
+      confidence: input.reportDraft.confidence,
+    });
+  }
+
+  if (input.memoryRecall?.memoryInfluences.length) {
+    const influence = input.memoryRecall.memoryInfluences[0];
+    lessons.push({
+      id: `lesson-memory-${influence.id}`,
+      event,
+      lesson: `Past memory should influence PIE interpretation: ${influence.summary}`,
+      whatPIEShouldDoDifferently:
+        influence.influence || 'Compare new evidence against past memory before recommending action.',
+      confidence: influence.confidence,
+    });
+  }
+
+  if (input.memoryRecall?.pastCorrections.some(correction => correction.confidenceAdjustment === 'lower')) {
+    lessons.push({
+      id: 'lesson-user-correction-confidence',
+      event,
+      lesson: 'User corrections indicate PIE should be careful with similar future assumptions.',
+      whatPIEShouldDoDifferently:
+        'Lower confidence and ask for verification when similar GPS, project, area, report, or recommendation context appears again.',
+      confidence: 'high',
+    });
+  }
+
+  if (input.decisionOutcomes?.length) {
+    const failedOutcome = input.decisionOutcomes.find(outcome =>
+      outcome.qualitySignal === 'failed' || outcome.qualitySignal === 'partially_worked',
+    );
+    lessons.push({
+      id: 'lesson-decision-outcome',
+      event,
+      lesson: failedOutcome
+        ? `A past decision outcome was ${failedOutcome.qualitySignal}; PIE should adjust future recommendations.`
+        : 'Decision outcomes are available for future learning.',
+      whatPIEShouldDoDifferently: failedOutcome
+        ? `Re-check assumptions behind ${failedOutcome.decision} before recommending similar action.`
+        : 'Use outcome evidence to improve future hypothesis testing and decision quality scoring.',
+      confidence: failedOutcome ? 'high' : 'medium',
+    });
+  }
+
+  if (lessons.length === 0) {
+    lessons.push({
+      id: 'lesson-understanding-stable',
+      event,
+      lesson: 'New evidence did not weaken PIE understanding.',
+      whatPIEShouldDoDifferently:
+        'Continue using the same evidence pattern while watching for stale or missing inputs.',
+      confidence: input.overallConfidence,
+    });
+  }
+
+  return lessons;
+}
+
+function buildRecommendationImprovements(
+  input: PIEReflectionInput,
+): PIERecommendationImprovement[] {
+  const evidence = [
+    ...recommendedEvidenceFromInput(input),
+    ...(input.memoryRecall?.memoryInfluences
+      .filter(influence => influence.appliesTo === 'recommendation')
+      .map(influence => influence.influence) || []),
+  ];
+
+  return evidence.map((item, index) => ({
+    id: `reflection-recommendation-${index}`,
+    recommendation: `Collect ${item.toLowerCase()}.`,
+    reason: 'Reflection identified this as the next evidence that would strengthen PIE understanding.',
+    recommendedNextEvidence: item,
+  }));
+}
+
+function buildReflectionSummary(
+  input: PIEReflectionInput,
+  beliefChanges: PIEBeliefChange[],
+  confidenceChanges: PIEConfidenceChange[],
+  improvements: PIERecommendationImprovement[],
+): PIEReflectionSummary {
+  const strengthened = beliefChanges
+    .filter(item => item.direction === 'strengthened')
+    .map(item => item.updatedBelief);
+  const weakened = beliefChanges
+    .filter(item => item.direction === 'weakened')
+    .map(item => item.previousBelief);
+  const recommendedEvidence = improvements.map(item => item.recommendedNextEvidence);
+  const decreased = confidenceChanges.some(item => item.direction === 'decreased');
+  const increased = confidenceChanges.some(item => item.direction === 'increased');
+
   return {
-    id: recommendation.id,
-    projectName: recommendation.projectName,
-    title: recommendation.title,
-    summary: recommendation.summary,
-    evidence: recommendation.evidence,
-    confidence: recommendation.confidence,
-    priority: recommendation.priority,
-    source: 'pie-runtime',
-    userApprovalRequired: recommendation.requiresApproval,
-    suggestedAction: recommendation.suggestedNextAction,
+    summary: decreased
+      ? 'Reflection found weaker confidence and recommends verification before PIE acts.'
+      : increased
+        ? 'Reflection found stronger evidence support for PIE understanding.'
+        : 'Reflection found PIE understanding mostly stable after new evidence.',
+    whatChanged: [
+      input.intelligentSummary.whatChanged,
+      input.photoProgress.photoProgressSummary,
+      input.scheduleIntelligence.executiveSummary,
+    ].filter(Boolean).slice(0, 4),
+    previousBeliefs: input.currentBeliefs.slice(0, 4).map(item => item.statement),
+    beliefsStrengthened: strengthened,
+    beliefsWeakened: weakened,
+    outstandingUnknowns: input.evidenceGaps.map(item => item.summary).slice(0, 6),
+    recommendedEvidence,
+    reflectionConfidence: decreased
+      ? 'medium'
+      : input.evidenceGaps.length > 2
+        ? 'low'
+        : input.overallConfidence,
   };
 }
 
-function decisionToReflectionRecommendation(
-  decision: PIEDecision,
-): ReflectionRecommendation {
-  return {
-    id: decision.id,
-    projectName: decision.projectName,
-    title: decision.title,
-    summary: decision.summary,
-    evidence: decision.evidence,
-    confidence: decision.confidence,
-    priority: decision.priority,
-    source: 'pie-decision',
-    userApprovalRequired: decision.userApproval.required,
-    suggestedAction: decision.suggestedNextAction,
-  };
+function prepareUpdatedBeliefs(
+  beliefs: PIEBelief[],
+  changes: PIEBeliefChange[],
+): PIEBelief[] {
+  const byId = new Map(changes.map(change => [change.beliefId, change]));
+
+  return beliefs.map(belief => {
+    const change = byId.get(belief.id);
+    if (!change) return belief;
+
+    return {
+      ...belief,
+      statement: change.updatedBelief,
+      status: change.direction === 'weakened' ? 'uncertain' : belief.status,
+      confidence: change.direction === 'strengthened' ? 'high' : belief.confidence,
+    };
+  });
 }
 
-function reasoningRecommendationToReflection(
-  recommendation: PIEThoughtRecommendation,
-): ReflectionRecommendation {
-  return {
-    id: recommendation.id,
-    projectName: recommendation.projectName,
-    title: recommendation.title,
-    summary: recommendation.why,
-    evidence: recommendation.evidence,
-    confidence: recommendation.confidence,
-    priority: recommendation.priority,
-    source: 'pie-reasoning',
-    userApprovalRequired: true,
-    suggestedAction: recommendation.suggestedNextAction,
-  };
-}
-
-function buildFindings({
-  context,
-  gaps,
-  weakRecommendations,
-  risks,
-  confidenceAudit,
-  evidenceAudit,
-}: {
-  context: ReflectionContext;
-  gaps: PIEReflectionGap[];
-  weakRecommendations: PIEReflectionWeakRecommendation[];
-  risks: PIEReflectionRisk[];
-  confidenceAudit: PIEReflectionConfidenceAudit;
-  evidenceAudit: PIEReflectionEvidenceAudit;
-}): PIEReflectionFinding[] {
-  const findings: Array<PIEReflectionFinding | null> = [
-    ...weakRecommendations.slice(0, 5).map(recommendation => ({
-      id: `finding-${recommendation.id}`,
-      projectName: recommendation.projectName,
-      title: 'Weak recommendation needs review',
-      summary: `${recommendation.title}: ${recommendation.weakness.join(' ')}`,
-      priority: recommendation.priority,
-      confidence: recommendation.confidence,
-      source: 'pie-reflection' as const,
-      evidence: recommendation.weakness,
-      suggestedAction: recommendation.suggestedAction,
-      createdAt: context.generatedAt,
+function buildReflectionFindings(
+  beliefChanges: PIEBeliefChange[],
+  confidenceChanges: PIEConfidenceChange[],
+): PIEReflectionFinding[] {
+  return [
+    ...beliefChanges.slice(0, 4).map((change, index) => ({
+      id: `reflection-finding-belief-${index}`,
+      title: change.direction === 'weakened' ? 'Belief Needs Verification' : 'Belief Strengthened',
+      summary: change.reason,
+      evidence: [change.previousBelief, change.updatedBelief],
+      confidence: change.direction === 'weakened' ? 'medium' as const : 'high' as const,
+      priority: change.direction === 'weakened' ? 'high' as const : 'medium' as const,
+      createdAt: new Date().toISOString(),
     })),
-    ...gaps.slice(0, 5).map(gap => ({
-      id: `finding-${gap.id}`,
-      projectName: gap.projectName,
-      title: gap.title,
+    ...confidenceChanges
+      .filter(change => change.direction !== 'unchanged')
+      .slice(0, 2)
+      .map((change, index) => ({
+        id: `reflection-finding-confidence-${index}`,
+        title: 'Confidence Changed',
+        summary: `${change.source} confidence ${change.direction}.`,
+        evidence: [change.reason],
+        confidence: change.updatedConfidence,
+        priority: change.direction === 'decreased' ? 'high' as const : 'medium' as const,
+        createdAt: new Date().toISOString(),
+      })),
+  ];
+}
+
+function buildReflectionGaps(input: PIEReflectionInput): PIEReflectionGap[] {
+  return [
+    ...input.evidenceGaps.slice(0, 4).map((gap, index) => ({
+      id: `reflection-gap-${index}`,
+      title: 'Reflection Evidence Gap',
       summary: gap.summary,
-      priority: gap.priority,
-      confidence: gap.confidence,
-      source: 'pie-reflection' as const,
-      evidence: gap.evidence,
+      evidence: [gap.summary],
       suggestedAction: gap.suggestedAction,
-      createdAt: context.generatedAt,
+      confidence: gap.confidence,
+      priority: gap.severity === 'high' || gap.severity === 'critical'
+        ? 'high' as const
+        : 'medium' as const,
+      missingEvidenceType: evidenceTypeFromText(`${gap.summary} ${gap.suggestedAction}`),
     })),
-    ...risks.slice(0, 5).map(risk => ({
-      id: `finding-${risk.id}`,
-      projectName: risk.projectName,
-      title: risk.title,
-      summary: risk.risk,
-      priority: risk.priority,
-      confidence: risk.confidence,
-      source: 'pie-reflection' as const,
-      evidence: risk.evidence,
-      suggestedAction: risk.suggestedVerification,
-      createdAt: context.generatedAt,
+    ...recommendedEvidenceFromInput(input).slice(0, 2).map((item, index) => ({
+      id: `reflection-gap-recommended-${index}`,
+      title: 'Recommended Evidence',
+      summary: `PIE needs ${item.toLowerCase()} to improve confidence.`,
+      evidence: [item],
+      suggestedAction: item,
+      confidence: input.overallConfidence,
+      priority: 'medium' as const,
+      missingEvidenceType: evidenceTypeFromText(item),
     })),
-    confidenceAudit.suggestedAdjustments[0]
-      ? {
-          id: 'finding-confidence-adjustment',
-          projectName: context.projectName,
-          title: 'Confidence should be reduced',
-          summary: confidenceAudit.suggestedAdjustments[0].reason,
-          priority: 'high' as const,
-          confidence: 'high' as const,
-          source: 'pie-reflection' as const,
-          evidence: confidenceAudit.suggestedAdjustments[0].evidence,
-          suggestedAction: 'Show the user what PIE is uncertain about before acting.',
-          createdAt: context.generatedAt,
-        }
-      : null,
-    evidenceAudit.contradictions[0]
-      ? {
-          id: 'finding-evidence-contradiction',
-          projectName: context.projectName,
-          title: 'Contradicting evidence needs review',
-          summary: evidenceAudit.contradictions[0],
-          priority: 'high' as const,
-          confidence: 'medium' as const,
-          source: 'pie-reflection' as const,
-          evidence: evidenceAudit.contradictions,
-          suggestedAction: 'Resolve contradictory evidence before relying on affected conclusions.',
-          createdAt: context.generatedAt,
-        }
-      : null,
   ];
-
-  return sortFindings(dedupeFindings(
-    findings.filter((finding): finding is PIEReflectionFinding =>
-      Boolean(finding),
-    ),
-  ));
 }
 
-function buildConfidenceAdjustments({
-  context,
-  gaps,
-  weakRecommendations,
-  risks,
-  evidenceAudit,
-}: {
-  context: ReflectionContext;
-  gaps: PIEReflectionGap[];
-  weakRecommendations: PIEReflectionWeakRecommendation[];
-  risks: PIEReflectionRisk[];
-  evidenceAudit: PIEReflectionEvidenceAudit;
-}): PIEReflectionConfidenceAdjustment[] {
-  return dedupeConfidenceAdjustments([
-    ...(context.runtime && (
-      context.runtime.overallConfidence === 'high' &&
-      (evidenceAudit.level === 'low' || weakRecommendations.length > 0)
-    )
+function buildVerificationQuestions(
+  beliefChanges: PIEBeliefChange[],
+  gaps: PIEReflectionGap[],
+): PIEReflectionQuestion[] {
+  const weakened = beliefChanges.filter(change => change.direction === 'weakened');
+
+  return [
+    ...weakened.slice(0, 3).map((change, index) => ({
+      id: `reflection-question-belief-${index}`,
+      question: change.verificationNeeded || 'What evidence verifies this belief?',
+      reason: change.reason,
+      evidence: [change.previousBelief],
+      confidence: 'medium' as const,
+      priority: 'high' as const,
+    })),
+    ...gaps.slice(0, 2).map((gap, index) => ({
+      id: `reflection-question-gap-${index}`,
+      question: gap.suggestedAction,
+      reason: gap.summary,
+      evidence: [gap.summary],
+      confidence: gap.confidence,
+      priority: gap.priority,
+    })),
+  ];
+}
+
+function buildReflectionRisks(
+  input: PIEReflectionInput,
+  beliefChanges: PIEBeliefChange[],
+): PIEReflectionRisk[] {
+  const weakened = beliefChanges.filter(change => change.direction === 'weakened');
+
+  return [
+    ...weakened.slice(0, 3).map((change, index) => ({
+      id: `reflection-risk-belief-${index}`,
+      title: 'Weakened Belief',
+      risk: change.reason,
+      summary: change.reason,
+      evidence: [change.previousBelief],
+      suggestedAction: change.verificationNeeded || 'Verify weakened belief before acting.',
+      suggestedVerification: change.verificationNeeded || 'Verify weakened belief before acting.',
+      confidence: 'medium' as const,
+      priority: 'high' as const,
+    })),
+    ...(input.reportDraft?.needsReview
       ? [{
-          id: 'confidence-runtime-high-with-weak-evidence',
-          targetId: context.runtime.id,
-          targetType: 'runtime' as const,
-          currentConfidence: context.runtime.overallConfidence,
-          suggestedConfidence: evidenceAudit.level,
-          reason:
-            'Runtime confidence is high, but Reflection found weak evidence support or weak recommendations.',
-          evidence: uniqueText([
-            evidenceAudit.summary,
-            weakRecommendations[0]?.title,
-          ]),
+          id: 'reflection-risk-report-review',
+          title: 'Report Review Required',
+          risk: 'Report has review flags that may weaken communication confidence.',
+          summary: 'Report has review flags that may weaken communication confidence.',
+          evidence: input.reportDraft.reviewFlags,
+          suggestedAction: input.reportDraft.reviewFlags[0] || 'Resolve report review flags.',
+          suggestedVerification: input.reportDraft.reviewFlags[0] || 'Resolve report review flags.',
+          confidence: input.reportDraft.confidence,
+          priority: 'medium' as const,
         }]
       : []),
-    ...context.beliefs
-      .filter(belief =>
-        belief.confidence !== 'low' &&
-        (belief.status === 'contested' || belief.supportingEvidence.length === 0),
-      )
-      .map(belief => ({
-        id: `confidence-belief-${belief.id}`,
-        targetId: belief.id,
-        targetType: 'belief' as const,
-        currentConfidence: belief.confidence,
-        suggestedConfidence: belief.status === 'contested' ? 'low' as const : 'medium' as const,
-        reason: `Belief status is ${belief.status}.`,
-        evidence: uniqueText([
-          belief.statement,
-          ...belief.contradictingEvidence.map(item => item.detail),
-        ]),
-      })),
-    ...weakRecommendations
-      .filter(recommendation => recommendation.confidence !== 'low')
-      .map(recommendation => ({
-        id: `confidence-recommendation-${recommendation.recommendationId}`,
-        targetId: recommendation.recommendationId,
-        targetType: 'recommendation' as const,
-        currentConfidence: recommendation.confidence,
-        suggestedConfidence:
-          recommendation.evidenceCount === 0 ? 'low' as const : 'medium' as const,
-        reason: recommendation.weakness.join(' '),
-        evidence: recommendation.weakness,
-      })),
-    ...risks
-      .filter(risk => risk.priority === 'critical')
-      .map(risk => ({
-        id: `confidence-risk-${risk.id}`,
-        targetId: risk.id,
-        targetType: 'project-intelligence' as const,
-        currentConfidence: risk.confidence,
-        suggestedConfidence: lowerConfidence(risk.confidence),
-        reason: risk.impact,
-        evidence: risk.evidence,
-      })),
-    ...gaps
-      .filter(gap => gap.priority === 'high' || gap.priority === 'critical')
-      .slice(0, 3)
-      .map(gap => ({
-        id: `confidence-gap-${gap.id}`,
-        targetId: gap.id,
-        targetType: 'project-intelligence' as const,
-        currentConfidence: gap.confidence,
-        suggestedConfidence: 'medium' as const,
-        reason: gap.impact,
-        evidence: gap.evidence,
-      })),
-  ]);
+  ];
 }
 
-function collectEvidence(context: ReflectionContext) {
-  return [
-    ...context.beliefs.flatMap(belief => [
-      ...belief.supportingEvidence.map(item => ({
-        id: item.id,
-        detail: item.detail,
-        confidence: item.confidence,
-        occurredAt: item.occurredAt,
-        isStale: isStale(item.occurredAt, context.generatedAt),
-      })),
-      ...belief.contradictingEvidence.map(item => ({
-        id: item.id,
-        detail: item.detail,
-        confidence: item.confidence,
-        occurredAt: item.occurredAt,
-        isStale: isStale(item.occurredAt, context.generatedAt),
-      })),
-    ]),
-    ...(context.reasoning?.evidence.map(item => ({
-      id: item.id,
-      detail: item.detail,
-      confidence: item.confidence,
-      occurredAt: item.occurredAt,
-      isStale: isStale(item.occurredAt, context.generatedAt),
-    })) ?? []),
-    ...(context.projectEvents.map(event => ({
-      id: event.id,
-      detail: event.description,
-      confidence: event.confidence,
-      occurredAt: event.occurredAt,
-      isStale: isStale(event.occurredAt, context.generatedAt),
-    }))),
-    ...(context.knowledgeGraph?.nodes.map(node => ({
-      id: node.id,
-      detail: node.summary,
-      confidence: node.confidence,
-      occurredAt: node.occurredAt,
-      isStale: isStale(node.occurredAt, context.generatedAt),
-    })) ?? []),
-    ...(context.intelligence?.riskSignals.flatMap(risk =>
-      risk.evidence.map((detail, index) => ({
-        id: `${risk.id}-${index}`,
-        detail,
-        confidence: risk.confidence,
-        occurredAt: context.intelligence?.generatedAt ?? null,
-        isStale: false,
-      })),
-    ) ?? []),
-  ].filter(item => item.detail.trim().length > 0);
+function recommendedEvidenceFromInput(input: PIEReflectionInput) {
+  const recommendations = [
+    ...input.evidenceGaps.map(item => item.suggestedAction),
+    input.photoProgress.comparisonNeedsReview
+      ? 'Verified photo progress summary'
+      : null,
+    input.scheduleIntelligence.scheduleSummary.totalItems === 0
+      ? 'Current project schedule'
+      : null,
+    input.reportDraft?.needsReview
+      ? input.reportDraft.reviewFlags[0] || 'Resolved report review flags'
+      : null,
+  ].filter((item): item is string => Boolean(item?.trim()));
+
+  return Array.from(new Set(recommendations)).slice(0, 6);
 }
 
-function reflectionGap(input: Omit<PIEReflectionGap, 'projectName' | 'relatedRecommendationIds'> & {
-  context: ReflectionContext;
-}): PIEReflectionGap {
-  const relatedRecommendationIds = input.context.recommendations
-    .filter(recommendation =>
-      textContains(
-        recommendationText(recommendation),
-        [input.missingEvidenceType, input.title, input.summary],
-      ),
-    )
-    .map(recommendation => recommendation.id);
+function compareConfidence(
+  previous: ProjectConfidenceLevel,
+  updated: ProjectConfidenceLevel,
+): PIEConfidenceChange['direction'] {
+  const score = { low: 1, medium: 2, high: 3 };
+  if (score[updated] > score[previous]) return 'increased';
+  if (score[updated] < score[previous]) return 'decreased';
 
-  return {
-    id: `reflection-gap-${slug(input.id)}`,
-    projectName: input.context.projectName,
-    title: input.title,
-    summary: input.summary,
-    missingEvidenceType: input.missingEvidenceType,
-    impact: input.impact,
-    priority: input.priority,
-    confidence: input.confidence,
-    evidence: uniqueText(input.evidence),
-    relatedRecommendationIds,
-    suggestedAction: input.suggestedAction,
-    createdAt: input.createdAt,
-  };
+  return 'unchanged';
 }
 
-function reflectionRisk(input: Omit<PIEReflectionRisk, 'projectName' | 'createdAt'> & {
-  context: ReflectionContext;
-}): PIEReflectionRisk {
-  return {
-    id: `reflection-risk-${slug(input.id)}`,
-    projectName: input.context.projectName,
-    title: input.title,
-    risk: input.risk,
-    impact: input.impact,
-    priority: input.priority,
-    confidence: input.confidence,
-    evidence: uniqueText(input.evidence),
-    suggestedVerification: input.suggestedVerification,
-    createdAt: input.context.generatedAt,
-  };
-}
-
-function hasStaleUpdateRisk(context: ReflectionContext) {
-  const days = context.intelligence?.metrics.daysSinceLastUpdate;
-  if (days === null || days === undefined) {
-    return (context.memory?.sourceCounts.updates ?? 0) === 0;
-  }
-
-  return days > 7;
-}
-
-function staleUpdateSummary(context: ReflectionContext) {
-  const days = context.intelligence?.metrics.daysSinceLastUpdate;
-  if (days === null || days === undefined) {
-    return 'PIE does not see a saved project update.';
-  }
-
-  return `Last saved update is ${days} day${days === 1 ? '' : 's'} old.`;
-}
-
-function hasPhotoEvidence(context: ReflectionContext) {
-  return Boolean(
-    (context.intelligence?.photoCount ?? 0) > 0 ||
-    (context.memory?.sourceCounts.photos ?? 0) > 0 ||
-    (context.knowledgeGraph?.sourceCounts.photo ?? 0) > 0 ||
-    context.knowledgeGraph?.nodes.some(node => node.type === 'photo'),
-  );
-}
-
-function hasScheduleEvidence(context: ReflectionContext) {
-  return Boolean(
-    (context.intelligence?.metrics.scheduleItemCount ?? 0) > 0 ||
-    (context.memory?.sourceCounts.scheduleItems ?? 0) > 0 ||
-    (context.knowledgeGraph?.sourceCounts.schedule_item ?? 0) > 0 ||
-    context.knowledgeGraph?.nodes.some(node => node.type === 'schedule_item'),
-  );
-}
-
-function hasInspectionEvidence(context: ReflectionContext) {
-  return Boolean(
-    context.projectEvents.some(event => event.eventType === 'inspection_event') ||
-    context.knowledgeGraph?.nodes.some(node => node.type === 'inspection') ||
-    matchingContextEvidence(context, ['inspection passed', 'inspection failed', 'inspection complete', 'inspection scheduled']).length > 0,
-  );
-}
-
-function needsInspectionStatus(context: ReflectionContext) {
-  const text = contextText(context);
-  const inspectionMentioned = textContains(text, [
-    'inspection',
-    'inspect',
-    'approved',
-    'passed',
-    'failed',
-  ]);
-
-  return inspectionMentioned && !hasInspectionEvidence(context);
-}
-
-function matchingContextEvidence(context: ReflectionContext, terms: string[]) {
-  const normalizedTerms = terms.map(term => term.toLowerCase());
-  return uniqueText([
-    ...(context.reasoning?.evidence.map(item => item.detail) ?? []),
-    ...context.projectEvents.map(event => event.description),
-    ...(context.knowledgeGraph?.relationships.map(item => item.summary) ?? []),
-    ...(context.intelligence?.riskSignals.flatMap(risk => risk.evidence) ?? []),
-    ...context.recommendations.flatMap(recommendation => recommendation.evidence),
-  ].filter(item =>
-    normalizedTerms.some(term => item.toLowerCase().includes(term)),
-  ));
-}
-
-function graphGapType(gap: PIEGraphGap): PIEReflectionGap['missingEvidenceType'] {
-  if (gap.missingNodeType === 'photo') return 'photo';
-  if (gap.missingNodeType === 'schedule_item') return 'schedule';
-  if (gap.missingNodeType === 'inspection') return 'inspection';
-  if (gap.missingNodeType === 'document') return 'document';
-
-  return 'relationship';
-}
-
-function memoryGapType(gap: PIEMemoryGap): PIEReflectionGap['missingEvidenceType'] {
-  const text = `${gap.title} ${gap.summary} ${gap.suggestedAction}`.toLowerCase();
-  if (textContains(text, ['photo'])) return 'photo';
-  if (textContains(text, ['schedule'])) return 'schedule';
-  if (textContains(text, ['inspection'])) return 'inspection';
-  if (textContains(text, ['document'])) return 'document';
-  if (textContains(text, ['update', 'recent'])) return 'update';
-
-  return 'unknown';
-}
-
-function questionForGap(gap: PIEReflectionGap) {
-  switch (gap.missingEvidenceType) {
-    case 'photo':
-      return 'Do we have current photos that confirm this project status?';
-    case 'schedule':
-      return 'Is the current schedule imported or updated?';
-    case 'inspection':
-      return 'What is the current inspection status?';
-    case 'document':
-      return 'Which document or specification supports this conclusion?';
-    case 'update':
-      return 'What changed since the last saved update?';
-    case 'owner':
-      return 'Who owns this open item?';
-    case 'relationship':
-      return 'What project record connects this recommendation to evidence?';
-    case 'confidence':
-      return 'What evidence would raise PIE confidence?';
-    case 'unknown':
-    default:
-      return gap.suggestedAction;
-  }
-}
-
-function reflectionScore({
-  confidenceAudit,
-  evidenceAudit,
-  gaps,
-  weakRecommendations,
-  risks,
-}: {
-  confidenceAudit: PIEReflectionConfidenceAudit;
-  evidenceAudit: PIEReflectionEvidenceAudit;
-  gaps: PIEReflectionGap[];
-  weakRecommendations: PIEReflectionWeakRecommendation[];
-  risks: PIEReflectionRisk[];
-}) {
-  return clamp(
-    Math.round(
-      confidenceAudit.score * 0.35 +
-      evidenceAudit.score * 0.35 +
-      (100 - Math.min(100, gaps.length * 10)) * 0.1 +
-      (100 - Math.min(100, weakRecommendations.length * 15)) * 0.1 +
-      (100 - Math.min(100, risks.length * 18)) * 0.1,
-    ),
-    0,
-    100,
-  );
-}
-
-function reflectionSummary({
-  context,
-  reflectionLevel,
-  gaps,
-  weakRecommendations,
-  risks,
-}: {
-  context: ReflectionContext;
-  reflectionLevel: ProjectConfidenceLevel;
-  gaps: PIEReflectionGap[];
-  weakRecommendations: PIEReflectionWeakRecommendation[];
-  risks: PIEReflectionRisk[];
-}) {
-  if (gaps.length === 0 && weakRecommendations.length === 0 && risks.length === 0) {
-    return `PIE Reflection found ${reflectionLevel} self-audit confidence for ${context.projectName}. No major weak recommendation or missing evidence signal is visible.`;
-  }
-
-  return `PIE Reflection found ${weakRecommendations.length} weak recommendation${weakRecommendations.length === 1 ? '' : 's'}, ${gaps.length} evidence gap${gaps.length === 1 ? '' : 's'}, and ${risks.length} reflection risk${risks.length === 1 ? '' : 's'} for ${context.projectName}.`;
-}
-
-function userFacingExplanation({
-  reflectionLevel,
-  weakRecommendations,
-  gaps,
-  whatPIEShouldVerifyFirst,
-}: {
-  reflectionLevel: ProjectConfidenceLevel;
-  weakRecommendations: PIEReflectionWeakRecommendation[];
-  gaps: PIEReflectionGap[];
-  whatPIEShouldVerifyFirst: string;
-}) {
-  if (reflectionLevel === 'high') {
-    return `PIE's current thinking appears well supported. First verification: ${whatPIEShouldVerifyFirst}`;
-  }
-
-  if (weakRecommendations.length > 0) {
-    return `PIE sees a recommendation that needs stronger support before acting. First verification: ${whatPIEShouldVerifyFirst}`;
-  }
-
-  if (gaps.length > 0) {
-    return `PIE is missing evidence that would improve confidence. First verification: ${whatPIEShouldVerifyFirst}`;
-  }
-
-  return `PIE should keep confidence moderate until more evidence is available. First verification: ${whatPIEShouldVerifyFirst}`;
-}
-
-function strongestBelief(beliefs: PIEBelief[]): PIEBelief | null {
-  return [...beliefs].sort((first, second) =>
-    beliefScore(second) - beliefScore(first),
-  )[0] ?? null;
-}
-
-function weakestBelief(beliefs: PIEBelief[]): PIEBelief | null {
-  return [...beliefs].sort((first, second) =>
-    beliefScore(first) - beliefScore(second),
-  )[0] ?? null;
-}
-
-function beliefScore(belief: PIEBelief) {
-  return scoreForConfidence(belief.confidence) +
-    belief.supportingEvidence.length * 8 -
-    belief.contradictingEvidence.length * 22 -
-    belief.remainingUncertainty.length * 8;
-}
-
-function recommendationText(recommendation: ReflectionRecommendation) {
-  return `${recommendation.title} ${recommendation.summary} ${recommendation.suggestedAction} ${recommendation.evidence.join(' ')}`.toLowerCase();
-}
-
-function contextText(context: ReflectionContext) {
-  return [
-    context.runtimeResponse?.whatPIEKnows,
-    context.runtimeResponse?.whatChanged,
-    context.runtimeResponse?.whatConcernsPIE,
-    context.runtimeResponse?.whatPIERecommends,
-    context.executiveBrief?.executiveSummary,
-    ...(context.recommendations.map(recommendation => recommendationText(recommendation))),
-    ...(context.reasoning?.evidence.map(item => `${item.title} ${item.detail}`) ?? []),
-    ...context.projectEvents.map(event => `${event.title} ${event.description}`),
-    ...(context.knowledgeGraph?.relationships.map(item => item.summary) ?? []),
-  ].join(' ').toLowerCase();
-}
-
-function asReflectionResult(input: ReflectionInput): PIEReflectionResult | null {
-  return isReflectionResult(input) ? input : null;
-}
-
-function isReflectionResult(input: ReflectionInput): input is PIEReflectionResult {
-  return Boolean(
-    input &&
-      typeof input === 'object' &&
-      'overallReflectionScore' in input &&
-      'confidenceAudit' in input &&
-      'evidenceAudit' in input,
-  );
-}
-
-function reflectionSources(context: ReflectionContext): PIEReflectionSource[] {
-  return uniqueText([
-    context.runtime ? 'pie-runtime' : null,
-    context.runtimeResponse ? 'pie-runtime-response' : null,
-    context.executiveBrief ? 'pie-executive' : null,
-    context.decisionQueue ? 'pie-decision' : null,
-    context.reasoning ? 'pie-reasoning' : null,
-    context.memory ? 'pie-memory' : null,
-    context.knowledgeGraph ? 'pie-knowledge-graph' : null,
-    context.projectEvents.length > 0 ? 'project-event' : null,
-    context.intelligence ? 'project-intelligence' : null,
-    'pie-reflection',
-  ]) as PIEReflectionSource[];
-}
-
-function dedupeReflectionRecommendations(
-  recommendations: ReflectionRecommendation[],
-): ReflectionRecommendation[] {
-  const byKey = new Map<string, ReflectionRecommendation>();
-  recommendations.forEach(recommendation => {
-    const key = normalizedKey(`${recommendation.title} ${recommendation.suggestedAction}`);
-    const existing = byKey.get(key);
-    if (!existing) {
-      byKey.set(key, {
-        ...recommendation,
-        evidence: uniqueText(recommendation.evidence),
-      });
-      return;
-    }
-
-    byKey.set(key, {
-      ...existing,
-      evidence: uniqueText([...existing.evidence, ...recommendation.evidence]),
-      confidence: lowerConfidence(existing.confidence, recommendation.confidence),
-      priority: higherPriority(existing.priority, recommendation.priority),
-      userApprovalRequired:
-        existing.userApprovalRequired || recommendation.userApprovalRequired,
-    });
-  });
-
-  return Array.from(byKey.values());
-}
-
-function dedupeBeliefs(beliefs: PIEBelief[]): PIEBelief[] {
-  return uniqueBy(beliefs, belief => belief.id);
-}
-
-function dedupeReasoningQuestions(questions: PIEQuestion[]): PIEQuestion[] {
-  return uniqueBy(questions, question => question.id);
-}
-
-function dedupeMemoryGaps(gaps: PIEMemoryGap[]): PIEMemoryGap[] {
-  return uniqueBy(gaps, gap => gap.id);
-}
-
-function dedupeGraphGaps(gaps: PIEGraphGap[]): PIEGraphGap[] {
-  return uniqueBy(gaps, gap => gap.id);
-}
-
-function dedupeRelationships(
-  relationships: PIEGraphRelationship[],
-): PIEGraphRelationship[] {
-  return uniqueBy(relationships, relationship => relationship.id);
-}
-
-function dedupeWeakRecommendations(
-  recommendations: PIEReflectionWeakRecommendation[],
-): PIEReflectionWeakRecommendation[] {
-  return uniqueBy(recommendations, recommendation => recommendation.id);
-}
-
-function dedupeGaps(gaps: PIEReflectionGap[]): PIEReflectionGap[] {
-  return uniqueBy(gaps, gap => gap.id);
-}
-
-function dedupeRisks(risks: PIEReflectionRisk[]): PIEReflectionRisk[] {
-  return uniqueBy(risks, risk => risk.id);
-}
-
-function dedupeQuestions(
-  questions: PIEReflectionVerificationQuestion[],
-): PIEReflectionVerificationQuestion[] {
-  return uniqueBy(questions, question => normalizedKey(question.question));
-}
-
-function dedupeFindings(findings: PIEReflectionFinding[]): PIEReflectionFinding[] {
-  return uniqueBy(findings, finding => finding.id);
-}
-
-function dedupeConfidenceAdjustments(
-  adjustments: PIEReflectionConfidenceAdjustment[],
-): PIEReflectionConfidenceAdjustment[] {
-  return uniqueBy(adjustments, adjustment => adjustment.id);
-}
-
-function sortWeakRecommendations(
-  recommendations: PIEReflectionWeakRecommendation[],
-): PIEReflectionWeakRecommendation[] {
-  return [...recommendations].sort((first, second) =>
-    priorityRank(second.priority) - priorityRank(first.priority) ||
-    first.evidenceCount - second.evidenceCount,
-  );
-}
-
-function sortGaps(gaps: PIEReflectionGap[]): PIEReflectionGap[] {
-  return [...gaps].sort((first, second) =>
-    priorityRank(second.priority) - priorityRank(first.priority),
-  );
-}
-
-function sortRisks(risks: PIEReflectionRisk[]): PIEReflectionRisk[] {
-  return [...risks].sort((first, second) =>
-    priorityRank(second.priority) - priorityRank(first.priority),
-  );
-}
-
-function sortQuestions(
-  questions: PIEReflectionVerificationQuestion[],
-): PIEReflectionVerificationQuestion[] {
-  return [...questions].sort((first, second) =>
-    priorityRank(second.priority) - priorityRank(first.priority),
-  );
-}
-
-function sortFindings(findings: PIEReflectionFinding[]): PIEReflectionFinding[] {
-  return [...findings].sort((first, second) =>
-    priorityRank(second.priority) - priorityRank(first.priority),
-  );
-}
-
-function isStale(occurredAt: string | null, generatedAt: string) {
-  if (!occurredAt) return false;
-
-  return daysBetween(occurredAt, generatedAt) > 14;
-}
-
-function daysBetween(start: string, end: string) {
-  const startTime = Date.parse(start);
-  const endTime = Date.parse(end);
-
-  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return 0;
-
-  return Math.abs(endTime - startTime) / (1000 * 60 * 60 * 24);
-}
-
-function confidenceFromScore(score: number): ProjectConfidenceLevel {
-  if (score >= 80) return 'high';
-  if (score >= 55) return 'medium';
-
-  return 'low';
-}
-
-function scoreForConfidence(confidence: ProjectConfidenceLevel): number {
-  if (confidence === 'high') return 90;
-  if (confidence === 'medium') return 65;
-
-  return 35;
-}
-
-function lowerConfidence(
-  first: ProjectConfidenceLevel,
-  second?: ProjectConfidenceLevel,
-): ProjectConfidenceLevel {
-  if (!second) {
-    if (first === 'high') return 'medium';
-    if (first === 'medium') return 'low';
-    return 'low';
-  }
-
-  return confidenceRank(second) < confidenceRank(first) ? second : first;
-}
-
-function confidenceRank(confidence: ProjectConfidenceLevel) {
-  if (confidence === 'high') return 3;
-  if (confidence === 'medium') return 2;
-
-  return 1;
-}
-
-function higherPriority(
-  first: PIEReflectionPriority,
-  second: PIEReflectionPriority,
-): PIEReflectionPriority {
-  return priorityRank(second) > priorityRank(first) ? second : first;
-}
-
-function priorityRank(priority: PIEDecisionPriority | PIEReflectionPriority) {
-  if (priority === 'critical') return 4;
-  if (priority === 'high') return 3;
-  if (priority === 'medium') return 2;
-
-  return 1;
-}
-
-function textContains(value: string, candidates: string[]) {
-  const normalized = value.toLowerCase();
-
-  return candidates.some(candidate => normalized.includes(candidate.toLowerCase()));
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  return Math.max(minimum, Math.min(maximum, value));
-}
-
-function uniqueBy<T>(items: T[], keyForItem: (item: T) => string): T[] {
-  const seen = new Set<string>();
-  const result: T[] = [];
-
-  items.forEach(item => {
-    const key = keyForItem(item);
-    if (seen.has(key)) return;
-
-    seen.add(key);
-    result.push(item);
-  });
-
-  return result;
-}
-
-function uniqueText(values: Array<string | null | undefined>): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  values.forEach(value => {
-    const text = value?.trim();
-    if (!text) return;
-
-    const key = text.toLowerCase();
-    if (seen.has(key)) return;
-
-    seen.add(key);
-    result.push(text);
-  });
-
-  return result;
-}
-
-function normalizedKey(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+function evidenceTypeFromText(value: string): PIEReflectionGap['missingEvidenceType'] {
+  if (/photo|image|visual/i.test(value)) return 'photo';
+  if (/schedule|milestone|critical|due/i.test(value)) return 'schedule';
+  if (/gps|location|area/i.test(value)) return 'gps';
+  if (/report|approval|communication/i.test(value)) return 'report';
+  if (/document|inspection|permit/i.test(value)) return 'document';
+
+  return 'update';
 }
 
 function slug(value: string) {
-  return normalizedKey(value).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80);
 }
