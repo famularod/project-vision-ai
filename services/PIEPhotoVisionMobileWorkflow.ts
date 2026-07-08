@@ -610,7 +610,15 @@ async function findPriorComparablePhoto(
   priorUpdates: ProjectUpdate[],
 ) {
   const currentKey = buildPIEPriorPhotoMatchKey(update, photo);
-  const accepted: Array<{
+  const acceptedConfirmedArea: Array<{
+    update: ProjectUpdate;
+    photo: UpdatePhoto;
+    reason: string;
+    capturedAt: number;
+    candidateIndex: number;
+    preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
+  }> = [];
+  const acceptedAreaFallback: Array<{
     update: ProjectUpdate;
     photo: UpdatePhoto;
     reason: string;
@@ -654,7 +662,14 @@ async function findPriorComparablePhoto(
       }
       afterSameProject += 1;
 
-      if (currentKey.normalizedAreaKey && candidateKey.normalizedAreaKey !== currentKey.normalizedAreaKey) {
+      const isAreaFallbackCandidate =
+        Boolean(currentKey.normalizedAreaKey) && !candidateKey.normalizedAreaKey;
+
+      if (
+        currentKey.normalizedAreaKey &&
+        candidateKey.normalizedAreaKey &&
+        candidateKey.normalizedAreaKey !== currentKey.normalizedAreaKey
+      ) {
         rejectedReasons.push(`${label} rejected: prior_photo_wrong_area`);
         skippedCandidateCount += 1;
         continue;
@@ -692,21 +707,34 @@ async function findPriorComparablePhoto(
       }
       afterUsableImage += 1;
 
-      accepted.push({
+      const candidateRecord = {
         update: candidateUpdate,
         photo: candidatePhoto,
         capturedAt: candidateKey.timestampMs ?? 0,
         candidateIndex: candidateCount,
         preparedFile,
-        reason: currentKey.normalizedAreaKey
-          ? 'most recent valid earlier photo from same project and area'
-          : 'most recent valid earlier photo from same project',
-      });
+        reason: isAreaFallbackCandidate
+          ? 'most recent valid earlier photo from same project; prior photo has no area set, matched as area-unconfirmed fallback (no same-area candidate was available)'
+          : currentKey.normalizedAreaKey
+            ? 'most recent valid earlier photo from same project and area'
+            : 'most recent valid earlier photo from same project',
+      };
+
+      if (isAreaFallbackCandidate) {
+        acceptedAreaFallback.push(candidateRecord);
+      } else {
+        acceptedConfirmedArea.push(candidateRecord);
+      }
     }
   }
 
-  accepted.sort((a, b) => b.capturedAt - a.capturedAt || a.candidateIndex - b.candidateIndex);
-  const selected = accepted[0] ?? null;
+  const byRecency = (
+    a: { capturedAt: number; candidateIndex: number },
+    b: { capturedAt: number; candidateIndex: number },
+  ) => b.capturedAt - a.capturedAt || a.candidateIndex - b.candidateIndex;
+  acceptedConfirmedArea.sort(byRecency);
+  acceptedAreaFallback.sort(byRecency);
+  const selected = acceptedConfirmedArea[0] ?? acceptedAreaFallback[0] ?? null;
   const noPriorReason = selected
     ? null
     : noPriorReasonFromCounters({
