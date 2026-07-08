@@ -5017,6 +5017,8 @@ function AppShell() {
 
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
+  const savedUpdatesRef = useRef(savedUpdates);
+  savedUpdatesRef.current = savedUpdates;
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
     photo: UpdatePhoto;
@@ -5387,12 +5389,13 @@ useEffect(() => {
     void cleanupStoredPhotoDirectory([draft, ...savedUpdates]);
   }, [updatesLoaded, draftLoaded, draft, savedUpdates]);
 
+  const hasQueuedSyncRetries = useMemo(
+    () => savedUpdates.some(update => updateNeedsAutomaticSyncRetry(update)),
+    [savedUpdates],
+  );
+
   useEffect(() => {
-    if (!updatesLoaded) return;
-
-    const hasQueued = savedUpdates.some(update => updateNeedsAutomaticSyncRetry(update));
-
-    if (!hasQueued) return;
+    if (!updatesLoaded || !hasQueuedSyncRetries) return;
 
     const timer = setInterval(() => {
       void hydrateQueuedUpdates();
@@ -5401,7 +5404,7 @@ useEffect(() => {
     void hydrateQueuedUpdates();
 
     return () => clearInterval(timer);
-  }, [updatesLoaded, savedUpdates]);
+  }, [updatesLoaded, hasQueuedSyncRetries]);
 
   useEffect(() => {
     if (!updatesLoaded) return;
@@ -6500,7 +6503,7 @@ useEffect(() => {
   async function hydrateQueuedUpdates() {
     if (queuedHydrationInFlight.current) return;
 
-    const queuedUpdates = savedUpdates.filter(updateNeedsAutomaticSyncRetry);
+    const queuedUpdates = savedUpdatesRef.current.filter(updateNeedsAutomaticSyncRetry);
 
     if (queuedUpdates.length === 0) return;
 
