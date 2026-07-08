@@ -1,4 +1,4 @@
-import { loadCloudProjects, saveCloudProject } from './services/projectService';
+import { deleteCloudProject, loadCloudProjects, saveCloudProject } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import {
   uploadLocalPhoto,
@@ -4929,6 +4929,9 @@ function AppShell() {
   const [archivedProjects, setArchivedProjects] =
     useState<string[]>([]);
 
+  const [deletingProjectName, setDeletingProjectName] =
+    useState<string | null>(null);
+
   const [projectAreas, setProjectAreas] =
     useState<ProjectArea[]>(DEFAULT_PROJECT_AREAS);
 
@@ -6755,6 +6758,70 @@ function addProject(projectName: string) {
           projectName.toLowerCase(),
       ),
     );
+  }
+
+  async function deleteProjectPermanently(projectName: string) {
+    setDeletingProjectName(projectName);
+
+    try {
+      await deleteCloudProject(projectName);
+
+      const remainingProjects = projects.filter(
+        project => project.toLowerCase() !== projectName.toLowerCase(),
+      );
+      const remainingActiveProjects = remainingProjects.filter(
+        project =>
+          !archivedProjects.some(
+            archived => archived.toLowerCase() === project.toLowerCase(),
+          ),
+      );
+      const fallbackProject =
+        remainingActiveProjects[0] || DEFAULT_PROJECTS[0];
+
+      setProjects(remainingProjects);
+      setArchivedProjects(prev =>
+        prev.filter(
+          project => project.toLowerCase() !== projectName.toLowerCase(),
+        ),
+      );
+      setSavedUpdates(prev =>
+        prev.filter(update => !projectMatchesScope(update, projectName)),
+      );
+      setProjectDocuments(prev =>
+        prev.filter(
+          document => !projectDocumentMatchesProject(document, projectName),
+        ),
+      );
+      setScheduleItems(prev =>
+        prev.filter(
+          item => item.projectName.toLowerCase() !== projectName.toLowerCase(),
+        ),
+      );
+
+      if (draft.projectName.toLowerCase() === projectName.toLowerCase()) {
+        setDraft(createDraft(fallbackProject));
+        setDraftSavedAt(null);
+        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
+      }
+
+      if (
+        overviewProjectSelection &&
+        overviewProjectSelection.toLowerCase() === projectName.toLowerCase()
+      ) {
+        setOverviewProjectSelection(undefined);
+        setOverviewProjectManuallySelected(false);
+      }
+
+      setSelectedWorkspaceProject(fallbackProject);
+      setScreen('Projects');
+    } catch {
+      Alert.alert(
+        'Delete failed',
+        `${projectName} could not be deleted. Check your connection and try again.`,
+      );
+    } finally {
+      setDeletingProjectName(null);
+    }
   }
 
   function addProjectArea(name: string) {
@@ -8849,6 +8916,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onOpenPhotoDifferences={openLatestProjectPhotoDifference}
               onOpenDocuments={() => setScreen('ProjectDocuments')}
               onRetryQueuedUpdate={retryQueuedUpdate}
+              onDeleteProject={deleteProjectPermanently}
+              isDeletingProject={deletingProjectName === selectedWorkspaceProject}
             />
           )}
 
@@ -12202,6 +12271,8 @@ function ProjectWorkspaceScreen({
   onOpenPhotoDifferences,
   onOpenDocuments,
   onRetryQueuedUpdate,
+  onDeleteProject,
+  isDeletingProject,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   projectName: string;
@@ -12215,6 +12286,8 @@ function ProjectWorkspaceScreen({
   onOpenPhotoDifferences: (projectName: string) => void;
   onOpenDocuments: () => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
+  onDeleteProject: (projectName: string) => void;
+  isDeletingProject: boolean;
 }) {
   const projectUpdates = savedUpdates.filter(
     update => projectMatchesScope(update, projectName),
@@ -12355,6 +12428,19 @@ function ProjectWorkspaceScreen({
           />
         ))
       )}
+
+      <Text style={styles.sectionLabel}>Danger Zone</Text>
+      <HoldToDeleteButton
+        label="Hold to Delete Project"
+        holdingLabel="Keep holding…"
+        deletingLabel="Deleting…"
+        isDeleting={isDeletingProject}
+        onConfirm={() => onDeleteProject(projectName)}
+      />
+      <Text style={styles.locationDetailText}>
+        Press and hold for 3 seconds to permanently delete {projectName} and its
+        cloud data. Release early to cancel.
+      </Text>
     </ScrollView>
   );
 }
@@ -15628,6 +15714,89 @@ function PrimaryButton({
   );
 }
 
+const HOLD_TO_DELETE_DURATION_MS = 3000;
+const HOLD_TO_DELETE_TICK_MS = 50;
+
+function HoldToDeleteButton({
+  label,
+  holdingLabel,
+  deletingLabel,
+  isDeleting,
+  onConfirm,
+}: {
+  label: string;
+  holdingLabel: string;
+  deletingLabel: string;
+  isDeleting: boolean;
+  onConfirm: () => void;
+}) {
+  const [progress, setProgress] = useState(0);
+  const [holding, setHolding] = useState(false);
+  const holdTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function clearHoldTimer() {
+    if (holdTimer.current) {
+      clearInterval(holdTimer.current);
+      holdTimer.current = null;
+    }
+  }
+
+  function startHold() {
+    if (isDeleting) return;
+
+    setHolding(true);
+    setProgress(0);
+
+    const startedAt = Date.now();
+
+    holdTimer.current = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const nextProgress = Math.min(
+        100,
+        (elapsed / HOLD_TO_DELETE_DURATION_MS) * 100,
+      );
+
+      setProgress(nextProgress);
+
+      if (nextProgress >= 100) {
+        clearHoldTimer();
+        setHolding(false);
+        setProgress(0);
+        onConfirm();
+      }
+    }, HOLD_TO_DELETE_TICK_MS);
+  }
+
+  function cancelHold() {
+    clearHoldTimer();
+    setHolding(false);
+    setProgress(0);
+  }
+
+  useEffect(() => clearHoldTimer, []);
+
+  return (
+    <TouchableOpacity
+      style={styles.holdToDeleteButton}
+      activeOpacity={0.85}
+      disabled={isDeleting}
+      onPressIn={startHold}
+      onPressOut={cancelHold}
+    >
+      <View
+        style={[
+          styles.holdToDeleteFill,
+          { width: `${progress}%` },
+        ]}
+      />
+      <Ionicons name="trash-outline" size={19} color={colors.danger} />
+      <Text style={styles.holdToDeleteText}>
+        {isDeleting ? deletingLabel : holding ? holdingLabel : label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
 function SecondaryButton({
   label,
   icon,
@@ -15888,6 +16057,37 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     minHeight: 54,
     justifyContent: 'center',
+  },
+
+  holdToDeleteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: colors.dangerSoft,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    minHeight: 54,
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+
+  holdToDeleteFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: colors.danger,
+    opacity: 0.25,
+  },
+
+  holdToDeleteText: {
+    color: colors.danger,
+    fontSize: 16,
+    fontWeight: '700',
   },
 
   secondaryButton: {

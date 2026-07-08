@@ -32,6 +32,6 @@ export function setCloudProjectArchived(projectName: string, archived: boolean) 
   void queueProjectUpdate({ previousName: projectName, archived });
 }
 
-export function deleteCloudProject(projectName: string) {
-  void queueProjectDelete(projectName);
+export async function deleteCloudProject(projectName: string): Promise<void> {
+  await queueProjectDelete(projectName);
 }
