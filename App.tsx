@@ -3866,13 +3866,18 @@ function classifySyncFailureCategory(
   const message = errors.join(' ').toLowerCase();
 
   if (!message.trim()) return 'unknown';
-  if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(message)) return 'offline';
-  if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
+  // Highest-confidence, most specific signals are checked first so a message
+  // that happens to also mention "network" or "fetch" (common in wrapped
+  // fetch/auth errors) is never misclassified as offline. Generic
+  // offline/network wording is checked last, only once nothing more
+  // specific has matched.
   if (/row level|rls|policy|permission denied|42501|violates row-level/.test(message)) return 'rls_denied';
-  if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';
+  if (/signed out|sign in|no user|session unavailable|storage_unavailable/.test(message)) return 'signed_out';
   if (/auth|jwt|token|unauthorized|forbidden|401|403/.test(message)) return 'auth';
   if (/malformed|invalid|schema|column|not null|constraint|payload/.test(message)) return 'malformed_payload';
   if (/database|insert|upsert|postgres|postgrest|supabase/.test(message)) return 'database_insert_failed';
+  if (/photo|storage|bucket|object|upload/.test(message)) return 'storage_upload_failed';
+  if (/offline|network|connection|fetch|timeout|unreachable|internet/.test(message)) return 'offline';
   return 'unknown';
 }
 
