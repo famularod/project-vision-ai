@@ -5257,6 +5257,44 @@ useEffect(() => {
     ).catch(() => undefined);
   }, [savedUpdates, updatesLoaded]);
 
+  // TEMPORARY DEBUG DUMP — remove after PIE prior-photo matching bug is fixed.
+  useEffect(() => {
+    if (!__DEV__ || !updatesLoaded) return;
+
+    const DEBUG_PROJECT_NAME = 'New computer';
+    const matches = savedUpdates.filter(
+      item => item.projectName === DEBUG_PROJECT_NAME,
+    );
+    if (matches.length === 0) return;
+
+    console.log(
+      `PIE_DEBUG_DUMP savedUpdates for "${DEBUG_PROJECT_NAME}" (${matches.length} update(s)):`,
+      JSON.stringify(
+        matches.map(update => ({
+          id: update.id,
+          projectName: update.projectName,
+          date: update.date,
+          status: update.status,
+          areaStatus: update.areaStatus,
+          selectedAreaId: update.selectedAreaId,
+          selectedAreaName: update.selectedAreaName,
+          locationCapturedAt: update.locationCapturedAt,
+          pieStartedAt: update.pieStartedAt,
+          workflowTimestamps: update.workflowTimestamps,
+          photos: (update.photos || []).map(photo => ({
+            id: photo.id,
+            selectedAreaId: photo.selectedAreaId,
+            selectedAreaName: photo.selectedAreaName,
+            locationCapturedAt: photo.locationCapturedAt,
+            uri: photo.uri,
+          })),
+        })),
+        null,
+        2,
+      ),
+    );
+  }, [savedUpdates, updatesLoaded]);
+
   useEffect(() => {
     if (!deletedUpdateTombstonesLoaded) return;
 
