@@ -149,6 +149,7 @@ export type ProjectUpdate = {
   distanceFromSelectedAreaFeet?: number | null;
   locationCapturedAt?: string | null;
   pieStartedAt?: string | null;
+  status?: 'draft' | 'ready_to_send' | 'queued' | 'sent' | 'failed';
   workflowTimestamps?: {
     startedAt?: string;
     cameraActionStartedAt?: string;

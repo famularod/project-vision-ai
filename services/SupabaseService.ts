@@ -505,6 +505,20 @@ export async function getCurrentUser(): Promise<SupabaseServiceResult<User | nul
   return okResult(data.user ?? null);
 }
 
+export function subscribeToAuthStateChange(
+  callback: (event: string, session: Session | null) => void,
+): () => void {
+  const client = getSupabaseClient();
+
+  if (!client) return () => undefined;
+
+  const { data } = client.auth.onAuthStateChange((event, session) => {
+    callback(event, session);
+  });
+
+  return () => data.subscription.unsubscribe();
+}
+
 export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceResult<SupabaseSessionTokenLookupResult>> {
   const client = getSupabaseClient();
   const storageAvailable = await probeAuthStorage();

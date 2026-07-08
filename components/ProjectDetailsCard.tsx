@@ -327,19 +327,23 @@ export function SecondaryButton({
   icon,
   onPress,
   compact,
+  disabled,
 }: {
   label: string;
   icon?: IconName;
   onPress: () => void;
   compact?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <TouchableOpacity
       style={[
         styles.secondaryButton,
         compact && styles.compactButton,
+        disabled && styles.disabledButton,
       ]}
       onPress={onPress}
+      disabled={disabled}
     >
       <View style={styles.buttonContent}>
         {icon ? (
