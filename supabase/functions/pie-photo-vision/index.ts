@@ -66,7 +66,7 @@ Deno.serve(async req => {
   const mode: VisionMode = request.mode ?? (request.baselineEvidenceId && request.currentEvidenceId ? 'photo_pair' : 'single_photo');
   const requestId = request.requestId ?? buildRequestId(request, mode);
 
-  const hasAccess = await verifyProjectAccess(userClient, request.organizationId, request.projectId);
+  const hasAccess = await verifyProjectAccess(userData.user.id, request.organizationId, request.projectId);
   if (!hasAccess) return json({ error: 'forbidden' }, 403);
 
   const evidenceIds = mode === 'single_photo'
@@ -192,13 +192,14 @@ Deno.serve(async req => {
   });
 });
 
-async function verifyProjectAccess(client: ReturnType<typeof createClient>, organizationId: string, projectId: string): Promise<boolean> {
-  const { data, error } = await client.rpc('pie_layer4_has_permission', {
-    org_id: organizationId,
-    project_id: projectId,
-    permission_name: 'synchronize_decision_history',
-  });
-  return !error && data === true;
+async function verifyProjectAccess(userId: string, organizationId: string, projectId: string): Promise<boolean> {
+  // Single-user app, no team/org sharing: the caller may only act on their own
+  // organizationId (which the client always sets to its own auth uid), mirroring
+  // the "organization_id = auth.uid()::text" ownership check used by the
+  // pie-project-evidence storage/table RLS policies. This intentionally no
+  // longer routes through pie_layer4_has_permission/organization_memberships,
+  // which has no membership rows for this account.
+  return Boolean(organizationId) && organizationId === userId && Boolean(projectId);
 }
 
 async function loadAuthorizedImage(
