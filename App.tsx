@@ -5,6 +5,7 @@ import {
   uploadLocalPhotoWithDiagnostics,
   uploadPendingChanges,
   removeProjectUpdateFromSyncQueue,
+  type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
   type SyncUploadResult,
 } from './services/SyncService';
@@ -14,6 +15,7 @@ import {
   signUp,
   uploadPhoto,
 } from './services/SupabaseService';
+import { AdminScreen } from './screens/AdminScreen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -90,7 +92,8 @@ type Screen =
   | 'ReferenceDocuments'
   | 'ProjectDocuments'
   | 'Schedule'
-  | 'Upcoming';
+  | 'Upcoming'
+  | 'Admin';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -6582,6 +6585,28 @@ useEffect(() => {
     }
   }
 
+  async function removeMissingSyncPhotos(missingPhotos: MissingSyncPhoto[]) {
+    const missingByUpdateId = new Map<string, Set<string>>();
+
+    for (const missingPhoto of missingPhotos) {
+      const photoIds = missingByUpdateId.get(missingPhoto.updateId) || new Set<string>();
+      photoIds.add(missingPhoto.photoId);
+      missingByUpdateId.set(missingPhoto.updateId, photoIds);
+    }
+
+    setSavedUpdates(prev =>
+      prev.map(update => {
+        const missingPhotoIds = missingByUpdateId.get(update.id);
+        if (!missingPhotoIds) return update;
+
+        return {
+          ...update,
+          photos: update.photos.filter(photo => !missingPhotoIds.has(photo.id)),
+        };
+      }),
+    );
+  }
+
   function createNewUpdate(projectName?: string) {
     const target = projectName || activeProjects[0];
 
@@ -8769,6 +8794,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }}
               onRetryQueuedUpdate={retryQueuedUpdate}
               onViewProjects={() => setScreen('Projects')}
+              onOpenSettings={() => setScreen('Admin')}
             />
           )}
 
@@ -8996,6 +9022,36 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 onBack={() => setScreen('Projects')}
               />
             </ScreenScroll>
+          )}
+
+          {screen === 'Admin' && (
+            <AdminScreen
+              contentStyle={contentStyle}
+              localProjects={activeProjects}
+              savedUpdates={savedUpdates}
+              projectAreas={projectAreas}
+              scheduleItems={scheduleItems}
+              referenceDocuments={referenceDocuments}
+              startupConnectionResult={null}
+              onBack={() => setScreen('Home')}
+              onDiagnostics={() => setScreen('Diagnostics')}
+              onProjectManagement={() => setScreen('Projects')}
+              onReferenceDocuments={() => setScreen('ReferenceDocuments')}
+              onSchedule={() => setScreen('Schedule')}
+              onBackup={() => {
+                void exportBackup();
+              }}
+              onRestore={() => {
+                void restoreBackup();
+              }}
+              onAddArea={addProjectArea}
+              onUpdateArea={updateProjectArea}
+              onDeleteArea={deleteProjectArea}
+              onUseCurrentLocationForArea={areaId => {
+                void useCurrentLocationForArea(areaId);
+              }}
+              onRemoveMissingPhotos={removeMissingSyncPhotos}
+            />
           )}
 
           {screen === 'Contacts' && (
@@ -9250,6 +9306,7 @@ function HomeScreen({
   onRetryPhotoAnalysis,
   onRetryQueuedUpdate,
   onViewProjects,
+  onOpenSettings,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
@@ -9270,6 +9327,7 @@ function HomeScreen({
   onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
   onViewProjects: () => void;
+  onOpenSettings: () => void;
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [selectorIntent, setSelectorIntent] =
@@ -9376,6 +9434,9 @@ function HomeScreen({
       <ScreenTitle
         title="Overview"
         subtitle="Fast access to the next field update and current project attention."
+        actionIcon="settings-outline"
+        onActionPress={onOpenSettings}
+        actionAccessibilityLabel="Settings"
       />
 
       <TouchableOpacity
@@ -15652,19 +15713,38 @@ function TabButton({
 function ScreenTitle({
   title,
   subtitle,
+  actionIcon,
+  onActionPress,
+  actionAccessibilityLabel,
 }: {
   title: string;
   subtitle: string;
+  actionIcon?: IconName;
+  onActionPress?: () => void;
+  actionAccessibilityLabel?: string;
 }) {
   return (
-    <View style={styles.screenTitle}>
-      <Text style={styles.title}>
-        {title}
-      </Text>
+    <View style={styles.screenTitleRow}>
+      <View style={styles.screenTitle}>
+        <Text style={styles.title}>
+          {title}
+        </Text>
 
-      <Text style={styles.subtitle}>
-        {subtitle}
-      </Text>
+        <Text style={styles.subtitle}>
+          {subtitle}
+        </Text>
+      </View>
+
+      {actionIcon && onActionPress ? (
+        <TouchableOpacity
+          style={styles.screenTitleActionButton}
+          onPress={onActionPress}
+          accessibilityLabel={actionAccessibilityLabel}
+          hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+        >
+          <Ionicons name={actionIcon} size={22} color={colors.primary} />
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -15994,8 +16074,25 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
+  screenTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+
   screenTitle: {
+    flex: 1,
     marginBottom: 12,
+  },
+
+  screenTitleActionButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: colors.fill,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   sectionLabel: {
