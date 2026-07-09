@@ -1,5 +1,46 @@
 {
   "enabledPlugins": {
     "expo@claude-plugins-official": true
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npx expo *)",
+      "Bash(npx tsc *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(git stash *)",
+      "Bash(git fetch *)",
+      "Bash(git pull)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(grep *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(gh pr merge *)",
+      "Bash(supabase functions deploy *)",
+      "Bash(supabase db push *)",
+      "Bash(supabase migration *)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(rm -rf *)",
+      "Bash(git branch -D main)",
+      "Bash(git branch -D v0.8-architecture-refactor)",
+      "Bash(supabase db reset*)",
+      "Bash(curl *)",
+      "Bash(wget *)"
+    ]
   }
 }
