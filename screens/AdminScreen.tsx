@@ -71,8 +71,6 @@ export function AdminScreen({
   onProjectManagement,
   onReferenceDocuments,
   onSchedule,
-  onHistory,
-  onConstructionTimeline,
   onBackup,
   onRestore,
   onAddArea,
@@ -94,8 +92,6 @@ export function AdminScreen({
   onProjectManagement: () => void;
   onReferenceDocuments: () => void;
   onSchedule: () => void;
-  onHistory: () => void;
-  onConstructionTimeline: () => void;
   onBackup: () => void;
   onRestore: () => void;
   onAddArea: (name: string) => boolean;
@@ -281,10 +277,10 @@ export function AdminScreen({
         </ScreenCard>
       </ScreenSection>
 
-      <ScreenSection title="Schedule, Documents, and History">
+      <ScreenSection title="Schedule and Documents">
         <ScreenCard>
           <Text style={styles.cardText}>
-            Documents, schedules, timeline tools, and saved history stay available here so PIE and Capture can stay focused.
+            Documents and schedules stay available here so PIE and Capture can stay focused.
           </Text>
 
           <View style={styles.actionGrid}>
@@ -298,18 +294,6 @@ export function AdminScreen({
               label="Schedule"
               icon="calendar-outline"
               onPress={onSchedule}
-            />
-
-            <AdminActionButton
-              label="Timeline"
-              icon="git-branch-outline"
-              onPress={onConstructionTimeline}
-            />
-
-            <AdminActionButton
-              label="History"
-              icon="time-outline"
-              onPress={onHistory}
             />
           </View>
         </ScreenCard>
