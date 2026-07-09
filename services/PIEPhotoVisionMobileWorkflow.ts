@@ -896,7 +896,49 @@ function buildPriorSelectionDiagnostics(
   };
 }
 
-async function stagePhotoEvidence({
+function buildPhotoEvidenceId(
+  organizationId: string,
+  projectId: string,
+  updateId: string,
+  photoId: string,
+) {
+  return `pie-mobile-photo-${stableHash([
+    organizationId,
+    projectId,
+    updateId,
+    photoId,
+  ].join(':'))}`;
+}
+
+const photoEvidenceStagingCache = new Map<string, Promise<StagedPhotoEvidence>>();
+
+function stagePhotoEvidence(params: {
+  organizationId: string;
+  projectId: string;
+  update: ProjectUpdate;
+  photo: UpdatePhoto;
+  captureSource: 'camera' | 'library';
+  preparedFile: PreparedPhotoFile;
+}): Promise<StagedPhotoEvidence> {
+  const evidenceId = buildPhotoEvidenceId(
+    params.organizationId,
+    params.projectId,
+    params.update.id,
+    params.photo.id,
+  );
+
+  const cached = photoEvidenceStagingCache.get(evidenceId);
+  if (cached) return cached;
+
+  const staging = stagePhotoEvidenceUncached(params).catch(error => {
+    photoEvidenceStagingCache.delete(evidenceId);
+    throw error;
+  });
+  photoEvidenceStagingCache.set(evidenceId, staging);
+  return staging;
+}
+
+async function stagePhotoEvidenceUncached({
   organizationId,
   projectId,
   update,
@@ -910,7 +952,7 @@ async function stagePhotoEvidence({
   photo: UpdatePhoto;
   captureSource: 'camera' | 'library';
   preparedFile: PreparedPhotoFile;
-}) {
+}): Promise<StagedPhotoEvidence> {
   const client = getSupabaseClient();
   if (!client) throw new Error('Supabase unavailable');
 
@@ -918,12 +960,7 @@ async function stagePhotoEvidence({
 
   const mimeType = preparedFile.mimeType;
   const extension = preparedFile.extension;
-  const evidenceId = `pie-mobile-photo-${stableHash([
-    organizationId,
-    projectId,
-    update.id,
-    photo.id,
-  ].join(':'))}`;
+  const evidenceId = buildPhotoEvidenceId(organizationId, projectId, update.id, photo.id);
   const assetId = evidenceId;
   const storagePath = `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
   const storagePathHash = stableHash(storagePath);
