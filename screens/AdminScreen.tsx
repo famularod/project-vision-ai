@@ -14,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCard';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
@@ -760,7 +761,10 @@ function SignInModal({
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
+        <KeyboardAvoidingModalCard
+          frameStyle={styles.modalCardFrame}
+          contentContainerStyle={styles.modalCardContent}
+        >
           <View style={styles.modalHeader}>
             <View style={styles.modalHeaderText}>
               <Text style={styles.cardTitle}>
@@ -832,7 +836,7 @@ function SignInModal({
             onPress={onClose}
             disabled={submitting}
           />
-        </View>
+        </KeyboardAvoidingModalCard>
       </View>
     </Modal>
   );
@@ -931,14 +935,17 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
 
-  modalCard: {
+  modalCardFrame: {
     backgroundColor: colors.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    padding: spacing.lg,
-    paddingBottom: Platform.OS === 'ios' ? 34 : spacing.lg,
     borderWidth: 1,
     borderColor: colors.border,
+  },
+
+  modalCardContent: {
+    padding: spacing.lg,
+    paddingBottom: Platform.OS === 'ios' ? 34 : spacing.lg,
   },
 
   modalHeader: {
