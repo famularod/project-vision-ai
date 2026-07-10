@@ -558,6 +558,7 @@ const PIE_STATUS_COPY = {
 
 const PIE_AUTH_HYDRATION_RETRY_COUNT = 3;
 const PIE_AUTH_HYDRATION_RETRY_DELAY_MS = 750;
+const DRAFT_LOCATION_CAPTURE_WAIT_MS = 1500;
 const ENABLE_DEV_AUTH_SIGNUP =
   process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
 
@@ -757,6 +758,10 @@ const uid = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 const zeroPad = (value: number) => value.toString().padStart(2, '0');
+
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 const isoToday = () => {
   const today = new Date();
@@ -5026,6 +5031,7 @@ function AppShell() {
   const queuedHydrationInFlight = useRef(false);
   const savedUpdatesRef = useRef(savedUpdates);
   savedUpdatesRef.current = savedUpdates;
+  const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
     photo: UpdatePhoto;
@@ -5571,6 +5577,8 @@ useEffect(() => {
     area: ProjectArea | null,
     snapshot?: LocationSnapshot | null,
   ) {
+    let nextDraftAfterAreaChange: ProjectUpdate | null = null;
+
     setDraft(prev => {
       const baseSnapshot =
         snapshot ||
@@ -5599,16 +5607,38 @@ useEffect(() => {
             locationCapturedAt: prev.locationCapturedAt ?? null,
           };
 
-      return {
+      const next = {
         ...prev,
         ...locationFields,
-        areaStatus: area ? 'confirmed' : 'unknown',
+        areaStatus: area ? 'confirmed' as const : 'unknown' as const,
         photos: prev.photos.map(photo => ({
           ...photo,
           ...locationFields,
         })),
       };
+
+      nextDraftAfterAreaChange = next;
+      return next;
     });
+
+    if (area && nextDraftAfterAreaChange) {
+      void recheckPhotosAfterAreaChange(nextDraftAfterAreaChange);
+    }
+  }
+
+  async function recheckPhotosAfterAreaChange(updateSnapshot: ProjectUpdate) {
+    const photosNeedingRecheck = updateSnapshot.photos.filter(photo => {
+      const reason = photo.photoIntelligence?.diagnostics?.noPriorReason;
+      return reason === 'missing_area_key' || reason === 'no_same_area';
+    });
+
+    for (const photo of photosNeedingRecheck) {
+      await analyzePhotoWithAuthHydrationRetry({
+        update: updateSnapshot,
+        photo,
+        priorUpdates: savedUpdatesRef.current,
+      });
+    }
   }
 
   async function refreshDraftLocation() {
@@ -5632,7 +5662,7 @@ useEffect(() => {
         {
           text: 'Use GPS',
           onPress: () => {
-            void captureDraftLocation();
+            draftLocationCaptureRef.current = captureDraftLocation();
           },
         },
       ],
@@ -5693,6 +5723,16 @@ useEffect(() => {
       );
       return null;
     }
+  }
+
+  async function waitForDraftLocationCapture() {
+    const pending = draftLocationCaptureRef.current;
+    if (!pending) return;
+
+    await Promise.race([
+      pending.catch(() => undefined),
+      delay(DRAFT_LOCATION_CAPTURE_WAIT_MS),
+    ]);
   }
 
   function confirmSuggestedArea() {
@@ -6640,7 +6680,7 @@ useEffect(() => {
               setDraft(createDraft(target));
               setSelectedWorkspaceProject(target);
               setScreen('AddPhotos');
-              void captureDraftLocation();
+              draftLocationCaptureRef.current = captureDraftLocation();
 
               void deleteUnreferencedPhotosFromUpdate(
                 discardedDraft,
@@ -6657,7 +6697,7 @@ useEffect(() => {
     setDraft(createDraft(target));
     setSelectedWorkspaceProject(target);
     setScreen('AddPhotos');
-    void captureDraftLocation();
+    draftLocationCaptureRef.current = captureDraftLocation();
   }
 
   function openProjectWorkspace(projectName: string) {
@@ -7198,7 +7238,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               new Date().toISOString(),
           },
         }));
-        void analyzeAddedPhotos(nextDraft, photos);
+        void (async () => {
+          await waitForDraftLocationCapture();
+          await analyzeAddedPhotos(nextDraft, photos);
+        })();
       } catch {
         await deleteStoredPhotos(photos);
 
@@ -7275,7 +7318,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               new Date().toISOString(),
           },
         }));
-        void analyzeAddedPhotos(nextDraft, photos);
+        void (async () => {
+          await waitForDraftLocationCapture();
+          await analyzeAddedPhotos(nextDraft, photos);
+        })();
       } catch {
         await deleteStoredPhotos(photos);
 
