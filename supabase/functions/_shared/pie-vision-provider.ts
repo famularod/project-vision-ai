@@ -20,6 +20,9 @@ export type ProviderRunContext = {
   policyVersion: string;
   timeoutMs: number;
   maxRetries: number;
+  projectName: string | null;
+  areaName: string | null;
+  fieldNotes: string | null;
 };
 
 export type ProviderResult = {
@@ -69,6 +72,7 @@ class OpenAIVisionProvider implements VisionProvider {
         'Return strict JSON. Do not return markdown.',
         'Schema: scene, probableProjectArea, visibleSubjects, equipment, materials, visibleWork, installationState, visibleConditions, possibleQualityConcerns, possibleSafetyConcerns, imageQuality, directObservations, inferences, confidence, limitations, requiredCorroboration, recommendedFollowUpEvidence.',
         'Do not claim hidden work, compliance, causation, blame, inspection outcome, or exact percentage.',
+        buildContextLine(context),
         `Evidence ID: ${image.evidenceId}. Content hash: ${image.contentHash}. Policy: ${context.policyVersion}.`,
       ].join('\n');
       return callOpenAI(context, [{ image, prompt }]);
@@ -80,21 +84,27 @@ class OpenAIVisionProvider implements VisionProvider {
       const prompt = [
         'Compare these two project photos using raw pixels. The first image is the baseline; the second is current.',
         'Return strict JSON. Do not return markdown.',
-        'Schema: sameSceneProbability, sameSubjectProbability, sharedVisualAnchors, sceneOverlapAssessment, viewpointAssessment, viewpointChange, cameraAngleChange, distanceChange, framingChange, lightingDifferences, lightingChange, obstructionDifferences, obstructionChange, alignmentConfidence, changeDetectionConfidence, objectAdditions, objectRemovals, materialOrStructuralChanges, unchangedConditions, possibleRegression, visibleConcerns, differenceClassifications, comparabilityClassification, comparabilityReasons, conclusion, confidence, limitations, repeatPhotoGuidance.',
+        'Schema: sameSceneProbability, sameSubjectProbability, sharedVisualAnchors, sceneOverlapAssessment, viewpointAssessment, viewpointChange, cameraAngleChange, distanceChange, framingChange, lightingDifferences, lightingChange, obstructionDifferences, obstructionChange, alignmentConfidence, changeDetectionConfidence, objectAdditions, objectRemovals, materialOrStructuralChanges, unchangedConditions, possibleRegression, visibleConcerns, differenceClassifications, comparabilityClassification, comparabilityReasons, conclusion, confidence, limitations, repeatPhotoGuidance, plainLanguageSummary.',
         'For every object addition/removal, defect, safety concern, installed equipment, material change, damage, obstruction, or work-area finding, include the raw visible object/change name and a concrete location phrase when visible.',
         'Location phrases should describe image position, nearby subject, and surface/area when visible, such as right side of desk, front-right tabletop, beside laptop on right, near the right-hand edge, or lower-right portion of image.',
+        'Write plainLanguageSummary as 1-3 full sentences a non-technical construction project manager could read and immediately act on without looking at the photos. State specifically what is different now versus the baseline - material, color, installation state, or condition - not just an object label. Example: "The left wall now has primed white drywall installed where bare wood stud framing was visible in the baseline photo." Not: "Drywall appears."',
+        'For objectAdditions, objectRemovals, and materialOrStructuralChanges, write full descriptive phrases, not single-word labels. Include material, color, or condition when visible. Avoid vague generic terms alone (e.g. "damage", "equipment") - say what kind and where, e.g. "water staining on the lower-left drywall panel" or "yellow forklift parked near the loading dock."',
         'Comparability must be strong, probable, weak, or not_comparable.',
         'Comparability measures whether the shared physical scene or subject can be reliably compared; it does not require identical camera position.',
         'Allow strong when the same subject is highly certain, stable visual anchors align, the relevant change is clearly visible, and viewpoint/framing differences do not materially limit the conclusion.',
         'Classify differences as camera_or_capture_change, physical_scene_change, uncertain_change, or mixed_change. Do not treat perspective, distance, framing, exposure, lighting, rotation, or obstruction changes as project progress.',
         'Conclusion must be progress_visible, partial_progress_visible, no_material_visible_change, possible_regression, or unable_to_determine.',
-        'Visible scene changes are not project progress unless linked to defined project scope.',
-        'For the mouse_added_to_table acceptance case, independently identify whether a black computer mouse appears in the newer image and keep project progress unable_to_determine unless project scope links it.',
+        buildContextLine(context),
+        'Visible scene changes are not project progress unless linked to the project/area/field-notes context above. If that context is insufficient to judge scope, say so in limitations rather than guessing.',
         `Baseline evidence: ${baseline.evidenceId} hash ${baseline.contentHash}. Current evidence: ${current.evidenceId} hash ${current.contentHash}. Policy: ${context.policyVersion}.`,
       ].join('\n');
       return callOpenAI(context, [{ image: baseline, prompt }, { image: current, prompt: 'Current image for comparison.' }]);
     });
   }
+}
+
+function buildContextLine(context: ProviderRunContext): string {
+  return `Project: ${context.projectName || 'unspecified'}. Area: ${context.areaName || 'unspecified'}. Field notes for this update: ${context.fieldNotes || 'none provided'}.`;
 }
 
 async function callWithRetries(

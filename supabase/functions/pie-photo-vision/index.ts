@@ -18,6 +18,9 @@ type VisionRequest = {
   currentEvidenceId?: string;
   promptVersion?: string;
   forceReanalysis?: boolean;
+  projectName?: string;
+  areaName?: string | null;
+  fieldNotes?: string | null;
 };
 
 type ImageDiagnostics = {
@@ -131,6 +134,9 @@ Deno.serve(async req => {
     policyVersion: POLICY_VERSION,
     timeoutMs: Number(Deno.env.get('PIE_VISION_TIMEOUT_MS') ?? '45000'),
     maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '2'),
+    projectName: request.projectName ?? null,
+    areaName: request.areaName ?? null,
+    fieldNotes: request.fieldNotes ?? null,
   };
 
   const provider = buildVisionProvider();
@@ -381,6 +387,7 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     confidence: confidenceValue(value.confidence),
     limitations,
     repeatPhotoGuidance: stringArray(value.repeatPhotoGuidance),
+    plainLanguageSummary: stringValue(value.plainLanguageSummary),
   };
 }
 
@@ -876,6 +883,7 @@ async function persistRequestAndResult(
       repeat_photo_guidance: stringArray(providerResult.normalized.repeatPhotoGuidance),
       deterministic_metrics: {
         ...(objectValue(providerResult.normalized.deterministicMetrics)),
+        plainLanguageSummary: stringValue(providerResult.normalized.plainLanguageSummary),
         rawProviderComparability: stringValue(providerResult.normalized.providerComparabilityClassification),
         rawProviderViewpointAssessment: stringValue(providerResult.normalized.viewpointAssessment),
         normalizedComparability: comparabilityValue(providerResult.normalized.comparabilityClassification),
