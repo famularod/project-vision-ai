@@ -27,13 +27,33 @@ export function AreaDetailModal({
   onDelete: () => void;
   onUseCurrentLocation: () => void;
 }) {
+  const [nameText, setNameText] = useState(area?.name ?? '');
   const [radiusText, setRadiusText] = useState(area ? String(area.radiusFeet) : '250');
+
+  useEffect(() => {
+    if (area) setNameText(area.name);
+  }, [area?.id]);
 
   useEffect(() => {
     if (area) setRadiusText(String(area.radiusFeet));
   }, [area?.id, area?.radiusFeet]);
 
   if (!area) return null;
+
+  function updateName(value: string) {
+    setNameText(value);
+
+    if (value.trim()) {
+      onUpdate({ name: value });
+    }
+  }
+
+  function commitNameOnBlur() {
+    if (!nameText.trim()) {
+      setNameText('New Area');
+      onUpdate({ name: 'New Area' });
+    }
+  }
 
   function updateRadius(value: string) {
     setRadiusText(value);
@@ -75,8 +95,9 @@ export function AreaDetailModal({
           <Text style={styles.label}>Area name</Text>
           <TextInput
             style={styles.input}
-            value={area.name}
-            onChangeText={name => onUpdate({ name })}
+            value={nameText}
+            onChangeText={updateName}
+            onBlur={commitNameOnBlur}
             placeholder="Area name"
             placeholderTextColor={colors.muted}
           />
