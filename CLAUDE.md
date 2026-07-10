@@ -166,6 +166,16 @@ Still open:
   acknowledged but out of scope unless actively wired in for a real fix.
 - Two independent sync engines — not unified, not currently causing known
   bugs, but a source of confusion if debugging sync issues.
+- Comparability downgrade logic (pie-photo-vision/index.ts
+  shouldDowngradeStrongComparability / hasInsufficientAnchorsOrOverlap /
+  hasLimitingLightingOrObstruction) matches hardcoded phrases against the
+  model's own free-text limitations/reasons to decide whether to downgrade
+  a "strong" comparability claim — brittle if the model phrases a
+  limitation differently than the hardcoded list expects. Noted 2026-07-10
+  during an AI pipeline reliability review, not fixed — would mean
+  touching the validation/scoring logic itself, bigger and riskier than
+  the prompt-context and confidence/comparability-label fixes done
+  alongside it.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or
