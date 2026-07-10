@@ -387,6 +387,7 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     confidence: confidenceValue(value.confidence),
     limitations,
     repeatPhotoGuidance: stringArray(value.repeatPhotoGuidance),
+    plainLanguageSummary: stringValue(value.plainLanguageSummary),
   };
 }
 
@@ -882,6 +883,7 @@ async function persistRequestAndResult(
       repeat_photo_guidance: stringArray(providerResult.normalized.repeatPhotoGuidance),
       deterministic_metrics: {
         ...(objectValue(providerResult.normalized.deterministicMetrics)),
+        plainLanguageSummary: stringValue(providerResult.normalized.plainLanguageSummary),
         rawProviderComparability: stringValue(providerResult.normalized.providerComparabilityClassification),
         rawProviderViewpointAssessment: stringValue(providerResult.normalized.viewpointAssessment),
         normalizedComparability: comparabilityValue(providerResult.normalized.comparabilityClassification),

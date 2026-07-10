@@ -1091,6 +1091,7 @@ function buildDisplayStateFromComparison(
   );
   const visibleChange = describeVisibleChange(additions, removals, materialChanges);
   const location = describeLocation(spatialFinding, additions[0]);
+  const plainLanguageSummary = String(metrics.plainLanguageSummary || '').trim() || null;
   const limitations = stringArray(row.limitations);
   const observationAccepted = jarvis.observationAccepted === true;
   const status = limitations.length > 0
@@ -1107,9 +1108,11 @@ function buildDisplayStateFromComparison(
   return {
     status: observationAccepted ? status : 'comparison_unavailable',
     title,
-    summary: visibleChange
-      ? `${visibleChange}${location ? ` ${location}.` : '.'}`
-      : 'PIE did not find a supported visible change in this comparison.',
+    summary: plainLanguageSummary
+      ? plainLanguageSummary
+      : visibleChange
+        ? `${visibleChange}${location ? ` ${location}.` : '.'}`
+        : 'PIE did not find a supported visible change in this comparison.',
     visibleChange,
     location,
     comparisonConfidence: String(row.comparability_classification || row.confidence || 'unknown'),
