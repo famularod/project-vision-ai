@@ -124,12 +124,49 @@ relaying it through chat.
 
 ## Known open issues (update this list as things get fixed)
 
-- "Retry Analysis" button appears not to trigger anything on already-sent
-  updates — found 2026-07-09, not yet investigated.
-- Duplicate React key warnings on two item IDs (`open-item-vdvdah`,
-  `open-item-8xud1c`).
-- `App.tsx` monolith refactor — the dead `screens/`/`components/`/`hooks/`
-  question is acknowledged but out of scope unless a specific file is being
-  actively wired in for a real fix.
-- Two independent sync engines (see above) — not unified, not currently
-  causing known bugs, but a source of confusion if debugging sync issues.
+Fixed 2026-07-09/10 (do not re-investigate — see merged PRs #1-16 on
+GitHub for history if context is needed):
+- Sign-in screen unreachable — fixed (PR #5, #6).
+- Hold-to-delete project — verified working.
+- Building 2321 / photo-comparison pipeline totally broken — root cause was
+  a missing organization_memberships row blocking RLS at three separate
+  points in the pipeline (storage upload, edge function auth, result
+  read-back). Fixed via direct single-user ownership RLS policies (PR #8)
+  and an edge function fix (PR #9). Full pipeline confirmed working
+  end-to-end on device, including a real AI comparison result.
+- Photo-analysis area/upload timing race for back-to-back photos — fixed
+  (PR #7).
+- Keyboard covering text fields in three modals (Area Mapping Details, both
+  sign-in modals) — fixed via a shared KeyboardAvoidingModalCard wrapper
+  (PR #12).
+- Area name field snapping back to "New Area" mid-edit — fixed by giving it
+  a local state buffer, same pattern as the GPS radius field (PR #16).
+- Duplicate React key warnings (open-item-vdvdah, open-item-8xud1c) —
+  root cause was stableOpenItemAttentionId hashing project+area+category
+  instead of a unique per-photo id, silently colliding and hiding some
+  "Needs Attention" cards. Fixed (PR #13).
+- "Retry Analysis"/"Retry Send" doing nothing visible on the sent-update
+  detail screen — root cause was ReadOnlyUpdateDetailScreen rendering
+  from a frozen one-time snapshot instead of live savedUpdates state.
+  Fixed (PR #14).
+
+Still open:
+- GPS auto-detection defaulting to "All Projects" — not a code bug.
+  findProjectAreaSuggestions only trusts areas with locationCapturedAt
+  set (i.e. captured live via the app's own GPS flow), and all 12 areas
+  were seeded with hand-typed coordinates, never actually GPS-captured.
+  The "Save GPS" flow works correctly and is reachable via gear icon →
+  Settings → Area Mapping. This is a fieldwork task for David (visit each
+  area physically, tap "Save GPS"), not a code fix.
+- The most recent real backup export (project-photo-update-backup-*.json)
+  shows every saved update with an empty photos: [] array, even sent
+  updates with full analysis data. Not yet root-caused. Could be
+  intentional or a real gap — worth a look sometime, not urgent.
+- App.tsx monolith refactor — dead screens//components//hooks/ files
+  acknowledged but out of scope unless actively wired in for a real fix.
+- Two independent sync engines — not unified, not currently causing known
+  bugs, but a source of confusion if debugging sync issues.
+
+Process note: verify PR/merge state directly against GitHub before marking
+anything "fixed" in this file — don't rely on conversation history or
+assumption, even within the same session.
