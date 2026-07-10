@@ -18,6 +18,9 @@ type VisionRequest = {
   currentEvidenceId?: string;
   promptVersion?: string;
   forceReanalysis?: boolean;
+  projectName?: string;
+  areaName?: string | null;
+  fieldNotes?: string | null;
 };
 
 type ImageDiagnostics = {
@@ -131,6 +134,9 @@ Deno.serve(async req => {
     policyVersion: POLICY_VERSION,
     timeoutMs: Number(Deno.env.get('PIE_VISION_TIMEOUT_MS') ?? '45000'),
     maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '2'),
+    projectName: request.projectName ?? null,
+    areaName: request.areaName ?? null,
+    fieldNotes: request.fieldNotes ?? null,
   };
 
   const provider = buildVisionProvider();

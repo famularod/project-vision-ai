@@ -416,6 +416,9 @@ export async function analyzeProjectPhotoWithVision({
         projectId,
         baselineEvidenceId: baselineEvidence.evidenceId,
         currentEvidenceId: currentEvidence.evidenceId,
+        projectName: update.projectName,
+        areaName: photo.selectedAreaName || update.selectedAreaName || null,
+        fieldNotes: update.notes || null,
       },
     });
     executedStages.push('edge_function_invoked');
