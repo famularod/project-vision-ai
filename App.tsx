@@ -4805,16 +4805,7 @@ function buildPhase2AttentionItems(
 }
 
 function stableOpenItemAttentionId(update: ProjectUpdate, photo: UpdatePhoto) {
-  const stableSource = [
-    update.projectName,
-    photo.selectedAreaId || update.selectedAreaId || photo.selectedAreaName || update.selectedAreaName || 'area',
-    update.quickContext || photo.category || 'open-item',
-  ]
-    .join('|')
-    .toLowerCase()
-    .replace(/[^a-z0-9|]+/g, '-');
-
-  return `open-item-${stableUiHash(stableSource)}`;
+  return `${update.id}-${photo.id}-open-item`;
 }
 
 function recurringOpenItemContext(
