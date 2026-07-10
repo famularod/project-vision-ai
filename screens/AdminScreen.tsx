@@ -203,7 +203,7 @@ export function AdminScreen({
           />
 
           <ScreenMetric
-            label="PIE Assist"
+            label="DAVE Assist"
             value="Server Routed"
             detail={aiStatus.message}
             tone="success"

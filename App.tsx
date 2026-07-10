@@ -545,7 +545,7 @@ const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
 ];
 
 const PIE_STATUS_COPY = {
-  checking: 'PIE checking photos…',
+  checking: 'DAVE checking photos…',
   preparingSecureAnalysis: 'Preparing secure photo analysis…',
   signInRequired: 'Sign in required for photo intelligence',
   sessionExpired: 'Session expired · Sign in again',
@@ -3670,7 +3670,7 @@ function buildGeneratedUpdateMessage(
           pieStatus.status === 'no_prior_photo' ||
           pieStatus.status === 'no_visual_comparison' ||
           pieStatus.status === 'failed'
-        ? `\n\nPIE Summary: ${pieStatus.summary}`
+        ? `\n\nDAVE Summary: ${pieStatus.summary}`
         : '';
   const confirmedInterpretationLine =
     pieStatus.status === 'complete' &&
@@ -4738,7 +4738,7 @@ function buildPhase2AttentionItems(
             updateId: update.id,
             actionTarget: 'update' as const,
             projectName: update.projectName,
-            title: 'PIE result changed after send',
+            title: 'DAVE result changed after send',
             detail: `Original message was sent while analysis was unresolved. Current result: ${summarizePIEStatusForUpdate(update).summary}`,
             areaLabel: update.selectedAreaName || 'No area selected',
             dateLabel: formatDisplayDate(update.date),
@@ -9562,7 +9562,7 @@ function HomeScreen({
       {needsAttention.length === 0 ? (
         <EmptyState
           title="Nothing needs attention right now."
-          text="Safety items, overdue work, and urgent PIE findings will appear here."
+          text="Safety items, overdue work, and urgent DAVE findings will appear here."
         />
       ) : (
         needsAttention.map(item => (
@@ -10210,10 +10210,10 @@ function FieldUpdateStepIndicator({
   current,
   pieStatus,
 }: {
-  current: 'Evidence' | 'PIE Analysis' | 'Review';
+  current: 'Evidence' | 'DAVE Analysis' | 'Review';
   pieStatus: 'pending' | 'in_progress' | 'complete';
 }) {
-  const steps = ['Evidence', 'PIE Analysis', 'Review'] as const;
+  const steps = ['Evidence', 'DAVE Analysis', 'Review'] as const;
 
   return (
     <View style={styles.phase3StepRow}>
@@ -10221,7 +10221,7 @@ function FieldUpdateStepIndicator({
         const active = current === step;
         const complete =
           step === 'Evidence' && current !== 'Evidence' ||
-          step === 'PIE Analysis' && pieStatus === 'complete';
+          step === 'DAVE Analysis' && pieStatus === 'complete';
 
         return (
           <View
@@ -11071,7 +11071,7 @@ function RootPhotoIntelligenceCard({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={onRetry}
-          accessibilityLabel="Retry PIE photo analysis"
+          accessibilityLabel="Retry DAVE photo analysis"
         >
           <Ionicons name="refresh-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Retry Analysis</Text>
@@ -11082,7 +11082,7 @@ function RootPhotoIntelligenceCard({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={onSignInRequired}
-          accessibilityLabel="Sign in to enable PIE photo intelligence"
+          accessibilityLabel="Sign in to enable DAVE photo intelligence"
         >
           <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
@@ -11468,7 +11468,7 @@ function PIEAnalysisStepScreen({
       />
 
       <FieldUpdateStepIndicator
-        current="PIE Analysis"
+        current="DAVE Analysis"
         pieStatus={pieStatus.status === 'complete' ? 'complete' : 'in_progress'}
       />
 
@@ -11497,7 +11497,7 @@ function PIEAnalysisStepScreen({
               ? `Comparing to prior photo from ${firstPrior}. This usually takes 10–30 seconds.`
               : pieStatus.status === 'no_prior_photo'
                 ? 'This appears to be the first comparable photo for this project area.'
-                : 'PIE runs in the background. You can continue to Review now.'}
+                : 'DAVE runs in the background. You can continue to Review now.'}
           </Text>
           {pieStatus.status === 'failed' || pieStatus.status === 'taking_longer' ? (
             <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
@@ -11693,7 +11693,7 @@ function BuildUpdateScreen({
                   key={interpretation}
                   role={hasSafety && interpretation.toLowerCase().includes('safety') ? 'safety' : 'interpretation'}
                   title={interpretation}
-                  detail="PIE suggestion only. Confirm before including as a message claim."
+                  detail="DAVE suggestion only. Confirm before including as a message claim."
                   confirmed={confirmed}
                   dismissed={dismissed}
                   onConfirm={dismissed ? undefined : () => onConfirmInterpretation(interpretation)}
@@ -12066,7 +12066,7 @@ function ReadOnlyUpdateDetailScreen({
                 key={interpretation}
                 role="interpretation"
                 title={interpretation}
-                detail="PIE suggestion only. Confirm before using as a message claim."
+                detail="DAVE suggestion only. Confirm before using as a message claim."
               />
             ))}
           </>
@@ -12477,7 +12477,7 @@ function ProjectWorkspaceScreen({
       {projectActivity.length === 0 ? (
         <EmptyState
           title="Recent project activity will show up here."
-          text="Photos, notes, documents, and PIE status will appear here."
+          text="Photos, notes, documents, and DAVE status will appear here."
         />
       ) : (
         projectActivity.map(item => (
@@ -12664,7 +12664,7 @@ function ProjectDocumentsScreen({
         documents.length === 0 ? (
           <EmptyState
             title="No documents yet — upload your first document."
-            text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, PIE review, or sending."
+            text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, DAVE review, or sending."
           />
         ) : (
           <EmptyState
@@ -13947,7 +13947,7 @@ function SavedUpdatesScreen({
         <>
           <ScreenTitle
             title="Updates"
-            subtitle="Review drafts, queued sends, sent updates, and PIE analysis items."
+            subtitle="Review drafts, queued sends, sent updates, and DAVE analysis items."
           />
 
           <View style={styles.updateTopControlRow}>
