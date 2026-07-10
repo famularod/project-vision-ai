@@ -185,13 +185,16 @@ Still open:
 - Pending verification for the Phase 1 comparability-downgrade hardening
   above (PR #21, deployed 2026-07-10): no live phone test was meaningful
   for this change (it only affects the "Comparability" label in a narrow
-  edge case that can't be reliably engineered on demand). Once David has
-  used the app normally for a few days, query
+  edge case that can't be reliably engineered on demand). An automated
+  scheduled check (task id verify-comparability-downgrade-real-data,
+  one-time, fires 2026-07-13) will query
   pie_photo_semantic_comparison_results.deterministic_metrics →
-  comparabilityNormalizationReasons in Supabase against real data to
-  confirm the new specific-trigger format (e.g. "only 1 shared visual
-  anchor(s) reported...") is actually showing up correctly instead of the
-  old generic reason string. Remove this bullet once confirmed.
+  comparabilityNormalizationReasons in Supabase against real data and
+  report back whether the new specific-trigger format (e.g. "only 1
+  shared visual anchor(s) reported...") is actually showing up instead of
+  the old generic reason string. This is now automated, not a manual
+  follow-up — remove this bullet once the scheduled check reports back
+  confirming the fix.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or
