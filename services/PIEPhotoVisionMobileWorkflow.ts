@@ -23,6 +23,7 @@ export type PIEPhotoIntelligenceDisplayState = {
   visibleChange: string | null;
   location: string | null;
   comparisonConfidence: string | null;
+  comparability: string | null;
   captureLimitations: string[];
   projectProgress: 'supported' | 'unsupported' | 'unable_to_determine';
   repeatPhotoGuidance: string | null;
@@ -217,6 +218,7 @@ export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisp
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
+    comparability: null,
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: null,
@@ -236,6 +238,7 @@ export function buildPreparingSecurePhotoAnalysisState(
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
+    comparability: null,
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: null,
@@ -269,6 +272,7 @@ export function buildNoSuitablePriorPhotoIntelligenceState(
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
+    comparability: null,
     captureLimitations: ['No prior photo was available for a reliable comparison.'],
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: 'Capture a repeat photo from a similar angle when there is prior evidence to compare.',
@@ -1109,7 +1113,8 @@ function buildDisplayStateFromComparison(
       : 'PIE did not find a supported visible change in this comparison.',
     visibleChange,
     location,
-    comparisonConfidence: String(row.comparability_classification || row.confidence || 'unknown'),
+    comparisonConfidence: String(row.confidence || 'unknown'),
+    comparability: String(row.comparability_classification || 'unknown'),
     captureLimitations: limitations,
     projectProgress: progress,
     repeatPhotoGuidance: stringArray(row.repeat_photo_guidance)[0] ?? null,
@@ -1161,6 +1166,7 @@ function unavailableState(
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
+    comparability: null,
     captureLimitations: [
       'Cloud photo intelligence is unavailable.',
       safeUnavailableReason(summary),
@@ -1198,6 +1204,7 @@ function failedRetryState(
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
+    comparability: null,
     captureLimitations: [
       'Photo comparison could not be completed.',
       safeUnavailableReason(summary),
