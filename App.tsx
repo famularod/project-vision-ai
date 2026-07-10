@@ -8755,6 +8755,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setOverviewProjectSelection(projectName);
   }
 
+  const liveDetailUpdate = selectedDetailUpdate
+    ? savedUpdates.find(item => item.id === selectedDetailUpdate.id) || selectedDetailUpdate
+    : null;
+
   return (
     <PIELiveAuthorityProvider input={liveAuthorityInput}>
       <SafeAreaView
@@ -9096,16 +9100,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
             />
           )}
 
-          {screen === 'UpdateDetail' && selectedDetailUpdate && (
+          {screen === 'UpdateDetail' && liveDetailUpdate && (
             <ScreenScroll contentStyle={contentStyle}>
               <ReadOnlyUpdateDetailScreen
-                update={selectedDetailUpdate}
+                update={liveDetailUpdate}
                 onBack={() => setScreen('SavedUpdates')}
                 onRetry={
-                  selectedDetailUpdate.status === 'queued' ||
-                  selectedDetailUpdate.status === 'failed'
+                  liveDetailUpdate.status === 'queued' ||
+                  liveDetailUpdate.status === 'failed'
                     ? () => {
-                        void retryQueuedUpdate(selectedDetailUpdate);
+                        void retryQueuedUpdate(liveDetailUpdate);
                       }
                     : undefined
                 }
