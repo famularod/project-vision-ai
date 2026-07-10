@@ -182,6 +182,16 @@ Still open:
   catches cases where the model's free text hedges on alignment without
   also lowering the structured alignmentConfidence field; not itself
   something to "fix" away.
+- Pending verification for the Phase 1 comparability-downgrade hardening
+  above (PR #21, deployed 2026-07-10): no live phone test was meaningful
+  for this change (it only affects the "Comparability" label in a narrow
+  edge case that can't be reliably engineered on demand). Once David has
+  used the app normally for a few days, query
+  pie_photo_semantic_comparison_results.deterministic_metrics →
+  comparabilityNormalizationReasons in Supabase against real data to
+  confirm the new specific-trigger format (e.g. "only 1 shared visual
+  anchor(s) reported...") is actually showing up correctly instead of the
+  old generic reason string. Remove this bullet once confirmed.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or
