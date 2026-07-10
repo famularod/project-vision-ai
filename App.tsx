@@ -11098,6 +11098,10 @@ function RootPhotoIntelligenceCard({
         <PIEDetailLine label="Confidence" value={result.comparisonConfidence} />
       ) : null}
 
+      {result.comparability ? (
+        <PIEDetailLine label="Comparability" value={result.comparability} />
+      ) : null}
+
       {priorUpdateUsed ? (
         <PIEDetailLine label="Prior update used" value={priorUpdateUsed} />
       ) : null}
@@ -11425,6 +11429,11 @@ function SavedUpdatePIESummary({
       {firstResult?.comparisonConfidence ? (
         <Text style={styles.locationDetailText}>
           Confidence: {firstResult.comparisonConfidence}
+        </Text>
+      ) : null}
+      {firstResult?.comparability ? (
+        <Text style={styles.locationDetailText}>
+          Comparability: {firstResult.comparability}
         </Text>
       ) : null}
       {firstPriorUpdateUsed ? (
@@ -11756,6 +11765,9 @@ function BuildUpdateScreen({
         {firstResult?.comparisonConfidence ? (
           <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
         ) : null}
+        {firstResult?.comparability ? (
+          <Text style={styles.locationDetailText}>Comparability: {firstResult.comparability}</Text>
+        ) : null}
         {pieStatus.status === 'analyzing' ? (
           <Text style={styles.locationDetailText}>
             Photo analysis is still in progress.
@@ -11799,6 +11811,9 @@ function BuildUpdateScreen({
             ) : null}
             {firstResult?.comparisonConfidence ? (
               <PIEDetailLine label="Confidence" value={firstResult.comparisonConfidence} />
+            ) : null}
+            {firstResult?.comparability ? (
+              <PIEDetailLine label="Comparability" value={firstResult.comparability} />
             ) : null}
             {firstPriorUpdateUsed ? (
               <PIEDetailLine label="Prior update used" value={firstPriorUpdateUsed} />
@@ -12078,6 +12093,9 @@ function ReadOnlyUpdateDetailScreen({
         </Text>
         {firstResult?.comparisonConfidence ? (
           <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
+        ) : null}
+        {firstResult?.comparability ? (
+          <Text style={styles.locationDetailText}>Comparability: {firstResult.comparability}</Text>
         ) : null}
         {baselineOnly ? (
           <>
