@@ -1536,14 +1536,17 @@ export const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
 
-  detailModalCard: {
+  detailModalCardFrame: {
     backgroundColor: colors.card,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    padding: 18,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 18,
     borderWidth: 1,
     borderColor: colors.line,
+  },
+
+  detailModalCardContent: {
+    padding: 18,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 18,
   },
 
   detailModalHeader: {

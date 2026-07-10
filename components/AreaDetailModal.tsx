@@ -4,6 +4,7 @@ import { Modal, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import type { ProjectArea } from '../types';
 import { formatSavedTime } from '../utils/date';
 import { formatFeet, hasSavedAreaLocation } from '../utils/locations';
+import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import {
   PrimaryButton,
   SecondaryButton,
@@ -52,7 +53,10 @@ export function AreaDetailModal({
       onRequestClose={onClose}
     >
       <View style={styles.detailModalBackdrop}>
-        <View style={styles.detailModalCard}>
+        <KeyboardAvoidingModalCard
+          frameStyle={styles.detailModalCardFrame}
+          contentContainerStyle={styles.detailModalCardContent}
+        >
           <View style={styles.detailModalHeader}>
             <View>
               <Text style={styles.panelTitle}>Area Mapping Details</Text>
@@ -135,7 +139,7 @@ export function AreaDetailModal({
               compact
             />
           </View>
-        </View>
+        </KeyboardAvoidingModalCard>
       </View>
     </Modal>
   );

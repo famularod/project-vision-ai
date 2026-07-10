@@ -16,6 +16,7 @@ import {
   uploadPhoto,
 } from './services/SupabaseService';
 import { AdminScreen } from './screens/AdminScreen';
+import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -9752,7 +9753,10 @@ function PhotoIntelligenceSignInModal({
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.detailModalBackdrop}>
-        <View style={styles.detailModalCard}>
+        <KeyboardAvoidingModalCard
+          frameStyle={styles.detailModalCardFrame}
+          contentContainerStyle={styles.detailModalCardContent}
+        >
           <View style={styles.detailModalHeader}>
             <View style={styles.rowMain}>
               <Text style={styles.panelTitle}>Sign in to enable photo intelligence</Text>
@@ -9813,7 +9817,7 @@ function PhotoIntelligenceSignInModal({
             icon="close-outline"
             onPress={onClose}
           />
-        </View>
+        </KeyboardAvoidingModalCard>
       </View>
     </Modal>
   );
@@ -13417,7 +13421,7 @@ function AreaDetailModal({
       onRequestClose={onClose}
     >
       <View style={styles.detailModalBackdrop}>
-        <View style={styles.detailModalCard}>
+        <View style={[styles.detailModalCardFrame, styles.detailModalCardContent]}>
           <View style={styles.detailModalHeader}>
             <View>
               <Text style={styles.panelTitle}>Location Details</Text>
@@ -17167,14 +17171,17 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
 
-  detailModalCard: {
+  detailModalCardFrame: {
     backgroundColor: colors.card,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    padding: 18,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 18,
     borderWidth: 1,
     borderColor: colors.line,
+  },
+
+  detailModalCardContent: {
+    padding: 18,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 18,
   },
 
   detailModalHeader: {
