@@ -166,16 +166,22 @@ Still open:
   acknowledged but out of scope unless actively wired in for a real fix.
 - Two independent sync engines — not unified, not currently causing known
   bugs, but a source of confusion if debugging sync issues.
-- Comparability downgrade logic (pie-photo-vision/index.ts
-  shouldDowngradeStrongComparability / hasInsufficientAnchorsOrOverlap /
-  hasLimitingLightingOrObstruction) matches hardcoded phrases against the
-  model's own free-text limitations/reasons to decide whether to downgrade
-  a "strong" comparability claim — brittle if the model phrases a
-  limitation differently than the hardcoded list expects. Noted 2026-07-10
-  during an AI pipeline reliability review, not fixed — would mean
-  touching the validation/scoring logic itself, bigger and riskier than
-  the prompt-context and confidence/comparability-label fixes done
-  alongside it.
+- Comparability downgrade logic (pie-photo-vision/index.ts) partially
+  hardened 2026-07-10: anchor sufficiency now uses a structured check
+  (sharedVisualAnchors.length < 2) instead of keyword-matching phrases
+  like "insufficient anchor"/"few anchor", and the downgrade reason is now
+  specific about which check fired. Still open: lighting/obstruction
+  downgrading (hasLimitingLightingOrObstruction) still matches hardcoded
+  phrases ("obstruct", "glare", "shadow", etc.) against the model's free
+  text, because no structured severity field exists for this yet — fixing
+  it would require a prompt/schema change (new field like
+  lightingObstructionSeverity) plus a redeploy and live test, same shape
+  as the prompt-context work in PR #18. A residual free-text check also
+  remains for alignment/overlap self-consistency
+  (hasAlignmentOrOverlapInconsistencyText) — kept deliberately, since it
+  catches cases where the model's free text hedges on alignment without
+  also lowering the structured alignmentConfidence field; not itself
+  something to "fix" away.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or

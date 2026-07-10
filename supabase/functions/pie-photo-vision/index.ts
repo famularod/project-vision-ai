@@ -515,40 +515,61 @@ type ComparabilityNormalizationInput = {
   limitations: string[];
 };
 
+const MIN_SHARED_VISUAL_ANCHORS = 2;
+
 function normalizeComparabilityClassification(input: ComparabilityNormalizationInput): {
   comparabilityClassification: string;
   reasons: string[];
 } {
-  const reasons: string[] = [];
-  if (input.providerComparability === 'strong' && shouldDowngradeStrongComparability(input)) {
-    reasons.push('comparability downgraded from strong because scene overlap, visual anchors, alignment confidence, change-detection confidence, or limiting image conditions do not support a strong comparison');
-    return { comparabilityClassification: 'probable', reasons };
+  if (input.providerComparability !== 'strong') {
+    return { comparabilityClassification: input.providerComparability, reasons: [] };
   }
-  return { comparabilityClassification: input.providerComparability, reasons };
+  const triggers = collectStrongComparabilityDowngradeTriggers(input);
+  if (triggers.length === 0) {
+    return { comparabilityClassification: input.providerComparability, reasons: [] };
+  }
+  return {
+    comparabilityClassification: 'probable',
+    reasons: [`comparability downgraded from strong: ${triggers.join('; ')}`],
+  };
 }
 
-function shouldDowngradeStrongComparability(input: ComparabilityNormalizationInput): boolean {
-  if (input.sameSceneProbability < 0.9 || input.sameSubjectProbability < 0.85) return true;
-  if (input.alignmentConfidence === 'low' || input.changeDetectionConfidence === 'low') return true;
-  if (hasInsufficientAnchorsOrOverlap(input)) return true;
-  if (hasLimitingLightingOrObstruction(input)) return true;
-  return false;
+function collectStrongComparabilityDowngradeTriggers(input: ComparabilityNormalizationInput): string[] {
+  const triggers: string[] = [];
+  if (input.sameSceneProbability < 0.9) {
+    triggers.push(`sameSceneProbability ${input.sameSceneProbability} below 0.9 threshold`);
+  }
+  if (input.sameSubjectProbability < 0.85) {
+    triggers.push(`sameSubjectProbability ${input.sameSubjectProbability} below 0.85 threshold`);
+  }
+  if (input.alignmentConfidence === 'low') triggers.push('alignmentConfidence reported low');
+  if (input.changeDetectionConfidence === 'low') triggers.push('changeDetectionConfidence reported low');
+  if (input.sharedVisualAnchors.length < MIN_SHARED_VISUAL_ANCHORS) {
+    triggers.push(`only ${input.sharedVisualAnchors.length} shared visual anchor(s) reported, below minimum of ${MIN_SHARED_VISUAL_ANCHORS}`);
+  }
+  if (hasAlignmentOrOverlapInconsistencyText(input)) {
+    triggers.push('alignment/overlap limitation language present in provider free text');
+  }
+  if (hasLimitingLightingOrObstruction(input)) {
+    triggers.push('limiting lighting/obstruction language present in provider free text');
+  }
+  return triggers;
 }
 
-function hasInsufficientAnchorsOrOverlap(input: ComparabilityNormalizationInput): boolean {
+// Anchor sufficiency and alignment-confidence checks above are structured
+// (sharedVisualAnchors.length, alignmentConfidence). This remaining text
+// match is a cross-consistency safety net for cases where the model's free
+// text hedges on alignment/overlap ("cannot align", "missing comparison
+// region") without also lowering alignmentConfidence - not fully
+// replaceable by a structured field without a prompt change.
+function hasAlignmentOrOverlapInconsistencyText(input: ComparabilityNormalizationInput): boolean {
   const text = [
     input.viewpointAssessment,
     input.sceneOverlapAssessment,
-    ...input.sharedVisualAnchors,
     ...input.comparabilityReasons,
     ...input.limitations,
   ].join(' ').toLowerCase();
   return includesAny(text, [
-    'insufficient anchor',
-    'limited anchor',
-    'few anchor',
-    'limited overlap',
-    'insufficient overlap',
     'missing comparison region',
     'important region missing',
     'cannot align',
