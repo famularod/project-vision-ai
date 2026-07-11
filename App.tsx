@@ -5018,6 +5018,10 @@ function AppShell() {
     null,
   );
 
+  const savedUpdatesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
   const savedUpdatesRef = useRef(savedUpdates);
@@ -5255,11 +5259,42 @@ useEffect(() => {
   useEffect(() => {
     if (!updatesLoaded) return;
 
-    AsyncStorage.setItem(
-      UPDATES_STORAGE_KEY,
-      JSON.stringify(savedUpdates),
-    ).catch(() => undefined);
+    if (savedUpdatesSaveTimer.current) {
+      clearTimeout(savedUpdatesSaveTimer.current);
+    }
+
+    savedUpdatesSaveTimer.current = setTimeout(() => {
+      savedUpdatesSaveTimer.current = null;
+
+      AsyncStorage.setItem(
+        UPDATES_STORAGE_KEY,
+        JSON.stringify(savedUpdates),
+      ).catch(() => undefined);
+    }, 750);
+
+    return () => {
+      if (savedUpdatesSaveTimer.current) {
+        clearTimeout(savedUpdatesSaveTimer.current);
+      }
+    };
   }, [savedUpdates, updatesLoaded]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => {
+      if (state !== 'background' && state !== 'inactive') return;
+      if (!savedUpdatesSaveTimer.current) return;
+
+      clearTimeout(savedUpdatesSaveTimer.current);
+      savedUpdatesSaveTimer.current = null;
+
+      AsyncStorage.setItem(
+        UPDATES_STORAGE_KEY,
+        JSON.stringify(savedUpdatesRef.current),
+      ).catch(() => undefined);
+    });
+
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     if (!deletedUpdateTombstonesLoaded) return;
