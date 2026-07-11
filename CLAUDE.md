@@ -195,6 +195,18 @@ Still open:
   the old generic reason string. This is now automated, not a manual
   follow-up — remove this bullet once the scheduled check reports back
   confirming the fix.
+- No delete option in the edit/resume flow (BuildUpdate/AddPhotos/
+  PIEAnalysis screens) for a previously-saved-but-unsent update reopened
+  for continued editing — found 2026-07-11 during a delete-everywhere
+  audit (PR adding delete to the Updates list overflow menu and the
+  read-only update-detail screen, gear-icon-to-bottom-nav move, and
+  duplicate New Update button removal). Not a dead end today: the
+  Updates list overflow menu and the read-only update-detail screen can
+  already delete these updates without entering edit mode. Deferred
+  because these screens are shared with brand-new-draft creation, so
+  adding delete here needs logic to tell "nothing saved yet" apart from
+  "resuming an existing saved update" first — more than a quick/low-risk
+  change.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or
