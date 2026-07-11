@@ -66,6 +66,8 @@ export function AdminScreen({
   scheduleItems,
   referenceDocuments,
   syncCleanupNotice,
+  displayName,
+  onDisplayNameChange,
   onBack,
   onDiagnostics,
   onProjectManagement,
@@ -86,6 +88,8 @@ export function AdminScreen({
   scheduleItems: ScheduleItem[];
   referenceDocuments: ReferenceDocument[];
   syncCleanupNotice?: string | null;
+  displayName: string;
+  onDisplayNameChange: (value: string) => void;
   onBack: () => void;
   onDiagnostics: () => void;
   onProjectManagement: () => void;
@@ -300,6 +304,18 @@ export function AdminScreen({
               Account
             </Text>
           </View>
+
+          <Text style={styles.modalLabel}>
+            Display name
+          </Text>
+          <TextInput
+            style={styles.modalInput}
+            value={displayName}
+            onChangeText={onDisplayNameChange}
+            placeholder="David"
+            placeholderTextColor={colors.mutedText}
+            autoCapitalize="words"
+          />
 
           {connectionStatus?.authenticated ? (
             <>
