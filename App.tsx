@@ -9074,7 +9074,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={projectAreas}
               scheduleItems={scheduleItems}
               referenceDocuments={referenceDocuments}
-              startupConnectionResult={null}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
               onProjectManagement={() => setScreen('Projects')}
