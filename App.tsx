@@ -970,6 +970,19 @@ function isDueThisWeek(photo: UpdatePhoto) {
   return dueDate >= today && dueDate <= sevenDaysFromNow;
 }
 
+function isDueTodayAction(photo: UpdatePhoto) {
+  if (!isOpenAction(photo)) return false;
+
+  const dueDate = parseDueDate(photo.actionDueDate);
+
+  if (!dueDate) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return dueDate.getTime() === today.getTime();
+}
+
 function mergeProjectNames(base: string[], ...sources: string[][]) {
   const names: string[] = [];
 
@@ -2118,6 +2131,12 @@ function daysUntilDate(value: string) {
   today.setHours(0, 0, 0, 0);
 
   return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function isScheduleItemDueToday(item: ScheduleItem) {
+  if (item.status === 'Complete') return false;
+
+  return daysUntilDate(item.finishDate) === 0;
 }
 
 function dueStatusText(value: string) {
@@ -4527,6 +4546,62 @@ function resolveProjectForDetectedArea(
       areaTokens.some(token => project.toLowerCase().includes(token)),
     ) || null
   );
+}
+
+function projectDueTodayLabel(
+  projectName: string,
+  savedUpdates: ProjectUpdate[],
+  scheduleItems: ScheduleItem[],
+): string | null {
+  const dueScheduleItem = scheduleItems.find(
+    item =>
+      item.projectName.toLowerCase() === projectName.toLowerCase() &&
+      isScheduleItemDueToday(item),
+  );
+
+  if (dueScheduleItem) {
+    return dueScheduleItem.taskName.trim() || 'Schedule item due today';
+  }
+
+  const hasDueTodayAction = savedUpdates.some(
+    update =>
+      projectMatchesScope(update, projectName) &&
+      update.photos.some(isDueTodayAction),
+  );
+
+  return hasDueTodayAction ? 'Open action item due today' : null;
+}
+
+type OverviewProjectRow = {
+  project: string;
+  needsAttention: boolean;
+  severity: 'high' | 'medium';
+  subtitle: string;
+  dueTodayLabel: string | null;
+};
+
+function buildOverviewProjectRows(
+  projects: string[],
+  savedUpdates: ProjectUpdate[],
+  scheduleItems: ScheduleItem[],
+): OverviewProjectRow[] {
+  return projects.map(project => {
+    const attentionItems = buildPhase2AttentionItems(savedUpdates, project);
+    const dueTodayLabel = projectDueTodayLabel(project, savedUpdates, scheduleItems);
+    const needsAttention = attentionItems.length > 0 || dueTodayLabel !== null;
+    const brief = buildPIEProjectBriefModel(project, savedUpdates);
+    const subtitle = needsAttention
+      ? brief.observations[0]?.text || brief.summary.split('\n')[0]
+      : buildProjectCardPIEStatus(project, savedUpdates);
+
+    return {
+      project,
+      needsAttention,
+      severity: attentionItems.length > 0 ? 'high' : 'medium',
+      subtitle,
+      dueTodayLabel,
+    };
+  });
 }
 
 function buildPhase2ActivityItems(
@@ -8884,9 +8959,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
               contentStyle={contentStyle}
               projects={activeProjects}
               savedUpdates={savedUpdates}
+              scheduleItems={scheduleItems}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
-              projectDocuments={projectDocuments}
               selectedProjectName={overviewProjectName}
               detectedProjectName={detectedProjectName}
               gpsCandidateProjectNames={gpsCandidateProjectNames}
@@ -8896,11 +8971,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onNewUpdate={createNewUpdate}
               onSelectProject={selectOverviewProject}
               onOpenProject={openProjectWorkspace}
-              onOpenUpdate={openSavedUpdate}
-              onRetryPhotoAnalysis={(update, photo) => {
-                void retryPhotoAnalysis(update, photo);
-              }}
-              onRetryQueuedUpdate={retryQueuedUpdate}
               onViewProjects={() => setScreen('Projects')}
             />
           )}
@@ -9406,9 +9476,9 @@ function HomeScreen({
   contentStyle,
   projects,
   savedUpdates,
+  scheduleItems,
   unfinishedDraft,
   draftSavedAt,
-  projectDocuments,
   selectedProjectName,
   detectedProjectName,
   gpsCandidateProjectNames,
@@ -9418,17 +9488,14 @@ function HomeScreen({
   onNewUpdate,
   onSelectProject,
   onOpenProject,
-  onOpenUpdate,
-  onRetryPhotoAnalysis,
-  onRetryQueuedUpdate,
   onViewProjects,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
   savedUpdates: ProjectUpdate[];
+  scheduleItems: ScheduleItem[];
   unfinishedDraft: ProjectUpdate | null;
   draftSavedAt: string | null;
-  projectDocuments: ProjectDocument[];
   selectedProjectName: string | null;
   detectedProjectName: string | null;
   gpsCandidateProjectNames: string[];
@@ -9438,9 +9505,6 @@ function HomeScreen({
   onNewUpdate: (projectName?: string) => void;
   onSelectProject: (projectName: OverviewProjectSelection) => void;
   onOpenProject: (projectName: string) => void;
-  onOpenUpdate: (update: ProjectUpdate) => void;
-  onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
-  onRetryQueuedUpdate: (update: ProjectUpdate) => void;
   onViewProjects: () => void;
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false);
@@ -9448,16 +9512,18 @@ function HomeScreen({
     useState<'filter' | 'newUpdate'>('filter');
 
   const activeLabel = selectedProjectName || 'All Projects';
-  const pieBrief = buildPIEBriefText(selectedProjectName, savedUpdates);
-  const needsAttention = buildPhase2AttentionItems(
+  const scopedProjects = selectedProjectName
+    ? projects.filter(
+        project => project.toLowerCase() === selectedProjectName.toLowerCase(),
+      )
+    : projects;
+  const overviewRows = buildOverviewProjectRows(
+    scopedProjects,
     savedUpdates,
-    selectedProjectName,
+    scheduleItems,
   );
-  const recentActivity = buildPhase2ActivityItems(
-    savedUpdates,
-    selectedProjectName,
-    projectDocuments,
-  );
+  const attentionRows = overviewRows.filter(row => row.needsAttention);
+  const caughtUpRows = overviewRows.filter(row => !row.needsAttention);
 
   function openSelector(intent: 'filter' | 'newUpdate') {
     setSelectorIntent(intent);
@@ -9471,51 +9537,6 @@ function HomeScreen({
     if (selectorIntent === 'newUpdate' && projectName) {
       onNewUpdate(projectName);
     }
-  }
-
-  function updateForAttentionItem(item: Phase2AttentionItem) {
-    return savedUpdates.find(update => update.id === item.updateId) || null;
-  }
-
-  function openAttentionItem(item: Phase2AttentionItem) {
-    const update = updateForAttentionItem(item);
-
-    if (update && item.actionTarget !== 'project') {
-      onOpenUpdate(update);
-      return;
-    }
-
-    onOpenProject(item.projectName);
-  }
-
-  function retryAttentionItem(item: Phase2AttentionItem) {
-    const update = updateForAttentionItem(item);
-    if (!update) {
-      onOpenProject(item.projectName);
-      return;
-    }
-
-    if (item.actionTarget === 'retry_send') {
-      onRetryQueuedUpdate(update);
-      return;
-    }
-
-    if (item.actionTarget === 'retry_photo_analysis') {
-      const photo =
-        update.photos.find(candidate => candidate.id === item.photoId) ||
-        update.photos.find(
-          candidate =>
-            candidate.photoIntelligence?.status === 'analysis_failed_retry' ||
-            candidate.photoIntelligence?.status === 'comparison_unavailable',
-        );
-
-      if (photo) {
-        onRetryPhotoAnalysis(update, photo);
-        return;
-      }
-    }
-
-    onOpenUpdate(update);
   }
 
   const projectPickerCandidates =
@@ -9635,54 +9656,103 @@ function HomeScreen({
         </View>
       ) : null}
 
-      <View style={styles.phase2BriefCard}>
-        <View style={styles.phase2BriefIcon}>
-          <Ionicons name="sparkles-outline" size={21} color={colors.primary} />
-        </View>
-        <View style={styles.rowMain}>
-          <Text style={styles.panelTitle}>PIE Brief</Text>
-          <Text style={styles.bodyText}>{pieBrief}</Text>
-        </View>
-      </View>
-
-      <Text style={styles.sectionLabel}>
-        Needs Attention
-      </Text>
-
-      {needsAttention.length === 0 ? (
+      {attentionRows.length === 0 && caughtUpRows.length === 0 ? (
         <EmptyState
-          title="Nothing needs attention right now."
-          text="Safety items, overdue work, and urgent DAVE findings will appear here."
+          title="No projects yet."
+          text="Add a project to start tracking field updates and schedule attention."
         />
-      ) : (
-        needsAttention.map(item => (
-          <Phase2AttentionCard
-            key={item.id}
-            item={item}
-            onPress={() => openAttentionItem(item)}
-            onRetry={() => retryAttentionItem(item)}
-          />
-        ))
-      )}
+      ) : null}
 
-      <Text style={styles.sectionLabel}>
-        Recent Activity
-      </Text>
+      {attentionRows.length > 0 ? (
+        <>
+          <Text style={styles.overviewSectionLabel}>
+            Needs your attention
+          </Text>
 
-      {recentActivity.length === 0 ? (
-        <EmptyState
-          title="Your recent updates will show up here."
-          text="Start with a field update to build the project history."
-        />
-      ) : (
-        recentActivity.map(item => (
-          <Phase2ActivityRow
-            key={item.update.id}
-            item={item}
-            onPress={() => onOpenProject(item.projectName)}
-          />
-        ))
-      )}
+          <View style={styles.overviewGroupedList}>
+            {attentionRows.map((row, index) => (
+              <View
+                key={row.project}
+                style={[
+                  styles.overviewGroupedCell,
+                  index === attentionRows.length - 1 &&
+                    styles.overviewGroupedCellLast,
+                ]}
+              >
+                <TouchableOpacity
+                  style={styles.overviewGroupedRow}
+                  onPress={() => onOpenProject(row.project)}
+                >
+                  <View
+                    style={[
+                      styles.overviewStatusDot,
+                      {
+                        backgroundColor:
+                          row.severity === 'high'
+                            ? colors.danger
+                            : colors.warning,
+                      },
+                    ]}
+                  />
+                  <View style={styles.rowMain}>
+                    <Text style={styles.projectName}>{row.project}</Text>
+                    <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
+                      {row.subtitle}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                </TouchableOpacity>
+
+                {row.dueTodayLabel ? (
+                  <View style={styles.overviewDueTodayRow}>
+                    <Ionicons name="time-outline" size={14} color={colors.warning} />
+                    <Text style={styles.overviewDueTodayText}>
+                      Due today · {row.dueTodayLabel}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        </>
+      ) : null}
+
+      {caughtUpRows.length > 0 ? (
+        <>
+          <Text style={styles.overviewSectionLabel}>
+            All caught up
+          </Text>
+
+          <View style={styles.overviewGroupedList}>
+            {caughtUpRows.map((row, index) => (
+              <TouchableOpacity
+                key={row.project}
+                style={[
+                  styles.overviewGroupedCell,
+                  styles.overviewGroupedRow,
+                  index === caughtUpRows.length - 1 &&
+                    styles.overviewGroupedCellLast,
+                ]}
+                onPress={() => onOpenProject(row.project)}
+              >
+                <View
+                  style={[
+                    styles.overviewStatusDot,
+                    { backgroundColor: colors.success },
+                  ]}
+                />
+                <View style={styles.rowMain}>
+                  <Text style={styles.projectName}>{row.project}</Text>
+                  <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
+                    {row.subtitle}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        </>
+      ) : null}
 
       <SecondaryButton
         label="View Projects"
@@ -9938,50 +10008,6 @@ function ProjectSelectorRow({
       </View>
       {selected ? (
         <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
-      ) : (
-        <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-      )}
-    </TouchableOpacity>
-  );
-}
-
-function Phase2AttentionCard({
-  item,
-  onPress,
-  onRetry,
-}: {
-  item: Phase2AttentionItem;
-  onPress: () => void;
-  onRetry?: () => void;
-}) {
-  const statusStyle = statusStyleForRole(item.statusRole);
-
-  return (
-    <TouchableOpacity
-      style={[
-        styles.attentionCard,
-        item.urgent && styles.attentionCardUrgent,
-      ]}
-      onPress={onPress}
-    >
-      <View style={styles.rowIconBubble}>
-        <Ionicons
-          name={statusStyle.icon}
-          size={20}
-          color={statusStyle.color}
-        />
-      </View>
-      <View style={styles.rowMain}>
-        <Text style={styles.projectName}>{item.title}</Text>
-        <Text style={styles.rowSub}>
-          {item.projectName} | {item.areaLabel} | {item.dateLabel}
-        </Text>
-        <Text style={styles.bodyText}>{item.detail}</Text>
-      </View>
-      {item.retryable ? (
-        <TouchableOpacity style={styles.phase3ChangeButton} onPress={onRetry || onPress}>
-          <Text style={styles.dashboardManageText}>Retry</Text>
-        </TouchableOpacity>
       ) : (
         <Ionicons name="chevron-forward" size={20} color={colors.muted} />
       )}
@@ -17584,6 +17610,66 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  overviewSectionLabel: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 20,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+
+  overviewGroupedList: {
+    backgroundColor: colors.card,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+
+  overviewGroupedCell: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.line,
+  },
+
+  overviewGroupedCellLast: {
+    borderBottomWidth: 0,
+  },
+
+  overviewGroupedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+
+  overviewStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  overviewRowSubtitle: {
+    fontSize: 13,
+    color: colors.muted,
+    marginTop: 1,
+  },
+
+  overviewDueTodayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingLeft: 32,
+    paddingRight: 14,
+    paddingBottom: 12,
+    marginTop: -2,
+  },
+
+  overviewDueTodayText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.warning,
   },
 
   projectSelectorBackdrop: {
