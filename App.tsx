@@ -8655,7 +8655,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setScreen('UpdateDetail');
   }
 
-  function deleteSavedUpdate(updateId: string) {
+  function deleteSavedUpdate(updateId: string, onConfirmed?: () => void) {
     const update = savedUpdates.find(item => item.id === updateId);
     const lifecycle = update ? lifecycleStatusForUpdate(update) : 'draft';
     const deleteTitle =
@@ -8717,13 +8717,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 [draft, ...remainingUpdates],
               );
             }
+
+            onConfirmed?.();
           },
         },
       ],
     );
   }
 
-  function archiveSavedUpdate(updateId: string) {
+  function archiveSavedUpdate(updateId: string, onConfirmed?: () => void) {
     Alert.alert(
       'Archive sent update?',
       'Sent updates are communication records. This will hide the update from default views without deleting the record.',
@@ -8767,6 +8769,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   : update,
               ),
             );
+
+            onConfirmed?.();
           },
         },
       ],
@@ -8875,7 +8879,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }}
               onRetryQueuedUpdate={retryQueuedUpdate}
               onViewProjects={() => setScreen('Projects')}
-              onOpenSettings={() => setScreen('Admin')}
             />
           )}
 
@@ -9191,6 +9194,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 onRetryPhotoAnalysis={(update, photo) => {
                   void retryPhotoAnalysis(update, photo);
                 }}
+                onDelete={() => {
+                  deleteSavedUpdate(liveDetailUpdate.id, () =>
+                    setScreen('SavedUpdates'),
+                  );
+                }}
+                onArchive={() => {
+                  archiveSavedUpdate(liveDetailUpdate.id, () =>
+                    setScreen('SavedUpdates'),
+                  );
+                }}
               />
             </ScreenScroll>
           )}
@@ -9386,7 +9399,6 @@ function HomeScreen({
   onRetryPhotoAnalysis,
   onRetryQueuedUpdate,
   onViewProjects,
-  onOpenSettings,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
@@ -9407,7 +9419,6 @@ function HomeScreen({
   onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
   onViewProjects: () => void;
-  onOpenSettings: () => void;
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [selectorIntent, setSelectorIntent] =
@@ -9437,20 +9448,6 @@ function HomeScreen({
     if (selectorIntent === 'newUpdate' && projectName) {
       onNewUpdate(projectName);
     }
-  }
-
-  function startUpdate() {
-    if (selectedProjectName) {
-      onNewUpdate(selectedProjectName);
-      return;
-    }
-
-    if (detectedProjectName) {
-      onNewUpdate(detectedProjectName);
-      return;
-    }
-
-    openSelector('newUpdate');
   }
 
   function updateForAttentionItem(item: Phase2AttentionItem) {
@@ -9514,9 +9511,6 @@ function HomeScreen({
       <ScreenTitle
         title="Overview"
         subtitle="Fast access to the next field update and current project attention."
-        actionIcon="settings-outline"
-        onActionPress={onOpenSettings}
-        actionAccessibilityLabel="Settings"
       />
 
       <TouchableOpacity
@@ -9548,12 +9542,6 @@ function HomeScreen({
         </View>
         <Ionicons name="chevron-down" size={22} color={colors.primary} />
       </TouchableOpacity>
-
-      <PrimaryButton
-        label="New Update"
-        icon="camera-outline"
-        onPress={startUpdate}
-      />
 
       {unfinishedDraft ? (
         <View style={styles.draftRecoveryCard}>
@@ -12069,12 +12057,17 @@ function ReadOnlyUpdateDetailScreen({
   onBack,
   onRetry,
   onRetryPhotoAnalysis,
+  onDelete,
+  onArchive,
 }: {
   update: ProjectUpdate;
   onBack: () => void;
   onRetry?: () => void;
   onRetryPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
+  onDelete: () => void;
+  onArchive: () => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const lifecycle = lifecycleStatusForUpdate(update);
   const pieStatus = updatePIEAnalysisStatus(update);
   const documents = update.documents || [];
@@ -12105,6 +12098,16 @@ function ReadOnlyUpdateDetailScreen({
       <ScreenTitle
         title={update.projectName}
         subtitle="Update Detail"
+        actionIcon="ellipsis-horizontal"
+        onActionPress={() => setMenuOpen(true)}
+        actionAccessibilityLabel="Update options"
+      />
+      <UpdateOverflowMenu
+        visible={menuOpen}
+        lifecycle={lifecycle}
+        onClose={() => setMenuOpen(false)}
+        onDelete={onDelete}
+        onArchive={onArchive}
       />
       <View style={styles.panel}>
         <Text style={styles.projectName}>{lifecycle}</Text>
@@ -14316,7 +14319,7 @@ function UpdateHistoryCard({
         ) : null}
         {__DEV__ && update.deleteDiagnostics ? (
           <Text style={styles.locationDetailText}>
-            Delete diagnostics: update id {update.deleteDiagnostics.updateId} | local id {update.deleteDiagnostics.localId} | cloud id present {update.deleteDiagnostics.cloudIdPresent ? 'yes' : 'no'} | lifecycle {update.deleteDiagnostics.lifecycleStatus} | pending sync {update.deleteDiagnostics.pendingSync ? 'yes' : 'no'} | tombstoned {update.deleteDiagnostics.tombstoned ? 'yes' : 'no'} | deleted at {update.deleteDiagnostics.deletedAt || 'none'} | source after reload {update.deleteDiagnostics.sourceAfterReload} | merge decision {update.deleteDiagnostics.mergeDecision} | orphaned photo count ignored {update.deleteDiagnostics.orphanedPhotoCountIgnored}
+            Lifecycle diagnostics: update id {update.deleteDiagnostics.updateId} | local id {update.deleteDiagnostics.localId} | cloud id present {update.deleteDiagnostics.cloudIdPresent ? 'yes' : 'no'} | lifecycle {update.deleteDiagnostics.lifecycleStatus} | pending sync {update.deleteDiagnostics.pendingSync ? 'yes' : 'no'} | tombstoned {update.deleteDiagnostics.tombstoned ? 'yes' : 'no'} | {update.isArchived ? 'archived at' : 'deleted at'} {update.deleteDiagnostics.deletedAt || 'none'} | source after reload {update.deleteDiagnostics.sourceAfterReload} | merge decision {update.deleteDiagnostics.mergeDecision} | orphaned photo count ignored {update.deleteDiagnostics.orphanedPhotoCountIgnored}
           </Text>
         ) : null}
         {onRetry ? (
@@ -15769,6 +15772,13 @@ function BottomTabs({
         icon="document-text-outline"
         active={current === 'SavedUpdates' || current === 'UpdateDetail'}
         onPress={() => onChange('SavedUpdates')}
+      />
+
+      <TabButton
+        label="Settings"
+        icon="settings-outline"
+        active={current === 'Admin'}
+        onPress={() => onChange('Admin')}
       />
     </View>
   );
