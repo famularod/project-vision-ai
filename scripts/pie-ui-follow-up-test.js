@@ -3,10 +3,25 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const vm = require('vm');
+const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, 'services/PIEPhotoVisionMobileWorkflow.ts'), 'utf8');
+
+function loadTs(relativePath) {
+  const filename = path.join(root, relativePath);
+  const source = fs.readFileSync(filename, 'utf8');
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  });
+  const sandbox = { exports: {}, encodeURIComponent, Set };
+  vm.runInNewContext(compiled.outputText, sandbox, { filename });
+  return sandbox.exports;
+}
+
+const attentionIdentity = loadTs('services/PIEAttentionIdentity.ts');
 
 function sliceBetween(source, start, end) {
   const startIndex = source.indexOf(start);
@@ -73,16 +88,16 @@ assert(
 assert(
   app.includes('overviewProjectSelection === undefined') &&
     app.includes('? detectedProjectName') &&
-    app.includes('onNewUpdate(detectedProjectName)'),
-  'Detected GPS project must become the active Overview project and New Update target.',
+    app.includes('selectedProjectName={overviewProjectName}'),
+  'Detected GPS project must become the active Overview project without depending on removed duplicate New Update copy.',
 );
 assert(
-  app.includes('openSelector(\'newUpdate\')') &&
+  app.includes("const activeLabel = selectedProjectName || 'All Projects'") &&
     app.includes('No nearby project matched; showing all projects') &&
     app.includes('Location unavailable; showing all projects') &&
     app.includes('Multiple nearby projects found; choose one to continue') &&
     app.includes('GPS found multiple nearby projects. Choose one of these likely matches.'),
-  'GPS fallback must keep All Projects and route New Update through project selection.',
+  'GPS fallback must keep All Projects and explain unmatched or ambiguous detection.',
 );
 assert(
   app.includes('likelyProjectCandidatesFromGps') &&
@@ -165,15 +180,64 @@ assert(
 assert(
   attentionBuilder.includes('stableOpenItemAttentionId') &&
     app.includes('function stableOpenItemAttentionId') &&
-    app.includes('stableUiHash'),
+    app.includes('buildStableAttentionItemId') &&
+    app.includes('dedupeAttentionItemsById(items)'),
   'Open items must have a stable identity instead of spawning a new card per update/photo id.',
 );
 const stableOpenItemId = sliceBetween(app, 'function stableOpenItemAttentionId', 'function recurringOpenItemContext');
 assert(
-  stableOpenItemId.includes('update.quickContext || photo.category') &&
+  stableOpenItemId.includes('attentionCategoryForPhotoCategory(photo.category)') &&
+    stableOpenItemId.includes('updateId: update.id') &&
+    stableOpenItemId.includes('photoId: photo.id') &&
     !stableOpenItemId.includes('photo.actionRequired') &&
-    !stableOpenItemId.includes('photo.caption'),
+    !stableOpenItemId.includes('photo.caption') &&
+    !stableOpenItemId.includes('title') &&
+    !stableOpenItemId.includes('detail'),
   'Stable open-item identity must use category context, not raw caption/action wording.',
+);
+
+const stableInput = {
+  updateId: 'update-123',
+  photoId: 'photo-456',
+  category: 'open_issue',
+  itemType: 'open_item',
+  subtype: 'photo_action',
+};
+const originalId = attentionIdentity.buildStableAttentionItemId({
+  ...stableInput,
+  caption: 'Original caption',
+  actionRequired: 'Original action wording',
+});
+const editedWordingId = attentionIdentity.buildStableAttentionItemId({
+  ...stableInput,
+  caption: 'Completely rewritten caption',
+  actionRequired: 'Completely rewritten action wording',
+});
+assert.strictEqual(originalId, editedWordingId, 'caption and action wording edits must not change attention identity');
+
+const safetyId = attentionIdentity.buildStableAttentionItemId({
+  ...stableInput,
+  category: 'safety_concern',
+  itemType: 'safety_observation',
+});
+assert.notStrictEqual(originalId, safetyId, 'different categories for the same update/photo must receive different IDs');
+assert.strictEqual(
+  originalId,
+  attentionIdentity.buildStableAttentionItemId(JSON.parse(JSON.stringify(stableInput))),
+  'the same category/update identity must survive reload serialization',
+);
+const dedupedAttention = attentionIdentity.dedupeAttentionItemsById([
+  { id: originalId, title: 'Original wording' },
+  { id: originalId, title: 'Edited wording' },
+  { id: safetyId, title: 'Safety wording' },
+]);
+assert.strictEqual(dedupedAttention.length, 2, 'Needs Attention must dedupe repeated stable identities');
+assert.strictEqual(dedupedAttention[0].title, 'Original wording', 'deduplication must preserve the first ranked item');
+assert(
+  app.includes('function buildUpdateTombstone') &&
+    app.includes('function upsertDeletedUpdateTombstone') &&
+    app.includes("mergeDecision: 'tombstoned'"),
+  'stable attention identity must not affect delete/archive tombstone behavior',
 );
 assert(
   !attentionBuilder.includes('Permit card missing') &&

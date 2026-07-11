@@ -1,3 +1,8 @@
+import {
+  PIE_PHOTO_PAIR_RESPONSE_SCHEMA,
+  PIE_PHOTO_PAIR_SCHEMA_VERSION,
+} from './pie-photo-comparison-schema.ts';
+
 export type VisionMode = 'single_photo' | 'photo_pair';
 export type ProviderStatus = 'succeeded' | 'degraded' | 'failed' | 'blocked';
 
@@ -83,12 +88,13 @@ class OpenAIVisionProvider implements VisionProvider {
     return callWithRetries(context, async () => {
       const prompt = [
         'Compare these two project photos using raw pixels. The first image is the baseline; the second is current.',
-        'Return strict JSON. Do not return markdown.',
-        'Schema: sameSceneProbability, sameSubjectProbability, sharedVisualAnchors, sceneOverlapAssessment, viewpointAssessment, viewpointChange, cameraAngleChange, distanceChange, framingChange, lightingDifferences, lightingChange, obstructionDifferences, obstructionChange, alignmentConfidence, changeDetectionConfidence, objectAdditions, objectRemovals, materialOrStructuralChanges, unchangedConditions, possibleRegression, visibleConcerns, differenceClassifications, comparabilityClassification, comparabilityReasons, conclusion, confidence, limitations, repeatPhotoGuidance, plainLanguageSummary.',
+        `Return the strict paired-photo JSON schema version ${PIE_PHOTO_PAIR_SCHEMA_VERSION}. Do not return markdown.`,
+        'Inventory the baseline and current image independently, then reconcile shared, added, removed, moved, occluding, revealed, material-change, concern, and uncertain findings.',
+        'Each finding must use the structured finding schema. Observations must contain only directly visible evidence. Interpretations must remain separate and qualified.',
         'For every object addition/removal, defect, safety concern, installed equipment, material change, damage, obstruction, or work-area finding, include the raw visible object/change name and a concrete location phrase when visible.',
         'Location phrases should describe image position, nearby subject, and surface/area when visible, such as right side of desk, front-right tabletop, beside laptop on right, near the right-hand edge, or lower-right portion of image.',
         'Write plainLanguageSummary as 1-3 full sentences a non-technical construction project manager could read and immediately act on without looking at the photos. State specifically what is different now versus the baseline - material, color, installation state, or condition - not just an object label. Example: "The left wall now has primed white drywall installed where bare wood stud framing was visible in the baseline photo." Not: "Drywall appears."',
-        'For objectAdditions, objectRemovals, and materialOrStructuralChanges, write full descriptive phrases, not single-word labels. Include material, color, or condition when visible. Avoid vague generic terms alone (e.g. "damage", "equipment") - say what kind and where, e.g. "water staining on the lower-left drywall panel" or "yellow forklift parked near the loading dock."',
+        'For every finding description, write a full descriptive phrase, not a single-word label. Include material, color, condition, foreground/background position, and occlusion relationship only when directly visible.',
         'Comparability must be strong, probable, weak, or not_comparable.',
         'Comparability measures whether the shared physical scene or subject can be reliably compared; it does not require identical camera position.',
         'Allow strong when the same subject is highly certain, stable visual anchors align, the relevant change is clearly visible, and viewpoint/framing differences do not materially limit the conclusion.',
@@ -162,7 +168,16 @@ async function callOpenAI(
       body: JSON.stringify({
         model,
         input: [{ role: 'user', content }],
-        text: { format: { type: 'json_object' } },
+        text: context.mode === 'photo_pair'
+          ? {
+              format: {
+                type: 'json_schema',
+                name: 'pie_photo_pair_comparison',
+                strict: true,
+                schema: PIE_PHOTO_PAIR_RESPONSE_SCHEMA,
+              },
+            }
+          : { format: { type: 'json_object' } },
       }),
     });
     clearTimeout(timer);

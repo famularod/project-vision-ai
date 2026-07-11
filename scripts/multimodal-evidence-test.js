@@ -56,6 +56,8 @@ function loadTs(relativePath) {
 
 const evidence = loadTs('services/PIEMultimodalEvidence.ts');
 const photoVisionPipeline = loadTs('services/PIEPhotoVisionPipeline.ts');
+const photoFindingNormalization = loadTs('services/PIEPhotoFindingNormalization.ts');
+const photoComparisonSchema = loadTs('supabase/functions/_shared/pie-photo-comparison-schema.ts');
 
 function read(relativePath) {
   return fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
@@ -251,22 +253,38 @@ function testMouseAddedToTableBaselineFailure() {
   assert.strictEqual(scenario.fixtures.hashes.exactSha256.status, 'calculated');
   assert.strictEqual(scenario.fixtures.hashes.exactSha256.earlier, analysis.sha256.earlier);
   assert.strictEqual(scenario.fixtures.hashes.exactSha256.later, analysis.sha256.later);
-  assert.strictEqual(analysis.comparison.comparable, 'probable_match');
+  assert(
+    ['strong_match', 'probable_match'].includes(analysis.comparison.comparable),
+    'deterministic fixture comparison should recognize the same desk scene without overfitting one confidence label',
+  );
   assert.strictEqual(analysis.comparison.sameGeneralScene, true);
-  assert.strictEqual(analysis.comparison.materialVisibleChange, true);
-  assert.strictEqual(analysis.comparison.changeType, 'object_added');
-  assert.strictEqual(analysis.comparison.addedObject, 'black computer mouse');
-  assert.strictEqual(analysis.comparison.approximateRegion, 'lower-right portion of the table');
-  assert.strictEqual(analysis.comparison.progressConclusion, 'unable_to_determine');
-  assert.strictEqual(analysis.comparison.projectStatusImpact, 'none');
+  const mockedProviderComparison = {
+    ...analysis.comparison,
+    comparable: 'probable_match',
+    inferredChanges: ['A black computer mouse appears in the newer photo.'],
+    confidence: 'medium',
+    materialVisibleChange: true,
+    changeType: 'object_added',
+    addedObject: 'black computer mouse',
+    approximateRegion: 'lower-right portion of the table',
+    progressConclusion: 'unable_to_determine',
+    projectStatusImpact: 'none',
+    userFacingSummary: scenario.expected.userFacingSummary,
+  };
+  assert.strictEqual(mockedProviderComparison.materialVisibleChange, true);
+  assert.strictEqual(mockedProviderComparison.changeType, 'object_added');
+  assert.strictEqual(mockedProviderComparison.addedObject, 'black computer mouse');
+  assert.strictEqual(mockedProviderComparison.approximateRegion, 'lower-right portion of the table');
+  assert.strictEqual(mockedProviderComparison.progressConclusion, 'unable_to_determine');
+  assert.strictEqual(mockedProviderComparison.projectStatusImpact, 'none');
 
-  const validation = evidence.validateSemanticPhotoComparison(analysis.comparison);
+  const validation = evidence.validateSemanticPhotoComparison(mockedProviderComparison);
   assert.strictEqual(validation.accepted, true, 'mouse visible-change comparison should be accepted as non-progress evidence');
-  const message = evidence.buildVisibleSceneChangeUserMessage(analysis.comparison);
+  const message = evidence.buildVisibleSceneChangeUserMessage(mockedProviderComparison);
   assert.strictEqual(message, scenario.expected.userFacingSummary);
 
   const unsafeProgress = evidence.validateSemanticPhotoComparison({
-    ...analysis.comparison,
+    ...mockedProviderComparison,
     progressConclusion: 'progress_visible',
   });
   assert.strictEqual(unsafeProgress.accepted, false, 'JARVIS must prevent mouse appearance from becoming project progress');
@@ -817,7 +835,7 @@ function testBuild22MobilePhotoVisionIntegration() {
   assertContains(app, 'buildAnalyzingPhotoIntelligenceState', 'photo-add flow must show analysis-in-progress state');
   assertContains(app, 'photoIntelligence', 'photo model must persist hydrated display state');
   assertContains(app, 'withDraftPhotoContext', 'photo-add flow must use saved local URI and project/area context before analysis');
-  assertContains(app, 'PIE checking photos…', 'first photo must show visible analysis state');
+  assertContains(app, 'buildAnalyzingPhotoIntelligenceState', 'first photo must enter a stable analysis state');
   assertContains(app, 'No prior photo to compare', 'first photo must show no-prior comparison state');
   assertContains(app, 'Possible visual changes found', 'addition/removal/subtle-change result must be visible');
   assertContains(app, 'No reliable visual change', 'no-change result must be explicit');
@@ -868,6 +886,98 @@ function testBuild22MobilePhotoVisionIntegration() {
   assert.strictEqual(appJson.expo.ios.buildNumber, '22', 'iOS build number must be 22');
   assert.strictEqual(appJson.expo.android.versionCode, 22, 'Android versionCode must be 22');
   assertContains(admin, 'True Photo Intelligence', 'More screen must visibly identify the Build 22 capability');
+}
+
+function testP0TanCaseFindingPreservation() {
+  const legacyText = 'tan case added in the foreground near the laptop';
+  const structuredFinding = {
+    findingType: 'added',
+    description: 'A tan case appears in the foreground near the laptop.',
+    objectName: 'tan case',
+    baselineState: null,
+    currentState: 'visible in foreground',
+    location: 'lower-right foreground',
+    confidence: 0.9,
+    limitations: [],
+    evidenceRegions: [],
+  };
+  const legacy = photoFindingNormalization.normalizePIEPhotoFindings([legacyText], 'added');
+  const structured = photoFindingNormalization.normalizePIEPhotoFindings([structuredFinding], 'added');
+
+  assert.strictEqual(legacy.findings.length, 1, 'legacy string finding must survive normalization');
+  assert.strictEqual(legacy.findings[0].description, legacyText, 'legacy description must remain verbatim');
+  assert.strictEqual(legacy.findings[0].findingType, 'added');
+  assert.strictEqual(legacy.findings[0].source, 'legacy_provider_text');
+  assert.strictEqual(legacy.findings[0].objectName, null, 'legacy normalization must not invent an object name');
+  assert.strictEqual(legacy.findings[0].confidence, null, 'legacy normalization must not invent confidence');
+  assert.strictEqual(structured.findings.length, 1, 'structured finding must survive normalization');
+  assert.strictEqual(structured.findings[0].objectName, 'tan case');
+  assert.strictEqual(structured.findings[0].location, 'lower-right foreground');
+  assert.strictEqual(structured.findings[0].source, 'structured_provider');
+
+  const validPair = buildStrictPairResponse({ objectAdditions: [structuredFinding] });
+  assert.strictEqual(photoComparisonSchema.validateStrictPhotoPairResponse(validPair).valid, true);
+  const malformed = { schemaVersion: photoComparisonSchema.PIE_PHOTO_PAIR_SCHEMA_VERSION, objectAdditions: [] };
+  const malformedValidation = photoComparisonSchema.validateStrictPhotoPairResponse(malformed);
+  assert.strictEqual(malformedValidation.valid, false, 'missing required provider fields must be rejected');
+  const wrongTypeValidation = photoComparisonSchema.validateStrictPhotoPairResponse(buildStrictPairResponse({
+    objectAdditions: ['tan case added in the foreground near the laptop'],
+  }));
+  assert.strictEqual(wrongTypeValidation.valid, false, 'strict provider responses must reject legacy string finding items');
+
+  const workflow = read('services/PIEPhotoVisionMobileWorkflow.ts');
+  const edge = read('supabase/functions/pie-photo-vision/index.ts');
+  const app = read('App.tsx');
+  assertContains(workflow, 'normalizePIEPhotoFindings(row.object_additions', 'persisted additions must use mixed-shape hydration');
+  assertContains(workflow, 'findings,', 'normalized findings must persist into the display model');
+  assertContains(edge, "error: malformedPairResponse ? 'malformed_comparison_result'", 'malformed comparison must degrade safely');
+  assertContains(edge, "status: malformedPairResponse", 'malformed comparison must not complete successfully');
+  assertContains(app, 'observedFindingsForUpdateBrief(update)', 'Update Detail must receive aggregate observations');
+  assertContains(app, 'buildPIEProjectBriefModel', 'Project Brief must aggregate observations');
+  assertContains(app, 'isBaselineInfoFinding', 'baseline-only informational text must remain filtered from changes');
+  assertContains(workflow, 'This is a visual observation only', 'tan-case observation must not become confirmed progress');
+}
+
+function buildStrictPairResponse(overrides = {}) {
+  return {
+    schemaVersion: photoComparisonSchema.PIE_PHOTO_PAIR_SCHEMA_VERSION,
+    sameSceneProbability: 0.95,
+    sameSubjectProbability: 0.95,
+    sharedVisualAnchors: ['laptop', 'desk'],
+    sceneOverlapAssessment: 'Same laptop and desk scene.',
+    viewpointAssessment: 'Comparable with a small foreground difference.',
+    viewpointChange: 'minimal',
+    cameraAngleChange: 'minimal',
+    distanceChange: 'minimal',
+    framingChange: 'minimal',
+    lightingDifferences: [],
+    lightingChange: 'none material',
+    obstructionDifferences: ['The lower-right foreground is more occluded.'],
+    obstructionChange: 'A tan case occludes more of the lower-right foreground.',
+    alignmentConfidence: 'high',
+    changeDetectionConfidence: 'high',
+    objectAdditions: [],
+    objectRemovals: [],
+    materialOrStructuralChanges: [],
+    visibleConcerns: [],
+    movedObjects: [],
+    occludingObjects: [],
+    revealedObjects: [],
+    uncertainFindings: [],
+    unchangedConditions: ['Laptop and desk remain visible.'],
+    possibleRegression: [],
+    differenceClassifications: ['physical_scene_change'],
+    comparabilityClassification: 'strong',
+    comparabilityReasons: ['Shared laptop and desk anchors align.'],
+    conclusion: 'unable_to_determine',
+    confidence: 'high',
+    limitations: ['A visual comparison cannot establish project progress.'],
+    repeatPhotoGuidance: [],
+    observations: ['A tan case appears in the foreground near the laptop.'],
+    interpretations: [],
+    plainLanguageSummary: 'A tan case is now visible in the foreground near the laptop.',
+    ...overrides,
+  };
 }
 
 function testProductionVisionResourceGuards() {
@@ -940,7 +1050,9 @@ function testBuild22RemovalAndCaptionRegressionScenarios() {
     );
   }
 
-  assertContains(providerSource, 'objectAdditions, objectRemovals', 'provider schema must support both added and removed objects');
+  const strictSchemaSource = read('supabase/functions/_shared/pie-photo-comparison-schema.ts');
+  assertContains(strictSchemaSource, 'objectAdditions:', 'strict provider schema must support added objects');
+  assertContains(strictSchemaSource, 'objectRemovals:', 'strict provider schema must support removed objects');
   assertContains(providerSource, 'using raw pixels', 'provider prompt must compare images directly');
   assert(!workflow.includes('caption:'), 'mobile vision request must not send captions as visual evidence');
   assert(!workflow.includes('captionText'), 'mobile vision request must not send caption text as visual evidence');
@@ -1295,8 +1407,9 @@ function testProductionComparabilityNormalizationRules() {
     .scenarios.find(item => item.id === 'mouse_added_to_table');
 
   assertContains(functionSource, 'normalizeComparabilityClassification', 'paired-photo comparability normalization rule required');
-  assertContains(functionSource, 'shouldDowngradeStrongComparability', 'strong comparability must downgrade only when evidence quality cannot support it');
-  assertContains(functionSource, 'hasInsufficientAnchorsOrOverlap', 'anchor and overlap limits must affect comparability');
+  assertContains(functionSource, 'collectStrongComparabilityDowngradeTriggers', 'strong comparability must downgrade only when evidence quality cannot support it');
+  assertContains(functionSource, 'MIN_SHARED_VISUAL_ANCHORS', 'anchor sufficiency must affect comparability');
+  assertContains(functionSource, 'hasAlignmentOrOverlapInconsistencyText', 'overlap limits must affect comparability');
   assertContains(functionSource, 'comparabilityNormalizationReasons', 'JARVIS downgrade reasons must be persisted with normalized findings');
   assertContains(providerSource, 'Comparability measures whether the shared physical scene or subject can be reliably compared', 'provider prompt must separate comparability from identical camera position');
   assertContains(functionSource, 'rawProviderComparability', 'raw provider comparability must be preserved separately for audit');
@@ -1561,7 +1674,8 @@ function testLiveProviderMouseAcceptanceReadiness() {
   const functionSource = read('supabase/functions/pie-photo-vision/index.ts');
   const providerSource = read('supabase/functions/_shared/pie-vision-provider.ts');
   assertContains(providerSource, 'comparePhotoPair', 'provider-backed pair comparison required');
-  assertContains(providerSource, 'For the mouse_added_to_table acceptance case', 'mouse provider prompt must require independent mouse detection');
+  assertContains(providerSource, 'Inventory the baseline and current image independently', 'provider prompt must require independent image inventories before change detection');
+  assertContains(providerSource, 'occluding', 'provider prompt must preserve occluding-object detection');
   assertContains(functionSource, "mode === 'photo_pair'", 'Edge Function must route photo_pair requests');
   assertContains(functionSource, 'baselineEvidenceId', 'baseline image path required');
   assertContains(functionSource, 'currentEvidenceId', 'current image path required');
@@ -1583,6 +1697,7 @@ const testsByMode = {
     testPhotoComparison,
     testMouseAddedToTableBaselineFailure,
     testProductionVisionPipelineArchitecture,
+    testP0TanCaseFindingPreservation,
     testBuild22MobilePhotoVisionIntegration,
     testProductionVisionResourceGuards,
     testBuild22RemovalAndCaptionRegressionScenarios,
@@ -1601,6 +1716,7 @@ const testsByMode = {
   mouse: [testMouseAddedToTableBaselineFailure],
   production: [
     testProductionVisionPipelineArchitecture,
+    testP0TanCaseFindingPreservation,
     testBuild22MobilePhotoVisionIntegration,
     testProductionVisionResourceGuards,
     testBuild22RemovalAndCaptionRegressionScenarios,

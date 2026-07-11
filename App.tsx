@@ -35,6 +35,11 @@ import {
   type PIEPhotoIntelligenceDisplayState,
 } from './services/PIEPhotoVisionMobileWorkflow';
 import {
+  attentionCategoryForPhotoCategory,
+  buildStableAttentionItemId,
+  dedupeAttentionItemsById,
+} from './services/PIEAttentionIdentity';
+import {
   buildSixtySecondFlowTimingResult,
   type SixtySecondFlowTimingResult,
 } from './services/SixtySecondFlowInstrumentation';
@@ -4549,7 +4554,7 @@ function buildPhase2AttentionItems(
   savedUpdates: ProjectUpdate[],
   projectName: string | null,
 ) {
-  return savedUpdates
+  const items = savedUpdates
     .filter(update => projectMatchesScope(update, projectName))
     .flatMap(update => {
       const recurringContext = recurringOpenItemContext(update, savedUpdates);
@@ -4804,13 +4809,22 @@ function buildPhase2AttentionItems(
           };
         }),
       ];
-    })
+    });
+
+  return dedupeAttentionItemsById(items)
     .sort((a, b) => a.priority - b.priority || b.dateLabel.localeCompare(a.dateLabel))
     .slice(0, 6);
 }
 
 function stableOpenItemAttentionId(update: ProjectUpdate, photo: UpdatePhoto) {
-  return `${update.id}-${photo.id}-open-item`;
+  const category = attentionCategoryForPhotoCategory(photo.category);
+  return buildStableAttentionItemId({
+    updateId: update.id,
+    photoId: photo.id,
+    category,
+    itemType: category === 'safety_concern' ? 'safety_observation' : 'open_item',
+    subtype: 'photo_action',
+  });
 }
 
 function recurringOpenItemContext(
@@ -6674,10 +6688,15 @@ useEffect(() => {
     );
   }
 
-  function createNewUpdate(projectName?: string) {
-    const target = projectName || activeProjects[0];
+  function beginDraftForProject(projectName: string) {
+    setDraft(createDraft(projectName));
+    setSelectedWorkspaceProject(projectName);
+    setScreen('AddPhotos');
+    draftLocationCaptureRef.current = captureDraftLocation();
+  }
 
-    if (!target) {
+  function createNewUpdate(projectName?: string) {
+    if (!projectName && activeProjects.length === 0) {
       Alert.alert(
         'No projects yet',
         'Add a new project or reopen an archived project first.',
@@ -6686,6 +6705,20 @@ useEffect(() => {
       setScreen('Projects');
 
       return;
+    }
+
+    const confidentTarget =
+      projectName ||
+      (activeProjects.length === 1 ? activeProjects[0] : null) ||
+      overviewProjectSelection ||
+      (projectDetectionStatus === 'detected' ? detectedProjectName : null);
+
+    function proceed() {
+      if (confidentTarget) {
+        beginDraftForProject(confidentTarget);
+      } else {
+        setScreen('SelectProject');
+      }
     }
 
     if (hasDraftContent(draft)) {
@@ -6703,10 +6736,7 @@ useEffect(() => {
             onPress: () => {
               const discardedDraft = draft;
 
-              setDraft(createDraft(target));
-              setSelectedWorkspaceProject(target);
-              setScreen('AddPhotos');
-              draftLocationCaptureRef.current = captureDraftLocation();
+              proceed();
 
               void deleteUnreferencedPhotosFromUpdate(
                 discardedDraft,
@@ -6720,10 +6750,7 @@ useEffect(() => {
       return;
     }
 
-    setDraft(createDraft(target));
-    setSelectedWorkspaceProject(target);
-    setScreen('AddPhotos');
-    draftLocationCaptureRef.current = captureDraftLocation();
+    proceed();
   }
 
   function openProjectWorkspace(projectName: string) {
@@ -6773,11 +6800,7 @@ useEffect(() => {
   
 
   function changeDraftProject(projectName: string) {
-    setDraft(prev => ({
-      ...prev,
-      projectName,
-    }));
-    setScreen('AddPhotos');
+    beginDraftForProject(projectName);
   }
 function addProject(projectName: string) {
   const trimmed = projectName.trim();

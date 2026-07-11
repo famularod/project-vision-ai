@@ -20,7 +20,7 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'AreaSelectionSheet',
   'RecipientSummaryRow',
   'RecipientSelectionSheet',
-  'PIE checking photos…',
+  'PIE_STATUS_COPY.checking',
   'Continue to Review',
   'QUICK_CONTEXTS.map',
   "context === 'Safety'",
