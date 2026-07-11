@@ -8657,21 +8657,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function deleteSavedUpdate(updateId: string) {
     const update = savedUpdates.find(item => item.id === updateId);
-
-    if (update && lifecycleStatusForUpdate(update) === 'sent') {
-      archiveSavedUpdate(updateId);
-      return;
-    }
     const lifecycle = update ? lifecycleStatusForUpdate(update) : 'draft';
-    const deleteTitle = lifecycle === 'failed'
-      ? 'Delete failed update?'
-      : 'Remove update from device?';
-    const deleteCopy = lifecycle === 'failed'
-      ? 'This removes the failed local update from this device and stops retrying it.'
-      : 'This removes the local saved copy from this device.';
-    const deleteAction = lifecycle === 'failed'
-      ? 'Delete failed update'
-      : 'Remove from device';
+    const deleteTitle =
+      lifecycle === 'sent'
+        ? 'Delete sent update from this device?'
+        : lifecycle === 'failed'
+          ? 'Delete failed update?'
+          : 'Remove update from device?';
+    const deleteCopy =
+      lifecycle === 'sent'
+        ? "This removes the update and its local photos from this device only. It doesn't delete anything already sent, or the record stored in the cloud — this can't be undone on this device. If you just want it out of your default view but still available later, use Archive instead."
+        : lifecycle === 'failed'
+          ? 'This removes the failed local update from this device and stops retrying it.'
+          : 'This removes the local saved copy from this device.';
+    const deleteAction =
+      lifecycle === 'sent'
+        ? 'Delete from Device'
+        : lifecycle === 'failed'
+          ? 'Delete failed update'
+          : 'Remove from device';
 
     Alert.alert(
       deleteTitle,
@@ -14357,9 +14361,11 @@ function UpdateOverflowMenu({
   onArchive: () => void;
 }) {
   const sent = lifecycle === 'sent';
-  const deleteLabel = lifecycle === 'failed'
-    ? 'Delete failed update'
-    : 'Remove from device';
+  const deleteLabel = lifecycle === 'sent'
+    ? 'Delete sent update'
+    : lifecycle === 'failed'
+      ? 'Delete failed update'
+      : 'Remove from device';
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
@@ -14381,16 +14387,15 @@ function UpdateOverflowMenu({
                 onArchive();
               }}
             />
-          ) : (
-            <MoreOptionRow
-              label={deleteLabel}
-              icon="trash-outline"
-              onPress={() => {
-                onClose();
-                onDelete();
-              }}
-            />
-          )}
+          ) : null}
+          <MoreOptionRow
+            label={deleteLabel}
+            icon="trash-outline"
+            onPress={() => {
+              onClose();
+              onDelete();
+            }}
+          />
         </View>
       </View>
     </Modal>
