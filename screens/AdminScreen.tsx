@@ -65,7 +65,6 @@ export function AdminScreen({
   projectAreas,
   scheduleItems,
   referenceDocuments,
-  startupConnectionResult,
   syncCleanupNotice,
   onBack,
   onDiagnostics,
@@ -86,7 +85,6 @@ export function AdminScreen({
   projectAreas: ProjectArea[];
   scheduleItems: ScheduleItem[];
   referenceDocuments: ReferenceDocument[];
-  startupConnectionResult: SupabaseConnectionTestResult | null;
   syncCleanupNotice?: string | null;
   onBack: () => void;
   onDiagnostics: () => void;
@@ -106,7 +104,8 @@ export function AdminScreen({
   const [connectionStatus, setConnectionStatus] =
     useState<SupabaseConnectionStatus | null>(null);
   const [testResult, setTestResult] =
-    useState<SupabaseConnectionTestResult | null>(startupConnectionResult);
+    useState<SupabaseConnectionTestResult | null>(null);
+  const [isCheckingConnection, setIsCheckingConnection] = useState(true);
   const [adminActionSummary, setAdminActionSummary] =
     useState('Cloud sync tools are available.');
   const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
@@ -122,26 +121,12 @@ export function AdminScreen({
   useEffect(() => {
     let active = true;
 
-    refreshStatus().catch(() => undefined);
+    void refreshAdminStatus(undefined, () => active).catch(() => undefined);
 
     return () => {
       active = false;
     };
-
-    async function refreshStatus() {
-      const connection = await getSupabaseConnectionStatus();
-
-      if (!active) return;
-
-      setConnectionStatus(connection);
-    }
   }, []);
-
-  useEffect(() => {
-    if (!startupConnectionResult) return;
-
-    setTestResult(startupConnectionResult);
-  }, [startupConnectionResult]);
 
   useEffect(() => {
     if (!syncCleanupNotice) return;
@@ -184,13 +169,15 @@ export function AdminScreen({
 
           <ScreenMetric
             label="Connected"
-            value={connected ? 'Yes' : 'No'}
+            value={isCheckingConnection ? 'Checking...' : connected ? 'Yes' : 'No'}
             detail={
-              connected
-                ? formatCheckedAt(testResult?.checkedAt)
-                : 'Cloud connection needs review.'
+              isCheckingConnection
+                ? 'Verifying cloud connection...'
+                : connected
+                  ? formatCheckedAt(testResult?.checkedAt)
+                  : 'Cloud connection needs review.'
             }
-            tone={connected ? 'success' : 'warning'}
+            tone={isCheckingConnection ? 'default' : connected ? 'success' : 'warning'}
             icon={<Ionicons name="wifi-outline" size={18} color={colors.primary} />}
           />
 
@@ -425,13 +412,24 @@ export function AdminScreen({
     </Screen>
   );
 
-  async function refreshAdminStatus(nextTest?: SupabaseConnectionTestResult) {
-    const connection = await getSupabaseConnectionStatus();
+  async function refreshAdminStatus(
+    nextTest?: SupabaseConnectionTestResult,
+    isActive: () => boolean = () => true,
+  ) {
+    setIsCheckingConnection(true);
 
-    setConnectionStatus(connection);
+    try {
+      const [connection, test] = await Promise.all([
+        getSupabaseConnectionStatus(),
+        nextTest ? Promise.resolve(nextTest) : testSupabaseConnection(),
+      ]);
 
-    if (nextTest) {
-      setTestResult(nextTest);
+      if (!isActive()) return;
+
+      setConnectionStatus(connection);
+      setTestResult(test);
+    } finally {
+      if (isActive()) setIsCheckingConnection(false);
     }
   }
 
