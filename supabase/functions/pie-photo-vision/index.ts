@@ -6,6 +6,11 @@ import {
   type VisionImageInput,
   type VisionMode,
 } from '../_shared/pie-vision-provider.ts';
+import {
+  PIE_PHOTO_PAIR_SCHEMA_VERSION,
+  normalizePhotoFindings,
+  validateStrictPhotoPairResponse,
+} from '../_shared/pie-photo-comparison-schema.ts';
 
 type VisionRequest = {
   operation?: 'config_check';
@@ -166,12 +171,33 @@ Deno.serve(async req => {
     ? await provider.analyzeSinglePhoto(context, images[0])
     : await provider.comparePhotoPair(context, images[0], images[1]);
 
-  const normalized = normalizeProviderOutput(mode, providerResult.normalized);
+  const strictValidation = mode === 'photo_pair'
+    ? validateStrictPhotoPairResponse(providerResult.normalized)
+    : { valid: true as const };
+  const malformedPairResponse = !strictValidation.valid;
+  if (malformedPairResponse) {
+    console.log(JSON.stringify({
+      event: 'pie_vision_provider_response_degraded',
+      requestId,
+      mode,
+      schemaVersion: PIE_PHOTO_PAIR_SCHEMA_VERSION,
+      degradedResultStatus: 'malformed_comparison_result',
+      rejectionCategories: strictValidation.categories,
+    }));
+  }
+  const normalized = malformedPairResponse
+    ? null
+    : normalizeProviderOutput(mode, providerResult.normalized);
   const jarvis = validateNormalizedOutput(mode, normalized);
   const finalResult: ProviderResult = {
     ...providerResult,
-    status: providerResult.status === 'succeeded' && jarvis.observationAccepted ? 'succeeded' : providerResult.status,
+    status: malformedPairResponse
+      ? 'degraded'
+      : providerResult.status === 'succeeded'
+        ? jarvis.observationAccepted ? 'succeeded' : 'degraded'
+        : providerResult.status,
     normalized,
+    error: malformedPairResponse ? 'malformed_comparison_result' : providerResult.error,
   };
 
   console.log(JSON.stringify(buildSafeImageDiagnosticLog({
@@ -335,6 +361,24 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
   const normalizedObjectRemovals = normalizeSpatialFindings('object_removed', value.objectRemovals);
   const normalizedMaterialChanges = normalizeSpatialFindings('material_change', value.materialOrStructuralChanges);
   const normalizedVisibleConcerns = normalizeSpatialFindings('visible_concern', value.visibleConcerns);
+  const additions = normalizePhotoFindings(value.objectAdditions, 'added');
+  const removals = normalizePhotoFindings(value.objectRemovals, 'removed');
+  const materialChanges = normalizePhotoFindings(value.materialOrStructuralChanges, 'material_change');
+  const visibleConcerns = normalizePhotoFindings(value.visibleConcerns, 'visible_concern');
+  const movedObjects = normalizePhotoFindings(value.movedObjects, 'moved');
+  const occludingObjects = normalizePhotoFindings(value.occludingObjects, 'occluding');
+  const revealedObjects = normalizePhotoFindings(value.revealedObjects, 'revealed');
+  const uncertainFindings = normalizePhotoFindings(value.uncertainFindings, 'uncertain');
+  const canonicalFindings = [
+    ...additions.findings,
+    ...removals.findings,
+    ...materialChanges.findings,
+    ...visibleConcerns.findings,
+    ...movedObjects.findings,
+    ...occludingObjects.findings,
+    ...revealedObjects.findings,
+    ...uncertainFindings.findings,
+  ];
   const normalizedSpatialFindings = [
     ...normalizedObjectAdditions,
     ...normalizedObjectRemovals,
@@ -356,6 +400,7 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     limitations,
   });
   return {
+    schemaVersion: stringValue(value.schemaVersion),
     sameSceneProbability,
     sameSubjectProbability,
     sharedVisualAnchors,
@@ -371,12 +416,36 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     obstructionChange,
     alignmentConfidence,
     changeDetectionConfidence,
-    objectAdditions: arrayValue(value.objectAdditions),
-    objectRemovals: arrayValue(value.objectRemovals),
-    materialOrStructuralChanges: arrayValue(value.materialOrStructuralChanges),
+    objectAdditions: additions.findings,
+    objectRemovals: removals.findings,
+    materialOrStructuralChanges: materialChanges.findings,
     unchangedConditions: stringArray(value.unchangedConditions),
     possibleRegression: stringArray(value.possibleRegression),
-    visibleConcerns: arrayValue(value.visibleConcerns),
+    visibleConcerns: visibleConcerns.findings,
+    movedObjects: movedObjects.findings,
+    occludingObjects: occludingObjects.findings,
+    revealedObjects: revealedObjects.findings,
+    uncertainFindings: uncertainFindings.findings,
+    canonicalFindings,
+    observations: stringArray(value.observations),
+    interpretations: stringArray(value.interpretations),
+    findingNormalizationDiagnostics: {
+      schemaVersion: PIE_PHOTO_PAIR_SCHEMA_VERSION,
+      rawFindingCount: additions.diagnostics.rawFindingCount + removals.diagnostics.rawFindingCount + materialChanges.diagnostics.rawFindingCount + visibleConcerns.diagnostics.rawFindingCount + movedObjects.diagnostics.rawFindingCount + occludingObjects.diagnostics.rawFindingCount + revealedObjects.diagnostics.rawFindingCount + uncertainFindings.diagnostics.rawFindingCount,
+      normalizedFindingCount: canonicalFindings.length,
+      legacyStringCount: additions.diagnostics.legacyStringCount + removals.diagnostics.legacyStringCount + materialChanges.diagnostics.legacyStringCount + visibleConcerns.diagnostics.legacyStringCount + movedObjects.diagnostics.legacyStringCount + occludingObjects.diagnostics.legacyStringCount + revealedObjects.diagnostics.legacyStringCount + uncertainFindings.diagnostics.legacyStringCount,
+      rejectedFindingCount: additions.diagnostics.rejectedFindingCount + removals.diagnostics.rejectedFindingCount + materialChanges.diagnostics.rejectedFindingCount + visibleConcerns.diagnostics.rejectedFindingCount + movedObjects.diagnostics.rejectedFindingCount + occludingObjects.diagnostics.rejectedFindingCount + revealedObjects.diagnostics.rejectedFindingCount + uncertainFindings.diagnostics.rejectedFindingCount,
+      rejectionCategories: [...new Set([
+        ...additions.diagnostics.rejectionCategories,
+        ...removals.diagnostics.rejectionCategories,
+        ...materialChanges.diagnostics.rejectionCategories,
+        ...visibleConcerns.diagnostics.rejectionCategories,
+        ...movedObjects.diagnostics.rejectionCategories,
+        ...occludingObjects.diagnostics.rejectionCategories,
+        ...revealedObjects.diagnostics.rejectionCategories,
+        ...uncertainFindings.diagnostics.rejectionCategories,
+      ])],
+    },
     normalizedSpatialFindings,
     comparabilityClassification: comparabilityNormalization.comparabilityClassification,
     providerComparabilityClassification: providerComparability,
@@ -893,10 +962,10 @@ async function persistRequestAndResult(
       obstruction_differences: stringArray(providerResult.normalized.obstructionDifferences),
       object_additions: arrayValue(providerResult.normalized.objectAdditions),
       object_removals: arrayValue(providerResult.normalized.objectRemovals),
-      material_or_structural_changes: stringArray(providerResult.normalized.materialOrStructuralChanges),
+      material_or_structural_changes: arrayValue(providerResult.normalized.materialOrStructuralChanges),
       unchanged_conditions: stringArray(providerResult.normalized.unchangedConditions),
       possible_regression: stringArray(providerResult.normalized.possibleRegression),
-      visible_concerns: stringArray(providerResult.normalized.visibleConcerns),
+      visible_concerns: arrayValue(providerResult.normalized.visibleConcerns),
       comparability_classification: comparabilityValue(providerResult.normalized.comparabilityClassification),
       conclusion: conclusionValue(providerResult.normalized.conclusion),
       confidence: confidenceValue(providerResult.normalized.confidence),
@@ -921,6 +990,11 @@ async function persistRequestAndResult(
         changeDetectionConfidence: confidenceValue(providerResult.normalized.changeDetectionConfidence),
         differenceClassifications: arrayValue(providerResult.normalized.differenceClassifications),
         normalizedSpatialFindings: arrayValue(providerResult.normalized.normalizedSpatialFindings),
+        schemaVersion: stringValue(providerResult.normalized.schemaVersion),
+        canonicalFindings: arrayValue(providerResult.normalized.canonicalFindings),
+        observations: stringArray(providerResult.normalized.observations),
+        interpretations: stringArray(providerResult.normalized.interpretations),
+        findingNormalizationDiagnostics: objectValue(providerResult.normalized.findingNormalizationDiagnostics),
         imageDiagnostics,
         imageHashesDifferent: imageDiagnostics.length === 2
           ? imageDiagnostics[0]?.sha256 !== imageDiagnostics[1]?.sha256

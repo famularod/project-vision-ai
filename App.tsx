@@ -35,6 +35,11 @@ import {
   type PIEPhotoIntelligenceDisplayState,
 } from './services/PIEPhotoVisionMobileWorkflow';
 import {
+  attentionCategoryForPhotoCategory,
+  buildStableAttentionItemId,
+  dedupeAttentionItemsById,
+} from './services/PIEAttentionIdentity';
+import {
   buildSixtySecondFlowTimingResult,
   type SixtySecondFlowTimingResult,
 } from './services/SixtySecondFlowInstrumentation';
@@ -4549,7 +4554,7 @@ function buildPhase2AttentionItems(
   savedUpdates: ProjectUpdate[],
   projectName: string | null,
 ) {
-  return savedUpdates
+  const items = savedUpdates
     .filter(update => projectMatchesScope(update, projectName))
     .flatMap(update => {
       const recurringContext = recurringOpenItemContext(update, savedUpdates);
@@ -4804,13 +4809,22 @@ function buildPhase2AttentionItems(
           };
         }),
       ];
-    })
+    });
+
+  return dedupeAttentionItemsById(items)
     .sort((a, b) => a.priority - b.priority || b.dateLabel.localeCompare(a.dateLabel))
     .slice(0, 6);
 }
 
 function stableOpenItemAttentionId(update: ProjectUpdate, photo: UpdatePhoto) {
-  return `${update.id}-${photo.id}-open-item`;
+  const category = attentionCategoryForPhotoCategory(photo.category);
+  return buildStableAttentionItemId({
+    updateId: update.id,
+    photoId: photo.id,
+    category,
+    itemType: category === 'safety_concern' ? 'safety_observation' : 'open_item',
+    subtype: 'photo_action',
+  });
 }
 
 function recurringOpenItemContext(

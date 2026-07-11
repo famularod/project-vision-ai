@@ -8,6 +8,12 @@ import {
   type SupabaseSessionTokenLookupResult,
 } from './SupabaseService';
 import type { ProjectUpdate, UpdatePhoto } from '../types';
+import {
+  PIE_PHOTO_FINDING_SCHEMA_VERSION,
+  findingDisplayText,
+  normalizePIEPhotoFindings,
+  type PIEPhotoFinding,
+} from './PIEPhotoFindingNormalization';
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -33,6 +39,7 @@ export type PIEPhotoIntelligenceDisplayState = {
   changedFromPrior?: string | null;
   additions?: string[];
   removals?: string[];
+  findings?: PIEPhotoFinding[];
   possibleProgress?: string | null;
   possibleConcerns?: string[];
   priorUpdateUsed?: string | null;
@@ -172,6 +179,12 @@ export type PIEPhotoVisionDiagnostics = {
   resultPairMatchesRequestedPair: boolean | null;
   resultProvenance: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
   executedStages: string[];
+  findingSchemaVersion?: string | null;
+  rawFindingCount?: number;
+  normalizedFindingCount?: number;
+  legacyStringFindingCount?: number;
+  rejectedFindingCount?: number;
+  findingRejectionCategories?: string[];
 };
 
 const PIE_EVIDENCE_BUCKET = 'pie-project-evidence';
@@ -451,6 +464,30 @@ export async function analyzeProjectPhotoWithVision({
       });
     }
 
+    const functionStatus = providerStatus(functionData);
+    if (functionStatus !== 'succeeded') {
+      return failedRetryState('Photo intelligence returned an unavailable comparison. Retry analysis.', {
+        baselineEvidence,
+        currentEvidence,
+        requestId,
+        providerResponseStatus: functionStatus,
+        failureCategory: functionStatus === 'degraded' ? 'malformed_response' : 'provider_side',
+        selectedPriorPhotoId: priorSelection.selected.photo.id,
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: priorSelection.selected.reason,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
+        rejectedPriorReasons: priorSelection.rejectedReasons,
+        currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorSelection.selected.preparedFile,
+        usablePriorCandidateFound: true,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
+        executedStages: [...executedStages, 'provider_response_unavailable'],
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
+      });
+    }
+
     const { data, error: queryError } = await client
       .from('pie_photo_semantic_comparison_results')
       .select([
@@ -466,6 +503,7 @@ export async function analyzeProjectPhotoWithVision({
         'object_additions',
         'object_removals',
         'material_or_structural_changes',
+        'visible_concerns',
         'deterministic_metrics',
         'jarvis_result',
       ].join(','))
@@ -1085,11 +1123,26 @@ function buildDisplayStateFromComparison(
 ): PIEPhotoIntelligenceDisplayState {
   const jarvis = toRecord(row.jarvis_result);
   const metrics = toRecord(row.deterministic_metrics);
-  const additions = arrayRecords(row.object_additions);
-  const removals = arrayRecords(row.object_removals);
-  const materialChanges = stringArray(row.material_or_structural_changes);
-  const additionLabels = describeObjects(additions);
-  const removalLabels = describeObjects(removals);
+  const persistedFindingDiagnostics = toRecord(metrics.findingNormalizationDiagnostics);
+  const canonicalPersisted = normalizePIEPhotoFindings(metrics.canonicalFindings, 'uncertain');
+  const additionsResult = normalizePIEPhotoFindings(row.object_additions, 'added');
+  const removalsResult = normalizePIEPhotoFindings(row.object_removals, 'removed');
+  const materialResult = normalizePIEPhotoFindings(row.material_or_structural_changes, 'material_change');
+  const concernResult = normalizePIEPhotoFindings(row.visible_concerns, 'visible_concern');
+  const findings = canonicalPersisted.findings.length > 0
+    ? canonicalPersisted.findings
+    : [
+        ...additionsResult.findings,
+        ...removalsResult.findings,
+        ...materialResult.findings,
+        ...concernResult.findings,
+      ];
+  const additions = findings.filter(finding => finding.findingType === 'added');
+  const removals = findings.filter(finding => finding.findingType === 'removed');
+  const materialChanges = findings.filter(finding => finding.findingType === 'material_change');
+  const visibleConcerns = findings.filter(finding => finding.findingType === 'visible_concern');
+  const additionLabels = additions.map(findingDisplayText);
+  const removalLabels = removals.map(findingDisplayText);
   const spatialFinding = arrayRecords(metrics.normalizedSpatialFindings)[0] ?? null;
   const visualGroundingRegions = describeGroundingRegions(
     arrayRecords(metrics.normalizedSpatialFindings),
@@ -1128,16 +1181,17 @@ function buildDisplayStateFromComparison(
     authorityMessage: progress === 'supported'
       ? 'PIE found visual evidence that may support progress, but project status still requires normal evidence checks.'
       : 'This is a visual observation only. PIE did not create a milestone, schedule, cost, compliance, or status update.',
-    currentObservation: visibleChange || materialChanges[0] || 'PIE compared the current photo with prior visual evidence.',
+    currentObservation: visibleChange || findings[0]?.description || 'PIE compared the current photo with prior visual evidence.',
     changedFromPrior: visibleChange || 'No reliable visual change was detected.',
     additions: additionLabels,
     removals: removalLabels,
+    findings,
     possibleProgress: progress === 'supported'
       ? 'Possible progress observed. Verify against project scope before using it as project status.'
       : progress === 'unsupported'
         ? 'No verified project progress was inferred from this visual comparison.'
         : 'Project progress could not be determined from this visual comparison.',
-    possibleConcerns: limitations,
+    possibleConcerns: [...visibleConcerns.map(findingDisplayText), ...limitations],
     priorUpdateUsed: diagnosticInput.priorUpdateUsed ?? null,
     requestId: typeof row.request_id === 'string' ? row.request_id : null,
     comparisonId: typeof row.id === 'string' ? row.id : null,
@@ -1155,6 +1209,19 @@ function buildDisplayStateFromComparison(
       semanticComparisonResultId: typeof row.id === 'string' ? row.id : null,
       resultProvenance: provenance,
       signedUrlsGenerated: true,
+      findingSchemaVersion: String(metrics.schemaVersion || PIE_PHOTO_FINDING_SCHEMA_VERSION),
+      rawFindingCount: finiteNumberOrNull(persistedFindingDiagnostics.rawFindingCount) ?? additionsResult.rawFindingCount + removalsResult.rawFindingCount + materialResult.rawFindingCount + concernResult.rawFindingCount,
+      normalizedFindingCount: finiteNumberOrNull(persistedFindingDiagnostics.normalizedFindingCount) ?? findings.length,
+      legacyStringFindingCount: finiteNumberOrNull(persistedFindingDiagnostics.legacyStringCount) ?? additionsResult.legacyStringCount + removalsResult.legacyStringCount + materialResult.legacyStringCount + concernResult.legacyStringCount,
+      rejectedFindingCount: finiteNumberOrNull(persistedFindingDiagnostics.rejectedFindingCount) ?? additionsResult.rejectedFindingCount + removalsResult.rejectedFindingCount + materialResult.rejectedFindingCount + concernResult.rejectedFindingCount,
+      findingRejectionCategories: stringArray(persistedFindingDiagnostics.rejectionCategories).length > 0
+        ? stringArray(persistedFindingDiagnostics.rejectionCategories)
+        : [...new Set([
+            ...additionsResult.rejectionCategories,
+            ...removalsResult.rejectionCategories,
+            ...materialResult.rejectionCategories,
+            ...concernResult.rejectionCategories,
+          ])],
     }),
     updatedAt: new Date().toISOString(),
   };
@@ -1253,27 +1320,19 @@ function assertComparableEvidencePair(
 }
 
 function describeVisibleChange(
-  additions: Record<string, unknown>[],
-  removals: Record<string, unknown>[],
-  materialChanges: string[],
+  additions: PIEPhotoFinding[],
+  removals: PIEPhotoFinding[],
+  materialChanges: PIEPhotoFinding[],
 ) {
   const added = additions[0];
   if (added) {
-    const object = String(added.object || added.normalizedObjectName || 'A visible object');
-    return `${capitalize(object)} appears in the newer photo`;
+    return added.description;
   }
   const removed = removals[0];
   if (removed) {
-    const object = String(removed.object || removed.normalizedObjectName || 'A visible object');
-    return `${capitalize(object)} is no longer visible`;
+    return removed.description;
   }
-  return materialChanges[0] ?? null;
-}
-
-function describeObjects(items: Record<string, unknown>[]) {
-  return items
-    .map(item => String(item.object || item.normalizedObjectName || item.label || '').trim())
-    .filter(Boolean);
+  return materialChanges[0]?.description ?? null;
 }
 
 function safeUnavailableReason(summary: string) {
@@ -1300,7 +1359,7 @@ function messageForTokenMissingReason(reason: SupabaseSessionMissingReason | nul
 
 function describeLocation(
   spatialFinding: Record<string, unknown> | null,
-  fallback: Record<string, unknown> | undefined,
+  fallback: PIEPhotoFinding | undefined,
 ) {
   const horizontal = String(spatialFinding?.imageHorizontalRegion || '').replace('unknown', '');
   const vertical = String(spatialFinding?.imageVerticalRegion || '').replace('unknown', '');
@@ -1546,6 +1605,12 @@ type PIEPhotoVisionDiagnosticInput = {
   skippedPriorCandidateCount: number;
   imagePrepareFailureReason: PIEImagePrepareFailureReason | null;
   executedStages: string[];
+  findingSchemaVersion: string | null;
+  rawFindingCount: number;
+  normalizedFindingCount: number;
+  legacyStringFindingCount: number;
+  rejectedFindingCount: number;
+  findingRejectionCategories: string[];
 };
 
 function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPhotoVisionDiagnostics {
@@ -1622,6 +1687,12 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     resultPairMatchesRequestedPair: input.resultPairMatchesRequestedPair ?? null,
     resultProvenance: input.resultProvenance ?? 'unsupported',
     executedStages: input.executedStages ?? [],
+    findingSchemaVersion: input.findingSchemaVersion ?? null,
+    rawFindingCount: input.rawFindingCount ?? 0,
+    normalizedFindingCount: input.normalizedFindingCount ?? 0,
+    legacyStringFindingCount: input.legacyStringFindingCount ?? 0,
+    rejectedFindingCount: input.rejectedFindingCount ?? 0,
+    findingRejectionCategories: input.findingRejectionCategories ?? [],
   };
 }
 
@@ -1782,6 +1853,10 @@ function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function capitalize(value: string) {

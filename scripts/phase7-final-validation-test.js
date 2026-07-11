@@ -16,7 +16,7 @@ const phase6 = read('scripts/phase6-documents-foundation-test.js');
   'ANALYSIS_TIMEOUT_SECONDS = 60',
   'PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000',
   'PIE_STATUS_COPY',
-  'PIE checking photos…',
+  'PIE_STATUS_COPY.checking',
   'Possible visual changes found',
   'No reliable visual change',
   'No prior photo to compare',

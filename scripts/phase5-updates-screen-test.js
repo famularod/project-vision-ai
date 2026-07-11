@@ -71,9 +71,10 @@ assert(
   'Deleted and archived updates must record local tombstones to prevent resurrection.',
 );
 assert(
-  app.includes('Delete diagnostics: update id') &&
-    app.includes('source after reload') &&
-    app.includes('orphaned photo count ignored'),
+  app.includes('{__DEV__ && update.deleteDiagnostics') &&
+    app.includes('update.deleteDiagnostics.sourceAfterReload') &&
+    app.includes('update.deleteDiagnostics.mergeDecision') &&
+    app.includes('update.deleteDiagnostics.orphanedPhotoCountIgnored'),
   'Developer diagnostics must expose safe delete/merge state without raw cloud details.',
 );
 assert(
