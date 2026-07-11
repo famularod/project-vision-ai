@@ -66,6 +66,33 @@ instead — see the app's git history for that pass.
   `modalCard`) but each file defines its own independent style object. Don't
   assume patching one fixes the others — verify per-file.
 
+## Design language (established 2026-07-11, starting with the Overview redesign)
+
+Applies to every screen redesign from here on (Project, Updates, and
+anything after) — the goal is for pages built in different sessions to
+still read as one considered product, not a patchwork.
+
+- **Colors always carry consistent meaning, never decorative.** Use
+  `App.tsx`'s existing soft-tinted semantic colors — `dangerSoft`/`danger`
+  (problems, destructive actions), `warningSoft`/`warning` (caution, due
+  soon, pending), `successSoft`/`success` (good/caught-up state),
+  `primarySoft`/`primary` (neutral default UI, not tied to a specific
+  status), `insightSoft`/`insight` (purple — reserved specifically for
+  real DAVE/AI-derived findings, not just "a 4th color to fill a grid").
+  Before assigning a color to anything, ask what it actually means — if a
+  stat or icon doesn't genuinely represent one of these meanings, leave it
+  neutral/muted rather than forcing a color on for visual variety.
+- **Native iOS grouped-list is the base structural pattern**: a single
+  rounded container per section, inset hairline separators between rows,
+  no per-row shadow/border, right-chevron disclosure indicators, section
+  headers as small uppercase muted labels above the group (not large bold
+  headings). Prefer this over ad hoc bordered cards floating with gaps.
+- **Subtle load-in animation is the established motion language**: content
+  fades in with a small upward slide (~400ms), and key numbers count up
+  from 0 to their real value over ~600-700ms, once on screen load. Nothing
+  continuous, no spinners-as-decoration, no bounce/overshoot — everything
+  settles within under a second and then stops moving.
+
 ## Working agreement
 
 ### Default flow for anything non-trivial
@@ -207,6 +234,15 @@ Still open:
   adding delete here needs logic to tell "nothing saved yet" apart from
   "resuming an existing saved update" first — more than a quick/low-risk
   change.
+- Found 2026-07-11 while diagnosing an Overview "Projects on track"
+  count question: one Supabase projects row has archived=true with no
+  reachable code path that could have set it (closeProject/reopenProject
+  and setCloudProjectArchived all exist but are never called from
+  anywhere) — likely a leftover manual edit, not something the app did.
+  Separately, there's no UI anywhere that surfaces pending/failing
+  offline-sync queue items, so a stuck sync (e.g. a failed project
+  delete) would be invisible to the user. Both worth investigating
+  another day, not urgent now.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or

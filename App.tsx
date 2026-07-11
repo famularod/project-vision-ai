@@ -24,6 +24,7 @@ import * as Contacts from 'expo-contacts';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Location from 'expo-location';
 import * as MailComposer from 'expo-mail-composer';
 import * as Sharing from 'expo-sharing';
@@ -60,6 +61,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Animated,
   AppState,
   FlatList,
   Image,
@@ -487,6 +489,7 @@ const REFERENCE_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.referenceDocuments.v
 const PROJECT_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.projectDocuments.v1';
 const SCHEDULE_ITEMS_STORAGE_KEY = 'projectPhotoUpdate.scheduleItems.v1';
 const SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY = 'projectPhotoUpdate.scheduleAiExtractorUrl.v1';
+const DISPLAY_NAME_STORAGE_KEY = 'projectPhotoUpdate.displayName.v1';
 const ANALYSIS_TIMEOUT_SECONDS = 60;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
 const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
@@ -2137,6 +2140,23 @@ function isScheduleItemDueToday(item: ScheduleItem) {
   if (item.status === 'Complete') return false;
 
   return daysUntilDate(item.finishDate) === 0;
+}
+
+function timeOfDayGreeting(name?: string) {
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const trimmedName = name?.trim();
+
+  return trimmedName ? `${greeting}, ${trimmedName}` : greeting;
+}
+
+function todayLongDateLabel() {
+  return new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+  });
 }
 
 function dueStatusText(value: string) {
@@ -4578,6 +4598,7 @@ type OverviewProjectRow = {
   severity: 'high' | 'medium';
   subtitle: string;
   dueTodayLabel: string | null;
+  observationCount: number;
 };
 
 function buildOverviewProjectRows(
@@ -4600,8 +4621,24 @@ function buildOverviewProjectRows(
       severity: attentionItems.length > 0 ? 'high' : 'medium',
       subtitle,
       dueTodayLabel,
+      observationCount: brief.observations.length,
     };
   });
+}
+
+function mostRecentHeroPhotoUri(
+  scopedProjects: string[],
+  savedUpdates: ProjectUpdate[],
+): string | null {
+  const candidateUpdates = savedUpdates
+    .filter(
+      update =>
+        update.photos.length > 0 &&
+        scopedProjects.some(project => projectMatchesScope(update, project)),
+    )
+    .sort((a, b) => updateSortTime(b) - updateSortTime(a));
+
+  return candidateUpdates[0]?.photos[0]?.uri || null;
 }
 
 function buildPhase2ActivityItems(
@@ -4848,7 +4885,7 @@ function buildPhase2AttentionItems(
         ...update.photos
         .filter(
           photo =>
-            photo.category === 'Safety Concern' ||
+            isActionCategory(photo.category) &&
             photo.actionStatus !== 'Closed',
         )
         .map((photo): Phase2AttentionItem => {
@@ -4992,6 +5029,25 @@ function AppShell() {
 
   const [screen, setScreen] = useState<Screen>('Home');
 
+  const [savedUpdatesEntryFilter, setSavedUpdatesEntryFilter] = useState<{
+    tab: 'Sent';
+    withinDays: number;
+  } | null>(null);
+
+  const [projectsEntryStatusFilter, setProjectsEntryStatusFilter] =
+    useState<'onTrack' | null>(null);
+
+  useEffect(() => {
+    if (screen === 'SavedUpdates' && savedUpdatesEntryFilter) {
+      setSavedUpdatesEntryFilter(null);
+    }
+
+    if (screen === 'Projects' && projectsEntryStatusFilter) {
+      setProjectsEntryStatusFilter(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
+
   const [selectedWorkspaceProject, setSelectedWorkspaceProject] =
     useState(DEFAULT_PROJECTS[0]);
 
@@ -5034,6 +5090,9 @@ function AppShell() {
     useState<ScheduleItem[]>([]);
 
   const [scheduleAiExtractorUrl, setScheduleAiExtractorUrl] =
+    useState('');
+
+  const [displayName, setDisplayName] =
     useState('');
 
   const [contactBook, setContactBook] =
@@ -5089,6 +5148,9 @@ function AppShell() {
     useState(false);
 
   const [scheduleAiExtractorUrlLoaded, setScheduleAiExtractorUrlLoaded] =
+    useState(false);
+
+  const [displayNameLoaded, setDisplayNameLoaded] =
     useState(false);
 
   const [contactsLoaded, setContactsLoaded] =
@@ -5298,6 +5360,14 @@ useEffect(() => {
   }, []);
 
   useEffect(() => {
+    AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY)
+      .then(value => {
+        setDisplayName(value || '');
+      })
+      .finally(() => setDisplayNameLoaded(true));
+  }, []);
+
+  useEffect(() => {
     AsyncStorage.getItem(CONTACTS_STORAGE_KEY)
       .then(value => {
         if (!value) return;
@@ -5457,6 +5527,14 @@ useEffect(() => {
       scheduleAiExtractorUrl,
     ).catch(() => undefined);
   }, [scheduleAiExtractorUrl, scheduleAiExtractorUrlLoaded]);
+
+  useEffect(() => {
+    if (!displayNameLoaded) return;
+
+    AsyncStorage.setItem(DISPLAY_NAME_STORAGE_KEY, displayName).catch(
+      () => undefined,
+    );
+  }, [displayName, displayNameLoaded]);
 
   useEffect(() => {
     if (!contactsLoaded) return;
@@ -8960,6 +9038,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projects={activeProjects}
               savedUpdates={savedUpdates}
               scheduleItems={scheduleItems}
+              displayName={displayName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
               selectedProjectName={overviewProjectName}
@@ -8972,6 +9051,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onSelectProject={selectOverviewProject}
               onOpenProject={openProjectWorkspace}
               onViewProjects={() => setScreen('Projects')}
+              onOpenProjectsOnTrack={() => {
+                setProjectsEntryStatusFilter('onTrack');
+                setScreen('Projects');
+              }}
+              onOpenDueToday={() => setScreen('Upcoming')}
+              onOpenSentThisWeek={() => {
+                setSavedUpdatesEntryFilter({ tab: 'Sent', withinDays: 7 });
+                setScreen('SavedUpdates');
+              }}
             />
           )}
 
@@ -9102,6 +9190,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectStatsByName={projectStatsByName}
               onSelect={openProjectWorkspace}
               onAddProject={addProject}
+              initialStatusFilter={projectsEntryStatusFilter ?? undefined}
             />
           )}
 
@@ -9186,8 +9275,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               contentStyle={contentStyle}
               scheduleItems={scheduleItems}
               savedUpdates={savedUpdates}
+              onBack={() => setScreen('Home')}
               onSchedule={() => setScreen('Schedule')}
               onNewUpdate={() => createNewUpdate()}
+              autoOpenDueToday
             />
           )}
 
@@ -9209,6 +9300,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={projectAreas}
               scheduleItems={scheduleItems}
               referenceDocuments={referenceDocuments}
+              displayName={displayName}
+              onDisplayNameChange={setDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
               onProjectManagement={() => setScreen('Projects')}
@@ -9268,6 +9361,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 void retryPhotoAnalysis(update, photo);
               }}
               onRetryQueuedUpdate={retryQueuedUpdate}
+              initialTab={savedUpdatesEntryFilter?.tab}
+              initialWithinDays={savedUpdatesEntryFilter?.withinDays}
             />
           )}
 
@@ -9472,11 +9567,62 @@ function ScreenScroll({
   );
 }
 
+function useCountUp(target: number, durationMs: number) {
+  const [value, setValue] = useState(0);
+
+  useEffect(() => {
+    let frame: number;
+    const startedAt = Date.now();
+
+    function step() {
+      const elapsed = Date.now() - startedAt;
+      const progress = Math.min(1, elapsed / durationMs);
+
+      setValue(Math.round(progress * target));
+
+      if (progress < 1) {
+        frame = requestAnimationFrame(step);
+      }
+    }
+
+    frame = requestAnimationFrame(step);
+
+    return () => cancelAnimationFrame(frame);
+  }, [target, durationMs]);
+
+  return value;
+}
+
+function useFadeSlideIn(durationMs: number) {
+  const anim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: durationMs,
+      useNativeDriver: true,
+    }).start();
+  }, [anim, durationMs]);
+
+  return {
+    opacity: anim,
+    transform: [
+      {
+        translateY: anim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [8, 0],
+        }),
+      },
+    ],
+  };
+}
+
 function HomeScreen({
   contentStyle,
   projects,
   savedUpdates,
   scheduleItems,
+  displayName,
   unfinishedDraft,
   draftSavedAt,
   selectedProjectName,
@@ -9489,11 +9635,15 @@ function HomeScreen({
   onSelectProject,
   onOpenProject,
   onViewProjects,
+  onOpenProjectsOnTrack,
+  onOpenDueToday,
+  onOpenSentThisWeek,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
   savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
+  displayName: string;
   unfinishedDraft: ProjectUpdate | null;
   draftSavedAt: string | null;
   selectedProjectName: string | null;
@@ -9506,6 +9656,9 @@ function HomeScreen({
   onSelectProject: (projectName: OverviewProjectSelection) => void;
   onOpenProject: (projectName: string) => void;
   onViewProjects: () => void;
+  onOpenProjectsOnTrack: () => void;
+  onOpenDueToday: () => void;
+  onOpenSentThisWeek: () => void;
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [selectorIntent, setSelectorIntent] =
@@ -9524,6 +9677,35 @@ function HomeScreen({
   );
   const attentionRows = overviewRows.filter(row => row.needsAttention);
   const caughtUpRows = overviewRows.filter(row => !row.needsAttention);
+
+  const projectStatsByName = buildProjectStatsByName(savedUpdates);
+  const openItemsCount = scopedProjects.reduce(
+    (sum, project) => sum + projectStatsForName(projectStatsByName, project).openActions,
+    0,
+  );
+  const dueTodayCount = overviewRows.filter(row => row.dueTodayLabel !== null).length;
+  const sentThisWeekCount = savedUpdates.filter(update => {
+    if (lifecycleStatusForUpdate(update) !== 'sent') return false;
+    if (!scopedProjects.some(project => projectMatchesScope(update, project))) return false;
+
+    const daysSinceSent = daysUntilDate(update.date);
+
+    return daysSinceSent !== null && daysSinceSent <= 0 && daysSinceSent >= -7;
+  }).length;
+  const daveObservationCount = overviewRows.reduce(
+    (sum, row) => sum + row.observationCount,
+    0,
+  );
+  const heroPhotoUri = mostRecentHeroPhotoUri(scopedProjects, savedUpdates);
+  const [daveObservationsModalVisible, setDaveObservationsModalVisible] =
+    useState(false);
+  const allDaveObservations = scopedProjects
+    .flatMap(project =>
+      buildPIEProjectBriefModel(project, savedUpdates).observations.map(
+        observation => ({ ...observation, projectName: project }),
+      ),
+    )
+    .sort((a, b) => updateSortTime(b.update) - updateSortTime(a.update));
 
   function openSelector(intent: 'filter' | 'newUpdate') {
     setSelectorIntent(intent);
@@ -9547,15 +9729,22 @@ function HomeScreen({
       : projects;
 
   return (
-    <ScrollView
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-    >
-      <ScreenTitle
-        title="Overview"
-        subtitle="Fast access to the next field update and current project attention."
+    <View style={styles.overviewPageWrap}>
+      <LinearGradient
+        colors={['#E4E9FA', '#EEEBFB', 'rgba(245,245,247,0)']}
+        locations={[0, 0.4, 1]}
+        style={styles.overviewPageGradient}
       />
+
+      <ScrollView
+        style={styles.appFrame}
+        contentContainerStyle={contentStyle}
+        keyboardShouldPersistTaps="handled"
+      >
+      <View style={styles.overviewGreetingHeader}>
+        <Text style={styles.overviewGreetingText}>{timeOfDayGreeting(displayName)}</Text>
+        <Text style={styles.overviewGreetingDate}>{todayLongDateLabel()}</Text>
+      </View>
 
       <TouchableOpacity
         style={styles.phase2SelectorButton}
@@ -9656,6 +9845,54 @@ function HomeScreen({
         </View>
       ) : null}
 
+      <OverviewHeroCard
+        openItemsCount={openItemsCount}
+        dueTodayCount={dueTodayCount}
+        heroPhotoUri={heroPhotoUri}
+      />
+
+      <View style={styles.overviewBentoRow}>
+        <OverviewBentoCard
+          icon="checkmark-circle-outline"
+          iconColor={colors.success}
+          backgroundColor={colors.successSoft}
+          value={caughtUpRows.length}
+          label="Projects on track"
+          onPress={onOpenProjectsOnTrack}
+        />
+        <OverviewBentoCard
+          icon="time-outline"
+          iconColor={colors.warning}
+          backgroundColor={colors.warningSoft}
+          value={dueTodayCount}
+          label="Due today"
+          onPress={onOpenDueToday}
+        />
+        <OverviewBentoCard
+          icon="send-outline"
+          iconColor={colors.primary}
+          backgroundColor={colors.primarySoft}
+          value={sentThisWeekCount}
+          label="Sent this week"
+          onPress={onOpenSentThisWeek}
+        />
+        <OverviewBentoCard
+          icon="bulb-outline"
+          iconColor={colors.insight}
+          backgroundColor={colors.insightSoft}
+          value={daveObservationCount}
+          label="DAVE observations"
+          onPress={() => setDaveObservationsModalVisible(true)}
+        />
+      </View>
+
+      <DaveObservationsModal
+        visible={daveObservationsModalVisible}
+        observations={allDaveObservations}
+        onClose={() => setDaveObservationsModalVisible(false)}
+        onOpenProject={onOpenProject}
+      />
+
       {attentionRows.length === 0 && caughtUpRows.length === 0 ? (
         <EmptyState
           title="No projects yet."
@@ -9665,82 +9902,85 @@ function HomeScreen({
 
       {attentionRows.length > 0 ? (
         <>
-          <Text style={styles.overviewSectionLabel}>
-            Needs your attention
-          </Text>
+          <View style={styles.overviewSectionHeaderRow}>
+            <Ionicons name="warning-outline" size={13} color={colors.danger} />
+            <Text style={[styles.overviewSectionLabel, { color: colors.danger }]}>
+              Needs your attention
+            </Text>
+          </View>
 
           <View style={styles.overviewGroupedList}>
-            {attentionRows.map((row, index) => (
-              <View
-                key={row.project}
-                style={[
-                  styles.overviewGroupedCell,
-                  index === attentionRows.length - 1 &&
-                    styles.overviewGroupedCellLast,
-                ]}
-              >
-                <TouchableOpacity
-                  style={styles.overviewGroupedRow}
-                  onPress={() => onOpenProject(row.project)}
-                >
-                  <View
-                    style={[
-                      styles.overviewStatusDot,
-                      {
-                        backgroundColor:
-                          row.severity === 'high'
-                            ? colors.danger
-                            : colors.warning,
-                      },
-                    ]}
-                  />
-                  <View style={styles.rowMain}>
-                    <Text style={styles.projectName}>{row.project}</Text>
-                    <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
-                      {row.subtitle}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-                </TouchableOpacity>
+            {attentionRows.map(row => {
+              const tint = row.severity === 'high' ? colors.dangerSoft : colors.warningSoft;
+              const tintText = row.severity === 'high' ? colors.danger : colors.warning;
+              const iconName = row.severity === 'high' ? 'warning-outline' : 'time-outline';
 
-                {row.dueTodayLabel ? (
-                  <View style={styles.overviewDueTodayRow}>
-                    <Ionicons name="time-outline" size={14} color={colors.warning} />
-                    <Text style={styles.overviewDueTodayText}>
-                      Due today · {row.dueTodayLabel}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            ))}
+              return (
+                <View
+                  key={row.project}
+                  style={[styles.overviewGroupedCell, { backgroundColor: tint }]}
+                >
+                  <TouchableOpacity
+                    style={styles.overviewGroupedRow}
+                    onPress={() => onOpenProject(row.project)}
+                  >
+                    <View style={styles.overviewRowIconBubble}>
+                      <Ionicons name={iconName} size={18} color={tintText} />
+                    </View>
+                    <View style={styles.rowMain}>
+                      <Text style={styles.projectName}>{row.project}</Text>
+                      <View style={styles.overviewRowSubtitleRow}>
+                        {row.observationCount > 0 ? (
+                          <Ionicons name="bulb-outline" size={13} color={colors.insight} />
+                        ) : null}
+                        <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
+                          {row.subtitle}
+                        </Text>
+                      </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                  </TouchableOpacity>
+
+                  {row.dueTodayLabel ? (
+                    <View style={styles.overviewDueTodayPillWrap}>
+                      <View style={styles.overviewDueTodayPill}>
+                        <Ionicons name="time-outline" size={13} color={colors.warning} />
+                        <Text style={styles.overviewDueTodayText}>
+                          Due today · {row.dueTodayLabel}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
           </View>
         </>
       ) : null}
 
       {caughtUpRows.length > 0 ? (
         <>
-          <Text style={styles.overviewSectionLabel}>
-            All caught up
-          </Text>
+          <View style={styles.overviewSectionHeaderRow}>
+            <Ionicons name="checkmark-circle-outline" size={13} color={colors.success} />
+            <Text style={[styles.overviewSectionLabel, { color: colors.success }]}>
+              All caught up
+            </Text>
+          </View>
 
           <View style={styles.overviewGroupedList}>
-            {caughtUpRows.map((row, index) => (
+            {caughtUpRows.map(row => (
               <TouchableOpacity
                 key={row.project}
                 style={[
                   styles.overviewGroupedCell,
                   styles.overviewGroupedRow,
-                  index === caughtUpRows.length - 1 &&
-                    styles.overviewGroupedCellLast,
+                  { backgroundColor: colors.successSoft },
                 ]}
                 onPress={() => onOpenProject(row.project)}
               >
-                <View
-                  style={[
-                    styles.overviewStatusDot,
-                    { backgroundColor: colors.success },
-                  ]}
-                />
+                <View style={styles.overviewRowIconBubble}>
+                  <Ionicons name="checkmark-circle-outline" size={18} color={colors.success} />
+                </View>
                 <View style={styles.rowMain}>
                   <Text style={styles.projectName}>{row.project}</Text>
                   <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
@@ -9769,7 +10009,182 @@ function HomeScreen({
         onSelect={selectProject}
         onClose={() => setSelectorOpen(false)}
       />
-    </ScrollView>
+      </ScrollView>
+    </View>
+  );
+}
+
+function OverviewHeroCard({
+  openItemsCount,
+  dueTodayCount,
+  heroPhotoUri,
+}: {
+  openItemsCount: number;
+  dueTodayCount: number;
+  heroPhotoUri: string | null;
+}) {
+  const animatedStyle = useFadeSlideIn(400);
+  const displayedCount = useCountUp(openItemsCount, 700);
+  const isClear = openItemsCount === 0;
+  const glowColor = isClear ? colors.success : colors.warning;
+
+  return (
+    <Animated.View style={[styles.overviewHeroCard, animatedStyle]}>
+      <LinearGradient
+        colors={['#0B2A6B', '#1E4FBF', '#5B4FC9']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+
+      {heroPhotoUri ? (
+        <Image
+          source={{ uri: heroPhotoUri }}
+          style={[StyleSheet.absoluteFill, styles.overviewHeroPhoto]}
+        />
+      ) : null}
+
+      <LinearGradient
+        colors={['rgba(9,16,40,0.15)', 'rgba(9,16,40,0.6)']}
+        style={StyleSheet.absoluteFill}
+      />
+
+      <View style={styles.overviewHeroContent}>
+        <Text style={styles.overviewHeroLabel}>Open Issues</Text>
+
+        <View>
+          <Text style={[styles.overviewHeroNumber, { color: glowColor }]}>
+            {displayedCount}
+          </Text>
+          <Text style={styles.overviewHeroCaption}>
+            {isClear
+              ? 'No open issues logged'
+              : `open issue${displayedCount === 1 ? '' : 's'} logged across your projects`}
+          </Text>
+        </View>
+
+        {dueTodayCount > 0 ? (
+          <View style={styles.overviewHeroPill}>
+            <Ionicons name="time-outline" size={13} color="#FFC670" />
+            <Text style={styles.overviewHeroPillText}>
+              {dueTodayCount} due today
+            </Text>
+          </View>
+        ) : null}
+      </View>
+    </Animated.View>
+  );
+}
+
+function OverviewBentoCard({
+  icon,
+  iconColor,
+  backgroundColor,
+  value,
+  label,
+  onPress,
+}: {
+  icon: IconName;
+  iconColor: string;
+  backgroundColor: string;
+  value: number;
+  label: string;
+  onPress: () => void;
+}) {
+  const animatedStyle = useFadeSlideIn(400);
+  const displayedValue = useCountUp(value, 700);
+
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.8} style={styles.overviewBentoCardTouchable}>
+      <Animated.View style={[styles.overviewBentoCard, { backgroundColor }, animatedStyle]}>
+        <View style={styles.overviewBentoIconWrap}>
+          <Ionicons name={icon} size={16} color={iconColor} />
+        </View>
+        <Text style={styles.overviewBentoNumber}>{displayedValue}</Text>
+        <Text style={styles.overviewBentoLabel}>{label}</Text>
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
+function DaveObservationsModal({
+  visible,
+  observations,
+  onClose,
+  onOpenProject,
+}: {
+  visible: boolean;
+  observations: Array<PIEProjectBriefObservation & { projectName: string }>;
+  onClose: () => void;
+  onOpenProject: (projectName: string) => void;
+}) {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={styles.sheetModalBackdrop}>
+        <View
+          style={[
+            styles.sheetModalSafeArea,
+            { paddingTop: insets.top, paddingBottom: insets.bottom },
+          ]}
+        >
+          <View style={styles.sheetModalHeader}>
+            <View style={styles.sheetModalTitleWrap}>
+              <Text style={styles.sheetModalTitle}>DAVE Observations</Text>
+              <Text style={styles.sheetModalCaption}>
+                {observations.length} {pluralWord(observations.length, 'observation')}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.sheetModalCloseButton}
+              onPress={onClose}
+              accessibilityLabel="Close DAVE observations"
+            >
+              <Ionicons name="close" size={26} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={styles.appFrame}
+            contentContainerStyle={[styles.content, { paddingTop: 8, paddingBottom: 24 }]}
+          >
+            {observations.length === 0 ? (
+              <EmptyState
+                title="No DAVE observations yet."
+                text="Findings from photo analysis will appear here once available."
+              />
+            ) : (
+              observations.map(observation => (
+                <TouchableOpacity
+                  key={observation.id}
+                  style={styles.savedRow}
+                  onPress={() => {
+                    onClose();
+                    onOpenProject(observation.projectName);
+                  }}
+                >
+                  <View style={styles.rowIconBubble}>
+                    <Ionicons name="bulb-outline" size={20} color={colors.insight} />
+                  </View>
+                  <View style={styles.rowMain}>
+                    <Text style={styles.projectName}>{observation.projectName}</Text>
+                    <Text style={styles.rowSub}>{observation.context}</Text>
+                    <Text style={styles.bodyText}>{observation.text}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={colors.muted} />
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -12280,6 +12695,7 @@ function ProjectsScreen({
   projectStatsByName,
   onSelect,
   onAddProject,
+  initialStatusFilter,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   activeProjects: string[];
@@ -12289,9 +12705,13 @@ function ProjectsScreen({
   projectStatsByName: Record<string, ProjectStats>;
   onSelect: (projectName: string) => void;
   onAddProject: (projectName: string) => boolean;
+  initialStatusFilter?: 'onTrack';
 }) {
   const [searchText, setSearchText] = useState('');
   const [showAddProject, setShowAddProject] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<'onTrack' | null>(
+    initialStatusFilter ?? null,
+  );
   const search = searchText.trim().toLowerCase();
 
   const projectRows = activeProjects
@@ -12308,6 +12728,11 @@ function ProjectsScreen({
       if (!search) return true;
 
       return item.project.toLowerCase().includes(search);
+    })
+    .filter(item => {
+      if (statusFilter !== 'onTrack') return true;
+
+      return projectRowStatus(item.attentionCount, item.stats.openActions) === 'On Track';
     })
     .sort((a, b) => {
       if (b.stats.overdueActions !== a.stats.overdueActions) {
@@ -12383,7 +12808,17 @@ function ProjectsScreen({
 
             <Text style={styles.locationDetailText}>
               {projectRows.length} open project{projectRows.length === 1 ? '' : 's'} shown
+              {statusFilter === 'onTrack' ? ' · showing on-track projects only' : ''}
             </Text>
+
+            {statusFilter === 'onTrack' ? (
+              <SecondaryButton
+                label="Show all projects"
+                icon="close-circle-outline"
+                onPress={() => setStatusFilter(null)}
+                compact
+              />
+            ) : null}
           </View>
 
           {showAddProject ? (
@@ -12409,6 +12844,16 @@ function ProjectsScreen({
   );
 }
 
+function projectRowStatus(
+  attentionCount: number,
+  openActions: number,
+): 'Attention Needed' | 'Waiting' | 'On Track' {
+  if (attentionCount > 0) return 'Attention Needed';
+  if (openActions > 0) return 'Waiting';
+
+  return 'On Track';
+}
+
 function Phase2ProjectCard({
   item,
   onPress,
@@ -12424,16 +12869,11 @@ function Phase2ProjectCard({
   };
   onPress: () => void;
 }) {
-  const status =
-    item.attentionCount > 0
-      ? 'Attention Needed'
-      : item.stats.openActions > 0
-        ? 'Waiting'
-        : 'On Track';
+  const status = projectRowStatus(item.attentionCount, item.stats.openActions);
   const statusColor =
-    item.attentionCount > 0
+    status === 'Attention Needed'
       ? colors.danger
-      : item.stats.openActions > 0
+      : status === 'Waiting'
         ? colors.warning
         : colors.success;
 
@@ -13960,6 +14400,8 @@ function SavedUpdatesScreen({
   onNewUpdate,
   onRetryPhotoAnalysis,
   onRetryQueuedUpdate,
+  initialTab,
+  initialWithinDays,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   updates: ProjectUpdate[];
@@ -13971,9 +14413,11 @@ function SavedUpdatesScreen({
   onNewUpdate: () => void;
   onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
+  initialTab?: 'Needs Review' | 'Drafts' | 'Sent' | 'All';
+  initialWithinDays?: number;
 }) {
   const [activeTab, setActiveTab] =
-    useState<'Needs Review' | 'Drafts' | 'Sent' | 'All'>('Needs Review');
+    useState<'Needs Review' | 'Drafts' | 'Sent' | 'All'>(initialTab || 'Needs Review');
   const [searchText, setSearchText] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [filters, setFilters] = useState<{
@@ -13981,11 +14425,13 @@ function SavedUpdatesScreen({
     areaId: string | null;
     pieStatus: string | null;
     lifecycleStatus: FieldUpdateStatus | null;
+    withinDays: number | null;
   }>({
     project: null,
     areaId: null,
     pieStatus: null,
     lifecycleStatus: null,
+    withinDays: initialWithinDays ?? null,
   });
 
   const contactNamesById = useMemo(() => {
@@ -14021,6 +14467,13 @@ function SavedUpdatesScreen({
       }
       if (filters.pieStatus && updatePIEAnalysisStatus(update) !== filters.pieStatus) {
         return false;
+      }
+      if (filters.withinDays !== null) {
+        const daysSince = daysUntilDate(update.date);
+
+        if (daysSince === null || daysSince > 0 || daysSince < -filters.withinDays) {
+          return false;
+        }
       }
       return true;
     })
@@ -14190,12 +14643,14 @@ function UpdateFilterSheet({
     areaId: string | null;
     pieStatus: string | null;
     lifecycleStatus: FieldUpdateStatus | null;
+    withinDays: number | null;
   };
   onChange: (filters: {
     project: string | null;
     areaId: string | null;
     pieStatus: string | null;
     lifecycleStatus: FieldUpdateStatus | null;
+    withinDays: number | null;
   }) => void;
   onClose: () => void;
 }) {
@@ -14268,6 +14723,7 @@ function UpdateFilterSheet({
             areaId: null,
             pieStatus: null,
             lifecycleStatus: null,
+            withinDays: null,
           })
         }
       />
@@ -14710,15 +15166,20 @@ function UpcomingScreen({
   contentStyle,
   scheduleItems,
   savedUpdates,
+  onBack,
   onSchedule,
   onNewUpdate,
+  autoOpenDueToday,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   scheduleItems: ScheduleItem[];
   savedUpdates: ProjectUpdate[];
+  onBack: () => void;
   onSchedule: () => void;
   onNewUpdate: () => void;
+  autoOpenDueToday?: boolean;
 }) {
+  const insets = useSafeAreaInsets();
   const [selectedSection, setSelectedSection] = useState<{
     title: string;
     items: Array<{
@@ -14836,6 +15297,13 @@ function UpcomingScreen({
     setSelectedSection({ title, items });
   };
 
+  useEffect(() => {
+    if (autoOpenDueToday && today.length > 0) {
+      openSection('Due Today', today);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenDueToday]);
+
   const renderSection = (title: string, items: typeof withDueDates, emptyText: string) => {
     const previewItems = items.slice(0, 2);
     const hasItems = items.length > 0;
@@ -14891,6 +15359,12 @@ function UpcomingScreen({
           subtitle="Tap a section to see the schedule items and action items due in that timeframe."
         />
 
+        <SecondaryButton
+          label="Back to Overview"
+          icon="arrow-back-outline"
+          onPress={onBack}
+        />
+
         {withDueDates.length === 0 ? (
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>No dated items yet</Text>
@@ -14928,21 +15402,26 @@ function UpcomingScreen({
         transparent
         onRequestClose={() => setSelectedSection(null)}
       >
-        <View style={styles.photoModalBackdrop}>
-          <SafeAreaView style={styles.photoModalSafeArea}>
-            <View style={styles.photoModalHeader}>
-              <View style={styles.photoModalTitleWrap}>
-                <Text style={styles.photoModalTitle}>{selectedSection?.title}</Text>
-                <Text style={styles.photoModalCaption}>
+        <View style={styles.sheetModalBackdrop}>
+          <View
+            style={[
+              styles.sheetModalSafeArea,
+              { paddingTop: insets.top, paddingBottom: insets.bottom },
+            ]}
+          >
+            <View style={styles.sheetModalHeader}>
+              <View style={styles.sheetModalTitleWrap}>
+                <Text style={styles.sheetModalTitle}>{selectedSection?.title}</Text>
+                <Text style={styles.sheetModalCaption}>
                   {selectedSection?.items.length || 0} {pluralWord(selectedSection?.items.length || 0, 'item')}
                 </Text>
               </View>
               <TouchableOpacity
-                style={styles.photoModalCloseButton}
+                style={styles.sheetModalCloseButton}
                 onPress={() => setSelectedSection(null)}
                 accessibilityLabel="Close upcoming list"
               >
-                <Ionicons name="close" size={30} color="#FFFFFF" />
+                <Ionicons name="close" size={26} color={colors.text} />
               </TouchableOpacity>
             </View>
 
@@ -14952,7 +15431,7 @@ function UpcomingScreen({
             >
               {selectedSection?.items.map(renderUpcomingItem)}
             </ScrollView>
-          </SafeAreaView>
+          </View>
         </View>
       </Modal>
     </>
@@ -17113,6 +17592,51 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
+  sheetModalBackdrop: {
+    flex: 1,
+    backgroundColor: colors.bg,
+  },
+
+  sheetModalSafeArea: {
+    flex: 1,
+  },
+
+  sheetModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 12,
+  },
+
+  sheetModalTitleWrap: {
+    flex: 1,
+  },
+
+  sheetModalTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+
+  sheetModalCaption: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 3,
+  },
+
+  sheetModalCloseButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.fill,
+    borderWidth: 1,
+    borderColor: colors.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
   photoModalImage: {
     flex: 1,
     width: '100%',
@@ -17570,7 +18094,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 14,
     marginBottom: 12,
-    borderColor: colors.line,
+    borderColor: 'rgba(0,0,0,0.18)',
     borderWidth: 1,
     minHeight: 64,
     flexDirection: 'row',
@@ -17612,28 +18136,156 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
+  overviewPageWrap: {
+    flex: 1,
+  },
+
+  overviewPageGradient: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 280,
+  },
+
+  overviewGreetingHeader: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 4,
+  },
+
+  overviewGreetingText: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: colors.text,
+  },
+
+  overviewGreetingDate: {
+    fontSize: 13,
+    color: colors.muted,
+    marginTop: 2,
+  },
+
+  overviewHeroCard: {
+    marginTop: 8,
+    borderRadius: 20,
+    overflow: 'hidden',
+    height: 190,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.18)',
+  },
+
+  overviewHeroPhoto: {
+    opacity: 0.55,
+  },
+
+  overviewHeroContent: {
+    flex: 1,
+    padding: 18,
+    justifyContent: 'space-between',
+  },
+
+  overviewHeroLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    color: 'rgba(255,255,255,0.75)',
+  },
+
+  overviewHeroNumber: {
+    fontSize: 52,
+    fontWeight: '800',
+    lineHeight: 56,
+  },
+
+  overviewHeroCaption: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.88)',
+    marginTop: 2,
+  },
+
+  overviewHeroPill: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderRadius: 20,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+  },
+
+  overviewHeroPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+
+  overviewBentoRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 12,
+  },
+
+  overviewBentoCardTouchable: {
+    flexBasis: '47%',
+    flexGrow: 1,
+  },
+
+  overviewBentoCard: {
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.18)',
+  },
+
+  overviewBentoIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+
+  overviewBentoNumber: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: colors.text,
+  },
+
+  overviewBentoLabel: {
+    fontSize: 12,
+    color: colors.muted,
+  },
+
+  overviewSectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 20,
+    marginBottom: 6,
+  },
+
   overviewSectionLabel: {
     color: colors.muted,
     fontSize: 13,
     fontWeight: '600',
-    marginTop: 20,
-    marginBottom: 6,
     textTransform: 'uppercase',
   },
 
   overviewGroupedList: {
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    overflow: 'hidden',
+    gap: 8,
   },
 
   overviewGroupedCell: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.line,
-  },
-
-  overviewGroupedCellLast: {
-    borderBottomWidth: 0,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.18)',
+    overflow: 'hidden',
   },
 
   overviewGroupedRow: {
@@ -17644,30 +18296,47 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
 
-  overviewStatusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  overviewRowIconBubble: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  overviewRowSubtitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 1,
   },
 
   overviewRowSubtitle: {
     fontSize: 13,
     color: colors.muted,
-    marginTop: 1,
   },
 
-  overviewDueTodayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingLeft: 32,
+  overviewDueTodayPillWrap: {
+    paddingLeft: 58,
     paddingRight: 14,
     paddingBottom: 12,
     marginTop: -2,
   },
 
+  overviewDueTodayPill: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: colors.card,
+    borderRadius: 20,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+
   overviewDueTodayText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: colors.warning,
   },
