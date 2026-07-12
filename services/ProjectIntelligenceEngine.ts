@@ -905,8 +905,8 @@ function confidenceSignal({
       weight: 5,
       message:
         locationConfidenceScore >= 45
-          ? `PIE has ${locationConfidenceScore}% location confidence.`
-          : 'PIE location confidence is low.',
+          ? `DAVE has ${locationConfidenceScore}% location confidence.`
+          : 'DAVE location confidence is low.',
       source: 'project-area' as const,
     },
     {
@@ -1040,7 +1040,7 @@ function healthSignal({
       score: 35,
       severity: 'neutral',
       label: 'Project status unknown',
-      message: 'PIE needs updates or schedule data before it can evaluate project health.',
+      message: 'DAVE needs updates or schedule data before it can evaluate project health.',
       evidence: ['No saved updates found.', 'No schedule items found.'],
       sources,
       confidence: 'low',
@@ -1141,11 +1141,11 @@ function healthSignal({
 
   if (locationConfidenceScore >= 75) {
     score += 3;
-    evidence.push(`PIE location confidence is ${locationConfidenceScore}%.`);
+    evidence.push(`DAVE location confidence is ${locationConfidenceScore}%.`);
     sources.push('project-area');
   } else if (locationNeedsConfirmation) {
     score -= 3;
-    evidence.push(`PIE location confidence is ${locationConfidenceScore}% and needs confirmation.`);
+    evidence.push(`DAVE location confidence is ${locationConfidenceScore}% and needs confirmation.`);
     sources.push('project-area');
   }
 
@@ -1476,7 +1476,7 @@ function riskSignals({
       severity: 'warning',
       message:
         locationConfirmationPrompt ||
-        'PIE has a location guess, but confidence is not high enough to rely on it automatically.',
+        'DAVE has a location guess, but confidence is not high enough to rely on it automatically.',
       source: 'project-area',
       sources: ['project-area'],
       confidence: 'medium',
@@ -1490,7 +1490,7 @@ function riskSignals({
       id: 'missing-document-context',
       label: 'Document context not linked',
       severity: 'neutral',
-      message: 'Schedule work exists, but PIE does not see related reference document metadata.',
+      message: 'Schedule work exists, but DAVE does not see related reference document metadata.',
       source: 'document-metadata',
       sources: ['schedule', 'document-metadata'],
       confidence: 'medium',

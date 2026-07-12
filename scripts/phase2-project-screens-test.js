@@ -16,7 +16,7 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'title="Projects"',
   'Open Projects',
   'ProjectWorkspace',
-  'PIE Project Brief',
+  'DAVE Project Brief',
   'Latest observations',
   'View photo differences',
   'New Field Update',
@@ -92,11 +92,11 @@ assert(
   'View photo differences action must open an existing update detail path.',
 );
 assert(
-  app.includes('PIE Summary') &&
+  app.includes('DAVE Summary') &&
     app.includes('Observed findings') &&
     app.includes('Possible interpretations') &&
     app.includes('Retry Analysis'),
-  'Update detail must show PIE summary, observed findings, interpretations, and retry analysis.',
+  'Update detail must show DAVE summary, observed findings, interpretations, and retry analysis.',
 );
 assert(
   app.includes("resolveProjectForDetectedArea("),

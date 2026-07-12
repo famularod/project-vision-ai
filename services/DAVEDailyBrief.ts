@@ -5,7 +5,13 @@ import {
   type PIEAttentionItemType,
 } from './PIEAttentionIdentity';
 import { type DAVEProjectCommitment } from './DAVEProjectCommitments';
-import { buildProjectReality, type DAVEProjectReality, type DAVEProjectRealityState } from './DAVEProjectReality';
+import {
+  buildProjectReality,
+  projectRealitySourceRecords,
+  type DAVEProjectReality,
+  type DAVEProjectRealityState,
+} from './DAVEProjectReality';
+import type { DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
 
 export type DAVEEvidenceClass = 'fact' | 'observation' | 'uncertainty';
 export type DAVEBriefSourceType = 'update' | 'photo' | 'issue' | 'document' | 'schedule' | 'project';
@@ -143,6 +149,7 @@ export type DAVEDailyBriefScheduleItem = {
   id: string;
   projectName: string;
   taskName: string;
+  milestone?: string;
   status: string;
   priority?: string;
   finishDate?: string;
@@ -160,6 +167,12 @@ export type BuildProjectDailyBriefInput = {
   staleAfterDays?: number;
 };
 
+export type BuildProjectDailyBriefFromRealityInput = {
+  reality: DAVEProjectReality;
+  timeline: DAVEProjectTimelineEvent[];
+  staleAfterDays?: number;
+};
+
 const MAX_ITEMS = 3;
 const DEFAULT_STALE_DAYS = 14;
 const EMPTY_STATES = {
@@ -169,25 +182,42 @@ const EMPTY_STATES = {
   recommendation: 'No action recommended until more evidence is available.',
 };
 
-export function buildProjectDailyBrief(input: BuildProjectDailyBriefInput): DAVEProjectDailyBrief {
+export function buildProjectDailyBrief(
+  input: BuildProjectDailyBriefInput | BuildProjectDailyBriefFromRealityInput,
+): DAVEProjectDailyBrief {
+  if ('reality' in input) {
+    if (input.timeline !== input.reality.timelineEvents) {
+      throw new Error('Daily Brief must consume the canonical Project Reality timeline.');
+    }
+    return buildProjectDailyBriefModel(input.reality, input.staleAfterDays);
+  }
   const now = validDate(input.now) ?? new Date();
-  const updates = input.updates
-    .filter(update => normalizedKey(update.projectName) === normalizedKey(input.projectName))
-    .sort((a, b) => timestampMs(updateTimestamp(b)) - timestampMs(updateTimestamp(a)));
-  const documents = input.documents.filter(document => !document.isArchived);
-  const staleCutoff = now.getTime() - (input.staleAfterDays ?? DEFAULT_STALE_DAYS) * 24 * 60 * 60 * 1000;
   const reality = buildProjectReality({
     projectId: input.projectId,
     projectName: input.projectName,
-    updates,
-    documents,
+    updates: input.updates,
+    documents: input.documents,
     scheduleItems: input.scheduleItems,
     now: now.toISOString(),
   });
+  return buildProjectDailyBriefModel(reality, input.staleAfterDays);
+}
+
+function buildProjectDailyBriefModel(
+  reality: DAVEProjectReality,
+  staleAfterDays: number | undefined,
+): DAVEProjectDailyBrief {
+  const now = validDate(reality.generatedAt) ?? new Date();
+  const records = projectRealitySourceRecords(reality);
+  const updates = records.updates
+    .filter(update => normalizedKey(update.projectName) === normalizedKey(records.projectName))
+    .sort((a, b) => timestampMs(updateTimestamp(b)) - timestampMs(updateTimestamp(a)));
+  const documents = records.documents.filter(document => !document.isArchived);
+  const staleCutoff = now.getTime() - (staleAfterDays ?? DEFAULT_STALE_DAYS) * 24 * 60 * 60 * 1000;
   const commitments = reality.openCommitments;
 
   const changedCandidates = buildChangedItems(updates, documents, staleCutoff);
-  const uncertaintyCandidates = buildUncertaintyItems(input.projectId, updates, staleCutoff);
+  const uncertaintyCandidates = buildUncertaintyItems(reality.projectId, updates, staleCutoff);
   const attentionCandidates = buildAttentionItems(updates, commitments, staleCutoff);
   const changedItems = uniqueById(changedCandidates)
     .sort((a, b) => evidencePriority(a) - evidencePriority(b) || newestFirst(a, b))
@@ -211,7 +241,7 @@ export function buildProjectDailyBrief(input: BuildProjectDailyBriefInput): DAVE
   const staleEvidenceCount = updates.filter(update => timestampMs(updateTimestamp(update)) < staleCutoff).length;
 
   return {
-    projectId: input.projectId,
+    projectId: reality.projectId,
     realityState: reality.state,
     reality,
     generatedAt: now.toISOString(),

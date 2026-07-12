@@ -272,7 +272,7 @@ export function AdminScreen({
       <ScreenSection title="Schedule and Documents">
         <ScreenCard>
           <Text style={styles.cardText}>
-            Documents and schedules stay available here so PIE and Capture can stay focused.
+            Documents and schedules stay available here so DAVE and Capture can stay focused.
           </Text>
 
           <View style={styles.actionGrid}>
@@ -371,7 +371,7 @@ export function AdminScreen({
           </Text>
 
           <Text style={styles.cardText}>
-            Area Mapping is an advanced setup tool for PIE location intelligence. Daily project work should happen from PIE, Capture, and Review.
+            Area Mapping is an advanced setup tool for DAVE location intelligence. Daily project work should happen from DAVE, Capture, and Review.
           </Text>
 
           <SecondaryButton

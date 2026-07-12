@@ -25,6 +25,7 @@ function loadTs(relativePath, cache = new Map()) {
     require: localRequire,
     Date,
     Set,
+    WeakMap,
     Math,
     encodeURIComponent,
   }, { filename });

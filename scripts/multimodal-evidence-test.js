@@ -851,7 +851,7 @@ function testBuild22MobilePhotoVisionIntegration() {
   assertContains(app, 'Possible concerns', 'low-confidence or unavailable states must show concerns/reasons');
   assertContains(app, 'Prior update used', 'UI must show which prior update was used');
   assertContains(app, 'Analysis time', 'UI must show analysis timestamp');
-  assertContains(app, 'PIE diagnostics', 'development diagnostics panel must be present');
+  assertContains(app, 'DAVE diagnostics', 'development diagnostics panel must be present');
   assertContains(app, 'Current project ID', 'diagnostics must include project ID');
   assertContains(app, 'Current area ID', 'diagnostics must include area ID');
   assertContains(app, 'Current photo reference', 'diagnostics must include current photo reference');

@@ -15,6 +15,7 @@ import {
   upsertScheduleItem,
   type CloudProject,
   type CloudProjectUpdate,
+  type JsonValue,
   type SupabaseConfigurationStatus,
 } from './SupabaseService';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -230,6 +231,12 @@ type ProjectUpdatePayload = {
   status?: string;
   archived?: boolean;
   isFavorite?: boolean;
+  data?: JsonValue | null;
+  coverPhotoUpload?: {
+    localUri: string;
+    remotePath: string;
+    mimeType: string;
+  };
 };
 
 type ProjectDeletePayload = {
@@ -866,6 +873,18 @@ async function uploadProjectQueueItem(
   const payload = item.payload as ProjectCreatePayload &
     ProjectUpdatePayload &
     ProjectDeletePayload;
+  if (item.operation === 'update' && payload.coverPhotoUpload) {
+    const upload = await uploadPhoto({
+      path: payload.coverPhotoUpload.remotePath,
+      uri: payload.coverPhotoUpload.localUri,
+      contentType: payload.coverPhotoUpload.mimeType,
+      upsert: true,
+      cacheControl: '86400',
+    });
+    if (!upload.ok || upload.stubbed) {
+      return upload.error || upload.message || 'Project cover upload is waiting for cloud sync.';
+    }
+  }
   const result =
     item.operation === 'create'
       ? await createProject({ name: payload.name || 'Untitled Project' })

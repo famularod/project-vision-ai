@@ -32,13 +32,13 @@ assert(home.includes('Open Details'), 'Home summary counts should expose details
 assert(home.includes('onMoreTools'), 'More/Admin should remain reachable from Home overflow');
 
 assert(capture.includes('GuidedCaptureCard'), 'Capture should use guided PIE request');
-assert(capture.includes('PIE needs'), 'Capture should show what PIE needs');
+assert(capture.includes('DAVE needs'), 'Capture should show what DAVE needs');
 assert(capture.includes('onUploadDocument'), 'document upload should remain reachable');
 
 assert(review.includes('ReviewExperiencePanel'), 'Review should use Experience guidance');
 assert(review.includes('preparedDetailsOpen'), 'Review prepared counts should be hidden behind disclosure');
 assert(review.includes('advancedReviewOpen'), 'Advanced review and decision controls should be hidden by default');
-assert(review.includes('Why PIE recommends this'), 'Review should expose explanation behind one tap');
+assert(review.includes('Why DAVE recommends this'), 'Review should expose explanation behind one tap');
 assert(review.includes('Approve Report'), 'Review should keep approval action');
 assert(review.includes('Edit Report'), 'Review should keep correction action');
 assert(review.includes('Copy Report'), 'Review should keep share/copy action');

@@ -912,7 +912,7 @@ export function buildScheduleIntelligence({
       reason:
         task.reviewFields.length > 0
           ? `Low confidence schedule item needs correction for ${task.reviewFields.join(', ')}.`
-          : 'Low confidence schedule item should be reviewed before PIE relies on it.',
+          : 'Low confidence schedule item should be reviewed before DAVE relies on it.',
       correctionFields: task.reviewFields.length
         ? task.reviewFields
         : (['Project', 'Area', 'Dates', 'Task', 'Owner', 'Status'] as PIEScheduleReviewItem['correctionFields']),
@@ -954,7 +954,7 @@ export function buildScheduleIntelligence({
       : 'No inspection recommendation is available until schedule areas or inspection tasks are present.');
   const executiveSummary =
     scheduleSummary.totalItems === 0
-      ? 'PIE has no schedule to summarize yet.'
+      ? 'DAVE has no schedule to summarize yet.'
       : `${scheduleSummary.totalItems} schedule item${scheduleSummary.totalItems === 1 ? '' : 's'} understood: ${scheduleSummary.upcoming30Count} upcoming in 30 days, ${scheduleSummary.overdueCount} overdue, ${scheduleSummary.milestoneCount} milestone${scheduleSummary.milestoneCount === 1 ? '' : 's'}, confidence ${scheduleConfidence}.`;
   const missionBlockers = uniqueText([
     ...overdueTasks.slice(0, 3).map(task => `${task.task} is overdue (${dueStatusText(task.finish || '')}).`),

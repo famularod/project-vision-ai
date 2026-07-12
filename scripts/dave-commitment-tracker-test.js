@@ -26,6 +26,7 @@ function loadTs(relativePath, cache = new Map()) {
     Date,
     Set,
     Map,
+    WeakMap,
     Math,
     encodeURIComponent,
   }, { filename });

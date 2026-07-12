@@ -46,7 +46,7 @@ export function PIEConductorCard({
           </Text>
 
           <Text style={styles.pieMessage}>
-            PIE is guiding today’s attention.
+            DAVE is guiding today’s attention.
           </Text>
         </View>
       </View>

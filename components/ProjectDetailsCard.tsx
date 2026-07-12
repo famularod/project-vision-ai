@@ -471,13 +471,13 @@ export function ProjectDetailsCard({
 
   const suggestionText = areaSuggestion
     ? areaSuggestion.withinRadius
-      ? `PIE believes this is ${areaSuggestion.area.name}. Confirm if correct.`
-      : `PIE found ${areaSuggestion.area.name}, but your GPS is outside the saved radius.`
+      ? `DAVE believes this is ${areaSuggestion.area.name}. Confirm if correct.`
+      : `DAVE found ${areaSuggestion.area.name}, but your GPS is outside the saved radius.`
     : savedAreaLocationCount === 0
-      ? 'PIE is using remembered area context. Area Mapping GPS can be configured from Advanced Configuration.'
+      ? 'DAVE is using remembered area context. Area Mapping GPS can be configured from Advanced Configuration.'
       : savedAreaLocationCount < projectAreas.length
-        ? 'PIE can suggest areas with saved GPS points. Correct the area only if PIE is wrong.'
-        : 'PIE can refresh GPS when the area needs verification.';
+        ? 'DAVE can suggest areas with saved GPS points. Correct the area only if DAVE is wrong.'
+        : 'DAVE can refresh GPS when the area needs verification.';
 
   return (
     <View style={styles.locationPanel}>
@@ -492,7 +492,7 @@ export function ProjectDetailsCard({
 
         <View style={styles.rowMain}>
           <Text style={styles.panelTitle}>
-            PIE Location Context
+            DAVE Location Context
           </Text>
 
           <Text style={styles.rowSub}>
@@ -533,7 +533,7 @@ export function ProjectDetailsCard({
       <View style={styles.locationActionRow}>
         {areaSuggestion ? (
           <PrimaryButton
-            label="Confirm PIE Area"
+            label="Confirm DAVE Area"
             icon="checkmark-circle-outline"
             onPress={onConfirmArea}
             compact

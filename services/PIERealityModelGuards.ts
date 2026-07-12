@@ -21,7 +21,7 @@ export function requireRealityOrExecutiveJudgment(
   input: RealityOrExecutiveJudgmentInput,
 ): void {
   if (!input.realityModel && !input.executiveJudgment) {
-    throw new Error('Downstream PIE intelligence requires Reality Model or Layer 3 Executive Judgment input.');
+    throw new Error('Downstream DAVE intelligence requires Reality Model or Layer 3 Executive Judgment input.');
   }
 }
 

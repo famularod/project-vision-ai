@@ -1096,8 +1096,8 @@ function buildReport(
   });
   const title =
     reportType === 'combined_project_update'
-      ? 'PIE Combined Project Update'
-      : 'PIE Project Update';
+      ? 'DAVE Combined Project Update'
+      : 'DAVE Project Update';
   const subject =
     reportType === 'combined_project_update'
       ? `Combined Project Update - ${formatDate(generatedAt)}`
@@ -1294,7 +1294,7 @@ function reflectionReviewFlags(
 ) {
   const flags = [
     runtime?.beliefChanges?.some(change => 'direction' in change && change.direction === 'weakened')
-      ? 'Reflection weakened at least one PIE belief; verify before sending.'
+      ? 'Reflection weakened at least one DAVE belief; verify before sending.'
       : null,
     runtime?.recommendedEvidence?.[0]
       ? `Reflection recommends more evidence: ${runtime.recommendedEvidence[0]}.`
@@ -1373,7 +1373,7 @@ function deliberationReportBullets(
       ? `Recommendation: ${cleanReportBulletText(recommendation.whyRecommended)}`
       : null,
     runtime.deliberation.tradeoffs[0]?.benefit && runtime.deliberation.recommendationReadiness === 'Ready'
-      ? `PIE considered alternatives: ${cleanReportBulletText(runtime.deliberation.tradeoffs[0].benefit)}`
+      ? `DAVE considered alternatives: ${cleanReportBulletText(runtime.deliberation.tradeoffs[0].benefit)}`
       : null,
   ].filter(Boolean) as string[];
 
@@ -1393,7 +1393,7 @@ function scientificMethodReviewFlags(
       ? `Scientific Method identified uncertainty: ${primaryUncertainty}.`
       : null,
     weakestAssumption
-      ? `PIE should verify its weakest assumption: ${weakestAssumption}.`
+      ? `DAVE should verify its weakest assumption: ${weakestAssumption}.`
       : null,
     quality && quality.readiness !== 'Ready'
       ? `Decision quality is ${quality.readiness}; review before communicating.`
@@ -1412,7 +1412,7 @@ function scientificMethodReportBullets(
   const decision = result?.selectedDecision?.selectedAction;
   const bullets = [
     result?.decisionQualitySignals?.readiness === 'Ready' && decision
-      ? `PIE's recommendation is evidence-backed: ${cleanReportBulletText(decision)}`
+      ? `DAVE's recommendation is evidence-backed: ${cleanReportBulletText(decision)}`
       : null,
     action
       ? `Recommended verification: ${cleanReportBulletText(action)}`
@@ -1742,7 +1742,7 @@ function executiveJudgmentReviewFlags(
       ? `Escalation is not justified yet: ${escalationAnalysis.justification}`
       : null,
     waitForEvidenceReasoning?.shouldWaitForEvidence
-      ? `PIE should wait for evidence before final recommendation: ${waitForEvidenceReasoning.smallestEvidenceRequest}`
+      ? `DAVE should wait for evidence before final recommendation: ${waitForEvidenceReasoning.smallestEvidenceRequest}`
       : null,
     decisionTiming?.recommendation === 'wait_for_evidence'
       ? `Decision timing requires verification: ${decisionTiming.reason}`

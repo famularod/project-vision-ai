@@ -180,7 +180,7 @@ export function ReportsScreen({
   const pieReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft;
   const reportAuthorityMessage = liveAuthority.executiveJudgmentRecord
     ? null
-    : 'Draft recovery mode: PIE is preparing the persisted Executive Judgment before final report and decision creation.';
+    : 'Draft recovery mode: DAVE is preparing the persisted Executive Judgment before final report and decision creation.';
   const decisionCandidateKey = [
     reportType,
     projectName,
@@ -259,7 +259,7 @@ export function ReportsScreen({
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
         title="Review"
-        subtitle="Review, approve, and communicate what PIE has prepared."
+        subtitle="Review, approve, and communicate what DAVE has prepared."
       />
 
       <ReviewExperiencePanel
@@ -280,7 +280,7 @@ export function ReportsScreen({
           style={styles.preparedHeaderButton}
           onPress={() => setPreparedDetailsOpen(open => !open)}
           accessibilityRole="button"
-          accessibilityLabel="Show what PIE prepared"
+          accessibilityLabel="Show what DAVE prepared"
         >
           <View style={styles.reporterIcon}>
             <Ionicons name="sparkles-outline" size={22} color={colors.primary} />
@@ -288,7 +288,7 @@ export function ReportsScreen({
 
           <View style={styles.reporterHeaderText}>
             <Text style={styles.preparedTitle}>
-              PIE Prepared Items
+              DAVE Prepared Items
             </Text>
 
             <Text style={styles.reporterHelp}>
@@ -309,8 +309,8 @@ export function ReportsScreen({
             <PreparedReportItem title="Customer Update" detail="Prepared from the same approved evidence and conclusions." onPress={() => setReporterOpen(true)} />
             <PreparedReportItem title="Project Summary" detail="Includes what changed, schedule impact, risks, and recommended action." onPress={() => setReporterOpen(true)} />
             <PreparedReportItem title={`${openDecisions} open decision${openDecisions === 1 ? '' : 's'}`} detail="Approve, reject, correct, or defer only when human authority is required." onPress={() => setAdvancedReviewOpen(true)} />
-            <PreparedReportItem title={`${openQuestions} question${openQuestions === 1 ? '' : 's'} needing answers`} detail="Add missing information if PIE cannot verify a conclusion." onPress={() => setReporterOpen(true)} />
-            <PreparedReportItem title={communicationReady ? 'Communication readiness: ready for review' : 'Communication readiness: needs more evidence'} detail="PIE keeps draft sharing blocked until review and approval are complete." onPress={() => setReporterOpen(true)} />
+            <PreparedReportItem title={`${openQuestions} question${openQuestions === 1 ? '' : 's'} needing answers`} detail="Add missing information if DAVE cannot verify a conclusion." onPress={() => setReporterOpen(true)} />
+            <PreparedReportItem title={communicationReady ? 'Communication readiness: ready for review' : 'Communication readiness: needs more evidence'} detail="DAVE keeps draft sharing blocked until review and approval are complete." onPress={() => setReporterOpen(true)} />
           </View>
         ) : null}
       </ScreenCard>
@@ -327,7 +327,7 @@ export function ReportsScreen({
 
           <View style={styles.reporterHeaderText}>
             <Text style={styles.preparedTitle}>
-              PIE Reporter
+              DAVE Reporter
             </Text>
 
             <Text style={styles.reporterHelp}>
@@ -340,7 +340,7 @@ export function ReportsScreen({
           style={styles.generateReportButton}
           onPress={() => setReporterOpen(open => !open)}
           accessibilityRole="button"
-          accessibilityLabel="Generate PIE Project Update"
+          accessibilityLabel="Generate DAVE Project Update"
         >
           <Ionicons
             name="sparkles-outline"
@@ -349,7 +349,7 @@ export function ReportsScreen({
           />
 
           <Text style={styles.generateReportText}>
-            Generate PIE Project Update
+            Generate DAVE Project Update
           </Text>
         </TouchableOpacity>
 
@@ -395,7 +395,7 @@ export function ReportsScreen({
         />
 
         <Text style={styles.advancedToggleText}>
-          {advancedReviewOpen ? 'Hide Details' : 'Why PIE recommends this'}
+          {advancedReviewOpen ? 'Hide Details' : 'Why DAVE recommends this'}
         </Text>
 
         <Ionicons
@@ -417,7 +417,7 @@ export function ReportsScreen({
             referenceDocuments={referenceDocuments}
             syncMetadata={syncMetadata}
             title="Supporting Evidence"
-            subtitle="Evidence, uncertainty, and reasoning behind PIE's recommendation."
+            subtitle="Evidence, uncertainty, and reasoning behind DAVE's recommendation."
           />
 
           <DecisionLedgerPanel
@@ -509,7 +509,7 @@ function reviewExperienceActionLabel(
   if (action === 'correct') return 'Edit Report';
   if (action === 'review') return 'Review Draft';
 
-  return 'Generate PIE Project Update';
+  return 'Generate DAVE Project Update';
 }
 
 function ReviewExperiencePanel({
@@ -536,7 +536,7 @@ function ReviewExperiencePanel({
 
         <View style={styles.experienceTextGroup}>
           <Text style={styles.experienceEyebrow}>
-            PIE Review Experience
+            DAVE Review Experience
           </Text>
 
           <Text style={styles.experienceState}>
@@ -570,7 +570,7 @@ function ReviewExperiencePanel({
       {experience.reviewWarnings.length > 0 ? (
         <View style={styles.reviewFlagsPanel}>
           <Text style={styles.reportPreviewLabel}>
-            PIE found items that need review.
+            DAVE found items that need review.
           </Text>
 
           {experience.reviewWarnings.slice(0, 4).map(warning => (
@@ -700,7 +700,7 @@ function PIEReporterPreview({
       {reportDraft.reviewFlags.length > 0 ? (
         <View style={styles.reviewFlagsPanel}>
           <Text style={styles.reportPreviewLabel}>
-            PIE found items that need review.
+            DAVE found items that need review.
           </Text>
 
           {reportDraft.reviewFlags.slice(0, 4).map(flag => (
@@ -951,7 +951,7 @@ function DecisionLedgerPanel({
     decisions[0]?.id || null,
   );
   const [decisionReason, setDecisionReason] =
-    useState('Reviewed in PIE Decision History.');
+    useState('Reviewed in DAVE Decision History.');
 
   const selectedDecision =
     decisions.find(decision => decision.id === selectedDecisionId) ||
@@ -977,7 +977,7 @@ function DecisionLedgerPanel({
           </Text>
 
           <Text style={styles.reporterHelp}>
-            Preserve what PIE and the user knew before learning from the result.
+            Preserve what DAVE and the user knew before learning from the result.
           </Text>
         </View>
       </View>
@@ -998,7 +998,7 @@ function DecisionLedgerPanel({
 
       {decisions.length === 0 ? (
         <Text style={styles.decisionHelperText}>
-          PIE is monitoring reports for meaningful decisions. Routine notes and low-confidence drafts are ignored.
+          DAVE is monitoring reports for meaningful decisions. Routine notes and low-confidence drafts are ignored.
         </Text>
       ) : (
         <View style={styles.decisionStack}>
@@ -1032,10 +1032,10 @@ function DecisionLedgerPanel({
 
               <View style={styles.identityStatusPanel}>
                 <Text style={styles.reportPreviewLabel}>
-                  PIE automation
+                  DAVE automation
                 </Text>
                 <Text style={styles.reportListText}>
-                  PIE detected this decision, preserved the original snapshot, and is watching project evidence for implementation and outcome support.
+                  DAVE detected this decision, preserved the original snapshot, and is watching project evidence for implementation and outcome support.
                 </Text>
                 <Text style={styles.reportListText}>
                   Evidence linked automatically: {linkedEvidence.length}
@@ -1083,7 +1083,7 @@ function DecisionLedgerPanel({
               </Text>
 
               <Text style={styles.decisionHelperText}>
-                Routine lifecycle steps are automated when evidence is strong enough. Use these controls only to approve a real decision, correct PIE, or resolve an exception.
+                Routine lifecycle steps are automated when evidence is strong enough. Use these controls only to approve a real decision, correct DAVE, or resolve an exception.
               </Text>
 
               <View style={styles.reportActionRow}>
@@ -1173,7 +1173,7 @@ function DecisionLedgerPanel({
 function decisionAttentionSummary(decision: PIEDecisionRecord) {
   if (decision.currentStatus === 'proposed') return 'approval or rejection';
   if (decision.currentStatus === 'approved' && !decision.outcomePlan) {
-    return 'PIE is preparing an outcome plan';
+    return 'DAVE is preparing an outcome plan';
   }
   if (decision.closeBlockers.length > 0) return decision.closeBlockers[0];
   if (decision.currentStatus === 'outcome_observed') return 'validate or dispute outcome';

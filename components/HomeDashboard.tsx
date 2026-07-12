@@ -332,7 +332,7 @@ function buildTodayScheduleSummary({
       : scheduleItems.length;
 
   if (scheduleSummary.totalItems === 0) {
-    return `Schedule loaded: ${loadedCount} activities. PIE is preparing schedule insights.`;
+    return `Schedule loaded: ${loadedCount} activities. DAVE is preparing schedule insights.`;
   }
 
   return `Schedule loaded: ${loadedCount} activities. ${scheduleSummary.upcoming7Count} upcoming in 7 days, ${scheduleSummary.upcoming14Count} upcoming in 14 days, ${scheduleSummary.overdueCount} overdue, ${scheduleSummary.criticalPathItems.length} critical.`;
@@ -728,7 +728,7 @@ export function HomeDashboard({
             onPress={startCapture}
             detailItems={[
               runtime.recommendedEvidence[0] || 'Capture one current photo or note for the active project.',
-              runtime.response.whatPIENeedsFromYou || 'PIE will infer project, area, evidence type, and related schedule item where possible.',
+              runtime.response.whatPIENeedsFromYou || 'DAVE will infer project, area, evidence type, and related schedule item where possible.',
             ]}
           />
 
@@ -740,7 +740,7 @@ export function HomeDashboard({
             detailItems={[
               `Project status: ${projectHealth.label} - ${projectHealth.detail}.`,
               `Mission status: ${missionStatusLabel(runtime.missionProgress.status)}.`,
-              'Open details to see why PIE recommends the next action.',
+              'Open details to see why DAVE recommends the next action.',
             ]}
           />
         </View>

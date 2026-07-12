@@ -154,7 +154,7 @@ export async function runPIERealityModelOrchestration(
     if (!previousModel) {
       throw error;
     }
-    diagnostics.push('Persistence failed; PIE reused the last loaded Reality Model and blocked authoritative success.');
+    diagnostics.push('Persistence failed; DAVE reused the last loaded Reality Model and blocked authoritative success.');
     synchronization = {
       model: previousModel,
       previousModel,

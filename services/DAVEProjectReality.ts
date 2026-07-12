@@ -10,6 +10,7 @@ import type {
   DAVEDailyBriefScheduleItem,
   DAVEDailyBriefUpdate,
 } from './DAVEDailyBrief';
+import { buildProjectTimeline, type DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
 
 export type DAVEProjectRealityState = 'Moving' | 'Waiting' | 'At Risk' | 'Blocked';
 export type DAVEProjectRealityConfidence = 'high' | 'medium' | 'low';
@@ -40,16 +41,36 @@ export type DAVEProjectRealityRecommendation = {
 
 export type DAVEProjectReality = {
   projectId: string;
+  generatedAt: string;
   state: DAVEProjectRealityState;
   confidence: DAVEProjectRealityConfidence;
   lastVerifiedAt: string | null;
   blockers: DAVEProjectRealityItem[];
+  commitments: DAVEProjectCommitment[];
   openCommitments: DAVEProjectCommitment[];
   uncertainties: DAVEProjectRealityItem[];
   evidenceSummary: DAVEProjectEvidenceQuality;
   topRecommendation: DAVEProjectRealityRecommendation | null;
   supportingEvidence: DAVEProjectRealityEvidence[];
+  timelineEvents: DAVEProjectTimelineEvent[];
+  recentTimelineEvents: DAVEProjectTimelineEvent[];
 };
+
+export type DAVEProjectRealitySourceRecords = {
+  projectName: string;
+  projectCreatedAt: string | null;
+  updates: DAVEDailyBriefUpdate[];
+  documents: DAVEDailyBriefDocument[];
+  scheduleItems: DAVEDailyBriefScheduleItem[];
+};
+
+const sourceRecordsByReality = new WeakMap<DAVEProjectReality, DAVEProjectRealitySourceRecords>();
+
+export function projectRealitySourceRecords(reality: DAVEProjectReality): DAVEProjectRealitySourceRecords {
+  const records = sourceRecordsByReality.get(reality);
+  if (!records) throw new Error('Project Reality source records are unavailable for this object.');
+  return records;
+}
 
 export type BuildProjectRealityInput = {
   projectId: string;
@@ -57,10 +78,12 @@ export type BuildProjectRealityInput = {
   updates: DAVEDailyBriefUpdate[];
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
+  projectCreatedAt?: string | null;
   now?: string;
 };
 
 export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjectReality {
+  const generatedAt = validDate(input.now)?.toISOString() || new Date().toISOString();
   const projectKey = normalizeKey(input.projectName);
   const updates = input.updates.filter(update => normalizeKey(update.projectName) === projectKey);
   const documents = input.documents.filter(document =>
@@ -106,12 +129,14 @@ export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjec
     uncertainties,
   );
 
-  return {
+  const realityBase: Omit<DAVEProjectReality, 'timelineEvents' | 'recentTimelineEvents'> = {
     projectId: input.projectId,
+    generatedAt,
     state,
     confidence: evidenceQuality.strength === 'High' ? 'high' : evidenceQuality.strength === 'Medium' ? 'medium' : 'low',
     lastVerifiedAt: latestVerifiedAt(updates, documents, scheduleItems),
     blockers,
+    commitments,
     openCommitments,
     uncertainties,
     evidenceSummary: evidenceQuality,
@@ -121,6 +146,34 @@ export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjec
       ...(topRecommendation?.supportingEvidence ?? []),
     ]),
   };
+  const timelineEvents = buildProjectTimeline({
+    projectId: input.projectId,
+    projectName: input.projectName,
+    projectCreatedAt: input.projectCreatedAt,
+    updates,
+    documents,
+    scheduleItems,
+    commitments,
+    reality: realityBase,
+    now: input.now,
+  });
+  const recentTimelineEvents = timelineEvents.slice(0, 10);
+  const reality: DAVEProjectReality = { ...realityBase, timelineEvents, recentTimelineEvents };
+  sourceRecordsByReality.set(reality, {
+    projectName: input.projectName,
+    projectCreatedAt: input.projectCreatedAt || null,
+    updates,
+    documents,
+    scheduleItems,
+  });
+
+  return reality;
+}
+
+function validDate(value: string | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
 }
 
 function buildBlockers(updates: DAVEDailyBriefUpdate[]): DAVEProjectRealityItem[] {

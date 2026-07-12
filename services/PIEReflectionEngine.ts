@@ -169,12 +169,12 @@ export type PIEReflectionInput = {
 
 export const PIE_REFLECTION_QUESTIONS = [
   'What changed?',
-  'What did PIE previously believe?',
+  'What did DAVE previously believe?',
   'Did new evidence strengthen or weaken that belief?',
-  'Was PIE wrong?',
-  'Was PIE correct?',
+  'Was DAVE wrong?',
+  'Was DAVE correct?',
   'What still needs verification?',
-  'What should PIE do differently next time?',
+  'What should DAVE do differently next time?',
 ] as const;
 
 export function buildPIEReflection(
@@ -355,13 +355,13 @@ function buildBeliefChanges(
       updatedBelief: strengthened
         ? `${belief.statement} This belief is better supported after ${event.replace(/_/g, ' ')}.`
         : weakened
-          ? `${belief.statement} This belief needs verification before PIE relies on it.`
+          ? `${belief.statement} This belief needs verification before DAVE relies on it.`
           : belief.statement,
       direction,
       wasPIEWrong: direction === 'weakened' && belief.status === 'contested',
       wasPIECorrect: direction === 'strengthened',
       reason: strengthened
-        ? 'New evidence aligns with existing PIE understanding.'
+        ? 'New evidence aligns with existing DAVE understanding.'
         : weakened
           ? firstGap?.summary || 'New evidence exposed uncertainty in the current belief.'
           : 'New evidence did not materially change this belief.',
@@ -462,7 +462,7 @@ function buildLessonsLearned(
     lessons.push({
       id: `lesson-memory-${influence.id}`,
       event,
-      lesson: `Past memory should influence PIE interpretation: ${influence.summary}`,
+      lesson: `Past memory should influence DAVE interpretation: ${influence.summary}`,
       whatPIEShouldDoDifferently:
         influence.influence || 'Compare new evidence against past memory before recommending action.',
       confidence: influence.confidence,
@@ -473,7 +473,7 @@ function buildLessonsLearned(
     lessons.push({
       id: 'lesson-user-correction-confidence',
       event,
-      lesson: 'User corrections indicate PIE should be careful with similar future assumptions.',
+      lesson: 'User corrections indicate DAVE should be careful with similar future assumptions.',
       whatPIEShouldDoDifferently:
         'Lower confidence and ask for verification when similar GPS, project, area, report, or recommendation context appears again.',
       confidence: 'high',
@@ -488,7 +488,7 @@ function buildLessonsLearned(
       id: 'lesson-decision-outcome',
       event,
       lesson: failedOutcome
-        ? `A past decision outcome was ${failedOutcome.qualitySignal}; PIE should adjust future recommendations.`
+        ? `A past decision outcome was ${failedOutcome.qualitySignal}; DAVE should adjust future recommendations.`
         : 'Decision outcomes are available for future learning.',
       whatPIEShouldDoDifferently: failedOutcome
         ? `Re-check assumptions behind ${failedOutcome.decision} before recommending similar action.`
@@ -501,7 +501,7 @@ function buildLessonsLearned(
     lessons.push({
       id: 'lesson-understanding-stable',
       event,
-      lesson: 'New evidence did not weaken PIE understanding.',
+      lesson: 'New evidence did not weaken DAVE understanding.',
       whatPIEShouldDoDifferently:
         'Continue using the same evidence pattern while watching for stale or missing inputs.',
       confidence: input.overallConfidence,
@@ -524,7 +524,7 @@ function buildRecommendationImprovements(
   return evidence.map((item, index) => ({
     id: `reflection-recommendation-${index}`,
     recommendation: `Collect ${item.toLowerCase()}.`,
-    reason: 'Reflection identified this as the next evidence that would strengthen PIE understanding.',
+    reason: 'Reflection identified this as the next evidence that would strengthen DAVE understanding.',
     recommendedNextEvidence: item,
   }));
 }
@@ -547,10 +547,10 @@ function buildReflectionSummary(
 
   return {
     summary: decreased
-      ? 'Reflection found weaker confidence and recommends verification before PIE acts.'
+      ? 'Reflection found weaker confidence and recommends verification before DAVE acts.'
       : increased
-        ? 'Reflection found stronger evidence support for PIE understanding.'
-        : 'Reflection found PIE understanding mostly stable after new evidence.',
+        ? 'Reflection found stronger evidence support for DAVE understanding.'
+        : 'Reflection found DAVE understanding mostly stable after new evidence.',
     whatChanged: [
       input.intelligentSummary.whatChanged,
       input.photoProgress.photoProgressSummary,
@@ -634,7 +634,7 @@ function buildReflectionGaps(input: PIEReflectionInput): PIEReflectionGap[] {
     ...recommendedEvidenceFromInput(input).slice(0, 2).map((item, index) => ({
       id: `reflection-gap-recommended-${index}`,
       title: 'Recommended Evidence',
-      summary: `PIE needs ${item.toLowerCase()} to improve confidence.`,
+      summary: `DAVE needs ${item.toLowerCase()} to improve confidence.`,
       evidence: [item],
       suggestedAction: item,
       confidence: input.overallConfidence,

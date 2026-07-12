@@ -116,7 +116,7 @@ const DEFAULT_POLICY: PIELiveAuthorityPolicy = {
   highImpactAutomationAllowed: false,
   reportGenerationAllowed: false,
   layer4DecisionCreationAllowed: false,
-  userMessage: 'PIE is preparing the current project view.',
+  userMessage: 'DAVE is preparing the current project view.',
 };
 
 const PIELiveAuthorityContext = createContext<PIELiveAuthorityContextValue | null>(null);
@@ -176,15 +176,15 @@ export function PIELiveAuthorityProvider({
         setState(stateFromPersistence(result.realityAuthority.persistenceStatus));
         setError(null);
         setLastSuccessfulRefreshAt(new Date().toISOString());
-        logStartupDiagnostic('shared_provider_ready', 'PIE live authority provider is ready.', {
+        logStartupDiagnostic('shared_provider_ready', 'DAVE live authority provider is ready.', {
           state: stateFromPersistence(result.realityAuthority.persistenceStatus),
         });
       } catch (error) {
         if (refreshSequence !== sequenceRef.current) return;
-        logStartupDiagnostic('degraded_mode_entered', 'PIE live authority failed; fallback Runtime remains available.', {
+        logStartupDiagnostic('degraded_mode_entered', 'DAVE live authority failed; fallback Runtime remains available.', {
           error: startupErrorMessage(error),
         });
-        setError('PIE could not refresh the current project understanding.');
+        setError('DAVE could not refresh the current project understanding.');
         setState('unavailable');
         setRetryPending(true);
         setTimeout(() => {
@@ -306,7 +306,7 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
       highImpactAutomationAllowed: true,
       reportGenerationAllowed: true,
       layer4DecisionCreationAllowed: true,
-      userMessage: 'PIE is ready.',
+      userMessage: 'DAVE is ready.',
     };
   }
   if (state === 'queued_for_cloud' || state === 'degraded_local_only') {
@@ -315,7 +315,7 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
       highImpactAutomationAllowed: false,
       reportGenerationAllowed: true,
       layer4DecisionCreationAllowed: false,
-      userMessage: 'PIE is using the latest information saved on this device.',
+      userMessage: 'DAVE is using the latest information saved on this device.',
     };
   }
   if (state === 'conflict_blocked') {
@@ -324,7 +324,7 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
       highImpactAutomationAllowed: false,
       reportGenerationAllowed: false,
       layer4DecisionCreationAllowed: false,
-      userMessage: 'PIE found a conflict that needs review before final recommendations.',
+      userMessage: 'DAVE found a conflict that needs review before final recommendations.',
     };
   }
   if (state === 'stale_model') {
@@ -333,7 +333,7 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
       highImpactAutomationAllowed: false,
       reportGenerationAllowed: false,
       layer4DecisionCreationAllowed: false,
-      userMessage: 'PIE needs to refresh this project before recommending action.',
+      userMessage: 'DAVE needs to refresh this project before recommending action.',
     };
   }
 
@@ -341,9 +341,9 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
     ...DEFAULT_POLICY,
     userMessage:
       state === 'blocked_identity' || state === 'blocked_organization'
-        ? 'PIE needs a trusted project connection before final recommendations.'
+        ? 'DAVE needs a trusted project connection before final recommendations.'
         : state === 'persistence_failed'
-          ? 'PIE saved the evidence, but could not update project understanding yet.'
+          ? 'DAVE saved the evidence, but could not update project understanding yet.'
           : DEFAULT_POLICY.userMessage,
   };
 }
@@ -360,7 +360,7 @@ export function policyForCore(
     return {
       ...base,
       highImpactAutomationAllowed: false,
-      userMessage: 'PIE has a recommendation, but important uncertainty remains.',
+      userMessage: 'DAVE has a recommendation, but important uncertainty remains.',
     };
   }
 
@@ -372,7 +372,7 @@ export function policyForCore(
       layer4DecisionCreationAllowed: false,
       userMessage:
         core?.evidenceValuePrioritization.oneRequestForUser ||
-        'PIE needs one more piece of evidence before final recommendation.',
+        'DAVE needs one more piece of evidence before final recommendation.',
     };
   }
 
@@ -384,8 +384,8 @@ export function policyForCore(
     layer4DecisionCreationAllowed: false,
     userMessage:
       jarvisStatus === 'human_review_required'
-        ? 'PIE needs human review before this recommendation can be final.'
-        : 'PIE blocked this recommendation because reasoning validation failed.',
+        ? 'DAVE needs human review before this recommendation can be final.'
+        : 'DAVE blocked this recommendation because reasoning validation failed.',
   };
 }
 

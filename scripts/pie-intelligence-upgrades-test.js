@@ -16,7 +16,7 @@ assert(workflow.includes("comparisonConfidence: String(row.confidence || 'unknow
 assert(app.includes("const escalated = update.quickContext === 'Safety' || update.quickContext === 'Blocker'"), 'Safety/Blocker analysis failures must escalate in Needs Attention sorting.');
 assert(app.includes('Safety tagged update is still analyzing') || app.includes('${update.quickContext} tagged update is still analyzing'), 'Escalated stuck analysis must remain unresolved, not display a fake resolution.');
 
-assert(app.includes('buildSuggestedObservedNote') && app.includes('PIE suggested — edit or clear'), 'Observed-only PIE suggested notes must be visible and editable.');
+assert(app.includes('buildSuggestedObservedNote') && app.includes('DAVE suggested — edit or clear'), 'Observed-only DAVE suggested notes must be visible and editable.');
 assert(app.includes('possible|progress|blocker|quality|concern|ahead|behind|delay|risk'), 'Suggested notes must filter interpretation-tier wording.');
 assert(!app.includes('safetyLead') && !app.includes('EHS contact'), 'Recipient auto-suggestion must not invent role contacts that do not exist.');
 

@@ -274,7 +274,7 @@ export function ProjectsScreen({
         <>
           <ScreenTitle
             title="Projects"
-            subtitle="PIE-ranked work. Open the project that needs attention, or start the update PIE recommends."
+            subtitle="DAVE-ranked work. Open the project that needs attention, or start the update DAVE recommends."
           />
 
           <View style={styles.projectFinderPanel}>
@@ -339,7 +339,7 @@ export function ProjectsScreen({
           />
 
           <Text style={styles.sectionLabel}>
-            PIE-ranked project cards
+            DAVE-ranked project cards
           </Text>
         </>
       }

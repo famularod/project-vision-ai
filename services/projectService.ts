@@ -1,4 +1,10 @@
-import { listProjects } from './SupabaseService';
+import { listProjects, type JsonValue } from './SupabaseService';
+import type {
+  ProjectCoverPhoto,
+  ProjectCoverPhotoMode,
+  ProjectRecord,
+} from './ProjectCoverPhotoService';
+import { cloudProjectCoverData, projectRecordFromCloud } from './ProjectCoverPhotoService';
 import {
   queueProjectCreate,
   queueProjectDelete,
@@ -7,6 +13,10 @@ import {
 } from './SyncService';
 
 export async function loadCloudProjects() {
+  return (await loadCloudProjectRecords()).map(project => project.name);
+}
+
+export async function loadCloudProjectRecords(): Promise<ProjectRecord[]> {
   void uploadPendingChanges();
 
   const result = await listProjects();
@@ -16,8 +26,28 @@ export async function loadCloudProjects() {
   }
 
   return result.data
-    .map(item => item.name)
-    .filter(name => typeof name === 'string' && name.trim());
+    .filter(item => typeof item.name === 'string' && item.name.trim())
+    .map(projectRecordFromCloud);
+}
+
+export function saveCloudProjectCoverPhoto(
+  projectName: string,
+  coverPhoto: ProjectCoverPhoto | null,
+  coverPhotoMode: ProjectCoverPhotoMode,
+  existingData?: JsonValue | null,
+  updatedAt?: string,
+) {
+  void queueProjectUpdate({
+    previousName: projectName,
+    data: cloudProjectCoverData(coverPhoto, coverPhotoMode, existingData, updatedAt),
+    coverPhotoUpload: coverPhoto?.localUri && coverPhoto.remotePath
+      ? {
+          localUri: coverPhoto.localUri,
+          remotePath: coverPhoto.remotePath,
+          mimeType: coverPhoto.mimeType || 'image/jpeg',
+        }
+      : undefined,
+  });
 }
 
 export function saveCloudProject(projectName: string) {

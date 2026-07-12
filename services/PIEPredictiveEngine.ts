@@ -448,7 +448,7 @@ export function buildRecoveryActions(
           id: 'recovery-scientific-uncertainty',
           action: input.scientificResult.uncertaintyReductionActions[0].action,
           recovers: input.scientificResult.uncertaintyReductionActions[0].reducesUncertainty,
-          expectedRecovery: 'Reduces uncertainty before PIE recommends a stronger action.',
+          expectedRecovery: 'Reduces uncertainty before DAVE recommends a stronger action.',
           value: 8,
           requiredEvidence: [input.scientificResult.uncertaintyReductionActions[0].recommendedNextEvidence],
           confidence: input.scientificResult.confidence,
@@ -492,7 +492,7 @@ export function buildRecoveryActions(
           id: 'recovery-impact-verification',
           action: `Verify ${impacts[0].area} risk before acting.`,
           recovers: impacts[0].summary,
-          expectedRecovery: 'Prevents PIE from overstating a weak prediction.',
+          expectedRecovery: 'Prevents DAVE from overstating a weak prediction.',
           value: impacts[0].severity === 'high' ? 8 : 5,
           requiredEvidence: buildPredictionEvidenceNeeds(input).slice(0, 3),
           confidence: impacts[0].confidence,
@@ -670,9 +670,9 @@ function likelyOutcomeText(input: PIEPredictionInput, slipDays: number) {
     return `${input.runtime.projectName} may see a ${slipDays} day${slipDays === 1 ? '' : 's'} schedule or readiness impact unless the current risk is verified and recovered.`;
   }
   if (input.runtime.evidenceGaps.length > 0) {
-    return 'The likely outcome depends on filling missing evidence before PIE can recommend action confidently.';
+    return 'The likely outcome depends on filling missing evidence before DAVE can recommend action confidently.';
   }
-  return 'Current evidence does not predict a major slip, but PIE should continue monitoring schedule, safety, and inspection dependencies.';
+  return 'Current evidence does not predict a major slip, but DAVE should continue monitoring schedule, safety, and inspection dependencies.';
 }
 
 function scheduleImpactText(input: PIEPredictionInput, slipDays: number) {
@@ -805,7 +805,7 @@ function propagationForImpact(impact: PIEPredictionImpact) {
   if (impact.area === 'contractor') return 'May delay recovery until owner or contractor action is confirmed.';
   if (impact.area === 'safety') return 'May require immediate verification before work continues.';
   if (impact.area === 'communication') return 'May delay decisions or action-item closure.';
-  return 'May reduce PIE confidence until more evidence is collected.';
+  return 'May reduce DAVE confidence until more evidence is collected.';
 }
 
 function confidenceFromRiskLevel(

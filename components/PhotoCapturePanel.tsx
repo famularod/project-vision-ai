@@ -124,7 +124,7 @@ function GuidedCaptureCard({
 
         <View style={styles.rowMain}>
           <Text style={styles.panelTitle}>
-            {photoConfirmation ? 'Photo saved.' : 'PIE needs'}
+            {photoConfirmation ? 'Photo saved.' : 'DAVE needs'}
           </Text>
 
           <Text style={styles.rowSub}>
@@ -138,7 +138,7 @@ function GuidedCaptureCard({
       {showLocationConfirmation ? (
         <>
           <Text style={styles.bodyText}>
-            PIE believes you are at:
+            DAVE believes you are at:
           </Text>
 
           <Text style={styles.captureMissionText}>
@@ -434,7 +434,7 @@ export function PhotoCapturePanel({
     <>
       <ScreenTitle
         title="Capture"
-        subtitle="PIE will ask for the minimum evidence needed."
+        subtitle="DAVE will ask for the minimum evidence needed."
       />
 
       <DraftSavedIndicator
@@ -560,7 +560,7 @@ export function PhotoCapturePanel({
         </View>
 
         <Text style={styles.bodyText}>
-          PIE believes you are at:
+          DAVE believes you are at:
         </Text>
 
         <View style={styles.captureContextPanel}>
@@ -595,7 +595,7 @@ export function PhotoCapturePanel({
 
         {walkLocationRecommendation.needsUserSelection ? (
           <Text style={styles.locationDetailText}>
-            PIE is unsure of your location.
+            DAVE is unsure of your location.
           </Text>
         ) : null}
 
@@ -607,7 +607,7 @@ export function PhotoCapturePanel({
 
         {walkLocationRecommendation.gpsUnavailable ? (
           <Text style={styles.locationDetailText}>
-            PIE is using your last active project.
+            DAVE is using your last active project.
           </Text>
         ) : null}
 
@@ -798,15 +798,15 @@ export function PhotoCapturePanel({
 
         <View style={styles.captureMissionList}>
           <Text style={styles.captureMissionItem}>
-            What PIE wants to verify: current work, open issues, safety concerns, and inspection status.
+            What DAVE wants to verify: current work, open issues, safety concerns, and inspection status.
           </Text>
 
           <Text style={styles.captureMissionItem}>
-            Evidence PIE needs: photos, captions, notes, and any action owner or due date.
+            Evidence DAVE needs: photos, captions, notes, and any action owner or due date.
           </Text>
 
           <Text style={styles.captureMissionItem}>
-            Questions PIE wants answered: what changed, what is blocked, and what should happen next.
+            Questions DAVE wants answered: what changed, what is blocked, and what should happen next.
           </Text>
         </View>
       </View>

@@ -107,10 +107,13 @@ for (const forbidden of ['diagnostics', 'signedUrl', 'storagePath', 'rawResponse
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const dailyBriefIndex = app.indexOf('>DAVE Daily Brief<');
-const evidenceQualityIndex = app.indexOf('>Evidence Quality<');
-const pieBriefIndex = app.indexOf('>PIE Project Brief<');
-assert(dailyBriefIndex >= 0 && evidenceQualityIndex > dailyBriefIndex && pieBriefIndex > evidenceQualityIndex,
-  'Evidence Quality must render directly beneath DAVE Daily Brief.');
+const askIndex = app.indexOf('<DAVEAskExperience');
+const evidenceQualityIndex = app.indexOf('>Project Health<');
+const timelineIndex = app.indexOf('>Project Timeline<');
+const pieBriefIndex = app.indexOf('>DAVE Project Brief<');
+assert(dailyBriefIndex >= 0 && askIndex > dailyBriefIndex && evidenceQualityIndex > askIndex &&
+  timelineIndex > evidenceQualityIndex && pieBriefIndex > timelineIndex,
+  'Evidence Quality must render as Project Health after Ask DAVE and before the Project Timeline.');
 assert(app.includes('Why it matters: {signal.whyItMatters}'));
 
 console.log('DAVE Evidence Quality behavioral tests passed.');

@@ -749,7 +749,7 @@ export function detectPhotoProgressEvent({
     imageRegions: regionHintsFor(later),
     limitations: [
       ...comparability.limitations,
-      'PIE separates visible observation from completion approval.',
+      'DAVE separates visible observation from completion approval.',
       confidence === 'low' ? 'Low confidence prevents a firm project conclusion.' : null,
     ].filter((item): item is string => Boolean(item)),
     corroboratingEvidenceIds,
@@ -1042,7 +1042,7 @@ function buildRepeatPhotoGuidance(
       referencePhotoId: photo.photoId,
       referencePhotoUri: photo.uri,
       instruction: `Take one unobstructed photo of ${photo.subject}.`,
-      reason: 'The current photo is blocked, so PIE cannot compare progress confidently.',
+      reason: 'The current photo is blocked, so DAVE cannot compare progress confidently.',
       alignmentGuide: photo.cameraDirection
         ? `Match the prior view facing ${photo.cameraDirection}.`
         : 'Keep the full subject visible from the same standing position.',
@@ -1085,7 +1085,7 @@ function buildProgressEstimate(
       confidenceRange: null,
       scopeIncluded: sequences.map(sequence => sequence.subject),
       scopeExcluded: ['Areas without comparable photos', 'Work not visible in photographs'],
-      assumptions: ['PIE does not create completion percentages from photos alone.'],
+      assumptions: ['DAVE does not create completion percentages from photos alone.'],
       evidenceGaps: ['Capture repeat photos from comparable viewpoints.'],
       summary: 'No reliable longitudinal photo progress event is available yet.',
     };
@@ -1284,7 +1284,7 @@ function buildConciseProgressCard(
   return {
     visible: false,
     title: 'No visual progress signal yet',
-    summary: 'PIE will analyze comparable project photos automatically after capture.',
+    summary: 'DAVE will analyze comparable project photos automatically after capture.',
     primaryAction: 'View Progress' as const,
   };
 }

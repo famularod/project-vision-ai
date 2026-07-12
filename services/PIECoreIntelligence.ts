@@ -565,7 +565,7 @@ export function buildPIECoreIntelligence(
   input: PIECoreInput = {},
 ): PIECoreOutput {
   if (input.enforceLiveReality && !input.liveRealityAuthority) {
-    throw new Error('PIE Core requires live authoritative Reality Model orchestration in production mode.');
+    throw new Error('DAVE Core requires live authoritative Reality Model orchestration in production mode.');
   }
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
   const baselineLearning = buildPIELearning({

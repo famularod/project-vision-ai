@@ -194,14 +194,14 @@ const PATTERN_RULES: Array<{
     type: 'missing_evidence',
     title: 'Missing Evidence',
     terms: ['missing', 'unknown', 'unclear', 'need photo', 'no photo', 'verify'],
-    warning: 'PIE still lacks enough evidence to confirm the condition.',
+    warning: 'DAVE still lacks enough evidence to confirm the condition.',
     recommendation: 'Collect targeted evidence before making a strong recommendation.',
   },
   {
     type: 'repeated_user_correction',
     title: 'Repeated User Correction',
     terms: ['corrected', 'correction', 'wrong area', 'wrong project', 'user corrected'],
-    warning: 'The user has corrected PIE on similar context before.',
+    warning: 'The user has corrected DAVE on similar context before.',
     recommendation: 'Lower confidence and ask for confirmation before acting.',
   },
   {

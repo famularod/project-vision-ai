@@ -228,7 +228,7 @@ export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisp
   return {
     status: 'analyzing',
     title: 'Analyzing photo comparison',
-    summary: 'PIE is comparing this photo with prior project evidence.',
+    summary: 'DAVE is comparing this photo with prior project evidence.',
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
@@ -256,7 +256,7 @@ export function buildPreparingSecurePhotoAnalysisState(
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: null,
-    authorityMessage: 'PIE will compare the photos after the signed-in session is ready.',
+    authorityMessage: 'DAVE will compare the photos after the signed-in session is ready.',
     currentObservation: null,
     changedFromPrior: null,
     additions: [],
@@ -277,7 +277,7 @@ export function buildPreparingSecurePhotoAnalysisState(
 }
 
 export function buildNoSuitablePriorPhotoIntelligenceState(
-  summary = 'PIE needs a prior photo from this project area before it can compare visible changes.',
+  summary = 'DAVE needs a prior photo from this project area before it can compare visible changes.',
 ): PIEPhotoIntelligenceDisplayState {
   return {
     status: 'no_suitable_prior_photo',
@@ -442,7 +442,7 @@ export async function analyzeProjectPhotoWithVision({
     executedStages.push('edge_function_invoked');
 
     if (error) {
-      return failedRetryState('Photo intelligence could not finish. PIE will retry when cloud sync runs.', {
+      return failedRetryState('Photo intelligence could not finish. DAVE will retry when cloud sync runs.', {
         baselineEvidence,
         currentEvidence,
         requestId,
@@ -1170,7 +1170,7 @@ function buildDisplayStateFromComparison(
       ? plainLanguageSummary
       : visibleChange
         ? `${visibleChange}${location ? ` ${location}.` : '.'}`
-        : 'PIE did not find a supported visible change in this comparison.',
+        : 'DAVE did not find a supported visible change in this comparison.',
     visibleChange,
     location,
     comparisonConfidence: String(row.confidence || 'unknown'),
@@ -1179,9 +1179,9 @@ function buildDisplayStateFromComparison(
     projectProgress: progress,
     repeatPhotoGuidance: stringArray(row.repeat_photo_guidance)[0] ?? null,
     authorityMessage: progress === 'supported'
-      ? 'PIE found visual evidence that may support progress, but project status still requires normal evidence checks.'
-      : 'This is a visual observation only. PIE did not create a milestone, schedule, cost, compliance, or status update.',
-    currentObservation: visibleChange || findings[0]?.description || 'PIE compared the current photo with prior visual evidence.',
+      ? 'DAVE found visual evidence that may support progress, but project status still requires normal evidence checks.'
+      : 'This is a visual observation only. DAVE did not create a milestone, schedule, cost, compliance, or status update.',
+    currentObservation: visibleChange || findings[0]?.description || 'DAVE compared the current photo with prior visual evidence.',
     changedFromPrior: visibleChange || 'No reliable visual change was detected.',
     additions: additionLabels,
     removals: removalLabels,
@@ -1284,7 +1284,7 @@ function failedRetryState(
       safeUnavailableReason(summary),
     ],
     projectProgress: 'unable_to_determine',
-    repeatPhotoGuidance: 'Keep the photo. PIE can retry from cloud evidence later.',
+    repeatPhotoGuidance: 'Keep the photo. DAVE can retry from cloud evidence later.',
     authorityMessage: 'No project progress was inferred while analysis was unavailable.',
     currentObservation: null,
     changedFromPrior: null,

@@ -166,7 +166,7 @@ export function ProjectOverviewScreen({
         contacts={contacts}
         referenceDocuments={referenceDocuments}
         syncMetadata={syncMetadata}
-        title="PIE understands this project"
+        title="DAVE understands this project"
         subtitle="What I know, what changed, concerns, recommendations, and needed information."
       />
 
@@ -182,7 +182,7 @@ export function ProjectOverviewScreen({
 
           <View style={styles.pieBadge}>
             <Text style={styles.pieBadgeText}>
-              Powered by PIE
+              Powered by DAVE
             </Text>
           </View>
         </View>
@@ -287,11 +287,11 @@ export function ProjectOverviewScreen({
 
           <View style={styles.recommendationTextGroup}>
             <Text style={styles.pieInsightLabel}>
-              PIE Insight
+              DAVE Insight
             </Text>
 
             <Text style={styles.pieInsightTitle}>
-              PIE recommends: {intelligence.recommendedNextAction.label}
+              DAVE recommends: {intelligence.recommendedNextAction.label}
             </Text>
 
             <Text style={styles.pieInsightDetail}>
@@ -481,7 +481,7 @@ function ProjectSummaryCard({
 
         <View style={styles.recommendationTextGroup}>
           <Text style={styles.runtimeEyebrow}>
-            PIE currently understands this project
+            DAVE currently understands this project
           </Text>
 
           <Text style={styles.runtimeTitle}>
@@ -546,7 +546,7 @@ function ProjectSummaryCard({
         text={
           unknowns.length > 0
             ? unknowns.map(item => item.summary).join(' | ')
-            : 'PIE does not see major unknowns in the current project record.'
+            : 'DAVE does not see major unknowns in the current project record.'
         }
       />
       <RuntimeTextBlock
@@ -554,7 +554,7 @@ function ProjectSummaryCard({
         text={
           questions.length > 0
             ? questions.map(item => item.question).join(' | ')
-            : 'PIE does not have an open question for the project manager right now.'
+            : 'DAVE does not have an open question for the project manager right now.'
         }
       />
       <RuntimeTextBlock
@@ -562,7 +562,7 @@ function ProjectSummaryCard({
         text={
           runtime.executivePreparations.length > 0
             ? runtime.executivePreparations.map(item => item.title).slice(0, 3).join(' | ')
-            : 'PIE has not prepared a communication package from the current evidence yet.'
+            : 'DAVE has not prepared a communication package from the current evidence yet.'
         }
       />
       <RuntimeTextBlock
@@ -1022,7 +1022,7 @@ function todayFocusItems(intelligence: ProjectIntelligenceSummary): FocusItem[] 
   if (items.length === 0) {
     addFocusItem(items, {
       title: 'Continue monitoring project status',
-      detail: 'PIE does not see urgent local project risks right now.',
+      detail: 'DAVE does not see urgent local project risks right now.',
       icon: 'checkmark-circle-outline',
     });
   }

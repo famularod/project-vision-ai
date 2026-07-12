@@ -188,13 +188,13 @@ const SUGGESTED_QUESTIONS: SuggestedQuestion[] = [
   },
   {
     id: 'remember',
-    label: 'What does PIE remember about this project?',
+    label: 'What does DAVE remember about this project?',
     icon: 'archive-outline',
   },
 ];
 
 const NO_URGENT_DECISIONS_MESSAGE =
-  "PIE does not see any urgent decisions right now. Continue monitoring or capture today's progress.";
+  "DAVE does not see any urgent decisions right now. Continue monitoring or capture today's progress.";
 
 export function ProjectAssistantScreen({
   contentStyle,
@@ -453,7 +453,7 @@ export function ProjectAssistantScreen({
 
           <View style={styles.engineBadge}>
             <Text style={styles.engineBadgeText}>
-              Powered by PIE
+              Powered by DAVE
             </Text>
           </View>
         </View>
@@ -473,7 +473,7 @@ export function ProjectAssistantScreen({
         referenceDocuments={referenceDocuments}
         reportHistory={reportHistory}
         syncMetadata={syncMetadata}
-        title="PIE Read"
+        title="DAVE Read"
         subtitle="The assistant experience is now part of every major workflow."
       />
 
@@ -514,7 +514,7 @@ export function ProjectAssistantScreen({
 
           <View style={styles.engineBadge}>
             <Text style={styles.engineBadgeText}>
-              Powered by PIE
+              Powered by DAVE
             </Text>
           </View>
         </View>
@@ -1154,7 +1154,7 @@ function recurringIssueResponse(
   if (visiblePatterns.length === 0) {
     return [
       'I do not see a recurring issue pattern yet.',
-      'Why: PIE memory needs repeated issues, schedule movement, safety observations, or photo actions before it can call something recurring.',
+      'Why: DAVE memory needs repeated issues, schedule movement, safety observations, or photo actions before it can call something recurring.',
       evidenceLine(memoryEvidence(memory)),
       `Readiness: ${confidenceText(memory.memory.confidence)}.`,
       'Suggested next action: keep capturing updates with issue, owner, and due-date context so patterns can form.',
@@ -1184,7 +1184,7 @@ function rememberResponse(
   const topInsight = memory.insights[0];
 
   return [
-    `PIE remembers ${memorySourceCountLine(memory.memory)} for ${intelligence.projectName}.`,
+    `DAVE remembers ${memorySourceCountLine(memory.memory)} for ${intelligence.projectName}.`,
     `Project story: ${memory.story.whatHappened}`,
     `Timeline: ${timelineSummary(memory.timelineSegments)}.`,
     `Patterns: ${inlineList(memory.patterns.slice(0, 3).map(pattern => pattern.title), 'none strong yet')}.`,
@@ -1246,7 +1246,7 @@ function scheduleResponse(
   if (intelligence.scheduleStatus === 'not-available') {
     return [
       'I do not see schedule data for this project yet.',
-      'Why: PIE does not have schedule items to compare planned work, overdue work, or progress.',
+      'Why: DAVE does not have schedule items to compare planned work, overdue work, or progress.',
       'Evidence: no schedule item evidence found.',
       'Readiness: Low.',
       'Suggested next action: add or import schedule items so I can identify overdue work, upcoming work, and progress.',
@@ -1363,7 +1363,7 @@ function approvalDecisionsResponse(decisionQueue: PIEDecisionQueue) {
       hasActionableDecision(decisionQueue)
         ? 'I do not see any decisions that require approval right now.'
         : NO_URGENT_DECISIONS_MESSAGE,
-      'Why: PIE is only recommending review or monitoring from the current decision queue.',
+      'Why: DAVE is only recommending review or monitoring from the current decision queue.',
       evidenceLine(getNextBestAction(decisionQueue).evidence),
       `Readiness: ${confidenceText(decisionQueue.confidence)}.`,
       'Suggested next action: keep monitoring, or capture today\'s progress if the field condition changed.',
@@ -1388,7 +1388,7 @@ function priorityDecisionResponse(decisionQueue: PIEDecisionQueue) {
   if (!decision || !hasActionableDecision(decisionQueue)) {
     return [
       NO_URGENT_DECISIONS_MESSAGE,
-      `Why: ${decision?.reason.why || 'No higher-priority local PIE signal is available.'}`,
+      `Why: ${decision?.reason.why || 'No higher-priority local DAVE signal is available.'}`,
       evidenceLine(decision?.evidence),
       `Readiness: ${confidenceText(decision?.confidence || decisionQueue.confidence)}.`,
       'Suggested next action: continue monitoring or capture today\'s progress.',
@@ -1415,7 +1415,7 @@ function communicationDecisionResponse(decisionQueue: PIEDecisionQueue) {
       hasActionableDecision(decisionQueue)
         ? 'I do not see a communication decision ready right now.'
         : NO_URGENT_DECISIONS_MESSAGE,
-      'Why: PIE needs enough current project context before it recommends stakeholder communication.',
+      'Why: DAVE needs enough current project context before it recommends stakeholder communication.',
       evidenceLine(getNextBestAction(decisionQueue).evidence),
       `Readiness: ${confidenceText(decisionQueue.confidence)}.`,
       'Suggested next action: capture current progress or fill missing context, then review communication readiness.',
@@ -1442,7 +1442,7 @@ function projectWalkDecisionResponse(decisionQueue: PIEDecisionQueue) {
   if (!decision) {
     return [
       hasActionableDecision(decisionQueue)
-        ? 'PIE does not see a project walk as the highest-value move right now.'
+        ? 'DAVE does not see a project walk as the highest-value move right now.'
         : NO_URGENT_DECISIONS_MESSAGE,
       'Why: the current decision queue points to another action first.',
       evidenceLine(getNextBestAction(decisionQueue).evidence),
@@ -1452,7 +1452,7 @@ function projectWalkDecisionResponse(decisionQueue: PIEDecisionQueue) {
   }
 
   return [
-    'Yes. PIE recommends walking the project.',
+    'Yes. DAVE recommends walking the project.',
     `Why: ${decision.reason.why}`,
     `Impact: ${decision.impact.description}`,
     evidenceLine(decision.evidence),

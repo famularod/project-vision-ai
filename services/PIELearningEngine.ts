@@ -342,7 +342,7 @@ export function learnFromPredictionOutcome(
       whatPIELearned: 'No-action consequences should be monitored for future prediction quality.',
       shouldTrustMore: ['no-action simulation with clear dependencies'],
       shouldTrustLess: ['unverified high-impact prediction'],
-      futureBehavior: 'Ask for outcome evidence after high-risk predictions so PIE can calibrate future confidence.',
+      futureBehavior: 'Ask for outcome evidence after high-risk predictions so DAVE can calibrate future confidence.',
       confidence: prediction.predictionConfidence,
     }];
   }
@@ -502,11 +502,11 @@ export function summarizeLearning({
   confidenceCalibration: PIELearningConfidenceCalibration[];
 }): string {
   if (learningSignals.length === 0) {
-    return 'PIE did not find a strong learning outcome yet.';
+    return 'DAVE did not find a strong learning outcome yet.';
   }
 
   return [
-    `PIE learned from ${learningSignals.length} signal${learningSignals.length === 1 ? '' : 's'}.`,
+    `DAVE learned from ${learningSignals.length} signal${learningSignals.length === 1 ? '' : 's'}.`,
     lessonsLearned[0]?.lesson,
     futureAdjustments[0],
     confidenceCalibration[0]?.reason,

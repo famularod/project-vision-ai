@@ -125,7 +125,7 @@ assert(
     app.includes('Token lookup result:') &&
     app.includes('Token missing reason:') &&
     app.includes('Sign-in client source:') &&
-    app.includes('PIE analysis client source:') &&
+    app.includes('DAVE analysis client source:') &&
     app.includes('Auth hydration completed:') &&
     app.includes('Retry fetched fresh token:') &&
     app.includes('Edge Function invoked:') &&

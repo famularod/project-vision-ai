@@ -65,7 +65,7 @@ export function ManageAreasPanel({
       <Text style={styles.panelTitle}>Area Mapping</Text>
 
       <Text style={styles.bodyText}>
-        Configure work areas and save GPS points for PIE location intelligence.
+        Configure work areas and save GPS points for DAVE location intelligence.
       </Text>
 
       <View style={styles.setupProgressCard}>

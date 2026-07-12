@@ -743,7 +743,7 @@ export function compareActualOutcomeToPredictions(
         ? 'Actual result supports the predicted outcome.'
         : matched === false
           ? 'Actual result does not meet the predicted target.'
-          : 'Actual result needs human review before PIE can judge the prediction.',
+          : 'Actual result needs human review before DAVE can judge the prediction.',
     };
   });
 }

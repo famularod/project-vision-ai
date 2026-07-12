@@ -57,7 +57,7 @@ export type BuildProjectCommitmentsFromRealityInput = {
 export function buildProjectCommitments(
   input: BuildProjectCommitmentsInput | BuildProjectCommitmentsFromRealityInput,
 ): DAVEProjectCommitment[] {
-  if ('reality' in input) return input.reality.openCommitments;
+  if ('reality' in input) return input.reality.commitments;
   const now = validDate(input.now) ?? new Date();
   const today = now.toISOString().slice(0, 10);
   const projectKey = normalizeKey(input.projectName);

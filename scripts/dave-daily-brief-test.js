@@ -30,6 +30,7 @@ function loadTs(relativePath, cache = new Map()) {
     Date,
     Set,
     Map,
+    WeakMap,
     encodeURIComponent,
   };
   vm.runInNewContext(compiled.outputText, sandbox, { filename });
@@ -162,7 +163,7 @@ for (const forbidden of ['providerName', 'diagnostics', 'signedUrl', 'storagePat
 }
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-assert(app.includes('DAVE Daily Brief') && app.includes('buildProjectDailyBrief({'), 'Project Workspace must render the canonical Daily Brief model.');
+assert(app.includes('DAVE Daily Brief') && app.includes('buildProjectIntelligence({'), 'Project Workspace must render the Daily Brief from canonical project intelligence.');
 assert(!app.includes("title=\"DAVE Daily Brief\""), 'Daily Brief must not add a top-level navigation screen.');
 
 console.log('DAVE Daily Brief behavioral tests passed.');

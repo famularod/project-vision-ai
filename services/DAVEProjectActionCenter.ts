@@ -14,6 +14,7 @@ export type DAVEActionCenterEvidence = {
   sourceType: DAVEBriefSourceType;
   recordId: string;
   summary: string;
+  timelineEventId?: string;
 };
 
 export type DAVEProjectActionCenter = {
@@ -27,13 +28,17 @@ export type DAVEProjectActionCenter = {
   limitations: string[];
 };
 
-export type BuildProjectActionCenterInput = {
+export type BuildProjectActionCenterLegacyInput = {
   dailyBrief: DAVEProjectDailyBrief;
   evidenceQuality: DAVEProjectEvidenceQuality;
   commitments: DAVEProjectCommitment[];
   attentionItems: DAVEProjectDailyBriefAttentionItem[];
   reality?: DAVEProjectReality;
 };
+
+export type BuildProjectActionCenterInput =
+  | BuildProjectActionCenterLegacyInput
+  | { reality: DAVEProjectReality };
 
 type PriorityCandidate = Omit<DAVEProjectActionCenter, 'realityState'> & {
   id: string;
@@ -44,6 +49,7 @@ type PriorityCandidate = Omit<DAVEProjectActionCenter, 'realityState'> & {
 export function buildProjectActionCenter(
   input: BuildProjectActionCenterInput,
 ): DAVEProjectActionCenter {
+  if (!('dailyBrief' in input)) return buildProjectActionCenterFromReality(input.reality);
   const reality = input.reality || input.dailyBrief.reality;
   const commitments = reality?.openCommitments || input.commitments;
   const evidenceQuality = reality?.evidenceSummary || input.evidenceQuality;
@@ -81,14 +87,86 @@ export function buildProjectActionCenter(
     realityState: reality?.state || input.dailyBrief.realityState || 'At Risk',
     priority: selected.priority,
     reason: realityRecommendation?.reason || selected.reason,
-    supportingEvidence: realityRecommendation?.supportingEvidence.length
-      ? realityRecommendation.supportingEvidence
-      : selected.supportingEvidence,
+    supportingEvidence: linkTimelineEvidence(
+      realityRecommendation?.supportingEvidence.length
+        ? realityRecommendation.supportingEvidence
+        : selected.supportingEvidence,
+      reality,
+    ),
     recommendedAction: realityRecommendation?.action || selected.recommendedAction,
     navigationTarget: realityRecommendation?.navigationTarget || selected.navigationTarget,
     confidence: evidenceConfidence,
     limitations: uniqueStrings(limitations),
   };
+}
+
+function buildProjectActionCenterFromReality(reality: DAVEProjectReality): DAVEProjectActionCenter {
+  const recommendation = reality.topRecommendation;
+  const overdue = reality.openCommitments.find(item => item.status === 'Overdue');
+  const openCommitment = reality.openCommitments[0];
+  const blocker = reality.blockers[0];
+  const uncertainty = reality.uncertainties.find(item => item.category === 'analysis_unavailable') ||
+    reality.uncertainties[0];
+
+  if (!recommendation && !openCommitment) {
+    return {
+      realityState: reality.state,
+      priority: 'No priority today.',
+      reason: 'No open evidence-backed attention item or commitment is recorded for this project.',
+      supportingEvidence: [],
+      recommendedAction: null,
+      navigationTarget: 'project_workspace',
+      confidence: null,
+      limitations: reality.lastVerifiedAt ? [] : ['No recent project update is available to support a priority.'],
+    };
+  }
+
+  const priority = blocker
+    ? blocker.text
+    : overdue
+      ? `Overdue commitment: ${overdue.description}`
+      : reality.state === 'Waiting'
+        ? 'Waiting dependency requires confirmation.'
+        : uncertainty?.category === 'analysis_unavailable'
+          ? 'Photo analysis is unavailable.'
+          : openCommitment
+            ? `Open commitment: ${openCommitment.description}`
+            : 'Project evidence needs review.';
+  const evidenceItems = recommendation?.supportingEvidence ||
+    openCommitment?.linkedEvidence.map(item => ({
+      sourceType: item.type,
+      recordId: item.recordId,
+      summary: `${item.type} record linked to ${openCommitment.description}.`,
+    })) || [];
+  const limitations = [...(recommendation?.limitations || [])];
+  if (reality.confidence === 'low') {
+    limitations.push('Overall project evidence is weak; verify the supporting record before acting.');
+  } else if (reality.confidence === 'medium') {
+    limitations.push('Project evidence is partial; confirm the supporting record before changing status.');
+  }
+
+  return {
+    realityState: reality.state,
+    priority,
+    reason: recommendation?.reason || 'The commitment is recorded as open.',
+    supportingEvidence: linkTimelineEvidence(evidenceItems, reality),
+    recommendedAction: recommendation?.action || openCommitment?.recommendedFollowUpAction || null,
+    navigationTarget: recommendation?.navigationTarget || (openCommitment ? 'update_detail' : 'project_workspace'),
+    confidence: reality.confidence,
+    limitations: uniqueStrings(limitations),
+  };
+}
+
+function linkTimelineEvidence(
+  evidenceItems: DAVEActionCenterEvidence[],
+  reality: DAVEProjectReality | undefined,
+): DAVEActionCenterEvidence[] {
+  if (!reality) return evidenceItems;
+  return evidenceItems.map(item => {
+    const timelineEvent = reality.recentTimelineEvents.find(event =>
+      event.evidence.some(citation => citation.recordId === item.recordId));
+    return timelineEvent ? { ...item, timelineEventId: timelineEvent.id } : item;
+  });
 }
 
 function attentionCandidates(items: DAVEProjectDailyBriefAttentionItem[]): PriorityCandidate[] {

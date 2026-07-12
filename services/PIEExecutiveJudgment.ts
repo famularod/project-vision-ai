@@ -646,7 +646,7 @@ export function identifyExecutiveConstraints(
     ? {
         id: 'constraint-evidence-quality',
         constraint: `Evidence readiness is ${input.evidenceQuality.evidenceReadiness}.`,
-        limits: 'PIE should verify before making a confident executive recommendation.',
+        limits: 'DAVE should verify before making a confident executive recommendation.',
         actionRequired: 'Collect stronger current evidence.',
         confidence: input.evidenceQuality.averageScore >= 60 ? 'medium' as const : 'low' as const,
       }
@@ -740,7 +740,7 @@ export function explainExecutiveJudgment(
   const escalation = context.escalations?.find(item => item.shouldEscalate);
 
   return {
-    summary: highestValueAction?.governance.why || 'PIE needs stronger evidence before a confident executive action.',
+    summary: highestValueAction?.governance.why || 'DAVE needs stronger evidence before a confident executive action.',
     whatMattersMost: priority?.priority || input.situationIntelligence?.situationSummary.headline || 'No single priority is clear yet.',
     decisionNeeded: decision?.decision || 'No immediate executive decision is required.',
     greatestValue: opportunity?.valueCreated || highestValueAction?.expectedOutcome || 'Value comes from reducing uncertainty before action.',
@@ -882,7 +882,7 @@ export function analyzeExecutiveTradeoffs(
   return {
     summary: preferredOption
       ? `${preferredOption.label} creates the best current tradeoff across ${dimensions.join(', ')}.`
-      : 'PIE needs stronger evidence before comparing executive options.',
+      : 'DAVE needs stronger evidence before comparing executive options.',
     dimensions,
     options,
     preferredOption,
@@ -1046,7 +1046,7 @@ export function analyzeEscalationNeed(
     justification: shouldEscalate
       ? `${presentTriggers[0].trigger} is present and has enough support for escalation.`
       : evidenceIsWeak
-        ? 'Escalation should wait until PIE verifies the evidence unless safety risk becomes clear.'
+        ? 'Escalation should wait until DAVE verifies the evidence unless safety risk becomes clear.'
         : policyRaisedThreshold
           ? 'Adaptive policy raised the escalation threshold for similar weak-outcome situations.'
         : wisdomSaysNoEscalation
@@ -1061,7 +1061,7 @@ export function analyzeEscalationNeed(
         ].filter((item): item is string => Boolean(item)).slice(0, 4),
     escalationRisk: shouldEscalate
       ? 'Escalation may interrupt local resolution, so the ask should be specific.'
-      : 'Unnecessary escalation may create noise and reduce trust in PIE recommendations.',
+      : 'Unnecessary escalation may create noise and reduce trust in DAVE recommendations.',
     localResolutionFirst: !shouldEscalate,
   };
 }
@@ -1348,16 +1348,16 @@ export function explainTradeoffDecision(
   options: PIETradeoffOption[] = [],
 ): string {
   if (!preferredOption) {
-    return 'PIE cannot compare options until stronger evidence is available.';
+    return 'DAVE cannot compare options until stronger evidence is available.';
   }
   const nextBest = options.find(option => option.id !== preferredOption.id);
   const evidenceBoundary = input.evidenceQuality?.evidenceReadiness &&
     !['strong', 'good'].includes(input.evidenceQuality.evidenceReadiness)
-    ? ' Evidence is not strong, so PIE favors verification before irreversible action.'
+    ? ' Evidence is not strong, so DAVE favors verification before irreversible action.'
     : '';
   const noiseBoundary = preferredOption.unnecessaryNoiseRisk <= 3
     ? ' It also avoids unnecessary noise.'
-    : ' PIE should watch for unnecessary communication noise.';
+    : ' DAVE should watch for unnecessary communication noise.';
   return `${preferredOption.label} wins because it protects the project goal while managing uncertainty.${nextBest ? ` It beats ${nextBest.label} because ${preferredOption.gains[0] || 'it creates more value'}.` : ''}${noiseBoundary}${evidenceBoundary}`;
 }
 
@@ -1500,7 +1500,7 @@ function actionFromConstraint(
     type: 'capture_evidence',
     action: constraint.actionRequired,
     why: constraint.limits,
-    expectedOutcome: 'PIE can make a stronger executive recommendation after the constraint is cleared.',
+    expectedOutcome: 'DAVE can make a stronger executive recommendation after the constraint is cleared.',
     successMeasure: 'Missing evidence, owner, status, or readiness is confirmed.',
     input,
     tradeoffs,
@@ -1560,7 +1560,7 @@ function noActionCandidate(
     type: 'no_action',
     action: 'Take no executive action right now.',
     why: noActionRationale(input),
-    expectedOutcome: 'PIE continues monitoring without creating unnecessary work.',
+    expectedOutcome: 'DAVE continues monitoring without creating unnecessary work.',
     successMeasure: 'No schedule, safety, quality, communication, or decision risk grows.',
     input,
     tradeoffs: context.tradeoffs || [],
@@ -1730,7 +1730,7 @@ function readinessReason(
 ) {
   if (readiness === 'Ready') return 'Evidence is strong enough for user-reviewed action.';
   if (readiness === 'Blocked') return input.situationIntelligence?.situationReadiness.reason || 'A blocker prevents confident action.';
-  if (readiness === 'Uncertain') return 'PIE does not have enough confidence to treat this as final.';
+  if (readiness === 'Uncertain') return 'DAVE does not have enough confidence to treat this as final.';
   return action.type === 'capture_evidence' || action.type === 'verify'
     ? 'This action is appropriate because evidence is incomplete.'
     : 'Verify before treating this action as final.';

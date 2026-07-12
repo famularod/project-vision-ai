@@ -210,7 +210,7 @@ export function formBeliefsFromEvidence(
       assumptions: [{
         id: `assumption-runtime-${index}`,
         assumption: 'Runtime belief reflects the current project state.',
-        whyItMatters: 'PIE should not treat old evidence as final truth.',
+        whyItMatters: 'DAVE should not treat old evidence as final truth.',
         confidence: belief.confidence,
       }],
       uncertainty: belief.remainingUncertainty.map((uncertainty, uncertaintyIndex) => ({
@@ -229,7 +229,7 @@ export function formBeliefsFromEvidence(
   const selectedDecisionBelief = input.scientificResult?.selectedDecision
     ? buildBelief({
         id: 'belief-selected-decision',
-        statement: `PIE selected decision: ${input.scientificResult.selectedDecision.selectedAction}`,
+        statement: `DAVE selected decision: ${input.scientificResult.selectedDecision.selectedAction}`,
         type: 'decision',
         supportingEvidence: [{
           id: 'belief-support-selected-decision',
@@ -241,7 +241,7 @@ export function formBeliefsFromEvidence(
         assumptions: [{
           id: 'belief-assumption-selected-decision',
           assumption: 'The selectedDecision is based on the best current evidence.',
-          whyItMatters: 'If the selected decision is based on weak evidence, PIE should ask for verification.',
+          whyItMatters: 'If the selected decision is based on weak evidence, DAVE should ask for verification.',
           confidence: input.scientificResult.selectedDecision.confidence,
         }],
         uncertainty: input.scientificResult.uncertainty.slice(0, 2).map((item, index) => ({
@@ -506,7 +506,7 @@ export function identifyWeakestAssumption(belief: PIEBelief): PIEBeliefAssumptio
   )[0] || {
     id: 'assumption-default',
     assumption: 'Current evidence is complete enough to rely on.',
-    whyItMatters: 'If evidence is incomplete, PIE should verify before recommending action.',
+    whyItMatters: 'If evidence is incomplete, DAVE should verify before recommending action.',
     confidence: 'low',
   };
 }
@@ -528,8 +528,8 @@ export function explainBelief(belief: PIEBelief): PIEBeliefExplanation {
     contradictingEvidence: belief.contradictingEvidence.map(item => item.summary),
     weakestAssumption: weakestAssumption.assumption,
     readinessReason: belief.readiness === 'Ready'
-      ? 'Enough evidence supports the belief for PIE to use it carefully.'
-      : belief.uncertainty[0]?.recommendedEvidence || 'More evidence is needed before PIE relies on this belief.',
+      ? 'Enough evidence supports the belief for DAVE to use it carefully.'
+      : belief.uncertainty[0]?.recommendedEvidence || 'More evidence is needed before DAVE relies on this belief.',
   };
 }
 
@@ -569,7 +569,7 @@ export function summarizeBeliefChanges(
         id: `belief-change-${next.id}`,
         beliefId: next.id,
         change: 'formed',
-        reason: 'PIE formed this belief from current evidence.',
+        reason: 'DAVE formed this belief from current evidence.',
         previousStatus: null,
         nextStatus: next.status,
         confidence: next.confidence,
@@ -796,9 +796,9 @@ function summarizeBeliefs(
   beliefs: PIEBelief[],
   beliefsNeedingVerification: PIEBelief[],
 ) {
-  if (beliefs.length === 0) return 'PIE has not formed enough beliefs yet.';
+  if (beliefs.length === 0) return 'DAVE has not formed enough beliefs yet.';
   if (beliefsNeedingVerification.length > 0) {
-    return `${beliefs.length} beliefs formed. ${beliefsNeedingVerification.length} need verification before PIE should rely on them.`;
+    return `${beliefs.length} beliefs formed. ${beliefsNeedingVerification.length} need verification before DAVE should rely on them.`;
   }
   return `${beliefs.length} beliefs formed and ready to support recommendations.`;
 }

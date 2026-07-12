@@ -827,7 +827,7 @@ export function summarizeRealityModel(
     objectsNeedingVerification: objectsNeedingVerification.map(object => object.name).slice(0, 8),
     strongestCurrentRealityStatement: strongestObject
       ? `${strongestObject.name}: ${strongestObject.intelligence.readiness}. ${strongestObject.currentState.summary}`
-      : 'PIE does not have a strong current reality statement yet.',
+      : 'DAVE does not have a strong current reality statement yet.',
     weakestCurrentRealityAssumption: weakestObject
       ? `${weakestObject.name}: ${weakestObject.intelligence.uncertainty[0]?.uncertainty || weakestObject.currentState.summary}`
       : 'No weak reality assumption is visible yet.',
@@ -1039,13 +1039,13 @@ export function buildObjectNextBestAction(object: PIERealityObject): PIERealityN
     return { action: object.currentState.nextAction || `Resolve blocker for ${object.name}.`, reason: 'Blocked objects should be cleared before downstream work proceeds.', priority: 'critical', ownerNeeded };
   }
   if (object.currentStatus === 'contradicted') {
-    return { action: object.currentState.nextAction || `Resolve contradiction for ${object.name}.`, reason: 'Contradicted objects should be reconciled before PIE relies on them.', priority: 'high', ownerNeeded };
+    return { action: object.currentState.nextAction || `Resolve contradiction for ${object.name}.`, reason: 'Contradicted objects should be reconciled before DAVE relies on them.', priority: 'high', ownerNeeded };
   }
   if (object.currentStatus === 'at_risk') {
     return { action: object.currentState.nextAction || `Verify risk for ${object.name}.`, reason: 'At-risk objects can affect schedule, inspection, or closeout.', priority: 'high', ownerNeeded };
   }
   if (object.currentStatus === 'needs_verification' || object.currentState.uncertain) {
-    return { action: object.currentState.nextAction || `Collect current evidence for ${object.name}.`, reason: 'This object needs verification before PIE relies on it.', priority: 'medium', ownerNeeded };
+    return { action: object.currentState.nextAction || `Collect current evidence for ${object.name}.`, reason: 'This object needs verification before DAVE relies on it.', priority: 'medium', ownerNeeded };
   }
   if (object.currentState.stale) {
     return { action: `Refresh evidence for ${object.name}.`, reason: 'Stale evidence weakens confidence.', priority: 'medium', ownerNeeded };

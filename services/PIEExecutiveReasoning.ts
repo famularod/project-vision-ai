@@ -518,7 +518,7 @@ export function identifyDecisionNeeds(
     .slice(0, 3)
     .map(belief => ({
       id: `decision-belief-${belief.id}`,
-      decisionNeeded: `Can PIE rely on this belief: ${belief.statement}`,
+      decisionNeeded: `Can DAVE rely on this belief: ${belief.statement}`,
       whyNow: belief.explanation.readinessReason,
       options: ['Verify', 'Correct belief', 'Defer action'],
       owner: 'User',

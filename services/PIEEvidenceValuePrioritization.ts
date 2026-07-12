@@ -88,7 +88,7 @@ function buildEvidenceDecisionValue(
     safetyImpact: safetyImpactForEvidence(item, input),
     canProceedWithoutIt,
     reason: canProceedWithoutIt
-      ? 'PIE can proceed with bounded confidence, but this evidence would improve certainty.'
+      ? 'DAVE can proceed with bounded confidence, but this evidence would improve certainty.'
       : 'This evidence can change option ranking, confidence, or authority requirements.',
   };
 }

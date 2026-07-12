@@ -336,7 +336,7 @@ function coreProjectDecisions(context: DecisionContext): PIEDecision[] {
       title: 'Capture today\'s progress',
       summary: stale
         ? `The latest update is ${days} days old.`
-        : 'PIE needs a current field update to improve project confidence.',
+        : 'DAVE needs a current field update to improve project confidence.',
       priority: days !== null && days > 14 ? 'critical' : 'high',
       action: 'capture-todays-progress',
       evidence: [
@@ -360,8 +360,8 @@ function coreProjectDecisions(context: DecisionContext): PIEDecision[] {
       reason: {
         summary: 'Project status needs current field evidence.',
         why: stale
-          ? 'PIE confidence drops when recent field history is stale.'
-          : 'PIE cannot confidently explain project status without current field evidence.',
+          ? 'DAVE confidence drops when recent field history is stale.'
+          : 'DAVE cannot confidently explain project status without current field evidence.',
       },
       metadata: {
         daysSinceLastUpdate: days,
@@ -394,7 +394,7 @@ function coreProjectDecisions(context: DecisionContext): PIEDecision[] {
       },
       suggestedNextAction: 'Review overdue items, confirm blockers, and capture a recovery action.',
       userApproval: approvalNotRequired(
-        'PIE is only recommending review; schedule changes still require user action.',
+        'DAVE is only recommending review; schedule changes still require user action.',
       ),
       reason: {
         summary: 'Overdue schedule work needs attention.',
@@ -426,11 +426,11 @@ function coreProjectDecisions(context: DecisionContext): PIEDecision[] {
       },
       suggestedNextAction: 'Review the safety concern, confirm owner and closure status, and document the outcome.',
       userApproval: approvalNotRequired(
-        'PIE can flag safety concern review, but the user must decide and record the outcome.',
+        'DAVE can flag safety concern review, but the user must decide and record the outcome.',
       ),
       reason: {
         summary: 'Safety-related project evidence requires attention.',
-        why: 'PIE prioritizes safety concerns above routine reporting and monitoring.',
+        why: 'DAVE prioritizes safety concerns above routine reporting and monitoring.',
       },
     }));
   }
@@ -449,7 +449,7 @@ function coreProjectDecisions(context: DecisionContext): PIEDecision[] {
     decisions.push(createDecision(context, {
       id: 'update-missing-project-information',
       title: 'Update missing project information',
-      summary: 'PIE is missing context that would improve project confidence.',
+      summary: 'DAVE is missing context that would improve project confidence.',
       priority: intelligence.confidence.level === 'low' ? 'high' : 'medium',
       action: 'update-missing-project-information',
       evidence: [
@@ -472,11 +472,11 @@ function coreProjectDecisions(context: DecisionContext): PIEDecision[] {
         intelligence.locationIntelligence.confirmationPrompt ||
         'Fill the highest-value missing project context before sharing status.',
       userApproval: approvalRequired(
-        'Adding or correcting project information changes what PIE will rely on later.',
+        'Adding or correcting project information changes what DAVE will rely on later.',
       ),
       reason: {
         summary: 'Project confidence can be improved with missing context.',
-        why: 'PIE should ask for correction or missing information when confidence is low instead of guessing.',
+        why: 'DAVE should ask for correction or missing information when confidence is low instead of guessing.',
       },
       metadata: {
         confidenceScore: intelligence.confidence.score,
@@ -521,7 +521,7 @@ function communicationDecisionsFromContext(
       },
       suggestedNextAction: 'Generate the report, review it, and approve before sharing.',
       userApproval: approvalRequired(
-        'PIE may prepare a report, but the user must review and approve it before sharing.',
+        'DAVE may prepare a report, but the user must review and approve it before sharing.',
       ),
       reason: {
         summary: 'Communication readiness is high.',
@@ -554,11 +554,11 @@ function communicationDecisionsFromContext(
       },
       suggestedNextAction: 'Review and approve the customer update before sending.',
       userApproval: approvalRequired(
-        'PIE must never send customer communication automatically.',
+        'DAVE must never send customer communication automatically.',
       ),
       reason: {
         summary: 'Customer communication may now be useful.',
-        why: 'PIE sees enough communication context to prepare a customer-facing draft, but the user must approve it.',
+        why: 'DAVE sees enough communication context to prepare a customer-facing draft, but the user must approve it.',
       },
     }));
   }
@@ -588,7 +588,7 @@ function reasoningDecisions(context: DecisionContext): PIEDecision[] {
         actionFromText(concern.suggestedNextAction),
       ),
       reason: {
-        summary: 'PIE reasoning surfaced a concern.',
+        summary: 'DAVE reasoning surfaced a concern.',
         why: concern.summary,
       },
       relatedDecisionIds: [concern.id],
@@ -597,7 +597,7 @@ function reasoningDecisions(context: DecisionContext): PIEDecision[] {
   const questionDecisions = context.questions.slice(0, 3).map(question =>
     createDecision(context, {
       id: `reasoning-question-${stableId(question.id)}`,
-      title: 'Answer open PIE question',
+      title: 'Answer open DAVE question',
       summary: question.question,
       priority: toDecisionPriority(question.priority),
       action: 'update-missing-project-information',
@@ -607,16 +607,16 @@ function reasoningDecisions(context: DecisionContext): PIEDecision[] {
       impact: {
         area: 'project-context',
         severity: toDecisionPriority(question.priority),
-        description: 'Answering this question can improve PIE confidence and reduce project uncertainty.',
+        description: 'Answering this question can improve DAVE confidence and reduce project uncertainty.',
         affectedStakeholders: ['Project Manager'],
       },
       suggestedNextAction: question.question,
       userApproval: approvalRequired(
-        'Answering an open PIE question changes the project context PIE relies on.',
+        'Answering an open DAVE question changes the project context DAVE relies on.',
       ),
       reason: {
         summary: question.reason,
-        why: 'PIE asks questions when confidence is not high enough to decide silently.',
+        why: 'DAVE asks questions when confidence is not high enough to decide silently.',
       },
       relatedDecisionIds: [question.id],
     }),
@@ -653,7 +653,7 @@ function reasoningDecisions(context: DecisionContext): PIEDecision[] {
         ),
         reason: {
           summary: recommendation.why,
-          why: 'PIE reasoning produced a recommendation from evidence-backed thoughts.',
+          why: 'DAVE reasoning produced a recommendation from evidence-backed thoughts.',
         },
         relatedDecisionIds: [recommendation.id],
       }),
@@ -761,11 +761,11 @@ function projectEventDecisions(context: DecisionContext): PIEDecision[] {
       },
       suggestedNextAction: 'Review the open decision and capture the approved outcome.',
       userApproval: approvalRequired(
-        'PIE must not approve or close project decisions automatically.',
+        'DAVE must not approve or close project decisions automatically.',
       ),
       reason: {
         summary: 'Project event memory includes open decisions.',
-        why: 'Decisions require user review and approval before PIE treats them as resolved.',
+        why: 'Decisions require user review and approval before DAVE treats them as resolved.',
       },
       relatedDecisionIds: openDecisionEvents.map(event => event.id),
     }),
@@ -820,7 +820,7 @@ function projectWalkDecisionsFromContext(
       ),
       reason: {
         summary: 'Field verification would reduce uncertainty.',
-        why: 'PIE sees stale, missing, low-confidence, or unresolved context that a project walk can clarify.',
+        why: 'DAVE sees stale, missing, low-confidence, or unresolved context that a project walk can clarify.',
       },
     }),
   ];
@@ -830,7 +830,7 @@ function monitoringDecision(context: DecisionContext): PIEDecision {
   return createDecision(context, {
     id: 'continue-monitoring',
     title: 'Continue monitoring project status',
-    summary: 'No urgent decision surfaced from current local PIE signals.',
+    summary: 'No urgent decision surfaced from current local DAVE signals.',
     priority: 'low',
     action: 'continue-monitoring',
     evidence: [context.intelligence.healthSignal.message],
@@ -839,7 +839,7 @@ function monitoringDecision(context: DecisionContext): PIEDecision {
     impact: {
       area: 'monitoring',
       severity: 'low',
-      description: 'PIE will continue watching for schedule, safety, update, memory, and communication signals.',
+      description: 'DAVE will continue watching for schedule, safety, update, memory, and communication signals.',
       affectedStakeholders: ['Project Manager'],
     },
     suggestedNextAction: context.intelligence.recommendedNextAction.label,
@@ -848,7 +848,7 @@ function monitoringDecision(context: DecisionContext): PIEDecision {
     ),
     reason: {
       summary: 'Current signals do not require urgent action.',
-      why: 'PIE did not find a higher-priority decision from current intelligence, reasoning, memory, or events.',
+      why: 'DAVE did not find a higher-priority decision from current intelligence, reasoning, memory, or events.',
     },
   });
 }
@@ -991,7 +991,7 @@ function approvalForAction(action: PIEDecisionAction): PIEUserApprovalState {
   }
 
   return approvalNotRequired(
-    'PIE is recommending review only and is not changing project data.',
+    'DAVE is recommending review only and is not changing project data.',
   );
 }
 

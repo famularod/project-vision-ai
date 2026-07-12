@@ -156,7 +156,7 @@ export function classifyLayer4AutomationPolicy(
   ) {
     return {
       level: 'confirmation_required',
-      reason: 'PIE can prepare the action, but confirmation is needed before materially changing the decision record.',
+      reason: 'DAVE can prepare the action, but confirmation is needed before materially changing the decision record.',
       humanReviewAvailable: true,
     };
   }
@@ -224,7 +224,7 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
       created: false,
       duplicateDecisionId: duplicate.id,
       decision: duplicate,
-      explanation: 'PIE found an existing decision candidate for this persisted Executive Judgment.',
+      explanation: 'DAVE found an existing decision candidate for this persisted Executive Judgment.',
     };
   }
 
@@ -302,7 +302,7 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
   return {
     created: true,
     decision,
-    explanation: 'PIE created a decision candidate from a persisted Executive Judgment and authoritative Reality Model snapshot.',
+    explanation: 'DAVE created a decision candidate from a persisted Executive Judgment and authoritative Reality Model snapshot.',
   };
 }
 
@@ -314,7 +314,7 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
     return {
       created: false,
       skippedReason: 'Report is informational, incomplete, low confidence, or still needs too much review.',
-      explanation: 'PIE did not create a decision candidate because this does not meet the meaningful-decision threshold.',
+      explanation: 'DAVE did not create a decision candidate because this does not meet the meaningful-decision threshold.',
     };
   }
 
@@ -324,7 +324,7 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
       created: false,
       duplicateDecisionId: duplicate.id,
       decision: duplicate,
-      explanation: 'PIE found an existing decision candidate and avoided a duplicate.',
+      explanation: 'DAVE found an existing decision candidate and avoided a duplicate.',
     };
   }
 
@@ -344,14 +344,14 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
     assumptions: buildDecisionAssumptions(input.report),
     risks: input.report.risks.length
       ? input.report.risks.map(risk => risk.summary)
-      : ['PIE must not treat implementation as outcome success without verification.'],
+      : ['DAVE must not treat implementation as outcome success without verification.'],
     constraints: buildDecisionConstraints(input.report),
     predictedOutcomes: predictions,
     recommendationConfidence: input.report.confidence,
     confidenceExplanation: input.report.reviewFlags[0] ||
-      `PIE confidence is ${input.report.confidence} based on current report evidence and review flags.`,
+      `DAVE confidence is ${input.report.confidence} based on current report evidence and review flags.`,
     selectedReason: input.report.executiveSummary[0] ||
-      `PIE detected a ${trigger.replace(/_/g, ' ')} that should be tracked through outcome review.`,
+      `DAVE detected a ${trigger.replace(/_/g, ' ')} that should be tracked through outcome review.`,
   };
   const decision = createDecisionRecord({
     id: `pie-auto-decision-${stableHash(`${input.organizationId}:${input.projectId}:${input.report.id}:${snapshot.selectedOption}`)}`,
@@ -365,7 +365,7 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
   return {
     created: true,
     decision,
-    explanation: 'PIE created a decision candidate automatically from a meaningful Layer 3 recommendation.',
+    explanation: 'DAVE created a decision candidate automatically from a meaningful Layer 3 recommendation.',
   };
 }
 
@@ -427,7 +427,7 @@ export function proposeImplementationQualityFromEvidence(
   if (!relevant.length) {
     return {
       quality: 'unknown',
-      reason: 'PIE does not have enough implementation evidence yet.',
+      reason: 'DAVE does not have enough implementation evidence yet.',
       confidence: 'low',
       supportingEvidence: [],
     };
@@ -482,8 +482,8 @@ export function comparePredictedAndActualOutcomesAutomatically(
     projectId: decision.projectId,
     classification,
     summary: hasOutcomeEvidence
-      ? 'PIE found project evidence related to the predicted outcome.'
-      : 'PIE found possible outcome evidence, but the result needs review.',
+      ? 'DAVE found project evidence related to the predicted outcome.'
+      : 'DAVE found possible outcome evidence, but the result needs review.',
     actualResults: relevant.length
       ? relevant.map(item => item.summary)
       : ['No reliable outcome evidence available yet.'],
@@ -522,7 +522,7 @@ export function automateLayer4DecisionLifecycle(
       id: `exception-conflict-${decision.id}`,
       message: 'Conflicting evidence needs review.',
       action: 'resolve_conflict',
-      reason: 'PIE found evidence that could change the decision outcome or implementation quality.',
+      reason: 'DAVE found evidence that could change the decision outcome or implementation quality.',
     });
   }
 
@@ -569,7 +569,7 @@ export function automateLayer4DecisionLifecycle(
   if (policy.level === 'human_decision_required') {
     exceptions.push({
       id: `exception-approval-${decision.id}`,
-      message: 'Human approval is required before PIE changes this decision.',
+      message: 'Human approval is required before DAVE changes this decision.',
       action: 'approve',
       reason: policy.reason,
     });
@@ -579,7 +579,7 @@ export function automateLayer4DecisionLifecycle(
   if (policy.level === 'confirmation_required') {
     exceptions.push({
       id: `exception-confirm-${decision.id}`,
-      message: 'PIE prepared the next step and needs a quick confirmation.',
+      message: 'DAVE prepared the next step and needs a quick confirmation.',
       action: 'approve',
       reason: policy.reason,
     });
@@ -594,7 +594,7 @@ export function automateLayer4DecisionLifecycle(
       approvedScopeImplemented: proposed.quality === 'high_fidelity' ||
         proposed.quality === 'implemented_as_designed',
       materialDeviations: proposed.quality === 'partial_fidelity'
-        ? ['PIE detected possible deviation; review before learning from this outcome.']
+        ? ['DAVE detected possible deviation; review before learning from this outcome.']
         : [],
       omittedControls: [],
       timingDeviations: [],
@@ -633,7 +633,7 @@ export function automateLayer4DecisionLifecycle(
       decision,
       nextStatus: 'awaiting_outcome',
       actor: input.actor,
-      reason: 'PIE moved implemented decision to outcome review automatically.',
+      reason: 'DAVE moved implemented decision to outcome review automatically.',
       source: 'system',
       linkedEvidence,
       timestamp: now,
@@ -658,7 +658,7 @@ export function automateLayer4DecisionLifecycle(
       decision,
       nextStatus: 'outcome_observed',
       actor: input.actor,
-      reason: 'PIE observed outcome evidence and compared it to the prediction.',
+      reason: 'DAVE observed outcome evidence and compared it to the prediction.',
       source: 'system',
       linkedEvidence,
       actualOutcome: outcome,
@@ -687,7 +687,7 @@ export function automateLayer4DecisionLifecycle(
         decision,
         'system_supported',
         input.actor,
-        'PIE system-supported this low-risk objectively verifiable outcome.',
+        'DAVE system-supported this low-risk objectively verifiable outcome.',
         linkedEvidence,
         now,
       );
@@ -710,7 +710,7 @@ export function automateLayer4DecisionLifecycle(
         action: authorityRequired ? 'validate_high_impact_outcome' : 'provide_missing_evidence',
         reason: authorityRequired
           ? 'This decision affects high-impact authority boundaries.'
-          : 'PIE needs stronger evidence before validation.',
+          : 'DAVE needs stronger evidence before validation.',
       });
     }
   }
@@ -720,7 +720,7 @@ export function automateLayer4DecisionLifecycle(
       decision,
       nextStatus: 'closed',
       actor: input.actor,
-      reason: 'PIE closed this low-risk decision after documented outcome support satisfied closeout requirements.',
+      reason: 'DAVE closed this low-risk decision after documented outcome support satisfied closeout requirements.',
       source: 'system',
       linkedEvidence,
       timestamp: now,
@@ -785,7 +785,7 @@ export function generatePredictedOutcomesFromReport(
       validationAuthority: authority,
       predictionConfidence: report.confidence,
       rationale: report.reviewFlags[0] ||
-        'PIE generated this outcome from the recommendation context, schedule/evidence signals, and report action items.',
+        'DAVE generated this outcome from the recommendation context, schedule/evidence signals, and report action items.',
     }),
   ];
 }
@@ -873,10 +873,10 @@ function reviewResult(
     exceptions,
     linkedEvidence,
     conciseExplanation: exceptions.length
-      ? 'PIE found decision history items that need review.'
+      ? 'DAVE found decision history items that need review.'
       : actions.length
-        ? 'PIE updated decision history from project evidence.'
-        : 'PIE is monitoring this decision for outcome evidence.',
+        ? 'DAVE updated decision history from project evidence.'
+        : 'DAVE is monitoring this decision for outcome evidence.',
   };
 }
 

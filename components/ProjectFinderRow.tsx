@@ -140,7 +140,7 @@ export function ProjectFinderRow({
     runtime.response.whatConcernsPIE ||
     (runtime.intelligence.healthStatus === 'healthy'
       ? 'No urgent concern from current evidence'
-      : 'Capture more context for PIE');
+      : 'Capture more context for DAVE');
   const pieHealth = healthLabel(runtime.intelligence.healthStatus);
 
   function runMoreAction(action: () => void) {
@@ -206,7 +206,7 @@ export function ProjectFinderRow({
           style={styles.projectMilestoneText}
           numberOfLines={2}
         >
-          Next PIE Recommendation: {nextBestAction}
+          Next DAVE Recommendation: {nextBestAction}
         </Text>
 
         <Text
@@ -291,7 +291,7 @@ export function ProjectFinderRow({
               style={styles.projectSignalLabel}
               numberOfLines={1}
             >
-              PIE
+              DAVE
             </Text>
 
             <Text

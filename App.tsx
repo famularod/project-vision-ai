@@ -1,4 +1,9 @@
-import { deleteCloudProject, loadCloudProjects, saveCloudProject } from './services/projectService';
+import {
+  deleteCloudProject,
+  loadCloudProjectRecords,
+  saveCloudProject,
+  saveCloudProjectCoverPhoto,
+} from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import {
   uploadLocalPhoto,
@@ -17,6 +22,7 @@ import {
 } from './services/SupabaseService';
 import { AdminScreen } from './screens/AdminScreen';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
+import { DAVEAskExperience } from './components/DAVEAskExperience';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -41,14 +47,22 @@ import {
   dedupeAttentionItemsById,
 } from './services/PIEAttentionIdentity';
 import {
-  buildProjectDailyBrief,
   type DAVEBriefNavigationTarget,
   type DAVEProjectDailyBriefAttentionItem,
   type DAVEProjectDailyBriefItem,
 } from './services/DAVEDailyBrief';
-import { buildProjectEvidenceQuality } from './services/DAVEProjectEvidenceQuality';
-import { buildProjectCommitments } from './services/DAVEProjectCommitments';
-import { buildProjectActionCenter } from './services/DAVEProjectActionCenter';
+import { buildProjectIntelligence } from './services/DAVEIntelligence';
+import {
+  cacheSelectedProjectCoverPhoto,
+  coverPhotoForProject,
+  hydrateProjectCoverPhotoCache,
+  mergeProjectRecords,
+  normalizeProjectRecords,
+  removeCachedProjectCoverPhoto,
+  resolveProjectDisplayPhotoUri,
+  type ProjectCoverPhoto,
+  type ProjectRecord,
+} from './services/ProjectCoverPhotoService';
 import {
   buildSixtySecondFlowTimingResult,
   type SixtySecondFlowTimingResult,
@@ -5080,6 +5094,10 @@ function AppShell() {
   const [projects, setProjects] =
     useState<string[]>(DEFAULT_PROJECTS);
 
+  const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>(
+    DEFAULT_PROJECTS.map(name => ({ name })),
+  );
+
   const [archivedProjects, setArchivedProjects] =
     useState<string[]>([]);
 
@@ -5242,16 +5260,26 @@ useEffect(() => {
   async function loadProjects() {
     try {
       const localValue = await AsyncStorage.getItem(PROJECTS_STORAGE_KEY);
-      const localProjects = localValue ? JSON.parse(localValue) : [];
-      const cloudProjects = await loadCloudProjects();
+      const localProjects = normalizeProjectRecords(localValue ? JSON.parse(localValue) : []);
+      const cloudProjects = await loadCloudProjectRecords();
+      const mergedRecords = mergeProjectRecords(DEFAULT_PROJECTS, localProjects, cloudProjects);
 
-      setProjects(
-        mergeProjectNames(
-          DEFAULT_PROJECTS,
-          Array.isArray(localProjects) ? localProjects : [],
-          cloudProjects,
-        ),
-      );
+      setProjectRecords(mergedRecords);
+      setProjects(mergedRecords.map(project => project.name));
+
+      void Promise.all(mergedRecords.map(async project => {
+        if (!project.coverPhoto?.remotePath) return;
+        const hydrated = await hydrateProjectCoverPhotoCache(
+          authorityProjectId(project.name),
+          project.coverPhoto,
+        );
+        if (hydrated.localUri === project.coverPhoto?.localUri) return;
+        setProjectRecords(previous => previous.map(item =>
+          item.name.toLowerCase() === project.name.toLowerCase()
+            ? { ...item, coverPhoto: hydrated }
+            : item,
+        ));
+      }));
     } catch {
       Alert.alert(
         'Storage error',
@@ -5478,9 +5506,9 @@ useEffect(() => {
 
     AsyncStorage.setItem(
       PROJECTS_STORAGE_KEY,
-      JSON.stringify(projects),
+      JSON.stringify(projectRecords),
     ).catch(() => undefined);
-  }, [projects, projectsLoaded]);
+  }, [projectRecords, projectsLoaded]);
 
   useEffect(() => {
     if (!archivedProjectsLoaded) return;
@@ -6923,6 +6951,119 @@ useEffect(() => {
     setScreen('ProjectWorkspace');
   }
 
+  async function persistSelectedProjectCoverPhoto(
+    projectName: string,
+    asset: ImagePicker.ImagePickerAsset,
+  ) {
+    try {
+      const coverPhoto = await cacheSelectedProjectCoverPhoto(
+        asset.uri,
+        authorityProjectId(projectName),
+        asset.mimeType || 'image/jpeg',
+      );
+      setProjectRecords(previous => previous.map(project =>
+        project.name.toLowerCase() === projectName.toLowerCase()
+          ? {
+              ...project,
+              coverPhoto,
+              coverPhotoMode: 'manual',
+              coverPhotoUpdatedAt: coverPhoto.updatedAt,
+            }
+          : project,
+      ));
+      const record = projectRecords.find(project =>
+        project.name.toLowerCase() === projectName.toLowerCase(),
+      );
+      saveCloudProjectCoverPhoto(projectName, coverPhoto, 'manual', record?.data);
+    } catch {
+      Alert.alert('Cover photo unavailable', 'The selected cover photo could not be saved.');
+    }
+  }
+
+  async function chooseProjectCoverFromLibrary(projectName: string) {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Photo access needed', 'Allow photo access to select a project cover photo.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [16, 9],
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    await persistSelectedProjectCoverPhoto(projectName, result.assets[0]);
+  }
+
+  async function takeNewProjectCoverPhoto(projectName: string) {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Camera access needed', 'Allow camera access to take a project cover photo.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [16, 9],
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    await persistSelectedProjectCoverPhoto(projectName, result.assets[0]);
+  }
+
+  function useBestProjectPhoto(projectName: string) {
+    const changedAt = new Date().toISOString();
+    const record = projectRecords.find(project =>
+      project.name.toLowerCase() === projectName.toLowerCase(),
+    );
+    setProjectRecords(previous => previous.map(project =>
+      project.name.toLowerCase() === projectName.toLowerCase()
+        ? { ...project, coverPhotoMode: 'automatic', coverPhotoUpdatedAt: changedAt }
+        : project,
+    ));
+    saveCloudProjectCoverPhoto(
+      projectName,
+      record?.coverPhoto || null,
+      'automatic',
+      record?.data,
+      changedAt,
+    );
+  }
+
+  function removeProjectCoverPhoto(projectName: string) {
+    const current = coverPhotoForProject(projectRecords, projectName);
+    Alert.alert(
+      'Remove cover photo?',
+      'The project will return to automatic photo selection.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            const removedAt = new Date().toISOString();
+            setProjectRecords(previous => previous.map(project =>
+              project.name.toLowerCase() === projectName.toLowerCase()
+                ? {
+                    ...project,
+                    coverPhoto: null,
+                    coverPhotoMode: 'automatic',
+                    coverPhotoUpdatedAt: removedAt,
+                  }
+                : project,
+            ));
+            const record = projectRecords.find(project =>
+              project.name.toLowerCase() === projectName.toLowerCase(),
+            );
+            saveCloudProjectCoverPhoto(projectName, null, 'automatic', record?.data, removedAt);
+            void removeCachedProjectCoverPhoto(current);
+          },
+        },
+      ],
+    );
+  }
+
   function resumeDraft() {
     setSelectedWorkspaceProject(draft.projectName);
     setScreen('AddPhotos');
@@ -6994,6 +7135,7 @@ function addProject(projectName: string) {
   }
 
   setProjects(prev => [trimmed, ...prev]);
+  setProjectRecords(prev => [{ name: trimmed }, ...prev]);
 
   saveCloudProject(trimmed);
 
@@ -7059,6 +7201,9 @@ function addProject(projectName: string) {
         remainingActiveProjects[0] || DEFAULT_PROJECTS[0];
 
       setProjects(remainingProjects);
+      setProjectRecords(prev => prev.filter(
+        project => project.name.toLowerCase() !== projectName.toLowerCase(),
+      ));
       setArchivedProjects(prev =>
         prev.filter(
           project => project.toLowerCase() !== projectName.toLowerCase(),
@@ -9057,6 +9202,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               detectedProjectName={detectedProjectName}
               gpsCandidateProjectNames={gpsCandidateProjectNames}
               projectDetectionStatus={projectDetectionStatus}
+              projectRecords={projectRecords}
               onResumeDraft={resumeDraft}
               onDiscardDraft={discardDraft}
               onNewUpdate={createNewUpdate}
@@ -9215,6 +9361,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
               scheduleItems={scheduleItems}
               contactBook={contactBook}
               projectStats={projectStatsForName(projectStatsByName, selectedWorkspaceProject)}
+              coverPhoto={coverPhotoForProject(projectRecords, selectedWorkspaceProject)}
+              coverPhotoMode={projectRecords.find(project =>
+                project.name.toLowerCase() === selectedWorkspaceProject.toLowerCase()
+              )?.coverPhotoMode || 'automatic'}
+              onTakeNewCoverPhoto={() => {
+                void takeNewProjectCoverPhoto(selectedWorkspaceProject);
+              }}
+              onChooseCoverFromLibrary={() => {
+                void chooseProjectCoverFromLibrary(selectedWorkspaceProject);
+              }}
+              onUseBestProjectPhoto={() => useBestProjectPhoto(selectedWorkspaceProject)}
+              onRemoveCoverPhoto={() => removeProjectCoverPhoto(selectedWorkspaceProject)}
               onBack={() => setScreen('Projects')}
               onNewFieldUpdate={createNewUpdate}
               onOpenUpdates={() => setScreen('SavedUpdates')}
@@ -9662,6 +9820,7 @@ function HomeScreen({
   detectedProjectName,
   gpsCandidateProjectNames,
   projectDetectionStatus,
+  projectRecords,
   onResumeDraft,
   onDiscardDraft,
   onNewUpdate,
@@ -9683,6 +9842,7 @@ function HomeScreen({
   detectedProjectName: string | null;
   gpsCandidateProjectNames: string[];
   projectDetectionStatus: OverviewDetectionStatus;
+  projectRecords: ProjectRecord[];
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
   onNewUpdate: (projectName?: string) => void;
@@ -9720,7 +9880,15 @@ function HomeScreen({
     (sum, row) => sum + row.observationCount,
     0,
   );
-  const heroPhotoUri = mostRecentHeroPhotoUri(scopedProjects, savedUpdates);
+  const selectedCoverPhoto = coverPhotoForProject(projectRecords, selectedProjectName);
+  const selectedProjectRecord = projectRecords.find(project =>
+    project.name.toLowerCase() === selectedProjectName?.toLowerCase(),
+  );
+  const heroPhotoUri = resolveProjectDisplayPhotoUri(
+    selectedProjectRecord?.coverPhotoMode,
+    selectedCoverPhoto,
+    mostRecentHeroPhotoUri(scopedProjects, savedUpdates),
+  );
   const [daveObservationsModalVisible, setDaveObservationsModalVisible] =
     useState(false);
   const allDaveObservations = scopedProjects
@@ -10299,7 +10467,7 @@ function PhotoIntelligenceSignInModal({
             <View style={styles.rowMain}>
               <Text style={styles.panelTitle}>Sign in to enable photo intelligence</Text>
               <Text style={styles.rowSub}>
-                PIE photo comparison needs a signed-in cloud session before it can analyze photos.
+                DAVE photo comparison needs a signed-in cloud session before it can analyze photos.
               </Text>
               <Text style={styles.rowSub}>
                 Use a Supabase Auth email and password. Do not use Apple Developer, Expo, or TestFlight credentials.
@@ -11593,7 +11761,7 @@ function RootPhotoIntelligenceCard({
 
       {__DEV__ && result.diagnostics ? (
         <View style={styles.setupProgressCard}>
-          <Text style={styles.sectionLabel}>PIE diagnostics</Text>
+          <Text style={styles.sectionLabel}>DAVE diagnostics</Text>
           <Text style={styles.locationDetailText}>
             Current project ID: {projectIdForPhotoVisionLabel(projectName) || 'none'}
           </Text>
@@ -11715,7 +11883,7 @@ function RootPhotoIntelligenceCard({
             Sign-in client source: {result.diagnostics.signInClientSource || 'unknown'}
           </Text>
           <Text style={styles.locationDetailText}>
-            PIE analysis client source: {result.diagnostics.pieAnalysisClientSource || 'unknown'}
+            DAVE analysis client source: {result.diagnostics.pieAnalysisClientSource || 'unknown'}
           </Text>
           <Text style={styles.locationDetailText}>
             Auth hydration completed: {result.diagnostics.authHydrationCompleted === null ? 'unknown' : result.diagnostics.authHydrationCompleted ? 'yes' : 'no'}
@@ -11874,7 +12042,7 @@ function UpdatePIEStatusSection({
 
   return (
     <View style={styles.panel}>
-      <Text style={styles.panelTitle}>PIE Photo Review</Text>
+      <Text style={styles.panelTitle}>DAVE Photo Review</Text>
       {photosWithPIE.length === 0 ? (
         <Text style={styles.bodyText}>{PIE_STATUS_COPY.checking}</Text>
       ) : (
@@ -11923,7 +12091,7 @@ function SavedUpdatePIESummary({
 
   return (
     <View style={styles.setupProgressCard}>
-      <Text style={styles.sectionLabelNoMargin}>PIE Photo Review</Text>
+      <Text style={styles.sectionLabelNoMargin}>DAVE Photo Review</Text>
       <Text style={styles.bodyText}>
         {firstResult
           ? pieUserStatus(firstResult)
@@ -11951,7 +12119,7 @@ function SavedUpdatePIESummary({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={() => onRetryPhotoAnalysis(update, failedPhoto)}
-          accessibilityLabel="Retry PIE photo analysis"
+          accessibilityLabel="Retry DAVE photo analysis"
         >
           <Ionicons name="refresh-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Retry Analysis</Text>
@@ -11961,7 +12129,7 @@ function SavedUpdatePIESummary({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={() => (onSignInForPhotoAnalysis || onRetryPhotoAnalysis)(update, failedPhoto)}
-          accessibilityLabel="Sign in to enable PIE photo intelligence"
+          accessibilityLabel="Sign in to enable DAVE photo intelligence"
         >
           <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
@@ -12210,7 +12378,7 @@ function BuildUpdateScreen({
       />
 
       <View style={styles.phase4PieCard}>
-        <Text style={styles.panelTitle}>PIE Summary</Text>
+        <Text style={styles.panelTitle}>DAVE Summary</Text>
         {hasSafety ? (
           <View style={styles.phase4SafetyFinding}>
             <Ionicons name="warning-outline" size={20} color={colors.warning} />
@@ -12411,7 +12579,7 @@ function BuildUpdateScreen({
             </Text>
             {update.pieSuggestedNoteAccepted ? (
               <Text style={styles.locationDetailText}>
-                PIE suggested — edit or clear
+                DAVE suggested — edit or clear
               </Text>
             ) : null}
           </View>
@@ -12625,7 +12793,7 @@ function ReadOnlyUpdateDetailScreen({
         ) : null}
       </View>
       <View style={styles.panel}>
-        <Text style={styles.panelTitle}>PIE Summary</Text>
+        <Text style={styles.panelTitle}>DAVE Summary</Text>
         <Text style={styles.projectName}>
           {pieSummary.summary}
         </Text>
@@ -12694,7 +12862,7 @@ function ReadOnlyUpdateDetailScreen({
         </Text>
         {timing.canSendWhileAnalysisPending ? (
           <Text style={styles.locationDetailText}>
-            Send was available while PIE was still checking photos.
+            Send was available while DAVE was still checking photos.
           </Text>
         ) : null}
       </View>
@@ -13005,6 +13173,8 @@ function DailyBriefSection({
             key={item.id}
             style={styles.projectSelectorRow}
             onPress={() => onOpen(item)}
+            accessibilityRole="button"
+            accessibilityLabel={`${title}: ${item.text}`}
           >
             <View style={styles.rowMain}>
               <Text style={styles.locationDetailText}>• {item.text}</Text>
@@ -13016,6 +13186,20 @@ function DailyBriefSection({
           </TouchableOpacity>
         ))
       )}
+    </View>
+  );
+}
+
+function WorkspaceCardSkeleton() {
+  return (
+    <View
+      style={styles.workspaceSkeleton}
+      accessible
+      accessibilityLabel="Loading project priority"
+    >
+      <View style={[styles.workspaceSkeletonLine, { width: '72%' }]} />
+      <View style={[styles.workspaceSkeletonLine, { width: '94%' }]} />
+      <View style={[styles.workspaceSkeletonLine, { width: '58%' }]} />
     </View>
   );
 }
@@ -13033,6 +13217,12 @@ function ProjectWorkspaceScreen({
   scheduleItems,
   contactBook,
   projectStats,
+  coverPhoto,
+  coverPhotoMode,
+  onTakeNewCoverPhoto,
+  onChooseCoverFromLibrary,
+  onUseBestProjectPhoto,
+  onRemoveCoverPhoto,
   onBack,
   onNewFieldUpdate,
   onOpenUpdates,
@@ -13050,6 +13240,12 @@ function ProjectWorkspaceScreen({
   scheduleItems: ScheduleItem[];
   contactBook: ContactBook;
   projectStats: ProjectStats;
+  coverPhoto: ProjectCoverPhoto | null;
+  coverPhotoMode: 'automatic' | 'manual';
+  onTakeNewCoverPhoto: () => void;
+  onChooseCoverFromLibrary: () => void;
+  onUseBestProjectPhoto: () => void;
+  onRemoveCoverPhoto: () => void;
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
   onOpenUpdates: () => void;
@@ -13075,37 +13271,29 @@ function ProjectWorkspaceScreen({
   const issuesCount = projectStats.openActions + projectStats.overdueActions;
   const pieBrief = buildPIEProjectBriefModel(projectName, savedUpdates);
   const documentBrief = buildProjectDocumentMetadataBrief(projectName, projectDocuments);
-  const dailyBrief = buildProjectDailyBrief({
+  const projectIntelligence = useMemo(() => buildProjectIntelligence({
     projectId: authorityProjectId(projectName),
     projectName,
-    updates: projectUpdates,
-    documents: projectDocumentsForProject(projectName, projectDocuments),
+    updates: savedUpdates,
+    documents: projectDocuments,
     scheduleItems,
-  });
-  const evidenceQuality = buildProjectEvidenceQuality({
-    reality: dailyBrief.reality,
-  });
-  const commitments = buildProjectCommitments({
-    reality: dailyBrief.reality,
-  });
-  const actionCenter = buildProjectActionCenter({
-    dailyBrief,
-    evidenceQuality,
-    commitments,
-    attentionItems: dailyBrief.attentionItems,
-    reality: dailyBrief.reality,
-  });
+  }), [projectName, savedUpdates, projectDocuments, scheduleItems]);
+  const dailyBrief = projectIntelligence.dailyBrief;
+  const evidenceQuality = projectIntelligence.evidenceQuality;
+  const actionCenter = projectIntelligence.actionCenter;
   const actionCenterDismissKey = `dave-action-center-dismissed:${authorityProjectId(projectName)}:${isoToday()}`;
-  const [actionCenterDismissed, setActionCenterDismissed] = useState(false);
+  const [actionCenterDismissed, setActionCenterDismissed] = useState<boolean | null>(null);
 
   useEffect(() => {
     let active = true;
-    setActionCenterDismissed(false);
+    setActionCenterDismissed(null);
     AsyncStorage.getItem(actionCenterDismissKey)
       .then(value => {
         if (active) setActionCenterDismissed(value === 'dismissed');
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (active) setActionCenterDismissed(false);
+      });
     return () => {
       active = false;
     };
@@ -13113,6 +13301,20 @@ function ProjectWorkspaceScreen({
 
   const actionCenterSource = actionCenter.supportingEvidence.find(evidence => evidence.sourceType === 'update') ||
     actionCenter.supportingEvidence[0];
+  const automaticProjectPhotoUri = projectThumbnailUri(projectName, savedUpdates);
+  const workspaceHeroPhotoUri = resolveProjectDisplayPhotoUri(
+    coverPhotoMode,
+    coverPhoto,
+    automaticProjectPhotoUri,
+  );
+  const workspaceFadeStyle = useFadeSlideIn(260);
+  const projectHealthIsProblem = dailyBrief.reality.state === 'Blocked' || dailyBrief.reality.state === 'At Risk';
+  const projectHealthIsHealthy = dailyBrief.reality.state === 'Moving';
+  const projectHealthColor = projectHealthIsProblem
+    ? colors.danger
+    : projectHealthIsHealthy
+      ? colors.success
+      : colors.warning;
 
   return (
     <ScrollView
@@ -13120,7 +13322,12 @@ function ProjectWorkspaceScreen({
       contentContainerStyle={contentStyle}
       keyboardShouldPersistTaps="handled"
     >
-      <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
+      <TouchableOpacity
+        style={styles.phase2BackButton}
+        onPress={onBack}
+        accessibilityRole="button"
+        accessibilityLabel="Back to Projects"
+      >
         <Ionicons name="chevron-back" size={21} color={colors.primary} />
         <Text style={styles.dashboardManageText}>Projects</Text>
       </TouchableOpacity>
@@ -13130,13 +13337,72 @@ function ProjectWorkspaceScreen({
         subtitle="Project workspace"
       />
 
+      <View style={styles.projectWorkspaceHero}>
+        {workspaceHeroPhotoUri ? (
+          <Image
+            source={{ uri: workspaceHeroPhotoUri }}
+            style={styles.projectWorkspaceHeroImage}
+            accessibilityLabel={`${projectName} project cover photo`}
+          />
+        ) : (
+          <View style={styles.projectWorkspaceHeroPlaceholder}>
+            <Ionicons name="image-outline" size={30} color={colors.muted} />
+            <Text style={styles.locationDetailText}>Project cover photo</Text>
+          </View>
+        )}
+        <Text style={styles.projectWorkspaceCoverTitle}>Set Project Cover</Text>
+        <View style={styles.projectWorkspaceCoverActions}>
+          <TouchableOpacity
+            style={[styles.photoControlButton, styles.projectWorkspaceCoverButton]}
+            onPress={onTakeNewCoverPhoto}
+            accessibilityRole="button"
+            accessibilityLabel="Take New Photo for project cover"
+          >
+            <Ionicons name="camera-outline" size={17} color={colors.primary} />
+            <Text style={styles.photoControlText}>Take New Photo</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.photoControlButton, styles.projectWorkspaceCoverButton]}
+            onPress={onChooseCoverFromLibrary}
+            accessibilityRole="button"
+            accessibilityLabel="Choose project cover from library"
+          >
+            <Ionicons name="images-outline" size={17} color={colors.primary} />
+            <Text style={styles.photoControlText}>Choose From Library</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.photoControlButton, styles.projectWorkspaceCoverButton]}
+            onPress={onUseBestProjectPhoto}
+            accessibilityRole="button"
+            accessibilityLabel="Use Best Project Photo automatically"
+          >
+            <Ionicons name="sparkles-outline" size={17} color={colors.primary} />
+            <Text style={styles.photoControlText}>Use Best Project Photo</Text>
+          </TouchableOpacity>
+          {coverPhoto ? (
+            <TouchableOpacity
+              style={[styles.photoControlButton, styles.projectWorkspaceCoverButton]}
+              onPress={onRemoveCoverPhoto}
+              accessibilityRole="button"
+              accessibilityLabel="Remove Cover Photo"
+            >
+              <Ionicons name="trash-outline" size={17} color={colors.danger} />
+              <Text style={[styles.photoControlText, { color: colors.danger }]}>Remove Cover Photo</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+
+      <Animated.View style={workspaceFadeStyle}>
       <View style={styles.phase2BriefCard}>
-        <View style={styles.phase2BriefIcon}>
-          <Ionicons name="flag-outline" size={21} color={colors.primary} />
+        <View style={[styles.phase2BriefIcon, styles.phase2BriefIconAttention]}>
+          <Ionicons name="flag-outline" size={20} color={colors.warning} />
         </View>
         <View style={styles.rowMain}>
           <Text style={styles.panelTitle}>Today's Priority</Text>
-          {actionCenterDismissed ? (
+          {actionCenterDismissed === null ? (
+            <WorkspaceCardSkeleton />
+          ) : actionCenterDismissed ? (
             <Text style={styles.locationDetailText}>Dismissed for today.</Text>
           ) : (
             <>
@@ -13150,6 +13416,8 @@ function ProjectWorkspaceScreen({
                     sourceRecordId: actionCenterSource.recordId,
                   });
                 }}
+                accessibilityRole="button"
+                accessibilityLabel={`${actionCenter.priority}. ${actionCenter.reason}`}
               >
                 <View style={styles.rowMain}>
                   <Text style={styles.bodyText}>{actionCenter.priority}</Text>
@@ -13224,12 +13492,29 @@ function ProjectWorkspaceScreen({
         </View>
       </View>
 
+      <DAVEAskExperience
+        intelligence={projectIntelligence}
+        onOpenSupportingRecord={(target, sourceRecordId) => {
+          onOpenDailyBriefItem({ navigationTarget: target, sourceRecordId });
+        }}
+      />
+
       <View style={styles.phase2BriefCard}>
-        <View style={styles.phase2BriefIcon}>
-          <Ionicons name="shield-checkmark-outline" size={21} color={colors.primary} />
+        <View style={[
+          styles.phase2BriefIcon,
+          projectHealthIsProblem
+            ? styles.phase2BriefIconProblem
+            : projectHealthIsHealthy
+              ? styles.phase2BriefIconHealthy
+              : styles.phase2BriefIconAttention,
+        ]}>
+          <Ionicons name="shield-checkmark-outline" size={20} color={projectHealthColor} />
         </View>
         <View style={styles.rowMain}>
-          <Text style={styles.panelTitle}>Evidence Quality</Text>
+          <Text style={styles.panelTitle}>Project Health</Text>
+          <Text style={styles.bodyText}>
+            {dailyBrief.reality.state} · {dailyBrief.reality.confidence} confidence
+          </Text>
           <Text style={styles.bodyText}>Evidence Strength: {evidenceQuality.strength}</Text>
           {evidenceQuality.signals.map(signal => (
             <View key={signal.id} style={styles.projectSelectorRow}>
@@ -13247,10 +13532,53 @@ function ProjectWorkspaceScreen({
 
       <View style={styles.phase2BriefCard}>
         <View style={styles.phase2BriefIcon}>
+          <Ionicons name="time-outline" size={21} color={colors.primary} />
+        </View>
+        <View style={styles.rowMain}>
+          <Text style={styles.panelTitle}>Project Timeline</Text>
+          {dailyBrief.reality.recentTimelineEvents.length === 0 ? (
+            <Text style={styles.locationDetailText}>
+              Capture your first project update to begin building a verified project timeline.
+            </Text>
+          ) : (
+            dailyBrief.reality.recentTimelineEvents.slice(0, 3).map(timelineEvent => {
+              const source = timelineEvent.evidence.find(item => item.sourceType === 'update') ||
+                timelineEvent.evidence[0];
+              return (
+                <TouchableOpacity
+                  key={timelineEvent.id}
+                  style={styles.projectSelectorRow}
+                  disabled={!source}
+                  onPress={() => {
+                    if (!source) return;
+                    onOpenDailyBriefItem({
+                      navigationTarget: timelineEvent.navigationTarget,
+                      sourceRecordId: source.recordId,
+                    });
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${timelineEvent.title}. ${timelineEvent.summary}`}
+                >
+                  <View style={styles.rowMain}>
+                    <Text style={styles.locationDetailText}>{timelineEvent.title}</Text>
+                    <Text style={styles.rowSub}>{formatDisplayDate(timelineEvent.timestamp)} · {timelineEvent.evidenceClass}</Text>
+                    <Text style={styles.rowSub}>{timelineEvent.summary}</Text>
+                  </View>
+                  {source ? <Ionicons name="chevron-forward" size={17} color={colors.muted} /> : null}
+                </TouchableOpacity>
+              );
+            })
+          )}
+        </View>
+      </View>
+      </Animated.View>
+
+      <View style={styles.phase2BriefCard}>
+        <View style={styles.phase2BriefIcon}>
           <Ionicons name="sparkles-outline" size={21} color={colors.primary} />
         </View>
         <View style={styles.rowMain}>
-          <Text style={styles.panelTitle}>PIE Project Brief</Text>
+          <Text style={styles.panelTitle}>DAVE Project Brief</Text>
           <Text style={styles.bodyText}>{pieBrief.summary}</Text>
           {pieBrief.observations.length > 0 ? (
             <>
@@ -14973,7 +15301,7 @@ function UpdateFilterSheet({
         />
       ))}
 
-      <Text style={styles.sectionLabel}>PIE status</Text>
+      <Text style={styles.sectionLabel}>DAVE status</Text>
       {pieStatuses.map(status => (
         <FilterOption
           key={status}
@@ -18380,22 +18708,99 @@ const styles = StyleSheet.create({
 
   phase2BriefCard: {
     backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 12,
     borderColor: colors.line,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 12,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
 
   phase2BriefIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 8,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  phase2BriefIconAttention: {
+    backgroundColor: colors.warningSoft,
+  },
+
+  phase2BriefIconHealthy: {
+    backgroundColor: colors.successSoft,
+  },
+
+  phase2BriefIconProblem: {
+    backgroundColor: colors.dangerSoft,
+  },
+
+  projectWorkspaceHero: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 12,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  projectWorkspaceHeroImage: {
+    width: '100%',
+    height: 180,
+    resizeMode: 'cover',
+  },
+
+  projectWorkspaceHeroPlaceholder: {
+    height: 130,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: colors.fill,
+  },
+
+  projectWorkspaceCoverActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    padding: 10,
+  },
+
+  projectWorkspaceCoverButton: {
+    flexBasis: '46%',
+    minHeight: 44,
+    paddingHorizontal: 8,
+  },
+
+  workspaceSkeleton: {
+    gap: 9,
+    paddingVertical: 8,
+  },
+
+  workspaceSkeletonLine: {
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: colors.fill,
+  },
+
+  projectWorkspaceCoverTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    paddingHorizontal: 12,
+    paddingTop: 12,
   },
 
   overviewPageWrap: {

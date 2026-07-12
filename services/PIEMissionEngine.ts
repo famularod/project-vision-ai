@@ -250,7 +250,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
     purpose: 'Start the day with the clearest project-management priority.',
     objectiveTitle: 'Review what deserves attention today',
     objectiveSummary:
-      'Identify the top priority, what changed, what PIE needs from the user, and which project should be reviewed first.',
+      'Identify the top priority, what changed, what DAVE needs from the user, and which project should be reviewed first.',
     desiredOutcome:
       'The user starts with a clear, evidence-backed plan for the day.',
     expectedImpact:
@@ -266,12 +266,12 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'project-walk': {
     title: 'Project Walk',
     purpose:
-      'Guide the user through the field evidence PIE most needs to improve project reality.',
+      'Guide the user through the field evidence DAVE most needs to improve project reality.',
     objectiveTitle: 'Verify current field reality',
     objectiveSummary:
       'Confirm project, area, current work status, risks, and missing evidence while the user is in the field.',
     desiredOutcome:
-      'PIE receives current, user-verified evidence that strengthens project understanding.',
+      'DAVE receives current, user-verified evidence that strengthens project understanding.',
     expectedImpact:
       'Improves field accuracy, location confidence, photo coverage, and next-action quality.',
     defaultPriority: 'high',
@@ -323,7 +323,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'inspection-verification': {
     title: 'Inspection Verification',
     purpose:
-      'Confirm inspection status before PIE treats work as complete or communication-ready.',
+      'Confirm inspection status before DAVE treats work as complete or communication-ready.',
     objectiveTitle: 'Verify inspection status',
     objectiveSummary:
       'Identify whether inspection evidence exists, what is missing, and what the user should verify first.',
@@ -342,12 +342,12 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'reduce-project-uncertainty': {
     title: 'Reduce Project Uncertainty',
     purpose:
-      'Collect the evidence that most improves PIE trust, understanding, and confidence.',
+      'Collect the evidence that most improves DAVE trust, understanding, and confidence.',
     objectiveTitle: 'Improve project understanding',
     objectiveSummary:
-      'Focus on missing updates, photos, schedule, documents, inspections, relationships, or answers that are limiting PIE.',
+      'Focus on missing updates, photos, schedule, documents, inspections, relationships, or answers that are limiting DAVE.',
     desiredOutcome:
-      'PIE knows what evidence is missing and what the user should verify first.',
+      'DAVE knows what evidence is missing and what the user should verify first.',
     expectedImpact:
       'Raises trust and understanding before decisions or communication are prepared.',
     defaultPriority: 'medium',
@@ -437,7 +437,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'communication-preparation': {
     title: 'Communication Preparation',
     purpose:
-      'Prepare stakeholder communication after PIE checks evidence, uncertainty, and approval needs.',
+      'Prepare stakeholder communication after DAVE checks evidence, uncertainty, and approval needs.',
     objectiveTitle: 'Prepare accurate communication',
     objectiveSummary:
       'Gather project status, changes, concerns, recommended language, missing context, and approval requirements.',
@@ -461,7 +461,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
     objectiveSummary:
       'Identify missing reports, documents, photos, updates, inspection records, or decision records.',
     desiredOutcome:
-      'The user knows what documentation would most improve PIE confidence.',
+      'The user knows what documentation would most improve DAVE confidence.',
     expectedImpact:
       'Improves traceability, report readiness, and future project memory.',
     defaultPriority: 'medium',
@@ -475,19 +475,19 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   monitoring: {
     title: 'Monitoring',
     purpose:
-      'Stay quiet while PIE continues tracking evidence, risks, and changes.',
+      'Stay quiet while DAVE continues tracking evidence, risks, and changes.',
     objectiveTitle: 'Monitor project state',
     objectiveSummary:
       'Continue watching for meaningful change without creating unnecessary user work.',
     desiredOutcome:
-      'PIE remains ready without interrupting the user unnecessarily.',
+      'DAVE remains ready without interrupting the user unnecessarily.',
     expectedImpact:
       'Protects user attention while preserving current project awareness.',
     defaultPriority: 'low',
     nextMission: null,
     criteria: [
       'No urgent mission is currently supported by evidence.',
-      'PIE continues monitoring available signals.',
+      'DAVE continues monitoring available signals.',
       'User approval boundaries remain preserved.',
     ],
   },
@@ -656,7 +656,7 @@ export function buildMissionSummary(
       currentMission.missionType,
     ]).length,
     overallPurpose:
-      'Give PIE a clear purpose so recommendations, briefs, walks, reports, and questions all support the same project-management outcome.',
+      'Give DAVE a clear purpose so recommendations, briefs, walks, reports, and questions all support the same project-management outcome.',
     nextMission: currentMission.nextMission,
     activeBlockers,
     recommendedActions,
@@ -939,7 +939,7 @@ function collectMissionEvidence(context: MissionContext): PIEMissionEvidence[] {
             id: 'behavior-active-recommendation',
             title: 'Behavior Recommendation',
             detail: context.behavior.activeRecommendation.recommendation ||
-              'PIE Behavior has an active recommendation.',
+              'DAVE Behavior has an active recommendation.',
             source: 'pie-behavior',
             confidence:
               context.behavior.activeRecommendation.confidence ?? 'medium',
@@ -1160,14 +1160,14 @@ function buildMissionRecommendationsFromContext(
     recommendations.push({
       id: `mission-reflection-${reflectionQuestion.id}`,
       missionType: context.missionType,
-      title: 'Verify what PIE is least certain about',
+      title: 'Verify what DAVE is least certain about',
       recommendation: reflectionQuestion.question,
       why: reflectionQuestion.reason,
       evidence: reflectionQuestion.evidence,
       confidence: reflectionQuestion.confidence,
       priority: reflectionQuestion.priority,
       expectedImpact:
-        'Improves PIE confidence before recommendations, reports, or decisions are treated as reliable.',
+        'Improves DAVE confidence before recommendations, reports, or decisions are treated as reliable.',
       userApprovalRequired: false,
       source: 'pie-reflection',
     });
@@ -1233,7 +1233,7 @@ function buildMissionSuccessCriteria(
     description: 'User approval boundaries are preserved.',
     met: true,
     required: true,
-    evidence: ['PIE prepares mission recommendations; the user approves action.'],
+    evidence: ['DAVE prepares mission recommendations; the user approves action.'],
     confidence: 'high',
   });
 
@@ -1317,7 +1317,7 @@ function buildMissionTransitions(
     transitions.push(transition({
       from: context.missionType,
       to: 'reduce-project-uncertainty',
-      reason: 'PIE needs stronger evidence before mission confidence improves.',
+      reason: 'DAVE needs stronger evidence before mission confidence improves.',
       condition: 'trust, understanding, reflection, or graph gaps are limiting confidence',
       confidence: 'medium',
     }));
@@ -1504,9 +1504,9 @@ function missionCriterionMet(
 function defaultMissionRecommendation(type: PIEMissionType): string {
   switch (type) {
     case 'morning-brief':
-      return 'Review PIE priorities and start with the highest-confidence management action.';
+      return 'Review DAVE priorities and start with the highest-confidence management action.';
     case 'project-walk':
-      return 'Begin Project Walk and verify the field evidence PIE needs most.';
+      return 'Begin Project Walk and verify the field evidence DAVE needs most.';
     case 'executive-meeting-prep':
       return 'Review the executive brief, priority, risk, and approval-required decisions.';
     case 'customer-update-prep':

@@ -532,7 +532,7 @@ function buildDelayEvidenceOption(input: PIEDecisionSimulationInput): PIEDecisio
     action: input.executiveJudgment.waitForEvidenceReasoning.smallestEvidenceRequest || 'Delay briefly and collect the highest-value missing evidence.',
     rationale: input.executiveJudgment.waitForEvidenceReasoning.reason,
     prerequisites: evidenceRequired(input).slice(0, 3),
-    expectedOutcome: 'PIE can make a stronger recommendation with less uncertainty.',
+    expectedOutcome: 'DAVE can make a stronger recommendation with less uncertainty.',
     expectedTimeframe: 'Before the next irreversible or high-impact decision.',
     estimatedCostDirection: 'neutral',
     scheduleImpact: input.executiveJudgment.decisionTiming.timeSensitivity === 'immediate' ? 'delays' : 'neutral',
@@ -765,7 +765,7 @@ function scenarioOutcome(
   if (scenarioType === 'conflicting_stakeholder_direction') return 'Stakeholder conflict requires authority clarification before action.';
   if (scenarioType === 'recurrence_of_original_issue') return 'Recurring issue pattern increases monitoring and verification value.';
   if (scenarioType === 'visual_progress_not_matching_reported_progress') {
-    return 'Visual progress and written status disagree; PIE lowers confidence and requests targeted confirmation instead of choosing one source silently.';
+    return 'Visual progress and written status disagree; DAVE lowers confidence and requests targeted confirmation instead of choosing one source silently.';
   }
   return option.expectedOutcome || input.executiveJudgment.executiveJudgmentSummary;
 }

@@ -229,6 +229,12 @@ export type DownloadPhotoParams = {
   path: string;
 };
 
+export type CreatePhotoSignedUrlParams = {
+  bucket?: string;
+  path: string;
+  expiresIn?: number;
+};
+
 const RAW_SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_URL = RAW_SUPABASE_URL.trim();
 const SUPABASE_ANON_KEY =
@@ -652,6 +658,20 @@ export async function downloadPhoto({
   return okResult(data);
 }
 
+export async function createPhotoSignedUrl(
+  path: string,
+  expiresIn = 300,
+  bucket = PROJECT_PHOTOS_BUCKET,
+): Promise<SupabaseServiceResult<string>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<string>();
+  const { data, error } = await client.storage
+    .from(bucket)
+    .createSignedUrl(path, expiresIn);
+  if (error) return errorResult(error.message);
+  return okResult(data.signedUrl);
+}
+
 export async function createProject(
   project: CreateProjectParams,
 ): Promise<SupabaseServiceResult<CloudProject>> {
@@ -664,6 +684,7 @@ export async function createProject(
     status: project.status ?? 'Active',
     archived: project.archived ?? false,
     is_favorite: project.isFavorite ?? false,
+    ...(project.data !== undefined ? { project_data: project.data } : {}),
   };
 
   const { data, error, status } = await client
@@ -690,6 +711,7 @@ export async function updateProject(
   if (project.status !== undefined) payload.status = project.status;
   if (project.archived !== undefined) payload.archived = project.archived;
   if (project.isFavorite !== undefined) payload.is_favorite = project.isFavorite;
+  if (project.data !== undefined) payload.project_data = project.data;
 
   if (Object.keys(payload).length === 0) {
     return okResult<CloudProject>(
@@ -997,7 +1019,7 @@ export async function loadPIERealityModelCloud(
 
 export async function savePIERealityModelCloud(
   model: PIERealityModel,
-  reason = 'Reality Model synchronized from live PIE authority.',
+  reason = 'Reality Model synchronized from live DAVE authority.',
 ): Promise<SupabaseServiceResult<PIERealityModel>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIERealityModel>();

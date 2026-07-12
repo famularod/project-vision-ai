@@ -413,7 +413,7 @@ function responseForIntent(
 function morningBriefResponse(state: PIEConversationState) {
   return createResponse(state, {
     title: 'Morning Brief',
-    summary: `${state.projectName}: ${healthLabel(state.intelligence)} health, ${state.intelligence.confidence.score}% PIE confidence, next action is ${state.nextBestAction.title}.`,
+    summary: `${state.projectName}: ${healthLabel(state.intelligence)} health, ${state.intelligence.confidence.score}% DAVE confidence, next action is ${state.nextBestAction.title}.`,
     whatPIEKnows: projectStatusLine(state),
     whatChanged: changedLine(state),
     whatConcernsPIE: concernLine(state),
@@ -472,7 +472,7 @@ function riskResponse(state: PIEConversationState) {
     title: 'Current Risks',
     summary: risk
       ? `${risk.label}: ${risk.message}`
-      : 'PIE does not see an urgent risk from current local evidence.',
+      : 'DAVE does not see an urgent risk from current local evidence.',
     whatPIEKnows: projectStatusLine(state),
     whatChanged: changedLine(state),
     whatConcernsPIE: risk
@@ -492,7 +492,7 @@ function concernResponse(state: PIEConversationState) {
     title: 'Current Concerns',
     summary: concern
       ? `${concern.title}: ${concern.summary}`
-      : 'PIE does not see an urgent concern from current local evidence.',
+      : 'DAVE does not see an urgent concern from current local evidence.',
     whatPIEKnows: projectStatusLine(state),
     whatChanged: changedLine(state),
     whatConcernsPIE: concern
@@ -521,7 +521,7 @@ function communicationResponse(
     whatConcernsPIE:
       readiness.missingItems[0] ||
       decision?.summary ||
-      'PIE does not see a blocking communication concern.',
+      'DAVE does not see a blocking communication concern.',
     whatPIERecommends:
       decision?.suggestedNextAction ||
       state.reasoning.communicationInsight.summary ||
@@ -542,8 +542,8 @@ function projectWalkResponse(state: PIEConversationState) {
     title: 'Project Walk',
     summary: walkDecision
       ? walkDecision.summary
-      : 'PIE can prepare a field walk from current project memory and location context.',
-    whatPIEKnows: `PIE believes the current area is ${location.currentArea || 'not confirmed'}. GPS status: ${location.gpsStatus}. Location confidence is ${location.confidenceScore}%.`,
+      : 'DAVE can prepare a field walk from current project memory and location context.',
+    whatPIEKnows: `DAVE believes the current area is ${location.currentArea || 'not confirmed'}. GPS status: ${location.gpsStatus}. Location confidence is ${location.confidenceScore}%.`,
     whatChanged: changedLine(state),
     whatConcernsPIE: concernLine(state),
     whatPIERecommends:
@@ -552,7 +552,7 @@ function projectWalkResponse(state: PIEConversationState) {
     whatPIENeedsFromYou:
       location.confirmationPrompt ||
       state.memoryGaps[0]?.suggestedAction ||
-      'Review PIE output before saving any field update.',
+      'Review DAVE output before saving any field update.',
     suggestedNextAction:
       walkDecision?.suggestedNextAction || 'Begin Project Walk',
   });
@@ -576,7 +576,7 @@ function executiveSummaryResponse(state: PIEConversationState) {
 function customerUpdateResponse(state: PIEConversationState) {
   return createResponse(state, {
     title: 'Customer Update',
-    summary: `${state.projectName}: PIE can prepare a customer-safe update from current project evidence.`,
+    summary: `${state.projectName}: DAVE can prepare a customer-safe update from current project evidence.`,
     whatPIEKnows: customerSafeStatusLine(state),
     whatChanged: changedLine(state),
     whatConcernsPIE:
@@ -593,10 +593,10 @@ function customerUpdateResponse(state: PIEConversationState) {
 
 function generalQuestionResponse(state: PIEConversationState) {
   return createResponse(state, {
-    title: 'PIE Response',
+    title: 'DAVE Response',
     summary: state.question
-      ? `PIE reviewed the project for: ${state.question}`
-      : 'PIE reviewed the current project intelligence.',
+      ? `DAVE reviewed the project for: ${state.question}`
+      : 'DAVE reviewed the current project intelligence.',
     whatPIEKnows: projectStatusLine(state),
     whatChanged: changedLine(state),
     whatConcernsPIE: concernLine(state),
@@ -605,7 +605,7 @@ function generalQuestionResponse(state: PIEConversationState) {
     suggestedNextAction: state.nextBestAction.suggestedNextAction,
     uncertainty:
       state.question && state.intent === 'general-question'
-        ? ['PIE can only answer from current local project evidence in this version.']
+        ? ['DAVE can only answer from current local project evidence in this version.']
         : undefined,
   });
 }
@@ -696,7 +696,7 @@ function changedLine(state: PIEConversationState) {
     return `Latest activity was ${formatShortDate(state.projectStory.latestActivityAt)}.`;
   }
 
-  return 'PIE does not have enough timeline history to compare change over time yet.';
+  return 'DAVE does not have enough timeline history to compare change over time yet.';
 }
 
 function concernLine(state: PIEConversationState) {
@@ -706,7 +706,7 @@ function concernLine(state: PIEConversationState) {
   if (concern) return `${concern.title}: ${concern.summary}`;
   if (risk) return `${risk.label}: ${risk.message}`;
 
-  return 'PIE does not see an urgent concern from current local evidence.';
+  return 'DAVE does not see an urgent concern from current local evidence.';
 }
 
 function decisionConcernLine(state: PIEConversationState) {
@@ -721,7 +721,7 @@ function decisionLine(state: PIEConversationState) {
   const action = state.nextBestAction;
   const approval = action.userApprovalRequired
     ? 'User approval is required.'
-    : 'User approval is not required for PIE to suggest this.';
+    : 'User approval is not required for DAVE to suggest this.';
 
   return `${action.title}: ${action.summary} ${approval}`;
 }
@@ -745,7 +745,7 @@ function approvalNeedLine(state: PIEConversationState) {
   const approval = state.approvalRequiredDecisions[0];
 
   if (approval) {
-    return `Review and approve: ${approval.title}. PIE will not complete this automatically.`;
+    return `Review and approve: ${approval.title}. DAVE will not complete this automatically.`;
   }
 
   return 'Continue monitoring or capture current field progress if conditions changed.';
@@ -769,7 +769,7 @@ function evidenceLines(state: PIEConversationState) {
 function uncertaintyLines(state: PIEConversationState) {
   return compactList([
     state.decisionQueue.confidence === 'low'
-      ? 'PIE confidence is low because project context is incomplete.'
+      ? 'DAVE confidence is low because project context is incomplete.'
       : null,
     state.memoryGaps[0]
       ? `${state.memoryGaps[0].title}: ${state.memoryGaps[0].impact}`
@@ -810,7 +810,7 @@ function conversationQuestions(
     ? [{
         id: 'confirm-location',
         question: state.intelligence.locationIntelligence.confirmationPrompt,
-        reason: 'PIE location confidence is not high enough to assume the area.',
+        reason: 'DAVE location confidence is not high enough to assume the area.',
         priority: 'medium' as const,
         confidence: state.intelligence.locationIntelligence.confidence,
         source: 'location' as const,

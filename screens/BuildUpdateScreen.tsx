@@ -174,8 +174,8 @@ export function AddPhotosScreen({
             contacts={contacts}
             referenceDocuments={referenceDocuments}
             syncMetadata={syncMetadata}
-            title="PIE Walk Prep"
-            subtitle="PIE believes this is the project and area for your field walk."
+            title="DAVE Walk Prep"
+            subtitle="DAVE believes this is the project and area for your field walk."
             compact
           />
 
@@ -405,7 +405,7 @@ function PIEProjectUpdateCard({
   return (
     <View style={screenStyles.modePanel}>
       <Text style={screenStyles.modeTitle}>
-        Generate PIE Project Update
+        Generate DAVE Project Update
       </Text>
 
       <Text style={screenStyles.modeHelp}>
@@ -539,7 +539,7 @@ function UpdateModeCard({
 
       <Text style={screenStyles.modeHelp}>
         {isCombined
-          ? 'PIE will compile selected projects and evidence into one reviewable update. Nothing is sent automatically.'
+          ? 'DAVE will compile selected projects and evidence into one reviewable update. Nothing is sent automatically.'
           : 'Prepare a focused update for the current project.'}
       </Text>
 

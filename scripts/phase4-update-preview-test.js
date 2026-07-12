@@ -10,7 +10,7 @@ const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8')
 
 [
   'subtitle="Update Preview"',
-  'PIE Summary',
+  'DAVE Summary',
   'phase4SafetyFinding',
   'Safety concern detected',
   'View Details',

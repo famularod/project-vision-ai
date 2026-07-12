@@ -669,7 +669,7 @@ function buildFacts({
     factItem({
       id: 'issue-counts',
       projectName,
-      statement: `${intelligence.metrics.openIssueCount} open issue${intelligence.metrics.openIssueCount === 1 ? '' : 's'} and ${intelligence.metrics.safetyConcernCount} safety concern${intelligence.metrics.safetyConcernCount === 1 ? '' : 's'} are visible to PIE.`,
+      statement: `${intelligence.metrics.openIssueCount} open issue${intelligence.metrics.openIssueCount === 1 ? '' : 's'} and ${intelligence.metrics.safetyConcernCount} safety concern${intelligence.metrics.safetyConcernCount === 1 ? '' : 's'} are visible to DAVE.`,
       evidenceIds: evidenceIdsBySource(evidence, ['photo-action', 'photo-category', 'project-event']),
       confidence:
         intelligence.metrics.openIssueCount > 0 ||
@@ -808,7 +808,7 @@ function buildRelationships({
         id: 'communication-context-relationship',
         projectName,
         title: 'Missing context affects communication readiness',
-        summary: 'PIE is connecting missing notes, photos, recipients, documents, or sync freshness to stakeholder communication quality.',
+        summary: 'DAVE is connecting missing notes, photos, recipients, documents, or sync freshness to stakeholder communication quality.',
         factIds: factIdsById(facts, ['communication-readiness', 'document-context', 'confidence-level']),
         evidenceIds: evidenceIdsBySource(evidence, ['project-intelligence', 'document-metadata', 'confidence']),
         confidence: intelligence.communicationReadiness.confidence,
@@ -871,7 +871,7 @@ function buildConcerns({
         projectName,
         title: 'Project context is limited',
         summary: intelligence.confidence.message,
-        impact: 'PIE may be missing project reality needed for confident decisions.',
+        impact: 'DAVE may be missing project reality needed for confident decisions.',
         evidenceIds: evidenceIdsBySource(evidence, ['confidence']),
         confidence: 'high',
         priority: 'medium',
@@ -954,7 +954,7 @@ function buildQuestions({
         id: 'next-verification-question',
         projectName,
         question: 'Is there anything new in the field that has not been captured yet?',
-        reason: 'PIE does not see urgent risks, so the useful next question is whether the record is current.',
+        reason: 'DAVE does not see urgent risks, so the useful next question is whether the record is current.',
         evidenceIds: evidenceIdsBySource(evidence, ['project-intelligence', 'project-event']),
         confidence: 'medium',
         priority: 'low',
@@ -1047,10 +1047,10 @@ function buildCommunicationInsight({
     readiness: intelligence.communicationReadiness.level,
     summary:
       intelligence.communicationReadiness.level === 'ready'
-        ? 'PIE sees enough project context to support a stakeholder-ready update.'
+        ? 'DAVE sees enough project context to support a stakeholder-ready update.'
         : intelligence.communicationReadiness.level === 'needs-context'
-          ? 'PIE can support a draft, but the communication should be reviewed for missing context.'
-          : 'PIE needs more project context before this is ready for stakeholder communication.',
+          ? 'DAVE can support a draft, but the communication should be reviewed for missing context.'
+          : 'DAVE needs more project context before this is ready for stakeholder communication.',
     talkingPoints,
     missingContext: intelligence.communicationReadiness.missingItems,
     evidenceIds: evidenceIdsBySource(evidence, ['project-intelligence', 'typed-update', 'photo-caption', 'schedule', 'document-metadata']),
@@ -1147,7 +1147,7 @@ function buildThoughtsFromParts(parts: ReasoningParts): PIEThought[] {
         title: scheduleConcern ? 'Schedule needs review' : 'Schedule context is available',
         summary:
           scheduleConcern?.summary ||
-          `PIE sees ${parts.intelligence.metrics.scheduleItemCount} schedule item${parts.intelligence.metrics.scheduleItemCount === 1 ? '' : 's'} for this project.`,
+          `DAVE sees ${parts.intelligence.metrics.scheduleItemCount} schedule item${parts.intelligence.metrics.scheduleItemCount === 1 ? '' : 's'} for this project.`,
         evidence: evidenceBySource(parts.evidence, ['schedule', 'project-event']).slice(0, 8),
         facts: factsById(parts.facts, [
           'schedule-status',
@@ -1396,7 +1396,7 @@ function questionForConcern(
   const mapping: Record<string, string> = {
     'missing-updates': 'What changed on site since the last captured update?',
     'stale-update': 'Is the latest saved update still accurate, or should a fresh update be captured?',
-    'missing-schedule': 'Which schedule or milestone should PIE use for this project?',
+    'missing-schedule': 'Which schedule or milestone should DAVE use for this project?',
     'overdue-schedule': 'What is blocking the overdue schedule work, and who owns recovery?',
     'open-safety': 'Who owns each open safety concern, and what is the closure target?',
     'open-issues': 'Which open issues still need owner, due date, or closure?',
@@ -1413,7 +1413,7 @@ function questionForConcern(
     'stale-sync': 'Should cloud sync be refreshed before relying on cloud status?',
     'open-decisions': 'What decision outcome should be recorded so this item can be closed?',
     'project-health-concern': 'What action would most improve this project status today?',
-    'low-confidence-concern': 'What missing project context would most improve PIE confidence?',
+    'low-confidence-concern': 'What missing project context would most improve DAVE confidence?',
     'communication-not-ready-concern': 'What context is needed before this can become a stakeholder update?',
   };
   const question = mapping[concern.id];
@@ -1682,7 +1682,7 @@ function impactForAction(action: ProjectRecommendation['action']) {
     return 'Improves schedule confidence and next-step planning.';
   }
   if (action === 'capture-update') {
-    return 'Refreshes project reality so PIE can reason from current field information.';
+    return 'Refreshes project reality so DAVE can reason from current field information.';
   }
   if (action === 'generate-report') {
     return 'Turns current project intelligence into stakeholder communication.';
