@@ -23,6 +23,10 @@
     "android": {
       "package": "com.davidfamularo.projectphotoupdate",
       "versionCode": 22,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundColor": "#19466F"
+      },
       "permissions": [
         "READ_CONTACTS",
         "ACCESS_COARSE_LOCATION",
