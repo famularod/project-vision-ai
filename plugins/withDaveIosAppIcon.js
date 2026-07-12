@@ -1,9 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const { withDangerousMod, withXcodeProject } = require('@expo/config-plugins');
 
 const APP_ICON_NAME = 'DaveAppIcon';
-const APP_ICON_FILENAME = 'Dave_Project_App_Icon.png';
+const APP_ICON_FILENAME = 'icon.png';
+const execFileAsync = promisify(execFile);
 
 const contents = {
   images: [
@@ -37,10 +40,14 @@ module.exports = function withDaveIosAppIcon(config) {
       );
 
       await fs.promises.mkdir(targetDirectory, { recursive: true });
-      await fs.promises.copyFile(
+      await execFileAsync('sips', [
+        '-z',
+        '1024',
+        '1024',
         sourcePath,
+        '--out',
         path.join(targetDirectory, APP_ICON_FILENAME),
-      );
+      ]);
       await fs.promises.writeFile(
         path.join(targetDirectory, 'Contents.json'),
         `${JSON.stringify(contents, null, 2)}\n`,
