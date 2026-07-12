@@ -119,9 +119,22 @@ for (const marker of [
   'hydrateProjectCoverPhotoCache',
   'launchCameraAsync',
   'launchImageLibraryAsync',
+  "text: 'Take Photo'",
+  "text: 'Select from Library'",
 ]) {
   assert(app.includes(marker), `Project cover flow is missing ${marker}.`);
 }
+assert(app.includes('onSetProjectCover={openProjectCoverMenu}'),
+  'Overview must wire its visible project-cover entry point to the existing cover actions.');
+assert((app.match(/<ProjectCoverEntryButton/g) || []).length >= 2,
+  'Both Overview project-card variants must keep Set Project Cover visible.');
+assert(app.includes('accessibilityLabel={`Set Project Cover for ${projectName}`}'),
+  'The Overview cover entry point must remain discoverable to VoiceOver users.');
+const workspaceStart = app.indexOf('function ProjectWorkspaceScreen');
+const workspaceSource = app.slice(workspaceStart);
+assert(workspaceSource.indexOf('>Set Project Cover<') >= 0 &&
+  workspaceSource.indexOf('>Set Project Cover<') < workspaceSource.indexOf(">Today's Priority<"),
+  'Project Workspace must show Set Project Cover near the top, before intelligence cards.');
 assert(app.includes('resolveProjectDisplayPhotoUri('),
   'Project Workspace and Overview must share explicit manual/automatic display behavior.');
 assert(app.includes("coverPhotoMode: 'manual'") && app.includes("coverPhotoMode: 'automatic'"),

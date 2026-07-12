@@ -7031,6 +7031,40 @@ useEffect(() => {
     );
   }
 
+  function openProjectCoverMenu(projectName: string) {
+    const coverPhoto = coverPhotoForProject(projectRecords, projectName);
+    Alert.alert(
+      'Set Project Cover',
+      projectName,
+      [
+        {
+          text: 'Take Photo',
+          onPress: () => {
+            void takeNewProjectCoverPhoto(projectName);
+          },
+        },
+        {
+          text: 'Select from Library',
+          onPress: () => {
+            void chooseProjectCoverFromLibrary(projectName);
+          },
+        },
+        {
+          text: 'Use Best Project Photo',
+          onPress: () => useBestProjectPhoto(projectName),
+        },
+        ...(coverPhoto
+          ? [{
+              text: 'Remove Cover Photo',
+              style: 'destructive' as const,
+              onPress: () => removeProjectCoverPhoto(projectName),
+            }]
+          : []),
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
+  }
+
   function removeProjectCoverPhoto(projectName: string) {
     const current = coverPhotoForProject(projectRecords, projectName);
     Alert.alert(
@@ -9203,6 +9237,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               gpsCandidateProjectNames={gpsCandidateProjectNames}
               projectDetectionStatus={projectDetectionStatus}
               projectRecords={projectRecords}
+              onSetProjectCover={openProjectCoverMenu}
               onResumeDraft={resumeDraft}
               onDiscardDraft={discardDraft}
               onNewUpdate={createNewUpdate}
@@ -9821,6 +9856,7 @@ function HomeScreen({
   gpsCandidateProjectNames,
   projectDetectionStatus,
   projectRecords,
+  onSetProjectCover,
   onResumeDraft,
   onDiscardDraft,
   onNewUpdate,
@@ -9843,6 +9879,7 @@ function HomeScreen({
   gpsCandidateProjectNames: string[];
   projectDetectionStatus: OverviewDetectionStatus;
   projectRecords: ProjectRecord[];
+  onSetProjectCover: (projectName: string) => void;
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
   onNewUpdate: (projectName?: string) => void;
@@ -10092,6 +10129,10 @@ function HomeScreen({
                       </View>
                     </View>
                   ) : null}
+                  <ProjectCoverEntryButton
+                    projectName={row.project}
+                    onPress={() => onSetProjectCover(row.project)}
+                  />
                 </View>
               );
             })}
@@ -10110,26 +10151,30 @@ function HomeScreen({
 
           <View style={styles.overviewGroupedList}>
             {caughtUpRows.map(row => (
-              <TouchableOpacity
+              <View
                 key={row.project}
-                style={[
-                  styles.overviewGroupedCell,
-                  styles.overviewGroupedRow,
-                  { backgroundColor: colors.successSoft },
-                ]}
-                onPress={() => onOpenProject(row.project)}
+                style={[styles.overviewGroupedCell, { backgroundColor: colors.successSoft }]}
               >
-                <View style={styles.overviewRowIconBubble}>
-                  <Ionicons name="checkmark-circle-outline" size={18} color={colors.success} />
-                </View>
-                <View style={styles.rowMain}>
-                  <Text style={styles.projectName}>{row.project}</Text>
-                  <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
-                    {row.subtitle}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.overviewGroupedRow}
+                  onPress={() => onOpenProject(row.project)}
+                >
+                  <View style={styles.overviewRowIconBubble}>
+                    <Ionicons name="checkmark-circle-outline" size={18} color={colors.success} />
+                  </View>
+                  <View style={styles.rowMain}>
+                    <Text style={styles.projectName}>{row.project}</Text>
+                    <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
+                      {row.subtitle}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                </TouchableOpacity>
+                <ProjectCoverEntryButton
+                  projectName={row.project}
+                  onPress={() => onSetProjectCover(row.project)}
+                />
+              </View>
             ))}
           </View>
         </>
@@ -10142,6 +10187,27 @@ function HomeScreen({
       />
       </ScrollView>
     </View>
+  );
+}
+
+function ProjectCoverEntryButton({
+  projectName,
+  onPress,
+}: {
+  projectName: string;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={styles.overviewProjectCoverEntry}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Set Project Cover for ${projectName}`}
+      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+    >
+      <Ionicons name="image-outline" size={16} color={colors.primary} />
+      <Text style={styles.overviewProjectCoverEntryText}>Set Project Cover</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -19006,6 +19072,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: colors.warning,
+  },
+
+  overviewProjectCoverEntry: {
+    minHeight: 44,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.08)',
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    backgroundColor: 'rgba(255,255,255,0.55)',
+  },
+
+  overviewProjectCoverEntryText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '700',
   },
 
   projectSelectorBackdrop: {
