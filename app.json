@@ -5,12 +5,12 @@
     "version": "1.0.22",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/Dave_Project_App_Icon.png",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.davidfamularo.projectphotoupdate",
       "buildNumber": "22",
-      "icon": "./assets/icon.png",
+      "icon": "./assets/Dave_Project_App_Icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Allow Project Photo Update Tool to capture project photos as field evidence.",
         "NSPhotoLibraryUsageDescription": "Allow Project Photo Update Tool to select project photos and supporting evidence from your photo library.",
@@ -36,6 +36,7 @@
       ]
     },
     "plugins": [
+      "./plugins/withDaveIosAppIcon",
       [
         "expo-location",
         {
