@@ -92,21 +92,21 @@ assert(
   'Detected GPS project must become the active Overview project without depending on removed duplicate New Update copy.',
 );
 assert(
-  app.includes("const activeLabel = selectedProjectName || 'All Projects'") &&
-    app.includes('No nearby project matched; showing all projects') &&
-    app.includes('Location unavailable; showing all projects') &&
-    app.includes('Multiple nearby projects found; choose one to continue') &&
+  app.includes('label="All Projects"') &&
+    app.includes('detail="Show the full portfolio overview."') &&
+    app.includes('selected={selectedProjectName === null}') &&
     app.includes('GPS found multiple nearby projects. Choose one of these likely matches.'),
-  'GPS fallback must keep All Projects and explain unmatched or ambiguous detection.',
+  'GPS fallback must retain an explicit All Projects choice and explain ambiguous detection.',
 );
 assert(
   app.includes('likelyProjectCandidatesFromGps') &&
     app.includes('topCandidates') &&
     app.includes('slice(0, 3)') &&
     app.includes('GPS_CLEAR_WINNER_DISTANCE_FEET') &&
-    app.includes("projectDetectionStatus === 'multiple'") &&
-    app.includes('projectPickerCandidates'),
-  'Multiple similar GPS matches must use a narrowed top-2-to-3 picker instead of the full list.',
+    app.includes('gpsCandidates.ambiguous') &&
+    app.includes('setGpsCandidateProjectNames(') &&
+    app.includes('gpsCandidates.topCandidates.map(candidate => candidate.projectName)'),
+  'Multiple similar GPS matches must preserve only the narrowed top-2-to-3 candidate set.',
 );
 assert(
   app.includes('PIE_GPS_MATCH_DIAGNOSTIC no_saved_project_area_coordinates') &&
@@ -118,7 +118,7 @@ assert(
 assert(
   app.includes('overviewProjectManuallySelected') &&
     app.includes('setOverviewProjectManuallySelected(true)') &&
-    app.includes('Nearby project found; manual selection preserved'),
+    app.includes("setProjectDetectionStatus(projectName ? 'not_applied' : 'unmatched')"),
   'Late GPS matches must not override a manual Overview project selection.',
 );
 
@@ -132,7 +132,8 @@ assert(
   'Project cards must not render the Overview all-project empty-state string.',
 );
 assert(
-  projectCard.includes('item.attentionCount > 0') &&
+  app.includes('if (attentionCount > 0) return \'Attention Needed\';') &&
+    projectCard.includes('projectRowStatus(item.attentionCount, item.stats.openActions)') &&
     app.includes('attentionCount: buildPhase2AttentionItems(savedUpdates, project).length'),
   'A project with open Needs Attention items must show Attention Needed instead of On Track.',
 );
@@ -257,28 +258,28 @@ assert(
   'Safety and higher-priority attention items must sort first.',
 );
 
-const homeScreen = sliceBetween(app, 'function HomeScreen', 'function ProjectSelectorSheet');
+const savedUpdatesScreen = sliceBetween(app, 'function SavedUpdatesScreen', 'function UpdateFilterSheet');
 assert(
-  homeScreen.includes('function retryAttentionItem') &&
-    homeScreen.includes("item.actionTarget === 'retry_photo_analysis'") &&
-    homeScreen.includes('onRetryPhotoAnalysis(update, photo)'),
+  savedUpdatesScreen.includes('function retryUpdate(update: ProjectUpdate)') &&
+    savedUpdatesScreen.includes('if (targetPhoto) onRetryPhotoAnalysis(update, targetPhoto)') &&
+    savedUpdatesScreen.includes('updateCanInlineRetry(update)'),
   'Analysis unavailable Needs Attention retry must rerun photo analysis for the source update/photo.',
 );
 assert(
-  homeScreen.includes("item.actionTarget === 'retry_send'") &&
-    homeScreen.includes('onRetryQueuedUpdate(update)'),
+  savedUpdatesScreen.includes("lifecycle === 'queued' || lifecycle === 'failed'") &&
+    savedUpdatesScreen.includes('onRetryQueuedUpdate(update)'),
   'Queued or failed send Needs Attention retry must route to the source queued update.',
 );
 assert(
-  homeScreen.includes('onOpenUpdate(update)') &&
-    homeScreen.includes('onOpenProject(item.projectName)'),
-  'Needs Attention cards must route to the relevant update when possible and fall back to project workspace.',
+  savedUpdatesScreen.includes('onOpen={() => onOpen(update)}'),
+  'Needs Attention cards must route to their source update.',
 );
 
-const attentionCard = sliceBetween(app, 'function Phase2AttentionCard', 'function Phase2ActivityRow');
+const updateHistoryCard = sliceBetween(app, 'function UpdateHistoryCard', 'function UpdateOverflowMenu');
 assert(
-  attentionCard.includes('onRetry?: () => void') &&
-    attentionCard.includes('onRetry || onPress'),
+  updateHistoryCard.includes('onRetry?: () => void') &&
+    updateHistoryCard.includes('onPress={onRetry}') &&
+    updateHistoryCard.includes('onPress={onOpen}'),
   'Retryable Needs Attention cards must expose an inline Retry action distinct from the card tap target.',
 );
 

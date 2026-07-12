@@ -106,11 +106,15 @@ for (const forbidden of ['diagnostics', 'signedUrl', 'storagePath', 'rawResponse
 }
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-const dailyBriefIndex = app.indexOf('>DAVE Daily Brief<');
-const askIndex = app.indexOf('<DAVEAskExperience');
-const evidenceQualityIndex = app.indexOf('>Project Health<');
-const timelineIndex = app.indexOf('>Project Timeline<');
-const pieBriefIndex = app.indexOf('>DAVE Project Brief<');
+const workspace = app.slice(
+  app.indexOf('function ProjectWorkspaceScreen'),
+  app.indexOf('function SavedUpdatesScreen'),
+);
+const dailyBriefIndex = workspace.indexOf('>DAVE Daily Brief<');
+const askIndex = workspace.indexOf('<DAVEAskExperience');
+const evidenceQualityIndex = workspace.indexOf('>Project Health<');
+const timelineIndex = workspace.indexOf('>Project Timeline<');
+const pieBriefIndex = workspace.indexOf('>DAVE Project Brief<');
 assert(dailyBriefIndex >= 0 && askIndex > dailyBriefIndex && evidenceQualityIndex > askIndex &&
   timelineIndex > evidenceQualityIndex && pieBriefIndex > timelineIndex,
   'Evidence Quality must render as Project Health after Ask DAVE and before the Project Timeline.');

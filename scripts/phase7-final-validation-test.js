@@ -45,13 +45,12 @@ assert(
 );
 
 [
-  'Nothing needs attention right now.',
-  'Your recent updates will show up here.',
   'No projects yet.',
-  'Nothing needs review — you’re all caught up.',
+  "✅ You're all caught up.",
+  'No updates require your attention today.',
+  "Ready to capture today&apos;s work?",
   'No drafts.',
-  'No sent updates yet.',
-  'No updates yet.',
+  'No update history yet.',
   'No documents yet — upload your first document.',
 ].forEach(marker => {
   assert(app.includes(marker), `Phase 7 empty state should include ${marker}`);

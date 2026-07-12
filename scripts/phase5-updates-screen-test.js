@@ -14,16 +14,21 @@ const updatesScreen = app.slice(
 
 [
   'title="Updates"',
-  "useState<'Needs Review' | 'Drafts' | 'Sent' | 'All'>('Needs Review')",
+  "useState<'Needs Attention' | 'Drafts' | 'History'>",
+  "(['Needs Attention', 'Drafts', 'History'] as const)",
   'UpdateFilterSheet',
-  'Needs Review',
+  'Needs Attention',
   'Drafts',
-  'Sent',
-  'All',
-  'Nothing needs review — you’re all caught up.',
+  'History',
+  "✅ You're all caught up.",
+  'No updates require your attention today.',
+  "Ready to capture today&apos;s work?",
   'No drafts.',
-  'No sent updates yet.',
-  'No updates yet.',
+  'No update history yet.',
+  "type UpdateTimelineGroup = 'Today' | 'Yesterday' | 'Earlier'",
+  'updateTimelineGroup(update.date)',
+  'relativeUpdateTimestamp(update.date)',
+  'updatePhotoStatusPill',
   'lifecycleStatusForUpdate',
   'updatePIEAnalysisStatus',
   "Queued — will send when you're back online",
@@ -56,8 +61,18 @@ assert(
   'Updates cards should not have always-visible red trash icons.',
 );
 assert(
-  app.includes("if (activeTab === 'Needs Review') return updateNeedsReview(update);"),
-  'Needs Review tab should derive from shared lifecycle and PIE status.',
+  app.includes("if (activeTab === 'Needs Attention') return updateNeedsReview(update);"),
+  'Needs Attention tab should derive from shared lifecycle and DAVE status.',
+);
+assert(
+  !updatesScreen.includes('Needs Your Attention') &&
+    !updatesScreen.includes("(['Needs Review', 'Drafts', 'Sent', 'All'] as const)"),
+  'Updates should rely on the active three-tab queue without a redundant section title.',
+);
+assert(
+  updatesScreen.includes('group !== previousGroup') &&
+    updatesScreen.includes('styles.updateGroupHeader'),
+  'Updates should render timeline headers only at group boundaries.',
 );
 assert(
   app.includes("lifecycle === 'sent'") && app.includes('archiveSavedUpdate'),

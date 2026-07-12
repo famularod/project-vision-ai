@@ -880,6 +880,42 @@ function formatDisplayDate(date: string) {
   });
 }
 
+type UpdateTimelineGroup = 'Today' | 'Yesterday' | 'Earlier';
+
+function updateDateValue(value: string) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function updateTimelineGroup(value: string, now = new Date()): UpdateTimelineGroup {
+  const date = updateDateValue(value);
+  if (!date) return 'Earlier';
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfUpdate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayDifference = Math.round(
+    (startOfToday.getTime() - startOfUpdate.getTime()) / (24 * 60 * 60 * 1000),
+  );
+
+  if (dayDifference <= 0) return 'Today';
+  if (dayDifference === 1) return 'Yesterday';
+  return 'Earlier';
+}
+
+function relativeUpdateTimestamp(value: string, now = new Date()) {
+  const date = updateDateValue(value);
+  if (!date) return formatDisplayDate(value);
+
+  const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 60000));
+  if (elapsedMinutes < 1) return 'Just now';
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  if (elapsedHours < 48) return 'Yesterday';
+  return formatDisplayDate(value);
+}
+
 function formatSavedTime(value: string | null) {
   if (!value) return 'Recently';
 
@@ -9861,12 +9897,11 @@ function HomeScreen({
   );
   const attentionRows = overviewRows.filter(row => row.needsAttention);
   const caughtUpRows = overviewRows.filter(row => !row.needsAttention);
+  const blockedRows = attentionRows.filter(row => row.severity === 'high');
+  const atRiskRows = attentionRows.filter(row => row.severity !== 'high');
+  const topPriority = attentionRows[0] || null;
 
   const projectStatsByName = buildProjectStatsByName(savedUpdates);
-  const openItemsCount = scopedProjects.reduce(
-    (sum, project) => sum + projectStatsForName(projectStatsByName, project).openActions,
-    0,
-  );
   const dueTodayCount = overviewRows.filter(row => row.dueTodayLabel !== null).length;
   const sentThisWeekCount = savedUpdates.filter(update => {
     if (lifecycleStatusForUpdate(update) !== 'sent') return false;
@@ -9876,28 +9911,30 @@ function HomeScreen({
 
     return daysSinceSent !== null && daysSinceSent <= 0 && daysSinceSent >= -7;
   }).length;
-  const daveObservationCount = overviewRows.reduce(
-    (sum, row) => sum + row.observationCount,
-    0,
-  );
-  const selectedCoverPhoto = coverPhotoForProject(projectRecords, selectedProjectName);
-  const selectedProjectRecord = projectRecords.find(project =>
-    project.name.toLowerCase() === selectedProjectName?.toLowerCase(),
-  );
-  const heroPhotoUri = resolveProjectDisplayPhotoUri(
-    selectedProjectRecord?.coverPhotoMode,
-    selectedCoverPhoto,
-    mostRecentHeroPhotoUri(scopedProjects, savedUpdates),
-  );
-  const [daveObservationsModalVisible, setDaveObservationsModalVisible] =
-    useState(false);
   const allDaveObservations = scopedProjects
     .flatMap(project =>
       buildPIEProjectBriefModel(project, savedUpdates).observations.map(
         observation => ({ ...observation, projectName: project }),
       ),
     )
+    .filter(observation => updateTimelineGroup(observation.update.date) === 'Today')
     .sort((a, b) => updateSortTime(b.update) - updateSortTime(a.update));
+  const recentActivity = [...savedUpdates]
+    .filter(update => scopedProjects.some(project => projectMatchesScope(update, project)))
+    .sort((left, right) => updateSortTime(right) - updateSortTime(left))
+    .slice(0, 5);
+
+  function overviewPhotoForProject(projectName: string) {
+    const projectRecord = projectRecords.find(
+      project => project.name.toLowerCase() === projectName.toLowerCase(),
+    );
+
+    return resolveProjectDisplayPhotoUri(
+      projectRecord?.coverPhotoMode,
+      coverPhotoForProject(projectRecords, projectName),
+      projectThumbnailUri(projectName, savedUpdates),
+    );
+  }
 
   return (
     <View style={styles.overviewPageWrap}>
@@ -9913,8 +9950,20 @@ function HomeScreen({
         keyboardShouldPersistTaps="handled"
       >
       <View style={styles.overviewGreetingHeader}>
-        <Text style={styles.overviewGreetingText}>{timeOfDayGreeting(displayName)}</Text>
-        <Text style={styles.overviewGreetingDate}>{todayLongDateLabel()}</Text>
+        <View style={styles.overviewGreetingCopy}>
+          <Text style={styles.overviewGreetingText}>{timeOfDayGreeting(displayName)}</Text>
+          <Text style={styles.overviewGreetingDate}>{todayLongDateLabel()}</Text>
+        </View>
+        <TouchableOpacity
+          style={styles.overviewAskDaveButton}
+          onPress={() => Alert.alert('Ask DAVE', 'Ask DAVE is coming soon.')}
+          accessibilityRole="button"
+          accessibilityLabel="Ask DAVE"
+          accessibilityHint="Shows an Ask DAVE coming soon message"
+        >
+          <Ionicons name="sparkles-outline" size={17} color={colors.primary} />
+          <Text style={styles.overviewAskDaveText}>Ask DAVE</Text>
+        </TouchableOpacity>
       </View>
 
       {unfinishedDraft ? (
@@ -9986,160 +10035,182 @@ function HomeScreen({
         </View>
       ) : null}
 
-      <OverviewHeroCard
-        openItemsCount={openItemsCount}
-        dueTodayCount={dueTodayCount}
-        heroPhotoUri={heroPhotoUri}
-      />
-
-      <View style={styles.overviewBentoRow}>
-        <OverviewBentoCard
-          icon="checkmark-circle-outline"
-          iconColor={colors.success}
-          backgroundColor={colors.successSoft}
-          value={caughtUpRows.length}
-          label="Projects on track"
-          onPress={onOpenProjectsOnTrack}
-        />
-        <OverviewBentoCard
-          icon="time-outline"
-          iconColor={colors.warning}
-          backgroundColor={colors.warningSoft}
-          value={dueTodayCount}
-          label="Due today"
-          onPress={onOpenDueToday}
-        />
-        <OverviewBentoCard
-          icon="send-outline"
-          iconColor={colors.primary}
-          backgroundColor={colors.primarySoft}
-          value={sentThisWeekCount}
-          label="Sent this week"
-          onPress={onOpenSentThisWeek}
-        />
-        <OverviewBentoCard
-          icon="bulb-outline"
-          iconColor={colors.insight}
-          backgroundColor={colors.insightSoft}
-          value={daveObservationCount}
-          label="DAVE observations"
-          onPress={() => setDaveObservationsModalVisible(true)}
-        />
+      <View style={styles.overviewHealthCard}>
+        <View style={styles.overviewDashboardSectionHeader}>
+          <View>
+            <Text style={styles.overviewHealthEyebrow}>PORTFOLIO</Text>
+            <Text style={styles.overviewHealthTitle}>Project Health</Text>
+          </View>
+          <Ionicons name="pulse-outline" size={24} color="rgba(255,255,255,0.82)" />
+        </View>
+        <View style={styles.overviewHealthMetrics}>
+          {[
+            { label: 'Active Projects', value: scopedProjects.length },
+            { label: 'Healthy', value: caughtUpRows.length },
+            { label: 'At Risk', value: atRiskRows.length },
+            { label: 'Blocked', value: blockedRows.length },
+          ].map(metric => (
+            <View key={metric.label} style={styles.overviewHealthMetric}>
+              <Text style={styles.overviewHealthMetricValue}>{metric.value}</Text>
+              <Text style={styles.overviewHealthMetricLabel}>{metric.label}</Text>
+            </View>
+          ))}
+        </View>
       </View>
 
-      <DaveObservationsModal
-        visible={daveObservationsModalVisible}
-        observations={allDaveObservations}
-        onClose={() => setDaveObservationsModalVisible(false)}
-        onOpenProject={onOpenProject}
-      />
+      <View style={styles.overviewDashboardHeadingRow}>
+        <Text style={styles.overviewDashboardHeading}>Today's Priority</Text>
+      </View>
+      <View style={styles.overviewPriorityCard}>
+        {topPriority && overviewPhotoForProject(topPriority.project) ? (
+          <Image
+            source={{ uri: overviewPhotoForProject(topPriority.project)! }}
+            style={styles.overviewPriorityImage}
+          />
+        ) : (
+          <View style={styles.overviewPriorityImagePlaceholder}>
+            <Ionicons name="flag-outline" size={34} color={colors.primary} />
+          </View>
+        )}
+        <View style={styles.overviewPriorityContent}>
+          <View style={styles.overviewPriorityBadge}>
+            <Ionicons name="sparkles-outline" size={14} color={colors.warning} />
+            <Text style={styles.overviewPriorityBadgeText}>PRIORITY</Text>
+          </View>
+          <Text style={styles.overviewPriorityProject}>
+            {topPriority?.project || 'No immediate priority'}
+          </Text>
+          <Text style={styles.overviewPriorityRecommendation}>
+            {topPriority?.dueTodayLabel || topPriority?.subtitle || 'Your projects have no current attention items.'}
+          </Text>
+          <Text style={styles.overviewPrioritySupport}>
+            {topPriority
+              ? 'Based on the latest project records requiring review.'
+              : 'DAVE will surface the next evidence-backed item here.'}
+          </Text>
+          <TouchableOpacity
+            style={styles.overviewPriorityButton}
+            onPress={() => topPriority ? onOpenProject(topPriority.project) : onViewProjects()}
+          >
+            <Text style={styles.overviewPriorityButtonText}>
+              {topPriority ? 'Review priority' : 'View projects'}
+            </Text>
+            <Ionicons name="arrow-forward" size={17} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+      </View>
 
-      {attentionRows.length === 0 && caughtUpRows.length === 0 ? (
+      <View style={styles.overviewDashboardHeadingRow}>
+        <Text style={styles.overviewDashboardHeading}>DAVE Daily Brief</Text>
+        <TouchableOpacity onPress={onOpenSentThisWeek}>
+          <Text style={styles.overviewDashboardLink}>See all updates</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.overviewDailyBriefCard}>
+        {allDaveObservations.length > 0 ? (
+          allDaveObservations.slice(0, 3).map(observation => (
+            <TouchableOpacity
+              key={observation.id}
+              style={styles.overviewBriefRow}
+              onPress={() => onOpenProject(observation.projectName)}
+            >
+              <View style={styles.overviewBriefIcon}>
+                <Ionicons name="sparkles-outline" size={16} color={colors.primary} />
+              </View>
+              <View style={styles.rowMain}>
+                <Text style={styles.overviewBriefProject}>{observation.projectName}</Text>
+                <Text style={styles.overviewBriefText} numberOfLines={2}>{observation.text}</Text>
+              </View>
+            </TouchableOpacity>
+          ))
+        ) : (
+          <Text style={styles.overviewBriefEmpty}>No meaningful project changes recorded today.</Text>
+        )}
+      </View>
+
+      {overviewRows.length === 0 ? (
         <EmptyState
           title="No projects yet."
           text="Add a project to start tracking field updates and schedule attention."
         />
       ) : null}
 
-      {attentionRows.length > 0 ? (
+      {overviewRows.length > 0 ? (
         <>
-          <View style={styles.overviewSectionHeaderRow}>
-            <Ionicons name="warning-outline" size={13} color={colors.danger} />
-            <Text style={[styles.overviewSectionLabel, { color: colors.danger }]}>
-              Needs your attention
-            </Text>
+          <View style={styles.overviewDashboardHeadingRow}>
+            <Text style={styles.overviewDashboardHeading}>Active Projects</Text>
+            <TouchableOpacity onPress={onViewProjects}>
+              <Text style={styles.overviewDashboardLink}>View projects</Text>
+            </TouchableOpacity>
           </View>
+          {overviewRows.map(row => {
+            const health = row.severity === 'high' ? 'Blocked' : row.needsAttention ? 'At Risk' : 'Healthy';
+            const healthColor = health === 'Blocked' ? colors.danger : health === 'At Risk' ? colors.warning : colors.success;
+            const photo = overviewPhotoForProject(row.project);
 
-          <View style={styles.overviewGroupedList}>
-            {attentionRows.map(row => {
-              const tint = row.severity === 'high' ? colors.dangerSoft : colors.warningSoft;
-              const tintText = row.severity === 'high' ? colors.danger : colors.warning;
-              const iconName = row.severity === 'high' ? 'warning-outline' : 'time-outline';
-
-              return (
-                <View
-                  key={row.project}
-                  style={[styles.overviewGroupedCell, { backgroundColor: tint }]}
-                >
-                  <TouchableOpacity
-                    style={styles.overviewGroupedRow}
-                    onPress={() => onOpenProject(row.project)}
-                  >
-                    <View style={styles.overviewRowIconBubble}>
-                      <Ionicons name={iconName} size={18} color={tintText} />
-                    </View>
-                    <View style={styles.rowMain}>
-                      <Text style={styles.projectName}>{row.project}</Text>
-                      <View style={styles.overviewRowSubtitleRow}>
-                        {row.observationCount > 0 ? (
-                          <Ionicons name="bulb-outline" size={13} color={colors.insight} />
-                        ) : null}
-                        <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
-                          {row.subtitle}
-                        </Text>
-                      </View>
-                    </View>
-                    <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-                  </TouchableOpacity>
-
-                  {row.dueTodayLabel ? (
-                    <View style={styles.overviewDueTodayPillWrap}>
-                      <View style={styles.overviewDueTodayPill}>
-                        <Ionicons name="time-outline" size={13} color={colors.warning} />
-                        <Text style={styles.overviewDueTodayText}>
-                          Due today · {row.dueTodayLabel}
-                        </Text>
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
-              );
-            })}
-          </View>
-        </>
-      ) : null}
-
-      {caughtUpRows.length > 0 ? (
-        <>
-          <View style={styles.overviewSectionHeaderRow}>
-            <Ionicons name="checkmark-circle-outline" size={13} color={colors.success} />
-            <Text style={[styles.overviewSectionLabel, { color: colors.success }]}>
-              All caught up
-            </Text>
-          </View>
-
-          <View style={styles.overviewGroupedList}>
-            {caughtUpRows.map(row => (
+            return (
               <TouchableOpacity
                 key={row.project}
-                style={[
-                  styles.overviewGroupedCell,
-                  styles.overviewGroupedRow,
-                  { backgroundColor: colors.successSoft },
-                ]}
+                style={styles.overviewProjectCard}
                 onPress={() => onOpenProject(row.project)}
               >
-                <View style={styles.overviewRowIconBubble}>
-                  <Ionicons name="checkmark-circle-outline" size={18} color={colors.success} />
-                </View>
-                <View style={styles.rowMain}>
-                  <Text style={styles.projectName}>{row.project}</Text>
-                  <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
-                    {row.subtitle}
+                {photo ? (
+                  <Image source={{ uri: photo }} style={styles.overviewProjectImage} />
+                ) : (
+                  <View style={styles.overviewProjectImagePlaceholder}>
+                    <Ionicons name="business-outline" size={28} color={colors.primary} />
+                  </View>
+                )}
+                <View style={styles.overviewProjectContent}>
+                  <View style={styles.overviewProjectTitleRow}>
+                    <Text style={styles.overviewProjectTitle} numberOfLines={1}>{row.project}</Text>
+                    <Text style={[styles.overviewProjectHealth, { color: healthColor }]}>{health}</Text>
+                  </View>
+                  <Text style={styles.overviewProjectSummary} numberOfLines={2}>{row.subtitle}</Text>
+                  <Text style={styles.overviewProjectActivity}>
+                    {projectStatsForName(projectStatsByName, row.project).lastUpdate
+                      ? `Last activity ${relativeUpdateDateLabel(projectStatsForName(projectStatsByName, row.project).lastUpdate!)}`
+                      : 'No activity recorded yet'}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                <Ionicons name="chevron-forward" size={20} color={colors.muted} />
               </TouchableOpacity>
-            ))}
-          </View>
+            );
+          })}
         </>
       ) : null}
 
-      <SecondaryButton
-        label="View Projects"
-        icon="business-outline"
-        onPress={onViewProjects}
-      />
+      <View style={styles.overviewDashboardHeadingRow}>
+        <Text style={styles.overviewDashboardHeading}>Recent Activity</Text>
+        <TouchableOpacity onPress={onOpenSentThisWeek}>
+          <Text style={styles.overviewDashboardLink}>View all activity</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.overviewActivityCard}>
+        {recentActivity.length > 0 ? recentActivity.map((update, index) => {
+          const group = updateTimelineGroup(update.date);
+          const previousGroup = index > 0 ? updateTimelineGroup(recentActivity[index - 1].date) : null;
+          return (
+            <View key={update.id}>
+              {group !== previousGroup ? <Text style={styles.overviewActivityGroup}>{group}</Text> : null}
+              <TouchableOpacity style={styles.overviewActivityRow} onPress={() => onOpenProject(update.projectName)}>
+                <View style={styles.overviewActivityIcon}>
+                  <Ionicons name={update.photos.length > 0 ? 'camera-outline' : 'document-text-outline'} size={17} color={colors.primary} />
+                </View>
+                <View style={styles.rowMain}>
+                  <Text style={styles.overviewActivityProject}>{update.projectName}</Text>
+                  <Text style={styles.overviewActivityText} numberOfLines={1}>
+                    {update.observedFindings?.[0] || update.notes.trim() || 'Project update recorded.'}
+                  </Text>
+                </View>
+                <Text style={styles.overviewActivityTime}>{relativeUpdateTimestamp(update.date)}</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        }) : (
+          <Text style={styles.overviewBriefEmpty}>Recent project activity will show up here.</Text>
+        )}
+      </View>
       </ScrollView>
     </View>
   );
@@ -15016,8 +15087,13 @@ function SavedUpdatesScreen({
   initialTab?: 'Needs Review' | 'Drafts' | 'Sent' | 'All';
   initialWithinDays?: number;
 }) {
-  const [activeTab, setActiveTab] =
-    useState<'Needs Review' | 'Drafts' | 'Sent' | 'All'>(initialTab || 'Needs Review');
+  const [activeTab, setActiveTab] = useState<'Needs Attention' | 'Drafts' | 'History'>(
+    initialTab === 'Drafts'
+      ? 'Drafts'
+      : initialTab === 'Sent' || initialTab === 'All'
+        ? 'History'
+        : 'Needs Attention',
+  );
   const [searchText, setSearchText] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [filters, setFilters] = useState<{
@@ -15042,14 +15118,14 @@ function SavedUpdatesScreen({
     return map;
   }, [contactBook]);
 
-  const filteredUpdates = updates
-    .filter(update => activeTab === 'All' || !update.isArchived)
+  const filteredUpdates = [...updates]
+    .filter(update => activeTab === 'History' || !update.isArchived)
     .filter(update => {
       const lifecycle = lifecycleStatusForUpdate(update);
 
-      if (activeTab === 'Needs Review') return updateNeedsReview(update);
+      if (activeTab === 'Needs Attention') return updateNeedsReview(update);
       if (activeTab === 'Drafts') return lifecycle === 'draft';
-      if (activeTab === 'Sent') return lifecycle === 'sent';
+      if (activeTab === 'History') return lifecycle === 'sent';
 
       return true;
     })
@@ -15088,16 +15164,15 @@ function SavedUpdatesScreen({
       const searchable = `${update.projectName} ${update.selectedAreaName || ''} ${recipientNames}`.toLowerCase();
 
       return searchable.includes(search);
-    });
+    })
+    .sort((left, right) => (updateDateValue(right.date)?.getTime() || 0) - (updateDateValue(left.date)?.getTime() || 0));
 
   const emptyTitle =
-    activeTab === 'Needs Review'
-      ? 'Nothing needs review — you’re all caught up.'
+    activeTab === 'Needs Attention'
+      ? "✅ You're all caught up."
       : activeTab === 'Drafts'
         ? 'No drafts.'
-        : activeTab === 'Sent'
-          ? 'No sent updates yet.'
-          : 'No updates yet.';
+        : 'No update history yet.';
 
   function retryUpdate(update: ProjectUpdate) {
     const lifecycle = lifecycleStatusForUpdate(update);
@@ -15124,18 +15199,25 @@ function SavedUpdatesScreen({
     if (targetPhoto) onRetryPhotoAnalysis(update, targetPhoto);
   }
 
-  const renderUpdate = ({ item: update }: { item: ProjectUpdate }) => (
-    <UpdateHistoryCard
-      update={update}
-      lifecycle={lifecycleStatusForUpdate(update)}
-      pieStatus={updatePIEAnalysisStatus(update)}
-      showLifecycleTag={activeTab === 'All' || activeTab === 'Needs Review'}
-      onOpen={() => onOpen(update)}
-      onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}
-      onDelete={() => onDelete(update.id)}
-      onArchive={() => onArchive(update.id)}
-    />
-  );
+  const renderUpdate = ({ item: update, index }: { item: ProjectUpdate; index: number }) => {
+    const group = updateTimelineGroup(update.date);
+    const previousGroup = index > 0 ? updateTimelineGroup(filteredUpdates[index - 1].date) : null;
+
+    return (
+      <>
+        {group !== previousGroup ? <Text style={styles.updateGroupHeader}>{group}</Text> : null}
+        <UpdateHistoryCard
+          update={update}
+          lifecycle={lifecycleStatusForUpdate(update)}
+          pieStatus={updatePIEAnalysisStatus(update)}
+          onOpen={() => onOpen(update)}
+          onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}
+          onDelete={() => onDelete(update.id)}
+          onArchive={() => onArchive(update.id)}
+        />
+      </>
+    );
+  };
 
   return (
     <FlatList
@@ -15149,7 +15231,7 @@ function SavedUpdatesScreen({
         <>
           <ScreenTitle
             title="Updates"
-            subtitle="Review drafts, queued sends, sent updates, and DAVE analysis items."
+            subtitle="What needs your attention today?"
           />
 
           <View style={styles.updateTopControlRow}>
@@ -15168,15 +15250,8 @@ function SavedUpdatesScreen({
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.updateFilterSummary} onPress={() => setFilterOpen(true)}>
-            <Text style={styles.phase2SelectorLabel}>FILTER</Text>
-            <Text style={styles.projectName}>
-              {filters.project || 'All Projects'} ▾
-            </Text>
-          </TouchableOpacity>
-
           <View style={styles.updateSegmentRow}>
-            {(['Needs Review', 'Drafts', 'Sent', 'All'] as const).map(tab => {
+            {(['Needs Attention', 'Drafts', 'History'] as const).map(tab => {
               const selected = activeTab === tab;
               return (
                 <TouchableOpacity
@@ -15211,17 +15286,23 @@ function SavedUpdatesScreen({
         </>
       }
       ListEmptyComponent={
-        <EmptyState
-          title={emptyTitle}
-          text="Use New Update to create or resume project update work."
-        />
+        <View style={styles.updateEmptyState}>
+          <Text style={styles.updateEmptyTitle}>{emptyTitle}</Text>
+          <Text style={styles.updateEmptyText}>
+            {activeTab === 'Needs Attention'
+              ? 'No updates require your attention today.'
+              : activeTab === 'Drafts'
+                ? 'Start a new update when you are ready to capture field work.'
+                : 'Completed and sent updates will appear here.'}
+          </Text>
+          <Text style={styles.updateEmptyPrompt}>Ready to capture today&apos;s work?</Text>
+          <PrimaryButton label="New Update" icon="add-circle-outline" onPress={onNewUpdate} />
+        </View>
       }
       ListFooterComponent={
-        <PrimaryButton
-          label="New Update"
-          icon="add-circle-outline"
-          onPress={onNewUpdate}
-        />
+        filteredUpdates.length > 0 ? (
+          <PrimaryButton label="New Update" icon="add-circle-outline" onPress={onNewUpdate} />
+        ) : null
       }
     />
   );
@@ -15362,7 +15443,6 @@ function UpdateHistoryCard({
   update,
   lifecycle,
   pieStatus,
-  showLifecycleTag,
   onOpen,
   onRetry,
   onDelete,
@@ -15371,7 +15451,6 @@ function UpdateHistoryCard({
   update: ProjectUpdate;
   lifecycle: FieldUpdateStatus;
   pieStatus: string | null;
-  showLifecycleTag: boolean;
   onOpen: () => void;
   onRetry?: () => void;
   onDelete: () => void;
@@ -15391,48 +15470,95 @@ function UpdateHistoryCard({
             (update.photos.length === 0
               ? update.notes.trim() || (documents.length > 0 ? countLabel(documents.length, 'document') : 'No photos attached')
               : null);
+  const updateType = update.quickContext || (update.photos.length > 0 ? 'Photo update' : 'Project update');
+  const summary =
+    update.observedFindings?.[0] ||
+    statusLine ||
+    update.notes.trim() ||
+    (documents.length > 0
+      ? `${countLabel(documents.length, 'document')} added to this update.`
+      : 'Project update recorded.');
+  const statusLabel =
+    lifecycle === 'ready_to_send'
+      ? 'Ready'
+      : lifecycle === 'failed'
+        ? 'Failed'
+        : lifecycle === 'queued'
+          ? 'Queued'
+          : lifecycle === 'sent'
+            ? 'Sent'
+            : 'Draft';
 
   return (
     <TouchableOpacity style={styles.updateCard} onPress={onOpen}>
-      {thumbnail ? (
-        <Image source={{ uri: thumbnail }} style={styles.updateCardThumb} />
-      ) : (
-        <View style={styles.updateCardThumbPlaceholder}>
-          <Ionicons name="document-text-outline" size={22} color={colors.primary} />
-        </View>
-      )}
+      <View style={styles.updateCardMedia}>
+        {thumbnail ? (
+          <Image source={{ uri: thumbnail }} style={styles.updateCardThumb} />
+        ) : (
+          <View style={styles.updateCardThumbPlaceholder}>
+            <Ionicons name="document-text-outline" size={28} color={colors.primary} />
+          </View>
+        )}
+        <Text style={styles.updatePhotoStatusPill}>{statusLabel}</Text>
+      </View>
 
       <View style={styles.rowMain}>
-        <View style={styles.phase2ProjectTitleRow}>
-          <Text style={styles.projectName}>{update.projectName}</Text>
-          {showLifecycleTag ? (
-            <Text style={styles.updateLifecycleTag}>{lifecycle}</Text>
-          ) : null}
+        <Text style={styles.updateCardProject} numberOfLines={1}>{update.projectName}</Text>
+        <Text style={styles.updateCardSummary} numberOfLines={2}>{summary}</Text>
+        <View style={styles.updateCardMetaRow}>
+          <Text style={styles.updateCardType}>{updateType}</Text>
+          <Text style={styles.updateCardMetaDot}>•</Text>
+          <Text style={styles.updateCardTime}>{relativeUpdateTimestamp(update.date)}</Text>
         </View>
-        <Text style={styles.rowSub}>
-          {formatDisplayDate(update.date)} · {countLabel(update.photos.length, 'photo')}
-          {documents.length > 0 ? ` · ${countLabel(documents.length, 'document')}` : ''}
-          {update.selectedAreaName ? ` · ${update.selectedAreaName}` : ''}
-        </Text>
-        {statusLine ? (
-          <Text style={styles.bodyText}>{statusLine}</Text>
-        ) : null}
         {onRetry ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry</Text>
           </TouchableOpacity>
         ) : null}
+        {__DEV__ && update.deleteDiagnostics ? (
+          <Text style={styles.rowSub}>
+            Delete state: {update.deleteDiagnostics.sourceAfterReload} ·{' '}
+            {update.deleteDiagnostics.mergeDecision} · ignored photos{' '}
+            {update.deleteDiagnostics.orphanedPhotoCountIgnored}
+          </Text>
+        ) : null}
+        {__DEV__ && update.syncDiagnostics ? (
+          <Text style={styles.rowSub}>
+            cloud insert attempted {String(update.syncDiagnostics.cloudUpdateInsertAttempted)} · photo upload attempted{' '}
+            {String(update.syncDiagnostics.photoStorageUploadAttempted)} · storage bucket{' '}
+            {update.syncDiagnostics.storageBucketName || 'unknown'} · bucket exists{' '}
+            {update.syncDiagnostics.storageBucketExists} · storage category{' '}
+            {update.syncDiagnostics.storageFailureCategory || 'none'} · storage status{' '}
+            {update.syncDiagnostics.storageHttpStatus ?? 'none'} · storage code{' '}
+            {update.syncDiagnostics.storageErrorCode || 'none'} · retry attempt{' '}
+            {update.syncDiagnostics.retryAttemptNumber ?? 'none'} · local file exists{' '}
+            {String(update.syncDiagnostics.localFileExists)} · local file readable{' '}
+            {String(update.syncDiagnostics.localFileReadable)} · byte size{' '}
+            {update.syncDiagnostics.fileByteSizeCategory} · payload{' '}
+            {update.syncDiagnostics.uploadPayloadType} · content type{' '}
+            {update.syncDiagnostics.storageContentType || 'unknown'} · path category{' '}
+            {update.syncDiagnostics.objectPathCategory || 'unknown'} · database after upload{' '}
+            {String(update.syncDiagnostics.databaseSyncRanAfterUpload)} · failed operation{' '}
+            {update.syncDiagnostics.failedOperationName || 'none'} · target{' '}
+            {update.syncDiagnostics.failedLogicalTarget || 'none'} · RLS denied{' '}
+            {String(update.syncDiagnostics.rlsDenied)} · user id present{' '}
+            {String(update.syncDiagnostics.authenticatedUserIdPresent)} · project id present{' '}
+            {String(update.syncDiagnostics.projectIdPresent)} · organization id present{' '}
+            {String(update.syncDiagnostics.organizationIdPresent)} · membership{' '}
+            {update.syncDiagnostics.membershipCheckResult || 'unknown'} · rls/auth{' '}
+            {String(update.syncDiagnostics.rlsOrAuthFailureDetected)}
+            {' '}· Rollup source: local-first saved updates | queued included: yes | workspace/card shared: yes
+          </Text>
+        ) : null}
       </View>
 
-      <TouchableOpacity
-        style={styles.iconOnlyButton}
-        onPress={() => setMenuOpen(true)}
-      >
-        <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
-      </TouchableOpacity>
-
-      <Ionicons name="chevron-forward" size={20} color={colors.muted} />
+      <View style={styles.updateCardActions}>
+        <TouchableOpacity style={styles.iconOnlyButton} onPress={() => setMenuOpen(true)}>
+          <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
+        </TouchableOpacity>
+        <Ionicons name="chevron-forward" size={22} color={colors.muted} />
+      </View>
 
       <UpdateOverflowMenu
         visible={menuOpen}
@@ -18819,6 +18945,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 18,
     paddingBottom: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+
+  overviewGreetingCopy: {
+    flex: 1,
   },
 
   overviewGreetingText: {
@@ -18831,6 +18965,384 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.muted,
     marginTop: 2,
+  },
+
+  overviewAskDaveButton: {
+    minHeight: 44,
+    borderRadius: 22,
+    paddingHorizontal: 13,
+    backgroundColor: 'rgba(255,255,255,0.72)',
+    borderColor: 'rgba(32,83,158,0.18)',
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+
+  overviewAskDaveText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  overviewHealthCard: {
+    marginTop: 10,
+    marginBottom: 20,
+    borderRadius: 20,
+    padding: 20,
+    backgroundColor: '#123F8C',
+    shadowColor: '#0B2A6B',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 5,
+  },
+
+  overviewDashboardSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+  },
+
+  overviewHealthEyebrow: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+    marginBottom: 3,
+  },
+
+  overviewHealthTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+
+  overviewHealthMetrics: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+
+  overviewHealthMetric: {
+    flex: 1,
+  },
+
+  overviewHealthMetricValue: {
+    color: '#FFFFFF',
+    fontSize: 25,
+    fontWeight: '800',
+    marginBottom: 3,
+  },
+
+  overviewHealthMetricLabel: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '700',
+  },
+
+  overviewDashboardHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    marginBottom: 10,
+  },
+
+  overviewDashboardHeading: {
+    color: colors.text,
+    fontSize: 19,
+    fontWeight: '800',
+  },
+
+  overviewDashboardLink: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
+    paddingVertical: 8,
+  },
+
+  overviewPriorityCard: {
+    backgroundColor: colors.card,
+    borderRadius: 20,
+    borderColor: colors.line,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginBottom: 22,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    elevation: 4,
+  },
+
+  overviewPriorityImage: {
+    width: '100%',
+    height: 176,
+    resizeMode: 'cover',
+  },
+
+  overviewPriorityImagePlaceholder: {
+    height: 130,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  overviewPriorityContent: {
+    padding: 18,
+  },
+
+  overviewPriorityBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: colors.warningSoft,
+    borderRadius: 999,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    marginBottom: 10,
+  },
+
+  overviewPriorityBadgeText: {
+    color: colors.warning,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+  },
+
+  overviewPriorityProject: {
+    color: colors.text,
+    fontSize: 21,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+
+  overviewPriorityRecommendation: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700',
+    marginBottom: 7,
+  },
+
+  overviewPrioritySupport: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 15,
+  },
+
+  overviewPriorityButton: {
+    minHeight: 46,
+    borderRadius: 12,
+    paddingHorizontal: 15,
+    backgroundColor: colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+
+  overviewPriorityButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+
+  overviewDailyBriefCard: {
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    borderColor: colors.line,
+    borderWidth: 1,
+    paddingHorizontal: 15,
+    paddingVertical: 4,
+    marginBottom: 22,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  overviewBriefRow: {
+    minHeight: 66,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    borderBottomColor: colors.line,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+
+  overviewBriefIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  overviewBriefProject: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+
+  overviewBriefText: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+
+  overviewBriefEmpty: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    paddingVertical: 18,
+  },
+
+  overviewProjectCard: {
+    minHeight: 116,
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    borderColor: colors.line,
+    borderWidth: 1,
+    padding: 11,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  overviewProjectImage: {
+    width: 92,
+    height: 92,
+    borderRadius: 12,
+    resizeMode: 'cover',
+  },
+
+  overviewProjectImagePlaceholder: {
+    width: 92,
+    height: 92,
+    borderRadius: 12,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  overviewProjectContent: {
+    flex: 1,
+  },
+
+  overviewProjectTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 5,
+  },
+
+  overviewProjectTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+
+  overviewProjectHealth: {
+    fontSize: 11,
+    fontWeight: '900',
+  },
+
+  overviewProjectSummary: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 7,
+  },
+
+  overviewProjectActivity: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  overviewActivityCard: {
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    borderColor: colors.line,
+    borderWidth: 1,
+    paddingHorizontal: 15,
+    paddingVertical: 6,
+    marginBottom: 12,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  overviewActivityGroup: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+    paddingTop: 12,
+    paddingBottom: 3,
+  },
+
+  overviewActivityRow: {
+    minHeight: 62,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderBottomColor: colors.line,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+
+  overviewActivityIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  overviewActivityProject: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+
+  overviewActivityText: {
+    color: colors.muted,
+    fontSize: 12,
+  },
+
+  overviewActivityTime: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
   },
 
   overviewHeroCard: {
@@ -19385,11 +19897,11 @@ const styles = StyleSheet.create({
   updateSegmentRow: {
     flexDirection: 'row',
     backgroundColor: colors.fill,
-    borderRadius: 8,
+    borderRadius: 10,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 4,
-    marginBottom: 14,
+    marginBottom: 16,
   },
 
   updateSegment: {
@@ -19418,41 +19930,144 @@ const styles = StyleSheet.create({
 
   updateCard: {
     backgroundColor: colors.card,
-    borderRadius: 8,
+    borderRadius: 14,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 12,
-    marginBottom: 10,
+    marginBottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
+    minHeight: 118,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  updateGroupHeader: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: 2,
+    marginBottom: 9,
+  },
+
+  updateCardMedia: {
+    width: 104,
+    height: 92,
+    position: 'relative',
   },
 
   updateCardThumb: {
-    width: 58,
-    height: 58,
-    borderRadius: 8,
+    width: 104,
+    height: 92,
+    borderRadius: 10,
     backgroundColor: colors.fill,
+    resizeMode: 'cover',
   },
 
   updateCardThumbPlaceholder: {
-    width: 58,
-    height: 58,
-    borderRadius: 8,
+    width: 104,
+    height: 92,
+    borderRadius: 10,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
 
-  updateLifecycleTag: {
-    color: colors.primary,
-    backgroundColor: colors.primarySoft,
+  updatePhotoStatusPill: {
+    position: 'absolute',
+    left: 7,
+    bottom: 7,
+    color: '#FFFFFF',
+    backgroundColor: 'rgba(10, 34, 61, 0.86)',
     borderRadius: 999,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 9,
     fontSize: 11,
-    fontWeight: '900',
+    fontWeight: '800',
     overflow: 'hidden',
+  },
+
+  updateCardProject: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+
+  updateCardSummary: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 19,
+    marginBottom: 8,
+  },
+
+  updateCardMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+  },
+
+  updateCardType: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  updateCardMetaDot: {
+    color: colors.muted,
+    fontSize: 12,
+  },
+
+  updateCardTime: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  updateCardActions: {
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+
+  updateEmptyState: {
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderColor: colors.line,
+    borderWidth: 1,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  updateEmptyTitle: {
+    color: colors.text,
+    fontSize: 19,
+    fontWeight: '800',
+    marginBottom: 7,
+  },
+
+  updateEmptyText: {
+    color: colors.muted,
+    fontSize: 15,
+    lineHeight: 21,
+    marginBottom: 14,
+  },
+
+  updateEmptyPrompt: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 12,
   },
 
   updateOverflowSheet: {
