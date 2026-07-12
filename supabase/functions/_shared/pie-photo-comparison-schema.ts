@@ -142,6 +142,60 @@ export const PIE_PHOTO_PAIR_RESPONSE_SCHEMA = {
   },
 };
 
+export const PIE_SINGLE_PHOTO_SCHEMA_VERSION = '2026-07-p0-v1';
+
+export const PIE_SINGLE_PHOTO_RESPONSE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'scene',
+    'probableProjectArea',
+    'visibleSubjects',
+    'equipment',
+    'materials',
+    'visibleWork',
+    'installationState',
+    'visibleConditions',
+    'possibleQualityConcerns',
+    'possibleSafetyConcerns',
+    'imageQuality',
+    'directObservations',
+    'inferences',
+    'confidence',
+    'limitations',
+    'requiredCorroboration',
+    'recommendedFollowUpEvidence',
+  ],
+  properties: {
+    scene: { type: 'string' },
+    probableProjectArea: nullableStringSchema,
+    visibleSubjects: { type: 'array', items: { type: 'string' } },
+    equipment: { type: 'array', items: { type: 'string' } },
+    materials: { type: 'array', items: { type: 'string' } },
+    visibleWork: { type: 'array', items: { type: 'string' } },
+    installationState: nullableStringSchema,
+    visibleConditions: { type: 'array', items: { type: 'string' } },
+    possibleQualityConcerns: { type: 'array', items: { type: 'string' } },
+    possibleSafetyConcerns: { type: 'array', items: { type: 'string' } },
+    imageQuality: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['clarity', 'lighting', 'notes'],
+      properties: {
+        clarity: { type: 'string' },
+        lighting: { type: 'string' },
+        notes: { type: 'string' },
+      },
+    },
+    directObservations: { type: 'array', items: { type: 'string' } },
+    inferences: { type: 'array', items: { type: 'string' } },
+    confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
+    limitations: { type: 'array', items: { type: 'string' } },
+    requiredCorroboration: { type: 'array', items: { type: 'string' } },
+    recommendedFollowUpEvidence: { type: 'array', items: { type: 'string' } },
+  },
+};
+
 export type PIEFindingNormalizationDiagnostics = {
   rawFindingCount: number;
   normalizedFindingCount: number;

@@ -1,6 +1,8 @@
 import {
   PIE_PHOTO_PAIR_RESPONSE_SCHEMA,
   PIE_PHOTO_PAIR_SCHEMA_VERSION,
+  PIE_SINGLE_PHOTO_RESPONSE_SCHEMA,
+  PIE_SINGLE_PHOTO_SCHEMA_VERSION,
 } from './pie-photo-comparison-schema.ts';
 
 export type VisionMode = 'single_photo' | 'photo_pair';
@@ -74,8 +76,7 @@ class OpenAIVisionProvider implements VisionProvider {
     return callWithRetries(context, async () => {
       const prompt = [
         'Analyze this construction/project photo as visual evidence only.',
-        'Return strict JSON. Do not return markdown.',
-        'Schema: scene, probableProjectArea, visibleSubjects, equipment, materials, visibleWork, installationState, visibleConditions, possibleQualityConcerns, possibleSafetyConcerns, imageQuality, directObservations, inferences, confidence, limitations, requiredCorroboration, recommendedFollowUpEvidence.',
+        `Return the strict single-photo JSON schema version ${PIE_SINGLE_PHOTO_SCHEMA_VERSION}. Do not return markdown.`,
         'Do not claim hidden work, compliance, causation, blame, inspection outcome, or exact percentage.',
         buildContextLine(context),
         `Evidence ID: ${image.evidenceId}. Content hash: ${image.contentHash}. Policy: ${context.policyVersion}.`,
@@ -98,6 +99,8 @@ class OpenAIVisionProvider implements VisionProvider {
         'Comparability must be strong, probable, weak, or not_comparable.',
         'Comparability measures whether the shared physical scene or subject can be reliably compared; it does not require identical camera position.',
         'Allow strong when the same subject is highly certain, stable visual anchors align, the relevant change is clearly visible, and viewpoint/framing differences do not materially limit the conclusion.',
+        'alignmentConfidence reflects how precisely the baseline and current photos can be spatially aligned to compare the same physical area. Use high when framing, distance, and angle are close enough that shared reference points clearly line up. Use medium when there are minor viewpoint, distance, or framing differences but the same physical area can still be reliably compared. Use low only when viewpoint, distance, or framing differ enough - or too few shared reference points exist - that you cannot confidently confirm you are looking at the same physical location. Do not default to low simply because the two photos are not pixel-identical.',
+        'changeDetectionConfidence reflects how confident you are that visible differences represent real physical changes rather than lighting, shadow, exposure, or angle artifacts. Use high when differences are clearly physical and not explained by lighting or angle. Use medium when most differences appear physical but some ambiguity from lighting or angle exists. Use low only when lighting, shadows, exposure, or angle differences make it genuinely hard to tell what changed physically versus what is a capture artifact.',
         'Classify differences as camera_or_capture_change, physical_scene_change, uncertain_change, or mixed_change. Do not treat perspective, distance, framing, exposure, lighting, rotation, or obstruction changes as project progress.',
         'Conclusion must be progress_visible, partial_progress_visible, no_material_visible_change, possible_regression, or unable_to_determine.',
         buildContextLine(context),
@@ -177,7 +180,14 @@ async function callOpenAI(
                 schema: PIE_PHOTO_PAIR_RESPONSE_SCHEMA,
               },
             }
-          : { format: { type: 'json_object' } },
+          : {
+              format: {
+                type: 'json_schema',
+                name: 'pie_single_photo_analysis',
+                strict: true,
+                schema: PIE_SINGLE_PHOTO_RESPONSE_SCHEMA,
+              },
+            },
       }),
     });
     clearTimeout(timer);

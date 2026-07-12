@@ -8,11 +8,11 @@ const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 
 [
-  'title="Overview"',
+  'function HomeScreen({',
   'ProjectSelectorSheet',
   'All projects on track — nothing needs your attention.',
   'Needs Attention',
-  'Your recent updates will show up here.',
+  'All caught up',
   'title="Projects"',
   'Open Projects',
   'ProjectWorkspace',

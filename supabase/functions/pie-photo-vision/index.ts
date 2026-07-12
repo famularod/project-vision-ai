@@ -44,6 +44,12 @@ const BUCKET = 'pie-project-evidence';
 const SIGNED_URL_EXPIRES_SECONDS = 600;
 const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 
+function defaultPromptVersion(mode: VisionMode): string {
+  return mode === 'single_photo'
+    ? '2026.07.11-single-photo-schema-enforcement'
+    : '2026.07.11-alignment-confidence-rubric';
+}
+
 Deno.serve(async req => {
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
 
@@ -135,7 +141,7 @@ Deno.serve(async req => {
     organizationId: request.organizationId,
     projectId: request.projectId,
     requestId,
-    promptVersion: request.promptVersion ?? '2026.07.02-production-photo-vision',
+    promptVersion: request.promptVersion ?? defaultPromptVersion(mode),
     policyVersion: POLICY_VERSION,
     timeoutMs: Number(Deno.env.get('PIE_VISION_TIMEOUT_MS') ?? '45000'),
     maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '2'),
@@ -874,7 +880,7 @@ async function persistRequestAndResult(
     analyzer_id: ANALYZER_ID,
     analyzer_version: ANALYZER_VERSION,
     policy_version: POLICY_VERSION,
-    prompt_version: request.promptVersion ?? '2026.07.02-production-photo-vision',
+    prompt_version: request.promptVersion ?? defaultPromptVersion(mode),
     force_reanalysis: Boolean(request.forceReanalysis),
     status: providerResult?.status ?? 'failed',
     failure_reason: failureReason ?? providerResult?.error ?? null,
@@ -905,7 +911,7 @@ async function persistRequestAndResult(
       provider_name: providerResult?.providerName ?? null,
       model_name: providerResult?.modelName ?? null,
       model_version: providerResult?.modelVersion ?? null,
-      prompt_version: request.promptVersion ?? '2026.07.02-production-photo-vision',
+      prompt_version: request.promptVersion ?? defaultPromptVersion(mode),
       policy_version: POLICY_VERSION,
       status: providerResult?.status ?? 'failed',
       observations: mode === 'single_photo'

@@ -41,6 +41,15 @@ import {
   dedupeAttentionItemsById,
 } from './services/PIEAttentionIdentity';
 import {
+  buildProjectDailyBrief,
+  type DAVEBriefNavigationTarget,
+  type DAVEProjectDailyBriefAttentionItem,
+  type DAVEProjectDailyBriefItem,
+} from './services/DAVEDailyBrief';
+import { buildProjectEvidenceQuality } from './services/DAVEProjectEvidenceQuality';
+import { buildProjectCommitments } from './services/DAVEProjectCommitments';
+import { buildProjectActionCenter } from './services/DAVEProjectActionCenter';
+import {
   buildSixtySecondFlowTimingResult,
   type SixtySecondFlowTimingResult,
 } from './services/SixtySecondFlowInstrumentation';
@@ -6494,6 +6503,9 @@ useEffect(() => {
     saveCloudUpdate(saved);
     syncUpdatePhotosToCloud(saved);
     setSelectedWorkspaceProject(saved.projectName);
+    setDraft(createDraft(saved.projectName));
+    setDraftSavedAt(null);
+    AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
     Alert.alert('Draft saved', 'This field update was saved as a draft.');
     setScreen('ProjectWorkspace');
   }
@@ -9200,6 +9212,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectName={selectedWorkspaceProject}
               savedUpdates={savedUpdates}
               projectDocuments={projectDocuments}
+              scheduleItems={scheduleItems}
               contactBook={contactBook}
               projectStats={projectStatsForName(projectStatsByName, selectedWorkspaceProject)}
               onBack={() => setScreen('Projects')}
@@ -9207,6 +9220,26 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onOpenUpdates={() => setScreen('SavedUpdates')}
               onOpenPhotoDifferences={openLatestProjectPhotoDifference}
               onOpenDocuments={() => setScreen('ProjectDocuments')}
+              onOpenDailyBriefItem={item => {
+                setSelectedWorkspaceProject(selectedWorkspaceProject);
+                if (item.navigationTarget === 'project_documents') {
+                  setScreen('ProjectDocuments');
+                  return;
+                }
+                if (item.navigationTarget === 'schedule') {
+                  setScreen('Schedule');
+                  return;
+                }
+                if (item.navigationTarget === 'capture') {
+                  createNewUpdate(selectedWorkspaceProject);
+                  return;
+                }
+                const sourceUpdate = savedUpdates.find(update => update.id === item.sourceRecordId);
+                if (sourceUpdate) {
+                  setSelectedDetailUpdate(sourceUpdate);
+                  setScreen('UpdateDetail');
+                }
+              }}
               onRetryQueuedUpdate={retryQueuedUpdate}
               onDeleteProject={deleteProjectPermanently}
               isDeletingProject={deletingProjectName === selectedWorkspaceProject}
@@ -9660,16 +9693,7 @@ function HomeScreen({
   onOpenDueToday: () => void;
   onOpenSentThisWeek: () => void;
 }) {
-  const [selectorOpen, setSelectorOpen] = useState(false);
-  const [selectorIntent, setSelectorIntent] =
-    useState<'filter' | 'newUpdate'>('filter');
-
-  const activeLabel = selectedProjectName || 'All Projects';
-  const scopedProjects = selectedProjectName
-    ? projects.filter(
-        project => project.toLowerCase() === selectedProjectName.toLowerCase(),
-      )
-    : projects;
+  const scopedProjects = projects;
   const overviewRows = buildOverviewProjectRows(
     scopedProjects,
     savedUpdates,
@@ -9707,27 +9731,6 @@ function HomeScreen({
     )
     .sort((a, b) => updateSortTime(b.update) - updateSortTime(a.update));
 
-  function openSelector(intent: 'filter' | 'newUpdate') {
-    setSelectorIntent(intent);
-    setSelectorOpen(true);
-  }
-
-  function selectProject(projectName: string | null) {
-    onSelectProject(projectName);
-    setSelectorOpen(false);
-
-    if (selectorIntent === 'newUpdate' && projectName) {
-      onNewUpdate(projectName);
-    }
-  }
-
-  const projectPickerCandidates =
-    selectorIntent === 'newUpdate' &&
-    projectDetectionStatus === 'multiple' &&
-    gpsCandidateProjectNames.length > 0
-      ? gpsCandidateProjectNames
-      : projects;
-
   return (
     <View style={styles.overviewPageWrap}>
       <LinearGradient
@@ -9745,36 +9748,6 @@ function HomeScreen({
         <Text style={styles.overviewGreetingText}>{timeOfDayGreeting(displayName)}</Text>
         <Text style={styles.overviewGreetingDate}>{todayLongDateLabel()}</Text>
       </View>
-
-      <TouchableOpacity
-        style={styles.phase2SelectorButton}
-        onPress={() => openSelector('filter')}
-      >
-        <View style={styles.rowMain}>
-          <Text style={styles.phase2SelectorLabel}>Project</Text>
-          <Text style={styles.phase2SelectorValue}>
-            {detectedProjectName && selectedProjectName === detectedProjectName
-              ? `Project: ${detectedProjectName}`
-              : activeLabel}
-          </Text>
-          <Text style={styles.rowSub}>
-            {projectDetectionStatus === 'checking'
-              ? 'Checking nearby project...'
-              : detectedProjectName
-                ? `Detected: ${detectedProjectName}`
-                : projectDetectionStatus === 'denied'
-                  ? 'Location unavailable; showing all projects'
-                  : projectDetectionStatus === 'multiple'
-                    ? 'Multiple nearby projects found; choose one to continue'
-                    : projectDetectionStatus === 'not_applied'
-                      ? 'Nearby project found; manual selection preserved'
-                  : projectDetectionStatus === 'unmatched'
-                    ? 'No nearby project matched; showing all projects'
-                    : 'Select a project or view all projects'}
-          </Text>
-        </View>
-        <Ionicons name="chevron-down" size={22} color={colors.primary} />
-      </TouchableOpacity>
 
       {unfinishedDraft ? (
         <View style={styles.draftRecoveryCard}>
@@ -9998,16 +9971,6 @@ function HomeScreen({
         label="View Projects"
         icon="business-outline"
         onPress={onViewProjects}
-      />
-
-      <ProjectSelectorSheet
-        visible={selectorOpen}
-        projects={projectPickerCandidates}
-        narrowed={projectPickerCandidates.length !== projects.length}
-        selectedProjectName={selectedProjectName}
-        detectedProjectName={detectedProjectName}
-        onSelect={selectProject}
-        onClose={() => setSelectorOpen(false)}
       />
       </ScrollView>
     </View>
@@ -11585,11 +11548,15 @@ function RootPhotoIntelligenceCard({
       ) : null}
 
       {result.comparisonConfidence ? (
-        <PIEDetailLine label="Confidence" value={result.comparisonConfidence} />
+        <Text style={styles.locationDetailText}>
+          {pieConfidenceSentence(result.comparisonConfidence)}
+        </Text>
       ) : null}
 
       {result.comparability ? (
-        <PIEDetailLine label="Comparability" value={result.comparability} />
+        <Text style={styles.locationDetailText}>
+          {pieComparabilitySentence(result.comparability)}
+        </Text>
       ) : null}
 
       {priorUpdateUsed ? (
@@ -11777,6 +11744,55 @@ function RootPhotoIntelligenceCard({
   );
 }
 
+function pieConfidenceSentence(confidence: string): string {
+  switch (confidence) {
+    case 'high':
+      return 'DAVE is highly confident in this finding.';
+    case 'medium':
+      return 'DAVE has moderate confidence in this finding.';
+    case 'low':
+      return 'DAVE has low confidence in this finding — treat it cautiously.';
+    default:
+      return `Confidence: ${confidence}`;
+  }
+}
+
+function pieComparabilitySentence(comparability: string): string {
+  switch (comparability) {
+    case 'strong':
+      return 'These photos are a strong, reliable comparison.';
+    case 'probable':
+      return 'These photos are probably comparable, with some limitations.';
+    case 'weak':
+      return 'These photos are only weakly comparable — differences may reflect camera or angle changes rather than real changes.';
+    case 'not_comparable':
+      return "These photos couldn't be reliably compared.";
+    default:
+      return `Comparability: ${comparability}`;
+  }
+}
+
+function pieInterpretationCaveat(confidence: string, comparability: string): string {
+  const cautious =
+    confidence === 'low' ||
+    comparability === 'weak' ||
+    comparability === 'not_comparable';
+
+  if (cautious) {
+    return 'This finding carries real uncertainty. Treat both the observation and this interpretation with caution, and verify directly before relying on it.';
+  }
+
+  const confident =
+    confidence === 'high' &&
+    (comparability === 'strong' || comparability === 'probable');
+
+  if (confident) {
+    return 'DAVE is confident in this observation. The interpretation above is still a judgment call — confirm it reflects real project context before using it as a claim.';
+  }
+
+  return 'DAVE suggestion only, moderate confidence. Confirm this interpretation before using it as a message claim.';
+}
+
 function PIEDetailLine({ label, value }: { label: string; value: string }) {
   return (
     <Text style={styles.locationDetailText}>
@@ -11918,12 +11934,12 @@ function SavedUpdatePIESummary({
       ) : null}
       {firstResult?.comparisonConfidence ? (
         <Text style={styles.locationDetailText}>
-          Confidence: {firstResult.comparisonConfidence}
+          {pieConfidenceSentence(firstResult.comparisonConfidence)}
         </Text>
       ) : null}
       {firstResult?.comparability ? (
         <Text style={styles.locationDetailText}>
-          Comparability: {firstResult.comparability}
+          {pieComparabilitySentence(firstResult.comparability)}
         </Text>
       ) : null}
       {firstPriorUpdateUsed ? (
@@ -12233,7 +12249,10 @@ function BuildUpdateScreen({
                   key={interpretation}
                   role={hasSafety && interpretation.toLowerCase().includes('safety') ? 'safety' : 'interpretation'}
                   title={interpretation}
-                  detail="DAVE suggestion only. Confirm before including as a message claim."
+                  detail={pieInterpretationCaveat(
+                    firstResult?.comparisonConfidence ?? '',
+                    firstResult?.comparability ?? '',
+                  )}
                   confirmed={confirmed}
                   dismissed={dismissed}
                   onConfirm={dismissed ? undefined : () => onConfirmInterpretation(interpretation)}
@@ -12253,10 +12272,14 @@ function BuildUpdateScreen({
           title={hasBlocker ? 'Possible blocker requires review' : 'No open blockers detected'}
         />
         {firstResult?.comparisonConfidence ? (
-          <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieConfidenceSentence(firstResult.comparisonConfidence)}
+          </Text>
         ) : null}
         {firstResult?.comparability ? (
-          <Text style={styles.locationDetailText}>Comparability: {firstResult.comparability}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieComparabilitySentence(firstResult.comparability)}
+          </Text>
         ) : null}
         {pieStatus.status === 'analyzing' ? (
           <Text style={styles.locationDetailText}>
@@ -12300,10 +12323,14 @@ function BuildUpdateScreen({
               <PIEDetailLine label="Possible concerns" value={(firstResult?.possibleConcerns || []).join(' ')} />
             ) : null}
             {firstResult?.comparisonConfidence ? (
-              <PIEDetailLine label="Confidence" value={firstResult.comparisonConfidence} />
+              <Text style={styles.locationDetailText}>
+                {pieConfidenceSentence(firstResult.comparisonConfidence)}
+              </Text>
             ) : null}
             {firstResult?.comparability ? (
-              <PIEDetailLine label="Comparability" value={firstResult.comparability} />
+              <Text style={styles.locationDetailText}>
+                {pieComparabilitySentence(firstResult.comparability)}
+              </Text>
             ) : null}
             {firstPriorUpdateUsed ? (
               <PIEDetailLine label="Prior update used" value={firstPriorUpdateUsed} />
@@ -12426,11 +12453,21 @@ function BuildUpdateScreen({
         ) : null}
       </View>
 
-      <PrimaryButton
-        label="Send Update"
-        icon="send-outline"
-        onPress={onSendUpdate}
-      />
+      <View style={styles.sendRow}>
+        <SecondaryButton
+          label="Save"
+          icon="bookmark-outline"
+          onPress={onSaveDraft}
+          compact
+        />
+
+        <PrimaryButton
+          label="Send Update"
+          icon="send-outline"
+          onPress={onSendUpdate}
+          compact
+        />
+      </View>
 
       <SecondaryButton
         label="More Options"
@@ -12444,7 +12481,6 @@ function BuildUpdateScreen({
         onEmail={onSendEmail}
         onText={onSendText}
         onCopy={onCopy}
-        onSaveDraft={onSaveDraft}
         onEditPhotos={onEditPhotos}
         onAddDocument={onAddDocument}
         onShareSheet={onShareSheet}
@@ -12459,7 +12495,6 @@ function MoreOptionsSheet({
   onEmail,
   onText,
   onCopy,
-  onSaveDraft,
   onEditPhotos,
   onAddDocument,
   onShareSheet,
@@ -12469,7 +12504,6 @@ function MoreOptionsSheet({
   onEmail: () => void;
   onText: () => void;
   onCopy: () => void;
-  onSaveDraft: () => void;
   onEditPhotos: () => void;
   onAddDocument: () => void;
   onShareSheet: () => void;
@@ -12484,7 +12518,6 @@ function MoreOptionsSheet({
       <MoreOptionRow label="Email" icon="mail-outline" onPress={() => run(onEmail)} />
       <MoreOptionRow label="Text" icon="chatbubble-outline" onPress={() => run(onText)} />
       <MoreOptionRow label="Copy" icon="copy-outline" onPress={() => run(onCopy)} />
-      <MoreOptionRow label="Save Draft" icon="bookmark-outline" onPress={() => run(onSaveDraft)} />
       <MoreOptionRow label="Edit Photos" icon="images-outline" onPress={() => run(onEditPhotos)} />
       <MoreOptionRow label="Add Document" icon="document-attach-outline" onPress={() => run(onAddDocument)} />
       {Platform.OS === 'ios' ? (
@@ -12597,10 +12630,14 @@ function ReadOnlyUpdateDetailScreen({
           {pieSummary.summary}
         </Text>
         {firstResult?.comparisonConfidence ? (
-          <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieConfidenceSentence(firstResult.comparisonConfidence)}
+          </Text>
         ) : null}
         {firstResult?.comparability ? (
-          <Text style={styles.locationDetailText}>Comparability: {firstResult.comparability}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieComparabilitySentence(firstResult.comparability)}
+          </Text>
         ) : null}
         {baselineOnly ? (
           <>
@@ -12630,7 +12667,10 @@ function ReadOnlyUpdateDetailScreen({
                 key={interpretation}
                 role="interpretation"
                 title={interpretation}
-                detail="DAVE suggestion only. Confirm before using as a message claim."
+                detail={pieInterpretationCaveat(
+                  firstResult?.comparisonConfidence ?? '',
+                  firstResult?.comparability ?? '',
+                )}
               />
             ))}
           </>
@@ -12721,7 +12761,6 @@ function ProjectsScreen({
       thumbnailUri: projectThumbnailUri(project, savedUpdates),
       documentCount: projectDocumentCountForProject(project, projectDocuments),
       contactCount: contactBook.contacts.length,
-      pieBrief: buildProjectCardPIEStatus(project, savedUpdates),
       attentionCount: buildPhase2AttentionItems(savedUpdates, project).length,
     }))
     .filter(item => {
@@ -12864,46 +12903,78 @@ function Phase2ProjectCard({
     thumbnailUri?: string;
     documentCount: number;
     contactCount: number;
-    pieBrief: string;
     attentionCount: number;
   };
   onPress: () => void;
 }) {
+  const hasActivity = item.stats.updates > 0;
   const status = projectRowStatus(item.attentionCount, item.stats.openActions);
-  const statusColor =
-    status === 'Attention Needed'
-      ? colors.danger
+  const tier = !hasActivity
+    ? {
+        tint: colors.fill,
+        iconColor: colors.muted,
+        icon: 'business-outline' as const,
+        label: 'No activity yet',
+      }
+    : status === 'Attention Needed'
+      ? {
+          tint: colors.warningSoft,
+          iconColor: colors.warning,
+          icon: 'warning-outline' as const,
+          label: 'Needs Attention',
+        }
       : status === 'Waiting'
-        ? colors.warning
-        : colors.success;
+        ? {
+            tint: colors.primarySoft,
+            iconColor: colors.primary,
+            icon: 'time-outline' as const,
+            label: 'In Progress',
+          }
+        : {
+            tint: colors.successSoft,
+            iconColor: colors.success,
+            icon: 'checkmark-circle-outline' as const,
+            label: 'On Track',
+          };
+
+  const activitySegments = [
+    item.stats.photos > 0
+      ? `${item.stats.photos} photo${item.stats.photos === 1 ? '' : 's'}`
+      : null,
+    item.documentCount > 0
+      ? `${item.documentCount} document${item.documentCount === 1 ? '' : 's'}`
+      : null,
+    item.stats.openActions > 0
+      ? `${item.stats.openActions} open item${item.stats.openActions === 1 ? '' : 's'}`
+      : null,
+  ].filter(Boolean);
 
   return (
-    <TouchableOpacity style={styles.phase2ProjectCard} onPress={onPress}>
+    <TouchableOpacity
+      style={[styles.phase2ProjectCard, { backgroundColor: tier.tint }]}
+      onPress={onPress}
+    >
       {item.thumbnailUri ? (
         <Image source={{ uri: item.thumbnailUri }} style={styles.phase2ProjectThumb} />
       ) : (
-        <View style={styles.phase2ProjectThumbPlaceholder}>
-          <Ionicons name="business-outline" size={24} color={colors.primary} />
+        <View style={styles.overviewRowIconBubble}>
+          <Ionicons name={tier.icon} size={18} color={tier.iconColor} />
         </View>
       )}
 
       <View style={styles.rowMain}>
-        <View style={styles.phase2ProjectTitleRow}>
-          <View style={[styles.phase2StatusDot, { backgroundColor: statusColor }]} />
-          <Text style={styles.projectName}>{item.project}</Text>
-        </View>
+        <Text style={styles.projectName}>{item.project}</Text>
         <Text style={styles.rowSub}>
-          {status} | Last update:{' '}
-          {item.stats.lastUpdate ? formatDisplayDate(item.stats.lastUpdate) : 'None yet'}
+          {hasActivity
+            ? `${tier.label} · ${
+                item.stats.lastUpdate
+                  ? `Last update: ${formatDisplayDate(item.stats.lastUpdate)}`
+                  : 'No recent updates'
+              }`
+            : tier.label}
         </Text>
-        <Text style={styles.rowSub}>
-          {item.stats.photos} photo{item.stats.photos === 1 ? '' : 's'} | {item.documentCount} document{item.documentCount === 1 ? '' : 's'} | {item.stats.openActions} open item{item.stats.openActions === 1 ? '' : 's'}
-        </Text>
-        <Text style={styles.bodyText}>{item.pieBrief}</Text>
-        {__DEV__ ? (
-          <Text style={styles.locationDetailText}>
-            Rollup source: local-first saved updates | queued included: yes | workspace/card shared: yes
-          </Text>
+        {activitySegments.length > 0 ? (
+          <Text style={styles.rowSub}>{activitySegments.join(' · ')}</Text>
         ) : null}
       </View>
 
@@ -12912,11 +12983,54 @@ function Phase2ProjectCard({
   );
 }
 
+function DailyBriefSection({
+  title,
+  items,
+  emptyText,
+  onOpen,
+}: {
+  title: string;
+  items: Array<DAVEProjectDailyBriefItem | DAVEProjectDailyBriefAttentionItem>;
+  emptyText: string;
+  onOpen: (item: DAVEProjectDailyBriefItem | DAVEProjectDailyBriefAttentionItem) => void;
+}) {
+  return (
+    <View>
+      <Text style={styles.sectionLabelNoMargin}>{title}</Text>
+      {items.length === 0 ? (
+        <Text style={styles.locationDetailText}>{emptyText}</Text>
+      ) : (
+        items.map(item => (
+          <TouchableOpacity
+            key={item.id}
+            style={styles.projectSelectorRow}
+            onPress={() => onOpen(item)}
+          >
+            <View style={styles.rowMain}>
+              <Text style={styles.locationDetailText}>• {item.text}</Text>
+              {'whyItMatters' in item ? (
+                <Text style={styles.rowSub}>{item.whyItMatters} {item.actionText}</Text>
+              ) : null}
+            </View>
+            <Ionicons name="chevron-forward" size={17} color={colors.muted} />
+          </TouchableOpacity>
+        ))
+      )}
+    </View>
+  );
+}
+
+type DAVEWorkspaceOpenItem = {
+  navigationTarget: DAVEBriefNavigationTarget;
+  sourceRecordId: string;
+};
+
 function ProjectWorkspaceScreen({
   contentStyle,
   projectName,
   savedUpdates,
   projectDocuments,
+  scheduleItems,
   contactBook,
   projectStats,
   onBack,
@@ -12924,6 +13038,7 @@ function ProjectWorkspaceScreen({
   onOpenUpdates,
   onOpenPhotoDifferences,
   onOpenDocuments,
+  onOpenDailyBriefItem,
   onRetryQueuedUpdate,
   onDeleteProject,
   isDeletingProject,
@@ -12932,6 +13047,7 @@ function ProjectWorkspaceScreen({
   projectName: string;
   savedUpdates: ProjectUpdate[];
   projectDocuments: ProjectDocument[];
+  scheduleItems: ScheduleItem[];
   contactBook: ContactBook;
   projectStats: ProjectStats;
   onBack: () => void;
@@ -12939,6 +13055,9 @@ function ProjectWorkspaceScreen({
   onOpenUpdates: () => void;
   onOpenPhotoDifferences: (projectName: string) => void;
   onOpenDocuments: () => void;
+  onOpenDailyBriefItem: (
+    item: DAVEWorkspaceOpenItem,
+  ) => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
   onDeleteProject: (projectName: string) => void;
   isDeletingProject: boolean;
@@ -12956,6 +13075,44 @@ function ProjectWorkspaceScreen({
   const issuesCount = projectStats.openActions + projectStats.overdueActions;
   const pieBrief = buildPIEProjectBriefModel(projectName, savedUpdates);
   const documentBrief = buildProjectDocumentMetadataBrief(projectName, projectDocuments);
+  const dailyBrief = buildProjectDailyBrief({
+    projectId: authorityProjectId(projectName),
+    projectName,
+    updates: projectUpdates,
+    documents: projectDocumentsForProject(projectName, projectDocuments),
+    scheduleItems,
+  });
+  const evidenceQuality = buildProjectEvidenceQuality({
+    reality: dailyBrief.reality,
+  });
+  const commitments = buildProjectCommitments({
+    reality: dailyBrief.reality,
+  });
+  const actionCenter = buildProjectActionCenter({
+    dailyBrief,
+    evidenceQuality,
+    commitments,
+    attentionItems: dailyBrief.attentionItems,
+    reality: dailyBrief.reality,
+  });
+  const actionCenterDismissKey = `dave-action-center-dismissed:${authorityProjectId(projectName)}:${isoToday()}`;
+  const [actionCenterDismissed, setActionCenterDismissed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setActionCenterDismissed(false);
+    AsyncStorage.getItem(actionCenterDismissKey)
+      .then(value => {
+        if (active) setActionCenterDismissed(value === 'dismissed');
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [actionCenterDismissKey]);
+
+  const actionCenterSource = actionCenter.supportingEvidence.find(evidence => evidence.sourceType === 'update') ||
+    actionCenter.supportingEvidence[0];
 
   return (
     <ScrollView
@@ -12972,6 +13129,121 @@ function ProjectWorkspaceScreen({
         title={projectName}
         subtitle="Project workspace"
       />
+
+      <View style={styles.phase2BriefCard}>
+        <View style={styles.phase2BriefIcon}>
+          <Ionicons name="flag-outline" size={21} color={colors.primary} />
+        </View>
+        <View style={styles.rowMain}>
+          <Text style={styles.panelTitle}>Today's Priority</Text>
+          {actionCenterDismissed ? (
+            <Text style={styles.locationDetailText}>Dismissed for today.</Text>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={styles.projectSelectorRow}
+                disabled={!actionCenterSource}
+                onPress={() => {
+                  if (!actionCenterSource) return;
+                  onOpenDailyBriefItem({
+                    navigationTarget: actionCenter.navigationTarget,
+                    sourceRecordId: actionCenterSource.recordId,
+                  });
+                }}
+              >
+                <View style={styles.rowMain}>
+                  <Text style={styles.bodyText}>{actionCenter.priority}</Text>
+                  <Text style={styles.locationDetailText}>{actionCenter.reason}</Text>
+                  {actionCenter.recommendedAction ? (
+                    <Text style={styles.photoControlText}>{actionCenter.recommendedAction}</Text>
+                  ) : null}
+                  {actionCenter.confidence ? (
+                    <Text style={styles.rowSub}>Confidence: {actionCenter.confidence}</Text>
+                  ) : null}
+                  {actionCenter.limitations.map(limitation => (
+                    <Text key={limitation} style={styles.rowSub}>{limitation}</Text>
+                  ))}
+                </View>
+                {actionCenterSource ? <Ionicons name="chevron-forward" size={17} color={colors.muted} /> : null}
+              </TouchableOpacity>
+              {actionCenter.recommendedAction ? (
+                <TouchableOpacity
+                  style={styles.photoControlButton}
+                  onPress={() => {
+                    setActionCenterDismissed(true);
+                    AsyncStorage.setItem(actionCenterDismissKey, 'dismissed').catch(() => undefined);
+                  }}
+                >
+                  <Text style={styles.photoControlText}>Dismiss for Today</Text>
+                </TouchableOpacity>
+              ) : null}
+            </>
+          )}
+        </View>
+      </View>
+
+      <View style={styles.phase2BriefCard}>
+        <View style={styles.phase2BriefIcon}>
+          <Ionicons name="sunny-outline" size={21} color={colors.primary} />
+        </View>
+        <View style={styles.rowMain}>
+          <Text style={styles.panelTitle}>DAVE Daily Brief</Text>
+          <DailyBriefSection
+            title="Changed"
+            items={dailyBrief.changedItems}
+            emptyText={dailyBrief.emptyStates.changed}
+            onOpen={onOpenDailyBriefItem}
+          />
+          <DailyBriefSection
+            title="Uncertain"
+            items={dailyBrief.uncertaintyItems}
+            emptyText={dailyBrief.emptyStates.uncertainty}
+            onOpen={onOpenDailyBriefItem}
+          />
+          <DailyBriefSection
+            title="Needs attention"
+            items={dailyBrief.attentionItems}
+            emptyText={dailyBrief.emptyStates.attention}
+            onOpen={onOpenDailyBriefItem}
+          />
+          <Text style={styles.sectionLabelNoMargin}>Recommended next action</Text>
+          {dailyBrief.recommendedAction ? (
+            <TouchableOpacity
+              style={styles.photoControlButton}
+              onPress={() => onOpenDailyBriefItem(dailyBrief.recommendedAction!)}
+            >
+              <Ionicons name="arrow-forward-circle-outline" size={17} color={colors.primary} />
+              <View style={styles.rowMain}>
+                <Text style={styles.photoControlText}>{dailyBrief.recommendedAction.text}</Text>
+                <Text style={styles.locationDetailText}>{dailyBrief.recommendedAction.reason}</Text>
+              </View>
+            </TouchableOpacity>
+          ) : (
+            <Text style={styles.locationDetailText}>{dailyBrief.emptyStates.recommendation}</Text>
+          )}
+        </View>
+      </View>
+
+      <View style={styles.phase2BriefCard}>
+        <View style={styles.phase2BriefIcon}>
+          <Ionicons name="shield-checkmark-outline" size={21} color={colors.primary} />
+        </View>
+        <View style={styles.rowMain}>
+          <Text style={styles.panelTitle}>Evidence Quality</Text>
+          <Text style={styles.bodyText}>Evidence Strength: {evidenceQuality.strength}</Text>
+          {evidenceQuality.signals.map(signal => (
+            <View key={signal.id} style={styles.projectSelectorRow}>
+              <View style={styles.rowMain}>
+                <Text style={styles.locationDetailText}>{signal.label}: {signal.value}</Text>
+                {signal.whyItMatters ? (
+                  <Text style={styles.rowSub}>Why it matters: {signal.whyItMatters}</Text>
+                ) : null}
+              </View>
+            </View>
+          ))}
+          <Text style={styles.locationDetailText}>{evidenceQuality.limitation}</Text>
+        </View>
+      </View>
 
       <View style={styles.phase2BriefCard}>
         <View style={styles.phase2BriefIcon}>
@@ -14816,16 +15088,6 @@ function UpdateHistoryCard({
         </Text>
         {statusLine ? (
           <Text style={styles.bodyText}>{statusLine}</Text>
-        ) : null}
-        {__DEV__ && update.syncDiagnostics ? (
-          <Text style={styles.locationDetailText}>
-            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | retry attempt {update.syncDiagnostics.retryAttemptNumber ?? 'unknown'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | failed operation {update.syncDiagnostics.failedOperationName || 'none'} | target {update.syncDiagnostics.failedLogicalTarget || 'none'} | RLS denied {update.syncDiagnostics.rlsDenied ? 'yes' : 'no'} | user id present {update.syncDiagnostics.authenticatedUserIdPresent === null ? 'unknown' : update.syncDiagnostics.authenticatedUserIdPresent ? 'yes' : 'no'} | project id present {update.syncDiagnostics.projectIdPresent === null ? 'unknown' : update.syncDiagnostics.projectIdPresent ? 'yes' : 'no'} | organization id present {update.syncDiagnostics.organizationIdPresent === null ? 'unknown' : update.syncDiagnostics.organizationIdPresent ? 'yes' : 'no'} | membership {update.syncDiagnostics.membershipCheckResult || 'unknown'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | local file exists {update.syncDiagnostics.localFileExists === null ? 'unknown' : update.syncDiagnostics.localFileExists ? 'yes' : 'no'} | local file readable {update.syncDiagnostics.localFileReadable === null ? 'unknown' : update.syncDiagnostics.localFileReadable ? 'yes' : 'no'} | byte size {update.syncDiagnostics.fileByteSizeCategory} | payload {update.syncDiagnostics.uploadPayloadType} | content type {update.syncDiagnostics.storageContentType || 'unknown'} | path category {update.syncDiagnostics.objectPathCategory || 'unknown'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database after upload {update.syncDiagnostics.databaseSyncRanAfterUpload === null ? 'unknown' : update.syncDiagnostics.databaseSyncRanAfterUpload ? 'yes' : 'no'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
-          </Text>
-        ) : null}
-        {__DEV__ && update.deleteDiagnostics ? (
-          <Text style={styles.locationDetailText}>
-            Lifecycle diagnostics: update id {update.deleteDiagnostics.updateId} | local id {update.deleteDiagnostics.localId} | cloud id present {update.deleteDiagnostics.cloudIdPresent ? 'yes' : 'no'} | lifecycle {update.deleteDiagnostics.lifecycleStatus} | pending sync {update.deleteDiagnostics.pendingSync ? 'yes' : 'no'} | tombstoned {update.deleteDiagnostics.tombstoned ? 'yes' : 'no'} | {update.isArchived ? 'archived at' : 'deleted at'} {update.deleteDiagnostics.deletedAt || 'none'} | source after reload {update.deleteDiagnostics.sourceAfterReload} | merge decision {update.deleteDiagnostics.mergeDecision} | orphaned photo count ignored {update.deleteDiagnostics.orphanedPhotoCountIgnored}
-          </Text>
         ) : null}
         {onRetry ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
@@ -18425,32 +18687,22 @@ const styles = StyleSheet.create({
   },
 
   phase2ProjectCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 12,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     marginBottom: 10,
-    borderColor: colors.line,
+    borderColor: 'rgba(0,0,0,0.18)',
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    minHeight: 104,
+    gap: 10,
   },
 
   phase2ProjectThumb: {
-    width: 64,
-    height: 64,
+    width: 36,
+    height: 36,
     borderRadius: 8,
     backgroundColor: colors.fill,
-  },
-
-  phase2ProjectThumbPlaceholder: {
-    width: 64,
-    height: 64,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 
   phase2ProjectTitleRow: {
@@ -18458,12 +18710,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 7,
     marginBottom: 2,
-  },
-
-  phase2StatusDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 999,
   },
 
   phase2BackButton: {
