@@ -23,8 +23,7 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'At Risk',
   'Blocked',
   'title="Projects"',
-  'accessibilityLabel="New Project"',
-  'phase2AddProjectText}>New Project',
+  'label="New Project"',
   "label: 'Healthy'",
   "label: 'At Risk'",
   "title={search ? 'No matching projects' : 'No projects yet'}",
@@ -65,6 +64,29 @@ assert(
 assert(
   app.includes("onNewUpdate={createNewUpdate}"),
   'Overview New Update should use the existing capture entry point.',
+);
+const projectsScreen = app.slice(
+  app.indexOf('function ProjectsScreen({'),
+  app.indexOf('function projectRowStatus('),
+);
+const projectsHeader = projectsScreen.slice(
+  projectsScreen.indexOf('<ScreenTitle'),
+  projectsScreen.indexOf('<View style={styles.projectFinderPanel}>'),
+);
+assert(
+  !projectsHeader.includes('New Project') &&
+    !projectsHeader.includes('TouchableOpacity'),
+  'Projects header must contain only its title and subtitle, without a floating New Project action.',
+);
+assert(
+  projectsScreen.indexOf('<View style={styles.projectFinderPanel}>') <
+    projectsScreen.indexOf('label="New Project"') &&
+    projectsScreen.indexOf('label="New Project"') <
+    projectsScreen.indexOf('Open Projects') &&
+    projectsScreen.includes('onPress={() => setShowAddProject(prev => !prev)}') &&
+    app.includes('primaryButton: {') &&
+    app.includes('minHeight: 54'),
+  'Projects must show a full-width 44pt-or-larger New Project action after Search and before Open Projects.',
 );
 assert(
   app.includes('observedFindingsForUpdateBrief') &&

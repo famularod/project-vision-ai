@@ -159,6 +159,22 @@ export function resolveProjectDisplayPhotoUri(
   return automaticPhotoUri || null;
 }
 
+export function resolveProjectCoverPhotoUri(
+  records: ProjectRecord[],
+  projectName: string | null | undefined,
+  automaticPhotoUri: string | null | undefined,
+): string | null {
+  if (!projectName) return automaticPhotoUri || null;
+  const record = records.find(
+    item => item.name.toLowerCase() === projectName.toLowerCase(),
+  );
+  return resolveProjectDisplayPhotoUri(
+    record?.coverPhotoMode,
+    record?.coverPhoto,
+    automaticPhotoUri,
+  );
+}
+
 export function cloudProjectCoverData(
   coverPhoto: ProjectCoverPhoto | null,
   coverPhotoMode: ProjectCoverPhotoMode,

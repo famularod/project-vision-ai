@@ -33,6 +33,7 @@ const {
   mergeProjectRecords,
   normalizeProjectRecords,
   projectRecordFromCloud,
+  resolveProjectCoverPhotoUri,
   resolveProjectDisplayPhotoUri,
 } = moduleValue.exports;
 
@@ -63,6 +64,15 @@ assert.strictEqual(
   resolveProjectDisplayPhotoUri('manual', { ...selected, localUri: null }, automatic),
   null,
   'Manual mode must not silently substitute an automatic image while its cover cache hydrates.',
+);
+assert.strictEqual(
+  resolveProjectCoverPhotoUri([{
+    name: 'Alpha',
+    coverPhoto: selected,
+    coverPhotoMode: 'manual',
+  }], 'alpha', automatic),
+  selected.localUri,
+  'Every project surface must resolve the same manual cover using canonical project context.',
 );
 
 const serialized = JSON.stringify([{
@@ -143,8 +153,12 @@ for (const accessibilityLabel of [
   assert(workspaceSource.includes(`accessibilityLabel="${accessibilityLabel}"`),
     `Project Workspace is missing accessible cover control: ${accessibilityLabel}.`);
 }
-assert(app.includes('resolveProjectDisplayPhotoUri('),
-  'Project Workspace and Overview must share explicit manual/automatic display behavior.');
+assert((app.match(/resolveProjectCoverPhotoUri\(/g) || []).length >= 3,
+  'Overview, Projects, and Project Workspace must use the canonical project cover resolver.');
+assert(app.includes('projectRecords={projectRecords}'),
+  'Projects must receive project cover records instead of selecting an independent thumbnail.');
+assert(app.includes('coverPhotoUri={resolveProjectCoverPhotoUri('),
+  'Project Workspace must receive the canonical resolved project cover URI.');
 assert(app.includes("coverPhotoMode: 'manual'") && app.includes("coverPhotoMode: 'automatic'"),
   'Camera/library selection must choose manual mode and best-photo/removal must choose automatic mode.');
 assert(projectService.includes('coverPhotoUpload: coverPhoto?.localUri && coverPhoto.remotePath'),

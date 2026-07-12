@@ -59,7 +59,7 @@ import {
   mergeProjectRecords,
   normalizeProjectRecords,
   removeCachedProjectCoverPhoto,
-  resolveProjectDisplayPhotoUri,
+  resolveProjectCoverPhotoUri,
   type ProjectCoverPhoto,
   type ProjectRecord,
 } from './services/ProjectCoverPhotoService';
@@ -9382,6 +9382,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectDocuments={projectDocuments}
               contactBook={contactBook}
               projectStatsByName={projectStatsByName}
+              projectRecords={projectRecords}
               onSelect={openProjectWorkspace}
               onAddProject={addProject}
               initialStatusFilter={projectsEntryStatusFilter ?? undefined}
@@ -9401,6 +9402,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               coverPhotoMode={projectRecords.find(project =>
                 project.name.toLowerCase() === selectedWorkspaceProject.toLowerCase()
               )?.coverPhotoMode || 'automatic'}
+              coverPhotoUri={resolveProjectCoverPhotoUri(
+                projectRecords,
+                selectedWorkspaceProject,
+                projectThumbnailUri(selectedWorkspaceProject, savedUpdates),
+              )}
               onTakeNewCoverPhoto={() => {
                 void takeNewProjectCoverPhoto(selectedWorkspaceProject);
               }}
@@ -9925,13 +9931,9 @@ function HomeScreen({
     .slice(0, 5);
 
   function overviewPhotoForProject(projectName: string) {
-    const projectRecord = projectRecords.find(
-      project => project.name.toLowerCase() === projectName.toLowerCase(),
-    );
-
-    return resolveProjectDisplayPhotoUri(
-      projectRecord?.coverPhotoMode,
-      coverPhotoForProject(projectRecords, projectName),
+    return resolveProjectCoverPhotoUri(
+      projectRecords,
+      projectName,
       projectThumbnailUri(projectName, savedUpdates),
     );
   }
@@ -12972,6 +12974,7 @@ function ProjectsScreen({
   projectDocuments,
   contactBook,
   projectStatsByName,
+  projectRecords,
   onSelect,
   onAddProject,
   initialStatusFilter,
@@ -12982,6 +12985,7 @@ function ProjectsScreen({
   projectDocuments: ProjectDocument[];
   contactBook: ContactBook;
   projectStatsByName: Record<string, ProjectStats>;
+  projectRecords: ProjectRecord[];
   onSelect: (projectName: string) => void;
   onAddProject: (projectName: string) => boolean;
   initialStatusFilter?: 'onTrack';
@@ -12997,7 +13001,11 @@ function ProjectsScreen({
     .map(project => ({
       project,
       stats: projectStatsForName(projectStatsByName, project),
-      thumbnailUri: projectThumbnailUri(project, savedUpdates),
+      thumbnailUri: resolveProjectCoverPhotoUri(
+        projectRecords,
+        project,
+        projectThumbnailUri(project, savedUpdates),
+      ),
       documentCount: projectDocumentCountForProject(project, projectDocuments),
       contactCount: contactBook.contacts.length,
       attentionCount: buildPhase2AttentionItems(savedUpdates, project).length,
@@ -13042,21 +13050,10 @@ function ProjectsScreen({
       renderItem={renderProject}
       ListHeaderComponent={
         <>
-          <View style={styles.phase2HeaderRow}>
-            <ScreenTitle
-              title="Projects"
-              subtitle="Open a project workspace or start a field update."
-            />
-            <TouchableOpacity
-              style={styles.phase2AddProjectButton}
-              onPress={() => setShowAddProject(prev => !prev)}
-              accessibilityRole="button"
-              accessibilityLabel="New Project"
-            >
-              <Ionicons name="add-outline" size={20} color="#FFFFFF" />
-              <Text style={styles.phase2AddProjectText}>New Project</Text>
-            </TouchableOpacity>
-          </View>
+          <ScreenTitle
+            title="Projects"
+            subtitle="Open a project workspace or start a field update."
+          />
 
           <View style={styles.projectFinderPanel}>
             <View style={styles.projectSearchBox}>
@@ -13106,6 +13103,12 @@ function ProjectsScreen({
             ) : null}
           </View>
 
+          <PrimaryButton
+            label="New Project"
+            icon="add-circle-outline"
+            onPress={() => setShowAddProject(prev => !prev)}
+          />
+
           {showAddProject ? (
             <AddProjectCard
               buttonLabel="Create Project"
@@ -13148,7 +13151,7 @@ function Phase2ProjectCard({
   item: {
     project: string;
     stats: ProjectStats;
-    thumbnailUri?: string;
+    thumbnailUri?: string | null;
     documentCount: number;
     contactCount: number;
     attentionCount: number;
@@ -13300,6 +13303,7 @@ function ProjectWorkspaceScreen({
   projectStats,
   coverPhoto,
   coverPhotoMode,
+  coverPhotoUri,
   onTakeNewCoverPhoto,
   onChooseCoverFromLibrary,
   onUseBestProjectPhoto,
@@ -13323,6 +13327,7 @@ function ProjectWorkspaceScreen({
   projectStats: ProjectStats;
   coverPhoto: ProjectCoverPhoto | null;
   coverPhotoMode: 'automatic' | 'manual';
+  coverPhotoUri: string | null;
   onTakeNewCoverPhoto: () => void;
   onChooseCoverFromLibrary: () => void;
   onUseBestProjectPhoto: () => void;
@@ -13382,12 +13387,6 @@ function ProjectWorkspaceScreen({
 
   const actionCenterSource = actionCenter.supportingEvidence.find(evidence => evidence.sourceType === 'update') ||
     actionCenter.supportingEvidence[0];
-  const automaticProjectPhotoUri = projectThumbnailUri(projectName, savedUpdates);
-  const workspaceHeroPhotoUri = resolveProjectDisplayPhotoUri(
-    coverPhotoMode,
-    coverPhoto,
-    automaticProjectPhotoUri,
-  );
   const workspaceFadeStyle = useFadeSlideIn(260);
   const projectHealthIsProblem = dailyBrief.reality.state === 'Blocked' || dailyBrief.reality.state === 'At Risk';
   const projectHealthIsHealthy = dailyBrief.reality.state === 'Moving';
@@ -13419,9 +13418,9 @@ function ProjectWorkspaceScreen({
       />
 
       <View style={styles.projectWorkspaceHero}>
-        {workspaceHeroPhotoUri ? (
+        {coverPhotoUri ? (
           <Image
-            source={{ uri: workspaceHeroPhotoUri }}
+            source={{ uri: coverPhotoUri }}
             style={styles.projectWorkspaceHeroImage}
             accessibilityLabel={`${projectName} project cover photo`}
           />
@@ -19601,36 +19600,6 @@ const styles = StyleSheet.create({
   projectSelectorRowSelected: {
     backgroundColor: colors.primarySoft,
     borderColor: colors.primary,
-  },
-
-  phase2HeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 4,
-  },
-
-  phase2AddProjectButton: {
-    minHeight: 46,
-    borderRadius: 23,
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.primary,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.12,
-    shadowRadius: 7,
-    elevation: 3,
-  },
-
-  phase2AddProjectText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
   },
 
   phase2ProjectCard: {
