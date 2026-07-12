@@ -12,6 +12,7 @@ const bottomNav = read('components/BottomNavigation.tsx');
 const home = read('components/HomeDashboard.tsx');
 const capture = read('components/PhotoCapturePanel.tsx');
 const review = read('screens/ReportsScreen.tsx');
+const settings = read('screens/AdminScreen.tsx');
 
 assert(app.includes("useState<Screen>('Home')"), 'app should open on Home');
 assert(bottomNav.includes('label="Overview"'), 'bottom nav should start with Overview');
@@ -43,6 +44,68 @@ assert(review.includes('Approve Report'), 'Review should keep approval action');
 assert(review.includes('Edit Report'), 'Review should keep correction action');
 assert(review.includes('Copy Report'), 'Review should keep share/copy action');
 assert(review.includes('Email Report'), 'Review should keep email/share action');
+
+const settingsMain = settings.slice(
+  settings.indexOf('<ScreenHeader'),
+  settings.indexOf('<ScreenSection title="Advanced / Diagnostics">'),
+);
+[
+  'title="Settings"',
+  'title="Account"',
+  'title="Preferences"',
+  'title="DAVE"',
+  'title="Support"',
+  'title="Advanced / Diagnostics"',
+  'title="Profile"',
+  'title="Organization"',
+  'title="Connection status"',
+  'title="Notifications"',
+  'title="Project defaults"',
+  'title="Photo quality"',
+  'title="Appearance"',
+  'title="Daily Brief"',
+  'title="Ask DAVE"',
+  'title="Voice"',
+  'detail="Coming Soon"',
+  'title="Feedback"',
+  'title="Help"',
+  'title="About"',
+].forEach(marker => assert(settings.includes(marker), `Settings should include ${marker}`));
+assert(
+  settings.indexOf('title="Account"') < settings.indexOf('title="Preferences"') &&
+    settings.indexOf('title="Preferences"') < settings.indexOf('title="DAVE"') &&
+    settings.indexOf('title="DAVE"') < settings.indexOf('title="Support"') &&
+    settings.indexOf('title="Support"') < settings.indexOf('title="Advanced / Diagnostics"'),
+  'Settings should follow the Account, Preferences, DAVE, Support, Advanced hierarchy.',
+);
+assert(
+  settings.includes('const [advancedOpen, setAdvancedOpen] = useState(false)') &&
+    settings.includes('{advancedOpen ? (') &&
+    settings.includes('accessibilityState={{ expanded: advancedOpen }}'),
+  'Advanced diagnostics must be collapsed by default and expose its disclosure state accessibly.',
+);
+assert(
+  !settingsMain.includes('Server Routed') &&
+    !settingsMain.includes('label="Build"') &&
+    !settingsMain.includes('label="Auth"') &&
+    !settingsMain.includes('label="Sync Now"'),
+  'Developer routing, build, auth, and sync terminology must stay out of the main Settings view.',
+);
+assert(
+  settings.includes("? 'Connected'") && settings.includes(": 'Needs Attention'"),
+  'Settings should reduce connection status to Connected or Needs Attention.',
+);
+[
+  'handleSyncNow',
+  'handleTestConnection',
+  'onBackup',
+  'onRestore',
+  'onDiagnostics',
+  'onProjectManagement',
+  'onReferenceDocuments',
+  'onSchedule',
+  'ManageAreasPanel',
+].forEach(marker => assert(settings.includes(marker), `Settings must preserve existing behavior: ${marker}`));
 
 const normalUi = [bottomNav, home, capture, review].join('\n');
 [

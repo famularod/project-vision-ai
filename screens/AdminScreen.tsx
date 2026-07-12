@@ -112,6 +112,7 @@ export function AdminScreen({
   const [isCheckingConnection, setIsCheckingConnection] = useState(true);
   const [adminActionSummary, setAdminActionSummary] =
     useState('Cloud sync tools are available.');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -148,166 +149,21 @@ export function AdminScreen({
 
   const connected = testResult?.connected ?? false;
   const cloudProjectCount = testResult?.projectCount;
+  const connectionLabel = !isCheckingConnection && connected
+    ? 'Connected'
+    : 'Needs Attention';
 
   return (
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
         title="Settings"
-        subtitle="Account, cloud services, project tools, and application preferences."
+        subtitle="Manage your account, preferences, DAVE experience, and support."
         onBack={onBack}
       />
 
-      <ScreenSection title="System Status">
-        <ScreenMetricGrid>
-          <ScreenMetric
-            label="Cloud"
-            value={supabaseConfig.configured ? 'Ready' : 'Needs Setup'}
-            detail={
-              supabaseConfig.configured
-                ? 'Cloud configuration is ready.'
-                : 'Cloud setup needs review.'
-            }
-            tone={supabaseConfig.configured ? 'success' : 'warning'}
-            icon={<Ionicons name="cloud-outline" size={18} color={colors.primary} />}
-          />
-
-          <ScreenMetric
-            label="Connected"
-            value={isCheckingConnection ? 'Checking...' : connected ? 'Yes' : 'No'}
-            detail={
-              isCheckingConnection
-                ? 'Verifying cloud connection...'
-                : connected
-                  ? formatCheckedAt(testResult?.checkedAt)
-                  : 'Cloud connection needs review.'
-            }
-            tone={isCheckingConnection ? 'default' : connected ? 'success' : 'warning'}
-            icon={<Ionicons name="wifi-outline" size={18} color={colors.primary} />}
-          />
-
-          <ScreenMetric
-            label="Cloud Projects"
-            value={cloudProjectCount === null || cloudProjectCount === undefined ? 'Unknown' : cloudProjectCount}
-            detail="Projects synced through cloud"
-            tone={cloudProjectCount === null || cloudProjectCount === undefined ? 'warning' : 'default'}
-            icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />}
-          />
-
-          <ScreenMetric
-            label="DAVE Assist"
-            value="Server Routed"
-            detail={aiStatus.message}
-            tone="success"
-            icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />}
-          />
-
-          <ScreenMetric
-            label="Build"
-            value="22"
-            detail="True Photo Intelligence"
-            tone="success"
-            icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />}
-          />
-
-          <ScreenMetric
-            label="Auth"
-            value={connectionStatus?.authenticated ? 'Signed In' : 'No Session'}
-            detail={connectionStatus?.userEmail || 'Future multi-user support'}
-            tone={connectionStatus?.authenticated ? 'success' : 'default'}
-            icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />}
-          />
-        </ScreenMetricGrid>
-      </ScreenSection>
-
-      <ScreenCard>
-        <Text style={styles.cardTitle}>
-          Admin
-        </Text>
-
-        <Text style={styles.cardText}>
-          Cloud sync, backup, and restore tools are available.
-        </Text>
-
-        <View style={styles.actionGrid}>
-          <AdminActionButton
-            label={isSyncing ? 'Syncing...' : 'Sync Now'}
-            icon="sync-outline"
-            onPress={handleSyncNow}
-            disabled={isSyncing}
-            primary
-          />
-
-          <AdminActionButton
-            label="Backup"
-            icon="download-outline"
-            onPress={onBackup}
-          />
-
-          <AdminActionButton
-            label="Restore"
-            icon="cloud-upload-outline"
-            onPress={onRestore}
-          />
-        </View>
-
-        <Text style={styles.resultText}>
-          {adminActionSummary}
-        </Text>
-      </ScreenCard>
-
-      <ScreenSection title="Projects">
-        <ScreenCard>
-          <Text style={styles.cardText}>
-            Rename, archive, restore, delete, favorite, and search projects from Projects.
-          </Text>
-
-          <SecondaryButton
-            label="Projects"
-            icon="folder-outline"
-            onPress={onProjectManagement}
-          />
-        </ScreenCard>
-      </ScreenSection>
-
-      <ScreenSection title="Schedule and Documents">
-        <ScreenCard>
-          <Text style={styles.cardText}>
-            Documents and schedules stay available here so DAVE and Capture can stay focused.
-          </Text>
-
-          <View style={styles.actionGrid}>
-            <AdminActionButton
-              label="Documents"
-              icon="documents-outline"
-              onPress={onReferenceDocuments}
-            />
-
-            <AdminActionButton
-              label="Schedule"
-              icon="calendar-outline"
-              onPress={onSchedule}
-            />
-          </View>
-        </ScreenCard>
-      </ScreenSection>
-
-      <ScreenSection title="Settings">
-        <ScreenCard>
-          <View style={styles.infoHeader}>
-            <Ionicons
-              name="person-circle-outline"
-              size={20}
-              color={colors.primary}
-            />
-
-            <Text style={styles.cardTitle}>
-              Account
-            </Text>
-          </View>
-
-          <Text style={styles.modalLabel}>
-            Display name
-          </Text>
+      <ScreenSection title="Account">
+        <ScreenCard style={styles.settingsCard}>
+          <SettingsRow icon="person-circle-outline" title="Profile" detail="Your display name" />
           <TextInput
             style={styles.modalInput}
             value={displayName}
@@ -315,6 +171,14 @@ export function AdminScreen({
             placeholder="David"
             placeholderTextColor={colors.mutedText}
             autoCapitalize="words"
+          />
+
+          <SettingsRow icon="business-outline" title="Organization" detail="Current DAVE workspace" />
+          <SettingsRow
+            icon={connected ? 'checkmark-circle-outline' : 'alert-circle-outline'}
+            title="Connection status"
+            detail={connectionLabel}
+            tone={connected ? 'success' : 'warning'}
           />
 
           {connectionStatus?.authenticated ? (
@@ -364,66 +228,95 @@ export function AdminScreen({
         onClose={closeSignInModal}
       />
 
-      <ScreenSection title="Developer Tools">
-        <ScreenCard>
-          <Text style={styles.cardTitle}>
-            Advanced Configuration
-          </Text>
-
-          <Text style={styles.cardText}>
-            Area Mapping is an advanced setup tool for DAVE location intelligence. Daily project work should happen from DAVE, Capture, and Review.
-          </Text>
-
-          <SecondaryButton
-            label={advancedConfigOpen ? 'Hide Area Mapping' : 'Open Area Mapping'}
-            icon={advancedConfigOpen ? 'chevron-up-outline' : 'map-outline'}
-            onPress={() => setAdvancedConfigOpen(open => !open)}
-          />
+      <ScreenSection title="Preferences">
+        <ScreenCard style={styles.settingsCard}>
+          <SettingsRow icon="notifications-outline" title="Notifications" detail="Project alerts and reminders" />
+          <SettingsRow icon="options-outline" title="Project defaults" detail="Current project preferences" />
+          <SettingsRow icon="camera-outline" title="Photo quality" detail="Automatic quality" />
+          <SettingsRow icon="contrast-outline" title="Appearance" detail="System appearance" last />
         </ScreenCard>
-
-        <ScreenCard>
-          <Text style={styles.cardTitle}>
-            Developer Support
-          </Text>
-
-          <Text style={styles.cardText}>
-            Diagnostics, raw cloud diagnostics, connection tests, and debug data are support tools for troubleshooting.
-          </Text>
-
-          <View style={styles.actionGrid}>
-            <AdminActionButton
-              label="Diagnostics"
-              icon="pulse-outline"
-              onPress={onDiagnostics}
-            />
-
-            <AdminActionButton
-              label={isTesting ? 'Testing...' : 'Test Connection'}
-              icon="cloud-done-outline"
-              onPress={handleTestConnection}
-              disabled={isTesting}
-              primary
-            />
-          </View>
-        </ScreenCard>
-
-        {advancedConfigOpen ? (
-          <ManageAreasPanel
-            projectAreas={projectAreas}
-            onAddArea={onAddArea}
-            onUpdateArea={onUpdateArea}
-            onDeleteArea={onDeleteArea}
-            onUseCurrentLocationForArea={onUseCurrentLocationForArea}
-          />
-        ) : null}
       </ScreenSection>
 
-      <ScreenSection title="Build Information">
-        <AdminInfoCard
-          title="App Version / Build Info"
-          text="Build metadata placeholder. Add EAS build profile, version, runtime version, and update channel here when release metadata is finalized."
-          icon="information-circle-outline"
-        />
+      <ScreenSection title="DAVE">
+        <ScreenCard style={styles.settingsCard}>
+          <SettingsRow icon="today-outline" title="Daily Brief" detail="Available in each project workspace" />
+          <SettingsRow icon="sparkles-outline" title="Ask DAVE" detail="Available in each project workspace" />
+          <SettingsRow icon="mic-outline" title="Voice" detail="Coming Soon" last />
+        </ScreenCard>
+      </ScreenSection>
+
+      <ScreenSection title="Support">
+        <ScreenCard style={styles.settingsCard}>
+          <SettingsRow icon="chatbubble-ellipses-outline" title="Feedback" detail="Share product feedback" />
+          <SettingsRow icon="help-circle-outline" title="Help" detail="Get help using DAVE" />
+          <SettingsRow icon="information-circle-outline" title="About" detail="DAVE project intelligence" last />
+        </ScreenCard>
+      </ScreenSection>
+
+      <ScreenSection title="Advanced / Diagnostics">
+        <TouchableOpacity
+          style={styles.advancedDisclosure}
+          onPress={() => setAdvancedOpen(open => !open)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: advancedOpen }}
+          accessibilityLabel="Advanced and diagnostics"
+        >
+          <View style={styles.settingsIcon}>
+            <Ionicons name="settings-outline" size={20} color={colors.primary} />
+          </View>
+          <View style={styles.settingsRowMain}>
+            <Text style={styles.settingsRowTitle}>Technical details and tools</Text>
+            <Text style={styles.settingsRowDetail}>Build, connection, sync, routing, and diagnostics</Text>
+          </View>
+          <Ionicons name={advancedOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.mutedText} />
+        </TouchableOpacity>
+
+        {advancedOpen ? (
+          <>
+            <ScreenMetricGrid>
+              <ScreenMetric label="Cloud" value={supabaseConfig.configured ? 'Ready' : 'Needs Setup'} detail={supabaseConfig.configured ? 'Cloud configuration is ready.' : 'Cloud setup needs review.'} tone={supabaseConfig.configured ? 'success' : 'warning'} icon={<Ionicons name="cloud-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Connection" value={connectionLabel} detail={formatCheckedAt(testResult?.checkedAt)} tone={connected ? 'success' : 'warning'} icon={<Ionicons name="wifi-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Cloud Projects" value={cloudProjectCount ?? 'Unknown'} detail="Projects synced through cloud" tone={cloudProjectCount == null ? 'warning' : 'default'} icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="DAVE Assist" value="Server Routed" detail={aiStatus.message} tone="success" icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Build" value="22" detail="True Photo Intelligence" tone="success" icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Auth" value={connectionStatus?.authenticated ? 'Signed In' : 'No Session'} detail={connectionStatus?.userEmail || 'No active account session'} tone={connectionStatus?.authenticated ? 'success' : 'default'} icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />} />
+            </ScreenMetricGrid>
+
+            <ScreenCard>
+              <Text style={styles.cardTitle}>Data and sync</Text>
+              <View style={styles.actionGrid}>
+                <AdminActionButton label={isSyncing ? 'Syncing...' : 'Sync Now'} icon="sync-outline" onPress={handleSyncNow} disabled={isSyncing} primary />
+                <AdminActionButton label="Backup" icon="download-outline" onPress={onBackup} />
+                <AdminActionButton label="Restore" icon="cloud-upload-outline" onPress={onRestore} />
+              </View>
+              <Text style={styles.resultText}>{adminActionSummary}</Text>
+            </ScreenCard>
+
+            <ScreenCard>
+              <Text style={styles.cardTitle}>Project tools</Text>
+              <View style={styles.actionGrid}>
+                <AdminActionButton label="Projects" icon="folder-outline" onPress={onProjectManagement} />
+                <AdminActionButton label="Documents" icon="documents-outline" onPress={onReferenceDocuments} />
+                <AdminActionButton label="Schedule" icon="calendar-outline" onPress={onSchedule} />
+              </View>
+            </ScreenCard>
+
+            <ScreenCard>
+              <Text style={styles.cardTitle}>Developer support</Text>
+              <View style={styles.actionGrid}>
+                <AdminActionButton label="Diagnostics" icon="pulse-outline" onPress={onDiagnostics} />
+                <AdminActionButton label={isTesting ? 'Testing...' : 'Test Connection'} icon="cloud-done-outline" onPress={handleTestConnection} disabled={isTesting} primary />
+              </View>
+              <SecondaryButton label={advancedConfigOpen ? 'Hide Area Mapping' : 'Open Area Mapping'} icon={advancedConfigOpen ? 'chevron-up-outline' : 'map-outline'} onPress={() => setAdvancedConfigOpen(open => !open)} />
+            </ScreenCard>
+
+            {advancedConfigOpen ? (
+              <ManageAreasPanel projectAreas={projectAreas} onAddArea={onAddArea} onUpdateArea={onUpdateArea} onDeleteArea={onDeleteArea} onUseCurrentLocationForArea={onUseCurrentLocationForArea} />
+            ) : null}
+
+            <AdminInfoCard title="App Version / Build Info" text="Build metadata placeholder. Add EAS build profile, version, runtime version, and update channel here when release metadata is finalized." icon="information-circle-outline" />
+          </>
+        ) : null}
       </ScreenSection>
     </Screen>
   );
@@ -675,6 +568,38 @@ function formatMissingPhotoSyncMessage(count: number) {
   return `${count} photo${count === 1 ? '' : 's'} could not be synced because ${count === 1 ? 'it is' : 'they are'} no longer available.`;
 }
 
+function SettingsRow({
+  icon,
+  title,
+  detail,
+  tone = 'default',
+  last = false,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  detail: string;
+  tone?: 'default' | 'success' | 'warning';
+  last?: boolean;
+}) {
+  const iconColor = tone === 'success'
+    ? colors.success
+    : tone === 'warning'
+      ? colors.warning
+      : colors.primary;
+
+  return (
+    <View style={[styles.settingsRow, last && styles.settingsRowLast]}>
+      <View style={styles.settingsIcon}>
+        <Ionicons name={icon} size={20} color={iconColor} />
+      </View>
+      <View style={styles.settingsRowMain}>
+        <Text style={styles.settingsRowTitle}>{title}</Text>
+        <Text style={styles.settingsRowDetail}>{detail}</Text>
+      </View>
+    </View>
+  );
+}
+
 function AdminInfoCard({
   title,
   text,
@@ -872,6 +797,69 @@ function formatCheckedAt(value: string | undefined) {
 }
 
 const styles = StyleSheet.create({
+  settingsCard: {
+    paddingVertical: spacing.xs,
+  },
+
+  settingsRow: {
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    paddingVertical: spacing.sm,
+  },
+
+  settingsRowLast: {
+    borderBottomWidth: 0,
+  },
+
+  settingsIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  settingsRowMain: {
+    flex: 1,
+  },
+
+  settingsRowTitle: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '800',
+  },
+
+  settingsRowDetail: {
+    color: colors.mutedText,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+
+  advancedDisclosure: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
   cardTitle: {
     ...typography.h3,
     marginBottom: spacing.sm,
