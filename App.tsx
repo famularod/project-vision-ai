@@ -15243,20 +15243,27 @@ function SavedUpdatesScreen({
             subtitle="What needs your attention today?"
           />
 
-          <View style={styles.updateTopControlRow}>
-            <View style={styles.updateSearchBox}>
-              <Ionicons name="search-outline" size={19} color={colors.muted} />
-              <TextInput
-                style={styles.projectSearchInput}
-                value={searchText}
-                onChangeText={setSearchText}
-                placeholder="Search updates"
-                placeholderTextColor={colors.muted}
-              />
+          <View style={styles.updateSearchPanel}>
+            <View style={styles.updateTopControlRow}>
+              <View style={styles.updateSearchBox}>
+                <Ionicons name="search-outline" size={19} color={colors.muted} />
+                <TextInput
+                  style={styles.projectSearchInput}
+                  value={searchText}
+                  onChangeText={setSearchText}
+                  placeholder="Search updates"
+                  placeholderTextColor={colors.muted}
+                />
+              </View>
+              <TouchableOpacity
+                style={styles.updateFilterButton}
+                onPress={() => setFilterOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Filter updates"
+              >
+                <Ionicons name="filter-outline" size={20} color={colors.primary} />
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity style={styles.updateFilterButton} onPress={() => setFilterOpen(true)}>
-              <Ionicons name="filter-outline" size={20} color={colors.primary} />
-            </TouchableOpacity>
           </View>
 
           <View style={styles.updateSegmentRow}>
@@ -15270,6 +15277,9 @@ function SavedUpdatesScreen({
                     selected && styles.updateSegmentSelected,
                   ]}
                   onPress={() => setActiveTab(tab)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`${tab} updates`}
                 >
                   <Text
                     style={[
@@ -15310,7 +15320,9 @@ function SavedUpdatesScreen({
       }
       ListFooterComponent={
         filteredUpdates.length > 0 ? (
-          <PrimaryButton label="New Update" icon="add-circle-outline" onPress={onNewUpdate} />
+          <View style={styles.updateFooterAction}>
+            <PrimaryButton label="New Update" icon="add-circle-outline" onPress={onNewUpdate} />
+          </View>
         ) : null
       }
     />
@@ -15499,7 +15511,12 @@ function UpdateHistoryCard({
             : 'Draft';
 
   return (
-    <TouchableOpacity style={styles.updateCard} onPress={onOpen}>
+    <TouchableOpacity
+      style={styles.updateCard}
+      onPress={onOpen}
+      accessibilityRole="button"
+      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${relativeUpdateTimestamp(update.date)}`}
+    >
       <View style={styles.updateCardMedia}>
         {thumbnail ? (
           <Image source={{ uri: thumbnail }} style={styles.updateCardThumb} />
@@ -15563,7 +15580,12 @@ function UpdateHistoryCard({
       </View>
 
       <View style={styles.updateCardActions}>
-        <TouchableOpacity style={styles.iconOnlyButton} onPress={() => setMenuOpen(true)}>
+        <TouchableOpacity
+          style={styles.iconOnlyButton}
+          onPress={() => setMenuOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`More options for ${update.projectName} update`}
+        >
           <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
         </TouchableOpacity>
         <Ionicons name="chevron-forward" size={22} color={colors.muted} />
@@ -19904,7 +19926,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 10,
+  },
+
+  updateSearchPanel: {
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 12,
+    borderColor: colors.line,
+    borderWidth: 1,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
 
   updateSearchBox: {
@@ -19953,7 +19988,7 @@ const styles = StyleSheet.create({
 
   updateSegment: {
     flex: 1,
-    minHeight: 40,
+    minHeight: 44,
     borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
@@ -20115,6 +20150,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     marginBottom: 12,
+  },
+
+  updateFooterAction: {
+    paddingTop: 4,
+    paddingBottom: 6,
   },
 
   updateOverflowSheet: {

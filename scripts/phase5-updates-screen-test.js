@@ -11,6 +11,10 @@ const updatesScreen = app.slice(
   app.indexOf('function SavedUpdatesScreen'),
   app.indexOf('function UpdateFilterSheet'),
 );
+const updateCard = app.slice(
+  app.indexOf('function UpdateHistoryCard'),
+  app.indexOf('function UpdateOverflowMenu'),
+);
 
 [
   'title="Updates"',
@@ -68,6 +72,35 @@ assert(
   !updatesScreen.includes('Needs Your Attention') &&
     !updatesScreen.includes("(['Needs Review', 'Drafts', 'Sent', 'All'] as const)"),
   'Updates should rely on the active three-tab queue without a redundant section title.',
+);
+assert(
+  updatesScreen.indexOf('title="Updates"') <
+    updatesScreen.indexOf('styles.updateSearchPanel') &&
+    updatesScreen.indexOf('styles.updateSearchPanel') <
+    updatesScreen.indexOf('styles.updateSegmentRow') &&
+    updatesScreen.includes('renderItem={renderUpdate}') &&
+    updatesScreen.indexOf('styles.updateSegmentRow') <
+    updatesScreen.indexOf('ListFooterComponent') &&
+    updatesScreen.includes('styles.updateFooterAction'),
+  'Updates must follow the title, subtitle, search, tabs, cards, New Update top-down workflow.',
+);
+assert(
+  updatesScreen.includes('accessibilityRole="tab"') &&
+    updatesScreen.includes('accessibilityState={{ selected }}') &&
+    updatesScreen.includes('accessibilityRole="button"') &&
+    app.includes('updateSegment: {') &&
+    app.includes('minHeight: 44'),
+  'Updates tabs and cards must expose large accessible touch targets.',
+);
+assert(
+  updateCard.includes('styles.updateCardMedia') &&
+    updateCard.includes('styles.updateCardProject') &&
+    updateCard.includes('styles.updateCardSummary') &&
+    updateCard.includes('relativeUpdateTimestamp(update.date)') &&
+    updateCard.includes('styles.updateCardType') &&
+    updateCard.includes('styles.updatePhotoStatusPill') &&
+    updateCard.includes('name="chevron-forward"'),
+  'Each update card must keep its large thumbnail, project, summary, relative time, type, status, and chevron.',
 );
 assert(
   updatesScreen.includes('group !== previousGroup') &&
