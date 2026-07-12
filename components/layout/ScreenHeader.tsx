@@ -93,7 +93,7 @@ export function HeaderIconButton({
 
 const styles = StyleSheet.create({
   header: {
-    marginBottom: spacing.lg,
+    marginBottom: spacing.xl,
   },
 
   topRow: {
@@ -103,9 +103,9 @@ const styles = StyleSheet.create({
   },
 
   iconButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,

@@ -39,12 +39,13 @@ export function ScreenCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.surface,
-    borderRadius: radius.sm,
-    marginBottom: spacing.md,
+    borderRadius: radius.lg,
+    marginBottom: spacing.lg,
+    ...shadows.small,
   },
 
   padded: {
-    padding: spacing.md,
+    padding: spacing.lg,
   },
 
   bordered: {
@@ -53,6 +54,6 @@ const styles = StyleSheet.create({
   },
 
   elevated: {
-    ...shadows.small,
+    ...shadows.medium,
   },
 });

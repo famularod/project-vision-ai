@@ -35,12 +35,13 @@ export function ScreenSection({
 
 const styles = StyleSheet.create({
   section: {
-    marginBottom: spacing.lg,
+    marginBottom: spacing.xl,
   },
 
   title: {
-    ...typography.h3,
-    marginBottom: spacing.xxs,
+    ...typography.h2,
+    fontSize: 19,
+    marginBottom: spacing.sm,
   },
 
   subtitle: {

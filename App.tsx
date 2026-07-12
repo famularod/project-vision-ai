@@ -13050,9 +13050,11 @@ function ProjectsScreen({
             <TouchableOpacity
               style={styles.phase2AddProjectButton}
               onPress={() => setShowAddProject(prev => !prev)}
+              accessibilityRole="button"
+              accessibilityLabel="New Project"
             >
-              <Ionicons name="add-outline" size={22} color={colors.primary} />
-              <Text style={styles.dashboardManageText}>Add Project</Text>
+              <Ionicons name="add-outline" size={20} color="#FFFFFF" />
+              <Text style={styles.phase2AddProjectText}>New Project</Text>
             </TouchableOpacity>
           </View>
 
@@ -13074,10 +13076,15 @@ function ProjectsScreen({
               />
 
               {searchText.trim() ? (
-                <TouchableOpacity onPress={() => setSearchText('')}>
+                <TouchableOpacity
+                  style={styles.projectSearchClearButton}
+                  onPress={() => setSearchText('')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear project search"
+                >
                   <Ionicons
                     name="close-circle"
-                    size={20}
+                    size={21}
                     color={colors.muted}
                   />
                 </TouchableOpacity>
@@ -13101,7 +13108,7 @@ function ProjectsScreen({
 
           {showAddProject ? (
             <AddProjectCard
-              buttonLabel="Add Project"
+              buttonLabel="Create Project"
               placeholder="New project name"
               onAdd={onAddProject}
             />
@@ -13114,8 +13121,10 @@ function ProjectsScreen({
       }
       ListEmptyComponent={
         <EmptyState
-          title="No matching projects"
-          text="Change the search or add a project to start a field update."
+          title={search ? 'No matching projects' : 'No projects yet'}
+          text={search
+            ? 'Try a different project name or clear the search.'
+            : 'Create your first project to begin capturing updates and building DAVE project intelligence.'}
         />
       }
     />
@@ -13160,7 +13169,7 @@ function Phase2ProjectCard({
           tint: colors.warningSoft,
           iconColor: colors.warning,
           icon: 'warning-outline' as const,
-          label: 'Needs Attention',
+          label: 'At Risk',
         }
       : status === 'Waiting'
         ? {
@@ -13173,7 +13182,7 @@ function Phase2ProjectCard({
             tint: colors.successSoft,
             iconColor: colors.success,
             icon: 'checkmark-circle-outline' as const,
-            label: 'On Track',
+            label: 'Healthy',
           };
 
   const activitySegments = [
@@ -13190,31 +13199,32 @@ function Phase2ProjectCard({
 
   return (
     <TouchableOpacity
-      style={[styles.phase2ProjectCard, { backgroundColor: tier.tint }]}
+      style={styles.phase2ProjectCard}
       onPress={onPress}
     >
       {item.thumbnailUri ? (
         <Image source={{ uri: item.thumbnailUri }} style={styles.phase2ProjectThumb} />
       ) : (
-        <View style={styles.overviewRowIconBubble}>
-          <Ionicons name={tier.icon} size={18} color={tier.iconColor} />
+        <View style={styles.phase2ProjectThumbPlaceholder}>
+          <Ionicons name={tier.icon} size={28} color={tier.iconColor} />
         </View>
       )}
 
       <View style={styles.rowMain}>
-        <Text style={styles.projectName}>{item.project}</Text>
-        <Text style={styles.rowSub}>
-          {hasActivity
-            ? `${tier.label} · ${
-                item.stats.lastUpdate
-                  ? `Last update: ${formatDisplayDate(item.stats.lastUpdate)}`
-                  : 'No recent updates'
-              }`
-            : tier.label}
-        </Text>
+        <View style={styles.phase2ProjectTitleRow}>
+          <Text style={styles.phase2ProjectTitle} numberOfLines={1}>{item.project}</Text>
+          <View style={[styles.phase2ProjectStatusPill, { backgroundColor: tier.tint }]}>
+            <Text style={[styles.phase2ProjectStatusText, { color: tier.iconColor }]}>{tier.label}</Text>
+          </View>
+        </View>
         {activitySegments.length > 0 ? (
-          <Text style={styles.rowSub}>{activitySegments.join(' · ')}</Text>
+          <Text style={styles.phase2ProjectSummary} numberOfLines={2}>{activitySegments.join(' · ')}</Text>
         ) : null}
+        <Text style={styles.phase2ProjectActivity}>
+          {item.stats.lastUpdate
+            ? `Last activity ${relativeUpdateDateLabel(item.stats.lastUpdate)}`
+            : hasActivity ? 'Activity recorded' : 'No activity recorded yet'}
+        </Text>
       </View>
 
       <Ionicons name="chevron-forward" size={22} color={colors.muted} />
@@ -17417,9 +17427,9 @@ const styles = StyleSheet.create({
 
   title: {
     color: colors.text,
-    fontSize: 31,
+    fontSize: 28,
     fontWeight: '800',
-    lineHeight: 37,
+    lineHeight: 34,
   },
 
   subtitle: {
@@ -17439,13 +17449,13 @@ const styles = StyleSheet.create({
 
   screenTitle: {
     flex: 1,
-    marginBottom: 12,
+    marginBottom: 16,
   },
 
   screenTitleActionButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.fill,
     alignItems: 'center',
     justifyContent: 'center',
@@ -17503,7 +17513,7 @@ const styles = StyleSheet.create({
 
   primaryButton: {
     backgroundColor: colors.primary,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingVertical: 14,
     paddingHorizontal: 14,
     alignItems: 'center',
@@ -17547,7 +17557,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingVertical: 14,
     paddingHorizontal: 14,
     alignItems: 'center',
@@ -18080,11 +18090,16 @@ const styles = StyleSheet.create({
 
   emptyState: {
     backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 18,
+    borderRadius: 16,
+    padding: 20,
     marginBottom: 16,
     borderWidth: 1,
     borderColor: colors.line,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
 
   emptyTitle: {
@@ -18798,11 +18813,16 @@ const styles = StyleSheet.create({
 
   projectFinderPanel: {
     backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 14,
+    borderRadius: 16,
+    padding: 15,
+    marginBottom: 18,
     borderColor: colors.line,
     borderWidth: 1,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
 
   phase2SelectorButton: {
@@ -19585,48 +19605,106 @@ const styles = StyleSheet.create({
 
   phase2HeaderRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
+    marginBottom: 4,
   },
 
   phase2AddProjectButton: {
-    minHeight: 44,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    minHeight: 46,
+    borderRadius: 23,
+    paddingVertical: 10,
+    paddingHorizontal: 15,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: colors.card,
+    backgroundColor: colors.primary,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 7,
+    elevation: 3,
+  },
+
+  phase2AddProjectText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
   },
 
   phase2ProjectCard: {
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 10,
-    borderColor: 'rgba(0,0,0,0.18)',
+    minHeight: 116,
+    borderRadius: 16,
+    padding: 11,
+    marginBottom: 12,
+    borderColor: colors.line,
     borderWidth: 1,
+    backgroundColor: colors.card,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
+    shadowColor: '#17213A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
 
   phase2ProjectThumb: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
+    width: 92,
+    height: 92,
+    borderRadius: 12,
     backgroundColor: colors.fill,
+    resizeMode: 'cover',
+  },
+
+  phase2ProjectThumbPlaceholder: {
+    width: 92,
+    height: 92,
+    borderRadius: 12,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   phase2ProjectTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
-    marginBottom: 2,
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 6,
+  },
+
+  phase2ProjectTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+
+  phase2ProjectStatusPill: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+
+  phase2ProjectStatusText: {
+    fontSize: 10,
+    fontWeight: '900',
+  },
+
+  phase2ProjectSummary: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 7,
+  },
+
+  phase2ProjectActivity: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   phase2BackButton: {
@@ -19865,7 +19943,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.fill,
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 12,
     minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
@@ -19876,7 +19954,7 @@ const styles = StyleSheet.create({
   updateFilterButton: {
     width: 48,
     height: 48,
-    borderRadius: 8,
+    borderRadius: 12,
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderWidth: 1,
@@ -19897,7 +19975,7 @@ const styles = StyleSheet.create({
   updateSegmentRow: {
     flexDirection: 'row',
     backgroundColor: colors.fill,
-    borderRadius: 10,
+    borderRadius: 12,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 4,
@@ -19907,7 +19985,7 @@ const styles = StyleSheet.create({
   updateSegment: {
     flex: 1,
     minHeight: 40,
-    borderRadius: 7,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 4,
@@ -19930,7 +20008,7 @@ const styles = StyleSheet.create({
 
   updateCard: {
     backgroundColor: colors.card,
-    borderRadius: 14,
+    borderRadius: 16,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 12,
@@ -20037,7 +20115,7 @@ const styles = StyleSheet.create({
 
   updateEmptyState: {
     backgroundColor: colors.card,
-    borderRadius: 14,
+    borderRadius: 16,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 20,
@@ -20098,6 +20176,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     paddingVertical: 8,
+  },
+
+  projectSearchClearButton: {
+    width: 44,
+    height: 44,
+    marginRight: -10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   projectFilterRow: {

@@ -152,8 +152,8 @@ export function AdminScreen({
   return (
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
-        title="More"
-        subtitle="Projects, schedule, documents, history, settings, admin, and developer tools."
+        title="Settings"
+        subtitle="Account, cloud services, project tools, and application preferences."
         onBack={onBack}
       />
 
@@ -874,7 +874,7 @@ function formatCheckedAt(value: string | undefined) {
 const styles = StyleSheet.create({
   cardTitle: {
     ...typography.h3,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
   },
 
   cardText: {
@@ -975,9 +975,9 @@ const styles = StyleSheet.create({
   },
 
   modalCloseButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.surfaceMuted,
     alignItems: 'center',
     justifyContent: 'center',
@@ -995,7 +995,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
+    borderRadius: 12,
     color: colors.text,
     fontSize: 15,
     paddingHorizontal: spacing.sm,
