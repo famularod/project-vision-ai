@@ -110,6 +110,7 @@ import {
   buildPIEReportDraft,
   type PIEReportActionItem,
   type PIEReportDraft,
+  type PIEReportType,
 } from './PIEReporter';
 import {
   buildPIEReflection,
@@ -132,6 +133,7 @@ export type PIERuntimeSurface =
 
 export type PIERuntimeContext = PIEConversationContext & {
   surface?: PIERuntimeSurface;
+  reportType?: PIEReportType;
 };
 
 export type PIERuntimeSource =
@@ -970,10 +972,10 @@ export function buildRuntime(
       currentUnderstanding.whatPIENeedsFromYou,
   });
   const reportDraft = buildPIEReportDraft({
-    reportType:
-      context.projectNames && context.projectNames.length > 1
+    reportType: context.reportType ||
+      (context.projectNames && context.projectNames.length > 1
         ? 'combined_project_update'
-        : 'daily_project_update',
+        : 'daily_project_update'),
     audience: 'internal_team',
     currentUpdate: context.currentUpdate,
     savedUpdates: context.updates,
@@ -1256,20 +1258,11 @@ function buildScheduleOutputsFromState(
   context: PIERuntimeContext,
   state: PIEConversationState,
 ): PIERuntimeScheduleOutputs {
-  const projectScheduleIntelligence = buildScheduleIntelligence({
+  const scheduleIntelligence = buildScheduleIntelligence({
     scheduleItems: context.scheduleItems,
-    projectName: state.projectName,
+    projectName: state.projectNames.length > 1 ? null : state.projectName,
     now: new Date(state.generatedAt),
   });
-  const scheduleIntelligence =
-    projectScheduleIntelligence.scheduleSummary.totalItems === 0 &&
-    (context.scheduleItems?.length ?? 0) > 0
-      ? buildScheduleIntelligence({
-          scheduleItems: context.scheduleItems,
-          projectName: null,
-          now: new Date(state.generatedAt),
-        })
-      : projectScheduleIntelligence;
 
   return {
     scheduleIntelligence,

@@ -13,6 +13,10 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'Needs Attention',
   'Project Health',
   "Today's Priority",
+  'All clear',
+  "project{scopedProjects.length === 1 ? '' : 's'} reviewed",
+  'Nothing due today',
+  "topPriority ? 'PRIORITY' : 'ALL CLEAR'",
   'DAVE Daily Brief',
   'See all updates',
   'Active Projects',
@@ -43,6 +47,7 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   "Alert.alert('Ask DAVE', 'Ask DAVE is coming soon.')",
   'accessibilityLabel="Ask DAVE"',
   'buildPIEProjectBriefModel(projectName, savedUpdates)',
+  'buildPIEScheduleReconciliation({',
   'onOpenPhotoDifferences',
   'onNewFieldUpdate(projectName)',
 ].forEach(marker => {
@@ -142,6 +147,11 @@ assert(
 assert(
   app.includes("resolveProjectForDetectedArea("),
   'Overview should support GPS-based project defaulting.',
+);
+assert(
+  app.includes('authoritativeScheduleItems') &&
+    app.includes("warning.type !== 'schedule_mapping_incomplete'"),
+  'Overview must use authoritative schedule rows and surface actionable field reconciliation warnings.',
 );
 assert(
   app.includes("<Modal visible={visible} animationType=\"slide\" transparent"),

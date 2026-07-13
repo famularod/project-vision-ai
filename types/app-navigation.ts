@@ -1,0 +1,18 @@
+export type AppScreen =
+  | 'Home'
+  | 'SelectProject'
+  | 'AddPhotos'
+  | 'PIEAnalysis'
+  | 'BuildUpdate'
+  | 'Projects'
+  | 'ProjectWorkspace'
+  | 'SavedUpdates'
+  | 'UpdateDetail'
+  | 'Reports'
+  | 'Contacts'
+  | 'Diagnostics'
+  | 'ReferenceDocuments'
+  | 'ProjectDocuments'
+  | 'Schedule'
+  | 'Upcoming'
+  | 'Admin';

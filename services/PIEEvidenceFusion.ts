@@ -21,6 +21,10 @@ import type {
   ProjectReportHistoryMetadata,
   ProjectSyncFreshnessMetadata,
 } from './ProjectIntelligenceEngine';
+import {
+  buildPIEScheduleReconciliation,
+  type PIEScheduleReconciliationResult,
+} from './PIEScheduleReconciliation';
 
 export type PIEEvidenceSourceType =
   | 'schedule'
@@ -244,6 +248,7 @@ export type PIEFusedEvidence = {
   sources: PIEEvidenceSourceType[];
   scheduleEvidence: PIEScheduleEvidence[];
   scheduleSummary: ScheduleSummary;
+  scheduleReconciliation: PIEScheduleReconciliationResult;
   photoEvidence: PIEPhotoEvidence[];
   photoProgressEvidence: PIEPhotoProgressEvidence[];
   gpsEvidence: PIEGPSEvidence;
@@ -279,6 +284,7 @@ type EvidenceSet = Pick<
   | 'generatedAt'
   | 'scheduleEvidence'
   | 'scheduleSummary'
+  | 'scheduleReconciliation'
   | 'photoEvidence'
   | 'photoProgressEvidence'
   | 'gpsEvidence'
@@ -323,6 +329,14 @@ export function buildFusedEvidence({
   const scheduleSummary = buildScheduleSummary(scheduleItems, {
     projectName: resolvedProjectName,
   });
+  const scheduleReconciliation = buildPIEScheduleReconciliation({
+    scheduleItems,
+    updates: currentUpdate && !updates.some(update => update.id === currentUpdate.id)
+      ? [currentUpdate, ...updates]
+      : updates,
+    projectName: projectNames.length > 1 ? null : resolvedProjectName,
+    now,
+  });
   const photoEvidence = extractPhotoEvidence({
     projectName: resolvedProjectName,
     updates: projectUpdates,
@@ -359,6 +373,7 @@ export function buildFusedEvidence({
     generatedAt: now.toISOString(),
     scheduleEvidence,
     scheduleSummary,
+    scheduleReconciliation,
     photoEvidence,
     photoProgressEvidence,
     gpsEvidence,
@@ -967,7 +982,25 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
 export function findEvidenceConflicts(
   evidence: EvidenceSet,
 ): PIEvidenceConflict[] {
-  const conflicts: PIEvidenceConflict[] = [];
+  const conflicts: PIEvidenceConflict[] = evidence.scheduleReconciliation.warnings.map(
+    warning => {
+      const sources: PIEEvidenceSourceType[] = ['schedule'];
+
+      if (warning.updateId) sources.push('typed-update');
+      if (warning.evidenceIds.some(id => id.startsWith('photo:'))) sources.push('photo');
+
+      return {
+      id: warning.id,
+      projectName: warning.projectName,
+      title: warning.title,
+      summary: warning.summary,
+      sources,
+      severity: warning.severity,
+      confidence: warning.confidence,
+      suggestedAction: warning.suggestedAction,
+      };
+    },
+  );
   const completedScheduleWithOpenIssue = evidence.scheduleEvidence.find(
     schedule =>
       schedule.isComplete &&

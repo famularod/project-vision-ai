@@ -44,8 +44,8 @@ assert(provider.includes('notifyProjectChanged'), 'Provider must expose notifyPr
 });
 
 assert(app.includes('<PIELiveAuthorityProvider input={liveAuthorityInput}>'), 'App must mount provider above primary screens.');
-assert(app.includes('screenToPIESurface'), 'App must map screens to PIE surfaces.');
-assert(app.includes('buildLocalPIEProjectId'), 'App must provide stable local project IDs.');
+assert(app.includes('authoritySurfaceForScreen'), 'App must map screens to PIE surfaces.');
+assert(app.includes('authorityProjectId'), 'App must provide stable local project IDs.');
 
 [
   ['HomeDashboard', home],

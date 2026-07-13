@@ -66,6 +66,7 @@ export type SyncStatus = {
 export type SyncUploadResult = {
   configured: boolean;
   uploaded: number;
+  uploadedByEntity?: Partial<Record<SyncEntity, number>>;
   queued: number;
   conflicts: number;
   errors: string[];
@@ -159,6 +160,32 @@ export type LocalPhotoUploadResult = {
   result: 'uploaded' | 'missing' | 'failed' | 'skipped';
   message: string | null;
   diagnostic: PhotoStorageUploadDiagnostic;
+};
+
+export type FieldUpdateSyncWorkAttempt = {
+  cloudUpdateInsertAttempted: boolean;
+  photoStorageUploadAttempted: boolean;
+  storageUploadResult: 'success' | 'failed' | 'skipped';
+  databaseUpsertResult: 'success' | 'failed' | 'skipped';
+  storageBucketName: string | null;
+  storageBucketExists: 'yes' | 'no' | 'unknown';
+  storageFailureCategory: PhotoStorageUploadFailureCategory | null;
+  storageHttpStatus: number | null;
+  storageErrorCode: string | null;
+  localFileExists: boolean | null;
+  localFileReadable: boolean | null;
+  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
+  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
+  storageContentType: string | null;
+  objectPathCategory: string | null;
+  databaseSyncRanAfterUpload: boolean | null;
+  errors: string[];
+};
+
+export type StagedProjectUpdateSync = {
+  workAttempt: FieldUpdateSyncWorkAttempt;
+  uploadedPhotoCount: number;
+  missingPhotos: MissingSyncPhoto[];
 };
 
 const PROJECT_PHOTOS_BUCKET = 'project-photos';
@@ -284,6 +311,7 @@ export async function enqueuePendingChange<TPayload>(
     id?: string;
     createdAt?: string;
     retryCount?: number;
+    autoUpload?: boolean;
   },
 ): Promise<SyncQueueItem<TPayload>> {
   const queue = await getOfflineQueue();
@@ -303,7 +331,9 @@ export async function enqueuePendingChange<TPayload>(
     ...queue.filter(item => item.id !== queueItem.id),
     queueItem,
   ]);
-  void uploadPendingChanges();
+  if (item.autoUpload !== false) {
+    void uploadPendingChanges();
+  }
 
   return queueItem;
 }
@@ -341,7 +371,7 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   id: string;
   projectName?: string;
   selectedAreaName?: string | null;
-}>(update: TUpdate): Promise<void> {
+}>(update: TUpdate, autoUpload = true): Promise<void> {
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
     id: `project-update-${update.id}`,
     entity: 'project_update',
@@ -353,6 +383,7 @@ export async function queueProjectUpdateRecord<TUpdate extends {
       updateData: update,
     },
     changedAt: new Date().toISOString(),
+    autoUpload,
   });
 }
 
@@ -371,6 +402,59 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
 
   await setStoredJson(SYNC_QUEUE_STORAGE_KEY, nextQueue);
   return queue.length - nextQueue.length;
+}
+
+export async function stageProjectUpdateForSync(
+  update: ProjectUpdate,
+): Promise<StagedProjectUpdateSync> {
+  await queueProjectUpdateRecord(update, false);
+  const photoAttempt = await uploadUpdatePhotosForSync(update);
+
+  return {
+    workAttempt: {
+      cloudUpdateInsertAttempted: true,
+      photoStorageUploadAttempted: photoAttempt.photoStorageUploadAttempted,
+      storageUploadResult: photoAttempt.storageUploadResult,
+      databaseUpsertResult: 'skipped',
+      storageBucketName: photoAttempt.storageBucketName,
+      storageBucketExists: photoAttempt.storageBucketExists,
+      storageFailureCategory: photoAttempt.storageFailureCategory,
+      storageHttpStatus: photoAttempt.storageHttpStatus,
+      storageErrorCode: photoAttempt.storageErrorCode,
+      localFileExists: photoAttempt.localFileExists,
+      localFileReadable: photoAttempt.localFileReadable,
+      fileByteSizeCategory: photoAttempt.fileByteSizeCategory,
+      uploadPayloadType: photoAttempt.uploadPayloadType,
+      storageContentType: photoAttempt.storageContentType,
+      objectPathCategory: photoAttempt.objectPathCategory,
+      databaseSyncRanAfterUpload: false,
+      errors: [...photoAttempt.errors],
+    },
+    uploadedPhotoCount: photoAttempt.uploadedPhotoCount,
+    missingPhotos: photoAttempt.missingPhotos,
+  };
+}
+
+export async function runFieldUpdateCloudSync(
+  update: ProjectUpdate,
+): Promise<{
+  syncResult: SyncUploadResult;
+  workAttempt: FieldUpdateSyncWorkAttempt;
+}> {
+  const staged = await stageProjectUpdateForSync(update);
+  const workAttempt = staged.workAttempt;
+  const syncResult = await uploadPendingChanges();
+
+  workAttempt.databaseSyncRanAfterUpload =
+    workAttempt.storageUploadResult === 'success';
+  workAttempt.databaseUpsertResult =
+    syncResult.configured &&
+      syncResult.errors.length === 0 &&
+      syncResult.queued === 0
+      ? 'success'
+      : 'failed';
+
+  return { syncResult, workAttempt };
 }
 
 let uploadPendingChangesInFlight: Promise<SyncUploadResult> | null = null;
@@ -423,12 +507,17 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const retriedItemsById = new Map<string, SyncQueueItem>();
   const errors: string[] = [];
   let uploaded = 0;
+  const uploadedByEntity: Record<SyncEntity, number> = {
+    project: 0,
+    project_update: 0,
+  };
 
   for (const item of queue) {
     const result = await uploadQueueItem(item);
 
     if (result === 'uploaded') {
       uploaded += 1;
+      uploadedByEntity[item.entity] += 1;
       resolvedIds.add(item.id);
       continue;
     }
@@ -465,6 +554,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   return {
     configured: true,
     uploaded,
+    uploadedByEntity,
     queued: remaining.length,
     conflicts: (await getSyncConflicts()).length,
     errors,
@@ -605,43 +695,25 @@ export async function synchronizeLocalData(
   }
 
   for (const update of payload.savedUpdates) {
-    const result = await saveProjectUpdate({
-      id: update.id,
-      projectName: update.projectName,
-      areaName: update.selectedAreaName || '',
-      updateData: update,
-      updatedAt: update.date || new Date().toISOString(),
-    });
+    const staged = await stageProjectUpdateForSync(update);
+    details.photosUploaded += staged.uploadedPhotoCount;
+    missingPhotos.push(...staged.missingPhotos);
+    errors.push(...staged.workAttempt.errors.map(sanitizeSyncError));
+    progress(`Update staged: ${update.projectName}`);
 
-    if (result.ok && !result.stubbed) {
-      details.updatesUploaded += 1;
-    } else {
-      errors.push(
-        result.error || result.message || `Update sync failed: ${update.id}`,
+    const missingPhotoIds = new Set(staged.missingPhotos.map(photo => photo.photoId));
+    update.photos.forEach(photo => {
+      progress(
+        missingPhotoIds.has(photo.id)
+          ? 'Photo skipped: unavailable'
+          : 'Photo synced',
       );
-    }
-
-    progress(`Update synced: ${update.projectName}`);
+    });
   }
 
-  for (const update of payload.savedUpdates) {
-    for (const photo of update.photos) {
-      const result = await uploadLocalPhoto(update, photo);
-
-      if (result === 'uploaded') {
-        details.photosUploaded += 1;
-      } else if (result === 'missing') {
-        missingPhotos.push({
-          updateId: update.id,
-          photoId: photo.id,
-        });
-      } else if (result) {
-        errors.push(sanitizeSyncError(result));
-      }
-
-      progress(result === 'missing' ? 'Photo skipped: unavailable' : 'Photo synced');
-    }
-  }
+  const stagedUpdateUpload = await uploadPendingChanges();
+  details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0;
+  errors.push(...stagedUpdateUpload.errors);
 
   for (const area of payload.projectAreas) {
     const result = await upsertProjectArea(area);
@@ -1207,6 +1279,80 @@ export async function uploadLocalPhotoWithDiagnostics(
       },
     };
   }
+}
+
+async function uploadUpdatePhotosForSync(
+  update: ProjectUpdate,
+): Promise<Omit<
+  FieldUpdateSyncWorkAttempt,
+  'cloudUpdateInsertAttempted' | 'databaseUpsertResult'
+> & {
+  uploadedPhotoCount: number;
+  missingPhotos: MissingSyncPhoto[];
+}> {
+  if (update.photos.length === 0) {
+    return {
+      photoStorageUploadAttempted: false,
+      storageUploadResult: 'skipped',
+      storageBucketName: null,
+      storageBucketExists: 'unknown',
+      storageFailureCategory: null,
+      storageHttpStatus: null,
+      storageErrorCode: null,
+      localFileExists: null,
+      localFileReadable: null,
+      fileByteSizeCategory: 'unknown',
+      uploadPayloadType: 'unknown',
+      storageContentType: null,
+      objectPathCategory: null,
+      databaseSyncRanAfterUpload: false,
+      errors: [],
+      uploadedPhotoCount: 0,
+      missingPhotos: [],
+    };
+  }
+
+  const results = await Promise.all(
+    update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo)),
+  );
+  const failures = results.filter(
+    result => result.result !== 'uploaded' && result.result !== 'skipped',
+  );
+  const representativeDiagnostic =
+    failures[0]?.diagnostic || results[0]?.diagnostic || null;
+
+  return {
+    photoStorageUploadAttempted: true,
+    storageUploadResult: failures.length > 0 ? 'failed' : 'success',
+    storageBucketName: representativeDiagnostic?.bucketName || null,
+    storageBucketExists:
+      representativeDiagnostic?.bucketExists ||
+      (failures.length > 0 ? 'unknown' : 'yes'),
+    storageFailureCategory:
+      failures[0]?.diagnostic.failureCategory || null,
+    storageHttpStatus: failures[0]?.diagnostic.httpStatus ?? null,
+    storageErrorCode: failures[0]?.diagnostic.errorCode ?? null,
+    localFileExists: representativeDiagnostic?.localFileExists ?? null,
+    localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
+    fileByteSizeCategory:
+      representativeDiagnostic?.fileByteSizeCategory || 'unknown',
+    uploadPayloadType:
+      representativeDiagnostic?.uploadPayloadType || 'unknown',
+    storageContentType: representativeDiagnostic?.contentType || null,
+    objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
+    databaseSyncRanAfterUpload: false,
+    errors: failures.map(result =>
+      result.result === 'missing'
+        ? 'Photo storage upload failed: photo file unavailable.'
+        : `Photo storage upload failed: ${result.message || 'unknown storage error'}`,
+    ),
+    uploadedPhotoCount: results.filter(result => result.result === 'uploaded').length,
+    missingPhotos: results.flatMap((result, index) =>
+      result.result === 'missing'
+        ? [{ updateId: update.id, photoId: update.photos[index].id }]
+        : [],
+    ),
+  };
 }
 
 async function inspectPhotoFileForUpload(uri: string): Promise<{

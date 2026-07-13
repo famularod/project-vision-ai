@@ -8,7 +8,8 @@ const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const app = read('App.tsx');
-const bottomNav = read('components/BottomNavigation.tsx');
+const bottomNav = read('components/app-bottom-tabs.tsx');
+const sync = read('services/SyncService.ts');
 const timing = read('services/SixtySecondFlowInstrumentation.ts');
 const phase6 = read('scripts/phase6-documents-foundation-test.js');
 
@@ -27,21 +28,21 @@ const phase6 = read('scripts/phase6-documents-foundation-test.js');
 });
 
 assert(
-  app.includes('label="Overview"') &&
-    app.includes('label="Projects"') &&
-    app.includes('label="Updates"') &&
-    !app.includes('label="Capture"') &&
-    !app.includes('label="Share"'),
-  'App bottom tabs must be exactly Overview / Projects / Updates.',
+  app.includes('<AppBottomTabs') &&
+    app.includes("screen === 'Reports'") &&
+    app.includes('<ReportsScreen'),
+  'App must render the extracted live bottom tabs and Reports screen.',
 );
 assert(
   bottomNav.includes('label="Overview"') &&
     bottomNav.includes('label="Projects"') &&
     bottomNav.includes('label="Updates"') &&
+    bottomNav.includes('label="Reports"') &&
+    bottomNav.includes('label="Settings"') &&
     !bottomNav.includes('label="Capture"') &&
     !bottomNav.includes('label="Share"') &&
-    (bottomNav.match(/<TabButton/g) || []).length === 3,
-  'Shared BottomNavigation must expose only the final three tabs.',
+    (bottomNav.match(/<TabButton/g) || []).length === 5,
+  'Live bottom tabs must expose Overview, Projects, Updates, Reports, and Settings.',
 );
 
 [
@@ -103,7 +104,8 @@ assert(
     app.includes("if (diagnostics.lastSyncResult === 'success') return 'sent';") &&
     app.includes("if (diagnostics.lastSyncFailureCategory === 'offline') return 'queued';") &&
     app.includes('queuedHydrationInFlight') &&
-    app.includes('uploadPendingChanges()'),
+    sync.includes('runFieldUpdateCloudSync') &&
+    sync.includes('stageProjectUpdateForSync'),
   'Queued updates should hydrate through the idempotent pending-change path and preserve sent/queued/failed outcomes.',
 );
 

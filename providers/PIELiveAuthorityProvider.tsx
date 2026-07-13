@@ -26,6 +26,7 @@ import type {
   ScheduleItem,
 } from '../types';
 import type { ProjectSyncFreshnessMetadata } from '../services/ProjectIntelligenceEngine';
+import type { PIEReportType } from '../services/PIEReporter';
 import {
   logStartupDiagnostic,
   startupErrorMessage,
@@ -68,6 +69,7 @@ export type PIELiveAuthorityInput = {
   projectId?: string | null;
   projectName: string;
   projectNames: string[];
+  reportType?: PIEReportType;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   currentUpdate?: ProjectUpdate | null;
@@ -131,6 +133,7 @@ export function PIELiveAuthorityProvider({
   const [core, setCore] = useState<PIECoreOutput | null>(null);
   const [fallbackRuntime, setFallbackRuntime] =
     useState<PIERuntimeState>(() => safeBuildProviderRuntime(input));
+  const [coreSignature, setCoreSignature] = useState<string | null>(null);
   const [state, setState] = useState<PIELiveAuthorityStateName>('loading');
   const [error, setError] = useState<string | null>(null);
   const [retryPending, setRetryPending] = useState(false);
@@ -140,6 +143,14 @@ export function PIELiveAuthorityProvider({
   const latestProjectRef = useRef<string | null>(input.projectId || safeProjectId(input.projectName));
   const pendingReasonRef = useRef<PIELiveAuthorityRefreshReason | null>(null);
   const signature = useMemo(() => authorityInputSignature(input), [input]);
+  const currentInputRuntime = useMemo(
+    () => safeBuildProviderRuntime(input),
+    [signature],
+  );
+  const latestInputRef = useRef(input);
+  const latestSignatureRef = useRef(signature);
+  latestInputRef.current = input;
+  latestSignatureRef.current = signature;
 
   const runRefresh = useCallback(async (reason: PIELiveAuthorityRefreshReason) => {
     pendingReasonRef.current = reason;
@@ -148,6 +159,9 @@ export function PIELiveAuthorityProvider({
       return inFlightRef.current;
     }
 
+    const refreshInput = latestInputRef.current;
+    const refreshSignature = latestSignatureRef.current;
+    pendingReasonRef.current = null;
     const refreshSequence = sequenceRef.current + 1;
     sequenceRef.current = refreshSequence;
     setState(previous => previous === 'ready' ? previous : 'loading');
@@ -155,24 +169,31 @@ export function PIELiveAuthorityProvider({
 
     const run = (async () => {
       try {
-        const runtime = safeBuildProviderRuntime(input);
+        const runtime = safeBuildProviderRuntime(refreshInput);
         setFallbackRuntime(runtime);
         const result = await buildLivePIECoreIntelligence({
           runtime,
-          runtimeContext: providerRuntimeContext(input),
-          organizationId: input.organizationId || 'local-unverified-anonymous',
-          projectId: input.projectId || safeProjectId(input.projectName),
-          identityTrusted: Boolean(input.identityTrusted),
-          cloudAvailable: Boolean(input.cloudAvailable),
+          runtimeContext: providerRuntimeContext(refreshInput),
+          reportType: refreshInput.reportType,
+          reportProjectNames: refreshInput.projectNames,
+          organizationId: refreshInput.organizationId || 'local-unverified-anonymous',
+          projectId: refreshInput.projectId || safeProjectId(refreshInput.projectName),
+          identityTrusted: Boolean(refreshInput.identityTrusted),
+          cloudAvailable: Boolean(refreshInput.cloudAvailable),
         });
-        const nextProjectId = result.realityAuthority.modelId || input.projectId || safeProjectId(input.projectName);
+        const nextProjectId =
+          result.realityAuthority.modelId ||
+          refreshInput.projectId ||
+          safeProjectId(refreshInput.projectName);
 
         if (refreshSequence !== sequenceRef.current) return;
+        if (refreshSignature !== latestSignatureRef.current) return;
         if (latestProjectRef.current && nextProjectId && !nextProjectId.includes(latestProjectRef.current)) {
           return;
         }
 
         setCore(result);
+        setCoreSignature(refreshSignature);
         setState(stateFromPersistence(result.realityAuthority.persistenceStatus));
         setError(null);
         setLastSuccessfulRefreshAt(new Date().toISOString());
@@ -181,6 +202,7 @@ export function PIELiveAuthorityProvider({
         });
       } catch (error) {
         if (refreshSequence !== sequenceRef.current) return;
+        if (refreshSignature !== latestSignatureRef.current) return;
         logStartupDiagnostic('degraded_mode_entered', 'DAVE live authority failed; fallback Runtime remains available.', {
           error: startupErrorMessage(error),
         });
@@ -194,15 +216,22 @@ export function PIELiveAuthorityProvider({
         }, 2500);
       } finally {
         inFlightRef.current = null;
+        const pendingReason = pendingReasonRef.current;
+        pendingReasonRef.current = null;
+
+        if (pendingReason || refreshSignature !== latestSignatureRef.current) {
+          void runRefresh(pendingReason || 'project_changed');
+        }
       }
     })();
 
     inFlightRef.current = run;
     return run;
-  }, [input]);
+  }, []);
 
   useEffect(() => {
     latestProjectRef.current = input.projectId || safeProjectId(input.projectName);
+    setFallbackRuntime(safeBuildProviderRuntime(input));
     void runRefresh(core ? 'project_changed' : 'initial_load');
   }, [signature]);
 
@@ -222,32 +251,35 @@ export function PIELiveAuthorityProvider({
   }, [runRefresh]);
 
   const value = useMemo<PIELiveAuthorityContextValue>(() => {
-    const persistenceStatus = core?.realityAuthority.persistenceStatus || null;
-    const nextState = state === 'loading' && core
-      ? stateFromPersistence(core.realityAuthority.persistenceStatus)
+    const currentCore = coreSignature === signature ? core : null;
+    const currentRuntime = currentCore?.runtime ||
+      (coreSignature === signature ? fallbackRuntime : currentInputRuntime);
+    const persistenceStatus = currentCore?.realityAuthority.persistenceStatus || null;
+    const nextState = state === 'loading' && currentCore
+      ? stateFromPersistence(currentCore.realityAuthority.persistenceStatus)
       : state;
-    const policy = policyForCore(nextState, core);
+    const policy = policyForCore(nextState, currentCore);
 
     return {
       state: nextState,
       policy,
-      core,
-      runtime: core?.runtime || fallbackRuntime,
-      organizationId: core?.realityModel.organizationId || input.organizationId || null,
-      projectId: core?.realityModel.projectId || input.projectId || null,
-      realityModel: core?.realityModel || null,
-      realityModelVersion: core?.realityAuthority.modelVersion || null,
-      realitySnapshotId: core?.realityAuthority.snapshotId || null,
-      executiveJudgment: core?.executiveJudgmentResult || null,
-      executiveJudgmentRecord: core?.executiveJudgmentRecord || null,
-      situationIntelligence: core?.situationIntelligence || null,
-      predictiveReality: core?.predictiveReality || null,
-      attention: core?.attention || null,
-      experience: core?.experience || null,
-      reportDraft: core?.reportDraft || null,
+      core: currentCore,
+      runtime: currentRuntime,
+      organizationId: currentCore?.realityModel.organizationId || input.organizationId || null,
+      projectId: currentCore?.realityModel.projectId || input.projectId || null,
+      realityModel: currentCore?.realityModel || null,
+      realityModelVersion: currentCore?.realityAuthority.modelVersion || null,
+      realitySnapshotId: currentCore?.realityAuthority.snapshotId || null,
+      executiveJudgment: currentCore?.executiveJudgmentResult || null,
+      executiveJudgmentRecord: currentCore?.executiveJudgmentRecord || null,
+      situationIntelligence: currentCore?.situationIntelligence || null,
+      predictiveReality: currentCore?.predictiveReality || null,
+      attention: currentCore?.attention || null,
+      experience: currentCore?.experience || null,
+      reportDraft: currentCore?.reportDraft || null,
       persistenceStatus,
-      activeConflicts: core?.realityModel.evidenceConflicts || [],
-      activeUncertainties: core?.realityModel.activeUncertainties || [],
+      activeConflicts: currentCore?.realityModel.evidenceConflicts || [],
+      activeUncertainties: currentCore?.realityModel.activeUncertainties || [],
       loading: nextState === 'loading',
       degraded: nextState !== 'ready',
       error,
@@ -260,6 +292,8 @@ export function PIELiveAuthorityProvider({
     };
   }, [
     core,
+    coreSignature,
+    currentInputRuntime,
     error,
     fallbackRuntime,
     input.organizationId,
@@ -270,6 +304,7 @@ export function PIELiveAuthorityProvider({
     notifyProjectChanged,
     retryPending,
     runRefresh,
+    signature,
     state,
   ]);
 
@@ -395,6 +430,7 @@ function authorityInputSignature(input: PIELiveAuthorityInput) {
     projectId: input.projectId || safeProjectId(input.projectName),
     projectName: input.projectName,
     projectNames: input.projectNames,
+    reportType: input.reportType || null,
     updateIds: input.updates.map(update => `${update.id}:${update.date}:${update.photos.length}:${update.notes.length}`).slice(0, 80),
     scheduleIds: input.scheduleItems.map(item => `${item.id}:${item.createdAt}:${item.importedAt || ''}:${item.finishDate}:${item.status}`).slice(0, 120),
     currentUpdateId: input.currentUpdate?.id || null,
@@ -412,6 +448,7 @@ function providerRuntimeContext(input: PIELiveAuthorityInput): PIERuntimeContext
   return {
     projectName: input.projectName,
     projectNames: input.projectNames,
+    reportType: input.reportType,
     updates: Array.isArray(input.updates) ? input.updates : [],
     scheduleItems: Array.isArray(input.scheduleItems) ? input.scheduleItems : [],
     currentUpdate: input.currentUpdate,

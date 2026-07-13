@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const app = read('App.tsx');
-const bottomNav = read('components/BottomNavigation.tsx');
+const bottomNav = read('components/app-bottom-tabs.tsx');
 const home = read('components/HomeDashboard.tsx');
 const capture = read('components/PhotoCapturePanel.tsx');
 const review = read('screens/ReportsScreen.tsx');
@@ -18,13 +18,17 @@ assert(app.includes("useState<Screen>('Home')"), 'app should open on Home');
 assert(bottomNav.includes('label="Overview"'), 'bottom nav should start with Overview');
 assert(bottomNav.includes('label="Projects"'), 'bottom nav should include Projects');
 assert(bottomNav.includes('label="Updates"'), 'bottom nav should include Updates');
+assert(bottomNav.includes('label="Reports"'), 'bottom nav should include Reports');
+assert(bottomNav.includes('label="Settings"'), 'bottom nav should include Settings');
 assert(!bottomNav.includes('label="Capture"'), 'Capture must not be a bottom tab');
 assert(!bottomNav.includes('label="Share"'), 'Share must not be a bottom tab');
 assert(!bottomNav.includes('label="Review"'), 'Review must not be a bottom tab');
 assert(!bottomNav.includes('label="More"'), 'More should not be a primary bottom tab');
-assert((bottomNav.match(/<TabButton/g) || []).length === 3, 'bottom nav should have three primary tabs');
+assert((bottomNav.match(/<TabButton/g) || []).length === 5, 'bottom nav should have five primary tabs');
 assert(bottomNav.indexOf('label="Overview"') < bottomNav.indexOf('label="Projects"'), 'Overview should precede Projects');
 assert(bottomNav.indexOf('label="Projects"') < bottomNav.indexOf('label="Updates"'), 'Projects should precede Updates');
+assert(bottomNav.indexOf('label="Updates"') < bottomNav.indexOf('label="Reports"'), 'Updates should precede Reports');
+assert(bottomNav.indexOf('label="Reports"') < bottomNav.indexOf('label="Settings"'), 'Reports should precede Settings');
 
 assert(home.includes('PIEMissionCard'), 'Home should start with the mission card');
 assert(home.includes('What should I do now?'), 'Home should answer what to do now');
@@ -44,6 +48,24 @@ assert(review.includes('Approve Report'), 'Review should keep approval action');
 assert(review.includes('Edit Report'), 'Review should keep correction action');
 assert(review.includes('Copy Report'), 'Review should keep share/copy action');
 assert(review.includes('Email Report'), 'Review should keep email/share action');
+assert(review.includes('title="Reports"'), 'live report surface should identify itself as Reports');
+assert(review.includes('reportEditing ? ('), 'report correction must expose editable title and body fields');
+assert(review.includes('Copy and Email unlock after approval'), 'report sharing must remain approval-gated');
+assert(app.includes("screen === 'Reports'"), 'App must render Reports from the live screen union');
+assert(app.includes("screen === 'BuildUpdate' || screen === 'Reports'"), 'Reports must use the shared report authority surface');
+assert(app.includes('Schedule vs Field'), 'Live Schedule should summarize reconciliation against field evidence.');
+assert(
+  app.includes('buildPIEScheduleReconciliation({') &&
+    app.includes('scheduleReconciliation.warnings.slice(0, 5)') &&
+    app.includes('DAVE field check'),
+  'Live Schedule should show bounded field warnings and per-activity evidence rather than raw update text.',
+);
+assert(
+  app.includes('Import Message Screenshot') &&
+    app.includes('importScheduleCommunicationScreenshot') &&
+    app.includes('recognizeTextFromImage'),
+  'Schedule should support local review of scheduling information in message and email screenshots.',
+);
 
 const settingsMain = settings.slice(
   settings.indexOf('<ScreenHeader'),

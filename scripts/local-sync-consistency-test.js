@@ -92,10 +92,25 @@ includes(app, "Queued — will send when you're back online", 'offline queued co
 includes(app, 'onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}', 'queued/failed cards must expose retry');
 includes(app, 'void hydrateQueuedUpdates();', 'sync worker must run after save/sign-in or queue wake-up');
 includes(app, "AppState.addEventListener('change'", 'sync worker must run on app foreground');
-includes(app, 'runFieldUpdateCloudSync', 'send/retry must run structured cloud sync work');
-includes(app, 'update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo))', 'sync retry must await photo upload work with diagnostics');
-includes(app, 'await saveCloudUpdate(update)', 'sync retry must queue the update for cloud insert/update');
-includes(app, 'await uploadPendingChanges()', 'sync retry must attempt database insert/update work');
+includes(app, 'runFieldUpdateCloudSync', 'send/retry must call the shared structured cloud sync work');
+includes(sync, 'export async function runFieldUpdateCloudSync', 'shared sync service must own field update orchestration');
+includes(sync, 'update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo))', 'shared sync must await photo upload work with diagnostics');
+includes(sync, 'await queueProjectUpdateRecord(update, false)', 'shared sync must stage update metadata in the durable queue');
+assert(
+  sync.indexOf('await queueProjectUpdateRecord(update, false)') <
+    sync.indexOf('const photoAttempt = await uploadUpdatePhotosForSync(update)'),
+  'shared sync must persist update metadata before potentially slow photo work',
+);
+includes(sync, 'const syncResult = await uploadPendingChanges()', 'shared sync must attempt database insert/update work');
+includes(sync, 'const staged = await stageProjectUpdateForSync(update)', 'field send and Settings reconciliation must share update staging');
+assert(!app.includes('async function runFieldUpdateCloudSync'), 'App must not own a second field-update sync engine');
+assert(!app.includes('void stageProjectUpdateForSync(saved)'), 'draft saves must not leave newly staged updates waiting without a background flush');
+includes(sync, 'details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0', 'Settings sync must report uploads from the durable queue');
+assert.strictEqual(
+  (sync.match(/saveProjectUpdate\(\{/g) || []).length,
+  1,
+  'project update database writes must have one queue-owned execution path',
+);
 assert(
   app.indexOf('const tokenResult = await getCurrentSessionAccessToken();') <
     app.indexOf('const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);'),

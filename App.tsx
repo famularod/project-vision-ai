@@ -6,13 +6,12 @@ import {
   saveCloudProjectCoverPhoto,
   setCloudProjectArchived,
 } from './services/projectService';
-import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
+import { loadCloudUpdates } from './services/updateService';
 import {
-  uploadLocalPhoto,
-  uploadLocalPhotoWithDiagnostics,
-  uploadPendingChanges,
   removeMissingPhotosFromSyncQueue,
   removeProjectUpdateFromSyncQueue,
+  runFieldUpdateCloudSync,
+  type FieldUpdateSyncWorkAttempt,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
   type SyncUploadResult,
@@ -24,6 +23,8 @@ import {
   uploadPhoto,
 } from './services/SupabaseService';
 import { AdminScreen } from './screens/AdminScreen';
+import { ReportsScreen } from './screens/ReportsScreen';
+import { AppBottomTabs } from './components/app-bottom-tabs';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { DAVEAskExperience } from './components/DAVEAskExperience';
 import { DAVECaptureConfirmationSheet } from './components/DAVECaptureConfirmationSheet';
@@ -107,6 +108,20 @@ import type {
   PIEEvidenceReference,
 } from './services/PIEDecisionLedger';
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
+import type { PIEReportDraft, PIEReportType } from './services/PIEReporter';
+import {
+  buildPIEScheduleReconciliation,
+  selectAuthoritativeScheduleItems,
+  type PIEScheduleFieldMatch,
+  type PIEScheduleReconciliationWarning,
+} from './services/PIEScheduleReconciliation';
+import { normalizeScheduleImport } from './services/PIEScheduleIntelligence';
+import { extractScheduleItemsFromCommunicationText } from './services/PIEScheduleCommunicationImport';
+import {
+  isDaveTextRecognitionAvailable,
+  recognizeTextFromImage,
+} from './modules/dave-text-recognition';
+import type { AppScreen } from './types/app-navigation';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -135,23 +150,8 @@ import {
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 
-type Screen =
-  | 'Home'
-  | 'SelectProject'
-  | 'AddPhotos'
-  | 'PIEAnalysis'
-  | 'BuildUpdate'
-  | 'Projects'
-  | 'ProjectWorkspace'
-  | 'SavedUpdates'
-  | 'UpdateDetail'
-  | 'Contacts'
-  | 'Diagnostics'
-  | 'ReferenceDocuments'
-  | 'ProjectDocuments'
-  | 'Schedule'
-  | 'Upcoming'
-  | 'Admin';
+type Screen = AppScreen;
+type ReportFormat = 'project_manager' | 'executive';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -2322,216 +2322,6 @@ function normalizeScheduleItems(value: unknown) {
     .filter(item => item.taskName.trim());
 }
 
-function csvCells(line: string) {
-  const cells: string[] = [];
-  let current = '';
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-
-    if (char === '"') {
-      quoted = !quoted;
-      continue;
-    }
-
-    if (char === ',' && !quoted) {
-      cells.push(current.trim());
-      current = '';
-      continue;
-    }
-
-    current += char;
-  }
-
-  cells.push(current.trim());
-  return cells;
-}
-
-function parseScheduleText(contents: string, sourceName: string) {
-  const importedAt = new Date().toISOString();
-  const lines = contents
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
-
-  if (!lines.length) return [];
-
-  const firstCells = csvCells(lines[0]).map(cell => cell.toLowerCase());
-  const hasHeader = firstCells.some(cell =>
-    ['task', 'task name', 'milestone', 'project', 'location', 'start', 'finish', 'due', 'owner', 'status'].includes(cell),
-  );
-  const headers = hasHeader ? firstCells : [];
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-
-  function cell(cells: string[], names: string[], fallbackIndex: number) {
-    const headerIndex = headers.findIndex(header => names.includes(header));
-
-    if (headerIndex >= 0) return cells[headerIndex] || '';
-
-    return cells[fallbackIndex] || '';
-  }
-
-  return dataLines
-    .map(line => {
-      const cells = csvCells(line);
-      const taskName = cell(cells, ['task', 'task name', 'activity', 'item'], 0);
-
-      if (!taskName) return null;
-
-      return normalizeScheduleItem({
-        taskName,
-        projectName: cell(cells, ['project', 'project name'], 1),
-        locationName: cell(cells, ['location', 'area', 'work area'], 2),
-        startDate: cell(cells, ['start', 'start date'], 3),
-        finishDate: cell(cells, ['finish', 'finish date', 'due', 'due date'], 4),
-        milestone: cell(cells, ['milestone'], 5),
-        owner: cell(cells, ['owner', 'responsible'], 6),
-        status: (cell(cells, ['status'], 7) as ScheduleStatus) || 'Not Started',
-        notes: cell(cells, ['notes', 'comments'], 8),
-        importedFrom: sourceName,
-        importedAt,
-      });
-    })
-    .filter(Boolean) as ScheduleItem[];
-}
-
-
-function cleanPdfExtractedText(value: string) {
-  const parentheticalText = Array.from(
-    value.matchAll(/\((?:\\.|[^\\)])*\)/g),
-  )
-    .map(match =>
-      match[0]
-        .slice(1, -1)
-        .replace(/\\\(/g, '(')
-        .replace(/\\\)/g, ')')
-        .replace(/\\n/g, ' ')
-        .replace(/\\r/g, ' ')
-        .replace(/\\t/g, ' ')
-        .replace(/\\/g, ''),
-    )
-    .join('\n');
-
-  return `${value}\n${parentheticalText}`
-    .replace(/\r/g, '\n')
-    .replace(/[\u0000-\u001F]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizeExtractedScheduleDate(value: string) {
-  const match = value.trim().match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2}|\d{4})$/);
-
-  if (!match) return '';
-
-  const month = match[1].padStart(2, '0');
-  const day = match[2].padStart(2, '0');
-  const year = match[3].length === 2 ? `20${match[3]}` : match[3];
-
-  return formatAppDate(`${month}/${day}/${year}`);
-}
-
-function wordsNearDate(text: string, dateIndex: number) {
-  const start = Math.max(0, dateIndex - 120);
-  const end = Math.min(text.length, dateIndex + 80);
-
-  return text
-    .slice(start, end)
-    .replace(/\b\d{1,2}[\/-]\d{1,2}[\/-](\d{2}|\d{4})\b/g, ' ')
-    .replace(/\b(Start|Finish|Due|Duration|Predecessors|Successors|Calendar|Task Name|Milestone|Owner|Status)\b/gi, ' ')
-    .replace(/[^a-zA-Z0-9 #&/.,'-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function bestScheduleLabelFromContext(context: string) {
-  const parts = context
-    .split(/\s{2,}|[|•]+/)
-    .map(part => part.trim())
-    .filter(part => part.length >= 4 && /[a-zA-Z]/.test(part));
-
-  const candidate = parts[parts.length - 1] || context;
-
-  return candidate
-    .replace(/^[-–—:.,\s]+/, '')
-    .replace(/[-–—:.,\s]+$/, '')
-    .slice(0, 90)
-    .trim();
-}
-
-function findNameMatch(value: string, names: string[]) {
-  const lower = value.toLowerCase();
-
-  return names.find(name => name && lower.includes(name.toLowerCase())) || '';
-}
-
-function extractScheduleItemsFromPdfText(
-  rawPdfText: string,
-  sourceName: string,
-  projects: string[],
-  projectAreas: ProjectArea[],
-) {
-  const importedAt = new Date().toISOString();
-  const cleaned = cleanPdfExtractedText(rawPdfText);
-  const datePattern = /\b\d{1,2}[\/-]\d{1,2}[\/-](?:\d{2}|\d{4})\b/g;
-  const matches = Array.from(cleaned.matchAll(datePattern));
-  const items: ScheduleItem[] = [];
-  const seen = new Set<string>();
-
-  matches.forEach((match, index) => {
-    const finishDate = normalizeExtractedScheduleDate(match[0]);
-
-    if (!finishDate) return;
-
-    const context = wordsNearDate(cleaned, match.index || 0);
-    const taskName = bestScheduleLabelFromContext(context);
-
-    if (!taskName || taskName.length < 4) return;
-
-    const previousMatch = matches[index - 1];
-    const startDate =
-      previousMatch &&
-      typeof previousMatch.index === 'number' &&
-      typeof match.index === 'number' &&
-      match.index - previousMatch.index < 80
-        ? normalizeExtractedScheduleDate(previousMatch[0])
-        : '';
-
-    const locationName = findNameMatch(
-      `${context} ${taskName}`,
-      projectAreas.map(area => area.name),
-    );
-    const projectName = findNameMatch(
-      `${context} ${taskName}`,
-      projects,
-    );
-    const key = `${taskName.toLowerCase()}|${finishDate}|${locationName}`;
-
-    if (seen.has(key)) return;
-
-    seen.add(key);
-    items.push(
-      normalizeScheduleItem({
-        taskName,
-        projectName,
-        locationName,
-        startDate,
-        finishDate,
-        milestone: '',
-        owner: '',
-        status: 'Not Started',
-        notes:
-          'Best-effort extraction from imported Gantt PDF. Review task name, location, and dates before relying on this item.',
-        importedFrom: sourceName,
-        importedAt,
-      }),
-    );
-  });
-
-  return items.slice(0, 75);
-}
-
 type AiScheduleExtractedItem = {
   taskName?: string;
   projectName?: string | null;
@@ -2689,14 +2479,16 @@ function scheduleItemsFromAiPayload(payload: unknown, sourceName: string) {
 
 async function extractScheduleItemsWithAiEndpoint({
   endpointUrl,
-  pdfUri,
+  fileUri,
   fileName,
+  mimeType,
   projects,
   projectAreas,
 }: {
   endpointUrl: string;
-  pdfUri: string;
+  fileUri: string;
   fileName: string;
+  mimeType: string;
   projects: string[];
   projectAreas: ProjectArea[];
 }) {
@@ -2707,9 +2499,9 @@ async function extractScheduleItemsWithAiEndpoint({
   const formData = new FormData();
 
   formData.append('file', {
-    uri: pdfUri,
+    uri: fileUri,
     name: fileName || 'schedule.pdf',
-    type: 'application/pdf',
+    type: mimeType || 'application/octet-stream',
   } as any);
 
   formData.append('projectName', projects[0] || '');
@@ -3244,155 +3036,6 @@ function buildProjectDocumentStoragePath(
   return `${PROJECT_DOCUMENT_UPLOAD_FOLDER}/${sanitizeFilename(
     projectId,
   )}/${documentId}/${sanitizeFilename(fileName)}`;
-}
-
-// Backs up each photo's actual image file to the project-photos bucket.
-// saveCloudUpdate() only writes the update's metadata (caption, category,
-// the photo's local-device file path) to the database - without this, a
-// photo's image never leaves the phone it was taken on. Fire-and-forget per
-// photo: a slow or failed upload shouldn't block the update save/send flow.
-function syncUpdatePhotosToCloud(update: ProjectUpdate) {
-  update.photos.forEach(photo => {
-    void uploadLocalPhoto(update, photo);
-  });
-}
-
-async function uploadUpdatePhotosForSync(
-  update: ProjectUpdate,
-): Promise<Pick<
-  FieldUpdateSyncWorkAttempt,
-  | 'photoStorageUploadAttempted'
-  | 'storageUploadResult'
-  | 'storageBucketName'
-  | 'storageBucketExists'
-  | 'storageFailureCategory'
-  | 'storageHttpStatus'
-  | 'storageErrorCode'
-  | 'localFileExists'
-  | 'localFileReadable'
-  | 'fileByteSizeCategory'
-  | 'uploadPayloadType'
-  | 'storageContentType'
-  | 'objectPathCategory'
-  | 'databaseSyncRanAfterUpload'
-  | 'errors'
->> {
-  if (update.photos.length === 0) {
-    return {
-      photoStorageUploadAttempted: false,
-      storageUploadResult: 'skipped',
-      storageBucketName: null,
-      storageBucketExists: 'unknown',
-      storageFailureCategory: null,
-      storageHttpStatus: null,
-      storageErrorCode: null,
-      localFileExists: null,
-      localFileReadable: null,
-      fileByteSizeCategory: 'unknown',
-      uploadPayloadType: 'unknown',
-      storageContentType: null,
-      objectPathCategory: null,
-      databaseSyncRanAfterUpload: false,
-      errors: [],
-    };
-  }
-
-  const results = await Promise.all(
-    update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo)),
-  );
-  const failures = results.filter(
-    result => result.result !== 'uploaded' && result.result !== 'skipped',
-  );
-  const representativeDiagnostic =
-    failures[0]?.diagnostic || results[0]?.diagnostic || null;
-
-  if (failures.length > 0) {
-    return {
-      photoStorageUploadAttempted: true,
-      storageUploadResult: 'failed',
-      storageBucketName: representativeDiagnostic?.bucketName || null,
-      storageBucketExists: representativeDiagnostic?.bucketExists || 'unknown',
-      storageFailureCategory:
-        representativeDiagnostic?.failureCategory || 'unknown_storage_error',
-      storageHttpStatus: representativeDiagnostic?.httpStatus ?? null,
-      storageErrorCode: representativeDiagnostic?.errorCode ?? null,
-      localFileExists: representativeDiagnostic?.localFileExists ?? null,
-      localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
-      fileByteSizeCategory:
-        representativeDiagnostic?.fileByteSizeCategory || 'unknown',
-      uploadPayloadType: representativeDiagnostic?.uploadPayloadType || 'unknown',
-      storageContentType: representativeDiagnostic?.contentType || null,
-      objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
-      databaseSyncRanAfterUpload: false,
-      errors: failures.map(result =>
-        result.result === 'missing'
-          ? 'Photo storage upload failed: photo file unavailable.'
-          : `Photo storage upload failed: ${result.message || 'unknown storage error'}`,
-      ),
-    };
-  }
-
-  return {
-    photoStorageUploadAttempted: true,
-    storageUploadResult: 'success',
-    storageBucketName: representativeDiagnostic?.bucketName || null,
-    storageBucketExists: representativeDiagnostic?.bucketExists || 'yes',
-    storageFailureCategory: null,
-    storageHttpStatus: null,
-    storageErrorCode: null,
-    localFileExists: representativeDiagnostic?.localFileExists ?? null,
-    localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
-    fileByteSizeCategory:
-      representativeDiagnostic?.fileByteSizeCategory || 'unknown',
-    uploadPayloadType: representativeDiagnostic?.uploadPayloadType || 'unknown',
-    storageContentType: representativeDiagnostic?.contentType || null,
-    objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
-    databaseSyncRanAfterUpload: false,
-    errors: [],
-  };
-}
-
-async function runFieldUpdateCloudSync(
-  update: ProjectUpdate,
-): Promise<{
-  syncResult: SyncUploadResult;
-  workAttempt: FieldUpdateSyncWorkAttempt;
-}> {
-  const photoAttempt = await uploadUpdatePhotosForSync(update);
-  const workAttempt: FieldUpdateSyncWorkAttempt = {
-    cloudUpdateInsertAttempted: false,
-    photoStorageUploadAttempted: photoAttempt.photoStorageUploadAttempted,
-    storageUploadResult: photoAttempt.storageUploadResult,
-    databaseUpsertResult: 'skipped',
-    storageBucketName: photoAttempt.storageBucketName,
-    storageBucketExists: photoAttempt.storageBucketExists,
-    storageFailureCategory: photoAttempt.storageFailureCategory,
-    storageHttpStatus: photoAttempt.storageHttpStatus,
-    storageErrorCode: photoAttempt.storageErrorCode,
-    localFileExists: photoAttempt.localFileExists,
-    localFileReadable: photoAttempt.localFileReadable,
-    fileByteSizeCategory: photoAttempt.fileByteSizeCategory,
-    uploadPayloadType: photoAttempt.uploadPayloadType,
-    storageContentType: photoAttempt.storageContentType,
-    objectPathCategory: photoAttempt.objectPathCategory,
-    databaseSyncRanAfterUpload: false,
-    errors: [...photoAttempt.errors],
-  };
-
-  await saveCloudUpdate(update);
-  workAttempt.cloudUpdateInsertAttempted = true;
-
-  const syncResult = await uploadPendingChanges();
-  workAttempt.databaseSyncRanAfterUpload = workAttempt.storageUploadResult === 'success';
-  workAttempt.databaseUpsertResult =
-    syncResult.configured && syncResult.errors.length === 0 && syncResult.queued === 0
-      ? 'success'
-      : 'failed';
-
-  return {
-    syncResult,
-    workAttempt,
-  };
 }
 
 function projectDocumentStatusDetail(document: ProjectDocument) {
@@ -4170,26 +3813,6 @@ function buildSkippedSyncDiagnostics(
   };
 }
 
-type FieldUpdateSyncWorkAttempt = {
-  cloudUpdateInsertAttempted: boolean;
-  photoStorageUploadAttempted: boolean;
-  storageUploadResult: FieldUpdateSyncStepResult;
-  databaseUpsertResult: FieldUpdateSyncStepResult;
-  storageBucketName: string | null;
-  storageBucketExists: 'yes' | 'no' | 'unknown';
-  storageFailureCategory: PhotoStorageUploadFailureCategory | null;
-  storageHttpStatus: number | null;
-  storageErrorCode: string | null;
-  localFileExists: boolean | null;
-  localFileReadable: boolean | null;
-  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
-  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
-  storageContentType: string | null;
-  objectPathCategory: string | null;
-  databaseSyncRanAfterUpload: boolean | null;
-  errors: string[];
-};
-
 const SKIPPED_SYNC_WORK_ATTEMPT: FieldUpdateSyncWorkAttempt = {
   cloudUpdateInsertAttempted: false,
   photoStorageUploadAttempted: false,
@@ -4703,21 +4326,50 @@ function buildOverviewProjectRows(
   return projects.map(project => {
     const attentionItems = buildPhase2AttentionItems(savedUpdates, project);
     const dueTodayLabel = projectDueTodayLabel(project, savedUpdates, scheduleItems);
-    const needsAttention = attentionItems.length > 0 || dueTodayLabel !== null;
+    const projectScheduleItems = scheduleItems.filter(item => {
+      if (item.projectName.trim().toLowerCase() === project.trim().toLowerCase()) return true;
+      const canonicalProjectExists = projects.some(
+        candidate => candidate.trim().toLowerCase() === item.projectName.trim().toLowerCase(),
+      );
+      return !canonicalProjectExists &&
+        item.locationName.trim().toLowerCase() === project.trim().toLowerCase();
+    });
+    const scheduleReconciliation = buildPIEScheduleReconciliation({
+      scheduleItems: projectScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
+      updates: savedUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
+      projectName: project,
+    });
+    const scheduleWarning = scheduleReconciliation.warnings.find(
+      warning => warning.type !== 'schedule_mapping_incomplete',
+    ) || null;
+    const needsAttention =
+      attentionItems.length > 0 ||
+      dueTodayLabel !== null ||
+      scheduleWarning !== null;
     const brief = buildPIEProjectBriefModel(project, savedUpdates);
     const subtitle = needsAttention
-      ? brief.observations[0]?.text || brief.summary.split('\n')[0]
+      ? scheduleWarning?.summary || brief.observations[0]?.text || brief.summary.split('\n')[0]
       : buildProjectCardPIEStatus(project, savedUpdates);
 
     return {
       project,
       needsAttention,
-      severity: attentionItems.length > 0 ? 'high' : 'medium',
+      severity: (
+        attentionItems.length > 0 ||
+        scheduleWarning?.severity === 'critical' ||
+        scheduleWarning?.severity === 'high'
+          ? 'high'
+          : 'medium'
+      ) as OverviewProjectRow['severity'],
       subtitle,
       dueTodayLabel,
       observationCount: brief.observations.length,
     };
-  });
+  }).sort((left, right) =>
+    Number(right.needsAttention) - Number(left.needsAttention) ||
+    (right.severity === 'high' ? 1 : 0) - (left.severity === 'high' ? 1 : 0) ||
+    left.project.localeCompare(right.project),
+  );
 }
 
 function mostRecentHeroPhotoUri(
@@ -5144,6 +4796,12 @@ function AppShell() {
 
   const [selectedWorkspaceProject, setSelectedWorkspaceProject] =
     useState(DEFAULT_PROJECTS[0]);
+  const [reportType, setReportType] =
+    useState<Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>>(
+      'daily_project_update',
+    );
+  const [reportFormat, setReportFormat] =
+    useState<ReportFormat>('project_manager');
 
   const [overviewProjectSelection, setOverviewProjectSelection] =
     useState<OverviewProjectSelection>(undefined);
@@ -6650,8 +6308,7 @@ useEffect(() => {
       saved,
       ...prev.filter(item => item.id !== saved.id),
     ]);
-    saveCloudUpdate(saved);
-    syncUpdatePhotosToCloud(saved);
+    void runFieldUpdateCloudSync(saved);
     setSelectedWorkspaceProject(saved.projectName);
     setDraft(createDraft(saved.projectName));
     setDraftSavedAt(null);
@@ -8502,6 +8159,35 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
+  async function copyReport(report: PIEReportDraft) {
+    await Clipboard.setStringAsync(
+      `${report.title}\n\n${report.body}`,
+    );
+
+    Alert.alert(
+      'Report copied',
+      'The approved report is ready to paste.',
+    );
+  }
+
+  async function emailReport(report: PIEReportDraft) {
+    const available = await MailComposer.isAvailableAsync();
+
+    if (!available) {
+      await Clipboard.setStringAsync(`${report.title}\n\n${report.body}`);
+      Alert.alert(
+        'Email unavailable',
+        'The report was copied instead. Open your email app and paste it into a new message.',
+      );
+      return;
+    }
+
+    await MailComposer.composeAsync({
+      subject: report.subject || report.title,
+      body: report.body,
+    });
+  }
+
   async function openSystemShareSheet() {
     const available = await Sharing.isAvailableAsync();
 
@@ -9108,8 +8794,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
           try {
             extractedItems = await extractScheduleItemsWithAiEndpoint({
               endpointUrl: scheduleAiExtractorUrl,
-              pdfUri: targetUri,
+              fileUri: targetUri,
               fileName: originalFileName,
+              mimeType: file.mimeType || 'application/pdf',
               projects,
               projectAreas,
             });
@@ -9123,12 +8810,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
         if (extractedItems.length === 0) {
           try {
             const rawPdfText = await FileSystem.readAsStringAsync(targetUri);
-            extractedItems = extractScheduleItemsFromPdfText(
-              rawPdfText,
-              originalFileName,
+            const normalizedImport = normalizeScheduleImport({
+              contents: rawPdfText,
+              sourceName: originalFileName,
+              mimeType: file.mimeType || 'application/pdf',
               projects,
-              projectAreas,
-            );
+              projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+            });
+            extractedItems = normalizedImport.items as unknown as ScheduleItem[];
             extractionMethod = 'PDF text';
           } catch {
             extractedItems = [];
@@ -9171,7 +8860,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
 
       const contents = await FileSystem.readAsStringAsync(file.uri);
-      const imported = parseScheduleText(contents, fileName);
+      const normalizedImport = normalizeScheduleImport({
+        contents,
+        sourceName: fileName,
+        mimeType,
+        projects,
+        projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+      });
+      const imported = normalizedImport.items as unknown as ScheduleItem[];
 
       if (!imported.length) {
         Alert.alert(
@@ -9185,12 +8881,112 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       Alert.alert(
         'Schedule imported',
-        `${imported.length} schedule item${imported.length === 1 ? '' : 's'} imported.`,
+        `${imported.length} schedule item${imported.length === 1 ? '' : 's'} imported. ${normalizedImport.reviewItems.length} need manual review. Import confidence: ${normalizedImport.extractionConfidencePercent}%.`,
       );
     } catch {
       Alert.alert(
         'Import failed',
         'The schedule file could not be imported. Try a PDF, CSV, or plain text schedule file.',
+      );
+    }
+  }
+
+  async function importScheduleCommunicationScreenshot() {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          'Photo access needed',
+          'Allow photo access to select a screenshot of a text message or email.',
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: false,
+        quality: 1,
+      });
+      if (result.canceled) return;
+
+      const asset = result.assets[0];
+      if (!asset) return;
+
+      const directory = await ensureReferenceDocumentsDirectory();
+      const mimeType = asset.mimeType || 'image/jpeg';
+      const originalFileName = asset.fileName || filenameFromUri(asset.uri, 0, mimeType);
+      const storedFileName = `${uid()}-${sanitizeFilename(originalFileName)}`;
+      const targetUri = `${directory}${storedFileName}`;
+
+      await FileSystem.copyAsync({ from: asset.uri, to: targetUri });
+
+      const screenshotDocument = normalizeReferenceDocument({
+        id: uid(),
+        name: `Schedule message - ${originalFileName.replace(/\.[^/.]+$/, '')}`,
+        originalFileName,
+        uri: targetUri,
+        mimeType,
+        category: 'Other',
+        notes: '[Schedule communication screenshot] Imported for local text recognition and schedule review.',
+        isCurrent: false,
+        importedAt: new Date().toISOString(),
+      });
+      setReferenceDocuments(prev => [screenshotDocument, ...prev]);
+
+      let extractedItems: ScheduleItem[] = [];
+      let resultMessage = '';
+      let reviewCount = 0;
+
+      if (isDaveTextRecognitionAvailable()) {
+        const recognized = await recognizeTextFromImage(targetUri);
+        const communicationImport = extractScheduleItemsFromCommunicationText({
+          text: recognized.text,
+          sourceName: originalFileName,
+          projects,
+          projectAreas: projectAreas as unknown as Parameters<typeof extractScheduleItemsFromCommunicationText>[0]['projectAreas'],
+          recognitionConfidence: recognized.averageConfidence,
+        });
+        extractedItems = communicationImport.items as unknown as ScheduleItem[];
+        resultMessage = communicationImport.message;
+        reviewCount = communicationImport.reviewCount;
+      }
+
+      if (extractedItems.length === 0 && scheduleAiExtractorUrl.trim()) {
+        extractedItems = await extractScheduleItemsWithAiEndpoint({
+          endpointUrl: scheduleAiExtractorUrl,
+          fileUri: targetUri,
+          fileName: originalFileName,
+          mimeType,
+          projects,
+          projectAreas,
+        });
+        resultMessage = extractedItems.length
+          ? `${extractedItems.length} possible schedule activities extracted by the configured service.`
+          : resultMessage;
+        reviewCount = extractedItems.length;
+      }
+
+      if (extractedItems.length === 0) {
+        Alert.alert(
+          'Screenshot saved for review',
+          isDaveTextRecognitionAvailable()
+            ? resultMessage || 'DAVE recognized the screenshot, but no clear schedule commitment or date was found.'
+            : 'This installed app does not yet include local screenshot recognition. Install the updated DAVE build, then import the screenshot again.',
+        );
+        return;
+      }
+
+      setScheduleItems(prev => [...extractedItems, ...prev]);
+      Alert.alert(
+        'Schedule screenshot reviewed',
+        `${resultMessage} ${reviewCount} ${reviewCount === 1 ? 'activity needs' : 'activities need'} manual review. Nothing was sent or updated automatically.`,
+      );
+    } catch (error) {
+      Alert.alert(
+        'Screenshot review failed',
+        error instanceof Error
+          ? error.message
+          : 'The screenshot could not be read. Try a clear screenshot with the complete message visible.',
       );
     }
   }
@@ -9226,8 +9022,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ...prev.filter(item => item.id !== saved.id),
   ]);
 
-  saveCloudUpdate(saved);
-  syncUpdatePhotosToCloud(saved);
+  void runFieldUpdateCloudSync(saved);
 
   const nextProject =
     activeProjects[0] || DEFAULT_PROJECTS[0];
@@ -9470,21 +9265,74 @@ Note: This update was opened through Outlook because PLZ email security may reje
     [insets.top],
   );
 
+  const authoritativeScheduleItems = useMemo(
+    () => selectAuthoritativeScheduleItems({
+      scheduleItems: scheduleItems as unknown as Parameters<typeof selectAuthoritativeScheduleItems>[0]['scheduleItems'],
+      scheduleDocuments: referenceDocuments as unknown as Parameters<typeof selectAuthoritativeScheduleItems>[0]['scheduleDocuments'],
+    }) as unknown as ScheduleItem[],
+    [referenceDocuments, scheduleItems],
+  );
+
   const liveAuthorityInput = useMemo<PIELiveAuthorityInput>(() => {
+    const workspaceProjectName =
+      screen === 'ProjectWorkspace' ||
+      screen === 'ProjectDocuments' ||
+      screen === 'Reports'
+        ? selectedWorkspaceProject
+        : null;
     const projectName =
+      workspaceProjectName ||
       draft.projectName ||
       activeProjects[0] ||
       DEFAULT_PROJECTS[0] ||
       'Current Project';
+    const singleProjectReport =
+      screen === 'Reports' && reportType === 'daily_project_update';
+    const authorityReportType: PIEReportType | undefined =
+      screen !== 'Reports'
+        ? undefined
+        : reportFormat === 'executive'
+          ? 'executive_summary'
+          : reportType;
+    const matchesReportProject = (candidate: string) =>
+      candidate.trim().toLowerCase() === projectName.trim().toLowerCase();
+    const scopedReportScheduleItems = singleProjectReport
+      ? authoritativeScheduleItems.filter(item =>
+          matchesReportProject(item.projectName) ||
+          matchesReportProject(item.locationName),
+        )
+      : authoritativeScheduleItems;
+    const reportScheduleAreaNames = new Set(
+      scopedReportScheduleItems
+        .map(item => item.locationName.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const matchesReportUpdate = (candidate: string) =>
+      matchesReportProject(candidate) ||
+      reportScheduleAreaNames.has(candidate.trim().toLowerCase());
 
     return {
       organizationId: null,
       projectId: authorityProjectId(projectName),
       projectName,
-      projectNames: activeProjects.length ? activeProjects : [projectName],
-      updates: savedUpdates as unknown as PIELiveAuthorityInput['updates'],
-      scheduleItems: scheduleItems as unknown as PIELiveAuthorityInput['scheduleItems'],
-      currentUpdate: draft as unknown as PIELiveAuthorityInput['currentUpdate'],
+      projectNames:
+        singleProjectReport
+          ? [projectName]
+          : activeProjects.length
+            ? activeProjects
+            : [projectName],
+      reportType: authorityReportType,
+      updates: (
+        singleProjectReport
+          ? savedUpdates.filter(update => matchesReportUpdate(update.projectName))
+          : savedUpdates
+      ) as unknown as PIELiveAuthorityInput['updates'],
+      scheduleItems: scopedReportScheduleItems as unknown as PIELiveAuthorityInput['scheduleItems'],
+      currentUpdate: (
+        singleProjectReport && !matchesReportProject(draft.projectName)
+          ? null
+          : draft
+      ) as unknown as PIELiveAuthorityInput['currentUpdate'],
       projectAreas: projectAreas as unknown as PIELiveAuthorityInput['projectAreas'],
       contacts: contactBook as unknown as PIELiveAuthorityInput['contacts'],
       referenceDocuments: referenceDocuments as unknown as PIELiveAuthorityInput['referenceDocuments'],
@@ -9498,9 +9346,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
     draft,
     projectAreas,
     referenceDocuments,
+    reportType,
+    reportFormat,
     savedUpdates,
-    scheduleItems,
+    authoritativeScheduleItems,
     screen,
+    selectedWorkspaceProject,
   ]);
 
   function selectOverviewProject(projectName: OverviewProjectSelection) {
@@ -9534,7 +9385,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               contentStyle={contentStyle}
               projects={activeProjects}
               savedUpdates={savedUpdates}
-              scheduleItems={scheduleItems}
+              scheduleItems={authoritativeScheduleItems}
               displayName={displayName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
@@ -9715,7 +9566,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               ]}
               projectAreas={projectAreas}
               projectDocuments={projectDocuments}
-              scheduleItems={scheduleItems}
+              scheduleItems={authoritativeScheduleItems}
               contactBook={contactBook}
               projectStats={projectStatsForName(projectStatsByName, selectedWorkspaceProject)}
               coverPhoto={coverPhotoForProject(projectRecords, selectedWorkspaceProject)}
@@ -9775,6 +9626,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
             />
           )}
 
+          {screen === 'Reports' && (
+            <ReportsScreen
+              contentStyle={contentStyle}
+              projectName={selectedWorkspaceProject}
+              reportType={reportType}
+              onReportTypeChange={setReportType}
+              reportFormat={reportFormat}
+              onReportFormatChange={setReportFormat}
+              updates={savedUpdates as unknown as Parameters<typeof ReportsScreen>[0]['updates']}
+              scheduleItems={authoritativeScheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['scheduleItems']}
+              currentUpdate={draft as unknown as Parameters<typeof ReportsScreen>[0]['currentUpdate']}
+              projectAreas={projectAreas as unknown as Parameters<typeof ReportsScreen>[0]['projectAreas']}
+              contacts={contactBook as unknown as Parameters<typeof ReportsScreen>[0]['contacts']}
+              referenceDocuments={referenceDocuments as unknown as Parameters<typeof ReportsScreen>[0]['referenceDocuments']}
+              onSavedUpdates={() => setScreen('SavedUpdates')}
+              onCopyReport={report => {
+                void copyReport(report);
+              }}
+              onEmailReport={report => {
+                void emailReport(report);
+              }}
+            />
+          )}
+
           {screen === 'ProjectDocuments' && (
             <ProjectDocumentsScreen
               contentStyle={contentStyle}
@@ -9814,11 +9689,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'Schedule' && (
             <ScheduleScreen
               contentStyle={contentStyle}
-              scheduleItems={scheduleItems}
+              scheduleItems={authoritativeScheduleItems}
               savedUpdates={savedUpdates}
               projectAreas={projectAreas}
               projects={projects}
-              scheduleDocuments={referenceDocuments.filter(document => document.category === 'Schedules')}
+              scheduleDocuments={referenceDocuments.filter(document =>
+                document.category === 'Schedules' ||
+                document.notes.includes('[Schedule communication screenshot]'),
+              )}
               onBack={() => setScreen('Home')}
               onOpenDocument={openReferenceDocument}
               onDeleteDocument={deleteScheduleDocument}
@@ -9827,6 +9705,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onUpdate={updateScheduleItem}
               onDelete={deleteScheduleItem}
               onImport={importScheduleFile}
+              onImportScreenshot={importScheduleCommunicationScreenshot}
               scheduleAiExtractorUrl={scheduleAiExtractorUrl}
               onScheduleAiExtractorUrlChange={setScheduleAiExtractorUrl}
             />
@@ -9835,7 +9714,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'Upcoming' && (
             <UpcomingScreen
               contentStyle={contentStyle}
-              scheduleItems={scheduleItems}
+              scheduleItems={authoritativeScheduleItems}
               savedUpdates={savedUpdates}
               onBack={() => setScreen('Home')}
               onSchedule={() => setScreen('Schedule')}
@@ -10053,7 +9932,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             onClose={cancelDocumentProjectSelection}
           />
 
-          <BottomTabs
+          <AppBottomTabs
             current={screen}
             onChange={setScreen}
           />
@@ -10079,7 +9958,7 @@ function authoritySurfaceForScreen(screen: Screen): PIELiveAuthorityInput['surfa
     return 'capture';
   }
 
-  if (screen === 'BuildUpdate') {
+  if (screen === 'BuildUpdate' || screen === 'Reports') {
     return 'reports';
   }
 
@@ -10400,14 +10279,38 @@ function HomeScreen({
             style={styles.overviewPriorityImage}
           />
         ) : (
-          <View style={styles.overviewPriorityImagePlaceholder}>
-            <Ionicons name="flag-outline" size={34} color={colors.primary} />
+          <View style={styles.overviewPriorityClearPanel}>
+            <View style={styles.overviewPriorityClearIcon}>
+              <Ionicons name="checkmark-circle" size={34} color={colors.success} />
+            </View>
+            <View style={styles.overviewPriorityClearCopy}>
+              <Text style={styles.overviewPriorityClearTitle}>All clear</Text>
+              <Text style={styles.overviewPriorityClearText}>
+                {scopedProjects.length} project{scopedProjects.length === 1 ? '' : 's'} reviewed
+              </Text>
+              <Text style={styles.overviewPriorityClearText}>
+                {dueTodayCount === 0
+                  ? 'Nothing due today'
+                  : `${dueTodayCount} item${dueTodayCount === 1 ? '' : 's'} due today`}
+              </Text>
+            </View>
           </View>
         )}
         <View style={styles.overviewPriorityContent}>
           <View style={styles.overviewPriorityBadge}>
-            <Ionicons name="sparkles-outline" size={14} color={colors.warning} />
-            <Text style={styles.overviewPriorityBadgeText}>PRIORITY</Text>
+            <Ionicons
+              name={topPriority ? 'sparkles-outline' : 'checkmark-circle-outline'}
+              size={14}
+              color={topPriority ? colors.warning : colors.success}
+            />
+            <Text
+              style={[
+                styles.overviewPriorityBadgeText,
+                !topPriority && styles.overviewPriorityClearBadgeText,
+              ]}
+            >
+              {topPriority ? 'PRIORITY' : 'ALL CLEAR'}
+            </Text>
           </View>
           <Text style={styles.overviewPriorityProject}>
             {topPriority?.project || 'No immediate priority'}
@@ -16910,6 +16813,7 @@ function ScheduleScreen({
   onUpdate,
   onDelete,
   onImport,
+  onImportScreenshot,
   scheduleAiExtractorUrl,
   onScheduleAiExtractorUrlChange,
 }: {
@@ -16927,6 +16831,7 @@ function ScheduleScreen({
   onUpdate: (itemId: string, next: Partial<ScheduleItem>) => void;
   onDelete: (itemId: string) => void;
   onImport: () => void;
+  onImportScreenshot: () => void;
   scheduleAiExtractorUrl: string;
   onScheduleAiExtractorUrlChange: (value: string) => void;
 }) {
@@ -16945,6 +16850,29 @@ function ScheduleScreen({
   const [notes, setNotes] = useState('');
 
   const actionItems = actionItemsFromUpdates(savedUpdates);
+  const scheduleReconciliation = useMemo(
+    () => buildPIEScheduleReconciliation({
+      scheduleItems,
+      updates: savedUpdates,
+    }),
+    [savedUpdates, scheduleItems],
+  );
+  const scheduleFieldResults = useMemo(() => {
+    const matches = new Map<string, PIEScheduleFieldMatch>();
+    const warnings = new Map<string, PIEScheduleReconciliationWarning[]>();
+
+    scheduleReconciliation.matches.forEach(match => {
+      matches.set(match.scheduleItemId, match);
+    });
+    scheduleReconciliation.warnings.forEach(warning => {
+      warnings.set(warning.scheduleItemId, [
+        ...(warnings.get(warning.scheduleItemId) || []),
+        warning,
+      ]);
+    });
+
+    return { matches, warnings };
+  }, [scheduleReconciliation]);
 
   const sortedItems = [...scheduleItems].sort((a, b) => {
     const aDays = daysUntilDate(a.finishDate);
@@ -16988,19 +16916,24 @@ function ScheduleScreen({
     setNotes('');
   }
 
-  function startScheduleItemFromPdf(document: ReferenceDocument) {
+  function startScheduleItemFromSource(document: ReferenceDocument) {
+    const isScreenshot = document.notes.includes('[Schedule communication screenshot]');
     setTaskName('');
     setProjectName(projects[0] || '');
     setLocationName(projectAreas[0]?.name || '');
     setStartDate('');
     setFinishDate('');
-    setMilestone('From PDF Schedule');
+    setMilestone(isScreenshot ? 'From Schedule Message' : 'From PDF Schedule');
     setOwner('');
     setContractor('');
     setPercentComplete('0');
     setPriority('Medium');
     setStatus('Not Started');
-    setNotes(`Source PDF: ${document.originalFileName}. Open the PDF, review the Gantt chart, then enter the task name, dates, owner, and location from the schedule.`);
+    setNotes(
+      isScreenshot
+        ? `Source message screenshot: ${document.originalFileName}. Open the screenshot and confirm the task, date, owner, project, and area.`
+        : `Source PDF: ${document.originalFileName}. Open the PDF, review the Gantt chart, then enter the task name, dates, owner, and location from the schedule.`,
+    );
     setShowAdd(true);
   }
 
@@ -17049,6 +16982,8 @@ function ScheduleScreen({
       renderItem={({ item }) => (
         <ScheduleItemRow
           item={item}
+          fieldMatch={scheduleFieldResults.matches.get(item.id) || null}
+          fieldWarnings={scheduleFieldResults.warnings.get(item.id) || []}
           onUpdate={next => onUpdate(item.id, next)}
           onDelete={() => onDelete(item.id)}
         />
@@ -17094,9 +17029,49 @@ function ScheduleScreen({
           </View>
 
           <View style={styles.panel}>
+            <View style={styles.areaStatusLine}>
+              <Ionicons
+                name={scheduleReconciliation.warnings.length > 0
+                  ? 'warning-outline'
+                  : 'checkmark-circle-outline'}
+                size={20}
+                color={scheduleReconciliation.warnings.length > 0
+                  ? colors.warning
+                  : colors.success}
+              />
+              <Text style={styles.panelTitle}>Schedule vs Field</Text>
+            </View>
+
+            <Text style={styles.bodyText}>
+              {scheduleReconciliation.summary}
+            </Text>
+
+            {scheduleReconciliation.warnings.slice(0, 5).map(warning => (
+              <View key={warning.id} style={styles.compactLocationRow}>
+                <View style={styles.rowIconBubble}>
+                  <Ionicons
+                    name={warning.severity === 'critical' || warning.severity === 'high'
+                      ? 'alert-circle-outline'
+                      : 'information-circle-outline'}
+                    size={20}
+                    color={warning.severity === 'critical' || warning.severity === 'high'
+                      ? colors.danger
+                      : colors.warning}
+                  />
+                </View>
+                <View style={styles.rowMain}>
+                  <Text style={styles.projectName}>{warning.title}</Text>
+                  <Text style={styles.rowSub}>{warning.summary}</Text>
+                  <Text style={styles.rowSub}>{warning.suggestedAction}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.panel}>
             <Text style={styles.panelTitle}>Schedule Import</Text>
             <Text style={styles.bodyText}>
-              Import a PDF Gantt chart. The app will first use your AI/OCR extractor endpoint if one is saved, then fall back to readable PDF text extraction. Scanned or flattened Gantt charts usually require AI/OCR.
+              Import a PDF or CSV schedule, or review a screenshot of scheduling information from a text message or email. Screenshot recognition stays on this iPhone and every extracted activity requires review.
             </Text>
 
             <Text style={styles.label}>AI/OCR extractor endpoint</Text>
@@ -17112,7 +17087,7 @@ function ScheduleScreen({
             />
 
             <Text style={styles.mutedNote}>
-              For scanned Gantt PDFs, connect a secure OCR/AI endpoint that accepts the PDF and returns JSON schedule items. Leave blank to use best-effort PDF text extraction only.
+              The optional secure extractor supports scanned Gantt PDFs. Message and email screenshots use local Apple text recognition first.
             </Text>
 
             <View style={styles.dataActionRow}>
@@ -17124,6 +17099,15 @@ function ScheduleScreen({
               />
 
               <SecondaryButton
+                label="Import Message Screenshot"
+                icon="image-outline"
+                onPress={onImportScreenshot}
+                compact
+              />
+            </View>
+
+            <View style={styles.dataActionRow}>
+              <SecondaryButton
                 label={showAdd ? 'Hide Manual Entry' : 'Add Manually'}
                 icon="add-circle-outline"
                 onPress={() => setShowAdd(prev => !prev)}
@@ -17134,15 +17118,22 @@ function ScheduleScreen({
 
           {scheduleDocuments.length ? (
             <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Imported Schedule PDFs</Text>
+              <Text style={styles.panelTitle}>Imported Schedule Sources</Text>
               <Text style={styles.bodyText}>
-                Keep only the current Gantt schedule active. Delete or archive outdated uploads so Upcoming is driven by the latest dates.
+                Keep only the current Gantt schedule active. Message screenshots are supporting sources and never replace the active schedule.
               </Text>
 
-              {scheduleDocuments.map(document => (
+              {scheduleDocuments.map(document => {
+                const isScreenshot = document.notes.includes('[Schedule communication screenshot]');
+
+                return (
                 <View key={document.id} style={styles.compactLocationRow}>
                   <View style={styles.rowIconBubble}>
-                    <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+                    <Ionicons
+                      name={isScreenshot ? 'image-outline' : 'document-text-outline'}
+                      size={20}
+                      color={colors.primary}
+                    />
                   </View>
 
                   <View style={styles.rowMain}>
@@ -17151,7 +17142,9 @@ function ScheduleScreen({
                       {document.originalFileName}
                     </Text>
                     <Text style={styles.rowSub}>
-                      Imported {formatSavedTime(document.importedAt)} • {document.isCurrent ? 'Active schedule' : 'Inactive'}
+                      Imported {formatSavedTime(document.importedAt)} • {isScreenshot
+                        ? 'Supporting message screenshot'
+                        : document.isCurrent ? 'Active schedule' : 'Inactive'}
                     </Text>
                   </View>
 
@@ -17164,11 +17157,11 @@ function ScheduleScreen({
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.compactInlineAction}
-                      onPress={() => startScheduleItemFromPdf(document)}
+                      onPress={() => startScheduleItemFromSource(document)}
                     >
                       <Text style={styles.compactInlineActionText}>Add Item</Text>
                     </TouchableOpacity>
-                    {!document.isCurrent ? (
+                    {!isScreenshot && !document.isCurrent ? (
                       <TouchableOpacity
                         style={styles.compactInlineAction}
                         onPress={() => onSetActiveDocument(document.id)}
@@ -17184,7 +17177,8 @@ function ScheduleScreen({
                     </TouchableOpacity>
                   </View>
                 </View>
-              ))}
+                );
+              })}
             </View>
           ) : null}
 
@@ -17406,10 +17400,14 @@ function ScheduleScreen({
 
 function ScheduleItemRow({
   item,
+  fieldMatch,
+  fieldWarnings,
   onUpdate,
   onDelete,
 }: {
   item: ScheduleItem;
+  fieldMatch?: PIEScheduleFieldMatch | null;
+  fieldWarnings?: PIEScheduleReconciliationWarning[];
   onUpdate: (next: Partial<ScheduleItem>) => void;
   onDelete: () => void;
 }) {
@@ -17458,6 +17456,25 @@ function ScheduleItemRow({
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${item.percentComplete}%` }]} />
         </View>
+
+        {fieldMatch || fieldWarnings?.length ? (
+          <View style={styles.scheduleFieldEvidenceCard}>
+            <Text style={styles.scheduleFieldEvidenceTitle}>DAVE field check</Text>
+            <Text style={styles.scheduleFieldEvidenceText}>
+              Schedule: {item.status}, {item.percentComplete}%
+            </Text>
+            {fieldMatch ? (
+              <Text style={styles.scheduleFieldEvidenceText}>
+                Field evidence: {scheduleFieldSignalLabel(fieldMatch.signal)} ({fieldMatch.confidence} confidence)
+              </Text>
+            ) : null}
+            {fieldWarnings?.[0] ? (
+              <Text style={styles.scheduleFieldEvidenceAction}>
+                {fieldWarnings[0].suggestedAction}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
 
         {expanded ? (
           <View style={styles.areaManagerCard}>
@@ -17565,6 +17582,14 @@ function ScheduleItemRow({
       </TouchableOpacity>
     </View>
   );
+}
+
+function scheduleFieldSignalLabel(signal: PIEScheduleFieldMatch['signal']) {
+  if (signal === 'complete') return 'May be complete';
+  if (signal === 'in_progress') return 'Work may be in progress';
+  if (signal === 'blocked') return 'Work may be blocked';
+  if (signal === 'issue') return 'Possible issue reported';
+  return 'Current condition is uncertain';
 }
 
 function ProjectDashboardCard({
@@ -17726,84 +17751,6 @@ function DraftSavedIndicator({
         {formatSavedTime(savedAt)}
       </Text>
     </View>
-  );
-}
-
-function BottomTabs({
-  current,
-  onChange,
-}: {
-  current: Screen;
-  onChange: (screen: Screen) => void;
-}) {
-  return (
-    <View style={styles.bottomTabs}>
-      <TabButton
-        label="Overview"
-        icon="home-outline"
-        active={current === 'Home'}
-        onPress={() => onChange('Home')}
-      />
-
-      <TabButton
-        label="Projects"
-        icon="folder-open-outline"
-        active={current === 'Projects' || current === 'ProjectWorkspace' || current === 'ProjectDocuments'}
-        onPress={() => onChange('Projects')}
-      />
-
-      <TabButton
-        label="Updates"
-        icon="document-text-outline"
-        active={current === 'SavedUpdates' || current === 'UpdateDetail'}
-        onPress={() => onChange('SavedUpdates')}
-      />
-
-      <TabButton
-        label="Settings"
-        icon="settings-outline"
-        active={current === 'Admin'}
-        onPress={() => onChange('Admin')}
-      />
-    </View>
-  );
-}
-
-function TabButton({
-  label,
-  icon,
-  active,
-  onPress,
-}: {
-  label: string;
-  icon: IconName;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      style={styles.tabButton}
-      onPress={onPress}
-    >
-      <Ionicons
-        name={icon}
-        size={21}
-        color={
-          active
-            ? colors.primary
-            : colors.muted
-        }
-      />
-
-      <Text
-        style={[
-          styles.tabText,
-          active && styles.tabTextActive,
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
   );
 }
 
@@ -19841,11 +19788,41 @@ const styles = StyleSheet.create({
     resizeMode: 'cover',
   },
 
-  overviewPriorityImagePlaceholder: {
+  overviewPriorityClearPanel: {
     height: 130,
     backgroundColor: colors.primarySoft,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 14,
+    paddingHorizontal: 24,
+  },
+
+  overviewPriorityClearIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  overviewPriorityClearCopy: {
+    gap: 2,
+  },
+
+  overviewPriorityClearTitle: {
+    color: colors.text,
+    fontSize: 18,
+    lineHeight: 23,
+    fontWeight: '900',
+  },
+
+  overviewPriorityClearText: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
   },
 
   overviewPriorityContent: {
@@ -19869,6 +19846,10 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 0.7,
+  },
+
+  overviewPriorityClearBadgeText: {
+    color: colors.success,
   },
 
   overviewPriorityProject: {
@@ -20989,57 +20970,6 @@ const styles = StyleSheet.create({
     gap: 7,
   },
 
-  bottomTabs: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: colors.card,
-    borderTopColor: colors.line,
-    borderTopWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    paddingTop: 8,
-    paddingBottom:
-      Platform.OS === 'ios' ? 24 : 10,
-  },
-
-  newTabButtonText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-
-  tabButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    gap: 3,
-  },
-
-  tabText: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-
-  tabTextActive: {
-    color: colors.primary,
-  },
-
-  newTabButton: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginHorizontal: 6,
-  },
-
-
   dashboardGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -21111,6 +21041,32 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 999,
     backgroundColor: colors.primary,
+  },
+
+  scheduleFieldEvidenceCard: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 10,
+    marginTop: 10,
+    padding: 10,
+  },
+  scheduleFieldEvidenceTitle: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  scheduleFieldEvidenceText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  scheduleFieldEvidenceAction: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
+    marginTop: 5,
   },
 
 });
