@@ -23,6 +23,9 @@ import {
 import { AdminScreen } from './screens/AdminScreen';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { DAVEAskExperience } from './components/DAVEAskExperience';
+import { DAVECaptureConfirmationSheet } from './components/DAVECaptureConfirmationSheet';
+import { DAVECaptureMemoryDetailSheet } from './components/DAVECaptureMemoryDetailSheet';
+import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -52,7 +55,11 @@ import {
   type DAVEProjectDailyBriefItem,
 } from './services/DAVEDailyBrief';
 import { buildProjectIntelligence } from './services/DAVEIntelligence';
-import type { DAVEConfirmedCaptureMemory } from './services/DAVECaptureMemory';
+import {
+  createCaptureMemory,
+  type DAVECaptureMemory,
+  type DAVEConfirmedCaptureMemory,
+} from './services/DAVECaptureMemory';
 import { localDAVECaptureMemoryRepository } from './services/DAVECaptureMemoryRepository';
 import {
   cacheSelectedProjectCoverPhoto,
@@ -9425,6 +9432,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectName={selectedWorkspaceProject}
               savedUpdates={savedUpdates}
               captureMemories={captureMemories}
+              projectAreas={projectAreas}
               projectDocuments={projectDocuments}
               scheduleItems={scheduleItems}
               contactBook={contactBook}
@@ -9448,6 +9456,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRemoveCoverPhoto={() => removeProjectCoverPhoto(selectedWorkspaceProject)}
               onBack={() => setScreen('Projects')}
               onNewFieldUpdate={createNewUpdate}
+              onSaveCaptureMemory={saveCaptureMemory}
               onOpenUpdates={() => setScreen('SavedUpdates')}
               onOpenPhotoDifferences={openLatestProjectPhotoDifference}
               onOpenDocuments={() => setScreen('ProjectDocuments')}
@@ -13330,6 +13339,7 @@ function ProjectWorkspaceScreen({
   projectName,
   savedUpdates,
   captureMemories,
+  projectAreas,
   projectDocuments,
   scheduleItems,
   contactBook,
@@ -13343,6 +13353,7 @@ function ProjectWorkspaceScreen({
   onRemoveCoverPhoto,
   onBack,
   onNewFieldUpdate,
+  onSaveCaptureMemory,
   onOpenUpdates,
   onOpenPhotoDifferences,
   onOpenDocuments,
@@ -13355,6 +13366,7 @@ function ProjectWorkspaceScreen({
   projectName: string;
   savedUpdates: ProjectUpdate[];
   captureMemories: readonly DAVEConfirmedCaptureMemory[];
+  projectAreas: ProjectArea[];
   projectDocuments: ProjectDocument[];
   scheduleItems: ScheduleItem[];
   contactBook: ContactBook;
@@ -13368,6 +13380,7 @@ function ProjectWorkspaceScreen({
   onRemoveCoverPhoto: () => void;
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
+  onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
   onOpenUpdates: () => void;
   onOpenPhotoDifferences: (projectName: string) => void;
   onOpenDocuments: () => void;
@@ -13404,6 +13417,9 @@ function ProjectWorkspaceScreen({
   const actionCenter = projectIntelligence.actionCenter;
   const actionCenterDismissKey = `dave-action-center-dismissed:${authorityProjectId(projectName)}:${isoToday()}`;
   const [actionCenterDismissed, setActionCenterDismissed] = useState<boolean | null>(null);
+  const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
+  const [captureDraft, setCaptureDraft] = useState<DAVECaptureMemory | null>(null);
+  const [selectedCaptureMemory, setSelectedCaptureMemory] = useState<DAVEConfirmedCaptureMemory | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -13659,12 +13675,31 @@ function ProjectWorkspaceScreen({
             dailyBrief.reality.recentTimelineEvents.slice(0, 3).map(timelineEvent => {
               const source = timelineEvent.evidence.find(item => item.sourceType === 'update') ||
                 timelineEvent.evidence[0];
-              return (
+              const memoryEvidence = timelineEvent.evidence.find(item => item.sourceType === 'memory');
+              const sourceMemory = memoryEvidence
+                ? captureMemories.find(memory => memory.id === memoryEvidence.recordId) || null
+                : null;
+              const canOpen = Boolean(sourceMemory || (source && timelineEvent.navigationTarget !== 'project_workspace'));
+              const rowContent = (
+                <>
+                  <View style={styles.rowMain}>
+                    <Text style={styles.locationDetailText}>{timelineEvent.title}</Text>
+                    <Text style={styles.rowSub}>{formatSavedTime(timelineEvent.timestamp)} · {timelineEvent.evidenceClass}</Text>
+                    <Text style={styles.rowSub}>{timelineEvent.summary}</Text>
+                  </View>
+                  {canOpen ? <Ionicons name="chevron-forward" size={17} color={colors.muted} /> : null}
+                </>
+              );
+
+              return canOpen ? (
                 <TouchableOpacity
                   key={timelineEvent.id}
                   style={styles.projectSelectorRow}
-                  disabled={!source}
                   onPress={() => {
+                    if (sourceMemory) {
+                      setSelectedCaptureMemory(sourceMemory);
+                      return;
+                    }
                     if (!source) return;
                     onOpenDailyBriefItem({
                       navigationTarget: timelineEvent.navigationTarget,
@@ -13674,13 +13709,12 @@ function ProjectWorkspaceScreen({
                   accessibilityRole="button"
                   accessibilityLabel={`${timelineEvent.title}. ${timelineEvent.summary}`}
                 >
-                  <View style={styles.rowMain}>
-                    <Text style={styles.locationDetailText}>{timelineEvent.title}</Text>
-                    <Text style={styles.rowSub}>{formatDisplayDate(timelineEvent.timestamp)} · {timelineEvent.evidenceClass}</Text>
-                    <Text style={styles.rowSub}>{timelineEvent.summary}</Text>
-                  </View>
-                  {source ? <Ionicons name="chevron-forward" size={17} color={colors.muted} /> : null}
+                  {rowContent}
                 </TouchableOpacity>
+              ) : (
+                <View key={timelineEvent.id} style={styles.projectSelectorRow}>
+                  {rowContent}
+                </View>
               );
             })
           )}
@@ -13735,6 +13769,56 @@ function ProjectWorkspaceScreen({
         label="New Field Update"
         icon="camera-outline"
         onPress={() => onNewFieldUpdate(projectName)}
+      />
+
+      <SecondaryButton
+        label="Capture Memory"
+        icon="chatbox-ellipses-outline"
+        onPress={() => setTypedCaptureOpen(true)}
+      />
+
+      <DAVETypedCaptureSheet
+        visible={typedCaptureOpen}
+        projectName={projectName}
+        onContinue={text => {
+          const createdAt = new Date().toISOString();
+          const memoryId = `typed-memory-${uid()}`;
+          setCaptureDraft(createCaptureMemory({
+            id: memoryId,
+            transcript: text,
+            transcriptSourceRecordId: `typed-entry:${memoryId}`,
+            createdAt,
+            recommendedProject: {
+              value: projectName,
+              confidence: 'high',
+              confirmed: true,
+            },
+            fields: { generalMemory: text },
+          }));
+          setTypedCaptureOpen(false);
+        }}
+        onCancel={() => setTypedCaptureOpen(false)}
+      />
+
+      {captureDraft ? (
+        <DAVECaptureConfirmationSheet
+          visible
+          transcript={captureDraft.transcript}
+          draft={captureDraft}
+          projects={[projectName]}
+          locations={projectAreas.map(area => area.name)}
+          sourceLabel="Source note"
+          onSave={async memory => {
+            await onSaveCaptureMemory(memory);
+            setCaptureDraft(null);
+          }}
+          onCancel={() => setCaptureDraft(null)}
+        />
+      ) : null}
+
+      <DAVECaptureMemoryDetailSheet
+        memory={selectedCaptureMemory}
+        onClose={() => setSelectedCaptureMemory(null)}
       />
 
       <Text style={styles.sectionLabel}>Tools</Text>

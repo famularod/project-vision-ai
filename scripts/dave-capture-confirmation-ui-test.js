@@ -15,6 +15,8 @@ function load(file) {
 
 const memory = load('services/DAVECaptureMemory.ts');
 const sheet = fs.readFileSync(path.join(root, 'components/DAVECaptureConfirmationSheet.tsx'), 'utf8');
+const typedSheet = fs.readFileSync(path.join(root, 'components/DAVETypedCaptureSheet.tsx'), 'utf8');
+const detailSheet = fs.readFileSync(path.join(root, 'components/DAVECaptureMemoryDetailSheet.tsx'), 'utf8');
 const admin = fs.readFileSync(path.join(root, 'screens/AdminScreen.tsx'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 
@@ -28,8 +30,9 @@ assert(sheet.includes('<Text style={styles.transcript}>{transcript}</Text>'), 'S
 assert(sheet.includes('buildMemoryConfirmation(working)') && sheet.includes('buildAssignmentUncertainty('), 'Sheet must use deterministic human-language builders.');
 
 assert(sheet.includes("correctCaptureMemory(current, 'project'") && sheet.includes("correctCaptureMemory(current, 'location'"), 'Project and location corrections must be independent.');
-assert(sheet.includes('correctCaptureMemory(current, field, value || null'), 'Structured fields must remain editable before save.');
-assert(sheet.includes('confirmCaptureMemory(working') && sheet.includes('confirmedCaptureMemoryForSave(confirmed)'), 'Save must cross the confirmation boundary and use only confirmedCaptureMemoryForSave().');
+assert(sheet.includes('setFieldTexts(current => ({ ...current, [field]: value }))'), 'Structured fields must use local text buffers so spaces survive mid-edit.');
+assert(sheet.includes('onBlur={() => commitField(field)}') && sheet.includes('commitFieldText(current, field, fieldTexts[field])'), 'Buffered fields must commit on blur and Save.');
+assert(sheet.includes('confirmCaptureMemory(prepared') && sheet.includes('confirmedCaptureMemoryForSave(confirmed)'), 'Save must cross the confirmation boundary and use only confirmedCaptureMemoryForSave().');
 assert(sheet.includes('await onSave(eligible)') && sheet.includes('disabled={isSaving}'), 'Save must await persistence and prevent duplicate taps.');
 
 const cancelBody = sheet.slice(sheet.indexOf('function cancel()'), sheet.indexOf('const limitations'));
@@ -57,6 +60,16 @@ assert(admin.includes('await onSaveCaptureMemory(memory)') && admin.includes('sa
 assert(!admin.includes('saveCloudUpdate') && !admin.includes('AsyncStorage.setItem'), 'The confirmation UI must not add cloud persistence or bypass the repository.');
 assert(app.includes('localDAVECaptureMemoryRepository.list()') && app.includes('localDAVECaptureMemoryRepository.save(memory)'), 'App must hydrate and save confirmed memories through the repository.');
 assert(app.includes('captureMemories={captureMemories}') && app.includes('captureMemories,\n  }),'), 'Selected-project intelligence must refresh from hydrated capture memories.');
+
+['Capture Memory', 'What should DAVE remember?', 'Review Memory'].forEach(marker =>
+  assert(typedSheet.includes(marker), `Typed capture sheet must render ${marker}.`));
+assert(app.includes('label="Capture Memory"') && app.includes('<DAVETypedCaptureSheet'), 'Project Workspace must expose the production typed capture entry.');
+assert(app.includes("transcriptSourceRecordId: `typed-entry:${memoryId}`") && app.includes("fields: { generalMemory: text }"), 'Typed capture must preserve source text without inventing structured facts.');
+assert(app.includes('await onSaveCaptureMemory(memory)') && app.includes('sourceLabel="Source note"'), 'Typed capture must reuse the confirmed repository save boundary.');
+assert(app.includes('formatSavedTime(timelineEvent.timestamp)') && !app.includes('formatDisplayDate(timelineEvent.timestamp)'), 'Timeline must format full confirmation timestamps without producing Invalid Date.');
+assert(app.includes('setSelectedCaptureMemory(sourceMemory)') && app.includes('<DAVECaptureMemoryDetailSheet'), 'Memory-backed timeline rows must open a real saved-memory destination.');
+['Saved Memory', 'What DAVE remembers', 'Source note'].forEach(marker =>
+  assert(detailSheet.includes(marker), `Saved memory detail must render ${marker}.`));
 
 ['extracted', 'classified', 'processing', 'operation completed', 'contractor commitment detected'].forEach(term => {
   assert(!sheet.toLowerCase().includes(term), `Confirmation sheet leaked internal language: ${term}`);

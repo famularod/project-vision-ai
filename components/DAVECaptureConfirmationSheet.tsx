@@ -35,12 +35,19 @@ const FIELD_LABELS: ReadonlyArray<readonly [EditableField, string]> = [
   ['generalMemory', 'General memory'],
 ];
 
+function editableFieldTexts(memory: DAVECaptureMemory): Record<EditableField, string> {
+  return Object.fromEntries(
+    FIELD_LABELS.map(([field]) => [field, memory.fields[field] || '']),
+  ) as Record<EditableField, string>;
+}
+
 export function DAVECaptureConfirmationSheet({
   visible,
   transcript,
   draft,
   projects,
   locations,
+  sourceLabel = 'Source transcript',
   onSave,
   onCancel,
 }: {
@@ -49,10 +56,12 @@ export function DAVECaptureConfirmationSheet({
   draft: DAVECaptureMemory;
   projects: readonly string[];
   locations: readonly string[];
+  sourceLabel?: string;
   onSave: (memory: DAVEConfirmedCaptureMemory) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const [working, setWorking] = useState(draft);
+  const [fieldTexts, setFieldTexts] = useState<Record<EditableField, string>>(() => editableFieldTexts(draft));
   const [, setConversation] = useState(confirmationSnapshot);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -60,14 +69,19 @@ export function DAVECaptureConfirmationSheet({
   useEffect(() => {
     if (!visible) return;
     setWorking(draft);
+    setFieldTexts(editableFieldTexts(draft));
     setConversation(confirmationSnapshot());
     setSaveError(null);
     setIsSaving(false);
   }, [draft, visible]);
 
   function editField(field: EditableField, value: string) {
-    setWorking(current => correctCaptureMemory(current, field, value || null, new Date().toISOString()));
+    setFieldTexts(current => ({ ...current, [field]: value }));
     setSaveError(null);
+  }
+
+  function commitField(field: EditableField) {
+    setWorking(current => commitFieldText(current, field, fieldTexts[field]));
   }
 
   function chooseProject(project: string) {
@@ -94,7 +108,11 @@ export function DAVECaptureConfirmationSheet({
     if (isSaving) return;
 
     try {
-      const confirmed = confirmCaptureMemory(working, new Date().toISOString());
+      const prepared = FIELD_LABELS.reduce(
+        (current, [field]) => commitFieldText(current, field, fieldTexts[field]),
+        working,
+      );
+      const confirmed = confirmCaptureMemory(prepared, new Date().toISOString());
       const eligible = confirmedCaptureMemoryForSave(confirmed);
       if (!eligible) return;
       setIsSaving(true);
@@ -136,7 +154,7 @@ export function DAVECaptureConfirmationSheet({
           <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
             <Card title="What I remember">
               <Text style={styles.summary}>{buildMemoryConfirmation(working)}</Text>
-              <Text style={styles.sourceLabel}>Source transcript</Text>
+              <Text style={styles.sourceLabel}>{sourceLabel}</Text>
               <Text style={styles.transcript}>{transcript}</Text>
             </Card>
 
@@ -171,8 +189,9 @@ export function DAVECaptureConfirmationSheet({
                   <Text style={styles.label}>{label}</Text>
                   <TextInput
                     style={[styles.input, field === 'generalMemory' && styles.multiline]}
-                    value={working.fields[field] || ''}
+                    value={fieldTexts[field]}
                     onChangeText={value => editField(field, value)}
+                    onBlur={() => commitField(field)}
                     placeholder={field === 'dueDate' ? 'Not supplied' : 'Nothing remembered'}
                     placeholderTextColor={colors.mutedText}
                     multiline={field === 'generalMemory'}
@@ -203,6 +222,16 @@ export function DAVECaptureConfirmationSheet({
       </View>
     </Modal>
   );
+}
+
+function commitFieldText(
+  memory: DAVECaptureMemory,
+  field: EditableField,
+  value: string,
+) {
+  const normalized = value.trim() || null;
+  if (memory.fields[field] === normalized) return memory;
+  return correctCaptureMemory(memory, field, normalized, new Date().toISOString());
 }
 
 function Recommendation({ label, value, confidence, confirmed, options, onConfirm, onChoose, optional = false }: {
