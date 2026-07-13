@@ -126,9 +126,10 @@ assert.throws(() => buildDAVEProjectWalkFieldUpdateDraft({
 }), /confirmed Project Walk memory/i);
 
 const app = read('App.tsx');
-assert(app.includes('sourceCaptureMemoryIds?: string[]') && app.includes('sourceCaptureMemoryIds: Array.isArray'),
-  'Field Updates must persist and hydrate their source memory IDs.');
-assert(app.includes('Prepare Walk Update (') && app.includes('onPrepareWalkUpdate(unusedWalkMemories)'),
+assert(app.includes('sourceCaptureMemoryIds?: string[]') && app.includes('sourceCaptureMemoryIds: Array.isArray') &&
+  app.includes('sourceWalkSessionId?: string | null') && app.includes('sourceWalkSessionId: optionalString'),
+  'Field Updates must persist and hydrate their source memory and walk-session IDs.');
+assert(app.includes('Prepare Walk Update (') && app.includes('onPrepareWalkUpdate(legacyUnusedWalkMemories)'),
   'Project Workspace must expose the existing-review entry point only when unused memories exist.');
 assert(app.includes("setScreen('BuildUpdate')") && app.includes("continueWithoutPhotosAcknowledged: true"),
   'Prepared walk updates must open the existing review screen as notes-only drafts.');

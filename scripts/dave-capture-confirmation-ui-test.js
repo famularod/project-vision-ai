@@ -63,7 +63,7 @@ assert(app.includes('captureMemories={captureMemories}') && app.includes('captur
 
 ['Capture Memory', 'What should DAVE remember?', 'Review Memory'].forEach(marker =>
   assert(typedSheet.includes(marker), `Typed capture sheet must render ${marker}.`));
-assert(app.includes('label="Capture Memory"') && app.includes('<DAVETypedCaptureSheet'), 'Project Workspace must preserve the production typed capture fallback.');
+assert(app.includes('label="Start Project Walk"') && app.includes('<DAVETypedCaptureSheet'), 'Project Workspace must preserve the production typed capture fallback inside Project Walk.');
 assert(app.includes("transcriptSourceRecordId: `typed-entry:${memoryId}`") && app.includes("fields: { generalMemory: text }"), 'Typed capture must preserve source text without inventing structured facts.');
 assert(app.includes('await onSaveCaptureMemory(memory)') && app.includes("? 'Source transcript' : 'Source note'"), 'Typed capture must reuse the confirmed repository save boundary.');
 assert(app.includes('formatSavedTime(timelineEvent.timestamp)') && !app.includes('formatDisplayDate(timelineEvent.timestamp)'), 'Timeline must format full confirmation timestamps without producing Invalid Date.');

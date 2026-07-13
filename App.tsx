@@ -72,6 +72,11 @@ import {
 } from './services/DAVECaptureMemory';
 import { localDAVECaptureMemoryRepository } from './services/DAVECaptureMemoryRepository';
 import {
+  startDAVEProjectWalkSession,
+  type DAVEProjectWalkSession,
+} from './services/DAVEProjectWalkSession';
+import { localDAVEProjectWalkSessionRepository } from './services/DAVEProjectWalkSessionRepository';
+import {
   cacheSelectedProjectCoverPhoto,
   coverPhotoForProject,
   hydrateProjectCoverPhotoCache,
@@ -187,6 +192,7 @@ type ProjectUpdate = {
   documents?: FieldUpdateDocument[];
   notes: string;
   sourceCaptureMemoryIds?: string[];
+  sourceWalkSessionId?: string | null;
   recipients: RecipientSelection;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
@@ -837,6 +843,7 @@ function createDraft(projectName: string): ProjectUpdate {
     documents: [],
     notes: '',
     sourceCaptureMemoryIds: [],
+    sourceWalkSessionId: null,
     recipients: emptyRecipients(),
     selectedAreaId: null,
     selectedAreaName: 'Unassigned / Unknown Area',
@@ -1550,6 +1557,7 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
     sourceCaptureMemoryIds: Array.isArray(update.sourceCaptureMemoryIds)
       ? uniqueStrings(update.sourceCaptureMemoryIds.filter(item => typeof item === 'string'))
       : [],
+    sourceWalkSessionId: optionalString(update.sourceWalkSessionId),
     recipients: normalizeRecipientSelection(update.recipients),
     selectedAreaId: optionalString(update.selectedAreaId),
     selectedAreaName: optionalString(update.selectedAreaName),
@@ -5149,6 +5157,8 @@ function AppShell() {
 
   const [savedUpdates, setSavedUpdates] = useState<ProjectUpdate[]>([]);
   const [captureMemories, setCaptureMemories] = useState<DAVEConfirmedCaptureMemory[]>([]);
+  const [activeProjectWalkSession, setActiveProjectWalkSession] =
+    useState<DAVEProjectWalkSession | null>(null);
   const [deletedUpdateTombstones, setDeletedUpdateTombstones] =
     useState<DeletedUpdateTombstone[]>([]);
 
@@ -5329,6 +5339,27 @@ useEffect(() => {
         Alert.alert(
           'Capture memories unavailable',
           'Confirmed project memories could not be loaded from this device.',
+        );
+      }
+    });
+
+  return () => {
+    active = false;
+  };
+}, []);
+
+useEffect(() => {
+  let active = true;
+
+  void localDAVEProjectWalkSessionRepository.readActive()
+    .then(session => {
+      if (active) setActiveProjectWalkSession(session);
+    })
+    .catch(() => {
+      if (active) {
+        Alert.alert(
+          'Project Walk unavailable',
+          'The active Project Walk could not be restored from this device.',
         );
       }
     });
@@ -7031,6 +7062,8 @@ useEffect(() => {
   function prepareProjectWalkFieldUpdate(
     projectName: string,
     memories: readonly DAVEConfirmedCaptureMemory[],
+    sourceWalkSessionId: string | null = null,
+    onPrepared?: () => void,
   ) {
     let prepared: ReturnType<typeof buildDAVEProjectWalkFieldUpdateDraft>;
     try {
@@ -7056,6 +7089,7 @@ useEffect(() => {
         ...createDraft(projectName),
         notes: prepared.notes,
         sourceCaptureMemoryIds: [...prepared.sourceMemoryIds],
+        sourceWalkSessionId,
         selectedAreaId: area?.id || null,
         selectedAreaName:
           area?.name || prepared.recommendedAreaName || 'Unassigned / Unknown Area',
@@ -7073,6 +7107,7 @@ useEffect(() => {
       setSelectedWorkspaceProject(projectName);
       setDraftSavedAt(null);
       setScreen('BuildUpdate');
+      onPrepared?.();
     }
 
     if (hasDraftContent(draft)) {
@@ -7099,16 +7134,136 @@ useEffect(() => {
     setScreen('ProjectWorkspace');
   }
 
-  async function saveCaptureMemory(memory: DAVEConfirmedCaptureMemory) {
+  async function startProjectWalk(projectName: string) {
+    const existing = await localDAVEProjectWalkSessionRepository.readActive();
+    if (existing) {
+      setActiveProjectWalkSession(existing);
+      if (existing.projectName.trim().toLowerCase() === projectName.trim().toLowerCase()) {
+        return true;
+      }
+      Alert.alert(
+        'Project Walk already in progress',
+        `Finish or end the walk for ${existing.projectName} before starting another one.`,
+        [
+          { text: 'Not Now', style: 'cancel' },
+          {
+            text: 'Resume Walk',
+            onPress: () => openProjectWorkspace(existing.projectName),
+          },
+        ],
+      );
+      return false;
+    }
+
+    const startedAt = new Date().toISOString();
+    const session = await localDAVEProjectWalkSessionRepository.start(
+      startDAVEProjectWalkSession({
+        id: `walk-session-${uid()}`,
+        projectName,
+        startedAt,
+      }),
+    );
+    setActiveProjectWalkSession(session);
+    return true;
+  }
+
+  async function saveCaptureMemory(
+    memory: DAVEConfirmedCaptureMemory,
+    walkSessionId?: string,
+  ) {
     await localDAVECaptureMemoryRepository.save(memory);
     const refreshedMemories = await localDAVECaptureMemoryRepository.list();
     setCaptureMemories([...refreshedMemories]);
+    if (walkSessionId) {
+      const session = await localDAVEProjectWalkSessionRepository.addMemory(
+        walkSessionId,
+        memory.id,
+        new Date().toISOString(),
+      );
+      setActiveProjectWalkSession(session);
+    }
+  }
+
+  async function finishProjectWalk(sessionId: string) {
+    try {
+      const session = await localDAVEProjectWalkSessionRepository.readActive();
+      if (!session || session.id !== sessionId) {
+        throw new Error('The active Project Walk was not found.');
+      }
+      const allMemories = await localDAVECaptureMemoryRepository.list();
+      const memoriesById = new Map(allMemories.map(memory => [memory.id, memory]));
+      const sessionMemories = session.memoryIds
+        .map(memoryId => memoriesById.get(memoryId))
+        .filter((memory): memory is DAVEConfirmedCaptureMemory => Boolean(memory));
+      if (sessionMemories.length === 0) {
+        throw new Error('Capture at least one observation before finishing the walk.');
+      }
+      prepareProjectWalkFieldUpdate(
+        session.projectName,
+        sessionMemories,
+        session.id,
+        () => {
+          void localDAVEProjectWalkSessionRepository
+            .complete(session.id, new Date().toISOString())
+            .then(() => setActiveProjectWalkSession(current =>
+              current?.id === session.id ? null : current
+            ))
+            .catch(() => {
+              Alert.alert(
+                'Walk status not cleared',
+                'The update is ready to review, but the active walk could not be cleared. Try Finish Walk again after returning to the project.',
+              );
+            });
+        },
+      );
+    } catch (error) {
+      Alert.alert(
+        'Unable to finish walk',
+        error instanceof Error ? error.message : 'The Project Walk could not be prepared.',
+      );
+    }
+  }
+
+  function cancelProjectWalk(sessionId: string) {
+    const session = activeProjectWalkSession;
+    const count = session?.id === sessionId ? session.memoryIds.length : 0;
+    Alert.alert(
+      'End Project Walk?',
+      count > 0
+        ? `${count} confirmed ${count === 1 ? 'observation remains' : 'observations remain'} in project history and can still be prepared later.`
+        : 'No observations have been saved in this walk.',
+      [
+        { text: 'Keep Walking', style: 'cancel' },
+        {
+          text: 'End Walk',
+          style: 'destructive',
+          onPress: () => {
+            void localDAVEProjectWalkSessionRepository
+              .cancel(sessionId, new Date().toISOString())
+              .then(() => setActiveProjectWalkSession(current =>
+                current?.id === sessionId ? null : current
+              ))
+              .catch(() => {
+                Alert.alert('Unable to end walk', 'The active Project Walk could not be ended.');
+              });
+          },
+        },
+      ],
+    );
   }
 
   async function deleteCaptureMemory(memoryId: string) {
     const deleted = await localDAVECaptureMemoryRepository.delete(memoryId);
     if (!deleted) throw new Error('The saved memory was already removed.');
     setCaptureMemories(current => current.filter(memory => memory.id !== memoryId));
+    if (activeProjectWalkSession?.memoryIds.includes(memoryId)) {
+      const session = await localDAVEProjectWalkSessionRepository.removeMemory(
+        activeProjectWalkSession.id,
+        memoryId,
+        new Date().toISOString(),
+      );
+      setActiveProjectWalkSession(session);
+    }
   }
 
   async function persistSelectedProjectCoverPhoto(
@@ -9519,6 +9674,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectName={selectedWorkspaceProject}
               savedUpdates={savedUpdates}
               captureMemories={captureMemories}
+              projectWalkSession={
+                activeProjectWalkSession?.projectName.trim().toLowerCase() ===
+                selectedWorkspaceProject.trim().toLowerCase()
+                  ? activeProjectWalkSession
+                  : null
+              }
               usedCaptureMemoryIds={[
                 ...savedUpdates.flatMap(update => update.sourceCaptureMemoryIds || []),
                 ...(draft.sourceCaptureMemoryIds || []),
@@ -9547,6 +9708,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRemoveCoverPhoto={() => removeProjectCoverPhoto(selectedWorkspaceProject)}
               onBack={() => setScreen('Projects')}
               onNewFieldUpdate={createNewUpdate}
+              onStartProjectWalk={() => startProjectWalk(selectedWorkspaceProject)}
+              onFinishProjectWalk={finishProjectWalk}
+              onCancelProjectWalk={cancelProjectWalk}
               onPrepareWalkUpdate={memories =>
                 prepareProjectWalkFieldUpdate(selectedWorkspaceProject, memories)
               }
@@ -13447,6 +13611,7 @@ function ProjectWorkspaceScreen({
   projectName,
   savedUpdates,
   captureMemories,
+  projectWalkSession,
   usedCaptureMemoryIds,
   projectAreas,
   projectDocuments,
@@ -13462,6 +13627,9 @@ function ProjectWorkspaceScreen({
   onRemoveCoverPhoto,
   onBack,
   onNewFieldUpdate,
+  onStartProjectWalk,
+  onFinishProjectWalk,
+  onCancelProjectWalk,
   onPrepareWalkUpdate,
   onSaveCaptureMemory,
   onDeleteCaptureMemory,
@@ -13477,6 +13645,7 @@ function ProjectWorkspaceScreen({
   projectName: string;
   savedUpdates: ProjectUpdate[];
   captureMemories: readonly DAVEConfirmedCaptureMemory[];
+  projectWalkSession: DAVEProjectWalkSession | null;
   usedCaptureMemoryIds: readonly string[];
   projectAreas: ProjectArea[];
   projectDocuments: ProjectDocument[];
@@ -13492,8 +13661,14 @@ function ProjectWorkspaceScreen({
   onRemoveCoverPhoto: () => void;
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
+  onStartProjectWalk: () => Promise<boolean>;
+  onFinishProjectWalk: (sessionId: string) => void;
+  onCancelProjectWalk: (sessionId: string) => void;
   onPrepareWalkUpdate: (memories: readonly DAVEConfirmedCaptureMemory[]) => void;
-  onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
+  onSaveCaptureMemory: (
+    memory: DAVEConfirmedCaptureMemory,
+    walkSessionId?: string,
+  ) => Promise<void>;
   onDeleteCaptureMemory: (memoryId: string) => Promise<void>;
   onOpenUpdates: () => void;
   onOpenPhotoDifferences: (projectName: string) => void;
@@ -13513,6 +13688,10 @@ function ProjectWorkspaceScreen({
     memories: captureMemories,
     usedMemoryIds: usedCaptureMemoryIds,
   });
+  const projectWalkMemoryIds = new Set(projectWalkSession?.memoryIds || []);
+  const legacyUnusedWalkMemories = unusedWalkMemories.filter(
+    memory => !projectWalkMemoryIds.has(memory.id),
+  );
   const projectDocumentCount = projectDocumentCountForProject(projectName, projectDocuments);
   const projectActivity = buildPhase2ActivityItems(
     savedUpdates,
@@ -13551,6 +13730,7 @@ function ProjectWorkspaceScreen({
     }),
   );
   const projectWalkLocationRequest = useRef(0);
+  const projectWalkStartInFlight = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -13607,6 +13787,23 @@ function ProjectWorkspaceScreen({
     } catch {
       if (request !== projectWalkLocationRequest.current) return;
       setProjectWalkContext(contextForProjectWalk({ status: 'unavailable' }));
+    }
+  }
+
+  async function startProjectWalkCapture() {
+    if (projectWalkStartInFlight.current) return;
+    projectWalkStartInFlight.current = true;
+    try {
+      if (await onStartProjectWalk()) {
+        await beginProjectWalkCapture();
+      }
+    } catch (error) {
+      Alert.alert(
+        'Unable to start walk',
+        error instanceof Error ? error.message : 'The Project Walk could not be started.',
+      );
+    } finally {
+      projectWalkStartInFlight.current = false;
     }
   }
 
@@ -13939,17 +14136,56 @@ function ProjectWorkspaceScreen({
         onPress={() => onNewFieldUpdate(projectName)}
       />
 
-      <SecondaryButton
-        label="Capture Memory"
-        icon="chatbox-ellipses-outline"
-        onPress={() => { void beginProjectWalkCapture(); }}
-      />
-
-      {unusedWalkMemories.length > 0 ? (
+      {projectWalkSession ? (
+        <View style={styles.phase2BriefCard}>
+          <View style={styles.phase2BriefIcon}>
+            <Ionicons name="footsteps-outline" size={21} color={colors.primary} />
+          </View>
+          <View style={styles.rowMain}>
+            <Text style={styles.panelTitle}>Project Walk in progress</Text>
+            <Text style={styles.bodyText}>
+              {projectWalkSession.memoryIds.length}{' '}
+              {projectWalkSession.memoryIds.length === 1 ? 'observation' : 'observations'} saved
+            </Text>
+            <Text style={styles.locationDetailText}>
+              Started {formatSavedTime(projectWalkSession.startedAt)}. Your walk will resume here after restarting DAVE.
+            </Text>
+            <SecondaryButton
+              label="Add Observation"
+              icon="add-circle-outline"
+              onPress={() => { void beginProjectWalkCapture(); }}
+            />
+            {projectWalkSession.memoryIds.length > 0 ? (
+              <SecondaryButton
+                label="Finish Walk"
+                icon="checkmark-circle-outline"
+                onPress={() => onFinishProjectWalk(projectWalkSession.id)}
+              />
+            ) : null}
+            <TouchableOpacity
+              style={styles.photoControlButton}
+              onPress={() => onCancelProjectWalk(projectWalkSession.id)}
+              accessibilityRole="button"
+              accessibilityLabel="End Project Walk"
+            >
+              <Ionicons name="close-circle-outline" size={17} color={colors.danger} />
+              <Text style={[styles.photoControlText, { color: colors.danger }]}>End Walk</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : (
         <SecondaryButton
-          label={`Prepare Walk Update (${unusedWalkMemories.length})`}
+          label="Start Project Walk"
+          icon="footsteps-outline"
+          onPress={() => { void startProjectWalkCapture(); }}
+        />
+      )}
+
+      {legacyUnusedWalkMemories.length > 0 ? (
+        <SecondaryButton
+          label={`Prepare Walk Update (${legacyUnusedWalkMemories.length})`}
           icon="document-text-outline"
-          onPress={() => onPrepareWalkUpdate(unusedWalkMemories)}
+          onPress={() => onPrepareWalkUpdate(legacyUnusedWalkMemories)}
         />
       ) : null}
 
@@ -14054,8 +14290,29 @@ function ProjectWorkspaceScreen({
             evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
           ) ? 'Source transcript' : 'Source note'}
           onSave={async memory => {
-            await onSaveCaptureMemory(memory);
+            if (projectWalkSession) {
+              await onSaveCaptureMemory(memory, projectWalkSession.id);
+            } else {
+              await onSaveCaptureMemory(memory);
+            }
             setCaptureDraft(null);
+            if (projectWalkSession) {
+              Alert.alert(
+                'Observation saved',
+                'Add another observation, finish the walk, or return to it later.',
+                [
+                  { text: 'Later', style: 'cancel' },
+                  {
+                    text: 'Finish Walk',
+                    onPress: () => onFinishProjectWalk(projectWalkSession.id),
+                  },
+                  {
+                    text: 'Add Another',
+                    onPress: () => { void beginProjectWalkCapture(); },
+                  },
+                ],
+              );
+            }
           }}
           onCancel={() => setCaptureDraft(null)}
         />
