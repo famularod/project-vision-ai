@@ -70,6 +70,8 @@ assert(app.includes('formatSavedTime(timelineEvent.timestamp)') && !app.includes
 assert(app.includes('setSelectedCaptureMemory(sourceMemory)') && app.includes('<DAVECaptureMemoryDetailSheet'), 'Memory-backed timeline rows must open a real saved-memory destination.');
 ['Saved Memory', 'What DAVE remembers', 'Source note'].forEach(marker =>
   assert(detailSheet.includes(marker), `Saved memory detail must render ${marker}.`));
+assert(detailSheet.includes("Alert.alert(\n      'Delete Saved Memory?'") && detailSheet.includes('await onDelete(memoryId)') && detailSheet.includes('disabled={isDeleting}'), 'Saved memory deletion must require confirmation, await the repository boundary, and prevent duplicate taps.');
+assert(app.includes('localDAVECaptureMemoryRepository.delete(memoryId)') && app.includes('current.filter(memory => memory.id !== memoryId)'), 'Deleting a memory must refresh App intelligence state immediately.');
 
 ['extracted', 'classified', 'processing', 'operation completed', 'contractor commitment detected'].forEach(term => {
   assert(!sheet.toLowerCase().includes(term), `Confirmation sheet leaked internal language: ${term}`);

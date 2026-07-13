@@ -1,5 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useEffect, useState } from 'react';
 import {
+  Alert,
   Modal,
   ScrollView,
   StyleSheet,
@@ -30,12 +32,23 @@ const FIELD_LABELS: ReadonlyArray<readonly [keyof DAVECaptureMemoryFields, strin
 export function DAVECaptureMemoryDetailSheet({
   memory,
   onClose,
+  onDelete,
 }: {
   memory: DAVEConfirmedCaptureMemory | null;
   onClose: () => void;
+  onDelete: (memoryId: string) => Promise<void>;
 }) {
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsDeleting(false);
+    setDeleteError(null);
+  }, [memory?.id]);
+
   if (!memory) return null;
 
+  const memoryId = memory.id;
   const populatedFields = FIELD_LABELS.filter(([field]) => Boolean(memory.fields[field]));
 
   return (
@@ -93,11 +106,51 @@ export function DAVECaptureMemoryDetailSheet({
                 ))}
               </DetailCard>
             ) : null}
+
+            {deleteError ? <Text style={styles.error}>{deleteError}</Text> : null}
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={confirmDelete}
+              disabled={isDeleting}
+              accessibilityRole="button"
+              accessibilityLabel="Delete saved memory"
+            >
+              <Ionicons name="trash-outline" size={18} color={colors.danger} />
+              <Text style={styles.deleteText}>{isDeleting ? 'Deleting…' : 'Delete Memory'}</Text>
+            </TouchableOpacity>
           </ScrollView>
         </View>
       </View>
     </Modal>
   );
+
+  function confirmDelete() {
+    Alert.alert(
+      'Delete Saved Memory?',
+      'This removes the confirmed memory from this device and updates DAVE’s local project intelligence. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Memory',
+          style: 'destructive',
+          onPress: () => { void performDelete(); },
+        },
+      ],
+    );
+  }
+
+  async function performDelete() {
+    if (isDeleting) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(memoryId);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'The saved memory could not be deleted.');
+    } finally {
+      setIsDeleting(false);
+    }
+  }
 }
 
 function DetailCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -183,4 +236,16 @@ const styles = StyleSheet.create({
   detail: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 4 },
   source: { color: colors.text, fontSize: 15, lineHeight: 22 },
   limitation: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: spacing.md },
+  error: { color: colors.danger, fontSize: 14, fontWeight: '700', marginBottom: spacing.sm },
+  deleteButton: {
+    minHeight: 50,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+  },
+  deleteText: { color: colors.danger, fontSize: 15, fontWeight: '800' },
 });

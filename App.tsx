@@ -7024,6 +7024,12 @@ useEffect(() => {
     setCaptureMemories([...refreshedMemories]);
   }
 
+  async function deleteCaptureMemory(memoryId: string) {
+    const deleted = await localDAVECaptureMemoryRepository.delete(memoryId);
+    if (!deleted) throw new Error('The saved memory was already removed.');
+    setCaptureMemories(current => current.filter(memory => memory.id !== memoryId));
+  }
+
   async function persistSelectedProjectCoverPhoto(
     projectName: string,
     asset: ImagePicker.ImagePickerAsset,
@@ -9457,6 +9463,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onBack={() => setScreen('Projects')}
               onNewFieldUpdate={createNewUpdate}
               onSaveCaptureMemory={saveCaptureMemory}
+              onDeleteCaptureMemory={deleteCaptureMemory}
               onOpenUpdates={() => setScreen('SavedUpdates')}
               onOpenPhotoDifferences={openLatestProjectPhotoDifference}
               onOpenDocuments={() => setScreen('ProjectDocuments')}
@@ -13354,6 +13361,7 @@ function ProjectWorkspaceScreen({
   onBack,
   onNewFieldUpdate,
   onSaveCaptureMemory,
+  onDeleteCaptureMemory,
   onOpenUpdates,
   onOpenPhotoDifferences,
   onOpenDocuments,
@@ -13381,6 +13389,7 @@ function ProjectWorkspaceScreen({
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
   onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
+  onDeleteCaptureMemory: (memoryId: string) => Promise<void>;
   onOpenUpdates: () => void;
   onOpenPhotoDifferences: (projectName: string) => void;
   onOpenDocuments: () => void;
@@ -13819,6 +13828,10 @@ function ProjectWorkspaceScreen({
       <DAVECaptureMemoryDetailSheet
         memory={selectedCaptureMemory}
         onClose={() => setSelectedCaptureMemory(null)}
+        onDelete={async memoryId => {
+          await onDeleteCaptureMemory(memoryId);
+          setSelectedCaptureMemory(null);
+        }}
       />
 
       <Text style={styles.sectionLabel}>Tools</Text>

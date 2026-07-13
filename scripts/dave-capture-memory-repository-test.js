@@ -145,7 +145,21 @@ async function run() {
 
   assert.strictEqual(await restartedRepository.delete(saveable.id), true);
   assert.strictEqual(await restartedRepository.delete(saveable.id), false);
-  assert.strictEqual((await restartedRepository.list()).length, 0, 'Delete must persist.');
+  const memoriesAfterDelete = await restartedRepository.list();
+  assert.strictEqual(memoriesAfterDelete.length, 0, 'Delete must persist.');
+  const commitmentsAfterDelete = commitmentsModule.buildProjectCommitments({
+    projectId: 'project-alpha', projectName: 'Alpha', updates: [], documents: [],
+    captureMemories: memoriesAfterDelete, now: '2026-07-13T12:00:00.000Z',
+  });
+  const timelineAfterDelete = timelineModule.buildProjectTimeline({
+    projectId: 'project-alpha', projectName: 'Alpha', updates: [], documents: [], scheduleItems: [],
+    commitments: commitmentsAfterDelete, captureMemories: memoriesAfterDelete,
+    reality: { state: 'Moving', confidence: 'medium', lastVerifiedAt: null, topRecommendation: null },
+    now: '2026-07-13T12:00:00.000Z',
+  });
+  assert.strictEqual(commitmentsAfterDelete.length, 0, 'Deleting a memory must remove its derived commitment.');
+  assert(!timelineAfterDelete.some(item => item.eventType === 'memory_confirmed' || item.eventType === 'commitment_created'),
+    'Deleting a memory must remove its memory and commitment timeline events.');
 
   const corruptStorage = createStorage({
     [repositoryModule.DAVE_CAPTURE_MEMORY_STORAGE_KEY]: '{not-json',
