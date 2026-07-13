@@ -63,9 +63,9 @@ assert(app.includes('captureMemories={captureMemories}') && app.includes('captur
 
 ['Capture Memory', 'What should DAVE remember?', 'Review Memory'].forEach(marker =>
   assert(typedSheet.includes(marker), `Typed capture sheet must render ${marker}.`));
-assert(app.includes('label="Capture Memory"') && app.includes('<DAVETypedCaptureSheet'), 'Project Workspace must expose the production typed capture entry.');
+assert(app.includes('label="Capture Memory"') && app.includes('<DAVETypedCaptureSheet'), 'Project Workspace must preserve the production typed capture fallback.');
 assert(app.includes("transcriptSourceRecordId: `typed-entry:${memoryId}`") && app.includes("fields: { generalMemory: text }"), 'Typed capture must preserve source text without inventing structured facts.');
-assert(app.includes('await onSaveCaptureMemory(memory)') && app.includes('sourceLabel="Source note"'), 'Typed capture must reuse the confirmed repository save boundary.');
+assert(app.includes('await onSaveCaptureMemory(memory)') && app.includes("? 'Source transcript' : 'Source note'"), 'Typed capture must reuse the confirmed repository save boundary.');
 assert(app.includes('formatSavedTime(timelineEvent.timestamp)') && !app.includes('formatDisplayDate(timelineEvent.timestamp)'), 'Timeline must format full confirmation timestamps without producing Invalid Date.');
 assert(app.includes('setSelectedCaptureMemory(sourceMemory)') && app.includes('<DAVECaptureMemoryDetailSheet'), 'Memory-backed timeline rows must open a real saved-memory destination.');
 ['Saved Memory', 'What DAVE remembers', 'Source note'].forEach(marker =>

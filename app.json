@@ -42,6 +42,13 @@
         {
           "locationWhenInUsePermission": "This app uses your location to tag project photos and suggest the correct work area."
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow DAVE to record project memories.",
+          "enableBackgroundRecording": false
+        }
       ]
     ],
     "extra": {

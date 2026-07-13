@@ -26,6 +26,7 @@ import { DAVEAskExperience } from './components/DAVEAskExperience';
 import { DAVECaptureConfirmationSheet } from './components/DAVECaptureConfirmationSheet';
 import { DAVECaptureMemoryDetailSheet } from './components/DAVECaptureMemoryDetailSheet';
 import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
+import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -13426,6 +13427,7 @@ function ProjectWorkspaceScreen({
   const actionCenter = projectIntelligence.actionCenter;
   const actionCenterDismissKey = `dave-action-center-dismissed:${authorityProjectId(projectName)}:${isoToday()}`;
   const [actionCenterDismissed, setActionCenterDismissed] = useState<boolean | null>(null);
+  const [voiceCaptureOpen, setVoiceCaptureOpen] = useState(false);
   const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
   const [captureDraft, setCaptureDraft] = useState<DAVECaptureMemory | null>(null);
   const [selectedCaptureMemory, setSelectedCaptureMemory] = useState<DAVEConfirmedCaptureMemory | null>(null);
@@ -13783,7 +13785,34 @@ function ProjectWorkspaceScreen({
       <SecondaryButton
         label="Capture Memory"
         icon="chatbox-ellipses-outline"
-        onPress={() => setTypedCaptureOpen(true)}
+        onPress={() => setVoiceCaptureOpen(true)}
+      />
+
+      <DAVEVoiceCaptureSheet
+        visible={voiceCaptureOpen}
+        projectName={projectName}
+        onTranscript={text => {
+          const createdAt = new Date().toISOString();
+          const memoryId = `voice-memory-${uid()}`;
+          setCaptureDraft(createCaptureMemory({
+            id: memoryId,
+            transcript: text,
+            transcriptSourceRecordId: `voice-transcription:${memoryId}`,
+            createdAt,
+            recommendedProject: {
+              value: projectName,
+              confidence: 'high',
+              confirmed: true,
+            },
+            fields: { generalMemory: text },
+          }));
+          setVoiceCaptureOpen(false);
+        }}
+        onTypeInstead={() => {
+          setVoiceCaptureOpen(false);
+          setTypedCaptureOpen(true);
+        }}
+        onCancel={() => setVoiceCaptureOpen(false)}
       />
 
       <DAVETypedCaptureSheet
@@ -13816,7 +13845,9 @@ function ProjectWorkspaceScreen({
           draft={captureDraft}
           projects={[projectName]}
           locations={projectAreas.map(area => area.name)}
-          sourceLabel="Source note"
+          sourceLabel={captureDraft.evidence.some(
+            evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
+          ) ? 'Source transcript' : 'Source note'}
           onSave={async memory => {
             await onSaveCaptureMemory(memory);
             setCaptureDraft(null);
