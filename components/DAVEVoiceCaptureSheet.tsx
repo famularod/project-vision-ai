@@ -12,6 +12,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
+import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
 import { colors, spacing } from '../theme';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 
@@ -20,13 +21,15 @@ const MAX_RECORDING_SECONDS = 180;
 export function DAVEVoiceCaptureSheet({
   visible,
   projectName,
-  onTranscript,
+  candidateLocations,
+  onMemoryReady,
   onTypeInstead,
   onCancel,
 }: {
   visible: boolean;
   projectName: string;
-  onTranscript: (transcript: string) => void;
+  candidateLocations: readonly string[];
+  onMemoryReady: (result: DAVEVoiceUnderstandingResponse) => void;
   onTypeInstead: () => void;
   onCancel: () => void;
 }) {
@@ -99,11 +102,15 @@ export function DAVEVoiceCaptureSheet({
     setError(null);
     setIsTranscribing(true);
     try {
-      const result = await transcribeDAVECaptureMemoryAudio({ uri: recordingUri });
+      const result = await transcribeDAVECaptureMemoryAudio({
+        uri: recordingUri,
+        projectName,
+        candidateLocations,
+      });
       if (operation !== transcriptionOperationRef.current) return;
       await removeRecording(recordingUri);
       setRecordingUri(null);
-      onTranscript(result.transcript);
+      onMemoryReady(result);
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
       setError(reason instanceof Error ? reason.message : 'DAVE could not transcribe this recording.');
@@ -169,7 +176,7 @@ export function DAVEVoiceCaptureSheet({
             <>
               <TouchableOpacity style={styles.continueButton} disabled={isTranscribing} onPress={() => { void transcribe(); }} accessibilityRole="button">
                 <Ionicons name="sparkles-outline" size={20} color="#FFF" />
-                <Text style={styles.primaryText}>{isTranscribing ? 'Transcribing…' : 'Review Memory'}</Text>
+                <Text style={styles.primaryText}>{isTranscribing ? 'Preparing review…' : 'Review Memory'}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.secondaryButton} disabled={isTranscribing} onPress={() => { void startRecording(); }} accessibilityRole="button">
                 <Ionicons name="refresh" size={19} color={colors.primary} />

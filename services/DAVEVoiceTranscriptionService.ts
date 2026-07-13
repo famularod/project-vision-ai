@@ -1,20 +1,22 @@
 import { getCurrentSessionAccessToken, getSupabaseClient } from './SupabaseService';
 import * as FileSystem from 'expo-file-system/legacy';
+import {
+  parseDAVEVoiceUnderstandingResponse,
+  type DAVEVoiceUnderstandingResponse,
+} from './DAVEVoiceUnderstanding';
 
-export const DAVE_VOICE_TRANSCRIPTION_SCHEMA_VERSION = 'dave-voice-transcription/1.0' as const;
 export const DAVE_VOICE_TRANSCRIPTION_MAX_BYTES = 10 * 1024 * 1024;
-
-type DAVEVoiceTranscriptionResponse = {
-  schemaVersion: typeof DAVE_VOICE_TRANSCRIPTION_SCHEMA_VERSION;
-  transcript: string;
-  model: string;
-};
+const DAVE_VOICE_CONTEXT_MAX_LOCATIONS = 100;
 
 export async function transcribeDAVECaptureMemoryAudio({
   uri,
+  projectName,
+  candidateLocations,
 }: {
   uri: string;
-}): Promise<DAVEVoiceTranscriptionResponse> {
+  projectName: string;
+  candidateLocations: readonly string[];
+}): Promise<DAVEVoiceUnderstandingResponse> {
   const info = await FileSystem.getInfoAsync(uri);
   if (!info.exists) throw new Error('The recording is no longer available. Record it again.');
   if (typeof info.size === 'number' && info.size > DAVE_VOICE_TRANSCRIPTION_MAX_BYTES) {
@@ -36,6 +38,11 @@ export async function transcribeDAVECaptureMemoryAudio({
     name: `dave-memory-${Date.now()}.m4a`,
     type: 'audio/mp4',
   } as unknown as Blob);
+  const submittedLocations = Array.from(new Set(
+    candidateLocations.map(item => item.trim()).filter(Boolean),
+  )).slice(0, DAVE_VOICE_CONTEXT_MAX_LOCATIONS);
+  formData.append('projectName', projectName.trim());
+  formData.append('candidateLocations', JSON.stringify(submittedLocations));
 
   const { data, error } = await client.functions.invoke('dave-transcribe-memory', {
     headers: { Authorization: `Bearer ${token.accessToken}` },
@@ -43,28 +50,5 @@ export async function transcribeDAVECaptureMemoryAudio({
   });
 
   if (error) throw new Error('DAVE could not transcribe this recording. You can retry or type it instead.');
-  return parseDAVEVoiceTranscriptionResponse(data);
-}
-
-export function parseDAVEVoiceTranscriptionResponse(value: unknown): DAVEVoiceTranscriptionResponse {
-  if (!value || typeof value !== 'object') throw malformedResponse();
-  const candidate = value as Partial<DAVEVoiceTranscriptionResponse>;
-  const transcript = typeof candidate.transcript === 'string' ? candidate.transcript.trim() : '';
-  if (
-    candidate.schemaVersion !== DAVE_VOICE_TRANSCRIPTION_SCHEMA_VERSION ||
-    !transcript ||
-    typeof candidate.model !== 'string' ||
-    !candidate.model.trim()
-  ) {
-    throw malformedResponse();
-  }
-  return {
-    schemaVersion: DAVE_VOICE_TRANSCRIPTION_SCHEMA_VERSION,
-    transcript,
-    model: candidate.model,
-  };
-}
-
-function malformedResponse() {
-  return new Error('DAVE received an incomplete transcription. You can retry or type it instead.');
+  return parseDAVEVoiceUnderstandingResponse(data, submittedLocations);
 }

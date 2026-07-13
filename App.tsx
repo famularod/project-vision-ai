@@ -13791,12 +13791,17 @@ function ProjectWorkspaceScreen({
       <DAVEVoiceCaptureSheet
         visible={voiceCaptureOpen}
         projectName={projectName}
-        onTranscript={text => {
+        candidateLocations={projectAreas.map(area => area.name)}
+        onMemoryReady={result => {
           const createdAt = new Date().toISOString();
           const memoryId = `voice-memory-${uid()}`;
+          const proposedFields = result.understanding.status === 'succeeded'
+            ? result.understanding.fields
+            : { ...result.understanding.fields, generalMemory: result.transcript };
+          const proposedLocation = result.understanding.recommendedLocation;
           setCaptureDraft(createCaptureMemory({
             id: memoryId,
-            transcript: text,
+            transcript: result.transcript,
             transcriptSourceRecordId: `voice-transcription:${memoryId}`,
             createdAt,
             recommendedProject: {
@@ -13804,7 +13809,13 @@ function ProjectWorkspaceScreen({
               confidence: 'high',
               confirmed: true,
             },
-            fields: { generalMemory: text },
+            recommendedLocation: {
+              value: proposedLocation.value,
+              confidence: proposedLocation.confidence,
+              evidenceIds: proposedLocation.value ? [`transcript:${memoryId}`] : [],
+              confirmed: false,
+            },
+            fields: proposedFields,
           }));
           setVoiceCaptureOpen(false);
         }}
