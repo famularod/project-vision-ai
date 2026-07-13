@@ -7,7 +7,9 @@ const assert = require('assert');
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
+const admin = fs.readFileSync(path.join(root, 'screens/AdminScreen.tsx'), 'utf8');
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
+const projectService = fs.readFileSync(path.join(root, 'services/projectService.ts'), 'utf8');
 const storageMigration = fs.readFileSync(
   path.join(root, 'supabase/migrations/20260707000000_project_storage_buckets.sql'),
   'utf8',
@@ -172,6 +174,16 @@ assert(
 includes(app, 'DELETED_UPDATES_STORAGE_KEY', 'deleted update tombstones must persist in AsyncStorage');
 includes(app, "if (tombstone && !localArchiveCanStayHidden) return;", 'cloud/local merge must not resurrect tombstoned updates');
 includes(app, 'removeProjectUpdateFromSyncQueue(tombstone.updateId)', 'startup load must remove tombstoned updates from pending sync queue before cloud load');
+includes(app, 'await removeMissingPhotosFromSyncQueue(missingPhotos);', 'missing local photo cleanup must target only the retry queue');
+const missingPhotoCleanup = app.slice(
+  app.indexOf('async function removeMissingSyncPhotos'),
+  app.indexOf('function beginDraftForProject'),
+);
+assert(!missingPhotoCleanup.includes('setSavedUpdates'), 'missing local photo cleanup must preserve historical saved-update photo metadata for backups');
+includes(app, 'label="Delete Saved Update"', 'resumed saved updates must expose an in-flow delete action');
+includes(app, 'onDeleteUpdate={resumedSavedDraft ? deleteResumedSavedDraft : undefined}', 'delete action must only appear while editing an existing saved update');
+includes(app, "...(draft.id === updateId ? [] : [draft])", 'deleting a resumed update must not keep its photos alive through the active draft reference');
+includes(sync, 'export async function removeMissingPhotosFromSyncQueue', 'queue-only missing photo cleanup must remain available');
 includes(app, 'orphanedPhotoCountIgnored: update.photos.length', 'failed update tombstones must record ignored orphaned photo metadata');
 includes(app, 'projectRollupKey(update.projectName)', 'project rollups must normalize saved update project names');
 includes(app, 'projectStatsForName(projectStatsByName, project)', 'project card must use normalized local-first stats');
@@ -186,6 +198,17 @@ assert(!projectCard.includes('All projects on track — nothing needs your atten
 assert(!projectCard.includes('Needs Review'), 'project card status must not use Needs Review');
 
 includes(sync, "id: `project-update-${update.id}`", 'queued update retry must remain idempotent');
+includes(admin, 'getSyncStatus()', 'Settings must read the durable offline sync queue status');
+includes(admin, 'title="Cloud sync"', 'Settings must surface sync status outside developer diagnostics');
+includes(admin, "'All caught up'", 'Settings must clearly identify an empty sync queue');
+includes(admin, 'waiting to sync', 'Settings must clearly identify pending sync work');
+includes(admin, 'label={isSyncing ? \'Syncing…\' : \'Retry Sync\'}', 'pending sync work must expose a guarded retry action');
+includes(supabase, 'export async function listArchivedProjects', 'archived cloud projects must be queryable for recovery and reopening');
+includes(projectService, 'loadCloudArchivedProjectNames', 'project loading must include archived cloud project names');
+includes(app, 'setCloudProjectArchived(projectName, true)', 'archiving a project must persist to cloud sync');
+includes(app, 'setCloudProjectArchived(projectName, false)', 'reopening a project must persist to cloud sync');
+includes(app, 'label="Archive Project"', 'the live project workspace must expose the archive path');
+includes(app, 'Archived Projects', 'the live Projects screen must expose archived projects for reopening');
 assert(!app.includes('SUPABASE_SERVICE_ROLE_KEY'), 'mobile app must not reference service-role env');
 assert(!app.includes('EXPO_PUBLIC_OPENAI_API_KEY'), 'mobile app must not reference public OpenAI API key');
 assert(!app.match(/service[_-]?role/i), 'mobile app must not contain service-role references');

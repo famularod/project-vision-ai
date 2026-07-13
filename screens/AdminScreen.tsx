@@ -46,8 +46,10 @@ import {
   type SupabaseConnectionTestResult,
 } from '../services/SupabaseService';
 import {
+  getSyncStatus,
   synchronizeLocalData,
   type MissingSyncPhoto,
+  type SyncStatus,
 } from '../services/SyncService';
 import type {
   ProjectArea,
@@ -124,6 +126,7 @@ export function AdminScreen({
   const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [signInModalVisible, setSignInModalVisible] = useState(false);
   const [signInEmail, setSignInEmail] = useState('');
   const [signInPassword, setSignInPassword] = useState('');
@@ -163,6 +166,18 @@ export function AdminScreen({
   const connectionLabel = !isCheckingConnection && connected
     ? 'Connected'
     : 'Needs Attention';
+  const updateSyncAttentionCount = savedUpdates.filter(
+    update => update.status === 'queued' || update.status === 'failed',
+  ).length;
+  const pendingSyncCount = Math.max(
+    updateSyncAttentionCount,
+    syncStatus?.queuedChanges || 0,
+  );
+  const syncDetail = pendingSyncCount > 0
+    ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting to sync`
+    : syncStatus?.conflicts
+      ? `${syncStatus.conflicts} sync conflict${syncStatus.conflicts === 1 ? '' : 's'} need review`
+      : 'All caught up';
 
   return (
     <Screen contentStyle={contentStyle}>
@@ -191,6 +206,21 @@ export function AdminScreen({
             detail={connectionLabel}
             tone={connected ? 'success' : 'warning'}
           />
+          <SettingsRow
+            icon={pendingSyncCount > 0 || syncStatus?.conflicts ? 'cloud-offline-outline' : 'cloud-done-outline'}
+            title="Cloud sync"
+            detail={syncDetail}
+            tone={pendingSyncCount > 0 || syncStatus?.conflicts ? 'warning' : 'success'}
+          />
+
+          {pendingSyncCount > 0 || syncStatus?.conflicts ? (
+            <SecondaryButton
+              label={isSyncing ? 'Syncing…' : 'Retry Sync'}
+              icon="sync-outline"
+              onPress={handleSyncNow}
+              disabled={isSyncing}
+            />
+          ) : null}
 
           {connectionStatus?.authenticated ? (
             <>
@@ -368,15 +398,17 @@ export function AdminScreen({
     setIsCheckingConnection(true);
 
     try {
-      const [connection, test] = await Promise.all([
+      const [connection, test, currentSyncStatus] = await Promise.all([
         getSupabaseConnectionStatus(),
         nextTest ? Promise.resolve(nextTest) : testSupabaseConnection(),
+        getSyncStatus(),
       ]);
 
       if (!isActive()) return;
 
       setConnectionStatus(connection);
       setTestResult(test);
+      setSyncStatus(currentSyncStatus);
     } finally {
       if (isActive()) setIsCheckingConnection(false);
     }
@@ -433,6 +465,8 @@ export function AdminScreen({
       if (result.missingPhotos.length > 0) {
         showMissingPhotoSyncAlert(result.missingPhotos);
       }
+
+      setSyncStatus(await getSyncStatus());
     } catch {
       setAdminActionSummary(
         'Sync completed. Some unavailable photos may be skipped.',

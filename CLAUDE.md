@@ -176,6 +176,21 @@ GitHub for history if context is needed):
   detail screen — root cause was ReadOnlyUpdateDetailScreen rendering
   from a frozen one-time snapshot instead of live savedUpdates state.
   Fixed (PR #14).
+- Backup exports with empty photos arrays — root-caused 2026-07-13. The
+  missing-photo sync cleanup removed photo records from savedUpdates, and
+  backup export correctly serialized that already-damaged state. Cleanup now
+  removes missing files only from the retry queue while preserving historical
+  photo metadata in saved updates and backups. Existing backups that already
+  contain photos: [] cannot reconstruct those deleted records by themselves.
+- Resumed saved updates can now be deleted directly from Add Photos and
+  Build Update. Brand-new unsaved drafts do not show the action, and confirmed
+  deletion removes unreferenced local photo files correctly.
+- Archived projects and invisible sync work — addressed 2026-07-13. The live
+  project workspace now exposes Archive Project, Projects lists archived
+  projects with Reopen, cloud loading recovers archived rows, and archive/
+  reopen changes enter cloud sync. Settings now shows All caught up or the
+  number of items waiting to sync and exposes Retry Sync when attention is
+  needed.
 
 Still open:
 - GPS auto-detection defaulting to "All Projects" — not a code bug.
@@ -185,10 +200,6 @@ Still open:
   The "Save GPS" flow works correctly and is reachable via gear icon →
   Settings → Area Mapping. This is a fieldwork task for David (visit each
   area physically, tap "Save GPS"), not a code fix.
-- The most recent real backup export (project-photo-update-backup-*.json)
-  shows every saved update with an empty photos: [] array, even sent
-  updates with full analysis data. Not yet root-caused. Could be
-  intentional or a real gap — worth a look sometime, not urgent.
 - App.tsx monolith refactor — dead screens//components//hooks/ files
   acknowledged but out of scope unless actively wired in for a real fix.
 - Two independent sync engines — not unified, not currently causing known
@@ -222,27 +233,6 @@ Still open:
   the old generic reason string. This is now automated, not a manual
   follow-up — remove this bullet once the scheduled check reports back
   confirming the fix.
-- No delete option in the edit/resume flow (BuildUpdate/AddPhotos/
-  PIEAnalysis screens) for a previously-saved-but-unsent update reopened
-  for continued editing — found 2026-07-11 during a delete-everywhere
-  audit (PR adding delete to the Updates list overflow menu and the
-  read-only update-detail screen, gear-icon-to-bottom-nav move, and
-  duplicate New Update button removal). Not a dead end today: the
-  Updates list overflow menu and the read-only update-detail screen can
-  already delete these updates without entering edit mode. Deferred
-  because these screens are shared with brand-new-draft creation, so
-  adding delete here needs logic to tell "nothing saved yet" apart from
-  "resuming an existing saved update" first — more than a quick/low-risk
-  change.
-- Found 2026-07-11 while diagnosing an Overview "Projects on track"
-  count question: one Supabase projects row has archived=true with no
-  reachable code path that could have set it (closeProject/reopenProject
-  and setCloudProjectArchived all exist but are never called from
-  anywhere) — likely a leftover manual edit, not something the app did.
-  Separately, there's no UI anywhere that surfaces pending/failing
-  offline-sync queue items, so a stuck sync (e.g. a failed project
-  delete) would be invisible to the user. Both worth investigating
-  another day, not urgent now.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or

@@ -829,6 +829,22 @@ export async function listProjects(): Promise<SupabaseServiceResult<CloudProject
   return okResult(Array.isArray(data) ? data.map(normalizeProject) : [], status);
 }
 
+export async function listArchivedProjects(): Promise<SupabaseServiceResult<CloudProject[]>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<CloudProject[]>();
+
+  const { data, error, status } = await client
+    .from(PROJECTS_TABLE)
+    .select('*')
+    .eq('archived', true)
+    .order('created_at', { ascending: false });
+
+  if (error) return tableAwareListResult<CloudProject>(error.message, status);
+
+  return okResult(Array.isArray(data) ? data.map(normalizeProject) : [], status);
+}
+
 export async function countCloudProjects(): Promise<SupabaseServiceResult<number>> {
   const testResult = await testSupabaseConnection();
 
