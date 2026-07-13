@@ -191,6 +191,12 @@ GitHub for history if context is needed):
   reopen changes enter cloud sync. Settings now shows All caught up or the
   number of items waiting to sync and exposes Retry Sync when attention is
   needed.
+- Lighting/obstruction comparability downgrades no longer keyword-match model
+  prose such as "shadow", "glare", or "occluded". The strict photo-pair schema
+  now requires independent none/minor/limiting impact fields, and only a
+  structured limiting impact can trigger this downgrade. Deployed as
+  pie-photo-vision version 20 on 2026-07-13. The residual alignment/overlap
+  free-text safety check remains deliberately.
 
 Still open:
 - GPS auto-detection defaulting to "All Projects" — not a code bug.
@@ -204,22 +210,6 @@ Still open:
   acknowledged but out of scope unless actively wired in for a real fix.
 - Two independent sync engines — not unified, not currently causing known
   bugs, but a source of confusion if debugging sync issues.
-- Comparability downgrade logic (pie-photo-vision/index.ts) partially
-  hardened 2026-07-10: anchor sufficiency now uses a structured check
-  (sharedVisualAnchors.length < 2) instead of keyword-matching phrases
-  like "insufficient anchor"/"few anchor", and the downgrade reason is now
-  specific about which check fired. Still open: lighting/obstruction
-  downgrading (hasLimitingLightingOrObstruction) still matches hardcoded
-  phrases ("obstruct", "glare", "shadow", etc.) against the model's free
-  text, because no structured severity field exists for this yet — fixing
-  it would require a prompt/schema change (new field like
-  lightingObstructionSeverity) plus a redeploy and live test, same shape
-  as the prompt-context work in PR #18. A residual free-text check also
-  remains for alignment/overlap self-consistency
-  (hasAlignmentOrOverlapInconsistencyText) — kept deliberately, since it
-  catches cases where the model's free text hedges on alignment without
-  also lowering the structured alignmentConfidence field; not itself
-  something to "fix" away.
 - Pending verification for the Phase 1 comparability-downgrade hardening
   above (PR #21, deployed 2026-07-10): no live phone test was meaningful
   for this change (it only affects the "Comparability" label in a narrow

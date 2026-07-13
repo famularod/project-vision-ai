@@ -952,8 +952,10 @@ function buildStrictPairResponse(overrides = {}) {
     framingChange: 'minimal',
     lightingDifferences: [],
     lightingChange: 'none material',
+    lightingComparabilityImpact: 'none',
     obstructionDifferences: ['The lower-right foreground is more occluded.'],
     obstructionChange: 'A tan case occludes more of the lower-right foreground.',
+    obstructionComparabilityImpact: 'minor',
     alignmentConfidence: 'high',
     changeDetectionConfidence: 'high',
     objectAdditions: [],
@@ -1066,11 +1068,6 @@ function normalizeComparabilityForTest(input) {
     ...(input.comparabilityReasons || []),
     ...(input.limitations || []),
   ].join(' ').toLowerCase();
-  const limitingText = [
-    ...(input.lightingDifferences || []),
-    ...(input.obstructionDifferences || []),
-    ...(input.limitations || []),
-  ].join(' ').toLowerCase();
   const insufficientAnchors = [
     'insufficient anchor',
     'limited anchor',
@@ -1081,8 +1078,9 @@ function normalizeComparabilityForTest(input) {
     'poor alignment',
     'significantly reduces confidence',
   ].some(marker => qualityText.includes(marker));
-  const limited = ['limits comparison', 'obstruct', 'occluded', 'poor lighting', 'glare', 'blur', 'important region missing']
-    .some(marker => limitingText.includes(marker));
+  const structuredImpactLimiting =
+    input.lightingComparabilityImpact === 'limiting' ||
+    input.obstructionComparabilityImpact === 'limiting';
   const strongAllowed =
     input.providerComparability === 'strong' &&
     input.sameSceneProbability >= 0.9 &&
@@ -1090,7 +1088,7 @@ function normalizeComparabilityForTest(input) {
     input.alignmentConfidence !== 'low' &&
     input.changeDetectionConfidence !== 'low' &&
     !insufficientAnchors &&
-    !limited;
+    !structuredImpactLimiting;
   if (input.providerComparability === 'strong' && !strongAllowed) return 'probable';
   return input.providerComparability;
 }
@@ -1410,14 +1408,32 @@ function testProductionComparabilityNormalizationRules() {
   assertContains(functionSource, 'collectStrongComparabilityDowngradeTriggers', 'strong comparability must downgrade only when evidence quality cannot support it');
   assertContains(functionSource, 'MIN_SHARED_VISUAL_ANCHORS', 'anchor sufficiency must affect comparability');
   assertContains(functionSource, 'hasAlignmentOrOverlapInconsistencyText', 'overlap limits must affect comparability');
+  assert(!functionSource.includes('hasLimitingLightingOrObstruction'), 'lighting and obstruction must not use phrase matching');
+  assertContains(functionSource, "input.lightingComparabilityImpact === 'limiting'", 'lighting downgrade must use the structured impact');
+  assertContains(functionSource, "input.obstructionComparabilityImpact === 'limiting'", 'obstruction downgrade must use the structured impact');
   assertContains(functionSource, 'comparabilityNormalizationReasons', 'JARVIS downgrade reasons must be persisted with normalized findings');
   assertContains(providerSource, 'Comparability measures whether the shared physical scene or subject can be reliably compared', 'provider prompt must separate comparability from identical camera position');
+  assertContains(providerSource, 'Set lightingComparabilityImpact and obstructionComparabilityImpact independently', 'provider prompt must define structured comparability impacts');
   assertContains(functionSource, 'rawProviderComparability', 'raw provider comparability must be preserved separately for audit');
   assertContains(functionSource, 'normalizedComparability', 'normalized comparability must be persisted separately');
   assertContains(harnessSource, 'normalizedComparability', 'live harness must validate normalized comparability');
   assertContains(harnessSource, 'rawProviderComparability', 'live harness diagnostics must show raw provider comparability separately');
   assertContains(harnessSource, "requirePredicate('persistedComparabilityMatchesNormalized'", 'live harness must prove persisted comparability matches normalized field');
   assertContains(harnessSource, "['strong', 'probable'].includes(normalizedComparability)", 'mouse live acceptance must accept strong or probable only');
+
+  const strictSchemaSource = read('supabase/functions/_shared/pie-photo-comparison-schema.ts');
+  assertContains(strictSchemaSource, "'lightingComparabilityImpact'", 'strict schema must require lighting impact');
+  assertContains(strictSchemaSource, "'obstructionComparabilityImpact'", 'strict schema must require obstruction impact');
+  const missingImpact = buildStrictPairResponse();
+  delete missingImpact.lightingComparabilityImpact;
+  const missingImpactValidation = photoComparisonSchema.validateStrictPhotoPairResponse(missingImpact);
+  assert.strictEqual(missingImpactValidation.valid, false, 'missing structured impact must be rejected');
+  assert(missingImpactValidation.categories.includes('missing_lightingComparabilityImpact'));
+  const invalidImpactValidation = photoComparisonSchema.validateStrictPhotoPairResponse(buildStrictPairResponse({
+    obstructionComparabilityImpact: 'blocked',
+  }));
+  assert.strictEqual(invalidImpactValidation.valid, false, 'invalid structured impact must be rejected');
+  assert(invalidImpactValidation.categories.includes('invalid_obstructionComparabilityImpact'));
 
   assert(['strong', 'probable'].includes(normalizeComparabilityForTest({
     providerComparability: 'strong',
@@ -1516,6 +1532,70 @@ function testProductionComparabilityNormalizationRules() {
     obstructionDifferences: [],
     limitations: ['No viewpoint change.'],
   }), 'strong', 'provider strong with materially unchanged viewpoint should remain strong');
+
+  assert.strictEqual(normalizeComparabilityForTest({
+    providerComparability: 'strong',
+    sameSceneProbability: 0.98,
+    sameSubjectProbability: 0.96,
+    sharedVisualAnchors: ['wall edge', 'window frame', 'conduit'],
+    sceneOverlapAssessment: 'High overlap and stable anchors.',
+    alignmentConfidence: 'high',
+    changeDetectionConfidence: 'high',
+    viewpointAssessment: 'Same wall and conduit remain aligned.',
+    lightingDifferences: ['Shadows changed across the wall.'],
+    lightingComparabilityImpact: 'minor',
+    obstructionDifferences: [],
+    obstructionComparabilityImpact: 'none',
+    limitations: [],
+  }), 'strong', 'minor lighting differences must not downgrade a reliable comparison');
+
+  assert.strictEqual(normalizeComparabilityForTest({
+    providerComparability: 'strong',
+    sameSceneProbability: 0.98,
+    sameSubjectProbability: 0.96,
+    sharedVisualAnchors: ['wall edge', 'window frame', 'conduit'],
+    sceneOverlapAssessment: 'High overlap and stable anchors.',
+    alignmentConfidence: 'high',
+    changeDetectionConfidence: 'high',
+    viewpointAssessment: 'Same wall and conduit remain aligned.',
+    lightingDifferences: ['Strong glare covers the comparison region.'],
+    lightingComparabilityImpact: 'limiting',
+    obstructionDifferences: [],
+    obstructionComparabilityImpact: 'none',
+    limitations: [],
+  }), 'probable', 'limiting lighting impact must downgrade provider strong');
+
+  assert.strictEqual(normalizeComparabilityForTest({
+    providerComparability: 'strong',
+    sameSceneProbability: 0.98,
+    sameSubjectProbability: 0.96,
+    sharedVisualAnchors: ['door frame', 'wall corner', 'floor edge'],
+    sceneOverlapAssessment: 'High overlap and stable anchors.',
+    alignmentConfidence: 'high',
+    changeDetectionConfidence: 'high',
+    viewpointAssessment: 'Same area remains reliably aligned.',
+    lightingDifferences: [],
+    lightingComparabilityImpact: 'none',
+    obstructionDifferences: ['The subject is partially occluded at one edge.'],
+    obstructionComparabilityImpact: 'minor',
+    limitations: [],
+  }), 'strong', 'minor obstruction text must not downgrade a reliable comparison');
+
+  assert.strictEqual(normalizeComparabilityForTest({
+    providerComparability: 'strong',
+    sameSceneProbability: 0.98,
+    sameSubjectProbability: 0.96,
+    sharedVisualAnchors: ['door frame', 'wall corner', 'floor edge'],
+    sceneOverlapAssessment: 'High overlap and stable anchors.',
+    alignmentConfidence: 'high',
+    changeDetectionConfidence: 'high',
+    viewpointAssessment: 'Same area remains reliably aligned.',
+    lightingDifferences: [],
+    lightingComparabilityImpact: 'none',
+    obstructionDifferences: ['Stored material blocks the relevant work area.'],
+    obstructionComparabilityImpact: 'limiting',
+    limitations: [],
+  }), 'probable', 'limiting obstruction impact must downgrade provider strong');
 
   assert(['weak', 'not_comparable'].includes(normalizeComparabilityForTest({
     providerComparability: 'weak',

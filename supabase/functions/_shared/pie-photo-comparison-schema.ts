@@ -1,4 +1,10 @@
-export const PIE_PHOTO_PAIR_SCHEMA_VERSION = '2026-07-p0-v1';
+export const PIE_PHOTO_PAIR_SCHEMA_VERSION = '2026-07-p1-v1';
+
+export const PIE_COMPARABILITY_IMPACTS = [
+  'none',
+  'minor',
+  'limiting',
+] as const;
 
 export const PIE_PHOTO_FINDING_TYPES = [
   'added',
@@ -71,8 +77,10 @@ export const PIE_PHOTO_PAIR_RESPONSE_SCHEMA = {
     'framingChange',
     'lightingDifferences',
     'lightingChange',
+    'lightingComparabilityImpact',
     'obstructionDifferences',
     'obstructionChange',
+    'obstructionComparabilityImpact',
     'alignmentConfidence',
     'changeDetectionConfidence',
     'objectAdditions',
@@ -109,8 +117,10 @@ export const PIE_PHOTO_PAIR_RESPONSE_SCHEMA = {
     framingChange: { type: 'string' },
     lightingDifferences: { type: 'array', items: { type: 'string' } },
     lightingChange: { type: 'string' },
+    lightingComparabilityImpact: { type: 'string', enum: [...PIE_COMPARABILITY_IMPACTS] },
     obstructionDifferences: { type: 'array', items: { type: 'string' } },
     obstructionChange: { type: 'string' },
+    obstructionComparabilityImpact: { type: 'string', enum: [...PIE_COMPARABILITY_IMPACTS] },
     alignmentConfidence: { type: 'string', enum: ['low', 'medium', 'high'] },
     changeDetectionConfidence: { type: 'string', enum: ['low', 'medium', 'high'] },
     objectAdditions: { type: 'array', items: findingSchema },
@@ -303,7 +313,8 @@ export function validateStrictPhotoPairResponse(value: unknown): { valid: true }
   }
   for (const key of [
     'sceneOverlapAssessment', 'viewpointAssessment', 'viewpointChange', 'cameraAngleChange', 'distanceChange',
-    'framingChange', 'lightingChange', 'obstructionChange', 'plainLanguageSummary',
+    'framingChange', 'lightingChange', 'lightingComparabilityImpact', 'obstructionChange',
+    'obstructionComparabilityImpact', 'plainLanguageSummary',
   ]) {
     if (typeof record[key] !== 'string') categories.push(`invalid_${key}`);
   }
@@ -336,6 +347,12 @@ export function validateStrictPhotoPairResponse(value: unknown): { valid: true }
   if (!['low', 'medium', 'high'].includes(String(record.confidence))) categories.push('invalid_confidence');
   if (!['low', 'medium', 'high'].includes(String(record.alignmentConfidence))) categories.push('invalid_alignmentConfidence');
   if (!['low', 'medium', 'high'].includes(String(record.changeDetectionConfidence))) categories.push('invalid_changeDetectionConfidence');
+  if (!PIE_COMPARABILITY_IMPACTS.includes(record.lightingComparabilityImpact as typeof PIE_COMPARABILITY_IMPACTS[number])) {
+    categories.push('invalid_lightingComparabilityImpact');
+  }
+  if (!PIE_COMPARABILITY_IMPACTS.includes(record.obstructionComparabilityImpact as typeof PIE_COMPARABILITY_IMPACTS[number])) {
+    categories.push('invalid_obstructionComparabilityImpact');
+  }
   if (Array.isArray(record.differenceClassifications) && !(record.differenceClassifications as unknown[]).every(item =>
     ['camera_or_capture_change', 'physical_scene_change', 'uncertain_change', 'mixed_change'].includes(String(item)))) {
     categories.push('invalid_differenceClassifications_items');
