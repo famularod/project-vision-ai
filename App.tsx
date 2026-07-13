@@ -62,6 +62,10 @@ import {
   type DAVEProjectWalkLocationInput,
 } from './services/DAVEProjectWalk';
 import {
+  buildDAVEProjectWalkFieldUpdateDraft,
+  unusedConfirmedProjectWalkMemories,
+} from './services/DAVEProjectWalkFieldUpdate';
+import {
   createCaptureMemory,
   type DAVECaptureMemory,
   type DAVEConfirmedCaptureMemory,
@@ -182,6 +186,7 @@ type ProjectUpdate = {
   photos: UpdatePhoto[];
   documents?: FieldUpdateDocument[];
   notes: string;
+  sourceCaptureMemoryIds?: string[];
   recipients: RecipientSelection;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
@@ -831,6 +836,7 @@ function createDraft(projectName: string): ProjectUpdate {
     photos: [],
     documents: [],
     notes: '',
+    sourceCaptureMemoryIds: [],
     recipients: emptyRecipients(),
     selectedAreaId: null,
     selectedAreaName: 'Unassigned / Unknown Area',
@@ -1541,6 +1547,9 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
       updateId,
     }),
     notes: typeof update.notes === 'string' ? update.notes : '',
+    sourceCaptureMemoryIds: Array.isArray(update.sourceCaptureMemoryIds)
+      ? uniqueStrings(update.sourceCaptureMemoryIds.filter(item => typeof item === 'string'))
+      : [],
     recipients: normalizeRecipientSelection(update.recipients),
     selectedAreaId: optionalString(update.selectedAreaId),
     selectedAreaName: optionalString(update.selectedAreaName),
@@ -7019,6 +7028,72 @@ useEffect(() => {
     proceed();
   }
 
+  function prepareProjectWalkFieldUpdate(
+    projectName: string,
+    memories: readonly DAVEConfirmedCaptureMemory[],
+  ) {
+    let prepared: ReturnType<typeof buildDAVEProjectWalkFieldUpdateDraft>;
+    try {
+      prepared = buildDAVEProjectWalkFieldUpdateDraft({ projectName, memories });
+    } catch (error) {
+      Alert.alert(
+        'Nothing to prepare',
+        error instanceof Error
+          ? error.message
+          : 'Capture and confirm a Project Walk memory first.',
+      );
+      return;
+    }
+
+    const area = prepared.recommendedAreaName
+      ? projectAreas.find(item =>
+          item.name.trim().toLowerCase() === prepared.recommendedAreaName?.trim().toLowerCase()
+        ) || null
+      : null;
+
+    function proceed() {
+      const nextDraft: ProjectUpdate = {
+        ...createDraft(projectName),
+        notes: prepared.notes,
+        sourceCaptureMemoryIds: [...prepared.sourceMemoryIds],
+        selectedAreaId: area?.id || null,
+        selectedAreaName:
+          area?.name || prepared.recommendedAreaName || 'Unassigned / Unknown Area',
+        areaStatus: area ? 'confirmed' : 'unknown',
+        continueWithoutPhotosAcknowledged: true,
+        pieStatus: 'no_visual_comparison',
+        pieSummary: 'No visual comparison available',
+        status: 'ready_to_send',
+        workflowTimestamps: {
+          startedAt: new Date().toISOString(),
+          reviewOpenedAt: new Date().toISOString(),
+        },
+      };
+      setDraft(nextDraft);
+      setSelectedWorkspaceProject(projectName);
+      setDraftSavedAt(null);
+      setScreen('BuildUpdate');
+    }
+
+    if (hasDraftContent(draft)) {
+      Alert.alert(
+        'Unfinished update found',
+        'Preparing this Project Walk update will replace the current unfinished draft.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Prepare Update',
+            style: 'destructive',
+            onPress: proceed,
+          },
+        ],
+      );
+      return;
+    }
+
+    proceed();
+  }
+
   function openProjectWorkspace(projectName: string) {
     setSelectedWorkspaceProject(projectName);
     setScreen('ProjectWorkspace');
@@ -9444,6 +9519,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectName={selectedWorkspaceProject}
               savedUpdates={savedUpdates}
               captureMemories={captureMemories}
+              usedCaptureMemoryIds={[
+                ...savedUpdates.flatMap(update => update.sourceCaptureMemoryIds || []),
+                ...(draft.sourceCaptureMemoryIds || []),
+              ]}
               projectAreas={projectAreas}
               projectDocuments={projectDocuments}
               scheduleItems={scheduleItems}
@@ -9468,6 +9547,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRemoveCoverPhoto={() => removeProjectCoverPhoto(selectedWorkspaceProject)}
               onBack={() => setScreen('Projects')}
               onNewFieldUpdate={createNewUpdate}
+              onPrepareWalkUpdate={memories =>
+                prepareProjectWalkFieldUpdate(selectedWorkspaceProject, memories)
+              }
               onSaveCaptureMemory={saveCaptureMemory}
               onDeleteCaptureMemory={deleteCaptureMemory}
               onOpenUpdates={() => setScreen('SavedUpdates')}
@@ -12473,6 +12555,7 @@ function BuildUpdateScreen({
   const firstPriorUpdateUsed = priorUpdateUsedForPIEResult(firstResult);
   const hasSafety = updateHasSafetyConcern(update);
   const hasBlocker = updateHasBlocker(update);
+  const hasPhotoEvidence = update.photos.length > 0;
   const previewLine = buildPreviewLine(update, contacts);
   const fullMessage = buildGeneratedUpdateMessage(update, pieStatus);
   const failedPhoto = update.photos.find(
@@ -12559,12 +12642,24 @@ function BuildUpdateScreen({
         ) : null}
 
         <PIEFindingRow
-          role={hasSafety ? 'safety' : 'confirmedClear'}
-          title={hasSafety ? 'Safety concern requires review' : 'No safety concerns detected'}
+          role={hasSafety ? 'safety' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}
+          title={
+            hasSafety
+              ? 'Safety concern requires review'
+              : hasPhotoEvidence
+                ? 'No safety concerns detected'
+                : 'No photo evidence available for safety review'
+          }
         />
         <PIEFindingRow
-          role={hasBlocker ? 'interpretation' : 'confirmedClear'}
-          title={hasBlocker ? 'Possible blocker requires review' : 'No open blockers detected'}
+          role={hasBlocker ? 'interpretation' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}
+          title={
+            hasBlocker
+              ? 'Possible blocker requires review'
+              : hasPhotoEvidence
+                ? 'No open blockers detected'
+                : 'No photo evidence available for blocker review'
+          }
         />
         {firstResult?.comparisonConfidence ? (
           <Text style={styles.locationDetailText}>
@@ -13352,6 +13447,7 @@ function ProjectWorkspaceScreen({
   projectName,
   savedUpdates,
   captureMemories,
+  usedCaptureMemoryIds,
   projectAreas,
   projectDocuments,
   scheduleItems,
@@ -13366,6 +13462,7 @@ function ProjectWorkspaceScreen({
   onRemoveCoverPhoto,
   onBack,
   onNewFieldUpdate,
+  onPrepareWalkUpdate,
   onSaveCaptureMemory,
   onDeleteCaptureMemory,
   onOpenUpdates,
@@ -13380,6 +13477,7 @@ function ProjectWorkspaceScreen({
   projectName: string;
   savedUpdates: ProjectUpdate[];
   captureMemories: readonly DAVEConfirmedCaptureMemory[];
+  usedCaptureMemoryIds: readonly string[];
   projectAreas: ProjectArea[];
   projectDocuments: ProjectDocument[];
   scheduleItems: ScheduleItem[];
@@ -13394,6 +13492,7 @@ function ProjectWorkspaceScreen({
   onRemoveCoverPhoto: () => void;
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
+  onPrepareWalkUpdate: (memories: readonly DAVEConfirmedCaptureMemory[]) => void;
   onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
   onDeleteCaptureMemory: (memoryId: string) => Promise<void>;
   onOpenUpdates: () => void;
@@ -13409,6 +13508,11 @@ function ProjectWorkspaceScreen({
   const projectUpdates = savedUpdates.filter(
     update => projectMatchesScope(update, projectName),
   );
+  const unusedWalkMemories = unusedConfirmedProjectWalkMemories({
+    projectName,
+    memories: captureMemories,
+    usedMemoryIds: usedCaptureMemoryIds,
+  });
   const projectDocumentCount = projectDocumentCountForProject(projectName, projectDocuments);
   const projectActivity = buildPhase2ActivityItems(
     savedUpdates,
@@ -13840,6 +13944,14 @@ function ProjectWorkspaceScreen({
         icon="chatbox-ellipses-outline"
         onPress={() => { void beginProjectWalkCapture(); }}
       />
+
+      {unusedWalkMemories.length > 0 ? (
+        <SecondaryButton
+          label={`Prepare Walk Update (${unusedWalkMemories.length})`}
+          icon="document-text-outline"
+          onPress={() => onPrepareWalkUpdate(unusedWalkMemories)}
+        />
+      ) : null}
 
       <DAVEVoiceCaptureSheet
         visible={voiceCaptureOpen}

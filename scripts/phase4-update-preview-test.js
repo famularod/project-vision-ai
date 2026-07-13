@@ -49,9 +49,11 @@ assert(
 );
 assert(
   app.includes('role={hasSafety && interpretation.toLowerCase().includes') &&
-    app.includes('role={hasBlocker ?') &&
-    app.includes("role={hasSafety ? 'safety' : 'confirmedClear'}"),
-  'Preview should use status roles for safety, interpretation, and confirmed-clear states.',
+    app.includes("role={hasBlocker ? 'interpretation' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}") &&
+    app.includes("role={hasSafety ? 'safety' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}") &&
+    app.includes('No photo evidence available for safety review') &&
+    app.includes('No photo evidence available for blocker review'),
+  'Preview should reserve confirmed-clear states for updates with photo evidence.',
 );
 assert(
   app.includes("draft.recipients.contactIds.length === 0") &&
