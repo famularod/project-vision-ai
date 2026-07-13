@@ -37,9 +37,9 @@ type ImageDiagnostics = {
   signedUrlGenerated: boolean;
 };
 
-const POLICY_VERSION = '2026.07.02-production-vision-policy';
+const POLICY_VERSION = '2026.07.13-structured-comparability-impact';
 const ANALYZER_ID = 'pie-production-photo-vision';
-const ANALYZER_VERSION = '2026.07.02-production';
+const ANALYZER_VERSION = '2026.07.13-structured-comparability-impact';
 const BUCKET = 'pie-project-evidence';
 const SIGNED_URL_EXPIRES_SECONDS = 600;
 const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
@@ -47,7 +47,7 @@ const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 function defaultPromptVersion(mode: VisionMode): string {
   return mode === 'single_photo'
     ? '2026.07.11-single-photo-schema-enforcement'
-    : '2026.07.11-alignment-confidence-rubric';
+    : '2026.07.13-structured-comparability-impact';
 }
 
 Deno.serve(async req => {
@@ -359,7 +359,9 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
   const distanceChange = stringValue(value.distanceChange);
   const framingChange = stringValue(value.framingChange);
   const lightingChange = stringValue(value.lightingChange);
+  const lightingComparabilityImpact = comparabilityImpactValue(value.lightingComparabilityImpact);
   const obstructionChange = stringValue(value.obstructionChange);
+  const obstructionComparabilityImpact = comparabilityImpactValue(value.obstructionComparabilityImpact);
   const alignmentConfidence = confidenceValue(value.alignmentConfidence);
   const changeDetectionConfidence = confidenceValue(value.changeDetectionConfidence);
   const comparabilityReasons = stringArray(value.comparabilityReasons);
@@ -403,6 +405,8 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     comparabilityReasons,
     lightingDifferences,
     obstructionDifferences,
+    lightingComparabilityImpact,
+    obstructionComparabilityImpact,
     limitations,
   });
   return {
@@ -418,8 +422,10 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     framingChange,
     lightingDifferences,
     lightingChange,
+    lightingComparabilityImpact,
     obstructionDifferences,
     obstructionChange,
+    obstructionComparabilityImpact,
     alignmentConfidence,
     changeDetectionConfidence,
     objectAdditions: additions.findings,
@@ -587,6 +593,8 @@ type ComparabilityNormalizationInput = {
   comparabilityReasons: string[];
   lightingDifferences: string[];
   obstructionDifferences: string[];
+  lightingComparabilityImpact: string;
+  obstructionComparabilityImpact: string;
   limitations: string[];
 };
 
@@ -625,8 +633,11 @@ function collectStrongComparabilityDowngradeTriggers(input: ComparabilityNormali
   if (hasAlignmentOrOverlapInconsistencyText(input)) {
     triggers.push('alignment/overlap limitation language present in provider free text');
   }
-  if (hasLimitingLightingOrObstruction(input)) {
-    triggers.push('limiting lighting/obstruction language present in provider free text');
+  if (input.lightingComparabilityImpact === 'limiting') {
+    triggers.push('lightingComparabilityImpact reported limiting');
+  }
+  if (input.obstructionComparabilityImpact === 'limiting') {
+    triggers.push('obstructionComparabilityImpact reported limiting');
   }
   return triggers;
 }
@@ -651,27 +662,6 @@ function hasAlignmentOrOverlapInconsistencyText(input: ComparabilityNormalizatio
     'not reliably aligned',
     'poor alignment',
     'significantly reduces confidence',
-  ]);
-}
-
-function hasLimitingLightingOrObstruction(input: ComparabilityNormalizationInput): boolean {
-  const text = [
-    ...input.lightingDifferences,
-    ...input.obstructionDifferences,
-    ...input.limitations,
-  ].join(' ').toLowerCase();
-  return includesAny(text, [
-    'limits comparison',
-    'limited comparison',
-    'limits comparability',
-    'obstruct',
-    'occluded',
-    'blocked',
-    'poor lighting',
-    'lighting changed materially',
-    'shadow',
-    'glare',
-    'blur',
   ]);
 }
 
@@ -991,7 +981,9 @@ async function persistRequestAndResult(
         distanceChange: stringValue(providerResult.normalized.distanceChange),
         framingChange: stringValue(providerResult.normalized.framingChange),
         lightingChange: stringValue(providerResult.normalized.lightingChange),
+        lightingComparabilityImpact: comparabilityImpactValue(providerResult.normalized.lightingComparabilityImpact),
         obstructionChange: stringValue(providerResult.normalized.obstructionChange),
+        obstructionComparabilityImpact: comparabilityImpactValue(providerResult.normalized.obstructionComparabilityImpact),
         alignmentConfidence: confidenceValue(providerResult.normalized.alignmentConfidence),
         changeDetectionConfidence: confidenceValue(providerResult.normalized.changeDetectionConfidence),
         differenceClassifications: arrayValue(providerResult.normalized.differenceClassifications),
@@ -1132,6 +1124,12 @@ function confidenceValue(value: unknown): string {
 
 function comparabilityValue(value: unknown): string {
   return ['strong', 'probable', 'weak', 'not_comparable'].includes(String(value)) ? String(value) : 'not_comparable';
+}
+
+function comparabilityImpactValue(value: unknown): string {
+  return value === 'none' || value === 'minor' || value === 'limiting'
+    ? value
+    : 'none';
 }
 
 function conclusionValue(value: unknown): string {
