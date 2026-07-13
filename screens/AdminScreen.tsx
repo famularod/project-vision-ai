@@ -282,7 +282,7 @@ export function AdminScreen({
         <ScreenCard style={styles.settingsCard}>
           <SettingsRow icon="today-outline" title="Daily Brief" detail="Available in each project workspace" />
           <SettingsRow icon="sparkles-outline" title="Ask DAVE" detail="Available in each project workspace" />
-          <SettingsRow icon="mic-outline" title="Voice" detail="Coming Soon" last />
+          <SettingsRow icon="mic-outline" title="Voice" detail="Available in Project Walk" last />
         </ScreenCard>
       </ScreenSection>
 
