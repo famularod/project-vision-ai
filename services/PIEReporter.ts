@@ -84,6 +84,8 @@ import type { PIERecommendationChallengeResult } from './PIERecommendationChalle
 import type { PIEJarvisReasoningValidation } from './PIEJarvisReasoningValidation';
 import type { PIEConfidenceDecomposition } from './PIEConfidenceDecomposition';
 import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritization';
+import { resolvePIEReportProjectNames } from './PIEReportScope';
+import type { PIEScheduleReconciliationResult } from './PIEScheduleReconciliation';
 import {
   requirePersistedExecutiveJudgment,
   type PIEExecutiveJudgmentRecord,
@@ -302,7 +304,9 @@ export type PIEReporterRuntimeInput = {
     nextAction?: string;
     trust?: number;
   };
-  fusedEvidence?: unknown;
+  fusedEvidence?: {
+    scheduleReconciliation?: PIEScheduleReconciliationResult;
+  } | null;
   photoProgressSummary?: string;
   recommendedWalkAreas?: string[];
   reflectionSummary?: string | { summary?: string; recommendedEvidence?: string[] };
@@ -468,9 +472,15 @@ export function buildPIEReportDraft(
       input.executiveJudgmentRecord || input.runtime?.executiveJudgmentRecord,
     );
   }
-  return input.reportType === 'combined_project_update'
-    ? buildCombinedProjectUpdate(input)
-    : buildDailyProjectUpdate(input);
+  if (input.reportType === 'combined_project_update') {
+    return buildCombinedProjectUpdate(input);
+  }
+
+  if (!input.reportType || input.reportType === 'daily_project_update') {
+    return buildDailyProjectUpdate(input);
+  }
+
+  return buildReport(input, input.reportType);
 }
 
 export function buildPIEReportDraftFromExecutiveJudgment(
@@ -711,7 +721,7 @@ export function buildConstructionUnderstanding(
   return {
     locationGroups,
     workAreas,
-    executiveSummaryBullets: buildExecutiveSummaryBullets(workAreas, reviewFlags),
+    executiveSummaryBullets: buildExecutiveSummaryBullets(workAreas),
     reviewFlags,
   };
 }
@@ -780,26 +790,38 @@ export function buildDavidStyleReport({
   executiveSummary,
   locationGroups,
   closingLine,
+  format = 'project_manager',
+  includeProjectNames = false,
 }: {
   openingLine: string;
   executiveSummary: string[];
   locationGroups: PIEReportLocationGroup[];
   closingLine: string;
+  format?: 'project_manager' | 'executive';
+  includeProjectNames?: boolean;
 }) {
+  const summaryTitle = format === 'executive'
+    ? 'Executive Summary'
+    : 'Project Summary';
   const executiveText = executiveSummary.length
-    ? `Executive Summary\n${executiveSummary.map(item => `• ${item}`).join('\n')}`
+    ? `${summaryTitle}\n${executiveSummary.map(item => `• ${item}`).join('\n')}`
     : '';
-  const locationText = locationGroups
+  const locationText = format === 'executive'
+    ? ''
+    : locationGroups
     .filter(group => group.workAreas.length > 0)
     .map(group => {
       const areas = group.workAreas
         .filter(area => area.bullets.length > 0)
-        .map((area, index) => {
+        .map(area => {
           const bullets = area.bullets
-            .map(bullet => `   • ${bullet.text}`)
+            .map(bullet => `• ${reportBulletLabel(bullet)}: ${bullet.text}`)
             .join('\n');
+          const areaTitle = includeProjectNames
+            ? `${area.projectName} — ${area.title}`
+            : area.title;
 
-          return `${index + 1}. ${area.title}\n${bullets}`;
+          return `${areaTitle}\n${bullets}`;
         })
         .join('\n\n');
 
@@ -814,6 +836,16 @@ export function buildDavidStyleReport({
     locationText,
     closingLine,
   ].filter(Boolean).join('\n\n');
+}
+
+function reportBulletLabel(bullet: PIEReportBullet) {
+  if (bullet.kind === 'safety') return 'Safety';
+  if (bullet.kind === 'issue') return 'Issue';
+  if (bullet.kind === 'next_step') return 'Action';
+  if (bullet.kind === 'schedule') return 'Schedule';
+  if (bullet.kind === 'image_reference') return 'Evidence';
+
+  return 'Progress';
 }
 
 export function buildReportActionItems(
@@ -917,7 +949,10 @@ export function cleanReportWorkAreaName(
       .replace(/\s+/g, ' ')
       .trim(),
   );
-  const best = chooseBestWorkAreaName(candidates) || 'Project Work';
+  const best =
+    chooseBestWorkAreaName(candidates.slice(0, 2)) ||
+    chooseBestWorkAreaName(candidates.slice(2)) ||
+    'Project Work';
   const withoutDuplicateNumber = locationNumber
     ? best.replace(new RegExp(`\\b${locationNumber}\\b`, 'g'), '').trim()
     : best;
@@ -926,10 +961,14 @@ export function cleanReportWorkAreaName(
       ? `${locationNumber} ${withoutDuplicateNumber}`
       : withoutDuplicateNumber;
 
-  return removeRepeatedPhrases(removeDuplicateWorkAreaPhrases(withNumber))
+  const cleaned = removeRepeatedPhrases(removeDuplicateWorkAreaPhrases(withNumber))
     .replace(/\s*[-–]\s*$/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+
+  if (cleaned.length <= 70) return cleaned;
+
+  return projectName.trim().slice(0, 70) || 'Project Work';
 }
 
 export function groupEvidenceByLocation(
@@ -1052,6 +1091,7 @@ function buildReport(
 ): PIEReportDraft {
   const generatedAt = input.generatedAt || new Date();
   const audience = input.audience || 'internal_team';
+  const executiveFormat = reportType === 'executive_summary';
   const sourceEvidence = collectReportEvidence({
     ...input,
     reportType,
@@ -1073,21 +1113,12 @@ function buildReport(
     ...executiveReasoningReviewFlags(input.runtime),
     ...situationReviewFlags(input.runtime),
     ...learningReviewFlags(input.runtime),
+    ...scheduleReconciliationReviewFlags(input.runtime),
   ];
-  const executiveSummary = [
-    ...situationReportBullets(input.runtime),
+  const executiveSummary = uniqueText([
     ...narrative.executiveSummaryBullets,
-    ...predictionReportBullets(input.runtime),
-    ...predictiveRealityReportBullets(input.runtime),
-    ...executiveJudgmentReportBullets(input.runtime),
-    ...executiveReasoningReportBullets(input.runtime),
-    ...learningReportBullets(input.runtime),
-    ...memoryRecallReportBullets(input.runtime),
-    ...deliberationReportBullets(input.runtime),
-    ...scientificMethodReportBullets(input.runtime),
-    ...patternReportBullets(input.runtime),
-    ...beliefReportBullets(input.runtime),
-  ];
+    scheduleReconciliationExecutiveBullet(input.runtime),
+  ].filter((item): item is string => Boolean(item))).slice(0, 5);
   const confidence = buildReportConfidence({
     sourceEvidence,
     actionItems: narrative.actionItems,
@@ -1095,18 +1126,30 @@ function buildReport(
     reviewFlags,
   });
   const title =
-    reportType === 'combined_project_update'
+    executiveFormat
+      ? 'DAVE Executive Summary'
+      : reportType === 'combined_project_update'
       ? 'DAVE Combined Project Update'
       : 'DAVE Project Update';
   const subject =
-    reportType === 'combined_project_update'
+    executiveFormat
+      ? `Executive Summary - ${
+          (input.selectedProjectNames || []).length === 1
+            ? input.selectedProjectNames?.[0]
+            : 'Combined Projects'
+        } - ${formatDate(generatedAt)}`
+      : reportType === 'combined_project_update'
       ? `Combined Project Update - ${formatDate(generatedAt)}`
       : `Project Update - ${input.currentUpdate?.projectName || 'Project'} - ${formatDate(generatedAt)}`;
+  const openingLine = executiveFormat ? '' : DAVID_STYLE_OPENING;
+  const closingLine = executiveFormat ? '' : DAVID_STYLE_CLOSING;
   const body = buildDavidStyleReport({
-    openingLine: DAVID_STYLE_OPENING,
+    openingLine,
     executiveSummary,
     locationGroups: narrative.locationGroups,
-    closingLine: DAVID_STYLE_CLOSING,
+    closingLine,
+    format: executiveFormat ? 'executive' : 'project_manager',
+    includeProjectNames: reportType === 'combined_project_update',
   });
 
   return {
@@ -1115,9 +1158,9 @@ function buildReport(
     audience,
     title,
     subject,
-    body: body || `${DAVID_STYLE_OPENING}\n\n${DAVID_STYLE_CLOSING}`,
-    openingLine: DAVID_STYLE_OPENING,
-    closingLine: DAVID_STYLE_CLOSING,
+    body: body || (executiveFormat ? 'Executive Summary\n• No reportable project changes.' : `${DAVID_STYLE_OPENING}\n\n${DAVID_STYLE_CLOSING}`),
+    openingLine,
+    closingLine,
     executiveSummary,
     sections: [
       {
@@ -1202,7 +1245,7 @@ function buildReportBulletsFromUnderstanding(
     }
   }
 
-  return uniqueBullets(bullets).slice(0, 6);
+  return selectConciseAreaBullets(uniqueBullets(bullets));
 }
 
 function actionItemsFromEvidence(
@@ -1257,36 +1300,56 @@ function formatActionItem(item: PIEReportActionItem) {
 
 function buildExecutiveSummaryBullets(
   workAreas: PIEWorkAreaUnderstanding[],
-  reviewFlags: string[],
 ) {
   if (workAreas.length === 0) {
     return ['Several updates need review before this report is ready to send.'];
   }
 
   const areasWithProgress = workAreas.filter(area => area.progress.length > 0).length;
-  const actionCount = workAreas.reduce((count, area) => count + area.nextSteps.length, 0);
-  const safetyCount = workAreas.filter(area => area.hasSafetyConcern).length;
-  const majorProgress = workAreas
-    .filter(area => area.status === 'In Progress' || area.status === 'Complete')
-    .map(area => area.workAreaName)
-    .slice(0, 3);
+  const progressHighlight = workAreas.find(area => area.progress.length > 0);
+  const concernHighlight = [
+    ...workAreas.filter(area => area.hasSafetyConcern),
+    ...workAreas.filter(area => !area.hasSafetyConcern && area.issues.length > 0),
+  ][0];
+  const actionHighlight = workAreas.find(area => area.nextSteps.length > 0);
+  const scheduleCount = workAreas.filter(area => area.affectsSchedule).length;
   const bullets = [
     `Work progressed across ${areasWithProgress || workAreas.length} area${(areasWithProgress || workAreas.length) === 1 ? '' : 's'}.`,
-    majorProgress.length > 0
-      ? `Major progress includes ${joinHumanList(majorProgress)}.`
+    progressHighlight
+      ? shortenReportBullet(
+          `Key update: ${executiveAreaLabel(progressHighlight)} — ${progressHighlight.progress[0].summary}`,
+          180,
+        )
       : null,
-    actionCount > 0
-      ? `${actionCount} item${actionCount === 1 ? '' : 's'} require follow-up before work can continue.`
-      : 'No action items were identified from the selected evidence.',
-    safetyCount > 0
-      ? `${safetyCount} safety concern${safetyCount === 1 ? '' : 's'} require attention.`
-      : 'No new safety concerns were identified.',
-    reviewFlags.length > 0
-      ? 'Several updates need review before this report is ready to send.'
+    concernHighlight
+      ? shortenReportBullet(
+          `${concernHighlight.hasSafetyConcern ? 'Safety' : 'Priority concern'}: ${executiveAreaLabel(concernHighlight)} — ${concernHighlight.issues[0]?.summary || concernHighlight.readerTakeaway}`,
+          180,
+        )
+      : null,
+    actionHighlight
+      ? shortenReportBullet(
+          `Next action: ${executiveAreaLabel(actionHighlight)} — ${actionHighlight.nextSteps[0].summary}${actionHighlight.nextSteps[0].owner ? ` (${actionHighlight.nextSteps[0].owner})` : ''}`,
+          180,
+        )
+      : null,
+    scheduleCount > 0
+      ? `Schedule attention is indicated in ${scheduleCount} area${scheduleCount === 1 ? '' : 's'}.`
       : null,
   ];
 
-  return bullets.filter(Boolean) as string[];
+  return (bullets.filter(Boolean) as string[]).slice(0, 5);
+}
+
+function executiveAreaLabel(area: PIEWorkAreaUnderstanding) {
+  const projectName = area.projectName.trim();
+  const workAreaName = area.workAreaName.trim();
+
+  if (!workAreaName || normalizeName(workAreaName) === normalizeName(projectName)) {
+    return projectName || 'Project';
+  }
+
+  return `${projectName} / ${workAreaName}`;
 }
 
 function reflectionReviewFlags(
@@ -1665,6 +1728,34 @@ function learningReviewFlags(
   return Array.from(new Set(flags));
 }
 
+function scheduleReconciliationReviewFlags(
+  runtime: PIEReporterRuntimeInput | null | undefined,
+) {
+  return (runtime?.fusedEvidence?.scheduleReconciliation?.warnings || [])
+    .filter(warning =>
+      warning.severity === 'high' ||
+      warning.severity === 'critical' ||
+      warning.type === 'field_progress_not_reflected'
+    )
+    .slice(0, 2)
+    .map(warning => `Schedule check: ${shortenReportBullet(warning.summary, 180)}`);
+}
+
+function scheduleReconciliationExecutiveBullet(
+  runtime: PIEReporterRuntimeInput | null | undefined,
+) {
+  const warning = runtime?.fusedEvidence?.scheduleReconciliation?.warnings.find(
+    item =>
+      item.severity === 'critical' ||
+      item.severity === 'high' ||
+      item.type === 'field_progress_not_reflected',
+  );
+
+  return warning
+    ? `Schedule attention: ${shortenReportBullet(warning.summary, 165)}`
+    : null;
+}
+
 function learningReportBullets(
   runtime: PIEReporterRuntimeInput | null | undefined,
 ) {
@@ -1879,15 +1970,13 @@ function groupUnderstandingByLocation(
 }
 
 function selectedProjectsFromInput(input: PIEReportDraftInput) {
-  const names = [
-    ...(input.selectedProjectNames || []),
-    input.currentUpdate?.projectName,
-    ...(input.savedUpdates || []).map(update => update.projectName),
-  ]
-    .filter((name): name is string => Boolean(name?.trim()))
-    .map(normalizeName);
-
-  return Array.from(new Set(names));
+  return resolvePIEReportProjectNames({
+    selectedProjectNames: input.selectedProjectNames,
+    fallbackProjectNames: [
+      input.currentUpdate?.projectName,
+      ...(input.savedUpdates || []).map(update => update.projectName),
+    ],
+  }).map(normalizeName);
 }
 
 function selectedUpdates(
@@ -2070,6 +2159,44 @@ function uniqueBullets(bullets: PIEReportBullet[]) {
     seen.add(key);
     return true;
   });
+}
+
+function selectConciseAreaBullets(
+  bullets: PIEReportBullet[],
+): PIEReportBullet[] {
+  const preferred = [
+    bullets.find(bullet =>
+      bullet.kind === 'progress' || bullet.kind === 'schedule'
+    ),
+    bullets.find(bullet =>
+      bullet.kind === 'safety' || bullet.kind === 'issue'
+    ),
+    bullets.find(bullet => bullet.kind === 'next_step'),
+  ].filter((bullet): bullet is PIEReportBullet => Boolean(bullet));
+  const selectedIds = new Set(preferred.map(bullet => bullet.id));
+  const selected = [
+    ...preferred,
+    ...bullets.filter(bullet => !selectedIds.has(bullet.id)),
+  ].slice(0, 3);
+
+  return selected.map(bullet => ({
+    ...bullet,
+    text: shortenReportBullet(bullet.text),
+  }));
+}
+
+function shortenReportBullet(value: string, maximumLength = 160) {
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (text.length <= maximumLength) return text;
+
+  const shortened = text.slice(0, maximumLength - 1);
+  const lastWordBoundary = shortened.lastIndexOf(' ');
+
+  const visibleText = lastWordBoundary > 0
+    ? shortened.slice(0, lastWordBoundary)
+    : shortened;
+
+  return `${visibleText.trim()}…`;
 }
 
 function uniqueActionItems(items: PIEReportActionItem[]) {

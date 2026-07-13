@@ -37,6 +37,7 @@
     },
     "plugins": [
       "./plugins/withDaveIosAppIcon",
+      "expo-asset",
       [
         "expo-location",
         {

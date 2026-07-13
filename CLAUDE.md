@@ -46,10 +46,12 @@ instead — see the app's git history for that pass.
   `types/index.ts` that `screens/`/`components/` files import. They're
   usually structurally compatible but not always — expect occasional small
   type patches when wiring the two together.
-- **There are two independent sync engines**: the live per-update queue sync
-  in `App.tsx` (`runFieldUpdateCloudSync`/`hydrateQueuedUpdates`), and a
-  separate batch sync in `services/SyncService.ts` used by the Admin screen's
-  "Sync Now". Both work independently; they haven't been unified.
+- **Cloud update sync has one queue-owned execution path.** Field send/retry
+  and Settings reconciliation both stage update photos and metadata through
+  `services/SyncService.ts`; `App.tsx` no longer owns a second database-write
+  implementation. Area, schedule, and reference-document snapshot
+  reconciliation remains in the same service because those entities do not
+  yet have change queues.
 - **RLS policy pattern**: this app is single-user with no team/org sharing.
   Supabase tables under the PIE evidence/vision pipeline use a direct
   ownership check — `organization_id = auth.uid()::text` — not the older
@@ -197,6 +199,14 @@ GitHub for history if context is needed):
   structured limiting impact can trigger this downgrade. Deployed as
   pie-photo-vision version 20 on 2026-07-13. The residual alignment/overlap
   free-text safety check remains deliberately.
+- Reports is live in the main five-tab navigation. It uses the shared DAVE
+  authority provider, supports real single/combined project scope, editable
+  review, explicit approval, copy, and email. Unreachable advanced report
+  destinations remain hidden rather than presenting dead controls.
+- The gradual `App.tsx` refactor is underway through behavior-driven slices:
+  app navigation types and bottom tabs are extracted, and field-update sync
+  orchestration now lives in `services/SyncService.ts`. Do not turn this into
+  a wholesale rewrite; continue extracting only code touched by real work.
 
 Still open:
 - GPS auto-detection defaulting to "All Projects" — not a code bug.
@@ -206,10 +216,9 @@ Still open:
   The "Save GPS" flow works correctly and is reachable via gear icon →
   Settings → Area Mapping. This is a fieldwork task for David (visit each
   area physically, tap "Save GPS"), not a code fix.
-- App.tsx monolith refactor — dead screens//components//hooks/ files
-  acknowledged but out of scope unless actively wired in for a real fix.
-- Two independent sync engines — not unified, not currently causing known
-  bugs, but a source of confusion if debugging sync issues.
+- App.tsx remains large. Continue the gradual behavior-driven extraction
+  above; dead screens//components//hooks/ files remain out of scope unless a
+  real feature is deliberately wired into the live app.
 - Pending verification for the Phase 1 comparability-downgrade hardening
   above (PR #21, deployed 2026-07-10): no live phone test was meaningful
   for this change (it only affects the "Comparability" label in a narrow

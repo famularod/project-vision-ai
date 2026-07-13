@@ -14,7 +14,7 @@ const capture = read('components/PhotoCapturePanel.tsx');
 const piePanel = read('components/PIEPanel.tsx');
 
 assert(provider.includes('attention: PIECoreOutput'), 'Provider must expose Attention output.');
-assert(provider.includes('attention: core?.attention || null'), 'Provider value must include current attention.');
+assert(provider.includes('attention: currentCore?.attention || null'), 'Provider value must include current scope attention.');
 assert(home.includes('liveAuthority.attention || buildPIEAttentionState'), 'Home must prefer provider attention.');
 assert(reports.includes('liveAuthority.attention || buildPIEAttentionState'), 'Review must prefer provider attention.');
 assert(capture.includes('usePIELiveAuthority'), 'Capture must consume provider authority state.');

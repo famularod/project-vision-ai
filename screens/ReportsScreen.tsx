@@ -54,6 +54,7 @@ import type {
 import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync';
 
 type IconName = keyof typeof Ionicons.glyphMap;
+type ReportFormat = 'project_manager' | 'executive';
 
 type ReportCardProps = {
   title: string;
@@ -65,6 +66,10 @@ type ReportCardProps = {
 export function ReportsScreen({
   contentStyle,
   projectName,
+  reportType,
+  onReportTypeChange,
+  reportFormat,
+  onReportFormatChange,
   updates,
   scheduleItems,
   currentUpdate,
@@ -90,7 +95,6 @@ export function ReportsScreen({
   onValidateOutcome,
   onCloseDecision,
   onRetryDecisionLedgerSync,
-  onGenerateExecutiveReport,
   onWeeklyExecutiveReport,
   onProjectHealthReport,
   onCriticalPathReport,
@@ -101,6 +105,12 @@ export function ReportsScreen({
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projectName: string;
+  reportType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>;
+  onReportTypeChange: (
+    reportType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>,
+  ) => void;
+  reportFormat: ReportFormat;
+  onReportFormatChange: (format: ReportFormat) => void;
   updates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   currentUpdate?: ProjectUpdate | null;
@@ -140,11 +150,10 @@ export function ReportsScreen({
   ) => void;
   onCloseDecision?: (decisionId: string) => void;
   onRetryDecisionLedgerSync?: () => void;
-  onGenerateExecutiveReport: () => void;
-  onWeeklyExecutiveReport: () => void;
-  onProjectHealthReport: () => void;
-  onCriticalPathReport: () => void;
-  onMilestoneReport: () => void;
+  onWeeklyExecutiveReport?: () => void;
+  onProjectHealthReport?: () => void;
+  onCriticalPathReport?: () => void;
+  onMilestoneReport?: () => void;
   onSavedUpdates: () => void;
   onCopyReport: (report: PIEReportDraft) => void;
   onEmailReport: (report: PIEReportDraft) => void;
@@ -152,13 +161,15 @@ export function ReportsScreen({
   const [reporterOpen, setReporterOpen] = useState(false);
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
+  const [reportEdits, setReportEdits] = useState<{
+    title: string;
+    body: string;
+  } | null>(null);
   const [communicationComplete, setCommunicationComplete] = useState(false);
   const [preparedDetailsOpen, setPreparedDetailsOpen] = useState(false);
   const [advancedReviewOpen, setAdvancedReviewOpen] = useState(false);
   const [autoDecisionKey, setAutoDecisionKey] = useState('');
   const liveAuthority = usePIELiveAuthority();
-  const [reportType, setReportType] =
-    useState<Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>>('daily_project_update');
   const runtime = liveAuthority.runtime;
   const openDecisions = runtime.priorityQueue.approvalRequired.length;
   const openQuestions = runtime.reasoning.questions.length;
@@ -178,6 +189,17 @@ export function ReportsScreen({
     [projectName, reportType, scheduleItems, updates],
   );
   const pieReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft;
+  const effectiveReportDraft = useMemo<PIEReportDraft>(
+    () => reportEdits
+      ? {
+          ...pieReportDraft,
+          title: reportEdits.title,
+          subject: reportEdits.title,
+          body: reportEdits.body,
+        }
+      : pieReportDraft,
+    [pieReportDraft, reportEdits],
+  );
   const reportAuthorityMessage = liveAuthority.executiveJudgmentRecord
     ? null
     : 'Draft recovery mode: DAVE is preparing the persisted Executive Judgment before final report and decision creation.';
@@ -190,6 +212,12 @@ export function ReportsScreen({
       pieReportDraft.title,
     pieReportDraft.confidence,
   ].join('|');
+
+  useEffect(() => {
+    setReportEdits(null);
+    setReportEditing(false);
+    setReportApproved(false);
+  }, [pieReportDraft.id]);
 
   useEffect(() => {
     if (
@@ -241,7 +269,7 @@ export function ReportsScreen({
         return;
       }
 
-      onCopyReport(pieReportDraft);
+      onCopyReport(effectiveReportDraft);
       setCommunicationComplete(true);
       return;
     }
@@ -258,8 +286,8 @@ export function ReportsScreen({
   return (
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
-        title="Review"
-        subtitle="Review, approve, and communicate what DAVE has prepared."
+        title="Reports"
+        subtitle={`${projectName} · Review, approve, and communicate what DAVE has prepared.`}
       />
 
       <ReviewExperiencePanel
@@ -305,9 +333,7 @@ export function ReportsScreen({
 
         {preparedDetailsOpen ? (
           <View style={styles.preparedList}>
-            <PreparedReportItem title="Executive Report" detail="Open the report preview below to approve, correct, copy, or email." onPress={() => setReporterOpen(true)} />
-            <PreparedReportItem title="Customer Update" detail="Prepared from the same approved evidence and conclusions." onPress={() => setReporterOpen(true)} />
-            <PreparedReportItem title="Project Summary" detail="Includes what changed, schedule impact, risks, and recommended action." onPress={() => setReporterOpen(true)} />
+            <PreparedReportItem title="Project Update Draft" detail="Open the prepared report below to review, correct, approve, copy, or email." onPress={() => setReporterOpen(true)} />
             <PreparedReportItem title={`${openDecisions} open decision${openDecisions === 1 ? '' : 's'}`} detail="Approve, reject, correct, or defer only when human authority is required." onPress={() => setAdvancedReviewOpen(true)} />
             <PreparedReportItem title={`${openQuestions} question${openQuestions === 1 ? '' : 's'} needing answers`} detail="Add missing information if DAVE cannot verify a conclusion." onPress={() => setReporterOpen(true)} />
             <PreparedReportItem title={communicationReady ? 'Communication readiness: ready for review' : 'Communication readiness: needs more evidence'} detail="DAVE keeps draft sharing blocked until review and approval are complete." onPress={() => setReporterOpen(true)} />
@@ -355,27 +381,50 @@ export function ReportsScreen({
 
         {reporterOpen ? (
           <PIEReporterPreview
-            reportDraft={pieReportDraft}
+            reportDraft={effectiveReportDraft}
+            hasManualEdits={Boolean(reportEdits)}
             authorityMessage={reportAuthorityMessage}
             reportType={reportType}
+            reportFormat={reportFormat}
             onReportTypeChange={nextReportType => {
-              setReportType(nextReportType);
+              onReportTypeChange(nextReportType);
               setReportApproved(false);
               setReportEditing(false);
+              setReportEdits(null);
+              setCommunicationComplete(false);
+            }}
+            onReportFormatChange={nextFormat => {
+              onReportFormatChange(nextFormat);
+              setReportApproved(false);
+              setReportEditing(false);
+              setReportEdits(null);
               setCommunicationComplete(false);
             }}
             reportApproved={reportApproved}
+            reportEditing={reportEditing}
             onApproveReport={markReportApproved}
             onEditReport={() => {
               setReportEditing(true);
               setReportApproved(false);
             }}
+            onTitleChange={title => {
+              setReportEdits(current => ({
+                title,
+                body: current?.body ?? pieReportDraft.body,
+              }));
+            }}
+            onBodyChange={body => {
+              setReportEdits(current => ({
+                title: current?.title ?? pieReportDraft.title,
+                body,
+              }));
+            }}
             onCopyReport={() => {
-              onCopyReport(pieReportDraft);
+              onCopyReport(effectiveReportDraft);
               setCommunicationComplete(true);
             }}
             onEmailReport={() => {
-              onEmailReport(pieReportDraft);
+              onEmailReport(effectiveReportDraft);
               setCommunicationComplete(true);
             }}
           />
@@ -422,7 +471,7 @@ export function ReportsScreen({
 
           <DecisionLedgerPanel
             decisions={decisionLedger || []}
-            reportDraft={pieReportDraft}
+            reportDraft={effectiveReportDraft}
             layer4Identity={layer4Identity || null}
             migrationStatus={decisionLedgerMigrationStatus || null}
             syncMetadata={decisionSyncMetadata || {}}
@@ -446,45 +495,41 @@ export function ReportsScreen({
 
       {advancedReviewOpen ? (
         <View style={styles.reviewActionStack}>
-        <ReportCard
-          title="Weekly Executive Review"
-          description="Summarize weekly progress, risks, schedule movement, and action items."
-          icon="newspaper-outline"
-          onPress={onWeeklyExecutiveReport}
-        />
+        {onWeeklyExecutiveReport ? (
+          <ReportCard
+            title="Weekly Executive Review"
+            description="Summarize weekly progress, risks, schedule movement, and action items."
+            icon="newspaper-outline"
+            onPress={onWeeklyExecutiveReport}
+          />
+        ) : null}
 
-        <ReportCard
-          title="Project Health Report"
-          description="Review risk, overdue work, stale updates, safety items, and status signals."
-          icon="pulse-outline"
-          onPress={onProjectHealthReport}
-        />
+        {onProjectHealthReport ? (
+          <ReportCard
+            title="Project Health Report"
+            description="Review risk, overdue work, stale updates, safety items, and status signals."
+            icon="pulse-outline"
+            onPress={onProjectHealthReport}
+          />
+        ) : null}
 
-        <ReportCard
-          title="Photo Log Report"
-          description="Coming Soon: exportable photo logs grouped by project, area, and date."
-          icon="images-outline"
-        />
+        {onCriticalPathReport ? (
+          <ReportCard
+            title="Critical Path Report"
+            description="Analyze schedule drivers, blocked work, dependencies, and float risk."
+            icon="git-branch-outline"
+            onPress={onCriticalPathReport}
+          />
+        ) : null}
 
-        <ReportCard
-          title="Open Issues Report"
-          description="Coming Soon: unresolved action items, safety concerns, and blockers."
-          icon="alert-circle-outline"
-        />
-
-        <ReportCard
-          title="Critical Path Report"
-          description="Analyze schedule drivers, blocked work, dependencies, and float risk."
-          icon="git-branch-outline"
-          onPress={onCriticalPathReport}
-        />
-
-        <ReportCard
-          title="Milestone Report"
-          description="Track milestone progress, dates, slippage, and upcoming checkpoints."
-          icon="flag-outline"
-          onPress={onMilestoneReport}
-        />
+        {onMilestoneReport ? (
+          <ReportCard
+            title="Milestone Report"
+            description="Track milestone progress, dates, slippage, and upcoming checkpoints."
+            icon="flag-outline"
+            onPress={onMilestoneReport}
+          />
+        ) : null}
 
         <ReportCard
           title="Saved History"
@@ -573,9 +618,9 @@ function ReviewExperiencePanel({
             DAVE found items that need review.
           </Text>
 
-          {experience.reviewWarnings.slice(0, 4).map(warning => (
+          {experience.reviewWarnings.slice(0, 4).map((warning, index) => (
             <Text
-              key={warning}
+              key={`${index}-${warning}`}
               style={styles.reviewFlagText}
             >
               • {warning}
@@ -633,24 +678,36 @@ function ReviewExperiencePanel({
 
 function PIEReporterPreview({
   reportDraft,
+  hasManualEdits,
   authorityMessage,
   reportType,
+  reportFormat,
   onReportTypeChange,
+  onReportFormatChange,
   reportApproved,
+  reportEditing,
   onApproveReport,
   onEditReport,
+  onTitleChange,
+  onBodyChange,
   onCopyReport,
   onEmailReport,
 }: {
   reportDraft: PIEReportDraft;
+  hasManualEdits: boolean;
   authorityMessage?: string | null;
   reportType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>;
+  reportFormat: ReportFormat;
   onReportTypeChange: (
     reportType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>,
   ) => void;
+  onReportFormatChange: (format: ReportFormat) => void;
   reportApproved: boolean;
+  reportEditing: boolean;
   onApproveReport: () => void;
   onEditReport: () => void;
+  onTitleChange: (title: string) => void;
+  onBodyChange: (body: string) => void;
   onCopyReport: () => void;
   onEmailReport: () => void;
 }) {
@@ -666,6 +723,10 @@ function PIEReporterPreview({
 
   return (
     <View style={styles.reportPreview}>
+      <Text style={styles.reportOptionLabel}>
+        Report Scope
+      </Text>
+
       <View style={styles.segmentRow}>
         <ReporterTypeButton
           label="Single Project Update"
@@ -677,6 +738,24 @@ function PIEReporterPreview({
           label="Combined Project Update"
           selected={reportType === 'combined_project_update'}
           onPress={() => onReportTypeChange('combined_project_update')}
+        />
+      </View>
+
+      <Text style={styles.reportOptionLabel}>
+        Report Format
+      </Text>
+
+      <View style={styles.segmentRow}>
+        <ReporterTypeButton
+          label="Project Manager"
+          selected={reportFormat === 'project_manager'}
+          onPress={() => onReportFormatChange('project_manager')}
+        />
+
+        <ReporterTypeButton
+          label="Executive Summary"
+          selected={reportFormat === 'executive'}
+          onPress={() => onReportFormatChange('executive')}
         />
       </View>
 
@@ -703,9 +782,9 @@ function PIEReporterPreview({
             DAVE found items that need review.
           </Text>
 
-          {reportDraft.reviewFlags.slice(0, 4).map(flag => (
+          {reportDraft.reviewFlags.slice(0, 4).map((flag, index) => (
             <Text
-              key={flag}
+              key={`${index}-${flag}`}
               style={styles.reviewFlagText}
             >
               • {flag}
@@ -718,21 +797,41 @@ function PIEReporterPreview({
         </View>
       ) : null}
 
-      <Text style={styles.reportPreviewLabel}>
-        Report Title
-      </Text>
+      {reportEditing ? (
+        <View style={styles.reportEditFields}>
+          <Text style={styles.reportPreviewLabel}>
+            Report Title
+          </Text>
 
-      <Text style={styles.reportTitleText}>
-        {reportDraft.title}
-      </Text>
+          <TextInput
+            style={[styles.decisionInput, styles.reportTitleInput]}
+            value={reportDraft.title}
+            onChangeText={onTitleChange}
+            placeholder="Report title"
+            placeholderTextColor={colors.mutedText}
+          />
 
-      <Text style={styles.reportPreviewLabel}>
-        Report Body
-      </Text>
+          <Text style={styles.reportPreviewLabel}>
+            Report Body
+          </Text>
 
-      <Text style={styles.reportBodyText}>
-        {reportDraft.body}
-      </Text>
+          <TextInput
+            style={[styles.decisionInput, styles.reportBodyInput]}
+            value={reportDraft.body}
+            onChangeText={onBodyChange}
+            multiline
+            textAlignVertical="top"
+            placeholder="Report body"
+            placeholderTextColor={colors.mutedText}
+          />
+        </View>
+      ) : (
+        <ReportDocumentPreview
+          reportDraft={reportDraft}
+          reportFormat={reportFormat}
+          useStructuredLayout={!hasManualEdits}
+        />
+      )}
 
       {actionItems.length > 0 ? (
         <>
@@ -759,9 +858,9 @@ function PIEReporterPreview({
                 Action Items
               </Text>
 
-              {actionItems.map(item => (
+              {actionItems.map((item, index) => (
                 <Text
-                  key={item.id}
+                  key={`${item.id}-${index}`}
                   style={styles.reportListText}
                 >
                   {item.needsOwner
@@ -890,6 +989,118 @@ function PIEReporterPreview({
       ) : null}
     </View>
   );
+}
+
+function ReportDocumentPreview({
+  reportDraft,
+  reportFormat,
+  useStructuredLayout,
+}: {
+  reportDraft: PIEReportDraft;
+  reportFormat: ReportFormat;
+  useStructuredLayout: boolean;
+}) {
+  return (
+    <View style={styles.reportDocument}>
+      <View style={styles.reportDocumentHeader}>
+        <Text style={styles.reportDocumentTitle}>
+          {reportDraft.title}
+        </Text>
+
+        <Text style={styles.reportDocumentType}>
+          {reportFormat === 'executive'
+            ? 'Executive Summary'
+            : 'Project Manager Report'}
+        </Text>
+      </View>
+
+      <View style={styles.reportDocumentRule} />
+
+      {!useStructuredLayout ? (
+        <Text style={styles.reportBodyText}>
+          {reportDraft.body}
+        </Text>
+      ) : (
+        <>
+          {reportDraft.openingLine ? (
+            <Text style={styles.reportDocumentIntro}>
+              {reportDraft.openingLine}
+            </Text>
+          ) : null}
+
+          <View style={styles.reportDocumentSection}>
+            <Text style={styles.reportDocumentSectionTitle}>
+              {reportFormat === 'executive'
+                ? 'Executive Summary'
+                : 'Project Summary'}
+            </Text>
+
+            <View style={styles.reportDocumentBulletList}>
+              {reportDraft.executiveSummary.map((summary, index) => (
+                <View key={`${index}-${summary}`} style={styles.reportDocumentBulletRow}>
+                  <Text style={styles.reportDocumentBulletMarker}>•</Text>
+                  <Text style={styles.reportDocumentBulletText}>{summary}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+
+          {reportFormat === 'project_manager'
+            ? reportDraft.locationGroups.map(group => (
+                <View key={group.id} style={styles.reportDocumentSection}>
+                  <Text style={styles.reportDocumentLocationTitle}>
+                    {group.title}
+                  </Text>
+
+                  {group.workAreas.map(area => (
+                    <View key={area.id} style={styles.reportDocumentArea}>
+                      <Text style={styles.reportDocumentAreaTitle}>
+                        {area.projectName !== area.title
+                          ? `${area.projectName} — ${area.title}`
+                          : area.title}
+                      </Text>
+
+                      <View style={styles.reportDocumentBulletList}>
+                        {area.bullets.map((bullet, index) => (
+                          <View
+                            key={`${bullet.id}-${index}`}
+                            style={styles.reportDocumentBulletRow}
+                          >
+                            <Text style={styles.reportDocumentBulletMarker}>•</Text>
+                            <Text style={styles.reportDocumentBulletText}>
+                              <Text style={styles.reportDocumentBulletLabel}>
+                                {reportPreviewBulletLabel(bullet.kind)}:{' '}
+                              </Text>
+                              {bullet.text}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ))
+            : null}
+
+          {reportDraft.closingLine ? (
+            <Text style={styles.reportDocumentClosing}>
+              {reportDraft.closingLine}
+            </Text>
+          ) : null}
+        </>
+      )}
+    </View>
+  );
+}
+
+function reportPreviewBulletLabel(kind: string) {
+  if (kind === 'safety') return 'Safety';
+  if (kind === 'issue') return 'Issue';
+  if (kind === 'next_step') return 'Action';
+  if (kind === 'schedule') return 'Schedule';
+  if (kind === 'image_reference') return 'Evidence';
+
+  return 'Progress';
 }
 
 function DecisionLedgerPanel({
@@ -1152,9 +1363,9 @@ function DecisionLedgerPanel({
                     Why this cannot close yet
                   </Text>
 
-                  {selectedDecision.closeBlockers.map(blocker => (
+                  {selectedDecision.closeBlockers.map((blocker, index) => (
                     <Text
-                      key={blocker}
+                      key={`${index}-${blocker}`}
                       style={styles.reviewFlagText}
                     >
                       • {blocker}
@@ -1616,6 +1827,14 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
 
+  reportTitleInput: {
+    minHeight: 48,
+  },
+
+  reportBodyInput: {
+    minHeight: 220,
+  },
+
   snapshotPanel: {
     borderRadius: 8,
     borderWidth: 1,
@@ -1674,9 +1893,133 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
 
+  reportEditFields: {
+    gap: spacing.sm,
+  },
+
+  reportDocument: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+
+  reportDocumentHeader: {
+    gap: spacing.xxs,
+  },
+
+  reportDocumentTitle: {
+    color: colors.text,
+    fontSize: 20,
+    lineHeight: 26,
+    fontWeight: '900',
+  },
+
+  reportDocumentType: {
+    color: colors.primary,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+
+  reportDocumentRule: {
+    height: 2,
+    backgroundColor: colors.primary,
+    borderRadius: 2,
+  },
+
+  reportDocumentIntro: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
+  },
+
+  reportDocumentSection: {
+    gap: spacing.sm,
+  },
+
+  reportDocumentSectionTitle: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '900',
+  },
+
+  reportDocumentLocationTitle: {
+    color: colors.primary,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '900',
+  },
+
+  reportDocumentArea: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primarySoft,
+    paddingLeft: spacing.sm,
+    gap: spacing.xs,
+  },
+
+  reportDocumentAreaTitle: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+
+  reportDocumentBulletList: {
+    gap: spacing.xs,
+  },
+
+  reportDocumentBulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingLeft: spacing.xs,
+  },
+
+  reportDocumentBulletMarker: {
+    width: 14,
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '900',
+  },
+
+  reportDocumentBulletText: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '600',
+  },
+
+  reportDocumentBulletLabel: {
+    fontWeight: '900',
+  },
+
+  reportDocumentClosing: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '600',
+    marginTop: spacing.xs,
+  },
+
   segmentRow: {
     flexDirection: 'row',
     gap: spacing.xs,
+  },
+
+  reportOptionLabel: {
+    color: colors.mutedText,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '900',
+    textTransform: 'uppercase',
   },
 
   reportTypeButton: {

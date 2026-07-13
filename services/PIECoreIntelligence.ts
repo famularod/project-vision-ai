@@ -70,6 +70,7 @@ import {
   buildPIEReportDraft,
   buildPIEReportDraftFromExecutiveJudgment,
   type PIEReportDraft,
+  type PIEReportType,
 } from './PIEReporter';
 import {
   buildPIEMemoryRecall,
@@ -254,6 +255,8 @@ export type PIECoreInput = {
   expectedMinimumRealityModelVersion?: number;
   organizationId?: string;
   projectId?: string;
+  reportType?: PIEReportType;
+  reportProjectNames?: string[];
   memoryRecallInput?: Omit<
     PIEMemoryRecallInput,
     'projectName' | 'areaName' | 'pastRecommendations' | 'pastLessons' | 'pastBeliefs' | 'pastOpinions' | 'coreIntelligence'
@@ -561,6 +564,35 @@ const CORE_ENGINE_CHAIN = [
   'Runtime',
 ] as const;
 
+function coreReportScope(
+  input: PIECoreInput,
+  runtime: PIERuntimeState,
+): {
+  reportType: PIEReportType;
+  projectNames: string[];
+} {
+  const explicitlySelectedProjects = (input.reportProjectNames || [])
+    .map(name => name.trim())
+    .filter(Boolean);
+  const contextProjects = (input.runtimeContext?.projectNames || [])
+    .map(name => name.trim())
+    .filter(Boolean);
+  const projectNames = explicitlySelectedProjects.length > 0
+    ? explicitlySelectedProjects
+    : contextProjects.length > 0
+      ? contextProjects
+      : runtime.projectNames;
+
+  return {
+    reportType:
+      input.reportType ||
+      (projectNames.length > 1
+        ? 'combined_project_update'
+        : 'daily_project_update'),
+    projectNames,
+  };
+}
+
 export function buildPIECoreIntelligence(
   input: PIECoreInput = {},
 ): PIECoreOutput {
@@ -568,6 +600,7 @@ export function buildPIECoreIntelligence(
     throw new Error('DAVE Core requires live authoritative Reality Model orchestration in production mode.');
   }
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const reportScope = coreReportScope(input, runtime);
   const baselineLearning = buildPIELearning({
     runtime,
     reportDraft: runtime.response.reportDraft,
@@ -904,12 +937,14 @@ export function buildPIECoreIntelligence(
     memory.source === 'project_event' || memory.source === 'update',
   );
   const reportDraft = buildPIEReportDraft({
-    reportType:
-      runtime.projectNames.length > 1
-        ? 'combined_project_update'
-        : 'daily_project_update',
+    reportType: reportScope.reportType,
     audience: 'internal_team',
-    selectedProjectNames: runtime.projectNames,
+    selectedProjectNames: reportScope.projectNames,
+    currentUpdate: input.runtimeContext?.currentUpdate,
+    savedUpdates: input.runtimeContext?.updates,
+    scheduleItems: input.runtimeContext?.scheduleItems,
+    projectAreas: input.runtimeContext?.projectAreas,
+    contacts: input.runtimeContext?.contacts,
     runtime: {
       ...runtime,
       memoryRecallSummary: memoryRecall.summaryForPIE,
@@ -1262,6 +1297,7 @@ export async function buildLivePIECoreIntelligence(
   input: PIECoreInput = {},
 ): Promise<PIECoreOutput> {
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const reportScope = coreReportScope(input, runtime);
   const liveRealityAuthority = await runPIERealityModelOrchestration({
     runtime,
     organizationId: input.organizationId,
@@ -1333,12 +1369,14 @@ export async function buildLivePIECoreIntelligence(
     generatedAt: core.generatedAt,
   });
   const reportDraft = buildPIEReportDraftFromExecutiveJudgment({
-    reportType:
-      core.runtime.projectNames.length > 1
-        ? 'combined_project_update'
-        : 'daily_project_update',
+    reportType: reportScope.reportType,
     audience: 'internal_team',
-    selectedProjectNames: core.runtime.projectNames,
+    selectedProjectNames: reportScope.projectNames,
+    currentUpdate: input.runtimeContext?.currentUpdate,
+    savedUpdates: input.runtimeContext?.updates,
+    scheduleItems: input.runtimeContext?.scheduleItems,
+    projectAreas: input.runtimeContext?.projectAreas,
+    contacts: input.runtimeContext?.contacts,
     runtime: {
       ...core.runtime,
       executiveJudgmentRecord,
