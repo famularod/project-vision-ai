@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
 import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
+import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
 import { colors, spacing } from '../theme';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 
@@ -21,6 +22,7 @@ const MAX_RECORDING_SECONDS = 180;
 export function DAVEVoiceCaptureSheet({
   visible,
   projectName,
+  walkContext,
   candidateLocations,
   onMemoryReady,
   onTypeInstead,
@@ -28,6 +30,7 @@ export function DAVEVoiceCaptureSheet({
 }: {
   visible: boolean;
   projectName: string;
+  walkContext: DAVEProjectWalkContext;
   candidateLocations: readonly string[];
   onMemoryReady: (result: DAVEVoiceUnderstandingResponse) => void;
   onTypeInstead: () => void;
@@ -159,6 +162,16 @@ export function DAVEVoiceCaptureSheet({
           <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? 'Recording ready' : 'Tell DAVE what to remember'}</Text>
           <Text style={styles.guidance}>Commitment, decision, issue, request, schedule change, or follow-up.</Text>
 
+          <View style={styles.walkCard}>
+            <View style={styles.walkHeader}>
+              <Ionicons name="footsteps-outline" size={18} color={colors.primary} />
+              <Text style={styles.walkTitle}>Project Walk</Text>
+            </View>
+            <Text style={styles.walkLocation}>{walkContext.locationMessage}</Text>
+            <Text style={styles.walkPrompt}>{walkContext.prompt.guidance}</Text>
+            <Text style={styles.walkWhy}>Why: {walkContext.prompt.whyItMatters}</Text>
+          </View>
+
           <View style={[styles.recorderCard, recorderState.isRecording && styles.recorderCardActive]}>
             <Text style={styles.timer}>{formatDuration(elapsed)}</Text>
             <Text style={styles.recordingLimit}>Up to 3 minutes</Text>
@@ -244,6 +257,12 @@ const styles = StyleSheet.create({
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
   prompt: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
   guidance: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 5, textAlign: 'center' },
+  walkCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.primarySoft, padding: spacing.md, marginTop: spacing.lg },
+  walkHeader: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  walkTitle: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  walkLocation: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: 7 },
+  walkPrompt: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '700', marginTop: spacing.sm },
+  walkWhy: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: 5 },
   recorderCard: { borderRadius: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: 'center', padding: spacing.lg, marginTop: spacing.lg },
   recorderCardActive: { borderColor: colors.danger, backgroundColor: '#FFF7F7' },
   timer: { color: colors.text, fontSize: 38, fontWeight: '800', fontVariant: ['tabular-nums'] },

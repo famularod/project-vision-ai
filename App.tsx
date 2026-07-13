@@ -57,6 +57,11 @@ import {
 } from './services/DAVEDailyBrief';
 import { buildProjectIntelligence } from './services/DAVEIntelligence';
 import {
+  buildDAVEProjectWalkContext,
+  type DAVEProjectWalkContext,
+  type DAVEProjectWalkLocationInput,
+} from './services/DAVEProjectWalk';
+import {
   createCaptureMemory,
   type DAVECaptureMemory,
   type DAVEConfirmedCaptureMemory,
@@ -13431,6 +13436,17 @@ function ProjectWorkspaceScreen({
   const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
   const [captureDraft, setCaptureDraft] = useState<DAVECaptureMemory | null>(null);
   const [selectedCaptureMemory, setSelectedCaptureMemory] = useState<DAVEConfirmedCaptureMemory | null>(null);
+  const [projectWalkContext, setProjectWalkContext] = useState<DAVEProjectWalkContext>(() =>
+    buildDAVEProjectWalkContext({
+      projectName,
+      projectAreas,
+      location: { status: 'checking' },
+      updates: savedUpdates,
+      scheduleItems,
+      intelligence: projectIntelligence,
+    }),
+  );
+  const projectWalkLocationRequest = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -13457,6 +13473,43 @@ function ProjectWorkspaceScreen({
     : projectHealthIsHealthy
       ? colors.success
       : colors.warning;
+
+  function contextForProjectWalk(location: DAVEProjectWalkLocationInput) {
+    return buildDAVEProjectWalkContext({
+      projectName,
+      projectAreas,
+      location,
+      updates: savedUpdates,
+      scheduleItems,
+      intelligence: projectIntelligence,
+    });
+  }
+
+  async function beginProjectWalkCapture() {
+    const request = ++projectWalkLocationRequest.current;
+    setProjectWalkContext(contextForProjectWalk({ status: 'checking' }));
+    setVoiceCaptureOpen(true);
+
+    if (!projectAreas.some(area => hasSavedAreaLocation(area))) return;
+    try {
+      const snapshot = await getCurrentLocationSnapshot();
+      if (request !== projectWalkLocationRequest.current) return;
+      setProjectWalkContext(contextForProjectWalk(snapshot ? {
+        status: 'resolved',
+        latitude: snapshot.latitude,
+        longitude: snapshot.longitude,
+        accuracyMeters: snapshot.accuracy,
+      } : { status: 'unavailable' }));
+    } catch {
+      if (request !== projectWalkLocationRequest.current) return;
+      setProjectWalkContext(contextForProjectWalk({ status: 'unavailable' }));
+    }
+  }
+
+  function closeProjectWalkCapture() {
+    projectWalkLocationRequest.current += 1;
+    setVoiceCaptureOpen(false);
+  }
 
   return (
     <ScrollView
@@ -13785,20 +13838,39 @@ function ProjectWorkspaceScreen({
       <SecondaryButton
         label="Capture Memory"
         icon="chatbox-ellipses-outline"
-        onPress={() => setVoiceCaptureOpen(true)}
+        onPress={() => { void beginProjectWalkCapture(); }}
       />
 
       <DAVEVoiceCaptureSheet
         visible={voiceCaptureOpen}
         projectName={projectName}
+        walkContext={projectWalkContext}
         candidateLocations={projectAreas.map(area => area.name)}
         onMemoryReady={result => {
+          projectWalkLocationRequest.current += 1;
           const createdAt = new Date().toISOString();
           const memoryId = `voice-memory-${uid()}`;
           const proposedFields = result.understanding.status === 'succeeded'
             ? result.understanding.fields
             : { ...result.understanding.fields, generalMemory: result.transcript };
-          const proposedLocation = result.understanding.recommendedLocation;
+          const transcriptArea = result.understanding.recommendedLocation;
+          const gpsArea = projectWalkContext.recommendedArea;
+          const areasConflict = Boolean(
+            transcriptArea.value && gpsArea &&
+            transcriptArea.value.toLowerCase() !== gpsArea.name.toLowerCase(),
+          );
+          const proposedLocationValue = areasConflict
+            ? null
+            : transcriptArea.value || gpsArea?.name || null;
+          const locationEvidenceId = gpsArea ? `location:${memoryId}:${gpsArea.id}` : null;
+          const locationEvidenceIds = [
+            ...(transcriptArea.value && transcriptArea.value === proposedLocationValue
+              ? [`transcript:${memoryId}`]
+              : []),
+            ...(gpsArea && gpsArea.name === proposedLocationValue && locationEvidenceId
+              ? [locationEvidenceId]
+              : []),
+          ];
           setCaptureDraft(createCaptureMemory({
             id: memoryId,
             transcript: result.transcript,
@@ -13810,20 +13882,30 @@ function ProjectWorkspaceScreen({
               confirmed: true,
             },
             recommendedLocation: {
-              value: proposedLocation.value,
-              confidence: proposedLocation.confidence,
-              evidenceIds: proposedLocation.value ? [`transcript:${memoryId}`] : [],
+              value: proposedLocationValue,
+              confidence: proposedLocationValue
+                ? transcriptArea.value
+                  ? transcriptArea.confidence
+                  : gpsArea?.confidence || 'unknown'
+                : 'unknown',
+              evidenceIds: locationEvidenceIds,
               confirmed: false,
             },
             fields: proposedFields,
+            evidence: gpsArea && locationEvidenceId ? [{
+              id: locationEvidenceId,
+              kind: 'location_record',
+              sourceRecordId: gpsArea.id,
+              summary: 'Current device location matched this saved project area during capture.',
+            }] : [],
           }));
-          setVoiceCaptureOpen(false);
+          closeProjectWalkCapture();
         }}
         onTypeInstead={() => {
-          setVoiceCaptureOpen(false);
+          closeProjectWalkCapture();
           setTypedCaptureOpen(true);
         }}
-        onCancel={() => setVoiceCaptureOpen(false)}
+        onCancel={closeProjectWalkCapture}
       />
 
       <DAVETypedCaptureSheet
