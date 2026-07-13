@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCard';
+import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
@@ -27,6 +28,11 @@ import {
   SecondaryButton,
 } from '../components/ProjectDetailsCard';
 import { getAIConfigurationStatus } from '../services/AIClientBoundaryService';
+import {
+  createCaptureMemory,
+  type DAVECaptureMemory,
+  type DAVEConfirmedCaptureMemory,
+} from '../services/DAVECaptureMemory';
 import {
   getCurrentSessionAccessToken,
   getSupabaseConfigurationStatus,
@@ -80,6 +86,7 @@ export function AdminScreen({
   onDeleteArea,
   onUseCurrentLocationForArea,
   onRemoveMissingPhotos,
+  onSaveCaptureMemory,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   localProjects: string[];
@@ -102,6 +109,7 @@ export function AdminScreen({
   onDeleteArea: (areaId: string) => void;
   onUseCurrentLocationForArea: (areaId: string) => void;
   onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
+  onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
 }) {
   const aiStatus = getAIConfigurationStatus();
   const supabaseConfig = getSupabaseConfigurationStatus();
@@ -122,6 +130,9 @@ export function AdminScreen({
   const [signInMessage, setSignInMessage] = useState<string | null>(null);
   const [signInSubmitting, setSignInSubmitting] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [capturePreviewOpen, setCapturePreviewOpen] = useState(false);
+  const [capturePreviewDraft, setCapturePreviewDraft] = useState<DAVECaptureMemory>(() => createCapturePreviewDraft());
+  const [capturePreviewSaved, setCapturePreviewSaved] = useState<DAVEConfirmedCaptureMemory | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -308,6 +319,19 @@ export function AdminScreen({
                 <AdminActionButton label={isTesting ? 'Testing...' : 'Test Connection'} icon="cloud-done-outline" onPress={handleTestConnection} disabled={isTesting} primary />
               </View>
               <SecondaryButton label={advancedConfigOpen ? 'Hide Area Mapping' : 'Open Area Mapping'} icon={advancedConfigOpen ? 'chevron-up-outline' : 'map-outline'} onPress={() => setAdvancedConfigOpen(open => !open)} />
+              {__DEV__ ? (
+                <SecondaryButton
+                  label="Preview Capture Confirmation"
+                  icon="chatbox-ellipses-outline"
+                  onPress={() => {
+                    setCapturePreviewDraft(createCapturePreviewDraft());
+                    setCapturePreviewOpen(true);
+                  }}
+                />
+              ) : null}
+              {__DEV__ && capturePreviewSaved ? (
+                <Text style={styles.resultText}>Preview confirmed and saved locally.</Text>
+              ) : null}
             </ScreenCard>
 
             {advancedConfigOpen ? (
@@ -318,6 +342,22 @@ export function AdminScreen({
           </>
         ) : null}
       </ScreenSection>
+
+      {__DEV__ ? (
+        <DAVECaptureConfirmationSheet
+          visible={capturePreviewOpen}
+          transcript={CAPTURE_PREVIEW_TRANSCRIPT}
+          draft={capturePreviewDraft}
+          projects={localProjects.length ? localProjects : ['Canopy B', 'Canopy C']}
+          locations={projectAreas.map(area => area.name)}
+          onSave={async memory => {
+            await onSaveCaptureMemory(memory);
+            setCapturePreviewSaved(memory);
+            setCapturePreviewOpen(false);
+          }}
+          onCancel={() => setCapturePreviewOpen(false)}
+        />
+      ) : null}
     </Screen>
   );
 
@@ -560,6 +600,27 @@ export function AdminScreen({
       ],
     );
   }
+}
+
+const CAPTURE_PREVIEW_TRANSCRIPT = 'ABC Electric agreed to finish the conduit by Friday in the electrical room. The owner asked for a photo after the inspection.';
+
+function createCapturePreviewDraft() {
+  const createdAt = new Date().toISOString();
+  const stableTimestamp = createdAt.replace(/[^0-9]/g, '');
+  return createCaptureMemory({
+    id: `developer-preview-memory-${stableTimestamp}`,
+    transcript: CAPTURE_PREVIEW_TRANSCRIPT,
+    transcriptSourceRecordId: `developer-preview-transcript-${stableTimestamp}`,
+    createdAt,
+    recommendedProject: { value: 'Canopy B', confidence: 'medium' },
+    recommendedLocation: { value: 'Electrical room', confidence: 'medium' },
+    fields: {
+      peopleOrCompany: 'ABC Electric',
+      commitment: 'Finish the conduit by Friday.',
+      dueDate: null,
+      ownerRequest: 'Provide a photo after the inspection.',
+    },
+  });
 }
 
 function formatMissingPhotoSyncMessage(count: number) {

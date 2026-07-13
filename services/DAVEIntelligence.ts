@@ -10,6 +10,7 @@ import {
 import { buildProjectEvidenceQuality, type DAVEProjectEvidenceQuality } from './DAVEProjectEvidenceQuality';
 import { buildProjectReality, type DAVEProjectReality } from './DAVEProjectReality';
 import type { DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
+import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 
 export type BuildProjectIntelligenceInput = {
   projectId: string;
@@ -18,6 +19,7 @@ export type BuildProjectIntelligenceInput = {
   updates: DAVEDailyBriefUpdate[];
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
+  captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   now?: string;
   staleAfterDays?: number;
 };
@@ -42,6 +44,7 @@ export function buildProjectIntelligence(input: BuildProjectIntelligenceInput): 
     updates: input.updates,
     documents: input.documents,
     scheduleItems: input.scheduleItems,
+    captureMemories: input.captureMemories,
     now: input.now,
   });
   const timeline = projectReality.timelineEvents;

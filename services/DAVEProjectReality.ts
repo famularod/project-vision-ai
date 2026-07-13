@@ -11,6 +11,7 @@ import type {
   DAVEDailyBriefUpdate,
 } from './DAVEDailyBrief';
 import { buildProjectTimeline, type DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
+import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 
 export type DAVEProjectRealityState = 'Moving' | 'Waiting' | 'At Risk' | 'Blocked';
 export type DAVEProjectRealityConfidence = 'high' | 'medium' | 'low';
@@ -62,6 +63,7 @@ export type DAVEProjectRealitySourceRecords = {
   updates: DAVEDailyBriefUpdate[];
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
+  captureMemories: readonly DAVEConfirmedCaptureMemory[];
 };
 
 const sourceRecordsByReality = new WeakMap<DAVEProjectReality, DAVEProjectRealitySourceRecords>();
@@ -79,6 +81,7 @@ export type BuildProjectRealityInput = {
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
   projectCreatedAt?: string | null;
+  captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   now?: string;
 };
 
@@ -95,6 +98,7 @@ export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjec
     projectName: input.projectName,
     updates,
     documents,
+    captureMemories: input.captureMemories,
     now: input.now,
   });
   const evidenceQuality = buildProjectEvidenceQuality({
@@ -154,6 +158,7 @@ export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjec
     documents,
     scheduleItems,
     commitments,
+    captureMemories: input.captureMemories,
     reality: realityBase,
     now: input.now,
   });
@@ -165,6 +170,7 @@ export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjec
     updates,
     documents,
     scheduleItems,
+    captureMemories: input.captureMemories ?? [],
   });
 
   return reality;
@@ -257,7 +263,9 @@ function selectTopRecommendation(
   const commitment = overdue[0];
   if (commitment) {
     return recommendation(commitment.recommendedFollowUpAction,
-      `Commitment due ${commitment.dueDate} remains open.`, commitment.sourceUpdateId, 'update_detail',
+      `Commitment due ${commitment.dueDate} remains open.`,
+      commitment.sourceMemoryId || commitment.sourceUpdateId,
+      commitment.sourceMemoryId ? 'project_workspace' : 'update_detail',
       commitmentEvidence(commitment), ['The open status is not proof that the underlying work did not occur.']);
   }
   const uncertainty = uncertainties[0];

@@ -14,7 +14,15 @@ import {
 import type { DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
 
 export type DAVEEvidenceClass = 'fact' | 'observation' | 'uncertainty';
-export type DAVEBriefSourceType = 'update' | 'photo' | 'issue' | 'document' | 'schedule' | 'project';
+export type DAVEBriefSourceType =
+  | 'update'
+  | 'photo'
+  | 'issue'
+  | 'document'
+  | 'schedule'
+  | 'project'
+  | 'memory'
+  | 'transcript';
 export type DAVEBriefNavigationTarget =
   | 'update_detail'
   | 'project_documents'

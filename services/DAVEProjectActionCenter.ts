@@ -5,7 +5,7 @@ import type {
   DAVEProjectDailyBriefAttentionItem,
 } from './DAVEDailyBrief';
 import type { DAVEProjectEvidenceQuality } from './DAVEProjectEvidenceQuality';
-import type { DAVEProjectCommitment } from './DAVEProjectCommitments';
+import type { DAVECommitmentEvidenceType, DAVEProjectCommitment } from './DAVEProjectCommitments';
 import type { DAVEProjectReality, DAVEProjectRealityState } from './DAVEProjectReality';
 
 export type DAVEActionCenterConfidence = 'high' | 'medium' | 'low';
@@ -215,13 +215,13 @@ function commitmentCandidates(commitments: DAVEProjectCommitment[]): PriorityCan
         summary: `${evidence.type} record linked to the commitment.`,
       })),
       recommendedAction: commitment.recommendedFollowUpAction,
-      navigationTarget: 'update_detail' as const,
+      navigationTarget: commitment.sourceMemoryId ? 'project_workspace' as const : 'update_detail' as const,
       confidence: null,
       limitations: ['The recorded status is not independent proof that the underlying work occurred.'],
     }));
 }
 
-function sourceTypeForCommitmentEvidence(type: 'update' | 'photo' | 'document'): DAVEBriefSourceType {
+function sourceTypeForCommitmentEvidence(type: DAVECommitmentEvidenceType): DAVEBriefSourceType {
   return type;
 }
 

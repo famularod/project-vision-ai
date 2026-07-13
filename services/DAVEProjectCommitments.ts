@@ -1,5 +1,7 @@
+import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
+
 export type DAVECommitmentStatus = 'Open' | 'Completed' | 'Overdue';
-export type DAVECommitmentEvidenceType = 'update' | 'photo' | 'document';
+export type DAVECommitmentEvidenceType = 'update' | 'photo' | 'document' | 'memory' | 'transcript';
 
 export type DAVECommitmentEvidenceLink = {
   type: DAVECommitmentEvidenceType;
@@ -17,6 +19,7 @@ export type DAVEProjectCommitment = {
   recommendedFollowUpAction: string;
   sourceUpdateId: string;
   sourcePhotoId: string;
+  sourceMemoryId?: string;
   priority: number;
 };
 
@@ -47,6 +50,7 @@ export type BuildProjectCommitmentsInput = {
   projectName: string;
   updates: DAVECommitmentUpdateInput[];
   documents?: DAVECommitmentDocumentInput[];
+  captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   now?: string;
 };
 
@@ -98,9 +102,57 @@ export function buildProjectCommitments(
     }
   }
 
+  commitments.push(...projectCaptureMemoriesToCommitments(
+    input.projectId,
+    input.captureMemories ?? [],
+    input.now,
+    input.projectName,
+  ));
+
   return uniqueById(commitments).sort((a, b) =>
     a.priority - b.priority || compareDueDates(a.dueDate, b.dueDate) || a.id.localeCompare(b.id),
   );
+}
+
+export function projectCaptureMemoriesToCommitments(
+  projectId: string,
+  memories: readonly DAVEConfirmedCaptureMemory[],
+  now?: string,
+  projectName?: string,
+): DAVEProjectCommitment[] {
+  const today = (validDate(now) ?? new Date()).toISOString().slice(0, 10);
+  return memories
+    .filter(memory => {
+      const selectedProject = normalizeKey(memory.recommendedProject.value ?? '');
+      return Boolean(clean(memory.fields.commitment)) && (
+        selectedProject === normalizeKey(projectId) ||
+        Boolean(projectName && selectedProject === normalizeKey(projectName))
+      );
+    })
+    .map(memory => {
+      const dueDate = validDateOnly(memory.fields.dueDate);
+      const status: DAVECommitmentStatus = dueDate && dueDate < today ? 'Overdue' : 'Open';
+      const owner = clean(memory.fields.peopleOrCompany) || 'Unassigned';
+      return {
+        id: ['commitment', projectId, 'memory', memory.id, 'confirmed-commitment']
+          .map(part => encodeURIComponent(part.trim() || 'unknown'))
+          .join(':'),
+        projectId,
+        owner,
+        description: clean(memory.fields.commitment),
+        dueDate,
+        status,
+        linkedEvidence: uniqueEvidence([
+          { type: 'memory', recordId: memory.id },
+          { type: 'transcript', recordId: memory.transcriptEvidenceId },
+        ]),
+        recommendedFollowUpAction: followUpAction(status, owner === 'Unassigned' ? '' : owner),
+        sourceUpdateId: '',
+        sourcePhotoId: '',
+        sourceMemoryId: memory.id,
+        priority: commitmentPriority('', status, dueDate),
+      };
+    });
 }
 
 function commitmentStatus(actionStatus: string | undefined, dueDate: string | null, today: string): DAVECommitmentStatus {

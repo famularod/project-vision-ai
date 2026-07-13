@@ -52,6 +52,8 @@ import {
   type DAVEProjectDailyBriefItem,
 } from './services/DAVEDailyBrief';
 import { buildProjectIntelligence } from './services/DAVEIntelligence';
+import type { DAVEConfirmedCaptureMemory } from './services/DAVECaptureMemory';
+import { localDAVECaptureMemoryRepository } from './services/DAVECaptureMemoryRepository';
 import {
   cacheSelectedProjectCoverPhoto,
   coverPhotoForProject,
@@ -5124,6 +5126,7 @@ function AppShell() {
     useState<OverviewDetectionStatus>('checking');
 
   const [savedUpdates, setSavedUpdates] = useState<ProjectUpdate[]>([]);
+  const [captureMemories, setCaptureMemories] = useState<DAVEConfirmedCaptureMemory[]>([]);
   const [deletedUpdateTombstones, setDeletedUpdateTombstones] =
     useState<DeletedUpdateTombstone[]>([]);
 
@@ -5290,6 +5293,27 @@ useEffect(() => {
   }
 
   void loadSavedUpdates();
+}, []);
+
+useEffect(() => {
+  let active = true;
+
+  void localDAVECaptureMemoryRepository.list()
+    .then(memories => {
+      if (active) setCaptureMemories([...memories]);
+    })
+    .catch(() => {
+      if (active) {
+        Alert.alert(
+          'Capture memories unavailable',
+          'Confirmed project memories could not be loaded from this device.',
+        );
+      }
+    });
+
+  return () => {
+    active = false;
+  };
 }, []);
 
 useEffect(() => {
@@ -6985,6 +7009,12 @@ useEffect(() => {
   function openProjectWorkspace(projectName: string) {
     setSelectedWorkspaceProject(projectName);
     setScreen('ProjectWorkspace');
+  }
+
+  async function saveCaptureMemory(memory: DAVEConfirmedCaptureMemory) {
+    await localDAVECaptureMemoryRepository.save(memory);
+    const refreshedMemories = await localDAVECaptureMemoryRepository.list();
+    setCaptureMemories([...refreshedMemories]);
   }
 
   async function persistSelectedProjectCoverPhoto(
@@ -9394,6 +9424,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
               savedUpdates={savedUpdates}
+              captureMemories={captureMemories}
               projectDocuments={projectDocuments}
               scheduleItems={scheduleItems}
               contactBook={contactBook}
@@ -9553,6 +9584,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 void useCurrentLocationForArea(areaId);
               }}
               onRemoveMissingPhotos={removeMissingSyncPhotos}
+              onSaveCaptureMemory={saveCaptureMemory}
             />
           )}
 
@@ -13297,6 +13329,7 @@ function ProjectWorkspaceScreen({
   contentStyle,
   projectName,
   savedUpdates,
+  captureMemories,
   projectDocuments,
   scheduleItems,
   contactBook,
@@ -13321,6 +13354,7 @@ function ProjectWorkspaceScreen({
   contentStyle: StyleProp<ViewStyle>;
   projectName: string;
   savedUpdates: ProjectUpdate[];
+  captureMemories: readonly DAVEConfirmedCaptureMemory[];
   projectDocuments: ProjectDocument[];
   scheduleItems: ScheduleItem[];
   contactBook: ContactBook;
@@ -13363,7 +13397,8 @@ function ProjectWorkspaceScreen({
     updates: savedUpdates,
     documents: projectDocuments,
     scheduleItems,
-  }), [projectName, savedUpdates, projectDocuments, scheduleItems]);
+    captureMemories,
+  }), [projectName, savedUpdates, projectDocuments, scheduleItems, captureMemories]);
   const dailyBrief = projectIntelligence.dailyBrief;
   const evidenceQuality = projectIntelligence.evidenceQuality;
   const actionCenter = projectIntelligence.actionCenter;

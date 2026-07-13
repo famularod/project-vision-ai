@@ -7,6 +7,7 @@ import type {
   DAVEDailyBriefUpdate,
 } from './DAVEDailyBrief';
 import type { DAVEProjectCommitment } from './DAVEProjectCommitments';
+import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import type {
   DAVEProjectRealityConfidence,
   DAVEProjectRealityEvidence,
@@ -30,7 +31,8 @@ export type DAVEProjectTimelineEventType =
   | 'schedule_milestone_reached'
   | 'waiting_dependency_recorded'
   | 'project_state_changed'
-  | 'recommendation_generated';
+  | 'recommendation_generated'
+  | 'memory_confirmed';
 
 export type DAVETimelineEvidenceClass = 'fact' | 'interpretation' | 'recommendation';
 
@@ -63,6 +65,7 @@ export type BuildProjectTimelineInput = {
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
   commitments: DAVEProjectCommitment[];
+  captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   reality: DAVEProjectTimelineRealityInput;
   now?: string;
 };
@@ -91,6 +94,7 @@ const EVENT_ORDER: Record<DAVEProjectTimelineEventType, number> = {
   waiting_dependency_recorded: 5,
   project_state_changed: 5,
   recommendation_generated: 5,
+  memory_confirmed: 5,
 };
 
 export function buildProjectTimeline(input: BuildProjectTimelineInput): DAVEProjectTimelineEvent[] {
@@ -102,6 +106,10 @@ export function buildProjectTimeline(input: BuildProjectTimelineInput): DAVEProj
   const scheduleItems = input.scheduleItems.filter(item => normalizeKey(item.projectName) === projectKey);
   const updateById = new Map(updates.map(update => [update.id, update]));
   const photoById = new Map(updates.flatMap(update => update.photos.map(photo => [photo.id, { photo, update }] as const)));
+  const captureMemories = (input.captureMemories ?? []).filter(memory =>
+    projectMatches(memory.recommendedProject.value, input.projectId, input.projectName),
+  );
+  const memoryById = new Map(captureMemories.map(memory => [memory.id, memory]));
   const events: DAVEProjectTimelineEvent[] = [];
   const stateMarkers: StateMarker[] = [];
 
@@ -217,11 +225,16 @@ export function buildProjectTimeline(input: BuildProjectTimelineInput): DAVEProj
     }));
   }
 
+  for (const memory of captureMemories) {
+    events.push(captureMemoryEvent(input.projectId, memory));
+  }
+
   for (const commitment of input.commitments) {
+    const memory = commitment.sourceMemoryId ? memoryById.get(commitment.sourceMemoryId) : undefined;
     const source = photoById.get(commitment.sourcePhotoId);
-    if (source && !isCommitmentRecord(source.photo)) continue;
+    if (!memory && source && !isCommitmentRecord(source.photo)) continue;
     const update = updateById.get(commitment.sourceUpdateId) || source?.update;
-    const createdAt = update ? updateTimestamp(update) : null;
+    const createdAt = memory?.confirmedAt || (update ? updateTimestamp(update) : null);
     if (!validTimestamp(createdAt)) continue;
     const citations = commitmentEvidence(commitment);
     events.push(event({
@@ -233,7 +246,7 @@ export function buildProjectTimeline(input: BuildProjectTimelineInput): DAVEProj
       title: 'Commitment created',
       summary: `${commitment.description} was recorded for ${commitment.owner}${commitment.dueDate ? `, due ${commitment.dueDate}` : ''}. It matters because the owner and follow-up can be tracked.`,
       evidence: citations,
-      navigationTarget: 'update_detail',
+      navigationTarget: memory ? 'project_workspace' : 'update_detail',
       confidence: 'high',
       limitations: ['A recorded commitment is not proof that the underlying work occurred.'],
     }));
@@ -248,7 +261,7 @@ export function buildProjectTimeline(input: BuildProjectTimelineInput): DAVEProj
         title: 'Commitment recorded as completed',
         summary: `${commitment.description} is recorded with Closed status. It matters because the commitment no longer appears open.`,
         evidence: citations,
-        navigationTarget: 'update_detail',
+        navigationTarget: memory ? 'project_workspace' : 'update_detail',
         confidence: 'high',
         limitations: ['Closed is a structured status, not independent proof that work was completed.'],
       }));
@@ -264,11 +277,16 @@ export function buildProjectTimeline(input: BuildProjectTimelineInput): DAVEProj
           title: 'Commitment became overdue',
           summary: `${commitment.description} passed its recorded due date and remains open. It matters because the current status needs confirmation.`,
           evidence: citations,
-          navigationTarget: 'update_detail',
+          navigationTarget: memory ? 'project_workspace' : 'update_detail',
           confidence: 'high',
           limitations: ['An open status does not prove that the underlying work is incomplete.'],
         }));
-        stateMarkers.push(marker('At Risk', overdueAt, citations[0], 'update_detail'));
+        stateMarkers.push(marker(
+          'At Risk',
+          overdueAt,
+          citations[0],
+          memory ? 'project_workspace' : 'update_detail',
+        ));
       }
     }
   }
@@ -457,6 +475,44 @@ function buildRecommendationEvent(
   });
 }
 
+function captureMemoryEvent(
+  projectId: string,
+  memory: DAVEConfirmedCaptureMemory,
+): DAVEProjectTimelineEvent {
+  const remembered = [
+    memory.fields.commitment,
+    memory.fields.decision,
+    memory.fields.ownerRequest,
+    memory.fields.inspectionChange,
+    memory.fields.scheduleChange,
+    memory.fields.issue,
+    memory.fields.risk,
+    memory.fields.followUp,
+    memory.fields.generalMemory,
+  ].find(value => Boolean(value?.trim()));
+  const location = memory.recommendedLocation.value
+    ? ` Location: ${memory.recommendedLocation.value}.`
+    : '';
+  return event({
+    projectId,
+    timestamp: memory.confirmedAt,
+    eventType: 'memory_confirmed',
+    evidenceClass: 'fact',
+    sourceIdentity: memory.id,
+    title: 'Project memory confirmed',
+    summary: `${remembered || 'A project memory was confirmed by the PM.'}${location} It matters because the record can support later follow-up without treating the conversation as proof that work occurred.`,
+    evidence: [
+      evidence('memory', memory.id, 'PM-confirmed project memory.'),
+      evidence('transcript', memory.transcriptEvidenceId, 'Source transcript linked to the confirmed memory.'),
+    ],
+    navigationTarget: 'project_workspace',
+    confidence: memory.recommendedProject.confidence === 'unknown'
+      ? 'low'
+      : memory.recommendedProject.confidence,
+    limitations: ['The transcript records what was said; it does not independently verify that work occurred.'],
+  });
+}
+
 function newestEvidenceTimestamp(
   citations: DAVEProjectRealityEvidence[],
   events: DAVEProjectTimelineEvent[],
@@ -587,4 +643,9 @@ function cleanStrings(value: unknown): string[] {
 
 function normalizeKey(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+function projectMatches(value: string | null, projectId: string, projectName: string): boolean {
+  const selected = normalizeKey(value ?? '');
+  return selected === normalizeKey(projectId) || selected === normalizeKey(projectName);
 }
