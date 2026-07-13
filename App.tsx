@@ -1,14 +1,17 @@
 import {
   deleteCloudProject,
+  loadCloudArchivedProjectNames,
   loadCloudProjectRecords,
   saveCloudProject,
   saveCloudProjectCoverPhoto,
+  setCloudProjectArchived,
 } from './services/projectService';
 import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import {
   uploadLocalPhoto,
   uploadLocalPhotoWithDiagnostics,
   uploadPendingChanges,
+  removeMissingPhotosFromSyncQueue,
   removeProjectUpdateFromSyncQueue,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
@@ -5374,11 +5377,17 @@ useEffect(() => {
     try {
       const localValue = await AsyncStorage.getItem(PROJECTS_STORAGE_KEY);
       const localProjects = normalizeProjectRecords(localValue ? JSON.parse(localValue) : []);
-      const cloudProjects = await loadCloudProjectRecords();
+      const [cloudProjects, cloudArchivedProjects] = await Promise.all([
+        loadCloudProjectRecords(),
+        loadCloudArchivedProjectNames(),
+      ]);
       const mergedRecords = mergeProjectRecords(DEFAULT_PROJECTS, localProjects, cloudProjects);
 
       setProjectRecords(mergedRecords);
       setProjects(mergedRecords.map(project => project.name));
+      setArchivedProjects(previous =>
+        mergeProjectNames(previous, cloudArchivedProjects),
+      );
 
       void Promise.all(mergedRecords.map(async project => {
         if (!project.coverPhoto?.remotePath) return;
@@ -5414,8 +5423,8 @@ useEffect(() => {
         const parsed = JSON.parse(value);
 
         if (Array.isArray(parsed)) {
-          setArchivedProjects(
-            mergeProjectNames([], parsed),
+          setArchivedProjects(previous =>
+            mergeProjectNames(previous, parsed),
           );
         }
       })
@@ -6973,25 +6982,9 @@ useEffect(() => {
   }
 
   async function removeMissingSyncPhotos(missingPhotos: MissingSyncPhoto[]) {
-    const missingByUpdateId = new Map<string, Set<string>>();
-
-    for (const missingPhoto of missingPhotos) {
-      const photoIds = missingByUpdateId.get(missingPhoto.updateId) || new Set<string>();
-      photoIds.add(missingPhoto.photoId);
-      missingByUpdateId.set(missingPhoto.updateId, photoIds);
-    }
-
-    setSavedUpdates(prev =>
-      prev.map(update => {
-        const missingPhotoIds = missingByUpdateId.get(update.id);
-        if (!missingPhotoIds) return update;
-
-        return {
-          ...update,
-          photos: update.photos.filter(photo => !missingPhotoIds.has(photo.id)),
-        };
-      }),
-    );
+    // A missing local file should stop retrying in the upload queue, but its
+    // historical photo metadata must remain in savedUpdates and backups.
+    await removeMissingPhotosFromSyncQueue(missingPhotos);
   }
 
   function beginDraftForProject(projectName: string) {
@@ -7478,16 +7471,25 @@ function addProject(projectName: string) {
         {
           text: 'Close Project',
           style: 'destructive',
-          onPress: () =>
+          onPress: () => {
             setArchivedProjects(prev =>
               mergeProjectNames(prev, [projectName]),
-            ),
+            );
+            setCloudProjectArchived(projectName, true);
+            setScreen('Projects');
+          },
         },
       ],
     );
   }
 
   function reopenProject(projectName: string) {
+    setProjects(prev => mergeProjectNames(prev, [projectName]));
+    setProjectRecords(prev =>
+      prev.some(project => project.name.toLowerCase() === projectName.toLowerCase())
+        ? prev
+        : [{ name: projectName }, ...prev],
+    );
     setArchivedProjects(prev =>
       prev.filter(
         project =>
@@ -7495,6 +7497,7 @@ function addProject(projectName: string) {
           projectName.toLowerCase(),
       ),
     );
+    setCloudProjectArchived(projectName, false);
   }
 
   async function deleteProjectPermanently(projectName: string) {
@@ -9362,7 +9365,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
             if (deletedUpdate) {
               void deleteUnreferencedPhotosFromUpdate(
                 deletedUpdate,
-                [draft, ...remainingUpdates],
+                [
+                  ...(draft.id === updateId ? [] : [draft]),
+                  ...remainingUpdates,
+                ],
               );
             }
 
@@ -9427,6 +9433,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function requestBuildUpdate() {
     continueToPIEAnalysis();
+  }
+
+  const resumedSavedDraft = savedUpdates.some(
+    update =>
+      update.id === draft.id &&
+      lifecycleStatusForUpdate(update) !== 'sent' &&
+      lifecycleStatusForUpdate(update) !== 'queued',
+  );
+
+  function deleteResumedSavedDraft() {
+    const projectName = draft.projectName;
+
+    deleteSavedUpdate(draft.id, () => {
+      setDraft(createDraft(projectName));
+      setDraftSavedAt(null);
+      AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
+      setSelectedWorkspaceProject(projectName);
+      setScreen('ProjectWorkspace');
+    });
   }
 
   const unfinishedDraft =
@@ -9575,6 +9600,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRetryPhotoAnalysis={photo => {
                 void retryPhotoAnalysis(draft, photo);
               }}
+              onDeleteUpdate={resumedSavedDraft ? deleteResumedSavedDraft : undefined}
             />
           )}
 
@@ -9649,6 +9675,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 onRetryPhotoAnalysis={photo => {
                   void retryPhotoAnalysis(draft, photo);
                 }}
+                onDeleteUpdate={resumedSavedDraft ? deleteResumedSavedDraft : undefined}
               />
             </ScreenScroll>
           )}
@@ -9657,6 +9684,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ProjectsScreen
               contentStyle={contentStyle}
               activeProjects={activeProjects}
+              archivedProjects={archivedProjects}
               savedUpdates={savedUpdates}
               projectDocuments={projectDocuments}
               contactBook={contactBook}
@@ -9664,6 +9692,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectRecords={projectRecords}
               onSelect={openProjectWorkspace}
               onAddProject={addProject}
+              onReopenProject={reopenProject}
               initialStatusFilter={projectsEntryStatusFilter ?? undefined}
             />
           )}
@@ -9741,6 +9770,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }}
               onRetryQueuedUpdate={retryQueuedUpdate}
               onDeleteProject={deleteProjectPermanently}
+              onCloseProject={closeProject}
               isDeletingProject={deletingProjectName === selectedWorkspaceProject}
             />
           )}
@@ -11087,6 +11117,7 @@ function AddPhotosScreen({
   onRetryDocumentUpload,
   onContinueWithoutPhotos,
   onRetryPhotoAnalysis,
+  onDeleteUpdate,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   update: ProjectUpdate;
@@ -11109,6 +11140,7 @@ function AddPhotosScreen({
   onRetryDocumentUpload: (documentId: string) => void;
   onContinueWithoutPhotos: () => void;
   onRetryPhotoAnalysis: (photo: UpdatePhoto) => void;
+  onDeleteUpdate?: () => void;
 }) {
   const [areaSheetOpen, setAreaSheetOpen] = useState(false);
   const [recipientSheetOpen, setRecipientSheetOpen] = useState(false);
@@ -11214,6 +11246,14 @@ function AddPhotosScreen({
           onPress={onContinueWithoutPhotos}
         />
       )}
+
+      {onDeleteUpdate ? (
+        <SecondaryButton
+          label="Delete Saved Update"
+          icon="trash-outline"
+          onPress={onDeleteUpdate}
+        />
+      ) : null}
 
       <AreaSelectionSheet
         visible={areaSheetOpen}
@@ -12685,6 +12725,7 @@ function BuildUpdateScreen({
   onDismissInterpretation,
   onShareSheet,
   onRetryPhotoAnalysis,
+  onDeleteUpdate,
 }: {
   update: ProjectUpdate;
   selectedArea: ProjectArea | null;
@@ -12705,6 +12746,7 @@ function BuildUpdateScreen({
   onDismissInterpretation: (interpretation: string) => void;
   onShareSheet: () => void;
   onRetryPhotoAnalysis: (photo: UpdatePhoto) => void;
+  onDeleteUpdate?: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [messageOpen, setMessageOpen] = useState(false);
@@ -13029,6 +13071,14 @@ function BuildUpdateScreen({
         onPress={() => setMoreOptionsOpen(true)}
       />
 
+      {onDeleteUpdate ? (
+        <SecondaryButton
+          label="Delete Saved Update"
+          icon="trash-outline"
+          onPress={onDeleteUpdate}
+        />
+      ) : null}
+
       <MoreOptionsSheet
         visible={moreOptionsOpen}
         onClose={() => setMoreOptionsOpen(false)}
@@ -13283,6 +13333,7 @@ function ReadOnlyUpdateDetailScreen({
 function ProjectsScreen({
   contentStyle,
   activeProjects,
+  archivedProjects,
   savedUpdates,
   projectDocuments,
   contactBook,
@@ -13290,10 +13341,12 @@ function ProjectsScreen({
   projectRecords,
   onSelect,
   onAddProject,
+  onReopenProject,
   initialStatusFilter,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   activeProjects: string[];
+  archivedProjects: string[];
   savedUpdates: ProjectUpdate[];
   projectDocuments: ProjectDocument[];
   contactBook: ContactBook;
@@ -13301,6 +13354,7 @@ function ProjectsScreen({
   projectRecords: ProjectRecord[];
   onSelect: (projectName: string) => void;
   onAddProject: (projectName: string) => boolean;
+  onReopenProject: (projectName: string) => void;
   initialStatusFilter?: 'onTrack';
 }) {
   const [searchText, setSearchText] = useState('');
@@ -13443,6 +13497,27 @@ function ProjectsScreen({
             : 'Create your first project to begin capturing updates and building DAVE project intelligence.'}
         />
       }
+      ListFooterComponent={archivedProjects.length > 0 ? (
+        <View>
+          <Text style={styles.sectionLabel}>Archived Projects</Text>
+          {archivedProjects.map(project => (
+            <View key={`archived-${project}`} style={styles.compactLocationRow}>
+              <View style={styles.rowMain}>
+                <Text style={styles.projectName}>{project}</Text>
+                <Text style={styles.rowSub}>Archived · hidden from active project views</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.phase3ChangeButton}
+                onPress={() => onReopenProject(project)}
+                accessibilityRole="button"
+                accessibilityLabel={`Reopen ${project}`}
+              >
+                <Text style={styles.dashboardManageText}>Reopen</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      ) : null}
     />
   );
 }
@@ -13639,6 +13714,7 @@ function ProjectWorkspaceScreen({
   onOpenDailyBriefItem,
   onRetryQueuedUpdate,
   onDeleteProject,
+  onCloseProject,
   isDeletingProject,
 }: {
   contentStyle: StyleProp<ViewStyle>;
@@ -13678,6 +13754,7 @@ function ProjectWorkspaceScreen({
   ) => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
   onDeleteProject: (projectName: string) => void;
+  onCloseProject: (projectName: string) => void;
   isDeletingProject: boolean;
 }) {
   const projectUpdates = savedUpdates.filter(
@@ -14389,6 +14466,14 @@ function ProjectWorkspaceScreen({
       )}
 
       <Text style={styles.sectionLabel}>Danger Zone</Text>
+      <SecondaryButton
+        label="Archive Project"
+        icon="archive-outline"
+        onPress={() => onCloseProject(projectName)}
+      />
+      <Text style={styles.locationDetailText}>
+        Archive hides this project from active views. You can reopen it later from Projects.
+      </Text>
       <HoldToDeleteButton
         label="Hold to Delete Project"
         holdingLabel="Keep holding…"

@@ -1,4 +1,4 @@
-import { listProjects, type JsonValue } from './SupabaseService';
+import { listArchivedProjects, listProjects, type JsonValue } from './SupabaseService';
 import type {
   ProjectCoverPhoto,
   ProjectCoverPhotoMode,
@@ -28,6 +28,16 @@ export async function loadCloudProjectRecords(): Promise<ProjectRecord[]> {
   return result.data
     .filter(item => typeof item.name === 'string' && item.name.trim())
     .map(projectRecordFromCloud);
+}
+
+export async function loadCloudArchivedProjectNames(): Promise<string[]> {
+  const result = await listArchivedProjects();
+
+  if (!result.ok || !result.data) return [];
+
+  return result.data
+    .map(project => project.name.trim())
+    .filter(Boolean);
 }
 
 export function saveCloudProjectCoverPhoto(
