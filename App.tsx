@@ -243,6 +243,7 @@ import {
 } from './modules/dave-text-recognition';
 import type { AppScreen } from './types/app-navigation';
 import { useAppNavigation } from './hooks/use-app-navigation';
+import { useReportSelection } from './hooks/use-report-selection';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -271,7 +272,6 @@ import {
 } from 'react-native-safe-area-context';
 
 type Screen = AppScreen;
-type ReportFormat = 'project_manager' | 'executive';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -5172,15 +5172,6 @@ function AppShell() {
 
   const [selectedWorkspaceProject, setSelectedWorkspaceProject] =
     useState(DEFAULT_PROJECTS[0]);
-  const [reportType, setReportType] =
-    useState<Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>>(
-      'daily_project_update',
-    );
-  const [reportFormat, setReportFormat] =
-    useState<ReportFormat>('project_manager');
-  const [reportProjectNames, setReportProjectNames] = useState<string[]>([
-    DEFAULT_PROJECTS[0],
-  ]);
 
   const [overviewProjectSelection, setOverviewProjectSelection] =
     useState<OverviewProjectSelection>(undefined);
@@ -10524,6 +10515,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ),
     [activeProjects, authoritativeScheduleItems],
   );
+  const {
+    reportType,
+    reportFormat,
+    selectedProjectNames: selectedReportProjectNames,
+    setReportFormat,
+    changeReportType,
+    toggleReportProject,
+  } = useReportSelection({
+    availableProjectNames: reportAvailableProjectNames,
+    selectedWorkspaceProject,
+    initialProjectName: DEFAULT_PROJECTS[0],
+  });
 
   const talkCandidateTasks = useMemo(() => {
     if (!talkProjectName) return [];
@@ -10542,30 +10545,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
         detail: `${item.locationName || 'No area'} · ${item.status} · ${item.percentComplete}%`,
       }));
   }, [authoritativeScheduleItems, talkProjectName]);
-
-  const selectedReportProjectNames = useMemo(() => {
-    const availableKeys = new Set(
-      reportAvailableProjectNames.map(name => name.trim().toLowerCase()),
-    );
-    const validSelections = mergeProjectNames(
-      [],
-      reportProjectNames.filter(name => availableKeys.has(name.trim().toLowerCase())),
-    );
-    const fallback =
-      reportAvailableProjectNames.find(
-        name => name.trim().toLowerCase() === selectedWorkspaceProject.trim().toLowerCase(),
-      ) || reportAvailableProjectNames[0] || selectedWorkspaceProject;
-    const selections = validSelections.length > 0 ? validSelections : [fallback];
-
-    return reportType === 'daily_project_update'
-      ? selections.slice(0, 1)
-      : selections;
-  }, [
-    reportAvailableProjectNames,
-    reportProjectNames,
-    reportType,
-    selectedWorkspaceProject,
-  ]);
 
   function projectIntelligenceForTalk(projectName: string, taskId: string | null = null) {
     const scopeNames = scheduleProjectScopeNames(
@@ -10848,38 +10827,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
       },
       { text: 'Done' },
     ]);
-  }
-
-  function changeReportType(
-    nextType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>,
-  ) {
-    setReportType(nextType);
-    setReportProjectNames(
-      nextType === 'daily_project_update'
-        ? selectedReportProjectNames.slice(0, 1)
-        : selectedReportProjectNames,
-    );
-  }
-
-  function toggleReportProject(projectName: string) {
-    if (reportType === 'daily_project_update') {
-      setReportProjectNames([projectName]);
-      return;
-    }
-
-    setReportProjectNames(() => {
-      const selected = selectedReportProjectNames.some(
-        name => name.trim().toLowerCase() === projectName.trim().toLowerCase(),
-      );
-      if (selected) {
-        const remaining = selectedReportProjectNames.filter(
-          name => name.trim().toLowerCase() !== projectName.trim().toLowerCase(),
-        );
-        return remaining.length > 0 ? remaining : selectedReportProjectNames;
-      }
-
-      return mergeProjectNames(selectedReportProjectNames, [projectName]);
-    });
   }
 
   const liveAuthorityInput = useMemo<PIELiveAuthorityInput>(() => {

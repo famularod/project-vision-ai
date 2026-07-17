@@ -4,7 +4,7 @@ const path = require('path');
 const appPath = path.join(__dirname, '..', 'App.tsx');
 const source = fs.readFileSync(appPath, 'utf8');
 const lineCount = source.split('\n').length - (source.endsWith('\n') ? 1 : 0);
-const maximumLines = 23564;
+const maximumLines = 23511;
 const failures = [];
 
 if (lineCount > maximumLines) {
