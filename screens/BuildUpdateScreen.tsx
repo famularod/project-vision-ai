@@ -24,7 +24,7 @@ import { RecipientsCard } from '../components/RecipientsCard';
 import { SaveUpdateBar } from '../components/SaveUpdateBar';
 import { UpdateNotesCard } from '../components/UpdateNotesCard';
 import type { ProjectSyncFreshnessMetadata } from '../services/ProjectIntelligenceEngine';
-import type { PIEReportDraft } from '../services/PIEReporter';
+import type { PIEReportDraft } from '../services/domains/reporting';
 import { usePIELiveAuthority } from '../providers/PIELiveAuthorityProvider';
 import type {
   ContactBook,

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 
-import type { PIEReportType } from '../services/PIEReporter';
+import type { PIEReportType } from '../services/domains/reporting';
 
 export type SelectableReportType = Extract<
   PIEReportType,

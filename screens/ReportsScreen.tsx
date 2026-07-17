@@ -37,7 +37,7 @@ import {
 import {
   type PIEReportDraft,
   type PIEReportType,
-} from '../services/PIEReporter';
+} from '../services/domains/reporting';
 import type { PIEExecutiveJudgmentRecord } from '../services/PIEExecutiveJudgmentRepository';
 import { usePIELiveAuthority } from '../providers/PIELiveAuthorityProvider';
 import type {

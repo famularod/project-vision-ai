@@ -191,7 +191,7 @@ import {
   type PIEDecisionLedgerMigrationStatus,
 } from './services/PIEDecisionLedgerStorage';
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
-import type { PIEReportDraft, PIEReportType } from './services/PIEReporter';
+import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
 import {
   buildPIEScheduleReconciliation,
   selectAuthoritativeScheduleItems,

@@ -26,7 +26,7 @@ import type {
   ScheduleItem,
 } from '../types';
 import type { ProjectSyncFreshnessMetadata } from '../services/ProjectIntelligenceEngine';
-import type { PIEReportType } from '../services/PIEReporter';
+import type { PIEReportType } from '../services/domains/reporting';
 import {
   logStartupDiagnostic,
   startupErrorMessage,
