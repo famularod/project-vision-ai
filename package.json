@@ -6,7 +6,7 @@
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.108.2",
-    "expo": "~54.0.0",
+    "expo": "~54.0.36",
     "expo-asset": "~12.0.13",
     "expo-audio": "~1.1.1",
     "expo-clipboard": "~8.0.8",
@@ -23,7 +23,7 @@
     "expo-sharing": "~14.0.8",
     "expo-sms": "~14.0.8",
     "expo-status-bar": "~3.0.8",
-    "react": "^19.1.0",
+    "react": "19.1.0",
     "react-native": "^0.81.5",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-url-polyfill": "^3.0.0"
@@ -41,7 +41,8 @@
   "scripts": {
     "start": "expo start",
     "typecheck": "tsc --noEmit",
-    "check": "node scripts/production-secret-guard.js && npm run typecheck",
+    "check:expo-dependencies": "npx expo install --check",
+    "check": "node scripts/production-secret-guard.js && npm run check:expo-dependencies && npm run typecheck",
     "jarvis:qa": "npm run jarvis:contracts",
     "jarvis:contracts": "node scripts/jarvis-qa.js",
     "test": "npm run test:check",
