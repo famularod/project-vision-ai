@@ -1008,13 +1008,15 @@ function DAVEReportOverview({
       ) : null}
 
       {briefing.dashboard.workAreas.length ? (
-        <View style={styles.reportProgressSection}>
-          <View style={styles.reportProgressHeader}>
-            <Text style={styles.reportDocumentSectionTitle}>Progress by Work Area</Text>
-            <Text style={styles.reportProgressHelper}>Task average · not weighted</Text>
-          </View>
-          <View style={styles.reportAreaProgressList}>
-            {activeAreas.map(area => <ReportAreaProgressRow key={area.id} area={area} />)}
+        <>
+          <View style={styles.reportProgressSection}>
+            <View style={styles.reportProgressHeading}>
+              <Text style={styles.reportDocumentSectionTitle}>Progress by Work Area</Text>
+              <Text style={styles.reportProgressHelper}>Unweighted average of tasks in each area</Text>
+            </View>
+            <View style={styles.reportAreaProgressList}>
+              {activeAreas.map(area => <ReportAreaProgressRow key={area.id} area={area} />)}
+            </View>
           </View>
           {completedAreas.length ? (
             <View style={styles.reportDisclosure}>
@@ -1038,7 +1040,7 @@ function DAVEReportOverview({
               ) : null}
             </View>
           ) : null}
-        </View>
+        </>
       ) : null}
 
       <View style={styles.reportDisclosure}>
@@ -2268,6 +2270,11 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
 
+  reportProgressHeading: {
+    alignItems: 'flex-start',
+    gap: spacing.xxs,
+  },
+
   reportProgressHelper: {
     color: colors.mutedText,
     fontSize: 11,
@@ -2594,6 +2601,7 @@ const styles = StyleSheet.create({
   },
 
   reportDisclosure: {
+    width: '100%',
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 10,
@@ -2602,7 +2610,7 @@ const styles = StyleSheet.create({
   },
 
   reportDisclosureHeader: {
-    minHeight: 48,
+    minHeight: 64,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 9,

@@ -83,6 +83,23 @@ assert(
   'The four report disclosure controls should share one consistent container treatment.',
 );
 assert(
+  review.includes('<View style={styles.reportProgressHeading}>') &&
+    review.includes('Unweighted average of tasks in each area'),
+  'The work-area progress explanation should sit below its heading instead of competing for horizontal space.',
+);
+assert(
+  review.includes('</View>\n          {completedAreas.length ? (\n            <View style={styles.reportDisclosure}>'),
+  'Completed Areas should be a full-width sibling of the progress card, not a nested inset disclosure.',
+);
+const reportDisclosureStyles = review.slice(
+  review.indexOf('  reportDisclosure: {'),
+  review.indexOf('  reportDisclosureContent: {'),
+);
+assert(
+  reportDisclosureStyles.includes("width: '100%'") && reportDisclosureStyles.includes('minHeight: 64'),
+  'Report disclosure rows should share a full-width, consistent minimum-height treatment.',
+);
+assert(
   app.includes('ScheduleImportFlow') &&
     app.includes('importScheduleCommunicationScreenshot') &&
     app.includes('recognizeTextFromImage') &&
