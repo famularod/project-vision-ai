@@ -6,6 +6,7 @@ const assert = require('assert');
 
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const projectTruth = fs.readFileSync(path.join(root, 'services/DAVEProjectTruth.ts'), 'utf8');
 
 [
   'function HomeScreen({',
@@ -17,8 +18,6 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   "project{scopedProjects.length === 1 ? '' : 's'} reviewed",
   'Nothing due today',
   "topPriority ? 'PRIORITY' : 'ALL CLEAR'",
-  'DAVE Daily Brief',
-  'See all updates',
   'Active Projects',
   'Recent Activity',
   'View all activity',
@@ -26,7 +25,7 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'Healthy',
   'At Risk',
   'Blocked',
-  'title="Projects"',
+  'title="Project Management"',
   'label="New Project"',
   "label: 'Healthy'",
   "label: 'At Risk'",
@@ -34,25 +33,29 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'accessibilityLabel="Clear project search"',
   'Open Projects',
   'ProjectWorkspace',
-  'DAVE Project Brief',
-  'Latest observations',
-  'View photo differences',
+  'ProjectTaskControlPanel',
+  'Tasks and Schedule',
+  'title="Project Options"',
+  'View All Tasks',
   'New Field Update',
   'Recent project activity will show up here.',
   'Attention Needed',
   'Waiting',
   'On Track',
   'overviewAskDaveButton',
-  'name="sparkles-outline"',
-  "Alert.alert('Ask DAVE', 'Ask DAVE is coming soon.')",
-  'accessibilityLabel="Ask DAVE"',
-  'buildPIEProjectBriefModel(projectName, savedUpdates)',
+  'name="settings-outline"',
+  'accessibilityLabel="Open Settings"',
+  'const projectIntelligence = liveAuthority.projectTruth.intelligence',
+  'const pmBriefing = projectTruth.briefing',
+  'pmBriefing.evidenceCoverage',
   'buildPIEScheduleReconciliation({',
   'onOpenPhotoDifferences',
   'onNewFieldUpdate(projectName)',
 ].forEach(marker => {
   assert(app.includes(marker), `Phase 2 screen should include ${marker}`);
 });
+
+assert(!app.includes("Today's Brief"), 'Overview should not render a separate Today\'s Brief section.');
 
 [
   'Executive Summary',
@@ -63,46 +66,23 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 });
 
 assert(
-  app.includes("onSelect={openProjectWorkspace}"),
+  app.includes('onPress={() => onOpenProject(row.project)}'),
   'Project cards should open Project Workspace.',
 );
 assert(
-  app.includes("onNewUpdate={createNewUpdate}"),
-  'Overview New Update should use the existing capture entry point.',
-);
-const projectsScreen = app.slice(
-  app.indexOf('function ProjectsScreen({'),
-  app.indexOf('function projectRowStatus('),
-);
-const projectsHeader = projectsScreen.slice(
-  projectsScreen.indexOf('<ScreenTitle'),
-  projectsScreen.indexOf('<View style={styles.projectFinderPanel}>'),
+  app.includes('Archived Projects') && app.includes('onReopenProject(projectName)'),
+  'Overview must preserve archived-project recovery after removing the duplicate Projects route.',
 );
 assert(
-  !projectsHeader.includes('New Project') &&
-    !projectsHeader.includes('TouchableOpacity'),
-  'Projects header must contain only its title and subtitle, without a floating New Project action.',
-);
-assert(
-  projectsScreen.indexOf('<View style={styles.projectFinderPanel}>') <
-    projectsScreen.indexOf('label="New Project"') &&
-    projectsScreen.indexOf('label="New Project"') <
-    projectsScreen.indexOf('Open Projects') &&
-    projectsScreen.includes('onPress={() => setShowAddProject(prev => !prev)}') &&
-    app.includes('primaryButton: {') &&
-    app.includes('minHeight: 54'),
-  'Projects must show a full-width 44pt-or-larger New Project action after Search and before Open Projects.',
-);
-assert(
-  app.includes('observedFindingsForUpdateBrief') &&
-    app.includes('Observed: {observation.context} — {observation.text}') &&
-    app.includes('observations: dedupedObservations.slice(0, 3)'),
+  projectTruth.includes("evidenceClass: safeVisualEvidence ? 'observation'") &&
+    projectTruth.includes('changeFromPrior: hasComparablePrior') &&
+    app.includes('pmBriefing.whatChanged.length'),
   'Project brief with findings must show top observed finding text, not only a count.',
 );
 assert(
-  app.includes('isSafeObservedBriefFinding') &&
-    app.includes('work completed|progress increased|finished|quality issue|schedule.*risk|at risk|completed') &&
-    app.includes('Possible visual changes found. Review details before using in an update.'),
+  projectTruth.includes("intelligence?.provenance === 'visual_only'") &&
+    projectTruth.includes("progressClaim = safeVisualEvidence") &&
+    projectTruth.includes("evidenceClass === 'observation'"),
   'Project brief must not render interpretation-tier or overclaiming text as confirmed observations.',
 );
 assert(
@@ -138,11 +118,11 @@ assert(
   'View photo differences action must open an existing update detail path.',
 );
 assert(
-  app.includes('DAVE Summary') &&
+  app.includes('Photo Analysis') &&
     app.includes('Observed findings') &&
     app.includes('Possible interpretations') &&
     app.includes('Retry Analysis'),
-  'Update detail must show DAVE summary, observed findings, interpretations, and retry analysis.',
+  'Update detail must show photo analysis, observed findings, interpretations, and retry analysis.',
 );
 assert(
   app.includes("resolveProjectForDetectedArea("),

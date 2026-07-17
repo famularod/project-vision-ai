@@ -32,7 +32,7 @@ assert(
   'Failure, unavailable, analyzing, and no-prior states must not feed possible interpretations.',
 );
 
-const preview = sliceBetween(app, 'function BuildUpdateScreen', 'function MoreOptionsSheet');
+const preview = sliceBetween(app, 'function BuildUpdateScreen', 'function ReadOnlyUpdateDetailScreen');
 assert(
   preview.includes('updateSupportsPIEInterpretations(update, pieStatus)') &&
     preview.includes("update.possibleInterpretations || []") &&

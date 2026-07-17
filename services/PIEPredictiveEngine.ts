@@ -36,7 +36,6 @@ export type PIEPredictionConfidence = ProjectConfidenceLevel;
 export type PIEPredictionDependency = {
   id: string;
   type:
-    | 'schedule predecessor/successor'
     | 'inspection dependency'
     | 'contractor dependency'
     | 'material dependency'
@@ -296,7 +295,7 @@ export function simulateWorstCase(
     id: 'outcome-worst-case',
     scenario: 'worst_case',
     likelyOutcome: 'If the current risk propagates, follow-on work may wait for verification, decision, or recovery action.',
-    scheduleImpact: `Schedule readiness could slip by ${slipDays} day${slipDays === 1 ? '' : 's'} or more if dependencies are not cleared.`,
+    scheduleImpact: `Schedule readiness could slip by ${slipDays} day${slipDays === 1 ? '' : 's'} or more if the current risks are not resolved.`,
     inspectionImpact: hasInspectionSignal(input) ? 'Inspection readiness may slip until prerequisite work or evidence is verified.' : 'Inspection impact is not the primary worst-case driver.',
     contractorImpact: hasContractorSignal(input) ? 'Contractor sequencing may be affected if responsibility and recovery action remain unclear.' : 'Contractor impact is uncertain.',
     riskLevel: 'high',
@@ -316,7 +315,7 @@ export function simulateNoAction(
   return {
     id: 'outcome-no-action',
     scenario: 'no_action',
-    likelyOutcome: 'If no action is taken, the highest-risk dependency remains unresolved and may affect the next scheduled activity.',
+    likelyOutcome: 'If no action is taken, the highest-risk issue remains unresolved and may affect the next scheduled activity.',
     scheduleImpact: `No action could allow a ${slipDays} day${slipDays === 1 ? '' : 's'} schedule impact to persist or grow.`,
     inspectionImpact: hasInspectionSignal(input) ? 'Inspection or turnover evidence may remain incomplete.' : 'No direct inspection impact is confirmed.',
     contractorImpact: hasContractorSignal(input) ? 'Contractor delay or responsibility may remain unresolved.' : 'Contractor impact remains uncertain.',
@@ -448,7 +447,7 @@ export function buildRecoveryActions(
           id: 'recovery-scientific-uncertainty',
           action: input.scientificResult.uncertaintyReductionActions[0].action,
           recovers: input.scientificResult.uncertaintyReductionActions[0].reducesUncertainty,
-          expectedRecovery: 'Reduces uncertainty before DAVE recommends a stronger action.',
+          expectedRecovery: 'Reduces uncertainty before a stronger action is recommended.',
           value: 8,
           requiredEvidence: [input.scientificResult.uncertaintyReductionActions[0].recommendedNextEvidence],
           confidence: input.scientificResult.confidence,
@@ -559,13 +558,6 @@ export function explainPrediction(
 
 function buildPredictionDependencies(input: PIEPredictionInput): PIEPredictionDependency[] {
   const dependencies: PIEPredictionDependency[] = [
-    ...input.runtime.criticalTasks.slice(0, 4).map((task, index) => ({
-      id: `dependency-schedule-${task.id || index}`,
-      type: 'schedule predecessor/successor' as const,
-      summary: `${task.task || 'Critical task'} depends on ${task.dependencies.join(', ') || 'current predecessor work'} in ${task.area || task.project || 'the project'}.`,
-      atRisk: task.critical || input.runtime.overdueTasks.some(overdue => overdue.id === task.id),
-      confidence: task.confidence,
-    })),
     ...input.runtime.graphGaps.slice(0, 3).map((gap, index) => ({
       id: `dependency-evidence-${index + 1}`,
       type: 'evidence dependency' as const,
@@ -670,9 +662,9 @@ function likelyOutcomeText(input: PIEPredictionInput, slipDays: number) {
     return `${input.runtime.projectName} may see a ${slipDays} day${slipDays === 1 ? '' : 's'} schedule or readiness impact unless the current risk is verified and recovered.`;
   }
   if (input.runtime.evidenceGaps.length > 0) {
-    return 'The likely outcome depends on filling missing evidence before DAVE can recommend action confidently.';
+    return 'The likely outcome depends on filling missing evidence before action can be recommended confidently.';
   }
-  return 'Current evidence does not predict a major slip, but DAVE should continue monitoring schedule, safety, and inspection dependencies.';
+  return 'Current evidence does not predict a major slip, but schedule readiness, safety, and inspections should continue to be monitored.';
 }
 
 function scheduleImpactText(input: PIEPredictionInput, slipDays: number) {
@@ -805,7 +797,7 @@ function propagationForImpact(impact: PIEPredictionImpact) {
   if (impact.area === 'contractor') return 'May delay recovery until owner or contractor action is confirmed.';
   if (impact.area === 'safety') return 'May require immediate verification before work continues.';
   if (impact.area === 'communication') return 'May delay decisions or action-item closure.';
-  return 'May reduce DAVE confidence until more evidence is collected.';
+  return 'May reduce confidence until more evidence is collected.';
 }
 
 function confidenceFromRiskLevel(

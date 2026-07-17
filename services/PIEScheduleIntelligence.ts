@@ -20,6 +20,7 @@ import {
   type ScheduleSummaryTask,
 } from '../utils/schedule';
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import { stripScheduleDependencyMetadata } from './PIEScheduleDependencyNetwork';
 
 export type PIEScheduleInputFormat =
   | 'pdf'
@@ -89,7 +90,6 @@ export type PIENormalizedScheduleTask = {
   contractor: string | null;
   critical: boolean;
   float: number | null;
-  dependencies: string[];
   notes: string | null;
   sourceItem: ScheduleItem;
   needsReview: boolean;
@@ -300,6 +300,16 @@ export function detectScheduleFormat({
 }
 
 export function cleanPdfScheduleText(value: string) {
+  const readableLines = value
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]+/g, ' ').replace(/ +/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+  const appearsToBeRawPdf = value.startsWith('%PDF-') || /\b(?:obj|stream|endobj)\b/.test(value.slice(0, 5_000));
+
+  if (!appearsToBeRawPdf) return readableLines;
+
   const parentheticalText = Array.from(
     value.matchAll(/\((?:\\.|[^\\)])*\)/g),
   )
@@ -317,8 +327,11 @@ export function cleanPdfScheduleText(value: string) {
 
   return `${value}\n${parentheticalText}`
     .replace(/\r/g, '\n')
-    .replace(/[\u0000-\u001F]+/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]+/g, ' ')
+    .split('\n')
+    .map(line => line.replace(/ +/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n')
     .trim();
 }
 
@@ -464,13 +477,6 @@ function parseDuration(value: string) {
   return match ? Number(match[0]) : null;
 }
 
-function parseDependencies(value: string) {
-  return value
-    .split(/[;,|]+/)
-    .map(item => item.trim())
-    .filter(Boolean);
-}
-
 export function detectScheduleType(text: string): PIEScheduleType {
   const lower = text.toLowerCase();
 
@@ -509,9 +515,248 @@ export function detectScheduleType(text: string): PIEScheduleType {
 }
 
 function findNameMatch(value: string, names: string[]) {
-  const lower = value.toLowerCase();
+  const normalizedValue = ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
 
-  return names.find(name => name && lower.includes(name.toLowerCase())) || '';
+  return names.find(name => {
+    const normalizedName = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return normalizedName && normalizedValue.includes(` ${normalizedName} `);
+  }) || '';
+}
+
+function scheduleMatchTokens(value: string) {
+  const ignored = new Set([
+    'and', 'building', 'campus', 'location', 'phase', 'project', 'site', 'the', 'work',
+  ]);
+
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .filter(token => token && !ignored.has(token));
+}
+
+function bestScheduleProjectMatch(value: string, projects: string[]) {
+  const direct = findNameMatch(value, projects);
+  if (direct) return direct;
+
+  const valueNumbers = new Set(scheduleMatchTokens(value).filter(token => /^\d{3,}$/.test(token)));
+  const numericMatches = projects.filter(project =>
+    scheduleMatchTokens(project).some(token => valueNumbers.has(token)),
+  );
+  if (valueNumbers.size && numericMatches.length === 1) return numericMatches[0];
+
+  const valueWords = new Set(
+    scheduleMatchTokens(value).filter(token => !/^\d+$/.test(token)),
+  );
+  const scoredMatches = projects
+    .map(project => ({
+      project,
+      score: scheduleMatchTokens(project)
+        .filter(token => !/^\d+$/.test(token) && valueWords.has(token))
+        .length,
+    }))
+    .filter(candidate => candidate.score >= 2)
+    .sort((a, b) => b.score - a.score);
+
+  if (
+    scoredMatches.length > 0 &&
+    (scoredMatches.length === 1 || scoredMatches[0].score > scoredMatches[1].score)
+  ) {
+    return scoredMatches[0].project;
+  }
+
+  return '';
+}
+
+function bestScheduleAreaMatch(value: string, projectAreas: ProjectArea[]) {
+  const normalizedValue = ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const valueTokens = new Set(scheduleMatchTokens(value));
+  let bestArea = '';
+  let bestScore = 0;
+
+  projectAreas.forEach(area => {
+    const normalizedName = area.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (normalizedName && normalizedValue.includes(` ${normalizedName} `)) {
+      const score = 100 + normalizedName.length;
+      if (score > bestScore) {
+        bestArea = area.name;
+        bestScore = score;
+      }
+      return;
+    }
+
+    const areaTokens = scheduleMatchTokens(area.name);
+    const commonTokens = areaTokens.filter(token => valueTokens.has(token));
+    const requiredMatches = areaTokens.length <= 1 ? areaTokens.length : Math.min(2, areaTokens.length);
+
+    if (commonTokens.length >= requiredMatches && commonTokens.length > bestScore) {
+      bestArea = area.name;
+      bestScore = commonTokens.length;
+    }
+  });
+
+  return bestArea;
+}
+
+function microsoftProjectContextBoundary(value: string) {
+  return /\b(?:campus|canop(?:y|ies)|driveway|enclosure|house|lot|phase|sequence)\b/i.test(value);
+}
+
+function normalizeMicrosoftProjectDate(value: string) {
+  const dateMatch = value.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
+  if (!dateMatch) return '';
+
+  const month = Number(dateMatch[1]);
+  const day = Number(dateMatch[2]);
+  const rawYear = Number(dateMatch[3]);
+  const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+  const parsed = parseFlexibleDate(`${month}/${day}/${year}`);
+  if (!parsed) return '';
+
+  return `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${year}`;
+}
+
+function scheduleProjectNameFromGanttRoot(value: string) {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const locationCode = normalized.match(
+    /^(?:plz\s+)?([a-z0-9][a-z0-9-]{2,})\b.*\b(?:campus|project|site)\b/i,
+  )?.[1];
+
+  return locationCode && /\d/.test(locationCode)
+    ? `${locationCode.toUpperCase()} Compliance Project`
+    : normalized;
+}
+
+export function normalizeMicrosoftProjectPdfRows({
+  contents,
+  sourceName,
+  projects = [],
+  projectAreas = [],
+  now = new Date(),
+}: {
+  contents: string;
+  sourceName: string;
+  projects?: string[];
+  projectAreas?: ProjectArea[];
+  now?: Date;
+}) {
+  const lines = contents.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const header = (lines[0] || '').split('\t').map(value => headerKey(value.trim()));
+
+  if (!header.includes('task name') || !header.includes('indent') || !header.includes('finish')) {
+    return [] as ScheduleItem[];
+  }
+
+  const importedAt = now.toISOString();
+  const rows = lines.slice(1).map(line => {
+    const cells = line.split('\t').map(value => value.trim());
+    return {
+      activityId: cell(cells, header, ['id', 'activity id'], 0),
+      taskName: cell(cells, header, ['task name', 'task', 'activity'], 1),
+      indent: Number(cell(cells, header, ['indent'], 2)) || 0,
+      duration: parseDuration(cell(cells, header, ['duration'], 3)),
+      startDate: normalizeMicrosoftProjectDate(cell(cells, header, ['start', 'start date'], 4)),
+      finishDate: normalizeMicrosoftProjectDate(cell(cells, header, ['finish', 'finish date'], 5)),
+      percentComplete: normalizePercent(
+        cell(cells, header, ['percent complete', '% complete'], 6),
+        'Not Started',
+      ),
+    };
+  }).filter(row => row.taskName && row.finishDate);
+  const contexts = new Map<number, {
+    scheduleProjectName: string;
+    projectName: string;
+    locationName: string;
+  }>();
+  const items: ScheduleItem[] = [];
+
+  rows.forEach((row, index) => {
+    Array.from(contexts.keys()).forEach(level => {
+      if (level >= row.indent) contexts.delete(level);
+    });
+
+    let parentContext = { scheduleProjectName: '', projectName: '', locationName: '' };
+    for (let level = row.indent - 1; level >= 0; level -= 1) {
+      const candidate = contexts.get(level);
+      if (candidate) {
+        parentContext = candidate;
+        break;
+      }
+    }
+
+    const directProject = bestScheduleProjectMatch(row.taskName, projects);
+    const directArea = bestScheduleAreaMatch(row.taskName, projectAreas);
+    const hasChildren = (rows[index + 1]?.indent ?? -1) > row.indent;
+    const directScheduleProject = row.indent === 0 && hasChildren
+      ? scheduleProjectNameFromGanttRoot(row.taskName)
+      : '';
+    const startsNamedBranch = Boolean(
+      hasChildren &&
+      parentContext.locationName &&
+      directProject &&
+      microsoftProjectContextBoundary(row.taskName),
+    );
+    const changesMappedArea = Boolean(
+      directArea &&
+      parentContext.locationName &&
+      directArea !== parentContext.locationName,
+    );
+    const context = {
+      scheduleProjectName: directScheduleProject || parentContext.scheduleProjectName,
+      projectName: (
+        startsNamedBranch || changesMappedArea
+          ? directProject
+          : ''
+      ) || parentContext.projectName || directProject,
+      locationName: directArea || (
+        hasChildren && microsoftProjectContextBoundary(row.taskName)
+          ? ''
+          : parentContext.locationName
+      ),
+    };
+
+    if (hasChildren) {
+      contexts.set(row.indent, context);
+      return;
+    }
+
+    if (row.indent === 0) return;
+
+    const percentComplete = clamp(row.percentComplete, 0, 100);
+    const status: ScheduleStatus = percentComplete >= 100
+      ? 'Complete'
+      : percentComplete > 0
+        ? 'In Progress'
+        : 'Not Started';
+    const metadataNotes = [
+      row.activityId ? `Activity ID: ${row.activityId}.` : null,
+      row.duration !== null ? `Duration: ${row.duration} day${row.duration === 1 ? '' : 's'}.` : null,
+      'Imported from a structured Microsoft Project PDF; verify highlighted fields before approval.',
+    ].filter(Boolean).join(' ');
+
+    items.push({
+      id: uid(),
+      scheduleProjectName: context.scheduleProjectName || null,
+      projectName: context.projectName,
+      locationName: directArea || context.locationName,
+      taskName: row.taskName,
+      startDate: row.startDate,
+      finishDate: row.finishDate,
+      milestone: row.duration === 0 ? row.taskName : '',
+      owner: '',
+      contractor: '',
+      durationDays: row.duration,
+      percentComplete,
+      priority: normalizePriority('', row.finishDate),
+      status,
+      notes: metadataNotes,
+      importedFrom: sourceName,
+      importedAt,
+      createdAt: importedAt,
+    });
+  });
+
+  return items;
 }
 
 function scheduleItemFromNormalizedTask(
@@ -520,12 +765,11 @@ function scheduleItemFromNormalizedTask(
   importedAt: string,
 ): ScheduleItem {
   const metadataNotes = [
-    task.notes,
+    task.notes ? stripScheduleDependencyMetadata(task.notes) : null,
     task.wbs ? `WBS: ${task.wbs}` : null,
     task.duration !== null ? `Duration: ${task.duration} day${task.duration === 1 ? '' : 's'}` : null,
     task.critical ? 'Critical: yes' : null,
     task.float !== null ? `Float: ${task.float}` : null,
-    task.dependencies.length ? `Dependencies: ${task.dependencies.join(', ')}` : null,
     task.needsReview
       ? `Review needed: ${task.reviewFields.join(', ')}.`
       : null,
@@ -629,7 +873,7 @@ export function normalizeScheduleImport({
       }],
       message:
         extraction?.message ||
-        'No readable schedule text was available. This import needs review and did not silently fail.',
+        'No schedule items were added automatically, so this import did not silently fail. No readable schedule text was available; OCR or review is required.',
       validationOutput: emptyValidationOutput,
     };
   }
@@ -668,9 +912,6 @@ export function normalizeScheduleImport({
       );
       const floatValue = parseDuration(
         cell(cells, headers, ['float', 'total float'], 12),
-      );
-      const dependencies = parseDependencies(
-        cell(cells, headers, ['dependencies', 'predecessors', 'predecessor'], 13),
       );
       const criticalText = cell(cells, headers, ['critical', 'critical path'], 14);
       const notes = cell(cells, headers, ['notes', 'comments'], 8);
@@ -715,8 +956,7 @@ export function normalizeScheduleImport({
         contractor: optionalText(contractor),
         critical,
         float: floatValue,
-        dependencies,
-        notes: optionalText(notes),
+        notes: optionalText(stripScheduleDependencyMetadata(notes)),
         needsReview: reviewFields.length > 0,
         reviewFields,
         confidence: confidenceFromScore(confidenceScore),
@@ -790,9 +1030,6 @@ function parseNotesValue(notes: string, label: string) {
 
 function taskFromSummary(summaryTask: ScheduleSummaryTask): PIENormalizedScheduleTask {
   const item = summaryTask.item;
-  const dependencies = parseDependencies(
-    parseNotesValue(item.notes, 'Dependencies') || '',
-  );
   const floatValue = parseDuration(parseNotesValue(item.notes, 'Float') || '');
   const duration = parseDuration(parseNotesValue(item.notes, 'Duration') || '');
   const critical =
@@ -835,8 +1072,7 @@ function taskFromSummary(summaryTask: ScheduleSummaryTask): PIENormalizedSchedul
     contractor: optionalText(item.contractor),
     critical,
     float: floatValue,
-    dependencies,
-    notes: optionalText(item.notes),
+    notes: optionalText(stripScheduleDependencyMetadata(item.notes)),
     sourceItem: item,
     needsReview: summaryTask.isNeedsReview || reviewFields.length > 0,
     reviewFields,
@@ -954,7 +1190,7 @@ export function buildScheduleIntelligence({
       : 'No inspection recommendation is available until schedule areas or inspection tasks are present.');
   const executiveSummary =
     scheduleSummary.totalItems === 0
-      ? 'DAVE has no schedule to summarize yet.'
+      ? 'There is no schedule to summarize yet.'
       : `${scheduleSummary.totalItems} schedule item${scheduleSummary.totalItems === 1 ? '' : 's'} understood: ${scheduleSummary.upcoming30Count} upcoming in 30 days, ${scheduleSummary.overdueCount} overdue, ${scheduleSummary.milestoneCount} milestone${scheduleSummary.milestoneCount === 1 ? '' : 's'}, confidence ${scheduleConfidence}.`;
   const missionBlockers = uniqueText([
     ...overdueTasks.slice(0, 3).map(task => `${task.task} is overdue (${dueStatusText(task.finish || '')}).`),
@@ -962,7 +1198,7 @@ export function buildScheduleIntelligence({
   ]);
   const missionActions = uniqueText([
     overdueTasks.length > 0 ? 'Review overdue schedule work and confirm recovery dates.' : null,
-    criticalTasks.length > 0 ? 'Verify critical path tasks with owner, area, and dependency context.' : null,
+    criticalTasks.length > 0 ? 'Verify critical path tasks with the responsible owner and current field status.' : null,
     recommendedWalkAreas.length > 0 ? `Walk ${recommendedWalkAreas.slice(0, 2).join(', ')}.` : null,
     reviewItems.length > 0 ? 'Review low-confidence schedule import items before relying on the schedule.' : null,
   ]);
@@ -989,14 +1225,6 @@ export function buildScheduleIntelligence({
       });
     }
 
-    task.dependencies.forEach(dependency => {
-      nodes.push({
-        id: `dependency:${normalized(dependency)}`,
-        type: 'dependency',
-        label: dependency,
-      });
-    });
-
     return nodes;
   });
   const graphRelationships = normalizedTasks.flatMap(task => {
@@ -1017,14 +1245,6 @@ export function buildScheduleIntelligence({
         type: 'owned_by',
       });
     }
-
-    task.dependencies.forEach(dependency => {
-      relationships.push({
-        from: `schedule:${task.id}`,
-        to: `dependency:${normalized(dependency)}`,
-        type: task.critical ? 'blocks' : 'depends_on',
-      });
-    });
 
     return relationships;
   });

@@ -739,6 +739,7 @@ function testIdempotentSynchronization() {
 
 function testProductionVisionPipelineArchitecture() {
   const functionSource = read('supabase/functions/pie-photo-vision/index.ts');
+  const authoritySource = read('supabase/functions/_shared/pie-vision-authority.ts');
   const providerSource = read('supabase/functions/_shared/pie-vision-provider.ts');
   const migration = read('supabase/migrations/20260702040000_production_vision_pipeline.sql');
   const service = read('services/PIEPhotoVisionPipeline.ts');
@@ -759,7 +760,8 @@ function testProductionVisionPipelineArchitecture() {
   assertContains(functionSource, 'loadAuthorizedImage', 'Edge Function must verify each photo and create signed image access');
   assertContains(functionSource, 'photo_evidence_not_found_or_cross_boundary', 'cross-boundary evidence must be rejected');
   assertContains(functionSource, 'persistRequestAndResult', 'request/result persistence required');
-  assertContains(functionSource, 'validateNormalizedOutput', 'provider output validation required');
+  assertContains(functionSource, 'validateVisionAuthority', 'provider output validation must run in the Edge Function');
+  assertContains(authoritySource, 'blockingObservationReasons', 'provider output validation must distinguish useful observations from blockers');
   assertContains(functionSource, 'pie_photo_semantic_comparison_results', 'comparison persistence required');
 
   assertContains(migration, 'public.pie_vision_analysis_requests', 'request table required');
@@ -836,7 +838,7 @@ function testBuild22MobilePhotoVisionIntegration() {
   assertContains(app, 'photoIntelligence', 'photo model must persist hydrated display state');
   assertContains(app, 'withDraftPhotoContext', 'photo-add flow must use saved local URI and project/area context before analysis');
   assertContains(app, 'buildAnalyzingPhotoIntelligenceState', 'first photo must enter a stable analysis state');
-  assertContains(app, 'No prior photo to compare', 'first photo must show no-prior comparison state');
+  assertContains(app, 'Baseline saved', 'first photo must show a positive baseline state');
   assertContains(app, 'Possible visual changes found', 'addition/removal/subtle-change result must be visible');
   assertContains(app, 'No reliable visual change', 'no-change result must be explicit');
   assertContains(app, 'Analysis unavailable · Retry', 'failure state must be visible');
@@ -851,19 +853,14 @@ function testBuild22MobilePhotoVisionIntegration() {
   assertContains(app, 'Possible concerns', 'low-confidence or unavailable states must show concerns/reasons');
   assertContains(app, 'Prior update used', 'UI must show which prior update was used');
   assertContains(app, 'Analysis time', 'UI must show analysis timestamp');
-  assertContains(app, 'DAVE diagnostics', 'development diagnostics panel must be present');
-  assertContains(app, 'Current project ID', 'diagnostics must include project ID');
-  assertContains(app, 'Current area ID', 'diagnostics must include area ID');
-  assertContains(app, 'Current photo reference', 'diagnostics must include current photo reference');
-  assertContains(app, 'Comparison persisted', 'diagnostics must include persistence status');
-  assertContains(app, 'UI result hydrated', 'diagnostics must include UI hydration status');
+  assert(!app.includes('Analysis diagnostics'), 'normal PM UI must not expose analysis diagnostics');
   assert(!app.includes('Provenance:'), 'normal UI must not expose internal provenance details');
   assertContains(capturePanel, 'PhotoIntelligenceCard', 'capture UI must present photo intelligence result');
   assertContains(capturePanel, 'Comparison strength', 'capture UI must show comparison strength');
   assertContains(capturePanel, 'Limitations:', 'capture UI must show capture limitations');
   assertContains(capturePanel, 'Project progress unsupported', 'capture UI must separate visible observation from progress');
-  assertContains(capturePanel, 'Photo comparison diagnostics', 'development UI must expose safe comparison diagnostics');
-  assertContains(capturePanel, 'Hydrated pair match', 'development diagnostics must show pair correlation');
+  assert(!capturePanel.includes('Photo comparison diagnostics'), 'capture UI must not expose internal diagnostics');
+  assertContains(workflow, 'resultPairMatchesRequestedPair', 'workflow must retain internal pair-correlation diagnostics');
   assertContains(workflow, 'previous photo unavailable', 'first-photo/no-prior failures must have a safe user-facing reason');
   assertContains(workflow, 'image could not be prepared', 'image preparation failures must have a safe user-facing reason');
   assertContains(workflow, 'analysis service unavailable', 'service failures must have a safe user-facing reason');
@@ -882,9 +879,9 @@ function testBuild22MobilePhotoVisionIntegration() {
     assert(!capturePanel.includes(forbidden), `capture UI must not expose ${forbidden}`);
   }
 
-  assert.strictEqual(appJson.expo.version, '1.0.22', 'Expo visible version must be Build 22');
-  assert.strictEqual(appJson.expo.ios.buildNumber, '22', 'iOS build number must be 22');
-  assert.strictEqual(appJson.expo.android.versionCode, 22, 'Android versionCode must be 22');
+  assert.strictEqual(appJson.expo.version, '1.0.23', 'Expo visible version must be Build 23');
+  assert.strictEqual(appJson.expo.ios.buildNumber, '23', 'iOS build number must be 23');
+  assert.strictEqual(appJson.expo.android.versionCode, 23, 'Android versionCode must be 23');
   assertContains(admin, 'True Photo Intelligence', 'More screen must visibly identify the Build 22 capability');
 }
 

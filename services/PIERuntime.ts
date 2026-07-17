@@ -1391,7 +1391,7 @@ function buildExecutiveOutputsFromState(
           projectName: state.projectName,
           question: 'Does this summary look correct?',
           reason:
-            'DAVE needs user verification before using photo comparison as project evidence.',
+            'User verification is needed before using photo comparison as project evidence.',
           priority: 'medium',
           confidence: photoProgressOutputs.comparisonConfidence,
           evidence: [photoProgressOutputs.photoProgressSummary],
@@ -1736,7 +1736,7 @@ function buildRelationshipConfidence({
     improvementSuggestions: uniqueText([
       relationshipCount > 3
         ? null
-        : 'Add updates, photos, schedule items, documents, or events so DAVE can connect project relationships.',
+        : 'Add updates, photos, schedule items, documents, or events to connect project relationships.',
       connectedEvidenceCount > 0
         ? null
         : 'Add evidence that connects recommendations to project records.',
@@ -1944,7 +1944,7 @@ function buildUnknownsFromState(
           title: 'Photo Progress Needs Review',
           summary: photoProgressOutputs.photoProgressSummary,
           impact:
-            'DAVE should not treat photo comparison output as project evidence until the user accepts or edits it.',
+            'Photo comparison output should not be treated as project evidence until the user accepts or edits it.',
           suggestedAction: 'Does this summary look correct? Accept, edit, or reject.',
           source: 'photo-progress' as const,
           confidence: photoProgressOutputs.comparisonConfidence,
@@ -1976,7 +1976,7 @@ function buildUnknownsFromState(
           title: 'Location Needs Confirmation',
           summary: location.confirmationPrompt,
           impact:
-            'DAVE should not assume the exact project area until the user confirms it.',
+            'The exact project area should not be assumed until the user confirms it.',
           suggestedAction: location.confirmationPrompt,
           source: 'intelligence-engine' as const,
           confidence: location.confidence,
@@ -1990,7 +1990,7 @@ function buildUnknownsFromState(
           projectName: state.projectName,
           title: 'No DAVE Evidence Yet',
           summary:
-            'DAVE does not have field evidence for this project in the current local data.',
+            'The current local data has no field evidence for this project.',
           impact:
             'Recommendations will stay broad until updates, photos, schedule items, or documents are available.',
           suggestedAction: 'Capture current project progress.',
@@ -2006,7 +2006,7 @@ function buildUnknownsFromState(
       title: 'Mission Evidence Needed',
       summary: item,
       impact:
-        'DAVE needs this information to complete the current mission with stronger confidence.',
+        'This information is needed to complete the current mission with stronger confidence.',
       suggestedAction: item,
       source: 'mission-engine' as const,
       confidence: missionOutputs.currentMission.confidence,
@@ -2144,8 +2144,8 @@ function buildBeliefsFromState(
       projectName: state.projectName,
       statement:
         relationshipConfidence.relationshipCount > 0
-          ? `DAVE has connected ${relationshipConfidence.relationshipCount} project relationship${relationshipConfidence.relationshipCount === 1 ? '' : 's'} in the Knowledge Graph.`
-          : 'DAVE has not connected enough project relationships yet.',
+          ? `${relationshipConfidence.relationshipCount} project relationship${relationshipConfidence.relationshipCount === 1 ? '' : 's'} connected in the Knowledge Graph.`
+          : 'Not enough project relationships have been connected yet.',
       confidence: relationshipConfidence.level,
       supportingEvidence: graphOutputs.graphInsights.slice(0, 3).map(insight =>
         runtimeBeliefEvidence({
@@ -2209,7 +2209,7 @@ function buildBeliefsFromState(
       statement:
         state.intelligence.metrics.scheduleItemCount > 0
           ? `DAVE currently believes schedule status is ${state.intelligence.scheduleStatus}.`
-          : 'DAVE does not have enough schedule evidence to confirm schedule status.',
+          : 'There is not enough schedule evidence to confirm schedule status.',
       confidence:
         state.intelligence.metrics.scheduleItemCount > 0
           ? state.intelligence.confidence.level
@@ -2234,7 +2234,7 @@ function buildBeliefsFromState(
       projectName: state.projectName,
       statement: location.currentArea
         ? `DAVE currently believes the active area is ${location.currentArea}.`
-        : 'DAVE has not confirmed the current project area.',
+        : 'The current project area has not been confirmed.',
       confidence: location.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2260,7 +2260,7 @@ function buildBeliefsFromState(
       projectName: state.projectName,
       statement: latestEvent
         ? `DAVE believes the latest notable activity is ${latestEvent.title}.`
-        : 'DAVE does not have recent activity history for this project.',
+        : 'There is no recent activity history for this project.',
       confidence: latestEvent?.confidence ?? 'low',
       supportingEvidence: latestEvent
         ? [projectEventBeliefEvidence(latestEvent)]
@@ -2822,7 +2822,7 @@ function decisionPreparednessFactor(
     reason: `${decisionCount} decision${decisionCount === 1 ? '' : 's'} queued, ${approvalCount} requiring approval, with ${state.decisionQueue.confidence} decision confidence.`,
     missingItems,
     improvementSuggestions: uniqueText([
-      decisionCount > 0 ? null : 'Capture more project evidence so DAVE can build a decision queue.',
+      decisionCount > 0 ? null : 'Capture more project evidence to build a decision queue.',
       approvalCount > 0 ? 'Review approval-required decisions.' : null,
       ...trustScore.improvementSuggestions.slice(0, 1),
     ]),
@@ -2973,7 +2973,7 @@ function makeCurrentUnderstanding(
       graphConcern ||
       firstConcern?.summary ||
       response.whatConcernsPIE ||
-      'DAVE does not see an urgent concern from current local evidence.',
+      'No urgent concern is visible in current local evidence.',
     whatPIERecommends,
     whatPIENeedsFromYou:
       executiveNeed ||
@@ -3521,10 +3521,10 @@ function executiveBriefToInsight(
     id: `runtime-executive-${runtimeSlug(brief.id)}`,
     projectName: topPriority?.projectName || projectName,
     title: topPriority
-      ? 'DAVE Executive Recommendation'
-      : 'DAVE Executive Monitoring',
+      ? 'Executive Recommendation'
+      : 'Executive Monitoring',
     summary: topPriority
-      ? `DAVE Executive recommends: ${topPriority.recommendedAction}`
+      ? `Executive recommendation: ${topPriority.recommendedAction}`
       : brief.executiveSummary,
     whyItMatters: topPriority?.summary || brief.trustExplanation,
     source: 'pie-executive',
@@ -3622,7 +3622,7 @@ function photoProgressToInsight(
     title: 'Photo Progress Comparison',
     summary: photoProgressOutputs.photoProgressSummary,
     whyItMatters: photoProgressOutputs.comparisonNeedsReview
-      ? 'DAVE needs user verification before treating this comparison as project evidence.'
+      ? 'User verification is needed before treating this comparison as project evidence.'
       : 'Accepted photo progress can support Review, Executive, Mission, Knowledge Graph, and Combined Update context.',
     source: 'photo-progress',
     confidence: photoProgressOutputs.comparisonConfidence,
@@ -3676,7 +3676,7 @@ function graphGapToUnknown(gap: PIEGraphGap): PIEUnknown {
     title: gap.title,
     summary: gap.summary,
     impact:
-      'DAVE has weaker relationship confidence until this missing project context is filled.',
+      'Relationship confidence remains weaker until this missing project context is filled.',
     suggestedAction: gap.suggestedAction,
     source: 'knowledge-graph',
     confidence: gap.confidence,
@@ -3691,7 +3691,7 @@ function evidenceGapToUnknown(gap: PIEvidenceGap): PIEUnknown {
     title: gap.title,
     summary: gap.summary,
     impact:
-      'DAVE has weaker fused evidence until this missing input is resolved.',
+      'Fused evidence remains weaker until this missing input is resolved.',
     suggestedAction: gap.suggestedAction,
     source: 'evidence-fusion',
     confidence: gap.confidence,
@@ -3706,7 +3706,7 @@ function evidenceConflictToUnknown(conflict: PIEvidenceConflict): PIEUnknown {
     title: conflict.title,
     summary: conflict.summary,
     impact:
-      'DAVE should not overstate the recommendation until this evidence conflict is resolved.',
+      'The recommendation should not be overstated until this evidence conflict is resolved.',
     suggestedAction: conflict.suggestedAction,
     source: 'evidence-fusion',
     confidence: conflict.confidence,
@@ -3740,7 +3740,7 @@ function briefSummary(
   const mission = `Current Mission: ${parts.missionOutputs.currentMission.title}.`;
 
   if (type === 'walk') {
-    return `${mission} DAVE is ready to guide a project walk for ${state.projectName}. Current priority: ${priority}.`;
+    return `${mission} A guided project walk is ready for ${state.projectName}. Current priority: ${priority}.`;
   }
 
   if (type === 'executive') {
@@ -3755,7 +3755,7 @@ function briefSummary(
     return `${mission} ${state.projectName}: DAVE understands ${state.evidence.length} evidence signal${state.evidence.length === 1 ? '' : 's'} and recommends ${priority}.`;
   }
 
-  return `${mission} ${state.projectName}: today's highest priority is ${priority}; DAVE is at ${confidence}.`;
+  return `${mission} ${state.projectName}: today's highest priority is ${priority}; confidence is ${confidence}.`;
 }
 
 function projectWalkNeed(parts: RuntimeBuildParts) {
@@ -3915,7 +3915,7 @@ function evidenceFreshnessFactor(
       score: 25,
       weight: 1.2,
       status: 'missing',
-      reason: 'DAVE does not have a dated recent activity signal.',
+      reason: 'There is no dated recent activity signal.',
       improvementSuggestion: 'Capture a current update or import recent activity.',
     });
   }
@@ -4005,7 +4005,7 @@ function photoCoverageFactor(
       score: 25,
       weight: 0.9,
       status: 'missing',
-      reason: 'DAVE does not have photos for this project.',
+      reason: 'There are no photos for this project.',
       improvementSuggestion: 'Capture field photos with captions and action status.',
     });
   }
@@ -4042,7 +4042,7 @@ function scheduleCompletenessFactor(
       score: 25,
       weight: 1,
       status: 'missing',
-      reason: 'DAVE does not have schedule items for this project.',
+      reason: 'There are no schedule items for this project.',
       improvementSuggestion: 'Import or enter schedule items for the project.',
     });
   }
@@ -4120,7 +4120,7 @@ function recentUpdatesFactor(
       weight: 1.1,
       status: 'weak',
       reason: `Last update is ${daysSinceActivityLabel(daysSinceLastUpdate)} old.`,
-      improvementSuggestion: 'Capture a fresh update to improve DAVE confidence.',
+      improvementSuggestion: 'Capture a fresh update to improve confidence.',
     });
   }
 
@@ -4148,7 +4148,7 @@ function openQuestionsFactor(
       score: 100,
       weight: 1,
       status: 'strong',
-      reason: 'DAVE does not have unresolved questions in the current runtime state.',
+      reason: 'There are no unresolved questions in the current runtime state.',
       improvementSuggestion: 'Keep reviewing DAVE questions when new gaps appear.',
     });
   }
@@ -4187,7 +4187,7 @@ function conflictingEvidenceFactor(
       score: 100,
       weight: 1,
       status: 'strong',
-      reason: 'DAVE does not see sync conflicts or explicit conflicting evidence.',
+      reason: 'There are no sync conflicts or explicit conflicting evidence.',
       improvementSuggestion: 'Review conflicts if sync or field evidence changes.',
     });
   }
@@ -4508,7 +4508,7 @@ function understandingRecentUpdatesFactor(
       score: 20,
       weight: 1.1,
       present: false,
-      reason: 'DAVE does not have a saved update for this project.',
+      reason: 'There is no saved update for this project.',
       missingInformation: 'No recent project update.',
       improvementSuggestion: 'Capture the first project update.',
     });
@@ -4531,7 +4531,7 @@ function understandingRecentUpdatesFactor(
     present: score >= 70,
     reason: `Last update is ${daysSinceActivityLabel(daysSinceLastUpdate)} old.`,
     missingInformation: score >= 70 ? null : 'Recent field update is stale or missing.',
-    improvementSuggestion: 'Capture current progress so DAVE can understand today.',
+    improvementSuggestion: 'Capture current progress to establish today’s status.',
   });
 }
 
@@ -4547,7 +4547,7 @@ function understandingPhotoCoverageFactor(
       score: 20,
       weight: 1,
       present: false,
-      reason: 'DAVE does not have field photos for this project.',
+      reason: 'There are no field photos for this project.',
       missingInformation: 'No field photos.',
       improvementSuggestion: 'Capture photos with captions and action status.',
     });
@@ -4586,7 +4586,7 @@ function understandingScheduleCompletenessFactor(
       score: 20,
       weight: 1,
       present: false,
-      reason: 'DAVE does not have schedule items for this project.',
+      reason: 'There are no schedule items for this project.',
       missingInformation: 'No project schedule.',
       improvementSuggestion: 'Import or enter schedule items.',
     });
@@ -4638,10 +4638,10 @@ function understandingOpenQuestionsFactor(
     present: openQuestionCount === 0,
     reason:
       openQuestionCount === 0
-        ? 'DAVE does not have unresolved reasoning questions.'
+        ? 'There are no unresolved reasoning questions.'
         : `${openQuestionCount} DAVE question${openQuestionCount === 1 ? '' : 's'} need review.`,
     missingInformation:
-      openQuestionCount === 0 ? null : 'DAVE has unanswered project questions.',
+      openQuestionCount === 0 ? null : 'There are unanswered project questions.',
     improvementSuggestion: 'Answer DAVE questions or confirm missing context.',
   });
 }
@@ -4667,7 +4667,7 @@ function understandingUnknownsFactor(
     present: unknownCount === 0,
     reason:
       unknownCount === 0
-        ? 'DAVE does not see major unknowns in the current runtime state.'
+        ? 'There are no major unknowns in the current runtime state.'
         : `${unknownCount} unknown${unknownCount === 1 ? '' : 's'} limit DAVE's understanding.`,
     missingInformation:
       unknownCount === 0 ? null : unknowns[0]?.summary || 'Project context is incomplete.',
@@ -4697,7 +4697,7 @@ function understandingConflictingEvidenceFactor(
     present: conflictCount === 0,
     reason:
       conflictCount === 0
-        ? 'DAVE does not see conflicting local or cloud evidence.'
+        ? 'There is no conflicting local or cloud evidence.'
         : `${conflictCount} conflict signal${conflictCount === 1 ? '' : 's'} detected.`,
     missingInformation:
       conflictCount === 0 ? null : 'Conflicting project evidence needs resolution.',

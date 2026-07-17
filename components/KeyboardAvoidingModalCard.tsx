@@ -8,19 +8,26 @@ import {
 } from 'react-native';
 
 export function KeyboardAvoidingModalCard({
+  containerStyle,
   frameStyle,
   contentContainerStyle,
   children,
 }: {
+  containerStyle?: StyleProp<ViewStyle>;
   frameStyle: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
   children: ReactNode;
 }) {
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView
+      style={containerStyle}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       <ScrollView
         style={frameStyle}
         contentContainerStyle={contentContainerStyle}
+        contentInsetAdjustmentBehavior="automatic"
+        automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >

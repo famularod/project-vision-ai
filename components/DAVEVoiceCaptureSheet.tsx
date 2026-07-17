@@ -10,7 +10,7 @@ import {
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
 import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
 import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
@@ -19,20 +19,46 @@ import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 
 const MAX_RECORDING_SECONDS = 180;
 
+export type DAVEVoiceTaskOption = {
+  id: string;
+  taskName: string;
+  detail: string;
+};
+
 export function DAVEVoiceCaptureSheet({
   visible,
   projectName,
+  candidateProjects = [],
+  candidateTasks = [],
+  selectedTaskId = null,
   walkContext,
   candidateLocations,
+  title = 'Capture Memory',
+  prompt = 'Record a project memory',
+  guidance = 'Commitment, decision, issue, request, schedule change, or follow-up.',
+  continueLabel = 'Review Memory',
+  showWalkContext = true,
   onMemoryReady,
+  onProjectChange,
+  onTaskChange,
   onTypeInstead,
   onCancel,
 }: {
   visible: boolean;
   projectName: string;
-  walkContext: DAVEProjectWalkContext;
+  candidateProjects?: readonly string[];
+  candidateTasks?: readonly DAVEVoiceTaskOption[];
+  selectedTaskId?: string | null;
+  walkContext?: DAVEProjectWalkContext;
   candidateLocations: readonly string[];
+  title?: string;
+  prompt?: string;
+  guidance?: string;
+  continueLabel?: string;
+  showWalkContext?: boolean;
   onMemoryReady: (result: DAVEVoiceUnderstandingResponse) => void;
+  onProjectChange?: (projectName: string) => void;
+  onTaskChange?: (taskId: string | null) => void;
   onTypeInstead: () => void;
   onCancel: () => void;
 }) {
@@ -42,6 +68,8 @@ export function DAVEVoiceCaptureSheet({
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [taskPickerOpen, setTaskPickerOpen] = useState(false);
+  const [taskSearch, setTaskSearch] = useState('');
   const recordingActiveRef = useRef(false);
   const transcriptionOperationRef = useRef(0);
 
@@ -49,7 +77,18 @@ export function DAVEVoiceCaptureSheet({
     if (!visible) return;
     setError(null);
     setIsTranscribing(false);
+    setTaskPickerOpen(false);
+    setTaskSearch('');
   }, [visible]);
+
+  const selectedTask = candidateTasks.find(task => task.id === selectedTaskId) || null;
+  const normalizedTaskSearch = taskSearch.trim().toLowerCase();
+  const visibleTasks = candidateTasks
+    .filter(task =>
+      !normalizedTaskSearch ||
+      `${task.taskName} ${task.detail}`.toLowerCase().includes(normalizedTaskSearch),
+    )
+    .slice(0, 10);
 
   useEffect(() => {
     if (!recordingActiveRef.current || recorderState.isRecording || !recorderState.url) return;
@@ -78,7 +117,7 @@ export function DAVEVoiceCaptureSheet({
       recorder.record({ forDuration: MAX_RECORDING_SECONDS });
     } catch {
       recordingActiveRef.current = false;
-      setError('DAVE could not start recording. Try again or type the memory instead.');
+      setError('Recording could not start. Try again or type the memory instead.');
     }
   }
 
@@ -95,7 +134,7 @@ export function DAVEVoiceCaptureSheet({
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
     } catch {
       recordingActiveRef.current = false;
-      setError('DAVE could not finish this recording. Try again.');
+      setError('The recording could not finish. Try again.');
     }
   }
 
@@ -116,7 +155,7 @@ export function DAVEVoiceCaptureSheet({
       onMemoryReady(result);
     } catch (reason) {
       if (operation !== transcriptionOperationRef.current) return;
-      setError(reason instanceof Error ? reason.message : 'DAVE could not transcribe this recording.');
+      setError(reason instanceof Error ? reason.message : 'The recording could not be transcribed.');
     } finally {
       if (operation === transcriptionOperationRef.current) setIsTranscribing(false);
     }
@@ -147,22 +186,118 @@ export function DAVEVoiceCaptureSheet({
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={() => { void cancel(); }}>
       <View style={styles.backdrop}>
-        <KeyboardAvoidingModalCard frameStyle={styles.sheet} contentContainerStyle={styles.content}>
+        <KeyboardAvoidingModalCard
+          containerStyle={styles.sheetContainer}
+          frameStyle={styles.sheet}
+          contentContainerStyle={styles.content}
+        >
           <View style={styles.handle} />
           <View style={styles.header}>
             <View style={styles.main}>
-              <Text style={styles.title}>Capture Memory</Text>
-              <Text style={styles.subtitle}>{projectName}</Text>
+              <Text style={styles.title}>{title}</Text>
+              <Text style={styles.subtitle}>{projectName || 'Choose a project'}</Text>
             </View>
             <TouchableOpacity style={styles.closeButton} onPress={() => { void cancel(); }} accessibilityLabel="Cancel memory capture">
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? 'Recording ready' : 'Tell DAVE what to remember'}</Text>
-          <Text style={styles.guidance}>Commitment, decision, issue, request, schedule change, or follow-up.</Text>
+          {!projectName && candidateProjects.length > 0 ? (
+            <View style={styles.projectChoiceCard}>
+              <Text style={styles.projectChoiceTitle}>Which project is this about?</Text>
+              <View style={styles.projectChoices}>
+                {candidateProjects.map(candidate => (
+                  <TouchableOpacity
+                    key={candidate}
+                    style={styles.projectChoiceButton}
+                    onPress={() => onProjectChange?.(candidate)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Use ${candidate} for Talk`}
+                  >
+                    <Ionicons name="folder-outline" size={18} color={colors.primary} />
+                    <Text style={styles.projectChoiceText}>{candidate}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          ) : null}
 
-          <View style={styles.walkCard}>
+          {projectName && candidateTasks.length > 0 ? (
+            <View style={styles.taskContextCard}>
+              <TouchableOpacity
+                style={styles.taskContextHeader}
+                onPress={() => setTaskPickerOpen(open => !open)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: taskPickerOpen }}
+              >
+                <View style={styles.main}>
+                  <Text style={styles.taskContextLabel}>Specific task (optional)</Text>
+                  <Text style={styles.taskContextValue} numberOfLines={2}>
+                    {selectedTask?.taskName || 'General project conversation'}
+                  </Text>
+                </View>
+                <Ionicons
+                  name={taskPickerOpen ? 'chevron-up' : 'chevron-down'}
+                  size={20}
+                  color={colors.primary}
+                />
+              </TouchableOpacity>
+
+              {taskPickerOpen ? (
+                <View style={styles.taskPicker}>
+                  <TextInput
+                    style={styles.taskSearch}
+                    value={taskSearch}
+                    onChangeText={setTaskSearch}
+                    placeholder="Search tasks"
+                    placeholderTextColor={colors.mutedText}
+                    autoCorrect={false}
+                  />
+                  <TouchableOpacity
+                    style={[styles.taskOption, !selectedTaskId && styles.taskOptionSelected]}
+                    onPress={() => {
+                      onTaskChange?.(null);
+                      setTaskPickerOpen(false);
+                    }}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: !selectedTaskId }}
+                  >
+                    <Ionicons name={!selectedTaskId ? 'radio-button-on' : 'radio-button-off'} size={21} color={colors.primary} />
+                    <Text style={styles.taskOptionName}>General project conversation</Text>
+                  </TouchableOpacity>
+                  {visibleTasks.map(task => {
+                    const selected = task.id === selectedTaskId;
+                    return (
+                      <TouchableOpacity
+                        key={task.id}
+                        style={[styles.taskOption, selected && styles.taskOptionSelected]}
+                        onPress={() => {
+                          onTaskChange?.(task.id);
+                          setTaskPickerOpen(false);
+                        }}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected }}
+                      >
+                        <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={21} color={colors.primary} />
+                        <View style={styles.main}>
+                          <Text style={styles.taskOptionName}>{task.taskName}</Text>
+                          <Text style={styles.taskOptionDetail}>{task.detail}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  {visibleTasks.length === 0 ? (
+                    <Text style={styles.taskEmpty}>No matching tasks.</Text>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? 'Recording ready' : prompt}</Text>
+          <Text style={styles.guidance}>{guidance}</Text>
+
+          {showWalkContext && walkContext ? <View style={styles.walkCard}>
             <View style={styles.walkHeader}>
               <Ionicons name="footsteps-outline" size={18} color={colors.primary} />
               <Text style={styles.walkTitle}>Project Walk</Text>
@@ -170,7 +305,7 @@ export function DAVEVoiceCaptureSheet({
             <Text style={styles.walkLocation}>{walkContext.locationMessage}</Text>
             <Text style={styles.walkPrompt}>{walkContext.prompt.guidance}</Text>
             <Text style={styles.walkWhy}>Why: {walkContext.prompt.whyItMatters}</Text>
-          </View>
+          </View> : null}
 
           <View style={[styles.recorderCard, recorderState.isRecording && styles.recorderCardActive]}>
             <Text style={styles.timer}>{formatDuration(elapsed)}</Text>
@@ -189,7 +324,7 @@ export function DAVEVoiceCaptureSheet({
             <>
               <TouchableOpacity style={styles.continueButton} disabled={isTranscribing} onPress={() => { void transcribe(); }} accessibilityRole="button">
                 <Ionicons name="sparkles-outline" size={20} color="#FFF" />
-                <Text style={styles.primaryText}>{isTranscribing ? 'Preparing review…' : 'Review Memory'}</Text>
+                <Text style={styles.primaryText}>{isTranscribing ? 'Preparing…' : continueLabel}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.secondaryButton} disabled={isTranscribing} onPress={() => { void startRecording(); }} accessibilityRole="button">
                 <Ionicons name="refresh" size={19} color={colors.primary} />
@@ -197,14 +332,19 @@ export function DAVEVoiceCaptureSheet({
               </TouchableOpacity>
             </>
           ) : (
-            <TouchableOpacity style={styles.recordButton} onPress={() => { void startRecording(); }} accessibilityRole="button">
+            <TouchableOpacity
+              style={[styles.recordButton, !projectName && styles.buttonDisabled]}
+              onPress={() => { void startRecording(); }}
+              accessibilityRole="button"
+              disabled={!projectName}
+            >
               <Ionicons name="mic" size={23} color="#FFF" />
               <Text style={styles.primaryText}>Start Recording</Text>
             </TouchableOpacity>
           )}
 
           {!recorderState.isRecording ? (
-            <TouchableOpacity style={styles.typeButton} disabled={isTranscribing} onPress={() => { void typeInstead(); }} accessibilityRole="button">
+            <TouchableOpacity style={styles.typeButton} disabled={isTranscribing || !projectName} onPress={() => { void typeInstead(); }} accessibilityRole="button">
               <Text style={styles.typeText}>Type Instead</Text>
             </TouchableOpacity>
           ) : null}
@@ -247,14 +387,31 @@ function formatDuration(milliseconds: number) {
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(16,24,40,0.35)', justifyContent: 'flex-end' },
-  sheet: { maxHeight: '88%', backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24 },
-  content: { paddingHorizontal: spacing.lg, paddingBottom: 36 },
+  sheetContainer: { flex: 1, justifyContent: 'flex-end' },
+  sheet: { maxHeight: '92%', backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24 },
+  content: { paddingHorizontal: spacing.lg, paddingBottom: 44 },
   handle: { width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: 'center', marginTop: 9 },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingTop: spacing.md, paddingBottom: spacing.lg },
   main: { flex: 1 },
   title: { color: colors.text, fontSize: 25, fontWeight: '800' },
   subtitle: { color: colors.mutedText, fontSize: 14, marginTop: 3 },
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
+  projectChoiceCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md, marginBottom: spacing.lg },
+  projectChoiceTitle: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '800', marginBottom: spacing.sm },
+  projectChoices: { gap: spacing.sm },
+  projectChoiceButton: { minHeight: 48, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
+  projectChoiceText: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: '700', flex: 1 },
+  taskContextCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.lg, overflow: 'hidden' },
+  taskContextHeader: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
+  taskContextLabel: { color: colors.mutedText, fontSize: 12, lineHeight: 16, fontWeight: '800', textTransform: 'uppercase' },
+  taskContextValue: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: '800', marginTop: 2 },
+  taskPicker: { borderTopWidth: 1, borderTopColor: colors.border, gap: spacing.xs, padding: spacing.sm },
+  taskSearch: { minHeight: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 15, paddingHorizontal: spacing.md, marginBottom: spacing.xs },
+  taskOption: { minHeight: 54, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
+  taskOptionSelected: { backgroundColor: colors.primarySoft },
+  taskOptionName: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '700', flexShrink: 1 },
+  taskOptionDetail: { color: colors.mutedText, fontSize: 12, lineHeight: 17, marginTop: 2 },
+  taskEmpty: { color: colors.mutedText, fontSize: 14, lineHeight: 20, padding: spacing.md, textAlign: 'center' },
   prompt: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
   guidance: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 5, textAlign: 'center' },
   walkCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.primarySoft, padding: spacing.md, marginTop: spacing.lg },
@@ -269,6 +426,7 @@ const styles = StyleSheet.create({
   recordingLimit: { color: colors.mutedText, fontSize: 12, marginTop: 4 },
   playbackButton: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: spacing.md, paddingHorizontal: spacing.md },
   recordButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
+  buttonDisabled: { opacity: 0.45 },
   stopButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.danger, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
   continueButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
   secondaryButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },

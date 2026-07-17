@@ -90,6 +90,14 @@ const supportedQuestions = [
   ['What changed?', 'what_changed'],
   ['Why is this project At Risk?', 'why_at_risk'],
   ['What should I do next?', 'next_action'],
+  ['How is this project doing?', 'project_status'],
+  ['How is project 2375 going?', 'project_status'],
+  ['What needs attention?', 'needs_attention'],
+  ['What is the latest field update?', 'latest_field_update'],
+  ['What commitments are still open?', 'open_commitments'],
+  ['How reliable is the project evidence?', 'evidence_confidence'],
+  ['What is overdue?', 'overdue_commitments'],
+  ["What's coming up?", 'next_action'],
   ['What commitments are overdue?', 'overdue_commitments'],
   ['What safety issues exist?', 'safety_issues'],
   ['What evidence am I missing?', 'missing_evidence'],
@@ -171,6 +179,60 @@ assert.match(weak.answer, /^Evidence note: Project evidence is weak\./);
 assert(weak.limitations.some(item => /evidence is weak/i.test(item)));
 const weakUnknown = askDAVE({ question: 'Predict the weather.', intelligence: weakIntelligence });
 assert.strictEqual(weakUnknown.answer, "I don't have enough project evidence to answer that.");
+
+const scheduleIntelligence = buildProjectIntelligence({
+  projectId: 'project-2375',
+  projectName: '2375 Compliance Project',
+  updates: [],
+  documents: [],
+  scheduleItems: [
+    {
+      id: 'schedule-overdue',
+      scheduleProjectName: '2375 Compliance Project',
+      projectName: '2375 Compliance Project',
+      taskName: 'Electrical rough-in',
+      finishDate: '2026-07-10',
+      status: 'In Progress',
+      percentComplete: 50,
+      durationDays: 2,
+      createdAt: '2026-07-01T08:00:00.000Z',
+    },
+    {
+      id: 'schedule-complete',
+      scheduleProjectName: '2375 Compliance Project',
+      projectName: '2375 Compliance Project',
+      taskName: 'Underground inspection',
+      finishDate: '2026-07-08',
+      status: 'Complete',
+      percentComplete: 100,
+      durationDays: 2,
+      createdAt: '2026-07-01T08:00:00.000Z',
+    },
+    {
+      id: 'schedule-upcoming',
+      scheduleProjectName: '2375 Compliance Project',
+      projectName: '2375 Compliance Project',
+      taskName: 'Final electrical inspection',
+      finishDate: '2026-07-15',
+      status: 'Not Started',
+      percentComplete: 0,
+      durationDays: 1,
+      createdAt: '2026-07-01T08:00:00.000Z',
+    },
+  ],
+  now,
+});
+const scheduleStatus = askDAVE({ question: 'How is project 2375 going?', intelligence: scheduleIntelligence });
+assert.match(scheduleStatus.answer, /1 of 3 tasks complete/i);
+assert.match(scheduleStatus.answer, /60% overall progress/i);
+assert.match(scheduleStatus.answer, /1 incomplete task is overdue/i);
+assert.match(scheduleStatus.answer, /Electrical rough-in/i);
+const scheduleAttention = askDAVE({ question: 'What needs attention?', intelligence: scheduleIntelligence });
+assert.match(scheduleAttention.answer, /schedule task is overdue/i);
+const scheduleOverdue = askDAVE({ question: 'What is overdue?', intelligence: scheduleIntelligence });
+assert.match(scheduleOverdue.answer, /Electrical rough-in/i);
+const scheduleNext = askDAVE({ question: "What's coming up?", intelligence: scheduleIntelligence });
+assert.match(scheduleNext.answer, /Electrical rough-in/i);
 
 const serviceSource = fs.readFileSync(path.join(root, 'services/DAVEAsk.ts'), 'utf8');
 for (const forbiddenDependency of [

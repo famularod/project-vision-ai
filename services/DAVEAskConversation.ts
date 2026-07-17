@@ -16,6 +16,9 @@ export type DAVEAskConversationEntry = {
   question: string;
   answer: DAVEAskAnswer;
   createdAt: string;
+  contextStatus?: 'standalone' | 'resolved_follow_up' | 'ambiguous_follow_up';
+  resolvedQuestion?: string | null;
+  priorEntryId?: string | null;
 };
 
 export type DAVEAskWhyModel = {

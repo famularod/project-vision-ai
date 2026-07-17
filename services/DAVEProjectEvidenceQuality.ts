@@ -103,7 +103,7 @@ export function buildProjectEvidenceQuality(
       missingValue: 'Not recorded',
       currentValue: 'Evidence recorded recently',
       limitedValue: 'Evidence recorded, but not recently',
-      weakWhy: 'Without a recorded inspection artifact, DAVE cannot establish inspection status.',
+      weakWhy: 'Without a recorded inspection artifact, inspection status cannot be established.',
       limitedWhy: 'Older inspection evidence may not represent the current inspection status.',
     }),
     freshnessSignal({
@@ -129,7 +129,7 @@ export function buildProjectEvidenceQuality(
       missingValue: 'No current documents',
       currentValue: 'Added or updated recently',
       limitedValue: 'No recent document activity',
-      weakWhy: 'Without project documents, DAVE has less recorded context for verification and follow-up.',
+      weakWhy: 'Without project documents, there is less recorded context for verification and follow-up.',
       limitedWhy: 'Older documents may omit recent approvals, revisions, or field decisions.',
     }),
     analysisSignal(input.projectId, recentPhotos.length, analyzedPhotos.length, completedAnalyses.length, failedAnalyses.length),

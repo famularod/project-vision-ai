@@ -5,6 +5,31 @@ const ts = require('typescript');
 const repoRoot = path.resolve(__dirname, '..');
 const sourceRoots = ['App.tsx', 'components', 'providers', 'screens', 'services'];
 const sourceFiles = [];
+const visibleDaveFiles = new Set([
+  'App.tsx',
+  'screens/AdminScreen.tsx',
+  'screens/ReportsScreen.tsx',
+  'components/DAVEAskExperience.tsx',
+  'components/DAVETypedCaptureSheet.tsx',
+  'components/DAVEVoiceCaptureSheet.tsx',
+  'components/DAVECaptureConfirmationSheet.tsx',
+  'components/DAVECaptureMemoryDetailSheet.tsx',
+  'components/ManageAreasPanel.tsx',
+  'components/PIEPanel.tsx',
+  'services/DAVEDailyBrief.ts',
+  'services/DAVEProjectReality.ts',
+  'services/DAVEProjectEvidenceQuality.ts',
+  'services/PIEAttentionEngine.ts',
+  'services/PIEConversationEngine.ts',
+  'services/PIEDecisionEngine.ts',
+  'services/PIEEvidenceFusion.ts',
+  'services/PIEExperienceEngine.ts',
+  'services/PIEMissingEvidence.ts',
+  'services/PIEPhotoVisionMobileWorkflow.ts',
+  'services/PIEReporter.ts',
+  'services/PIEScheduleReconciliation.ts',
+  'services/ProjectIntelligenceEngine.ts',
+]);
 
 function collectSourceFiles(relativePath) {
   const absolutePath = path.join(repoRoot, relativePath);
@@ -22,6 +47,7 @@ function collectSourceFiles(relativePath) {
 sourceRoots.forEach(collectSourceFiles);
 
 const violations = [];
+const visibleDaveViolations = [];
 for (const relativePath of sourceFiles) {
   const absolutePath = path.join(repoRoot, relativePath);
   const source = fs.readFileSync(absolutePath, 'utf8');
@@ -41,14 +67,33 @@ for (const relativePath of sourceFiles) {
       ts.isTemplateMiddle(node) ||
       ts.isTemplateTail(node) ||
       ts.isJsxText(node);
+    const isModuleSpecifier = ts.isStringLiteral(node) && (
+      (ts.isImportDeclaration(node.parent) && node.parent.moduleSpecifier === node) ||
+      (ts.isExportDeclaration(node.parent) && node.parent.moduleSpecifier === node)
+    );
     if (isUserReadableText && /\bPIE\b/.test(node.text)) {
       const location = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
       violations.push(`${relativePath}:${location.line + 1}`);
+    }
+    if (
+      visibleDaveFiles.has(relativePath) &&
+      isUserReadableText &&
+      !isModuleSpecifier &&
+      /\bDAVE\b/.test(node.text)
+    ) {
+      const location = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+      visibleDaveViolations.push(`${relativePath}:${location.line + 1}`);
     }
     ts.forEachChild(node, visit);
   }
 
   visit(sourceFile);
+}
+
+if (visibleDaveViolations.length > 0) {
+  throw new Error(
+    `Functional UI copy should describe the capability instead of repeating DAVE:\n${visibleDaveViolations.join('\n')}`,
+  );
 }
 
 if (violations.length > 0) {
@@ -59,10 +104,9 @@ if (violations.length > 0) {
 
 const app = fs.readFileSync(path.join(repoRoot, 'App.tsx'), 'utf8');
 for (const expectedLabel of [
-  'DAVE Project Brief',
-  'DAVE Photo Review',
-  'DAVE Summary',
-  'DAVE status',
+  'Photo Review',
+  'Photo Analysis',
+  'Analysis status',
 ]) {
   if (!app.includes(expectedLabel)) {
     throw new Error(`Expected consolidated DAVE label is missing: ${expectedLabel}`);

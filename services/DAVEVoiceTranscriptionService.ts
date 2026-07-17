@@ -49,6 +49,6 @@ export async function transcribeDAVECaptureMemoryAudio({
     body: formData,
   });
 
-  if (error) throw new Error('DAVE could not transcribe this recording. You can retry or type it instead.');
+  if (error) throw new Error('The recording could not be transcribed. You can retry or type it instead.');
   return parseDAVEVoiceUnderstandingResponse(data, submittedLocations);
 }

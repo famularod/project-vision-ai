@@ -42,7 +42,6 @@ assert(
   ['ProjectSelectorSheet', 'title="Choose Project"'],
   ['AreaSelectionSheet', 'title="Change Area"'],
   ['RecipientSelectionSheet', 'title="Recipients"'],
-  ['MoreOptionsSheet', 'title="More Options"'],
   ['UpdateFilterSheet', 'title="Filter Updates"'],
 ].forEach(([functionName, title]) => {
   const section = app.slice(

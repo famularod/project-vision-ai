@@ -5,6 +5,7 @@ import type {
   ScheduleStatus,
 } from '../types';
 import { daysUntilDate, parseFlexibleDate } from '../utils/date';
+import { createReportedCompletionVerification } from './DAVECompletionVerification';
 
 export type PIEScheduleCommunicationImportResult = {
   items: ScheduleItem[];
@@ -15,7 +16,7 @@ export type PIEScheduleCommunicationImportResult = {
   message: string;
 };
 
-const SCHEDULE_CUE = /\b(due|deadline|by\s+(?:today|tomorrow|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|finish|complete|start|begin|scheduled|rescheduled|inspection|delivery|deliver|mobiliz|install|rough[ -]?in|pour|submit|waiting|blocked|delay|ready|working|in progress)\b/i;
+const SCHEDULE_CUE = /\b(due|deadline|by\s+(?:today|tomorrow|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|finish(?:ed)?|complet(?:e|ed|ion)|start|begin|scheduled|rescheduled|inspection|delivery|deliver|mobiliz|install|rough[ -]?in|pour|submit|waiting|blocked|delay|ready|working|in progress)\b/i;
 const NON_CONTENT_LINE = /^(sent from my|reply|forward|to:|from:|subject:|message|mail|today|yesterday|delivered|read)$/i;
 const WEEKDAYS = [
   'sunday',
@@ -53,7 +54,8 @@ export function extractScheduleItemsFromCommunicationText({
     if (!SCHEDULE_CUE.test(context)) return [];
 
     const finishDate = communicationDate(context, now);
-    const status = communicationStatus(context);
+    const reportedComplete = completionWasReported(context);
+    const status = reportedComplete ? 'Not Started' : communicationStatus(context);
     const projectName = findNamedContext(context, projects);
     const locationName = findNamedContext(
       context,
@@ -80,8 +82,9 @@ export function extractScheduleItemsFromCommunicationText({
       recognitionConfidence,
     });
 
+    const itemId = `schedule-message-${stableHash(`${sourceName}|${context}|${index}`)}`;
     return [{
-      id: `schedule-message-${stableHash(`${sourceName}|${context}|${index}`)}`,
+      id: itemId,
       projectName,
       locationName,
       taskName,
@@ -90,24 +93,38 @@ export function extractScheduleItemsFromCommunicationText({
       milestone: '',
       owner,
       contractor: '',
-      percentComplete: status === 'Complete' ? 100 : 0,
+      percentComplete: 0,
       priority: communicationPriority(finishDate),
       status,
       notes: [
         `Extracted locally from ${sourceName}.`,
         `Original message: ${context}`,
         `Extraction confidence: ${confidencePercent}%.`,
+        reportedComplete
+          ? 'Completion was reported by the message source and still requires PM verification.'
+          : 'The message does not independently verify field status.',
         missingFields.length
           ? `Review missing ${missingFields.join(', ')} before relying on this activity.`
           : 'Review this extracted activity before relying on it.',
       ].join(' '),
       importedFrom: sourceName,
       importedAt,
+      completionVerification: reportedComplete
+        ? createReportedCompletionVerification({
+            sourceName,
+            sourceRecordId: itemId,
+            summary: context,
+            reportedAt: importedAt,
+            reportedBy: owner || null,
+            priorScheduleStatus: status,
+            priorPercentComplete: 0,
+          })
+        : null,
       createdAt: importedAt,
     } satisfies ScheduleItem];
   });
   const reviewCount = items.filter(item =>
-    !item.projectName || !item.locationName || !item.finishDate || !item.owner,
+    !item.projectName || !item.locationName || !item.finishDate || !item.owner || item.completionVerification?.status === 'reported_complete',
   ).length;
   const extractionConfidencePercent = items.length
     ? Math.round(items.reduce((total, item) => {
@@ -123,7 +140,7 @@ export function extractScheduleItemsFromCommunicationText({
     reviewCount,
     extractionConfidencePercent,
     message: items.length
-      ? `${items.length} possible schedule activit${items.length === 1 ? 'y' : 'ies'} extracted from the screenshot. Review every activity before using it.`
+      ? `${items.length} possible schedule activit${items.length === 1 ? 'y' : 'ies'} extracted from the screenshot. Completion statements remain unverified until the project manager confirms them.`
       : 'Text was recognized, but no clear schedule commitments or dates were found.',
   };
 }
@@ -174,6 +191,8 @@ function communicationTaskName(value: string) {
   return value
     .replace(/^[^:]{1,28}:\s*/, '')
     .replace(/^(please|can you|could you|we need to|i need you to|make sure to)\s+/i, '')
+    .replace(/^[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)?\s+(?:completed|finished)\s+/i, '')
+    .replace(/\s+(?:was|is|were|are|has been|have been)\s+(?:done|complete|completed|finished)\b.*$/i, '')
     .replace(/\b(?:by|due|deadline|on|before)\s+(?:next\s+)?(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:,?\s+\d{4})?).*$/i, '')
     .replace(/\s+/g, ' ')
     .replace(/^[,.;:\-\s]+|[,.;:\-\s]+$/g, '')
@@ -220,16 +239,21 @@ function normalizedDate(value: string, now: Date) {
 }
 
 function communicationStatus(value: string): ScheduleStatus {
-  if (/\b(done|complete|completed|finished)\b/i.test(value)) return 'Complete';
   if (/\b(waiting|blocked|on hold|delayed)\b/i.test(value)) return 'Waiting';
   if (/\b(started|working|in progress|underway|installing)\b/i.test(value)) return 'In Progress';
   return 'Not Started';
+}
+
+function completionWasReported(value: string) {
+  return /\b(done|complete|completed|finished)\b/i.test(value) &&
+    !/\b(?:not|isn['’]?t|wasn['’]?t|never)\s+(?:done|complete|completed|finished)\b/i.test(value);
 }
 
 function communicationOwner(value: string) {
   return value.match(/\bowner\s*[:=-]\s*([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)?)/)?.[1] ||
     value.match(/\bassigned to\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)?)/)?.[1] ||
     value.match(/^([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)?)\s+(?:will|is|needs to|should)\b/)?.[1] ||
+    value.match(/^([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)?)\s+(?:completed|finished)\b/)?.[1] ||
     '';
 }
 

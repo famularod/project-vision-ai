@@ -128,7 +128,7 @@ assert(timelineDestination && timelineDestination.target === 'update_detail');
 const component = fs.readFileSync(path.join(root, 'components/DAVEAskExperience.tsx'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 for (const marker of [
-  'Ask DAVE',
+  'Project Assistant',
   'Suggested questions',
   'Ask me about this project.',
   'Examples are listed above.',
@@ -143,7 +143,10 @@ for (const marker of [
 ]) {
   assert(component.includes(marker), `Ask DAVE experience must include ${marker}`);
 }
-assert(component.includes("askDAVE({ question: normalizedQuestion, intelligence, interface: 'text' })"));
+assert(component.includes('resolveDAVEConversationContext'));
+assert(component.includes('answerDAVEConversationContext'));
+assert(component.includes("context.status === 'ambiguous_follow_up'"));
+assert(component.includes('One detail needed'));
 assert(component.includes('history.map(entry =>'));
 assert(component.includes('AsyncStorage.getItem(storageKey)') && component.includes('AsyncStorage.setItem(storageKey'));
 assert(!component.includes('<Modal') && !component.includes('position: \'absolute\''),
@@ -155,13 +158,12 @@ for (const forbidden of ['buildProjectIntelligence(', 'projectRealitySourceRecor
 const workspaceStart = app.indexOf('function ProjectWorkspaceScreen');
 const workspace = app.slice(workspaceStart);
 assert(workspace.indexOf('<DAVEAskExperience') >= 0);
-assert(workspace.indexOf(">Today's Priority<") < workspace.indexOf('>DAVE Daily Brief<') &&
-  workspace.indexOf('>DAVE Daily Brief<') < workspace.indexOf('<DAVEAskExperience') &&
-  workspace.indexOf('<DAVEAskExperience') < workspace.indexOf('>Project Health<'),
-  'Ask DAVE must appear after the priority and Daily Brief, before Project Health.');
-assert(app.includes('const projectIntelligence = useMemo(() => buildProjectIntelligence({'));
-assert.strictEqual((workspace.match(/buildProjectIntelligence\s*\(/g) || []).length, 1,
-  'Project Workspace must build canonical intelligence only once through useMemo.');
+assert(workspace.indexOf('>Project Brief<') < workspace.indexOf('<DAVEAskExperience') &&
+  workspace.indexOf('<DAVEAskExperience') < workspace.indexOf('<ProjectTaskControlPanel'),
+  'Ask DAVE must appear after the unified Project Brief and before task controls.');
+assert(app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence'));
+assert.strictEqual((workspace.match(/buildProjectIntelligence\s*\(/g) || []).length, 0,
+  'Project Workspace must consume shared Project Truth without rebuilding intelligence.');
 assert(workspace.includes('intelligence={projectIntelligence}'));
 
 console.log('DAVE Ask Experience behavioral tests passed.');

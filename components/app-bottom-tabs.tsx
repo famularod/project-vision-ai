@@ -8,49 +8,52 @@ type IconName = keyof typeof Ionicons.glyphMap;
 export function AppBottomTabs({
   current,
   onChange,
+  onTalk,
 }: {
   current: AppScreen;
   onChange: (screen: AppScreen) => void;
+  onTalk: () => void;
 }) {
   return (
     <View style={styles.bottomTabs}>
       <TabButton
         label="Overview"
         icon="home-outline"
-        active={current === 'Home'}
+        active={
+          current === 'Home' ||
+          current === 'ProjectWorkspace' ||
+          current === 'ProjectDocuments' ||
+          current === 'SavedUpdates' ||
+          current === 'UpdateDetail' ||
+          current === 'Admin'
+        }
         onPress={() => onChange('Home')}
       />
 
       <TabButton
-        label="Projects"
-        icon="folder-open-outline"
-        active={
-          current === 'Projects' ||
-          current === 'ProjectWorkspace' ||
-          current === 'ProjectDocuments'
-        }
-        onPress={() => onChange('Projects')}
+        label="Tasks"
+        icon="checkbox-outline"
+        active={current === 'Schedule'}
+        onPress={() => onChange('Schedule')}
       />
 
-      <TabButton
-        label="Updates"
-        icon="document-text-outline"
-        active={current === 'SavedUpdates' || current === 'UpdateDetail'}
-        onPress={() => onChange('SavedUpdates')}
-      />
+      <TouchableOpacity
+        style={styles.talkButton}
+        onPress={onTalk}
+        accessibilityRole="button"
+        accessibilityLabel="Talk to project assistant"
+      >
+        <View style={styles.talkIcon}>
+          <Ionicons name="mic" size={21} color="#FFFFFF" />
+        </View>
+        <Text style={styles.talkText}>Talk</Text>
+      </TouchableOpacity>
 
       <TabButton
         label="Reports"
         icon="reader-outline"
         active={current === 'Reports'}
         onPress={() => onChange('Reports')}
-      />
-
-      <TabButton
-        label="Settings"
-        icon="settings-outline"
-        active={current === 'Admin'}
-        onPress={() => onChange('Admin')}
       />
     </View>
   );
@@ -116,5 +119,24 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: colors.primary,
+  },
+  talkButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    gap: 2,
+  },
+  talkIcon: {
+    width: 36,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  talkText: {
+    color: colors.primary,
+    fontSize: 10,
+    fontWeight: '800',
   },
 });

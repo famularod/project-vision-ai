@@ -905,8 +905,8 @@ function confidenceSignal({
       weight: 5,
       message:
         locationConfidenceScore >= 45
-          ? `DAVE has ${locationConfidenceScore}% location confidence.`
-          : 'DAVE location confidence is low.',
+          ? `Location confidence is ${locationConfidenceScore}%.`
+          : 'Location confidence is low.',
       source: 'project-area' as const,
     },
     {
@@ -1040,7 +1040,7 @@ function healthSignal({
       score: 35,
       severity: 'neutral',
       label: 'Project status unknown',
-      message: 'DAVE needs updates or schedule data before it can evaluate project health.',
+      message: 'Updates or schedule data are needed before project health can be evaluated.',
       evidence: ['No saved updates found.', 'No schedule items found.'],
       sources,
       confidence: 'low',
@@ -1141,11 +1141,11 @@ function healthSignal({
 
   if (locationConfidenceScore >= 75) {
     score += 3;
-    evidence.push(`DAVE location confidence is ${locationConfidenceScore}%.`);
+    evidence.push(`Location confidence is ${locationConfidenceScore}%.`);
     sources.push('project-area');
   } else if (locationNeedsConfirmation) {
     score -= 3;
-    evidence.push(`DAVE location confidence is ${locationConfidenceScore}% and needs confirmation.`);
+    evidence.push(`Location confidence is ${locationConfidenceScore}% and needs confirmation.`);
     sources.push('project-area');
   }
 
@@ -1476,7 +1476,7 @@ function riskSignals({
       severity: 'warning',
       message:
         locationConfirmationPrompt ||
-        'DAVE has a location guess, but confidence is not high enough to rely on it automatically.',
+        'A location is suggested, but confidence is not high enough to rely on it automatically.',
       source: 'project-area',
       sources: ['project-area'],
       confidence: 'medium',
@@ -1490,7 +1490,7 @@ function riskSignals({
       id: 'missing-document-context',
       label: 'Document context not linked',
       severity: 'neutral',
-      message: 'Schedule work exists, but DAVE does not see related reference document metadata.',
+      message: 'Schedule work exists, but related reference document metadata is missing.',
       source: 'document-metadata',
       sources: ['schedule', 'document-metadata'],
       confidence: 'medium',

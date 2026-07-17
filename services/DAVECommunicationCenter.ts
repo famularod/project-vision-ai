@@ -104,7 +104,7 @@ export function buildCommunicationDraft(
     ...allStatements.flatMap(item => item.limitations),
     intelligence.evidenceQuality.limitation,
     ...draftSpecificLimitations(intelligence, draftType),
-    'Review required: DAVE does not send communications or change project status.',
+    'Review required: communications are not sent and project status is not changed automatically.',
   ]);
 
   return deepFreeze({

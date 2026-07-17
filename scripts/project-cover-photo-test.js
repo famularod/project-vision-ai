@@ -98,6 +98,18 @@ assert.strictEqual(merged[0].coverPhoto.localUri, selected.localUri,
 assert.strictEqual(merged[0].coverPhotoMode, 'manual',
   'Cloud sync must preserve manual cover mode.');
 
+const deletedMerge = mergeProjectRecords(
+  ['Starter Project'],
+  [{ name: 'Local Deleted Project' }],
+  [{ name: 'Cloud Deleted Project' }],
+  ['Starter Project', 'Local Deleted Project', 'Cloud Deleted Project'],
+);
+assert.deepStrictEqual(
+  Array.from(deletedMerge),
+  [],
+  'Deleted-project tombstones must block starter, local, and stale cloud records from reappearing.',
+);
+
 const removedAt = '2026-07-12T13:00:00.000Z';
 const removedCloud = projectRecordFromCloud({
   name: 'Alpha',

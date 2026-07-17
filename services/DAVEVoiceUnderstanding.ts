@@ -103,5 +103,5 @@ function optionalString(value: unknown): string | null {
 }
 
 function malformedResponse() {
-  return new Error('DAVE received an incomplete memory review. You can retry or type it instead.');
+  return new Error('The memory review was incomplete. You can retry or type it instead.');
 }

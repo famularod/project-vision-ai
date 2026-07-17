@@ -195,13 +195,31 @@ function PhotoIntelligenceCard({
 }: {
   result: PhotoIntelligenceDisplayState;
 }) {
+  if (result.status === 'no_suitable_prior_photo') {
+    return (
+      <View style={styles.locationPanel}>
+        <View style={styles.locationPanelHeader}>
+          <View style={styles.rowIconBubble}>
+            <Ionicons name="images-outline" size={20} color={colors.success} />
+          </View>
+          <View style={styles.rowMain}>
+            <Text style={styles.panelTitle}>Baseline saved</Text>
+            <Text style={styles.rowSub}>This area is ready for future photo comparisons.</Text>
+          </View>
+        </View>
+        <Text style={styles.bodyText}>
+          Take the next photo from a similar angle to compare visible construction changes.
+        </Text>
+      </View>
+    );
+  }
+
   const icon =
     result.status === 'analyzing'
       ? 'sync-outline'
       : result.status === 'analysis_failed_retry'
         ? 'refresh-circle-outline'
-        : result.status === 'no_suitable_prior_photo' ||
-          result.status === 'comparison_unavailable'
+        : result.status === 'comparison_unavailable'
           ? 'image-outline'
           : 'sparkles-outline';
   const iconColor =
@@ -266,34 +284,6 @@ function PhotoIntelligenceCard({
         {result.authorityMessage}
       </Text>
 
-      {__DEV__ && result.diagnostics ? (
-        <View style={styles.captureContextPanel}>
-          <Text style={styles.sectionLabel}>
-            Photo comparison diagnostics
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current asset: {result.diagnostics.currentPhotoAssetId || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Prior asset: {result.diagnostics.priorPhotoAssetId || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Distinct hashes: {String(result.diagnostics.imageHashesDifferent)}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Edge invoked: {String(result.diagnostics.executedStages.includes('edge_function_invoked'))}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Provider: {result.diagnostics.providerResponseStatus || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Hydrated pair match: {String(result.diagnostics.resultPairMatchesRequestedPair)}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Provenance: {result.diagnostics.resultProvenance}
-          </Text>
-        </View>
-      ) : null}
     </View>
   );
 }

@@ -14,11 +14,23 @@ import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 export function DAVETypedCaptureSheet({
   visible,
   projectName,
+  title = 'Capture Memory',
+  prompt = 'What should be saved to project memory?',
+  guidance = 'Record a commitment, decision, issue, request, schedule change, or follow-up.',
+  placeholder = 'Example: ABC Electric committed to finish conduit by Friday.',
+  continueLabel = 'Review Memory',
+  accessibilityLabel = 'Project memory',
   onContinue,
   onCancel,
 }: {
   visible: boolean;
   projectName: string;
+  title?: string;
+  prompt?: string;
+  guidance?: string;
+  placeholder?: string;
+  continueLabel?: string;
+  accessibilityLabel?: string;
   onContinue: (text: string) => void;
   onCancel: () => void;
 }) {
@@ -34,7 +46,7 @@ export function DAVETypedCaptureSheet({
   function continueToConfirmation() {
     const value = text.trim();
     if (!value) {
-      setError('Enter what you want DAVE to remember.');
+      setError('Enter a question or project information.');
       return;
     }
     onContinue(value);
@@ -50,7 +62,7 @@ export function DAVETypedCaptureSheet({
           <View style={styles.handle} />
           <View style={styles.header}>
             <View style={styles.main}>
-              <Text style={styles.title}>Capture Memory</Text>
+              <Text style={styles.title}>{title}</Text>
               <Text style={styles.subtitle}>{projectName}</Text>
             </View>
             <TouchableOpacity
@@ -63,10 +75,8 @@ export function DAVETypedCaptureSheet({
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.prompt}>What should DAVE remember?</Text>
-          <Text style={styles.guidance}>
-            Record a commitment, decision, issue, request, schedule change, or follow-up.
-          </Text>
+          <Text style={styles.prompt}>{prompt}</Text>
+          <Text style={styles.guidance}>{guidance}</Text>
           <TextInput
             style={styles.input}
             value={text}
@@ -74,12 +84,12 @@ export function DAVETypedCaptureSheet({
               setText(value);
               setError(null);
             }}
-            placeholder="Example: ABC Electric committed to finish conduit by Friday."
+            placeholder={placeholder}
             placeholderTextColor={colors.mutedText}
             multiline
             autoFocus
             textAlignVertical="top"
-            accessibilityLabel="Project memory"
+            accessibilityLabel={accessibilityLabel}
           />
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -90,7 +100,7 @@ export function DAVETypedCaptureSheet({
             accessibilityRole="button"
             accessibilityLabel="Review captured memory"
           >
-            <Text style={styles.continueText}>Review Memory</Text>
+            <Text style={styles.continueText}>{continueLabel}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.cancelButton}

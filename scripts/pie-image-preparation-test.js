@@ -130,8 +130,12 @@ assertIncludes(
 );
 assertIncludes(
   workflow,
-  'candidateKey.timestampMs === currentKey.timestampMs',
-  'same-day or equal timestamp prior candidates must not be rejected solely by equal timestamps',
+  "if (candidateKey.timestampMs === null) return 'not_earlier'",
+  'undated candidate photos must not be presented as confirmed earlier evidence',
+);
+assert(
+  !workflow.includes("candidateKey.timestampMs === currentKey.timestampMs) {"),
+  'equal timestamps must not be ordered by unrelated IDs or array position',
 );
 assertIncludes(
   workflow,
@@ -156,43 +160,29 @@ assertIncludes(
   assertIncludes(workflow, reason, `missing prior-selection no-prior reason ${reason}`);
 });
 [
-  'Prior candidates total:',
-  'After same project:',
-  'After same area:',
-  'After timestamp:',
-  'After excluding current:',
-  'After usable image:',
-  'Selected prior update:',
-  'Selected prior photo:',
-  'Selected prior date:',
-  'No prior reason:',
-].forEach(label => {
-  assertIncludes(app, label, `development diagnostics must show ${label}`);
+  'selectionCandidateCount',
+  'priorCandidatesAfterSameProject',
+  'priorCandidatesAfterSameArea',
+  'priorCandidatesAfterTimestamp',
+  'priorCandidatesAfterExcludingCurrent',
+  'priorCandidatesAfterUsableImage',
+  'selectedPriorUpdateId',
+  'selectedPriorPhotoId',
+  'selectedPriorDate',
+  'noPriorReason',
+  'currentPhotoPrepStatus',
+  'priorPhotoPrepStatus',
+  'usablePriorCandidateFound',
+  'skippedPriorCandidateCount',
+  'imagePrepareFailureReason',
+].forEach(field => {
+  assertIncludes(workflow, field, `internal diagnostics must retain ${field}`);
 });
-assertIncludes(
-  app,
-  'Current prep:',
-  'development diagnostics must expose current image preparation status',
-);
-assertIncludes(
-  app,
-  'Prior prep:',
-  'development diagnostics must expose prior image preparation status',
-);
-assertIncludes(
-  app,
-  'Usable prior found:',
-  'development diagnostics must show whether a usable prior was found',
-);
-assertIncludes(
-  app,
-  'Skipped prior candidates:',
-  'development diagnostics must show skipped prior candidate count',
-);
-assertIncludes(
-  app,
-  'Image prep failure:',
-  'development diagnostics must expose the exact current/prior/edge image preparation failure category',
+assert(
+  !app.includes('Prior candidates total:') &&
+    !app.includes('Current prep:') &&
+    !app.includes('Image prep failure:'),
+  'normal PM UI must not expose image-preparation diagnostics',
 );
 assertIncludes(
   app,

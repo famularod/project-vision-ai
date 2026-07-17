@@ -473,7 +473,7 @@ function buildLessonsLearned(
     lessons.push({
       id: 'lesson-user-correction-confidence',
       event,
-      lesson: 'User corrections indicate DAVE should be careful with similar future assumptions.',
+      lesson: 'User corrections indicate similar future assumptions should be treated carefully.',
       whatPIEShouldDoDifferently:
         'Lower confidence and ask for verification when similar GPS, project, area, report, or recommendation context appears again.',
       confidence: 'high',
@@ -488,7 +488,7 @@ function buildLessonsLearned(
       id: 'lesson-decision-outcome',
       event,
       lesson: failedOutcome
-        ? `A past decision outcome was ${failedOutcome.qualitySignal}; DAVE should adjust future recommendations.`
+        ? `A past decision outcome was ${failedOutcome.qualitySignal}; future recommendations should be adjusted.`
         : 'Decision outcomes are available for future learning.',
       whatPIEShouldDoDifferently: failedOutcome
         ? `Re-check assumptions behind ${failedOutcome.decision} before recommending similar action.`
@@ -634,7 +634,7 @@ function buildReflectionGaps(input: PIEReflectionInput): PIEReflectionGap[] {
     ...recommendedEvidenceFromInput(input).slice(0, 2).map((item, index) => ({
       id: `reflection-gap-recommended-${index}`,
       title: 'Recommended Evidence',
-      summary: `DAVE needs ${item.toLowerCase()} to improve confidence.`,
+      summary: `${item} is needed to improve confidence.`,
       evidence: [item],
       suggestedAction: item,
       confidence: input.overallConfidence,

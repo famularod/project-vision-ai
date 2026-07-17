@@ -252,7 +252,7 @@ function selectTopRecommendation(
   const blocker = blockers[0];
   if (blocker) {
     return recommendation('Confirm the recorded safety or blocker status.', blocker.text, blocker.sourceRecordId,
-      'update_detail', [itemEvidence(blocker)], ['Review only; DAVE does not change project status.']);
+      'update_detail', [itemEvidence(blocker)], ['Review only; project status is not changed automatically.']);
   }
   const dependency = waiting[0];
   if (dependency) {
@@ -293,7 +293,7 @@ function recommendation(
     supportingEvidence,
     limitations: [...new Set([
       ...limitations,
-      'Review only; DAVE does not send messages or change project status.',
+      'Review only; messages are not sent and project status is not changed automatically.',
     ])],
   };
 }

@@ -10,6 +10,7 @@ import {
   type User,
 } from '@supabase/supabase-js';
 import type {
+  DAVESyncTombstone,
   ProjectArea,
   ReferenceDocument,
   ScheduleItem,
@@ -26,6 +27,7 @@ import type {
   PIERealityObject,
 } from './PIERealityModel';
 import type { PIEExecutiveJudgmentRecord } from './PIEExecutiveJudgmentRepository';
+import type { DAVEProjectTruthSnapshot } from './DAVEProjectTruthRepository';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
@@ -163,7 +165,6 @@ export type CreateProjectParams = {
   status?: string;
   archived?: boolean;
   isFavorite?: boolean;
-  ownerId?: string | null;
   data?: JsonValue | null;
 };
 
@@ -174,7 +175,6 @@ export type UpdateProjectParams = {
   status?: string;
   archived?: boolean;
   isFavorite?: boolean;
-  ownerId?: string | null;
   data?: JsonValue | null;
 };
 
@@ -200,7 +200,6 @@ export type SaveProjectUpdateParams<TUpdate> = {
   idempotencyKey?: string | null;
   updateData: TUpdate;
   updatedAt?: string;
-  ownerId?: string | null;
 };
 
 export type ProjectUpdateSyncMetadata<TUpdate = JsonValue> = {
@@ -244,6 +243,8 @@ const PROJECT_UPDATES_TABLE = 'project_updates';
 const PROJECT_AREAS_TABLE = 'project_areas';
 const SCHEDULE_ITEMS_TABLE = 'schedule_items';
 const REFERENCE_DOCUMENTS_TABLE = 'reference_documents';
+const DAVE_SYNC_TOMBSTONES_TABLE = 'dave_sync_tombstones';
+const DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE = 'dave_project_truth_snapshots';
 const PIE_DECISION_RECORDS_TABLE = 'pie_decision_records';
 const PIE_DECISION_VERSIONS_TABLE = 'pie_decision_versions';
 const PIE_DECISION_OUTCOMES_TABLE = 'pie_decision_outcomes';
@@ -335,6 +336,7 @@ export async function getSupabaseConnectionStatus(): Promise<SupabaseConnectionS
     };
   }
 
+  await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
   const { data } = await client.auth.getSession();
 
   return {
@@ -365,10 +367,22 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
   }
 
   logSupabaseUrlBeforeNetworkRequest('testSupabaseConnection');
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return {
+      configured: true,
+      connected: false,
+      projectCount: null,
+      checkedAt,
+      status: owner.status,
+      error: owner.error,
+    };
+  }
 
   const { count, error, status } = await client
     .from(PROJECTS_TABLE)
     .select('name', { count: 'exact' })
+    .eq('owner_id', owner.data)
     .limit(1);
 
   if (error) {
@@ -393,6 +407,10 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
 
 export async function runSupabaseConnectionDiagnostics(): Promise<SupabaseConnectionDiagnostics> {
   const supabaseUrl = SUPABASE_URL || null;
+  const client = getSupabaseClient();
+  if (client) await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
+  const sessionResult = client ? await client.auth.getSession() : null;
+  const accessToken = sessionResult?.data.session?.access_token ?? null;
   const rootUrl = supabaseUrl || 'Missing EXPO_PUBLIC_SUPABASE_URL';
   const restUrl = supabaseUrl
     ? `${withoutTrailingSlash(supabaseUrl)}/rest/v1/${PROJECTS_TABLE}?select=name&limit=1`
@@ -402,19 +420,21 @@ export async function runSupabaseConnectionDiagnostics(): Promise<SupabaseConnec
     supabaseUrl
       ? fetchDiagnosticStep('Supabase URL root', rootUrl)
       : Promise.resolve(missingUrlStep('Supabase URL root', rootUrl)),
-    supabaseUrl && SUPABASE_ANON_KEY
+    supabaseUrl && SUPABASE_ANON_KEY && accessToken
       ? fetchDiagnosticStep('Supabase REST projects endpoint', restUrl, {
           headers: {
             apikey: SUPABASE_ANON_KEY,
-            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            Authorization: `Bearer ${accessToken}`,
           },
         })
       : Promise.resolve(
           missingUrlStep(
             'Supabase REST projects endpoint',
             restUrl,
-            supabaseUrl
-              ? 'Missing EXPO_PUBLIC_SUPABASE_ANON_KEY.'
+            supabaseUrl && SUPABASE_ANON_KEY
+              ? 'Sign in is required to test authenticated project access.'
+              : supabaseUrl
+                ? 'Missing EXPO_PUBLIC_SUPABASE_ANON_KEY.'
               : 'Missing EXPO_PUBLIC_SUPABASE_URL.',
           ),
         ),
@@ -668,8 +688,33 @@ export async function createPhotoSignedUrl(
   const { data, error } = await client.storage
     .from(bucket)
     .createSignedUrl(path, expiresIn);
-  if (error) return errorResult(error.message);
+  if (error) {
+    const errorRecord = error as unknown as Record<string, unknown>;
+    const rawStatus = errorRecord.statusCode ?? errorRecord.status;
+    const parsedStatus = typeof rawStatus === 'string'
+      ? Number(rawStatus)
+      : rawStatus;
+    const status = typeof parsedStatus === 'number' && Number.isFinite(parsedStatus)
+      ? parsedStatus
+      : undefined;
+    const code = typeof errorRecord.error === 'string'
+      ? errorRecord.error
+      : typeof errorRecord.code === 'string'
+        ? errorRecord.code
+        : undefined;
+
+    return errorResult(error.message, status, code);
+  }
   return okResult(data.signedUrl);
+}
+
+export async function verifyDAVEAppOwner(): Promise<SupabaseServiceResult<boolean>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<boolean>();
+
+  const { data, error, status } = await client.rpc('dave_is_app_owner');
+  if (error) return errorResult(error.message, status);
+  return okResult(data === true, status);
 }
 
 export async function createProject(
@@ -678,6 +723,10 @@ export async function createProject(
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProject>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const payload = {
     name: project.name,
@@ -685,6 +734,7 @@ export async function createProject(
     archived: project.archived ?? false,
     is_favorite: project.isFavorite ?? false,
     ...(project.data !== undefined ? { project_data: project.data } : {}),
+    owner_id: owner.data,
   };
 
   const { data, error, status } = await client
@@ -704,6 +754,10 @@ export async function updateProject(
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProject>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const payload: Record<string, unknown> = {};
 
@@ -721,7 +775,11 @@ export async function updateProject(
     );
   }
 
-  let query = client.from(PROJECTS_TABLE).update(payload).select('*');
+  let query = client
+    .from(PROJECTS_TABLE)
+    .update(payload)
+    .eq('owner_id', owner.data)
+    .select('*');
 
   if (project.id) {
     query = query.eq('id', project.id);
@@ -744,6 +802,10 @@ export async function deleteProject({
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const projectName = name.trim();
 
@@ -754,18 +816,21 @@ export async function deleteProject({
   const updatesResult = await client
     .from(PROJECT_UPDATES_TABLE)
     .delete()
+    .eq('owner_id', owner.data)
     .eq('project_name', projectName);
   appendRelatedDeleteError(errors, 'project updates', updatesResult.error?.message);
 
   const scheduleResult = await client
     .from(SCHEDULE_ITEMS_TABLE)
     .delete()
+    .eq('owner_id', owner.data)
     .eq('project_name', projectName);
   appendRelatedDeleteError(errors, 'schedule items', scheduleResult.error?.message);
 
   const relatedDocuments = await client
     .from(REFERENCE_DOCUMENTS_TABLE)
-    .select('id, document_data');
+    .select('id, document_data')
+    .eq('owner_id', owner.data);
   appendRelatedDeleteError(
     errors,
     'reference documents',
@@ -782,6 +847,7 @@ export async function deleteProject({
       const documentDeleteResult = await client
         .from(REFERENCE_DOCUMENTS_TABLE)
         .delete()
+        .eq('owner_id', owner.data)
         .in('id', relatedDocumentIds);
       appendRelatedDeleteError(
         errors,
@@ -794,6 +860,7 @@ export async function deleteProject({
   const projectResult = await client
     .from(PROJECTS_TABLE)
     .delete()
+    .eq('owner_id', owner.data)
     .eq('name', projectName);
 
   if (projectResult.error) {
@@ -817,10 +884,15 @@ export async function listProjects(): Promise<SupabaseServiceResult<CloudProject
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProject[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const { data, error, status } = await client
     .from(PROJECTS_TABLE)
     .select('*')
+    .eq('owner_id', owner.data)
     .eq('archived', false)
     .order('created_at', { ascending: false });
 
@@ -833,10 +905,15 @@ export async function listArchivedProjects(): Promise<SupabaseServiceResult<Clou
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProject[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const { data, error, status } = await client
     .from(PROJECTS_TABLE)
     .select('*')
+    .eq('owner_id', owner.data)
     .eq('archived', true)
     .order('created_at', { ascending: false });
 
@@ -873,6 +950,10 @@ export async function saveProjectUpdate<TUpdate>({
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProjectUpdate<TUpdate>>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const stableIdempotencyKey =
     sanitizeIdempotencyKey(idempotencyKey) ||
@@ -885,6 +966,7 @@ export async function saveProjectUpdate<TUpdate>({
     idempotency_key: stableIdempotencyKey,
     update_data: updateData,
     updated_at: updatedAt,
+    owner_id: owner.data,
   };
 
   const { data, error, status } = await client
@@ -909,10 +991,15 @@ export async function listProjectUpdates<TUpdate>(): Promise<
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProjectUpdate<TUpdate>[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const { data, error, status } = await client
     .from(PROJECT_UPDATES_TABLE)
     .select('*')
+    .eq('owner_id', owner.data)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -936,10 +1023,15 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
   if (!client) {
     return notConfiguredResult<ProjectUpdateSyncMetadata<TUpdate> | null>();
   }
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const { data, error, status } = await client
     .from(PROJECT_UPDATES_TABLE)
     .select('id, updated_at, update_data')
+    .eq('owner_id', owner.data)
     .eq('id', id)
     .maybeSingle();
 
@@ -969,6 +1061,7 @@ export async function upsertProjectArea(
 ): Promise<SupabaseServiceResult<ProjectArea>> {
   return upsertJsonRecord<ProjectArea>({
     table: PROJECT_AREAS_TABLE,
+    ownerScoped: true,
     payload: {
       id: area.id,
       name: area.name,
@@ -984,6 +1077,7 @@ export async function upsertScheduleItem(
 ): Promise<SupabaseServiceResult<ScheduleItem>> {
   return upsertJsonRecord<ScheduleItem>({
     table: SCHEDULE_ITEMS_TABLE,
+    ownerScoped: true,
     payload: {
       id: item.id,
       project_name: item.projectName,
@@ -1000,6 +1094,7 @@ export async function upsertReferenceDocument(
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
   return upsertJsonRecord<ReferenceDocument>({
     table: REFERENCE_DOCUMENTS_TABLE,
+    ownerScoped: true,
     payload: {
       id: document.id,
       name: document.name,
@@ -1009,6 +1104,185 @@ export async function upsertReferenceDocument(
     },
     data: document,
   });
+}
+
+export async function listProjectAreas(): Promise<SupabaseServiceResult<ProjectArea[]>> {
+  return listOwnedJsonRecords<ProjectArea>({
+    table: PROJECT_AREAS_TABLE,
+    jsonColumn: 'area_data',
+  });
+}
+
+export async function listScheduleItems(): Promise<SupabaseServiceResult<ScheduleItem[]>> {
+  return listOwnedJsonRecords<ScheduleItem>({
+    table: SCHEDULE_ITEMS_TABLE,
+    jsonColumn: 'item_data',
+  });
+}
+
+export async function listReferenceDocuments(): Promise<SupabaseServiceResult<ReferenceDocument[]>> {
+  return listOwnedJsonRecords<ReferenceDocument>({
+    table: REFERENCE_DOCUMENTS_TABLE,
+    jsonColumn: 'document_data',
+  });
+}
+
+export async function upsertDAVESyncTombstone(
+  tombstone: DAVESyncTombstone,
+): Promise<SupabaseServiceResult<DAVESyncTombstone>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVESyncTombstone>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { error, status } = await client
+    .from(DAVE_SYNC_TOMBSTONES_TABLE)
+    .upsert(
+      {
+        owner_id: owner.data,
+        entity_type: tombstone.entityType,
+        record_id: tombstone.recordId,
+        deleted_at: tombstone.deletedAt,
+      },
+      { onConflict: 'owner_id,entity_type,record_id' },
+    );
+
+  if (error) return tableAwareErrorResult<DAVESyncTombstone>(error.message, status);
+  return okResult(tombstone, status);
+}
+
+export async function listDAVESyncTombstones(): Promise<
+  SupabaseServiceResult<DAVESyncTombstone[]>
+> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVESyncTombstone[]>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data, error, status } = await client
+    .from(DAVE_SYNC_TOMBSTONES_TABLE)
+    .select('entity_type, record_id, deleted_at')
+    .eq('owner_id', owner.data)
+    .order('deleted_at', { ascending: false });
+
+  if (error) return tableAwareListResult<DAVESyncTombstone>(error.message, status);
+
+  const tombstones = Array.isArray(data)
+    ? data
+        .map(row => {
+          const record = toRecord(row);
+          const entityType = String(record.entity_type || '');
+          const recordId = String(record.record_id || '').trim();
+          const deletedAt = String(record.deleted_at || '');
+          if (
+            !recordId ||
+            !deletedAt ||
+            ![
+              'project_area',
+              'schedule_item',
+              'reference_document',
+            ].includes(entityType)
+          ) return null;
+          return {
+            entityType: entityType as DAVESyncTombstone['entityType'],
+            recordId,
+            deletedAt,
+          };
+        })
+        .filter((value): value is DAVESyncTombstone => Boolean(value))
+    : [];
+
+  return okResult(tombstones, status);
+}
+
+export async function loadLatestDAVEProjectTruthSnapshotCloud(
+  organizationId: string,
+  projectId: string,
+): Promise<SupabaseServiceResult<DAVEProjectTruthSnapshot | null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVEProjectTruthSnapshot | null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  if (organizationId !== owner.data) {
+    return errorResult('Project Truth organization does not match the authenticated owner.', 403);
+  }
+
+  const { data, error, status } = await client
+    .from(DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE)
+    .select('snapshot')
+    .eq('owner_id', owner.data)
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .order('revision', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    return tableAwareErrorResult<DAVEProjectTruthSnapshot | null>(error.message, status);
+  }
+  if (!data) return okResult(null, status);
+  return okResult(
+    (toRecord(data).snapshot as unknown as DAVEProjectTruthSnapshot) || null,
+    status,
+  );
+}
+
+export async function saveDAVEProjectTruthSnapshotCloud(
+  snapshot: DAVEProjectTruthSnapshot,
+): Promise<SupabaseServiceResult<DAVEProjectTruthSnapshot>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVEProjectTruthSnapshot>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  if (snapshot.organizationId !== owner.data) {
+    return errorResult('Project Truth organization does not match the authenticated owner.', 403);
+  }
+
+  const payload = {
+    id: snapshot.id,
+    owner_id: owner.data,
+    organization_id: snapshot.organizationId,
+    project_id: snapshot.projectId,
+    project_name: snapshot.projectName,
+    revision: snapshot.revision,
+    source_fingerprint: snapshot.sourceFingerprint,
+    truth_schema_version: snapshot.truthSchemaVersion,
+    generated_at: snapshot.generatedAt,
+    saved_at: snapshot.savedAt,
+    snapshot: toJsonValue(snapshot),
+  };
+  const { error, status } = await client
+    .from(DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE)
+    .insert(payload);
+
+  if (error) {
+    if (!isDuplicateKeyError(error.message)) {
+      return tableAwareErrorResult<DAVEProjectTruthSnapshot>(error.message, status);
+    }
+    const latest = await loadLatestDAVEProjectTruthSnapshotCloud(
+      snapshot.organizationId,
+      snapshot.projectId,
+    );
+    if (
+      latest.ok &&
+      latest.data &&
+      latest.data.sourceFingerprint === snapshot.sourceFingerprint
+    ) {
+      return okResult(latest.data, status);
+    }
+    return errorResult('A newer Project Truth revision already exists.', 409, 'truth_revision_conflict');
+  }
+  return okResult(snapshot, status);
 }
 
 export async function loadPIERealityModelCloud(
@@ -1311,9 +1585,12 @@ async function savePIERealityHistoryCloud(
 
   const { error, status } = await client
     .from(PIE_REALITY_OBJECT_HISTORY_TABLE)
-    .upsert(payload, { onConflict: 'id' });
+    .insert(payload);
 
-  if (error) return tableAwareErrorResult<null>(error.message, status);
+  if (error) {
+    if (isDuplicateKeyError(error.message)) return okResult(null, status);
+    return tableAwareErrorResult<null>(error.message, status);
+  }
   return okResult(null, status);
 }
 
@@ -1825,6 +2102,42 @@ async function waitForAuthHydration(timeoutMs: number) {
   return authHydrationCompleted;
 }
 
+async function requireAuthenticatedOwnerId(
+  client: SupabaseClient,
+): Promise<SupabaseServiceResult<string>> {
+  const hydrated = await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
+  if (!hydrated) {
+    return errorResult(
+      'Authentication is still loading. Try cloud sync again in a moment.',
+      503,
+      'auth_loading',
+    );
+  }
+
+  const { data, error } = await client.auth.getSession();
+  if (error) return errorResult(error.message, 401, 'auth_required');
+  const session = data.session;
+  if (!session?.access_token || !session.user?.id) {
+    return errorResult(
+      'Sign in is required before cloud data can be accessed.',
+      401,
+      'auth_required',
+    );
+  }
+  if (
+    typeof session.expires_at === 'number' &&
+    session.expires_at * 1000 <= Date.now()
+  ) {
+    return errorResult(
+      'The sign-in session expired. Sign in again before cloud sync.',
+      401,
+      'session_expired',
+    );
+  }
+
+  return okResult(session.user.id);
+}
+
 async function probeAuthStorage(): Promise<boolean> {
   try {
     await AsyncStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
@@ -1974,20 +2287,65 @@ async function upsertJsonRecord<T>({
   table,
   payload,
   data,
+  ownerScoped = false,
 }: {
   table: string;
   payload: Record<string, unknown>;
   data: T;
+  ownerScoped?: boolean;
 }): Promise<SupabaseServiceResult<T>> {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<T>();
+  let writePayload = payload;
+  if (ownerScoped) {
+    const owner = await requireAuthenticatedOwnerId(client);
+    if (!owner.ok || !owner.data) {
+      return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+    }
+    writePayload = {
+      ...payload,
+      owner_id: owner.data,
+    };
+  }
 
-  const { error, status } = await client.from(table).upsert(payload);
+  const { error, status } = await client.from(table).upsert(writePayload);
 
   if (error) return tableAwareErrorResult<T>(error.message, status);
 
   return okResult(data, status);
+}
+
+async function listOwnedJsonRecords<T>({
+  table,
+  jsonColumn,
+}: {
+  table: string;
+  jsonColumn: string;
+}): Promise<SupabaseServiceResult<T[]>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<T[]>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data, error, status } = await client
+    .from(table)
+    .select(jsonColumn)
+    .eq('owner_id', owner.data)
+    .order('updated_at', { ascending: false });
+
+  if (error) return tableAwareListResult<T>(error.message, status);
+
+  const records = Array.isArray(data)
+    ? data
+        .map(row => toRecord(row)[jsonColumn] as T | null | undefined)
+        .filter((value): value is T => Boolean(value))
+    : [];
+
+  return okResult(records, status);
 }
 
 function isMissingTableError(message: string): boolean {

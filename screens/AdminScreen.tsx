@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
+import Constants from 'expo-constants';
+import { useEffect, useRef, useState } from 'react';
 import type {
   StyleProp,
   ViewStyle,
@@ -8,6 +9,7 @@ import {
   Alert,
   Modal,
   Platform,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -22,7 +24,6 @@ import { ScreenHeader } from '../components/layout/ScreenHeader';
 import { ScreenMetric } from '../components/layout/ScreenMetric';
 import { ScreenMetricGrid } from '../components/layout/ScreenMetricGrid';
 import { ScreenSection } from '../components/layout/ScreenSection';
-import { ManageAreasPanel } from '../components/ManageAreasPanel';
 import {
   PrimaryButton,
   SecondaryButton,
@@ -46,9 +47,15 @@ import {
   type SupabaseConnectionTestResult,
 } from '../services/SupabaseService';
 import {
+  getSyncConflicts,
   getSyncStatus,
+  reconcileSyncConflicts,
+  resolveProjectUpdateSyncConflict,
   synchronizeLocalData,
+  uploadPendingChanges,
   type MissingSyncPhoto,
+  type FullSyncResult,
+  type SyncConflict,
   type SyncStatus,
 } from '../services/SyncService';
 import type {
@@ -65,6 +72,46 @@ import {
 
 const ENABLE_DEV_AUTH_SIGNUP =
   process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
+const SETTINGS_SYNC_TIMEOUT_MS = 30_000;
+
+const APP_VERSION = Constants.expoConfig?.version || 'Unknown';
+const APP_BUILD_NUMBER = getInstalledBuildNumber();
+const APP_VERSION_BUILD_LABEL = `Version ${APP_VERSION} · Build ${APP_BUILD_NUMBER}`;
+
+function getInstalledBuildNumber(): string {
+  if (Platform.OS === 'ios') {
+    return Constants.platform?.ios?.buildNumber
+      || Constants.expoConfig?.ios?.buildNumber
+      || 'Unknown';
+  }
+
+  if (Platform.OS === 'android') {
+    return String(
+      Constants.platform?.android?.versionCode
+        ?? Constants.expoConfig?.android?.versionCode
+        ?? 'Unknown',
+    );
+  }
+
+  return String(Constants.expoConfig?.extra?.buildLabel || 'Unknown');
+}
+
+async function withSyncTimeout<T>(
+  work: Promise<T>,
+  timeoutMs = SETTINGS_SYNC_TIMEOUT_MS,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('sync_timeout')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 export function AdminScreen({
   contentStyle,
@@ -73,14 +120,13 @@ export function AdminScreen({
   projectAreas,
   scheduleItems,
   referenceDocuments,
+  scheduleAiExtractorUrl,
+  onScheduleAiExtractorUrlChange,
   syncCleanupNotice,
   displayName,
   onDisplayNameChange,
   onBack,
   onDiagnostics,
-  onProjectManagement,
-  onReferenceDocuments,
-  onSchedule,
   onBackup,
   onRestore,
   onAddArea,
@@ -88,6 +134,9 @@ export function AdminScreen({
   onDeleteArea,
   onUseCurrentLocationForArea,
   onRemoveMissingPhotos,
+  onRetryUpdateSync,
+  onApplyCloudConflictUpdate,
+  onApplyCloudRecovery,
   onSaveCaptureMemory,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
@@ -96,14 +145,13 @@ export function AdminScreen({
   projectAreas: ProjectArea[];
   scheduleItems: ScheduleItem[];
   referenceDocuments: ReferenceDocument[];
+  scheduleAiExtractorUrl: string;
+  onScheduleAiExtractorUrlChange: (value: string) => void;
   syncCleanupNotice?: string | null;
   displayName: string;
   onDisplayNameChange: (value: string) => void;
   onBack: () => void;
   onDiagnostics: () => void;
-  onProjectManagement: () => void;
-  onReferenceDocuments: () => void;
-  onSchedule: () => void;
   onBackup: () => void;
   onRestore: () => void;
   onAddArea: (name: string) => boolean;
@@ -111,6 +159,9 @@ export function AdminScreen({
   onDeleteArea: (areaId: string) => void;
   onUseCurrentLocationForArea: (areaId: string) => void;
   onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
+  onRetryUpdateSync: (update: ProjectUpdate) => Promise<{ status?: string }>;
+  onApplyCloudConflictUpdate: (update: ProjectUpdate) => void;
+  onApplyCloudRecovery: (recovered: FullSyncResult['recovered']) => void;
   onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
 }) {
   const aiStatus = getAIConfigurationStatus();
@@ -123,10 +174,15 @@ export function AdminScreen({
   const [adminActionSummary, setAdminActionSummary] =
     useState('Cloud sync tools are available.');
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
+  const [dataRecoveryOpen, setDataRecoveryOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncAttemptMessage, setSyncAttemptMessage] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [lastFullSyncIssueCount, setLastFullSyncIssueCount] = useState(0);
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
+  const [conflictReviewVisible, setConflictReviewVisible] = useState(false);
+  const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
   const [signInModalVisible, setSignInModalVisible] = useState(false);
   const [signInEmail, setSignInEmail] = useState('');
   const [signInPassword, setSignInPassword] = useState('');
@@ -136,6 +192,7 @@ export function AdminScreen({
   const [capturePreviewOpen, setCapturePreviewOpen] = useState(false);
   const [capturePreviewDraft, setCapturePreviewDraft] = useState<DAVECaptureMemory>(() => createCapturePreviewDraft());
   const [capturePreviewSaved, setCapturePreviewSaved] = useState<DAVEConfirmedCaptureMemory | null>(null);
+  const statusRefreshRunRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -154,18 +211,42 @@ export function AdminScreen({
   }, [syncCleanupNotice]);
 
   useEffect(() => {
-    const unsubscribe = subscribeToAuthStateChange(() => {
+    const unsubscribe = subscribeToAuthStateChange((event, session) => {
+      if (session?.user) {
+        setConnectionStatus({
+          ...supabaseConfig,
+          clientReady: true,
+          authenticated: true,
+          userEmail: session.user.email ?? null,
+          checkedAt: new Date().toISOString(),
+        });
+        setIsCheckingConnection(false);
+      } else if (event === 'SIGNED_OUT') {
+        setConnectionStatus({
+          ...supabaseConfig,
+          clientReady: true,
+          authenticated: false,
+          userEmail: null,
+          checkedAt: new Date().toISOString(),
+        });
+      }
       void refreshAdminStatus();
     });
 
     return unsubscribe;
   }, []);
 
-  const connected = testResult?.connected ?? false;
+  const connected = Boolean(
+    supabaseConfig.configured &&
+    connectionStatus?.clientReady &&
+    connectionStatus.authenticated,
+  );
   const cloudProjectCount = testResult?.projectCount;
-  const connectionLabel = !isCheckingConnection && connected
-    ? 'Connected'
-    : 'Needs Attention';
+  const connectionLabel = isCheckingConnection
+    ? 'Checking…'
+    : connected
+      ? 'Connected'
+      : 'Needs Attention';
   const updateSyncAttentionCount = savedUpdates.filter(
     update => update.status === 'queued' || update.status === 'failed',
   ).length;
@@ -173,23 +254,56 @@ export function AdminScreen({
     updateSyncAttentionCount,
     syncStatus?.queuedChanges || 0,
   );
-  const syncDetail = pendingSyncCount > 0
+  const syncDetail = isSyncing
+    ? 'Sync in progress'
+    : pendingSyncCount > 0
     ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting to sync`
     : syncStatus?.conflicts
       ? `${syncStatus.conflicts} sync conflict${syncStatus.conflicts === 1 ? '' : 's'} need review`
+      : lastFullSyncIssueCount > 0
+        ? `${lastFullSyncIssueCount} ${lastFullSyncIssueCount === 1 ? 'item needs' : 'items need'} retry`
       : 'All caught up';
+  const syncNeedsAttention =
+    pendingSyncCount > 0 || Boolean(syncStatus?.conflicts) || lastFullSyncIssueCount > 0;
+
+  async function shareFeedback() {
+    try {
+      await Share.share({
+        title: 'App Feedback',
+        message: 'App feedback:\n\n',
+      });
+    } catch {
+      Alert.alert('Feedback unavailable', 'The share sheet could not be opened.');
+    }
+  }
+
+  function showHelp() {
+    Alert.alert(
+      'Using the app',
+      'Overview shows project health. Tasks contains scheduled work and field updates. Reports creates project communications. Use Talk for project questions, navigation, and confirmed project memory.',
+      [{ text: 'Got It' }],
+    );
+  }
+
+  function showAbout() {
+    Alert.alert(
+      'About',
+      `This construction project assistant runs on ECOS. It helps organize field evidence, schedules, project memory, and reports while keeping final decisions with the project manager.\n\n${APP_VERSION_BUILD_LABEL}`,
+      [{ text: 'Done' }],
+    );
+  }
 
   return (
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
         title="Settings"
-        subtitle="Manage your account, preferences, DAVE experience, and support."
+        subtitle="Manage your account, project data, and technical tools."
         onBack={onBack}
       />
 
       <ScreenSection title="Account">
         <ScreenCard style={styles.settingsCard}>
-          <SettingsRow icon="person-circle-outline" title="Profile" detail="Your display name" />
+          <SettingsStatusRow icon="person-circle-outline" title="Display name" detail="Used in greetings and project communication" />
           <TextInput
             style={styles.modalInput}
             value={displayName}
@@ -199,27 +313,36 @@ export function AdminScreen({
             autoCapitalize="words"
           />
 
-          <SettingsRow icon="business-outline" title="Organization" detail="Current DAVE workspace" />
-          <SettingsRow
+          <SettingsStatusRow
             icon={connected ? 'checkmark-circle-outline' : 'alert-circle-outline'}
             title="Connection status"
             detail={connectionLabel}
             tone={connected ? 'success' : 'warning'}
           />
-          <SettingsRow
-            icon={pendingSyncCount > 0 || syncStatus?.conflicts ? 'cloud-offline-outline' : 'cloud-done-outline'}
+          <SettingsStatusRow
+            icon={syncNeedsAttention ? 'cloud-offline-outline' : 'cloud-done-outline'}
             title="Cloud sync"
             detail={syncDetail}
-            tone={pendingSyncCount > 0 || syncStatus?.conflicts ? 'warning' : 'success'}
+            tone={syncNeedsAttention ? 'warning' : 'success'}
           />
 
-          {pendingSyncCount > 0 || syncStatus?.conflicts ? (
+          {pendingSyncCount > 0 ? (
             <SecondaryButton
               label={isSyncing ? 'Syncing…' : 'Retry Sync'}
               icon="sync-outline"
-              onPress={handleSyncNow}
+              onPress={handleRetrySync}
               disabled={isSyncing}
             />
+          ) : null}
+          {pendingSyncCount === 0 && syncStatus?.conflicts ? (
+            <SecondaryButton
+              label="Review Conflicts"
+              icon="git-compare-outline"
+              onPress={() => setConflictReviewVisible(true)}
+            />
+          ) : null}
+          {syncAttemptMessage ? (
+            <Text style={styles.cardText} selectable>{syncAttemptMessage}</Text>
           ) : null}
 
           {connectionStatus?.authenticated ? (
@@ -269,28 +392,50 @@ export function AdminScreen({
         onClose={closeSignInModal}
       />
 
-      <ScreenSection title="Preferences">
-        <ScreenCard style={styles.settingsCard}>
-          <SettingsRow icon="notifications-outline" title="Notifications" detail="Project alerts and reminders" />
-          <SettingsRow icon="options-outline" title="Project defaults" detail="Current project preferences" />
-          <SettingsRow icon="camera-outline" title="Photo quality" detail="Automatic quality" />
-          <SettingsRow icon="contrast-outline" title="Appearance" detail="System appearance" last />
-        </ScreenCard>
-      </ScreenSection>
+      <SyncConflictReviewModal
+        visible={conflictReviewVisible}
+        conflicts={syncConflicts}
+        resolvingConflictId={resolvingConflictId}
+        onKeepPhone={conflict => confirmConflictResolution(conflict, 'keep_local')}
+        onKeepCloud={conflict => confirmConflictResolution(conflict, 'keep_cloud')}
+        onClose={() => {
+          if (!resolvingConflictId) setConflictReviewVisible(false);
+        }}
+      />
 
-      <ScreenSection title="DAVE">
+      <ScreenSection title="Data & Sync">
         <ScreenCard style={styles.settingsCard}>
-          <SettingsRow icon="today-outline" title="Daily Brief" detail="Available in each project workspace" />
-          <SettingsRow icon="sparkles-outline" title="Ask DAVE" detail="Available in each project workspace" />
-          <SettingsRow icon="mic-outline" title="Voice" detail="Available in Project Walk" last />
+          <SettingsActionRow icon="sync-outline" title={isSyncing ? 'Syncing…' : 'Sync Now'} detail="Sync projects, updates, schedules, areas, and documents" onPress={() => { void handleFullSyncNow(); }} disabled={isSyncing} />
+          <TouchableOpacity
+            style={styles.settingsRow}
+            onPress={() => setDataRecoveryOpen(open => !open)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: dataRecoveryOpen }}
+          >
+            <View style={styles.settingsIcon}>
+              <Ionicons name="shield-checkmark-outline" size={20} color={colors.primary} />
+            </View>
+            <View style={styles.settingsRowMain}>
+              <Text style={styles.settingsRowTitle}>Data Recovery</Text>
+              <Text style={styles.settingsRowDetail}>Back up or restore this phone's local data</Text>
+            </View>
+            <Ionicons name={dataRecoveryOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.mutedText} />
+          </TouchableOpacity>
+          {dataRecoveryOpen ? (
+            <>
+              <SettingsActionRow icon="download-outline" title="Back Up Data" detail="Export a local backup file" onPress={onBackup} />
+              <SettingsActionRow icon="cloud-upload-outline" title="Restore Backup" detail="Import a previously exported backup" onPress={onRestore} last />
+            </>
+          ) : null}
+          <Text style={styles.actionSummary} selectable>{adminActionSummary}</Text>
         </ScreenCard>
       </ScreenSection>
 
       <ScreenSection title="Support">
         <ScreenCard style={styles.settingsCard}>
-          <SettingsRow icon="chatbubble-ellipses-outline" title="Feedback" detail="Share product feedback" />
-          <SettingsRow icon="help-circle-outline" title="Help" detail="Get help using DAVE" />
-          <SettingsRow icon="information-circle-outline" title="About" detail="DAVE project intelligence" last />
+          <SettingsActionRow icon="chatbubble-ellipses-outline" title="Send Feedback" detail="Share an idea or report a problem" onPress={() => { void shareFeedback(); }} />
+          <SettingsActionRow icon="help-circle-outline" title="Help" detail="Learn where to find core workflows" onPress={showHelp} />
+          <SettingsActionRow icon="information-circle-outline" title="About" detail={APP_VERSION_BUILD_LABEL} onPress={showAbout} last />
         </ScreenCard>
       </ScreenSection>
 
@@ -318,37 +463,17 @@ export function AdminScreen({
               <ScreenMetric label="Cloud" value={supabaseConfig.configured ? 'Ready' : 'Needs Setup'} detail={supabaseConfig.configured ? 'Cloud configuration is ready.' : 'Cloud setup needs review.'} tone={supabaseConfig.configured ? 'success' : 'warning'} icon={<Ionicons name="cloud-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Connection" value={connectionLabel} detail={formatCheckedAt(testResult?.checkedAt)} tone={connected ? 'success' : 'warning'} icon={<Ionicons name="wifi-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Cloud Projects" value={cloudProjectCount ?? 'Unknown'} detail="Projects synced through cloud" tone={cloudProjectCount == null ? 'warning' : 'default'} icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />} />
-              <ScreenMetric label="DAVE Assist" value="Server Routed" detail={aiStatus.message} tone="success" icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />} />
-              <ScreenMetric label="Build" value="22" detail="True Photo Intelligence" tone="success" icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="AI Assist" value="Server Routed" detail={aiStatus.message} tone="success" icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Build" value={APP_BUILD_NUMBER} detail={`Version ${APP_VERSION} · True Photo Intelligence`} tone="success" icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Auth" value={connectionStatus?.authenticated ? 'Signed In' : 'No Session'} detail={connectionStatus?.userEmail || 'No active account session'} tone={connectionStatus?.authenticated ? 'success' : 'default'} icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />} />
             </ScreenMetricGrid>
 
             <ScreenCard>
-              <Text style={styles.cardTitle}>Data and sync</Text>
-              <View style={styles.actionGrid}>
-                <AdminActionButton label={isSyncing ? 'Syncing...' : 'Sync Now'} icon="sync-outline" onPress={handleSyncNow} disabled={isSyncing} primary />
-                <AdminActionButton label="Backup" icon="download-outline" onPress={onBackup} />
-                <AdminActionButton label="Restore" icon="cloud-upload-outline" onPress={onRestore} />
-              </View>
-              <Text style={styles.resultText}>{adminActionSummary}</Text>
-            </ScreenCard>
-
-            <ScreenCard>
-              <Text style={styles.cardTitle}>Project tools</Text>
-              <View style={styles.actionGrid}>
-                <AdminActionButton label="Projects" icon="folder-outline" onPress={onProjectManagement} />
-                <AdminActionButton label="Documents" icon="documents-outline" onPress={onReferenceDocuments} />
-                <AdminActionButton label="Schedule" icon="calendar-outline" onPress={onSchedule} />
-              </View>
-            </ScreenCard>
-
-            <ScreenCard>
-              <Text style={styles.cardTitle}>Developer support</Text>
+              <Text style={styles.cardTitle}>Developer Support</Text>
               <View style={styles.actionGrid}>
                 <AdminActionButton label="Diagnostics" icon="pulse-outline" onPress={onDiagnostics} />
                 <AdminActionButton label={isTesting ? 'Testing...' : 'Test Connection'} icon="cloud-done-outline" onPress={handleTestConnection} disabled={isTesting} primary />
               </View>
-              <SecondaryButton label={advancedConfigOpen ? 'Hide Area Mapping' : 'Open Area Mapping'} icon={advancedConfigOpen ? 'chevron-up-outline' : 'map-outline'} onPress={() => setAdvancedConfigOpen(open => !open)} />
               {__DEV__ ? (
                 <SecondaryButton
                   label="Preview Capture Confirmation"
@@ -362,13 +487,22 @@ export function AdminScreen({
               {__DEV__ && capturePreviewSaved ? (
                 <Text style={styles.resultText}>Preview confirmed and saved locally.</Text>
               ) : null}
+              <Text style={styles.modalLabel}>Advanced schedule OCR endpoint</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={scheduleAiExtractorUrl}
+                onChangeText={onScheduleAiExtractorUrlChange}
+                placeholder="https://your-secure-schedule-extractor.example.com/extract"
+                placeholderTextColor={colors.mutedText}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+              />
+              <Text style={styles.progressText}>
+                Optional fallback for scanned Gantt PDFs. Message screenshots use local Apple recognition first.
+              </Text>
             </ScreenCard>
 
-            {advancedConfigOpen ? (
-              <ManageAreasPanel projectAreas={projectAreas} onAddArea={onAddArea} onUpdateArea={onUpdateArea} onDeleteArea={onDeleteArea} onUseCurrentLocationForArea={onUseCurrentLocationForArea} />
-            ) : null}
-
-            <AdminInfoCard title="App Version / Build Info" text="Build metadata placeholder. Add EAS build profile, version, runtime version, and update channel here when release metadata is finalized." icon="information-circle-outline" />
           </>
         ) : null}
       </ScreenSection>
@@ -395,22 +529,31 @@ export function AdminScreen({
     nextTest?: SupabaseConnectionTestResult,
     isActive: () => boolean = () => true,
   ) {
+    const refreshRun = statusRefreshRunRef.current + 1;
+    statusRefreshRunRef.current = refreshRun;
+    const isCurrentRefresh = () =>
+      isActive() && statusRefreshRunRef.current === refreshRun;
     setIsCheckingConnection(true);
 
     try {
-      const [connection, test, currentSyncStatus] = await Promise.all([
+      const [, connection, test] = await Promise.all([
+        reconcileSyncConflicts(),
         getSupabaseConnectionStatus(),
         nextTest ? Promise.resolve(nextTest) : testSupabaseConnection(),
+      ]);
+      const [currentSyncStatus, currentConflicts] = await Promise.all([
         getSyncStatus(),
+        getSyncConflicts(),
       ]);
 
-      if (!isActive()) return;
+      if (!isCurrentRefresh()) return;
 
       setConnectionStatus(connection);
       setTestResult(test);
       setSyncStatus(currentSyncStatus);
+      setSyncConflicts(currentConflicts);
     } finally {
-      if (isActive()) setIsCheckingConnection(false);
+      if (isCurrentRefresh()) setIsCheckingConnection(false);
     }
   }
 
@@ -436,9 +579,57 @@ export function AdminScreen({
     }
   }
 
-  async function handleSyncNow() {
+  async function handleRetrySync() {
     setIsSyncing(true);
+    setSyncAttemptMessage(null);
     setAdminActionSummary('Cloud sync tools are available.');
+
+    try {
+      const updatesToRetry = savedUpdates.filter(
+        update => update.status === 'queued' || update.status === 'failed',
+      );
+      const retryResults = updatesToRetry.length > 0
+        ? await withSyncTimeout(
+            Promise.all(updatesToRetry.map(update => onRetryUpdateSync(update))),
+          )
+        : [];
+      const queueResult = updatesToRetry.length === 0
+        ? await withSyncTimeout(uploadPendingChanges())
+        : null;
+      const nextSyncStatus = await getSyncStatus();
+      setSyncStatus(nextSyncStatus);
+
+      const syncedUpdates = retryResults.filter(update => update.status === 'sent').length;
+      const unsyncedUpdates = retryResults.length - syncedUpdates;
+      const remainingQueue = queueResult?.queued ?? nextSyncStatus.queuedChanges;
+      const remainingConflicts = nextSyncStatus.conflicts;
+      const syncSucceeded =
+        unsyncedUpdates === 0 && remainingQueue === 0 && remainingConflicts === 0;
+      const message = remainingConflicts > 0
+        ? `The sync queue is clear, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
+        : syncSucceeded
+        ? `${syncedUpdates || queueResult?.uploaded || 0} pending ${syncedUpdates === 1 || queueResult?.uploaded === 1 ? 'item' : 'items'} synced successfully.`
+        : `${Math.max(unsyncedUpdates, remainingQueue)} ${Math.max(unsyncedUpdates, remainingQueue) === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone.`;
+      setSyncAttemptMessage(message);
+      setAdminActionSummary(message);
+      setSyncConflicts(await getSyncConflicts());
+    } catch (error) {
+      const timedOut = String(error).includes('sync_timeout');
+      const message = timedOut
+        ? 'Cloud sync is taking longer than expected. The item remains saved on this phone; its status will update if the background attempt finishes.'
+        : 'Cloud sync could not finish. The item remains saved on this phone.';
+      setSyncAttemptMessage(message);
+      setAdminActionSummary(message);
+    } finally {
+      setIsSyncing(false);
+    }
+  }
+
+  async function handleFullSyncNow() {
+    setIsSyncing(true);
+    setLastFullSyncIssueCount(0);
+    setSyncAttemptMessage('Preparing project data…');
+    setAdminActionSummary('Preparing project data…');
 
     try {
       const result = await synchronizeLocalData(
@@ -449,30 +640,120 @@ export function AdminScreen({
           scheduleItems,
           referenceDocuments,
         },
+        progress => {
+          const message = `${progress.message} (${progress.completed} of ${progress.total})`;
+          setSyncAttemptMessage(message);
+          setAdminActionSummary(message);
+        },
       );
+      const [nextStatus, nextConflicts] = await Promise.all([
+        getSyncStatus(),
+        getSyncConflicts(),
+      ]);
+      setSyncStatus(nextStatus);
+      onApplyCloudRecovery(result.recovered);
+      setSyncConflicts(nextConflicts);
+      setLastFullSyncIssueCount(result.errors.length);
+      const message = nextConflicts.length > 0
+        ? `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`
+        : result.errors.length === 0
+        ? `Cloud sync completed: ${result.uploaded} uploaded and ${result.downloaded} downloaded.`
+        : [
+            `Cloud sync finished with ${result.errors.length} ${result.errors.length === 1 ? 'item' : 'items'} still needing attention:`,
+            ...result.errors.slice(0, 3).map(error => `• ${error}`),
+            ...(result.errors.length > 3
+              ? [`• ${result.errors.length - 3} more ${result.errors.length - 3 === 1 ? 'item' : 'items'}`]
+              : []),
+          ].join('\n');
+      setSyncAttemptMessage(message);
+      setAdminActionSummary(message);
+      if (result.missingPhotos.length > 0) showMissingPhotoSyncAlert(result.missingPhotos);
+    } catch {
+      let actualIssueCount = updateSyncAttentionCount;
 
-      setAdminActionSummary(
-        'Sync completed. Some unavailable photos may be skipped.',
-      );
-      await refreshAdminStatus({
-        configured: result.configured,
-        connected: result.connected,
-        projectCount: result.cloudProjectCount,
-        checkedAt: result.lastSyncAt || new Date().toISOString(),
-        error: result.errors.length ? 'Some records could not sync and will be retried.' : undefined,
-      });
-
-      if (result.missingPhotos.length > 0) {
-        showMissingPhotoSyncAlert(result.missingPhotos);
+      try {
+        const [nextStatus, nextConflicts] = await Promise.all([
+          getSyncStatus(),
+          getSyncConflicts(),
+        ]);
+        setSyncStatus(nextStatus);
+        setSyncConflicts(nextConflicts);
+        actualIssueCount = Math.max(
+          actualIssueCount,
+          nextStatus.queuedChanges + nextConflicts.length,
+        );
+      } catch {
+        // Keep the known local update count when sync status itself cannot load.
       }
 
-      setSyncStatus(await getSyncStatus());
-    } catch {
-      setAdminActionSummary(
-        'Sync completed. Some unavailable photos may be skipped.',
-      );
+      setLastFullSyncIssueCount(actualIssueCount);
+      const message = actualIssueCount > 0
+        ? `Full cloud sync could not finish. ${actualIssueCount} ${actualIssueCount === 1 ? 'item remains' : 'items remain'} saved on this phone.`
+        : 'The cloud sync check could not finish, but no pending retry items were found. Please try Sync Now again.';
+      setSyncAttemptMessage(message);
+      setAdminActionSummary(message);
     } finally {
       setIsSyncing(false);
+    }
+  }
+
+  function confirmConflictResolution(
+    conflict: SyncConflict,
+    resolution: 'keep_local' | 'keep_cloud',
+  ) {
+    const update = conflictUpdate(conflict, resolution);
+    const projectName = update?.projectName || 'this field update';
+    const title = resolution === 'keep_local' ? 'Keep Phone Copy?' : 'Keep Cloud Copy?';
+    const message = resolution === 'keep_local'
+      ? `The version saved on this phone for ${projectName} will replace the cloud copy.`
+      : `The cloud version for ${projectName} will replace the copy saved on this phone.`;
+
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: resolution === 'keep_local' ? 'Keep Phone' : 'Keep Cloud',
+        style: resolution === 'keep_cloud' ? 'destructive' : 'default',
+        onPress: () => {
+          void resolveConflict(conflict, resolution);
+        },
+      },
+    ]);
+  }
+
+  async function resolveConflict(
+    conflict: SyncConflict,
+    resolution: 'keep_local' | 'keep_cloud',
+  ) {
+    setResolvingConflictId(conflict.id);
+
+    try {
+      const resolvedUpdate = await resolveProjectUpdateSyncConflict<ProjectUpdate>(
+        conflict.id,
+        resolution,
+      );
+      if (resolution === 'keep_cloud') {
+        onApplyCloudConflictUpdate(resolvedUpdate);
+      }
+
+      const [nextConflicts, nextStatus] = await Promise.all([
+        getSyncConflicts(),
+        getSyncStatus(),
+      ]);
+      setSyncConflicts(nextConflicts);
+      setSyncStatus(nextStatus);
+      setSyncAttemptMessage(
+        nextConflicts.length > 0
+          ? `${nextConflicts.length} ${nextConflicts.length === 1 ? 'conflict remains' : 'conflicts remain'} to review.`
+          : 'Cloud conflicts resolved.',
+      );
+      if (nextConflicts.length === 0) setConflictReviewVisible(false);
+    } catch {
+      Alert.alert(
+        'Conflict not resolved',
+        'Neither copy was changed. Check the cloud connection and try again.',
+      );
+    } finally {
+      setResolvingConflictId(null);
     }
   }
 
@@ -518,6 +799,15 @@ export function AdminScreen({
         );
         return;
       }
+
+      setConnectionStatus({
+        ...supabaseConfig,
+        clientReady: true,
+        authenticated: true,
+        userEmail: result.data?.user?.email || email,
+        checkedAt: new Date().toISOString(),
+      });
+      setIsCheckingConnection(false);
 
       setSignInModalVisible(false);
       setSignInEmail('');
@@ -613,18 +903,20 @@ export function AdminScreen({
         'A photo could not be synced because it is no longer available.',
       [
         {
-          text: 'Remove Missing Photo',
+          text: count === 1 ? 'Keep Update, Skip Photo' : 'Keep Updates, Skip Photos',
           style: 'destructive',
           onPress: () => {
-            void onRemoveMissingPhotos(missingPhotos).then(() => {
-              setAdminActionSummary('Sync completed. Some unavailable photos may be skipped.');
+            void onRemoveMissingPhotos(missingPhotos).then(async () => {
+              await refreshAdminStatus();
+              setSyncAttemptMessage('Field update history preserved. Unavailable photo retries were cleared.');
+              setAdminActionSummary('Field update history preserved. Unavailable photo retries were cleared.');
             });
           },
         },
         {
           text: 'Retry',
           onPress: () => {
-            void handleSyncNow();
+            void handleFullSyncNow();
           },
         },
         {
@@ -660,10 +952,10 @@ function createCapturePreviewDraft() {
 function formatMissingPhotoSyncMessage(count: number) {
   if (count <= 0) return null;
 
-  return `${count} photo${count === 1 ? '' : 's'} could not be synced because ${count === 1 ? 'it is' : 'they are'} no longer available.`;
+  return `${count} photo ${count === 1 ? 'file is' : 'files are'} no longer on this phone or in cloud storage. Keep the field update history and stop retrying only the unavailable ${count === 1 ? 'file' : 'files'}.`;
 }
 
-function SettingsRow({
+function SettingsStatusRow({
   icon,
   title,
   detail,
@@ -692,6 +984,47 @@ function SettingsRow({
         <Text style={styles.settingsRowDetail}>{detail}</Text>
       </View>
     </View>
+  );
+}
+
+function SettingsActionRow({
+  icon,
+  title,
+  detail,
+  onPress,
+  disabled = false,
+  last = false,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  detail: string;
+  onPress: () => void;
+  disabled?: boolean;
+  last?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      style={[
+        styles.settingsRow,
+        styles.settingsActionRow,
+        last && styles.settingsRowLast,
+        disabled && styles.settingsActionRowDisabled,
+      ]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityHint={detail}
+    >
+      <View style={styles.settingsIcon}>
+        <Ionicons name={icon} size={20} color={colors.primary} />
+      </View>
+      <View style={styles.settingsRowMain}>
+        <Text style={styles.settingsRowTitle}>{title}</Text>
+        <Text style={styles.settingsRowDetail}>{detail}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={19} color={colors.mutedText} />
+    </TouchableOpacity>
   );
 }
 
@@ -767,7 +1100,117 @@ function AdminActionButton({
   );
 }
 
-function SignInModal({
+function SyncConflictReviewModal({
+  visible,
+  conflicts,
+  resolvingConflictId,
+  onKeepPhone,
+  onKeepCloud,
+  onClose,
+}: {
+  visible: boolean;
+  conflicts: SyncConflict[];
+  resolvingConflictId: string | null;
+  onKeepPhone: (conflict: SyncConflict) => void;
+  onKeepCloud: (conflict: SyncConflict) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingModalCard
+          frameStyle={styles.modalCardFrame}
+          contentContainerStyle={styles.modalCardContent}
+        >
+          <View style={styles.modalHeader}>
+            <View style={styles.modalHeaderText}>
+              <Text style={styles.cardTitle}>Review Cloud Conflicts</Text>
+              <Text style={styles.cardText}>
+                These field updates have different phone and cloud copies. Nothing changes until you choose which copy to keep.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={onClose}
+              disabled={Boolean(resolvingConflictId)}
+              accessibilityLabel="Close cloud conflict review"
+            >
+              <Ionicons name="close-outline" size={22} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          {conflicts.length === 0 ? (
+            <Text style={styles.cardText}>No cloud conflicts remain.</Text>
+          ) : conflicts.map(conflict => {
+            const phoneUpdate = conflictUpdate(conflict, 'keep_local');
+            const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
+            const resolving = resolvingConflictId === conflict.id;
+
+            return (
+              <View key={conflict.id} style={styles.conflictCard}>
+                <Text style={styles.conflictTitle}>
+                  {phoneUpdate?.projectName || cloudUpdate?.projectName || 'Field update'}
+                </Text>
+                <Text style={styles.settingsRowDetail}>
+                  Phone: {formatConflictCopy(phoneUpdate)}
+                </Text>
+                <Text style={styles.settingsRowDetail}>
+                  Cloud: {formatConflictCopy(cloudUpdate)}
+                </Text>
+                <View style={styles.conflictActions}>
+                  <SecondaryButton
+                    label={resolving ? 'Saving…' : 'Keep Phone'}
+                    icon="phone-portrait-outline"
+                    onPress={() => onKeepPhone(conflict)}
+                    disabled={Boolean(resolvingConflictId)}
+                    compact
+                  />
+                  <SecondaryButton
+                    label={resolving ? 'Saving…' : 'Keep Cloud'}
+                    icon="cloud-outline"
+                    onPress={() => onKeepCloud(conflict)}
+                    disabled={Boolean(resolvingConflictId)}
+                    compact
+                  />
+                </View>
+              </View>
+            );
+          })}
+        </KeyboardAvoidingModalCard>
+      </View>
+    </Modal>
+  );
+}
+
+function conflictUpdate(
+  conflict: SyncConflict,
+  source: 'keep_local' | 'keep_cloud',
+): ProjectUpdate | null {
+  const payload = source === 'keep_local'
+    ? conflict.localPayload
+    : conflict.remotePayload;
+
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const update = source === 'keep_local' && record.updateData
+    ? record.updateData
+    : payload;
+
+  if (!update || typeof update !== 'object' || Array.isArray(update)) return null;
+  return update as ProjectUpdate;
+}
+
+function formatConflictCopy(update: ProjectUpdate | null): string {
+  if (!update) return 'Copy unavailable';
+  const date = update.date ? new Date(update.date) : null;
+  const dateLabel = date && Number.isFinite(date.getTime())
+    ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'date unavailable';
+  const photoCount = Array.isArray(update.photos) ? update.photos.length : 0;
+  return `${dateLabel} · ${photoCount} photo${photoCount === 1 ? '' : 's'}${update.notes?.trim() ? ` · ${update.notes.trim().slice(0, 80)}` : ''}`;
+}
+
+export function SignInModal({
   visible,
   email,
   password,
@@ -908,6 +1351,45 @@ const styles = StyleSheet.create({
 
   settingsRowLast: {
     borderBottomWidth: 0,
+  },
+
+  settingsActionRow: {
+    minHeight: 66,
+  },
+
+  settingsActionRowDisabled: {
+    opacity: 0.5,
+  },
+
+  actionSummary: {
+    ...typography.caption,
+    color: colors.mutedText,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
+  },
+
+  conflictCard: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceMuted,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+  },
+
+  conflictTitle: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '800',
+  },
+
+  conflictActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
   },
 
   settingsIcon: {

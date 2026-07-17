@@ -21,6 +21,8 @@ new Function('module', 'exports', compiled)(
 );
 
 const { resolvePIEReportProjectNames } = moduleUnderTest.exports;
+const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
+const reportsScreen = fs.readFileSync(path.resolve(__dirname, '../screens/ReportsScreen.tsx'), 'utf8');
 const single = resolvePIEReportProjectNames({
   selectedProjectNames: ['Alpha'],
   fallbackProjectNames: ['Alpha', 'Beta'],
@@ -39,6 +41,20 @@ assert.deepStrictEqual(
   combined,
   ['Alpha', 'Beta'],
   'Combined Project Update must retain every explicitly selected project.',
+);
+
+assert(
+  reportsScreen.includes("? 'Choose Project' : 'Choose Projects'") &&
+    reportsScreen.includes("accessibilityRole={reportType === 'daily_project_update' ? 'radio' : 'checkbox'}") &&
+    reportsScreen.includes('onToggleProject(project)'),
+  'Reports must expose a single-select project picker and a multi-select combined-project picker.',
+);
+assert(
+  app.includes('selectedReportProjectNames.flatMap(selectedProject =>') &&
+    app.includes('workspaceScopeNames(selectedProject)') &&
+    app.includes('matchesReportProject(update.scheduleProjectName)') &&
+    app.includes('selectedProjectNames={selectedReportProjectNames}'),
+  'Visible project selections must scope the live report authority, including parent-project tasks.',
 );
 
 console.log('PASS reporter single/combined project scope');

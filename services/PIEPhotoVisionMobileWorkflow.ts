@@ -9,6 +9,12 @@ import {
 } from './SupabaseService';
 import type { ProjectUpdate, UpdatePhoto } from '../types';
 import {
+  createDAVEAreaIdentity,
+  daveAreaIdentitiesMatch,
+  daveVisualContinuityReason,
+  scoreDAVEVisualContinuityCandidate,
+} from './PIEVisualContinuity';
+import {
   PIE_PHOTO_FINDING_SCHEMA_VERSION,
   findingDisplayText,
   normalizePIEPhotoFindings,
@@ -203,6 +209,8 @@ export type PIEPriorNoPriorReason =
 export type PIEPriorPhotoMatchKey = {
   normalizedProjectKey: string | null;
   normalizedAreaKey: string | null;
+  normalizedAreaIdKey: string | null;
+  normalizedAreaNameKey: string | null;
   capturedOrSavedAt: string | null;
   timestampMs: number | null;
   updateId: string | null;
@@ -228,7 +236,7 @@ export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisp
   return {
     status: 'analyzing',
     title: 'Analyzing photo comparison',
-    summary: 'DAVE is comparing this photo with prior project evidence.',
+    summary: 'Comparing this photo with prior project evidence.',
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
@@ -256,7 +264,7 @@ export function buildPreparingSecurePhotoAnalysisState(
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
     repeatPhotoGuidance: null,
-    authorityMessage: 'DAVE will compare the photos after the signed-in session is ready.',
+    authorityMessage: 'The photos will be compared after the signed-in session is ready.',
     currentObservation: null,
     changedFromPrior: null,
     additions: [],
@@ -277,20 +285,20 @@ export function buildPreparingSecurePhotoAnalysisState(
 }
 
 export function buildNoSuitablePriorPhotoIntelligenceState(
-  summary = 'DAVE needs a prior photo from this project area before it can compare visible changes.',
+  summary = 'This first photo is saved for future comparison.',
 ): PIEPhotoIntelligenceDisplayState {
   return {
     status: 'no_suitable_prior_photo',
-    title: 'No suitable prior photo',
+    title: 'Baseline saved',
     summary,
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
     comparability: null,
-    captureLimitations: ['No prior photo was available for a reliable comparison.'],
+    captureLimitations: [],
     projectProgress: 'unable_to_determine',
-    repeatPhotoGuidance: 'Capture a repeat photo from a similar angle when there is prior evidence to compare.',
-    authorityMessage: 'No project progress was inferred from this photo alone.',
+    repeatPhotoGuidance: 'Take the next photo from a similar angle to compare visible construction changes.',
+    authorityMessage: 'No project status was changed.',
     currentObservation: null,
     changedFromPrior: null,
     additions: [],
@@ -335,8 +343,8 @@ export async function analyzeProjectPhotoWithVision({
     return {
       ...buildNoSuitablePriorPhotoIntelligenceState(
         priorSelection.candidateCount > 0
-          ? 'No reliable prior photo to compare'
-          : 'No earlier photo is available for comparison.',
+          ? 'This photo is saved as the best available baseline for future comparison.'
+          : 'This first photo is saved for future comparison.',
       ),
       diagnostics: buildDiagnostics({
         currentPhotoPrep: currentPrepared,
@@ -442,7 +450,7 @@ export async function analyzeProjectPhotoWithVision({
     executedStages.push('edge_function_invoked');
 
     if (error) {
-      return failedRetryState('Photo intelligence could not finish. DAVE will retry when cloud sync runs.', {
+      return failedRetryState('Photo intelligence could not finish. It will retry when cloud sync runs.', {
         baselineEvidence,
         currentEvidence,
         requestId,
@@ -662,6 +670,7 @@ async function findPriorComparablePhoto(
     reason: string;
     capturedAt: number;
     candidateIndex: number;
+    continuityScore: number;
     preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
   }> = [];
   const acceptedAreaFallback: Array<{
@@ -670,6 +679,7 @@ async function findPriorComparablePhoto(
     reason: string;
     capturedAt: number;
     candidateIndex: number;
+    continuityScore: number;
     preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
   }> = [];
   const rejectedReasons: string[] = [];
@@ -708,13 +718,26 @@ async function findPriorComparablePhoto(
       }
       afterSameProject += 1;
 
-      const isAreaFallbackCandidate =
-        Boolean(currentKey.normalizedAreaKey) && !candidateKey.normalizedAreaKey;
+      const currentAreaIdentity = createDAVEAreaIdentity(
+        currentKey.normalizedAreaIdKey,
+        currentKey.normalizedAreaNameKey,
+      );
+      const candidateAreaIdentity = createDAVEAreaIdentity(
+        candidateKey.normalizedAreaIdKey,
+        candidateKey.normalizedAreaNameKey,
+      );
+      const currentHasArea = Boolean(
+        currentAreaIdentity.idKey || currentAreaIdentity.nameKey,
+      );
+      const candidateHasArea = Boolean(
+        candidateAreaIdentity.idKey || candidateAreaIdentity.nameKey,
+      );
+      const isAreaFallbackCandidate = currentHasArea && !candidateHasArea;
 
       if (
-        currentKey.normalizedAreaKey &&
-        candidateKey.normalizedAreaKey &&
-        candidateKey.normalizedAreaKey !== currentKey.normalizedAreaKey
+        currentHasArea &&
+        candidateHasArea &&
+        !daveAreaIdentitiesMatch(currentAreaIdentity, candidateAreaIdentity)
       ) {
         rejectedReasons.push(`${label} rejected: prior_photo_wrong_area`);
         skippedCandidateCount += 1;
@@ -722,7 +745,7 @@ async function findPriorComparablePhoto(
       }
       afterSameArea += 1;
 
-      const timestampComparison = comparePriorCandidateTime(candidateKey, currentKey, candidateCount);
+      const timestampComparison = comparePriorCandidateTime(candidateKey, currentKey);
       if (timestampComparison === 'invalid_current') {
         rejectedReasons.push(`${label} rejected: timestamp_invalid`);
         continue;
@@ -758,6 +781,12 @@ async function findPriorComparablePhoto(
         photo: candidatePhoto,
         capturedAt: candidateKey.timestampMs ?? 0,
         candidateIndex: candidateCount,
+        continuityScore: scoreDAVEVisualContinuityCandidate({
+          currentUpdate: update,
+          currentPhoto: photo,
+          candidateUpdate,
+          candidatePhoto,
+        }),
         preparedFile,
         reason: isAreaFallbackCandidate
           ? 'most recent valid earlier photo from same project; prior photo has no area set, matched as area-unconfirmed fallback (no same-area candidate was available)'
@@ -765,6 +794,9 @@ async function findPriorComparablePhoto(
             ? 'most recent valid earlier photo from same project and area'
             : 'most recent valid earlier photo from same project',
       };
+      if (candidateRecord.continuityScore > 0) {
+        candidateRecord.reason = `${candidateRecord.reason}; preferred for ${daveVisualContinuityReason(candidateRecord.continuityScore)}`;
+      }
 
       if (isAreaFallbackCandidate) {
         acceptedAreaFallback.push(candidateRecord);
@@ -774,12 +806,14 @@ async function findPriorComparablePhoto(
     }
   }
 
-  const byRecency = (
-    a: { capturedAt: number; candidateIndex: number },
-    b: { capturedAt: number; candidateIndex: number },
-  ) => b.capturedAt - a.capturedAt || a.candidateIndex - b.candidateIndex;
-  acceptedConfirmedArea.sort(byRecency);
-  acceptedAreaFallback.sort(byRecency);
+  const byContinuityThenRecency = (
+    a: { continuityScore: number; capturedAt: number; candidateIndex: number },
+    b: { continuityScore: number; capturedAt: number; candidateIndex: number },
+  ) => b.continuityScore - a.continuityScore ||
+    b.capturedAt - a.capturedAt ||
+    a.candidateIndex - b.candidateIndex;
+  acceptedConfirmedArea.sort(byContinuityThenRecency);
+  acceptedAreaFallback.sort(byContinuityThenRecency);
   const selected = acceptedConfirmedArea[0] ?? acceptedAreaFallback[0] ?? null;
   const noPriorReason = selected
     ? null
@@ -825,15 +859,16 @@ export function buildPIEPriorPhotoMatchKey(
     update.date,
   ]);
 
+  const areaIdentity = createDAVEAreaIdentity(
+    photo?.selectedAreaId || update.selectedAreaId || null,
+    photo?.selectedAreaName || update.selectedAreaName || null,
+  );
+
   return {
     normalizedProjectKey: normalizedMatchKey(update.projectName),
-    normalizedAreaKey: normalizedMatchKey(
-      photo?.selectedAreaId ||
-      update.selectedAreaId ||
-      photo?.selectedAreaName ||
-      update.selectedAreaName ||
-      '',
-    ),
+    normalizedAreaKey: areaIdentity.idKey || areaIdentity.nameKey || null,
+    normalizedAreaIdKey: areaIdentity.idKey || null,
+    normalizedAreaNameKey: areaIdentity.nameKey || null,
     capturedOrSavedAt,
     timestampMs: timestampMsOrNull(capturedOrSavedAt),
     updateId: update.id || null,
@@ -844,16 +879,10 @@ export function buildPIEPriorPhotoMatchKey(
 function comparePriorCandidateTime(
   candidateKey: PIEPriorPhotoMatchKey,
   currentKey: PIEPriorPhotoMatchKey,
-  candidateIndex: number,
 ): 'earlier' | 'not_earlier' | 'invalid_current' {
   if (currentKey.timestampMs === null) return 'invalid_current';
-  if (candidateKey.timestampMs === null) return candidateIndex > 0 ? 'earlier' : 'not_earlier';
+  if (candidateKey.timestampMs === null) return 'not_earlier';
   if (candidateKey.timestampMs < currentKey.timestampMs) return 'earlier';
-  if (candidateKey.timestampMs === currentKey.timestampMs) {
-    return candidateKey.updateId !== currentKey.updateId || candidateKey.photoId !== currentKey.photoId
-      ? 'earlier'
-      : 'not_earlier';
-  }
   return 'not_earlier';
 }
 
@@ -1170,7 +1199,7 @@ function buildDisplayStateFromComparison(
       ? plainLanguageSummary
       : visibleChange
         ? `${visibleChange}${location ? ` ${location}.` : '.'}`
-        : 'DAVE did not find a supported visible change in this comparison.',
+        : 'No supported visible change was found in this comparison.',
     visibleChange,
     location,
     comparisonConfidence: String(row.confidence || 'unknown'),
@@ -1179,9 +1208,9 @@ function buildDisplayStateFromComparison(
     projectProgress: progress,
     repeatPhotoGuidance: stringArray(row.repeat_photo_guidance)[0] ?? null,
     authorityMessage: progress === 'supported'
-      ? 'DAVE found visual evidence that may support progress, but project status still requires normal evidence checks.'
-      : 'This is a visual observation only. DAVE did not create a milestone, schedule, cost, compliance, or status update.',
-    currentObservation: visibleChange || findings[0]?.description || 'DAVE compared the current photo with prior visual evidence.',
+      ? 'Visual evidence may support progress, but project status still requires normal evidence checks.'
+      : 'This is a visual observation only. No milestone, schedule, cost, compliance, or status update was created.',
+    currentObservation: visibleChange || findings[0]?.description || 'The current photo was compared with prior visual evidence.',
     changedFromPrior: visibleChange || 'No reliable visual change was detected.',
     additions: additionLabels,
     removals: removalLabels,
@@ -1284,7 +1313,7 @@ function failedRetryState(
       safeUnavailableReason(summary),
     ],
     projectProgress: 'unable_to_determine',
-    repeatPhotoGuidance: 'Keep the photo. DAVE can retry from cloud evidence later.',
+    repeatPhotoGuidance: 'Keep the photo. Comparison can retry from cloud evidence later.',
     authorityMessage: 'No project progress was inferred while analysis was unavailable.',
     currentObservation: null,
     changedFromPrior: null,

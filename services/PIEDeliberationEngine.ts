@@ -202,7 +202,7 @@ export function evaluateHypotheses(
       readiness: readinessFromRuntime(input.runtime),
     },
     {
-      hypothesis: 'DAVE should verify before recommending action.',
+      hypothesis: 'Evidence should be verified before recommending action.',
       supports: missingEvidence,
       contradicts: input.runtime.nextBestAction.evidence,
       testNeeded: missingEvidence[0] || 'Review the current recommendation with the user.',

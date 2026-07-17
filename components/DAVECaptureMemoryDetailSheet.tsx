@@ -79,7 +79,7 @@ export function DAVECaptureMemoryDetailSheet({
               </Text>
             </DetailCard>
 
-            <DetailCard title="What DAVE remembers">
+            <DetailCard title="Project Memory">
               {populatedFields.length ? populatedFields.map(([field, label]) => (
                 <View key={field} style={styles.field}>
                   <Text style={styles.label}>{label}</Text>
@@ -127,7 +127,7 @@ export function DAVECaptureMemoryDetailSheet({
   function confirmDelete() {
     Alert.alert(
       'Delete Saved Memory?',
-      'This removes the confirmed memory from this device and updates DAVE’s local project intelligence. This cannot be undone.',
+      'This removes the confirmed memory from this device and updates local project intelligence. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {

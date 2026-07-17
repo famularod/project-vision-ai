@@ -3,6 +3,7 @@ const path = require('path');
 
 const root = process.cwd();
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const admin = fs.readFileSync(path.join(root, 'screens/AdminScreen.tsx'), 'utf8');
 const workflow = fs.readFileSync(path.join(root, 'services/PIEPhotoVisionMobileWorkflow.ts'), 'utf8');
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
 const envExample = fs.readFileSync(path.join(root, '.env.example'), 'utf8');
@@ -29,6 +30,27 @@ assert(
 );
 
 assert(
+  supabase.includes('await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);') &&
+    admin.includes("event === 'SIGNED_OUT'") &&
+    admin.includes('userEmail: result.data?.user?.email || email'),
+  'Settings waits for stored-session hydration and applies successful auth state immediately',
+);
+
+assert(
+  admin.includes('connectionStatus?.clientReady') &&
+    admin.includes('connectionStatus.authenticated') &&
+    !admin.includes('const connected = testResult?.connected ?? false'),
+  'Settings connection badge follows the authenticated session instead of a separate project-table test',
+);
+
+assert(
+  admin.includes('const statusRefreshRunRef = useRef(0)') &&
+    admin.includes('statusRefreshRunRef.current === refreshRun') &&
+    admin.includes('if (!isCurrentRefresh()) return;'),
+  'an older Settings refresh cannot overwrite a newer authenticated session',
+);
+
+assert(
   supabase.includes("missingReason: storageAvailable ? 'signed_out' : 'storage_unavailable'") &&
     workflow.includes("'Sign in required for photo intelligence'") &&
     supabase.includes("appAuthMode") &&
@@ -38,9 +60,9 @@ assert(
 );
 
 assert(
-  app.includes('function PhotoIntelligenceSignInModal') &&
+    app.includes('function PhotoIntelligenceSignInModal') &&
     app.includes('Sign in to enable photo intelligence') &&
-    app.includes('Use a Supabase Auth email and password') &&
+    app.includes('Use the email and password for your cloud sync account') &&
     app.includes('Do not use Apple Developer, Expo, or TestFlight credentials') &&
     app.includes('onSignInRequired') &&
     app.includes('pieResultRequiresSupabaseSignIn'),
@@ -115,22 +137,15 @@ assert(
 );
 
 assert(
-  app.includes('Supabase auth state:') &&
-    app.includes('App auth mode:') &&
-    app.includes('Supabase user id present:') &&
-    app.includes('Session token present:') &&
-    app.includes('Last auth event:') &&
-    app.includes('Reached without Supabase auth:') &&
-    app.includes('Retry routed to sign-in:') &&
-    app.includes('Token lookup result:') &&
-    app.includes('Token missing reason:') &&
-    app.includes('Sign-in client source:') &&
-    app.includes('DAVE analysis client source:') &&
-    app.includes('Auth hydration completed:') &&
-    app.includes('Retry fetched fresh token:') &&
-    app.includes('Edge Function invoked:') &&
-    app.includes('Edge Function status:'),
-  'development diagnostics expose auth/session state without secret values',
+  workflow.includes('supabaseAuthState:') &&
+    workflow.includes('sessionTokenPresent:') &&
+    workflow.includes('lastAuthEvent:') &&
+    workflow.includes('tokenLookupResult:') &&
+    workflow.includes('authHydrationCompleted:') &&
+    workflow.includes('edgeFunctionStatus:') &&
+    !app.includes('Supabase auth state:') &&
+    !app.includes('Session token present:'),
+  'auth/session diagnostics must remain available internally without appearing in the PM UI',
 );
 
 assert(

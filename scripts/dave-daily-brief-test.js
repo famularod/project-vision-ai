@@ -163,7 +163,12 @@ for (const forbidden of ['providerName', 'diagnostics', 'signedUrl', 'storagePat
 }
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-assert(app.includes('DAVE Daily Brief') && app.includes('buildProjectIntelligence({'), 'Project Workspace must render the Daily Brief from canonical project intelligence.');
+assert(
+  app.includes('Project Brief') &&
+    app.includes('const dailyBrief = projectIntelligence.dailyBrief') &&
+    app.includes('liveAuthority.projectTruth.intelligence'),
+  'Project Workspace must render the consolidated Project Brief from canonical Project Truth intelligence.',
+);
 assert(!app.includes("title=\"DAVE Daily Brief\""), 'Daily Brief must not add a top-level navigation screen.');
 
 console.log('DAVE Daily Brief behavioral tests passed.');

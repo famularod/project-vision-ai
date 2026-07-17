@@ -43,7 +43,12 @@ assert(
 );
 assert(
   app.includes("if (summary.status === 'no_prior_photo') return PIE_STATUS_COPY.noPriorPhoto;"),
-  'No-prior-photo updates must display No prior photo to compare.',
+  'No-prior-photo updates must display the positive shared baseline status.',
+);
+assert(
+  app.includes("noPriorPhoto: 'Baseline saved'") &&
+    app.includes('Future photos from this area can be compared against this baseline.'),
+  'Baseline updates must explain future comparison value without presenting a failure.',
 );
 assert(
     workflow.includes('client.functions.invoke') &&
@@ -73,8 +78,8 @@ assert(
     workflow.includes("'malformed_response'") &&
     workflow.includes("'provider_side'") &&
     workflow.includes("'unknown'") &&
-    app.includes('Failure category:'),
-  'Dev diagnostics must distinguish failure category instead of collapsing every failure into generic unavailable.',
+    !app.includes('Failure category:'),
+  'Internal diagnostics must distinguish failure categories without exposing them in the PM UI.',
 );
 
 assert(
@@ -124,8 +129,8 @@ assert(
 
 const projectCard = sliceBetween(app, 'function Phase2ProjectCard', 'function ProjectWorkspaceScreen');
 assert(
-  app.includes('buildProjectCardPIEStatus(project, savedUpdates)'),
-  'Project cards must use project-specific PIE status copy.',
+  app.includes('buildProjectCardPIEStatus(scopeProjects, savedUpdates)'),
+  'Overview project cards must use parent-and-child scoped DAVE status copy.',
 );
 assert(
   !projectCard.includes('All projects on track — nothing needs your attention.'),
@@ -142,10 +147,10 @@ assert(
   'Project card status must not use Needs Review.',
 );
 [
-  'Last update sent',
+  'Last update cloud synced',
   'updates analyzing',
   'Analysis unavailable · Retry',
-  'Queued update waiting to send',
+  'Queued update waiting to sync',
   'Safety item needs review',
   'No recent updates',
 ].forEach(marker => {
@@ -157,9 +162,9 @@ const attentionBuilder = sliceBetween(app, 'function buildPhase2AttentionItems',
   'Safety concern detected',
   'PIE_STATUS_COPY.unavailableRetry',
   'PIE_STATUS_COPY.timeoutRetry',
-  'Queued update waiting to send',
+  'Queued update waiting to sync',
   'Sync failed · Retry',
-  'Update ready to send',
+  'Update ready to sync',
   'Missing recipients',
   'Blocker tagged',
   'Document upload failed · Retry',

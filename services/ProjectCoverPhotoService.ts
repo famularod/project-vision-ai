@@ -107,10 +107,15 @@ export function mergeProjectRecords(
   baseNames: string[],
   localRecords: ProjectRecord[],
   cloudRecords: ProjectRecord[],
+  deletedProjectNames: string[] = [],
 ): ProjectRecord[] {
   const records = new Map<string, ProjectRecord>();
+  const deletedKeys = new Set(
+    deletedProjectNames.map(name => name.trim().toLowerCase()).filter(Boolean),
+  );
   const add = (record: ProjectRecord) => {
     const key = record.name.toLowerCase();
+    if (deletedKeys.has(key)) return;
     const previous = records.get(key);
     if (!previous) {
       records.set(key, record);

@@ -8,7 +8,6 @@ const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 
 [
-  "'PIEAnalysis'",
   'FieldUpdateStepIndicator',
   'Capture Evidence',
   'Take Photo',
@@ -25,8 +24,7 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'QUICK_CONTEXTS.map',
   "context === 'Safety'",
   'Update Preview',
-  'Send Update',
-  'Save Draft',
+  'Save Field Update',
   'minimumSendDataIssue',
   'workflowTimestamps',
   'cameraActionStartedAt',
@@ -50,6 +48,13 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 });
 
 assert(
+  !app.includes("setScreen('PIEAnalysis')") &&
+    app.includes("function continueToReview()") &&
+    app.includes("setScreen('BuildUpdate')"),
+  'Photo intelligence should run inline while Capture moves directly to Review.',
+);
+
+assert(
   app.includes('await ImagePicker.launchCameraAsync({'),
   'Take Photo should open the camera directly.',
 );
@@ -66,8 +71,9 @@ assert(
   'Zero-photo path must show no visual comparison available.',
 );
 assert(
-  app.includes("return 'Recipients are required before sending.'"),
-  'Send must require recipients while Save Draft remains available.',
+  app.includes('function saveFieldUpdateFromReview()') &&
+    app.includes('if (!hasSavableUpdate(draft))'),
+  'Review must save a substantive Field Update without requiring communication recipients.',
 );
 assert(
   app.includes('Observed findings') &&

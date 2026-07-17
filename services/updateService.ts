@@ -1,5 +1,11 @@
 import { listProjectUpdates } from './SupabaseService';
-import { queueProjectUpdateRecord, uploadPendingChanges } from './SyncService';
+import {
+  hydrateRecoveredProjectUpdatePhotos,
+  queueProjectUpdateRecord,
+  runFieldUpdateCloudSync,
+  uploadPendingChanges,
+} from './SyncService';
+import type { ProjectUpdate } from '../types';
 
 type ProjectUpdateLike = {
   id: string;
@@ -16,9 +22,13 @@ export async function loadCloudUpdates<TUpdate>(): Promise<TUpdate[]> {
     return [];
   }
 
-  return result.data
+  const updates = result.data
     .map(row => row.updateData)
     .filter((update): update is TUpdate => Boolean(update));
+  return Promise.all(updates.map(async update => {
+    if (!isProjectUpdateWithPhotos(update)) return update;
+    return await hydrateRecoveredProjectUpdatePhotos(update) as unknown as TUpdate;
+  }));
 }
 
 export async function saveCloudUpdate<TUpdate extends ProjectUpdateLike>(
@@ -26,5 +36,19 @@ export async function saveCloudUpdate<TUpdate extends ProjectUpdateLike>(
 ): Promise<void> {
   if (!update.id) return;
 
+  if (isProjectUpdateWithPhotos(update)) {
+    await runFieldUpdateCloudSync(update);
+    return;
+  }
   await queueProjectUpdateRecord(update);
+}
+
+function isProjectUpdateWithPhotos(value: unknown): value is ProjectUpdate {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as ProjectUpdate).id === 'string' &&
+    typeof (value as ProjectUpdate).projectName === 'string' &&
+    Array.isArray((value as ProjectUpdate).photos),
+  );
 }

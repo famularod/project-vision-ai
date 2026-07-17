@@ -23,6 +23,7 @@ import type {
 } from './ProjectIntelligenceEngine';
 import {
   buildPIEScheduleReconciliation,
+  scheduleHasAuthoritativeProgressJudgment,
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
 
@@ -438,6 +439,7 @@ export function extractScheduleEvidence({
       const notes = trimOrNull(item.notes);
       const importedFrom = trimOrNull(item.importedFrom ?? '');
       const importedAt = trimOrNull(item.importedAt ?? '');
+      const pmProgressJudgment = scheduleHasAuthoritativeProgressJudgment(item);
       const needsReview =
         !item.projectName.trim() ||
         !item.locationName.trim() ||
@@ -472,6 +474,13 @@ export function extractScheduleEvidence({
         isComplete,
         needsReview,
         sources: [
+          ...(pmProgressJudgment ? [{
+            type: 'typed-update' as const,
+            label: `${item.progressConfirmedBy || 'Project manager'} progress judgment`,
+            recordId: item.id,
+            confidence: 'high' as const,
+            capturedAt: item.progressConfirmedAt || item.createdAt,
+          }] : []),
           {
             type: scheduleSourceType(importedFrom),
             label: importedFrom || 'Schedule item',
@@ -884,7 +893,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-schedule',
       title: 'No schedule evidence',
-      summary: 'DAVE does not have schedule items, so milestones, overdue work, and next work are less reliable.',
+      summary: 'There are no schedule items, so milestones, overdue work, and next work are less reliable.',
       source: 'schedule',
       severity: 'high',
       suggestedAction:
@@ -897,7 +906,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-photos',
       title: 'No photo evidence',
-      summary: 'DAVE does not have field photos to verify current conditions.',
+      summary: 'There are no field photos to verify current conditions.',
       source: 'photo',
       severity: 'medium',
       suggestedAction: 'Capture field photos with captions and action status.',
@@ -909,7 +918,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-gps',
       title: 'GPS unavailable',
-      summary: 'DAVE cannot strongly recommend project or area from location evidence.',
+      summary: 'Project or area cannot be strongly recommended from location evidence.',
       source: 'gps',
       severity: 'medium',
       suggestedAction: 'Capture GPS-backed field evidence or confirm the current area.',
@@ -921,7 +930,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-user-updates',
       title: 'No typed updates',
-      summary: 'DAVE does not have recent user notes to explain what changed.',
+      summary: 'There are no recent user notes to explain what changed.',
       source: 'typed-update',
       severity: 'medium',
       suggestedAction: 'Add a short update note after the next walk or photo capture.',
@@ -957,7 +966,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-documents',
       title: 'No document context',
-      summary: 'DAVE does not have document metadata to connect plans, specs, or schedules to the current status.',
+      summary: 'There is no document metadata connecting plans, specs, or schedules to the current status.',
       source: 'document-metadata',
       severity: 'low',
       suggestedAction: 'Attach relevant document metadata when available.',
@@ -969,7 +978,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-report-history',
       title: 'No report history',
-      summary: 'DAVE cannot compare this summary against previous reports.',
+      summary: 'This summary cannot be compared against previous reports.',
       source: 'report-history',
       severity: 'low',
       suggestedAction: 'Generate or save a reviewed report when communication is ready.',
@@ -1092,7 +1101,7 @@ export function buildIntelligentSummary(
         : `${summary.photoCount} photo${summary.photoCount === 1 ? '' : 's'} available; ${summary.captionedPhotoCount} captioned and ${summary.photoActionCount} action-linked.`,
     gpsLocationConfidence: fusedEvidence.gpsEvidence.gpsAvailable
       ? `GPS supports ${fusedEvidence.gpsEvidence.recommendedArea || 'the current area'} with ${fusedEvidence.gpsEvidence.confidenceScore}% confidence.`
-      : 'GPS is unavailable; DAVE is relying on project, area, schedule, or last activity context.',
+      : 'GPS is unavailable; project, area, schedule, or last activity context is being used.',
     userUpdateSummary:
       summary.userUpdateCount === 0
         ? 'No typed update notes are available.'
@@ -1110,7 +1119,7 @@ export function buildIntelligentSummary(
     confidence: summary.confidence,
     trust: summary.trustScore,
     nextAction: nextActionForFusedEvidence(fusedEvidence),
-    evidenceSourceSummary: `DAVE fused ${summary.sourceCount} evidence source${summary.sourceCount === 1 ? '' : 's'}: ${summary.sources.join(', ') || 'none'}.`,
+    evidenceSourceSummary: `${summary.sourceCount} evidence source${summary.sourceCount === 1 ? '' : 's'} combined: ${summary.sources.join(', ') || 'none'}.`,
   };
 }
 
@@ -1175,7 +1184,7 @@ function buildEvidenceFusionSummary(
     conflictCount: fusedEvidence.conflicts.length,
     confidence: confidenceFromScore(trustScore),
     trustScore,
-    summary: `DAVE fused schedule, photos, GPS, and updates into a ${confidenceFromScore(trustScore)}-confidence evidence summary.`,
+    summary: `Schedule, photos, GPS, and updates were combined into a ${confidenceFromScore(trustScore)}-confidence evidence summary.`,
   };
 }
 
@@ -1304,6 +1313,7 @@ function scheduleConfidence(
   needsReview: boolean,
 ): ProjectConfidenceLevel {
   if (needsReview) return 'low';
+  if (scheduleHasAuthoritativeProgressJudgment(item)) return 'high';
   if (
     item.projectName.trim() &&
     item.locationName.trim() &&
@@ -1490,7 +1500,7 @@ function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
     nextSchedule
       ? `Schedule focus: ${nextSchedule.taskName} (${nextSchedule.dueLabel}).`
       : null,
-  ]).join(' ') || 'DAVE does not see a recent change from current evidence.';
+  ]).join(' ') || 'No recent change is visible from current evidence.';
 }
 
 function recommendationForFusedEvidence(fusedEvidence: PIEFusedEvidence) {
@@ -1507,13 +1517,13 @@ function recommendationForFusedEvidence(fusedEvidence: PIEFusedEvidence) {
     return 'Confirm project and area context before the next Project Walk.';
   }
   if (fusedEvidence.photoEvidence.length === 0) {
-    return 'Capture current field photos to strengthen DAVE confidence.';
+    return 'Capture current field photos to strengthen confidence.';
   }
   if (fusedEvidence.userUpdateEvidence.length === 0) {
-    return 'Add a concise typed update so DAVE can explain what changed.';
+    return 'Add a concise typed update to explain what changed.';
   }
 
-  return 'Continue monitoring and review DAVE recommendations before acting.';
+  return 'Continue monitoring and review recommendations before acting.';
 }
 
 function nextActionForFusedEvidence(fusedEvidence: PIEFusedEvidence) {

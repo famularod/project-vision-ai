@@ -29,6 +29,7 @@ export type PIEScheduleFieldMatch = {
   signal: PIEScheduleFieldSignal;
   score: number;
   confidence: 'low' | 'medium' | 'high';
+  matchBasis: 'explicit_task_id' | 'stored_task_name' | 'semantic_fallback';
   taskTokenOverlap: number;
   projectMatched: boolean;
   areaMatched: boolean;
@@ -63,9 +64,22 @@ export type PIEScheduleReconciliationResult = {
   summary: string;
 };
 
+export function scheduleHasAuthoritativeProgressJudgment(item: ScheduleItem) {
+  if (item.progressSource === 'project_manager') return true;
+
+  // Older records did not preserve progress provenance. A saved in-progress
+  // percentage is still an explicit professional judgment, not a DAVE guess.
+  return item.status === 'In Progress' && boundedPercent(item.percentComplete) > 0;
+}
+
 const DAY_MS = 86_400_000;
 const RECENT_EVIDENCE_DAYS = 14;
 const NEAR_TERM_DAYS = 14;
+const MATCH_BASIS_RANK: Record<PIEScheduleFieldMatch['matchBasis'], number> = {
+  explicit_task_id: 0,
+  stored_task_name: 1,
+  semantic_fallback: 2,
+};
 const TASK_STOP_WORDS = new Set([
   'and', 'the', 'for', 'from', 'into', 'with', 'work', 'area', 'project',
   'building', 'location', 'install', 'installation', 'complete', 'completed',
@@ -142,7 +156,9 @@ export function buildPIEScheduleReconciliation({
       .map(update => matchScheduleItemToUpdate(item, update))
       .filter((match): match is PIEScheduleFieldMatch => Boolean(match))
       .sort((left, right) =>
-        right.score - left.score || timestamp(right.capturedAt) - timestamp(left.capturedAt),
+        MATCH_BASIS_RANK[left.matchBasis] - MATCH_BASIS_RANK[right.matchBasis] ||
+        right.score - left.score ||
+        timestamp(right.capturedAt) - timestamp(left.capturedAt),
       );
     const bestMatch = itemMatches[0] || null;
     const daysUntilFinish = relativeDays(item.finishDate, now);
@@ -225,7 +241,11 @@ export function buildPIEScheduleReconciliation({
       }
     }
 
-    if (urgent && !hasRecentStrongEvidence(bestMatch, now)) {
+    if (
+      urgent &&
+      !scheduleHasAuthoritativeProgressJudgment(item) &&
+      !hasRecentStrongEvidence(bestMatch, now)
+    ) {
       warnings.push(makeWarning({
         item,
         match: bestMatch,
@@ -233,7 +253,7 @@ export function buildPIEScheduleReconciliation({
         title: 'Scheduled work lacks recent field evidence',
         summary: bestMatch
           ? `${scheduleLabel(item)} is ${dueWindowLabel(daysUntilFinish)}, but its latest task-specific field evidence is older than ${RECENT_EVIDENCE_DAYS} days.`
-          : `${scheduleLabel(item)} is ${dueWindowLabel(daysUntilFinish)}, but DAVE found no task-specific field update confirming current status.`,
+          : `${scheduleLabel(item)} is ${dueWindowLabel(daysUntilFinish)}, but no task-specific field update confirms current status.`,
         severity: daysUntilFinish !== null && daysUntilFinish < 0 ? 'high' : 'medium',
         suggestedAction: `Capture or review current evidence for ${item.locationName.trim() || 'the scheduled area'}.`,
       }));
@@ -268,9 +288,13 @@ function matchScheduleItemToUpdate(
   item: ScheduleItem,
   update: ProjectUpdate,
 ): PIEScheduleFieldMatch | null {
+  const explicitTaskMatched = Boolean(
+    update.scheduleItemId?.trim() && update.scheduleItemId.trim() === item.id,
+  );
   const projectMatched =
     Boolean(item.projectName.trim()) &&
-    normalize(item.projectName) === normalize(update.projectName);
+    [update.projectName, update.scheduleProjectName || '']
+      .some(project => normalize(item.projectName) === normalize(project));
 
   const updateAreaNames = unique([
     update.selectedAreaName || '',
@@ -282,19 +306,41 @@ function matchScheduleItemToUpdate(
   const legacyProjectAreaMatched =
     Boolean(item.locationName.trim()) &&
     sameName(item.locationName, update.projectName);
-  if (!projectMatched && !legacyProjectAreaMatched) return null;
+  const storedTaskNameMatched = Boolean(
+    update.scheduleTaskName?.trim() &&
+    normalize(update.scheduleTaskName) === normalize(scheduleLabel(item)),
+  );
+  if (!explicitTaskMatched && !projectMatched && !legacyProjectAreaMatched) return null;
   const fieldText = updateEvidenceText(update);
   const overlap = scheduleTaskTokenOverlap(item, fieldText);
   const taskMatched = overlap >= 0.34;
 
-  if (!taskMatched && !(areaMatched && overlap >= 0.14)) return null;
+  if (
+    !explicitTaskMatched &&
+    !storedTaskNameMatched &&
+    !taskMatched &&
+    !(areaMatched && overlap >= 0.14)
+  ) return null;
 
-  const score = Math.min(100, Math.round(
-    (projectMatched ? 40 : 28) +
-    (areaMatched || legacyProjectAreaMatched ? 25 : 0) +
-    overlap * 35,
-  ));
-  const confidence = score >= 82 ? 'high' : score >= 65 ? 'medium' : 'low';
+  const matchBasis = explicitTaskMatched
+    ? 'explicit_task_id' as const
+    : storedTaskNameMatched
+      ? 'stored_task_name' as const
+      : 'semantic_fallback' as const;
+  const score = explicitTaskMatched
+    ? 100
+    : storedTaskNameMatched
+      ? Math.min(99, Math.round(90 + (areaMatched ? 5 : 0) + overlap * 4))
+      : Math.min(100, Math.round(
+          (projectMatched ? 40 : 28) +
+          (areaMatched || legacyProjectAreaMatched ? 25 : 0) +
+          overlap * 35,
+        ));
+  const confidence = matchBasis !== 'semantic_fallback' || score >= 82
+    ? 'high'
+    : score >= 65
+      ? 'medium'
+      : 'low';
   const signal = fieldSignal(fieldText, update);
 
   return {
@@ -307,6 +353,7 @@ function matchScheduleItemToUpdate(
     signal,
     score,
     confidence,
+    matchBasis,
     taskTokenOverlap: Math.round(overlap * 100) / 100,
     projectMatched,
     areaMatched,
@@ -316,12 +363,12 @@ function matchScheduleItemToUpdate(
 
 function updateEvidenceText(update: ProjectUpdate) {
   return [
+    update.scheduleTaskName,
     update.notes,
     ...update.photos.flatMap(photo => [
       photo.caption,
       photo.category,
       photo.actionRequired,
-      photo.actionStatus,
       photo.photoIntelligence?.currentObservation,
       photo.photoIntelligence?.visibleChange,
       photo.photoIntelligence?.possibleProgress,

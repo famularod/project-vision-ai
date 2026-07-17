@@ -144,7 +144,7 @@ export function DAVECaptureConfirmationSheet({
           <View style={styles.header}>
             <View style={styles.main}>
               <Text style={styles.title}>Confirm Memory</Text>
-              <Text style={styles.subtitle}>Review what DAVE remembers. Nothing is saved yet.</Text>
+              <Text style={styles.subtitle}>Review this project memory. Nothing is saved yet.</Text>
             </View>
             <TouchableOpacity style={styles.closeButton} onPress={cancel} accessibilityRole="button" accessibilityLabel="Cancel memory confirmation">
               <Ionicons name="close" size={22} color={colors.text} />

@@ -12,6 +12,11 @@ export type DAVEAskIntent =
   | 'what_changed'
   | 'why_at_risk'
   | 'next_action'
+  | 'project_status'
+  | 'needs_attention'
+  | 'latest_field_update'
+  | 'open_commitments'
+  | 'evidence_confidence'
   | 'overdue_commitments'
   | 'safety_issues'
   | 'missing_evidence'
@@ -79,14 +84,19 @@ export function routeDAVEAskIntent(question: string): DAVEAskIntent {
   if (/summari[sz]e.*project|project.*summary/.test(value)) return 'summarize_project';
   if (/what changed|changes?/.test(value)) return 'what_changed';
   if (/why.*at risk|at risk.*why/.test(value)) return 'why_at_risk';
-  if (/what should i do next|next action|what.*do next/.test(value)) return 'next_action';
-  if (/commitments?.*overdue|overdue.*commitments?/.test(value)) return 'overdue_commitments';
+  if (/what should i do next|next action|what.*do next|what(?: s| is).*next|coming up|upcoming work|due soon/.test(value)) return 'next_action';
+  if (/project status|project health|how.*project.*(?:doing|going)|how are we doing|how are things going|on track/.test(value)) return 'project_status';
+  if (/what.*need.*attention|needs attention|open issues?|open problems?|what.*concern|what.*risk|what.*block|what.*problem/.test(value)) return 'needs_attention';
+  if (/what happened.*this week|this week.*happened/.test(value)) return 'happened_this_week';
+  if (/what happened.*since.*last update|since.*last update/.test(value)) return 'since_last_update';
+  if (/latest.*(?:field )?update|last.*(?:field )?update|most recent.*update|recent field activity/.test(value)) return 'latest_field_update';
+  if (/open.*commitments?|commitments?.*open|current commitments?|who.*promised|what.*promised/.test(value)) return 'open_commitments';
+  if (/how confident|evidence strength|can i trust|how reliable|confidence.*evidence/.test(value)) return 'evidence_confidence';
+  if (/commitments?.*overdue|overdue.*commitments?|what.*overdue|what.*late|behind schedule/.test(value)) return 'overdue_commitments';
   if (/safety.*issues?|issues?.*safety/.test(value)) return 'safety_issues';
   if (/evidence.*missing|missing.*evidence/.test(value)) return 'missing_evidence';
   if (/why.*recommend|recommend.*why/.test(value)) return 'recommendation_reason';
   if (/show.*supporting evidence|supporting evidence/.test(value)) return 'supporting_evidence';
-  if (/what happened.*this week|this week.*happened/.test(value)) return 'happened_this_week';
-  if (/what happened.*since.*last update|since.*last update/.test(value)) return 'since_last_update';
   return 'unknown';
 }
 
@@ -100,6 +110,16 @@ function answerForIntent(intent: Exclude<DAVEAskIntent, 'unknown'>, intelligence
       return explainRisk(intelligence);
     case 'next_action':
       return nextAction(intelligence);
+    case 'project_status':
+      return projectStatus(intelligence);
+    case 'needs_attention':
+      return needsAttention(intelligence);
+    case 'latest_field_update':
+      return latestFieldUpdate(intelligence);
+    case 'open_commitments':
+      return openCommitments(intelligence);
+    case 'evidence_confidence':
+      return evidenceConfidence(intelligence);
     case 'overdue_commitments':
       return overdueCommitments(intelligence);
     case 'safety_issues':
@@ -119,6 +139,147 @@ function answerForIntent(intent: Exclude<DAVEAskIntent, 'unknown'>, intelligence
     case 'draft_contractor_follow_up':
       return communicationDraft(intelligence, 'contractor_follow_up');
   }
+}
+
+function projectStatus(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
+  const reality = intelligence.projectReality;
+  const schedule = intelligence.scheduleSummary;
+  const scheduleFacts = schedule.taskCount > 0 ? [
+    `Schedule records show ${schedule.completedCount} of ${schedule.taskCount} tasks complete and ${schedule.percentComplete}% overall progress.`,
+    `${schedule.overdueCount} incomplete ${schedule.overdueCount === 1 ? 'task is' : 'tasks are'} overdue; ${schedule.dueSoonCount} ${schedule.dueSoonCount === 1 ? 'task is' : 'tasks are'} due within 7 days; ${schedule.waitingCount} ${schedule.waitingCount === 1 ? 'task is' : 'tasks are'} waiting.`,
+    ...(schedule.forecastFinishDate ? [`Latest scheduled finish is ${schedule.forecastFinishDate}.`] : []),
+  ] : ['No schedule tasks are assigned to this project.'];
+  const latestFieldEvent = intelligence.timeline.find(item =>
+    item.eventType === 'update_recorded' || item.eventType === 'qualified_photo_observation',
+  );
+  const facts = [
+    ...scheduleFacts,
+    ...(latestFieldEvent ? [`Latest field evidence: ${latestFieldEvent.summary}`] : ['No field update is currently recorded for this project.']),
+    `${reality.openCommitments.length} open recorded ${reality.openCommitments.length === 1 ? 'commitment' : 'commitments'}.`,
+  ];
+  const interpretations = [
+    `Schedule health is ${schedule.health}. Evidence-backed project status is ${reality.state}.`,
+    `Field-status confidence is ${reality.confidence}; evidence strength is ${intelligence.evidenceQuality.strength}.`,
+  ];
+  const scheduleRecommendation = schedule.overdueCount > 0
+    ? `Set recovery plans for ${schedule.overdueCount} overdue ${schedule.overdueCount === 1 ? 'task' : 'tasks'}, starting with ${schedule.overdueTasks.slice(0, 3).map(item => item.taskName).join(', ')}.`
+    : schedule.dueSoonCount > 0
+      ? `Confirm readiness for ${schedule.dueSoonCount} ${schedule.dueSoonCount === 1 ? 'task' : 'tasks'} due within 7 days.`
+      : null;
+  const recommendation = scheduleRecommendation
+    ? [scheduleRecommendation]
+    : reality.topRecommendation ? [reality.topRecommendation.action] : [];
+  const scheduleEvidence = [...schedule.overdueTasks, ...schedule.dueSoonTasks].map(item => ({
+    sourceType: 'schedule' as const,
+    recordId: item.id,
+    summary: `${item.taskName}: ${item.status}, ${item.percentComplete}% complete${item.finishDate ? `, due ${item.finishDate}` : ''}.`,
+  }));
+  const supportingEvidence = [...reality.supportingEvidence, ...scheduleEvidence];
+  return answerFromEvents(
+    sectionedAnswer(facts, [], interpretations, recommendation),
+    intelligence,
+    timelineForRecordIds(intelligence, supportingEvidence.map(item => item.recordId)),
+    supportingEvidence,
+    recommendation[0] || null,
+    [intelligence.evidenceQuality.limitation, ...reality.uncertainties.map(item => item.text)],
+  );
+}
+
+function needsAttention(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
+  const items = intelligence.dailyBrief.attentionItems;
+  const schedule = intelligence.scheduleSummary;
+  const scheduleTasks = [...schedule.overdueTasks, ...schedule.dueSoonTasks]
+    .filter((item, index, all) => all.findIndex(candidate => candidate.id === item.id) === index);
+  if (items.length === 0 && schedule.overdueCount === 0 && schedule.dueSoonCount === 0 && schedule.waitingCount === 0) {
+    return answerFromEvents(
+      `Facts\n${intelligence.dailyBrief.emptyStates.attention}`,
+      intelligence,
+      [],
+      [],
+      intelligence.actionCenter.recommendedAction,
+      intelligence.actionCenter.limitations,
+    );
+  }
+  const evidenceItems = items.map(item => evidenceFromDailyItem(intelligence, item));
+  const scheduleEvidenceItems = scheduleTaskEvidence(scheduleTasks);
+  const scheduleFacts = [
+    ...(schedule.overdueCount > 0 ? [`${schedule.overdueCount} incomplete schedule ${schedule.overdueCount === 1 ? 'task is' : 'tasks are'} overdue.`] : []),
+    ...(schedule.dueSoonCount > 0 ? [`${schedule.dueSoonCount} incomplete schedule ${schedule.dueSoonCount === 1 ? 'task is' : 'tasks are'} due within 7 days.`] : []),
+    ...(schedule.waitingCount > 0 ? [`${schedule.waitingCount} schedule ${schedule.waitingCount === 1 ? 'task is' : 'tasks are'} waiting.`] : []),
+  ];
+  const actions = [
+    ...items.map(item => item.actionText),
+    ...(schedule.overdueCount > 0 ? ['Confirm the current field status of overdue scheduled work.'] : []),
+    ...(schedule.dueSoonCount > 0 ? ['Confirm readiness for work due within 7 days.'] : []),
+  ];
+  return answerFromEvents(
+    sectionedAnswer([...scheduleFacts, ...items.map(item => item.text)], [], [], actions),
+    intelligence,
+    timelineForRecordIds(intelligence, [
+      ...items.map(item => item.sourceRecordId),
+      ...scheduleTasks.map(item => item.id),
+    ]),
+    [...scheduleEvidenceItems, ...evidenceItems],
+    actions[0] || null,
+    items.flatMap(item => item.limitations),
+  );
+}
+
+function latestFieldUpdate(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
+  const fieldEvents = intelligence.timeline.filter(item =>
+    item.eventType === 'update_recorded' ||
+    item.eventType === 'qualified_photo_observation' ||
+    item.eventType === 'action_created' ||
+    item.eventType === 'action_completed' ||
+    item.eventType === 'safety_issue_opened' ||
+    item.eventType === 'safety_issue_resolved',
+  ).slice(0, 6);
+  return timelineAnswer(
+    fieldEvents,
+    intelligence,
+    'No evidence-backed field update is recorded for this project.',
+  );
+}
+
+function openCommitments(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
+  const commitments = intelligence.projectReality.openCommitments;
+  if (commitments.length === 0) {
+    return answerFromEvents(
+      'Facts\nNo open commitments are recorded.',
+      intelligence,
+      [],
+      [],
+      null,
+      ['This answer reflects confirmed project memories and structured update actions only.'],
+    );
+  }
+  const evidenceItems = commitments.flatMap(item => item.linkedEvidence.map(link => ({
+    sourceType: link.type,
+    recordId: link.recordId,
+    summary: `${link.type} record linked to ${item.description}.`,
+  })));
+  return answerFromEvents(
+    sectionedAnswer(commitments.map(item =>
+      `${item.description} — owner: ${item.owner}; due: ${item.dueDate}; status: ${item.status}.`), [], [], []),
+    intelligence,
+    timelineForRecordIds(intelligence, evidenceItems.map(item => item.recordId)),
+    evidenceItems,
+    commitments[0]?.recommendedFollowUpAction || null,
+    ['An open recorded status should be confirmed before treating the underlying work as incomplete.'],
+  );
+}
+
+function evidenceConfidence(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
+  const quality = intelligence.evidenceQuality;
+  const facts = quality.signals.map(item => `${item.label}: ${item.value} (${item.quality}).`);
+  return answerFromEvents(
+    sectionedAnswer(facts, [], [`Overall evidence strength is ${quality.strength} (${quality.score} of ${quality.maximumScore}).`], []),
+    intelligence,
+    [],
+    intelligence.projectReality.supportingEvidence,
+    intelligence.actionCenter.recommendedAction,
+    uniqueStrings([quality.limitation, ...quality.signals.map(item => item.whyItMatters || '')]),
+  );
 }
 
 function summarizeProject(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
@@ -195,6 +356,22 @@ function explainRisk(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
 }
 
 function nextAction(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
+  const schedule = intelligence.scheduleSummary;
+  const nextScheduledTask = schedule.overdueTasks[0] || schedule.dueSoonTasks[0];
+  if (nextScheduledTask) {
+    const recommendation = schedule.overdueTasks.length > 0
+      ? `Set the recovery date and next accountable step for overdue task: ${nextScheduledTask.taskName}.`
+      : `Confirm readiness for upcoming task: ${nextScheduledTask.taskName}.`;
+    const evidence = scheduleTaskEvidence([nextScheduledTask]);
+    return answerFromEvents(
+      sectionedAnswer([], [], [], [recommendation]),
+      intelligence,
+      timelineForRecordIds(intelligence, [nextScheduledTask.id]),
+      evidence,
+      recommendation,
+      ['Schedule status is not proof of field completion; confirm against current evidence.'],
+    );
+  }
   const action = intelligence.actionCenter;
   if (!action.recommendedAction) return unknownAnswer(intelligence);
   return answerFromEvents(
@@ -209,24 +386,47 @@ function nextAction(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
 
 function overdueCommitments(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
   const overdue = intelligence.commitments.filter(item => item.status === 'Overdue');
-  if (overdue.length === 0) {
-    return answerFromEvents('Facts\nNo overdue commitments are recorded.', intelligence, [], [], null,
-      ['This reflects recorded commitment statuses only.']);
+  const overdueScheduleTasks = intelligence.scheduleSummary.overdueTasks;
+  if (overdue.length === 0 && intelligence.scheduleSummary.overdueCount === 0) {
+    return answerFromEvents('Facts\nNo overdue schedule tasks or commitments are recorded.', intelligence, [], [], null,
+      ['This reflects current structured schedule and commitment records.']);
   }
-  const facts = overdue.map(item => `${item.description} — owner: ${item.owner}; due: ${item.dueDate}; status: Overdue.`);
+  const facts = [
+    ...(intelligence.scheduleSummary.overdueCount > 0
+      ? [`${intelligence.scheduleSummary.overdueCount} incomplete schedule ${intelligence.scheduleSummary.overdueCount === 1 ? 'task is' : 'tasks are'} overdue.`]
+      : []),
+    ...overdueScheduleTasks.map(item =>
+      `${item.taskName} — due: ${item.finishDate || 'date unavailable'}; status: ${item.status}; ${item.percentComplete}% complete.`),
+    ...overdue.map(item => `${item.description} — owner: ${item.owner}; due: ${item.dueDate}; status: Overdue.`),
+  ];
   const evidenceItems = overdue.flatMap(item => item.linkedEvidence.map(link => ({
     sourceType: link.type,
     recordId: link.recordId,
     summary: `${link.type} record linked to ${item.description}.`,
   })));
+  const scheduleEvidenceItems = scheduleTaskEvidence(overdueScheduleTasks);
   return answerFromEvents(
     sectionedAnswer(facts, [], [], []),
     intelligence,
-    timelineForRecordIds(intelligence, evidenceItems.map(item => item.recordId)),
-    evidenceItems,
+    timelineForRecordIds(intelligence, [
+      ...scheduleEvidenceItems.map(item => item.recordId),
+      ...evidenceItems.map(item => item.recordId),
+    ]),
+    [...scheduleEvidenceItems, ...evidenceItems],
     null,
-    ['An overdue recorded status does not prove that the underlying work is incomplete.'],
+    ['An overdue schedule or commitment status does not prove that the underlying work is incomplete; confirm against current field evidence.'],
   );
+}
+
+function scheduleTaskEvidence(
+  tasks: DAVEProjectIntelligence['scheduleSummary']['overdueTasks'],
+): DAVEAskEvidence[] {
+  return tasks.map(item => ({
+    sourceType: 'schedule',
+    recordId: item.id,
+    summary: `${item.taskName}: ${item.status}, ${item.percentComplete}% complete${item.finishDate ? `, due ${item.finishDate}` : ''}.`,
+    timelineEventId: null,
+  }));
 }
 
 function safetyIssues(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {

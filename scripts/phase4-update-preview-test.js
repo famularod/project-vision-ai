@@ -10,32 +10,23 @@ const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8')
 
 [
   'subtitle="Update Preview"',
-  'DAVE Summary',
+  'Photo Analysis',
   'phase4SafetyFinding',
   'Safety concern detected',
   'View Details',
   'Photos ({update.photos.length})',
   'No photos attached',
   'Documents ({documents.length})',
-  'Recipients:',
   'Notes (optional)',
-  'Message Preview',
-  'View Full Message',
-  'Send Update',
-  'More Options',
-  'Text',
-  'Copy',
-  'Save Draft',
+  'Save Field Update',
   'Edit Photos',
   'Add Document',
-  'iOS Share Sheet',
-  'queuedStatusCopyForUpdate(finalUpdate)',
-  "Queued — will send when you're back online",
+  "Queued — will sync when you're back online",
   'Sync failed · Retry',
   'stableSendId',
   'idempotencyKey',
   'sendAttempts',
-  'Retry Send',
+  'Retry Sync',
   'Observed findings',
   'Possible interpretations',
   'Confirmed possible interpretations',
@@ -55,11 +46,24 @@ assert(
     app.includes('No photo evidence available for blocker review'),
   'Preview should reserve confirmed-clear states for updates with photo evidence.',
 );
+const livePreview = app.slice(
+  app.indexOf('function BuildUpdateScreen'),
+  app.indexOf('function ReadOnlyUpdateDetailScreen'),
+);
 assert(
-  app.includes("draft.recipients.contactIds.length === 0") &&
-    app.includes("text: 'Change Recipients'") &&
-    app.includes("text: 'Save Draft'"),
-  'Missing recipients should block send and offer Change Recipients or Save Draft.',
+  livePreview.includes('Save Field Update') &&
+    !livePreview.includes('Send Update') &&
+    !livePreview.includes('Message Preview') &&
+    !livePreview.includes('Recipients:') &&
+    !livePreview.includes('More Options'),
+  'Field Update review should save the record without exposing communication controls.',
+);
+assert(
+  app.includes('function saveFieldUpdateFromReview()') &&
+    app.includes('if (!hasSavableUpdate(draft))') &&
+    !livePreview.includes('onSendEmail') &&
+    !livePreview.includes('onSendText'),
+  'Saving a Field Update should not require recipients or route through email/text actions.',
 );
 assert(
   app.includes('summary: PIE_STATUS_COPY.checking') &&
@@ -67,8 +71,9 @@ assert(
   'Pending PIE sends should use neutral in-progress language.',
 );
 assert(
-  sync.includes("id: `project-update-${update.id}`") &&
-    sync.includes('queue.filter(item => item.id !== queueItem.id)'),
+  sync.includes('id: projectUpdateQueueItemId(update.id)') &&
+    sync.includes('return `project-update-${updateId}`') &&
+    sync.includes('queue.filter(existing => existing.id !== queueItem.id)'),
   'Queued sends should use stable ids and replace duplicate queue entries.',
 );
 assert(

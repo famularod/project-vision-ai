@@ -5,12 +5,10 @@ import {
 } from './PIEExecutiveJudgmentRepository';
 import {
   buildActualOutcomeRecord,
-  buildImplementationAssessment,
   buildOutcomePlan,
   buildPredictedOutcome,
   createDecisionRecord,
   transitionDecisionStatus,
-  updateLatestOutcomeValidation,
   type PIEActor,
   type PIEAutomationAuditDetail,
   type PIEAutomationLevel,
@@ -70,6 +68,7 @@ export type PIELayer4AutomationException = {
     | 'approve'
     | 'reject'
     | 'correct'
+    | 'confirm_implementation'
     | 'resolve_conflict'
     | 'validate_high_impact_outcome'
     | 'provide_missing_evidence';
@@ -128,9 +127,9 @@ const HIGH_AUTHORITY_PATTERN =
 const DECISION_PATTERN =
   /approve|approved|assign|owner|decision|recommend|corrective|escalat|risk|mitigat|commit|schedule|cost|safety|compliance|change|implement|resolve/i;
 const IMPLEMENTATION_PATTERN =
-  /implemented|complete|completed|installed|resolved|closed|finished|started|began|approved scope/i;
+  /implemented|complete|completed|installed|resolved|closed|finished|started|began/i;
 const OUTCOME_PATTERN =
-  /verified|confirmed|passed|failed|resolved|complete|completed|ready|not achieved|partially/i;
+  /verified|confirmed|passed|failed|resolved|complete|completed|not achieved|partially/i;
 
 export function classifyLayer4AutomationPolicy(
   input: PIELayer4AutomationPolicyInput,
@@ -205,6 +204,10 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
   input: PIELayer4JudgmentDecisionCandidateInput,
 ): PIELayer4DecisionCandidateResult {
   const judgment = requirePersistedExecutiveJudgment(input.judgment);
+  assertEvidenceWithinBoundary(input.evidence, {
+    organizationId: judgment.organizationId,
+    projectId: judgment.projectId,
+  });
   if (
     judgment.persistenceStatus === 'persistence_failed' ||
     judgment.persistenceStatus === 'stale_model' ||
@@ -246,6 +249,9 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
     recommendationConfidence: judgment.confidence,
     confidenceExplanation: judgment.priorityRationale,
     selectedReason: judgment.priorityRationale,
+  }, {
+    organizationId: judgment.organizationId,
+    projectId: judgment.projectId,
   });
   const predictedOutcomes = judgment.conditionsThatWouldChangeRecommendation.length
     ? judgment.conditionsThatWouldChangeRecommendation.map((condition, index) => buildPredictedOutcome({
@@ -307,6 +313,10 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
 }
 
 export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer4DecisionCandidateInput): PIELayer4DecisionCandidateResult {
+  assertEvidenceWithinBoundary(input.evidence, {
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+  });
   const now = input.now || new Date().toISOString();
   const trigger = detectLayer4DecisionTrigger(input.report);
 
@@ -328,7 +338,10 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
     };
   }
 
-  const evidence = collectRelevantOutcomeEvidence(input.evidence, input.report);
+  const evidence = collectRelevantOutcomeEvidence(input.evidence, input.report, {
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+  });
   const predictions = generatePredictedOutcomesFromReport(input.report, evidence, now, input.actor.name);
   const snapshot = {
     projectId: input.projectId,
@@ -387,7 +400,7 @@ export function buildAutomaticOutcomePlan(
     reviewDate,
     responsibleOwner: snapshot.decisionOwner || 'Decision owner',
     acceptedEvidence: acceptedEvidence.length ? acceptedEvidence : ['Project evidence that verifies the result'],
-    evidenceReferences: collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot),
+    evidenceReferences: collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot, decision),
     validationAuthority: snapshot.decisionAuthority || snapshot.decisionOwner || 'Validation authority',
     createdAt: now,
     updatedAt: now,
@@ -397,17 +410,23 @@ export function buildAutomaticOutcomePlan(
 export function collectRelevantOutcomeEvidence(
   evidence: PIEEvidenceReference[],
   context: PIEReportDraft | PIEDecisionRecord['immutableSnapshot'],
+  boundary: Pick<PIEDecisionRecord, 'organizationId' | 'projectId'>,
 ): PIEEvidenceReference[] {
   const contextText = stringifyContext(context);
+  if ('projectId' in context && context.projectId !== boundary.projectId) return [];
+  const contextKeywords = new Set(keywords(contextText));
+  const explicitEvidenceIds = explicitContextEvidenceIds(context);
   const matching = evidence.filter(item => {
-    if (!item.organizationId || !item.projectId) return false;
-    const haystack = `${item.summary} ${item.sourceType}`.toLowerCase();
-    return keywords(contextText).some(word => haystack.includes(word)) ||
-      item.sourceType === 'photo' ||
-      item.sourceType === 'schedule_item' ||
-      item.sourceType === 'project_update';
+    if (
+      item.organizationId !== boundary.organizationId ||
+      item.projectId !== boundary.projectId
+    ) return false;
+    if (explicitEvidenceIds.has(item.id)) return true;
+    const sharedTerms = keywords(`${item.summary} ${item.sourceType}`)
+      .filter(word => contextKeywords.has(word));
+    return new Set(sharedTerms).size >= 2;
   });
-  return dedupeEvidence(matching.length ? matching : evidence).slice(0, 8);
+  return dedupeEvidence(matching).slice(0, 8);
 }
 
 export function proposeImplementationQualityFromEvidence(
@@ -419,7 +438,7 @@ export function proposeImplementationQualityFromEvidence(
   confidence: 'low' | 'medium' | 'high';
   supportingEvidence: PIEEvidenceReference[];
 } {
-  const relevant = collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot);
+  const relevant = collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot, decision);
   const text = relevant.map(item => item.summary).join(' ');
   const hasImplementation = IMPLEMENTATION_PATTERN.test(text);
   const hasConflict = /partial|miss|deviation|delayed|failed|blocked/i.test(text);
@@ -465,7 +484,7 @@ export function comparePredictedAndActualOutcomesAutomatically(
   actor: PIEActor,
   now: string = new Date().toISOString(),
 ) {
-  const relevant = collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot);
+  const relevant = collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot, decision);
   const text = relevant.map(item => item.summary).join(' ');
   const hasOutcomeEvidence = OUTCOME_PATTERN.test(text);
   const classification: PIEOutcomeClassification = !hasOutcomeEvidence
@@ -496,9 +515,7 @@ export function comparePredictedAndActualOutcomesAutomatically(
       startedAt: decision.createdAt,
       endedAt: now,
     },
-    validationStatus: hasOutcomeEvidence && decision.immutableSnapshot.recommendationConfidence === 'high'
-      ? 'system_supported'
-      : 'unvalidated',
+    validationStatus: 'unvalidated',
     validator: null,
     validationDate: null,
     createdBy: actor,
@@ -513,7 +530,7 @@ export function automateLayer4DecisionLifecycle(
   let decision = input.decision;
   const actions: PIELayer4AutomationAction[] = [];
   const exceptions: PIELayer4AutomationException[] = [];
-  const linkedEvidence = collectRelevantOutcomeEvidence(input.evidence, decision.immutableSnapshot);
+  const linkedEvidence = collectRelevantOutcomeEvidence(input.evidence, decision.immutableSnapshot, decision);
   const authorityRequired = requiresHumanAuthority(decision);
   const hasConflict = linkedEvidence.some(item => /conflict|dispute|failed|unsafe|blocked/i.test(item.summary));
 
@@ -588,43 +605,13 @@ export function automateLayer4DecisionLifecycle(
 
   if (decision.currentStatus === 'approved' && decision.outcomePlan && linkedEvidence.length > 0) {
     const proposed = proposeImplementationQualityFromEvidence(decision, linkedEvidence);
-    const assessment = buildImplementationAssessment({
-      id: `implementation-${decision.id}-${Date.parse(now) || Date.now()}`,
-      quality: proposed.quality,
-      approvedScopeImplemented: proposed.quality === 'high_fidelity' ||
-        proposed.quality === 'implemented_as_designed',
-      materialDeviations: proposed.quality === 'partial_fidelity'
-        ? ['DAVE detected possible deviation; review before learning from this outcome.']
-        : [],
-      omittedControls: [],
-      timingDeviations: [],
-      externalFactors: [],
-      supportingEvidence: proposed.supportingEvidence,
-      assessedBy: input.actor,
-      assessedAt: now,
-    });
-    decision = transitionDecisionStatus({
-      decision,
-      nextStatus: 'implemented',
-      actor: input.actor,
-      reason: proposed.reason,
-      source: 'system',
-      linkedEvidence: proposed.supportingEvidence,
-      implementationAssessment: assessment,
-      outcomePlan: decision.outcomePlan,
-      timestamp: now,
-    });
-    actions.push({
-      id: `auto-implemented-${decision.id}`,
-      actionTaken: 'Marked implementation started from project evidence',
-      triggeringEvent: 'Implementation evidence found',
-      evidenceUsed: proposed.supportingEvidence,
-      confidence: proposed.confidence,
-      automationLevel: policy.level,
-      reasonHumanApprovalWasOrWasNotRequired: policy.reason,
-      correctionAvailable: true,
-      reversible: true,
-      timestamp: now,
+    exceptions.push({
+      id: `exception-implementation-${decision.id}`,
+      message: 'Implementation needs confirmation before DAVE changes decision status.',
+      action: 'confirm_implementation',
+      reason: proposed.quality === 'not_started' || proposed.quality === 'unknown'
+        ? proposed.reason
+        : 'Evidence suggests implementation activity, but a human or authoritative workflow must record implementation.',
     });
   }
 
@@ -669,11 +656,9 @@ export function automateLayer4DecisionLifecycle(
       actionTaken: 'Recorded observed outcome',
       triggeringEvent: 'Outcome evidence found',
       evidenceUsed: linkedEvidence,
-      confidence: outcome.validationStatus === 'system_supported' ? 'high' : 'medium',
-      automationLevel: outcome.validationStatus === 'system_supported' ? 'automatic' : 'confirmation_required',
-      reasonHumanApprovalWasOrWasNotRequired: outcome.validationStatus === 'system_supported'
-        ? 'Routine evidence supports the result, but history remains reviewable.'
-        : 'Outcome evidence is useful but still needs human validation.',
+      confidence: 'medium',
+      automationLevel: 'confirmation_required',
+      reasonHumanApprovalWasOrWasNotRequired: 'Outcome evidence is useful but remains unvalidated until an authorized human validates it.',
       correctionAvailable: true,
       reversible: true,
       timestamp: now,
@@ -681,41 +666,23 @@ export function automateLayer4DecisionLifecycle(
   }
 
   if (decision.currentStatus === 'outcome_observed') {
-    const latest = decision.actualOutcomes[decision.actualOutcomes.length - 1];
-    if (latest?.validationStatus === 'system_supported' && !authorityRequired && !hasConflict) {
-      decision = updateLatestOutcomeValidation(
-        decision,
-        'system_supported',
-        input.actor,
-        'DAVE system-supported this low-risk objectively verifiable outcome.',
-        linkedEvidence,
-        now,
-      );
-      actions.push({
-        id: `auto-validated-${decision.id}`,
-        actionTaken: 'System-supported outcome validation',
-        triggeringEvent: 'Low-risk outcome evidence matched prediction',
-        evidenceUsed: linkedEvidence,
-        confidence: 'high',
-        automationLevel: 'automatic',
-        reasonHumanApprovalWasOrWasNotRequired: 'No high-impact authority boundary was detected.',
-        correctionAvailable: true,
-        reversible: true,
-        timestamp: now,
-      });
-    } else {
-      exceptions.push({
-        id: `exception-validate-${decision.id}`,
-        message: 'Outcome needs validation before closure.',
-        action: authorityRequired ? 'validate_high_impact_outcome' : 'provide_missing_evidence',
-        reason: authorityRequired
-          ? 'This decision affects high-impact authority boundaries.'
-          : 'DAVE needs stronger evidence before validation.',
-      });
-    }
+    exceptions.push({
+      id: `exception-validate-${decision.id}`,
+      message: 'Outcome needs human validation before closure.',
+      action: authorityRequired ? 'validate_high_impact_outcome' : 'provide_missing_evidence',
+      reason: authorityRequired
+        ? 'This decision affects high-impact authority boundaries.'
+        : 'Automatic comparison can organize evidence, but DAVE cannot validate its own outcome.',
+    });
   }
 
-  if (decision.currentStatus === 'outcome_validated' && !authorityRequired && !hasConflict) {
+  const latestOutcome = decision.actualOutcomes[decision.actualOutcomes.length - 1];
+  if (
+    decision.currentStatus === 'outcome_validated' &&
+    latestOutcome?.validationStatus === 'human_validated' &&
+    !authorityRequired &&
+    !hasConflict
+  ) {
     decision = transitionDecisionStatus({
       decision,
       nextStatus: 'closed',
@@ -736,6 +703,13 @@ export function automateLayer4DecisionLifecycle(
       correctionAvailable: true,
       reversible: false,
       timestamp: now,
+    });
+  } else if (decision.currentStatus === 'outcome_validated' && latestOutcome?.validationStatus !== 'human_validated') {
+    exceptions.push({
+      id: `exception-human-validation-${decision.id}`,
+      message: 'Only a human-validated outcome can close this decision.',
+      action: 'provide_missing_evidence',
+      reason: 'System-supported or unvalidated observations cannot satisfy the human validation boundary.',
     });
   }
 
@@ -969,13 +943,38 @@ function stringifyContext(context: PIEReportDraft | PIEDecisionRecord['immutable
   ].join(' ').toLowerCase();
 }
 
+function explicitContextEvidenceIds(
+  context: PIEReportDraft | PIEDecisionRecord['immutableSnapshot'],
+) {
+  if ('body' in context) {
+    return new Set([
+      ...context.sourceEvidence.map(item => item.id),
+      ...context.actionItems.flatMap(item => item.sourceEvidenceIds),
+      ...context.risks.flatMap(item => item.sourceEvidenceIds),
+      ...context.decisionsNeeded.flatMap(item => item.sourceEvidenceIds),
+      ...context.imageReferences.map(item => item.photoId),
+      ...context.constructionUnderstanding.workAreas.flatMap(item => item.sourceEvidenceIds),
+    ].filter(Boolean));
+  }
+  return new Set([
+    ...context.evidenceAvailable.map(item => item.id),
+    ...context.predictedOutcomes.flatMap(outcome => outcome.evidenceRequired),
+  ].filter(Boolean));
+}
+
+const EVIDENCE_MATCH_STOP_WORDS = new Set([
+  'action', 'approved', 'complete', 'completed', 'current', 'decision',
+  'evidence', 'project', 'ready', 'report', 'requirement', 'schedule',
+  'selected', 'update', 'verified', 'work',
+]);
+
 function keywords(text: string) {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, ' ')
     .split(/\s+/)
-    .filter(word => word.length > 4)
-    .slice(0, 18);
+    .filter(word => word.length > 4 && !EVIDENCE_MATCH_STOP_WORDS.has(word))
+    .slice(0, 28);
 }
 
 function dedupeEvidence(evidence: PIEEvidenceReference[]) {
@@ -984,6 +983,22 @@ function dedupeEvidence(evidence: PIEEvidenceReference[]) {
     byKey.set(`${item.organizationId}:${item.projectId}:${item.sourceType}:${item.id}:${item.versionId || ''}`, item);
   });
   return Array.from(byKey.values());
+}
+
+function assertEvidenceWithinBoundary(
+  evidence: readonly PIEEvidenceReference[],
+  boundary: { organizationId: string; projectId: string },
+) {
+  const crossOrganization = evidence.find(
+    item => item.organizationId !== boundary.organizationId,
+  );
+  if (crossOrganization) {
+    throw new Error('Layer 4 evidence belongs to another organization.');
+  }
+  const crossProject = evidence.find(item => item.projectId !== boundary.projectId);
+  if (crossProject) {
+    throw new Error('Layer 4 evidence belongs to another project.');
+  }
 }
 
 function normalizeDecisionText(value: string) {

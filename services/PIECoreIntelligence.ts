@@ -87,6 +87,7 @@ import {
   type PIELearningMemoryConsolidation,
   type PIELearningResult,
   type PIELearningSignal as PIELearningEngineSignal,
+  type PIEVerifiedLearningEvent,
 } from './PIELearningEngine';
 import {
   buildPIEDeliberation,
@@ -255,6 +256,7 @@ export type PIECoreInput = {
   expectedMinimumRealityModelVersion?: number;
   organizationId?: string;
   projectId?: string;
+  verifiedLearningEvents?: readonly PIEVerifiedLearningEvent[];
   reportType?: PIEReportType;
   reportProjectNames?: string[];
   memoryRecallInput?: Omit<
@@ -603,6 +605,9 @@ export function buildPIECoreIntelligence(
   const reportScope = coreReportScope(input, runtime);
   const baselineLearning = buildPIELearning({
     runtime,
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    verifiedLearningEvents: input.verifiedLearningEvents,
     reportDraft: runtime.response.reportDraft,
   });
   const memoryRecall = buildPIEMemoryRecall({
@@ -868,6 +873,9 @@ export function buildPIECoreIntelligence(
   });
   const learningResult = buildPIELearning({
     runtime,
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    verifiedLearningEvents: input.verifiedLearningEvents,
     beliefSystem,
     patternIntelligence,
     predictionResult,

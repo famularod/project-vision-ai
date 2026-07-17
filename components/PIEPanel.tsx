@@ -66,7 +66,7 @@ export function PIEPanel({
   referenceDocuments = [],
   reportHistory = [],
   syncMetadata = null,
-  title = 'DAVE Briefing',
+  title = 'Project Briefing',
   subtitle = 'Project Intelligence Engine',
   compact = false,
 }: PIEPanelProps) {
@@ -110,9 +110,7 @@ export function PIEPanel({
     >
       <View style={styles.header}>
         <View style={styles.pieMark}>
-          <Text style={styles.pieMarkText}>
-            DAVE
-          </Text>
+          <Ionicons name="analytics-outline" size={18} color={colors.primary} />
         </View>
 
         <View style={styles.headerText}>

@@ -10,6 +10,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const app = read('App.tsx');
 const bottomNav = read('components/app-bottom-tabs.tsx');
 const sync = read('services/SyncService.ts');
+const lifecycle = read('services/FieldUpdateLifecycle.ts');
 const timing = read('services/SixtySecondFlowInstrumentation.ts');
 const phase6 = read('scripts/phase6-documents-foundation-test.js');
 
@@ -20,7 +21,7 @@ const phase6 = read('scripts/phase6-documents-foundation-test.js');
   'PIE_STATUS_COPY.checking',
   'Possible visual changes found',
   'No reliable visual change',
-  'No prior photo to compare',
+  'Baseline saved',
   'Analysis unavailable · Retry',
   'Analysis taking longer than expected · Retry',
 ].forEach(marker => {
@@ -35,21 +36,21 @@ assert(
 );
 assert(
   bottomNav.includes('label="Overview"') &&
-    bottomNav.includes('label="Projects"') &&
-    bottomNav.includes('label="Updates"') &&
+    !bottomNav.includes('label="Projects"') &&
+    !bottomNav.includes('label="Updates"') &&
+    bottomNav.includes('label="Tasks"') &&
     bottomNav.includes('label="Reports"') &&
-    bottomNav.includes('label="Settings"') &&
+    !bottomNav.includes('label="Settings"') &&
     !bottomNav.includes('label="Capture"') &&
     !bottomNav.includes('label="Share"') &&
-    (bottomNav.match(/<TabButton/g) || []).length === 5,
-  'Live bottom tabs must expose Overview, Projects, Updates, Reports, and Settings.',
+    (bottomNav.match(/<TabButton/g) || []).length === 3,
+  'Live bottom tabs must expose Overview, Tasks, and Reports while Settings remains reachable from Overview.',
 );
 
 [
   'No projects yet.',
   "✅ You're all caught up.",
-  'No updates require your attention today.',
-  "Ready to capture today&apos;s work?",
+  'No field records require action today.',
   'No drafts.',
   'No update history yet.',
   'No documents yet — upload your first document.',
@@ -101,12 +102,12 @@ assert(elapsedSeconds === 42, 'Mock one-photo flow timing should be deterministi
 assert(
   app.includes('hydrateQueuedUpdates') &&
     app.includes('statusForSyncDiagnostics(syncDiagnostics)') &&
-    app.includes("if (diagnostics.lastSyncResult === 'success') return 'sent';") &&
-    app.includes("if (diagnostics.lastSyncFailureCategory === 'offline') return 'queued';") &&
+    lifecycle.includes("if (input.result === 'success') return 'sent';") &&
+    lifecycle.includes("if (input.failureCategory === 'offline') return 'queued';") &&
     app.includes('queuedHydrationInFlight') &&
     sync.includes('runFieldUpdateCloudSync') &&
     sync.includes('stageProjectUpdateForSync'),
-  'Queued updates should hydrate through the idempotent pending-change path and preserve sent/queued/failed outcomes.',
+  'Queued updates should hydrate through the idempotent pending-change path and preserve cloud-synced/queued/failed outcomes.',
 );
 
 assert(
@@ -117,11 +118,11 @@ assert(
 );
 
 assert(
-  app.includes('Archive sent update?') &&
+  app.includes('Archive cloud-synced update?') &&
     app.includes('Archive compliance-sensitive document?') &&
     app.includes('isArchived') &&
     app.includes('archivedAt'),
-  'Sent updates and compliance-sensitive documents should use guarded archive/delete flows.',
+  'Cloud-synced updates and compliance-sensitive documents should use guarded archive/delete flows.',
 );
 
 assert(

@@ -49,7 +49,9 @@ assert(
 );
 assert(
   reporter.includes('resolvePIEReportProjectNames({') &&
-    app.includes('savedUpdates.filter(update => matchesReportUpdate(update.projectName))') &&
+    app.includes('selectedReportProjectNames.flatMap(selectedProject =>') &&
+    app.includes('savedUpdates.filter(update =>') &&
+    app.includes('matchesReportProject(update.scheduleProjectName)') &&
     app.includes('matchesReportProject(item.locationName)'),
   'Single-project reports must filter evidence to the selected project instead of unioning all saved projects.',
 );
@@ -59,9 +61,21 @@ assert(
   'Authoritative reports must receive raw selected updates and schedules, not only a high-level Runtime summary.',
 );
 assert(
-  reports.includes('key={`${index}-${flag}`}') &&
+  reports.includes('Array.from(new Set([') &&
     reports.includes('key={`${index}-${warning}`}'),
   'Repeated report warnings must retain unique React keys.',
+);
+assert(
+  reports.includes('key={`${item.id}-${index}`}') &&
+    reports.includes('key={`${group.id}-${groupIndex}`}') &&
+    reports.includes('key={`${area.id}-${areaIndex}`}') &&
+    reporter.includes('stableSlugHash(normalized)'),
+  'Report rows must remain uniquely keyed even when imported source IDs share long prefixes.',
+);
+assert(
+  !reports.includes("? 'question' : 'questions'} to resolve") &&
+    !reports.includes('Draft recovery mode:'),
+  'Internal unanswered-question and report-authority diagnostics must not appear in the report surface.',
 );
 assert(
   reporter.includes('].filter((item): item is string => Boolean(item))).slice(0, 5)') &&
@@ -87,7 +101,7 @@ assert(
   'Reports must separate project scope from PM versus executive format.',
 );
 assert(
-  reporter.includes("? 'DAVE Executive Summary'") &&
+  reporter.includes("? 'Executive Summary'") &&
     reporter.includes("format === 'executive'") &&
     reporter.includes('reportBulletLabel(bullet)'),
   'Executive reports must omit work-area detail while PM reports retain labeled operational bullets.',
@@ -110,6 +124,40 @@ assert(
   reporter.includes('chooseBestWorkAreaName(candidates.slice(0, 2))') &&
     reporter.includes('if (cleaned.length <= 70) return cleaned;'),
   'Report work-area headings must prefer area metadata and reject caption-length headings.',
+);
+assert(
+  reporter.includes('isConstructionRelevantObservation') &&
+    reporter.includes('isIncidentalVisualObservation') &&
+    reporter.includes('.filter(item => !isIncidentalReportEvidence(item))') &&
+    reporter.includes('.filter(isVerifiedConstructionProgressEvidence)') &&
+    reporter.includes("source === 'photo'") &&
+    reporter.includes('return null;'),
+  'Reports must exclude incidental visual observations and only count verified construction evidence as progress.',
+);
+assert(
+  reporter.includes('No construction progress was reported or visually observed in the selected updates.') &&
+    !reporter.includes('Verified construction progress was identified') &&
+    !reporter.includes('areasWithProgress || workAreas.length'),
+  'Report summaries must not overstate progress as verified or substitute the total work-area count when no progress evidence exists.',
+);
+assert(
+  reporter.includes('function reportScheduleNote') &&
+    reporter.includes('Activity ID:') &&
+    reporter.includes('Predecessors?') &&
+    reporter.includes('function scheduleActionLine') &&
+    reporter.includes('Confirm the current status of'),
+  'Reports must remove import metadata from PM copy and turn schedule risk into a meaningful follow-up.',
+);
+assert(
+  reporter.includes('if (item.needsOwner) {') &&
+    reporter.includes('return ensureSentence(item.action);') &&
+    !reporter.includes('Owner unassigned —'),
+  'Ownerless report actions must state the action directly without an Owner unassigned prefix.',
+);
+assert(
+  reporter.includes("if (draft.reportType !== 'executive_summary') return draft;") &&
+    reporter.includes("return projectName.trim() || areaName.trim() || 'Project';"),
+  'PM reports must avoid executive-only recommendations and use the real parent project hierarchy.',
 );
 assert(
   reporter.includes('scheduleReconciliationReviewFlags(input.runtime)') &&

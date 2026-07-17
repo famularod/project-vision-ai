@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { askDAVE, type DAVEAskAnswer, type DAVEAskEvidence } from '../services/DAVEAsk';
+import { type DAVEAskAnswer, type DAVEAskEvidence } from '../services/DAVEAsk';
 import {
   appendDAVEAskHistory,
   buildDAVEAskWhyModel,
@@ -21,6 +21,10 @@ import {
 } from '../services/DAVEAskConversation';
 import type { DAVEBriefNavigationTarget } from '../services/DAVEDailyBrief';
 import type { DAVEProjectIntelligence } from '../services/DAVEIntelligence';
+import {
+  answerDAVEConversationContext,
+  resolveDAVEConversationContext,
+} from '../services/DAVEConversationContext';
 
 type Props = {
   intelligence: DAVEProjectIntelligence;
@@ -31,6 +35,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
   const [history, setHistory] = useState<DAVEAskConversationEntry[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [followUp, setFollowUp] = useState('');
+  const [clarification, setClarification] = useState<string | null>(null);
   const [expandedWhyId, setExpandedWhyId] = useState<string | null>(null);
   const storageKey = daveAskHistoryStorageKey(intelligence.projectId);
 
@@ -39,6 +44,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
     setHistory([]);
     setHistoryLoaded(false);
     setExpandedWhyId(null);
+    setClarification(null);
     AsyncStorage.getItem(storageKey)
       .then(value => {
         if (active) setHistory(parseDAVEAskHistory(value, intelligence.projectId));
@@ -55,7 +61,23 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
   function executeQuestion(question: string) {
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) return;
-    const answer = askDAVE({ question: normalizedQuestion, intelligence, interface: 'text' });
+    const context = resolveDAVEConversationContext({
+      transcript: normalizedQuestion,
+      history,
+      projectId: intelligence.projectId,
+    });
+    if (context.status === 'ambiguous_follow_up') {
+      setClarification(context.effectiveQuestion);
+      setFollowUp('');
+      return;
+    }
+    const answer = answerDAVEConversationContext({
+      resolution: context,
+      intelligence,
+      interface: 'text',
+    });
+    if (!answer) return;
+    setClarification(null);
     const createdAt = new Date().toISOString();
     const entry: DAVEAskConversationEntry = {
       id: `ask:${encodeURIComponent(intelligence.projectId)}:${createdAt}:${history.length}`,
@@ -63,6 +85,9 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
       question: normalizedQuestion,
       answer,
       createdAt,
+      contextStatus: context.status,
+      resolvedQuestion: context.status === 'standalone' ? null : context.effectiveQuestion,
+      priorEntryId: context.priorEntryId,
     };
     setHistory(current => {
       const next = appendDAVEAskHistory(current, entry);
@@ -84,7 +109,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
           <Ionicons name="chatbubble-ellipses-outline" size={20} color="#3656A7" />
         </View>
         <View style={styles.flex}>
-          <Text style={styles.title}>Ask DAVE</Text>
+          <Text style={styles.title}>Project Assistant</Text>
           <Text style={styles.subtitle}>Suggested questions</Text>
         </View>
       </View>
@@ -96,7 +121,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
             style={styles.suggestion}
             onPress={() => executeQuestion(question)}
             accessibilityRole="button"
-            accessibilityLabel={`Ask DAVE: ${question}`}
+            accessibilityLabel={`Ask project assistant: ${question}`}
           >
             <Text style={styles.suggestionText}>• {question}</Text>
           </TouchableOpacity>
@@ -115,6 +140,9 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
       {history.map(entry => (
         <View key={entry.id} style={styles.historyEntry}>
           <Text style={styles.questionText}>{entry.question}</Text>
+          {entry.resolvedQuestion ? (
+            <Text style={styles.metaText}>Follow-up understood as: {entry.resolvedQuestion}</Text>
+          ) : null}
           <Text style={styles.sectionLabel}>Answer</Text>
           <Text style={styles.answerText}>{entry.answer.answer}</Text>
           <Text style={styles.metaText}>Confidence: {entry.answer.confidence}</Text>
@@ -168,6 +196,13 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
         </View>
       ))}
 
+      {clarification ? (
+        <View style={styles.emptyState} accessibilityRole="alert">
+          <Text style={styles.answerText}>One detail needed</Text>
+          <Text style={styles.metaText}>{clarification}</Text>
+        </View>
+      ) : null}
+
       <View style={styles.followUpRow}>
         <TextInput
           style={styles.input}
@@ -177,14 +212,14 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
           placeholderTextColor="#858B98"
           returnKeyType="send"
           onSubmitEditing={() => executeQuestion(followUp)}
-          accessibilityLabel="Ask DAVE a follow-up question"
+          accessibilityLabel="Ask the project assistant a follow-up question"
         />
         <TouchableOpacity
           style={[styles.askButton, !followUp.trim() && styles.askButtonDisabled]}
           disabled={!followUp.trim()}
           onPress={() => executeQuestion(followUp)}
           accessibilityRole="button"
-          accessibilityLabel="Send question to DAVE"
+          accessibilityLabel="Send question to the project assistant"
         >
           <Text style={styles.askButtonText}>Ask</Text>
         </TouchableOpacity>
@@ -195,7 +230,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
 
 function AskHistorySkeleton() {
   return (
-    <View style={styles.skeleton} accessible accessibilityLabel="Loading Ask DAVE history">
+    <View style={styles.skeleton} accessible accessibilityLabel="Loading project assistant history">
       <View style={[styles.skeletonLine, { width: '68%' }]} />
       <View style={[styles.skeletonLine, { width: '92%' }]} />
       <View style={[styles.skeletonLine, { width: '54%' }]} />

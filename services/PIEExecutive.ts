@@ -571,7 +571,7 @@ function inspectionCandidates(
     projectName: context.projectName,
     title: 'Inspection status needs verification',
     summary:
-      'DAVE found inspection language that suggests inspection status may be missing or unresolved.',
+      'Inspection language suggests inspection status may be missing or unresolved.',
     weight: 22,
     priority: 'high',
     confidence: 'medium',
@@ -604,7 +604,7 @@ function customerImpactCandidates(
     title: 'Customer communication may be needed',
     summary:
       communicationDecision?.summary ||
-      'DAVE sees project risk or delay language that may affect customer communication.',
+      'Project risk or delay language may affect customer communication.',
     weight: communicationDecision ? 20 : 12,
     priority: communicationDecision?.priority || 'medium',
     confidence: communicationDecision?.confidence ||
@@ -651,7 +651,7 @@ function executiveReportCandidates(
       executiveDecision?.summary ||
       runtimePreparedness?.reason ||
       readiness?.message ||
-      'DAVE has enough context to prepare an executive brief for review.',
+      'There is enough context to prepare an executive brief for review.',
     weight: executiveDecision ? 18 : 10,
     priority: executiveDecision?.priority || 'medium',
     confidence:
@@ -696,7 +696,7 @@ function missingRecentUpdateCandidates(
       missingUpdateGap?.summary ||
       (typeof days === 'number'
         ? `Last update is ${days} day${days === 1 ? '' : 's'} old.`
-        : 'DAVE does not see a saved update for this project.'),
+        : 'There is no saved update for this project.'),
     weight: typeof days === 'number' && days > 7 ? 18 : 12,
     priority: typeof days === 'number' && days > 7 ? 'high' : 'medium',
     confidence: missingUpdateGap?.confidence || 'high',
@@ -720,7 +720,7 @@ function lowTrustCandidates(
     id: `low-trust-${slug(context.projectName)}`,
     projectName: context.projectName,
     title: 'Trust Score is low',
-    summary: trustScore.reasons[0] || 'DAVE has low trust in current evidence.',
+    summary: trustScore.reasons[0] || 'Current evidence has low trust.',
     weight: 12,
     priority: 'medium',
     confidence: trustScore.level,
@@ -745,7 +745,7 @@ function lowUnderstandingCandidates(
     title: 'Understanding Score is low',
     summary:
       understandingScore.missingInformation[0] ||
-      'DAVE has incomplete project understanding.',
+      'Project understanding is incomplete.',
     weight: 12,
     priority: 'medium',
     confidence: understandingScore.level,
@@ -826,7 +826,7 @@ function projectWalkCandidates(
       walkDecision?.summary ||
       location?.confirmationPrompt ||
       context.runtime?.areaLinkedRisks[0]?.risk ||
-      'DAVE has field context that should be verified during Project Walk.',
+      'Field context should be verified during Project Walk.',
     weight: walkDecision ? priorityToWeight(walkDecision.priority) : 10,
     priority: walkDecision?.priority || 'medium',
     confidence: walkDecision?.confidence || location?.confidence || 'medium',
@@ -1156,7 +1156,7 @@ function executiveSummary({
   confidence: ProjectConfidenceLevel;
 }) {
   if (!topPriority) {
-    return `DAVE Executive is monitoring ${contexts.length} project${contexts.length === 1 ? '' : 's'} with ${confidence} confidence. No urgent priority is visible from current DAVE outputs.`;
+    return `Monitoring ${contexts.length} project${contexts.length === 1 ? '' : 's'} with ${confidence} confidence. No urgent priority is visible from current outputs.`;
   }
 
   return `${topPriority.projectName}: ${topPriority.title}. ${escalations.length} escalation${escalations.length === 1 ? '' : 's'}, ${preparations.length} preparation${preparations.length === 1 ? '' : 's'}, and ${questionsForUser.length} question${questionsForUser.length === 1 ? '' : 's'} need review.`;
@@ -1173,7 +1173,7 @@ function trustExplanation(contexts: ExecutiveProjectContext[]) {
     return `Project intelligence confidence is ${confidence.score}% (${confidence.level}).`;
   }
 
-  return 'DAVE Executive has limited confidence because no Runtime or Intelligence output was provided.';
+  return 'Executive confidence is limited because no Runtime or Intelligence output was provided.';
 }
 
 function buildWaitList(
@@ -1342,7 +1342,7 @@ function expectedImpact(priority: PIEExecutivePriority) {
     return 'Reduces preparation time while keeping user approval in place.';
   }
 
-  return 'Improves DAVE confidence and project understanding.';
+  return 'Improves confidence and project understanding.';
 }
 
 function routineTitle(mode: PIEExecutiveOperatingMode) {
@@ -1370,7 +1370,7 @@ function routineSummary(
   priorities: PIEExecutivePriority[],
 ) {
   if (mode === 'monitor') {
-    return 'DAVE Executive is monitoring current Runtime outputs without an urgent action.';
+    return 'Current Runtime outputs are being monitored without an urgent action.';
   }
 
   return `${routineTitle(mode)} has ${priorities.length} ranked priorit${priorities.length === 1 ? 'y' : 'ies'}.`;

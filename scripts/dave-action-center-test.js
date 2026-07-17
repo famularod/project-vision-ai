@@ -155,10 +155,9 @@ assert.strictEqual(empty.recommendedAction, null);
 assert.strictEqual(empty.supportingEvidence.length, 0);
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-const priorityIndex = app.indexOf(">Today's Priority<");
-const briefIndex = app.indexOf('>DAVE Daily Brief<');
-assert(priorityIndex >= 0 && priorityIndex < briefIndex, "Today's Priority must render above DAVE Daily Brief.");
-assert(app.includes('Dismiss for Today') && app.includes('actionCenterDismissKey'));
+const briefIndex = app.indexOf('>Project Brief<');
+const priorityIndex = app.indexOf('>What matters now<', briefIndex);
+assert(briefIndex >= 0 && priorityIndex > briefIndex, 'The selected priority must lead the consolidated Project Brief.');
 assert(app.includes('onOpenDailyBriefItem({') && app.includes('sourceRecordId: actionCenterSource.recordId'));
 
 console.log('DAVE Action Center behavioral tests passed.');

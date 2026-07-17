@@ -87,6 +87,10 @@ import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritiz
 import { resolvePIEReportProjectNames } from './PIEReportScope';
 import type { PIEScheduleReconciliationResult } from './PIEScheduleReconciliation';
 import {
+  isConstructionRelevantObservation,
+  isIncidentalVisualObservation,
+} from './dave-construction-relevance';
+import {
   requirePersistedExecutiveJudgment,
   type PIEExecutiveJudgmentRecord,
 } from './PIEExecutiveJudgmentRepository';
@@ -290,6 +294,7 @@ export type PIEReportDraft = {
   reviewFlags: string[];
   sourceEvidence: PIEReportSourceEvidence[];
   constructionUnderstanding: PIEConstructionUnderstanding;
+  daveBriefing?: import('./DAVEReportIntelligence').DAVEReportBriefing | null;
   generatedAt: string;
 };
 
@@ -506,6 +511,8 @@ export function buildPIEReportDraftFromExecutiveJudgment(
         'Success is measured by verified project evidence after the decision is implemented.',
     },
   });
+  if (draft.reportType !== 'executive_summary') return draft;
+
   const recommendationLine = `Executive recommendation: ${cleanReportBulletText(record.primaryRecommendation)}`;
   return {
     ...draft,
@@ -536,39 +543,55 @@ export function collectReportEvidence(
   const evidence: PIEReportSourceEvidence[] = [];
 
   updates.forEach(update => {
-    const areaName = update.selectedAreaName || projectAreaFromPhotos(update) || '';
+    const context = reportContextForUpdate(update, input.scheduleItems || []);
+    const suggestedNote = update.pieSuggestedNote?.trim() || '';
+    const noteWasGeneratedFromPhotoAnalysis = Boolean(
+      update.pieSuggestedNoteAccepted &&
+      suggestedNote &&
+      suggestedNote === update.notes.trim(),
+    );
 
-    if (update.notes.trim()) {
+    if (
+      update.notes.trim() &&
+      (!noteWasGeneratedFromPhotoAnalysis || isConstructionRelevantObservation(update.notes))
+    ) {
       evidence.push({
         id: `note-${update.id}`,
         source: 'note',
-        projectName: update.projectName,
-        areaName,
+        projectName: context.projectName,
+        areaName: context.areaName,
         summary: cleanReportBulletText(update.notes),
         confidence: isUnclearText(update.notes) ? 'low' : 'medium',
       });
     }
 
     update.photos.forEach(photo => {
-      evidence.push(photoToEvidence(update, photo));
+      const photoEvidence = photoToEvidence(update, photo, context);
+      if (photoEvidence) evidence.push(photoEvidence);
     });
   });
 
   input.scheduleItems
-    ?.filter(item => selectedProjects.includes(normalizeName(item.projectName)))
+    ?.filter(item =>
+      [item.scheduleProjectName, item.projectName, item.locationName]
+        .some(name => selectedProjects.includes(normalizeName(name || ''))),
+    )
     .forEach(item => {
+      const scheduleProjectName = item.scheduleProjectName?.trim() || item.projectName || selectedProjects[0] || '';
+      const scheduleAreaName = item.locationName?.trim() || (
+        normalizeName(item.projectName) !== normalizeName(scheduleProjectName)
+          ? item.projectName
+          : ''
+      );
       evidence.push({
         id: `schedule-${item.id}`,
         source: 'schedule',
-        projectName: item.projectName || selectedProjects[0] || '',
-        areaName: item.locationName || '',
+        projectName: scheduleProjectName,
+        areaName: scheduleAreaName,
         summary: scheduleSummaryLine(item),
         confidence: item.projectName && item.taskName ? 'medium' : 'low',
         owner: item.owner || item.contractor || null,
-        actionRequired:
-          item.status === 'Waiting' || item.priority === 'High'
-            ? item.notes || item.taskName
-            : null,
+        actionRequired: scheduleActionLine(item),
         status: item.status,
       });
     });
@@ -607,7 +630,8 @@ export function collectReportEvidence(
 
   if (
     runtime?.photoProgressSummary &&
-    !isEmptyRuntimeSummary(runtime.photoProgressSummary)
+    !isEmptyRuntimeSummary(runtime.photoProgressSummary) &&
+    isConstructionRelevantObservation(runtime.photoProgressSummary)
   ) {
     evidence.push({
       id: 'runtime-photo-progress',
@@ -623,8 +647,14 @@ export function collectReportEvidence(
     evidence
       .filter(item => item.source !== 'gps')
       .filter(item => item.summary.trim())
+      .filter(item => !isIncidentalReportEvidence(item))
       .filter(item => !containsGenericAiWording(item.summary)),
   );
+}
+
+function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
+  if (!['note', 'photo', 'runtime'].includes(item.source)) return false;
+  return isIncidentalVisualObservation(item.summary);
 }
 
 export function buildConstructionUnderstanding(
@@ -657,7 +687,7 @@ export function buildConstructionUnderstanding(
       normalizeName(areaName),
     );
     const progress = items
-      .filter(item => !isActionEvidence(item) && item.source !== 'safety')
+      .filter(isVerifiedConstructionProgressEvidence)
       .map(item => ({
         summary: cleanReportBulletText(item.summary),
         sourceEvidenceIds: [item.id],
@@ -688,9 +718,7 @@ export function buildConstructionUnderstanding(
         sourceEvidenceIds: item.sourceEvidenceIds,
       }));
     const status = resolveWorkAreaStatus(items, issues, nextSteps);
-    const changed = progress.length
-      ? progress.map(item => item.summary)
-      : items.map(item => cleanReportBulletText(item.summary)).filter(Boolean);
+    const changed = progress.map(item => item.summary);
 
     return {
       id: slug(`understanding-${location}-${areaName}`),
@@ -813,15 +841,15 @@ export function buildDavidStyleReport({
     .map(group => {
       const areas = group.workAreas
         .filter(area => area.bullets.length > 0)
-        .map(area => {
+        .map((area, index) => {
           const bullets = area.bullets
             .map(bullet => `• ${reportBulletLabel(bullet)}: ${bullet.text}`)
             .join('\n');
-          const areaTitle = includeProjectNames
+          const areaTitle = includeProjectNames && normalizeName(group.title) !== normalizeName(area.projectName)
             ? `${area.projectName} — ${area.title}`
             : area.title;
 
-          return `${areaTitle}\n${bullets}`;
+          return `${index + 1}. ${areaTitle}\n${bullets}`;
         })
         .join('\n\n');
 
@@ -912,6 +940,14 @@ export function buildReportReviewFlags({
     evidence.some(item => isUnclearText(item.summary)) ? 'Some notes may need grammar or typo review.' : null,
     workAreas.some(area => area.nextSteps.some(step => !step.owner))
       ? 'One or more action items need an owner.'
+      : null,
+    evidence.some(item => !item.areaName.trim())
+      ? 'One or more evidence items need a confirmed location.'
+      : null,
+    workAreas.some(area =>
+      area.progress.length === 0 && area.issues.length === 0 && area.nextSteps.length === 0,
+    )
+      ? 'One or more work areas need a clearer evidence summary.'
       : null,
     workAreas.some(area => area.status === 'Blocked' || area.status === 'At Risk')
       ? 'Schedule or work-area conflict may need review.'
@@ -1127,10 +1163,10 @@ function buildReport(
   });
   const title =
     executiveFormat
-      ? 'DAVE Executive Summary'
+      ? 'Executive Summary'
       : reportType === 'combined_project_update'
-      ? 'DAVE Combined Project Update'
-      : 'DAVE Project Update';
+      ? 'Combined Project Update'
+      : 'Project Update';
   const subject =
     executiveFormat
       ? `Executive Summary - ${
@@ -1292,7 +1328,7 @@ function actionFromEvidence(item: PIEReportSourceEvidence) {
 
 function formatActionItem(item: PIEReportActionItem) {
   if (item.needsOwner) {
-    return `Action Required – Assign owner to ${lowercaseFirst(item.action)}.`;
+    return ensureSentence(item.action);
   }
 
   return `${item.owner} – Please ${lowercaseFirst(item.action)}.`;
@@ -1314,7 +1350,9 @@ function buildExecutiveSummaryBullets(
   const actionHighlight = workAreas.find(area => area.nextSteps.length > 0);
   const scheduleCount = workAreas.filter(area => area.affectsSchedule).length;
   const bullets = [
-    `Work progressed across ${areasWithProgress || workAreas.length} area${(areasWithProgress || workAreas.length) === 1 ? '' : 's'}.`,
+    areasWithProgress > 0
+      ? `Construction progress was reported or visually observed in ${areasWithProgress} area${areasWithProgress === 1 ? '' : 's'}; verification status is identified in the detailed evidence.`
+      : 'No construction progress was reported or visually observed in the selected updates.',
     progressHighlight
       ? shortenReportBullet(
           `Key update: ${executiveAreaLabel(progressHighlight)} — ${progressHighlight.progress[0].summary}`,
@@ -1357,7 +1395,7 @@ function reflectionReviewFlags(
 ) {
   const flags = [
     runtime?.beliefChanges?.some(change => 'direction' in change && change.direction === 'weakened')
-      ? 'Reflection weakened at least one DAVE belief; verify before sending.'
+      ? 'Reflection weakened at least one project belief; verify before sending.'
       : null,
     runtime?.recommendedEvidence?.[0]
       ? `Reflection recommends more evidence: ${runtime.recommendedEvidence[0]}.`
@@ -1433,10 +1471,10 @@ function deliberationReportBullets(
   const recommendation = runtime.deliberation.deliberatedRecommendation;
   const bullets = [
     recommendation?.whyRecommended
-      ? `Recommendation: ${cleanReportBulletText(recommendation.whyRecommended)}`
+      ? `Evidence-backed recommendation: ${cleanReportBulletText(recommendation.whyRecommended)}`
       : null,
     runtime.deliberation.tradeoffs[0]?.benefit && runtime.deliberation.recommendationReadiness === 'Ready'
-      ? `DAVE considered alternatives: ${cleanReportBulletText(runtime.deliberation.tradeoffs[0].benefit)}`
+      ? `Alternatives considered: ${cleanReportBulletText(runtime.deliberation.tradeoffs[0].benefit)}`
       : null,
   ].filter(Boolean) as string[];
 
@@ -1456,7 +1494,7 @@ function scientificMethodReviewFlags(
       ? `Scientific Method identified uncertainty: ${primaryUncertainty}.`
       : null,
     weakestAssumption
-      ? `DAVE should verify its weakest assumption: ${weakestAssumption}.`
+      ? `Verify the weakest assumption: ${weakestAssumption}.`
       : null,
     quality && quality.readiness !== 'Ready'
       ? `Decision quality is ${quality.readiness}; review before communicating.`
@@ -1475,7 +1513,7 @@ function scientificMethodReportBullets(
   const decision = result?.selectedDecision?.selectedAction;
   const bullets = [
     result?.decisionQualitySignals?.readiness === 'Ready' && decision
-      ? `DAVE's recommendation is evidence-backed: ${cleanReportBulletText(decision)}`
+      ? `Evidence-backed recommendation: ${cleanReportBulletText(decision)}`
       : null,
     action
       ? `Recommended verification: ${cleanReportBulletText(action)}`
@@ -1833,7 +1871,7 @@ function executiveJudgmentReviewFlags(
       ? `Escalation is not justified yet: ${escalationAnalysis.justification}`
       : null,
     waitForEvidenceReasoning?.shouldWaitForEvidence
-      ? `DAVE should wait for evidence before final recommendation: ${waitForEvidenceReasoning.smallestEvidenceRequest}`
+      ? `Wait for evidence before final recommendation: ${waitForEvidenceReasoning.smallestEvidenceRequest}`
       : null,
     decisionTiming?.recommendation === 'wait_for_evidence'
       ? `Decision timing requires verification: ${decisionTiming.reason}`
@@ -1993,25 +2031,63 @@ function selectedUpdates(
   );
 }
 
+function reportContextForUpdate(
+  update: ProjectUpdate,
+  scheduleItems: ScheduleItem[],
+) {
+  const updateNames = [
+    update.projectName,
+    update.selectedAreaName,
+    projectAreaFromPhotos(update),
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map(normalizeName);
+  const scheduleMatch = scheduleItems.find(item =>
+    [item.projectName, item.locationName].some(name => updateNames.includes(normalizeName(name))),
+  );
+  const projectName =
+    update.scheduleProjectName?.trim() ||
+    scheduleMatch?.scheduleProjectName?.trim() ||
+    update.projectName;
+  const explicitArea = update.selectedAreaName || projectAreaFromPhotos(update) || '';
+  const areaName = explicitArea || (
+    normalizeName(update.projectName) !== normalizeName(projectName)
+      ? update.projectName
+      : ''
+  );
+
+  return { projectName, areaName };
+}
+
 function photoToEvidence(
   update: ProjectUpdate,
   photo: UpdatePhoto,
-): PIEReportSourceEvidence {
+  context: { projectName: string; areaName: string },
+): PIEReportSourceEvidence | null {
   const summary =
     photo.caption.trim() ||
     photo.actionRequired.trim() ||
     `${photo.category} photo captured.`;
+  const source =
+    photo.category === 'Open Issue'
+      ? 'issue' as const
+      : photo.category === 'Safety Concern'
+        ? 'safety' as const
+        : 'photo' as const;
+
+  if (
+    source === 'photo' &&
+    !photo.actionRequired.trim() &&
+    !isConstructionRelevantObservation(summary)
+  ) {
+    return null;
+  }
 
   return {
     id: `photo-${photo.id}`,
-    source:
-      photo.category === 'Open Issue'
-        ? 'issue'
-        : photo.category === 'Safety Concern'
-          ? 'safety'
-          : 'photo',
-    projectName: update.projectName,
-    areaName: photo.selectedAreaName || update.selectedAreaName || '',
+    source,
+    projectName: context.projectName,
+    areaName: photo.selectedAreaName || context.areaName,
     summary: cleanReportBulletText(summary),
     confidence: summary ? 'high' : 'medium',
     owner: photo.actionOwner || null,
@@ -2022,6 +2098,7 @@ function photoToEvidence(
 }
 
 function scheduleSummaryLine(item: ScheduleItem) {
+  const scheduleNote = reportScheduleNote(item.notes);
   const parts = [
     cleanReportBulletText(item.taskName),
     item.status !== 'Complete' && item.finishDate
@@ -2029,10 +2106,41 @@ function scheduleSummaryLine(item: ScheduleItem) {
       : null,
     item.status ? `status ${item.status}` : null,
     item.owner || item.contractor ? `owner ${item.owner || item.contractor}` : null,
-    item.notes ? cleanReportBulletText(item.notes) : null,
+    scheduleNote || null,
   ].filter(Boolean);
 
   return parts.join(', ');
+}
+
+function scheduleActionLine(item: ScheduleItem) {
+  const taskName = cleanReportBulletText(item.taskName);
+  if (!taskName) return null;
+  if (item.status === 'Waiting') return `Confirm what is blocking ${taskName}.`;
+  if (item.priority === 'High' && item.status !== 'Complete') {
+    return `Confirm the current status of ${taskName}.`;
+  }
+
+  return null;
+}
+
+function reportScheduleNote(value: string) {
+  return cleanReportBulletText(value)
+    .replace(/\bActivity ID:\s*[^.]+\.?\s*/gi, '')
+    .replace(/\bDuration:\s*[^.]+\.?\s*/gi, '')
+    .replace(/\bPredecessors?:\s*[^.]+\.?\s*/gi, '')
+    .replace(/\bImported from (?:a )?structured Microsoft Project PDF;?\s*/gi, '')
+    .replace(/\bverify highlighted fields before approval\.?\s*/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isVerifiedConstructionProgressEvidence(item: PIEReportSourceEvidence) {
+  if (isActionEvidence(item)) return false;
+  if (item.source === 'schedule' || item.source === 'safety' || item.source === 'issue') {
+    return false;
+  }
+
+  return isConstructionRelevantObservation(item.summary);
 }
 
 function resolveWorkAreaStatus(
@@ -2123,11 +2231,7 @@ function projectAreaFromPhotos(update: ProjectUpdate) {
 }
 
 function locationTitle(projectName: string, areaName: string) {
-  const locationNumber =
-    projectName.match(/\b\d{4}\b/)?.[0] ||
-    areaName.match(/\b\d{4}\b/)?.[0];
-
-  return locationNumber ? `${locationNumber} Location` : `${projectName || 'Project'} Location`;
+  return projectName.trim() || areaName.trim() || 'Project';
 }
 
 function imageReferenceText(refs: PIEReportImageReference[]) {
@@ -2312,11 +2416,25 @@ function normalizeName(value: string | null | undefined) {
 }
 
 function slug(value: string) {
-  return value
+  const normalized = value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80);
+    .replace(/^-|-$/g, '');
+
+  if (normalized.length <= 80) return normalized;
+
+  return `${normalized.slice(0, 72).replace(/-$/g, '')}-${stableSlugHash(normalized)}`;
+}
+
+function stableSlugHash(value: string) {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(36).padStart(7, '0').slice(-7);
 }
 
 function formatDate(value: Date) {

@@ -9,13 +9,14 @@ export type StartupStorageReadResult<T> = {
   recovered: boolean;
   isolatedRecordCount: number;
   error: string | null;
+  found?: boolean;
 };
 
 export async function readStartupJson<T>(
   key: string,
   fallback: T,
   label: string,
-): Promise<StartupStorageReadResult<unknown>> {
+): Promise<StartupStorageReadResult<T>> {
   logStartupDiagnostic('storage_hydration_started', `${label} hydration started.`, {
     key,
   });
@@ -30,11 +31,12 @@ export async function readStartupJson<T>(
         recovered: false,
         isolatedRecordCount: 0,
         error: null,
+        found: false,
       };
     }
 
     try {
-      const parsed = JSON.parse(raw) as unknown;
+      const parsed = JSON.parse(raw) as T;
       logStartupDiagnostic('storage_hydration_completed', `${label} hydration completed.`, {
         key,
       });
@@ -43,6 +45,7 @@ export async function readStartupJson<T>(
         recovered: false,
         isolatedRecordCount: 0,
         error: null,
+        found: true,
       };
     } catch (error) {
       await quarantineStartupStorageValue(key, raw, label, error);
@@ -51,6 +54,7 @@ export async function readStartupJson<T>(
         recovered: true,
         isolatedRecordCount: 1,
         error: startupErrorMessage(error),
+        found: false,
       };
     }
   } catch (error) {
@@ -63,6 +67,7 @@ export async function readStartupJson<T>(
       recovered: true,
       isolatedRecordCount: 0,
       error: startupErrorMessage(error),
+      found: false,
     };
   }
 }

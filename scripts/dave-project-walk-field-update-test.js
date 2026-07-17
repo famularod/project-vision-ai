@@ -133,8 +133,8 @@ assert(app.includes('Prepare Walk Update (') && app.includes('onPrepareWalkUpdat
   'Project Workspace must expose the existing-review entry point only when unused memories exist.');
 assert(app.includes("setScreen('BuildUpdate')") && app.includes("continueWithoutPhotosAcknowledged: true"),
   'Prepared walk updates must open the existing review screen as notes-only drafts.');
-assert(app.includes("status: 'ready_to_send'") && app.includes('Save') && app.includes('Send Update'),
-  'The existing explicit save/send approval boundary must remain in control.');
+assert(app.includes('function saveFieldUpdateFromReview()') && app.includes('Save Field Update'),
+  'Prepared walk updates must use the same explicit Field Update save boundary.');
 assert(app.includes('No photo evidence available for safety review') &&
   app.includes('No photo evidence available for blocker review'),
   'Notes-only walk drafts must not claim that missing photo evidence proves safety or blockers are clear.');

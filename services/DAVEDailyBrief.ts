@@ -155,12 +155,20 @@ export type DAVEDailyBriefDocument = {
 
 export type DAVEDailyBriefScheduleItem = {
   id: string;
+  scheduleProjectName?: string | null;
   projectName: string;
+  locationName?: string;
   taskName: string;
+  startDate?: string;
   milestone?: string;
   status: string;
   priority?: string;
   finishDate?: string;
+  owner?: string;
+  contractor?: string;
+  durationDays?: number | null;
+  percentComplete?: number;
+  notes?: string;
   createdAt: string;
   importedAt?: string | null;
 };
@@ -573,7 +581,7 @@ function selectRecommendedAction(
       sourceRecordId: attention.sourceRecordId,
       navigationTarget: attention.navigationTarget,
       confidence: attention.confidence,
-      limitations: ['DAVE recommends review only; it does not send messages or change project status.'],
+      limitations: ['Review only; no messages are sent and project status is not changed automatically.'],
     };
   }
 
@@ -591,7 +599,7 @@ function selectRecommendedAction(
     sourceRecordId: uncertainty.sourceRecordId,
     navigationTarget: uncertainty.navigationTarget === 'capture' ? 'capture' : 'update_detail',
     confidence: uncertainty.confidence,
-    limitations: ['DAVE cannot determine project status from missing or unavailable evidence.'],
+    limitations: ['Project status cannot be determined from missing or unavailable evidence.'],
   };
 }
 

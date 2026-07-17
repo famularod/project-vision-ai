@@ -110,14 +110,13 @@ const workspace = app.slice(
   app.indexOf('function ProjectWorkspaceScreen'),
   app.indexOf('function SavedUpdatesScreen'),
 );
-const dailyBriefIndex = workspace.indexOf('>DAVE Daily Brief<');
+const briefIndex = workspace.indexOf('>Project Brief<');
 const askIndex = workspace.indexOf('<DAVEAskExperience');
-const evidenceQualityIndex = workspace.indexOf('>Project Health<');
-const timelineIndex = workspace.indexOf('>Project Timeline<');
-const pieBriefIndex = workspace.indexOf('>DAVE Project Brief<');
-assert(dailyBriefIndex >= 0 && askIndex > dailyBriefIndex && evidenceQualityIndex > askIndex &&
-  timelineIndex > evidenceQualityIndex && pieBriefIndex > timelineIndex,
-  'Evidence Quality must render as Project Health after Ask DAVE and before the Project Timeline.');
-assert(app.includes('Why it matters: {signal.whyItMatters}'));
+const evidenceQualityIndex = workspace.indexOf('evidenceQuality.signals.map');
+assert(
+  briefIndex >= 0 && evidenceQualityIndex > briefIndex && askIndex > evidenceQualityIndex,
+  'Evidence Quality must remain available inside the consolidated Project Brief before Ask DAVE.',
+);
+assert(app.includes('evidenceQuality.limitation'));
 
 console.log('DAVE Evidence Quality behavioral tests passed.');

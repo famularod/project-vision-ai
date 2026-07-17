@@ -87,9 +87,10 @@ assert(
 );
 
 assert(
-  app.includes('projectDocumentsForProject(selectedWorkspaceProject, projectDocuments)') &&
+  app.includes('projectDocumentsForScopes(') &&
+    app.includes('workspaceScopeNames(selectedWorkspaceProject)') &&
     app.includes("onOpenDocuments={() => setScreen('ProjectDocuments')}"),
-  'Project Workspace Documents tool should open the project documents screen.',
+  'Project Workspace Documents tool should open documents across the parent project scope.',
 );
 
 assert(

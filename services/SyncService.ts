@@ -1,11 +1,15 @@
 import {
   countCloudProjects,
   createProject,
+  createPhotoSignedUrl,
   deleteProject,
   getProjectUpdateSyncMetadata,
   getSupabaseConfigurationStatus,
   listProjectUpdates,
+  listProjectAreas,
   listProjects,
+  listReferenceDocuments,
+  listScheduleItems,
   saveProjectUpdate,
   testSupabaseConnection,
   updateProject,
@@ -13,6 +17,7 @@ import {
   upsertProjectArea,
   upsertReferenceDocument,
   upsertScheduleItem,
+  verifyDAVEAppOwner,
   type CloudProject,
   type CloudProjectUpdate,
   type JsonValue,
@@ -21,7 +26,13 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getStoredJson, setStoredJson } from './StorageService';
+import {
+  removeDAVETombstonedRecords,
+  synchronizeDAVESyncTombstones,
+  type DAVESyncTombstoneSyncResult,
+} from './DAVESyncTombstones';
 import type {
+  DAVESyncTombstone,
   ProjectArea,
   ProjectUpdate,
   ReferenceDocument,
@@ -67,16 +78,25 @@ export type SyncUploadResult = {
   configured: boolean;
   uploaded: number;
   uploadedByEntity?: Partial<Record<SyncEntity, number>>;
+  itemOutcomes?: Record<string, SyncItemOutcome>;
   queued: number;
   conflicts: number;
   errors: string[];
 };
+
+export type SyncItemOutcome = 'uploaded' | 'conflict' | 'blocked' | 'failed';
 
 export type CloudDownloadResult<TUpdate> = {
   configured: boolean;
   projects: CloudProject[];
   projectNames: string[];
   updates: CloudProjectUpdate<TUpdate>[];
+  projectAreas: ProjectArea[];
+  scheduleItems: ScheduleItem[];
+  referenceDocuments: ReferenceDocument[];
+  tombstones: DAVESyncTombstone[];
+  tombstonesAuthoritative: boolean;
+  tombstoneError: string | null;
 };
 
 export type LocalSyncPayload = {
@@ -114,6 +134,17 @@ export type FullSyncResult = {
     documentsUploaded: number;
     cloudProjectsDownloaded: number;
     cloudUpdatesDownloaded: number;
+    cloudAreasDownloaded: number;
+    cloudSchedulesDownloaded: number;
+    cloudDocumentsDownloaded: number;
+  };
+  recovered: {
+    projects: CloudProject[];
+    updates: ProjectUpdate[];
+    projectAreas: ProjectArea[];
+    scheduleItems: ScheduleItem[];
+    referenceDocuments: ReferenceDocument[];
+    tombstones: DAVESyncTombstone[];
   };
 };
 
@@ -186,9 +217,11 @@ export type StagedProjectUpdateSync = {
   workAttempt: FieldUpdateSyncWorkAttempt;
   uploadedPhotoCount: number;
   missingPhotos: MissingSyncPhoto[];
+  pendingPhotoAssetIds: string[];
 };
 
 const PROJECT_PHOTOS_BUCKET = 'project-photos';
+const RECOVERED_PHOTOS_FOLDER = 'dave-recovered-project-photos';
 
 export function sanitizeUserFacingSyncMessage(message: string): string {
   if (!message.trim()) return message;
@@ -206,7 +239,23 @@ export function sanitizeUserFacingSyncMessage(message: string): string {
     return 'Some photos could not be synced because the original files are no longer available. The remaining items will continue syncing.';
   }
 
-  return message;
+  if (/unauthorized|forbidden|jwt|session|sign.?in|auth/i.test(message)) {
+    return 'Cloud sync needs you to sign in again. Your changes remain saved on this phone.';
+  }
+
+  if (/network|fetch|offline|timeout|timed out|connection|dns/i.test(message)) {
+    return 'Cloud sync could not connect. Your changes remain saved and will be retried.';
+  }
+
+  if (/schema|column|relation|bucket|row.level|permission|postgres|supabase|storage/i.test(message)) {
+    return 'Cloud sync needs service attention. Your changes remain saved on this phone.';
+  }
+
+  if (/^[\w .,'“”'!?()-]{1,180}$/.test(message) && !/error|exception|failed|failure/i.test(message)) {
+    return message;
+  }
+
+  return 'Cloud sync could not finish. Your changes remain saved on this phone and will be retried.';
 }
 
 export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageCleanupResult> {
@@ -216,19 +265,36 @@ export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageClea
   let missingPhotosRemoved = 0;
 
   for (const key of syncKeys) {
-    const value = await AsyncStorage.getItem(key);
+    if (key === SYNC_QUEUE_STORAGE_KEY) {
+      const queueCleanup = await serializeOfflineQueueMutation(async () => {
+        const value = await AsyncStorage.getItem(key);
+        if (value === null) {
+          return { changed: false, missingPhotosRemoved: 0 };
+        }
+        const result = await cleanupSyncQueueValue(value);
+        const changed = result.value !== value;
+        if (changed) await AsyncStorage.setItem(key, result.value);
+        return {
+          changed,
+          missingPhotosRemoved: result.missingPhotosRemoved,
+        };
+      });
+      cleaned = cleaned || queueCleanup.changed;
+      missingPhotosRemoved += queueCleanup.missingPhotosRemoved;
+      continue;
+    }
 
+    const value = await AsyncStorage.getItem(key);
     if (value === null) continue;
 
-    if (key === SYNC_QUEUE_STORAGE_KEY) {
-      const result = await cleanupSyncQueueValue(value);
+    if (key === SYNC_CONFLICTS_STORAGE_KEY) {
+      const nextValue = cleanupSyncConflictsValue(value);
 
-      if (result.value !== value) {
-        await AsyncStorage.setItem(key, result.value);
+      if (nextValue !== value) {
+        await AsyncStorage.setItem(key, nextValue);
         cleaned = true;
       }
 
-      missingPhotosRemoved += result.missingPhotosRemoved;
       continue;
     }
 
@@ -275,18 +341,62 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   projectName?: string;
   selectedAreaName?: string | null;
   updateData: TUpdate;
+  pendingPhotoAssetIds?: string[];
 };
 
 const SYNC_QUEUE_STORAGE_KEY = 'projectVisionAI.syncQueue.v1';
 const SYNC_CONFLICTS_STORAGE_KEY = 'projectVisionAI.syncConflicts.v1';
 const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
+const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
+
+let offlineQueueMutationTail: Promise<void> = Promise.resolve();
+
+function serializeOfflineQueueMutation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const result = offlineQueueMutationTail.then(operation);
+  offlineQueueMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function mutateOfflineQueue<T>(
+  mutator: (queue: SyncQueueItem[]) => {
+    nextQueue: SyncQueueItem[];
+    result: T;
+    persist?: boolean;
+  },
+): Promise<T> {
+  return serializeOfflineQueueMutation(async () => {
+    const queue = await getOfflineQueue();
+    const mutation = mutator(queue);
+    if (mutation.persist !== false) {
+      await setStoredJson(SYNC_QUEUE_STORAGE_KEY, mutation.nextQueue);
+    }
+    return mutation.result;
+  });
+}
 
 export async function getOfflineQueue(): Promise<SyncQueueItem[]> {
   return getStoredJson<SyncQueueItem[]>(SYNC_QUEUE_STORAGE_KEY, []);
 }
 
 export async function getSyncConflicts(): Promise<SyncConflict[]> {
-  return getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
+  const conflicts = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
+  return normalizeSyncConflicts(conflicts);
+}
+
+export async function reconcileSyncConflicts(): Promise<SyncConflict[]> {
+  const stored = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
+  const reconciled = normalizeSyncConflicts(stored);
+
+  if (JSON.stringify(stored) !== JSON.stringify(reconciled)) {
+    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, reconciled);
+  }
+
+  return reconciled;
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {
@@ -314,7 +424,6 @@ export async function enqueuePendingChange<TPayload>(
     autoUpload?: boolean;
   },
 ): Promise<SyncQueueItem<TPayload>> {
-  const queue = await getOfflineQueue();
   const createdAt = item.createdAt ?? new Date().toISOString();
   const queueItem: SyncQueueItem<TPayload> = {
     id: item.id ?? createQueueId(item.entity, createdAt),
@@ -327,10 +436,13 @@ export async function enqueuePendingChange<TPayload>(
     lastError: null,
   };
 
-  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, [
-    ...queue.filter(item => item.id !== queueItem.id),
-    queueItem,
-  ]);
+  await mutateOfflineQueue(queue => ({
+    nextQueue: [
+      ...queue.filter(existing => existing.id !== queueItem.id),
+      queueItem as unknown as SyncQueueItem,
+    ],
+    result: undefined,
+  }));
   if (item.autoUpload !== false) {
     void uploadPendingChanges();
   }
@@ -371,9 +483,30 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   id: string;
   projectName?: string;
   selectedAreaName?: string | null;
-}>(update: TUpdate, autoUpload = true): Promise<void> {
+  photos?: Array<{ id: string }>;
+}>(
+  update: TUpdate,
+  autoUpload = true,
+): Promise<void> {
+  await persistProjectUpdateRecord(
+    update,
+    autoUpload,
+    update.photos?.map(photo => photo.id) || [],
+  );
+}
+
+async function persistProjectUpdateRecord<TUpdate extends {
+  id: string;
+  projectName?: string;
+  selectedAreaName?: string | null;
+}>(
+  update: TUpdate,
+  autoUpload: boolean,
+  pendingPhotoAssetIds: readonly string[],
+) {
+  const pendingPhotos = uniquePhotoAssetIds(pendingPhotoAssetIds);
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
-    id: `project-update-${update.id}`,
+    id: projectUpdateQueueItemId(update.id),
     entity: 'project_update',
     operation: 'update',
     payload: {
@@ -381,38 +514,51 @@ export async function queueProjectUpdateRecord<TUpdate extends {
       projectName: update.projectName,
       selectedAreaName: update.selectedAreaName,
       updateData: update,
+      pendingPhotoAssetIds: pendingPhotos,
     },
     changedAt: new Date().toISOString(),
     autoUpload,
   });
 }
 
+function projectUpdateQueueItemId(updateId: string) {
+  return `project-update-${updateId}`;
+}
+
 export async function removeProjectUpdateFromSyncQueue(updateId: string): Promise<number> {
   if (!updateId.trim()) return 0;
 
-  const queue = await getOfflineQueue();
-  const nextQueue = queue.filter(item => {
-    if (item.entity !== 'project_update') return true;
+  return mutateOfflineQueue(queue => {
+    const nextQueue = queue.filter(item => {
+      if (item.entity !== 'project_update') return true;
 
-    const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
-    return payload.id !== updateId;
+      const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+      return payload.id !== updateId;
+    });
+    const removed = queue.length - nextQueue.length;
+    return {
+      nextQueue,
+      result: removed,
+      persist: removed > 0,
+    };
   });
-
-  if (nextQueue.length === queue.length) return 0;
-
-  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, nextQueue);
-  return queue.length - nextQueue.length;
 }
 
 export async function stageProjectUpdateForSync(
   update: ProjectUpdate,
 ): Promise<StagedProjectUpdateSync> {
-  await queueProjectUpdateRecord(update, false);
-  const photoAttempt = await uploadUpdatePhotosForSync(update);
+  const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
+  await queueProjectUpdateRecord(cloudRecoverableUpdate, false);
+  const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate);
+  await persistProjectUpdateRecord(
+    cloudRecoverableUpdate,
+    false,
+    photoAttempt.failedPhotoIds,
+  );
 
   return {
     workAttempt: {
-      cloudUpdateInsertAttempted: true,
+      cloudUpdateInsertAttempted: false,
       photoStorageUploadAttempted: photoAttempt.photoStorageUploadAttempted,
       storageUploadResult: photoAttempt.storageUploadResult,
       databaseUpsertResult: 'skipped',
@@ -432,6 +578,7 @@ export async function stageProjectUpdateForSync(
     },
     uploadedPhotoCount: photoAttempt.uploadedPhotoCount,
     missingPhotos: photoAttempt.missingPhotos,
+    pendingPhotoAssetIds: photoAttempt.failedPhotoIds,
   };
 }
 
@@ -440,21 +587,71 @@ export async function runFieldUpdateCloudSync(
 ): Promise<{
   syncResult: SyncUploadResult;
   workAttempt: FieldUpdateSyncWorkAttempt;
+  missingPhotos: MissingSyncPhoto[];
 }> {
   const staged = await stageProjectUpdateForSync(update);
   const workAttempt = staged.workAttempt;
-  const syncResult = await uploadPendingChanges();
+  const queueItemId = projectUpdateQueueItemId(update.id);
+  let aggregateResult = await uploadPendingChanges();
+  let remainingQueue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+  let remainingItem = remainingQueue.find(item => item.id === queueItemId);
 
-  workAttempt.databaseSyncRanAfterUpload =
-    workAttempt.storageUploadResult === 'success';
-  workAttempt.databaseUpsertResult =
-    syncResult.configured &&
-      syncResult.errors.length === 0 &&
-      syncResult.queued === 0
+  // If another upload pass was already in flight, this newly staged item may
+  // not have been in that pass's snapshot. A successful older same-ID revision
+  // can also leave a newer revision queued. Give either case one bounded
+  // follow-up pass before assigning the local lifecycle status.
+  if (
+    remainingItem &&
+    (!aggregateResult.itemOutcomes?.[queueItemId] ||
+      aggregateResult.itemOutcomes[queueItemId] === 'uploaded')
+  ) {
+    aggregateResult = await uploadPendingChanges();
+    remainingQueue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+    remainingItem = remainingQueue.find(item => item.id === queueItemId);
+  }
+
+  const conflicts = await getSyncConflicts();
+  const currentConflict = conflicts.find(
+    conflict => conflict.entity === 'project_update' && conflict.localId === update.id,
+  );
+  const itemOutcome = aggregateResult.itemOutcomes?.[queueItemId];
+  const itemSucceeded =
+    itemOutcome === 'uploaded' && !remainingItem && !currentConflict;
+  const itemErrors = remainingItem?.lastError
+    ? [formatQueueItemFailure(remainingItem, remainingItem.lastError)]
+    : currentConflict
+      ? [`Field update for “${update.projectName || 'Unassigned Project'}” has a cloud conflict that needs review.`]
+      : !aggregateResult.configured
+        ? [...aggregateResult.errors]
+        : itemOutcome === 'failed'
+          ? [`Field update for “${update.projectName || 'Unassigned Project'}” could not sync.`]
+          : [];
+  const syncResult: SyncUploadResult = {
+    configured: aggregateResult.configured,
+    uploaded: itemSucceeded ? 1 : 0,
+    uploadedByEntity: itemSucceeded ? { project_update: 1 } : {},
+    itemOutcomes: itemOutcome ? { [queueItemId]: itemOutcome } : {},
+    queued: remainingItem ? 1 : 0,
+    conflicts: currentConflict ? 1 : 0,
+    errors: itemErrors,
+  };
+  const metadataBlocked = staged.pendingPhotoAssetIds.length > 0;
+
+  workAttempt.cloudUpdateInsertAttempted = !metadataBlocked;
+  workAttempt.databaseSyncRanAfterUpload = metadataBlocked
+    ? false
+    : workAttempt.storageUploadResult === 'success';
+  workAttempt.databaseUpsertResult = metadataBlocked
+    ? 'skipped'
+    : itemSucceeded
       ? 'success'
       : 'failed';
 
-  return { syncResult, workAttempt };
+  return {
+    syncResult,
+    workAttempt,
+    missingPhotos: staged.missingPhotos,
+  };
 }
 
 let uploadPendingChangesInFlight: Promise<SyncUploadResult> | null = null;
@@ -491,7 +688,7 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
 async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
-  const queue = await getOfflineQueue();
+  const queue = await serializeOfflineQueueMutation(() => getOfflineQueue());
 
   if (!configuration.configured) {
     return {
@@ -505,6 +702,8 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 
   const resolvedIds = new Set<string>();
   const retriedItemsById = new Map<string, SyncQueueItem>();
+  const attemptedItemsById = new Map(queue.map(item => [item.id, item]));
+  const itemOutcomes: Record<string, SyncItemOutcome> = {};
   const errors: string[] = [];
   let uploaded = 0;
   const uploadedByEntity: Record<SyncEntity, number> = {
@@ -516,6 +715,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     const result = await uploadQueueItem(item);
 
     if (result === 'uploaded') {
+      itemOutcomes[item.id] = 'uploaded';
       uploaded += 1;
       uploadedByEntity[item.entity] += 1;
       resolvedIds.add(item.id);
@@ -523,29 +723,39 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     }
 
     if (result === 'conflict') {
+      itemOutcomes[item.id] = 'conflict';
       resolvedIds.add(item.id);
       continue;
     }
 
+    if (result === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS) {
+      itemOutcomes[item.id] = 'blocked';
+      continue;
+    }
+
     const sanitizedResult = sanitizeUserFacingSyncMessage(result);
+    itemOutcomes[item.id] = 'failed';
 
     retriedItemsById.set(item.id, {
       ...item,
       retryCount: item.retryCount + 1,
       lastError: sanitizedResult,
     });
-    errors.push(sanitizedResult);
+    errors.push(formatQueueItemFailure(item, sanitizedResult));
   }
 
   // Reconcile against the queue as it stands right now, not the snapshot
   // read at the top of this function - anything enqueued while the uploads
   // above were in flight needs to survive this write.
-  const currentQueue = await getOfflineQueue();
-  const remaining = currentQueue
-    .filter(item => !resolvedIds.has(item.id))
-    .map(item => retriedItemsById.get(item.id) ?? item);
-
-  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, remaining);
+  const remaining = await mutateOfflineQueue(currentQueue => {
+    const nextQueue = currentQueue.flatMap(item => {
+      const attempted = attemptedItemsById.get(item.id);
+      if (!attempted || !sameQueueRevision(item, attempted)) return [item];
+      if (resolvedIds.has(item.id)) return [];
+      return [retriedItemsById.get(item.id) ?? item];
+    });
+    return { nextQueue, result: nextQueue };
+  });
 
   if (uploaded > 0) {
     await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, new Date().toISOString());
@@ -555,22 +765,58 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     configured: true,
     uploaded,
     uploadedByEntity,
+    itemOutcomes,
     queued: remaining.length,
     conflicts: (await getSyncConflicts()).length,
     errors,
   };
 }
 
-export async function downloadCloudChanges<TUpdate>(): Promise<
+export async function downloadCloudChanges<TUpdate>(
+  knownTombstoneSync?: DAVESyncTombstoneSyncResult,
+): Promise<
   CloudDownloadResult<TUpdate>
 > {
-  const [projectsResult, updatesResult] = await Promise.all([
+  const [
+    tombstoneSync,
+    projectsResult,
+    updatesResult,
+    areasResult,
+    schedulesResult,
+    documentsResult,
+  ] = await Promise.all([
+    knownTombstoneSync ?? synchronizeDAVESyncTombstones(),
     listProjects(),
     listProjectUpdates<TUpdate>(),
+    listProjectAreas(),
+    listScheduleItems(),
+    listReferenceDocuments(),
   ]);
 
   const projects = projectsResult.ok && projectsResult.data ? projectsResult.data : [];
   const updates = updatesResult.ok && updatesResult.data ? updatesResult.data : [];
+  const projectAreas = tombstoneSync.cloudAuthoritative && areasResult.ok && areasResult.data
+    ? removeDAVETombstonedRecords(
+        areasResult.data,
+        tombstoneSync.tombstones,
+        'project_area',
+      )
+    : [];
+  const scheduleItems = tombstoneSync.cloudAuthoritative && schedulesResult.ok && schedulesResult.data
+    ? removeDAVETombstonedRecords(
+        schedulesResult.data,
+        tombstoneSync.tombstones,
+        'schedule_item',
+      )
+    : [];
+  const referenceDocuments = tombstoneSync.cloudAuthoritative && documentsResult.ok && documentsResult.data
+    ? documentsResult.data
+    : [];
+  const filteredReferenceDocuments = removeDAVETombstonedRecords(
+    referenceDocuments,
+    tombstoneSync.tombstones,
+    'reference_document',
+  );
 
   return {
     configured: projectsResult.configured || updatesResult.configured,
@@ -579,6 +825,12 @@ export async function downloadCloudChanges<TUpdate>(): Promise<
       .map(project => project.name)
       .filter(name => typeof name === 'string' && name.trim()),
     updates,
+    projectAreas,
+    scheduleItems,
+    referenceDocuments: filteredReferenceDocuments,
+    tombstones: tombstoneSync.tombstones,
+    tombstonesAuthoritative: tombstoneSync.cloudAuthoritative,
+    tombstoneError: tombstoneSync.cloudError,
   };
 }
 
@@ -612,9 +864,23 @@ export async function synchronizeLocalData(
     documentsUploaded: 0,
     cloudProjectsDownloaded: 0,
     cloudUpdatesDownloaded: 0,
+    cloudAreasDownloaded: 0,
+    cloudSchedulesDownloaded: 0,
+    cloudDocumentsDownloaded: 0,
   };
-  const total =
-    3 +
+  const emptyRecovery: FullSyncResult['recovered'] = {
+    projects: [],
+    updates: [],
+    projectAreas: [],
+    scheduleItems: [],
+    referenceDocuments: [],
+    tombstones: [],
+  };
+  let syncableProjectAreas = payload.projectAreas;
+  let syncableScheduleItems = payload.scheduleItems;
+  let syncableReferenceDocuments = payload.referenceDocuments;
+  let total =
+    4 +
     payload.projects.length +
     payload.savedUpdates.length +
     countPhotos(payload.savedUpdates) +
@@ -641,6 +907,7 @@ export async function synchronizeLocalData(
       errors: [configuration.message],
       missingPhotos,
       details,
+      recovered: emptyRecovery,
     };
   }
 
@@ -660,8 +927,59 @@ export async function synchronizeLocalData(
       errors: [connection.error || 'Supabase connection failed.'],
       missingPhotos,
       details,
+      recovered: emptyRecovery,
     };
   }
+
+  progress('Checking cross-device deletion history');
+  const tombstoneSync = await synchronizeDAVESyncTombstones();
+  if (!tombstoneSync.cloudAuthoritative) {
+    return {
+      configured: true,
+      connected: true,
+      uploaded: 0,
+      downloaded: 0,
+      queued: (await getOfflineQueue()).length,
+      conflicts: (await getSyncConflicts()).length,
+      cloudProjectCount: connection.projectCount,
+      lastSyncAt: null,
+      errors: [
+        `Full cloud sync stopped because DAVE could not verify cross-device deletion history. No local records were uploaded.${
+          tombstoneSync.cloudError ? ` ${tombstoneSync.cloudError}` : ''
+        }`,
+      ],
+      missingPhotos,
+      details,
+      recovered: {
+        ...emptyRecovery,
+        tombstones: tombstoneSync.tombstones,
+      },
+    };
+  }
+
+  syncableProjectAreas = removeDAVETombstonedRecords(
+    payload.projectAreas,
+    tombstoneSync.tombstones,
+    'project_area',
+  );
+  syncableScheduleItems = removeDAVETombstonedRecords(
+    payload.scheduleItems,
+    tombstoneSync.tombstones,
+    'schedule_item',
+  );
+  syncableReferenceDocuments = removeDAVETombstonedRecords(
+    payload.referenceDocuments,
+    tombstoneSync.tombstones,
+    'reference_document',
+  );
+  total =
+    4 +
+    payload.projects.length +
+    payload.savedUpdates.length +
+    countPhotos(payload.savedUpdates) +
+    syncableProjectAreas.length +
+    syncableScheduleItems.length +
+    syncableReferenceDocuments.length;
 
   progress('Uploading queued changes');
   const queuedUpload = await uploadPendingChanges();
@@ -676,7 +994,13 @@ export async function synchronizeLocalData(
   for (const projectName of payload.projects) {
     const normalizedName = projectName.trim();
 
-    if (!normalizedName || existingProjectNames.has(normalizedName.toLowerCase())) {
+    if (!normalizedName) {
+      progress('Empty project skipped');
+      continue;
+    }
+
+    if (existingProjectNames.has(normalizedName.toLowerCase())) {
+      progress(`Project already synced: ${normalizedName}`);
       continue;
     }
 
@@ -686,9 +1010,7 @@ export async function synchronizeLocalData(
       details.projectsUploaded += 1;
       existingProjectNames.add(normalizedName.toLowerCase());
     } else {
-      errors.push(
-        result.error || result.message || `Project sync failed: ${normalizedName}`,
-      );
+      errors.push(`Project “${normalizedName}” could not sync.`);
     }
 
     progress(`Project synced: ${normalizedName}`);
@@ -698,7 +1020,9 @@ export async function synchronizeLocalData(
     const staged = await stageProjectUpdateForSync(update);
     details.photosUploaded += staged.uploadedPhotoCount;
     missingPhotos.push(...staged.missingPhotos);
-    errors.push(...staged.workAttempt.errors.map(sanitizeSyncError));
+    errors.push(...staged.workAttempt.errors.map(error =>
+      `Field update for “${update.projectName || 'Unassigned Project'}”: ${error}`,
+    ));
     progress(`Update staged: ${update.projectName}`);
 
     const missingPhotoIds = new Set(staged.missingPhotos.map(photo => photo.photoId));
@@ -715,52 +1039,52 @@ export async function synchronizeLocalData(
   details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0;
   errors.push(...stagedUpdateUpload.errors);
 
-  for (const area of payload.projectAreas) {
+  for (const area of syncableProjectAreas) {
     const result = await upsertProjectArea(area);
 
     if (result.ok && !result.stubbed) {
       details.areasUploaded += 1;
     } else {
-      errors.push(
-        result.error || result.message || `Area sync failed: ${area.name}`,
-      );
+      errors.push(`GPS area “${area.name}” could not sync.`);
     }
 
     progress(`GPS area synced: ${area.name}`);
   }
 
-  for (const item of payload.scheduleItems) {
+  for (const item of syncableScheduleItems) {
     const result = await upsertScheduleItem(item);
 
     if (result.ok && !result.stubbed) {
       details.schedulesUploaded += 1;
     } else {
-      errors.push(
-        result.error || result.message || `Schedule sync failed: ${item.taskName}`,
-      );
+      errors.push(`Schedule task “${item.taskName}” could not sync.`);
     }
 
     progress(`Schedule synced: ${item.taskName}`);
   }
 
-  for (const document of payload.referenceDocuments) {
+  for (const document of syncableReferenceDocuments) {
     const result = await upsertReferenceDocument(document);
 
     if (result.ok && !result.stubbed) {
       details.documentsUploaded += 1;
     } else {
-      errors.push(
-        result.error || result.message || `Document sync failed: ${document.name}`,
-      );
+      errors.push(`Document “${document.name}” could not sync.`);
     }
 
     progress(`Document synced: ${document.name}`);
   }
 
   progress('Downloading cloud changes');
-  const download = await downloadCloudChanges<ProjectUpdate>();
+  const download = await downloadCloudChanges<ProjectUpdate>(tombstoneSync);
+  const recoveredUpdates = await Promise.all(
+    download.updates.map(row => hydrateRecoveredProjectUpdatePhotos(row.updateData)),
+  );
   details.cloudProjectsDownloaded = download.projects.length;
   details.cloudUpdatesDownloaded = download.updates.length;
+  details.cloudAreasDownloaded = download.projectAreas.length;
+  details.cloudSchedulesDownloaded = download.scheduleItems.length;
+  details.cloudDocumentsDownloaded = download.referenceDocuments.length;
 
   const cloudCount = await countCloudProjects();
   const lastSyncAt = new Date().toISOString();
@@ -778,7 +1102,11 @@ export async function synchronizeLocalData(
     details.schedulesUploaded +
     details.documentsUploaded;
   const downloaded =
-    details.cloudProjectsDownloaded + details.cloudUpdatesDownloaded;
+    details.cloudProjectsDownloaded +
+    details.cloudUpdatesDownloaded +
+    details.cloudAreasDownloaded +
+    details.cloudSchedulesDownloaded +
+    details.cloudDocumentsDownloaded;
 
   return {
     configured: true,
@@ -795,6 +1123,14 @@ export async function synchronizeLocalData(
     errors,
     missingPhotos,
     details,
+    recovered: {
+      projects: download.projects,
+      updates: recoveredUpdates,
+      projectAreas: download.projectAreas,
+      scheduleItems: download.scheduleItems,
+      referenceDocuments: download.referenceDocuments,
+      tombstones: download.tombstones,
+    },
   };
 }
 
@@ -803,42 +1139,81 @@ export async function removeMissingPhotosFromSyncQueue(
 ): Promise<void> {
   if (missingPhotos.length === 0) return;
 
-  const missingPhotoIds = new Set(
-    missingPhotos.map(photo => photo.photoId),
-  );
-  const queue = await getOfflineQueue();
-  const nextQueue = queue
-    .filter(item => {
-      const entity = (item as SyncQueueItem & { entity: string }).entity;
+  const missingPhotoIds = new Set(missingPhotos.map(photo => photo.photoId));
+  const missingPhotoIdsByUpdate = new Map<string, Set<string>>();
+  missingPhotos.forEach(photo => {
+    const ids = missingPhotoIdsByUpdate.get(photo.updateId) || new Set<string>();
+    ids.add(photo.photoId);
+    missingPhotoIdsByUpdate.set(photo.updateId, ids);
+  });
+  await mutateOfflineQueue(queue => ({
+    nextQueue: queue
+      .filter(item => {
+        const entity = (item as SyncQueueItem & { entity: string }).entity;
 
-      return String(entity) !== 'photo' || !missingPhotoIds.has(item.id);
-    })
-    .map(item => {
-      if (item.entity !== 'project_update') return item;
+        return String(entity) !== 'photo' || !missingPhotoIds.has(item.id);
+      })
+      .map(item => {
+        if (item.entity !== 'project_update') return item;
 
-      const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
-      const updateData = payload.updateData;
+        const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
+        const updateData = payload.updateData;
+        const updateMissingPhotoIds = missingPhotoIdsByUpdate.get(payload.id);
 
-      if (!Array.isArray(updateData?.photos)) return item;
+        if (!updateMissingPhotoIds || !Array.isArray(updateData?.photos)) return item;
 
-      const nextPhotos = updateData.photos.filter(
-        photo => !missingPhotoIds.has(photo.id),
-      );
+        const nextPhotos = updateData.photos.map(photo =>
+          updateMissingPhotoIds.has(photo.id)
+            ? {
+                ...photo,
+                cloudRecoveryStatus: 'unavailable' as const,
+                cloudSignedUrlExpiresAt: null,
+              }
+            : photo,
+        );
 
-      return {
-        ...item,
-        payload: {
-          ...payload,
-          updateData: {
-            ...updateData,
-            photos: nextPhotos,
+        return {
+          ...item,
+          payload: {
+            ...payload,
+            pendingPhotoAssetIds: uniquePhotoAssetIds(
+              payload.pendingPhotoAssetIds || [],
+            ).filter(photoId => !updateMissingPhotoIds.has(photoId)),
+            updateData: {
+              ...updateData,
+              photos: nextPhotos,
+            },
           },
-        },
-        lastError: null,
-      };
-    });
+          lastError: null,
+        };
+      }),
+    result: undefined,
+  }));
+}
 
-  await setStoredJson(SYNC_QUEUE_STORAGE_KEY, nextQueue);
+export function markMissingPhotosUnavailable<TUpdate extends ProjectUpdate>(
+  update: TUpdate,
+  missingPhotos: readonly MissingSyncPhoto[],
+): TUpdate {
+  const missingPhotoIds = new Set(
+    missingPhotos
+      .filter(photo => photo.updateId === update.id)
+      .map(photo => photo.photoId),
+  );
+  if (missingPhotoIds.size === 0) return update;
+
+  return {
+    ...update,
+    photos: update.photos.map(photo =>
+      missingPhotoIds.has(photo.id)
+        ? {
+            ...photo,
+            cloudRecoveryStatus: 'unavailable' as const,
+            cloudSignedUrlExpiresAt: null,
+          }
+        : photo,
+    ),
+  };
 }
 
 async function cleanupSyncQueueValue(value: string) {
@@ -869,34 +1244,20 @@ async function cleanupSyncQueueValue(value: string) {
         const updateData = payload.updateData;
 
         if (Array.isArray(updateData?.photos)) {
-          const nextPhotos: UpdatePhoto[] = [];
-
-          for (const photo of updateData.photos) {
-            const fileState = photo.uri
-              ? await inspectPhotoFileForUpload(photo.uri)
-              : { exists: false, readable: false };
-
-            if (!fileState.exists || !fileState.readable) {
-              missingPhotosRemoved += 1;
-              continue;
-            }
-
-            nextPhotos.push(photo);
-          }
+          const referencedPhotoIds = new Set(updateData.photos.map(photo => photo.id));
+          const pendingPhotoAssetIds = uniquePhotoAssetIds(
+            Array.isArray(payload.pendingPhotoAssetIds)
+              ? payload.pendingPhotoAssetIds
+              : updateData.photos.map(photo => photo.id),
+          ).filter(photoId => referencedPhotoIds.has(photoId));
 
           nextItem = {
             ...nextItem,
             payload: {
               ...payload,
-              updateData: {
-                ...updateData,
-                photos: nextPhotos,
-              },
+              pendingPhotoAssetIds,
+              updateData,
             },
-            lastError:
-              nextPhotos.length === updateData.photos.length
-                ? nextItem.lastError
-                : null,
           };
         }
       }
@@ -918,11 +1279,56 @@ async function cleanupSyncQueueValue(value: string) {
 
 export async function clearResolvedConflict(conflictId: string): Promise<void> {
   const conflicts = await getSyncConflicts();
+  const conflict = conflicts.find(item => item.id === conflictId);
 
   await setStoredJson(
     SYNC_CONFLICTS_STORAGE_KEY,
-    conflicts.filter(conflict => conflict.id !== conflictId),
+    conflicts.filter(item =>
+      conflict
+        ? item.entity !== conflict.entity || item.localId !== conflict.localId
+        : item.id !== conflictId,
+    ),
   );
+}
+
+export async function resolveProjectUpdateSyncConflict<TUpdate>(
+  conflictId: string,
+  resolution: 'keep_local' | 'keep_cloud',
+): Promise<TUpdate> {
+  const conflicts = await getSyncConflicts();
+  const conflict = conflicts.find(item => item.id === conflictId);
+
+  if (!conflict || conflict.entity !== 'project_update') {
+    throw new Error('sync_conflict_not_found');
+  }
+
+  const localPayload = conflict.localPayload as ProjectUpdateRecordPayload<TUpdate>;
+
+  if (resolution === 'keep_cloud') {
+    if (!isRecord(conflict.remotePayload)) {
+      throw new Error('sync_conflict_cloud_copy_missing');
+    }
+
+    await clearResolvedConflict(conflict.id);
+    return conflict.remotePayload as TUpdate;
+  }
+
+  await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
+    id: `project-update-${localPayload.id}`,
+    entity: 'project_update',
+    operation: 'update',
+    payload: localPayload,
+    changedAt: new Date().toISOString(),
+    autoUpload: false,
+  });
+  const result = await uploadPendingChanges();
+
+  if (result.queued > 0 || result.errors.length > 0) {
+    throw new Error(result.errors[0] || 'sync_conflict_save_failed');
+  }
+
+  await clearResolvedConflict(conflict.id);
+  return localPayload.updateData;
 }
 
 async function uploadQueueItem(
@@ -973,6 +1379,12 @@ async function uploadProjectUpdateQueueItem(
   item: SyncQueueItem,
 ): Promise<'uploaded' | 'conflict' | string> {
   const payload = item.payload as ProjectUpdateRecordPayload;
+  const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
+    ? payload.pendingPhotoAssetIds
+    : projectUpdateReferencedPhotoIds(payload.updateData);
+  if (uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
+    return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS;
+  }
   const remoteMetadata = await getProjectUpdateSyncMetadata(payload.id);
 
   if (!remoteMetadata.ok && remoteMetadata.error) {
@@ -984,6 +1396,11 @@ async function uploadProjectUpdateQueueItem(
     remoteMetadata.data?.updatedAt &&
     isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt)
   ) {
+    if (projectUpdatePayloadsMatch(payload.updateData, remoteMetadata.data.updateData)) {
+      await clearConflictsForLocalRecord('project_update', payload.id);
+      return 'uploaded';
+    }
+
     await recordConflict({
       id: createQueueId('project_update_conflict', new Date().toISOString()),
       entity: 'project_update',
@@ -1017,11 +1434,103 @@ async function uploadProjectUpdateQueueItem(
 
 async function recordConflict(conflict: SyncConflict): Promise<void> {
   const conflicts = await getSyncConflicts();
-  const existingConflict = conflicts.some(item => item.id === conflict.id);
+  const nextConflicts = conflicts.filter(item =>
+    item.entity !== conflict.entity || item.localId !== conflict.localId,
+  );
 
-  if (existingConflict) return;
+  await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...nextConflicts, conflict]);
+}
 
-  await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...conflicts, conflict]);
+async function clearConflictsForLocalRecord(
+  entity: SyncEntity,
+  localId: string,
+): Promise<void> {
+  const conflicts = await getSyncConflicts();
+  const nextConflicts = conflicts.filter(item =>
+    item.entity !== entity || item.localId !== localId,
+  );
+
+  if (nextConflicts.length !== conflicts.length) {
+    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, nextConflicts);
+  }
+}
+
+function normalizeSyncConflicts(conflicts: SyncConflict[]): SyncConflict[] {
+  const conflictsByRecord = new Map<string, SyncConflict>();
+
+  for (const conflict of conflicts) {
+    if (
+      conflict.entity === 'project_update' &&
+      projectUpdatePayloadsMatch(
+        extractProjectUpdateData(conflict.localPayload),
+        conflict.remotePayload,
+      )
+    ) {
+      continue;
+    }
+
+    const key = `${conflict.entity}:${conflict.localId}`;
+    const previous = conflictsByRecord.get(key);
+    if (!previous || conflictSortTime(conflict) >= conflictSortTime(previous)) {
+      conflictsByRecord.set(key, conflict);
+    }
+  }
+
+  return [...conflictsByRecord.values()].sort(
+    (left, right) => conflictSortTime(right) - conflictSortTime(left),
+  );
+}
+
+function conflictSortTime(conflict: SyncConflict): number {
+  const parsed = new Date(conflict.detectedAt).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extractProjectUpdateData(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return 'updateData' in value ? value.updateData : value;
+}
+
+function projectUpdatePayloadsMatch(left: unknown, right: unknown): boolean {
+  return JSON.stringify(normalizeProjectUpdateForConflict(left)) ===
+    JSON.stringify(normalizeProjectUpdateForConflict(right));
+}
+
+function normalizeProjectUpdateForConflict(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizeProjectUpdateForConflict);
+  }
+
+  if (!isRecord(value)) return value;
+
+  const ignoredKeys = new Set([
+    'status',
+    'syncDiagnostics',
+    'sendAttempts',
+    'lastSendAttemptAt',
+    'stableSendId',
+    'idempotencyKey',
+  ]);
+  const normalized: Record<string, unknown> = {};
+
+  for (const key of Object.keys(value).sort()) {
+    if (ignoredKeys.has(key)) continue;
+
+    if (key === 'workflowTimestamps' && isRecord(value[key])) {
+      const timestamps = { ...value[key] };
+      delete timestamps.sendResolvedAt;
+      normalized[key] = normalizeProjectUpdateForConflict(timestamps);
+      continue;
+    }
+
+    normalized[key] = normalizeProjectUpdateForConflict(value[key]);
+  }
+
+  return normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function buildSyncStatusMessage(
@@ -1055,8 +1564,33 @@ function isRemoteNewer(remoteUpdatedAt: string, localChangedAt: string): boolean
   return remoteTime > localTime;
 }
 
+function formatQueueItemFailure(item: SyncQueueItem, reason: string): string {
+  if (item.entity === 'project_update') {
+    const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
+    const projectName = payload.projectName?.trim() || 'Unassigned Project';
+    return `Field update for “${projectName}” could not sync. ${reason}`;
+  }
+
+  const payload = item.payload as Partial<ProjectCreatePayload & ProjectUpdatePayload & ProjectDeletePayload>;
+  const projectName = payload.name?.trim() || payload.previousName?.trim() || 'Unnamed Project';
+  return `Project “${projectName}” could not sync. ${reason}`;
+}
+
 function createQueueId(entity: string, createdAt: string): string {
   return `${entity}-${createdAt}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function sameQueueRevision(
+  current: SyncQueueItem,
+  attempted: SyncQueueItem,
+): boolean {
+  return (
+    current.id === attempted.id &&
+    current.createdAt === attempted.createdAt &&
+    current.changedAt === attempted.changedAt &&
+    current.operation === attempted.operation &&
+    JSON.stringify(current.payload) === JSON.stringify(attempted.payload)
+  );
 }
 
 function projectUpdateIdempotencyKey(
@@ -1090,10 +1624,34 @@ export async function uploadLocalPhoto(
   return detailed.message || 'Photo sync could not finish.';
 }
 
+export function cloudPhotoLookupConfirmedMissing(
+  lookup: {
+    error?: string;
+    message?: string;
+    status?: number;
+    code?: string;
+  },
+  ownerVerified: boolean,
+) {
+  if (!ownerVerified || (lookup.status !== 400 && lookup.status !== 404)) {
+    return false;
+  }
+
+  const message = `${lookup.error || ''} ${lookup.message || ''}`.toLowerCase();
+  const code = (lookup.code || '').toLowerCase();
+  if (/bucket/.test(`${message} ${code}`)) return false;
+
+  return (
+    /object\s+(?:not found|missing)/.test(message) ||
+    /^(?:not_found|object_not_found|404)$/.test(code)
+  );
+}
+
 export async function uploadLocalPhotoWithDiagnostics(
   update: ProjectUpdate,
   photo: UpdatePhoto,
 ): Promise<LocalPhotoUploadResult> {
+  const path = projectUpdatePhotoStoragePath(update, photo);
   const diagnosticBase: PhotoStorageUploadDiagnostic = {
     bucketName: PROJECT_PHOTOS_BUCKET,
     bucketExists: 'unknown',
@@ -1110,27 +1668,92 @@ export async function uploadLocalPhotoWithDiagnostics(
     objectPathCategory: null,
   };
 
-  if (!photo.uri) {
+  const cloudCopy = await createPhotoSignedUrl(path, 60, PROJECT_PHOTOS_BUCKET);
+  if (cloudCopy.ok && !cloudCopy.stubbed && cloudCopy.data) {
     return {
       result: 'skipped',
       message: null,
-      diagnostic: diagnosticBase,
+      diagnostic: {
+        ...diagnosticBase,
+        bucketExists: 'yes',
+        objectPathCategory: photoObjectPathCategory(path),
+      },
     };
   }
 
-  const fileState = await inspectPhotoFileForUpload(photo.uri);
+  const localUri = photo.uri?.trim() ? photo.uri : null;
+  const fileState = localUri
+    ? await isPhotoFileAvailable(localUri)
+    : { exists: false, readable: false, byteSizeCategory: 'unknown' as const };
 
   if (!fileState.exists) {
+    if (photo.cloudRecoveryStatus === 'unavailable') {
+      return {
+        result: 'skipped',
+        message: null,
+        diagnostic: {
+          ...diagnosticBase,
+          localFileExists: false,
+          localFileReadable: false,
+          objectPathCategory: photoObjectPathCategory(path),
+        },
+      };
+    }
+
+    const ownerCheck = await verifyDAVEAppOwner();
+    const confirmedMissing = cloudPhotoLookupConfirmedMissing(
+      cloudCopy,
+      ownerCheck.ok && !ownerCheck.stubbed && ownerCheck.data === true,
+    );
+
+    if (!confirmedMissing) {
+      const lookupMessage = [
+        cloudCopy.error || cloudCopy.message || '',
+        ownerCheck.error || ownerCheck.message || '',
+      ].filter(Boolean).join(' ');
+      let failureCategory = ownerCheck.ok && ownerCheck.data === false
+        ? 'rls_denied' as const
+        : classifyPhotoStorageUploadFailure(
+            lookupMessage || 'Cloud photo availability could not be verified.',
+            cloudCopy.status ?? ownerCheck.status ?? null,
+            cloudCopy.code ?? ownerCheck.code ?? null,
+          );
+      if (failureCategory === 'stale_local_uri') {
+        failureCategory = 'unknown_storage_error';
+      }
+
+      return {
+        result: 'failed',
+        message: 'Cloud photo availability could not be verified. Sync will retry without removing the photo record.',
+        diagnostic: {
+          ...diagnosticBase,
+          bucketExists: failureCategory === 'bucket_missing' ? 'no' : 'unknown',
+          localFileExists: false,
+          localFileReadable: false,
+          fileByteSizeCategory: fileState.byteSizeCategory,
+          uploadResult: 'failed',
+          failureCategory,
+          httpStatus: cloudCopy.status ?? ownerCheck.status ?? null,
+          errorCode: cloudCopy.code ?? ownerCheck.code ?? null,
+          objectPathCategory: photoObjectPathCategory(path),
+        },
+      };
+    }
+
     return {
       result: 'missing',
-      message: 'Photo storage upload failed: stale local photo URI.',
+      message: 'Photo storage upload failed: the photo is confirmed missing from both local and cloud storage.',
       diagnostic: {
         ...diagnosticBase,
+        bucketExists: 'yes',
         localFileExists: false,
         localFileReadable: false,
         fileByteSizeCategory: fileState.byteSizeCategory,
         uploadResult: 'failed',
         failureCategory: 'stale_local_uri',
+        httpStatus: cloudCopy.status ?? null,
+        errorCode: cloudCopy.code ?? null,
+        objectPathCategory: photoObjectPathCategory(path),
       },
     };
   }
@@ -1166,7 +1789,6 @@ export async function uploadLocalPhotoWithDiagnostics(
   }
 
   try {
-    const path = photoUploadPath(update, photo);
     const contentType = photo.mimeType || 'image/jpeg';
     const objectPathCategory = photoObjectPathCategory(path);
     const invalidPath = validatePhotoStoragePath(path);
@@ -1211,7 +1833,7 @@ export async function uploadLocalPhotoWithDiagnostics(
     const result = await uploadPhoto({
       bucket: PROJECT_PHOTOS_BUCKET,
       path,
-      uri: photo.uri,
+      uri: localUri!,
       contentType,
       upsert: true,
     });
@@ -1281,6 +1903,61 @@ export async function uploadLocalPhotoWithDiagnostics(
   }
 }
 
+export function projectUpdateWithCloudPhotoPaths<TUpdate extends ProjectUpdate>(
+  update: TUpdate,
+): TUpdate {
+  return {
+    ...update,
+    photos: update.photos.map(photo => ({
+      ...photo,
+      cloudStoragePath:
+        photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo),
+    })),
+  };
+}
+
+export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends ProjectUpdate>(
+  update: TUpdate,
+): Promise<TUpdate> {
+  const photos = await Promise.all(update.photos.map(async photo => {
+    if (await hasUsablePhotoUri(photo)) return photo;
+    const cloudStoragePath =
+      photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
+    const signed = await createPhotoSignedUrl(
+      cloudStoragePath,
+      600,
+      PROJECT_PHOTOS_BUCKET,
+    );
+    if (!signed.ok || !signed.data || signed.stubbed) {
+      return {
+        ...photo,
+        cloudStoragePath,
+        cloudRecoveryStatus: 'unavailable' as const,
+        cloudSignedUrlExpiresAt: null,
+      };
+    }
+
+    const recoveredAt = new Date().toISOString();
+    const localUri = await cacheRecoveredPhoto(
+      signed.data,
+      update.id,
+      photo.id,
+      photo.mimeType,
+    );
+    return {
+      ...photo,
+      uri: localUri || signed.data,
+      cloudStoragePath,
+      cloudRecoveredAt: recoveredAt,
+      cloudRecoveryStatus: localUri ? 'cached' as const : 'signed_url' as const,
+      cloudSignedUrlExpiresAt: localUri
+        ? null
+        : new Date(Date.now() + 9 * 60 * 1000).toISOString(),
+    };
+  }));
+  return { ...update, photos };
+}
+
 async function uploadUpdatePhotosForSync(
   update: ProjectUpdate,
 ): Promise<Omit<
@@ -1289,6 +1966,7 @@ async function uploadUpdatePhotosForSync(
 > & {
   uploadedPhotoCount: number;
   missingPhotos: MissingSyncPhoto[];
+  failedPhotoIds: string[];
 }> {
   if (update.photos.length === 0) {
     return {
@@ -1309,17 +1987,20 @@ async function uploadUpdatePhotosForSync(
       errors: [],
       uploadedPhotoCount: 0,
       missingPhotos: [],
+      failedPhotoIds: [],
     };
   }
 
   const results = await Promise.all(
     update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo)),
   );
-  const failures = results.filter(
-    result => result.result !== 'uploaded' && result.result !== 'skipped',
+  const failures = results.flatMap((result, index) =>
+    result.result !== 'uploaded' && result.result !== 'skipped'
+      ? [{ result, photo: update.photos[index] }]
+      : [],
   );
   const representativeDiagnostic =
-    failures[0]?.diagnostic || results[0]?.diagnostic || null;
+    failures[0]?.result.diagnostic || results[0]?.diagnostic || null;
 
   return {
     photoStorageUploadAttempted: true,
@@ -1329,9 +2010,9 @@ async function uploadUpdatePhotosForSync(
       representativeDiagnostic?.bucketExists ||
       (failures.length > 0 ? 'unknown' : 'yes'),
     storageFailureCategory:
-      failures[0]?.diagnostic.failureCategory || null,
-    storageHttpStatus: failures[0]?.diagnostic.httpStatus ?? null,
-    storageErrorCode: failures[0]?.diagnostic.errorCode ?? null,
+      failures[0]?.result.diagnostic.failureCategory || null,
+    storageHttpStatus: failures[0]?.result.diagnostic.httpStatus ?? null,
+    storageErrorCode: failures[0]?.result.diagnostic.errorCode ?? null,
     localFileExists: representativeDiagnostic?.localFileExists ?? null,
     localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
     fileByteSizeCategory:
@@ -1341,10 +2022,10 @@ async function uploadUpdatePhotosForSync(
     storageContentType: representativeDiagnostic?.contentType || null,
     objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
     databaseSyncRanAfterUpload: false,
-    errors: failures.map(result =>
+    errors: failures.map(({ result, photo }) =>
       result.result === 'missing'
-        ? 'Photo storage upload failed: photo file unavailable.'
-        : `Photo storage upload failed: ${result.message || 'unknown storage error'}`,
+        ? `Photo “${photo.fileName || photo.id}” is missing from both this phone and cloud storage.`
+        : `Photo “${photo.fileName || photo.id}” could not be synced because ${sanitizeUserFacingSyncMessage(result.message || 'Photo sync could not finish.')}`,
     ),
     uploadedPhotoCount: results.filter(result => result.result === 'uploaded').length,
     missingPhotos: results.flatMap((result, index) =>
@@ -1352,10 +2033,24 @@ async function uploadUpdatePhotosForSync(
         ? [{ updateId: update.id, photoId: update.photos[index].id }]
         : [],
     ),
+    failedPhotoIds: uniquePhotoAssetIds(
+      failures.map(({ photo }) => photo.id),
+    ),
   };
 }
 
-async function inspectPhotoFileForUpload(uri: string): Promise<{
+function uniquePhotoAssetIds(photoIds: readonly string[]) {
+  return Array.from(new Set(photoIds.map(id => id.trim()).filter(Boolean)));
+}
+
+function projectUpdateReferencedPhotoIds(updateData: unknown) {
+  if (!isRecord(updateData) || !Array.isArray(updateData.photos)) return [];
+  return updateData.photos.flatMap(photo =>
+    isRecord(photo) && typeof photo.id === 'string' ? [photo.id] : [],
+  );
+}
+
+async function isPhotoFileAvailable(uri: string): Promise<{
   exists: boolean;
   readable: boolean;
   byteSizeCategory: 'zero' | 'nonzero' | 'unknown';
@@ -1391,16 +2086,6 @@ async function inspectPhotoFileForUpload(uri: string): Promise<{
   }
 }
 
-function sanitizeSyncError(value: string) {
-  if (
-    /readAsStringAsync|file:|\/var\/|\/data\/|stack|internal|exception|documentDirectory|cacheDirectory/i.test(value)
-  ) {
-    return sanitizeUserFacingSyncMessage(value);
-  }
-
-  return sanitizeUserFacingSyncMessage(value);
-}
-
 function isSyncStorageKey(key: string) {
   return /sync|admin|status|diagnostic|cloud|queue|lastSync/i.test(key);
 }
@@ -1413,9 +2098,26 @@ function sanitizeStoredSyncValue(value: string) {
     const sanitizedParsed = sanitizeStoredSyncJson(parsed);
     const nextValue = JSON.stringify(sanitizedParsed);
 
-    return nextValue === value ? sanitizedDirect : nextValue;
+    // Preserve the JSON envelope even when none of its nested strings changed.
+    // Returning `sanitizedDirect` here can turn structured values such as `[]`
+    // into user-facing prose, leaving the sync store unreadable on the next run.
+    return nextValue;
   } catch {
     return sanitizedDirect;
+  }
+}
+
+function cleanupSyncConflictsValue(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+
+    if (!Array.isArray(parsed)) return '[]';
+
+    return JSON.stringify(sanitizeStoredSyncJson(parsed));
+  } catch {
+    // A non-JSON value cannot represent a recoverable conflict. Reset only this
+    // derived status list; project data and the durable upload queue are separate.
+    return '[]';
   }
 }
 
@@ -1444,7 +2146,8 @@ function countPhotos(updates: ProjectUpdate[]) {
   return updates.reduce((total, update) => total + update.photos.length, 0);
 }
 
-function photoUploadPath(update: ProjectUpdate, photo: UpdatePhoto) {
+export function projectUpdatePhotoStoragePath(update: ProjectUpdate, photo: UpdatePhoto) {
+  if (photo.cloudStoragePath?.trim()) return photo.cloudStoragePath.trim();
   const extension = mimeExtension(photo.mimeType);
   const fileName = sanitizePathSegment(
     photo.fileName || `${photo.id}.${extension}`,
@@ -1455,6 +2158,61 @@ function photoUploadPath(update: ProjectUpdate, photo: UpdatePhoto) {
     sanitizePathSegment(update.id),
     `${sanitizePathSegment(photo.id)}-${fileName}`,
   ].join('/');
+}
+
+export function recoveredSignedPhotoUriIsFresh(
+  photo: Pick<UpdatePhoto, 'cloudRecoveryStatus' | 'cloudSignedUrlExpiresAt'>,
+  now = Date.now(),
+) {
+  if (photo.cloudRecoveryStatus !== 'signed_url') return true;
+  const expiresAt = photo.cloudSignedUrlExpiresAt
+    ? new Date(photo.cloudSignedUrlExpiresAt).getTime()
+    : Number.NaN;
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+async function hasUsablePhotoUri(photo: UpdatePhoto) {
+  const uri = photo.uri;
+  if (!uri) return false;
+  if (/^https?:\/\//i.test(uri)) return recoveredSignedPhotoUriIsFresh(photo);
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    const size = info.exists && 'size' in info && typeof info.size === 'number'
+      ? info.size
+      : null;
+    return info.exists && !info.isDirectory && size !== 0;
+  } catch {
+    return false;
+  }
+}
+
+async function cacheRecoveredPhoto(
+  signedUrl: string,
+  updateId: string,
+  photoId: string,
+  mimeType?: string | null,
+) {
+  if (!FileSystem.cacheDirectory) return null;
+  try {
+    const directory = `${FileSystem.cacheDirectory}${RECOVERED_PHOTOS_FOLDER}/`;
+    const directoryInfo = await FileSystem.getInfoAsync(directory);
+    if (!directoryInfo.exists) {
+      await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+    }
+    const destination = `${directory}${sanitizePathSegment(updateId)}-${sanitizePathSegment(photoId)}.${mimeExtension(mimeType)}`;
+    const existing = await FileSystem.getInfoAsync(destination);
+    const existingSize = existing.exists && 'size' in existing && typeof existing.size === 'number'
+      ? existing.size
+      : null;
+    if (existing.exists && !existing.isDirectory && existingSize !== 0) return destination;
+    if (existing.exists) {
+      await FileSystem.deleteAsync(destination, { idempotent: true });
+    }
+    const download = await FileSystem.downloadAsync(signedUrl, destination);
+    return download.uri || destination;
+  } catch {
+    return null;
+  }
 }
 
 function mimeExtension(mimeType: string | null | undefined) {

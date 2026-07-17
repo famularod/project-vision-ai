@@ -56,6 +56,7 @@ export type PIELearningSignal = {
   shouldTrustLess: string[];
   futureBehavior: string;
   confidence: ProjectConfidenceLevel;
+  provenanceRecordIds?: readonly string[];
 };
 
 export type PIELearningEvent = {
@@ -65,6 +66,16 @@ export type PIELearningEvent = {
   outcome: PIELearningOutcome;
   evidence: string[];
   confidence: ProjectConfidenceLevel;
+  provenanceRecordIds?: readonly string[];
+};
+
+export type PIEVerifiedLearningEvent = PIELearningEvent & {
+  organizationId: string;
+  projectId: string;
+  verifiedAt: string;
+  verifiedBy: string;
+  verificationStatus: 'human_validated' | 'authority_approved';
+  provenanceRecordIds: string[];
 };
 
 export type PIELearningLesson = {
@@ -155,6 +166,8 @@ export type PIELearningResult = {
 
 export type PIELearningInput = {
   runtime: PIERuntimeState;
+  organizationId?: string;
+  projectId?: string;
   reflection?: PIEReflectionResult | null;
   beliefSystem?: PIEBeliefEngineResult | null;
   patternIntelligence?: PIEPatternIntelligence | null;
@@ -163,6 +176,7 @@ export type PIELearningInput = {
   reportDraft?: PIEReportDraft | null;
   adaptiveIntelligence?: PIEAdaptiveResult | null;
   decisionMemory?: PIEDecisionMemoryResult | null;
+  verifiedLearningEvents?: readonly PIEVerifiedLearningEvent[];
   generatedAt?: string;
 };
 
@@ -236,6 +250,7 @@ export function learnFromUserCorrections(
       shouldTrustLess: ['uncorrected GPS boundary inference', 'stale location memory'],
       futureBehavior: 'Lower confidence and ask for confirmation when similar GPS, project, or area ambiguity appears.',
       confidence: event.confidence,
+      provenanceRecordIds: event.provenanceRecordIds,
     }));
 }
 
@@ -254,6 +269,7 @@ export function learnFromReportApproval(
     shouldTrustLess: [],
     futureBehavior: 'Prefer concise David-style wording and keep action items tied to named owners.',
     confidence: event.confidence,
+    provenanceRecordIds: event.provenanceRecordIds,
   }));
 }
 
@@ -261,20 +277,20 @@ export function learnFromReportEdits(
   input: PIELearningInput,
   events: PIELearningEvent[] = buildLearningEvents(input),
 ): PIELearningSignal[] {
-  const reportNeedsReview = input.reportDraft?.needsReview || input.runtime.response.reportNeedsReview;
-  if (!reportNeedsReview) return [];
-
-  return [{
-    id: 'learning-report-edit-style',
-    source: 'report_edit',
-    outcome: 'corrected',
-    signal: 'Report draft needed review or editing.',
-    whatPIELearned: 'Report style or evidence wording may need adjustment before future communication.',
-    shouldTrustMore: ['review flags', 'user-edited report language', 'source evidence'],
-    shouldTrustLess: ['unreviewed generated wording', 'low-confidence report bullets'],
-    futureBehavior: 'Keep report language concise, avoid unsupported predictions, and preserve user approval before communication.',
-    confidence: input.reportDraft?.confidence || input.runtime.response.reportReadiness,
-  }];
+  return events
+    .filter(event => event.source === 'report_edit')
+    .map((event, index) => ({
+      id: `learning-report-edit-${index + 1}`,
+      source: 'report_edit',
+      outcome: 'corrected',
+      signal: event.event,
+      whatPIELearned: 'The verified edit identifies wording or structure that should change in future drafts.',
+      shouldTrustMore: ['verified user-edited report language', 'source evidence'],
+      shouldTrustLess: ['the replaced draft wording'],
+      futureBehavior: 'Apply the verified edit pattern while preserving human approval before communication.',
+      confidence: event.confidence,
+      provenanceRecordIds: event.provenanceRecordIds,
+    }));
 }
 
 export function learnFromRecommendationOutcome(
@@ -294,13 +310,22 @@ export function learnFromRecommendationOutcome(
       signal: event.event,
       whatPIELearned: event.outcome === 'rejected'
         ? 'A rejected recommendation should weaken similar future recommendation patterns.'
-        : 'A recommendation or decision outcome can strengthen similar future patterns when evidence is comparable.',
-      shouldTrustMore: event.outcome === 'rejected' ? ['user correction'] : ['similar evidence-backed recommendation'],
+        : event.source === 'recommendation_accepted'
+          ? 'The user accepted this recommendation, which is a preference signal but not proof that the outcome worked.'
+          : 'A verified decision outcome can strengthen similar future patterns when evidence is comparable.',
+      shouldTrustMore: event.outcome === 'rejected'
+        ? ['user correction']
+        : event.source === 'recommendation_accepted'
+          ? ['the user preference represented by this acceptance']
+          : ['similar evidence-backed decision outcomes'],
       shouldTrustLess: event.outcome === 'rejected' ? ['same recommendation pattern without new evidence'] : [],
       futureBehavior: event.outcome === 'rejected'
         ? 'Ask what would change the recommendation before repeating it.'
-        : 'Reuse the recommendation pattern when similar evidence and readiness are present.',
+        : event.source === 'recommendation_accepted'
+          ? 'Offer similar recommendations when relevant, but verify the actual outcome before learning that they work.'
+          : 'Reuse the recommendation pattern when comparable evidence and a verified outcome are present.',
       confidence: event.confidence,
+      provenanceRecordIds: event.provenanceRecordIds,
     }));
 }
 
@@ -308,9 +333,6 @@ export function learnFromPredictionOutcome(
   input: PIELearningInput,
   events: PIELearningEvent[] = buildLearningEvents(input),
 ): PIELearningSignal[] {
-  const prediction = input.predictionResult;
-  if (!prediction) return [];
-
   const failedPrediction = events.find(event => event.source === 'prediction_failed');
   const confirmedPrediction = events.find(event => event.source === 'prediction_confirmed');
   const source = failedPrediction || confirmedPrediction;
@@ -330,20 +352,7 @@ export function learnFromPredictionOutcome(
         ? 'Lower prediction confidence until the failed assumption is verified.'
         : 'Use the same recovery sequence when matching dependencies recur.',
       confidence: source.confidence,
-    }];
-  }
-
-  if (prediction.noActionOutcome.riskLevel === 'high') {
-    return [{
-      id: 'learning-prediction-no-action',
-      source: 'prediction_confirmed',
-      outcome: 'unknown',
-      signal: prediction.noActionOutcome.likelyOutcome,
-      whatPIELearned: 'No-action consequences should be monitored for future prediction quality.',
-      shouldTrustMore: ['no-action simulation with clear dependencies'],
-      shouldTrustLess: ['unverified high-impact prediction'],
-      futureBehavior: 'Ask for outcome evidence after high-risk predictions so DAVE can calibrate future confidence.',
-      confidence: prediction.predictionConfidence,
+      provenanceRecordIds: source.provenanceRecordIds,
     }];
   }
 
@@ -354,18 +363,7 @@ export function learnFromReflection(
   input: PIELearningInput,
   events: PIELearningEvent[] = buildLearningEvents(input),
 ): PIELearningSignal[] {
-  const reflectionLessons = input.reflection?.lessonsLearned || input.runtime.lessonsLearned;
-  return reflectionLessons.slice(0, 6).map((lesson, index) => ({
-    id: `learning-reflection-${lesson.id || index}`,
-    source: 'reflection_lesson',
-    outcome: 'confirmed',
-    signal: lesson.lesson,
-    whatPIELearned: lesson.lesson,
-    shouldTrustMore: ['Reflection lesson', 'verified project evidence'],
-    shouldTrustLess: lesson.whatPIEShouldDoDifferently ? ['old behavior before reflection'] : [],
-    futureBehavior: lesson.whatPIEShouldDoDifferently || 'Use this lesson when similar evidence appears.',
-    confidence: lesson.confidence,
-  }));
+  return [];
 }
 
 export function calibrateConfidence(
@@ -383,7 +381,7 @@ export function calibrateConfidence(
         confidence: signal.confidence,
       })),
     ...signals
-      .filter(signal => signal.source === 'report_approval' || signal.source === 'prediction_confirmed')
+      .filter(signal => signal.source === 'prediction_confirmed')
       .map(signal => ({
         id: `confidence-${signal.id}`,
         source: signal.source,
@@ -421,9 +419,16 @@ export function updatePatternLearning(
     ...(input.patternIntelligence?.patternMatches || []).slice(0, 4).map((match, index) => ({
       id: `pattern-learning-${match.id || index}`,
       pattern: match.pattern.summary,
-      confidenceChange: signals.some(signal => signal.source === 'prediction_failed' || signal.source === 'recommendation_rejected')
+      confidenceChange: signals.some(signal =>
+        signalAppliesToPattern(signal, match) &&
+        (signal.source === 'prediction_failed' || signal.source === 'recommendation_rejected')
+      )
         ? 'decrease' as const
-        : signals.some(signal => signal.source === 'recommendation_accepted' || signal.source === 'prediction_confirmed')
+        : signals.some(signal =>
+            signalAppliesToPattern(signal, match) &&
+            (signal.source === 'prediction_confirmed' ||
+              signal.source === 'decision_outcome' && signal.outcome === 'worked')
+          )
           ? 'increase' as const
           : 'hold' as const,
       reason: match.explanation,
@@ -450,9 +455,16 @@ export function updateBeliefLearning(
     id: `belief-learning-${belief.id || index}`,
     belief: belief.statement,
     confidenceChange:
-      belief.readiness === 'Ready'
+      signals.some(signal =>
+        signalAppliesToBelief(signal, belief) &&
+        (signal.source === 'prediction_confirmed' ||
+          signal.source === 'decision_outcome' && signal.outcome === 'worked')
+      )
         ? 'increase'
-        : signals.some(signal => signal.source === 'user_correction' || signal.source === 'prediction_failed')
+        : signals.some(signal =>
+            signalAppliesToBelief(signal, belief) &&
+            (signal.source === 'user_correction' || signal.source === 'prediction_failed')
+          )
           ? 'decrease'
           : 'hold',
     reason: belief.explanation.readinessReason,
@@ -514,108 +526,60 @@ export function summarizeLearning({
 }
 
 function buildLearningEvents(input: PIELearningInput): PIELearningEvent[] {
-  const events: PIELearningEvent[] = [
-    ...input.runtime.beliefChanges
-      .filter(change => change.direction === 'corrected' || change.wasPIEWrong)
-      .map(change => ({
-        id: `event-correction-${change.id}`,
-        source: 'user_correction' as const,
-        event: change.reason,
-        outcome: 'corrected' as const,
-        evidence: [change.previousBelief, change.updatedBelief].filter(Boolean),
-        confidence: input.runtime.reflectionConfidence,
-      })),
-    ...input.runtime.confidenceChanges
-      .filter(change => /gps/i.test(change.source + change.reason))
-      .map(change => ({
-        id: `event-gps-${change.id}`,
-        source: 'GPS_correction' as const,
-        event: change.reason,
-        outcome: 'corrected' as const,
-        evidence: [change.source],
-        confidence: change.updatedConfidence,
-      })),
-    input.reportDraft?.needsReview === false && input.reportDraft.reportReadiness === 'high'
-      ? {
-          id: 'event-report-approval',
-          source: 'report_approval',
-          event: 'Report draft was approved or ready without review flags.',
-          outcome: 'approved',
-          evidence: input.reportDraft.executiveSummary,
-          confidence: input.reportDraft.confidence,
-        }
-      : null,
-    input.reportDraft?.needsReview
-      ? {
-          id: 'event-report-edit',
-          source: 'report_edit',
-          event: input.reportDraft.reviewFlags[0] || 'Report needed edits before communication.',
-          outcome: 'corrected',
-          evidence: input.reportDraft.reviewFlags,
-          confidence: input.reportDraft.confidence,
-        }
-      : null,
-    input.predictionResult?.predictionConfidence === 'high' && input.predictionResult.noActionOutcome.riskLevel !== 'high'
-      ? {
-          id: 'event-prediction-confirmed',
-          source: 'prediction_confirmed',
-          event: input.predictionResult.mostLikelyOutcome.likelyOutcome,
-          outcome: 'confirmed',
-          evidence: input.predictionResult.explanation.evidence,
-          confidence: input.predictionResult.predictionConfidence,
-        }
-      : null,
-    input.predictionResult?.predictionConfidence === 'low'
-      ? {
-          id: 'event-prediction-failed',
-          source: 'prediction_failed',
-          event: input.predictionResult.explanation.uncertainty[0] || 'Prediction confidence was low.',
-          outcome: 'failed',
-          evidence: input.predictionResult.evidenceThatWouldImprovePrediction,
-          confidence: input.predictionResult.predictionConfidence,
-        }
-      : null,
-    ...input.runtime.lessonsLearned.map(lesson => ({
-      id: `event-reflection-${lesson.id}`,
-      source: 'reflection_lesson' as const,
-      event: lesson.lesson,
-      outcome: 'confirmed' as const,
-      evidence: [lesson.whatPIEShouldDoDifferently],
-      confidence: lesson.confidence,
-    })),
-    ...(input.patternIntelligence?.patternMatches || []).slice(0, 3).map(match => ({
-      id: `event-pattern-${match.id}`,
-      source: 'pattern_match' as const,
-      event: match.explanation,
-      outcome: match.pattern.outcome.outcome === 'failed' ? 'failed' as const : 'confirmed' as const,
-      evidence: match.pattern.evidence.map(item => item.summary),
-      confidence: match.confidence,
-    })),
-  ].filter((event): event is PIELearningEvent => Boolean(event));
-
-  if (input.runtime.scheduleSummary.totalItems > 0) {
-    events.push({
-      id: 'event-schedule-change',
-      source: 'schedule_change',
-      event: input.runtime.intelligentSummary.scheduleStatus || 'Schedule evidence changed.',
-      outcome: 'confirmed',
-      evidence: [input.runtime.intelligentSummary.scheduleStatus],
-      confidence: input.runtime.scheduleConfidence,
-    });
+  if ((input.verifiedLearningEvents || []).length > 0 && (!input.organizationId || !input.projectId)) {
+    return [];
   }
+  return (input.verifiedLearningEvents || [])
+    .filter(isVerifiedLearningEvent)
+    .filter(event =>
+      event.organizationId === input.organizationId &&
+      event.projectId === input.projectId
+    )
+    .map(event => Object.freeze({
+      id: event.id.trim(),
+      source: event.source,
+      event: event.event.trim(),
+      outcome: event.outcome,
+      evidence: Object.freeze([...event.evidence]) as unknown as string[],
+      confidence: event.confidence,
+      provenanceRecordIds: Object.freeze([...event.provenanceRecordIds]),
+    }));
+}
 
-  if (input.runtime.photoProgress.acceptedEvidence.length > 0) {
-    events.push({
-      id: 'event-photo-evidence',
-      source: 'photo_evidence',
-      event: input.runtime.photoProgressSummary,
-      outcome: 'confirmed',
-      evidence: input.runtime.photoProgress.acceptedEvidence.map(item => item.summary),
-      confidence: input.runtime.comparisonConfidence,
-    });
-  }
+export function isVerifiedLearningEvent(
+  event: PIEVerifiedLearningEvent,
+): boolean {
+  if (
+    !event ||
+    !event.id?.trim() ||
+    !event.event?.trim() ||
+    !event.organizationId?.trim() ||
+    !event.projectId?.trim() ||
+    !event.verifiedBy?.trim() ||
+    /\b(?:dave|system|automation|bot|service)\b/i.test(event.verifiedBy.trim()) ||
+    (event.verificationStatus !== 'human_validated' && event.verificationStatus !== 'authority_approved') ||
+    !validTimestamp(event.verifiedAt) ||
+    !Array.isArray(event.evidence) ||
+    event.evidence.filter(value => typeof value === 'string' && value.trim()).length === 0 ||
+    !Array.isArray(event.provenanceRecordIds) ||
+    event.provenanceRecordIds.filter(value => typeof value === 'string' && value.trim()).length === 0
+  ) return false;
 
-  return events;
+  const allowedOutcomes: Partial<Record<PIELearningSource, PIELearningOutcome[]>> = {
+    user_correction: ['corrected'],
+    GPS_correction: ['corrected'],
+    report_approval: ['approved'],
+    report_edit: ['corrected'],
+    recommendation_accepted: ['approved'],
+    recommendation_rejected: ['rejected'],
+    prediction_confirmed: ['confirmed'],
+    prediction_failed: ['failed'],
+    decision_outcome: ['worked', 'failed', 'partially_worked'],
+  };
+  if (!allowedOutcomes[event.source]?.includes(event.outcome)) return false;
+  return event.source === 'report_approval'
+    ? event.verificationStatus === 'authority_approved'
+    : event.verificationStatus === 'human_validated';
 }
 
 function summarizeLessons(signals: PIELearningSignal[]): PIELearningLesson[] {
@@ -634,16 +598,15 @@ function buildRecommendationImprovements(
 ): PIELearningRecommendationImprovement[] {
   return signals
     .filter(signal =>
-      signal.source === 'recommendation_accepted' ||
       signal.source === 'recommendation_rejected' ||
-      signal.source === 'reflection_lesson' ||
-      signal.source === 'prediction_failed',
+      signal.source === 'prediction_failed' ||
+      signal.source === 'decision_outcome',
     )
     .slice(0, 6)
     .map(signal => ({
       id: `recommendation-improvement-${signal.id}`,
       recommendationPattern: signal.signal,
-      worked: signal.outcome !== 'failed' && signal.outcome !== 'rejected',
+      worked: signal.outcome === 'worked' || signal.outcome === 'confirmed',
       improvement: signal.futureBehavior,
       confidence: signal.confidence,
     }));
@@ -676,41 +639,21 @@ function buildDecisionQualityLearning(
   input: PIELearningInput,
   signals: PIELearningSignal[],
 ): PIELearningDecisionQuality[] {
-  return [
-    input.predictionResult
-      ? {
-          id: 'decision-quality-prediction',
-          signal: input.predictionResult.explanation.summary,
-          decisionQualityLearning: input.predictionResult.explanation.doNotOverstate
-            ? 'Prediction should be verified before it affects a major decision.'
-            : 'Prediction had enough support to influence executive decision quality.',
-          confidence: input.predictionResult.predictionConfidence,
-        }
-      : null,
-    input.executiveReasoning
-      ? {
-          id: 'decision-quality-executive',
-          signal: input.executiveReasoning.judgment.highestValueAction,
-          decisionQualityLearning: `Executive readiness was ${input.executiveReasoning.executiveReadiness}.`,
-          confidence: input.executiveReasoning.confidence,
-        }
-      : null,
-    ...signals
-      .filter(signal => signal.source === 'decision_outcome')
-      .map(signal => ({
-        id: `decision-quality-${signal.id}`,
-        signal: signal.signal,
-        decisionQualityLearning: signal.futureBehavior,
-        confidence: signal.confidence,
-      })),
-  ].filter((item): item is PIELearningDecisionQuality => Boolean(item));
+  return signals
+    .filter(signal => signal.source === 'decision_outcome')
+    .map(signal => ({
+      id: `decision-quality-${signal.id}`,
+      signal: signal.signal,
+      decisionQualityLearning: signal.futureBehavior,
+      confidence: signal.confidence,
+    }));
 }
 
 function memoryInfluenceType(signal: PIELearningSignal): PIELearningMemoryConsolidation['influenceType'] {
   if (signal.source === 'user_correction' || signal.source === 'GPS_correction') return 'user correction pattern';
-  if (signal.source === 'report_approval' || signal.source === 'report_edit') return 'preference pattern';
+  if (signal.source === 'report_approval' || signal.source === 'report_edit' || signal.source === 'recommendation_accepted') return 'preference pattern';
   if (signal.source === 'prediction_failed' || signal.source === 'recommendation_rejected') return 'failed response';
-  if (signal.source === 'prediction_confirmed' || signal.source === 'recommendation_accepted') return 'successful response';
+  if (signal.source === 'prediction_confirmed' || signal.source === 'decision_outcome' && signal.outcome === 'worked') return 'successful response';
   if (signal.source === 'pattern_match') return 'recurring issue';
   return 'future caution';
 }
@@ -731,5 +674,32 @@ function learningConfidence(
 ): ProjectConfidenceLevel {
   if (signals.some(signal => signal.confidence === 'high')) return 'high';
   if (signals.length > 0) return 'medium';
-  return input.runtime.overallConfidence === 'low' ? 'low' : 'medium';
+  return 'low';
+}
+
+function validTimestamp(value: unknown) {
+  return typeof value === 'string' && value.trim().length > 0 && Number.isFinite(new Date(value).getTime());
+}
+
+function signalAppliesToPattern(
+  signal: PIELearningSignal,
+  match: PIEPatternIntelligence['patternMatches'][number],
+) {
+  const provenance = new Set(signal.provenanceRecordIds || []);
+  if (provenance.size === 0) return false;
+  return [
+    match.id,
+    match.pattern.id,
+    ...match.pattern.evidence.map(item => item.id),
+  ].some(id => provenance.has(id));
+}
+
+function signalAppliesToBelief(signal: PIELearningSignal, belief: PIEBelief) {
+  const provenance = new Set(signal.provenanceRecordIds || []);
+  if (provenance.size === 0) return false;
+  return [
+    belief.id,
+    ...(belief.supportingEvidence || []).map(item => item.id),
+    ...(belief.contradictingEvidence || []).map(item => item.id),
+  ].some(id => provenance.has(id));
 }

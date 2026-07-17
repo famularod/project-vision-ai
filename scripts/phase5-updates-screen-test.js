@@ -17,16 +17,15 @@ const updateCard = app.slice(
 );
 
 [
-  'title="Updates"',
-  "useState<'Needs Attention' | 'Drafts' | 'History'>",
-  "(['Needs Attention', 'Drafts', 'History'] as const)",
+  'title="Field Activity"',
+  "useState<'Needs Action' | 'Drafts' | 'All Activity'>",
+  "(['Needs Action', 'Drafts', 'All Activity'] as const)",
   'UpdateFilterSheet',
-  'Needs Attention',
+  'Needs Action',
   'Drafts',
-  'History',
+  'All Activity',
   "✅ You're all caught up.",
-  'No updates require your attention today.',
-  "Ready to capture today&apos;s work?",
+  'No field records require action today.',
   'No drafts.',
   'No update history yet.',
   "type UpdateTimelineGroup = 'Today' | 'Yesterday' | 'Earlier'",
@@ -35,14 +34,14 @@ const updateCard = app.slice(
   'updatePhotoStatusPill',
   'lifecycleStatusForUpdate',
   'updatePIEAnalysisStatus',
-  "Queued — will send when you're back online",
-  'Ready to send',
+  "Queued — will sync when you're back online",
+  'Ready to sync',
   'Analysis unavailable · Retry',
   'Analysis taking longer than expected · Retry',
   'No photos attached',
   'Retry',
   'stableSendId',
-  'Archive sent update',
+  'Archive cloud-synced update',
   'Delete failed update',
   'Remove from device',
   'DELETED_UPDATES_STORAGE_KEY',
@@ -65,8 +64,8 @@ assert(
   'Updates cards should not have always-visible red trash icons.',
 );
 assert(
-  app.includes("if (activeTab === 'Needs Attention') return updateNeedsReview(update);"),
-  'Needs Attention tab should derive from shared lifecycle and DAVE status.',
+  app.includes("if (activeTab === 'Needs Action') return updateNeedsReview(update);"),
+  'Needs Action tab should derive from shared lifecycle and DAVE status.',
 );
 assert(
   !updatesScreen.includes('Needs Your Attention') &&
@@ -74,15 +73,14 @@ assert(
   'Updates should rely on the active three-tab queue without a redundant section title.',
 );
 assert(
-  updatesScreen.indexOf('title="Updates"') <
+  updatesScreen.indexOf('title="Field Activity"') <
     updatesScreen.indexOf('styles.updateSearchPanel') &&
     updatesScreen.indexOf('styles.updateSearchPanel') <
     updatesScreen.indexOf('styles.updateSegmentRow') &&
     updatesScreen.includes('renderItem={renderUpdate}') &&
-    updatesScreen.indexOf('styles.updateSegmentRow') <
-    updatesScreen.indexOf('ListFooterComponent') &&
-    updatesScreen.includes('styles.updateFooterAction'),
-  'Updates must follow the title, subtitle, search, tabs, cards, New Update top-down workflow.',
+    !updatesScreen.includes('ListFooterComponent') &&
+    !updatesScreen.includes('label="New Update"'),
+  'Field Activity must remain a focused searchable record, with capture launched from Overview or a project.',
 );
 assert(
   updatesScreen.includes('accessibilityRole="tab"') &&
@@ -109,7 +107,7 @@ assert(
 );
 assert(
   app.includes("lifecycle === 'sent'") && app.includes('archiveSavedUpdate'),
-  'Sent updates should archive instead of permanently deleting.',
+  'Cloud-synced updates should archive instead of permanently deleting.',
 );
 assert(
   app.includes('const tombstone = buildUpdateTombstone(') &&
@@ -136,8 +134,8 @@ assert(
   'Search should include local recipient names without blocking lookups.',
 );
 assert(
-  sync.includes("id: `project-update-${update.id}`") &&
-    sync.includes('queue.filter(item => item.id !== queueItem.id)'),
+  sync.includes('id: projectUpdateQueueItemId(update.id)') &&
+    sync.includes('queue.filter(existing => existing.id !== queueItem.id)'),
   'Inline retry should reuse Phase 4 stable queue id behavior.',
 );
 assert(

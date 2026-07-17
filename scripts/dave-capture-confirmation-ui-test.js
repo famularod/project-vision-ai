@@ -61,14 +61,14 @@ assert(!admin.includes('saveCloudUpdate') && !admin.includes('AsyncStorage.setIt
 assert(app.includes('localDAVECaptureMemoryRepository.list()') && app.includes('localDAVECaptureMemoryRepository.save(memory)'), 'App must hydrate and save confirmed memories through the repository.');
 assert(app.includes('captureMemories={captureMemories}') && app.includes('captureMemories,\n  }),'), 'Selected-project intelligence must refresh from hydrated capture memories.');
 
-['Capture Memory', 'What should DAVE remember?', 'Review Memory'].forEach(marker =>
+['Capture Memory', 'What should be saved to project memory?', 'Review Memory'].forEach(marker =>
   assert(typedSheet.includes(marker), `Typed capture sheet must render ${marker}.`));
 assert(app.includes('label="Start Project Walk"') && app.includes('<DAVETypedCaptureSheet'), 'Project Workspace must preserve the production typed capture fallback inside Project Walk.');
 assert(app.includes("transcriptSourceRecordId: `typed-entry:${memoryId}`") && app.includes("fields: { generalMemory: text }"), 'Typed capture must preserve source text without inventing structured facts.');
 assert(app.includes('await onSaveCaptureMemory(memory)') && app.includes("? 'Source transcript' : 'Source note'"), 'Typed capture must reuse the confirmed repository save boundary.');
 assert(app.includes('formatSavedTime(timelineEvent.timestamp)') && !app.includes('formatDisplayDate(timelineEvent.timestamp)'), 'Timeline must format full confirmation timestamps without producing Invalid Date.');
 assert(app.includes('setSelectedCaptureMemory(sourceMemory)') && app.includes('<DAVECaptureMemoryDetailSheet'), 'Memory-backed timeline rows must open a real saved-memory destination.');
-['Saved Memory', 'What DAVE remembers', 'Source note'].forEach(marker =>
+['Saved Memory', 'Project Memory', 'Source note'].forEach(marker =>
   assert(detailSheet.includes(marker), `Saved memory detail must render ${marker}.`));
 assert(detailSheet.includes("Alert.alert(\n      'Delete Saved Memory?'") && detailSheet.includes('await onDelete(memoryId)') && detailSheet.includes('disabled={isDeleting}'), 'Saved memory deletion must require confirmation, await the repository boundary, and prevent duplicate taps.');
 assert(app.includes('localDAVECaptureMemoryRepository.delete(memoryId)') && app.includes('current.filter(memory => memory.id !== memoryId)'), 'Deleting a memory must refresh App intelligence state immediately.');

@@ -16,55 +16,73 @@ const settings = read('screens/AdminScreen.tsx');
 
 assert(app.includes("useState<Screen>('Home')"), 'app should open on Home');
 assert(bottomNav.includes('label="Overview"'), 'bottom nav should start with Overview');
-assert(bottomNav.includes('label="Projects"'), 'bottom nav should include Projects');
-assert(bottomNav.includes('label="Updates"'), 'bottom nav should include Updates');
+assert(!bottomNav.includes('label="Projects"'), 'Projects should not duplicate the parent-project Overview workflow');
+assert(!bottomNav.includes('label="Updates"'), 'Field Activity should be reached from Overview, not a primary tab');
+assert(bottomNav.includes('label="Tasks"'), 'bottom nav should include Tasks');
 assert(bottomNav.includes('label="Reports"'), 'bottom nav should include Reports');
-assert(bottomNav.includes('label="Settings"'), 'bottom nav should include Settings');
+assert(!bottomNav.includes('label="Settings"'), 'Settings should be reached from the Overview gear');
 assert(!bottomNav.includes('label="Capture"'), 'Capture must not be a bottom tab');
 assert(!bottomNav.includes('label="Share"'), 'Share must not be a bottom tab');
 assert(!bottomNav.includes('label="Review"'), 'Review must not be a bottom tab');
 assert(!bottomNav.includes('label="More"'), 'More should not be a primary bottom tab');
-assert((bottomNav.match(/<TabButton/g) || []).length === 5, 'bottom nav should have five primary tabs');
-assert(bottomNav.indexOf('label="Overview"') < bottomNav.indexOf('label="Projects"'), 'Overview should precede Projects');
-assert(bottomNav.indexOf('label="Projects"') < bottomNav.indexOf('label="Updates"'), 'Projects should precede Updates');
-assert(bottomNav.indexOf('label="Updates"') < bottomNav.indexOf('label="Reports"'), 'Updates should precede Reports');
-assert(bottomNav.indexOf('label="Reports"') < bottomNav.indexOf('label="Settings"'), 'Reports should precede Settings');
+assert((bottomNav.match(/<TabButton/g) || []).length === 3, 'bottom nav should have three distinct primary tabs');
+assert(bottomNav.indexOf('label="Overview"') < bottomNav.indexOf('label="Tasks"'), 'Overview should precede Tasks');
+assert(bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('label="Reports"'), 'Tasks should precede Reports');
+assert(app.includes('accessibilityLabel="Open Settings"'), 'Overview should expose Settings from a gear button');
 
 assert(home.includes('PIEMissionCard'), 'Home should start with the mission card');
 assert(home.includes('What should I do now?'), 'Home should answer what to do now');
 assert(home.includes('briefDetailList'), 'Home summary counts should expand to underlying items');
 assert(home.includes('Open Details'), 'Home summary counts should expose details destination');
 assert(home.includes('onMoreTools'), 'More/Admin should remain reachable from Home overflow');
+assert(app.includes('ProjectTaskControlPanel'), 'Parent projects should open a task-first project control view');
+assert(app.includes('onNewFieldUpdateForTask'), 'Each schedule task should support a task-linked field update');
+assert(app.includes('scheduleTaskName'), 'Task-linked field updates should preserve task context');
 
 assert(capture.includes('GuidedCaptureCard'), 'Capture should use guided PIE request');
 assert(capture.includes('DAVE needs'), 'Capture should show what DAVE needs');
 assert(capture.includes('onUploadDocument'), 'document upload should remain reachable');
 
-assert(review.includes('ReviewExperiencePanel'), 'Review should use Experience guidance');
-assert(review.includes('preparedDetailsOpen'), 'Review prepared counts should be hidden behind disclosure');
+assert(review.includes('BeforeYouSharePanel'), 'Reports should consolidate review guidance before sharing');
+assert(review.includes('Before You Share'), 'Reports should present one clear pre-share review area');
 assert(review.includes('advancedReviewOpen'), 'Advanced review and decision controls should be hidden by default');
-assert(review.includes('Why DAVE recommends this'), 'Review should expose explanation behind one tap');
+assert(review.includes("expanded ? 'Hide Why' : 'Why?'"), 'Reports should expose reasoning behind one disclosure');
 assert(review.includes('Approve Report'), 'Review should keep approval action');
 assert(review.includes('Edit Report'), 'Review should keep correction action');
 assert(review.includes('Copy Report'), 'Review should keep share/copy action');
 assert(review.includes('Email Report'), 'Review should keep email/share action');
+assert(review.includes('Text Report'), 'Review should support sending an approved report by text');
 assert(review.includes('title="Reports"'), 'live report surface should identify itself as Reports');
 assert(review.includes('reportEditing ? ('), 'report correction must expose editable title and body fields');
-assert(review.includes('Copy and Email unlock after approval'), 'report sharing must remain approval-gated');
+assert(review.includes('Copy, Email, and Text unlock after approval'), 'report sharing must remain approval-gated');
 assert(app.includes("screen === 'Reports'"), 'App must render Reports from the live screen union');
 assert(app.includes("screen === 'BuildUpdate' || screen === 'Reports'"), 'Reports must use the shared report authority surface');
-assert(app.includes('Schedule vs Field'), 'Live Schedule should summarize reconciliation against field evidence.');
+assert(app.includes('Plan vs Field'), 'Live Tasks should summarize planned work against field evidence.');
 assert(
   app.includes('buildPIEScheduleReconciliation({') &&
-    app.includes('scheduleReconciliation.warnings.slice(0, 5)') &&
-    app.includes('DAVE field check'),
-  'Live Schedule should show bounded field warnings and per-activity evidence rather than raw update text.',
+    app.includes('actionableScheduleWarnings.slice(0, 3)') &&
+    app.includes('scheduleWarningIsUserActionable') &&
+    app.includes('Schedule Alert') &&
+    app.includes('fieldWarnings?.find(scheduleWarningIsUserActionable)') &&
+    !app.includes('{fieldWarning.suggestedAction}'),
+  'Live Schedule should show only bounded, decision-useful schedule and field conflicts.',
 );
 assert(
-  app.includes('Import Message Screenshot') &&
+  app.includes('styles.scheduleItemHeader') &&
+    app.includes('styles.scheduleItemBody') &&
+    app.includes('styles.scheduleItemHeaderText'),
+  'Schedule cards should reserve a full-width body so long task and area text can wrap within the card.',
+);
+assert(
+  (review.match(/style=\{styles\.reportDisclosure\}/g) || []).length >= 4,
+  'The four report disclosure controls should share one consistent container treatment.',
+);
+assert(
+  app.includes('ScheduleImportFlow') &&
     app.includes('importScheduleCommunicationScreenshot') &&
-    app.includes('recognizeTextFromImage'),
-  'Schedule should support local review of scheduling information in message and email screenshots.',
+    app.includes('recognizeTextFromImage') &&
+    app.includes('allowsMultipleSelection: true'),
+  'Schedule should support staged batch review of message and email screenshots.',
 );
 
 const settingsMain = settings.slice(
@@ -74,32 +92,29 @@ const settingsMain = settings.slice(
 [
   'title="Settings"',
   'title="Account"',
-  'title="Preferences"',
-  'title="DAVE"',
+  'title="Data & Sync"',
   'title="Support"',
   'title="Advanced / Diagnostics"',
-  'title="Profile"',
-  'title="Organization"',
+  'title="Display name"',
   'title="Connection status"',
-  'title="Notifications"',
-  'title="Project defaults"',
-  'title="Photo quality"',
-  'title="Appearance"',
-  'title="Daily Brief"',
-  'title="Ask DAVE"',
-  'title="Voice"',
-  'detail="Available in Project Walk"',
-  'title="Feedback"',
+  'title="Back Up Data"',
+  'title="Restore Backup"',
+  'title="Send Feedback"',
   'title="Help"',
   'title="About"',
 ].forEach(marker => assert(settings.includes(marker), `Settings should include ${marker}`));
 assert(
-  settings.indexOf('title="Account"') < settings.indexOf('title="Preferences"') &&
-    settings.indexOf('title="Preferences"') < settings.indexOf('title="DAVE"') &&
-    settings.indexOf('title="DAVE"') < settings.indexOf('title="Support"') &&
+  settings.indexOf('title="Account"') < settings.indexOf('title="Data & Sync"') &&
+    settings.indexOf('title="Data & Sync"') < settings.indexOf('title="Support"') &&
     settings.indexOf('title="Support"') < settings.indexOf('title="Advanced / Diagnostics"'),
-  'Settings should follow the Account, Preferences, DAVE, Support, Advanced hierarchy.',
+  'Settings should follow the Account, Projects and Data, Support, Advanced hierarchy.',
 );
+for (const removedPlaceholder of ['Notifications', 'Project defaults', 'Photo quality', 'Appearance']) {
+  assert(!settingsMain.includes(`title="${removedPlaceholder}"`),
+    `Settings must not present unfinished ${removedPlaceholder} as an interactive control.`);
+}
+assert(settings.includes('function SettingsActionRow') && settings.includes('accessibilityRole="button"'),
+  'Every actionable Settings row must use a real accessible button.');
 assert(
   settings.includes('const [advancedOpen, setAdvancedOpen] = useState(false)') &&
     settings.includes('{advancedOpen ? (') &&
@@ -118,16 +133,28 @@ assert(
   'Settings should reduce connection status to Connected or Needs Attention.',
 );
 [
-  'handleSyncNow',
+  'handleRetrySync',
+  'handleFullSyncNow',
   'handleTestConnection',
   'onBackup',
   'onRestore',
   'onDiagnostics',
-  'onProjectManagement',
-  'onReferenceDocuments',
-  'onSchedule',
-  'ManageAreasPanel',
 ].forEach(marker => assert(settings.includes(marker), `Settings must preserve existing behavior: ${marker}`));
+assert(
+  app.includes('`Locations & GPS (${areaSetupStats.saved}/${areaSetupStats.total} saved)`') &&
+    app.includes('<ManageAreasPanel') &&
+    !app.includes("label={areaMappingOpen ? 'Hide Locations & GPS' : 'Locations & GPS'}"),
+  'Locations and GPS setup must be directly visible in the project workspace without a duplicate Project Options entry.',
+);
+assert(
+  !settingsMain.includes('title="Manage Projects"') &&
+    !settingsMain.includes('title="Reference Documents"'),
+  'Settings must not duplicate project management or reference-document navigation.',
+);
+assert(
+  !settings.includes('AdminActionButton label="Schedule"'),
+  'Settings should not expose a duplicate schedule-import entry point.',
+);
 
 const normalUi = [bottomNav, home, capture, review].join('\n');
 [

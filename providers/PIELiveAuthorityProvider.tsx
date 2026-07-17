@@ -31,6 +31,14 @@ import {
   logStartupDiagnostic,
   startupErrorMessage,
 } from '../services/StartupDiagnostics';
+import type { DAVEConfirmedCaptureMemory } from '../services/DAVECaptureMemory';
+import type { DAVEDailyBriefDocument } from '../services/DAVEDailyBrief';
+import {
+  buildDAVEProjectTruth,
+  type DAVEProjectTruth,
+} from '../services/DAVEProjectTruth';
+import { createDAVEProjectTruthRepository } from '../services/DAVEProjectTruthRepository';
+import { authorityInputSignature } from '../services/PIELiveAuthoritySignature';
 
 export type PIELiveAuthorityRefreshReason =
   | 'initial_load'
@@ -76,6 +84,8 @@ export type PIELiveAuthorityInput = {
   projectAreas?: ProjectArea[];
   contacts?: ContactBook;
   referenceDocuments?: ReferenceDocument[];
+  projectDocuments?: DAVEDailyBriefDocument[];
+  captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   syncMetadata?: ProjectSyncFreshnessMetadata | null;
   surface?: PIERuntimeContext['surface'];
   identityTrusted?: boolean;
@@ -87,6 +97,7 @@ export type PIELiveAuthorityContextValue = {
   policy: PIELiveAuthorityPolicy;
   core: PIECoreOutput | null;
   runtime: PIECoreOutput['runtime'];
+  projectTruth: DAVEProjectTruth;
   organizationId: string | null;
   projectId: string | null;
   realityModel: PIECoreOutput['realityModel'] | null;
@@ -259,12 +270,26 @@ export function PIELiveAuthorityProvider({
       ? stateFromPersistence(currentCore.realityAuthority.persistenceStatus)
       : state;
     const policy = policyForCore(nextState, currentCore);
+    const projectTruth = buildDAVEProjectTruth({
+      projectId: input.projectId || safeProjectId(input.projectName),
+      projectName: input.projectName,
+      updates: input.updates,
+      scheduleItems: input.scheduleItems,
+      projectAreas: input.projectAreas,
+      referenceDocuments: input.referenceDocuments,
+      projectDocuments: input.projectDocuments,
+      captureMemories: input.captureMemories,
+      runtime: currentRuntime,
+      core: currentCore,
+      now: currentRuntime.generatedAt,
+    });
 
     return {
       state: nextState,
       policy,
       core: currentCore,
       runtime: currentRuntime,
+      projectTruth,
       organizationId: currentCore?.realityModel.organizationId || input.organizationId || null,
       projectId: currentCore?.realityModel.projectId || input.projectId || null,
       realityModel: currentCore?.realityModel || null,
@@ -298,6 +323,13 @@ export function PIELiveAuthorityProvider({
     fallbackRuntime,
     input.organizationId,
     input.projectId,
+    input.projectName,
+    input.updates,
+    input.scheduleItems,
+    input.projectAreas,
+    input.referenceDocuments,
+    input.projectDocuments,
+    input.captureMemories,
     invalidateEvidence,
     lastSuccessfulRefreshAt,
     notifyEvidenceChanged,
@@ -306,6 +338,39 @@ export function PIELiveAuthorityProvider({
     runRefresh,
     signature,
     state,
+  ]);
+
+  useEffect(() => {
+    const organizationId = input.identityTrusted ? input.organizationId : null;
+    if (!organizationId || !value.projectTruth.projectId) return;
+    const repository = createDAVEProjectTruthRepository({
+      cloudEnabled: Boolean(input.cloudAvailable),
+      identityTrusted: Boolean(input.identityTrusted),
+    });
+    void repository.save(organizationId, value.projectTruth)
+      .then(result => {
+        logStartupDiagnostic(
+          'project_truth_persisted',
+          'Versioned DAVE Project Truth snapshot persisted.',
+          {
+            revision: result.snapshot.revision,
+            created: result.created,
+            cloudStatus: result.cloudStatus,
+          },
+        );
+      })
+      .catch(error => {
+        logStartupDiagnostic(
+          'project_truth_persistence_failed',
+          'DAVE Project Truth remains available in memory, but its snapshot could not be persisted.',
+          { error: startupErrorMessage(error) },
+        );
+      });
+  }, [
+    input.cloudAvailable,
+    input.identityTrusted,
+    input.organizationId,
+    value.projectTruth,
   ]);
 
   return (
@@ -422,22 +487,6 @@ export function policyForCore(
         ? 'DAVE needs human review before this recommendation can be final.'
         : 'DAVE blocked this recommendation because reasoning validation failed.',
   };
-}
-
-function authorityInputSignature(input: PIELiveAuthorityInput) {
-  return JSON.stringify({
-    organizationId: input.organizationId || null,
-    projectId: input.projectId || safeProjectId(input.projectName),
-    projectName: input.projectName,
-    projectNames: input.projectNames,
-    reportType: input.reportType || null,
-    updateIds: input.updates.map(update => `${update.id}:${update.date}:${update.photos.length}:${update.notes.length}`).slice(0, 80),
-    scheduleIds: input.scheduleItems.map(item => `${item.id}:${item.createdAt}:${item.importedAt || ''}:${item.finishDate}:${item.status}`).slice(0, 120),
-    currentUpdateId: input.currentUpdate?.id || null,
-    currentUpdatePhotos: input.currentUpdate?.photos.length || 0,
-    currentUpdateNotes: input.currentUpdate?.notes.length || 0,
-    documentIds: input.referenceDocuments?.map(document => `${document.id}:${document.importedAt || ''}:${document.isCurrent ? 'current' : 'archived'}`).slice(0, 80),
-  });
 }
 
 function buildProviderRuntime(input: PIELiveAuthorityInput) {

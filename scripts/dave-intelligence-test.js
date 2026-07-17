@@ -100,6 +100,9 @@ assert(Object.isFrozen(intelligence.dailyBrief));
 assert(Object.isFrozen(intelligence.actionCenter));
 assert(Object.isFrozen(intelligence.commitments));
 assert(Object.isFrozen(intelligence.evidenceQuality));
+assert(Object.isFrozen(intelligence.scheduleSummary));
+assert.strictEqual(intelligence.scheduleSummary.taskCount, 1);
+assert.strictEqual(intelligence.scheduleSummary.completedCount, 0);
 
 assert.strictEqual(intelligence.dailyBrief.reality, intelligence.projectReality,
   'Daily Brief must retain the one canonical Reality object.');
@@ -148,10 +151,14 @@ assert.strictEqual((intelligenceSource.match(/buildProjectReality\s*\(/g) || [])
   'Intelligence must build Project Reality exactly once.');
 assert(!intelligenceSource.includes('buildProjectTimeline('),
   'Intelligence must consume the timeline already owned by Project Reality.');
-assert(appSource.includes('const projectIntelligence = useMemo(() => buildProjectIntelligence({'),
-  'Project Workspace must memoize the canonical intelligence object.');
-assert(appSource.includes('updates: savedUpdates') && appSource.includes('documents: projectDocuments'),
-  'UI must pass records to Intelligence without performing DAVE-specific scoping.');
+assert(appSource.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence'),
+  'Project Workspace must consume the canonical intelligence object from Project Truth.');
+assert(
+  appSource.includes('updates: (') &&
+  appSource.includes('projectDocuments: projectDocuments') &&
+  appSource.includes('captureMemories,'),
+  'The live authority must receive canonical project records, documents, and confirmed memories.',
+);
 for (const duplicateBuilder of [
   'buildProjectReality({',
   'buildProjectTimeline({',

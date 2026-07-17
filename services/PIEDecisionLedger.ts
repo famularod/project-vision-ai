@@ -543,7 +543,7 @@ export function updateLatestOutcomeValidation(
     nextOutcome,
   ];
   const nextStatus: PIEDecisionStatus =
-    validationStatus === 'human_validated' || validationStatus === 'system_supported'
+    validationStatus === 'human_validated'
       ? 'outcome_validated'
       : decision.currentStatus;
   if (nextStatus !== decision.currentStatus) {
@@ -602,6 +602,8 @@ export function validateDecisionTransition(input: PIEDecisionTransitionInput): P
     const outcome = input.actualOutcome || decision.actualOutcomes[decision.actualOutcomes.length - 1];
     if (!outcome) {
       reasons.push('Outcome validation requires an actual outcome record.');
+    } else if (outcome.validationStatus !== 'human_validated') {
+      reasons.push('Outcome validation requires explicit human validation.');
     } else if (!canValidateOutcome(outcome, input.actor)) {
       reasons.push('Outcome validation requires an authorized validator.');
     }
@@ -762,10 +764,7 @@ export function getDecisionCloseBlockers(decision: Pick<PIEDecisionRecord, 'curr
   }
   if (latestOutcome.classification === 'cancelled' || latestOutcome.classification === 'not_implemented') return [];
   if (latestOutcome.classification === 'inconclusive' && latestOutcome.summary.trim().length > 0) return [];
-  if (
-    latestOutcome.validationStatus === 'human_validated' ||
-    latestOutcome.validationStatus === 'system_supported'
-  ) {
+  if (latestOutcome.validationStatus === 'human_validated') {
     return [];
   }
   return ['Decision cannot close because the outcome is not validated or justified.'];

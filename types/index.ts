@@ -35,6 +35,17 @@ export type ActionStatus =
   | 'Waiting'
   | 'Closed';
 
+export type PhotoContinuityAnchor = {
+  referencePhotoId: string;
+  referencePhotoUri?: string | null;
+  realityObjectId?: string | null;
+  projectName: string;
+  areaName?: string | null;
+  instruction: string;
+  alignmentGuide: string;
+  confirmedAt: string;
+};
+
 export type UpdatePhoto = {
   id: string;
   uri: string;
@@ -46,6 +57,11 @@ export type UpdatePhoto = {
   actionStatus: ActionStatus;
   fileName?: string | null;
   mimeType?: string | null;
+  cloudStoragePath?: string | null;
+  cloudRecoveredAt?: string | null;
+  cloudRecoveryStatus?: 'cached' | 'signed_url' | 'unavailable' | null;
+  cloudSignedUrlExpiresAt?: string | null;
+  continuityAnchor?: PhotoContinuityAnchor | null;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
   gpsLatitude?: number | null;
@@ -141,6 +157,9 @@ export type ProjectUpdate = {
   photos: UpdatePhoto[];
   notes: string;
   recipients: RecipientSelection;
+  scheduleItemId?: string | null;
+  scheduleTaskName?: string | null;
+  scheduleProjectName?: string | null;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
   gpsLatitude?: number | null;
@@ -149,6 +168,17 @@ export type ProjectUpdate = {
   distanceFromSelectedAreaFeet?: number | null;
   locationCapturedAt?: string | null;
   pieStartedAt?: string | null;
+  pieStatus?:
+    | 'not_started'
+    | 'analyzing'
+    | 'complete'
+    | 'no_prior_photo'
+    | 'no_visual_comparison'
+    | 'failed'
+    | 'taking_longer';
+  pieCompletedAt?: string | null;
+  pieSuggestedNote?: string | null;
+  pieSuggestedNoteAccepted?: boolean;
   status?: 'draft' | 'ready_to_send' | 'queued' | 'sent' | 'failed';
   workflowTimestamps?: {
     startedAt?: string;
@@ -185,6 +215,17 @@ export type ProjectArea = {
   locationCapturedAt?: string | null;
 };
 
+export type DAVESyncTombstoneEntity =
+  | 'project_area'
+  | 'schedule_item'
+  | 'reference_document';
+
+export type DAVESyncTombstone = {
+  entityType: DAVESyncTombstoneEntity;
+  recordId: string;
+  deletedAt: string;
+};
+
 export type AreaSuggestion = {
   area: ProjectArea;
   distanceFeet: number;
@@ -206,6 +247,8 @@ export type ReferenceDocument = {
   notes: string;
   isCurrent: boolean;
   importedAt: string;
+  projectId?: string | null;
+  projectName?: string | null;
 };
 
 export type ProjectStats = {
@@ -225,8 +268,44 @@ export type ScheduleStatus =
 
 export type SchedulePriority = 'Low' | 'Medium' | 'High';
 
+export type DAVECompletionVerificationStatus =
+  | 'reported_complete'
+  | 'evidence_supported'
+  | 'pm_verified'
+  | 'rejected'
+  | 'conflicting_evidence';
+
+export type DAVECompletionEvidenceKind =
+  | 'email'
+  | 'message_screenshot'
+  | 'photo'
+  | 'pm_confirmation'
+  | 'pm_note';
+
+export type DAVECompletionEvidence = {
+  id: string;
+  kind: DAVECompletionEvidenceKind;
+  sourceRecordId: string;
+  sourceName: string;
+  summary: string;
+  recordedAt: string;
+};
+
+export type DAVECompletionVerification = {
+  status: DAVECompletionVerificationStatus;
+  reportedAt: string;
+  reportedBy: string | null;
+  priorScheduleStatus: ScheduleStatus;
+  priorPercentComplete: number;
+  verifiedAt: string | null;
+  verifiedBy: string | null;
+  verificationNote: string | null;
+  evidence: DAVECompletionEvidence[];
+};
+
 export type ScheduleItem = {
   id: string;
+  scheduleProjectName?: string | null;
   projectName: string;
   locationName: string;
   taskName: string;
@@ -235,12 +314,17 @@ export type ScheduleItem = {
   milestone: string;
   owner: string;
   contractor: string;
+  durationDays?: number | null;
   percentComplete: number;
+  progressSource?: 'project_manager' | 'schedule_import' | null;
+  progressConfirmedAt?: string | null;
+  progressConfirmedBy?: string | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
   importedFrom?: string | null;
   importedAt?: string | null;
+  completionVerification?: DAVECompletionVerification | null;
   createdAt: string;
 };
 

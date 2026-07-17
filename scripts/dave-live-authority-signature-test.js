@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const ts = require('typescript');
+
+const root = path.resolve(__dirname, '..');
+const source = fs.readFileSync(path.join(root, 'services/PIELiveAuthoritySignature.ts'), 'utf8');
+const compiled = ts.transpileModule(source, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText;
+const moduleUnderTest = { exports: {} };
+new Function('require', 'module', 'exports', compiled)(
+  specifier => { throw new Error(`Unexpected runtime dependency: ${specifier}`); },
+  moduleUnderTest,
+  moduleUnderTest.exports,
+);
+const { authorityInputSignature } = moduleUnderTest.exports;
+
+function input() {
+  return {
+    organizationId: 'org-1',
+    projectId: 'project-1',
+    projectName: 'Hospital',
+    projectNames: ['Hospital'],
+    updates: [{
+      id: 'update-1',
+      projectName: 'Hospital',
+      date: '2026-07-16T12:00:00.000Z',
+      selectedAreaId: 'area-1',
+      selectedAreaName: 'Level 2',
+      status: 'sent',
+      pieStatus: 'complete',
+      pieCompletedAt: '2026-07-16T12:05:00.000Z',
+      notes: 'Field observation.',
+      photos: [{
+        id: 'photo-1',
+        caption: 'AHU inspection.',
+        category: 'Update',
+        actionRequired: '',
+        actionOwner: '',
+        actionDueDate: '',
+        actionStatus: 'Open',
+        selectedAreaId: 'area-1',
+        selectedAreaName: 'Level 2',
+        photoIntelligence: {
+          status: 'analysis_complete',
+          updatedAt: '2026-07-16T12:05:00.000Z',
+          title: 'AHU condition',
+          summary: 'Unit appears installed.',
+          visibleChange: 'Unit is now present.',
+          location: 'Level 2',
+          comparisonConfidence: 'high',
+          captureLimitations: [],
+          projectProgress: 'supported',
+          repeatPhotoGuidance: 'Repeat from the same doorway.',
+          authorityMessage: 'Visual evidence only.',
+        },
+      }],
+    }],
+    scheduleItems: [],
+  };
+}
+
+const base = input();
+const baseSignature = authorityInputSignature(base);
+assert.strictEqual(authorityInputSignature(JSON.parse(JSON.stringify(base))), baseSignature);
+
+const sameLengthSummary = input();
+sameLengthSummary.updates[0].photos[0].photoIntelligence.summary = 'Unit appears removed...';
+assert.strictEqual(
+  sameLengthSummary.updates[0].photos[0].photoIntelligence.summary.length,
+  base.updates[0].photos[0].photoIntelligence.summary.length,
+);
+assert.notStrictEqual(authorityInputSignature(sameLengthSummary), baseSignature, 'same-length semantic changes must refresh authority');
+
+const guidance = input();
+guidance.updates[0].photos[0].photoIntelligence.repeatPhotoGuidance = 'Repeat from the south wall.';
+assert.notStrictEqual(authorityInputSignature(guidance), baseSignature);
+
+const status = input();
+status.updates[0].photos[0].photoIntelligence.status = 'completed_with_limitations';
+status.updates[0].photos[0].photoIntelligence.updatedAt = '2026-07-16T12:06:00.000Z';
+assert.notStrictEqual(authorityInputSignature(status), baseSignature);
+
+const provider = fs.readFileSync(path.join(root, 'providers/PIELiveAuthorityProvider.tsx'), 'utf8');
+assert(provider.includes("from '../services/PIELiveAuthoritySignature'"));
+
+console.log('DAVE live-authority semantic signature tests passed.');

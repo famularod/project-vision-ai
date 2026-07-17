@@ -75,6 +75,9 @@ function update(overrides = {}) {
     projectName: overrides.projectName || 'Building 2375',
     date: overrides.date || '2026-07-13T10:00:00.000Z',
     notes: overrides.notes || 'Electrical rough-in started in Canopy B.',
+    scheduleItemId: overrides.scheduleItemId || null,
+    scheduleTaskName: overrides.scheduleTaskName || null,
+    scheduleProjectName: overrides.scheduleProjectName || null,
     selectedAreaId: 'area-canopy-b',
     selectedAreaName: overrides.areaName || 'Canopy B',
     recipients: { contactIds: [] },
@@ -107,6 +110,82 @@ assert(
   ahead.warnings.some(item => item.type === 'field_progress_not_reflected'),
   'Field progress should warn when the schedule remains Not Started.',
 );
+assert.strictEqual(ahead.matches[0].matchBasis, 'semantic_fallback');
+
+const explicitTaskLink = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({ id: 'task-linked' })],
+  updates: [update({
+    id: 'linked-update',
+    notes: 'Work observed in the field with no useful task wording.',
+    scheduleItemId: 'task-linked',
+    scheduleTaskName: 'Electrical rough-in',
+    photo: { caption: 'General progress view.' },
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert.strictEqual(explicitTaskLink.matches.length, 1, 'An explicit task ID must link its field update.');
+assert.strictEqual(explicitTaskLink.matches[0].matchBasis, 'explicit_task_id');
+assert.strictEqual(explicitTaskLink.matches[0].score, 100);
+
+const explicitBeatsNewerSemantic = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({ id: 'task-precedence' })],
+  updates: [
+    update({
+      id: 'newer-semantic',
+      date: '2026-07-13T11:00:00.000Z',
+      notes: 'Electrical rough-in installation work is underway in Canopy B.',
+      photo: { caption: 'Electrical rough-in installation work in progress.' },
+    }),
+    update({
+      id: 'older-explicit',
+      date: '2026-07-10T11:00:00.000Z',
+      scheduleItemId: 'task-precedence',
+      notes: 'General field view.',
+      photo: { caption: 'General field view.', actionStatus: 'Open' },
+    }),
+  ],
+  projectName: 'Building 2375',
+  now,
+});
+assert.strictEqual(explicitBeatsNewerSemantic.matches[0].updateId, 'older-explicit');
+assert.strictEqual(explicitBeatsNewerSemantic.matches[0].matchBasis, 'explicit_task_id');
+
+for (const actionStatus of ['Closed', 'In Progress']) {
+  const workflowStatusOnly = buildPIEScheduleReconciliation({
+    scheduleItems: [schedule({ id: `task-${actionStatus}` })],
+    updates: [update({
+      id: `workflow-${actionStatus}`,
+      scheduleItemId: `task-${actionStatus}`,
+      notes: 'General field view.',
+      photo: { caption: 'General field view.', category: 'Update', actionStatus },
+    })],
+    projectName: 'Building 2375',
+    now,
+  });
+  assert.strictEqual(
+    workflowStatusOnly.matches[0].signal,
+    'unknown',
+    `photo issue workflow status ${actionStatus} must not become schedule progress`,
+  );
+  assert(
+    !workflowStatusOnly.warnings.some(item => item.type === 'field_progress_not_reflected'),
+    `photo issue workflow status ${actionStatus} must not create a schedule progress warning`,
+  );
+}
+
+const storedTaskName = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule()],
+  updates: [update({
+    notes: 'General progress documented.',
+    scheduleTaskName: 'Electrical rough-in',
+    photo: { caption: 'Project progress.' },
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert.strictEqual(storedTaskName.matches.length, 1, 'A stored task name must link before semantic guessing.');
+assert.strictEqual(storedTaskName.matches[0].matchBasis, 'stored_task_name');
 
 const conflict = buildPIEScheduleReconciliation({
   scheduleItems: [schedule({ status: 'Complete', percentComplete: 100 })],
@@ -142,6 +221,41 @@ const noEvidence = buildPIEScheduleReconciliation({
 assert(
   noEvidence.warnings.some(item => item.type === 'scheduled_work_without_recent_evidence'),
   'Overdue work without a matching update should request current evidence.',
+);
+
+const pmProgressJudgment = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({
+    id: 'pm-progress',
+    finishDate: '2026-07-10',
+    status: 'In Progress',
+    percentComplete: 10,
+    progressSource: 'project_manager',
+    progressConfirmedAt: '2026-07-13T09:00:00.000Z',
+    progressConfirmedBy: 'Project manager',
+  })],
+  updates: [],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  !pmProgressJudgment.warnings.some(item => item.type === 'scheduled_work_without_recent_evidence'),
+  'A PM-entered progress percentage is authoritative and must not require separate field evidence.',
+);
+
+const legacyPmProgressJudgment = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({
+    id: 'legacy-pm-progress',
+    finishDate: '2026-07-10',
+    status: 'In Progress',
+    percentComplete: 10,
+  })],
+  updates: [],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  !legacyPmProgressJudgment.warnings.some(item => item.type === 'scheduled_work_without_recent_evidence'),
+  'A legacy saved in-progress percentage must remain trusted even before provenance fields existed.',
 );
 
 const unrelated = buildPIEScheduleReconciliation({

@@ -52,6 +52,12 @@ import type {
   PIEDecisionLedgerMigrationStatus,
 } from '../services/PIEDecisionLedgerStorage';
 import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync';
+import { buildDAVEProjectTruth } from '../services/DAVEProjectTruth';
+import {
+  buildDAVEReportBriefing,
+  enhanceDAVEReportDraft,
+  type DAVEReportBriefing,
+} from '../services/DAVEReportIntelligence';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 type ReportFormat = 'project_manager' | 'executive';
@@ -68,6 +74,9 @@ export function ReportsScreen({
   projectName,
   reportType,
   onReportTypeChange,
+  availableProjectNames,
+  selectedProjectNames,
+  onToggleProject,
   reportFormat,
   onReportFormatChange,
   updates,
@@ -102,6 +111,7 @@ export function ReportsScreen({
   onSavedUpdates,
   onCopyReport,
   onEmailReport,
+  onTextReport,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projectName: string;
@@ -109,6 +119,9 @@ export function ReportsScreen({
   onReportTypeChange: (
     reportType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>,
   ) => void;
+  availableProjectNames: string[];
+  selectedProjectNames: string[];
+  onToggleProject: (projectName: string) => void;
   reportFormat: ReportFormat;
   onReportFormatChange: (format: ReportFormat) => void;
   updates: ProjectUpdate[];
@@ -157,8 +170,9 @@ export function ReportsScreen({
   onSavedUpdates: () => void;
   onCopyReport: (report: PIEReportDraft) => void;
   onEmailReport: (report: PIEReportDraft) => void;
+  onTextReport: (report: PIEReportDraft) => void;
 }) {
-  const [reporterOpen, setReporterOpen] = useState(false);
+  const [reporterOpen, setReporterOpen] = useState(true);
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
   const [reportEdits, setReportEdits] = useState<{
@@ -166,29 +180,44 @@ export function ReportsScreen({
     body: string;
   } | null>(null);
   const [communicationComplete, setCommunicationComplete] = useState(false);
-  const [preparedDetailsOpen, setPreparedDetailsOpen] = useState(false);
   const [advancedReviewOpen, setAdvancedReviewOpen] = useState(false);
   const [autoDecisionKey, setAutoDecisionKey] = useState('');
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
-  const openDecisions = runtime.priorityQueue.approvalRequired.length;
-  const openQuestions = runtime.reasoning.questions.length;
-  const communicationReady =
-    runtime.intelligence.communicationReadiness.level === 'ready';
-  const selectedProjectNames = useMemo(
-    () =>
-      reportType === 'combined_project_update'
-        ? Array.from(
-            new Set([
-              projectName,
-              ...updates.map(update => update.projectName),
-              ...scheduleItems.map(item => item.projectName),
-            ].filter(Boolean)),
-          )
-        : [projectName],
-    [projectName, reportType, scheduleItems, updates],
+  const baseReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft;
+  const reportTruths = useMemo(() => selectedProjectNames.map(selectedName => {
+    const liveTruth = liveAuthority.projectTruth;
+    if (reportProjectKey(liveTruth?.projectName) === reportProjectKey(selectedName)) {
+      return liveTruth;
+    }
+    return buildDAVEProjectTruth({
+      projectId: `report:${reportProjectKey(selectedName) || 'project'}`,
+      projectName: selectedName,
+      updates,
+      scheduleItems,
+      projectAreas,
+      referenceDocuments,
+      runtime,
+      core: liveAuthority.core,
+    });
+  }), [
+    liveAuthority.core,
+    liveAuthority.projectTruth,
+    projectAreas,
+    referenceDocuments,
+    runtime,
+    scheduleItems,
+    selectedProjectNames,
+    updates,
+  ]);
+  const reportBriefing = useMemo(() => buildDAVEReportBriefing({
+    truths: reportTruths,
+    selectedProjectNames,
+  }), [reportTruths, selectedProjectNames]);
+  const pieReportDraft = useMemo(
+    () => enhanceDAVEReportDraft(baseReportDraft, reportBriefing, reportFormat),
+    [baseReportDraft, reportBriefing, reportFormat],
   );
-  const pieReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft;
   const effectiveReportDraft = useMemo<PIEReportDraft>(
     () => reportEdits
       ? {
@@ -200,9 +229,6 @@ export function ReportsScreen({
       : pieReportDraft,
     [pieReportDraft, reportEdits],
   );
-  const reportAuthorityMessage = liveAuthority.executiveJudgmentRecord
-    ? null
-    : 'Draft recovery mode: DAVE is preparing the persisted Executive Judgment before final report and decision creation.';
   const decisionCandidateKey = [
     reportType,
     projectName,
@@ -287,59 +313,8 @@ export function ReportsScreen({
     <Screen contentStyle={contentStyle}>
       <ScreenHeader
         title="Reports"
-        subtitle={`${projectName} · Review, approve, and communicate what DAVE has prepared.`}
+        subtitle={`${selectedProjectNames.join(', ')} · Review, approve, and communicate the prepared report.`}
       />
-
-      <ReviewExperiencePanel
-        experience={reviewExperience}
-        reportApproved={reportApproved}
-        onPrimaryAction={() =>
-          handleReviewExperienceAction(reviewExperience.primaryAction)
-        }
-        onSecondaryAction={
-          reviewExperience.secondaryAction
-            ? () => handleReviewExperienceAction(reviewExperience.secondaryAction!)
-            : undefined
-        }
-      />
-
-      <ScreenCard style={styles.preparedCard}>
-        <TouchableOpacity
-          style={styles.preparedHeaderButton}
-          onPress={() => setPreparedDetailsOpen(open => !open)}
-          accessibilityRole="button"
-          accessibilityLabel="Show what DAVE prepared"
-        >
-          <View style={styles.reporterIcon}>
-            <Ionicons name="sparkles-outline" size={22} color={colors.primary} />
-          </View>
-
-          <View style={styles.reporterHeaderText}>
-            <Text style={styles.preparedTitle}>
-              DAVE Prepared Items
-            </Text>
-
-            <Text style={styles.reporterHelp}>
-              Proposed summary, key changes, critical items, and open questions.
-            </Text>
-          </View>
-
-          <Ionicons
-            name={preparedDetailsOpen ? 'chevron-up-outline' : 'chevron-down-outline'}
-            size={20}
-            color={colors.tertiaryText}
-          />
-        </TouchableOpacity>
-
-        {preparedDetailsOpen ? (
-          <View style={styles.preparedList}>
-            <PreparedReportItem title="Project Update Draft" detail="Open the prepared report below to review, correct, approve, copy, or email." onPress={() => setReporterOpen(true)} />
-            <PreparedReportItem title={`${openDecisions} open decision${openDecisions === 1 ? '' : 's'}`} detail="Approve, reject, correct, or defer only when human authority is required." onPress={() => setAdvancedReviewOpen(true)} />
-            <PreparedReportItem title={`${openQuestions} question${openQuestions === 1 ? '' : 's'} needing answers`} detail="Add missing information if DAVE cannot verify a conclusion." onPress={() => setReporterOpen(true)} />
-            <PreparedReportItem title={communicationReady ? 'Communication readiness: ready for review' : 'Communication readiness: needs more evidence'} detail="DAVE keeps draft sharing blocked until review and approval are complete." onPress={() => setReporterOpen(true)} />
-          </View>
-        ) : null}
-      </ScreenCard>
 
       <ScreenCard style={styles.reporterCard}>
         <View style={styles.reporterHeader}>
@@ -353,38 +328,22 @@ export function ReportsScreen({
 
           <View style={styles.reporterHeaderText}>
             <Text style={styles.preparedTitle}>
-              DAVE Reporter
+              Prepared Report
             </Text>
 
             <Text style={styles.reporterHelp}>
-              Generate a David-style project update draft for review before copying or emailing.
+              Review the prepared project update before copying, texting, or emailing it.
             </Text>
           </View>
         </View>
 
-        <TouchableOpacity
-          style={styles.generateReportButton}
-          onPress={() => setReporterOpen(open => !open)}
-          accessibilityRole="button"
-          accessibilityLabel="Generate DAVE Project Update"
-        >
-          <Ionicons
-            name="sparkles-outline"
-            size={20}
-            color="#FFFFFF"
-          />
-
-          <Text style={styles.generateReportText}>
-            Generate DAVE Project Update
-          </Text>
-        </TouchableOpacity>
-
-        {reporterOpen ? (
-          <PIEReporterPreview
+        <PIEReporterPreview
             reportDraft={effectiveReportDraft}
             hasManualEdits={Boolean(reportEdits)}
-            authorityMessage={reportAuthorityMessage}
             reportType={reportType}
+            availableProjectNames={availableProjectNames}
+            selectedProjectNames={selectedProjectNames}
+            onToggleProject={onToggleProject}
             reportFormat={reportFormat}
             onReportTypeChange={nextReportType => {
               onReportTypeChange(nextReportType);
@@ -427,32 +386,28 @@ export function ReportsScreen({
               onEmailReport(effectiveReportDraft);
               setCommunicationComplete(true);
             }}
+            onTextReport={() => {
+              onTextReport(effectiveReportDraft);
+              setCommunicationComplete(true);
+            }}
           />
-        ) : null}
       </ScreenCard>
 
-      <TouchableOpacity
-        style={styles.advancedToggleButton}
-        onPress={() => setAdvancedReviewOpen(open => !open)}
-        accessibilityRole="button"
-        accessibilityLabel="Show advanced review details"
-      >
-        <Ionicons
-          name="information-circle-outline"
-          size={19}
-          color={colors.primary}
-        />
-
-        <Text style={styles.advancedToggleText}>
-          {advancedReviewOpen ? 'Hide Details' : 'Why DAVE recommends this'}
-        </Text>
-
-        <Ionicons
-          name={advancedReviewOpen ? 'chevron-up-outline' : 'chevron-down-outline'}
-          size={18}
-          color={colors.primary}
-        />
-      </TouchableOpacity>
+      <BeforeYouSharePanel
+        experience={reviewExperience}
+        reportDraft={effectiveReportDraft}
+        reportApproved={reportApproved}
+        expanded={advancedReviewOpen}
+        onToggleDetails={() => setAdvancedReviewOpen(open => !open)}
+        onPrimaryAction={() =>
+          handleReviewExperienceAction(reviewExperience.primaryAction)
+        }
+        onSecondaryAction={
+          reviewExperience.secondaryAction
+            ? () => handleReviewExperienceAction(reviewExperience.secondaryAction!)
+            : undefined
+        }
+      />
 
       {advancedReviewOpen ? (
         <>
@@ -466,79 +421,12 @@ export function ReportsScreen({
             referenceDocuments={referenceDocuments}
             syncMetadata={syncMetadata}
             title="Supporting Evidence"
-            subtitle="Evidence, uncertainty, and reasoning behind DAVE's recommendation."
+            subtitle="Evidence, uncertainty, and reasoning behind this recommendation."
           />
 
-          <DecisionLedgerPanel
-            decisions={decisionLedger || []}
-            reportDraft={effectiveReportDraft}
-            layer4Identity={layer4Identity || null}
-            migrationStatus={decisionLedgerMigrationStatus || null}
-            syncMetadata={decisionSyncMetadata || {}}
-            availableEvidence={decisionEvidenceReferences || []}
-            onCreateDecisionSnapshot={onCreateDecisionSnapshot}
-            onApproveDecision={onApproveDecision}
-            onRejectDecision={onRejectDecision}
-            onDeferDecision={onDeferDecision}
-            onCancelDecision={onCancelDecision}
-            onImplementDecision={onImplementDecision}
-            onMoveDecisionToAwaitingOutcome={onMoveDecisionToAwaitingOutcome}
-            onAppendCorrectedDecisionVersion={onAppendCorrectedDecisionVersion}
-            onRecordImplementationQuality={onRecordImplementationQuality}
-            onRecordActualOutcome={onRecordActualOutcome}
-            onValidateOutcome={onValidateOutcome}
-            onCloseDecision={onCloseDecision}
-            onRetryDecisionLedgerSync={onRetryDecisionLedgerSync}
-          />
         </>
       ) : null}
 
-      {advancedReviewOpen ? (
-        <View style={styles.reviewActionStack}>
-        {onWeeklyExecutiveReport ? (
-          <ReportCard
-            title="Weekly Executive Review"
-            description="Summarize weekly progress, risks, schedule movement, and action items."
-            icon="newspaper-outline"
-            onPress={onWeeklyExecutiveReport}
-          />
-        ) : null}
-
-        {onProjectHealthReport ? (
-          <ReportCard
-            title="Project Health Report"
-            description="Review risk, overdue work, stale updates, safety items, and status signals."
-            icon="pulse-outline"
-            onPress={onProjectHealthReport}
-          />
-        ) : null}
-
-        {onCriticalPathReport ? (
-          <ReportCard
-            title="Critical Path Report"
-            description="Analyze schedule drivers, blocked work, dependencies, and float risk."
-            icon="git-branch-outline"
-            onPress={onCriticalPathReport}
-          />
-        ) : null}
-
-        {onMilestoneReport ? (
-          <ReportCard
-            title="Milestone Report"
-            description="Track milestone progress, dates, slippage, and upcoming checkpoints."
-            icon="flag-outline"
-            onPress={onMilestoneReport}
-          />
-        ) : null}
-
-        <ReportCard
-          title="Saved History"
-          description="Open saved project updates, previous messages, and update history."
-          icon="time-outline"
-          onPress={onSavedUpdates}
-        />
-        </View>
-      ) : null}
     </Screen>
   );
 }
@@ -554,20 +442,39 @@ function reviewExperienceActionLabel(
   if (action === 'correct') return 'Edit Report';
   if (action === 'review') return 'Review Draft';
 
-  return 'Generate DAVE Project Update';
+  return 'Generate Report';
 }
 
-function ReviewExperiencePanel({
+function BeforeYouSharePanel({
   experience,
+  reportDraft,
   reportApproved,
+  expanded,
+  onToggleDetails,
   onPrimaryAction,
   onSecondaryAction,
 }: {
   experience: PIEExperienceOutput;
+  reportDraft: PIEReportDraft;
   reportApproved: boolean;
+  expanded: boolean;
+  onToggleDetails: () => void;
   onPrimaryAction: () => void;
   onSecondaryAction?: () => void;
 }) {
+  const warnings = Array.from(new Set([
+    ...experience.reviewWarnings,
+    ...reportDraft.reviewFlags,
+  ])).filter(isReportableShareWarning);
+  const reportActions = reportDraft.actionItems.filter(item =>
+    isReportableShareAction(item.action) && !item.needsOwner,
+  );
+  const reviewState = reportApproved
+    ? 'Approved'
+    : warnings.length > 0
+      ? 'Needs Review'
+      : 'Ready to Review';
+
   return (
     <ScreenCard style={styles.experienceCard}>
       <View style={styles.experienceHeader}>
@@ -581,44 +488,26 @@ function ReviewExperiencePanel({
 
         <View style={styles.experienceTextGroup}>
           <Text style={styles.experienceEyebrow}>
-            DAVE Review Experience
+            Before You Share
           </Text>
 
           <Text style={styles.experienceState}>
-            {experience.currentState.replace(/_/g, ' ')}
+            {reviewState}
           </Text>
         </View>
       </View>
 
       <Text style={styles.experienceMessage}>
-        {experience.primaryMessage}
+        Review the prepared report, make any edits, and approve it when ready.
       </Text>
 
-      <Text style={styles.experienceReason}>
-        {experience.reason}
-      </Text>
-
-      {experience.reportTitle ? (
-        <View style={styles.experienceMetaRow}>
-          <ReportStatusPill
-            label="Report"
-            value={experience.reportTitle}
-          />
-
-          <ReportStatusPill
-            label="Readiness"
-            value={experience.reportReadiness || 'pending'}
-          />
-        </View>
-      ) : null}
-
-      {experience.reviewWarnings.length > 0 ? (
+      {warnings.length > 0 ? (
         <View style={styles.reviewFlagsPanel}>
           <Text style={styles.reportPreviewLabel}>
-            DAVE found items that need review.
+            Check before sharing
           </Text>
 
-          {experience.reviewWarnings.slice(0, 4).map((warning, index) => (
+          {warnings.slice(0, expanded ? 6 : 2).map((warning, index) => (
             <Text
               key={`${index}-${warning}`}
               style={styles.reviewFlagText}
@@ -628,6 +517,35 @@ function ReviewExperiencePanel({
           ))}
         </View>
       ) : null}
+
+      {expanded ? (
+        <View style={styles.beforeShareDetails}>
+          {reportActions.length > 0 ? (
+            <View style={styles.reportList}>
+              <Text style={styles.reportPreviewLabel}>Included Actions</Text>
+              {reportActions.slice(0, 5).map((item, index) => (
+                <Text key={`${item.id}-${index}`} style={styles.reportListText}>
+                  • {item.owner} — {item.action}
+                </Text>
+              ))}
+            </View>
+          ) : <Text style={styles.reportListText}>The report contains current project conditions and recorded progress.</Text>}
+        </View>
+      ) : null}
+
+      <TouchableOpacity
+        style={styles.beforeShareWhyButton}
+        onPress={onToggleDetails}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+      >
+        <Text style={styles.advancedToggleText}>{expanded ? 'Hide Why' : 'Why?'}</Text>
+        <Ionicons
+          name={expanded ? 'chevron-up-outline' : 'chevron-down-outline'}
+          size={18}
+          color={colors.primary}
+        />
+      </TouchableOpacity>
 
       <View style={styles.reportActionRow}>
         <TouchableOpacity
@@ -676,11 +594,22 @@ function ReviewExperiencePanel({
   );
 }
 
+function isReportableShareWarning(value: string) {
+  return !/\b(?:confidence|evidence|missing|needs? (?:confirmation|verification|validation|review)|owner|uncertain|unknown|unresolved|verify)\b/i.test(value);
+}
+
+function isReportableShareAction(value: string) {
+  return !/\b(?:confirm|validate|verification|verify)\b/i.test(value) &&
+    !/\breview\b.*\b(?:evidence|status|completion|confidence|claim)\b/i.test(value);
+}
+
 function PIEReporterPreview({
   reportDraft,
   hasManualEdits,
-  authorityMessage,
   reportType,
+  availableProjectNames,
+  selectedProjectNames,
+  onToggleProject,
   reportFormat,
   onReportTypeChange,
   onReportFormatChange,
@@ -692,11 +621,14 @@ function PIEReporterPreview({
   onBodyChange,
   onCopyReport,
   onEmailReport,
+  onTextReport,
 }: {
   reportDraft: PIEReportDraft;
   hasManualEdits: boolean;
-  authorityMessage?: string | null;
   reportType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>;
+  availableProjectNames: string[];
+  selectedProjectNames: string[];
+  onToggleProject: (projectName: string) => void;
   reportFormat: ReportFormat;
   onReportTypeChange: (
     reportType: Extract<PIEReportType, 'daily_project_update' | 'combined_project_update'>,
@@ -710,42 +642,107 @@ function PIEReporterPreview({
   onBodyChange: (body: string) => void;
   onCopyReport: () => void;
   onEmailReport: () => void;
+  onTextReport: () => void;
 }) {
-  const [actionsOpen, setActionsOpen] = useState(false);
-  const actionItems =
-    reportDraft.actionItems.length > 0
-      ? reportDraft.actionItems.slice(0, 5)
-      : [];
-  const imageReferences =
-    reportDraft.imageReferences.length > 0
-      ? reportDraft.imageReferences.slice(0, 6)
-      : [];
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   return (
     <View style={styles.reportPreview}>
-      <Text style={styles.reportOptionLabel}>
-        Report Scope
-      </Text>
+      <TouchableOpacity
+        style={styles.reportOptionsToggle}
+        onPress={() => setOptionsOpen(open => !open)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: optionsOpen }}
+        accessibilityLabel="Report options"
+      >
+        <View>
+          <Text style={styles.reportOptionsTitle}>Report Options</Text>
+          <Text style={styles.reportOptionsSummary}>
+            {reportFormat === 'executive' ? 'Executive' : 'Project Manager'} · {selectedProjectNames.length} project{selectedProjectNames.length === 1 ? '' : 's'}
+          </Text>
+        </View>
+        <Ionicons name={optionsOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.primary} />
+      </TouchableOpacity>
 
-      <View style={styles.segmentRow}>
-        <ReporterTypeButton
-          label="Single Project Update"
-          selected={reportType === 'daily_project_update'}
-          onPress={() => onReportTypeChange('daily_project_update')}
-        />
+      {optionsOpen ? <View style={styles.reportOptionsPanel}>
+        <Text style={styles.reportOptionLabel}>
+          Report Scope
+        </Text>
 
-        <ReporterTypeButton
-          label="Combined Project Update"
-          selected={reportType === 'combined_project_update'}
-          onPress={() => onReportTypeChange('combined_project_update')}
-        />
-      </View>
+        <View style={styles.segmentRow}>
+          <ReporterTypeButton
+            label="Single Project Update"
+            selected={reportType === 'daily_project_update'}
+            onPress={() => onReportTypeChange('daily_project_update')}
+          />
 
-      <Text style={styles.reportOptionLabel}>
-        Report Format
-      </Text>
+          <ReporterTypeButton
+            label="Combined Project Update"
+            selected={reportType === 'combined_project_update'}
+            onPress={() => onReportTypeChange('combined_project_update')}
+          />
+        </View>
 
-      <View style={styles.segmentRow}>
+        <Text style={styles.reportOptionLabel}>
+          {reportType === 'daily_project_update' ? 'Choose Project' : 'Choose Projects'}
+        </Text>
+
+        <View style={styles.reportProjectPicker}>
+        {availableProjectNames.map(project => {
+          const selected = selectedProjectNames.some(
+            name => name.trim().toLowerCase() === project.trim().toLowerCase(),
+          );
+
+          return (
+            <TouchableOpacity
+              key={project}
+              style={[
+                styles.reportProjectOption,
+                selected && styles.reportProjectOptionSelected,
+              ]}
+              onPress={() => onToggleProject(project)}
+              accessibilityRole={reportType === 'daily_project_update' ? 'radio' : 'checkbox'}
+              accessibilityState={{ selected, checked: selected }}
+              accessibilityLabel={`${selected ? 'Selected' : 'Select'} ${project}`}
+            >
+              <Ionicons
+                name={
+                  reportType === 'daily_project_update'
+                    ? selected
+                      ? 'radio-button-on'
+                      : 'radio-button-off'
+                    : selected
+                      ? 'checkbox'
+                      : 'square-outline'
+                }
+                size={21}
+                color={selected ? colors.primary : colors.mutedText}
+              />
+              <Text
+                style={[
+                  styles.reportProjectOptionText,
+                  selected && styles.reportProjectOptionTextSelected,
+                ]}
+              >
+                {project}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+        </View>
+
+        <Text style={styles.reportProjectSelectionHelper}>
+        {reportType === 'daily_project_update'
+          ? 'The report will include only this project and its associated tasks.'
+          : `${selectedProjectNames.length} project${selectedProjectNames.length === 1 ? '' : 's'} selected for this combined update.`}
+        </Text>
+
+        <Text style={styles.reportOptionLabel}>
+          Report Format
+        </Text>
+
+        <View style={styles.segmentRow}>
         <ReporterTypeButton
           label="Project Manager"
           selected={reportFormat === 'project_manager'}
@@ -757,45 +754,8 @@ function PIEReporterPreview({
           selected={reportFormat === 'executive'}
           onPress={() => onReportFormatChange('executive')}
         />
-      </View>
-
-      <View style={styles.reportStatusRow}>
-        <ReportStatusPill label="Readiness" value={reportDraft.confidence} />
-        <ReportStatusPill label="Needs Review" value={reportDraft.needsReview ? 'Yes' : 'No'} />
-      </View>
-
-      {authorityMessage ? (
-        <View style={styles.reviewFlagsPanel}>
-          <Text style={styles.reportPreviewLabel}>
-            Review boundary
-          </Text>
-
-          <Text style={styles.reviewFlagText}>
-            {authorityMessage}
-          </Text>
         </View>
-      ) : null}
-
-      {reportDraft.reviewFlags.length > 0 ? (
-        <View style={styles.reviewFlagsPanel}>
-          <Text style={styles.reportPreviewLabel}>
-            DAVE found items that need review.
-          </Text>
-
-          {reportDraft.reviewFlags.slice(0, 4).map((flag, index) => (
-            <Text
-              key={`${index}-${flag}`}
-              style={styles.reviewFlagText}
-            >
-              • {flag}
-            </Text>
-          ))}
-
-          <Text style={styles.reviewFlagHelper}>
-            These warnings are for preview only and are not added to the email body by default.
-          </Text>
-        </View>
-      ) : null}
+      </View> : null}
 
       {reportEditing ? (
         <View style={styles.reportEditFields}>
@@ -833,82 +793,29 @@ function PIEReporterPreview({
         />
       )}
 
-      {actionItems.length > 0 ? (
-        <>
-          <TouchableOpacity
-            style={styles.expandActionButton}
-            onPress={() => setActionsOpen(open => !open)}
-            accessibilityRole="button"
-            accessibilityLabel="Toggle report action items"
-          >
-            <Text style={styles.expandActionText}>
-              {actionsOpen ? 'Hide' : 'Show'} Action Items ({reportDraft.actionItems.length})
-            </Text>
-
-            <Ionicons
-              name={actionsOpen ? 'chevron-up-outline' : 'chevron-down-outline'}
-              size={18}
-              color={colors.primary}
-            />
-          </TouchableOpacity>
-
-          {actionsOpen ? (
-            <View style={styles.reportList}>
-              <Text style={styles.reportPreviewLabel}>
-                Action Items
-              </Text>
-
-              {actionItems.map((item, index) => (
-                <Text
-                  key={`${item.id}-${index}`}
-                  style={styles.reportListText}
-                >
-                  {item.needsOwner
-                    ? `Action Required - ${item.action}`
-                    : `${item.owner} - ${item.action}`}
-                </Text>
-              ))}
-            </View>
-          ) : null}
-        </>
-      ) : null}
-
-      {imageReferences.length > 0 ? (
-        <>
-          <Text style={styles.reportPreviewLabel}>
-            Image References
-          </Text>
-
-          <View style={styles.reportList}>
-            {imageReferences.map(ref => (
-              <Text
-                key={ref.photoId}
-                style={styles.reportListText}
-              >
-                Image {ref.imageNumber}: {ref.areaName}
-              </Text>
-            ))}
-          </View>
-        </>
-      ) : null}
-
       <View style={styles.reportActionRow}>
-        <TouchableOpacity
-          style={styles.reportActionButtonPrimary}
-          onPress={onApproveReport}
-          accessibilityRole="button"
-          accessibilityLabel="Approve Report"
-        >
-          <Ionicons
-            name="checkmark-circle-outline"
-            size={18}
-            color="#FFFFFF"
-          />
-
-          <Text style={styles.reportActionTextPrimary}>
-            Approve Report
-          </Text>
-        </TouchableOpacity>
+        {!reportApproved ? (
+          <TouchableOpacity
+            style={styles.reportActionButtonPrimary}
+            onPress={onApproveReport}
+            accessibilityRole="button"
+            accessibilityLabel="Approve Report"
+          >
+            <Ionicons name="checkmark-circle-outline" size={18} color="#FFFFFF" />
+            <Text style={styles.reportActionTextPrimary}>Approve Report</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.reportActionButtonPrimary}
+            onPress={() => setShareOpen(open => !open)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: shareOpen }}
+            accessibilityLabel="Share Report"
+          >
+            <Ionicons name="share-outline" size={18} color="#FFFFFF" />
+            <Text style={styles.reportActionTextPrimary}>Share Report</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           style={styles.reportActionButton}
@@ -928,63 +835,17 @@ function PIEReporterPreview({
         </TouchableOpacity>
       </View>
 
-      <View style={styles.reportActionRow}>
-        <TouchableOpacity
-          style={[
-            styles.reportActionButton,
-            !reportApproved && styles.reportActionButtonDisabled,
-          ]}
-          onPress={onCopyReport}
-          disabled={!reportApproved}
-          accessibilityRole="button"
-          accessibilityLabel="Copy Report"
-        >
-          <Ionicons
-            name="copy-outline"
-            size={18}
-            color={reportApproved ? colors.primary : colors.mutedText}
-          />
-
-          <Text
-            style={[
-              styles.reportActionText,
-              !reportApproved && styles.reportActionTextDisabled,
-            ]}
-          >
-            Copy Report
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[
-            styles.reportActionButton,
-            !reportApproved && styles.reportActionButtonDisabled,
-          ]}
-          onPress={onEmailReport}
-          disabled={!reportApproved}
-          accessibilityRole="button"
-          accessibilityLabel="Email Report"
-        >
-          <Ionicons
-            name="mail-outline"
-            size={18}
-            color={reportApproved ? colors.primary : colors.mutedText}
-          />
-
-          <Text
-            style={[
-              styles.reportActionText,
-              !reportApproved && styles.reportActionTextDisabled,
-            ]}
-          >
-            Email Report
-          </Text>
-        </TouchableOpacity>
-      </View>
+      {reportApproved && shareOpen ? (
+        <View style={styles.reportShareMenu}>
+          <ReportShareButton icon="copy-outline" label="Copy Report" onPress={onCopyReport} />
+          <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} />
+          <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} />
+        </View>
+      ) : null}
 
       {!reportApproved ? (
         <Text style={styles.approvalBoundaryText}>
-          Copy and Email unlock after approval. No report is sent automatically.
+          Copy, Email, and Text unlock after approval. No report is sent automatically.
         </Text>
       ) : null}
     </View>
@@ -1000,6 +861,14 @@ function ReportDocumentPreview({
   reportFormat: ReportFormat;
   useStructuredLayout: boolean;
 }) {
+  const briefing = reportDraft.daveBriefing;
+  const [workAreasOpen, setWorkAreasOpen] = useState(false);
+  const [writtenReportOpen, setWrittenReportOpen] = useState(false);
+  const workAreaCount = reportDraft.locationGroups.reduce((total, group) => total + group.workAreas.length, 0);
+  const photoCount = reportDraft.locationGroups.reduce(
+    (total, group) => total + group.workAreas.reduce((areaTotal, area) => areaTotal + area.imageReferences.length, 0),
+    0,
+  );
   return (
     <View style={styles.reportDocument}>
       <View style={styles.reportDocumentHeader}>
@@ -1012,6 +881,12 @@ function ReportDocumentPreview({
             ? 'Executive Summary'
             : 'Project Manager Report'}
         </Text>
+
+        {briefing ? (
+          <Text style={styles.reportDocumentMeta}>
+            Reporting date · {formatReportDate(briefing.generatedAt)}
+          </Text>
+        ) : null}
       </View>
 
       <View style={styles.reportDocumentRule} />
@@ -1022,74 +897,397 @@ function ReportDocumentPreview({
         </Text>
       ) : (
         <>
-          {reportDraft.openingLine ? (
-            <Text style={styles.reportDocumentIntro}>
-              {reportDraft.openingLine}
-            </Text>
-          ) : null}
+          {briefing ? <DAVEReportOverview briefing={briefing} reportFormat={reportFormat} /> : (
+            <ReportInsightSection
+              title={reportFormat === 'executive' ? 'Executive Summary' : 'Project Summary'}
+              items={reportDraft.executiveSummary}
+            />
+          )}
 
-          <View style={styles.reportDocumentSection}>
-            <Text style={styles.reportDocumentSectionTitle}>
-              {reportFormat === 'executive'
-                ? 'Executive Summary'
-                : 'Project Summary'}
-            </Text>
-
-            <View style={styles.reportDocumentBulletList}>
-              {reportDraft.executiveSummary.map((summary, index) => (
-                <View key={`${index}-${summary}`} style={styles.reportDocumentBulletRow}>
-                  <Text style={styles.reportDocumentBulletMarker}>•</Text>
-                  <Text style={styles.reportDocumentBulletText}>{summary}</Text>
-                </View>
-              ))}
-            </View>
+          <View style={styles.reportDisclosure}>
+            <TouchableOpacity
+              style={styles.reportDisclosureHeader}
+              onPress={() => setWrittenReportOpen(open => !open)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: writtenReportOpen }}
+              accessibilityLabel="Full written report"
+            >
+              <View style={styles.reportDisclosureHeaderText}>
+                <Text style={styles.reportDisclosureTitle}>Full Written Report</Text>
+                <Text style={styles.reportDisclosureSummary}>Detailed narrative for email, text, or copy</Text>
+              </View>
+              <Ionicons name={writtenReportOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
+            </TouchableOpacity>
+            {writtenReportOpen ? (
+              <Text selectable style={styles.reportBodyText}>{reportDraft.body}</Text>
+            ) : null}
           </View>
 
-          {reportFormat === 'project_manager'
-            ? reportDraft.locationGroups.map(group => (
-                <View key={group.id} style={styles.reportDocumentSection}>
+          {reportFormat === 'project_manager' && reportDraft.locationGroups.length ? (
+            <View style={styles.reportDisclosure}>
+              <TouchableOpacity
+                style={styles.reportDisclosureHeader}
+                onPress={() => setWorkAreasOpen(open => !open)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: workAreasOpen }}
+                accessibilityLabel="Work Areas and Photos"
+              >
+                <View style={styles.reportDisclosureHeaderText}>
+                  <Text style={styles.reportDisclosureTitle}>Work Areas & Photos</Text>
+                  <Text style={styles.reportDisclosureSummary}>
+                    {workAreaCount} area{workAreaCount === 1 ? '' : 's'} · {photoCount} photo{photoCount === 1 ? '' : 's'}
+                  </Text>
+                </View>
+                <Ionicons name={workAreasOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
+              </TouchableOpacity>
+
+              {workAreasOpen ? reportDraft.locationGroups.map((group, groupIndex) => (
+                <View key={`${group.id}-${groupIndex}`} style={styles.reportDocumentSection}>
                   <Text style={styles.reportDocumentLocationTitle}>
                     {group.title}
                   </Text>
 
-                  {group.workAreas.map(area => (
-                    <View key={area.id} style={styles.reportDocumentArea}>
-                      <Text style={styles.reportDocumentAreaTitle}>
-                        {area.projectName !== area.title
-                          ? `${area.projectName} — ${area.title}`
-                          : area.title}
-                      </Text>
-
-                      <View style={styles.reportDocumentBulletList}>
-                        {area.bullets.map((bullet, index) => (
-                          <View
-                            key={`${bullet.id}-${index}`}
-                            style={styles.reportDocumentBulletRow}
-                          >
-                            <Text style={styles.reportDocumentBulletMarker}>•</Text>
-                            <Text style={styles.reportDocumentBulletText}>
-                              <Text style={styles.reportDocumentBulletLabel}>
-                                {reportPreviewBulletLabel(bullet.kind)}:{' '}
-                              </Text>
-                              {bullet.text}
-                            </Text>
-                          </View>
-                        ))}
-                      </View>
-                    </View>
+                  {group.workAreas.map((area, areaIndex) => (
+                    <ReportWorkArea
+                      key={`${area.id}-${areaIndex}`}
+                      area={area}
+                    />
                   ))}
                 </View>
-              ))
-            : null}
-
-          {reportDraft.closingLine ? (
-            <Text style={styles.reportDocumentClosing}>
-              {reportDraft.closingLine}
-            </Text>
+              )) : null}
+            </View>
           ) : null}
         </>
       )}
     </View>
+  );
+}
+
+function DAVEReportOverview({
+  briefing,
+  reportFormat,
+}: {
+  briefing: DAVEReportBriefing;
+  reportFormat: ReportFormat;
+}) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [completedAreasOpen, setCompletedAreasOpen] = useState(false);
+  const conditionTone = briefing.overallCondition === 'critical'
+    ? styles.reportConditionCritical
+    : briefing.overallCondition === 'stable'
+      ? styles.reportConditionStable
+      : styles.reportConditionAttention;
+  const actions = briefing.nextActions.slice(0, 3).map(action =>
+    `${action.action} — ${action.owner}, ${action.timing}.`,
+  );
+  const changes = briefing.whatChanged.slice(0, reportFormat === 'executive' ? 2 : 3);
+  const attention = Array.from(new Set([
+    ...briefing.criticalRisks,
+    ...briefing.decisionsRequired,
+  ])).slice(0, 3);
+  const activeAreas = briefing.dashboard.workAreas.filter(area => !area.completed);
+  const completedAreas = briefing.dashboard.workAreas.filter(area => area.completed);
+
+  return (
+    <>
+      <View style={[styles.reportConditionBanner, conditionTone]}>
+        <Text style={styles.reportConditionEyebrow}>PROJECT CONDITION</Text>
+        <Text style={styles.reportConditionTitle}>{briefing.conditionLabel}</Text>
+        <Text selectable style={styles.reportConditionText}>{briefing.executiveSnapshot}</Text>
+      </View>
+
+      <ReportStatusDistribution briefing={briefing} />
+      <ReportScheduleHealth briefing={briefing} />
+
+      {changes.length || attention.length || actions.length ? (
+        <View style={styles.reportSummaryStack}>
+          {changes.length ? <ReportSummaryCard title="What Changed" items={changes} tone="progress" /> : null}
+          {attention.length ? <ReportSummaryCard title="Needs Attention" items={attention} tone="risk" /> : null}
+          {actions.length ? <ReportSummaryCard title="Next Action" items={actions} tone="action" /> : null}
+        </View>
+      ) : null}
+
+      {briefing.dashboard.workAreas.length ? (
+        <View style={styles.reportProgressSection}>
+          <View style={styles.reportProgressHeader}>
+            <Text style={styles.reportDocumentSectionTitle}>Progress by Work Area</Text>
+            <Text style={styles.reportProgressHelper}>Task average · not weighted</Text>
+          </View>
+          <View style={styles.reportAreaProgressList}>
+            {activeAreas.map(area => <ReportAreaProgressRow key={area.id} area={area} />)}
+          </View>
+          {completedAreas.length ? (
+            <View style={styles.reportDisclosure}>
+              <TouchableOpacity
+                style={styles.reportDisclosureHeader}
+                onPress={() => setCompletedAreasOpen(open => !open)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: completedAreasOpen }}
+                accessibilityLabel="Completed work areas"
+              >
+                <View style={styles.reportDisclosureHeaderText}>
+                  <Text style={styles.reportDisclosureTitle}>Completed Areas</Text>
+                  <Text style={styles.reportDisclosureSummary}>{completedAreas.length} collapsed</Text>
+                </View>
+                <Ionicons name={completedAreasOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
+              </TouchableOpacity>
+              {completedAreasOpen ? (
+                <View style={styles.reportAreaProgressList}>
+                  {completedAreas.map(area => <ReportAreaProgressRow key={area.id} area={area} />)}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      <View style={styles.reportDisclosure}>
+        <TouchableOpacity
+          style={styles.reportDisclosureHeader}
+          onPress={() => setDetailsOpen(open => !open)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: detailsOpen }}
+          accessibilityLabel="Project Detail"
+        >
+          <View style={styles.reportDisclosureHeaderText}>
+            <Text style={styles.reportDisclosureTitle}>Project Detail</Text>
+            <Text style={styles.reportDisclosureSummary}>Current conditions and schedule position</Text>
+          </View>
+          <Ionicons name={detailsOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
+        </TouchableOpacity>
+        {detailsOpen ? (
+          <View style={styles.reportDisclosureContent}>
+            <ReportInsightSection title="Current Conditions" items={briefing.projectConditions.map(condition =>
+              `${briefing.projectConditions.length > 1 ? `${condition.projectName}: ` : ''}${condition.currentReality}`
+            ).filter(item => item.replace(/^[^:]+:\s*/, '').trim())} />
+            <ReportInsightSection title="Schedule Position" items={briefing.schedulePosition} />
+          </View>
+        ) : null}
+      </View>
+    </>
+  );
+}
+
+function ReportStatusDistribution({ briefing }: { briefing: DAVEReportBriefing }) {
+  const status = briefing.dashboard.taskStatus;
+  const segments = [
+    { label: 'Complete', value: status.complete, color: colors.success },
+    { label: 'In Progress', value: status.inProgress, color: colors.primary },
+    { label: 'Waiting', value: status.waiting, color: colors.warning },
+    { label: 'Not Started', value: status.notStarted, color: colors.border },
+  ].filter(segment => segment.value > 0);
+  return (
+    <View style={styles.reportChartSection}>
+      <View style={styles.reportProgressHeader}>
+        <Text style={styles.reportDocumentSectionTitle}>Task Status</Text>
+        <Text style={styles.reportProgressHelper}>{status.total} tasks</Text>
+      </View>
+      {status.total ? (
+        <View style={styles.reportStatusChart} accessibilityLabel="Task status distribution">
+          {segments.map(segment => (
+            <View key={segment.label} style={[styles.reportStatusSegment, { flex: segment.value, backgroundColor: segment.color }]} />
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.reportChartEmpty}>No schedule tasks available.</Text>
+      )}
+      <View style={styles.reportChartLegend}>
+        {segments.map(segment => (
+          <View key={segment.label} style={styles.reportLegendItem}>
+            <View style={[styles.reportLegendDot, { backgroundColor: segment.color }]} />
+            <Text style={styles.reportLegendText}>{segment.label} · {segment.value}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function ReportScheduleHealth({ briefing }: { briefing: DAVEReportBriefing }) {
+  const health = briefing.dashboard.scheduleHealth;
+  return (
+    <View style={styles.reportChartSection}>
+      <Text style={styles.reportDocumentSectionTitle}>Schedule Health</Text>
+      <View style={styles.reportMetricRow}>
+        <ReportMetric label="On Track" value={health.onTrack} tone="stable" />
+        <ReportMetric label="Due Soon" value={health.dueSoon} tone="attention" />
+        <ReportMetric label="Overdue" value={health.overdue} tone="critical" />
+      </View>
+    </View>
+  );
+}
+
+function ReportMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'stable' | 'attention' | 'critical';
+}) {
+  return (
+    <View style={[
+      styles.reportMetric,
+      tone === 'stable' ? styles.reportMetricStable : tone === 'attention' ? styles.reportMetricAttention : styles.reportMetricCritical,
+    ]}>
+      <Text style={styles.reportMetricValue}>{value}</Text>
+      <Text style={styles.reportMetricLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function ReportSummaryCard({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: readonly string[];
+  tone: 'progress' | 'risk' | 'action';
+}) {
+  return (
+    <View style={[
+      styles.reportSummaryCard,
+      tone === 'risk' ? styles.reportSummaryRisk : tone === 'action' ? styles.reportSummaryAction : styles.reportSummaryProgress,
+    ]}>
+      <Text style={styles.reportSummaryTitle}>{title}</Text>
+      {items.map((item, index) => (
+        <Text selectable key={`${title}-${index}-${item}`} style={styles.reportSummaryText} numberOfLines={3}>
+          {index + 1}. {item}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
+function ReportAreaProgressRow({
+  area,
+}: {
+  area: DAVEReportBriefing['dashboard']['workAreas'][number];
+}) {
+  return (
+    <View style={styles.reportAreaProgressRow}>
+      <View style={styles.reportAreaProgressHeader}>
+        <Text style={styles.reportAreaProgressTitle} numberOfLines={1}>{area.areaName}</Text>
+        <Text style={styles.reportAreaProgressValue}>{area.averagePercent}%</Text>
+      </View>
+      <View style={styles.reportAreaProgressTrack}>
+        <View style={[styles.reportAreaProgressFill, { width: `${area.averagePercent}%` }]} />
+      </View>
+      <Text style={styles.reportAreaProgressMeta}>
+        {area.completeTaskCount} of {area.taskCount} task{area.taskCount === 1 ? '' : 's'} complete
+      </Text>
+    </View>
+  );
+}
+
+function ReportInsightSection({
+  title,
+  items,
+  emptyText,
+  emphasis,
+}: {
+  title: string;
+  items: readonly string[];
+  emptyText?: string;
+  emphasis?: 'risk' | 'decision' | 'action';
+}) {
+  const values = items.length ? items : emptyText ? [emptyText] : [];
+  if (!values.length) return null;
+  return (
+    <View style={styles.reportDocumentSection}>
+      <Text style={styles.reportDocumentSectionTitle}>{title}</Text>
+      <View style={styles.reportDocumentBulletList}>
+        {values.map((item, index) => (
+          <View key={`${title}-${index}-${item}`} style={styles.reportDocumentBulletRow}>
+            <View style={[
+              styles.reportInsightMarker,
+              emphasis === 'risk' && styles.reportInsightMarkerRisk,
+              emphasis === 'decision' && styles.reportInsightMarkerDecision,
+              emphasis === 'action' && styles.reportInsightMarkerAction,
+            ]} />
+            <Text style={styles.reportDocumentBulletText}>{item}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function ReportWorkArea({
+  area,
+}: {
+  area: PIEReportDraft['locationGroups'][number]['workAreas'][number];
+}) {
+  const [open, setOpen] = useState(false);
+  const title = area.projectName !== area.title
+    ? `${area.projectName} — ${area.title}`
+    : area.title;
+  return (
+    <View style={styles.reportDocumentArea}>
+      <TouchableOpacity
+        style={styles.reportAreaHeader}
+        onPress={() => setOpen(value => !value)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${title} work area`}
+      >
+        <View style={styles.reportAreaHeaderText}>
+          <Text style={styles.reportDocumentAreaTitle}>{title}</Text>
+          <Text style={styles.reportAreaMeta}>
+            {area.bullets.length} update{area.bullets.length === 1 ? '' : 's'} · {area.imageReferences.length} image{area.imageReferences.length === 1 ? '' : 's'}
+          </Text>
+        </View>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
+      </TouchableOpacity>
+      {open ? <View style={styles.reportDocumentBulletList}>
+        {area.bullets.map((bullet, index) => (
+          <View key={`${bullet.id}-${index}`} style={styles.reportDocumentBulletRow}>
+            <Text style={styles.reportDocumentBulletMarker}>•</Text>
+            <Text style={styles.reportDocumentBulletText}>
+              <Text style={styles.reportDocumentBulletLabel}>{reportPreviewBulletLabel(bullet.kind)}:{' '}</Text>
+              {bullet.text}
+            </Text>
+          </View>
+        ))}
+        {area.imageReferences.map((reference, index) => (
+          <View key={`${reference.photoId}-${index}`} style={styles.reportEvidenceReference}>
+            <Ionicons name="image-outline" size={16} color={colors.primary} />
+            <Text style={styles.reportEvidenceReferenceText}>
+              Image {reference.imageNumber} — {reference.caption || `Evidence from ${reference.areaName}`}
+            </Text>
+          </View>
+        ))}
+      </View> : null}
+    </View>
+  );
+}
+
+function formatReportDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function ReportShareButton({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity style={styles.reportShareButton} onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
+      <Ionicons name={icon} size={18} color={colors.primary} />
+      <Text style={styles.reportActionText}>{label}</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -1101,6 +1299,12 @@ function reportPreviewBulletLabel(kind: string) {
   if (kind === 'image_reference') return 'Evidence';
 
   return 'Progress';
+}
+
+function reportProjectKey(value: unknown) {
+  return typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    : '';
 }
 
 function DecisionLedgerPanel({
@@ -1162,7 +1366,7 @@ function DecisionLedgerPanel({
     decisions[0]?.id || null,
   );
   const [decisionReason, setDecisionReason] =
-    useState('Reviewed in DAVE Decision History.');
+    useState('Reviewed in Decision History.');
 
   const selectedDecision =
     decisions.find(decision => decision.id === selectedDecisionId) ||
@@ -1188,7 +1392,7 @@ function DecisionLedgerPanel({
           </Text>
 
           <Text style={styles.reporterHelp}>
-            Preserve what DAVE and the user knew before learning from the result.
+            Preserve what was known before learning from the result.
           </Text>
         </View>
       </View>
@@ -1209,14 +1413,14 @@ function DecisionLedgerPanel({
 
       {decisions.length === 0 ? (
         <Text style={styles.decisionHelperText}>
-          DAVE is monitoring reports for meaningful decisions. Routine notes and low-confidence drafts are ignored.
+          Reports are monitored for meaningful decisions. Routine notes and low-confidence drafts are ignored.
         </Text>
       ) : (
         <View style={styles.decisionStack}>
           <View style={styles.decisionSelectorRow}>
-            {decisions.slice(0, 3).map(decision => (
+            {decisions.slice(0, 3).map((decision, index) => (
               <TouchableOpacity
-                key={decision.id}
+                key={`${decision.id}-${index}`}
                 style={[
                   styles.decisionChip,
                   decision.id === selectedDecision?.id && styles.decisionChipSelected,
@@ -1243,10 +1447,10 @@ function DecisionLedgerPanel({
 
               <View style={styles.identityStatusPanel}>
                 <Text style={styles.reportPreviewLabel}>
-                  DAVE automation
+                  Automated monitoring
                 </Text>
                 <Text style={styles.reportListText}>
-                  DAVE detected this decision, preserved the original snapshot, and is watching project evidence for implementation and outcome support.
+                  This decision was detected, its original snapshot was preserved, and project evidence is being monitored for implementation and outcome support.
                 </Text>
                 <Text style={styles.reportListText}>
                   Evidence linked automatically: {linkedEvidence.length}
@@ -1294,7 +1498,7 @@ function DecisionLedgerPanel({
               </Text>
 
               <Text style={styles.decisionHelperText}>
-                Routine lifecycle steps are automated when evidence is strong enough. Use these controls only to approve a real decision, correct DAVE, or resolve an exception.
+                Automatic review handles routine lifecycle steps when evidence is strong enough. Use these controls only to approve a real decision, correct an interpretation, or resolve an exception.
               </Text>
 
               <View style={styles.reportActionRow}>
@@ -1384,7 +1588,7 @@ function DecisionLedgerPanel({
 function decisionAttentionSummary(decision: PIEDecisionRecord) {
   if (decision.currentStatus === 'proposed') return 'approval or rejection';
   if (decision.currentStatus === 'approved' && !decision.outcomePlan) {
-    return 'DAVE is preparing an outcome plan';
+    return 'Preparing an outcome plan';
   }
   if (decision.closeBlockers.length > 0) return decision.closeBlockers[0];
   if (decision.currentStatus === 'outcome_observed') return 'validate or dispute outcome';
@@ -1677,6 +1881,24 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
+  beforeShareDetails: {
+    gap: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.sm,
+  },
+
+  beforeShareWhyButton: {
+    minHeight: 42,
+    borderRadius: 8,
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+  },
+
   experienceMetaRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1893,6 +2115,43 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
 
+  reportOptionsToggle: {
+    minHeight: 52,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+
+  reportOptionsTitle: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+
+  reportOptionsSummary: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
+
+  reportOptionsPanel: {
+    gap: spacing.sm,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+  },
+
   reportEditFields: {
     gap: spacing.sm,
   },
@@ -1926,10 +2185,291 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
+  reportDocumentMeta: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
+
   reportDocumentRule: {
     height: 2,
     backgroundColor: colors.primary,
     borderRadius: 2,
+  },
+
+  reportConditionBanner: {
+    borderRadius: 10,
+    borderLeftWidth: 5,
+    padding: spacing.md,
+    gap: spacing.xs,
+  },
+
+  reportConditionCritical: {
+    backgroundColor: colors.dangerSoft,
+    borderLeftColor: colors.danger,
+  },
+
+  reportConditionAttention: {
+    backgroundColor: colors.warningSoft,
+    borderLeftColor: colors.warning,
+  },
+
+  reportConditionStable: {
+    backgroundColor: colors.successSoft,
+    borderLeftColor: colors.success,
+  },
+
+  reportConditionEyebrow: {
+    color: colors.mutedText,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+
+  reportConditionTitle: {
+    color: colors.text,
+    fontSize: 18,
+    lineHeight: 23,
+    fontWeight: '900',
+  },
+
+  reportConditionText: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+
+  reportConditionSchedule: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '800',
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.xs,
+  },
+
+  reportChartSection: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    gap: spacing.sm,
+  },
+
+  reportProgressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+
+  reportProgressHelper: {
+    color: colors.mutedText,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '800',
+  },
+
+  reportStatusChart: {
+    height: 14,
+    borderRadius: 7,
+    overflow: 'hidden',
+    flexDirection: 'row',
+    backgroundColor: colors.surfaceMuted,
+  },
+
+  reportStatusSegment: {
+    minWidth: 3,
+  },
+
+  reportChartLegend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+
+  reportLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xxs,
+  },
+
+  reportLegendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  reportLegendText: {
+    color: colors.mutedText,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+
+  reportChartEmpty: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
+
+  reportMetricRow: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+
+  reportMetric: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 10,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
+    gap: spacing.xxs,
+    alignItems: 'center',
+  },
+
+  reportMetricStable: {
+    backgroundColor: colors.successSoft,
+  },
+
+  reportMetricAttention: {
+    backgroundColor: colors.warningSoft,
+  },
+
+  reportMetricCritical: {
+    backgroundColor: colors.dangerSoft,
+  },
+
+  reportMetricValue: {
+    color: colors.text,
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+  },
+
+  reportMetricLabel: {
+    color: colors.mutedText,
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: '900',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+  },
+
+  reportSummaryStack: {
+    gap: spacing.xs,
+  },
+
+  reportSummaryCard: {
+    borderRadius: 10,
+    borderLeftWidth: 4,
+    padding: spacing.sm,
+    gap: spacing.xs,
+  },
+
+  reportSummaryProgress: {
+    borderLeftColor: colors.primary,
+    backgroundColor: colors.primarySoft,
+  },
+
+  reportSummaryRisk: {
+    borderLeftColor: colors.danger,
+    backgroundColor: colors.dangerSoft,
+  },
+
+  reportSummaryAction: {
+    borderLeftColor: colors.success,
+    backgroundColor: colors.successSoft,
+  },
+
+  reportSummaryTitle: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '900',
+  },
+
+  reportSummaryText: {
+    color: colors.text,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+
+  reportProgressSection: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    gap: spacing.sm,
+  },
+
+  reportAreaProgressList: {
+    gap: spacing.sm,
+  },
+
+  reportAreaProgressRow: {
+    gap: spacing.xxs,
+  },
+
+  reportAreaProgressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+
+  reportAreaProgressTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '900',
+  },
+
+  reportAreaProgressValue: {
+    color: colors.primary,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+  },
+
+  reportAreaProgressTrack: {
+    height: 7,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: colors.surfaceMuted,
+  },
+
+  reportAreaProgressFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+  },
+
+  reportAreaProgressMeta: {
+    color: colors.mutedText,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+
+  reportCompletedAreas: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.xs,
+    gap: spacing.sm,
   },
 
   reportDocumentIntro: {
@@ -1958,10 +2498,33 @@ const styles = StyleSheet.create({
   },
 
   reportDocumentArea: {
-    borderLeftWidth: 3,
-    borderLeftColor: colors.primarySoft,
-    paddingLeft: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+    borderRadius: 10,
+    padding: spacing.sm,
     gap: spacing.xs,
+  },
+
+  reportAreaHeader: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+
+  reportAreaHeaderText: {
+    flex: 1,
+    gap: spacing.xxs,
+  },
+
+  reportAreaMeta: {
+    color: colors.mutedText,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '700',
   },
 
   reportDocumentAreaTitle: {
@@ -1989,6 +2552,27 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
 
+  reportInsightMarker: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+    marginTop: 7,
+    marginRight: spacing.xs,
+  },
+
+  reportInsightMarkerRisk: {
+    backgroundColor: colors.danger,
+  },
+
+  reportInsightMarkerDecision: {
+    backgroundColor: colors.warning,
+  },
+
+  reportInsightMarkerAction: {
+    backgroundColor: colors.success,
+  },
+
   reportDocumentBulletText: {
     flex: 1,
     color: colors.text,
@@ -2007,6 +2591,112 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '600',
     marginTop: spacing.xs,
+  },
+
+  reportDisclosure: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    padding: spacing.sm,
+    gap: spacing.sm,
+  },
+
+  reportDisclosureHeader: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 9,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+
+  reportDisclosureHeaderText: {
+    flex: 1,
+    gap: spacing.xxs,
+  },
+
+  reportDisclosureTitle: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+
+  reportDisclosureSummary: {
+    color: colors.mutedText,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '700',
+  },
+
+  reportDisclosureContent: {
+    gap: spacing.md,
+    paddingHorizontal: spacing.xs,
+  },
+
+  reportSupportingLabel: {
+    color: colors.mutedText,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
+
+  reportEvidenceLine: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+
+  reportReasoningToggle: {
+    minHeight: 42,
+    borderRadius: 8,
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.xs,
+  },
+
+  reportReasoningToggleText: {
+    color: colors.primary,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '900',
+  },
+
+  reportReasoningText: {
+    color: colors.text,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '600',
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 8,
+    padding: spacing.sm,
+  },
+
+  reportEvidenceReference: {
+    borderRadius: 8,
+    backgroundColor: colors.primarySoft,
+    padding: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.xs,
+  },
+
+  reportEvidenceReferenceText: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '700',
   },
 
   segmentRow: {
@@ -2049,6 +2739,47 @@ const styles = StyleSheet.create({
 
   reportTypeTextSelected: {
     color: '#FFFFFF',
+  },
+
+  reportProjectPicker: {
+    gap: spacing.xs,
+  },
+
+  reportProjectOption: {
+    minHeight: 46,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+
+  reportProjectOptionSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
+  },
+
+  reportProjectOptionText: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+
+  reportProjectOptionTextSelected: {
+    color: colors.primary,
+    fontWeight: '900',
+  },
+
+  reportProjectSelectionHelper: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
   },
 
   reportStatusRow: {
@@ -2162,6 +2893,27 @@ const styles = StyleSheet.create({
   reportActionRow: {
     flexDirection: 'row',
     gap: spacing.xs,
+  },
+
+  reportShareMenu: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceMuted,
+    padding: spacing.xs,
+  },
+
+  reportShareButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xxs,
   },
 
   reportActionButtonPrimary: {

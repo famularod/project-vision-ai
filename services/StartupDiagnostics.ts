@@ -9,6 +9,8 @@ export type StartupDiagnosticStage =
   | 'reality_model_loaded'
   | 'executive_judgment_loaded'
   | 'shared_provider_ready'
+  | 'project_truth_persisted'
+  | 'project_truth_persistence_failed'
   | 'cloud_connection_attempted'
   | 'degraded_mode_entered'
   | 'startup_completed'

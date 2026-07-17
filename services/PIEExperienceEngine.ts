@@ -365,7 +365,7 @@ export function getPrimaryMessage(
     return getReviewPrimaryMessage({ runtime, context }, state);
   }
 
-  if (state === 'greeting') return 'Good morning. DAVE is ready to focus the day.';
+  if (state === 'greeting') return 'Good morning. Your project priorities are ready.';
   if (state === 'mission') return `Current mission: ${runtime.currentMission.title}.`;
   if (state === 'collect_evidence') {
     if (context?.decisionMemory?.whenNotToActReasons[0]) {
@@ -408,7 +408,7 @@ export function getPrimaryMessage(
       attentionState.whatMattersNow;
   }
   if (state === 'blocked' && context?.executiveReasoning?.biggestRisk) {
-    return `DAVE needs to verify executive risk: ${context.executiveReasoning.biggestRisk.risk}.`;
+    return `Executive risk needs verification: ${context.executiveReasoning.biggestRisk.risk}.`;
   }
   if (state === 'blocked' && context?.decisionMemory?.whenNotToActReasons[0]) {
     return context.decisionMemory.whenNotToActReasons[0].recommendedAlternative;
@@ -434,17 +434,17 @@ export function getPrimaryMessage(
   }
   if (state === 'blocked' && context?.realityModel?.objects[0]) {
     return context.objectIntelligence?.objectNextBestActions[0]?.action ||
-      `DAVE needs to verify: ${context.realityModel.objects[0].name}.`;
+      `Verification needed: ${context.realityModel.objects[0].name}.`;
   }
   if (state === 'blocked' && context?.beliefsNeedingVerification?.[0]) {
-    return `DAVE needs to verify: ${context.beliefsNeedingVerification[0].statement}.`;
+    return `Verification needed: ${context.beliefsNeedingVerification[0].statement}.`;
   }
-  if (state === 'thinking') return 'DAVE is processing the new evidence.';
+  if (state === 'thinking') return 'Processing the new evidence.';
   if (state === 'review') return 'A project update is ready for review.';
   if (state === 'communicate') return 'The approved update is ready to communicate.';
   if (state === 'complete') return 'The current mission is complete.';
 
-  return 'DAVE needs one correction before moving forward.';
+  return 'One correction is needed before moving forward.';
 }
 
 export function getExperienceReason(
@@ -508,7 +508,7 @@ export function getExperienceReason(
     if (context?.deliberation) {
       const alternative = context.deliberation.alternativesConsidered[1]?.action;
       return alternative
-        ? `${context.deliberation.explanation} DAVE considered ${alternative}, but selected this action based on readiness and trade-offs.`
+        ? `${context.deliberation.explanation} ${alternative} was considered, but this action was selected based on readiness and trade-offs.`
         : context.deliberation.explanation;
     }
 
@@ -527,12 +527,12 @@ export function getExperienceReason(
   }
 
   if (state === 'thinking') {
-    return 'Fresh evidence should be fused into Runtime before DAVE asks for the next decision.';
+    return 'Fresh evidence should be processed before the next decision is requested.';
   }
 
   if (state === 'review') {
     return runtime.response.reportNeedsReview
-      ? 'DAVE has report material that needs user review before communication.'
+      ? 'Report material needs user review before communication.'
       : 'Reporter readiness indicates the draft can be reviewed.';
   }
 
@@ -678,11 +678,11 @@ function getWalkPrimaryMessage(
     'the current area';
 
   if (state === 'confirm_location') {
-    return `DAVE believes you are at ${project} / ${area}.`;
+    return `Suggested location: ${project} / ${area}.`;
   }
 
   if (state === 'capture_photo') {
-    return `DAVE needs one progress photo for ${area}.`;
+    return `One progress photo is needed for ${area}.`;
   }
 
   if (state === 'capture_note') {
@@ -723,12 +723,12 @@ function getWalkReason(
   }
 
   if (state === 'capture_note') {
-    return 'A short note helps DAVE connect the photo to progress, issues, safety, and next actions.';
+    return 'A short note connects the photo to progress, issues, safety, and next actions.';
   }
 
   if (state === 'verify_progress') {
     return context?.photoProgressStatus ||
-      'DAVE needs the user to verify what changed before it treats the photo as project evidence.';
+      'Verify what changed before the photo is treated as project evidence.';
   }
 
   if (state === 'continue_walk') {
@@ -737,7 +737,7 @@ function getWalkReason(
   }
 
   if (state === 'finish_walk') {
-    return 'DAVE has enough Walk evidence to prepare the update for review.';
+    return 'There is enough Project Walk evidence to prepare the update for review.';
   }
 
   return 'The Walk update should be reviewed before it becomes saved project evidence.';
@@ -837,7 +837,7 @@ function getReviewPrimaryMessage(
   { context }: Pick<PIEExperienceInput, 'runtime' | 'context'>,
   state: PIEExperienceState,
 ) {
-  if (state === 'report_ready') return "DAVE prepared today's project update.";
+  if (state === 'report_ready') return "Today's project update is prepared.";
   if (state === 'report_needs_review') {
     const count = buildReviewWarnings(context?.reportDraft).length || 1;
     return `${count} item${count === 1 ? '' : 's'} need review before this report is ready.`;
@@ -847,7 +847,7 @@ function getReviewPrimaryMessage(
   if (state === 'communicate_ready') return 'Report is ready to send.';
   if (state === 'communication_complete') return 'Communication complete.';
 
-  return 'Generate a DAVE project update for review.';
+  return 'Generate a project update for review.';
 }
 
 function getReviewReason(
@@ -863,7 +863,7 @@ function getReviewReason(
   if (state === 'report_needs_review') {
     return warning ||
       runtime.evidenceGaps[0]?.summary ||
-      'DAVE found items that need review before communication, including possible schedule or photo progress context.';
+      'Some items need review before communication, including possible schedule or photo progress context.';
   }
   if (state === 'report_editing') {
     return 'User edits should happen before approval so final communication stays intentional.';
