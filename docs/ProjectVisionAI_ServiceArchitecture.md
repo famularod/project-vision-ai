@@ -56,9 +56,9 @@ Preserve until their production integration is explicitly decided:
 
 These are exercised by architecture, photo-intelligence, persistence, or traceability validation even when the current mobile import graph does not reach them.
 
-### Legacy feature islands requiring coordinated removal
+### Removed legacy feature islands
 
-These services are connected to components that are themselves outside the live mobile graph. Remove them only as one reviewed legacy-surface cleanup so their types, components, docs, and stale navigation identifiers leave together:
+These services were connected only to components that were themselves outside the live mobile graph. The services, their orphan card/filter components, and stale navigation identifiers were removed together:
 
 - `AIProjectCoach.ts`
 - `ConstructionTimelineService.ts`
@@ -70,6 +70,8 @@ These services are connected to components that are themselves outside the live 
 - `ProjectAIAnalysisService.ts`
 - `ProjectRiskService.ts`
 - `WeeklyExecutiveReportService.ts`
+
+After coordinated cleanup, the reachability ratchet is five. Those five files are the deliberate validation and persistence foundations listed above; no legacy product feature island remains in the non-live service list.
 
 ## Rules
 

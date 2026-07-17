@@ -15,7 +15,6 @@ const excludedDirectories = new Set([
   'e2e',
   'ios',
   'node_modules',
-  'project_photo_update_refactor_phase1',
   'scripts',
   'supabase',
   'tests',
@@ -130,7 +129,7 @@ for (const service of result.unreachableServices) {
 }
 
 if (process.argv.includes('--assert')) {
-  const maximumUnreachableServices = 15;
+  const maximumUnreachableServices = 5;
   if (result.unreachableServiceCount > maximumUnreachableServices) {
     console.error(
       `FAIL unreachable service count grew beyond ${maximumUnreachableServices}.`,
