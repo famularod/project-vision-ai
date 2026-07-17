@@ -707,11 +707,13 @@ Use this checklist before release handoff:
 
 ## Active QA Runner
 
-JARVIS now includes a lightweight local static runner:
+JARVIS includes a lightweight local static contract runner:
 
 ```bash
 npm run jarvis:qa
 ```
+
+`jarvis:qa` is an alias for `jarvis:contracts`. It verifies required architecture, documentation, exports, safety boundaries, and source markers. It does not prove runtime behavior or visual correctness. Executable behavior, end-to-end workflows, and physical-device validation are separate quality layers defined in `docs/ProjectVisionAI_TestingStrategy.md`.
 
 The active runner checks the highest-risk pre-field-test pathways:
 
@@ -796,27 +798,26 @@ Runner statuses:
 
 ## Active QA Release Gate
 
-Before TestFlight or field testing, run:
+Before TestFlight or field testing, run the combined local release gate:
 
 ```bash
-npm run check
-npm run jarvis:qa
+npm run qa:release
 ```
 
-A release is blocked by any `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk.
+Then run Maestro and physical-device validation for the coherent build milestone. A release is blocked by any executable failure or JARVIS `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk.
 
-## Current Lightweight QA Foundation
+## QA Foundation
 
-The first JARVIS QA implementation combines the checklist above with the active static runner.
+The original JARVIS implementation established a useful static contract runner. The current foundation separates compile safety, executable Jest behavior, existing domain scenarios, static JARVIS contracts, Maestro workflows, and physical-device validation.
 
-This is intentional for the first automation step:
+This separation is intentional:
 
-- It adds no packages.
-- It does not change build tooling beyond a local npm script.
-- It does not affect Supabase, storage, schema, or external AI.
-- It gives every release a repeatable manual and local QA contract immediately.
+- A static marker cannot substitute for runtime behavior.
+- A unit test cannot substitute for an end-to-end field workflow.
+- A simulator cannot fully substitute for camera, location, sync, and native sign-in on the physical phone.
+- Each passing command communicates exactly which risk was checked.
 
-The next safe step is to pair the static runner with Maestro and screenshot review once the screen labels and navigation targets are stable.
+The release gate does not alter Supabase, storage, schema, authentication, or external AI configuration.
 
 ## Future Automated Screenshot Comparison
 
