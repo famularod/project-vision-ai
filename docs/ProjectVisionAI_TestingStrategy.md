@@ -28,7 +28,17 @@ Jest with the Expo preset imports production modules and renders React Native co
 
 Newly extracted services, hooks, reducers, and components must add executable tests. Tests should assert behavior, not source wording.
 
-### 3. Existing domain scenario harnesses
+### 3. Architecture ratchets
+
+Command:
+
+```bash
+npm run test:architecture
+```
+
+Architecture ratchets prevent known structural debt from growing while it is extracted safely. The initial ratchet prevents `App.tsx` from exceeding its Build 48 baseline and requires navigation state to remain outside the application shell. The line budget must move downward as extractions land; it must not be raised to accommodate new features.
+
+### 4. Existing domain scenario harnesses
 
 Command:
 
@@ -44,7 +54,7 @@ The combined executable behavior command is:
 npm run test:behavior
 ```
 
-### 4. Static architecture contracts
+### 5. Static architecture contracts
 
 Commands:
 
@@ -55,7 +65,7 @@ npm run jarvis:qa
 
 JARVIS contracts verify that required services, documents, exports, boundaries, and safety markers exist. They are static architecture checks. A PASS does not by itself prove that the app behaves correctly or renders correctly.
 
-### 5. End-to-end device workflows
+### 6. End-to-end device workflows
 
 Command:
 

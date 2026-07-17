@@ -8,13 +8,18 @@ const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const app = read('App.tsx');
+const navigation = read('hooks/use-app-navigation.ts');
 const bottomNav = read('components/app-bottom-tabs.tsx');
 const home = read('components/HomeDashboard.tsx');
 const capture = read('components/PhotoCapturePanel.tsx');
 const review = read('screens/ReportsScreen.tsx');
 const settings = read('screens/AdminScreen.tsx');
 
-assert(app.includes("useState<Screen>('Home')"), 'app should open on Home');
+assert(
+  app.includes("useAppNavigation('Home')") &&
+    navigation.includes("initialScreen: AppScreen = 'Home'"),
+  'app should open on Home through the typed navigation controller',
+);
 assert(bottomNav.includes('label="Overview"'), 'bottom nav should start with Overview');
 assert(!bottomNav.includes('label="Projects"'), 'Projects should not duplicate the parent-project Overview workflow');
 assert(!bottomNav.includes('label="Updates"'), 'Field Activity should be reached from Overview, not a primary tab');

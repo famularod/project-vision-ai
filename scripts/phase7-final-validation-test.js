@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const app = read('App.tsx');
+const appShellFrame = read('components/app-shell-frame.tsx');
 const bottomNav = read('components/app-bottom-tabs.tsx');
 const sync = read('services/SyncService.ts');
 const lifecycle = read('services/FieldUpdateLifecycle.ts');
@@ -29,7 +30,8 @@ const phase6 = read('scripts/phase6-documents-foundation-test.js');
 });
 
 assert(
-  app.includes('<AppBottomTabs') &&
+  app.includes('<AppShellFrame') &&
+    appShellFrame.includes('<AppBottomTabs') &&
     app.includes("screen === 'Reports'") &&
     app.includes('<ReportsScreen'),
   'App must render the extracted live bottom tabs and Reports screen.',

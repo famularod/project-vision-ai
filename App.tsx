@@ -34,7 +34,7 @@ import {
 } from './services/SupabaseService';
 import { AdminScreen, SignInModal } from './screens/AdminScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
-import { AppBottomTabs } from './components/app-bottom-tabs';
+import { AppShellFrame } from './components/app-shell-frame';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { DAVEAskExperience } from './components/DAVEAskExperience';
@@ -67,7 +67,6 @@ import * as Location from 'expo-location';
 import * as MailComposer from 'expo-mail-composer';
 import * as Sharing from 'expo-sharing';
 import * as SMS from 'expo-sms';
-import { StatusBar } from 'expo-status-bar';
 import {
   analyzeProjectPhotoWithVision,
   buildAnalyzingPhotoIntelligenceState,
@@ -243,6 +242,7 @@ import {
   recognizeTextFromImage,
 } from './modules/dave-text-recognition';
 import type { AppScreen } from './types/app-navigation';
+import { useAppNavigation } from './hooks/use-app-navigation';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -251,7 +251,6 @@ import {
   AppState,
   FlatList,
   Image,
-  KeyboardAvoidingView,
   Linking,
   Modal,
   PanResponder,
@@ -5153,7 +5152,8 @@ export default function App() {
 function AppShell() {
   const insets = useSafeAreaInsets();
 
-  const [screen, setScreen] = useState<Screen>('Home');
+  const { screen, setScreen, returnScreen: contactsReturnScreen,
+    setReturnScreen: setContactsReturnScreen } = useAppNavigation('Home');
 
   const [savedUpdatesEntryFilter, setSavedUpdatesEntryFilter] = useState<{
     tab: 'Sent';
@@ -5259,9 +5259,6 @@ function AppShell() {
 
   const [contactBook, setContactBook] =
     useState<ContactBook>({ contacts: [] });
-
-  const [contactsReturnScreen, setContactsReturnScreen] =
-    useState<Screen>('Home');
 
   const [draft, setDraft] = useState<ProjectUpdate>(() =>
     createDraft(DEFAULT_PROJECTS[0]),
@@ -11005,21 +11002,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   return (
     <PIELiveAuthorityProvider input={liveAuthorityInput}>
-      <SafeAreaView
-        style={styles.shell}
-        edges={['left', 'right', 'bottom']}
+      <AppShellFrame
+        currentScreen={screen}
+        onScreenChange={setScreen}
+        onTalk={openTalk}
       >
-        <StatusBar style="dark" />
-
-        <KeyboardAvoidingView
-          behavior={
-            Platform.OS === 'ios'
-              ? 'padding'
-              : undefined
-          }
-          style={styles.keyboard}
-        >
-          <View style={styles.appFrame}>
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}
@@ -11686,14 +11673,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             onCancel={() => setTalkTaskAction(null)}
           />
 
-          <AppBottomTabs
-            current={screen}
-            onChange={setScreen}
-            onTalk={openTalk}
-          />
-          </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
+      </AppShellFrame>
     </PIELiveAuthorityProvider>
   );
 }
@@ -20302,15 +20282,6 @@ function statusStyleForRole(role: StatusStyleRole) {
 }
 
 const styles = StyleSheet.create({
-  shell: {
-    flex: 1,
-    backgroundColor: colors.bg,
-  },
-
-  keyboard: {
-    flex: 1,
-  },
-
   appFrame: {
     flex: 1,
   },
