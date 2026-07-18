@@ -5555,16 +5555,26 @@ useEffect(() => {
 
       void Promise.all(mergedRecords.map(async project => {
         if (!project.coverPhoto?.remotePath) return;
+        const hydrationTarget = project.coverPhoto;
+        const hydrationVersion =
+          project.coverPhotoUpdatedAt || hydrationTarget.updatedAt || null;
         const hydrated = await hydrateProjectCoverPhotoCache(
           authorityProjectId(project.name),
-          project.coverPhoto,
+          hydrationTarget,
         );
-        if (hydrated.localUri === project.coverPhoto?.localUri) return;
-        setProjectRecords(previous => previous.map(item =>
-          item.name.toLowerCase() === project.name.toLowerCase()
-            ? { ...item, coverPhoto: hydrated }
-            : item,
-        ));
+        if (hydrated.localUri === hydrationTarget.localUri) return;
+        // Audit P1-58: compare-and-swap — apply hydrated bytes only if the
+        // record still references the exact cover version we downloaded.
+        // A newer selection or a removal since hydration started must win.
+        setProjectRecords(previous => previous.map(item => {
+          if (item.name.toLowerCase() !== project.name.toLowerCase()) return item;
+          if (!item.coverPhoto) return item;
+          if (item.coverPhoto.remotePath !== hydrationTarget.remotePath) return item;
+          const currentVersion =
+            item.coverPhotoUpdatedAt || item.coverPhoto.updatedAt || null;
+          if (currentVersion !== hydrationVersion) return item;
+          return { ...item, coverPhoto: hydrated };
+        }));
       }));
     } catch (error) {
       startupHydration.fail(PROJECTS_STORAGE_KEY, 'saved projects', error);
