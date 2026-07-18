@@ -42,6 +42,7 @@ export type DAVEAssertionStatus =
   | 'safety_issue_present'
   | 'safety_clear'
   | 'blocked'
+  | 'delayed'
   | 'unblocked'
   | 'blocker_resolved'
   | 'blocker_unresolved';
@@ -211,7 +212,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     priority: 55,
   },
   {
-    pattern: /\bnot\s+(?:yet\s+)?approved\b/gi,
+    pattern: /\bnot\s+(?:yet\s+)?(?:approved|accepted)\b|\brejected\b/gi,
     predicate: 'approved',
     status: 'not_approved',
     polarity: 'negated',
@@ -255,7 +256,6 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     status: 'unblocked',
     polarity: 'negated',
     priority: 120,
-    fixedSubject: 'blocker',
   },
   {
     pattern: /\b(?:blocker|blocking\s+issue)\b.{0,24}\b(?:resolved|cleared|closed|removed)\b|\b(?:resolved|cleared|closed|removed)\b.{0,24}\b(?:blocker|blocking\s+issue)\b/gi,
@@ -266,7 +266,21 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'blocker',
   },
   {
-    pattern: /\b(?:blocked|delayed|waiting|on\s+hold|cannot\s+proceed|blocking\s+issue|blocker(?:\s+(?:remains?|exists?|present|active))?)\b/gi,
+    pattern: /\bdelayed\b/gi,
+    predicate: 'blocker_present',
+    status: 'delayed',
+    polarity: 'affirmed',
+    priority: 92,
+  },
+  {
+    pattern: /\b(?:blocked|waiting|on\s+hold|cannot\s+proceed)\b/gi,
+    predicate: 'blocker_present',
+    status: 'blocked',
+    polarity: 'affirmed',
+    priority: 90,
+  },
+  {
+    pattern: /\b(?:blocking\s+issue|blocker(?:\s+(?:remains?|exists?|present|active))?)\b/gi,
     predicate: 'blocker_present',
     status: 'blocked',
     polarity: 'affirmed',
@@ -327,7 +341,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     priority: 50,
   },
   {
-    pattern: /\bapproved\b/gi,
+    pattern: /\b(?:approved|accepted)\b/gi,
     predicate: 'approved',
     status: 'approved',
     polarity: 'affirmed',
@@ -451,7 +465,9 @@ export function classifyDAVEBlocker(
   const certainAssertions = assertions.filter(isCertainAssertion);
 
   if (certainAssertions.some(assertion =>
-    assertion.status === 'blocked' || assertion.status === 'blocker_unresolved',
+    assertion.status === 'blocked' ||
+    assertion.status === 'delayed' ||
+    assertion.status === 'blocker_unresolved',
   )) {
     return 'blocked';
   }

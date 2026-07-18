@@ -1,4 +1,14 @@
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import {
+  classifyDAVEBlocker,
+  classifyDAVECompletion,
+  classifyDAVEImplementation,
+  classifyDAVEIssue,
+  classifyDAVEOutcome,
+  classifyDAVESafety,
+  isDAVECurrentCertainAssertion,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIERealityObjectType =
   | 'project'
@@ -1332,15 +1342,66 @@ function readinessForObjects(objects: PIERealityObject[]): PIERealityReadiness {
 }
 
 function inferStatus(source: PIERealitySourceObject): PIERealityObjectStatus {
-  const text = `${source.name} ${source.summary || ''}`.toLowerCase();
   if (source.stale || source.uncertain) return 'needs_verification';
-  if (/contradict|conflict|does not match|disputed/.test(text)) return 'contradicted';
-  if (/blocked|failed|rejected|overdue|open issue|safety concern/.test(text)) return 'blocked';
-  if (/risk|at risk|delay|slip|concern/.test(text)) return 'at_risk';
-  if (/complete|resolved|approved|accepted|done/.test(text)) return 'complete';
-  if (/ready|inspection/.test(text)) return 'ready';
-  if (/start|started|progress|active|install|rough-in/.test(text)) return 'in_progress';
-  if (/not started|waiting/.test(text)) return 'not_started';
+  const text = `${source.name} ${source.summary || ''}`;
+  const parsed = parseDAVEAssertions(text);
+  const completion = classifyDAVECompletion(parsed);
+  const implementation = classifyDAVEImplementation(parsed);
+  const blocker = classifyDAVEBlocker(parsed);
+  const safety = classifyDAVESafety(parsed);
+  const issue = classifyDAVEIssue(parsed);
+  const outcome = classifyDAVEOutcome(parsed);
+  const currentAssertions = parsed.assertions.filter(isDAVECurrentCertainAssertion);
+  const languageConflict = parsed.conflicts.length > 0 ||
+    [completion, implementation, blocker, safety, issue, outcome]
+      .some(classification => classification === 'conflicting');
+
+  if (languageConflict || /\b(?:contradicting|contradictory|does not match|disputed)\b/i.test(text)) {
+    return 'contradicted';
+  }
+  if (currentAssertions.some(assertion => assertion.status === 'delayed')) return 'at_risk';
+  if (
+    blocker === 'blocked' ||
+    safety === 'issue_present' ||
+    currentAssertions.some(assertion => assertion.status === 'outcome_failed') ||
+    (issue === 'issue_present' &&
+      (source.type === 'issue' || source.type === 'risk' || source.type === 'safety_observation'))
+  ) {
+    return 'blocked';
+  }
+  if (/\b(?:risk|at risk|slip|concern|overdue)\b/i.test(text)) return 'at_risk';
+  if (
+    completion === 'complete' ||
+    blocker === 'resolved' ||
+    safety === 'no_issue_observed' ||
+    issue === 'no_issue_observed' ||
+    outcome === 'successful' ||
+    currentAssertions.some(assertion => assertion.status === 'approved')
+  ) {
+    return 'complete';
+  }
+  if (currentAssertions.some(assertion => assertion.status === 'not_started')) {
+    return 'not_started';
+  }
+  if (
+    completion === 'not_complete' ||
+    implementation === 'implemented' ||
+    implementation === 'in_progress'
+  ) {
+    return 'in_progress';
+  }
+  if (implementation === 'not_implemented') return 'not_started';
+  if (
+    currentAssertions.some(assertion => assertion.status === 'not_approved') ||
+    parsed.assertions.some(assertion =>
+      assertion.polarity === 'uncertain' ||
+      assertion.modality === 'conditional' ||
+      assertion.temporality === 'future'
+    )
+  ) {
+    return 'needs_verification';
+  }
+  if (/\b(?:ready|inspection)\b/i.test(text)) return 'ready';
   return 'unknown';
 }
 

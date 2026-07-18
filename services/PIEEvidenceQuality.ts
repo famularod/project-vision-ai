@@ -1,4 +1,9 @@
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import {
+  isDAVECurrentCertainAssertion,
+  parseDAVEAssertions,
+  type DAVENormalizedAssertion,
+} from './DAVEAssertionParser';
 
 export type PIEEvidenceQualityLevel =
   | 'strong'
@@ -244,18 +249,78 @@ export function scoreEvidenceRelevance(
 export function detectEvidenceConflicts(
   evidence: PIEEvidenceQualityInput[],
 ): PIEEvidenceConflict[] {
-  const summaries = evidence.map(item => item.summary.toLowerCase());
-  const hasComplete = summaries.some(item => /complete|resolved|approved|accepted|done/.test(item));
-  const hasBlocked = summaries.some(item => /blocked|failed|rejected|overdue|open issue|safety concern/.test(item));
+  const signals = evidence.flatMap(item =>
+    parseDAVEAssertions(item.summary).assertions
+      .filter(isDAVECurrentCertainAssertion)
+      .map(assertion => evidenceAuthoritySignal(item.id, assertion))
+      .filter((signal): signal is EvidenceAuthoritySignal => Boolean(signal)),
+  );
+  const conflictEvidenceIds = new Set<string>();
 
-  return hasComplete && hasBlocked
+  for (let leftIndex = 0; leftIndex < signals.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < signals.length; rightIndex += 1) {
+      const left = signals[leftIndex];
+      const right = signals[rightIndex];
+      if (
+        left.stance !== right.stance &&
+        left.subject === right.subject
+      ) {
+        conflictEvidenceIds.add(left.evidenceId);
+        conflictEvidenceIds.add(right.evidenceId);
+      }
+    }
+  }
+
+  return conflictEvidenceIds.size > 0
     ? [{
         id: 'evidence-conflict-status',
-        evidenceIds: evidence.map(item => item.id),
-        summary: 'Evidence contains both complete/resolved and blocked/open-risk signals.',
+        evidenceIds: [...conflictEvidenceIds],
+        summary: 'Evidence contains contradictory current status assertions for the same subject.',
         severity: 'high',
       }]
     : [];
+}
+
+type EvidenceAuthoritySignal = Readonly<{
+  evidenceId: string;
+  subject: string | null;
+  stance: 'positive' | 'negative';
+}>;
+
+function evidenceAuthoritySignal(
+  evidenceId: string,
+  assertion: DAVENormalizedAssertion,
+): EvidenceAuthoritySignal | null {
+  const positiveStatuses = new Set([
+    'complete',
+    'approved',
+    'outcome_succeeded',
+    'blocker_resolved',
+    'unblocked',
+    'safety_clear',
+    'issue_clear',
+  ]);
+  const negativeStatuses = new Set([
+    'incomplete',
+    'not_started',
+    'in_progress',
+    'not_approved',
+    'outcome_failed',
+    'outcome_partial',
+    'blocked',
+    'delayed',
+    'blocker_unresolved',
+    'safety_issue_present',
+    'issue_present',
+  ]);
+
+  if (positiveStatuses.has(assertion.status)) {
+    return { evidenceId, subject: assertion.subject, stance: 'positive' };
+  }
+  if (negativeStatuses.has(assertion.status)) {
+    return { evidenceId, subject: assertion.subject, stance: 'negative' };
+  }
+  return null;
 }
 
 export function rankEvidenceByUsefulness(
