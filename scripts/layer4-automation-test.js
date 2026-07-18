@@ -43,8 +43,10 @@ function loadTs(relativePath, mocks = {}) {
 }
 
 const ledger = loadTs('services/PIEDecisionLedger.ts');
+const assertionParser = loadTs('services/DAVEAssertionParser.ts');
 const automation = loadTs('services/PIELayer4Automation.ts', {
   './PIEDecisionLedger': ledger,
+  './DAVEAssertionParser': assertionParser,
   './PIEExecutiveJudgmentRepository': {
     requirePersistedExecutiveJudgment: record => record,
   },
@@ -307,6 +309,41 @@ const actual = automation.comparePredictedAndActualOutcomesAutomatically(
 );
 assert(actual.predictionComparisons.length > 0, 'predicted and actual outcomes should be compared automatically');
 assert.strictEqual(actual.validationStatus, 'unvalidated', 'DAVE must not validate its own outcome comparison');
+
+for (const summary of [
+  'Electrical rough-in is not complete.',
+  'Electrical rough-in will be complete tomorrow.',
+  'Electrical rough-in might be complete.',
+  'Electrical rough-in will be complete if inspection passes.',
+]) {
+  const adversarialEvidence = { ...evidence, id: `adversarial-${summary}`, summary };
+  const quality = automation.proposeImplementationQualityFromEvidence(approved, [adversarialEvidence]);
+  assert.notStrictEqual(
+    quality.quality,
+    'high_fidelity',
+    `${summary} must not become high-fidelity implementation evidence`,
+  );
+}
+
+const incompleteOutcome = automation.comparePredictedAndActualOutcomesAutomatically(
+  approved,
+  [{ ...evidence, id: 'not-complete-outcome', summary: 'Electrical rough-in is not complete.' }],
+  actor,
+);
+assert.strictEqual(incompleteOutcome.classification, 'unsuccessful');
+
+for (const summary of [
+  'Electrical rough-in will be complete tomorrow.',
+  'Electrical rough-in might be complete.',
+  'Electrical rough-in will be complete if inspection passes.',
+]) {
+  const outcome = automation.comparePredictedAndActualOutcomesAutomatically(
+    approved,
+    [{ ...evidence, id: `future-outcome-${summary}`, summary }],
+    actor,
+  );
+  assert.strictEqual(outcome.classification, 'inconclusive', `${summary} must not become an observed outcome`);
+}
 
 const corrected = ledger.appendDecisionSnapshotVersion(
   automated.decision,

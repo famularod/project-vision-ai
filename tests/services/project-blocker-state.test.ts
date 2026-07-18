@@ -82,4 +82,43 @@ describe('current project blocker state', () => {
 
     expect(findCurrentDAVEConfirmedBlocker([blocker, otherAreaResolution])).toBe(blocker);
   });
+
+  it.each([
+    'The blocker is not resolved.',
+    'The blocker will be resolved tomorrow.',
+    'The blocker might be resolved.',
+    'The blocker will be resolved if material arrives.',
+  ])('does not let non-current resolution language clear a blocker: %s', notes => {
+    const blocker = update({
+      id: 'active-blocker',
+      date: '2026-07-16T12:00:00.000Z',
+      blockerFlag: true,
+    });
+    const ambiguousResolution = update({
+      id: 'ambiguous-resolution',
+      date: '2026-07-17T12:00:00.000Z',
+      notes,
+    });
+
+    expect(findCurrentDAVEConfirmedBlocker([blocker, ambiguousResolution])).toBe(blocker);
+  });
+
+  it('does not let a closed issue clear a separate safety concern in the same area', () => {
+    const safetyConcern = update({
+      id: 'open-safety',
+      date: '2026-07-16T12:00:00.000Z',
+      safetyFlag: true,
+    });
+    const closedIssue = update({
+      id: 'closed-issue',
+      date: '2026-07-17T12:00:00.000Z',
+      photos: [{
+        category: 'Open Issue',
+        actionStatus: 'Closed',
+        selectedAreaName: 'Canopy A',
+      }],
+    });
+
+    expect(findCurrentDAVEConfirmedBlocker([safetyConcern, closedIssue])).toBe(safetyConcern);
+  });
 });

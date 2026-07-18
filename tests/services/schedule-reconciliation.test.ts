@@ -233,4 +233,60 @@ describe('schedule reconciliation authority', () => {
       }),
     ]));
   });
+
+  it.each([
+    'Place concrete paving will be complete tomorrow.',
+    'Place concrete paving might be complete.',
+    'Place concrete paving will be complete if inspection passes.',
+    'Place concrete paving is not approved.',
+    'No safety issues observed.',
+    'Place concrete paving will be blocked tomorrow.',
+    'The blocker might be resolved if material arrives.',
+    'Place concrete paving is complete, but Place concrete paving is not complete.',
+  ])('does not promote non-current or conflicting language to a field status: %s', notes => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem()],
+      updates: [{
+        id: 'adversarial-update',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes,
+        scheduleItemId: 'task-1',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.matches[0].signal).toBe('unknown');
+    expect(result.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'field_progress_not_reflected' }),
+    ]));
+  });
+
+  it.each([
+    'Place concrete paving is not complete.',
+    'Place concrete paving is incomplete.',
+    'Place concrete paving has not started.',
+    'Place concrete paving is partially complete.',
+  ])('preserves explicit unfinished field language: %s', notes => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({ status: 'Complete', percentComplete: 100 })],
+      updates: [{
+        id: 'unfinished-update',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes,
+        scheduleItemId: 'task-1',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.matches[0].signal).toBe('in_progress');
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'schedule_status_conflict' }),
+    ]));
+  });
 });

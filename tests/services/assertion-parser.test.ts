@@ -1,6 +1,9 @@
 import {
   classifyDAVEBlocker,
   classifyDAVECompletion,
+  classifyDAVEImplementation,
+  classifyDAVEIssue,
+  classifyDAVEOutcome,
   classifyDAVESafety,
   parseDAVEAssertions,
 } from '../../services/DAVEAssertionParser';
@@ -152,5 +155,20 @@ describe('DAVE assertion parser', () => {
 
     expect(classifyDAVESafety(safety)).toBe('conflicting');
     expect(classifyDAVEBlocker(blocker)).toBe('conflicting');
+  });
+
+  it('keeps implementation and outcome decisions polarity- and time-aware', () => {
+    expect(classifyDAVEImplementation('The installation is not complete.')).toBe('in_progress');
+    expect(classifyDAVEImplementation('The installation was implemented.')).toBe('no_assertion');
+    expect(classifyDAVEImplementation('The installation will be implemented tomorrow.')).toBe('no_assertion');
+    expect(classifyDAVEOutcome('The inspection passed.')).toBe('successful');
+    expect(classifyDAVEOutcome('The inspection failed.')).toBe('unsuccessful');
+    expect(classifyDAVEOutcome('The inspection might pass if power is available.')).toBe('uncertain');
+  });
+
+  it('does not turn explicit clear language into an issue or blocker', () => {
+    expect(classifyDAVEIssue('No issues were observed.')).toBe('no_issue_observed');
+    expect(classifyDAVEBlocker('The work is not blocked.')).toBe('resolved');
+    expect(classifyDAVESafety('The area is not unsafe.')).toBe('no_issue_observed');
   });
 });

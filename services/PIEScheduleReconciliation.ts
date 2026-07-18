@@ -4,6 +4,15 @@ import type {
   ScheduleItem,
 } from '../types';
 import { parseFlexibleDate } from '../utils/date';
+import {
+  classifyDAVEBlocker,
+  classifyDAVECompletion,
+  classifyDAVEImplementation,
+  classifyDAVEIssue,
+  classifyDAVESafety,
+  isDAVECurrentCertainAssertion,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -473,17 +482,39 @@ function fieldSignal(
   text: string,
   photos: ProjectUpdate['photos'],
 ): PIEScheduleFieldSignal {
-  const value = normalize(text);
   const hasOpenIssue = photos.some(photo =>
     (photo.category === 'Open Issue' || photo.category === 'Safety Concern') &&
     photo.actionStatus !== 'Closed',
   );
+  if (hasOpenIssue) return 'issue';
 
-  if (/\b(blocked|blocker|waiting|on hold|cannot proceed|delayed)\b/.test(value)) return 'blocked';
-  if (hasOpenIssue || /\b(issue|problem|defect|failed|hazard|unsafe)\b/.test(value)) return 'issue';
-  if (/\b(not complete|incomplete|partially complete|still in progress)\b/.test(value)) return 'in_progress';
-  if (/\b(completed|complete|finished|closed|done)\b/.test(value)) return 'complete';
-  if (/\b(in progress|started|underway|rough-in|installed|installation|currently working|working on|work ongoing)\b/.test(value)) return 'in_progress';
+  const parsed = parseDAVEAssertions(text);
+  const blocker = classifyDAVEBlocker(parsed);
+  const safety = classifyDAVESafety(parsed);
+  const issue = classifyDAVEIssue(parsed);
+  const completion = classifyDAVECompletion(parsed);
+  const implementation = classifyDAVEImplementation(parsed);
+  const uncertainOrConflicting = [blocker, safety, issue, completion, implementation]
+    .some(classification =>
+      classification === 'uncertain' || classification === 'conflicting',
+    );
+
+  if (uncertainOrConflicting) return 'unknown';
+  if (blocker === 'blocked') return 'blocked';
+  if (
+    safety === 'issue_present' ||
+    issue === 'issue_present' ||
+    parsed.assertions.some(assertion =>
+      assertion.status === 'outcome_failed' && isDAVECurrentCertainAssertion(assertion),
+    )
+  ) {
+    return 'issue';
+  }
+  if (completion === 'not_complete') return 'in_progress';
+  if (completion === 'complete') return 'complete';
+  if (implementation === 'implemented' || implementation === 'in_progress') {
+    return 'in_progress';
+  }
   return 'unknown';
 }
 

@@ -1,3 +1,9 @@
+import {
+  classifyDAVEBlocker,
+  classifyDAVEIssue,
+  classifyDAVESafety,
+} from './DAVEAssertionParser';
+
 export type DAVEBlockerEvidencePhoto = Readonly<{
   category?: string | null;
   actionStatus?: string | null;
@@ -22,8 +28,6 @@ export type DAVEBlockerEvidenceUpdate = Readonly<{
 }>;
 
 const PROJECT_SCOPE = '__project__';
-const RESOLUTION_PATTERN =
-  /\b(?:blocker|safety concern|hazard|issue)\b.{0,32}\b(?:resolved|cleared|closed|removed)\b|\b(?:resolved|cleared|closed|removed)\b.{0,32}\b(?:blocker|safety concern|hazard|issue)\b/i;
 
 /**
  * Finds the newest unresolved, explicitly confirmed blocker. A later explicit
@@ -88,12 +92,19 @@ export function updateHasOpenDAVEBlocker(update: DAVEBlockerEvidenceUpdate) {
 function confirmedBlockerScopes(update: DAVEBlockerEvidenceUpdate) {
   const scopes = new Set<string>();
 
-  if (hasActiveTopLevelSafetyFlag(update) || hasActiveTopLevelBlockerFlag(update)) {
-    for (const scope of updateScopeKeys(update)) scopes.add(scope);
+  if (hasActiveTopLevelSafetyFlag(update)) {
+    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('safety', scope));
+  }
+
+  if (hasActiveTopLevelBlockerFlag(update)) {
+    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('blocker', scope));
   }
 
   for (const photo of openSafetyPhotos(update)) {
-    scopes.add(scopeKey(photo.selectedAreaName || update.selectedAreaName));
+    scopes.add(typedScope(
+      'safety',
+      scopeKey(photo.selectedAreaName || update.selectedAreaName),
+    ));
   }
 
   return [...scopes];
@@ -108,12 +119,19 @@ function resolutionScopes(update: DAVEBlockerEvidenceUpdate) {
       (photo.category === 'Safety Concern' || photo.category === 'Open Issue') &&
       photo.actionStatus === 'Closed'
     ) {
-      scopes.add(scopeKey(photo.selectedAreaName || update.selectedAreaName));
+      scopes.add(typedScope(
+        photo.category === 'Safety Concern' ? 'safety' : 'blocker',
+        scopeKey(photo.selectedAreaName || update.selectedAreaName),
+      ));
     }
   }
 
-  if (RESOLUTION_PATTERN.test(update.notes?.trim() || '')) {
-    for (const scope of updateScopeKeys(update)) scopes.add(scope);
+  if (notesResolveSafety(update.notes)) {
+    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('safety', scope));
+  }
+
+  if (notesResolveBlockerOrIssue(update.notes)) {
+    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('blocker', scope));
   }
 
   return [...scopes];
@@ -139,9 +157,20 @@ function explicitlyResolved(
   update: DAVEBlockerEvidenceUpdate,
   category: 'Safety Concern' | 'Open Issue',
 ) {
-  if (RESOLUTION_PATTERN.test(update.notes?.trim() || '')) return true;
+  if (category === 'Safety Concern' && notesResolveSafety(update.notes)) return true;
+  if (category === 'Open Issue' && notesResolveBlockerOrIssue(update.notes)) return true;
   const matchingPhotos = (update.photos ?? []).filter(photo => photo.category === category);
   return matchingPhotos.length > 0 && matchingPhotos.every(photo => photo.actionStatus === 'Closed');
+}
+
+function notesResolveSafety(notes: string | null | undefined) {
+  return classifyDAVESafety(notes?.trim() || '') === 'no_issue_observed';
+}
+
+function notesResolveBlockerOrIssue(notes: string | null | undefined) {
+  const value = notes?.trim() || '';
+  return classifyDAVEBlocker(value) === 'resolved' ||
+    classifyDAVEIssue(value) === 'no_issue_observed';
 }
 
 function updateScopeKeys(update: DAVEBlockerEvidenceUpdate) {
@@ -157,6 +186,10 @@ function updateScopeKeys(update: DAVEBlockerEvidenceUpdate) {
 
 function scopeKey(value: string | null | undefined) {
   return value?.trim().toLowerCase() || PROJECT_SCOPE;
+}
+
+function typedScope(type: 'safety' | 'blocker', scope: string) {
+  return `${type}:${scope}`;
 }
 
 function updateTimestamp(update: DAVEBlockerEvidenceUpdate) {

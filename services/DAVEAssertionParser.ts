@@ -17,7 +17,10 @@ export type DAVEAssertionPredicate =
   | 'complete'
   | 'started'
   | 'in_progress'
+  | 'implemented'
   | 'approved'
+  | 'outcome_succeeded'
+  | 'issue_present'
   | 'safety_issue_present'
   | 'blocker_present'
   | 'blocker_resolved';
@@ -27,11 +30,19 @@ export type DAVEAssertionStatus =
   | 'incomplete'
   | 'not_started'
   | 'in_progress'
+  | 'implemented'
+  | 'not_implemented'
   | 'approved'
   | 'not_approved'
+  | 'outcome_succeeded'
+  | 'outcome_failed'
+  | 'outcome_partial'
+  | 'issue_present'
+  | 'issue_clear'
   | 'safety_issue_present'
   | 'safety_clear'
   | 'blocked'
+  | 'unblocked'
   | 'blocker_resolved'
   | 'blocker_unresolved';
 
@@ -59,6 +70,9 @@ export type DAVENormalizedAssertion = Readonly<{
 
 export type DAVEAssertionConflictDomain =
   | 'completion'
+  | 'implementation'
+  | 'outcome'
+  | 'issue'
   | 'safety'
   | 'blocker';
 
@@ -90,6 +104,29 @@ export type DAVESafetyClassification =
 export type DAVEBlockerClassification =
   | 'blocked'
   | 'resolved'
+  | 'uncertain'
+  | 'conflicting'
+  | 'no_assertion';
+
+export type DAVEImplementationClassification =
+  | 'implemented'
+  | 'in_progress'
+  | 'not_implemented'
+  | 'uncertain'
+  | 'conflicting'
+  | 'no_assertion';
+
+export type DAVEOutcomeClassification =
+  | 'successful'
+  | 'partially_successful'
+  | 'unsuccessful'
+  | 'uncertain'
+  | 'conflicting'
+  | 'no_assertion';
+
+export type DAVEIssueClassification =
+  | 'issue_present'
+  | 'no_issue_observed'
   | 'uncertain'
   | 'conflicting'
   | 'no_assertion';
@@ -132,9 +169,16 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     priority: 100,
   },
   {
-    pattern: /\b(?:not|never)\s+(?:yet\s+)?complet(?:e|ed)\b/gi,
+    pattern: /\b(?:not|never)\s+(?:yet\s+)?(?:complet(?:e|ed)|finished|done)\b|\b(?:unfinished|pending)\b/gi,
     predicate: 'complete',
     status: 'incomplete',
+    polarity: 'negated',
+    priority: 100,
+  },
+  {
+    pattern: /\b(?:partially|partly)\s+(?:complet(?:e|ed)|finished|done)\b/gi,
+    predicate: 'complete',
+    status: 'in_progress',
     polarity: 'negated',
     priority: 100,
   },
@@ -144,6 +188,27 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     status: 'in_progress',
     polarity: 'affirmed',
     priority: 95,
+  },
+  {
+    pattern: /\b(?:not|never)\s+(?:yet\s+)?(?:implemented|installed)\b/gi,
+    predicate: 'implemented',
+    status: 'not_implemented',
+    polarity: 'negated',
+    priority: 100,
+  },
+  {
+    pattern: /\b(?:implemented|installed)\b/gi,
+    predicate: 'implemented',
+    status: 'implemented',
+    polarity: 'affirmed',
+    priority: 55,
+  },
+  {
+    pattern: /\b(?:started|began|underway|currently\s+working|working\s+on|work\s+ongoing)\b/gi,
+    predicate: 'started',
+    status: 'in_progress',
+    polarity: 'affirmed',
+    priority: 55,
   },
   {
     pattern: /\bnot\s+(?:yet\s+)?approved\b/gi,
@@ -161,7 +226,15 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'safety issue',
   },
   {
-    pattern: /\b(?:safety\s+(?:issues?|concerns?)|hazards?)\b.{0,32}\b(?:resolved|cleared|closed)\b|\b(?:resolved|cleared|closed)\b.{0,32}\b(?:safety\s+(?:issues?|concerns?)|hazards?)\b/gi,
+    pattern: /\b(?:safe|not\s+unsafe)\b/gi,
+    predicate: 'safety_issue_present',
+    status: 'safety_clear',
+    polarity: 'negated',
+    priority: 110,
+    fixedSubject: 'safety issue',
+  },
+  {
+    pattern: /\b(?:safety\s+(?:issues?|concerns?)|hazards?)\b.{0,32}\b(?:resolved|cleared|closed|removed)\b|\b(?:resolved|cleared|closed|removed)\b.{0,32}\b(?:safety\s+(?:issues?|concerns?)|hazards?)\b/gi,
     predicate: 'safety_issue_present',
     status: 'safety_clear',
     polarity: 'negated',
@@ -169,7 +242,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'safety issue',
   },
   {
-    pattern: /\b(?:blocker|blocking\s+issue)\b.{0,24}\bnot\s+(?:yet\s+)?(?:resolved|cleared|closed)\b/gi,
+    pattern: /\b(?:blocker|blocking\s+issue)\b.{0,24}\bnot\s+(?:yet\s+)?(?:resolved|cleared|closed|removed)\b/gi,
     predicate: 'blocker_resolved',
     status: 'blocker_unresolved',
     polarity: 'negated',
@@ -177,7 +250,15 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'blocker',
   },
   {
-    pattern: /\b(?:blocker|blocking\s+issue)\b.{0,24}\b(?:resolved|cleared|closed)\b|\b(?:resolved|cleared|closed)\b.{0,24}\b(?:blocker|blocking\s+issue)\b/gi,
+    pattern: /\b(?:not|no\s+longer)\s+(?:blocked|delayed|waiting)\b|\bno\s+longer\s+on\s+hold\b|\bcan\s+proceed\b/gi,
+    predicate: 'blocker_present',
+    status: 'unblocked',
+    polarity: 'negated',
+    priority: 120,
+    fixedSubject: 'blocker',
+  },
+  {
+    pattern: /\b(?:blocker|blocking\s+issue)\b.{0,24}\b(?:resolved|cleared|closed|removed)\b|\b(?:resolved|cleared|closed|removed)\b.{0,24}\b(?:blocker|blocking\s+issue)\b/gi,
     predicate: 'blocker_resolved',
     status: 'blocker_resolved',
     polarity: 'affirmed',
@@ -185,7 +266,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'blocker',
   },
   {
-    pattern: /\b(?:blocked|blocking\s+issue|blocker(?:\s+(?:remains?|exists?|present|active))?)\b/gi,
+    pattern: /\b(?:blocked|delayed|waiting|on\s+hold|cannot\s+proceed|blocking\s+issue|blocker(?:\s+(?:remains?|exists?|present|active))?)\b/gi,
     predicate: 'blocker_present',
     status: 'blocked',
     polarity: 'affirmed',
@@ -193,12 +274,57 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'blocker',
   },
   {
-    pattern: /\b(?:safety\s+(?:issue|concern)|hazard)s?\b/gi,
+    pattern: /\b(?:safety\s+(?:issue|concern)|hazard)s?\b|\bunsafe\b/gi,
     predicate: 'safety_issue_present',
     status: 'safety_issue_present',
     polarity: 'affirmed',
     priority: 80,
     fixedSubject: 'safety issue',
+  },
+  {
+    pattern: /\bno\s+(?:active\s+|current\s+)?(?:issues?|problems?|defects?|conflicts?|disputes?|deviations?)(?:\s+(?:(?:were|was|are|is)\s+)?(?:observed|found|identified|reported|noted))?\b/gi,
+    predicate: 'issue_present',
+    status: 'issue_clear',
+    polarity: 'negated',
+    priority: 110,
+    fixedSubject: 'issue',
+  },
+  {
+    pattern: /\b(?:issues?|problems?|defects?|conflicts?|disputes?|deviations?)\b.{0,24}\b(?:resolved|cleared|closed|removed)\b|\b(?:resolved|cleared|closed|removed)\b.{0,24}\b(?:issues?|problems?|defects?|conflicts?|disputes?|deviations?)\b/gi,
+    predicate: 'issue_present',
+    status: 'issue_clear',
+    polarity: 'negated',
+    priority: 105,
+    fixedSubject: 'issue',
+  },
+  {
+    pattern: /\b(?:issues?|problems?|defects?|conflicts?|disputes?|deviations?|missing)\b/gi,
+    predicate: 'issue_present',
+    status: 'issue_present',
+    polarity: 'affirmed',
+    priority: 45,
+    fixedSubject: 'issue',
+  },
+  {
+    pattern: /\b(?:failed|not\s+achieved|did\s+not\s+pass|was\s+not\s+successful)\b/gi,
+    predicate: 'outcome_succeeded',
+    status: 'outcome_failed',
+    polarity: 'negated',
+    priority: 105,
+  },
+  {
+    pattern: /\b(?:partially|partly)\s+(?:successful|achieved)|\bmixed\s+results?\b/gi,
+    predicate: 'outcome_succeeded',
+    status: 'outcome_partial',
+    polarity: 'affirmed',
+    priority: 100,
+  },
+  {
+    pattern: /\b(?:pass(?:ed|es)?|achieved|succeeded|successful)\b/gi,
+    predicate: 'outcome_succeeded',
+    status: 'outcome_succeeded',
+    polarity: 'affirmed',
+    priority: 50,
   },
   {
     pattern: /\bapproved\b/gi,
@@ -208,7 +334,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     priority: 50,
   },
   {
-    pattern: /\bcomplet(?:e|ed)\b/gi,
+    pattern: /\b(?:complet(?:e|ed)|finished|done)\b/gi,
     predicate: 'complete',
     status: 'complete',
     polarity: 'affirmed',
@@ -217,7 +343,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
 ] as const;
 
 const UNCERTAINTY_PATTERN =
-  /\b(?:uncertain|unclear|unconfirmed|possibly|perhaps|maybe|may|might|could|appears?|seems?|apparently|likely|unlikely|cannot\s+(?:confirm|verify|determine)|unable\s+to\s+(?:confirm|verify|determine))\b/i;
+  /\b(?:uncertain|unclear|unconfirmed|possibly|perhaps|maybe|may|might|could|should|would|appears?|seems?|apparently|likely|unlikely|cannot\s+(?:confirm|verify|determine)|unable\s+to\s+(?:confirm|verify|determine))\b/i;
 const CONDITIONAL_PATTERN =
   /\b(?:if|unless|provided\s+that|assuming|subject\s+to|depending\s+on|conditional(?:ly)?)\b/i;
 const OBSERVED_PATTERN =
@@ -225,13 +351,13 @@ const OBSERVED_PATTERN =
 const REPORTED_PATTERN =
   /\b(?:reported|reportedly|according\s+to|said|stated|states|marked|documented|noted)\b/i;
 const PLANNED_PATTERN =
-  /\b(?:will|shall|planned|scheduled|expected|intends?|targeted|tomorrow|next\s+(?:day|week|month))\b/i;
+  /\b(?:will|shall|should|would|planned|scheduled|expected|intends?|targeted|tomorrow|next\s+(?:day|week|month))\b/i;
 const PAST_PATTERN =
   /\b(?:was|were|had\s+been|previously|yesterday|last\s+(?:day|week|month)|earlier|formerly)\b/i;
 const CURRENT_PATTERN =
   /\b(?:is|are|currently|now|today|still|remains?|has\s+been|have\s+been)\b/i;
 const FUTURE_PATTERN =
-  /\b(?:will|shall|tomorrow|next\s+(?:day|week|month)|scheduled|planned|expected|by\s+\d{1,2}[/-]\d{1,2})\b/i;
+  /\b(?:will|shall|should|would|tomorrow|next\s+(?:day|week|month)|scheduled|planned|expected|by\s+\d{1,2}[/-]\d{1,2})\b/i;
 
 /**
  * Parses explicit construction-status assertions without making domain
@@ -286,15 +412,19 @@ export function classifyDAVESafety(
     return 'conflicting';
   }
 
-  const assertions = parsed.assertions
-    .filter(assertion => assertion.predicate === 'safety_issue_present')
-    .filter(isCurrentOrUnspecified);
+  const allAssertions = parsed.assertions
+    .filter(assertion => assertion.predicate === 'safety_issue_present');
+  const assertions = allAssertions.filter(isCurrentOrUnspecified);
   const certainAssertions = assertions.filter(isCertainAssertion);
 
   if (certainAssertions.some(assertion => assertion.status === 'safety_issue_present')) {
     return 'issue_present';
   }
-  if (certainAssertions.some(assertion => assertion.status === 'safety_clear')) {
+  if (allAssertions.some(assertion =>
+    assertion.status === 'safety_clear' &&
+    assertion.temporality !== 'future' &&
+    isCertainAssertion(assertion),
+  )) {
     return 'no_issue_observed';
   }
   if (assertions.some(assertion => assertion.polarity === 'uncertain')) {
@@ -312,12 +442,12 @@ export function classifyDAVEBlocker(
     return 'conflicting';
   }
 
-  const assertions = parsed.assertions
+  const allAssertions = parsed.assertions
     .filter(assertion =>
       assertion.predicate === 'blocker_present' ||
       assertion.predicate === 'blocker_resolved',
-    )
-    .filter(isCurrentOrUnspecified);
+    );
+  const assertions = allAssertions.filter(isCurrentOrUnspecified);
   const certainAssertions = assertions.filter(isCertainAssertion);
 
   if (certainAssertions.some(assertion =>
@@ -325,7 +455,11 @@ export function classifyDAVEBlocker(
   )) {
     return 'blocked';
   }
-  if (certainAssertions.some(assertion => assertion.status === 'blocker_resolved')) {
+  if (allAssertions.some(assertion =>
+    (assertion.status === 'blocker_resolved' || assertion.status === 'unblocked') &&
+    assertion.temporality !== 'future' &&
+    isCertainAssertion(assertion),
+  )) {
     return 'resolved';
   }
   if (assertions.some(assertion => assertion.polarity === 'uncertain')) {
@@ -333,6 +467,121 @@ export function classifyDAVEBlocker(
   }
 
   return 'no_assertion';
+}
+
+export function classifyDAVEImplementation(
+  input: string | DAVEAssertionParseResult,
+): DAVEImplementationClassification {
+  const parsed = parsedInput(input);
+  if (parsed.conflicts.some(conflict =>
+    conflict.domain === 'implementation' || conflict.domain === 'completion',
+  )) {
+    return 'conflicting';
+  }
+
+  const assertions = parsed.assertions
+    .filter(assertion =>
+      assertion.predicate === 'implemented' ||
+      assertion.predicate === 'started' ||
+      assertion.predicate === 'in_progress' ||
+      assertion.predicate === 'complete',
+    )
+    .filter(isCurrentOrUnspecified);
+  const certainAssertions = assertions.filter(isCertainAssertion);
+
+  if (certainAssertions.some(assertion =>
+    assertion.status === 'not_implemented' || assertion.status === 'not_started',
+  )) {
+    return 'not_implemented';
+  }
+  if (certainAssertions.some(assertion =>
+    assertion.status === 'implemented' || assertion.status === 'complete',
+  )) {
+    return 'implemented';
+  }
+  if (certainAssertions.some(assertion =>
+    assertion.status === 'in_progress' || assertion.status === 'incomplete',
+  )) {
+    return 'in_progress';
+  }
+  if (assertions.some(assertion => assertion.polarity === 'uncertain')) {
+    return 'uncertain';
+  }
+
+  return 'no_assertion';
+}
+
+export function classifyDAVEOutcome(
+  input: string | DAVEAssertionParseResult,
+): DAVEOutcomeClassification {
+  const parsed = parsedInput(input);
+  if (parsed.conflicts.some(conflict =>
+    conflict.domain === 'outcome' ||
+    conflict.domain === 'completion' ||
+    conflict.domain === 'blocker',
+  )) {
+    return 'conflicting';
+  }
+
+  const currentAssertions = parsed.assertions.filter(isCurrentOrUnspecified);
+  const certainAssertions = currentAssertions.filter(isCertainAssertion);
+  if (certainAssertions.some(assertion => assertion.status === 'outcome_partial')) {
+    return 'partially_successful';
+  }
+  if (
+    certainAssertions.some(assertion => assertion.status === 'outcome_failed') ||
+    classifyDAVECompletion(parsed) === 'not_complete' ||
+    classifyDAVEBlocker(parsed) === 'blocked'
+  ) {
+    return 'unsuccessful';
+  }
+  if (
+    certainAssertions.some(assertion => assertion.status === 'outcome_succeeded') ||
+    classifyDAVECompletion(parsed) === 'complete' ||
+    classifyDAVEBlocker(parsed) === 'resolved'
+  ) {
+    return 'successful';
+  }
+  if (currentAssertions.some(assertion => assertion.polarity === 'uncertain')) {
+    return 'uncertain';
+  }
+
+  return 'no_assertion';
+}
+
+export function classifyDAVEIssue(
+  input: string | DAVEAssertionParseResult,
+): DAVEIssueClassification {
+  const parsed = parsedInput(input);
+  if (parsed.conflicts.some(conflict => conflict.domain === 'issue')) {
+    return 'conflicting';
+  }
+
+  const allAssertions = parsed.assertions
+    .filter(assertion => assertion.predicate === 'issue_present');
+  const assertions = allAssertions.filter(isCurrentOrUnspecified);
+  const certainAssertions = assertions.filter(isCertainAssertion);
+  if (certainAssertions.some(assertion => assertion.status === 'issue_present')) {
+    return 'issue_present';
+  }
+  if (allAssertions.some(assertion =>
+    assertion.status === 'issue_clear' &&
+    assertion.temporality !== 'future' &&
+    isCertainAssertion(assertion),
+  )) {
+    return 'no_issue_observed';
+  }
+  if (assertions.some(assertion => assertion.polarity === 'uncertain')) {
+    return 'uncertain';
+  }
+
+  return 'no_assertion';
+}
+
+export function isDAVECurrentCertainAssertion(
+  assertion: DAVENormalizedAssertion,
+) {
+  return isCurrentOrUnspecified(assertion) && isCertainAssertion(assertion);
 }
 
 function parsedInput(input: string | DAVEAssertionParseResult) {
@@ -526,6 +775,30 @@ function conflictingDomain(
   }
 
   if (
+    left.predicate === 'implemented' &&
+    right.predicate === 'implemented' &&
+    left.status !== right.status
+  ) {
+    return 'implementation';
+  }
+
+  if (
+    left.predicate === 'outcome_succeeded' &&
+    right.predicate === 'outcome_succeeded' &&
+    left.status !== right.status
+  ) {
+    return 'outcome';
+  }
+
+  if (
+    left.predicate === 'issue_present' &&
+    right.predicate === 'issue_present' &&
+    left.status !== right.status
+  ) {
+    return 'issue';
+  }
+
+  if (
     left.predicate === 'safety_issue_present' &&
     right.predicate === 'safety_issue_present' &&
     left.status !== right.status
@@ -534,8 +807,8 @@ function conflictingDomain(
   }
 
   if (isBlockerAssertion(left) && isBlockerAssertion(right)) {
-    const leftResolved = left.status === 'blocker_resolved';
-    const rightResolved = right.status === 'blocker_resolved';
+    const leftResolved = left.status === 'blocker_resolved' || left.status === 'unblocked';
+    const rightResolved = right.status === 'blocker_resolved' || right.status === 'unblocked';
     if (leftResolved !== rightResolved) return 'blocker';
   }
 
