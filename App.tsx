@@ -10444,23 +10444,38 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (!startupHydrationReady) return;
     let active = true;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let refreshInFlight = false;
+    let lastRefreshStartedAt = 0;
+    // Field fix 2026-07-18: auth events can arrive in bursts (each identity
+    // resolve touches the Supabase client, which can itself emit events).
+    // A minimum interval and an in-flight guard make this cycle-proof.
+    const MIN_REFRESH_INTERVAL_MS = 2000;
 
     async function refreshLayer4Identity() {
-      const resolution = await resolvePIELayer4ActorContext();
-      if (!active) return;
-      setLayer4Identity(resolution.context);
-      const state = await loadPIEDecisionLedgerForOrganization(resolution.context.organizationId);
-      if (!active) return;
-      setDecisionLedger(state.decisions);
-      setDecisionLedgerMigrationStatus(state.migrationStatus);
+      if (refreshInFlight) return;
+      refreshInFlight = true;
+      lastRefreshStartedAt = Date.now();
+      try {
+        const resolution = await resolvePIELayer4ActorContext();
+        if (!active) return;
+        setLayer4Identity(resolution.context);
+        const state = await loadPIEDecisionLedgerForOrganization(resolution.context.organizationId);
+        if (!active) return;
+        setDecisionLedger(state.decisions);
+        setDecisionLedgerMigrationStatus(state.migrationStatus);
+      } finally {
+        refreshInFlight = false;
+      }
     }
 
     function scheduleIdentityRefresh() {
       if (refreshTimer) clearTimeout(refreshTimer);
+      const elapsed = Date.now() - lastRefreshStartedAt;
+      const delay = Math.max(0, MIN_REFRESH_INTERVAL_MS - elapsed);
       refreshTimer = setTimeout(() => {
         refreshTimer = null;
         void refreshLayer4Identity().catch(() => undefined);
-      }, 0);
+      }, delay);
     }
 
     scheduleIdentityRefresh();

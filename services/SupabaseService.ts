@@ -2659,7 +2659,14 @@ function withoutTrailingSlash(value: string) {
   return value.replace(/\/+$/g, '');
 }
 
+// Field fix 2026-07-18: this diagnostic logged on EVERY client access, and
+// each console call crosses the native bridge. Under repeated access it
+// flooded the log and burned main-thread time on device. Log each context
+// once per session — the URL never changes after launch.
+const loggedSupabaseContexts = new Set<string>();
 function logSupabaseUrlBeforeNetworkRequest(context: string) {
+  if (loggedSupabaseContexts.has(context)) return;
+  loggedSupabaseContexts.add(context);
   console.log(
     `[Supabase] ${context} using EXPO_PUBLIC_SUPABASE_URL=${SUPABASE_URL || 'Missing'}`,
   );
