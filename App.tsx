@@ -91,6 +91,7 @@ import { logStartupDiagnostic } from './services/StartupDiagnostics';
 import { normalizeStartupArray, readStartupJson } from './services/StartupRecovery';
 import { createDurableLocalTransactionRepository } from './services/DurableLocalTransaction';
 import { createProjectId, restoreProjectRecords } from './services/ProjectIdentity';
+import { recoverStaleUploadingDocuments } from './services/ProjectDocumentLifecycle';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -5702,8 +5703,12 @@ useEffect(() => {
     readStartupJson(PROJECT_DOCUMENTS_STORAGE_KEY, [], 'project documents')
       .then(result => {
         if (!startupHydration.accept([result])) return;
+        // Audit P1-23: uploads cannot survive relaunch; stale 'uploading'
+        // documents become retryable 'failed' instead of pending forever.
         setProjectDocuments(
-          normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument),
+          recoverStaleUploadingDocuments(
+            normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument),
+          ),
         );
         setProjectDocumentsLoaded(true);
       })
