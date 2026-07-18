@@ -5352,10 +5352,17 @@ useEffect(() => {
       if (!tokenResult.ok || tokenResult.data?.status !== 'token_present') return;
 
       const cloudProjects = await listProjects();
-      const remainingLegacyProjects = cloudProjects.data?.filter(project =>
+      // Field fix 2026-07-18 (cpu_resource kill, audit P1-21): a failed or
+      // unverifiable cloud inventory must SKIP the migration this launch —
+      // it previously fell through to a full synchronizeLocalData, which
+      // base64-encodes and uploads every photo of every update on the JS
+      // thread at every app start (84% CPU for ~107s in the crash report)
+      // because the completion marker only writes after a fully clean sync.
+      if (!cloudProjects.ok) return;
+      const remainingLegacyProjects = (cloudProjects.data || []).filter(project =>
         Boolean(legacyWorkContainerMigration(project.name)),
       );
-      if (cloudProjects.ok && remainingLegacyProjects?.length === 0) {
+      if (remainingLegacyProjects.length === 0) {
         await AsyncStorage.setItem(
           LEGACY_PROJECT_STRUCTURE_CLOUD_MIGRATION_KEY,
           'complete',
