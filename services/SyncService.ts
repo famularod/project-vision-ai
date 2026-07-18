@@ -226,6 +226,24 @@ export type StagedProjectUpdateSync = {
   pendingPhotoAssetIds: string[];
 };
 
+export type OfflineQueueQuarantineExport = {
+  storageKey: string;
+  rawValue: string;
+};
+
+export type OfflineQueueRecoveryState = {
+  activeItems: number;
+  quarantineKeys: string[];
+  recoveryAvailable: boolean;
+};
+
+export type OfflineQueueRecoveryAttempt = {
+  status: 'recovered' | 'still_corrupt' | 'active_queue_not_empty' | 'not_found';
+  quarantineKey: string;
+  restoredItems: number;
+  activeItems: number;
+};
+
 const PROJECT_PHOTOS_BUCKET = 'project-photos';
 const RECOVERED_PHOTOS_FOLDER = 'dave-recovered-project-photos';
 
@@ -271,14 +289,18 @@ export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageClea
   let missingPhotosRemoved = 0;
 
   for (const key of syncKeys) {
+    if (isOfflineQueueQuarantineKey(key)) continue;
+
     if (key === SYNC_QUEUE_STORAGE_KEY) {
       const queueCleanup = await serializeOfflineQueueMutation(async () => {
-        const value = await AsyncStorage.getItem(key);
-        if (value === null) {
+        const recovered = await readOfflineQueueUnsafe();
+        if (recovered.rawValue === null) {
           return { changed: false, missingPhotosRemoved: 0 };
         }
-        const result = await cleanupSyncQueueValue(value);
-        const changed = result.value !== value;
+        const result = await cleanupSyncQueueValue(recovered.rawValue);
+        const changed =
+          recovered.quarantineKey !== null ||
+          result.value !== recovered.rawValue;
         if (changed) await AsyncStorage.setItem(key, result.value);
         return {
           changed,
@@ -356,6 +378,8 @@ type ProjectUpdateDeletePayload = {
 };
 
 const SYNC_QUEUE_STORAGE_KEY = 'projectVisionAI.syncQueue.v1';
+export const SYNC_QUEUE_QUARANTINE_KEY_PREFIX =
+  `${SYNC_QUEUE_STORAGE_KEY}.quarantine.`;
 const SYNC_CONFLICTS_STORAGE_KEY = 'projectVisionAI.syncConflicts.v1';
 const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
 const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
@@ -373,6 +397,95 @@ function serializeOfflineQueueMutation<T>(
   return result;
 }
 
+type OfflineQueueReadResult = {
+  queue: SyncQueueItem[];
+  rawValue: string | null;
+  quarantineKey: string | null;
+};
+
+function isOfflineQueueQuarantineKey(key: string): boolean {
+  return key.startsWith(SYNC_QUEUE_QUARANTINE_KEY_PREFIX);
+}
+
+function parseOfflineQueueValue(rawValue: string): SyncQueueItem[] {
+  const parsed = JSON.parse(rawValue) as unknown;
+  if (!Array.isArray(parsed) || !parsed.every(isValidSyncQueueItem)) {
+    throw new Error('Stored offline queue is not a valid queue.');
+  }
+  return parsed;
+}
+
+function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
+  if (!isRecord(value) || !isRecord(value.payload)) return false;
+  if (typeof value.id !== 'string' || value.id.length === 0) return false;
+  if (value.entity !== 'project' && value.entity !== 'project_update') return false;
+  if (
+    value.operation !== 'create' &&
+    value.operation !== 'update' &&
+    value.operation !== 'delete'
+  ) return false;
+  if (typeof value.createdAt !== 'string' || value.createdAt.length === 0) return false;
+  if (typeof value.changedAt !== 'string' || value.changedAt.length === 0) return false;
+  if (
+    typeof value.retryCount !== 'number' ||
+    !Number.isInteger(value.retryCount) ||
+    value.retryCount < 0
+  ) return false;
+  return (
+    value.lastError === undefined ||
+    value.lastError === null ||
+    typeof value.lastError === 'string'
+  );
+}
+
+async function nextOfflineQueueQuarantineKey(): Promise<string> {
+  const keys = new Set(await AsyncStorage.getAllKeys());
+  const baseKey = `${SYNC_QUEUE_QUARANTINE_KEY_PREFIX}${new Date().toISOString()}`;
+  let key = baseKey;
+  let suffix = 1;
+  while (keys.has(key)) {
+    key = `${baseKey}.${suffix}`;
+    suffix += 1;
+  }
+  return key;
+}
+
+async function quarantineCorruptOfflineQueue(rawValue: string): Promise<string> {
+  const quarantineKey = await nextOfflineQueueQuarantineKey();
+  await AsyncStorage.setItem(quarantineKey, rawValue);
+
+  const verifiedQuarantine = await AsyncStorage.getItem(quarantineKey);
+  if (verifiedQuarantine !== rawValue) {
+    throw new Error('Offline queue quarantine could not be verified.');
+  }
+
+  await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, '[]');
+  const verifiedActiveQueue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
+  if (verifiedActiveQueue !== '[]') {
+    throw new Error('Offline queue recovery could not initialize a valid queue.');
+  }
+
+  return quarantineKey;
+}
+
+async function readOfflineQueueUnsafe(): Promise<OfflineQueueReadResult> {
+  const rawValue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
+  if (rawValue === null) {
+    return { queue: [], rawValue: null, quarantineKey: null };
+  }
+
+  try {
+    return {
+      queue: parseOfflineQueueValue(rawValue),
+      rawValue,
+      quarantineKey: null,
+    };
+  } catch {
+    const quarantineKey = await quarantineCorruptOfflineQueue(rawValue);
+    return { queue: [], rawValue: '[]', quarantineKey };
+  }
+}
+
 function mutateOfflineQueue<T>(
   mutator: (queue: SyncQueueItem[]) => {
     nextQueue: SyncQueueItem[];
@@ -381,7 +494,7 @@ function mutateOfflineQueue<T>(
   },
 ): Promise<T> {
   return serializeOfflineQueueMutation(async () => {
-    const queue = await getOfflineQueue();
+    const { queue } = await readOfflineQueueUnsafe();
     const mutation = mutator(queue);
     if (mutation.persist !== false) {
       await setStoredJson(SYNC_QUEUE_STORAGE_KEY, mutation.nextQueue);
@@ -391,7 +504,98 @@ function mutateOfflineQueue<T>(
 }
 
 export async function getOfflineQueue(): Promise<SyncQueueItem[]> {
-  return getStoredJson<SyncQueueItem[]>(SYNC_QUEUE_STORAGE_KEY, []);
+  return serializeOfflineQueueMutation(async () =>
+    (await readOfflineQueueUnsafe()).queue,
+  );
+}
+
+export async function listOfflineQueueQuarantines(): Promise<string[]> {
+  const keys = await AsyncStorage.getAllKeys();
+  return keys.filter(isOfflineQueueQuarantineKey).sort().reverse();
+}
+
+export async function exportOfflineQueueQuarantine(
+  quarantineKey: string,
+): Promise<OfflineQueueQuarantineExport | null> {
+  if (!isOfflineQueueQuarantineKey(quarantineKey)) return null;
+  const rawValue = await AsyncStorage.getItem(quarantineKey);
+  return rawValue === null ? null : { storageKey: quarantineKey, rawValue };
+}
+
+export async function getOfflineQueueRecoveryState(): Promise<OfflineQueueRecoveryState> {
+  const activeItems = (await getOfflineQueue()).length;
+  const quarantineKeys = await listOfflineQueueQuarantines();
+  return {
+    activeItems,
+    quarantineKeys,
+    recoveryAvailable: quarantineKeys.length > 0,
+  };
+}
+
+export async function retryOfflineQueueRecovery(
+  quarantineKey: string,
+  repairedRawValue?: string,
+): Promise<OfflineQueueRecoveryAttempt> {
+  if (!isOfflineQueueQuarantineKey(quarantineKey)) {
+    return {
+      status: 'not_found',
+      quarantineKey,
+      restoredItems: 0,
+      activeItems: (await getOfflineQueue()).length,
+    };
+  }
+
+  return serializeOfflineQueueMutation(async () => {
+    const quarantinedRawValue = await AsyncStorage.getItem(quarantineKey);
+    if (quarantinedRawValue === null) {
+      const { queue } = await readOfflineQueueUnsafe();
+      return {
+        status: 'not_found',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: queue.length,
+      };
+    }
+
+    let recoveredQueue: SyncQueueItem[];
+    try {
+      recoveredQueue = parseOfflineQueueValue(
+        repairedRawValue === undefined ? quarantinedRawValue : repairedRawValue,
+      );
+    } catch {
+      const { queue } = await readOfflineQueueUnsafe();
+      return {
+        status: 'still_corrupt',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: queue.length,
+      };
+    }
+
+    const { queue: activeQueue } = await readOfflineQueueUnsafe();
+    if (activeQueue.length > 0) {
+      return {
+        status: 'active_queue_not_empty',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: activeQueue.length,
+      };
+    }
+
+    const recoveredQueueValue = JSON.stringify(recoveredQueue);
+    await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, recoveredQueueValue);
+    const restoredRawValue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
+    if (restoredRawValue !== recoveredQueueValue) {
+      throw new Error('Offline queue recovery write could not be verified.');
+    }
+    const restoredQueue = parseOfflineQueueValue(restoredRawValue);
+    return {
+      status: 'recovered',
+      quarantineKey,
+      restoredItems: restoredQueue.length,
+      activeItems: restoredQueue.length,
+    };
+  });
 }
 
 export async function getSyncConflicts(): Promise<SyncConflict[]> {
@@ -636,7 +840,7 @@ export async function runFieldUpdateCloudSync(
   const workAttempt = staged.workAttempt;
   const queueItemId = projectUpdateQueueItemId(update.id);
   let aggregateResult = await uploadPendingChanges();
-  let remainingQueue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+  let remainingQueue = await getOfflineQueue();
   let remainingItem = remainingQueue.find(item => item.id === queueItemId);
 
   // If another upload pass was already in flight, this newly staged item may
@@ -649,7 +853,7 @@ export async function runFieldUpdateCloudSync(
       aggregateResult.itemOutcomes[queueItemId] === 'uploaded')
   ) {
     aggregateResult = await uploadPendingChanges();
-    remainingQueue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+    remainingQueue = await getOfflineQueue();
     remainingItem = remainingQueue.find(item => item.id === queueItemId);
   }
 
@@ -731,7 +935,7 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
 async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
-  const queue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+  const queue = await getOfflineQueue();
 
   if (!configuration.configured) {
     return {
@@ -1260,64 +1464,49 @@ export function markMissingPhotosUnavailable<TUpdate extends ProjectUpdate>(
 }
 
 async function cleanupSyncQueueValue(value: string) {
-  try {
-    const queue = JSON.parse(value) as SyncQueueItem[];
+  const queue = parseOfflineQueueValue(value);
+  let missingPhotosRemoved = 0;
+  const nextQueue: SyncQueueItem[] = [];
 
-    if (!Array.isArray(queue)) {
-      return {
-        value: sanitizeStoredSyncValue(value),
-        missingPhotosRemoved: 0,
-      };
-    }
+  for (const item of queue) {
+    let nextItem: SyncQueueItem = {
+      ...item,
+      lastError:
+        typeof item.lastError === 'string'
+          ? sanitizeUserFacingSyncMessage(item.lastError)
+          : item.lastError,
+    };
 
-    let missingPhotosRemoved = 0;
-    const nextQueue: SyncQueueItem[] = [];
+    if (item.entity === 'project_update') {
+      const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
+      const updateData = payload.updateData;
 
-    for (const item of queue) {
-      let nextItem: SyncQueueItem = {
-        ...item,
-        lastError:
-          typeof item.lastError === 'string'
-            ? sanitizeUserFacingSyncMessage(item.lastError)
-            : item.lastError,
-      };
+      if (Array.isArray(updateData?.photos)) {
+        const referencedPhotoIds = new Set(updateData.photos.map(photo => photo.id));
+        const pendingPhotoAssetIds = uniquePhotoAssetIds(
+          Array.isArray(payload.pendingPhotoAssetIds)
+            ? payload.pendingPhotoAssetIds
+            : updateData.photos.map(photo => photo.id),
+        ).filter(photoId => referencedPhotoIds.has(photoId));
 
-      if (item.entity === 'project_update') {
-        const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
-        const updateData = payload.updateData;
-
-        if (Array.isArray(updateData?.photos)) {
-          const referencedPhotoIds = new Set(updateData.photos.map(photo => photo.id));
-          const pendingPhotoAssetIds = uniquePhotoAssetIds(
-            Array.isArray(payload.pendingPhotoAssetIds)
-              ? payload.pendingPhotoAssetIds
-              : updateData.photos.map(photo => photo.id),
-          ).filter(photoId => referencedPhotoIds.has(photoId));
-
-          nextItem = {
-            ...nextItem,
-            payload: {
-              ...payload,
-              pendingPhotoAssetIds,
-              updateData,
-            },
-          };
-        }
+        nextItem = {
+          ...nextItem,
+          payload: {
+            ...payload,
+            pendingPhotoAssetIds,
+            updateData,
+          },
+        };
       }
-
-      nextQueue.push(nextItem);
     }
 
-    return {
-      value: JSON.stringify(nextQueue),
-      missingPhotosRemoved,
-    };
-  } catch {
-    return {
-      value: sanitizeStoredSyncValue(value),
-      missingPhotosRemoved: 0,
-    };
+    nextQueue.push(nextItem);
   }
+
+  return {
+    value: JSON.stringify(nextQueue),
+    missingPhotosRemoved,
+  };
 }
 
 export async function clearResolvedConflict(conflictId: string): Promise<void> {
