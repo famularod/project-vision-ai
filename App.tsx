@@ -5213,7 +5213,17 @@ function AppShell() {
     scheduleItemsLocalLoaded, captureMemoriesLoaded, identityCorrectionsLoaded, scheduleIdentityReady,
     scheduleAiExtractorUrlLoaded, displayNameLoaded, contactsLoaded, draftLoaded,
   ].every(Boolean);
-  const startupHydrationReady = requiredLocalHydrationReady && startupHydration.failures.length === 0;
+  // Field fix 2026-07-18 (device loop): readiness latches one-way. Before the
+  // first successful hydration the app fails closed (audit P0-11). After it,
+  // a late failure (e.g. a cloud phase mis-filing into a local hydration key)
+  // must never flip readiness back — that oscillation re-ran every
+  // ready-gated effect in a cycle (Maximum update depth + Supabase call
+  // flood) until iOS killed the app. Failures still surface via
+  // startupHydration.failures for the recovery UI.
+  const startupHydrationReadyRaw = requiredLocalHydrationReady && startupHydration.failures.length === 0;
+  const startupHydrationEverReadyRef = useRef(false);
+  if (startupHydrationReadyRaw) startupHydrationEverReadyRef.current = true;
+  const startupHydrationReady = startupHydrationEverReadyRef.current || startupHydrationReadyRaw;
 
   const [draftAreaSuggestion, setDraftAreaSuggestion] =
     useState<AreaSuggestion | null>(null);
@@ -5277,7 +5287,10 @@ useEffect(() => {
         tombstoneResult.value,
       );
       setDeletedUpdateTombstones(tombstones);
-      await reconcileProjectUpdateDeletionJournal(tombstones);
+      // Field fix 2026-07-18: deletion-journal reconciliation talks to the
+      // cloud; its failure is a sync concern retried later, never a local
+      // hydration failure (that mis-filing drove the startup loop).
+      await reconcileProjectUpdateDeletionJournal(tombstones).catch(() => undefined);
 
       setSavedUpdates(mergeSavedUpdatesWithTombstones({
         localUpdates,
@@ -5289,18 +5302,23 @@ useEffect(() => {
       setDeletedUpdateTombstonesLoaded(true);
 
       if (!startupHydrationReady) return;
-      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>().catch(() => []);
-      const normalizedCloudUpdates = normalizeStartupArray(
-        cloudUpdates,
-        normalizeStoredUpdateRecord,
-        'cloud saved updates',
-      ).value;
+      try {
+        const cloudUpdates = await loadCloudUpdates<ProjectUpdate>().catch(() => []);
+        const normalizedCloudUpdates = normalizeStartupArray(
+          cloudUpdates,
+          normalizeStoredUpdateRecord,
+          'cloud saved updates',
+        ).value;
 
-      setSavedUpdates(mergeSavedUpdatesWithTombstones({
-        localUpdates,
-        cloudUpdates: normalizedCloudUpdates,
-        tombstones,
-      }));
+        setSavedUpdates(mergeSavedUpdatesWithTombstones({
+          localUpdates,
+          cloudUpdates: normalizedCloudUpdates,
+          tombstones,
+        }));
+      } catch {
+        // Cloud recovery failures are retried by sync (audit P1-27); local
+        // hydration already succeeded and must stay hydrated.
+      }
     } catch (error) {
       startupHydration.fail(UPDATES_STORAGE_KEY, 'saved updates', error);
     }
@@ -5533,49 +5551,55 @@ useEffect(() => {
       setDeletedProjectNamesLoaded(true);
 
       if (!startupHydrationReady) return;
-      const [cloudProjects, cloudArchivedProjects] = await Promise.all([
-        loadCloudProjectRecords(),
-        loadCloudArchivedProjectNames(),
-      ]).catch((): [ProjectRecord[], string[]] => [[], []]);
-      const mergedRecords = mergeProjectRecords(
-        starterProjects,
-        localProjects,
-        cloudProjects,
-        deletedNames,
-      );
-      const deletedKeys = new Set(deletedNames.map(name => name.toLowerCase()));
-
-      setProjectRecords(mergedRecords);
-      setProjects(mergedRecords.map(project => project.name));
-      setArchivedProjects(previous =>
-        mergeProjectNames(previous, cloudArchivedProjects).filter(
-          project => !deletedKeys.has(project.toLowerCase()),
-        ),
-      );
-
-      void Promise.all(mergedRecords.map(async project => {
-        if (!project.coverPhoto?.remotePath) return;
-        const hydrationTarget = project.coverPhoto;
-        const hydrationVersion =
-          project.coverPhotoUpdatedAt || hydrationTarget.updatedAt || null;
-        const hydrated = await hydrateProjectCoverPhotoCache(
-          authorityProjectId(project.name),
-          hydrationTarget,
+      try {
+        const [cloudProjects, cloudArchivedProjects] = await Promise.all([
+          loadCloudProjectRecords(),
+          loadCloudArchivedProjectNames(),
+        ]).catch((): [ProjectRecord[], string[]] => [[], []]);
+        const mergedRecords = mergeProjectRecords(
+          starterProjects,
+          localProjects,
+          cloudProjects,
+          deletedNames,
         );
-        if (hydrated.localUri === hydrationTarget.localUri) return;
-        // Audit P1-58: compare-and-swap — apply hydrated bytes only if the
-        // record still references the exact cover version we downloaded.
-        // A newer selection or a removal since hydration started must win.
-        setProjectRecords(previous => previous.map(item => {
-          if (item.name.toLowerCase() !== project.name.toLowerCase()) return item;
-          if (!item.coverPhoto) return item;
-          if (item.coverPhoto.remotePath !== hydrationTarget.remotePath) return item;
-          const currentVersion =
-            item.coverPhotoUpdatedAt || item.coverPhoto.updatedAt || null;
-          if (currentVersion !== hydrationVersion) return item;
-          return { ...item, coverPhoto: hydrated };
-        }));
-      }));
+        const deletedKeys = new Set(deletedNames.map(name => name.toLowerCase()));
+
+        setProjectRecords(mergedRecords);
+        setProjects(mergedRecords.map(project => project.name));
+        setArchivedProjects(previous =>
+          mergeProjectNames(previous, cloudArchivedProjects).filter(
+            project => !deletedKeys.has(project.toLowerCase()),
+          ),
+        );
+
+        void Promise.all(mergedRecords.map(async project => {
+          if (!project.coverPhoto?.remotePath) return;
+          const hydrationTarget = project.coverPhoto;
+          const hydrationVersion =
+            project.coverPhotoUpdatedAt || hydrationTarget.updatedAt || null;
+          const hydrated = await hydrateProjectCoverPhotoCache(
+            authorityProjectId(project.name),
+            hydrationTarget,
+          );
+          if (hydrated.localUri === hydrationTarget.localUri) return;
+          // Audit P1-58: compare-and-swap — apply hydrated bytes only if the
+          // record still references the exact cover version we downloaded.
+          // A newer selection or a removal since hydration started must win.
+          setProjectRecords(previous => previous.map(item => {
+            if (item.name.toLowerCase() !== project.name.toLowerCase()) return item;
+            if (!item.coverPhoto) return item;
+            if (item.coverPhoto.remotePath !== hydrationTarget.remotePath) return item;
+            const currentVersion =
+              item.coverPhotoUpdatedAt || item.coverPhoto.updatedAt || null;
+            if (currentVersion !== hydrationVersion) return item;
+            return { ...item, coverPhoto: hydrated };
+          }));
+        })).catch(() => undefined);
+      } catch {
+        // Field fix 2026-07-18: cloud recovery failures are sync concerns
+        // (audit P1-27) and must never mis-file as a LOCAL hydration failure
+        // — that oscillated startupHydrationReady in an infinite loop.
+      }
     } catch (error) {
       startupHydration.fail(PROJECTS_STORAGE_KEY, 'saved projects', error);
     }
