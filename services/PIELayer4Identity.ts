@@ -51,7 +51,6 @@ export type PIELayer4IdentityResolution = {
 type MembershipRow = {
   organization_id?: unknown;
   role?: unknown;
-  roles?: unknown;
   status?: unknown;
 };
 
@@ -170,9 +169,7 @@ export async function resolvePIELayer4ActorContext(): Promise<PIELayer4IdentityR
     };
   }
 
-  const roles: PIELayer4Role[] = membership.roles.length > 0
-    ? membership.roles
-    : ['member'];
+  const roles = membership.roles;
   const permissions = permissionsForRoles(roles);
   const actor: PIEActor = {
     id: user.id,
@@ -272,7 +269,7 @@ async function resolveMembership(userId: string): Promise<{
 
   const { data, error } = await client
     .from(ORGANIZATION_MEMBERSHIPS_TABLE)
-    .select('organization_id, role, roles, status')
+    .select('organization_id, role, status')
     .eq('user_id', userId)
     .eq('status', 'active')
     .limit(1)
@@ -302,26 +299,30 @@ async function resolveMembership(userId: string): Promise<{
     };
   }
 
+  const role = normalizeRole(row?.role);
+  if (!role) {
+    return {
+      ok: false,
+      status: 'unverified',
+      source: ORGANIZATION_MEMBERSHIPS_TABLE,
+      error: 'The active organization membership has no recognized Layer 4 role.',
+    };
+  }
+
   return {
     ok: true,
     organizationId,
-    roles: normalizeRoles(row),
+    roles: [role],
     source: ORGANIZATION_MEMBERSHIPS_TABLE,
   };
 }
 
-function normalizeRoles(row: MembershipRow | null): PIELayer4Role[] {
-  const roles = Array.isArray(row?.roles)
-    ? row?.roles
-    : typeof row?.role === 'string'
-      ? [row.role]
-      : [];
-
-  return roles
-    .map(role => String(role).trim())
-    .filter((role): role is PIELayer4Role =>
-      ['member', 'project_manager', 'decision_owner', 'validation_authority', 'organization_admin'].includes(role),
-    );
+function normalizeRole(value: unknown): PIELayer4Role | null {
+  if (typeof value !== 'string') return null;
+  const role = value.trim();
+  return ['member', 'project_manager', 'decision_owner', 'validation_authority', 'organization_admin'].includes(role)
+    ? role as PIELayer4Role
+    : null;
 }
 
 function fallbackContext(

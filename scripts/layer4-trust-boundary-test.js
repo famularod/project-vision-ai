@@ -168,22 +168,25 @@ function makeDecision(id = 'decision-1') {
         from: table => {
           assert.strictEqual(table, 'organization_memberships');
           return {
-            select: () => ({
-              eq: () => ({
+            select: columns => {
+              assert.strictEqual(columns, 'organization_id, role, status');
+              return {
                 eq: () => ({
-                  limit: () => ({
-                    maybeSingle: async () => ({
-                      data: {
-                        organization_id: 'org-verified',
-                        role: 'validation_authority',
-                        status: 'active',
-                      },
-                      error: null,
+                  eq: () => ({
+                    limit: () => ({
+                      maybeSingle: async () => ({
+                        data: {
+                          organization_id: 'org-verified',
+                          role: 'validation_authority',
+                          status: 'active',
+                        },
+                        error: null,
+                      }),
                     }),
                   }),
                 }),
-              }),
-            }),
+              };
+            },
           };
         },
       }),
@@ -233,6 +236,45 @@ function makeDecision(id = 'decision-1') {
   assert.strictEqual(inactiveResolved.context.organizationStatus, 'unverified');
   assert(!inactiveResolved.context.permissions.includes('validate_outcome'));
   assert(!inactiveResolved.context.permissions.includes('close_decision'));
+
+  const invalidRoleIdentity = loadTs('services/PIELayer4Identity.ts', {
+    './SupabaseService': {
+      getCurrentUser: async () => ({
+        ok: true,
+        configured: true,
+        data: {
+          id: 'auth-user-invalid-role',
+          email: 'invalid-role@example.com',
+          user_metadata: {},
+        },
+      }),
+      getSupabaseClient: () => ({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                limit: () => ({
+                  maybeSingle: async () => ({
+                    data: {
+                      organization_id: 'org-untrusted',
+                      role: 'unknown_role',
+                      status: 'active',
+                    },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    },
+  });
+  const invalidRoleResolved = await invalidRoleIdentity.resolvePIELayer4ActorContext();
+  assert.strictEqual(invalidRoleResolved.ok, false);
+  assert.strictEqual(invalidRoleResolved.context.cloudTrusted, false);
+  assert.strictEqual(invalidRoleResolved.context.organizationStatus, 'unverified');
+  assert.match(invalidRoleResolved.error, /recognized Layer 4 role/i);
 
   const decision = makeDecision();
 
