@@ -40,6 +40,11 @@ import {
 } from './services/SupabaseService';
 import { AdminScreen, SignInModal } from './screens/AdminScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
+import {
+  mailComposerOutcome,
+  smsComposerOutcome,
+  type ReportCommunicationOutcome,
+} from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
@@ -8941,7 +8946,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
-  async function copyReport(report: PIEReportDraft) {
+  // Audit P1-40: every report communication returns its real outcome so the
+  // UI marks communication complete only when it actually happened. A canceled
+  // or undetermined composer result must never read as "sent".
+  async function copyReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
     await Clipboard.setStringAsync(
       `${report.title}\n\n${report.body}`,
     );
@@ -8950,9 +8958,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       'Report copied',
       'The approved report is ready to paste.',
     );
+    return 'completed';
   }
 
-  async function emailReport(report: PIEReportDraft) {
+  async function emailReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
     const available = await MailComposer.isAvailableAsync();
 
     if (!available) {
@@ -8961,16 +8970,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Email unavailable',
         'The report was copied instead. Open your email app and paste it into a new message.',
       );
-      return;
+      return 'unknown';
     }
 
-    await MailComposer.composeAsync({
+    const result = await MailComposer.composeAsync({
       subject: report.subject || report.title,
       body: report.body,
     });
+    return mailComposerOutcome(result.status);
   }
 
-  async function textReport(report: PIEReportDraft) {
+  async function textReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
     const available = await SMS.isAvailableAsync();
 
     if (!available) {
@@ -8979,10 +8989,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Text unavailable',
         'The report was copied instead. Open Messages and paste it into a new text.',
       );
-      return;
+      return 'unknown';
     }
 
-    await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}`);
+    const { result } = await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}`);
+    return smsComposerOutcome(result);
   }
 
   async function openSystemShareSheet() {
@@ -11150,15 +11161,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 void createAutomatedDecisionSnapshot(judgment, silent);
               }}
               onSavedUpdates={() => setScreen('SavedUpdates')}
-              onCopyReport={report => {
-                void copyReport(report);
-              }}
-              onEmailReport={report => {
-                void emailReport(report);
-              }}
-              onTextReport={report => {
-                void textReport(report);
-              }}
+              onCopyReport={copyReport}
+              onEmailReport={emailReport}
+              onTextReport={textReport}
             />
           )}
 

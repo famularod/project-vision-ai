@@ -69,6 +69,13 @@ type ReportCardProps = {
   onPress?: () => void;
 };
 
+export type { ReportCommunicationOutcome } from '../services/ReportCommunication';
+
+import {
+  shouldMarkCommunicationComplete,
+  type ReportCommunicationOutcome,
+} from '../services/ReportCommunication';
+
 export function ReportsScreen({
   contentStyle,
   projectName,
@@ -168,9 +175,9 @@ export function ReportsScreen({
   onCriticalPathReport?: () => void;
   onMilestoneReport?: () => void;
   onSavedUpdates: () => void;
-  onCopyReport: (report: PIEReportDraft) => void;
-  onEmailReport: (report: PIEReportDraft) => void;
-  onTextReport: (report: PIEReportDraft) => void;
+  onCopyReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
+  onEmailReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
+  onTextReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
 }) {
   const [reporterOpen, setReporterOpen] = useState(true);
   const [reportApproved, setReportApproved] = useState(false);
@@ -285,6 +292,30 @@ export function ReportsScreen({
       photoProgressStatus: runtime.photoProgressSummary,
     },
   });
+  // Audit P1-40: approval and communication state belong to one report
+  // identity. Changing the project selection is a new report; stale
+  // approved/communicated flags must not survive it.
+  const reportIdentityKey = selectedProjectNames
+    .map(name => reportProjectKey(name))
+    .join('|');
+  useEffect(() => {
+    setReportApproved(false);
+    setReportEditing(false);
+    setReportEdits(null);
+    setCommunicationComplete(false);
+  }, [reportIdentityKey]);
+
+  const completeCommunication = (
+    communicate: () => Promise<ReportCommunicationOutcome>,
+  ) => {
+    void (async () => {
+      const outcome = await communicate();
+      if (shouldMarkCommunicationComplete(outcome)) {
+        setCommunicationComplete(true);
+      }
+    })();
+  };
+
   const markReportApproved = () => {
     if (!reportGenerationAllowed) return;
     setReporterOpen(true);
@@ -304,8 +335,7 @@ export function ReportsScreen({
         return;
       }
 
-      onCopyReport(effectiveReportDraft);
-      setCommunicationComplete(true);
+      completeCommunication(() => onCopyReport(effectiveReportDraft));
       return;
     }
 
@@ -390,16 +420,13 @@ export function ReportsScreen({
               }));
             }}
             onCopyReport={() => {
-              onCopyReport(effectiveReportDraft);
-              setCommunicationComplete(true);
+              completeCommunication(() => onCopyReport(effectiveReportDraft));
             }}
             onEmailReport={() => {
-              onEmailReport(effectiveReportDraft);
-              setCommunicationComplete(true);
+              completeCommunication(() => onEmailReport(effectiveReportDraft));
             }}
             onTextReport={() => {
-              onTextReport(effectiveReportDraft);
-              setCommunicationComplete(true);
+              completeCommunication(() => onTextReport(effectiveReportDraft));
             }}
           />
       </ScreenCard>
