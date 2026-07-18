@@ -2,6 +2,7 @@ import {
   countCloudProjects,
   createProject,
   createPhotoSignedUrl,
+  deleteProjectUpdate,
   deleteProject,
   getProjectUpdateSyncMetadata,
   getSupabaseConfigurationStatus,
@@ -31,6 +32,11 @@ import {
   synchronizeDAVESyncTombstones,
   type DAVESyncTombstoneSyncResult,
 } from './DAVESyncTombstones';
+import {
+  confirmProjectUpdateCloudDeletion,
+  hasProjectUpdateDeletionIntent,
+  recordProjectUpdateDeletionIntent,
+} from './ProjectUpdateDeletionJournal';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -344,6 +350,11 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   pendingPhotoAssetIds?: string[];
 };
 
+type ProjectUpdateDeletePayload = {
+  id: string;
+  projectName?: string;
+};
+
 const SYNC_QUEUE_STORAGE_KEY = 'projectVisionAI.syncQueue.v1';
 const SYNC_CONFLICTS_STORAGE_KEY = 'projectVisionAI.syncConflicts.v1';
 const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
@@ -436,13 +447,22 @@ export async function enqueuePendingChange<TPayload>(
     lastError: null,
   };
 
-  await mutateOfflineQueue(queue => ({
-    nextQueue: [
-      ...queue.filter(existing => existing.id !== queueItem.id),
-      queueItem as unknown as SyncQueueItem,
-    ],
-    result: undefined,
-  }));
+  await mutateOfflineQueue(queue => {
+    const existingDelete = queue.find(existing =>
+      existing.id === queueItem.id && existing.operation === 'delete',
+    );
+    if (existingDelete && queueItem.operation !== 'delete') {
+      return { nextQueue: queue, result: undefined, persist: false };
+    }
+
+    return {
+      nextQueue: [
+        ...queue.filter(existing => existing.id !== queueItem.id),
+        queueItem as unknown as SyncQueueItem,
+      ],
+      result: undefined,
+    };
+  });
   if (item.autoUpload !== false) {
     void uploadPendingChanges();
   }
@@ -495,6 +515,27 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   );
 }
 
+export async function queueProjectUpdateDelete(update: {
+  id: string;
+  projectName?: string;
+}): Promise<void> {
+  const updateId = update.id.trim();
+  if (!updateId) return;
+
+  const intent = await recordProjectUpdateDeletionIntent(update);
+  if (intent.cloudDeleteConfirmedAt) return;
+  await enqueuePendingChange<ProjectUpdateDeletePayload>({
+    id: projectUpdateQueueItemId(updateId),
+    entity: 'project_update',
+    operation: 'delete',
+    payload: {
+      id: updateId,
+      projectName: update.projectName,
+    },
+    changedAt: new Date().toISOString(),
+  });
+}
+
 async function persistProjectUpdateRecord<TUpdate extends {
   id: string;
   projectName?: string;
@@ -504,6 +545,7 @@ async function persistProjectUpdateRecord<TUpdate extends {
   autoUpload: boolean,
   pendingPhotoAssetIds: readonly string[],
 ) {
+  if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const pendingPhotos = uniquePhotoAssetIds(pendingPhotoAssetIds);
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
     id: projectUpdateQueueItemId(update.id),
@@ -531,6 +573,7 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
   return mutateOfflineQueue(queue => {
     const nextQueue = queue.filter(item => {
       if (item.entity !== 'project_update') return true;
+      if (item.operation === 'delete') return true;
 
       const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
       return payload.id !== updateId;
@@ -1378,7 +1421,25 @@ async function uploadProjectQueueItem(
 async function uploadProjectUpdateQueueItem(
   item: SyncQueueItem,
 ): Promise<'uploaded' | 'conflict' | string> {
+  if (item.operation === 'delete') {
+    const deletePayload = item.payload as ProjectUpdateDeletePayload;
+    const result = await deleteProjectUpdate({
+      id: deletePayload.id,
+    });
+
+    if (result.ok && !result.stubbed) {
+      await confirmProjectUpdateCloudDeletion(deletePayload.id).catch(() => undefined);
+      await clearConflictsForLocalRecord('project_update', deletePayload.id);
+      return 'uploaded';
+    }
+
+    return result.error
+      ? `Field update delete failed: ${result.error}`
+      : result.message || 'Field update deletion is waiting for cloud sync.';
+  }
+
   const payload = item.payload as ProjectUpdateRecordPayload;
+  if (await hasProjectUpdateDeletionIntent(payload.id)) return 'uploaded';
   const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
     ? payload.pendingPhotoAssetIds
     : projectUpdateReferencedPhotoIds(payload.updateData);

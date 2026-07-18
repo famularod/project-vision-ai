@@ -197,6 +197,12 @@ assert.deepStrictEqual(
 );
 
 assert(
+  appSource.includes('notes: normalizeImportedScheduleNote(value.notes, value.importedFrom)') &&
+    appSource.includes('value={item.notes}'),
+  'Imported-note cleanup must run during local/cloud hydration before the live task Notes field renders.',
+);
+
+assert(
   flowSource.includes('cancelBusyImport') &&
     flowSource.includes('accessibilityLabel="Cancel schedule import"'),
   'A stalled import must expose an immediate cancel action.',

@@ -216,7 +216,7 @@ export function buildPIEScheduleReconciliation({
           match: bestMatch,
           type: 'schedule_status_conflict',
           title: 'Field evidence conflicts with schedule status',
-          summary: `${scheduleLabel(item)} is marked Complete, but the latest matching field update indicates ${signalLabel(bestMatch.signal)}.`,
+          summary: `${scheduleLabel(item)} is marked Complete, but the best task-specific field update indicates ${signalLabel(bestMatch.signal)}.`,
           severity: bestMatch.signal === 'blocked' || bestMatch.signal === 'issue' ? 'critical' : 'high',
           suggestedAction: 'Verify the field condition before relying on the Complete schedule status.',
         }));
@@ -313,9 +313,12 @@ function matchScheduleItemToUpdate(
   item: ScheduleItem,
   update: ProjectUpdate,
 ): PIEScheduleFieldMatch | null {
+  const explicitScheduleItemId = update.scheduleItemId?.trim() || '';
   const explicitTaskMatched = Boolean(
-    update.scheduleItemId?.trim() && update.scheduleItemId.trim() === item.id,
+    explicitScheduleItemId && explicitScheduleItemId === item.id,
   );
+  if (explicitScheduleItemId && !explicitTaskMatched) return null;
+
   const projectMatched =
     Boolean(item.projectName.trim()) &&
     [update.projectName, update.scheduleProjectName || '']
@@ -328,6 +331,14 @@ function matchScheduleItemToUpdate(
   const areaMatched = Boolean(item.locationName.trim()) && updateAreaNames.some(
     area => sameName(area, item.locationName),
   );
+  const confirmedAreaMismatch =
+    Boolean(item.locationName.trim()) &&
+    updateAreaNames.length > 0 &&
+    !areaMatched;
+  if (!explicitTaskMatched && confirmedAreaMismatch) return null;
+
+  const scopedEvidence = updateEvidenceForScheduleItem(item, update);
+
   const legacyProjectAreaMatched =
     Boolean(item.locationName.trim()) &&
     sameName(item.locationName, update.projectName);
@@ -336,7 +347,7 @@ function matchScheduleItemToUpdate(
     normalize(update.scheduleTaskName) === normalize(scheduleLabel(item)),
   );
   if (!explicitTaskMatched && !projectMatched && !legacyProjectAreaMatched) return null;
-  const fieldText = updateEvidenceText(update);
+  const fieldText = scopedEvidence.matchText;
   const overlap = scheduleTaskTokenOverlap(item, fieldText);
   const taskMatched = overlap >= 0.34;
 
@@ -366,14 +377,14 @@ function matchScheduleItemToUpdate(
     : score >= 65
       ? 'medium'
       : 'low';
-  const signal = fieldSignal(fieldText, update);
+  const signal = fieldSignal(scopedEvidence.signalText, scopedEvidence.photos);
 
   return {
     scheduleItemId: item.id,
     updateId: update.id,
-    photoIds: update.photos.map(photo => photo.id),
+    photoIds: scopedEvidence.photos.map(photo => photo.id),
     projectName: update.projectName,
-    areaName: updateAreaNames[0] || null,
+    areaName: scopedEvidence.areaName,
     capturedAt: updateTimestamp(update),
     signal,
     score,
@@ -382,15 +393,43 @@ function matchScheduleItemToUpdate(
     taskTokenOverlap: Math.round(overlap * 100) / 100,
     projectMatched,
     areaMatched,
-    summary: conciseEvidenceSummary(update, signal),
+    summary: conciseEvidenceSummary(update, signal, scopedEvidence),
   };
 }
 
-function updateEvidenceText(update: ProjectUpdate) {
-  return [
-    update.scheduleTaskName,
-    update.notes,
-    ...update.photos.flatMap(photo => [
+type ScheduleItemUpdateEvidence = {
+  photos: ProjectUpdate['photos'];
+  includeUpdateText: boolean;
+  matchText: string;
+  signalText: string;
+  areaName: string | null;
+};
+
+function updateEvidenceForScheduleItem(
+  item: ScheduleItem,
+  update: ProjectUpdate,
+): ScheduleItemUpdateEvidence {
+  const itemArea = item.locationName.trim();
+  const updateArea = update.selectedAreaName?.trim() || '';
+  const hasAreaTaggedPhotos = update.photos.some(photo => Boolean(photo.selectedAreaName?.trim()));
+  const photos = !itemArea
+    ? update.photos
+    : update.photos.filter(photo => {
+        const photoArea = photo.selectedAreaName?.trim() || '';
+        if (photoArea) return sameName(photoArea, itemArea);
+        if (updateArea) return sameName(updateArea, itemArea);
+
+        // Preserve legacy records only when the whole update predates area tagging.
+        // An untagged photo beside area-tagged photos is ambiguous and must not
+        // leak its signal into every same-named task across those areas.
+        return !hasAreaTaggedPhotos;
+      });
+  const includeUpdateText = !itemArea || (
+    updateArea
+      ? sameName(updateArea, itemArea)
+      : !hasAreaTaggedPhotos
+  );
+  const photoEvidence = photos.flatMap(photo => [
       photo.caption,
       photo.category,
       photo.actionRequired,
@@ -398,8 +437,30 @@ function updateEvidenceText(update: ProjectUpdate) {
       photo.photoIntelligence?.visibleChange,
       photo.photoIntelligence?.possibleProgress,
       ...(photo.photoIntelligence?.possibleConcerns || []),
-    ]),
-  ].filter(Boolean).join(' ');
+    ]);
+  const matchingParts = [
+    update.scheduleTaskName,
+    includeUpdateText ? update.notes : null,
+    ...photoEvidence,
+  ];
+  const signalParts = [
+    includeUpdateText ? update.notes : null,
+    ...photoEvidence,
+  ];
+  const taggedPhotoArea = photos
+    .map(photo => photo.selectedAreaName?.trim() || '')
+    .find(area => Boolean(area));
+  const matchedUpdateArea = updateArea && (!itemArea || sameName(updateArea, itemArea))
+    ? update.selectedAreaName || null
+    : null;
+
+  return {
+    photos,
+    includeUpdateText,
+    matchText: matchingParts.filter(Boolean).join(' '),
+    signalText: signalParts.filter(Boolean).join(' '),
+    areaName: taggedPhotoArea || matchedUpdateArea || null,
+  };
 }
 
 function scheduleTaskText(item: ScheduleItem) {
@@ -408,9 +469,12 @@ function scheduleTaskText(item: ScheduleItem) {
     .join(' ');
 }
 
-function fieldSignal(text: string, update: ProjectUpdate): PIEScheduleFieldSignal {
+function fieldSignal(
+  text: string,
+  photos: ProjectUpdate['photos'],
+): PIEScheduleFieldSignal {
   const value = normalize(text);
-  const hasOpenIssue = update.photos.some(photo =>
+  const hasOpenIssue = photos.some(photo =>
     (photo.category === 'Open Issue' || photo.category === 'Safety Concern') &&
     photo.actionStatus !== 'Closed',
   );
@@ -468,9 +532,13 @@ function makeWarning({
   };
 }
 
-function conciseEvidenceSummary(update: ProjectUpdate, signal: PIEScheduleFieldSignal) {
-  const text = update.notes.trim() ||
-    update.photos.find(photo => photo.caption.trim())?.caption ||
+function conciseEvidenceSummary(
+  update: ProjectUpdate,
+  signal: PIEScheduleFieldSignal,
+  evidence: ScheduleItemUpdateEvidence,
+) {
+  const text = (evidence.includeUpdateText ? update.notes.trim() : '') ||
+    evidence.photos.find(photo => photo.caption.trim())?.caption ||
     `Field update indicates ${signalLabel(signal)}.`;
   return shorten(text, 180);
 }

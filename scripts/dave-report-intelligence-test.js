@@ -114,7 +114,7 @@ assert(screen.includes('What Changed'));
 assert(screen.includes('Needs Attention'));
 assert(screen.includes('Next Action'));
 assert(screen.includes('Progress by Work Area'));
-assert(screen.includes('Task average · not weighted'));
+assert(screen.includes('Unweighted average of tasks in each area'));
 assert(screen.includes('Completed Areas'));
 assert(screen.includes('Full Written Report'));
 assert(screen.includes('Project Detail'));

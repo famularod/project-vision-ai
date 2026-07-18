@@ -184,6 +184,7 @@ export function ReportsScreen({
   const [autoDecisionKey, setAutoDecisionKey] = useState('');
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
+  const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
   const baseReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft;
   const reportTruths = useMemo(() => selectedProjectNames.map(selectedName => {
     const liveTruth = liveAuthority.projectTruth;
@@ -246,6 +247,12 @@ export function ReportsScreen({
   }, [pieReportDraft.id]);
 
   useEffect(() => {
+    if (reportGenerationAllowed) return;
+    setReportApproved(false);
+    setCommunicationComplete(false);
+  }, [reportGenerationAllowed]);
+
+  useEffect(() => {
     if (
       !onCreateDecisionSnapshot ||
       !liveAuthority.policy.layer4DecisionCreationAllowed ||
@@ -279,6 +286,7 @@ export function ReportsScreen({
     },
   });
   const markReportApproved = () => {
+    if (!reportGenerationAllowed) return;
     setReporterOpen(true);
     setReportEditing(false);
     setReportApproved(true);
@@ -290,6 +298,7 @@ export function ReportsScreen({
     }
 
     if (action === 'communicate') {
+      if (!reportGenerationAllowed) return;
       if (!reportApproved) {
         markReportApproved();
         return;
@@ -360,6 +369,8 @@ export function ReportsScreen({
               setCommunicationComplete(false);
             }}
             reportApproved={reportApproved}
+            reportGenerationAllowed={reportGenerationAllowed}
+            authorityMessage={liveAuthority.policy.userMessage}
             reportEditing={reportEditing}
             onApproveReport={markReportApproved}
             onEditReport={() => {
@@ -614,6 +625,8 @@ function PIEReporterPreview({
   onReportTypeChange,
   onReportFormatChange,
   reportApproved,
+  reportGenerationAllowed,
+  authorityMessage,
   reportEditing,
   onApproveReport,
   onEditReport,
@@ -635,6 +648,8 @@ function PIEReporterPreview({
   ) => void;
   onReportFormatChange: (format: ReportFormat) => void;
   reportApproved: boolean;
+  reportGenerationAllowed: boolean;
+  authorityMessage: string;
   reportEditing: boolean;
   onApproveReport: () => void;
   onEditReport: () => void;
@@ -798,7 +813,9 @@ function PIEReporterPreview({
           <TouchableOpacity
             style={styles.reportActionButtonPrimary}
             onPress={onApproveReport}
+            disabled={!reportGenerationAllowed}
             accessibilityRole="button"
+            accessibilityState={{ disabled: !reportGenerationAllowed }}
             accessibilityLabel="Approve Report"
           >
             <Ionicons name="checkmark-circle-outline" size={18} color="#FFFFFF" />
@@ -845,7 +862,9 @@ function PIEReporterPreview({
 
       {!reportApproved ? (
         <Text style={styles.approvalBoundaryText}>
-          Copy, Email, and Text unlock after approval. No report is sent automatically.
+          {reportGenerationAllowed
+            ? 'Copy, Email, and Text unlock after approval. No report is sent automatically.'
+            : `${authorityMessage} Approval and sharing stay unavailable until this is resolved.`}
         </Text>
       ) : null}
     </View>

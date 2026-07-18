@@ -33,9 +33,9 @@ assert(
   'Authority refreshes must replay the latest input when scope changes during in-flight work.',
 );
 assert(
-  provider.includes('const currentCore = scopeIsCurrent && coreSignature === signature ? core : null') &&
+  provider.includes('const currentCore = readyForAuthority && scopeIsCurrent && coreSignature === signature') &&
     provider.includes('const displayInput = scopeIsCurrent ? authorityInput : input'),
-  'Report UI must not expose a completed draft built for an older project scope.',
+  'Report UI must not expose a completed draft built before hydration or for an older project scope.',
 );
 assert(
   provider.includes('scopeIsCurrent ? null : safeBuildProviderRuntime(input)') &&

@@ -59,15 +59,23 @@ assert(admin.lastIndexOf('{__DEV__ ? (', previewIndex) >= 0, 'Preview entry must
 assert(admin.includes('await onSaveCaptureMemory(memory)') && admin.includes('saved locally'), 'Confirmed preview memory must cross the supplied local persistence boundary.');
 assert(!admin.includes('saveCloudUpdate') && !admin.includes('AsyncStorage.setItem'), 'The confirmation UI must not add cloud persistence or bypass the repository.');
 assert(app.includes('localDAVECaptureMemoryRepository.list()') && app.includes('localDAVECaptureMemoryRepository.save(memory)'), 'App must hydrate and save confirmed memories through the repository.');
-assert(app.includes('captureMemories={captureMemories}') && app.includes('captureMemories,\n  }),'), 'Selected-project intelligence must refresh from hydrated capture memories.');
+const authorityInput = app.slice(
+  app.indexOf('const liveAuthorityInput = useMemo'),
+  app.indexOf('function selectOverviewProject'),
+);
+assert(
+  app.includes('captureMemories={captureMemories}') &&
+    (authorityInput.match(/\bcaptureMemories\b/g) || []).length >= 2,
+  'Selected-project intelligence must pass hydrated capture memories into authority input and refresh when they change.',
+);
 
 ['Capture Memory', 'What should be saved to project memory?', 'Review Memory'].forEach(marker =>
   assert(typedSheet.includes(marker), `Typed capture sheet must render ${marker}.`));
 assert(app.includes('label="Start Project Walk"') && app.includes('<DAVETypedCaptureSheet'), 'Project Workspace must preserve the production typed capture fallback inside Project Walk.');
 assert(app.includes("transcriptSourceRecordId: `typed-entry:${memoryId}`") && app.includes("fields: { generalMemory: text }"), 'Typed capture must preserve source text without inventing structured facts.');
 assert(app.includes('await onSaveCaptureMemory(memory)') && app.includes("? 'Source transcript' : 'Source note'"), 'Typed capture must reuse the confirmed repository save boundary.');
-assert(app.includes('formatSavedTime(timelineEvent.timestamp)') && !app.includes('formatDisplayDate(timelineEvent.timestamp)'), 'Timeline must format full confirmation timestamps without producing Invalid Date.');
-assert(app.includes('setSelectedCaptureMemory(sourceMemory)') && app.includes('<DAVECaptureMemoryDetailSheet'), 'Memory-backed timeline rows must open a real saved-memory destination.');
+assert(app.includes('formatSavedTime(memory.confirmedAt)'), 'Saved-memory rows must format full confirmation timestamps without producing Invalid Date.');
+assert(app.includes('setSelectedCaptureMemory(memory)') && app.includes('<DAVECaptureMemoryDetailSheet'), 'Saved-memory rows must open a real saved-memory destination.');
 ['Saved Memory', 'Project Memory', 'Source note'].forEach(marker =>
   assert(detailSheet.includes(marker), `Saved memory detail must render ${marker}.`));
 assert(detailSheet.includes("Alert.alert(\n      'Delete Saved Memory?'") && detailSheet.includes('await onDelete(memoryId)') && detailSheet.includes('disabled={isDeleting}'), 'Saved memory deletion must require confirmation, await the repository boundary, and prevent duplicate taps.');

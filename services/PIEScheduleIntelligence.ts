@@ -213,6 +213,84 @@ function optionalText(value: string) {
   return trimmed ? trimmed : null;
 }
 
+export function explicitScheduleNote(value: unknown) {
+  if (typeof value !== 'string') return '';
+
+  return stripScheduleDependencyMetadata(value).trim();
+}
+
+export function normalizeImportedScheduleNote(
+  value: unknown,
+  importedFrom?: string | null,
+) {
+  const note = explicitScheduleNote(value);
+  if (!note || !importedFrom?.trim()) return note;
+
+  if (
+    /^AI\/OCR extraction from imported Gantt PDF\b/i.test(note) ||
+    /^The PDF was saved, but no dated schedule activity could be extracted automatically\b/i.test(note)
+  ) {
+    return '';
+  }
+
+  if (/Imported from a structured Microsoft Project PDF/i.test(note)) {
+    return note
+      .replace(/\bActivity ID:\s*[^.]+\.?\s*/gi, ' ')
+      .replace(/\bDuration:\s*\d+(?:\.\d+)?\s+days?\.?\s*/gi, ' ')
+      .replace(/\bImported from a structured Microsoft Project PDF;?\s*/gi, ' ')
+      .replace(/\bverify highlighted fields before approval\.?\s*/gi, ' ')
+      .replace(/\s+([.,;:])/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  const legacyCommunication = note.match(
+    /^Extracted locally from .*?\. Original message:\s*(.*?)\s+Extraction confidence:\s*\d+%\./i,
+  );
+  if (legacyCommunication?.[1]) {
+    return legacyCommunication[1].trim();
+  }
+
+  let cleaned = note;
+
+  if (/\bSchedule confidence:/i.test(cleaned)) {
+    const metadataStart = [
+      /\bWBS:/i,
+      /\bDuration:/i,
+      /\bCritical:/i,
+      /\bFloat:/i,
+      /\bReview needed:/i,
+      /\bSchedule confidence:/i,
+    ]
+      .map(pattern => cleaned.search(pattern))
+      .filter(index => index >= 0)
+      .sort((left, right) => left - right)[0];
+
+    if (metadataStart !== undefined) {
+      cleaned = cleaned.slice(0, metadataStart);
+    }
+  }
+
+  const aiReviewStart = [
+    /\bReview strength:/i,
+    /\bSource page:/i,
+    /\bReview this AI-extracted item before relying on it\.?/i,
+    /\bReview task name, location, and dates before relying on this item\.?/i,
+  ]
+    .map(pattern => cleaned.search(pattern))
+    .filter(index => index >= 0)
+    .sort((left, right) => left - right)[0];
+
+  if (aiReviewStart !== undefined) {
+    cleaned = cleaned.slice(0, aiReviewStart);
+  }
+
+  return cleaned
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -661,6 +739,7 @@ export function normalizeMicrosoftProjectPdfRows({
         cell(cells, header, ['percent complete', '% complete'], 6),
         'Not Started',
       ),
+      notes: cell(cells, header, ['notes', 'comments', 'remarks'], -1),
     };
   }).filter(row => row.taskName && row.finishDate);
   const contexts = new Map<number, {
@@ -728,12 +807,6 @@ export function normalizeMicrosoftProjectPdfRows({
       : percentComplete > 0
         ? 'In Progress'
         : 'Not Started';
-    const metadataNotes = [
-      row.activityId ? `Activity ID: ${row.activityId}.` : null,
-      row.duration !== null ? `Duration: ${row.duration} day${row.duration === 1 ? '' : 's'}.` : null,
-      'Imported from a structured Microsoft Project PDF; verify highlighted fields before approval.',
-    ].filter(Boolean).join(' ');
-
     items.push({
       id: uid(),
       scheduleProjectName: context.scheduleProjectName || null,
@@ -749,7 +822,7 @@ export function normalizeMicrosoftProjectPdfRows({
       percentComplete,
       priority: normalizePriority('', row.finishDate),
       status,
-      notes: metadataNotes,
+      notes: explicitScheduleNote(row.notes),
       importedFrom: sourceName,
       importedAt,
       createdAt: importedAt,
@@ -764,20 +837,6 @@ function scheduleItemFromNormalizedTask(
   sourceName: string,
   importedAt: string,
 ): ScheduleItem {
-  const metadataNotes = [
-    task.notes ? stripScheduleDependencyMetadata(task.notes) : null,
-    task.wbs ? `WBS: ${task.wbs}` : null,
-    task.duration !== null ? `Duration: ${task.duration} day${task.duration === 1 ? '' : 's'}` : null,
-    task.critical ? 'Critical: yes' : null,
-    task.float !== null ? `Float: ${task.float}` : null,
-    task.needsReview
-      ? `Review needed: ${task.reviewFields.join(', ')}.`
-      : null,
-    `Schedule confidence: ${task.confidence}.`,
-  ]
-    .filter(Boolean)
-    .join(' ');
-
   return {
     id: task.id,
     projectName: task.project,
@@ -788,10 +847,11 @@ function scheduleItemFromNormalizedTask(
     milestone: task.milestone || '',
     owner: task.owner || '',
     contractor: task.contractor || '',
+    durationDays: task.duration,
     percentComplete: task.percentComplete,
     priority: task.critical ? 'High' : normalizePriority('', task.finish || ''),
     status: task.status,
-    notes: metadataNotes,
+    notes: explicitScheduleNote(task.notes),
     importedFrom: sourceName,
     importedAt,
     createdAt: importedAt,
@@ -914,7 +974,7 @@ export function normalizeScheduleImport({
         cell(cells, headers, ['float', 'total float'], 12),
       );
       const criticalText = cell(cells, headers, ['critical', 'critical path'], 14);
-      const notes = cell(cells, headers, ['notes', 'comments'], 8);
+      const notes = cell(cells, headers, ['notes', 'comments', 'remarks'], -1);
       const critical =
         normalized(criticalText).includes('yes') ||
         normalized(criticalText).includes('critical') ||
@@ -1031,7 +1091,9 @@ function parseNotesValue(notes: string, label: string) {
 function taskFromSummary(summaryTask: ScheduleSummaryTask): PIENormalizedScheduleTask {
   const item = summaryTask.item;
   const floatValue = parseDuration(parseNotesValue(item.notes, 'Float') || '');
-  const duration = parseDuration(parseNotesValue(item.notes, 'Duration') || '');
+  const duration = typeof item.durationDays === 'number'
+    ? item.durationDays
+    : parseDuration(parseNotesValue(item.notes, 'Duration') || '');
   const critical =
     item.priority === 'High' ||
     summaryTask.isOverdue ||

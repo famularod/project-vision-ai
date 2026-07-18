@@ -103,4 +103,134 @@ describe('schedule reconciliation authority', () => {
       expect.objectContaining({ type: 'schedule_status_conflict' }),
     ]));
   });
+
+  it('clears a conflict when its mistaken source update is deleted without deleting the task', () => {
+    const task = scheduleItem({
+      status: 'Complete',
+      percentComplete: 100,
+      progressSource: 'project_manager',
+      progressConfirmedAt: '2026-07-16T12:00:00.000Z',
+    });
+    const mistakenUpdate = {
+      id: 'mistaken-update',
+      projectName: '2321 Compliance Project',
+      date: '2026-07-16T17:00:00.000Z',
+      notes: 'Place concrete paving is still in progress.',
+      scheduleItemId: 'task-1',
+      photos: [],
+      recipients: { contactIds: [] },
+    };
+
+    const beforeDelete = buildPIEScheduleReconciliation({
+      scheduleItems: [task],
+      updates: [mistakenUpdate],
+      now,
+    });
+    const afterDelete = buildPIEScheduleReconciliation({
+      scheduleItems: [task],
+      updates: [],
+      now,
+    });
+
+    expect(beforeDelete.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'schedule_status_conflict',
+        updateId: 'mistaken-update',
+      }),
+    ]));
+    expect(afterDelete.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'schedule_status_conflict' }),
+    ]));
+    expect(task.id).toBe('task-1');
+    expect(task.status).toBe('Complete');
+  });
+
+  it('isolates photo signals and evidence IDs by schedule area', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [
+        scheduleItem({
+          id: 'wall-packs-canopy-a',
+          locationName: 'Canopy A',
+          taskName: 'INSTALL ELECTRICAL WALL PACKS',
+          status: 'Complete',
+          percentComplete: 100,
+        }),
+        scheduleItem({
+          id: 'wall-packs-canopy-b',
+          locationName: 'Canopy B',
+          taskName: 'INSTALL ELECTRICAL WALL PACKS',
+          status: 'Complete',
+          percentComplete: 100,
+        }),
+      ],
+      updates: [{
+        id: 'multi-area-wall-pack-update',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes: '',
+        scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+        selectedAreaId: null,
+        selectedAreaName: null,
+        recipients: { contactIds: [] },
+        photos: [
+          {
+            id: 'photo-canopy-a-complete',
+            uri: 'file:///canopy-a.jpg',
+            caption: 'INSTALL ELECTRICAL WALL PACKS is complete.',
+            category: 'Update',
+            actionRequired: '',
+            actionOwner: '',
+            actionDueDate: '',
+            actionStatus: 'Closed',
+            selectedAreaId: 'area-canopy-a',
+            selectedAreaName: 'Canopy A',
+          },
+          {
+            id: 'photo-canopy-b-in-progress',
+            uri: 'file:///canopy-b.jpg',
+            caption: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+            category: 'Update',
+            actionRequired: '',
+            actionOwner: '',
+            actionDueDate: '',
+            actionStatus: 'In Progress',
+            selectedAreaId: 'area-canopy-b',
+            selectedAreaName: 'Canopy B',
+          },
+        ],
+      }],
+      projectName: '2321 Compliance Project',
+      now,
+    });
+
+    expect(result.matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scheduleItemId: 'wall-packs-canopy-a',
+        signal: 'complete',
+        photoIds: ['photo-canopy-a-complete'],
+      }),
+      expect.objectContaining({
+        scheduleItemId: 'wall-packs-canopy-b',
+        signal: 'in_progress',
+        photoIds: ['photo-canopy-b-in-progress'],
+      }),
+    ]));
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'schedule_status_conflict',
+        scheduleItemId: 'wall-packs-canopy-b',
+        evidenceIds: [
+          'schedule:wall-packs-canopy-b',
+          'update:multi-area-wall-pack-update',
+          'photo:photo-canopy-b-in-progress',
+        ],
+      }),
+    ]));
+    expect(result.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'schedule_status_conflict',
+        scheduleItemId: 'wall-packs-canopy-a',
+      }),
+    ]));
+  });
 });

@@ -9,12 +9,7 @@ const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), '
 
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const app = read('App.tsx');
-const home = app;
-const capture = app;
-const buildUpdate = app;
 const reports = read('screens/ReportsScreen.tsx');
-const projectOverview = app;
-const projectAssistant = app;
 const piePanel = read('components/PIEPanel.tsx');
 
 assert(provider.includes('buildLivePIECoreIntelligence'), 'Provider must call buildLivePIECoreIntelligence.');
@@ -47,26 +42,31 @@ assert(app.includes('<PIELiveAuthorityProvider input={liveAuthorityInput}>'), 'A
 assert(app.includes('authoritySurfaceForScreen'), 'App must map screens to PIE surfaces.');
 assert(app.includes('authorityProjectId'), 'App must provide stable local project IDs.');
 
-[
-  ['HomeDashboard', home],
-  ['PhotoCapturePanel', capture],
-  ['BuildUpdateScreen', buildUpdate],
-  ['ReportsScreen', reports],
-  ['ProjectOverviewScreen', projectOverview],
-  ['ProjectAssistantScreen', projectAssistant],
-].forEach(([name, source]) => {
-  assert(source.includes('usePIELiveAuthority'), `${name} must consume live authority provider.`);
-  assert(!source.includes('buildLivePIECoreIntelligence'), `${name} must not call Core live authority directly.`);
-});
-
-assert(buildUpdate.includes('notifyEvidenceChanged'), 'Capture wrapper must notify evidence changes.');
-assert(buildUpdate.includes('invalidateEvidence'), 'Capture wrapper must invalidate removed evidence.');
+assert((app.match(/usePIELiveAuthority\(\)/g) || []).length >= 3, 'Home, Capture, and Project Workspace must consume live authority provider.');
+assert(!app.includes('buildLivePIECoreIntelligence'), 'Screens must not call Core live authority directly.');
+assert(!reports.includes('buildLivePIECoreIntelligence'), 'Reports must not call Core live authority directly.');
+assert(
+  provider.includes("void runRefresh(core ? 'project_changed' : 'initial_load')") &&
+    provider.includes('}, [readyForAuthority, signature]);'),
+  'Provider must refresh when its hydrated evidence signature changes.',
+);
+assert(
+  provider.includes('hydrated?: boolean;') &&
+    provider.includes('const inputHydrated = input.hydrated !== false;') &&
+    provider.includes('if (!authorityReadyRef.current) return;'),
+  'Provider must default callers to ready but refuse Core refreshes while hydration is explicitly pending.',
+);
+assert(
+  provider.includes('sequenceRef.current += 1;') &&
+    provider.includes('inFlightRef.current = null;') &&
+    provider.includes('if (!readyForAuthority) return;'),
+  'Provider must invalidate in-flight authority and skip Project Truth persistence when hydration becomes pending.',
+);
+assert(app.includes('const liveAuthorityInput = useMemo') && app.includes('updates: (') && app.includes('currentUpdate: (') && app.includes('captureMemories,'), 'App must include live evidence in provider input.');
 assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must prefer provider report draft with Runtime recovery only.');
-assert(projectOverview.includes('liveAuthority.core.bestNextStep'), 'Project Workspace must prefer provider bestNextStep.');
-assert(projectAssistant.includes('liveAuthority.core?.bestNextStep'), 'Project Assistant must prefer provider bestNextStep.');
-assert(home.includes('const runtime = liveAuthority.runtime;'), 'Home must consume provider Runtime directly.');
+assert(app.includes('liveAuthority.projectTruth.briefing.nextActions'), 'Home must prefer provider-backed Project Truth actions.');
+assert(app.includes('const projectTruth = liveAuthority.projectTruth;'), 'Project Workspace must consume provider Project Truth directly.');
 assert(reports.includes('const runtime = liveAuthority.runtime;'), 'Review must consume provider Runtime directly.');
-assert(projectOverview.includes('const runtime = liveAuthority.runtime;'), 'Project Workspace must consume provider Runtime directly.');
 assert(piePanel.includes('useOptionalPIELiveAuthority'), 'PIEPanel must consume optional provider authority.');
 assert(piePanel.includes('liveAuthority?.runtime || fallbackRuntime'), 'PIEPanel must prefer provider Runtime when available.');
 

@@ -202,6 +202,10 @@ export type SaveProjectUpdateParams<TUpdate> = {
   updatedAt?: string;
 };
 
+export type DeleteProjectUpdateParams = {
+  id: string;
+};
+
 export type ProjectUpdateSyncMetadata<TUpdate = JsonValue> = {
   id: string;
   updatedAt: string | null;
@@ -983,6 +987,36 @@ export async function saveProjectUpdate<TUpdate>({
   }
 
   return okResult(normalizeProjectUpdate<TUpdate>(data), status);
+}
+
+export async function deleteProjectUpdate({
+  id,
+}: DeleteProjectUpdateParams): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const updateId = id.trim();
+  if (!updateId) return errorResult('Field update delete requires an id.');
+
+  const deleteResult = await client
+    .from(PROJECT_UPDATES_TABLE)
+    .delete()
+    .eq('owner_id', owner.data)
+    .eq('id', updateId);
+
+  if (deleteResult.error) {
+    return tableAwareErrorResult<null>(
+      deleteResult.error.message,
+      deleteResult.status,
+    );
+  }
+
+  return okResult(null, deleteResult.status);
 }
 
 export async function listProjectUpdates<TUpdate>(): Promise<

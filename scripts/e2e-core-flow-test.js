@@ -10,7 +10,6 @@ const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), '
 const app = read('App.tsx');
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const reports = read('screens/ReportsScreen.tsx');
-const buildUpdate = app;
 const home = app;
 const capture = app;
 const overview = app;
@@ -32,7 +31,7 @@ assert(provider.includes('highImpactAutomationAllowed'), 'Provider must gate hig
   ['Home', home],
   ['Capture', capture],
   ['Review', reports],
-  ['Share', buildUpdate],
+  ['Share', reports],
   ['Project Workspace', overview],
   ['Project Assistant', assistant],
 ].forEach(([name, source]) => {
@@ -43,7 +42,13 @@ assert(provider.includes('highImpactAutomationAllowed'), 'Provider must gate hig
 assert(!app.includes('buildPIEReportDraft({'), 'App must not rebuild report drafts from raw arrays.');
 assert(!reports.includes('buildPIEReportDraft({'), 'Review must not rebuild report drafts from raw arrays.');
 assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must use provider report draft with Runtime recovery only.');
-assert(buildUpdate.includes('authoritativeReportDraft'), 'Share must use authoritative report drafts.');
+assert(
+  reports.includes('reportDraft={effectiveReportDraft}') &&
+    reports.includes('onCopyReport(effectiveReportDraft)') &&
+    reports.includes('onEmailReport(effectiveReportDraft)') &&
+    reports.includes('onTextReport(effectiveReportDraft)'),
+  'Share actions must receive the authoritative or explicitly reviewed report draft.',
+);
 
 assert(app.includes('buildLayer4DecisionCandidateFromExecutiveJudgment'), 'Layer 4 decisions must come from persisted Executive Judgment.');
 assert(app.includes('createDecisionSnapshotFromJudgment'), 'App must create decision snapshots from Executive Judgment records.');

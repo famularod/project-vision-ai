@@ -46,7 +46,11 @@ function loadTypeScriptModule(relativePath) {
 const { extractScheduleItemsFromCommunicationText } = loadTypeScriptModule(
   'services/PIEScheduleCommunicationImport.ts',
 );
-const { normalizeMicrosoftProjectPdfRows } = loadTypeScriptModule(
+const {
+  normalizeImportedScheduleNote,
+  normalizeMicrosoftProjectPdfRows,
+  normalizeScheduleImport,
+} = loadTypeScriptModule(
   'services/PIEScheduleIntelligence.ts',
 );
 const result = extractScheduleItemsFromCommunicationText({
@@ -76,6 +80,11 @@ assert.strictEqual(roughIn.finishDate, '07/17/2026', 'Relative weekday dates sho
 assert.strictEqual(roughIn.locationName, 'Canopy B', 'Known areas should be matched from screenshot text.');
 assert.strictEqual(roughIn.owner, 'Alex', 'A named commitment owner should be extracted.');
 assert.strictEqual(roughIn.status, 'Not Started', 'Future completion language must not be treated as completed work.');
+assert.strictEqual(
+  roughIn.notes,
+  'Alex will finish electrical rough-in in Canopy B by Friday.',
+  'Communication imports should retain only the human-authored message, not extraction metadata.',
+);
 
 const blocked = result.items.find(item => item.taskName.toLowerCase().includes('concrete patch'));
 assert(blocked, 'Blocked concrete work should be extracted.');
@@ -128,8 +137,8 @@ const commaTask = structuredPdfItems.find(item => item.taskName.includes('BREAK 
 assert(commaTask, 'Commas inside Microsoft Project task names must not shift TSV columns.');
 assert.strictEqual(commaTask.scheduleProjectName, '2321 Compliance Project', 'Comma-containing tasks must retain their Gantt parent project.');
 assert(
-  structuredPdfItems.every(item => !/\b(?:predecessors?|dependencies)\s*:/i.test(item.notes)),
-  'Microsoft Project predecessor columns must not be imported into schedule task notes.',
+  structuredPdfItems.every(item => item.notes === ''),
+  'Microsoft Project metadata must not be auto-populated into the PM-facing Notes field.',
 );
 const northLotTask = structuredPdfItems.find(item => item.taskName.includes('CONCRETE PAVING'));
 assert(northLotTask, 'The North Lot leaf activity should be extracted.');
@@ -138,6 +147,7 @@ assert.strictEqual(northLotTask.scheduleProjectName, '2321 Compliance Project', 
 assert.strictEqual(northLotTask.locationName, 'North Lot', 'The North Lot task should inherit only the North Lot area.');
 assert.strictEqual(northLotTask.finishDate, '07/03/2026', 'Microsoft Project finish dates should be normalized.');
 assert.strictEqual(northLotTask.status, 'In Progress', 'Microsoft Project percent complete should determine status.');
+assert.strictEqual(northLotTask.durationDays, 2, 'Duration should remain structured schedule data instead of being copied into Notes.');
 
 const canopyTask = structuredPdfItems.find(item => item.taskName.includes('COLUMN CONCRETE'));
 assert(canopyTask, 'The Canopy B leaf activity should be extracted.');
@@ -186,6 +196,119 @@ assert.strictEqual(
   genericMultiProjectItems.filter(item => item.taskName === 'SITE CLEANUP').length,
   2,
   'Repeated task names in different arbitrary projects must remain separate activities.',
+);
+
+const structuredExplicitNoteItems = normalizeMicrosoftProjectPdfRows({
+  contents: [
+    'ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete\tNotes',
+    '1\tALPHA MEDICAL CENTER\t0\t10 days\tMon 7/13/26\tFri 7/24/26\t0%\t',
+    '2\tSITE CLEANUP\t1\t1 day\tThu 7/23/26\tThu 7/23/26\t0%\tCoordinate gate access with security.',
+  ].join('\n'),
+  sourceName: 'schedule-with-notes.pdf',
+  now: new Date('2026-07-13T12:00:00-07:00'),
+});
+assert.strictEqual(
+  structuredExplicitNoteItems[0]?.notes,
+  'Coordinate gate access with security.',
+  'An explicitly labeled Microsoft Project Notes column should remain visible to the PM.',
+);
+
+const unlabeledMetadataImport = normalizeScheduleImport({
+  contents: [
+    'Task,Project,Area,Start,Finish,Milestone,Owner,Status,Actual Start,Contractor,WBS,% Complete,Float,Priority,Critical,Duration',
+    'Roofing,Alpha Medical Center,Roof,,,,Alex,In Progress,Imported metadata,Roofing Co,A100,25%,0,,yes,3 days',
+  ].join('\n'),
+  sourceName: 'schedule-without-notes.csv',
+  now: new Date('2026-07-13T12:00:00-07:00'),
+});
+assert.strictEqual(
+  unlabeledMetadataImport.items[0]?.notes,
+  '',
+  'An unlabeled schedule column must never fall back into the PM-facing Notes field.',
+);
+
+const explicitNotesImport = normalizeScheduleImport({
+  contents: [
+    'Task,Project,Area,Start,Finish,Milestone,Owner,Status,Notes,Contractor,WBS,% Complete,Float,Priority,Critical,Duration',
+    'Roofing,Alpha Medical Center,Roof,,,,Alex,In Progress,Protect finished lobby floors.,Roofing Co,A100,25%,0,,yes,3 days',
+  ].join('\n'),
+  sourceName: 'schedule-with-notes.csv',
+  now: new Date('2026-07-13T12:00:00-07:00'),
+});
+assert.strictEqual(
+  explicitNotesImport.items[0]?.notes,
+  'Protect finished lobby floors.',
+  'Only an explicitly labeled Notes, Comments, or Remarks value should populate schedule Notes.',
+);
+assert.strictEqual(
+  explicitNotesImport.items[0]?.durationDays,
+  3,
+  'Duration should remain structured schedule data without being copied into Notes.',
+);
+
+for (const noteHeader of ['Comments', 'Remarks']) {
+  const labeledNoteImport = normalizeScheduleImport({
+    contents: [
+      `Task,Project,Area,Start,Finish,Milestone,Owner,Status,${noteHeader}`,
+      'Roofing,Alpha Medical Center,Roof,,,,Alex,In Progress,Protect finished lobby floors.',
+    ].join('\n'),
+    sourceName: `schedule-with-${noteHeader.toLowerCase()}.csv`,
+    now: new Date('2026-07-13T12:00:00-07:00'),
+  });
+  assert.strictEqual(
+    labeledNoteImport.items[0]?.notes,
+    'Protect finished lobby floors.',
+    `${noteHeader} should be treated as an explicitly labeled PM-facing note column.`,
+  );
+}
+
+assert.strictEqual(
+  normalizeImportedScheduleNote(
+    'Activity ID: 124. Duration: 2 days. Imported from a structured Microsoft Project PDF; verify highlighted fields before approval.',
+    'legacy-schedule.pdf',
+  ),
+  '',
+  'Previously generated Microsoft Project metadata should be removed when saved tasks reload.',
+);
+assert.strictEqual(
+  normalizeImportedScheduleNote(
+    'Coordinate shutdown with facilities. Activity ID: 124. Duration: 2 days. Imported from a structured Microsoft Project PDF; verify highlighted fields before approval.',
+    'legacy-schedule.pdf',
+  ),
+  'Coordinate shutdown with facilities.',
+  'Legacy cleanup must preserve a PM-authored note that precedes generated Microsoft Project metadata.',
+);
+assert.strictEqual(
+  normalizeImportedScheduleNote(
+    'Coordinate shutdown with operations. WBS: A100 Duration: 2 days Critical: yes Schedule confidence: high.',
+    'legacy-schedule.csv',
+  ),
+  'Coordinate shutdown with operations.',
+  'Legacy cleanup should preserve a genuine note while removing its generated metadata suffix.',
+);
+assert.strictEqual(
+  normalizeImportedScheduleNote(
+    'Manual note: coordinate with the owner before shutdown.',
+    null,
+  ),
+  'Manual note: coordinate with the owner before shutdown.',
+  'A manually entered note must remain unchanged.',
+);
+assert.strictEqual(
+  normalizeImportedScheduleNote(
+    'Protect finished lobby floors.',
+    'schedule-with-notes.csv',
+  ),
+  'Protect finished lobby floors.',
+  'Hydration cleanup must preserve a legitimate note from an explicitly labeled source column.',
+);
+assert.strictEqual(
+  normalizeImportedScheduleNote(
+    'Extracted locally from Messages screenshot.png. Original message: Crew will mobilize Monday. Extraction confidence: 90%. The message does not independently verify field status. Review this extracted activity before relying on it.',
+    'Messages screenshot.png',
+  ),
+  'Crew will mobilize Monday.',
+  'Legacy communication imports should keep the original message while removing extraction boilerplate.',
 );
 
 const moduleConfig = JSON.parse(fs.readFileSync(

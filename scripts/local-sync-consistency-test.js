@@ -10,6 +10,7 @@ const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8')
 const lifecycle = fs.readFileSync(path.join(root, 'services/FieldUpdateLifecycle.ts'), 'utf8');
 const admin = fs.readFileSync(path.join(root, 'screens/AdminScreen.tsx'), 'utf8');
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
+const updateService = fs.readFileSync(path.join(root, 'services/updateService.ts'), 'utf8');
 const projectService = fs.readFileSync(path.join(root, 'services/projectService.ts'), 'utf8');
 const storageMigration = fs.readFileSync(
   path.join(root, 'supabase/migrations/20260707000000_project_storage_buckets.sql'),
@@ -269,7 +270,18 @@ includes(app, 'mergeProjectRecords(\n        starterProjects,', 'startup project
 includes(app, 'const starterProjects = localResult.found ? [] : DEFAULT_PROJECTS;', 'starter projects must only seed a new installation or a recovered corrupt project store');
 includes(app, 'item.scheduleProjectName?.toLowerCase() !== projectName.toLowerCase()', 'deleting a parent project must remove its child schedule rows');
 includes(app, "if (tombstone && !localArchiveCanStayHidden) return;", 'cloud/local merge must not resurrect tombstoned updates');
-includes(app, 'removeProjectUpdateFromSyncQueue(tombstone.updateId)', 'startup load must remove tombstoned updates from pending sync queue before cloud load');
+includes(app, 'await reconcileProjectUpdateDeletionJournal(tombstones)', 'startup must replay durable permanent-delete intent before cloud load');
+includes(updateService, 'removeProjectUpdateFromSyncQueue(tombstone.updateId)', 'startup reconciliation must remove stale tombstoned update work');
+includes(updateService, "tombstone.action === 'delete_update_everywhere'", 'only permanent update tombstones may reconstruct a cloud delete');
+includes(updateService, 'queueProjectUpdateDelete({ id: tombstone.updateId })', 'a permanent tombstone must reconstruct a missing cloud-delete queue item');
+includes(sync, "if (item.operation === 'delete') return true", 'startup tombstone cleanup must preserve queued permanent deletes');
+includes(sync, 'queueProjectUpdateDelete', 'permanent field-update deletion must use the durable offline queue');
+includes(sync, "operation: 'delete'", 'field-update deletion must supersede same-id pending update work');
+includes(updateService, 'AsyncStorage.setItem(tombstonesStorageKey', 'field-update tombstones must persist before leaving the detail screen');
+includes(updateService, 'item => !deletedIds.has(item.id)', 'delete persistence must filter every durable deletion from the latest update state');
+includes(updateService, 'projectUpdateDeletionMutationTail', 'overlapping field-update deletions must serialize their storage mutations');
+includes(app, 'upsertSavedUpdateUnlessDeleted', 'late send and retry completion must not re-add a permanently deleted update');
+includes(app, 'tombstones: deletedUpdateTombstonesRef.current', 'restore and cloud conflict recovery must honor current deletion tombstones');
 includes(app, 'await removeMissingPhotosFromSyncQueue(missingPhotos);', 'missing local photo cleanup must target only the retry queue');
 const missingPhotoCleanup = app.slice(
   app.indexOf('async function removeMissingSyncPhotos'),

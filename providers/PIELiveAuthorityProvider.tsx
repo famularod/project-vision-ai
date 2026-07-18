@@ -79,6 +79,11 @@ export type PIELiveAuthorityPolicy = {
 };
 
 export type PIELiveAuthorityInput = {
+  /**
+   * Set to false while persisted project evidence is still hydrating.
+   * Omitted values preserve the existing ready-by-default behavior.
+   */
+  hydrated?: boolean;
   organizationId?: string | null;
   projectId?: string | null;
   projectName: string;
@@ -157,8 +162,16 @@ export function PIELiveAuthorityProvider({
   const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState<string | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const sequenceRef = useRef(0);
-  const rawSignature = useMemo(() => authorityInputSignature(input), [input]);
-  const rawScopeSignature = useMemo(() => authorityInputScopeSignature(input), [input]);
+  const inputHydrated = input.hydrated !== false;
+  const hydrationKey = inputHydrated ? 'hydrated' : 'pending_hydration';
+  const rawSignature = useMemo(
+    () => `${authorityInputSignature(input)}:${hydrationKey}`,
+    [hydrationKey, input],
+  );
+  const rawScopeSignature = useMemo(
+    () => `${authorityInputScopeSignature(input)}:${hydrationKey}`,
+    [hydrationKey, input],
+  );
   const authoritySnapshot = useDebouncedSnapshot({
     value: input,
     signature: rawSignature,
@@ -167,6 +180,8 @@ export function PIELiveAuthorityProvider({
   });
   const authorityInput = authoritySnapshot.value;
   const signature = authoritySnapshot.signature;
+  const authorityInputHydrated = authorityInput.hydrated !== false;
+  const readyForAuthority = inputHydrated && authorityInputHydrated;
   const scopeIsCurrent = rawScopeSignature === authoritySnapshot.priorityKey;
   const immediateScopeRuntime = useMemo(
     () => scopeIsCurrent ? null : safeBuildProviderRuntime(input),
@@ -179,11 +194,16 @@ export function PIELiveAuthorityProvider({
   const pendingReasonRef = useRef<PIELiveAuthorityRefreshReason | null>(null);
   const latestInputRef = useRef(authorityInput);
   const latestSignatureRef = useRef(signature);
+  const authorityReadyRef = useRef(readyForAuthority);
+  const authorityWasReadyRef = useRef(readyForAuthority);
   latestInputRef.current = authorityInput;
   latestSignatureRef.current = signature;
+  authorityReadyRef.current = readyForAuthority;
 
   const runRefresh = useCallback(async (reason: PIELiveAuthorityRefreshReason) => {
     pendingReasonRef.current = reason;
+
+    if (!authorityReadyRef.current) return;
 
     if (inFlightRef.current) {
       return inFlightRef.current;
@@ -216,6 +236,7 @@ export function PIELiveAuthorityProvider({
           refreshInput.projectId ||
           safeProjectId(refreshInput.projectName);
 
+        if (!authorityReadyRef.current) return;
         if (refreshSequence !== sequenceRef.current) return;
         if (refreshSignature !== latestSignatureRef.current) return;
         if (latestProjectRef.current && nextProjectId && !nextProjectId.includes(latestProjectRef.current)) {
@@ -231,6 +252,7 @@ export function PIELiveAuthorityProvider({
           state: stateFromPersistence(result.realityAuthority.persistenceStatus),
         });
       } catch (error) {
+        if (!authorityReadyRef.current) return;
         if (refreshSequence !== sequenceRef.current) return;
         if (refreshSignature !== latestSignatureRef.current) return;
         logStartupDiagnostic('degraded_mode_entered', 'DAVE live authority failed; fallback Runtime remains available.', {
@@ -245,11 +267,15 @@ export function PIELiveAuthorityProvider({
           }
         }, 2500);
       } finally {
+        if (refreshSequence !== sequenceRef.current) return;
         inFlightRef.current = null;
         const pendingReason = pendingReasonRef.current;
         pendingReasonRef.current = null;
 
-        if (pendingReason || refreshSignature !== latestSignatureRef.current) {
+        if (
+          authorityReadyRef.current &&
+          (pendingReason || refreshSignature !== latestSignatureRef.current)
+        ) {
           void runRefresh(pendingReason || 'project_changed');
         }
       }
@@ -260,9 +286,26 @@ export function PIELiveAuthorityProvider({
   }, []);
 
   useEffect(() => {
+    if (!readyForAuthority) {
+      if (authorityWasReadyRef.current) {
+        authorityWasReadyRef.current = false;
+        sequenceRef.current += 1;
+        inFlightRef.current = null;
+        pendingReasonRef.current = null;
+        setCore(null);
+        setCoreSignature(null);
+        setState('loading');
+        setError(null);
+        setRetryPending(false);
+        setLastSuccessfulRefreshAt(null);
+      }
+      return;
+    }
+
+    authorityWasReadyRef.current = true;
     latestProjectRef.current = authorityInput.projectId || safeProjectId(authorityInput.projectName);
     void runRefresh(core ? 'project_changed' : 'initial_load');
-  }, [signature]);
+  }, [readyForAuthority, signature]);
 
   const notifyEvidenceChanged = useCallback((evidenceId: string) => {
     void evidenceId;
@@ -280,12 +323,16 @@ export function PIELiveAuthorityProvider({
   }, [runRefresh]);
 
   const value = useMemo<PIELiveAuthorityContextValue>(() => {
-    const currentCore = scopeIsCurrent && coreSignature === signature ? core : null;
+    const currentCore = readyForAuthority && scopeIsCurrent && coreSignature === signature
+      ? core
+      : null;
     const currentRuntime = currentCore?.runtime || immediateScopeRuntime || fallbackRuntime;
     const persistenceStatus = currentCore?.realityAuthority.persistenceStatus || null;
-    const nextState = state === 'loading' && currentCore
-      ? stateFromPersistence(currentCore.realityAuthority.persistenceStatus)
-      : state;
+    const nextState = !readyForAuthority
+      ? 'loading'
+      : state === 'loading' && currentCore
+        ? stateFromPersistence(currentCore.realityAuthority.persistenceStatus)
+        : state;
     const policy = policyForCore(nextState, currentCore);
     const projectTruth = buildDAVEProjectTruth({
       projectId: displayInput.projectId || safeProjectId(displayInput.projectName),
@@ -343,6 +390,7 @@ export function PIELiveAuthorityProvider({
     lastSuccessfulRefreshAt,
     notifyEvidenceChanged,
     notifyProjectChanged,
+    readyForAuthority,
     retryPending,
     runRefresh,
     scopeIsCurrent,
@@ -351,6 +399,7 @@ export function PIELiveAuthorityProvider({
   ]);
 
   useEffect(() => {
+    if (!readyForAuthority) return;
     const organizationId = authorityInput.identityTrusted ? authorityInput.organizationId : null;
     if (!organizationId || !value.projectTruth.projectId) return;
     const repository = createDAVEProjectTruthRepository({
@@ -380,6 +429,7 @@ export function PIELiveAuthorityProvider({
     authorityInput.cloudAvailable,
     authorityInput.identityTrusted,
     authorityInput.organizationId,
+    readyForAuthority,
     value.projectTruth,
   ]);
 

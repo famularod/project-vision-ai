@@ -130,7 +130,8 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
 const projectService = fs.readFileSync(path.join(root, 'services/projectService.ts'), 'utf8');
 for (const marker of [
-  'Set Project Cover',
+  'title="Project Options"',
+  '<Text style={styles.sectionLabel}>Cover Photo</Text>',
   'Take New Photo',
   'Choose From Library',
   'Use Best Project Photo',
@@ -153,18 +154,19 @@ assert(!overviewSource.includes('Set Project Cover') &&
   'Overview project cards must not expose cover-photo actions.');
 const workspaceStart = app.indexOf('function ProjectWorkspaceScreen');
 const workspaceSource = app.slice(workspaceStart);
-assert(workspaceSource.indexOf('>Set Project Cover<') >= 0 &&
-  workspaceSource.indexOf('>Set Project Cover<') < workspaceSource.indexOf(">Today's Priority<"),
-  'Project Workspace must show Set Project Cover near the top, before intelligence cards.');
-for (const accessibilityLabel of [
-  'Take New Photo for project cover',
-  'Choose project cover from library',
-  'Use Best Project Photo automatically',
-  'Remove Cover Photo',
-]) {
-  assert(workspaceSource.includes(`accessibilityLabel="${accessibilityLabel}"`),
-    `Project Workspace is missing accessible cover control: ${accessibilityLabel}.`);
-}
+assert(
+  workspaceSource.includes('title="Project Options"') &&
+    workspaceSource.includes('<Text style={styles.sectionLabel}>Cover Photo</Text>'),
+  'Project Workspace must keep cover-photo controls in Project Options.',
+);
+const optionRowStart = app.indexOf('function MoreOptionRow');
+const optionRowEnd = app.indexOf('function ReadOnlyUpdateDetailScreen');
+const optionRowSource = app.slice(optionRowStart, optionRowEnd);
+assert(
+  optionRowSource.includes('accessibilityRole="button"') &&
+    optionRowSource.includes('accessibilityLabel={label}'),
+  'Project option rows must expose accessible button labels.',
+);
 assert((app.match(/resolveProjectCoverPhotoUri\(/g) || []).length >= 3,
   'Overview, Projects, and Project Workspace must use the canonical project cover resolver.');
 assert(app.includes('projectRecords={projectRecords}'),
