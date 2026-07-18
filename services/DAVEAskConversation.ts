@@ -40,11 +40,20 @@ export function daveAskHistoryStorageKey(projectId: string): string {
   return `dave-ask-history:${encodeURIComponent(projectId)}`;
 }
 
+/**
+ * Audit P1-50: Ask history is bounded. Older entries roll off so storage
+ * cannot grow without limit or exceed the platform quota.
+ */
+export const DAVE_ASK_HISTORY_LIMIT = 100;
+
 export function appendDAVEAskHistory(
   history: DAVEAskConversationEntry[],
   entry: DAVEAskConversationEntry,
 ): DAVEAskConversationEntry[] {
-  return [...history, Object.freeze(entry)];
+  const next = [...history, Object.freeze(entry)];
+  return next.length > DAVE_ASK_HISTORY_LIMIT
+    ? next.slice(next.length - DAVE_ASK_HISTORY_LIMIT)
+    : next;
 }
 
 export function historyForDAVEProject(

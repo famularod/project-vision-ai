@@ -37,6 +37,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
   const [followUp, setFollowUp] = useState('');
   const [clarification, setClarification] = useState<string | null>(null);
   const [expandedWhyId, setExpandedWhyId] = useState<string | null>(null);
+  const [persistenceError, setPersistenceError] = useState(false);
   const storageKey = daveAskHistoryStorageKey(intelligence.projectId);
 
   useEffect(() => {
@@ -59,6 +60,9 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
   }, [intelligence.projectId, storageKey]);
 
   function executeQuestion(question: string) {
+    // Audit P1-50: a tap before hydration finishes would answer against an
+    // empty history and then overwrite the stored history on save.
+    if (!historyLoaded) return;
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) return;
     const context = resolveDAVEConversationContext({
@@ -91,7 +95,10 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
     };
     setHistory(current => {
       const next = appendDAVEAskHistory(current, entry);
-      AsyncStorage.setItem(storageKey, JSON.stringify(next)).catch(() => undefined);
+      // Audit P1-50: a failed write is shown, not swallowed.
+      AsyncStorage.setItem(storageKey, JSON.stringify(next))
+        .then(() => setPersistenceError(false))
+        .catch(() => setPersistenceError(true));
       return next;
     });
     setFollowUp('');
@@ -129,6 +136,12 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
       </View>
 
       {!historyLoaded ? <AskHistorySkeleton /> : null}
+
+      {persistenceError ? (
+        <Text style={styles.metaText}>
+          The last answer could not be saved to this phone. It stays visible here, but may be missing after an app restart.
+        </Text>
+      ) : null}
 
       {historyLoaded && history.length === 0 ? (
         <View style={styles.emptyState}>
