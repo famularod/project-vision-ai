@@ -89,4 +89,13 @@ const edge = fs.readFileSync(
 assert(edge.includes('validateVisionAuthority(mode, normalized)'));
 assert(!edge.includes('function validateNormalizedOutput'));
 
+const provider = fs.readFileSync(
+  path.join(root, 'supabase/functions/_shared/pie-vision-provider.ts'),
+  'utf8',
+);
+assert(
+  /body:\s*JSON\.stringify\(\{[\s\S]*?model,[\s\S]*?store:\s*false,[\s\S]*?input:/m.test(provider),
+  'Every OpenAI vision request must explicitly disable provider response storage.',
+);
+
 console.log('PASS production photo-vision authority behavior');

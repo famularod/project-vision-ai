@@ -172,6 +172,7 @@ async function callOpenAI(
       },
       body: JSON.stringify({
         model,
+        store: false,
         input: [{ role: 'user', content }],
         text: context.mode === 'photo_pair'
           ? {
