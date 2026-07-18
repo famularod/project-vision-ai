@@ -16,7 +16,7 @@ const deletionJournal = read('services/ProjectUpdateDeletionJournal.ts');
 const migration = read('supabase/migrations/20260706010000_project_update_idempotency_key.sql');
 
 assert(
-  app.includes('const idempotencyKey = draft.idempotencyKey || draft.stableSendId || `send-${draft.id}`') &&
+  /const idempotencyKey = draftSnapshot\.idempotencyKey\s*\|\|\s*\n?\s*draftSnapshot\.stableSendId\s*\|\|\s*`send-\$\{draftSnapshot\.id\}`/.test(app) &&
     app.includes('stableSendId: idempotencyKey') &&
     app.includes('idempotencyKey,'),
   'Initial send must create one stable idempotency key from the draft id.',

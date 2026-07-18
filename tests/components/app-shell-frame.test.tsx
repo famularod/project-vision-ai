@@ -3,6 +3,10 @@ import { Text } from 'react-native';
 
 import { AppShellFrame } from '../../components/app-shell-frame';
 
+// Ionicons loads its native font asynchronously on mount. This suite exercises
+// shell navigation, so keep that external font lifecycle outside the test.
+jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
+
 describe('AppShellFrame', () => {
   it('renders the active screen content and delegates primary navigation', async () => {
     const onScreenChange = jest.fn();

@@ -28,6 +28,7 @@ const {
   buildDAVEProjectWalkFieldUpdateDraft,
   unusedConfirmedProjectWalkMemories,
 } = load('services/DAVEProjectWalkFieldUpdate.ts');
+const { photoAssessmentReviewCopy } = load('services/PhotoAssessment.ts');
 
 function memory(id, overrides = {}) {
   return {
@@ -135,8 +136,10 @@ assert(app.includes("setScreen('BuildUpdate')") && app.includes("continueWithout
   'Prepared walk updates must open the existing review screen as notes-only drafts.');
 assert(app.includes('function saveFieldUpdateFromReview()') && app.includes('Save Field Update'),
   'Prepared walk updates must use the same explicit Field Update save boundary.');
-assert(app.includes('No photo evidence available for safety review') &&
-  app.includes('No photo evidence available for blocker review'),
+assert(app.includes("photoAssessmentReviewCopy(photoAssessment.state, 'safety concern')") &&
+  app.includes("photoAssessmentReviewCopy(photoAssessment.state, 'blocker')") &&
+  photoAssessmentReviewCopy('not_assessed', 'safety concern') === 'Safety review is not complete' &&
+  photoAssessmentReviewCopy('not_assessed', 'blocker') === 'Blocker review is not complete',
   'Notes-only walk drafts must not claim that missing photo evidence proves safety or blockers are clear.');
 
 console.log('PASS DAVE Project Walk field-update draft checks');

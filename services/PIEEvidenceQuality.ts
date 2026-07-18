@@ -182,6 +182,14 @@ export function scoreEvidenceFreshness(
     };
   }
 
+  if (ageDays < 0) {
+    return {
+      score: 20,
+      level: 'insufficient',
+      reason: 'Evidence timestamp is in the future and must be verified.',
+      ageDays,
+    };
+  }
   if (ageDays <= 3) return { score: 95, level: 'strong', reason: 'Evidence is recent.', ageDays };
   if (ageDays <= 14) return { score: 80, level: 'good', reason: 'Evidence is reasonably current.', ageDays };
   if (ageDays <= 45) return { score: 55, level: 'weak', reason: 'Evidence is aging.', ageDays };
@@ -262,7 +270,7 @@ export function detectEvidenceConflicts(
       const left = signals[leftIndex];
       const right = signals[rightIndex];
       if (
-        left.stance !== right.stance &&
+        authoritySignalsConflict(left, right) &&
         left.subject === right.subject
       ) {
         conflictEvidenceIds.add(left.evidenceId);
@@ -284,8 +292,33 @@ export function detectEvidenceConflicts(
 type EvidenceAuthoritySignal = Readonly<{
   evidenceId: string;
   subject: string | null;
+  domain:
+    | 'completion'
+    | 'implementation'
+    | 'approval'
+    | 'outcome'
+    | 'issue'
+    | 'safety'
+    | 'blocker';
   stance: 'positive' | 'negative';
+  status: DAVENormalizedAssertion['status'];
 }>;
+
+function authoritySignalsConflict(
+  left: EvidenceAuthoritySignal,
+  right: EvidenceAuthoritySignal,
+) {
+  if (left.domain === right.domain) return left.stance !== right.stance;
+
+  const completion = left.domain === 'completion' ? left : right.domain === 'completion' ? right : null;
+  const blocker = left.domain === 'blocker' ? left : right.domain === 'blocker' ? right : null;
+  return Boolean(
+    completion?.status === 'complete' &&
+    (blocker?.status === 'blocked' ||
+      blocker?.status === 'delayed' ||
+      blocker?.status === 'blocker_unresolved'),
+  );
+}
 
 function evidenceAuthoritySignal(
   evidenceId: string,
@@ -313,12 +346,28 @@ function evidenceAuthoritySignal(
     'safety_issue_present',
     'issue_present',
   ]);
+  const domain: EvidenceAuthoritySignal['domain'] =
+    assertion.predicate === 'complete' ||
+    assertion.predicate === 'started' ||
+    assertion.predicate === 'in_progress'
+      ? 'completion'
+      : assertion.predicate === 'implemented'
+        ? 'implementation'
+        : assertion.predicate === 'approved'
+          ? 'approval'
+          : assertion.predicate === 'outcome_succeeded'
+            ? 'outcome'
+            : assertion.predicate === 'issue_present'
+              ? 'issue'
+              : assertion.predicate === 'safety_issue_present'
+                ? 'safety'
+                : 'blocker';
 
   if (positiveStatuses.has(assertion.status)) {
-    return { evidenceId, subject: assertion.subject, stance: 'positive' };
+    return { evidenceId, subject: assertion.subject, domain, stance: 'positive', status: assertion.status };
   }
   if (negativeStatuses.has(assertion.status)) {
-    return { evidenceId, subject: assertion.subject, stance: 'negative' };
+    return { evidenceId, subject: assertion.subject, domain, stance: 'negative', status: assertion.status };
   }
   return null;
 }
@@ -441,7 +490,13 @@ function ageInDays(capturedAt: string | null | undefined, generatedAt: string) {
   const captured = new Date(capturedAt).getTime();
   const generated = new Date(generatedAt).getTime();
   if (!Number.isFinite(captured) || !Number.isFinite(generated)) return null;
-  return Math.max(0, Math.round((generated - captured) / 86_400_000));
+  const ageMs = generated - captured;
+  // Future device clocks and malformed imports are not "fresh" evidence.
+  // Preserve a negative sentinel instead of clamping to zero.
+  if (ageMs < -5 * 60_000) {
+    return -Math.max(1, Math.ceil(Math.abs(ageMs) / 86_400_000));
+  }
+  return Math.max(0, Math.round(ageMs / 86_400_000));
 }
 
 function clampScore(value: number) {

@@ -87,14 +87,25 @@ assert(
 assert(
   app.includes('statusReady={projectStatusReady}') &&
     app.includes('if (!statusReady)') &&
-    app.includes('projectsLocalLoaded &&') &&
-    app.includes('updatesLocalLoaded &&') &&
-    app.includes('projectAreasLocalLoaded &&') &&
-    app.includes('identityCorrectionsLoaded &&') &&
-    app.includes('scheduleIdentityReady &&') &&
-    app.includes('referenceDocumentsLocalLoaded &&') &&
-    app.includes('projectDocumentsLoaded &&') &&
-    app.includes('scheduleItemsLocalLoaded &&') &&
+    app.includes('const requiredLocalHydrationDomains = [') &&
+    app.includes('updatesLocalLoaded') &&
+    app.includes('deletedUpdateTombstonesLoaded') &&
+    app.includes('projectsLocalLoaded') &&
+    app.includes('deletedProjectNamesLocalLoaded') &&
+    app.includes('archivedProjectsLoaded') &&
+    app.includes('projectAreasLocalLoaded') &&
+    app.includes('referenceDocumentsLocalLoaded') &&
+    app.includes('projectDocumentsLoaded') &&
+    app.includes('scheduleItemsLocalLoaded') &&
+    app.includes('captureMemoriesLoaded') &&
+    app.includes('identityCorrectionsLoaded') &&
+    app.includes('scheduleIdentityReady') &&
+    app.includes('displayNameLoaded') &&
+    app.includes('contactsLoaded') &&
+    app.includes('draftLoaded') &&
+    app.includes('const startupHydrationReady = isStartupHydrationReady(') &&
+    app.includes('requiredLocalHydrationDomains,') &&
+    app.includes('startupHydration.failures,') &&
     app.includes('hydrated: projectStatusReady'),
   'Status surfaces and the shared authority must wait for the complete local project snapshot.',
 );
@@ -173,8 +184,8 @@ assert(
 );
 assert(
   app.includes('openLatestProjectPhotoDifference') &&
-    app.includes("setScreen('UpdateDetail')") &&
-    app.includes('setSelectedDetailUpdate(targetUpdate)'),
+    app.includes('setSelectedDetailUpdate(targetUpdate)') &&
+    app.includes("setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' })"),
   'View photo differences action must open an existing update detail path.',
 );
 assert(

@@ -3,8 +3,11 @@ export type PhotoAnalysisTarget = Readonly<{
   updateId: string;
   photoId: string;
   contentSha256: string;
+  capturedAt: string | null;
   generation: number;
 }>;
+
+const CANONICAL_SHA256 = /^[a-f0-9]{64}$/;
 
 /**
  * Creates the immutable identity for one photo-analysis attempt.
@@ -19,6 +22,8 @@ export function createPhotoAnalysisTarget(
   assertNonEmpty('updateId', input.updateId);
   assertNonEmpty('photoId', input.photoId);
   assertNonEmpty('contentSha256', input.contentSha256);
+  assertCanonicalSha256(input.contentSha256);
+  assertCapturedAt(input.capturedAt);
   assertGeneration(input.generation);
 
   return Object.freeze({
@@ -26,6 +31,7 @@ export function createPhotoAnalysisTarget(
     updateId: input.updateId,
     photoId: input.photoId,
     contentSha256: input.contentSha256,
+    capturedAt: input.capturedAt,
     generation: input.generation,
   });
 }
@@ -42,6 +48,7 @@ export function photoAnalysisTargetsMatch(
     submitted.updateId === current.updateId &&
     submitted.photoId === current.photoId &&
     submitted.contentSha256 === current.contentSha256 &&
+    submitted.capturedAt === current.capturedAt &&
     submitted.generation === current.generation;
 }
 
@@ -99,5 +106,20 @@ function assertNonEmpty(
 function assertGeneration(value: number) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError('Photo analysis generation must be a non-negative safe integer.');
+  }
+}
+
+function assertCanonicalSha256(value: string) {
+  if (!CANONICAL_SHA256.test(value)) {
+    throw new TypeError(
+      'Photo analysis contentSha256 must be a canonical 64-character lowercase hexadecimal SHA-256.',
+    );
+  }
+}
+
+function assertCapturedAt(value: string | null) {
+  if (value === null) return;
+  if (typeof value !== 'string' || !value.trim() || !Number.isFinite(Date.parse(value))) {
+    throw new TypeError('Photo analysis capturedAt must be a valid timestamp or null.');
   }
 }

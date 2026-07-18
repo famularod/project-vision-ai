@@ -1,4 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 import type {
   PIERealityConflict,
   PIERealityHistoryEvent,
@@ -56,6 +60,9 @@ export async function saveSynchronizedRealityModel(
   model: PIERealityModel,
   reason = 'Reality Model synchronized from qualified evidence.',
 ): Promise<PIERealityModelStoredState> {
+  if (!isRealityModelForScope(model, model.organizationId, model.projectId)) {
+    throw new Error('Cannot store a Reality Model with invalid or cross-scope records.');
+  }
   const previous = await loadRealityModelState(model.organizationId, model.projectId);
   const lastSnapshot = previous.snapshots[0];
   const snapshotNeeded =
@@ -74,8 +81,8 @@ export async function saveSynchronizedRealityModel(
     savedAt: new Date().toISOString(),
   };
 
-  await AsyncStorage.setItem(realityModelKey(model.organizationId, model.projectId), JSON.stringify(next));
-  await AsyncStorage.setItem(realitySnapshotKey(model.organizationId, model.projectId), JSON.stringify(snapshots));
+  await AsyncStorage.setItem(realityModelStorageKey(model.organizationId, model.projectId), JSON.stringify(next));
+  await AsyncStorage.setItem(realitySnapshotStorageKey(model.organizationId, model.projectId), JSON.stringify(snapshots));
   return next;
 }
 
@@ -121,14 +128,30 @@ export async function getRealityModelSnapshots(
   organizationId: string,
   projectId: string,
 ): Promise<PIERealityModelSnapshot[]> {
-  const value = await AsyncStorage.getItem(realitySnapshotKey(organizationId, projectId));
-  if (!value) return [];
+  const storageKey = realitySnapshotStorageKey(organizationId, projectId);
+  const value = await AsyncStorage.getItem(storageKey);
+  if (value === null) return [];
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed as PIERealityModelSnapshot[] : [];
+    parsed = JSON.parse(value) as unknown;
   } catch {
-    return [];
+    return quarantineInvalidRealityValue(
+      storageKey,
+      value,
+      'Reality Model snapshots',
+    );
   }
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every(snapshot => isRealitySnapshotForScope(snapshot, organizationId, projectId))
+  ) {
+    return quarantineInvalidRealityValue(
+      storageKey,
+      value,
+      'Reality Model snapshots',
+    );
+  }
+  return parsed as PIERealityModelSnapshot[];
 }
 
 export async function getRealityConflicts(
@@ -169,9 +192,10 @@ export async function loadRealityModelState(
   organizationId: string,
   projectId: string,
 ): Promise<PIERealityModelStoredState> {
-  const value = await AsyncStorage.getItem(realityModelKey(organizationId, projectId));
+  const storageKey = realityModelStorageKey(organizationId, projectId);
+  const value = await AsyncStorage.getItem(storageKey);
   const snapshots = await getRealityModelSnapshots(organizationId, projectId);
-  if (!value) {
+  if (value === null) {
     return {
       version: PIE_REALITY_MODEL_STORAGE_VERSION,
       organizationId,
@@ -182,46 +206,41 @@ export async function loadRealityModelState(
     };
   }
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(value);
-    if (
-      parsed?.version !== PIE_REALITY_MODEL_STORAGE_VERSION ||
-      parsed?.organizationId !== organizationId ||
-      parsed?.projectId !== projectId
-    ) {
-      throw new Error('Reality Model storage boundary mismatch.');
-    }
-    return {
-      version: PIE_REALITY_MODEL_STORAGE_VERSION,
-      organizationId,
-      projectId,
-      currentModel: parsed.currentModel || null,
-      snapshots,
-      savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : new Date().toISOString(),
-    };
+    parsed = JSON.parse(value) as unknown;
   } catch {
-    await AsyncStorage.setItem(
-      `${realityModelKey(organizationId, projectId)}.corrupt.${Date.now()}`,
+    return quarantineInvalidRealityValue(
+      storageKey,
       value,
+      'Reality Model state',
     );
-    await AsyncStorage.removeItem(realityModelKey(organizationId, projectId));
-    return {
-      version: PIE_REALITY_MODEL_STORAGE_VERSION,
-      organizationId,
-      projectId,
-      currentModel: null,
-      snapshots,
-      savedAt: new Date().toISOString(),
-    };
   }
+
+  if (!isRealityStoredEnvelopeForScope(parsed, organizationId, projectId)) {
+    return quarantineInvalidRealityValue(
+      storageKey,
+      value,
+      'Reality Model state',
+    );
+  }
+
+  return {
+    version: PIE_REALITY_MODEL_STORAGE_VERSION,
+    organizationId,
+    projectId,
+    currentModel: parsed.currentModel,
+    snapshots,
+    savedAt: parsed.savedAt,
+  };
 }
 
 export async function clearRealityModelForTesting(
   organizationId: string,
   projectId: string,
 ): Promise<void> {
-  await AsyncStorage.removeItem(realityModelKey(organizationId, projectId));
-  await AsyncStorage.removeItem(realitySnapshotKey(organizationId, projectId));
+  await AsyncStorage.removeItem(realityModelStorageKey(organizationId, projectId));
+  await AsyncStorage.removeItem(realitySnapshotStorageKey(organizationId, projectId));
 }
 
 function buildSnapshot(model: PIERealityModel, reason: string): PIERealityModelSnapshot {
@@ -237,12 +256,106 @@ function buildSnapshot(model: PIERealityModel, reason: string): PIERealityModelS
   };
 }
 
-function realityModelKey(organizationId: string, projectId: string) {
+export function realityModelStorageKey(organizationId: string, projectId: string): string {
   return `${REALITY_MODEL_PREFIX}.${PIE_REALITY_MODEL_STORAGE_VERSION}.${safeKey(organizationId)}.${safeKey(projectId)}`;
 }
 
-function realitySnapshotKey(organizationId: string, projectId: string) {
+export function realitySnapshotStorageKey(organizationId: string, projectId: string): string {
   return `${REALITY_SNAPSHOT_PREFIX}.${PIE_REALITY_MODEL_STORAGE_VERSION}.${safeKey(organizationId)}.${safeKey(projectId)}`;
+}
+
+async function quarantineInvalidRealityValue<T>(
+  storageKey: string,
+  raw: string,
+  label: string,
+): Promise<T> {
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey,
+    quarantineKeyPrefix: `${storageKey}.corrupt.`,
+    raw,
+    replacementRaw: null,
+  });
+  throw localCorruptionRecoveryError({ label, recovery });
+}
+
+function isRealityStoredEnvelopeForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIERealityModelStoredState {
+  if (
+    !isRecord(value) ||
+    value.version !== PIE_REALITY_MODEL_STORAGE_VERSION ||
+    value.organizationId !== organizationId ||
+    value.projectId !== projectId ||
+    typeof value.savedAt !== 'string' ||
+    !Array.isArray(value.snapshots) ||
+    !value.snapshots.every(snapshot => isRealitySnapshotForScope(snapshot, organizationId, projectId))
+  ) {
+    return false;
+  }
+  return value.currentModel === null ||
+    isRealityModelForScope(value.currentModel, organizationId, projectId);
+}
+
+function isRealitySnapshotForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIERealityModelSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    value.organizationId === organizationId &&
+    value.projectId === projectId &&
+    typeof value.modelVersion === 'number' &&
+    Number.isFinite(value.modelVersion) &&
+    typeof value.createdAt === 'string' &&
+    isRealityModelForScope(value.model, organizationId, projectId)
+  );
+}
+
+function isRealityModelForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIERealityModel {
+  if (
+    !isRecord(value) ||
+    value.organizationId !== organizationId ||
+    value.projectId !== projectId ||
+    typeof value.version !== 'number' ||
+    !Number.isFinite(value.version) ||
+    !isRecord(value.objectRegistry) ||
+    !Array.isArray(value.objects)
+  ) {
+    return false;
+  }
+  return (
+    value.objects.every(object => isRealityObjectForScope(object, organizationId, projectId)) &&
+    Object.values(value.objectRegistry).every(object =>
+      isRealityObjectForScope(object, organizationId, projectId))
+  );
+}
+
+function isRealityObjectForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): boolean {
+  return (
+    isRecord(value) &&
+    value.organizationId === organizationId &&
+    value.projectId === projectId &&
+    typeof value.stableObjectId === 'string' &&
+    value.stableObjectId.length > 0
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function safeKey(value: string) {

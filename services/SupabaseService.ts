@@ -1,8 +1,10 @@
 import 'react-native-url-polyfill/auto';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabaseSecureAuthStorage } from './SupabaseAuthStorage';
-import * as FileSystem from 'expo-file-system/legacy';
+import {
+  isAuthStorageSecure,
+  supabaseSecureAuthStorage,
+} from './SupabaseAuthStorage';
 import { AppState } from 'react-native';
 import {
   createClient,
@@ -37,6 +39,10 @@ import {
   verifyPIERealityHistoryRows,
   type PIERealityHistoryCloudRow,
 } from './PIERealityHistoryIntegrity';
+import {
+  FileSizePreflightError,
+  prepareExpoFileUploadPayload,
+} from './FileSizePreflight';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
@@ -51,7 +57,7 @@ export type SupabaseConfigurationStatus = {
   rawProjectUrl: string | null;
   projectUrl: string | null;
   createClientUrl: string | null;
-  authStorage: 'AsyncStorage';
+  authStorage: 'SecureStore adapter';
   message: string;
 };
 
@@ -276,11 +282,6 @@ const SUPABASE_CLIENT_SOURCE = 'SupabaseService.singleton';
 const AUTH_HYDRATION_WAIT_MS = 1500;
 const AUTH_HYDRATION_POLL_MS = 50;
 const AUTH_STORAGE_PROBE_KEY = 'projectVisionAI.supabaseAuthStorage.probe';
-// Field fix 2026-07-18: declared BEFORE createSupabaseClient() runs at module
-// load — logSupabaseUrlBeforeNetworkRequest is called during initialization,
-// so this Set must already exist (a bottom-of-file const hit the temporal
-// dead zone and crashed app boot). Logs each context once per session.
-const loggedSupabaseContexts = new Set<string>();
 
 let authHydrationCompleted = false;
 let lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
@@ -293,8 +294,6 @@ const supabaseAuthStorage = supabaseSecureAuthStorage;
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-
-  logSupabaseUrlBeforeNetworkRequest('createClient');
 
   return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
@@ -311,7 +310,6 @@ export const supabase = createSupabaseClient();
 startSupabaseAuthLifecycle(supabase);
 
 export function getSupabaseClient(): SupabaseClient | null {
-  logSupabaseUrlBeforeNetworkRequest('getSupabaseClient');
   return supabase;
 }
 
@@ -331,7 +329,7 @@ export function getSupabaseConfigurationStatus(): SupabaseConfigurationStatus {
     rawProjectUrl: urlConfigured ? RAW_SUPABASE_URL : null,
     projectUrl: urlConfigured ? SUPABASE_URL : null,
     createClientUrl: supabase ? SUPABASE_URL : null,
-    authStorage: 'AsyncStorage',
+    authStorage: 'SecureStore adapter',
     message: configured
       ? 'Supabase is configured from Expo public environment variables.'
       : 'Supabase is not configured. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to enable cloud sync.',
@@ -382,7 +380,6 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
     };
   }
 
-  logSupabaseUrlBeforeNetworkRequest('testSupabaseConnection');
   const owner = await requireAuthenticatedOwnerId(client);
   if (!owner.ok || !owner.data) {
     return {
@@ -579,6 +576,14 @@ export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceRes
     };
   }
 
+  if (!storageAvailable) {
+    return okResult(buildSessionTokenLookup({
+      storageAvailable: false,
+      authState: 'unknown',
+      missingReason: 'storage_unavailable',
+    }));
+  }
+
   await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
 
   if (!authHydrationCompleted) {
@@ -641,10 +646,23 @@ export async function uploadPhoto({
 
   if (!client) return notConfiguredResult<UploadedPhoto>();
 
-  const base64 = await FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-  const fileData = base64ToArrayBuffer(base64);
+  let fileData: ArrayBuffer;
+  try {
+    fileData = (await prepareExpoFileUploadPayload({ uri })).data;
+  } catch (cause) {
+    if (cause instanceof FileSizePreflightError) {
+      return errorResult(
+        cause.message,
+        cause.code === 'file_too_large' ? 413 : 422,
+        cause.code,
+      );
+    }
+    return errorResult(
+      'DAVE could not safely inspect this file. Choose it again and retry.',
+      422,
+      'file_size_unavailable',
+    );
+  }
 
   const { data, error } = await client.storage
     .from(bucket)
@@ -2334,6 +2352,7 @@ async function probeAuthStorage(): Promise<boolean> {
   // Probes the real auth storage adapter (SecureStore-backed), not
   // AsyncStorage, so storageAvailable reflects where tokens actually live.
   try {
+    if (!(await isAuthStorageSecure())) return false;
     await supabaseAuthStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
     const stored = await supabaseAuthStorage.getItem(AUTH_STORAGE_PROBE_KEY);
     await supabaseAuthStorage.removeItem(AUTH_STORAGE_PROBE_KEY);
@@ -2602,7 +2621,6 @@ async function fetchDiagnosticStep(
   init?: RequestInit,
 ): Promise<SupabaseDiagnosticStep> {
   try {
-    logSupabaseUrlBeforeNetworkRequest(label);
     const response = await fetch(url, init);
     const responsePreview = await safeResponsePreview(response);
     const statusText = response.statusText || '';
@@ -2662,14 +2680,6 @@ async function safeResponsePreview(response: Response): Promise<string> {
 
 function withoutTrailingSlash(value: string) {
   return value.replace(/\/+$/g, '');
-}
-
-function logSupabaseUrlBeforeNetworkRequest(context: string) {
-  if (loggedSupabaseContexts.has(context)) return;
-  loggedSupabaseContexts.add(context);
-  console.log(
-    `[Supabase] ${context} using EXPO_PUBLIC_SUPABASE_URL=${SUPABASE_URL || 'Missing'}`,
-  );
 }
 
 function normalizeProject(value: unknown): CloudProject {
@@ -2749,29 +2759,4 @@ function isJsonValue(value: unknown): value is JsonValue {
   }
 
   return false;
-}
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const chars =
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  const sanitized = base64.replace(/[^A-Za-z0-9+/=]/g, '');
-  const output: number[] = [];
-  let buffer = 0;
-  let bits = 0;
-
-  for (let index = 0; index < sanitized.length; index += 1) {
-    const value = chars.indexOf(sanitized.charAt(index));
-
-    if (value < 0 || value === 64) continue;
-
-    buffer = (buffer << 6) | value;
-    bits += 6;
-
-    if (bits >= 8) {
-      bits -= 8;
-      output.push((buffer >> bits) & 0xff);
-    }
-  }
-
-  return new Uint8Array(output).buffer;
 }

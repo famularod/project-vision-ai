@@ -30,6 +30,11 @@ export type DAVEFollowThroughPlan = Readonly<{
   nextReviewAt: string | null;
 }>;
 
+export type DAVEFollowThroughReviewStateParseResult = Readonly<{
+  status: 'missing' | 'valid' | 'corrupt';
+  reviewStates: DAVEFollowThroughReviewState[];
+}>;
+
 export function planDAVEFollowThrough({
   items,
   reviewStates = [],
@@ -94,18 +99,25 @@ export function reviewedDAVEFollowThroughStates(
 }
 
 export function parseDAVEFollowThroughReviewStates(value: string | null) {
-  if (!value) return [];
+  return parseDAVEFollowThroughReviewStatesResult(value).reviewStates;
+}
+
+export function parseDAVEFollowThroughReviewStatesResult(
+  value: string | null,
+): DAVEFollowThroughReviewStateParseResult {
+  if (!value) return { status: 'missing', reviewStates: [] };
   try {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(item => Boolean(
-        item &&
-        typeof item.fingerprint === 'string' && item.fingerprint.trim() &&
-        typeof item.itemId === 'string' && item.itemId.trim() &&
-        validDate(item.firstSeenAt) &&
-        (item.reviewedAt === null || validDate(item.reviewedAt)),
-      ))
+    if (!Array.isArray(parsed)) return { status: 'corrupt', reviewStates: [] };
+    const valid = parsed.every(item => Boolean(
+      item &&
+      typeof item.fingerprint === 'string' && item.fingerprint.trim() &&
+      typeof item.itemId === 'string' && item.itemId.trim() &&
+      validDate(item.firstSeenAt) &&
+      (item.reviewedAt === null || validDate(item.reviewedAt)),
+    ));
+    if (!valid) return { status: 'corrupt', reviewStates: [] };
+    const reviewStates = parsed
       .map((item): DAVEFollowThroughReviewState => Object.freeze({
         fingerprint: item.fingerprint,
         itemId: item.itemId,
@@ -121,8 +133,9 @@ export function parseDAVEFollowThroughReviewStates(value: string | null) {
           : 0,
       }))
       .slice(0, 200);
+    return { status: 'valid', reviewStates };
   } catch {
-    return [];
+    return { status: 'corrupt', reviewStates: [] };
   }
 }
 

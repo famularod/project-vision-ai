@@ -4,6 +4,9 @@
  * migrated on first read and never left behind insecurely.
  */
 
+import fs from 'fs';
+import path from 'path';
+
 const mockSecureState = new Map<string, string>();
 let mockSecureAvailable = true;
 let mockSecureSetCount = 0;
@@ -141,19 +144,47 @@ describe('supabaseSecureAuthStorage', () => {
     expect(await supabaseSecureAuthStorage.getItem(KEY)).toBe(prior);
   });
 
-  it('falls back to AsyncStorage and reports insecure when SecureStore is unavailable', async () => {
+  it('fails closed without reading or writing plaintext when SecureStore is unavailable', async () => {
     mockSecureAvailable = false;
+    mockAsyncState.set(KEY, 'legacy-plaintext-session');
     resetAuthStorageAvailabilityForTests();
 
-    await supabaseSecureAuthStorage.setItem(KEY, 'fallback-session');
-
     expect(await isAuthStorageSecure()).toBe(false);
-    expect(await supabaseSecureAuthStorage.getItem(KEY)).toBe('fallback-session');
-    expect(mockAsyncState.get(KEY)).toBe('fallback-session');
+    expect(await supabaseSecureAuthStorage.getItem(KEY)).toBeNull();
+    expect(mockAsyncState.has(KEY)).toBe(false);
+    await expect(supabaseSecureAuthStorage.setItem(KEY, 'must-not-persist'))
+      .rejects.toThrow('Secure auth storage is unavailable');
+    expect(mockAsyncState.has(KEY)).toBe(false);
+    expect(mockSecureState.size).toBe(0);
+  });
+
+  it('removes legacy plaintext during sign-out even when SecureStore is unavailable', async () => {
+    mockSecureAvailable = false;
+    mockAsyncState.set(KEY, 'legacy-plaintext-session');
+    resetAuthStorageAvailabilityForTests();
+
+    await supabaseSecureAuthStorage.removeItem(KEY);
+
+    expect(mockAsyncState.has(KEY)).toBe(false);
     expect(mockSecureState.size).toBe(0);
   });
 
   it('reports secure when SecureStore is available', async () => {
     expect(await isAuthStorageSecure()).toBe(true);
+  });
+
+  it('makes session token lookup depend on verified secure storage', () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, '../../services/SupabaseService.ts'),
+      'utf8',
+    );
+    const secureCheck = source.indexOf('if (!(await isAuthStorageSecure())) return false;');
+    const probeWrite = source.indexOf(
+      "await supabaseAuthStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok')",
+    );
+
+    expect(secureCheck).toBeGreaterThan(0);
+    expect(secureCheck).toBeLessThan(probeWrite);
+    expect(source).toContain("missingReason: 'storage_unavailable'");
   });
 });

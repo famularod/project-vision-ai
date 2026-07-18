@@ -21,6 +21,21 @@ if (!source.includes("useAppNavigation('Home')")) {
   failures.push('App.tsx does not use the typed application navigation controller.');
 }
 
+if (
+  !source.includes('useAndroidHardwareBack({') ||
+  !source.includes("screen === 'AddPhotos'") ||
+  !source.includes("screen === 'BuildUpdate'")
+) {
+  failures.push('App.tsx does not guard capture flows while wiring Android hardware Back.');
+}
+
+if (
+  !source.includes("setScreen('UpdateDetail', { backTarget: returnScreen })") ||
+  !source.includes("setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' })")
+) {
+  failures.push('Context-specific update details do not share their visible and hardware Back destination.');
+}
+
 if (failures.length > 0) {
   failures.forEach(failure => console.error(`FAIL ${failure}`));
   process.exit(1);

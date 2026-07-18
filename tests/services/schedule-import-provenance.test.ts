@@ -4,6 +4,7 @@ import {
   scheduleImportDocumentOwnsItem,
   scheduleItemsForExactImportBatch,
 } from '../../services/ScheduleImportProvenance';
+import { bindPIEScheduleImportBatchProvenance } from '../../services/PIEScheduleImportBatch';
 
 function scheduleItem(id: string, importedFrom = 'schedule.pdf'): ScheduleItem {
   return {
@@ -39,6 +40,24 @@ function document(id: string, originalFileName = 'schedule.pdf'): ReferenceDocum
 }
 
 describe('immutable schedule import provenance', () => {
+  it('finalizes the live import-review batch with one exact identity', () => {
+    const batch = bindPIEScheduleImportBatchProvenance({
+      id: 'review-batch-1',
+      kind: 'schedule_file',
+      sourceCount: 1,
+      sourceLabel: 'schedule.pdf',
+      message: 'Review import',
+      items: [scheduleItem('item-1')],
+      documents: [document('document-1')],
+    });
+
+    expect(batch.items[0]).toMatchObject({
+      importBatchId: 'review-batch-1',
+      sourceDocumentId: 'document-1',
+    });
+    expect(batch.documents[0].importBatchId).toBe('review-batch-1');
+  });
+
   it('keeps same-named uploads in independent batches and deletes only the selected batch', () => {
     const first = bindScheduleImportBatch({
       importBatchId: 'batch-one',

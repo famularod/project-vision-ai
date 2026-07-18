@@ -470,13 +470,26 @@ export function detectMaterialSimulationChange(
   const reasons: string[] = [];
   if (prior.inputSignature !== inputSignature) reasons.push('Simulation input signature changed.');
   if (prior.selectedOption?.optionId !== selectedOption?.optionId) reasons.push('Preferred option changed.');
-  const priorTop = prior.scores[0]?.totalWeightedScore ?? null;
-  const nextTop = scores[0]?.totalWeightedScore ?? null;
+  const priorTop = scoreForPreferredOption(prior.scores, prior.selectedOption?.optionId);
+  const nextTop = scoreForPreferredOption(scores, selectedOption?.optionId);
   if (priorTop !== null && nextTop !== null && Math.abs(priorTop - nextTop) >= 10) {
     reasons.push('Option ranking or score changed materially.');
   }
   if (input.executiveJudgment.confidence !== 'high') reasons.push('Recommendation confidence is not high.');
   return reasons;
+}
+
+function scoreForPreferredOption(
+  scores: readonly PIEDecisionOptionScore[],
+  preferredOptionId: string | undefined,
+) {
+  const preferred = preferredOptionId
+    ? scores.find(score => score.optionId === preferredOptionId)
+    : null;
+  const bestEligible = [...scores]
+    .filter(score => !score.disqualified)
+    .sort((left, right) => right.totalWeightedScore - left.totalWeightedScore)[0];
+  return (preferred || bestEligible)?.totalWeightedScore ?? null;
 }
 
 function optionFromExecutiveAction(
@@ -612,9 +625,9 @@ function scoreCategory(
   const base = baseScore(category, option, input, scenarios);
   const uncertaintyPenalty = option.uncertainty.length > 2 ? -1 : 0;
   const gateStatus =
-    category === 'safety' && /violat|unsafe|critical safety/i.test(option.safetyImpact)
+    category === 'safety' && failsSafetyGate(option, input)
       ? 'fail'
-      : category === 'compliance' && /violat|non.?compliance/i.test(option.complianceImpact)
+      : category === 'compliance' && failsComplianceGate(option)
         ? 'fail'
         : base <= 3 && (category === 'safety' || category === 'compliance')
           ? 'warning'
@@ -630,6 +643,40 @@ function scoreCategory(
     explanation: explainCategoryScore(category, option, base),
     gateStatus,
   };
+}
+
+function failsSafetyGate(
+  option: PIEDecisionOption,
+  input: PIEDecisionSimulationInput,
+) {
+  const action = option.action.trim().toLowerCase();
+  const explicitlyUnsafeAction =
+    /\b(?:ignore|dismiss|bypass)\b.{0,60}\b(?:safety|hazard|unsafe|danger|risk)\b/i.test(action) ||
+    /\b(?:proceed|continue)\b.{0,60}\b(?:despite|with)\b.{0,30}\b(?:unsafe|hazard|danger|critical safety)\b/i.test(action) ||
+    /\b(?:this action|this option|implementation)\b.{0,40}\b(?:is unsafe|violates safety)\b/i.test(option.safetyImpact);
+  if (explicitlyUnsafeAction) return true;
+
+  const hasHighSafetyRisk = input.executiveJudgment.executiveRisks.some(risk =>
+    (risk.severity === 'critical' || risk.severity === 'high') &&
+    /\b(?:safety|hazard|unsafe|danger|injur|fatal|fall|fire|electr|exposure|collapse)\w*\b/i
+      .test(`${risk.risk} ${risk.whyItMatters}`),
+  );
+  if (!hasHighSafetyRisk) return false;
+  if (option.optionType === 'no_action') return true;
+
+  if (option.optionType === 'delay_and_gather_evidence') {
+    const protectsPeopleWhileWaiting =
+      /\b(?:stop|halt|pause|secure|isolate|evacuate|barricade|lockout|tagout|verify|inspect)\w*\b/i.test(action);
+    return !protectsPeopleWhileWaiting;
+  }
+  return false;
+}
+
+function failsComplianceGate(option: PIEDecisionOption) {
+  const action = option.action.trim().toLowerCase();
+  return /\b(?:ignore|bypass|skip|avoid|proceed without|continue without)\b.{0,60}\b(?:permit|inspection|code|compliance|approval)\b/i.test(action) ||
+    /^non.?compliance risk\b/i.test(option.complianceImpact.trim()) ||
+    /\b(?:this action|this option|implementation)\b.{0,40}\b(?:violat\w*|non.?compliance)\b/i.test(option.complianceImpact);
 }
 
 function baseScore(

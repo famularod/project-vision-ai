@@ -588,14 +588,28 @@ function buildPhotoComparisons(updates: ProjectUpdate[], links: DAVEEntityLink[]
     const intelligence = photo.photoIntelligence;
     const taskLink = links.find(item => item.sourceEvidenceId === `photo:${photo.id}` && item.targetType === 'schedule-task');
     const observation = clean(intelligence?.currentObservation) || clean(intelligence?.visibleChange) || clean(photo.caption) || 'No specific visible condition was recorded.';
-    const hasComparablePrior = Boolean(intelligence?.priorUpdateUsed || intelligence?.priorEvidenceId);
+    const hasPriorPhoto = Boolean(
+      intelligence?.priorUpdateUsed || intelligence?.priorEvidenceId,
+    );
+    const comparability = clean(intelligence?.comparability)?.toLowerCase();
+    const comparisonCompleted =
+      intelligence?.status === 'analysis_complete' ||
+      intelligence?.status === 'completed_with_limitations';
+    const hasComparablePrior = Boolean(
+      hasPriorPhoto &&
+      comparisonCompleted &&
+      (comparability === 'strong' || comparability === 'probable'),
+    );
     const safeVisualEvidence = intelligence?.provenance === 'visual_only' || intelligence?.provenance === 'visual_and_caption';
-    const progressClaim = safeVisualEvidence
+    const progressClaim = safeVisualEvidence && hasComparablePrior
       ? intelligence?.projectProgress || 'unable_to_determine'
       : 'unable_to_determine';
     const limitations = uniqueText([
       ...(intelligence?.captureLimitations ?? []),
-      !hasComparablePrior ? 'No confirmed comparable prior photo is available.' : null,
+      !hasPriorPhoto ? 'No confirmed prior photo is available.' : null,
+      hasPriorPhoto && !hasComparablePrior
+        ? 'The prior photo is not sufficiently comparable to support a change or progress conclusion.'
+        : null,
       !safeVisualEvidence && intelligence ? 'The result is not supported by visual evidence alone.' : null,
       !taskLink ? 'The photo is not confidently connected to a schedule activity.' : null,
     ]);

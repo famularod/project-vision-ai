@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 import {
+  buildPIECoreIntelligence,
   buildLivePIECoreIntelligence,
   type PIECoreOutput,
 } from '../services/PIECoreIntelligence';
@@ -50,6 +51,11 @@ import {
   type PIELiveAuthorityStateName,
 } from '../services/PIELiveAuthorityStateMachine';
 import { useDebouncedSnapshot } from '../hooks/use-debounced-snapshot';
+import {
+  buildPIERecommendationTrace,
+  type PIERecommendationTrace,
+} from '../services/PIETraceability';
+import { savePhotoProgressIntelligence } from '../services/PIEPhotoProgressIntelligenceStorage';
 
 export type { PIELiveAuthorityStateName } from '../services/PIELiveAuthorityStateMachine';
 
@@ -75,6 +81,10 @@ export type PIELiveAuthorityPolicy = {
   userMessage: string;
 };
 
+export type PIELiveAuthorityProjectTruthPersistencePolicy =
+  | 'persist_project'
+  | 'ephemeral_portfolio';
+
 export type PIELiveAuthorityInput = {
   /**
    * Set to false while persisted project evidence is still hydrating.
@@ -98,6 +108,8 @@ export type PIELiveAuthorityInput = {
   surface?: PIERuntimeContext['surface'];
   identityTrusted?: boolean;
   cloudAvailable?: boolean;
+  /** Combined report portfolios are computed in memory and never saved as project truth. */
+  projectTruthPersistencePolicy?: PIELiveAuthorityProjectTruthPersistencePolicy;
 };
 
 export type PIELiveAuthorityContextValue = {
@@ -118,6 +130,7 @@ export type PIELiveAuthorityContextValue = {
   attention: PIECoreOutput['attention'] | null;
   experience: PIECoreOutput['experience'] | null;
   reportDraft: PIECoreOutput['reportDraft'] | null;
+  recommendationTrace: PIERecommendationTrace | null;
   persistenceStatus: PIERealityPersistenceStatus | null;
   activeConflicts: PIECoreOutput['realityModel']['evidenceConflicts'];
   activeUncertainties: PIECoreOutput['realityModel']['activeUncertainties'];
@@ -248,7 +261,8 @@ export function PIELiveAuthorityProvider({
     setState('loading');
     setRetryPending(false);
 
-    const run = (async () => {
+    let run!: Promise<void>;
+    run = (async () => {
       const refreshIsCurrent = () => Boolean(
         mountedRef.current &&
         authorityReadyRef.current &&
@@ -263,7 +277,7 @@ export function PIELiveAuthorityProvider({
       try {
         const runtime = safeBuildProviderRuntime(refreshInput);
         if (mountedRef.current) setFallbackRuntime(runtime);
-        const result = await buildLivePIECoreIntelligence({
+        const coreInput = {
           runtime,
           runtimeContext: providerRuntimeContext(refreshInput),
           reportType: refreshInput.reportType,
@@ -272,7 +286,12 @@ export function PIELiveAuthorityProvider({
           projectId: refreshInput.projectId || safeProjectId(refreshInput.projectName),
           identityTrusted: Boolean(refreshInput.identityTrusted),
           cloudAvailable: Boolean(refreshInput.cloudAvailable),
-        });
+        };
+        const ephemeralPortfolio =
+          refreshInput.projectTruthPersistencePolicy === 'ephemeral_portfolio';
+        const result = ephemeralPortfolio
+          ? buildPIECoreIntelligence(coreInput)
+          : await buildLivePIECoreIntelligence(coreInput);
         if (!refreshIsCurrent()) return;
         const expectedOrganizationId =
           refreshInput.organizationId || 'local-unverified-anonymous';
@@ -284,6 +303,26 @@ export function PIELiveAuthorityProvider({
         ) {
           throw new Error('Live authority returned a Core result for a different scope.');
         }
+
+        // Longitudinal photo reasoning is durable only after the exact scoped
+        // Core generation has passed the provider's stale-result checks. A
+        // cache write failure must not invalidate the authoritative in-memory
+        // result, but is recorded for production diagnosis.
+        if (!ephemeralPortfolio && result.longitudinalPhotoIntelligence) {
+          try {
+            await savePhotoProgressIntelligence(result.longitudinalPhotoIntelligence);
+          } catch (storageError) {
+            logStartupDiagnostic(
+              'photo_progress_intelligence_persistence_failed',
+              'Current photo progress intelligence remains available in memory, but its local history could not be saved.',
+              { error: startupErrorMessage(storageError) },
+            );
+          }
+        }
+        // AsyncStorage cannot cancel an already-started write. It is scoped to
+        // the old organization/project key, so it cannot overwrite the new
+        // scope; re-check freshness before publishing Core to React state.
+        if (!refreshIsCurrent()) return;
 
         cancelScheduledRetry(true);
         setCore(result);
@@ -316,14 +355,22 @@ export function PIELiveAuthorityProvider({
           setRetryPending(false);
         }
       } finally {
-        if (refreshSequence !== sequenceRef.current) return;
+        // Keep one authority build in flight per provider. Raw input changes
+        // invalidate publication immediately, but they do not detach the
+        // promise: the next generation waits until every durable side effect
+        // from this build has finished.
+        if (inFlightRef.current !== run) return;
         inFlightRef.current = null;
         const pendingReason = pendingReasonRef.current;
         pendingReasonRef.current = null;
 
         if (
           authorityReadyRef.current &&
-          (pendingReason || refreshSignature !== latestSignatureRef.current)
+          (
+            pendingReason ||
+            refreshSignature !== latestSignatureRef.current ||
+            refreshScopeSignature !== latestScopeSignatureRef.current
+          )
         ) {
           void runRefresh(pendingReason || 'project_changed');
         }
@@ -352,8 +399,7 @@ export function PIELiveAuthorityProvider({
       scopeSignature: rawScopeSignature,
     };
     sequenceRef.current += 1;
-    inFlightRef.current = null;
-    pendingReasonRef.current = null;
+    pendingReasonRef.current = 'project_changed';
     cancelScheduledRetry(true);
     setState('loading');
     setError(null);
@@ -381,7 +427,6 @@ export function PIELiveAuthorityProvider({
       if (authorityWasReadyRef.current) {
         authorityWasReadyRef.current = false;
         sequenceRef.current += 1;
-        inFlightRef.current = null;
         pendingReasonRef.current = null;
         cancelScheduledRetry(true);
         setCore(null);
@@ -442,6 +487,12 @@ export function PIELiveAuthorityProvider({
       core: currentCore,
       now: currentRuntime.generatedAt,
     });
+    const recommendationTrace = currentCore?.executiveJudgmentRecord
+      ? buildPIERecommendationTrace({
+          core: currentCore,
+          report: currentCore.reportDraft,
+        })
+      : null;
 
     return {
       state: nextState,
@@ -461,6 +512,7 @@ export function PIELiveAuthorityProvider({
       attention: currentCore?.attention || null,
       experience: currentCore?.experience || null,
       reportDraft: currentCore?.reportDraft || null,
+      recommendationTrace,
       persistenceStatus,
       activeConflicts: currentCore?.realityModel.evidenceConflicts || [],
       activeUncertainties: currentCore?.realityModel.activeUncertainties || [],
@@ -493,6 +545,7 @@ export function PIELiveAuthorityProvider({
   useEffect(() => {
     if (!readyForAuthority) return;
     if (!authorityResolution.mayPersistProjectTruth || !value.core) return;
+    if (authorityInput.projectTruthPersistencePolicy === 'ephemeral_portfolio') return;
     const organizationId = authorityInput.identityTrusted ? authorityInput.organizationId : null;
     if (!organizationId || !value.projectTruth.projectId) return;
     const repository = createDAVEProjectTruthRepository({
@@ -522,6 +575,7 @@ export function PIELiveAuthorityProvider({
     authorityInput.cloudAvailable,
     authorityInput.identityTrusted,
     authorityInput.organizationId,
+    authorityInput.projectTruthPersistencePolicy,
     authorityResolution.mayPersistProjectTruth,
     value.core,
     value.projectTruth,

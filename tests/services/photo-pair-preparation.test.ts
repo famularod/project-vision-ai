@@ -130,10 +130,12 @@ describe('metadata-first photo pair preparation', () => {
     mockGetSize.mockResolvedValue({ width: 1_600, height: 1_200 });
     mockReadAsStringAsync.mockResolvedValue('ZmFrZQ==');
 
+    const onTargetPrepared = jest.fn();
     await analyzeProjectPhotoWithVision({
       update: update('current-update', current),
       photo: current,
       priorUpdates,
+      onTargetPrepared,
     });
 
     expect(mockGetInfoAsync.mock.calls).toEqual([
@@ -145,6 +147,13 @@ describe('metadata-first photo pair preparation', () => {
       'file://prior-999.jpg',
     ]);
     expect(mockInvokeProvider).not.toHaveBeenCalled();
+    expect(onTargetPrepared).toHaveBeenCalledWith({
+      projectId: 'project-2375-compliance-project',
+      updateId: 'current-update',
+      photoId: 'current',
+      contentSha256: '0'.repeat(64),
+      capturedAt: '2026-07-18T12:00:00Z',
+    });
   });
 
   it('does not read base64 when bytes or dimensions violate the source limits', async () => {

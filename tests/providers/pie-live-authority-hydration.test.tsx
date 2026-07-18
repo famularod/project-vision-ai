@@ -7,11 +7,25 @@ import {
   type PIELiveAuthorityInput,
   usePIELiveAuthority,
 } from '../../providers/PIELiveAuthorityProvider';
-import { buildLivePIECoreIntelligence } from '../../services/PIECoreIntelligence';
+import {
+  buildLivePIECoreIntelligence,
+  buildPIECoreIntelligence,
+} from '../../services/PIECoreIntelligence';
 import { createDAVEProjectTruthRepository } from '../../services/DAVEProjectTruthRepository';
+import { runPIERealityModelOrchestration } from '../../services/PIERealityModelOrchestrator';
+import { persistStructuredExecutiveJudgment } from '../../services/PIEExecutiveJudgmentRepository';
 
 jest.mock('../../services/PIECoreIntelligence', () => ({
+  buildPIECoreIntelligence: jest.fn(),
   buildLivePIECoreIntelligence: jest.fn(),
+}));
+
+jest.mock('../../services/PIERealityModelOrchestrator', () => ({
+  runPIERealityModelOrchestration: jest.fn(),
+}));
+
+jest.mock('../../services/PIEExecutiveJudgmentRepository', () => ({
+  persistStructuredExecutiveJudgment: jest.fn(),
 }));
 
 jest.mock('../../services/PIERuntime', () => ({
@@ -37,15 +51,32 @@ jest.mock('../../services/StartupDiagnostics', () => ({
   startupErrorMessage: (error: unknown) => String(error),
 }));
 
+const mockSavePhotoProgress = jest.fn();
+jest.mock('../../services/PIEPhotoProgressIntelligenceStorage', () => ({
+  savePhotoProgressIntelligence: (...args: unknown[]) => mockSavePhotoProgress(...args),
+}));
+
 const buildCoreMock = buildLivePIECoreIntelligence as jest.MockedFunction<
   typeof buildLivePIECoreIntelligence
+>;
+const buildInMemoryCoreMock = buildPIECoreIntelligence as jest.MockedFunction<
+  typeof buildPIECoreIntelligence
+>;
+const runRealityOrchestrationMock = runPIERealityModelOrchestration as jest.MockedFunction<
+  typeof runPIERealityModelOrchestration
+>;
+const persistExecutiveJudgmentMock = persistStructuredExecutiveJudgment as jest.MockedFunction<
+  typeof persistStructuredExecutiveJudgment
 >;
 const createProjectTruthRepositoryMock = createDAVEProjectTruthRepository as jest.MockedFunction<
   typeof createDAVEProjectTruthRepository
 >;
 type CoreResult = Awaited<ReturnType<typeof buildLivePIECoreIntelligence>>;
 
-function coreResult(projectId = 'project-1'): CoreResult {
+function coreResult(
+  projectId = 'project-1',
+  persistenceStatus: CoreResult['realityAuthority']['persistenceStatus'] = 'authoritative_local',
+): CoreResult {
   return {
     runtime: {
       generatedAt: '2026-07-17T12:00:00.000Z',
@@ -53,7 +84,7 @@ function coreResult(projectId = 'project-1'): CoreResult {
     },
     realityAuthority: {
       modelId: projectId,
-      persistenceStatus: 'authoritative_local',
+      persistenceStatus,
     },
     realityModel: {
       organizationId: 'organization-1',
@@ -93,7 +124,12 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
 
   beforeEach(() => {
     currentAuthority = null;
+    buildInMemoryCoreMock.mockReset();
     buildCoreMock.mockImplementation(() => new Promise(() => undefined));
+    runRealityOrchestrationMock.mockReset();
+    persistExecutiveJudgmentMock.mockReset();
+    mockSavePhotoProgress.mockReset();
+    mockSavePhotoProgress.mockResolvedValue(undefined);
     saveProjectTruthMock.mockResolvedValue({
       snapshot: { revision: 1 },
       created: true,
@@ -122,9 +158,40 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
     expect(buildCoreMock).not.toHaveBeenCalled();
     expect(saveProjectTruthMock).not.toHaveBeenCalled();
 
-    buildCoreMock.mockResolvedValueOnce(coreResult());
+    let resolveReadyCore!: (result: CoreResult) => void;
+    buildCoreMock.mockReturnValueOnce(new Promise(resolve => {
+      resolveReadyCore = resolve;
+    }));
     await screen.rerender(
       <PIELiveAuthorityProvider input={authorityInput(true)}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await act(async () => {
+      resolveReadyCore(coreResult());
+    });
+
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
+    expect(buildInMemoryCoreMock).not.toHaveBeenCalled();
+    expect(createProjectTruthRepositoryMock).toHaveBeenCalled();
+    expect(saveProjectTruthMock).toHaveBeenCalled();
+  });
+
+  it('computes combined portfolio authority fully in memory without persistence', async () => {
+    buildInMemoryCoreMock.mockReturnValueOnce(
+      coreResult('portfolio:project-record-a', 'degraded_local_only'),
+    );
+    const combinedInput = {
+      ...authorityInput(true),
+      projectId: 'portfolio:project-record-a',
+      projectName: 'Combined Project Portfolio',
+      projectNames: ['Project One', 'Project Two'],
+      reportType: 'combined_project_update' as const,
+      projectTruthPersistencePolicy: 'ephemeral_portfolio' as const,
+    };
+
+    await render(
+      <PIELiveAuthorityProvider input={combinedInput}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
@@ -132,9 +199,23 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
       await Promise.resolve();
     });
 
-    expect(buildCoreMock).toHaveBeenCalledTimes(1);
-    expect(createProjectTruthRepositoryMock).toHaveBeenCalled();
-    expect(saveProjectTruthMock).toHaveBeenCalled();
+    expect(buildInMemoryCoreMock).toHaveBeenCalledTimes(1);
+    expect(buildInMemoryCoreMock).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: 'organization-1',
+      projectId: 'portfolio:project-record-a',
+      reportType: 'combined_project_update',
+      reportProjectNames: ['Project One', 'Project Two'],
+    }));
+    expect(buildCoreMock).not.toHaveBeenCalled();
+    expect(runRealityOrchestrationMock).not.toHaveBeenCalled();
+    expect(persistExecutiveJudgmentMock).not.toHaveBeenCalled();
+    expect(mockSavePhotoProgress).not.toHaveBeenCalled();
+    expect(createProjectTruthRepositoryMock).not.toHaveBeenCalled();
+    expect(saveProjectTruthMock).not.toHaveBeenCalled();
+    expect(currentAuthority?.state).toBe('degraded_local_only');
+    expect(currentAuthority?.policy.highImpactAutomationAllowed).toBe(false);
+    expect(currentAuthority?.policy.layer4DecisionCreationAllowed).toBe(false);
+    expect(currentAuthority?.policy.reportGenerationAllowed).toBe(true);
   });
 
   it('discards a Core result that finishes after readiness returns to pending', async () => {

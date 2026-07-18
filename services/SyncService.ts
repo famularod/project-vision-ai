@@ -37,6 +37,8 @@ import {
   hasProjectUpdateDeletionIntent,
   recordProjectUpdateDeletionIntent,
 } from './ProjectUpdateDeletionJournal';
+import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
+import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -76,6 +78,8 @@ export type SyncStatus = {
   configured: boolean;
   queuedChanges: number;
   conflicts: number;
+  recoveryAvailable: boolean;
+  recoveryCopies: number;
   lastSyncAt: string | null;
   message: string;
 };
@@ -266,11 +270,17 @@ export type OfflineQueueQuarantineExport = {
 export type OfflineQueueRecoveryState = {
   activeItems: number;
   quarantineKeys: string[];
+  unresolvedQuarantineKeys: string[];
   recoveryAvailable: boolean;
 };
 
 export type OfflineQueueRecoveryAttempt = {
-  status: 'recovered' | 'still_corrupt' | 'active_queue_not_empty' | 'not_found';
+  status:
+    | 'recovered'
+    | 'already_recovered'
+    | 'still_corrupt'
+    | 'active_queue_not_empty'
+    | 'not_found';
   quarantineKey: string;
   restoredItems: number;
   activeItems: number;
@@ -321,7 +331,7 @@ export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageClea
   let missingPhotosRemoved = 0;
 
   for (const key of syncKeys) {
-    if (isOfflineQueueQuarantineKey(key)) continue;
+    if (isOfflineQueueRecoveryInternalKey(key)) continue;
 
     if (key === SYNC_QUEUE_STORAGE_KEY) {
       const queueCleanup = await serializeOfflineQueueMutation(async () => {
@@ -330,10 +340,16 @@ export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageClea
           return { changed: false, missingPhotosRemoved: 0 };
         }
         const result = await cleanupSyncQueueValue(recovered.rawValue);
+        const contentChanged = result.value !== recovered.rawValue;
         const changed =
           recovered.quarantineKey !== null ||
-          result.value !== recovered.rawValue;
-        if (changed) await AsyncStorage.setItem(key, result.value);
+          contentChanged;
+        // Discovery already committed and verified the salvaged active queue.
+        // Do not immediately rewrite those bytes. If message cleanup really
+        // changed the content, route it through the same durable verifier.
+        if (contentChanged) {
+          await persistVerifiedOfflineQueue(parseOfflineQueueValue(result.value));
+        }
         return {
           changed,
           missingPhotosRemoved: result.missingPhotosRemoved,
@@ -412,11 +428,23 @@ type ProjectUpdateDeletePayload = {
 const SYNC_QUEUE_STORAGE_KEY = 'projectVisionAI.syncQueue.v1';
 export const SYNC_QUEUE_QUARANTINE_KEY_PREFIX =
   `${SYNC_QUEUE_STORAGE_KEY}.quarantine.`;
+const SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX =
+  `${SYNC_QUEUE_STORAGE_KEY}.quarantine-metadata.`;
+const SYNC_QUEUE_RECOVERY_TRANSACTION_KEY =
+  `${SYNC_QUEUE_STORAGE_KEY}.recovery-transaction.v1`;
 const SYNC_CONFLICTS_STORAGE_KEY = 'projectVisionAI.syncConflicts.v1';
 const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
 const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
 
 let offlineQueueMutationTail: Promise<void> = Promise.resolve();
+let syncConflictMutationTail: Promise<void> = Promise.resolve();
+const offlineQueueRecoveryTransaction = createDurableLocalTransactionRepository({
+  storage: AsyncStorage,
+  journalKey: SYNC_QUEUE_RECOVERY_TRANSACTION_KEY,
+  createTransactionId: () =>
+    `offline-queue-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+  now: () => new Date().toISOString(),
+});
 
 function serializeOfflineQueueMutation<T>(
   operation: () => Promise<T>,
@@ -435,39 +463,107 @@ type OfflineQueueReadResult = {
   quarantineKey: string | null;
 };
 
+type OfflineQueueQuarantineMetadata = {
+  version: 1;
+  quarantineKey: string;
+  salvagedItemIds: string[];
+  restoredItemIds: string[];
+  invalidItemCount: number;
+  resolvedAt: string | null;
+};
+
+type OfflineQueueValueAnalysis = {
+  queue: SyncQueueItem[];
+  invalidItemCount: number;
+};
+
 function isOfflineQueueQuarantineKey(key: string): boolean {
   return key.startsWith(SYNC_QUEUE_QUARANTINE_KEY_PREFIX);
 }
 
 function parseOfflineQueueValue(rawValue: string): SyncQueueItem[] {
-  const parsed = JSON.parse(rawValue) as unknown;
-  if (!Array.isArray(parsed) || !parsed.every(isValidSyncQueueItem)) {
+  const analysis = analyzeOfflineQueueValue(rawValue);
+  if (analysis.invalidItemCount > 0) {
     throw new Error('Stored offline queue is not a valid queue.');
   }
-  return parsed;
+  return analysis.queue;
+}
+
+/**
+ * Parse each queue row independently so a single malformed row cannot erase
+ * unrelated valid offline work. Duplicate IDs are also isolated: normal queue
+ * mutations maintain one current revision per ID, so the last valid revision
+ * is retained and the anomalous duplicates remain in the exact quarantine.
+ */
+function analyzeOfflineQueueValue(rawValue: string): OfflineQueueValueAnalysis {
+  const parsed = JSON.parse(rawValue) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error('Stored offline queue is not an array.');
+  }
+
+  const lastValidIndexById = new Map<string, number>();
+  parsed.forEach((value, index) => {
+    if (isValidSyncQueueItem(value)) lastValidIndexById.set(value.id, index);
+  });
+
+  const queue: SyncQueueItem[] = [];
+  let invalidItemCount = 0;
+  parsed.forEach((value, index) => {
+    if (!isValidSyncQueueItem(value)) {
+      invalidItemCount += 1;
+      return;
+    }
+    if (lastValidIndexById.get(value.id) !== index) {
+      invalidItemCount += 1;
+      return;
+    }
+    queue.push(value);
+  });
+
+  return { queue, invalidItemCount };
 }
 
 function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
   if (!isRecord(value) || !isRecord(value.payload)) return false;
-  if (typeof value.id !== 'string' || value.id.length === 0) return false;
+  if (typeof value.id !== 'string' || value.id.trim().length === 0) return false;
   if (value.entity !== 'project' && value.entity !== 'project_update') return false;
   if (
     value.operation !== 'create' &&
     value.operation !== 'update' &&
     value.operation !== 'delete'
   ) return false;
-  if (typeof value.createdAt !== 'string' || value.createdAt.length === 0) return false;
-  if (typeof value.changedAt !== 'string' || value.changedAt.length === 0) return false;
+  if (!isFiniteSyncTimestamp(value.createdAt)) return false;
+  if (!isFiniteSyncTimestamp(value.changedAt)) return false;
   if (
     typeof value.retryCount !== 'number' ||
     !Number.isInteger(value.retryCount) ||
     value.retryCount < 0
   ) return false;
-  return (
+  const lastErrorIsValid = (
     value.lastError === undefined ||
     value.lastError === null ||
     typeof value.lastError === 'string'
   );
+  if (!lastErrorIsValid) return false;
+
+  if (value.entity === 'project_update') {
+    if (value.operation === 'create') return false;
+    if (
+      typeof value.payload.id !== 'string' ||
+      value.payload.id.trim().length === 0
+    ) return false;
+    return value.operation === 'delete' || isRecord(value.payload.updateData);
+  }
+
+  if (value.operation === 'create' || value.operation === 'delete') {
+    return typeof value.payload.name === 'string' && value.payload.name.trim().length > 0;
+  }
+  return [value.payload.id, value.payload.name, value.payload.previousName]
+    .some(item => typeof item === 'string' && item.trim().length > 0);
+}
+
+function isFiniteSyncTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(new Date(value).getTime());
 }
 
 async function nextOfflineQueueQuarantineKey(): Promise<string> {
@@ -482,7 +578,57 @@ async function nextOfflineQueueQuarantineKey(): Promise<string> {
   return key;
 }
 
-async function quarantineCorruptOfflineQueue(rawValue: string): Promise<string> {
+function offlineQueueQuarantineMetadataKey(quarantineKey: string): string {
+  const suffix = quarantineKey.slice(SYNC_QUEUE_QUARANTINE_KEY_PREFIX.length);
+  return `${SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX}${suffix}`;
+}
+
+function isOfflineQueueQuarantineMetadata(
+  value: unknown,
+  quarantineKey: string,
+): value is OfflineQueueQuarantineMetadata {
+  if (!isRecord(value) || value.version !== 1) return false;
+  if (value.quarantineKey !== quarantineKey) return false;
+  if (
+    !Array.isArray(value.salvagedItemIds) ||
+    !value.salvagedItemIds.every(id => typeof id === 'string' && id.length > 0) ||
+    !Array.isArray(value.restoredItemIds) ||
+    !value.restoredItemIds.every(id => typeof id === 'string' && id.length > 0)
+  ) return false;
+  if (
+    typeof value.invalidItemCount !== 'number' ||
+    !Number.isInteger(value.invalidItemCount) ||
+    value.invalidItemCount < 1
+  ) return false;
+  return value.resolvedAt === null || isFiniteSyncTimestamp(value.resolvedAt);
+}
+
+async function readOfflineQueueQuarantineMetadata(
+  quarantineKey: string,
+  strict = false,
+): Promise<OfflineQueueQuarantineMetadata | null> {
+  const rawValue = await AsyncStorage.getItem(
+    offlineQueueQuarantineMetadataKey(quarantineKey),
+  );
+  if (rawValue === null) return null;
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (isOfflineQueueQuarantineMetadata(parsed, quarantineKey)) return parsed;
+  } catch {
+    // Handled by the strict recovery gate below.
+  }
+  if (strict) {
+    throw new Error(
+      'Offline queue recovery metadata is damaged. Manual restore is blocked to prevent duplicate or resurrected work.',
+    );
+  }
+  return null;
+}
+
+async function quarantineCorruptOfflineQueue(
+  rawValue: string,
+  salvage: OfflineQueueValueAnalysis,
+): Promise<string> {
   const quarantineKey = await nextOfflineQueueQuarantineKey();
   await AsyncStorage.setItem(quarantineKey, rawValue);
 
@@ -491,31 +637,55 @@ async function quarantineCorruptOfflineQueue(rawValue: string): Promise<string> 
     throw new Error('Offline queue quarantine could not be verified.');
   }
 
-  await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, '[]');
+  const metadata: OfflineQueueQuarantineMetadata = {
+    version: 1,
+    quarantineKey,
+    salvagedItemIds: salvage.queue.map(item => item.id),
+    restoredItemIds: [],
+    invalidItemCount: Math.max(1, salvage.invalidItemCount),
+    resolvedAt: null,
+  };
+
+  const salvageValue = JSON.stringify(salvage.queue);
+  await offlineQueueRecoveryTransaction.commit([
+    {
+      kind: 'set',
+      key: offlineQueueQuarantineMetadataKey(quarantineKey),
+      value: JSON.stringify(metadata),
+    },
+    { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value: salvageValue },
+  ]);
   const verifiedActiveQueue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
-  if (verifiedActiveQueue !== '[]') {
-    throw new Error('Offline queue recovery could not initialize a valid queue.');
+  if (verifiedActiveQueue !== salvageValue) {
+    throw new Error('Offline queue salvage write could not be verified.');
   }
 
   return quarantineKey;
 }
 
 async function readOfflineQueueUnsafe(): Promise<OfflineQueueReadResult> {
+  // Complete a verified recovery transaction before accepting the active
+  // queue. This closes the process-kill window between queue and metadata
+  // writes and prevents a repaired snapshot from being replayed twice.
+  await offlineQueueRecoveryTransaction.recover();
   const rawValue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
   if (rawValue === null) {
     return { queue: [], rawValue: null, quarantineKey: null };
   }
 
+  let analysis: OfflineQueueValueAnalysis;
   try {
-    return {
-      queue: parseOfflineQueueValue(rawValue),
-      rawValue,
-      quarantineKey: null,
-    };
+    analysis = analyzeOfflineQueueValue(rawValue);
   } catch {
-    const quarantineKey = await quarantineCorruptOfflineQueue(rawValue);
-    return { queue: [], rawValue: '[]', quarantineKey };
+    analysis = { queue: [], invalidItemCount: 1 };
   }
+  if (analysis.invalidItemCount === 0) {
+    return { queue: analysis.queue, rawValue, quarantineKey: null };
+  }
+
+  const quarantineKey = await quarantineCorruptOfflineQueue(rawValue, analysis);
+  const salvagedRawValue = JSON.stringify(analysis.queue);
+  return { queue: analysis.queue, rawValue: salvagedRawValue, quarantineKey };
 }
 
 function mutateOfflineQueue<T>(
@@ -529,10 +699,19 @@ function mutateOfflineQueue<T>(
     const { queue } = await readOfflineQueueUnsafe();
     const mutation = mutator(queue);
     if (mutation.persist !== false) {
-      await setStoredJson(SYNC_QUEUE_STORAGE_KEY, mutation.nextQueue);
+      await persistVerifiedOfflineQueue(mutation.nextQueue);
     }
     return mutation.result;
   });
+}
+
+async function persistVerifiedOfflineQueue(
+  queue: readonly SyncQueueItem[],
+): Promise<void> {
+  const value = JSON.stringify(queue);
+  await offlineQueueRecoveryTransaction.commit([
+    { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value },
+  ]);
 }
 
 export async function getOfflineQueue(): Promise<SyncQueueItem[]> {
@@ -557,10 +736,17 @@ export async function exportOfflineQueueQuarantine(
 export async function getOfflineQueueRecoveryState(): Promise<OfflineQueueRecoveryState> {
   const activeItems = (await getOfflineQueue()).length;
   const quarantineKeys = await listOfflineQueueQuarantines();
+  const metadata = await Promise.all(
+    quarantineKeys.map(key => readOfflineQueueQuarantineMetadata(key)),
+  );
+  const unresolvedQuarantineKeys = quarantineKeys.filter(
+    (_key, index) => metadata[index]?.resolvedAt == null,
+  );
   return {
     activeItems,
     quarantineKeys,
-    recoveryAvailable: quarantineKeys.length > 0,
+    unresolvedQuarantineKeys,
+    recoveryAvailable: unresolvedQuarantineKeys.length > 0,
   };
 }
 
@@ -578,11 +764,23 @@ export async function retryOfflineQueueRecovery(
   }
 
   return serializeOfflineQueueMutation(async () => {
+    await offlineQueueRecoveryTransaction.recover();
     const quarantinedRawValue = await AsyncStorage.getItem(quarantineKey);
     if (quarantinedRawValue === null) {
       const { queue } = await readOfflineQueueUnsafe();
       return {
         status: 'not_found',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: queue.length,
+      };
+    }
+
+    const metadata = await readOfflineQueueQuarantineMetadata(quarantineKey, true);
+    if (metadata?.resolvedAt) {
+      const { queue } = await readOfflineQueueUnsafe();
+      return {
+        status: 'already_recovered',
         quarantineKey,
         restoredItems: 0,
         activeItems: queue.length,
@@ -614,8 +812,36 @@ export async function retryOfflineQueueRecovery(
       };
     }
 
-    const recoveredQueueValue = JSON.stringify(recoveredQueue);
-    await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, recoveredQueueValue);
+    // Rows already salvaged automatically must never be restored again after
+    // they have synced and left the active queue. The same protection applies
+    // to a repeated manual recovery attempt.
+    const previouslyRecoveredIds = new Set([
+      ...(metadata?.salvagedItemIds || []),
+      ...(metadata?.restoredItemIds || []),
+    ]);
+    const uniqueRecoveredQueue = recoveredQueue.filter(
+      item => !previouslyRecoveredIds.has(item.id),
+    );
+    const recoveredQueueValue = JSON.stringify(uniqueRecoveredQueue);
+    const resolvedMetadata: OfflineQueueQuarantineMetadata = {
+      version: 1,
+      quarantineKey,
+      salvagedItemIds: metadata?.salvagedItemIds || [],
+      restoredItemIds: [
+        ...(metadata?.restoredItemIds || []),
+        ...uniqueRecoveredQueue.map(item => item.id),
+      ],
+      invalidItemCount: Math.max(1, metadata?.invalidItemCount || 1),
+      resolvedAt: new Date().toISOString(),
+    };
+    await offlineQueueRecoveryTransaction.commit([
+      { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value: recoveredQueueValue },
+      {
+        kind: 'set',
+        key: offlineQueueQuarantineMetadataKey(quarantineKey),
+        value: JSON.stringify(resolvedMetadata),
+      },
+    ]);
     const restoredRawValue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
     if (restoredRawValue !== recoveredQueueValue) {
       throw new Error('Offline queue recovery write could not be verified.');
@@ -631,26 +857,32 @@ export async function retryOfflineQueueRecovery(
 }
 
 export async function getSyncConflicts(): Promise<SyncConflict[]> {
-  const conflicts = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
-  return normalizeSyncConflicts(conflicts);
+  await syncConflictMutationTail;
+  return readSyncConflictsUnsafe();
 }
 
 export async function reconcileSyncConflicts(): Promise<SyncConflict[]> {
-  const stored = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
-  const reconciled = normalizeSyncConflicts(stored);
+  return serializeSyncConflictMutation(async () => {
+    const stored = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
+    const reconciled = normalizeSyncConflicts(stored);
 
-  if (JSON.stringify(stored) !== JSON.stringify(reconciled)) {
-    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, reconciled);
-  }
+    if (JSON.stringify(stored) !== JSON.stringify(reconciled)) {
+      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, reconciled);
+    }
 
-  return reconciled;
+    return reconciled;
+  });
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {
-  const [queue, conflicts, lastSyncAt] = await Promise.all([
-    getOfflineQueue(),
+  // Read the queue first because that read can discover and quarantine damage.
+  // The recovery state must be computed afterward so status cannot race and
+  // incorrectly report that the queue is clear.
+  const queue = await getOfflineQueue();
+  const [conflicts, lastSyncAt, recovery] = await Promise.all([
     getSyncConflicts(),
     getStoredJson<string | null>(SYNC_LAST_RUN_STORAGE_KEY, null),
+    getOfflineQueueRecoveryState(),
   ]);
   const configuration = getSupabaseConfigurationStatus();
 
@@ -658,8 +890,15 @@ export async function getSyncStatus(): Promise<SyncStatus> {
     configured: configuration.configured,
     queuedChanges: queue.length,
     conflicts: conflicts.length,
+    recoveryAvailable: recovery.recoveryAvailable,
+    recoveryCopies: recovery.unresolvedQuarantineKeys.length,
     lastSyncAt,
-    message: buildSyncStatusMessage(configuration, queue.length, conflicts.length),
+    message: buildSyncStatusMessage(
+      configuration,
+      queue.length,
+      conflicts.length,
+      recovery.recoveryAvailable,
+    ),
   };
 }
 
@@ -700,10 +939,25 @@ export async function enqueuePendingChange<TPayload>(
     };
   });
   if (item.autoUpload !== false) {
-    void uploadPendingChanges();
+    requestPendingChangesUpload('queue_item_enqueued');
   }
 
   return queueItem;
+}
+
+/**
+ * Safe fire-and-forget entry point for the durable queue. The queue remains
+ * authoritative on failure; errors are diagnostic-only and never escape as
+ * unhandled promise rejections.
+ */
+export function requestPendingChangesUpload(trigger: string): void {
+  startGuardedBackgroundTask({
+    key: 'offline-queue-upload',
+    label: 'Pending cloud sync',
+    trigger,
+    maxConsecutiveRuns: 2,
+    task: uploadPendingChanges,
+  });
 }
 
 export async function queueProjectCreate(name: string): Promise<void> {
@@ -960,7 +1214,7 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
     if (anotherUploadPassRequested) {
       anotherUploadPassRequested = false;
-      void uploadPendingChanges();
+      requestPendingChangesUpload('coalesced_follow_up');
     }
   }
 }
@@ -1074,9 +1328,18 @@ export async function downloadCloudChanges<TUpdate>(
 
   // Audit P1-27: record WHY a collection is empty. A read failure or an
   // unverifiable deletion history yields an explicit error, never a silent [].
-  const readError = (result: { ok: boolean; configured: boolean; error?: string; message?: string }, label: string): string | null => {
+  const readError = (
+    result: {
+      ok: boolean;
+      configured: boolean;
+      stubbed?: boolean;
+      error?: string;
+      message?: string;
+    },
+    label: string,
+  ): string | null => {
     if (!result.configured) return null;
-    if (result.ok) return null;
+    if (result.ok && !result.stubbed) return null;
     return result.error || result.message || `${label} could not be read from the cloud.`;
   };
   const tombstoneGateError = tombstoneSync.cloudAuthoritative
@@ -1588,17 +1851,18 @@ async function cleanupSyncQueueValue(value: string) {
 }
 
 export async function clearResolvedConflict(conflictId: string): Promise<void> {
-  const conflicts = await getSyncConflicts();
-  const conflict = conflicts.find(item => item.id === conflictId);
-
-  await setStoredJson(
-    SYNC_CONFLICTS_STORAGE_KEY,
-    conflicts.filter(item =>
-      conflict
-        ? item.entity !== conflict.entity || item.localId !== conflict.localId
-        : item.id !== conflictId,
-    ),
-  );
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const conflict = conflicts.find(item => item.id === conflictId);
+    await setStoredJson(
+      SYNC_CONFLICTS_STORAGE_KEY,
+      conflicts.filter(item =>
+        conflict
+          ? item.entity !== conflict.entity || item.localId !== conflict.localId
+          : item.id !== conflictId,
+      ),
+    );
+  });
 }
 
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
@@ -1761,26 +2025,42 @@ async function uploadProjectUpdateQueueItem(
 }
 
 async function recordConflict(conflict: SyncConflict): Promise<void> {
-  const conflicts = await getSyncConflicts();
-  const nextConflicts = conflicts.filter(item =>
-    item.entity !== conflict.entity || item.localId !== conflict.localId,
-  );
-
-  await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...nextConflicts, conflict]);
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const nextConflicts = conflicts.filter(item =>
+      item.entity !== conflict.entity || item.localId !== conflict.localId,
+    );
+    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...nextConflicts, conflict]);
+  });
 }
 
 async function clearConflictsForLocalRecord(
   entity: SyncEntity,
   localId: string,
 ): Promise<void> {
-  const conflicts = await getSyncConflicts();
-  const nextConflicts = conflicts.filter(item =>
-    item.entity !== entity || item.localId !== localId,
-  );
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const nextConflicts = conflicts.filter(item =>
+      item.entity !== entity || item.localId !== localId,
+    );
+    if (nextConflicts.length !== conflicts.length) {
+      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, nextConflicts);
+    }
+  });
+}
 
-  if (nextConflicts.length !== conflicts.length) {
-    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, nextConflicts);
-  }
+async function readSyncConflictsUnsafe(): Promise<SyncConflict[]> {
+  const conflicts = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
+  return normalizeSyncConflicts(conflicts);
+}
+
+function serializeSyncConflictMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = syncConflictMutationTail.then(operation, operation);
+  syncConflictMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 function normalizeSyncConflicts(conflicts: SyncConflict[]): SyncConflict[] {
@@ -1865,7 +2145,14 @@ function buildSyncStatusMessage(
   configuration: SupabaseConfigurationStatus,
   queuedChanges: number,
   conflicts: number,
+  recoveryAvailable: boolean,
 ): string {
+  if (recoveryAvailable) {
+    return queuedChanges > 0
+      ? 'Some local changes are waiting to sync, and saved sync data needs recovery review.'
+      : 'Saved sync data needs recovery review. The active offline queue has no pending items.';
+  }
+
   if (!configuration.configured) {
     return 'Local storage is active. Supabase sync will start after environment configuration is added.';
   }
@@ -2416,6 +2703,14 @@ async function isPhotoFileAvailable(uri: string): Promise<{
 
 function isSyncStorageKey(key: string) {
   return /sync|admin|status|diagnostic|cloud|queue|lastSync/i.test(key);
+}
+
+function isOfflineQueueRecoveryInternalKey(key: string) {
+  return (
+    isOfflineQueueQuarantineKey(key) ||
+    key.startsWith(SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX) ||
+    key === SYNC_QUEUE_RECOVERY_TRANSACTION_KEY
+  );
 }
 
 function sanitizeStoredSyncValue(value: string) {

@@ -53,6 +53,11 @@ export type PhotoAssessmentDisplayResult = Readonly<{
   currentObservation?: string | null;
 }>;
 
+export type PhotoProjectProgress =
+  | 'supported'
+  | 'unsupported'
+  | 'unable_to_determine';
+
 const SUCCESSFUL_ANALYSIS_STATUSES = new Set<PhotoAnalysisLifecycleStatus>([
   'analysis_complete',
   'completed_with_limitations',
@@ -97,10 +102,12 @@ export function derivePhotoAssessmentState(
 export function derivePhotoAssessmentDisposition({
   observationAccepted,
   conclusion,
+  comparabilityClassification,
   normalizedFindingCount,
 }: Readonly<{
   observationAccepted: boolean;
   conclusion: string | null | undefined;
+  comparabilityClassification: string | null | undefined;
   normalizedFindingCount: number;
 }>): PhotoAssessmentDisposition {
   if (!observationAccepted) return 'indeterminate';
@@ -108,9 +115,27 @@ export function derivePhotoAssessmentDisposition({
     return 'indeterminate';
   }
   if (normalizedFindingCount > 0) return 'finding';
-  return conclusion?.trim().toLowerCase() === 'no_material_visible_change'
+  const comparability = comparabilityClassification?.trim().toLowerCase();
+  const comparisonCanAssessAbsence =
+    comparability === 'strong' || comparability === 'probable';
+  return comparisonCanAssessAbsence &&
+    conclusion?.trim().toLowerCase() === 'no_material_visible_change'
     ? 'explicit_clear'
     : 'indeterminate';
+}
+
+/**
+ * Converts only the validated authority decision into mobile project progress.
+ * Raw provider conclusions are observations, not an authority fallback: a
+ * blocked or missing JARVIS disposition must remain unable to determine.
+ */
+export function photoProjectProgressFromAuthority(
+  disposition: string | null | undefined,
+): PhotoProjectProgress {
+  const normalized = disposition?.trim().toLowerCase();
+  if (normalized === 'supported') return 'supported';
+  if (normalized === 'unsupported') return 'unsupported';
+  return 'unable_to_determine';
 }
 
 export function photoDisplayResultHasExplicitFinding(

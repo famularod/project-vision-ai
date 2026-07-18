@@ -1,4 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 import type {
   PIEExecutiveAction,
   PIEExecutiveConstraint,
@@ -89,11 +93,14 @@ export function resolveJudgmentSupersession(
 
 export const localPIEExecutiveJudgmentRepository: PIEExecutiveJudgmentRepository = {
   async saveIssuedJudgment(record) {
+    if (!isExecutiveJudgmentRecordForScope(record, record.organizationId, record.projectId)) {
+      throw new Error('Cannot store an invalid or cross-scope Executive Judgment.');
+    }
     const records = await listExecutiveJudgmentRecords(record.organizationId, record.projectId);
     const existing = records.find(item => item.id === record.id);
     if (existing) return existing;
     const next = [record, ...supersedeChangedRecommendations(records, record)].slice(0, 100);
-    await AsyncStorage.setItem(judgmentKey(record.organizationId, record.projectId), JSON.stringify(next));
+    await AsyncStorage.setItem(executiveJudgmentStorageKey(record.organizationId, record.projectId), JSON.stringify(next));
     return record;
   },
   async listJudgments(organizationId, projectId) {
@@ -237,14 +244,22 @@ async function listExecutiveJudgmentRecords(
   organizationId: string,
   projectId: string,
 ): Promise<PIEExecutiveJudgmentRecord[]> {
-  const value = await AsyncStorage.getItem(judgmentKey(organizationId, projectId));
-  if (!value) return [];
+  const storageKey = executiveJudgmentStorageKey(organizationId, projectId);
+  const value = await AsyncStorage.getItem(storageKey);
+  if (value === null) return [];
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed as PIEExecutiveJudgmentRecord[] : [];
+    parsed = JSON.parse(value) as unknown;
   } catch {
-    return [];
+    return quarantineInvalidExecutiveJudgments(storageKey, value);
   }
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every(record => isExecutiveJudgmentRecordForScope(record, organizationId, projectId))
+  ) {
+    return quarantineInvalidExecutiveJudgments(storageKey, value);
+  }
+  return parsed as PIEExecutiveJudgmentRecord[];
 }
 
 function supersedeChangedRecommendations(
@@ -276,8 +291,46 @@ function executiveJudgmentRecordId(
   ].join('-');
 }
 
-function judgmentKey(organizationId: string, projectId: string) {
+export function executiveJudgmentStorageKey(organizationId: string, projectId: string): string {
   return `${EXECUTIVE_JUDGMENT_PREFIX}.${safeKey(organizationId)}.${safeKey(projectId)}`;
+}
+
+async function quarantineInvalidExecutiveJudgments(
+  storageKey: string,
+  raw: string,
+): Promise<never> {
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey,
+    quarantineKeyPrefix: `${storageKey}.corrupt.`,
+    raw,
+    replacementRaw: null,
+  });
+  throw localCorruptionRecoveryError({
+    label: 'Stored Executive Judgments',
+    recovery,
+  });
+}
+
+function isExecutiveJudgmentRecordForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIEExecutiveJudgmentRecord {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    value.organizationId === organizationId &&
+    value.projectId === projectId &&
+    typeof value.judgmentTime === 'string' &&
+    typeof value.primaryRecommendation === 'string' &&
+    value.immutable === true
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function referencesObject(

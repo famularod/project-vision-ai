@@ -1,6 +1,6 @@
 import type { PIELiveAuthorityInput } from '../providers/PIELiveAuthorityProvider';
 
-export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.0';
+export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.1';
 
 export function authorityInputSignature(input: PIELiveAuthorityInput) {
   return stableStringify({
@@ -13,6 +13,8 @@ export function authorityInputSignature(input: PIELiveAuthorityInput) {
     surface: input.surface || 'home',
     identityTrusted: input.identityTrusted !== false,
     cloudAvailable: input.cloudAvailable !== false,
+    projectTruthPersistencePolicy:
+      input.projectTruthPersistencePolicy || 'persist_project',
     updates: input.updates,
     scheduleItems: input.scheduleItems,
     currentUpdate: input.currentUpdate || null,
@@ -35,6 +37,8 @@ export function authorityInputScopeSignature(input: PIELiveAuthorityInput) {
     reportType: input.reportType || null,
     surface: input.surface || 'home',
     identityTrusted: input.identityTrusted !== false,
+    projectTruthPersistencePolicy:
+      input.projectTruthPersistencePolicy || 'persist_project',
   });
 }
 

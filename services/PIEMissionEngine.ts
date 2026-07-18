@@ -23,6 +23,8 @@ import type { ProjectEvent } from './ProjectEventService';
 import type { PIERuntimeState } from './PIERuntime';
 import {
   classifyDAVEBlocker,
+  classifyDAVEIssue,
+  classifyDAVESafety,
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
 
@@ -1220,7 +1222,13 @@ function buildMissionSuccessCriteria(
 ): PIEMissionSuccessCriteria[] {
   const evidenceDetails = evidence.map(item => item.detail);
   const criteria = definition.criteria.map((description, index) => {
-    const met = missionCriterionMet(description, context, evidence, blockers);
+    const met = missionCriterionMet(
+      description,
+      context,
+      evidence,
+      evidenceNeeds,
+      blockers,
+    );
 
     return {
       id: `mission-criteria-${context.missionType}-${index}`,
@@ -1444,6 +1452,7 @@ function missionCriterionMet(
   description: string,
   context: MissionContext,
   evidence: PIEMissionEvidence[],
+  evidenceNeeds: string[],
   blockers: PIEMissionBlocker[],
 ): boolean {
   if (description.includes('Top priority')) {
@@ -1458,8 +1467,7 @@ function missionCriterionMet(
   if (description.includes('Questions or approvals')) {
     return Boolean(
       (context.executiveBrief?.questionsForUser.length ?? 0) > 0 ||
-        (context.decisionQueue?.userApprovalRequiredDecisions.length ?? 0) > 0 ||
-        context.runtime,
+        (context.decisionQueue?.userApprovalRequiredDecisions.length ?? 0) > 0,
     );
   }
   if (description.includes('Project and area')) {
@@ -1493,8 +1501,31 @@ function missionCriterionMet(
     return hasTypedMissionEvidence(context, 'document');
   }
   if (description.includes('User approval boundaries')) return true;
+  if (description.includes('Missing evidence') || description.includes('Missing context')) {
+    return evidenceNeeds.length > 0;
+  }
+  if (description.includes('verification question')) {
+    return Boolean(
+      (context.executiveBrief?.questionsForUser.length ?? 0) > 0 ||
+      (context.reflection?.verificationQuestions.length ?? 0) > 0,
+    );
+  }
+  if (description.includes('Evidence and uncertainty')) {
+    return evidence.length > 0 && evidenceNeeds.length > 0;
+  }
+  if (description.includes('Decision or escalation')) {
+    return Boolean(
+      (context.decisionQueue?.decisions.length ?? 0) > 0 ||
+      (context.executiveBrief?.escalations.length ?? 0) > 0,
+    );
+  }
+  if (description.includes('User approval') || description.includes('user approval')) {
+    return missionRequiresApproval(context.missionType);
+  }
 
-  return evidence.length > 0;
+  // Unmapped criteria fail closed. A generic, unrelated evidence item must
+  // never satisfy a mission criterion merely because some evidence exists.
+  return false;
 }
 
 function hasTypedMissionEvidence(
@@ -1598,9 +1629,17 @@ function isMission(input: MissionInput): input is PIEMission {
 }
 
 function hasSafetySignal(context: Omit<MissionContext, 'missionType'>): boolean {
-  return contextText(context).includes('safety') ||
-    contextText(context).includes('hazard') ||
-    (context.intelligence?.metrics.safetyConcernCount ?? 0) > 0;
+  const classification = classifyDAVESafety(
+    parseDAVEAssertions(contextText(context)),
+  );
+  return (
+    classification === 'issue_present' ||
+    classification === 'conflicting' ||
+    classification === 'uncertain' ||
+    (context.intelligence?.metrics.safetyConcernCount ?? 0) > 0 ||
+    Boolean(context.knowledgeGraph?.nodes.some(node => node.type === 'safety')) ||
+    context.projectEvents.some(event => event.eventType === 'safety_observation')
+  );
 }
 
 function hasCriticalRisk(context: Omit<MissionContext, 'missionType'>): boolean {
@@ -1620,7 +1659,8 @@ function hasInspectionNeed(context: Omit<MissionContext, 'missionType'>): boolea
     'missing inspection',
     'inspection not recorded',
     'verify inspection',
-    'inspection status',
+    'inspection status unknown',
+    'inspection status uncertain',
   ]);
 }
 
@@ -1660,8 +1700,20 @@ function hasCommunicationNeed(
 function hasIssueInvestigationNeed(
   context: Omit<MissionContext, 'missionType'>,
 ): boolean {
-  return includesAny(contextText(context), ['issue', 'blocker', 'blocked']) ||
-    (context.intelligence?.metrics.openIssueCount ?? 0) > 0;
+  const parsed = parseDAVEAssertions(contextText(context));
+  const issue = classifyDAVEIssue(parsed);
+  const blocker = classifyDAVEBlocker(parsed);
+  return (
+    issue === 'issue_present' ||
+    issue === 'conflicting' ||
+    issue === 'uncertain' ||
+    blocker === 'blocked' ||
+    blocker === 'conflicting' ||
+    blocker === 'uncertain' ||
+    (context.intelligence?.metrics.openIssueCount ?? 0) > 0 ||
+    Boolean(context.knowledgeGraph?.nodes.some(node => node.type === 'issue')) ||
+    context.projectEvents.some(event => event.eventType === 'issue_created')
+  );
 }
 
 function hasDocumentationNeed(

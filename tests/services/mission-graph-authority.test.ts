@@ -54,11 +54,7 @@ describe('mission and knowledge-graph authority', () => {
   it.each([
     scheduleItem({ status: 'Waiting', priority: 'Low' }),
     scheduleItem({ notes: 'Blocked by an unresolved electrical shutdown.', priority: 'Low' }),
-    scheduleItem({
-      finishDate: '2026-07-17T17:00:00-07:00',
-      priority: 'Low',
-    }),
-  ])('creates recovery authority only for explicit waiting, blocker, or overdue evidence', item => {
+  ])('creates recovery authority only for explicit waiting or blocker evidence', item => {
     const graph = graphFor(item);
 
     expect(graph.relationships.some(relationship => relationship.edgeType === 'blocks')).toBe(true);
@@ -67,6 +63,20 @@ describe('mission and knowledge-graph authority', () => {
       knowledgeGraph: graph,
       now: NOW,
     }).missionType).toBe('schedule-recovery');
+  });
+
+  it('does not fabricate a dependency edge merely because a task is overdue', () => {
+    const graph = graphFor(scheduleItem({
+      finishDate: '2026-07-17T17:00:00-07:00',
+      priority: 'Low',
+    }));
+
+    expect(graph.relationships.filter(item => item.edgeType === 'blocks')).toEqual([]);
+    expect(buildProjectMission({
+      projectName: graph.projectName,
+      knowledgeGraph: graph,
+      now: NOW,
+    }).missionType).not.toBe('schedule-recovery');
   });
 
   it('honors explicit no-blocker language instead of the blocker keyword', () => {
@@ -99,4 +109,46 @@ describe('mission and knowledge-graph authority', () => {
       expect(criterion?.evidence).not.toContain(criterionDescription);
     },
   );
+
+  it.each([
+    ['No safety issues were observed.', 'safety-verification'],
+    ['No current issues were observed and no blocker is present.', 'issue-investigation'],
+  ] as const)('does not select %s wording as an active mission', (summary, forbiddenMission) => {
+    const mission = buildProjectMission({
+      projectName: '2375 Compliance Project',
+      executiveBrief: {
+        executiveSummary: summary,
+        rankedPriorities: [],
+        recommendations: [],
+        escalations: [],
+        questionsForUser: [],
+        preparations: [],
+        projectsNeedingAttention: [],
+        userApprovalRequiredItems: [],
+      } as never,
+      now: NOW,
+    });
+
+    expect(mission.missionType).not.toBe(forbiddenMission);
+  });
+
+  it('does not satisfy unrelated criteria from one generic evidence event', () => {
+    const mission = buildMission({
+      missionType: 'project-walk',
+      projectName: '2375 Compliance Project',
+      projectEvents: [{
+        id: 'event-1',
+        eventType: 'project_created',
+        title: 'Project created',
+        description: 'The project record exists.',
+        confidence: 'high',
+        occurredAt: NOW.toISOString(),
+      }] as never,
+      now: NOW,
+    });
+
+    expect(mission.successCriteria.find(
+      item => item.description === 'Open field questions are answered.',
+    )?.met).toBe(false);
+  });
 });

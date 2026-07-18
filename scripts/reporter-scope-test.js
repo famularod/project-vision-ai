@@ -23,6 +23,7 @@ new Function('module', 'exports', compiled)(
 const { resolvePIEReportProjectNames } = moduleUnderTest.exports;
 const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
 const reportsScreen = fs.readFileSync(path.resolve(__dirname, '../screens/ReportsScreen.tsx'), 'utf8');
+const authorityScope = fs.readFileSync(path.resolve(__dirname, '../services/ReportAuthorityScope.ts'), 'utf8');
 const single = resolvePIEReportProjectNames({
   selectedProjectNames: ['Alpha'],
   fallbackProjectNames: ['Alpha', 'Beta'],
@@ -50,11 +51,13 @@ assert(
   'Reports must expose a single-select project picker and a multi-select combined-project picker.',
 );
 assert(
-  app.includes('selectedReportProjectNames.flatMap(selectedProject =>') &&
-    app.includes('workspaceScopeNames(selectedProject)') &&
-    app.includes('matchesReportProject(update.scheduleProjectName)') &&
+  app.includes('buildCombinedReportAuthorityScope({') &&
+    app.includes('buildDailyReportAuthorityScope({') &&
+    authorityScope.includes('const scheduleItemId = cleanText(update.scheduleItemId)') &&
+    authorityScope.includes('const scheduleProjectName = cleanText(update.scheduleProjectName)') &&
+    authorityScope.includes('owners?.size === 1') &&
     app.includes('selectedProjectNames={selectedReportProjectNames}'),
-  'Visible project selections must scope the live report authority, including parent-project tasks.',
+  'Visible project selections must scope live authority by exact parent/task identity and reject ambiguous area-only evidence.',
 );
 
 console.log('PASS reporter single/combined project scope');

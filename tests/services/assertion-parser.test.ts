@@ -171,4 +171,16 @@ describe('DAVE assertion parser', () => {
     expect(classifyDAVEBlocker('The work is not blocked.')).toBe('resolved');
     expect(classifyDAVESafety('The area is not unsafe.')).toBe('no_issue_observed');
   });
+
+  it.each([
+    ['Is the electrical rough-in complete?', classifyDAVECompletion],
+    ['Is the safety issue resolved?', classifyDAVESafety],
+    ['Has the blocker been resolved?', classifyDAVEBlocker],
+  ] as const)('never promotes a question to current truth: %s', (source, classify) => {
+    const parsed = parseDAVEAssertions(source);
+
+    expect(parsed.assertions.length).toBeGreaterThan(0);
+    expect(parsed.assertions.every(assertion => assertion.polarity === 'uncertain')).toBe(true);
+    expect(classify(parsed)).toBe('uncertain');
+  });
 });

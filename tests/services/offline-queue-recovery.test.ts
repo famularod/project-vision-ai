@@ -1,5 +1,6 @@
 const mockStorageValues = new Map<string, string>();
 let mockCorruptQuarantineWrites = false;
+let mockCorruptActiveQueueWrites = false;
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn((key: string) =>
@@ -9,6 +10,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
       key,
       mockCorruptQuarantineWrites && key.includes('.quarantine.')
         ? `${value}-changed`
+        : mockCorruptActiveQueueWrites && key === 'projectVisionAI.syncQueue.v1'
+          ? `${value}-changed`
         : value,
     );
     return Promise.resolve();
@@ -34,11 +37,14 @@ jest.mock('../../services/SupabaseService', () => ({
 
 import {
   SYNC_QUEUE_QUARANTINE_KEY_PREFIX,
+  clearResolvedConflict,
   cleanupStoredSyncStatusMessages,
   enqueuePendingChange,
   exportOfflineQueueQuarantine,
   getOfflineQueue,
   getOfflineQueueRecoveryState,
+  getSyncConflicts,
+  getSyncStatus,
   listOfflineQueueQuarantines,
   retryOfflineQueueRecovery,
   uploadPendingChanges,
@@ -64,6 +70,7 @@ describe('offline queue corruption recovery', () => {
   beforeEach(() => {
     mockStorageValues.clear();
     mockCorruptQuarantineWrites = false;
+    mockCorruptActiveQueueWrites = false;
     mockCreateProject.mockClear();
   });
 
@@ -89,6 +96,7 @@ describe('offline queue corruption recovery', () => {
     await expect(getOfflineQueueRecoveryState()).resolves.toEqual({
       activeItems: 0,
       quarantineKeys,
+      unresolvedQuarantineKeys: quarantineKeys,
       recoveryAvailable: true,
     });
 
@@ -108,6 +116,64 @@ describe('offline queue corruption recovery', () => {
     const [quarantineKey] = await listOfflineQueueQuarantines();
     expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
     expect(mockStorageValues.get(ACTIVE_QUEUE_KEY)).toBe('[]');
+  });
+
+  it('salvages every independently valid row and reports the remaining recovery work', async () => {
+    const first = queueItem('valid-first');
+    const second = queueItem('valid-second');
+    const invalid = { id: 'invalid', entity: 'project', payload: { name: 'Bad' } };
+    const rawValue = JSON.stringify([first, invalid, second]);
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, rawValue);
+
+    await expect(getOfflineQueue()).resolves.toEqual([first, second]);
+    expect(mockStorageValues.get(ACTIVE_QUEUE_KEY)).toBe(
+      JSON.stringify([first, second]),
+    );
+
+    const [quarantineKey] = await listOfflineQueueQuarantines();
+    expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
+    await expect(getSyncStatus()).resolves.toMatchObject({
+      queuedChanges: 2,
+      recoveryAvailable: true,
+      recoveryCopies: 1,
+      message: expect.stringMatching(/needs recovery review/i),
+    });
+  });
+
+  it('isolates duplicate IDs and keeps only the last valid queue revision', async () => {
+    const older = queueItem('same-id');
+    const newer = {
+      ...queueItem('same-id'),
+      payload: { name: 'Newest intended project name' },
+      changedAt: '2026-07-18T12:05:00.000Z',
+    };
+    const rawValue = JSON.stringify([older, newer]);
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, rawValue);
+
+    await expect(getOfflineQueue()).resolves.toEqual([newer]);
+    const [quarantineKey] = await listOfflineQueueQuarantines();
+    expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      activeItems: 1,
+      recoveryAvailable: true,
+    });
+  });
+
+  it('keeps status in attention when every row is invalid and active count is zero', async () => {
+    const rawValue = JSON.stringify([
+      { id: 'missing-fields' },
+      { id: 'negative-retry', retryCount: -1 },
+    ]);
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, rawValue);
+
+    await expect(getSyncStatus()).resolves.toMatchObject({
+      queuedChanges: 0,
+      recoveryAvailable: true,
+      recoveryCopies: 1,
+      message: expect.stringMatching(/active offline queue has no pending items/i),
+    });
+    const [quarantineKey] = await listOfflineQueueQuarantines();
+    expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
   });
 
   it('exports, retries, restores repaired queue data, and uploads it normally', async () => {
@@ -146,6 +212,67 @@ describe('offline queue corruption recovery', () => {
     });
     expect(mockCreateProject).toHaveBeenCalledTimes(1);
     expect(mockStorageValues.get(ACTIVE_QUEUE_KEY)).toBe('[]');
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      recoveryAvailable: false,
+      unresolvedQuarantineKeys: [],
+    });
+  });
+
+  it('does not restore an automatically salvaged row twice during manual recovery', async () => {
+    const salvaged = queueItem('salvaged-once');
+    const rawValue = JSON.stringify([salvaged, { id: 'repair-me' }]);
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, rawValue);
+
+    await expect(getOfflineQueue()).resolves.toEqual([salvaged]);
+    const [quarantineKey] = await listOfflineQueueQuarantines();
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ uploaded: 1, queued: 0 });
+
+    const repaired = queueItem('repaired-only');
+    await expect(retryOfflineQueueRecovery(
+      quarantineKey,
+      JSON.stringify([salvaged, repaired]),
+    )).resolves.toEqual({
+      status: 'recovered',
+      quarantineKey,
+      restoredItems: 1,
+      activeItems: 1,
+    });
+    await expect(getOfflineQueue()).resolves.toEqual([repaired]);
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ uploaded: 1, queued: 0 });
+    expect(mockCreateProject).toHaveBeenCalledTimes(2);
+
+    await expect(retryOfflineQueueRecovery(
+      quarantineKey,
+      JSON.stringify([salvaged, repaired]),
+    )).resolves.toEqual({
+      status: 'already_recovered',
+      quarantineKey,
+      restoredItems: 0,
+      activeItems: 0,
+    });
+    expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
+  });
+
+  it('blocks manual restore if salvage metadata is damaged', async () => {
+    const salvaged = queueItem('salvaged-before-metadata-damage');
+    const rawValue = JSON.stringify([salvaged, { id: 'repair-me' }]);
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, rawValue);
+    await getOfflineQueue();
+    const [quarantineKey] = await listOfflineQueueQuarantines();
+    await uploadPendingChanges();
+
+    const metadataKey = [...mockStorageValues.keys()].find(key =>
+      key.includes('.quarantine-metadata.'),
+    );
+    expect(metadataKey).toBeDefined();
+    mockStorageValues.set(metadataKey!, '{damaged-metadata');
+
+    await expect(retryOfflineQueueRecovery(
+      quarantineKey,
+      JSON.stringify([salvaged, queueItem('repaired-row')]),
+    )).rejects.toThrow(/blocked to prevent duplicate or resurrected work/i);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
   });
 
   it('never overwrites new active work during a recovery retry', async () => {
@@ -185,5 +312,68 @@ describe('offline queue corruption recovery', () => {
       'Offline queue quarantine could not be verified.',
     );
     expect(mockStorageValues.get(ACTIVE_QUEUE_KEY)).toBe(corruptRawValue);
+  });
+
+  it('fails closed when the salvaged active queue cannot be verified', async () => {
+    const valid = queueItem('must-survive-salvage');
+    const rawValue = JSON.stringify([valid, { id: 'bad-row' }]);
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, rawValue);
+    mockCorruptActiveQueueWrites = true;
+
+    await expect(getOfflineQueue()).rejects.toThrow(
+      /write verification failed.*projectVisionAI\.syncQueue\.v1/i,
+    );
+    const [quarantineKey] = await listOfflineQueueQuarantines();
+    expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
+
+    mockCorruptActiveQueueWrites = false;
+    await expect(getOfflineQueue()).resolves.toEqual([valid]);
+    await expect(getSyncStatus()).resolves.toMatchObject({
+      queuedChanges: 1,
+      recoveryAvailable: true,
+    });
+  });
+
+  it('allows new work to enqueue after all invalid rows are isolated without hiding recovery', async () => {
+    const rawValue = JSON.stringify([{ id: 'invalid-only' }]);
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, rawValue);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+
+    const newWork = queueItem('new-after-recovery');
+    await enqueuePendingChange({ ...newWork, autoUpload: false });
+
+    await expect(getOfflineQueue()).resolves.toEqual([newWork]);
+    await expect(getSyncStatus()).resolves.toMatchObject({
+      queuedChanges: 1,
+      recoveryAvailable: true,
+      recoveryCopies: 1,
+    });
+    const [quarantineKey] = await listOfflineQueueQuarantines();
+    expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
+  });
+
+  it('serializes overlapping conflict decisions without restoring either conflict', async () => {
+    const conflict = (id: string) => ({
+      id,
+      entity: 'project_update' as const,
+      localId: `update-${id}`,
+      localChangedAt: '2026-07-18T12:00:00.000Z',
+      remoteChangedAt: '2026-07-18T12:01:00.000Z',
+      reason: 'Concurrent edit',
+      detectedAt: '2026-07-18T12:02:00.000Z',
+      localPayload: { updateData: { id: `update-${id}`, notes: 'phone' } },
+      remotePayload: { id: `update-${id}`, notes: 'cloud' },
+    });
+    mockStorageValues.set(
+      'projectVisionAI.syncConflicts.v1',
+      JSON.stringify([conflict('first'), conflict('second')]),
+    );
+
+    await Promise.all([
+      clearResolvedConflict('first'),
+      clearResolvedConflict('second'),
+    ]);
+
+    await expect(getSyncConflicts()).resolves.toEqual([]);
   });
 });

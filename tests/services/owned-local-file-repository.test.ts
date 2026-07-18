@@ -3,10 +3,12 @@ import {
   createOwnedLocalFileManifest,
   createOwnedLocalFileManifestRecord,
   generateOwnedLocalFileBasename,
+  isLegacyOwnedLocalFileReadDeleteAuthorized,
   isOwnedLocalFileManifestMember,
   isOwnedLocalFileReadDeleteAuthorized,
   isValidOwnedLocalFileManifest,
   parseOwnedLocalFileManifest,
+  resolveLegacyOwnedLocalFilePath,
   resolveOwnedLocalFilePath,
   type OwnedLocalFileManifestRecord,
   type OwnedLocalFileManifestRecordInput,
@@ -352,6 +354,63 @@ describe('OwnedLocalFileRepository', () => {
         fileId: FILE_ID,
         expectedKind: 'reference_document',
         candidatePath: resolvedPath,
+      })).toBe(false);
+    });
+  });
+
+  describe('legacy direct-child authorization', () => {
+    const legacyFolderName = 'project-documents';
+    const currentPath = `${OWNED_ROOT}/${BASENAME}`;
+    const oldContainerPath =
+      `file:///old/container/Documents/${legacyFolderName}/${BASENAME}`;
+
+    it('accepts a current exact child and safely rebinds an old container path', () => {
+      expect(resolveLegacyOwnedLocalFilePath({
+        ownedRoot: OWNED_ROOT,
+        legacyFolderName,
+        candidatePath: currentPath,
+      })).toBe(currentPath);
+      expect(isLegacyOwnedLocalFileReadDeleteAuthorized({
+        ownedRoot: OWNED_ROOT,
+        legacyFolderName,
+        candidatePath: currentPath,
+      })).toBe(true);
+      expect(resolveLegacyOwnedLocalFilePath({
+        ownedRoot: OWNED_ROOT,
+        legacyFolderName,
+        candidatePath: oldContainerPath,
+      })).toBe(currentPath);
+      expect(isLegacyOwnedLocalFileReadDeleteAuthorized({
+        ownedRoot: OWNED_ROOT,
+        legacyFolderName,
+        candidatePath: oldContainerPath,
+      })).toBe(false);
+    });
+
+    it.each([
+      `${OWNED_ROOT}/../secret.txt`,
+      `${OWNED_ROOT}/folder/secret.txt`,
+      `${OWNED_ROOT}/%2e%2e%2fsecret.txt`,
+      `${OWNED_ROOT}/%252e%252e%252fsecret.txt`,
+      `${OWNED_ROOT}/secret.txt?download=1`,
+      `${OWNED_ROOT}/secret.txt#fragment`,
+      `${OWNED_ROOT}-other/secret.txt`,
+      `file:///old/container/Documents/${legacyFolderName}/../secret.txt`,
+      `file:///old/container/Documents/${legacyFolderName}/folder/secret.txt`,
+      `file:///old/container/Documents/${legacyFolderName}/%2e%2e%2fsecret.txt`,
+      'file:///tmp/unowned.txt',
+      'content://provider/unowned.txt',
+      `https://example.com/${legacyFolderName}/${BASENAME}`,
+    ])('rejects unsafe or unowned candidate %p', candidatePath => {
+      expect(resolveLegacyOwnedLocalFilePath({
+        ownedRoot: OWNED_ROOT,
+        legacyFolderName,
+        candidatePath,
+      })).toBeNull();
+      expect(isLegacyOwnedLocalFileReadDeleteAuthorized({
+        ownedRoot: OWNED_ROOT,
+        legacyFolderName,
+        candidatePath,
       })).toBe(false);
     });
   });

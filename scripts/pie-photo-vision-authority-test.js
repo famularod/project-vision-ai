@@ -88,6 +88,24 @@ const edge = fs.readFileSync(
 );
 assert(edge.includes('validateVisionAuthority(mode, normalized)'));
 assert(!edge.includes('function validateNormalizedOutput'));
+assert(
+  edge.indexOf(".rpc('dave_is_app_owner')") > 0 &&
+    edge.indexOf(".rpc('dave_is_app_owner')") <
+      edge.indexOf('await readBoundedUtf8Json<VisionRequest>'),
+  'The service-role photo edge must verify the designated app owner before parsing analysis input.',
+);
+assert(
+  edge.includes('readBoundedUtf8Json<VisionRequest>') &&
+    !edge.includes('await req.json()'),
+  'The photo edge must bound streamed request bytes before JSON parsing.',
+);
+assert(edge.includes('buildServerPhotoVisionRequestId'));
+assert(edge.includes('callerPhotoVisionRequestIdMatches'));
+assert(!edge.includes('request.requestId ??'));
+assert(edge.includes('isCanonicalPhotoEvidenceStoragePath'));
+assert(edge.includes('duplicate_photo_root_mismatch'));
+assert(edge.includes('evidenceId: storagePathEvidenceId'));
+assert(edge.includes('analysis_persistence_failed'));
 
 const provider = fs.readFileSync(
   path.join(root, 'supabase/functions/_shared/pie-vision-provider.ts'),

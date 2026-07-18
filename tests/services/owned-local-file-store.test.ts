@@ -7,6 +7,7 @@ import {
   createOwnedLocalFileManifest,
   resolveOwnedLocalFilePath,
 } from '../../services/OwnedLocalFileRepository';
+import { MAX_SAFE_LOCAL_FILE_BYTES } from '../../services/FileSizePreflight';
 
 const FILE_ID = '550e8400-e29b-41d4-a716-446655440000';
 const SOURCE_URI = 'content://document-provider/external-photo';
@@ -18,8 +19,10 @@ const SOURCE_BYTES = new Uint8Array([1, 2, 3, 4, 5, 6]);
 class FailureInjectingFileSystem {
   readonly files = new Map<string, Uint8Array>();
   readonly ensuredDirectories: string[] = [];
+  readonly copyCalls: Array<[string, string]> = [];
   readonly readCalls: string[] = [];
   readonly deleteCalls: string[] = [];
+  readonly statOverrides = new Map<string, number | null>();
   failCopy = false;
   corruptCopy = false;
 
@@ -29,6 +32,7 @@ class FailureInjectingFileSystem {
       this.ensuredDirectories.push(directoryUri);
     },
     copyFile: async (sourceUri, destinationUri) => {
+      this.copyCalls.push([sourceUri, destinationUri]);
       const source = this.files.get(sourceUri);
       if (!source) throw new Error('source missing');
 
@@ -51,7 +55,9 @@ class FailureInjectingFileSystem {
       const bytes = this.files.get(fileUri);
       return {
         exists: bytes !== undefined,
-        sizeBytes: bytes?.byteLength ?? null,
+        sizeBytes: this.statOverrides.has(fileUri)
+          ? this.statOverrides.get(fileUri) ?? null
+          : bytes?.byteLength ?? null,
       };
     },
     deleteFile: async fileUri => {
@@ -129,6 +135,42 @@ describe('OwnedLocalFileStore', () => {
     expect(fileSystem.ensuredDirectories).toEqual([OWNED_ROOT]);
     expect(fileSystem.files.get(OWNED_PATH)).toEqual(SOURCE_BYTES);
     expect(Object.isFrozen(record)).toBe(true);
+  });
+
+  it('rejects an oversized source before reading or copying it', async () => {
+    const { fileSystem, store } = createFixture();
+    fileSystem.statOverrides.set(SOURCE_URI, MAX_SAFE_LOCAL_FILE_BYTES + 1);
+
+    await expect(store.storeExternalFile({
+      sourceUri: SOURCE_URI,
+      kind: 'project_document',
+      extension: 'pdf',
+      mimeType: 'application/pdf',
+    })).rejects.toMatchObject({
+      code: 'source_too_large',
+      recoveryState: 'restore_or_reselect',
+    });
+
+    expect(fileSystem.readCalls).toEqual([]);
+    expect(fileSystem.copyCalls).toEqual([]);
+  });
+
+  it('rejects an unknown source size before reading or copying it', async () => {
+    const { fileSystem, store } = createFixture();
+    fileSystem.statOverrides.set(SOURCE_URI, null);
+
+    await expect(store.storeExternalFile({
+      sourceUri: SOURCE_URI,
+      kind: 'project_document',
+      extension: 'pdf',
+      mimeType: 'application/pdf',
+    })).rejects.toMatchObject({
+      code: 'source_unreadable',
+      recoveryState: 'restore_or_reselect',
+    });
+
+    expect(fileSystem.readCalls).toEqual([]);
+    expect(fileSystem.copyCalls).toEqual([]);
   });
 
   it('cleans a partial destination and returns no record when copy fails', async () => {

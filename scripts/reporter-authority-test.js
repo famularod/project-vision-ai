@@ -14,14 +14,27 @@ const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const reporter = read('services/PIEReporter.ts');
 const runtime = read('services/PIERuntime.ts');
 const evidenceFusion = read('services/PIEEvidenceFusion.ts');
+const reportScope = read('services/ReportAuthorityScope.ts');
 
 assert(core.includes('buildPIEReportDraftFromExecutiveJudgment'), 'Live Core must build reports from persisted Executive Judgment.');
 assert(core.includes('executiveJudgmentRecord'), 'Live Core must persist and expose Executive Judgment records.');
 assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must prefer provider report drafts with Runtime recovery only.');
 assert(!reports.includes('buildPIEReportDraft({'), 'Review must not rebuild report drafts from raw arrays.');
 assert(reports.includes('const baseReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft'), 'Reports must select the authoritative draft before review or sharing.');
-assert(reports.includes('onEmailReport(effectiveReportDraft)'), 'Email action must use the reviewed authoritative report draft.');
-assert(reports.includes('onCopyReport(effectiveReportDraft)'), 'Copy action must use the reviewed authoritative report draft.');
+assert(reports.includes('completeCommunication(onEmailReport)'), 'Email action must pass through the reviewed communication boundary.');
+assert(reports.includes('completeCommunication(onCopyReport)'), 'Copy action must pass through the reviewed communication boundary.');
+assert(reports.includes('completeCommunication(onTextReport)'), 'Text action must pass through the reviewed communication boundary.');
+assert(
+  reports.includes('evaluateReportApprovalPolicy({') &&
+    reports.includes('if (!reportApproved || !reportApprovalPolicy.allowed)') &&
+    reports.includes('shouldApplyCommunicationOutcome({'),
+  'Approval and every communication path must revalidate report review authority.',
+);
+assert(
+  !reports.includes('isReportableShareWarning') &&
+    reports.includes('...reportDraft.reviewFlags'),
+  'Evidence, confidence, verification, uncertainty, and owner warnings must remain visible before sharing.',
+);
 assert(!reports.includes('MailComposer.composeAsync'), 'Review screen must not auto-send mail directly.');
 assert(
   provider.includes('projectNames: input.projectNames'),
@@ -50,11 +63,32 @@ assert(
 );
 assert(
   reporter.includes('resolvePIEReportProjectNames({') &&
-    app.includes('selectedReportProjectNames.flatMap(selectedProject =>') &&
-    app.includes('savedUpdates.filter(update =>') &&
-    app.includes('matchesReportProject(update.scheduleProjectName)') &&
-    app.includes('matchesReportProject(item.locationName)'),
-  'Single-project reports must filter evidence to the selected project instead of unioning all saved projects.',
+    app.includes('buildCombinedReportAuthorityScope({') &&
+    app.includes('buildDailyReportAuthorityScope({') &&
+    app.includes("reportType === 'combined_project_update'") &&
+    app.includes("combinedReportScope?.projectTruthPersistencePolicy || 'persist_project'") &&
+    reportScope.includes('matches.length === 1 && scopedScheduleSet.has(matches[0])') &&
+    reportScope.includes('owners?.size === 1') &&
+    reportScope.includes('if (!allowUniquelyOwnedLegacyAreas) return false;'),
+  'Daily and combined reports must use exact parent/task authority and fail closed for ambiguous area-only evidence.',
+);
+assert(
+  app.includes('reportEvidenceScope ? reportEvidenceScope.projectAreas : projectAreas') &&
+    app.includes('reportEvidenceScope ? reportEvidenceScope.referenceDocuments : referenceDocuments') &&
+    app.includes('reportEvidenceScope ? reportEvidenceScope.projectDocuments : projectDocuments') &&
+    app.includes('reportEvidenceScope ? reportEvidenceScope.captureMemories : captureMemories') &&
+    app.includes('updates={liveAuthorityInput.updates') &&
+    app.includes('referenceDocuments={liveAuthorityInput.referenceDocuments') &&
+    reportScope.includes('sourceDocumentIds.has(normalizeKey(documentId))') &&
+    reportScope.includes('sourceBatchIds.has(normalizeKey(importBatchId))'),
+  'Empty report-scoped supporting arrays must remain empty and unrelated schedule documents must not fall back into report authority.',
+);
+assert(
+  reports.includes('buildDailyReportAuthorityScope({') &&
+    reports.includes('const reportProjectId = `report:') &&
+    reports.includes('updates: scopedTruthInput.updates.map(update => ({ ...update, projectName: selectedName }))') &&
+    !reports.includes('const liveTruth = liveAuthority.projectTruth'),
+  'Combined report UI must build safe per-project truth inputs instead of relying on an empty portfolio-named Project Truth.',
 );
 assert(
   core.includes('savedUpdates: input.runtimeContext?.updates') &&

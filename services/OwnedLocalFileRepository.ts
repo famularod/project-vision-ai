@@ -40,6 +40,12 @@ export type OwnedLocalFileAuthorizationInput = ResolveOwnedLocalFilePathInput & 
   candidatePath: string;
 }>;
 
+export type LegacyOwnedLocalFileResolutionInput = Readonly<{
+  ownedRoot: string;
+  legacyFolderName: string;
+  candidatePath: string;
+}>;
+
 const CANONICAL_UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const OPAQUE_FILE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/;
 const EXTENSION_RE = /^[a-z0-9]{1,10}$/;
@@ -267,6 +273,52 @@ export function isOwnedLocalFileReadDeleteAuthorized(
   }
 }
 
+/**
+ * Transitional authorization for records created before the manifest-backed
+ * store existed. Only an exact, path-safe file directly beneath the owned root
+ * is accepted. Prefix similarity, descendants, traversal syntax, encoded
+ * separators, query strings, and fragments all fail closed.
+ */
+export function resolveLegacyOwnedLocalFilePath(
+  input: LegacyOwnedLocalFileResolutionInput,
+): string | null {
+  if (typeof input.candidatePath !== 'string' || !input.candidatePath) return null;
+
+  try {
+    const ownedRoot = normalizeOwnedRoot(input.ownedRoot);
+    if (!ownedRoot.startsWith('file://') || !input.candidatePath.startsWith('file://')) {
+      return null;
+    }
+    assertPathSafeFilename('legacy folder name', input.legacyFolderName);
+    assertSafeCandidatePath(input.candidatePath);
+
+    const exactRootBoundary = `${ownedRoot}/`;
+    if (input.candidatePath.startsWith(exactRootBoundary)) {
+      const basename = input.candidatePath.slice(exactRootBoundary.length);
+      assertPathSafeFilename('legacy basename', basename);
+      return `${ownedRoot}/${basename}`;
+    }
+
+    // iOS changes the application-container UUID after reinstall/update. A
+    // legacy record may therefore contain an older absolute prefix. Rebind
+    // only its single safe basename, never a caller-controlled relative path.
+    const folderMarker = `/${input.legacyFolderName}/`;
+    const folderIndex = input.candidatePath.lastIndexOf(folderMarker);
+    if (folderIndex < 0) return null;
+    const basename = input.candidatePath.slice(folderIndex + folderMarker.length);
+    assertPathSafeFilename('legacy basename', basename);
+    return `${ownedRoot}/${basename}`;
+  } catch {
+    return null;
+  }
+}
+
+export function isLegacyOwnedLocalFileReadDeleteAuthorized(
+  input: LegacyOwnedLocalFileResolutionInput,
+): boolean {
+  return resolveLegacyOwnedLocalFilePath(input) === input.candidatePath;
+}
+
 function parseOwnedLocalFileManifestRecord(
   value: unknown,
 ): OwnedLocalFileManifestRecord {
@@ -353,6 +405,18 @@ function assertPathSafeFilename(field: string, value: unknown): asserts value is
     value.includes(':')
   ) {
     throw new TypeError(`Owned local file ${field} must be a path-safe filename.`);
+  }
+}
+
+function assertSafeCandidatePath(value: string) {
+  if (
+    CONTROL_CHARACTER_RE.test(value) ||
+    value.includes('%') ||
+    value.includes('\\') ||
+    value.includes('?') ||
+    value.includes('#')
+  ) {
+    throw new TypeError('Owned local file candidate path contains unsafe syntax.');
   }
 }
 

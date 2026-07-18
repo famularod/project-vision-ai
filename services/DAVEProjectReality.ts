@@ -12,6 +12,7 @@ import type {
 } from './DAVEDailyBrief';
 import { buildProjectTimeline, type DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
+import { listCurrentDAVEConfirmedBlockers } from './DAVEProjectBlockerState';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
   type ProjectTimeZone,
@@ -192,21 +193,25 @@ function validDate(value: string | undefined): Date | null {
 }
 
 function buildBlockers(updates: DAVEDailyBriefUpdate[]): DAVEProjectRealityItem[] {
-  const items: DAVEProjectRealityItem[] = [];
-  for (const update of updates) {
-    if (update.safetyFlag || update.quickContext === 'Safety') {
-      items.push(realityItem(update.id, 'safety', 'A project update is recorded with a safety flag.', 'update'));
-    }
-    if (update.blockerFlag || update.quickContext === 'Blocker') {
-      items.push(realityItem(update.id, 'confirmed_blocker', 'A project update is recorded as blocked.', 'update'));
-    }
-    for (const photo of update.photos) {
-      if (photo.category === 'Safety Concern' && photo.actionStatus !== 'Closed') {
-        items.push(realityItem(update.id, 'safety', 'An open safety concern is recorded in project evidence.', 'issue', photo.id));
-      }
-    }
-  }
-  return uniqueItems(items);
+  return uniqueItems(listCurrentDAVEConfirmedBlockers(updates)
+    // A photo categorized as Open Issue is actionable evidence, but it is not
+    // proof that work cannot advance. Only an explicit blocker flag/lifecycle
+    // or an unresolved safety concern earns the hard Blocked state.
+    .filter(blocker => blocker.blockerType === 'safety' || !blocker.blockerId.startsWith('photo:'))
+    .map(blocker => {
+    const isPhotoEvidence = blocker.blockerId.startsWith('photo:');
+    const photoId = isPhotoEvidence ? blocker.blockerId.slice('photo:'.length) : blocker.blockerId;
+    const isSafety = blocker.blockerType === 'safety';
+    return realityItem(
+      blocker.update.id,
+      isSafety ? 'safety' : 'confirmed_blocker',
+      isSafety
+        ? 'An unresolved safety concern is recorded in project evidence.'
+        : 'An unresolved project blocker is recorded in project evidence.',
+      isPhotoEvidence ? 'issue' : 'update',
+      photoId,
+    );
+    }));
 }
 
 function buildWaitingEvidence(

@@ -1,6 +1,10 @@
 import type { PIECoreOutput } from './PIECoreIntelligence';
 import type { PIEExecutiveJudgmentRecord } from './PIEExecutiveJudgmentRepository';
 import type { PIEReportDraft } from './PIEReporter';
+import {
+  requireRealityModel,
+  requireRealityOrExecutiveJudgment,
+} from './PIERealityModelGuards';
 
 export type PIERecommendationTrace = {
   userVisibleOutputId: string;
@@ -21,6 +25,13 @@ export function buildPIERecommendationTrace(input: {
   report?: PIEReportDraft | null;
   executiveJudgmentRecord?: PIEExecutiveJudgmentRecord | null;
 }): PIERecommendationTrace {
+  const realityModel = requireRealityModel({
+    realityModel: input.core.realityModel,
+  });
+  requireRealityOrExecutiveJudgment({
+    realityModel,
+    executiveJudgment: input.core.executiveJudgmentResult,
+  });
   const record = input.executiveJudgmentRecord || input.core.executiveJudgmentRecord;
   if (!record) {
     throw new Error('Recommendation traceability requires a persisted Executive Judgment.');
@@ -35,7 +46,7 @@ export function buildPIERecommendationTrace(input: {
     assertionIds: record.supportingAssertionIds,
     // Audit P1-51: evidence in the trace flows only through the judgment's
     // supporting objects, keeping the trace consistent with the claim graph.
-    evidenceIds: input.core.realityModel.objects
+    evidenceIds: realityModel.objects
       .filter(object => record.supportingRealityObjectIds.includes(object.identity.id))
       .flatMap(object => object.sourceEvidenceReferences.map(reference => reference.evidenceId))
       .filter((id, index, all) => Boolean(id) && all.indexOf(id) === index),

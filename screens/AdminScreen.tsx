@@ -71,7 +71,7 @@ import {
 } from '../theme';
 
 const ENABLE_DEV_AUTH_SIGNUP =
-  process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
+  __DEV__ && process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
 const SETTINGS_SYNC_TIMEOUT_MS = 30_000;
 
 const APP_VERSION = Constants.expoConfig?.version || 'Unknown';
@@ -120,8 +120,6 @@ export function AdminScreen({
   projectAreas,
   scheduleItems,
   referenceDocuments,
-  scheduleAiExtractorUrl,
-  onScheduleAiExtractorUrlChange,
   syncCleanupNotice,
   displayName,
   onDisplayNameChange,
@@ -145,8 +143,6 @@ export function AdminScreen({
   projectAreas: ProjectArea[];
   scheduleItems: ScheduleItem[];
   referenceDocuments: ReferenceDocument[];
-  scheduleAiExtractorUrl: string;
-  onScheduleAiExtractorUrlChange: (value: string) => void;
   syncCleanupNotice?: string | null;
   displayName: string;
   onDisplayNameChange: (value: string) => void;
@@ -256,6 +252,10 @@ export function AdminScreen({
   );
   const syncDetail = isSyncing
     ? 'Sync in progress'
+    : syncStatus?.recoveryAvailable
+      ? pendingSyncCount > 0
+        ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting; saved sync data also needs recovery`
+        : 'Saved sync data needs recovery'
     : pendingSyncCount > 0
     ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting to sync`
     : syncStatus?.conflicts
@@ -264,7 +264,10 @@ export function AdminScreen({
         ? `${lastFullSyncIssueCount} ${lastFullSyncIssueCount === 1 ? 'item needs' : 'items need'} retry`
       : 'All caught up';
   const syncNeedsAttention =
-    pendingSyncCount > 0 || Boolean(syncStatus?.conflicts) || lastFullSyncIssueCount > 0;
+    pendingSyncCount > 0 ||
+    Boolean(syncStatus?.conflicts) ||
+    Boolean(syncStatus?.recoveryAvailable) ||
+    lastFullSyncIssueCount > 0;
 
   async function shareFeedback() {
     try {
@@ -417,12 +420,21 @@ export function AdminScreen({
             </View>
             <View style={styles.settingsRowMain}>
               <Text style={styles.settingsRowTitle}>Data Recovery</Text>
-              <Text style={styles.settingsRowDetail}>Back up or restore this phone's local data</Text>
+              <Text style={styles.settingsRowDetail}>
+                {syncStatus?.recoveryAvailable
+                  ? 'A protected copy of saved sync data is available for recovery'
+                  : "Back up or restore this phone's local data"}
+              </Text>
             </View>
             <Ionicons name={dataRecoveryOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.mutedText} />
           </TouchableOpacity>
           {dataRecoveryOpen ? (
             <>
+              {syncStatus?.recoveryAvailable ? (
+                <Text style={styles.actionSummary} selectable>
+                  Valid saved changes were kept in the active queue. A protected copy of the damaged data remains available for recovery review; do not clear the app's local data.
+                </Text>
+              ) : null}
               <SettingsActionRow icon="download-outline" title="Back Up Data" detail="Export a local backup file" onPress={onBackup} />
               <SettingsActionRow icon="cloud-upload-outline" title="Restore Backup" detail="Import a previously exported backup" onPress={onRestore} last />
             </>
@@ -487,20 +499,6 @@ export function AdminScreen({
               {__DEV__ && capturePreviewSaved ? (
                 <Text style={styles.resultText}>Preview confirmed and saved locally.</Text>
               ) : null}
-              <Text style={styles.modalLabel}>Advanced schedule OCR endpoint</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={scheduleAiExtractorUrl}
-                onChangeText={onScheduleAiExtractorUrlChange}
-                placeholder="https://your-secure-schedule-extractor.example.com/extract"
-                placeholderTextColor={colors.mutedText}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-              />
-              <Text style={styles.progressText}>
-                Optional fallback for scanned Gantt PDFs. Message screenshots use local Apple recognition first.
-              </Text>
             </ScreenCard>
 
           </>
@@ -603,9 +601,15 @@ export function AdminScreen({
       const unsyncedUpdates = retryResults.length - syncedUpdates;
       const remainingQueue = queueResult?.queued ?? nextSyncStatus.queuedChanges;
       const remainingConflicts = nextSyncStatus.conflicts;
+      const recoveryAvailable = nextSyncStatus.recoveryAvailable;
       const syncSucceeded =
-        unsyncedUpdates === 0 && remainingQueue === 0 && remainingConflicts === 0;
-      const message = remainingConflicts > 0
+        unsyncedUpdates === 0 &&
+        remainingQueue === 0 &&
+        remainingConflicts === 0 &&
+        !recoveryAvailable;
+      const message = recoveryAvailable
+        ? `Cloud sync finished, but saved sync data still needs recovery review.${remainingConflicts > 0 ? ` ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+        : remainingConflicts > 0
         ? `The sync queue is clear, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
         : syncSucceeded
         ? `${syncedUpdates || queueResult?.uploaded || 0} pending ${syncedUpdates === 1 || queueResult?.uploaded === 1 ? 'item' : 'items'} synced successfully.`
@@ -653,8 +657,13 @@ export function AdminScreen({
       setSyncStatus(nextStatus);
       onApplyCloudRecovery(result.recovered);
       setSyncConflicts(nextConflicts);
-      setLastFullSyncIssueCount(result.errors.length);
-      const message = nextConflicts.length > 0
+      setLastFullSyncIssueCount(Math.max(
+        result.errors.length,
+        nextStatus.recoveryAvailable ? 1 : 0,
+      ));
+      const message = nextStatus.recoveryAvailable
+        ? `Cloud sync finished, but saved sync data still needs recovery review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+        : nextConflicts.length > 0
         ? `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`
         : result.errors.length === 0
         ? `Cloud sync completed: ${result.uploaded} uploaded and ${result.downloaded} downloaded.`
@@ -680,7 +689,9 @@ export function AdminScreen({
         setSyncConflicts(nextConflicts);
         actualIssueCount = Math.max(
           actualIssueCount,
-          nextStatus.queuedChanges + nextConflicts.length,
+          nextStatus.queuedChanges +
+            nextConflicts.length +
+            (nextStatus.recoveryAvailable ? 1 : 0),
         );
       } catch {
         // Keep the known local update count when sync status itself cannot load.

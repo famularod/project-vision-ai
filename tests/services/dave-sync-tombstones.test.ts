@@ -55,28 +55,33 @@ describe('DAVESyncTombstones durability (audit P1-28)', () => {
   it('quarantines corrupt journal bytes instead of silently discarding them', async () => {
     mockStorage.set(DAVE_SYNC_TOMBSTONES_STORAGE_KEY, '{corrupt json!!');
 
-    const tombstones = await loadDAVESyncTombstones();
+    await expect(loadDAVESyncTombstones()).rejects.toThrow(/was corrupt and was quarantined/i);
 
-    expect(tombstones).toEqual([]);
     const quarantined = await loadQuarantinedDAVESyncTombstones();
     expect(quarantined?.raw).toBe('{corrupt json!!');
     expect(quarantined?.quarantinedAt).toBeTruthy();
     expect(mockStorage.has(DAVE_SYNC_TOMBSTONES_STORAGE_KEY)).toBe(false);
+    expect([...mockStorage.values()]).toContain('{corrupt json!!');
+    await expect(loadDAVESyncTombstones()).resolves.toEqual([]);
   });
 
   it('keeps the first quarantined payload when corruption repeats', async () => {
     mockStorage.set(DAVE_SYNC_TOMBSTONES_STORAGE_KEY, 'first-corruption');
-    await loadDAVESyncTombstones();
+    await expect(loadDAVESyncTombstones()).rejects.toThrow(/quarantined/i);
     mockStorage.set(DAVE_SYNC_TOMBSTONES_STORAGE_KEY, 'second-corruption');
-    await loadDAVESyncTombstones();
+    await expect(loadDAVESyncTombstones()).rejects.toThrow(/quarantined/i);
 
     const quarantined = await loadQuarantinedDAVESyncTombstones();
     expect(quarantined?.raw).toBe('first-corruption');
+    expect([...mockStorage.values()]).toEqual(expect.arrayContaining([
+      'first-corruption',
+      'second-corruption',
+    ]));
   });
 
   it('journals new deletions after corruption without losing the quarantine', async () => {
     mockStorage.set(DAVE_SYNC_TOMBSTONES_STORAGE_KEY, 'corrupt');
-    await loadDAVESyncTombstones();
+    await expect(loadDAVESyncTombstones()).rejects.toThrow(/quarantined/i);
 
     await recordDAVESyncTombstone('schedule_item', 'task-1');
 
@@ -84,6 +89,27 @@ describe('DAVESyncTombstones durability (audit P1-28)', () => {
     expect(tombstones).toHaveLength(1);
     expect(tombstones[0].recordId).toBe('task-1');
     expect((await loadQuarantinedDAVESyncTombstones())?.raw).toBe('corrupt');
+  });
+
+  it('salvages valid rows but fails the discovering operation before mutation', async () => {
+    const valid = {
+      entityType: 'schedule_item',
+      recordId: 'keep-delete',
+      deletedAt: '2026-07-18T12:00:00.000Z',
+    };
+    mockStorage.set(
+      DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
+      JSON.stringify([valid, { entityType: 'schedule_item', recordId: '' }]),
+    );
+
+    await expect(recordDAVESyncTombstone('project_area', 'new-delete'))
+      .rejects.toThrow(/1 valid record was preserved/i);
+    expect(JSON.parse(mockStorage.get(DAVE_SYNC_TOMBSTONES_STORAGE_KEY) || '[]'))
+      .toEqual([valid]);
+
+    await recordDAVESyncTombstone('project_area', 'new-delete');
+    expect((await loadDAVESyncTombstones()).map(item => item.recordId).sort())
+      .toEqual(['keep-delete', 'new-delete']);
   });
 
   it('counts unacknowledged uploads as failures in the sync result', async () => {

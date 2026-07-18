@@ -14,6 +14,22 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
     esModuleInterop: true,
   },
 }).outputText;
+const quarantineModule = { exports: {} };
+const quarantineCompiled = ts.transpileModule(
+  fs.readFileSync(path.join(root, 'services/LocalStorageCorruptionQuarantine.ts'), 'utf8'),
+  {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
+    },
+  },
+).outputText;
+new Function('require', 'module', 'exports', quarantineCompiled)(
+  specifier => { throw new Error(`Unexpected quarantine dependency: ${specifier}`); },
+  quarantineModule,
+  quarantineModule.exports,
+);
 
 function memoryStorage() {
   const data = new Map();
@@ -44,6 +60,9 @@ new Function('require', 'module', 'exports', compiled)(
         },
       };
     }
+    if (specifier === './LocalStorageCorruptionQuarantine') {
+      return quarantineModule.exports;
+    }
     throw new Error(`Unexpected dependency: ${specifier}`);
   },
   moduleUnderTest,
@@ -52,6 +71,7 @@ new Function('require', 'module', 'exports', compiled)(
 
 const {
   DAVE_PROJECT_TRUTH_REPOSITORY_VERSION,
+  DAVE_PROJECT_TRUTH_QUARANTINE_KEY_PREFIX,
   DAVE_PROJECT_TRUTH_STORAGE_KEY,
   createDAVEProjectTruthRepository,
   fingerprintDAVEProjectTruth,
@@ -92,6 +112,34 @@ function legacyFingerprint(truthValue) {
     verificationQueue: truthValue.verificationQueue,
     briefing: truthValue.briefing,
   }));
+}
+
+function withoutVolatileGeneratedAt(value) {
+  if (Array.isArray(value)) return value.map(withoutVolatileGeneratedAt);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => key !== 'generatedAt')
+        .map(([key, child]) => [key, withoutVolatileGeneratedAt(child)]),
+    );
+  }
+  return value;
+}
+
+function priorSemanticFingerprint(truthValue) {
+  return stableHash(stableStringify(withoutVolatileGeneratedAt({
+    schemaVersion: truthValue.schemaVersion,
+    projectId: truthValue.projectId,
+    projectName: truthValue.projectName,
+    evidence: truthValue.evidence.records,
+    entityLinks: truthValue.entityLinks,
+    photoComparisons: truthValue.photoComparisons,
+    correlations: truthValue.correlations,
+    reasoning: truthValue.reasoning,
+    schedule: truthValue.schedule,
+    verificationQueue: truthValue.verificationQueue,
+    briefing: truthValue.briefing,
+  })));
 }
 
 function truth(headline = 'Current project truth') {
@@ -183,6 +231,34 @@ function projectTruth(projectId, projectName, headline) {
     'meaningful evidence occurrence times must remain part of the semantic revision',
   );
 
+  const intelligenceRevision = JSON.parse(JSON.stringify(originalTruth));
+  intelligenceRevision.intelligence = {
+    ...intelligenceRevision.intelligence,
+    projectState: 'at_risk',
+  };
+  assert.notStrictEqual(
+    fingerprintDAVEProjectTruth(originalTruth),
+    fingerprintDAVEProjectTruth(intelligenceRevision),
+    'canonical intelligence changes must create semantic revisions',
+  );
+
+  const intelligenceStorage = memoryStorage();
+  const intelligenceRepository = createDAVEProjectTruthRepository({
+    storage: intelligenceStorage,
+  });
+  await intelligenceRepository.save('owner-a', originalTruth);
+  const savedIntelligenceRevision = await intelligenceRepository.save(
+    'owner-a',
+    intelligenceRevision,
+  );
+  assert.strictEqual(savedIntelligenceRevision.created, true);
+  assert.strictEqual(savedIntelligenceRevision.snapshot.revision, 2);
+  assert.strictEqual(
+    savedIntelligenceRevision.snapshot.truth.intelligence.projectState,
+    'at_risk',
+    'the repository must not return stale intelligence from an equal non-intelligence fingerprint',
+  );
+
   const storage = memoryStorage();
   const repository = createDAVEProjectTruthRepository({ storage });
 
@@ -190,6 +266,82 @@ function projectTruth(projectId, projectName, headline) {
   assert.strictEqual(first.created, true);
   assert.strictEqual(first.snapshot.revision, 1);
   assert.strictEqual(first.cloudStatus, 'local_only');
+
+  const malformedStorage = memoryStorage();
+  const malformedRaw = '{"repositoryVersion":"dave-project-truth-repository/1.0",\n\u0000unfinished';
+  await malformedStorage.setItem(DAVE_PROJECT_TRUTH_STORAGE_KEY, malformedRaw);
+  const malformedRepository = createDAVEProjectTruthRepository({
+    storage: malformedStorage,
+  });
+  await assert.rejects(
+    malformedRepository.list('owner-a'),
+    /quarantined/i,
+    'malformed Project Truth storage must fail the current read',
+  );
+  assert.strictEqual(
+    await malformedStorage.getItem(DAVE_PROJECT_TRUTH_STORAGE_KEY),
+    null,
+    'malformed active storage may be removed only after quarantine verification',
+  );
+  const malformedQuarantineKey = [...malformedStorage.data.keys()]
+    .find(key => key.startsWith(DAVE_PROJECT_TRUTH_QUARANTINE_KEY_PREFIX));
+  assert.strictEqual(
+    malformedStorage.data.get(malformedQuarantineKey),
+    malformedRaw,
+    'Project Truth quarantine must preserve the exact raw value',
+  );
+
+  const salvageStorage = memoryStorage();
+  const salvageRaw = JSON.stringify({
+    repositoryVersion: DAVE_PROJECT_TRUTH_REPOSITORY_VERSION,
+    snapshots: [first.snapshot, { id: 'invalid-snapshot-without-truth' }],
+  });
+  await salvageStorage.setItem(DAVE_PROJECT_TRUTH_STORAGE_KEY, salvageRaw);
+  const salvageRepository = createDAVEProjectTruthRepository({ storage: salvageStorage });
+  await assert.rejects(
+    salvageRepository.list('owner-a'),
+    /1 valid record was preserved/i,
+    'partial recovery must fail once so callers cannot mistake salvage for a clean read',
+  );
+  const salvageQuarantineKey = [...salvageStorage.data.keys()]
+    .find(key => key.startsWith(DAVE_PROJECT_TRUTH_QUARANTINE_KEY_PREFIX));
+  assert.strictEqual(
+    salvageStorage.data.get(salvageQuarantineKey),
+    salvageRaw,
+    'partial recovery must preserve the exact original envelope',
+  );
+  const salvaged = await salvageRepository.list('owner-a');
+  assert.deepStrictEqual(
+    salvaged.map(snapshot => snapshot.id),
+    [first.snapshot.id],
+    'a retry may continue from only the validated snapshots installed after quarantine',
+  );
+
+  const quarantineFailureStorage = memoryStorage();
+  const quarantineFailureRaw = '{not-json';
+  await quarantineFailureStorage.setItem(
+    DAVE_PROJECT_TRUTH_STORAGE_KEY,
+    quarantineFailureRaw,
+  );
+  const originalSetItem = quarantineFailureStorage.setItem.bind(quarantineFailureStorage);
+  quarantineFailureStorage.setItem = async (key, value) => {
+    if (key.startsWith(DAVE_PROJECT_TRUTH_QUARANTINE_KEY_PREFIX)) {
+      throw new Error('simulated quarantine failure');
+    }
+    return originalSetItem(key, value);
+  };
+  const quarantineFailureRepository = createDAVEProjectTruthRepository({
+    storage: quarantineFailureStorage,
+  });
+  await assert.rejects(
+    quarantineFailureRepository.list('owner-a'),
+    /left in place/i,
+  );
+  assert.strictEqual(
+    await quarantineFailureStorage.getItem(DAVE_PROJECT_TRUTH_STORAGE_KEY),
+    quarantineFailureRaw,
+    'a failed quarantine must leave the active Project Truth bytes untouched',
+  );
 
   const legacyStorage = memoryStorage();
   const legacySnapshot = {
@@ -209,6 +361,30 @@ function projectTruth(projectId, projectName, headline) {
     'existing snapshots using the prior fingerprint must hydrate without a migration-only revision',
   );
   assert.strictEqual(migratedUnchanged.snapshot.revision, 1);
+
+  const priorSemanticStorage = memoryStorage();
+  const priorSemanticSnapshot = {
+    ...first.snapshot,
+    id: 'prior-semantic-project-truth-snapshot',
+    sourceFingerprint: priorSemanticFingerprint(first.snapshot.truth),
+  };
+  await priorSemanticStorage.setItem(DAVE_PROJECT_TRUTH_STORAGE_KEY, JSON.stringify({
+    repositoryVersion: DAVE_PROJECT_TRUTH_REPOSITORY_VERSION,
+    snapshots: [priorSemanticSnapshot],
+  }));
+  const priorSemanticRepository = createDAVEProjectTruthRepository({
+    storage: priorSemanticStorage,
+  });
+  const hydratedPriorSemantic = await priorSemanticRepository.save(
+    'owner-a',
+    recomputedTruth,
+  );
+  assert.strictEqual(
+    hydratedPriorSemantic.created,
+    false,
+    'snapshots from the immediately prior semantic fingerprint remain readable without a migration-only revision',
+  );
+  assert.strictEqual(hydratedPriorSemantic.snapshot.revision, 1);
 
   const unchanged = await repository.save('owner-a', recomputedTruth);
   assert.strictEqual(

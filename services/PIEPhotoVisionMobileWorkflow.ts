@@ -23,6 +23,7 @@ import {
 } from './PIEPhotoFindingNormalization';
 import {
   derivePhotoAssessmentDisposition,
+  photoProjectProgressFromAuthority,
   type PhotoAssessmentDisposition,
 } from './PhotoAssessment';
 import {
@@ -47,6 +48,7 @@ import {
   type ExistingPhotoEvidenceVersion,
 } from './PhotoEvidenceDeduplication';
 import { validatePhotoAnalysisContractEnvelope } from '../supabase/functions/_shared/pie-photo-analysis-contract';
+import type { PhotoAnalysisTarget } from './PhotoAnalysisTarget';
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -96,6 +98,9 @@ type AnalyzeInput = {
   photo: UpdatePhoto;
   priorUpdates: ProjectUpdate[];
   retryAttempt?: boolean;
+  onTargetPrepared?: (
+    target: Omit<PhotoAnalysisTarget, 'generation'>,
+  ) => void;
 };
 
 type StagedPhotoEvidence = {
@@ -359,6 +364,7 @@ export async function analyzeProjectPhotoWithVision({
   photo,
   priorUpdates,
   retryAttempt = false,
+  onTargetPrepared,
 }: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
   const priorSelectionMetadata = findPriorComparablePhoto(update, photo, priorUpdates);
   if (!priorSelectionMetadata.selected) {
@@ -406,6 +412,14 @@ export async function analyzeProjectPhotoWithVision({
       retryFetchedFreshToken: retryAttempt,
     });
   }
+
+  onTargetPrepared?.({
+    projectId: projectIdForPhotoVision(update.projectName),
+    updateId: update.id,
+    photoId: photo.id,
+    contentSha256: currentPrepared.sha256,
+    capturedAt: resolveImmutablePhotoCapturedAt(photo).value,
+  });
 
   const priorPrepared = preparedPair.prior;
   if (!priorPrepared || !priorPrepared.ok) {
@@ -1526,10 +1540,16 @@ function buildDisplayStateFromComparison(
   const status = limitations.length > 0
     ? 'completed_with_limitations'
     : 'analysis_complete';
-  const progress = progressStatus(String(row.conclusion || ''), String(jarvis.progressDisposition || ''));
+  const progress = photoProjectProgressFromAuthority(
+    String(jarvis.progressDisposition || ''),
+  );
   const assessmentDisposition = derivePhotoAssessmentDisposition({
     observationAccepted,
     conclusion: typeof row.conclusion === 'string' ? row.conclusion : null,
+    comparabilityClassification:
+      typeof row.comparability_classification === 'string'
+        ? row.comparability_classification
+        : null,
     normalizedFindingCount: findings.length,
   });
   const provenance = visibleChange ? 'visual_only' : 'unsupported';
@@ -1752,19 +1772,6 @@ function describeGroundingRegions(items: Record<string, unknown>[]) {
       ].filter(Boolean).join(' - '),
     )
     .filter(Boolean);
-}
-
-function progressStatus(
-  conclusion: string,
-  disposition: string,
-): PIEPhotoIntelligenceDisplayState['projectProgress'] {
-  if (disposition === 'supported' || conclusion === 'progress_visible' || conclusion === 'partial_progress_visible') {
-    return 'supported';
-  }
-  if (disposition === 'unsupported' || conclusion === 'no_material_visible_change' || conclusion === 'no_progress_visible') {
-    return 'unsupported';
-  }
-  return 'unable_to_determine';
 }
 
 function projectIdForPhotoVision(projectName: string) {

@@ -103,12 +103,48 @@ async function testStartup() {
 }
 
 async function testUpgrade() {
+  const exactRaw = JSON.stringify([
+    { id: 'old-one', legacy: 'preserve-exactly' },
+    { broken: true, legacy: 'quarantine-with-original' },
+    { id: 'old-two' },
+  ]);
   const storage = memoryStorage({
-    older: JSON.stringify([{ id: 'old-one' }, { broken: true }, { id: 'old-two' }]),
+    older: exactRaw,
   });
   const recovery = loadStartupRecovery(storage);
-  const result = await recovery.readStartupJson('older', [], 'older records');
-  assert.strictEqual(result.state, 'loaded');
+  const discovered = await recovery.readStartupJsonArray(
+    'older',
+    [],
+    'older records',
+    record => Boolean(record && typeof record === 'object' && record.id),
+  );
+  assert.strictEqual(
+    discovered.state,
+    'corrupt_quarantined',
+    'a malformed row must block the discovering startup instead of being silently skipped',
+  );
+  assert.strictEqual(discovered.isolatedRecordCount, 1);
+  assert.throws(() => discovered.value, /cannot hydrate.*corrupt_quarantined/i);
+  assert.strictEqual(
+    storage.data.get('older'),
+    JSON.stringify([
+      { id: 'old-one', legacy: 'preserve-exactly' },
+      { id: 'old-two' },
+    ]),
+    'salvage must preserve only demonstrably valid raw records without normalizing them',
+  );
+  assert(
+    Array.from(storage.data.values()).includes(exactRaw),
+    'quarantine must preserve the exact pre-recovery bytes',
+  );
+
+  const result = await recovery.readStartupJsonArray(
+    'older',
+    [],
+    'older records',
+    record => Boolean(record && typeof record === 'object' && record.id),
+  );
+  assert.strictEqual(result.state, 'loaded', 'retry should read the verified salvage');
   const normalized = recovery.normalizeStartupArray(
     result.value,
     record => {
@@ -121,7 +157,25 @@ async function testUpgrade() {
     { id: 'old-one', migrated: true },
     { id: 'old-two', migrated: true },
   ]));
-  assert.strictEqual(normalized.isolatedRecordCount, 1);
+  assert.strictEqual(normalized.isolatedRecordCount, 0);
+
+  storage.data.set('all-invalid', JSON.stringify([{ bad: 1 }, null]));
+  const noValidRecords = await recovery.readStartupJsonArray(
+    'all-invalid',
+    [{ id: 'must-not-be-used' }],
+    'all invalid records',
+    record => Boolean(record && typeof record === 'object' && record.id),
+  );
+  assert.strictEqual(noValidRecords.state, 'corrupt_quarantined');
+  assert.strictEqual(storage.data.get('all-invalid'), '[]');
+  const emptyRetry = await recovery.readStartupJsonArray(
+    'all-invalid',
+    [{ id: 'must-not-be-used' }],
+    'all invalid records',
+    record => Boolean(record && typeof record === 'object' && record.id),
+  );
+  assert.strictEqual(emptyRetry.state, 'loaded');
+  assert.deepStrictEqual(Array.from(emptyRetry.value), []);
 }
 
 async function testRecovery() {
@@ -145,6 +199,67 @@ async function testRecovery() {
   assert(
     Array.from(storage.data.keys()).some(key => key.startsWith('corrupt.corrupt.')),
     'corrupt value should be quarantined',
+  );
+  assert(
+    Array.from(storage.data.values()).includes('{not-json'),
+    'quarantine must preserve the exact corrupt bytes',
+  );
+
+  storage.data.set('wrong-shape', JSON.stringify({ records: [] }));
+  const wrongShape = await recovery.readStartupJson(
+    'wrong-shape',
+    [],
+    'array records',
+    Array.isArray,
+  );
+  assert.strictEqual(wrongShape.state, 'corrupt_quarantined');
+  assert.strictEqual(
+    storage.data.has('wrong-shape'),
+    false,
+    'a valid JSON envelope with the wrong shape must not hydrate as an empty list',
+  );
+
+  const unverifiableStorage = memoryStorage({ unsafe: '{broken' });
+  unverifiableStorage.setItem = async () => undefined;
+  const unverifiableRecovery = loadStartupRecovery(unverifiableStorage);
+  const unverifiable = await unverifiableRecovery.readStartupJson(
+    'unsafe',
+    [],
+    'unsafe records',
+  );
+  assert.strictEqual(unverifiable.state, 'read_failed');
+  assert.strictEqual(
+    unverifiableStorage.data.get('unsafe'),
+    '{broken',
+    'active bytes must remain untouched when quarantine cannot be verified',
+  );
+
+  const salvageWriteFailureStorage = memoryStorage({
+    'partial-write': JSON.stringify([{ id: 'keep' }, { bad: true }]),
+  });
+  const originalSetItem = salvageWriteFailureStorage.setItem.bind(salvageWriteFailureStorage);
+  salvageWriteFailureStorage.setItem = async (key, value) => {
+    if (key === 'partial-write') return;
+    return originalSetItem(key, value);
+  };
+  const salvageWriteFailureRecovery = loadStartupRecovery(salvageWriteFailureStorage);
+  const salvageWriteFailure = await salvageWriteFailureRecovery.readStartupJsonArray(
+    'partial-write',
+    [],
+    'partial write records',
+    record => Boolean(record && typeof record === 'object' && record.id),
+  );
+  assert.strictEqual(salvageWriteFailure.state, 'read_failed');
+  assert.strictEqual(
+    salvageWriteFailureStorage.data.get('partial-write'),
+    JSON.stringify([{ id: 'keep' }, { bad: true }]),
+    'unverified salvage must not be reported as recovered',
+  );
+  assert(
+    Array.from(salvageWriteFailureStorage.data.values()).includes(
+      JSON.stringify([{ id: 'keep' }, { bad: true }]),
+    ),
+    'the exact original bytes must still be quarantined before salvage is attempted',
   );
 
   const retryStorage = memoryStorage({
@@ -192,6 +307,13 @@ function testStaticStartupGuards() {
   const hydrationBoundary = fs.readFileSync(path.join(rootDir, 'components/StartupHydrationBoundary.tsx'), 'utf8');
   assert(app.includes('<StartupErrorBoundary>'), 'App should mount startup error boundary');
   assert(app.includes('readStartupJson'), 'App should use guarded startup JSON reads');
+  assert(
+    app.includes('readStartupJsonArray<ProjectUpdate>') &&
+      app.includes('isStartupSavedUpdateRecord') &&
+      app.includes('isStartupProjectAreaRecord') &&
+      app.includes('isStartupScheduleItemRecord'),
+    'Stored array domains must validate individual legacy-aware records before normalization',
+  );
   assert(app.includes('<StartupHydrationBoundary'), 'App should block live actions until required hydration succeeds');
   assert(app.includes('enabled: startupHydrationReady &&'), 'Persistence hooks must remain disabled while hydration is blocked');
   assert(app.includes('if (!startupHydrationReady || !updatesLoaded'), 'Background update save and sync must wait for hydration');

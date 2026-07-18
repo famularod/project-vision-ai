@@ -7,6 +7,7 @@ const ts = require('typescript');
 const assert = require('assert');
 
 const rootDir = path.resolve(__dirname, '..');
+const appSource = fs.readFileSync(path.join(rootDir, 'App.tsx'), 'utf8');
 const memoryStore = new Map();
 const AsyncStorage = {
   getItem: async key => memoryStore.has(key) ? memoryStore.get(key) : null,
@@ -36,6 +37,9 @@ function loadTs(relativePath, mocks = {}) {
       if (specifier in mocks) return mocks[specifier];
       if (specifier === '@react-native-async-storage/async-storage') {
         return { __esModule: true, default: AsyncStorage };
+      }
+      if (specifier === './LocalStorageCorruptionQuarantine') {
+        return loadTs('services/LocalStorageCorruptionQuarantine.ts');
       }
       return require(specifier);
     },
@@ -101,6 +105,22 @@ const untrustedIdentity = {
   cloudTrusted: false,
   organizationStatus: 'unverified',
 };
+
+const identityRefreshStart = appSource.indexOf('async function refreshLayer4Identity(generation: number)');
+const identityRefreshEnd = appSource.indexOf('async function createAutomatedDecisionSnapshot', identityRefreshStart);
+const identityRefreshSource = appSource.slice(identityRefreshStart, identityRefreshEnd);
+assert(identityRefreshStart >= 0 && identityRefreshEnd > identityRefreshStart);
+assert(
+  identityRefreshSource.indexOf('loadPIEDecisionLedgerForOrganization') <
+    identityRefreshSource.indexOf('setLayer4Identity(resolution.context)'),
+  'An identity must not become active before its organization-scoped ledger loads.',
+);
+assert(
+  identityRefreshSource.includes('generation !== refreshGeneration') &&
+    identityRefreshSource.includes('setLayer4Identity(null)') &&
+    identityRefreshSource.includes('setDecisionLedger([])'),
+  'Auth refresh must clear prior-account state and reject stale asynchronous generations.',
+);
 
 function makeDecision(id = 'decision-1') {
   const prediction = ledger.buildPredictedOutcome({

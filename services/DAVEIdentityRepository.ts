@@ -4,9 +4,15 @@ import {
   type DAVEEntityKind,
   type DAVEIdentityCorrection,
 } from './DAVEIdentity';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 
 export const DAVE_IDENTITY_REPOSITORY_VERSION = 'dave-identity-repository/1.0' as const;
 export const DAVE_IDENTITY_STORAGE_KEY = '@dave/identity-corrections/v1';
+export const DAVE_IDENTITY_QUARANTINE_KEY_PREFIX =
+  `${DAVE_IDENTITY_STORAGE_KEY}.corrupt.`;
 
 export type DAVEIdentityStorage = Pick<typeof AsyncStorage, 'getItem' | 'setItem' | 'removeItem'>;
 
@@ -25,15 +31,14 @@ export function createDAVEIdentityRepository(
   storage: DAVEIdentityStorage = AsyncStorage,
 ): DAVEIdentityRepository {
   async function write(records: readonly DAVEIdentityCorrection[]) {
-    const value: StoredDAVEIdentityCorrections = {
-      schemaVersion: DAVE_IDENTITY_REPOSITORY_VERSION,
-      records: [...records],
-    };
-    await storage.setItem(DAVE_IDENTITY_STORAGE_KEY, JSON.stringify(value));
+    await storage.setItem(
+      DAVE_IDENTITY_STORAGE_KEY,
+      serializeIdentityCorrections(records),
+    );
   }
 
   async function list() {
-    return Object.freeze((await hydrateCorrections(storage, write)).sort(compareCorrections));
+    return Object.freeze((await hydrateCorrections(storage)).sort(compareCorrections));
   }
 
   return Object.freeze({
@@ -70,40 +75,85 @@ export const localDAVEIdentityRepository = createDAVEIdentityRepository();
 
 async function hydrateCorrections(
   storage: DAVEIdentityStorage,
-  write: (records: readonly DAVEIdentityCorrection[]) => Promise<void>,
 ) {
   const raw = await storage.getItem(DAVE_IDENTITY_STORAGE_KEY);
   if (!raw) return [];
+
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      !isRecord(parsed) ||
-      parsed.schemaVersion !== DAVE_IDENTITY_REPOSITORY_VERSION ||
-      !Array.isArray(parsed.records)
-    ) {
-      throw new Error('Stored identity correction envelope is invalid.');
-    }
-    const records: DAVEIdentityCorrection[] = [];
-    let recovered = false;
-    for (const value of parsed.records) {
-      try {
-        const correction = normalizeCorrection(value);
-        const duplicate = records.some(item => item.id === correction.id);
-        if (duplicate) {
-          recovered = true;
-        } else {
-          records.push(correction);
-        }
-      } catch {
-        recovered = true;
-      }
-    }
-    if (recovered) await write(records);
-    return records;
+    parsed = JSON.parse(raw) as unknown;
   } catch {
-    await storage.removeItem(DAVE_IDENTITY_STORAGE_KEY);
-    return [];
+    const recovery = await quarantineCorruptLocalValue({
+      storage,
+      storageKey: DAVE_IDENTITY_STORAGE_KEY,
+      quarantineKeyPrefix: DAVE_IDENTITY_QUARANTINE_KEY_PREFIX,
+      raw,
+      replacementRaw: null,
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Stored identity corrections',
+      recovery,
+    });
   }
+
+  if (
+    !isRecord(parsed) ||
+    parsed.schemaVersion !== DAVE_IDENTITY_REPOSITORY_VERSION ||
+    !Array.isArray(parsed.records)
+  ) {
+    const recovery = await quarantineCorruptLocalValue({
+      storage,
+      storageKey: DAVE_IDENTITY_STORAGE_KEY,
+      quarantineKeyPrefix: DAVE_IDENTITY_QUARANTINE_KEY_PREFIX,
+      raw,
+      replacementRaw: null,
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Stored identity corrections',
+      recovery,
+    });
+  }
+
+  const records: DAVEIdentityCorrection[] = [];
+  let recovered = false;
+  for (const value of parsed.records) {
+    try {
+      const correction = normalizeCorrection(value);
+      const duplicate = records.some(item => item.id === correction.id);
+      if (duplicate) {
+        recovered = true;
+      } else {
+        records.push(correction);
+      }
+    } catch {
+      recovered = true;
+    }
+  }
+  if (recovered) {
+    const recovery = await quarantineCorruptLocalValue({
+      storage,
+      storageKey: DAVE_IDENTITY_STORAGE_KEY,
+      quarantineKeyPrefix: DAVE_IDENTITY_QUARANTINE_KEY_PREFIX,
+      raw,
+      replacementRaw: serializeIdentityCorrections(records),
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Stored identity corrections',
+      recovery,
+      salvagedRecords: records.length,
+    });
+  }
+  return records;
+}
+
+function serializeIdentityCorrections(
+  records: readonly DAVEIdentityCorrection[],
+): string {
+  const value: StoredDAVEIdentityCorrections = {
+    schemaVersion: DAVE_IDENTITY_REPOSITORY_VERSION,
+    records: [...records],
+  };
+  return JSON.stringify(value);
 }
 
 function normalizeCorrection(value: unknown): DAVEIdentityCorrection {

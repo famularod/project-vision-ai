@@ -1,6 +1,10 @@
 import { fireEvent, render } from '@testing-library/react-native';
 import { AppBottomTabs } from '../../components/app-bottom-tabs';
 
+// Ionicons loads its native font asynchronously on mount. This suite exercises
+// tab behavior, so keep that external font lifecycle outside the test.
+jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
+
 describe('AppBottomTabs', () => {
   it('routes the primary tabs and exposes the current selection', async () => {
     const onChange = jest.fn();

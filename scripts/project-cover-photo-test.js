@@ -149,6 +149,10 @@ assert.strictEqual(resolveProjectDisplayPhotoUri(
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
 const projectService = fs.readFileSync(path.join(root, 'services/projectService.ts'), 'utf8');
+const projectActionSheet = fs.readFileSync(
+  path.join(root, 'components/project-action-sheet.tsx'),
+  'utf8',
+);
 for (const marker of [
   'title="Project Options"',
   '<Text style={styles.sectionLabel}>Cover Photo</Text>',
@@ -179,13 +183,15 @@ assert(
     workspaceSource.includes('<Text style={styles.sectionLabel}>Cover Photo</Text>'),
   'Project Workspace must keep cover-photo controls in Project Options.',
 );
-const optionRowStart = app.indexOf('function MoreOptionRow');
-const optionRowEnd = app.indexOf('function ReadOnlyUpdateDetailScreen');
-const optionRowSource = app.slice(optionRowStart, optionRowEnd);
 assert(
-  optionRowSource.includes('accessibilityRole="button"') &&
-    optionRowSource.includes('accessibilityLabel={label}'),
+  projectActionSheet.includes('export function MoreOptionRow') &&
+    projectActionSheet.includes('accessibilityRole="button"') &&
+    projectActionSheet.includes('accessibilityLabel={label}'),
   'Project option rows must expose accessible button labels.',
+);
+assert(
+  projectActionSheet.includes('accessibilityLabel={`Close ${title}`}'),
+  'Project Options must expose an accessible close control tied to the sheet title.',
 );
 assert((app.match(/resolveProjectCoverPhotoUri\(/g) || []).length >= 3,
   'Overview, Projects, and Project Workspace must use the canonical project cover resolver.');

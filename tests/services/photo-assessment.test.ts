@@ -5,6 +5,7 @@ import {
   derivePhotoAssessmentState,
   photoAssessmentReviewCopy,
   photoDisplayResultHasExplicitFinding,
+  photoProjectProgressFromAuthority,
   type PhotoAssessmentInput,
 } from '../../services/PhotoAssessment';
 
@@ -20,17 +21,42 @@ function photo(
 
 describe('PhotoAssessment', () => {
   it.each([
-    [true, 'no_material_visible_change', 0, 'explicit_clear'],
-    [true, 'progress_visible', 1, 'finding'],
-    [true, 'no_progress_visible', 0, 'indeterminate'],
-    [false, 'no_material_visible_change', 0, 'indeterminate'],
-    [true, 'no_material_visible_change', -1, 'indeterminate'],
+    ['supported', 'supported'],
+    ['unsupported', 'unsupported'],
+    ['blocked', 'unable_to_determine'],
+    ['unable_to_determine', 'unable_to_determine'],
+    ['', 'unable_to_determine'],
+    [null, 'unable_to_determine'],
   ] as const)(
-    'derives structured disposition for accepted=%s conclusion=%s findings=%s',
-    (observationAccepted, conclusion, normalizedFindingCount, expected) => {
+    'uses only validated photo progress authority for %s',
+    (disposition, expected) => {
+      expect(photoProjectProgressFromAuthority(disposition)).toBe(expected);
+    },
+  );
+
+  it.each([
+    [true, 'no_material_visible_change', 'strong', 0, 'explicit_clear'],
+    [true, 'no_material_visible_change', 'probable', 0, 'explicit_clear'],
+    [true, 'no_material_visible_change', 'weak', 0, 'indeterminate'],
+    [true, 'no_material_visible_change', 'not_comparable', 0, 'indeterminate'],
+    [true, 'no_material_visible_change', null, 0, 'indeterminate'],
+    [true, 'progress_visible', 'weak', 1, 'finding'],
+    [true, 'no_progress_visible', 'strong', 0, 'indeterminate'],
+    [false, 'no_material_visible_change', 'strong', 0, 'indeterminate'],
+    [true, 'no_material_visible_change', 'strong', -1, 'indeterminate'],
+  ] as const)(
+    'derives structured disposition for accepted=%s conclusion=%s comparability=%s findings=%s',
+    (
+      observationAccepted,
+      conclusion,
+      comparabilityClassification,
+      normalizedFindingCount,
+      expected,
+    ) => {
       expect(derivePhotoAssessmentDisposition({
         observationAccepted,
         conclusion,
+        comparabilityClassification,
         normalizedFindingCount,
       })).toBe(expected);
     },

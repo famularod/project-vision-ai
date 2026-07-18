@@ -846,12 +846,34 @@ function textsOverlap(left: string, right: string) {
   return leftTerms.some(term => rightTerms.includes(term));
 }
 
+const NON_SUBJECT_TERMS = new Set([
+  'blocked',
+  'complete',
+  'completed',
+  'current',
+  'evidence',
+  'finished',
+  'issue',
+  'pending',
+  'progress',
+  'project',
+  'ready',
+  'reported',
+  'schedule',
+  'status',
+  'support',
+  'supported',
+  'update',
+  'verified',
+  'work',
+]);
+
 function terms(value: string) {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, ' ')
     .split(/\s+/)
-    .filter(term => term.length > 4);
+    .filter(term => term.length > 4 && !NON_SUBJECT_TERMS.has(term));
 }
 
 function calculateOverallBeliefReadiness(beliefs: PIEBelief[]): PIEBeliefReadiness {

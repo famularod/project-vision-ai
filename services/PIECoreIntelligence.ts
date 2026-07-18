@@ -197,10 +197,12 @@ import {
   type PIEExecutiveJudgmentRecord,
 } from './PIEExecutiveJudgmentRepository';
 import {
+  resolvePIERealityAuthorityScope,
   runPIERealityModelOrchestration,
   type PIERealityModelOrchestrationResult,
   type PIERealityPersistenceStatus,
 } from './PIERealityModelOrchestrator';
+import { runExclusivePIEAuthorityMutation } from './PIEAuthorityMutationCoordinator';
 import {
   buildPIEAdaptiveIntelligence,
   type PIEAdaptiveIntelligence,
@@ -1305,6 +1307,22 @@ export async function buildLivePIECoreIntelligence(
   input: PIECoreInput = {},
 ): Promise<PIECoreOutput> {
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const scope = resolvePIERealityAuthorityScope(
+    input.organizationId,
+    input.projectId,
+    runtime,
+  );
+  return runExclusivePIEAuthorityMutation(
+    scope.organizationId,
+    scope.projectId,
+    () => buildLivePIECoreIntelligenceForScope({ ...input, runtime }),
+  );
+}
+
+async function buildLivePIECoreIntelligenceForScope(
+  input: PIECoreInput,
+): Promise<PIECoreOutput> {
+  const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
   const reportScope = coreReportScope(input, runtime);
   const liveRealityAuthority = await runPIERealityModelOrchestration({
     runtime,
@@ -1496,6 +1514,14 @@ function latestRealCapturedAt(
   return best;
 }
 
+function conservativeEvidenceConfidence(
+  values: readonly ProjectConfidenceLevel[],
+): ProjectConfidenceLevel {
+  if (values.length === 0 || values.some(value => value === 'low')) return 'low';
+  if (values.some(value => value === 'medium')) return 'medium';
+  return 'high';
+}
+
 export function buildRuntimeEvidenceQualityInputs(
   runtime: PIERuntimeState,
   memoryRecall: PIEMemoryRecallResult,
@@ -1561,10 +1587,16 @@ export function buildRuntimeEvidenceQualityInputs(
       gpsConfirmed: false,
       photoSupported: false,
       scheduleSupported: fused.scheduleEvidence.length > 0,
-      userConfirmed: runtime.scheduleSummary.needsReviewCount === 0,
+      // A clean import is not a human confirmation. Only an explicit PM
+      // progress source carries that authority.
+      userConfirmed: fused.scheduleEvidence.some(item =>
+        item.sources.some(source => source.type === 'typed-update'),
+      ),
       matchesPriorEvidence: memoryRecall.patterns.length > 0,
       unreviewedOCR: runtime.scheduleSummary.needsReviewCount > 0,
-      confidence: runtime.scheduleConfidence,
+      confidence: fused.scheduleEvidence.length > 0
+        ? runtime.scheduleConfidence
+        : 'low',
     },
     {
       id: 'quality-photo',
@@ -1576,9 +1608,12 @@ export function buildRuntimeEvidenceQualityInputs(
       gpsConfirmed: fused.gpsEvidence.gpsAvailable,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
-      userConfirmed: runtime.comparisonNeedsReview === false,
+      // Provider/JARVIS review state is not a human confirmation event.
+      userConfirmed: false,
       matchesPriorEvidence: runtime.lastComparison !== null,
-      confidence: runtime.comparisonConfidence === 'high' ? 'high' : runtime.overallConfidence,
+      confidence: fused.photoEvidence.length > 0
+        ? runtime.comparisonConfidence
+        : 'low',
     },
     {
       id: 'quality-gps',
@@ -1611,7 +1646,11 @@ export function buildRuntimeEvidenceQualityInputs(
       // Audit P1-02: confirmed only when an actual user note exists.
       userConfirmed: fused.userUpdateEvidence.some(item => Boolean(item.notes?.trim())),
       matchesPriorEvidence: memoryRecall.memories.length > 0,
-      confidence: runtime.overallConfidence,
+      confidence: fused.userUpdateEvidence.length > 0
+        ? conservativeEvidenceConfidence(
+            fused.userUpdateEvidence.map(item => item.confidence),
+          )
+        : 'low',
     },
     {
       id: 'quality-issues',
@@ -1626,7 +1665,9 @@ export function buildRuntimeEvidenceQualityInputs(
       // Audit P1-02: derived issue summaries carry no confirmation event.
       userConfirmed: false,
       matchesPriorEvidence: memoryRecall.comparisons.length > 0,
-      confidence: runtime.overallConfidence,
+      confidence: conservativeEvidenceConfidence(
+        fused.issueEvidence.map(item => item.confidence),
+      ),
     },
     {
       id: 'quality-safety',
@@ -1641,7 +1682,9 @@ export function buildRuntimeEvidenceQualityInputs(
       // Audit P1-02: derived safety summaries carry no confirmation event.
       userConfirmed: false,
       matchesPriorEvidence: memoryRecall.patterns.length > 0,
-      confidence: fused.safetyEvidence.length > 0 ? 'high' : runtime.overallConfidence,
+      confidence: conservativeEvidenceConfidence(
+        fused.safetyEvidence.map(item => item.confidence),
+      ),
     },
     {
       id: 'quality-report-history',

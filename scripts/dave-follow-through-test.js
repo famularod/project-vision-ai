@@ -18,6 +18,7 @@ new Function('require', 'module', 'exports', compiled)(
 );
 const {
   parseDAVEFollowThroughReviewStates,
+  parseDAVEFollowThroughReviewStatesResult,
   planDAVEFollowThrough,
   reviewedDAVEFollowThroughStates,
 } = moduleUnderTest.exports;
@@ -173,9 +174,25 @@ assert.deepStrictEqual(
   'review timing must survive app restart',
 );
 
+assert.deepStrictEqual(
+  parseDAVEFollowThroughReviewStatesResult('{broken'),
+  { status: 'corrupt', reviewStates: [] },
+  'corrupt reminder history must be distinguishable from a new installation',
+);
+assert.deepStrictEqual(
+  parseDAVEFollowThroughReviewStatesResult(JSON.stringify([
+    ...deterministic.reviewStates,
+    { fingerprint: '', itemId: 'invalid' },
+  ])),
+  { status: 'corrupt', reviewStates: [] },
+  'one invalid review record must fail the whole read instead of being silently dropped',
+);
+
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 assert(app.includes("'dave-follow-through-reviews:v2'"));
 assert(app.includes('Reviewed for Now'));
 assert(app.includes('planDAVEFollowThrough'));
+assert(app.includes('parseDAVEFollowThroughReviewStatesResult'));
+assert(app.includes('No reminder history was changed.'));
 
 console.log('DAVE follow-through planner behavior tests passed.');

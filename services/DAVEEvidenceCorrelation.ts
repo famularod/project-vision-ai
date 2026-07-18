@@ -5,6 +5,11 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
+import {
+  classifyDAVECompletion,
+  classifyDAVEImplementation,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export const DAVE_EVIDENCE_CORRELATION_VERSION = 'dave-evidence-correlation/1.0' as const;
@@ -145,9 +150,9 @@ function correlateTask(
         kind: 'field_update',
         sourceRecordId: update.id,
         stance: noteStance,
-        authority: 'verified',
+        authority: 'reported',
         summary: update.notes.trim(),
-        recordedAt: update.date || null,
+        recordedAt: updateRecordedAt(update),
       });
     }
     for (const photo of update.photos) {
@@ -311,7 +316,18 @@ function photoClaim(update: ProjectUpdate, photo: UpdatePhoto): DAVETaskEvidence
   const intelligence = photo.photoIntelligence;
   const visuallyGrounded = intelligence?.provenance === 'visual_only' ||
     intelligence?.provenance === 'visual_and_caption';
-  const progressSupported = visuallyGrounded && intelligence?.projectProgress === 'supported';
+  const comparability = clean(intelligence?.comparability)?.toLowerCase();
+  const comparisonCompleted =
+    intelligence?.status === 'analysis_complete' ||
+    intelligence?.status === 'completed_with_limitations';
+  const comparablePair = Boolean(
+    comparisonCompleted &&
+    (intelligence?.priorUpdateUsed || intelligence?.priorEvidenceId) &&
+    (comparability === 'strong' || comparability === 'probable'),
+  );
+  const progressSupported = visuallyGrounded &&
+    comparablePair &&
+    intelligence?.projectProgress === 'supported';
   const summary = clean(intelligence?.currentObservation) ||
     clean(intelligence?.changedFromPrior) ||
     clean(intelligence?.visibleChange) ||
@@ -324,7 +340,7 @@ function photoClaim(update: ProjectUpdate, photo: UpdatePhoto): DAVETaskEvidence
     stance: progressSupported ? 'in_progress' : 'unknown',
     authority: 'observed',
     summary,
-    recordedAt: intelligence?.updatedAt || photo.locationCapturedAt || update.date || null,
+    recordedAt: photoCapturedAt(update, photo),
   };
 }
 
@@ -355,17 +371,65 @@ function completionEvidenceStance(
 }
 
 function textStance(value: string): DAVEEvidenceStance {
-  const text = value.toLowerCase();
-  if (!text.trim()) return 'unknown';
-  if (/\b(?:will|expected|scheduled|planned|targeted|should|forecast|anticipated)\b.{0,32}\b(?:done|complete|completed|finished)\b/i.test(text)) {
-    return 'unknown';
-  }
-  if (/\b(?:not|isn['’]?t|wasn['’]?t|remain(?:s|ing)?|unfinished|incomplete|pending)\b.{0,24}\b(?:done|complete|completed|finished|work|scope)?\b/i.test(text)) {
-    return 'not_complete';
-  }
-  if (/\b(?:done|complete|completed|finished|installed and operational)\b/i.test(text)) return 'complete';
-  if (/\b(?:started|working|in progress|underway|installed|placed|poured|framed)\b/i.test(text)) return 'in_progress';
+  const parsed = parseDAVEAssertions(value);
+  const completion = classifyDAVECompletion(parsed);
+  if (completion === 'complete') return 'complete';
+  if (completion === 'not_complete') return 'not_complete';
+  if (completion === 'conflicting' || completion === 'uncertain') return 'unknown';
+
+  const pastCompletion = parsed.assertions.filter(assertion =>
+    (assertion.predicate === 'complete' ||
+      assertion.predicate === 'started' ||
+      assertion.predicate === 'in_progress') &&
+    assertion.temporality === 'past' &&
+    assertion.polarity !== 'uncertain' &&
+    assertion.modality !== 'conditional' &&
+    assertion.modality !== 'planned',
+  );
+  if (pastCompletion.some(assertion =>
+    assertion.status === 'incomplete' ||
+    assertion.status === 'not_started' ||
+    assertion.status === 'in_progress' ||
+    assertion.predicate === 'complete' && assertion.polarity === 'negated',
+  )) return 'not_complete';
+  if (pastCompletion.some(assertion =>
+    assertion.status === 'complete' && assertion.polarity === 'affirmed',
+  )) return 'complete';
+
+  const implementation = classifyDAVEImplementation(parsed);
+  if (implementation === 'not_implemented') return 'not_complete';
+  if (implementation === 'implemented' || implementation === 'in_progress') return 'in_progress';
+  const pastImplementation = parsed.assertions.filter(assertion =>
+    (assertion.predicate === 'implemented' || assertion.predicate === 'started') &&
+    assertion.temporality === 'past' &&
+    assertion.polarity !== 'uncertain' &&
+    assertion.modality !== 'conditional' &&
+    assertion.modality !== 'planned',
+  );
+  if (pastImplementation.some(assertion => assertion.status === 'not_implemented')) return 'not_complete';
+  if (pastImplementation.some(assertion =>
+    assertion.status === 'implemented' || assertion.status === 'in_progress',
+  )) return 'in_progress';
   return 'unknown';
+}
+
+function updateRecordedAt(update: ProjectUpdate) {
+  return update.workflowTimestamps?.sendResolvedAt ||
+    update.workflowTimestamps?.sendTappedAt ||
+    update.locationCapturedAt ||
+    update.workflowTimestamps?.firstPhotoAddedAt ||
+    update.date ||
+    null;
+}
+
+function photoCapturedAt(update: ProjectUpdate, photo: UpdatePhoto) {
+  return photo.locationCapturedAt ||
+    update.locationCapturedAt ||
+    update.workflowTimestamps?.firstPhotoAddedAt ||
+    update.workflowTimestamps?.sendTappedAt ||
+    update.workflowTimestamps?.sendResolvedAt ||
+    update.date ||
+    null;
 }
 
 function compatibleContext(left: string, right: string) {

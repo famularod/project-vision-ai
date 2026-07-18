@@ -223,6 +223,8 @@ export type ReferenceDocument = {
   importedAt: string;
   projectId?: string | null;
   projectName?: string | null;
+  /** Immutable identity of the import review that created this document. */
+  importBatchId?: string | null;
 };
 
 export type ProjectStats = {
@@ -299,6 +301,10 @@ export type ScheduleItem = {
   notes: string;
   importedFrom?: string | null;
   importedAt?: string | null;
+  /** Immutable import identity; filenames are display data only. */
+  importBatchId?: string | null;
+  /** Exact source within a multi-document import, when determinable. */
+  sourceDocumentId?: string | null;
   completionVerification?: DAVECompletionVerification | null;
   createdAt: string;
 };

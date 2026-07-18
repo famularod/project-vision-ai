@@ -26,6 +26,9 @@ function runtime(overrides: {
   photoTimestamp?: string | null;
   scheduleImportedAt?: string | null;
   userNote?: string | null;
+  schedulePmConfirmed?: boolean;
+  photoConfidence?: 'low' | 'medium' | 'high';
+  safetyConfidence?: 'low' | 'medium' | 'high';
 } = {}): PIERuntimeState {
   return {
     generatedAt: RUN_TIME,
@@ -34,7 +37,7 @@ function runtime(overrides: {
     recommendedWalkAreas: ['North Lot'],
     overallConfidence: 'medium',
     scheduleConfidence: 'medium',
-    comparisonConfidence: 'medium',
+    comparisonConfidence: overrides.photoConfidence ?? 'medium',
     comparisonNeedsReview: false,
     lastComparison: null,
     scheduleSummary: { needsReviewCount: 0 },
@@ -52,7 +55,9 @@ function runtime(overrides: {
       scheduleEvidence: overrides.scheduleImportedAt !== null
         ? [{
             importedAt: overrides.scheduleImportedAt ?? IMPORT_TIME,
-            sources: [],
+            sources: overrides.schedulePmConfirmed
+              ? [{ type: 'typed-update', capturedAt: overrides.scheduleImportedAt ?? IMPORT_TIME }]
+              : [],
           }]
         : [],
       photoEvidence: overrides.photoTimestamp !== null
@@ -63,7 +68,9 @@ function runtime(overrides: {
         ? [{ notes: overrides.userNote, date: null, sources: [] }]
         : [],
       issueEvidence: [],
-      safetyEvidence: [],
+      safetyEvidence: overrides.safetyConfidence
+        ? [{ confidence: overrides.safetyConfidence, sources: [] }]
+        : [],
       reportEvidence: [],
     },
   } as unknown as PIERuntimeState;
@@ -78,7 +85,12 @@ const memoryRecall = {
 function itemById(items: { id: string }[], id: string) {
   const found = items.find(item => item.id === id);
   if (!found) throw new Error(`missing ${id}`);
-  return found as { id: string; capturedAt?: string | null; userConfirmed?: boolean };
+  return found as {
+    id: string;
+    capturedAt?: string | null;
+    userConfirmed?: boolean;
+    confidence?: 'low' | 'medium' | 'high';
+  };
 }
 
 describe('runtime evidence provenance (audit P1-02)', () => {
@@ -124,5 +136,31 @@ describe('runtime evidence provenance (audit P1-02)', () => {
 
     expect(itemById(inputs, 'quality-issues').userConfirmed).toBe(false);
     expect(itemById(inputs, 'quality-safety').userConfirmed).toBe(false);
+  });
+
+  it('does not treat a clean import or completed analysis as human confirmation', () => {
+    const inputs = buildRuntimeEvidenceQualityInputs(runtime(), memoryRecall);
+
+    expect(itemById(inputs, 'quality-schedule').userConfirmed).toBe(false);
+    expect(itemById(inputs, 'quality-photo').userConfirmed).toBe(false);
+  });
+
+  it('recognizes only an explicit PM schedule source as schedule confirmation', () => {
+    const inputs = buildRuntimeEvidenceQualityInputs(
+      runtime({ schedulePmConfirmed: true }),
+      memoryRecall,
+    );
+
+    expect(itemById(inputs, 'quality-schedule').userConfirmed).toBe(true);
+  });
+
+  it('never promotes weak photo or safety evidence to overall confidence', () => {
+    const inputs = buildRuntimeEvidenceQualityInputs(
+      runtime({ photoConfidence: 'low', safetyConfidence: 'low' }),
+      memoryRecall,
+    );
+
+    expect(itemById(inputs, 'quality-photo').confidence).toBe('low');
+    expect(itemById(inputs, 'quality-safety').confidence).toBe('low');
   });
 });

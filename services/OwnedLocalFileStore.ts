@@ -8,6 +8,10 @@ import {
   type OwnedLocalFileKind,
   type OwnedLocalFileManifestRecord,
 } from './OwnedLocalFileRepository';
+import {
+  FileSizePreflightError,
+  preflightLocalFileRead,
+} from './FileSizePreflight';
 
 export type OwnedLocalFileStat = Readonly<{
   exists: boolean;
@@ -31,6 +35,7 @@ export type OwnedLocalFileStoreDependencies = Readonly<{
 export type OwnedLocalFileStoreErrorCode =
   | 'invalid_request'
   | 'source_unreadable'
+  | 'source_too_large'
   | 'destination_collision'
   | 'copy_failed'
   | 'manifest_invalid'
@@ -81,6 +86,7 @@ export type StoreExternalOwnedFileInput = Readonly<{
   kind: OwnedLocalFileKind;
   extension: string;
   mimeType: string;
+  reportedSizeBytes?: number | null;
 }>;
 
 export type AuthorizedOwnedLocalFileInput = Readonly<{
@@ -137,7 +143,19 @@ export function createOwnedLocalFileStore({
   ): Promise<OwnedLocalFileManifestRecord> {
     assertExternalSourceUri(input.sourceUri);
 
+    const sourcePreflight = await preflightExternalSource(
+      input.sourceUri,
+      input.reportedSizeBytes,
+      dependencies,
+    );
     const sourceBytes = await readSourceBytes(input.sourceUri, dependencies);
+    if (sourceBytes.byteLength !== sourcePreflight.sizeBytes) {
+      throw storeError(
+        'source_unreadable',
+        'The selected file changed before it could be saved. Choose it again and retry.',
+        'restore_or_reselect',
+      );
+    }
     const sourceSha256 = await hashBytes(
       sourceBytes,
       dependencies,
@@ -284,6 +302,30 @@ export function createOwnedLocalFileStore({
     readAuthorizedFile,
     deleteAuthorizedFile,
   });
+}
+
+async function preflightExternalSource(
+  sourceUri: string,
+  reportedSizeBytes: number | null | undefined,
+  dependencies: OwnedLocalFileStoreDependencies,
+) {
+  try {
+    return await preflightLocalFileRead({
+      uri: sourceUri,
+      reportedSizeBytes,
+      statFile: dependencies.statFile,
+    });
+  } catch (cause) {
+    if (cause instanceof FileSizePreflightError) {
+      throw storeError(
+        cause.code === 'file_too_large' ? 'source_too_large' : 'source_unreadable',
+        cause.message,
+        'restore_or_reselect',
+        cause,
+      );
+    }
+    throw cause;
+  }
 }
 
 function authorizeOwnedFile(

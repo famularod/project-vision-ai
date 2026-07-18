@@ -38,3 +38,10 @@ export function useStartupHydration() {
 
   return { failures, retryAttempt, accept, fail, loaded, retry };
 }
+
+export function isStartupHydrationReady(
+  requiredDomains: readonly boolean[],
+  failures: readonly StartupHydrationFailure[],
+) {
+  return requiredDomains.every(Boolean) && failures.length === 0;
+}

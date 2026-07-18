@@ -103,8 +103,10 @@ assert.strictEqual(historyForDAVEProject(history, 'project-alpha').length, 1, 'H
 assert.strictEqual(historyForDAVEProject(history, 'project-beta')[0].id, 'ask-beta-1');
 assert.notStrictEqual(daveAskHistoryStorageKey('project-alpha'), daveAskHistoryStorageKey('project-beta'));
 
-const parsedAlpha = parseDAVEAskHistory(JSON.stringify(history), 'project-alpha');
+const parsedAlpha = parseDAVEAskHistory(JSON.stringify([alphaEntry]), 'project-alpha');
 assert.strictEqual(parsedAlpha.length, 1, 'Persisted history must hydrate only the selected project.');
+assert.strictEqual(parseDAVEAskHistory(JSON.stringify(history), 'project-alpha').length, 0,
+  'A mixed-project payload must fail closed instead of silently dropping records.');
 assert.strictEqual(parseDAVEAskHistory('{bad json', 'project-alpha').length, 0);
 assert.strictEqual(parseDAVEAskHistory(JSON.stringify([{ projectId: 'project-alpha' }]), 'project-alpha').length, 0);
 
@@ -148,7 +150,11 @@ assert(component.includes('answerDAVEConversationContext'));
 assert(component.includes("context.status === 'ambiguous_follow_up'"));
 assert(component.includes('One detail needed'));
 assert(component.includes('history.map(entry =>'));
-assert(component.includes('AsyncStorage.getItem(storageKey)') && component.includes('AsyncStorage.setItem(storageKey'));
+assert(component.includes('createDAVEAskHistoryPersistence'));
+assert(component.includes('historyPersistence.read(intelligence.projectId)'));
+assert(component.includes('historyPersistence.append(intelligence.projectId, entry)'));
+assert(!component.includes('AsyncStorage.setItem(storageKey'),
+  'Inline Ask history writes must use the ordered retrying persistence helper.');
 assert(!component.includes('<Modal') && !component.includes('position: \'absolute\''),
   'Ask DAVE must remain inline and must not use a modal or floating overlay.');
 for (const forbidden of ['buildProjectIntelligence(', 'projectRealitySourceRecords', '.updates', '.documents', '.scheduleItems']) {
@@ -162,6 +168,13 @@ assert(workspace.indexOf('>Project Brief<') < workspace.indexOf('<DAVEAskExperie
   workspace.indexOf('<DAVEAskExperience') < workspace.indexOf('<ProjectTaskControlPanel'),
   'Ask DAVE must appear after the unified Project Brief and before task controls.');
 assert(app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence'));
+assert(app.includes('createDAVEAskHistoryPersistence'));
+assert(app.includes('history = await talkHistoryPersistence.read(projectId)'));
+assert(app.includes('await talkHistoryPersistence.append(projectId, entry)'));
+assert(app.includes("'Talk history unavailable'"));
+assert(app.includes('reportTalkAnswerPersistenceFailure(projectName, error)'));
+assert(!app.includes('AsyncStorage.getItem(daveAskHistoryStorageKey(projectId)).catch(() => null)'),
+  'Talk must never convert a failed history read into authoritative empty history.');
 assert.strictEqual((workspace.match(/buildProjectIntelligence\s*\(/g) || []).length, 0,
   'Project Workspace must consume shared Project Truth without rebuilding intelligence.');
 assert(workspace.includes('intelligence={projectIntelligence}'));

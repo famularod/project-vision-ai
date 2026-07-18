@@ -4,7 +4,9 @@
  */
 
 import {
+  detectEvidenceConflicts,
   evidenceReadinessFromItems,
+  scoreEvidenceFreshness,
   type PIEEvidenceConflict,
   type PIEEvidenceQualityItem,
 } from '../../services/PIEEvidenceQuality';
@@ -59,5 +61,75 @@ describe('evidenceReadinessFromItems (audit P1-03)', () => {
   it('empty evidence is insufficient and all-stale evidence is stale', () => {
     expect(evidenceReadinessFromItems([], [])).toBe('insufficient');
     expect(evidenceReadinessFromItems([item(25, 'stale'), item(25, 'stale')], [])).toBe('stale');
+  });
+});
+
+describe('evidence authority boundaries', () => {
+  it('does not call completion and approval different domains a contradiction', () => {
+    const conflicts = detectEvidenceConflicts([
+      {
+        id: 'complete',
+        source: 'field',
+        summary: 'Electrical rough-in is complete.',
+      },
+      {
+        id: 'approval',
+        source: 'inspection',
+        summary: 'Electrical rough-in is not approved.',
+      },
+    ]);
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('does not call incomplete but unblocked work a contradiction', () => {
+    const conflicts = detectEvidenceConflicts([
+      {
+        id: 'incomplete',
+        source: 'field',
+        summary: 'Electrical rough-in is not complete.',
+      },
+      {
+        id: 'unblocked',
+        source: 'field',
+        summary: 'Electrical rough-in is no longer blocked.',
+      },
+    ]);
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('still detects opposite completion claims for the same subject', () => {
+    const conflicts = detectEvidenceConflicts([
+      {
+        id: 'complete',
+        source: 'field',
+        summary: 'Electrical rough-in is complete.',
+      },
+      {
+        id: 'incomplete',
+        source: 'inspection',
+        summary: 'Electrical rough-in is not complete.',
+      },
+    ]);
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].evidenceIds).toEqual(['complete', 'incomplete']);
+  });
+
+  it('never awards maximum freshness to future-dated evidence', () => {
+    const freshness = scoreEvidenceFreshness(
+      {
+        id: 'future',
+        source: 'device',
+        summary: 'Future-clock field update.',
+        capturedAt: '2026-07-20T12:00:00.000Z',
+      },
+      '2026-07-18T12:00:00.000Z',
+    );
+
+    expect(freshness.level).toBe('insufficient');
+    expect(freshness.score).toBeLessThan(45);
+    expect(freshness.ageDays).toBeLessThan(0);
   });
 });

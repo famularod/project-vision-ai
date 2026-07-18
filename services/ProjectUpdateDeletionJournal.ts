@@ -1,7 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
+import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 
-const PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY =
+export const PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY =
   'projectPhotoUpdate.deletionJournal.v1';
+export const PROJECT_UPDATE_DELETION_JOURNAL_QUARANTINE_PREFIX =
+  'projectPhotoUpdate.deletionJournal.quarantine.v1/';
 
 export type ProjectUpdateDeletionIntent = {
   updateId: string;
@@ -47,8 +54,11 @@ export async function hasProjectUpdateDeletionIntent(
   await deletionJournalMutationTail;
   const normalizedId = updateId.trim();
   if (!normalizedId) return false;
-  return (await readDeletionJournal()).some(
-    intent => intent.updateId === normalizedId,
+  return runExclusiveLocalStorageMutation(
+    [PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY],
+    async () => (await readDeletionJournal()).some(
+      intent => intent.updateId === normalizedId,
+    ),
   );
 }
 
@@ -75,7 +85,11 @@ export async function confirmProjectUpdateCloudDeletion(
 function serializeDeletionJournalMutation<T>(
   mutation: () => Promise<T>,
 ): Promise<T> {
-  const result = deletionJournalMutationTail.then(mutation, mutation);
+  const guardedMutation = () => runExclusiveLocalStorageMutation(
+    [PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY],
+    mutation,
+  );
+  const result = deletionJournalMutationTail.then(guardedMutation, guardedMutation);
   deletionJournalMutationTail = result.then(
     () => undefined,
     () => undefined,
@@ -89,24 +103,56 @@ async function readDeletionJournal(): Promise<ProjectUpdateDeletionIntent[]> {
   );
   if (!raw) return [];
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map(normalizeDeletionIntent)
-      .filter((intent): intent is ProjectUpdateDeletionIntent => Boolean(intent));
+    parsed = JSON.parse(raw);
   } catch {
-    return [];
+    await quarantineInvalidDeletionJournal(raw, []);
+    throw new Error('Unreachable after corrupt deletion journal quarantine.');
   }
+
+  if (!Array.isArray(parsed)) {
+    await quarantineInvalidDeletionJournal(raw, []);
+    throw new Error('Unreachable after invalid deletion journal quarantine.');
+  }
+
+  const normalized = parsed.map(normalizeDeletionIntent);
+  const valid = normalized.filter(
+    (intent): intent is ProjectUpdateDeletionIntent => Boolean(intent),
+  );
+  if (valid.length !== parsed.length) {
+    await quarantineInvalidDeletionJournal(raw, valid);
+    throw new Error('Unreachable after partial deletion journal recovery.');
+  }
+  return valid;
+}
+
+async function quarantineInvalidDeletionJournal(
+  raw: string,
+  valid: readonly ProjectUpdateDeletionIntent[],
+): Promise<never> {
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey: PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
+    quarantineKeyPrefix: PROJECT_UPDATE_DELETION_JOURNAL_QUARANTINE_PREFIX,
+    raw,
+    replacementRaw: valid.length > 0 ? JSON.stringify(valid) : null,
+  });
+  throw localCorruptionRecoveryError({
+    label: 'The project update deletion journal',
+    recovery,
+    salvagedRecords: valid.length,
+  });
 }
 
 async function persistDeletionJournal(
   intents: readonly ProjectUpdateDeletionIntent[],
 ): Promise<void> {
-  await AsyncStorage.setItem(
-    PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
-    JSON.stringify(intents),
-  );
+  const raw = JSON.stringify(intents);
+  await AsyncStorage.setItem(PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY, raw);
+  if (await AsyncStorage.getItem(PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY) !== raw) {
+    throw new Error('The project update deletion journal write could not be verified.');
+  }
 }
 
 function normalizeDeletionIntent(

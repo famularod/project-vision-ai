@@ -48,13 +48,18 @@ function build(overrides = {}) {
   });
 }
 
-function photo(id, status = 'analysis_complete') {
+function photo(id, status = 'analysis_complete', comparability = 'strong') {
   return {
     id,
     category: 'Update',
     actionStatus: 'Closed',
     locationCapturedAt: '2026-07-10T10:00:00.000Z',
-    photoIntelligence: { status, updatedAt: '2026-07-10T10:01:00.000Z' },
+    photoIntelligence: {
+      status,
+      comparability,
+      priorEvidenceId: status === 'no_suitable_prior_photo' ? null : 'prior-evidence',
+      updatedAt: '2026-07-10T10:01:00.000Z',
+    },
   };
 }
 
@@ -93,12 +98,67 @@ assert.strictEqual(analysis.quality, 'weak');
 assert.match(analysis.whyItMatters, /reliable comparison result/i);
 assert(!JSON.stringify(failed).match(/work (is )?(complete|incomplete)|percent complete|progressed/i), 'Evidence scoring must not infer progress.');
 
+const baselineOnly = build({ updates: [update('update-baseline', [
+  photo('photo-baseline', 'no_suitable_prior_photo', null),
+])] });
+assert.notStrictEqual(
+  baselineOnly.signals.find(signal => signal.key === 'analysis_health').value,
+  'Healthy',
+  'A baseline-only photo is saved evidence, not a completed comparison.',
+);
+
+const notComparable = build({ updates: [update('update-not-comparable', [
+  photo('photo-not-comparable', 'analysis_complete', 'not_comparable'),
+])] });
+assert.notStrictEqual(
+  notComparable.signals.find(signal => signal.key === 'analysis_health').value,
+  'Healthy',
+  'A completed but not-comparable result must not claim healthy comparison coverage.',
+);
+
 const scoped = build({
   updates: [{ ...update('other-update', [photo('other-photo')]), projectName: 'Other' }],
   scheduleItems: [{ id: 'other-schedule', projectName: 'Other', taskName: 'Other', status: 'Complete', createdAt: now }],
 });
 assert.strictEqual(scoped.signals.find(signal => signal.key === 'recent_updates').score, 0, 'Other-project evidence must be excluded.');
 assert.strictEqual(scoped.signals.find(signal => signal.key === 'schedule_freshness').score, 0);
+
+const futureDated = build({
+  updates: [{
+    ...update('future-update', [{
+      ...photo('future-photo'),
+      locationCapturedAt: '2026-07-12T12:00:00.000Z',
+    }]),
+    date: '2026-07-12T12:00:00.000Z',
+  }],
+  documents: [
+    { id: 'future-inspection', name: 'Future inspection', category: 'Inspection', status: 'uploaded', createdAt: '2026-07-12T12:00:00.000Z' },
+    { id: 'future-document', name: 'Future drawing', category: 'Drawing', status: 'uploaded', createdAt: '2026-07-12T12:00:00.000Z' },
+  ],
+  scheduleItems: [{ id: 'future-schedule', projectName: 'Alpha', taskName: 'Future task', status: 'Waiting', createdAt: '2026-07-12T12:00:00.000Z' }],
+});
+assert.strictEqual(futureDated.signals.find(signal => signal.key === 'recent_updates').score, 0);
+assert.strictEqual(futureDated.signals.find(signal => signal.key === 'recent_photos').score, 0);
+for (const key of ['inspection_status', 'schedule_freshness', 'document_freshness']) {
+  const signal = futureDated.signals.find(item => item.key === key);
+  assert.strictEqual(signal.score, 0, `${key} must not treat a future timestamp as fresh.`);
+  assert.strictEqual(signal.value, 'Future timestamp needs review');
+}
+
+const toleratedClockSkew = build({
+  scheduleItems: [{
+    id: 'near-future-schedule',
+    projectName: 'Alpha',
+    taskName: 'Near-future task',
+    status: 'Waiting',
+    createdAt: '2026-07-11T12:04:00.000Z',
+  }],
+});
+assert.strictEqual(
+  toleratedClockSkew.signals.find(signal => signal.key === 'schedule_freshness').score,
+  2,
+  'Small device clock skew within five minutes should remain usable.',
+);
 
 const serialized = JSON.stringify(strong);
 for (const forbidden of ['diagnostics', 'signedUrl', 'storagePath', 'rawResponse', 'requestId', 'apiKey']) {

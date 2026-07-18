@@ -7,11 +7,23 @@ const assert = require('assert');
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
+const automaticSync = fs.readFileSync(
+  path.join(root, 'services/AutomaticSyncState.ts'),
+  'utf8',
+);
 const lifecycle = fs.readFileSync(path.join(root, 'services/FieldUpdateLifecycle.ts'), 'utf8');
 const admin = fs.readFileSync(path.join(root, 'screens/AdminScreen.tsx'), 'utf8');
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
+const fileSizePreflight = fs.readFileSync(
+  path.join(root, 'services/FileSizePreflight.ts'),
+  'utf8',
+);
 const updateService = fs.readFileSync(path.join(root, 'services/updateService.ts'), 'utf8');
 const projectService = fs.readFileSync(path.join(root, 'services/projectService.ts'), 'utf8');
+const projectDeletionTransaction = fs.readFileSync(
+  path.join(root, 'services/ProjectDeletionTransaction.ts'),
+  'utf8',
+);
 const storageMigration = fs.readFileSync(
   path.join(root, 'supabase/migrations/20260707000000_project_storage_buckets.sql'),
   'utf8',
@@ -96,7 +108,10 @@ includes(app, "Sync failed · App data issue", 'malformed payload failures must 
 includes(app, "Sync failed · Retry", 'online sync failure must show retryable copy');
 includes(app, "Queued — will sync when you're back online", 'offline queued copy must be specific');
 includes(app, 'onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}', 'queued/failed cards must expose retry');
-includes(app, 'void hydrateQueuedUpdates();', 'sync worker must run after save/sign-in or queue wake-up');
+includes(app, 'startAutomaticSyncBackgroundTask(', 'sync worker must run through the guarded background path');
+includes(automaticSync, "key: 'field-update-automatic-sync'", 'automatic sync work must be keyed and bounded');
+includes(automaticSync, 'reportBackgroundTaskFailure({', 'per-item automatic sync failures must be handled diagnostically');
+assert(!app.includes('void hydrateQueuedUpdates();'), 'automatic sync must not create a floating rejecting promise');
 includes(app, "AppState.addEventListener('change'", 'sync worker must run on app foreground');
 includes(app, 'runFieldUpdateCloudSync', 'send/retry must call the shared structured cloud sync work');
 includes(app, 'onRetryUpdateSync={update => retryQueuedUpdate', 'Settings must retry through the live Field Update sync path');
@@ -132,6 +147,8 @@ assert(
   'shared sync must persist update metadata before potentially slow photo work',
 );
 includes(sync, 'let aggregateResult = await uploadPendingChanges()', 'shared sync must attempt database insert/update work');
+includes(sync, 'requestPendingChangesUpload(', 'durable queue uploads must use the guarded background entry point');
+assert(!sync.includes('void uploadPendingChanges();'), 'queue upload must not create a floating rejecting promise');
 includes(sync, "itemOutcomes[item.id] = 'uploaded'", 'shared sync must retain an exact per-item upload outcome');
 includes(sync, 'itemOutcome === \'uploaded\' && !remainingItem && !currentConflict', 'field-update success must ignore unrelated queued items while protecting newer same-ID work');
 includes(sync, 'reconcileSyncConflicts', 'stored equivalent and duplicate conflicts must be reconciled');
@@ -186,9 +203,21 @@ includes(
   'await runFieldUpdateCloudSync(update)',
   'missing-photo recovery must start with the normal durable sync engine',
 );
+const missingPhotoRepairStart = app.indexOf(
+  'async function syncFieldUpdateWithMissingPhotoRepair(',
+);
+const repairedUpdatePersistence = app.indexOf(
+  'await persistSavedUpdateImmediately(repairedUpdate, update)',
+  missingPhotoRepairStart,
+);
+const repairedUpdateCloudAttempt = app.indexOf(
+  'const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate)',
+  missingPhotoRepairStart,
+);
 assert(
-  app.indexOf('await persistSavedUpdateImmediately(repairedUpdate)') <
-    app.indexOf('const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate)'),
+  repairedUpdatePersistence >= 0 &&
+    repairedUpdateCloudAttempt >= 0 &&
+    repairedUpdatePersistence < repairedUpdateCloudAttempt,
   'automatic repair must persist the unavailable marker before its second cloud attempt',
 );
 includes(app, 'cloud insert attempted', 'dev diagnostics must expose cloud insert attempt safely');
@@ -252,7 +281,17 @@ includes(sync, 'Project update database upsert failed', 'project update upsert p
 includes(app, 'project_update_metadata_select', 'database select failure must map to safe operation diagnostic');
 includes(app, 'project_update_upsert', 'database upsert failure must map to safe operation diagnostic');
 includes(app, "'missing_or_denied'", 'authenticated user without membership must map to missing_or_denied');
-includes(supabase, 'base64ToArrayBuffer(base64)', 'mobile upload payload must convert local file base64 to binary bytes');
+includes(supabase, 'prepareExpoFileUploadPayload({ uri })', 'mobile upload must use bounded file preparation before Storage');
+includes(fileSizePreflight, 'MAX_SAFE_LOCAL_FILE_BYTES = 15 * 1024 * 1024', 'whole-file reads must have a documented hard byte ceiling');
+includes(fileSizePreflight, 'const preflight = await preflightExpoFileRead(input);', 'upload payload must verify file size before base64 reading');
+assert(
+  fileSizePreflight.indexOf('const preflight = await preflightExpoFileRead(input);') <
+    fileSizePreflight.indexOf('FileSystem.readAsStringAsync(input.uri'),
+  'upload size preflight must run before the whole-file base64 read',
+);
+includes(fileSizePreflight, 'const output = new Uint8Array(', 'mobile upload payload must decode into a bounded pre-sized byte array');
+assert(!fileSizePreflight.includes('const output: number[]'), 'mobile upload decoding must not accumulate unbounded boxed byte arrays');
+assert(!supabase.includes('FileSystem.readAsStringAsync'), 'Supabase upload must not bypass bounded payload preparation');
 includes(supabase, 'contentType', 'mobile upload must send content type to Supabase Storage');
 includes(supabase, 'errorRecord.statusCode', 'storage upload must preserve safe status code when available');
 includes(supabase, 'errorRecord.code', 'storage upload must preserve safe Supabase error code when available');
@@ -265,10 +304,20 @@ assert(
 includes(app, 'DELETED_UPDATES_STORAGE_KEY', 'deleted update tombstones must persist in AsyncStorage');
 includes(app, 'DELETED_PROJECTS_STORAGE_KEY', 'deleted project tombstones must persist in AsyncStorage');
 includes(app, "item.entity === 'project' && item.operation === 'delete'", 'pending project deletes must become startup tombstones before cloud hydration');
-includes(app, 'markProjectDeleted(projectName)', 'permanent project deletion must record its tombstone');
+includes(app, 'await projectDeletionRuntime.commit(', 'permanent project deletion must use the durable local transaction runtime');
+includes(projectDeletionTransaction, 'setJson(keys.deletedProjects, cascade.nextDeletedProjectNames)', 'the durable project deletion transaction must commit its tombstone');
+const projectDeletionHandler = app.slice(
+  app.indexOf('async function deleteProjectPermanently'),
+  app.indexOf('function addProjectArea'),
+);
+assert(
+  projectDeletionHandler.indexOf('await projectDeletionRuntime.commit(') <
+    projectDeletionHandler.indexOf('projectDeletionRuntime.processPendingCloudIntents()'),
+  'project cloud deletion must only queue after the local deletion transaction commits',
+);
 includes(app, 'mergeProjectRecords(\n        starterProjects,', 'startup project merging must apply the durable deletion filter');
 includes(app, 'const starterProjects = localResult.found ? [] : DEFAULT_PROJECTS;', 'starter projects must only seed a new installation or a recovered corrupt project store');
-includes(app, 'item.scheduleProjectName?.toLowerCase() !== projectName.toLowerCase()', 'deleting a parent project must remove its child schedule rows');
+includes(projectDeletionTransaction, 'normalizedScope(item.scheduleProjectName) === projectKey', 'deleting a parent project must remove its child schedule rows');
 includes(app, "if (tombstone && !localArchiveCanStayHidden) return;", 'cloud/local merge must not resurrect tombstoned updates');
 includes(app, 'await reconcileProjectUpdateDeletionJournal(tombstones)', 'startup must replay durable permanent-delete intent before cloud load');
 includes(updateService, 'removeProjectUpdateFromSyncQueue(tombstone.updateId)', 'startup reconciliation must remove stale tombstoned update work');
@@ -277,7 +326,7 @@ includes(updateService, 'queueProjectUpdateDelete({ id: tombstone.updateId })', 
 includes(sync, "if (item.operation === 'delete') return true", 'startup tombstone cleanup must preserve queued permanent deletes');
 includes(sync, 'queueProjectUpdateDelete', 'permanent field-update deletion must use the durable offline queue');
 includes(sync, "operation: 'delete'", 'field-update deletion must supersede same-id pending update work');
-includes(updateService, 'AsyncStorage.setItem(tombstonesStorageKey', 'field-update tombstones must persist before leaving the detail screen');
+includes(updateService, 'await setStoredJsonVerified(tombstonesStorageKey, initial.nextTombstones);', 'field-update tombstones must be verified before leaving the detail screen');
 includes(updateService, 'item => !deletedIds.has(item.id)', 'delete persistence must filter every durable deletion from the latest update state');
 includes(updateService, 'projectUpdateDeletionMutationTail', 'overlapping field-update deletions must serialize their storage mutations');
 includes(app, 'upsertSavedUpdateUnlessDeleted', 'late send and retry completion must not re-add a permanently deleted update');
@@ -288,7 +337,7 @@ const missingPhotoCleanup = app.slice(
   app.indexOf('function beginDraftForProject'),
 );
 includes(missingPhotoCleanup, 'markMissingPhotosUnavailable', 'missing local photo cleanup must preserve the record while marking only its unavailable file');
-includes(missingPhotoCleanup, 'AsyncStorage.setItem(UPDATES_STORAGE_KEY', 'the unavailable-file decision must survive restart');
+includes(missingPhotoCleanup, 'await persistStorageItem(UPDATES_STORAGE_KEY', 'the unavailable-file decision must survive restart');
 includes(app, 'syncFieldUpdateWithMissingPhotoRepair', 'background and manual retry must repair definitive missing-photo loops once');
 includes(sync, "cloudRecoveryStatus: 'unavailable' as const", 'unrecoverable files must retain explicit provenance instead of being deleted from history');
 includes(sync, "photo.cloudRecoveryStatus === 'unavailable'", 'confirmed unavailable files must not be queued forever');

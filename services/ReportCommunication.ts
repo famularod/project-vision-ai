@@ -31,3 +31,27 @@ export function shouldMarkCommunicationComplete(
 ): boolean {
   return outcome === 'completed';
 }
+
+/**
+ * A composer can finish after the user has selected or regenerated a different
+ * report. Its outcome belongs only to the exact approved report that launched
+ * it and must not mutate the new report's state.
+ */
+export function shouldApplyCommunicationOutcome({
+  outcome,
+  startedReportIdentity,
+  currentReportIdentity,
+  approvalAllowed,
+  reportApproved,
+}: {
+  outcome: ReportCommunicationOutcome;
+  startedReportIdentity: string;
+  currentReportIdentity: string;
+  approvalAllowed: boolean;
+  reportApproved: boolean;
+}): boolean {
+  return shouldMarkCommunicationComplete(outcome) &&
+    approvalAllowed &&
+    reportApproved &&
+    startedReportIdentity === currentReportIdentity;
+}

@@ -35,8 +35,6 @@ import {
   classifyDAVEBlocker,
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
-import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
-import { projectDateRelativeDays } from './ProjectDateTime';
 
 export type PIEGraphNodeType =
   | 'project'
@@ -834,7 +832,7 @@ function addScheduleNodes(
       });
     }
 
-    if (isScheduleBlocked(item, parts.generatedAt)) {
+    if (isScheduleBlocked(item)) {
       const issueNode = addIssueLikeNode(builder, parts, {
         type: 'issue',
         id: `schedule-blocker-${item.id}`,
@@ -2176,16 +2174,11 @@ function scheduleSummary(item: ScheduleItem): string {
   );
 }
 
-function isScheduleBlocked(item: ScheduleItem, generatedAt: string): boolean {
+function isScheduleBlocked(item: ScheduleItem): boolean {
   if (item.status === 'Waiting') return true;
-  if (
-    classifyDAVEBlocker(
-      parseDAVEAssertions(`${item.status}. ${item.notes || ''}`),
-    ) === 'blocked'
-  ) return true;
-
-  const days = projectDateRelativeDays(item.finishDate, generatedAt, item.projectTimeZone || undefined);
-  return days !== null && days < 0 && !scheduleProgressIsComplete(item);
+  return classifyDAVEBlocker(
+    parseDAVEAssertions(`${item.status}. ${item.notes || ''}`),
+  ) === 'blocked';
 }
 
 function sameProject(value: string | null | undefined, projectName: string): boolean {

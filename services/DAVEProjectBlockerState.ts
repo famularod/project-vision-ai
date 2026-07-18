@@ -42,6 +42,14 @@ export type DAVEBlockerEvidenceUpdate = Readonly<{
 
 const PROJECT_SCOPE = '__project__';
 
+export type DAVECurrentConfirmedBlocker<
+  T extends DAVEBlockerEvidenceUpdate = DAVEBlockerEvidenceUpdate,
+> = Readonly<{
+  blockerId: string;
+  blockerType: DAVEBlockerType;
+  update: T;
+}>;
+
 /**
  * Finds the newest unresolved, explicitly confirmed blocker. State changes are
  * replayed by stable blocker identity, type, project, and area. Proximity in an
@@ -50,6 +58,17 @@ const PROJECT_SCOPE = '__project__';
 export function findCurrentDAVEConfirmedBlocker<
   T extends DAVEBlockerEvidenceUpdate,
 >(updates: readonly T[]): T | null {
+  return listCurrentDAVEConfirmedBlockers(updates)[0]?.update || null;
+}
+
+/**
+ * Replays the complete blocker history and returns every identity whose latest
+ * event is still open. Consumers that render project state must use this list
+ * instead of treating any historical flag as permanently active.
+ */
+export function listCurrentDAVEConfirmedBlockers<
+  T extends DAVEBlockerEvidenceUpdate,
+>(updates: readonly T[]): DAVECurrentConfirmedBlocker<T>[] {
   const events = updates
     .flatMap((update, updateOrder) => blockerEventsForUpdate(update, updateOrder))
     .sort(compareBlockerEvents);
@@ -62,11 +81,14 @@ export function findCurrentDAVEConfirmedBlocker<
     });
   });
 
-  const newestActive = [...stateByIdentity.values()]
+  return [...stateByIdentity.values()]
     .filter(state => state.active)
-    .sort((left, right) => compareBlockerEvents(right.event, left.event))[0];
-
-  return newestActive?.event.update || null;
+    .sort((left, right) => compareBlockerEvents(right.event, left.event))
+    .map(({ event }) => ({
+      blockerId: event.blockerId,
+      blockerType: event.blockerType,
+      update: event.update,
+    }));
 }
 
 export function findCurrentDAVEConfirmedBlockerForScopes<

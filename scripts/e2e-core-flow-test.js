@@ -44,9 +44,11 @@ assert(!reports.includes('buildPIEReportDraft({'), 'Review must not rebuild repo
 assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must use provider report draft with Runtime recovery only.');
 assert(
   reports.includes('reportDraft={effectiveReportDraft}') &&
-    reports.includes('onCopyReport(effectiveReportDraft)') &&
-    reports.includes('onEmailReport(effectiveReportDraft)') &&
-    reports.includes('onTextReport(effectiveReportDraft)'),
+    reports.includes('const startedReport = effectiveReportDraft;') &&
+    reports.includes('const outcome = await communicate(startedReport);') &&
+    reports.includes('completeCommunication(onCopyReport)') &&
+    reports.includes('completeCommunication(onEmailReport)') &&
+    reports.includes('completeCommunication(onTextReport)'),
   'Share actions must receive the authoritative or explicitly reviewed report draft.',
 );
 

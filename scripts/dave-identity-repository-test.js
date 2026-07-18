@@ -8,12 +8,15 @@ const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
 
-function createStorage(initial = {}) {
+function createStorage(initial = {}, options = {}) {
   const values = new Map(Object.entries(initial));
   return {
     values,
     async getItem(key) { return values.get(key) ?? null; },
-    async setItem(key, value) { values.set(key, value); },
+    async setItem(key, value) {
+      if (options.failSetItem?.(key, value)) throw new Error('injected set failure');
+      values.set(key, value);
+    },
     async removeItem(key) { values.delete(key); },
   };
 }
@@ -97,12 +100,48 @@ async function run() {
   assert.strictEqual(await restarted.delete('area-correction-2'), true);
   assert.strictEqual(await restarted.delete('area-correction-2'), false);
 
+  const corruptRaw = '{bad-json';
   const corruptStorage = createStorage({
-    [repositoryModule.DAVE_IDENTITY_STORAGE_KEY]: '{bad-json',
+    [repositoryModule.DAVE_IDENTITY_STORAGE_KEY]: corruptRaw,
   });
   const recovered = repositoryModule.createDAVEIdentityRepository(corruptStorage);
-  assert.strictEqual((await recovered.list()).length, 0);
+  await assert.rejects(() => recovered.list(), /corrupt.*quarantin/i);
   assert.strictEqual(corruptStorage.values.has(repositoryModule.DAVE_IDENTITY_STORAGE_KEY), false);
+  const corruptQuarantine = [...corruptStorage.values.entries()].find(([key]) =>
+    key.startsWith(repositoryModule.DAVE_IDENTITY_QUARANTINE_KEY_PREFIX));
+  assert(corruptQuarantine);
+  assert.strictEqual(corruptQuarantine[1], corruptRaw);
+  assert.strictEqual((await recovered.list()).length, 0,
+    'A safe retry may continue after the corrupt active value is quarantined.');
+
+  const partiallyCorruptRaw = JSON.stringify({
+    schemaVersion: repositoryModule.DAVE_IDENTITY_REPOSITORY_VERSION,
+    records: [correction, { id: 'invalid-correction' }],
+  });
+  const salvageStorage = createStorage({
+    [repositoryModule.DAVE_IDENTITY_STORAGE_KEY]: partiallyCorruptRaw,
+  });
+  const salvageRepository = repositoryModule.createDAVEIdentityRepository(salvageStorage);
+  await assert.rejects(() => salvageRepository.list(), /1 valid record.*safe retry/i);
+  const salvageQuarantine = [...salvageStorage.values.entries()].find(([key]) =>
+    key.startsWith(repositoryModule.DAVE_IDENTITY_QUARANTINE_KEY_PREFIX));
+  assert(salvageQuarantine);
+  assert.strictEqual(salvageQuarantine[1], partiallyCorruptRaw);
+  assert.strictEqual((await salvageRepository.list()).length, 1);
+  assert.strictEqual((await salvageRepository.list())[0].id, correction.id);
+
+  const quarantineFailureStorage = createStorage({
+    [repositoryModule.DAVE_IDENTITY_STORAGE_KEY]: corruptRaw,
+  }, {
+    failSetItem: key => key.startsWith(repositoryModule.DAVE_IDENTITY_QUARANTINE_KEY_PREFIX),
+  });
+  const blocked = repositoryModule.createDAVEIdentityRepository(quarantineFailureStorage);
+  await assert.rejects(() => blocked.list(), /could not be quarantined/i);
+  assert.strictEqual(
+    quarantineFailureStorage.values.get(repositoryModule.DAVE_IDENTITY_STORAGE_KEY),
+    corruptRaw,
+    'A failed quarantine must not overwrite the active identity bytes.',
+  );
 
   console.log('PASS DAVE identity correction persistence');
 }

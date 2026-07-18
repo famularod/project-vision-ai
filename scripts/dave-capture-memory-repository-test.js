@@ -6,12 +6,15 @@ const vm = require('vm');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 
-function createStorage(initial = {}) {
+function createStorage(initial = {}, options = {}) {
   const values = new Map(Object.entries(initial));
   return {
     values,
     async getItem(key) { return values.get(key) ?? null; },
-    async setItem(key, value) { values.set(key, value); },
+    async setItem(key, value) {
+      if (options.failSetItem?.(key, value)) throw new Error('injected set failure');
+      values.set(key, value);
+    },
     async removeItem(key) { values.delete(key); },
   };
 }
@@ -161,14 +164,55 @@ async function run() {
   assert(!timelineAfterDelete.some(item => item.eventType === 'memory_confirmed' || item.eventType === 'commitment_created'),
     'Deleting a memory must remove its memory and commitment timeline events.');
 
+  const corruptRaw = '{not-json';
   const corruptStorage = createStorage({
-    [repositoryModule.DAVE_CAPTURE_MEMORY_STORAGE_KEY]: '{not-json',
+    [repositoryModule.DAVE_CAPTURE_MEMORY_STORAGE_KEY]: corruptRaw,
   });
   const recoveredRepository = repositoryModule.createDAVECaptureMemoryRepository(corruptStorage);
-  assert.strictEqual((await recoveredRepository.list()).length, 0,
-    'Corrupted local data must recover to an empty safe repository.');
+  await assert.rejects(() => recoveredRepository.list(), /corrupt.*quarantin/i,
+    'The operation that discovers corruption must fail closed for App hydration.');
   assert.strictEqual(corruptStorage.values.has(repositoryModule.DAVE_CAPTURE_MEMORY_STORAGE_KEY), false,
     'Corrupted active storage must be removed so restart recovery is stable.');
+  const corruptQuarantines = [...corruptStorage.values.entries()].filter(([key]) =>
+    key.startsWith(repositoryModule.DAVE_CAPTURE_MEMORY_QUARANTINE_KEY_PREFIX));
+  assert.strictEqual(corruptQuarantines.length, 1);
+  assert.strictEqual(corruptQuarantines[0][1], corruptRaw,
+    'Quarantine must preserve the exact unreadable bytes.');
+  assert.strictEqual((await recoveredRepository.list()).length, 0,
+    'A safe retry may continue from the now-clean active store.');
+
+  const partiallyCorruptRaw = JSON.stringify({
+    schemaVersion: repositoryModule.DAVE_CAPTURE_MEMORY_REPOSITORY_VERSION,
+    records: [saveable, { id: 'invalid-memory' }],
+  });
+  const salvageStorage = createStorage({
+    [repositoryModule.DAVE_CAPTURE_MEMORY_STORAGE_KEY]: partiallyCorruptRaw,
+  });
+  const salvageRepository = repositoryModule.createDAVECaptureMemoryRepository(salvageStorage);
+  await assert.rejects(() => salvageRepository.list(), /1 valid record.*safe retry/i,
+    'Filtering invalid records must be visible rather than a silent rewrite.');
+  const salvageQuarantine = [...salvageStorage.values.entries()].find(([key]) =>
+    key.startsWith(repositoryModule.DAVE_CAPTURE_MEMORY_QUARANTINE_KEY_PREFIX));
+  assert(salvageQuarantine);
+  assert.strictEqual(salvageQuarantine[1], partiallyCorruptRaw);
+  assert.deepStrictEqual(
+    [...(await salvageRepository.list()).map(item => item.id)],
+    [saveable.id],
+    'A retry must load only the verified valid record after explicit quarantine.',
+  );
+
+  const quarantineFailureStorage = createStorage({
+    [repositoryModule.DAVE_CAPTURE_MEMORY_STORAGE_KEY]: corruptRaw,
+  }, {
+    failSetItem: key => key.startsWith(repositoryModule.DAVE_CAPTURE_MEMORY_QUARANTINE_KEY_PREFIX),
+  });
+  const blockedRepository = repositoryModule.createDAVECaptureMemoryRepository(quarantineFailureStorage);
+  await assert.rejects(() => blockedRepository.list(), /could not be quarantined/i);
+  assert.strictEqual(
+    quarantineFailureStorage.values.get(repositoryModule.DAVE_CAPTURE_MEMORY_STORAGE_KEY),
+    corruptRaw,
+    'Quarantine failure must leave the exact active value in place for retry.',
+  );
 
   console.log('DAVE Capture Memory Repository behavioral tests passed.');
 }

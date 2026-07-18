@@ -1,15 +1,55 @@
 import { createPhotoAnalysisCoordinator } from '../../services/PhotoAnalysisCoordinator';
 import type { PhotoAnalysisTarget } from '../../services/PhotoAnalysisTarget';
 
+const CONTENT_SHA256 = 'a'.repeat(64);
+const OTHER_SHA256 = 'b'.repeat(64);
+
 const TARGET: PhotoAnalysisTarget = {
   projectId: 'project-a',
   updateId: 'update-a',
   photoId: 'photo-a',
-  contentSha256: 'sha-a',
+  contentSha256: CONTENT_SHA256,
+  capturedAt: '2026-07-18T12:00:00.000Z',
   generation: 1,
 };
 
 describe('PhotoAnalysisCoordinator', () => {
+  it('discards an early-return result when a newer entity generation has started', () => {
+    const coordinator = createPhotoAnalysisCoordinator();
+    const first = coordinator.beginAttempt(TARGET);
+    const newer = coordinator.beginAttempt(TARGET);
+    const commits: string[] = [];
+
+    expect(coordinator.commitAttemptIfCurrent(first, () => commits.push('first'))).toEqual({
+      committed: false,
+      reason: 'stale_target',
+    });
+    expect(coordinator.bindTargetIfCurrent(first, {
+      ...TARGET,
+      contentSha256: OTHER_SHA256,
+    })).toBeNull();
+    expect(coordinator.commitAttemptIfCurrent(newer, () => commits.push('newer'))).toEqual({
+      committed: true,
+    });
+    expect(commits).toEqual(['newer']);
+  });
+
+  it('never reuses an accepted or cleared entity generation', () => {
+    const coordinator = createPhotoAnalysisCoordinator();
+    const first = coordinator.beginAttempt(TARGET);
+    expect(coordinator.commitAttemptIfCurrent(first, jest.fn()).committed).toBe(true);
+
+    const second = coordinator.beginAttempt(TARGET);
+    expect(second.generation).toBe(first.generation + 1);
+    coordinator.clear();
+    const afterClear = coordinator.beginAttempt(TARGET);
+    expect(afterClear.generation).toBe(second.generation + 1);
+    expect(coordinator.commitAttemptIfCurrent(first, jest.fn())).toEqual({
+      committed: false,
+      reason: 'stale_target',
+    });
+  });
+
   it('commits only the exact active project, update, photo, bytes, and generation', () => {
     const coordinator = createPhotoAnalysisCoordinator();
     coordinator.begin(TARGET);
@@ -22,7 +62,8 @@ describe('PhotoAnalysisCoordinator', () => {
       { ...TARGET, projectId: 'project-b' },
       { ...TARGET, updateId: 'update-b' },
       { ...TARGET, photoId: 'photo-b' },
-      { ...TARGET, contentSha256: 'sha-b' },
+      { ...TARGET, contentSha256: OTHER_SHA256 },
+      { ...TARGET, capturedAt: '2026-07-18T12:01:00.000Z' },
       { ...TARGET, generation: 2 },
     ]) {
       expect(coordinator.commitIfCurrent(staleTarget, commit).committed).toBe(false);
@@ -46,6 +87,30 @@ describe('PhotoAnalysisCoordinator', () => {
     expect(commits).toEqual(['retry']);
   });
 
+  it('consumes one accepted generation so duplicate callbacks cannot commit twice', () => {
+    const coordinator = createPhotoAnalysisCoordinator();
+    const submitted = coordinator.begin(TARGET);
+    const commit = jest.fn();
+
+    expect(coordinator.commitIfCurrent(submitted, commit)).toEqual({ committed: true });
+    expect(coordinator.commitIfCurrent(submitted, commit)).toEqual({
+      committed: false,
+      reason: 'missing_target',
+    });
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consume a newer generation started by the commit callback', () => {
+    const coordinator = createPhotoAnalysisCoordinator();
+    const submitted = coordinator.begin(TARGET);
+    const newer = { ...TARGET, generation: TARGET.generation + 1 };
+
+    expect(coordinator.commitIfCurrent(submitted, () => {
+      coordinator.begin(newer);
+    })).toEqual({ committed: true });
+    expect(coordinator.isCurrent(newer)).toBe(true);
+  });
+
   it('discards a result after the photo is deleted or replaced', () => {
     const coordinator = createPhotoAnalysisCoordinator();
     const submitted = coordinator.begin(TARGET);
@@ -57,7 +122,7 @@ describe('PhotoAnalysisCoordinator', () => {
     });
 
     coordinator.begin(TARGET);
-    coordinator.begin({ ...TARGET, contentSha256: 'replacement-sha', generation: 2 });
+    coordinator.begin({ ...TARGET, contentSha256: OTHER_SHA256, generation: 2 });
     expect(coordinator.isCurrent(submitted)).toBe(false);
   });
 

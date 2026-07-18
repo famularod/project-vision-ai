@@ -6,30 +6,36 @@ const path = require('path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
-const servicePath = path.join(root, 'services/PIEVisualContinuity.ts');
-const compiled = ts.transpileModule(fs.readFileSync(servicePath, 'utf8'), {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2020,
-    esModuleInterop: true,
-  },
-}).outputText;
+function loadDependencyFreeTypeScriptModule(relativePath) {
+  const servicePath = path.join(root, relativePath);
+  const compiled = ts.transpileModule(fs.readFileSync(servicePath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
+    },
+  }).outputText;
 
-const moduleUnderTest = { exports: {} };
-new Function('require', 'module', 'exports', compiled)(
-  specifier => {
-    throw new Error(`Unexpected runtime dependency: ${specifier}`);
-  },
-  moduleUnderTest,
-  moduleUnderTest.exports,
-);
+  const moduleUnderTest = { exports: {} };
+  new Function('require', 'module', 'exports', compiled)(
+    specifier => {
+      throw new Error(`Unexpected runtime dependency: ${specifier}`);
+    },
+    moduleUnderTest,
+    moduleUnderTest.exports,
+  );
+  return moduleUnderTest.exports;
+}
 
 const {
   createDAVEAreaIdentity,
   daveAreaIdentitiesMatch,
   createDAVEPhotoContinuityAnchor,
   scoreDAVEVisualContinuityCandidate,
-} = moduleUnderTest.exports;
+} = loadDependencyFreeTypeScriptModule('services/PIEVisualContinuity.ts');
+const {
+  selectWinningPriorPhotoCandidate,
+} = loadDependencyFreeTypeScriptModule('services/PhotoPairPreparation.ts');
 
 assert.strictEqual(
   daveAreaIdentitiesMatch(
@@ -236,7 +242,32 @@ const workflowSource = fs.readFileSync(
   path.join(root, 'services/PIEPhotoVisionMobileWorkflow.ts'),
   'utf8',
 );
+const photoPairPreparationSource = fs.readFileSync(
+  path.join(root, 'services/PhotoPairPreparation.ts'),
+  'utf8',
+);
 assert(workflowSource.includes('scoreDAVEVisualContinuityCandidate'));
-assert(workflowSource.includes('b.continuityScore - a.continuityScore'));
+assert(workflowSource.includes('selectWinningPriorPhotoCandidate'));
+assert(photoPairPreparationSource.includes('right.continuityScore - left.continuityScore'));
+
+const selectedContinuityCandidate = selectWinningPriorPhotoCandidate([
+  {
+    photo: matchingPhoto,
+    continuityScore: matchingScore,
+    capturedAt: 100,
+    candidateIndex: 1,
+  },
+  {
+    photo: recentWrongPhoto,
+    continuityScore: wrongSubjectScore,
+    capturedAt: 200,
+    candidateIndex: 2,
+  },
+], []);
+assert.strictEqual(
+  selectedContinuityCandidate?.photo.id,
+  matchingPhoto.id,
+  'the production ranking contract must prefer higher visual continuity over a merely newer photo',
+);
 
 console.log('DAVE visual-continuity behavior tests passed.');

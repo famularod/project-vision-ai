@@ -20,6 +20,11 @@ assert(app.includes('surface: authoritySurfaceForScreen(screen)'), 'App must sen
 assert(home.includes('liveAuthority.projectTruth.briefing.nextActions'), 'Home must prefer provider-backed Project Truth actions.');
 assert(reports.includes('liveAuthority.policy.reportGenerationAllowed'), 'Reports must enforce report authority state.');
 assert(reports.includes('liveAuthority.policy.userMessage'), 'Reports must show the friendly authority-block reason.');
-assert(reports.includes('disabled={!reportGenerationAllowed}'), 'Report approval must be disabled while authority blocks generation.');
+assert(
+  reports.includes('evaluateReportApprovalPolicy({') &&
+    reports.includes('reportGenerationAllowed,') &&
+    reports.includes('disabled={!reportApprovalAllowed}'),
+  'Report approval must be disabled while authority or report policy blocks generation.',
+);
 
 console.log('PASS experience authority routing');

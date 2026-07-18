@@ -5,11 +5,16 @@ import {
   queueProjectUpdateDelete,
   queueProjectUpdateRecord,
   removeProjectUpdateFromSyncQueue,
+  requestPendingChangesUpload,
   runFieldUpdateCloudSync,
-  uploadPendingChanges,
 } from './SyncService';
 import type { ProjectUpdate } from '../types';
 import type { PersistedFieldUpdateStatus } from './FieldUpdateLifecycle';
+import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 
 type ProjectUpdateLike = {
   id: string;
@@ -57,46 +62,72 @@ export async function persistAndQueueProjectUpdateDeletion<
   getCurrentTombstones: () => TTombstone[];
   updatesStorageKey: string;
   tombstonesStorageKey: string;
-}): Promise<{ remainingUpdates: ProjectUpdate[]; nextTombstones: TTombstone[] }> {
-  const operation = projectUpdateDeletionMutationTail.then(async () => {
-    const deletionState = async () => {
-      const [storedUpdates, storedTombstones] = await Promise.all([
-        readStoredArray<ProjectUpdate>(updatesStorageKey),
-        readStoredArray<TTombstone>(tombstonesStorageKey),
-      ]);
-      const nextTombstones = uniqueByUpdateId([
-        tombstone,
-        ...getCurrentTombstones(),
-        ...storedTombstones,
-      ]);
-      const deletedIds = new Set(nextTombstones.map(item => item.updateId));
-      const updatesById = new Map(storedUpdates.map(item => [item.id, item]));
-      getCurrentUpdates().forEach(item => updatesById.set(item.id, item));
-      return {
-        remainingUpdates: [...updatesById.values()].filter(
-          item => !deletedIds.has(item.id),
-        ),
-        nextTombstones,
-      };
-    };
+}): Promise<{
+  remainingUpdates: ProjectUpdate[];
+  nextTombstones: TTombstone[];
+  phase: 'complete' | 'barrier_committed';
+}> {
+  const operation = projectUpdateDeletionMutationTail.then(() =>
+    runExclusiveLocalStorageMutation(
+      [updatesStorageKey, tombstonesStorageKey],
+      async () => {
+        const deletionState = async () => {
+          const [storedUpdates, storedTombstones] = await Promise.all([
+            readStoredArray<ProjectUpdate>(
+              updatesStorageKey,
+              isStoredProjectUpdate,
+              'saved field updates',
+            ),
+            readStoredArray<TTombstone>(
+              tombstonesStorageKey,
+              isStoredUpdateTombstone,
+              'deleted field update records',
+            ),
+          ]);
+          const nextTombstones = uniqueByUpdateId([
+            tombstone,
+            ...getCurrentTombstones(),
+            ...storedTombstones,
+          ]);
+          const deletedIds = new Set(nextTombstones.map(item => item.updateId));
+          const updatesById = new Map(storedUpdates.map(item => [item.id, item]));
+          getCurrentUpdates().forEach(item => updatesById.set(item.id, item));
+          return {
+            remainingUpdates: [...updatesById.values()].filter(
+              item => !deletedIds.has(item.id),
+            ),
+            nextTombstones,
+          };
+        };
 
-    const initial = await deletionState();
-    await AsyncStorage.setItem(
-      tombstonesStorageKey,
-      JSON.stringify(initial.nextTombstones),
-    );
-    await AsyncStorage.setItem(
-      updatesStorageKey,
-      JSON.stringify(initial.remainingUpdates),
-    ).catch(() => undefined);
-    await queueProjectUpdateDelete(update).catch(() => undefined);
-    const latest = await deletionState();
-    await Promise.allSettled([
-      AsyncStorage.setItem(updatesStorageKey, JSON.stringify(latest.remainingUpdates)),
-      AsyncStorage.setItem(tombstonesStorageKey, JSON.stringify(latest.nextTombstones)),
-    ]);
-    return latest;
-  });
+        const initial = await deletionState();
+        // The verified tombstone is the safety barrier. Even if later byte
+        // cleanup fails, a restart cannot legally restore this update.
+        await setStoredJsonVerified(tombstonesStorageKey, initial.nextTombstones);
+        let latest = initial;
+        try {
+          try {
+            await setStoredJsonVerified(updatesStorageKey, latest.remainingUpdates);
+          } catch {
+            // Re-read behind the durable barrier and roll forward once. This
+            // covers a one-time interruption between the two local writes.
+            latest = await deletionState();
+            await setStoredJsonVerified(updatesStorageKey, latest.remainingUpdates);
+          }
+          await queueProjectUpdateDelete(update).catch(() => undefined);
+          latest = await deletionState();
+          await setStoredJsonVerified(updatesStorageKey, latest.remainingUpdates);
+          await setStoredJsonVerified(tombstonesStorageKey, latest.nextTombstones);
+          return { ...latest, phase: 'complete' as const };
+        } catch {
+          // The barrier is already verified. Return its truthful projected
+          // state so the UI removes the update instead of claiming nothing
+          // happened; byte cleanup will be retried from the tombstone.
+          return { ...latest, phase: 'barrier_committed' as const };
+        }
+      },
+    ),
+  );
   projectUpdateDeletionMutationTail = operation.then(
     () => undefined,
     () => undefined,
@@ -116,12 +147,14 @@ export async function reconcileProjectUpdateDeletionJournal(
 }
 
 export async function loadCloudUpdates<TUpdate>(): Promise<TUpdate[]> {
-  void uploadPendingChanges();
+  requestPendingChangesUpload('cloud_update_loader');
 
   const result = await listProjectUpdates<TUpdate>();
 
-  if (!result.ok || !result.data) {
-    return [];
+  if (!result.ok || result.stubbed || !result.data) {
+    throw new Error(
+      result.error || result.message || 'Cloud field updates could not be read.',
+    );
   }
 
   const updates = result.data
@@ -155,15 +188,66 @@ function isProjectUpdateWithPhotos(value: unknown): value is ProjectUpdate {
   );
 }
 
-async function readStoredArray<T>(storageKey: string): Promise<T[]> {
+async function readStoredArray<T>(
+  storageKey: string,
+  isValidRecord: (value: unknown) => value is T,
+  label: string,
+): Promise<T[]> {
   const raw = await AsyncStorage.getItem(storageKey);
   if (!raw) return [];
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed as T[] : [];
+    parsed = JSON.parse(raw);
   } catch {
-    return [];
+    parsed = null;
   }
+  const records = Array.isArray(parsed) ? parsed : [];
+  const valid = records.filter(isValidRecord);
+  if (Array.isArray(parsed) && valid.length === records.length) return valid;
+
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey,
+    quarantineKeyPrefix: `${storageKey}.corrupt.`,
+    raw,
+    replacementRaw: JSON.stringify(valid),
+  });
+  throw localCorruptionRecoveryError({
+    label,
+    recovery,
+    salvagedRecords: valid.length,
+  });
+}
+
+async function setStoredJsonVerified(storageKey: string, value: unknown) {
+  const raw = JSON.stringify(value);
+  await AsyncStorage.setItem(storageKey, raw);
+  if (await AsyncStorage.getItem(storageKey) !== raw) {
+    throw new Error(`Local deletion write verification failed for ${storageKey}.`);
+  }
+}
+
+function isStoredProjectUpdate(value: unknown): value is ProjectUpdate {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Partial<ProjectUpdate>;
+  return Boolean(
+    typeof record.id === 'string' && record.id.trim() &&
+    typeof record.projectName === 'string' && record.projectName.trim() &&
+    typeof record.notes === 'string' &&
+    Array.isArray(record.photos),
+  );
+}
+
+function isStoredUpdateTombstone<T extends { updateId: string }>(
+  value: unknown,
+): value is T {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    typeof (value as { updateId?: unknown }).updateId === 'string' &&
+    (value as { updateId: string }).updateId.trim(),
+  );
 }
 
 function uniqueByUpdateId<T extends { updateId: string }>(items: T[]): T[] {

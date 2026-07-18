@@ -98,6 +98,15 @@ describe('belief evidence subject linking (audit P1-13)', () => {
     expect(support).toHaveLength(0);
   });
 
+  it('does not treat shared status words as a subject link', () => {
+    const support = identifySupportingEvidence(
+      engineInput({ whatChanged: 'Parking lot work is complete with current photo evidence' }),
+      ELECTRICAL_BELIEF,
+    );
+
+    expect(support).toHaveLength(0);
+  });
+
   it('accepts runtime changes about the belief subject', () => {
     const support = identifySupportingEvidence(
       engineInput({ whatChanged: 'Electrical rough-in passed inspection' }),
@@ -125,6 +134,15 @@ describe('belief evidence subject linking (audit P1-13)', () => {
     const contradictions = identifyContradictingEvidence(
       engineInput({ conflicts: ['Parking count mismatch between sources'] }),
       ELECTRICAL_BELIEF,
+    );
+
+    expect(contradictions).toHaveLength(0);
+  });
+
+  it('does not attach an unrelated conflict through generic project terms', () => {
+    const contradictions = identifyContradictingEvidence(
+      engineInput({ conflicts: ['Current project work status conflicts with parking evidence'] }),
+      'Electrical project work status is complete',
     );
 
     expect(contradictions).toHaveLength(0);

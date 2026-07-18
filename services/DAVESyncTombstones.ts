@@ -7,6 +7,11 @@ import {
   listDAVESyncTombstones,
   upsertDAVESyncTombstone,
 } from './SupabaseService';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
+import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 
 export const DAVE_SYNC_TOMBSTONES_STORAGE_KEY = '@dave/sync-tombstones/v1';
 /**
@@ -15,6 +20,8 @@ export const DAVE_SYNC_TOMBSTONES_STORAGE_KEY = '@dave/sync-tombstones/v1';
  */
 export const DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY =
   '@dave/sync-tombstones/quarantine/v1';
+export const DAVE_SYNC_TOMBSTONES_QUARANTINE_PREFIX =
+  '@dave/sync-tombstones/quarantine/v2/';
 
 let mutationTail: Promise<void> = Promise.resolve();
 let synchronizationInFlight: Promise<DAVESyncTombstoneSyncResult> | null = null;
@@ -38,6 +45,20 @@ export function parseDAVESyncTombstones(value: unknown): DAVESyncTombstone[] {
       .map(normalizeDAVESyncTombstone)
       .filter((item): item is DAVESyncTombstone => Boolean(item)),
   );
+}
+
+/** Strict parser for callers already holding the shared storage-key lock. */
+export function parsePersistedDAVESyncTombstones(
+  value: unknown,
+): DAVESyncTombstone[] {
+  if (!Array.isArray(value)) {
+    throw new Error('The deletion history is not a stored array.');
+  }
+  const normalized = value.map(normalizeDAVESyncTombstone);
+  if (normalized.some(item => !item)) {
+    throw new Error('The deletion history contains an invalid record.');
+  }
+  return mergeDAVESyncTombstones(normalized as DAVESyncTombstone[]);
 }
 
 export function mergeDAVESyncTombstones(
@@ -86,7 +107,10 @@ export function removeDAVETombstonedRecords<T extends { id: string }>(
 
 export async function loadDAVESyncTombstones(): Promise<DAVESyncTombstone[]> {
   await mutationTail;
-  return readLocalTombstones();
+  return runExclusiveLocalStorageMutation(
+    [DAVE_SYNC_TOMBSTONES_STORAGE_KEY],
+    readLocalTombstones,
+  );
 }
 
 export async function recordDAVESyncTombstone(
@@ -187,7 +211,11 @@ async function performTombstoneSynchronization(): Promise<DAVESyncTombstoneSyncR
 }
 
 function serializeTombstoneMutation<T>(mutation: () => Promise<T>): Promise<T> {
-  const next = mutationTail.then(mutation, mutation);
+  const guardedMutation = () => runExclusiveLocalStorageMutation(
+    [DAVE_SYNC_TOMBSTONES_STORAGE_KEY],
+    mutation,
+  );
+  const next = mutationTail.then(guardedMutation, guardedMutation);
   mutationTail = next.then(
     () => undefined,
     () => undefined,
@@ -198,34 +226,59 @@ function serializeTombstoneMutation<T>(mutation: () => Promise<T>): Promise<T> {
 async function readLocalTombstones(): Promise<DAVESyncTombstone[]> {
   const raw = await AsyncStorage.getItem(DAVE_SYNC_TOMBSTONES_STORAGE_KEY);
   if (!raw) return [];
+  let parsed: unknown;
   try {
-    return parseDAVESyncTombstones(JSON.parse(raw));
+    parsed = JSON.parse(raw);
   } catch {
-    // Audit P1-28: never destroy the deletion journal. Preserve the corrupt
-    // bytes for recovery, then continue from an explicitly empty journal.
-    await quarantineCorruptTombstoneBytes(raw);
-    return [];
+    await quarantineInvalidTombstones(raw, []);
+    throw new Error('Unreachable after corrupt tombstone quarantine.');
   }
+
+  if (!Array.isArray(parsed)) {
+    await quarantineInvalidTombstones(raw, []);
+    throw new Error('Unreachable after invalid tombstone quarantine.');
+  }
+
+  const normalized = parsed.map(normalizeDAVESyncTombstone);
+  const valid = normalized.filter(
+    (item): item is DAVESyncTombstone => Boolean(item),
+  );
+  if (valid.length !== parsed.length) {
+    await quarantineInvalidTombstones(raw, mergeDAVESyncTombstones(valid));
+    throw new Error('Unreachable after partial tombstone recovery.');
+  }
+  return mergeDAVESyncTombstones(valid);
 }
 
-async function quarantineCorruptTombstoneBytes(raw: string): Promise<void> {
-  try {
-    const existing = await AsyncStorage.getItem(
+async function quarantineInvalidTombstones(
+  raw: string,
+  valid: readonly DAVESyncTombstone[],
+): Promise<never> {
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey: DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
+    quarantineKeyPrefix: DAVE_SYNC_TOMBSTONES_QUARANTINE_PREFIX,
+    raw,
+    replacementRaw: valid.length > 0 ? JSON.stringify(valid) : null,
+  });
+
+  // Keep a backward-compatible pointer to the first quarantined payload for
+  // support/export while every exact payload remains in its own stable key.
+  const existingPointer = await AsyncStorage.getItem(
+    DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY,
+  );
+  if (existingPointer === null) {
+    await AsyncStorage.setItem(
       DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY,
+      JSON.stringify({ quarantinedAt: new Date().toISOString(), raw }),
     );
-    // Keep the FIRST corrupt payload; later corruption must not overwrite
-    // earlier forensic evidence.
-    if (existing === null) {
-      await AsyncStorage.setItem(
-        DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY,
-        JSON.stringify({ quarantinedAt: new Date().toISOString(), raw }),
-      );
-    }
-    await AsyncStorage.removeItem(DAVE_SYNC_TOMBSTONES_STORAGE_KEY);
-  } catch {
-    // Quarantine is best-effort; the corrupt key is left in place so a later
-    // attempt can still preserve it.
   }
+
+  throw localCorruptionRecoveryError({
+    label: 'The deletion history',
+    recovery,
+    salvagedRecords: valid.length,
+  });
 }
 
 /** Audit P1-28: expose quarantined journal bytes for recovery/export. */

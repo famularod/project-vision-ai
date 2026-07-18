@@ -36,6 +36,87 @@ export type DAVEAskResolvedNavigation = {
   timelineEventId: string | null;
 };
 
+export type DAVEAskHistoryParseResult = Readonly<{
+  status: 'missing' | 'valid' | 'corrupt';
+  history: DAVEAskConversationEntry[];
+}>;
+
+export class DAVEAskHistoryPersistenceError extends Error {
+  readonly code: 'read_failed' | 'corrupt_history' | 'write_failed';
+  readonly cause: unknown;
+
+  constructor(code: DAVEAskHistoryPersistenceError['code'], cause?: unknown) {
+    super(code === 'corrupt_history'
+      ? 'Saved DAVE Ask history is corrupt.'
+      : code === 'read_failed'
+        ? 'Saved DAVE Ask history could not be read.'
+        : 'DAVE Ask history could not be saved.');
+    this.name = 'DAVEAskHistoryPersistenceError';
+    this.code = code;
+    this.cause = cause;
+  }
+}
+
+// Talk and the inline Project Assistant share these keys. Keeping the tails
+// module-scoped serializes read-modify-write transactions across both views.
+const daveAskHistoryMutationTails = new Map<string, Promise<void>>();
+
+/**
+ * Serializes each project's complete read-modify-write transaction. A failed
+ * or corrupt read never becomes an authoritative empty history.
+ */
+export function createDAVEAskHistoryPersistence(dependencies: Readonly<{
+  readItem: (storageKey: string) => Promise<string | null>;
+  persistItem: (storageKey: string, value: string) => Promise<void>;
+}>) {
+  function enqueue<T>(storageKey: string, operation: () => Promise<T>): Promise<T> {
+    const previous = daveAskHistoryMutationTails.get(storageKey) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    const tail = current.then(() => undefined, () => undefined);
+    daveAskHistoryMutationTails.set(storageKey, tail);
+    void tail.finally(() => {
+      if (daveAskHistoryMutationTails.get(storageKey) === tail) {
+        daveAskHistoryMutationTails.delete(storageKey);
+      }
+    });
+    return current;
+  }
+
+  async function readParsed(storageKey: string, projectId: string) {
+    let raw: string | null;
+    try {
+      raw = await dependencies.readItem(storageKey);
+    } catch (error) {
+      throw new DAVEAskHistoryPersistenceError('read_failed', error);
+    }
+    const parsed = parseDAVEAskHistoryResult(raw, projectId);
+    if (parsed.status === 'corrupt') {
+      throw new DAVEAskHistoryPersistenceError('corrupt_history');
+    }
+    return parsed.history;
+  }
+
+  return Object.freeze({
+    read(projectId: string) {
+      const storageKey = daveAskHistoryStorageKey(projectId);
+      return enqueue(storageKey, () => readParsed(storageKey, projectId));
+    },
+    append(projectId: string, entry: DAVEAskConversationEntry) {
+      const storageKey = daveAskHistoryStorageKey(projectId);
+      return enqueue(storageKey, async () => {
+        const history = await readParsed(storageKey, projectId);
+        const next = appendDAVEAskHistory(history, entry);
+        try {
+          await dependencies.persistItem(storageKey, JSON.stringify(next));
+        } catch (error) {
+          throw new DAVEAskHistoryPersistenceError('write_failed', error);
+        }
+        return next;
+      });
+    },
+  });
+}
+
 export function daveAskHistoryStorageKey(projectId: string): string {
   return `dave-ask-history:${encodeURIComponent(projectId)}`;
 }
@@ -64,11 +145,18 @@ export function historyForDAVEProject(
 }
 
 export function parseDAVEAskHistory(value: string | null, projectId: string): DAVEAskConversationEntry[] {
-  if (!value) return [];
+  return parseDAVEAskHistoryResult(value, projectId).history;
+}
+
+export function parseDAVEAskHistoryResult(
+  value: string | null,
+  projectId: string,
+): DAVEAskHistoryParseResult {
+  if (!value) return { status: 'missing', history: [] };
   try {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is DAVEAskConversationEntry =>
+    if (!Array.isArray(parsed)) return { status: 'corrupt', history: [] };
+    const history = parsed.filter((item): item is DAVEAskConversationEntry =>
       Boolean(item) &&
       item.projectId === projectId &&
       typeof item.id === 'string' &&
@@ -80,8 +168,12 @@ export function parseDAVEAskHistory(value: string | null, projectId: string): DA
       Array.isArray(item.answer?.supportingEvidence) &&
       Array.isArray(item.answer?.timelineReferences) &&
       Array.isArray(item.answer?.navigationTargets));
+    if (history.length !== parsed.length) {
+      return { status: 'corrupt', history: [] };
+    }
+    return { status: 'valid', history };
   } catch {
-    return [];
+    return { status: 'corrupt', history: [] };
   }
 }
 

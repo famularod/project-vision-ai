@@ -37,8 +37,8 @@ const summarize = sliceBetween(
   'function pieResultsForUpdate',
 );
 assert(
-  summarize.indexOf("status === 'no_suitable_prior_photo'") <
-    summarize.indexOf("status === 'analysis_failed_retry'"),
+  summarize.indexOf("assessment.state === 'baseline_only'") <
+    summarize.indexOf("assessment.state === 'failed' || assessment.state === 'incomparable'"),
   'No-prior-photo must resolve before unavailable/retry fallback.',
 );
 assert(

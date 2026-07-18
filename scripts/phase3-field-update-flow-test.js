@@ -63,7 +63,10 @@ assert(
   'Captions must not gate Review.',
 );
 assert(
-  app.includes('summary: PIE_STATUS_COPY.checking'),
+  app.includes("status: 'analyzing'") &&
+    app.includes('summary: authCopy || (results.length === 0') &&
+    app.includes('? PIE_STATUS_COPY.preparingSecureAnalysis') &&
+    app.includes(': PIE_STATUS_COPY.checking'),
   'Review must show neutral status while PIE is still running.',
 );
 assert(
@@ -72,7 +75,8 @@ assert(
 );
 assert(
   app.includes('function saveFieldUpdateFromReview()') &&
-    app.includes('if (!hasSavableUpdate(draft))'),
+    app.includes('const draftSnapshot = draftRef.current;') &&
+    app.includes('if (!hasSavableUpdate(draftSnapshot))'),
   'Review must save a substantive Field Update without requiring communication recipients.',
 );
 assert(
@@ -83,8 +87,11 @@ assert(
   'Update Preview must separate visual observations from confirmable interpretations.',
 );
 assert(
-  app.includes('const idempotencyKey = draft.idempotencyKey || draft.stableSendId') &&
-    app.includes('idempotencyKey: update.idempotencyKey || update.stableSendId'),
+  app.includes('const idempotencyKey = draftSnapshot.idempotencyKey ||') &&
+    app.includes('draftSnapshot.stableSendId || `send-${draftSnapshot.id}`') &&
+    app.includes('stableSendId: idempotencyKey,') &&
+    app.includes('stableSendId: update.idempotencyKey || update.stableSendId || `send-${update.id}`') &&
+    app.includes('idempotencyKey: update.idempotencyKey || update.stableSendId || `send-${update.id}`'),
   'Send and retry must preserve the same client-side idempotency key.',
 );
 assert(

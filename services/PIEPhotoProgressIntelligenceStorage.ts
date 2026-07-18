@@ -1,4 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 import type {
   PIEPhotoComparabilityAssessment,
   PIEPhotoIntelligenceCacheEntry,
@@ -28,6 +32,9 @@ export type PIEPhotoProgressIntelligenceStoredState = {
 export async function savePhotoProgressIntelligence(
   result: PIEPhotoProgressIntelligenceResult,
 ): Promise<PIEPhotoProgressIntelligenceStoredState> {
+  if (!isPhotoIntelligenceResultForScope(result, result.organizationId, result.projectId)) {
+    throw new Error('Cannot store invalid or cross-scope photo progress intelligence.');
+  }
   const previous = await loadPhotoProgressIntelligenceState(result.organizationId, result.projectId);
   const next: PIEPhotoProgressIntelligenceStoredState = {
     version: PIE_PHOTO_INTELLIGENCE_STORAGE_VERSION,
@@ -41,7 +48,7 @@ export async function savePhotoProgressIntelligence(
     cacheEntries: mergeCacheEntries(previous.cacheEntries, result.cacheEntries),
     savedAt: new Date().toISOString(),
   };
-  await AsyncStorage.setItem(photoIntelligenceKey(result.organizationId, result.projectId), JSON.stringify(next));
+  await AsyncStorage.setItem(photoProgressIntelligenceStorageKey(result.organizationId, result.projectId), JSON.stringify(next));
   return next;
 }
 
@@ -58,39 +65,28 @@ export async function loadPhotoProgressIntelligenceState(
   projectId: string,
 ): Promise<PIEPhotoProgressIntelligenceStoredState> {
   const empty = emptyState(organizationId, projectId);
-  const value = await AsyncStorage.getItem(photoIntelligenceKey(organizationId, projectId));
-  if (!value) return empty;
+  const storageKey = photoProgressIntelligenceStorageKey(organizationId, projectId);
+  const value = await AsyncStorage.getItem(storageKey);
+  if (value === null) return empty;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(value);
-    if (
-      parsed?.version !== PIE_PHOTO_INTELLIGENCE_STORAGE_VERSION ||
-      parsed?.organizationId !== organizationId ||
-      parsed?.projectId !== projectId
-    ) {
-      throw new Error('Photo intelligence storage boundary mismatch.');
-    }
-    return {
-      ...empty,
-      currentAnalysis: parsed.currentAnalysis || null,
-      sequences: Array.isArray(parsed.sequences) ? parsed.sequences : [],
-      progressEvents: Array.isArray(parsed.progressEvents) ? parsed.progressEvents : [],
-      comparabilityAssessments: Array.isArray(parsed.comparabilityAssessments) ? parsed.comparabilityAssessments : [],
-      conflicts: Array.isArray(parsed.conflicts) ? parsed.conflicts : [],
-      cacheEntries: Array.isArray(parsed.cacheEntries) ? parsed.cacheEntries : [],
-      savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : empty.savedAt,
-    };
+    parsed = JSON.parse(value) as unknown;
   } catch {
-    await AsyncStorage.setItem(`${photoIntelligenceKey(organizationId, projectId)}.corrupt.${Date.now()}`, value);
-    await AsyncStorage.removeItem(photoIntelligenceKey(organizationId, projectId));
-    return empty;
+    return quarantineInvalidPhotoIntelligence(storageKey, value);
   }
+
+  if (!isPhotoIntelligenceEnvelopeForScope(parsed, organizationId, projectId)) {
+    return quarantineInvalidPhotoIntelligence(storageKey, value);
+  }
+
+  return parsed;
 }
 
 export async function clearPhotoProgressIntelligenceForTesting(
   organizationId: string,
   projectId: string,
 ): Promise<void> {
-  await AsyncStorage.removeItem(photoIntelligenceKey(organizationId, projectId));
+  await AsyncStorage.removeItem(photoProgressIntelligenceStorageKey(organizationId, projectId));
 }
 
 function emptyState(
@@ -139,8 +135,129 @@ function mergeCacheEntries(
   return Array.from(byId.values());
 }
 
-function photoIntelligenceKey(organizationId: string, projectId: string) {
+export function photoProgressIntelligenceStorageKey(
+  organizationId: string,
+  projectId: string,
+): string {
   return `${PHOTO_INTELLIGENCE_PREFIX}.${PIE_PHOTO_INTELLIGENCE_STORAGE_VERSION}.${safeKey(organizationId)}.${safeKey(projectId)}`;
+}
+
+async function quarantineInvalidPhotoIntelligence(
+  storageKey: string,
+  raw: string,
+): Promise<never> {
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey,
+    quarantineKeyPrefix: `${storageKey}.corrupt.`,
+    raw,
+    replacementRaw: null,
+  });
+  throw localCorruptionRecoveryError({
+    label: 'Stored photo progress intelligence',
+    recovery,
+  });
+}
+
+function isPhotoIntelligenceEnvelopeForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIEPhotoProgressIntelligenceStoredState {
+  if (
+    !isRecord(value) ||
+    value.version !== PIE_PHOTO_INTELLIGENCE_STORAGE_VERSION ||
+    value.organizationId !== organizationId ||
+    value.projectId !== projectId ||
+    typeof value.savedAt !== 'string' ||
+    !isScopedPhotoCollections(value, organizationId, projectId)
+  ) {
+    return false;
+  }
+  return value.currentAnalysis === null ||
+    isPhotoIntelligenceResultForScope(value.currentAnalysis, organizationId, projectId);
+}
+
+function isPhotoIntelligenceResultForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIEPhotoProgressIntelligenceResult {
+  return (
+    isRecord(value) &&
+    value.organizationId === organizationId &&
+    value.projectId === projectId &&
+    typeof value.analysisVersion === 'string' &&
+    typeof value.generatedAt === 'string' &&
+    isScopedPhotoCollections(value, organizationId, projectId) &&
+    Array.isArray(value.stalledProgressEvents) &&
+    value.stalledProgressEvents.every(item =>
+      isScopedPhotoRecord(item, organizationId, projectId)) &&
+    Array.isArray(value.regressionCandidates) &&
+    value.regressionCandidates.every(item =>
+      isScopedPhotoRecord(item, organizationId, projectId)) &&
+    Array.isArray(value.repeatPhotoGuidance) &&
+    value.repeatPhotoGuidance.every(item =>
+      isRecord(item) && item.projectId === projectId) &&
+    Array.isArray(value.qualifiedRealityEvidence) &&
+    value.qualifiedRealityEvidence.every(item =>
+      isRecord(item) &&
+      item.organizationId === organizationId &&
+      item.projectId === projectId)
+  );
+}
+
+function isScopedPhotoCollections(
+  value: Record<string, unknown>,
+  organizationId: string,
+  projectId: string,
+): boolean {
+  return (
+    Array.isArray(value.sequences) &&
+    value.sequences.every(item => isScopedPhotoRecord(item, organizationId, projectId)) &&
+    Array.isArray(value.progressEvents) &&
+    value.progressEvents.every(item => isScopedPhotoRecord(item, organizationId, projectId)) &&
+    Array.isArray(value.comparabilityAssessments) &&
+    value.comparabilityAssessments.every(isComparabilityAssessment) &&
+    Array.isArray(value.conflicts) &&
+    value.conflicts.every(item => isScopedPhotoRecord(item, organizationId, projectId)) &&
+    Array.isArray(value.cacheEntries) &&
+    value.cacheEntries.every(isPhotoCacheEntry)
+  );
+}
+
+function isScopedPhotoRecord(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    value.organizationId === organizationId &&
+    value.projectId === projectId
+  );
+}
+
+function isComparabilityAssessment(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.earlierPhotoId === 'string' &&
+    typeof value.laterPhotoId === 'string'
+  );
+}
+
+function isPhotoCacheEntry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.comparisonInputSignature === 'string' &&
+    typeof value.sequenceId === 'string'
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function safeKey(value: string) {

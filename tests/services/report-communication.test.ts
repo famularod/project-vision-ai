@@ -5,6 +5,7 @@
 
 import {
   mailComposerOutcome,
+  shouldApplyCommunicationOutcome,
   shouldMarkCommunicationComplete,
   smsComposerOutcome,
 } from '../../services/ReportCommunication';
@@ -29,5 +30,43 @@ describe('report communication outcomes', () => {
     expect(shouldMarkCommunicationComplete('completed')).toBe(true);
     expect(shouldMarkCommunicationComplete('canceled')).toBe(false);
     expect(shouldMarkCommunicationComplete('unknown')).toBe(false);
+  });
+
+  it('applies a completed outcome only to the same currently approved report', () => {
+    expect(shouldApplyCommunicationOutcome({
+      outcome: 'completed',
+      startedReportIdentity: 'report-a',
+      currentReportIdentity: 'report-a',
+      approvalAllowed: true,
+      reportApproved: true,
+    })).toBe(true);
+    expect(shouldApplyCommunicationOutcome({
+      outcome: 'completed',
+      startedReportIdentity: 'report-a',
+      currentReportIdentity: 'report-b',
+      approvalAllowed: true,
+      reportApproved: true,
+    })).toBe(false);
+    expect(shouldApplyCommunicationOutcome({
+      outcome: 'completed',
+      startedReportIdentity: 'report-a',
+      currentReportIdentity: 'report-a',
+      approvalAllowed: false,
+      reportApproved: true,
+    })).toBe(false);
+    expect(shouldApplyCommunicationOutcome({
+      outcome: 'canceled',
+      startedReportIdentity: 'report-a',
+      currentReportIdentity: 'report-a',
+      approvalAllowed: true,
+      reportApproved: true,
+    })).toBe(false);
+    expect(shouldApplyCommunicationOutcome({
+      outcome: 'completed',
+      startedReportIdentity: 'report-a',
+      currentReportIdentity: 'report-a',
+      approvalAllowed: true,
+      reportApproved: false,
+    })).toBe(false);
   });
 });

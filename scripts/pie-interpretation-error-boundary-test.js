@@ -54,7 +54,7 @@ assert(
 );
 
 const unavailable = sliceBetween(workflow, 'function unavailableState', 'function failedRetryState');
-const failed = sliceBetween(workflow, 'function failedRetryState', 'function assertComparableEvidencePair');
+const failed = sliceBetween(workflow, 'function failedRetryState', 'function describeVisibleChange');
 assert(
   unavailable.includes('possibleConcerns: []') &&
     failed.includes('possibleConcerns: []') &&

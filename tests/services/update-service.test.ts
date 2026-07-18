@@ -10,13 +10,14 @@ import {
 import type { ProjectUpdate } from '../../types';
 
 const mockStorage = new Map<string, string>();
+const writeStorage = (key: string, value: string) => {
+  mockStorage.set(key, value);
+  return Promise.resolve();
+};
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn((key: string) => Promise.resolve(mockStorage.get(key) ?? null)),
-  setItem: jest.fn((key: string, value: string) => {
-    mockStorage.set(key, value);
-    return Promise.resolve();
-  }),
+  setItem: jest.fn(writeStorage),
   removeItem: jest.fn((key: string) => {
     mockStorage.delete(key);
     return Promise.resolve();
@@ -43,6 +44,7 @@ describe('project update deletion persistence', () => {
   beforeEach(() => {
     mockStorage.clear();
     jest.clearAllMocks();
+    jest.mocked(AsyncStorage.setItem).mockImplementation(writeStorage);
   });
 
   it('keeps unrelated changes that arrive while cloud deletion is being queued', async () => {
@@ -114,6 +116,67 @@ describe('project update deletion persistence', () => {
     ]);
   });
 
+  it('rolls forward after a one-time failure between tombstone and update writes', async () => {
+    const target = update('delete-interrupted', 'Incorrect status');
+    const keep = update('keep-interrupted', 'Correct status');
+    mockStorage.set('updates', JSON.stringify([target, keep]));
+    mockStorage.set('tombstones', '[]');
+    let failUpdateWriteOnce = true;
+    jest.mocked(AsyncStorage.setItem).mockImplementation(async (key, value) => {
+      if (key === 'updates' && failUpdateWriteOnce) {
+        failUpdateWriteOnce = false;
+        throw new Error('interrupted after tombstone barrier');
+      }
+      mockStorage.set(key, value);
+    });
+
+    const result = await persistAndQueueProjectUpdateDeletion({
+      update: target,
+      tombstone: { updateId: target.id },
+      getCurrentUpdates: () => [target, keep],
+      getCurrentTombstones: () => [],
+      updatesStorageKey: 'updates',
+      tombstonesStorageKey: 'tombstones',
+    });
+
+    expect(result.phase).toBe('complete');
+    expect(result.remainingUpdates).toEqual([keep]);
+    expect(JSON.parse(mockStorage.get('tombstones') || '[]')).toEqual([
+      { updateId: target.id },
+    ]);
+    expect(JSON.parse(mockStorage.get('updates') || '[]')).toEqual([keep]);
+  });
+
+  it('returns truthful barrier state when update-list cleanup keeps failing', async () => {
+    const target = update('delete-barrier-only', 'Incorrect status');
+    const keep = update('keep-barrier-only', 'Correct status');
+    mockStorage.set('updates', JSON.stringify([target, keep]));
+    mockStorage.set('tombstones', '[]');
+    jest.mocked(AsyncStorage.setItem).mockImplementation(async (key, value) => {
+      if (key === 'updates') throw new Error('persistent update-list failure');
+      mockStorage.set(key, value);
+    });
+
+    const result = await persistAndQueueProjectUpdateDeletion({
+      update: target,
+      tombstone: { updateId: target.id },
+      getCurrentUpdates: () => [target, keep],
+      getCurrentTombstones: () => [],
+      updatesStorageKey: 'updates',
+      tombstonesStorageKey: 'tombstones',
+    });
+
+    expect(result).toMatchObject({
+      phase: 'barrier_committed',
+      remainingUpdates: [keep],
+      nextTombstones: [{ updateId: target.id }],
+    });
+    expect(JSON.parse(mockStorage.get('tombstones') || '[]')).toEqual([
+      { updateId: target.id },
+    ]);
+    expect(JSON.parse(mockStorage.get('updates') || '[]')).toEqual([target, keep]);
+  });
+
   it('serializes overlapping deletions without restoring either update', async () => {
     const first = update('delete-first', 'First mistake');
     const second = update('delete-second', 'Second mistake');
@@ -156,5 +219,48 @@ describe('project update deletion persistence', () => {
       first.id,
       second.id,
     ]);
+  });
+
+  it('quarantines a partially corrupt update store and requires a safe retry', async () => {
+    const target = update('delete-after-recovery', 'Incorrect status');
+    const keep = update('keep-after-recovery', 'Correct status');
+    const exactRaw = JSON.stringify([target, keep, { id: '', photos: 'invalid' }]);
+    mockStorage.set('updates', exactRaw);
+    mockStorage.set('tombstones', '[]');
+
+    const request = () => persistAndQueueProjectUpdateDeletion({
+      update: target,
+      tombstone: { updateId: target.id },
+      getCurrentUpdates: () => [target, keep],
+      getCurrentTombstones: () => [],
+      updatesStorageKey: 'updates',
+      tombstonesStorageKey: 'tombstones',
+    });
+
+    await expect(request()).rejects.toThrow(/2 valid records were preserved/i);
+    expect(jest.mocked(queueProjectUpdateDelete)).not.toHaveBeenCalled();
+    expect(JSON.parse(mockStorage.get('updates') || '[]')).toEqual([target, keep]);
+    expect([...mockStorage.entries()].some(([key, value]) =>
+      key.startsWith('updates.corrupt.') && value === exactRaw,
+    )).toBe(true);
+
+    await expect(request()).resolves.toMatchObject({ remainingUpdates: [keep] });
+  });
+
+  it('never treats corrupt deletion barriers as an empty journal', async () => {
+    const target = update('must-stay-protected', 'Incorrect status');
+    mockStorage.set('updates', JSON.stringify([target]));
+    mockStorage.set('tombstones', '{not-json');
+
+    await expect(persistAndQueueProjectUpdateDeletion({
+      update: target,
+      tombstone: { updateId: target.id },
+      getCurrentUpdates: () => [target],
+      getCurrentTombstones: () => [],
+      updatesStorageKey: 'updates',
+      tombstonesStorageKey: 'tombstones',
+    })).rejects.toThrow(/deleted field update records was corrupt/i);
+    expect(jest.mocked(queueProjectUpdateDelete)).not.toHaveBeenCalled();
+    expect(mockStorage.get('tombstones')).toBe('[]');
   });
 });

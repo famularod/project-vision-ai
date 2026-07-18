@@ -22,7 +22,7 @@ const {
   authorityInputSignature,
 } = moduleUnderTest.exports;
 
-assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.0');
+assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.1');
 
 function input() {
   return {
@@ -176,9 +176,33 @@ assert.notStrictEqual(
   'project changes must bypass the typing debounce',
 );
 
+const ephemeralPortfolio = input();
+ephemeralPortfolio.projectTruthPersistencePolicy = 'ephemeral_portfolio';
+assert.notStrictEqual(
+  authorityInputSignature(ephemeralPortfolio),
+  authorityInputSignature(input()),
+  'project-truth persistence policy must be part of the full signature',
+);
+assert.notStrictEqual(
+  authorityInputScopeSignature(ephemeralPortfolio),
+  authorityInputScopeSignature(input()),
+  'project-truth persistence policy must be part of the priority scope signature',
+);
+
 const provider = fs.readFileSync(path.join(root, 'providers/PIELiveAuthorityProvider.tsx'), 'utf8');
 assert(provider.includes("from '../services/PIELiveAuthoritySignature'"));
 assert(provider.includes('useDebouncedSnapshot'));
 assert(provider.includes('LIVE_AUTHORITY_INPUT_DEBOUNCE_MS'));
+assert(
+  provider.includes("refreshInput.projectTruthPersistencePolicy === 'ephemeral_portfolio'") &&
+    provider.includes('? buildPIECoreIntelligence(coreInput)') &&
+    provider.includes(': await buildLivePIECoreIntelligence(coreInput)'),
+  'Ephemeral portfolio authority must use the non-persisting Core builder.',
+);
+assert(
+  provider.includes('if (!ephemeralPortfolio && result.longitudinalPhotoIntelligence)') &&
+    provider.includes("if (authorityInput.projectTruthPersistencePolicy === 'ephemeral_portfolio') return;"),
+  'Ephemeral portfolio authority must skip photo-progress and project-truth persistence.',
+);
 
 console.log('DAVE live-authority semantic signature tests passed.');

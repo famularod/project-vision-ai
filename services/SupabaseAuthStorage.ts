@@ -16,10 +16,10 @@
  * first read and then removed from AsyncStorage, so existing signed-in
  * users keep their session without ever re-persisting it insecurely.
  *
- * If SecureStore is unavailable (e.g. web or a misconfigured build), the
- * adapter falls back to AsyncStorage and reports itself as not secure via
- * `isAuthStorageSecure()`; callers surface that as a degraded state rather
- * than silently pretending tokens are protected.
+ * This mobile app fails closed when SecureStore is unavailable. It never
+ * reads or writes a session token through AsyncStorage as a fallback. The
+ * only AsyncStorage access is one-way legacy migration into verified secure
+ * storage (or removal during sign-out/unavailable-storage cleanup).
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -160,13 +160,12 @@ async function migrateLegacyValueUnlocked(key: string): Promise<string | null> {
     await AsyncStorage.removeItem(key);
     return verified;
   }
-  return legacy;
+  throw new Error('Secure auth token migration could not be verified.');
 }
 
 /**
- * True when tokens are actually protected by SecureStore. False means the
- * AsyncStorage fallback is active and the caller should treat auth storage
- * as degraded (see buildSessionTokenLookup / storageAvailable reporting).
+ * True when tokens can be protected by SecureStore. False means auth must
+ * fail closed; there is deliberately no plaintext fallback.
  */
 export async function isAuthStorageSecure(): Promise<boolean> {
   return isSecureStoreAvailable();
@@ -177,7 +176,10 @@ export const supabaseSecureAuthStorage = {
   async getItem(key: string): Promise<string | null> {
     return serializeAuthStorageOperation(async () => {
       if (!(await isSecureStoreAvailable())) {
-        return AsyncStorage.getItem(key);
+        // Never hydrate a plaintext legacy token when secure storage is not
+        // available. Best-effort removal prevents backup/root exposure.
+        await AsyncStorage.removeItem(key).catch(() => undefined);
+        return null;
       }
       const stored = await secureReadUnlocked(key);
       if (stored !== null) return stored;
@@ -188,8 +190,10 @@ export const supabaseSecureAuthStorage = {
   async setItem(key: string, value: string): Promise<void> {
     return serializeAuthStorageOperation(async () => {
       if (!(await isSecureStoreAvailable())) {
-        await AsyncStorage.setItem(key, value);
-        return;
+        await AsyncStorage.removeItem(key).catch(() => undefined);
+        throw new Error(
+          'Secure auth storage is unavailable; the session was not persisted.',
+        );
       }
       await secureWriteUnlocked(key, value);
       // A copy must never linger in AsyncStorage once secure writes work.
@@ -199,11 +203,11 @@ export const supabaseSecureAuthStorage = {
 
   async removeItem(key: string): Promise<void> {
     return serializeAuthStorageOperation(async () => {
-      if (!(await isSecureStoreAvailable())) {
-        await AsyncStorage.removeItem(key);
-        return;
+      if (await isSecureStoreAvailable()) {
+        await secureRemoveUnlocked(key);
       }
-      await secureRemoveUnlocked(key);
+      // Sign-out/cleanup must remove any legacy plaintext copy even if the
+      // secure-store native module is unavailable.
       await AsyncStorage.removeItem(key);
     });
   },

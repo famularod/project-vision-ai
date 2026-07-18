@@ -11,10 +11,24 @@ const mockLists = {
   documents: jest.fn(),
 };
 
+const mockCloudConnection = {
+  configuration: jest.fn(),
+  test: jest.fn(),
+  countProjects: jest.fn(),
+};
+
+const mockStorage = new Map<string, string>();
+
 jest.mock('@react-native-async-storage/async-storage', () => ({
-  getItem: jest.fn(() => Promise.resolve(null)),
-  setItem: jest.fn(() => Promise.resolve()),
-  removeItem: jest.fn(() => Promise.resolve()),
+  getItem: jest.fn((key: string) => Promise.resolve(mockStorage.get(key) ?? null)),
+  setItem: jest.fn((key: string, value: string) => {
+    mockStorage.set(key, value);
+    return Promise.resolve();
+  }),
+  removeItem: jest.fn((key: string) => {
+    mockStorage.delete(key);
+    return Promise.resolve();
+  }),
 }));
 
 jest.mock('../../services/SupabaseService', () => {
@@ -26,6 +40,10 @@ jest.mock('../../services/SupabaseService', () => {
     listProjectAreas: (...args: unknown[]) => mockLists.areas(...args),
     listScheduleItems: (...args: unknown[]) => mockLists.schedules(...args),
     listReferenceDocuments: (...args: unknown[]) => mockLists.documents(...args),
+    getSupabaseConfigurationStatus: (...args: unknown[]) =>
+      mockCloudConnection.configuration(...args),
+    testSupabaseConnection: (...args: unknown[]) => mockCloudConnection.test(...args),
+    countCloudProjects: (...args: unknown[]) => mockCloudConnection.countProjects(...args),
   };
 });
 
@@ -39,7 +57,11 @@ jest.mock('../../services/DAVESyncTombstones', () => {
   };
 });
 
-import { downloadCloudChanges } from '../../services/SyncService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  downloadCloudChanges,
+  synchronizeLocalData,
+} from '../../services/SyncService';
 
 function okResult<T>(data: T) {
   return { ok: true, configured: true, data };
@@ -47,6 +69,10 @@ function okResult<T>(data: T) {
 
 function failedResult(error: string) {
   return { ok: false, configured: true, data: null, error };
+}
+
+function missingTableStub(message: string) {
+  return { ok: true, configured: true, stubbed: true, data: [], message };
 }
 
 function authoritativeTombstones() {
@@ -59,7 +85,18 @@ function authoritativeTombstones() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockStorage.clear();
   mockTombstoneSync.mockResolvedValue(authoritativeTombstones());
+  mockCloudConnection.configuration.mockReturnValue({
+    configured: true,
+    url: 'https://example.supabase.co',
+    message: 'Configured.',
+  });
+  mockCloudConnection.test.mockResolvedValue({
+    connected: true,
+    projectCount: 1,
+  });
+  mockCloudConnection.countProjects.mockResolvedValue(okResult(1));
   mockLists.projects.mockResolvedValue(okResult([{ name: 'Alpha' }]));
   mockLists.updates.mockResolvedValue(okResult([]));
   mockLists.areas.mockResolvedValue(okResult([]));
@@ -89,6 +126,50 @@ describe('downloadCloudChanges collection failure propagation', () => {
     expect(result.projects).toEqual([]);
     expect(result.collectionErrors.projects).toContain('relation unreachable');
     expect(result.collectionErrors.updates).toBeNull();
+  });
+
+  it('marks configured missing-table stubs as failed collection reads', async () => {
+    mockLists.projects.mockResolvedValue(
+      missingTableStub('projects table is not installed'),
+    );
+    mockLists.updates.mockResolvedValue(
+      missingTableStub('updates table is not installed'),
+    );
+
+    const result = await downloadCloudChanges();
+
+    expect(result.projects).toEqual([]);
+    expect(result.updates).toEqual([]);
+    expect(result.collectionErrors.projects).toContain('projects table is not installed');
+    expect(result.collectionErrors.updates).toContain('updates table is not installed');
+  });
+
+  it('returns a partial full sync without stamping lastSync when a configured table is missing', async () => {
+    mockLists.projects.mockResolvedValue(
+      missingTableStub('projects table is not installed'),
+    );
+
+    const result = await synchronizeLocalData({
+      projects: [],
+      savedUpdates: [],
+      projectAreas: [],
+      scheduleItems: [],
+      referenceDocuments: [],
+    });
+
+    expect(result.downloadStatus).toBe('partial');
+    expect(result.lastSyncAt).toBeNull();
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining('projects table is not installed'),
+    ]));
+    expect(result.recovered.projects).toEqual([]);
+    expect(result.recovered.collectionErrors.projects).toContain(
+      'projects table is not installed',
+    );
+    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+      'projectVisionAI.lastSyncAt.v1',
+      expect.any(String),
+    );
   });
 
   it('marks each independently failed collection', async () => {

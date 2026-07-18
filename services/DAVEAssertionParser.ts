@@ -145,6 +145,8 @@ type TextSegment = Readonly<{
   start: number;
   end: number;
   text: string;
+  /** True when this clause ended in a question mark that segmentation removed. */
+  isQuestion: boolean;
 }>;
 
 type AssertionCandidate = Readonly<{
@@ -619,10 +621,16 @@ function segmentText(sourceText: string): TextSegment[] {
   let match: RegExpExecArray | null;
 
   while ((match = boundary.exec(sourceText)) !== null) {
-    pushTrimmedSegment(sourceText, segmentStart, match.index, segments);
+    pushTrimmedSegment(
+      sourceText,
+      segmentStart,
+      match.index,
+      segments,
+      match[0].includes('?'),
+    );
     segmentStart = match.index + match[0].length;
   }
-  pushTrimmedSegment(sourceText, segmentStart, sourceText.length, segments);
+  pushTrimmedSegment(sourceText, segmentStart, sourceText.length, segments, false);
   return segments;
 }
 
@@ -631,13 +639,21 @@ function pushTrimmedSegment(
   rawStart: number,
   rawEnd: number,
   segments: TextSegment[],
+  isQuestion: boolean,
 ) {
   const raw = sourceText.slice(rawStart, rawEnd);
   const leadingWhitespace = raw.length - raw.trimStart().length;
   const trailingWhitespace = raw.length - raw.trimEnd().length;
   const start = rawStart + leadingWhitespace;
   const end = rawEnd - trailingWhitespace;
-  if (end > start) segments.push({ start, end, text: sourceText.slice(start, end) });
+  if (end > start) {
+    segments.push({
+      start,
+      end,
+      text: sourceText.slice(start, end),
+      isQuestion,
+    });
+  }
 }
 
 function assertionCandidates(segment: TextSegment): AssertionCandidate[] {
@@ -685,7 +701,12 @@ function normalizedAssertion(
   const { rule, segment } = candidate;
   const modality = assertionModality(segment.text);
   const temporality = assertionTemporality(segment.text);
-  const polarity = assertionPolarity(segment.text, rule.polarity, modality);
+  const polarity = assertionPolarity(
+    segment.text,
+    rule.polarity,
+    modality,
+    segment.isQuestion,
+  );
 
   return {
     subject: rule.fixedSubject || assertionSubject(sourceText, candidate),
@@ -707,8 +728,10 @@ function assertionPolarity(
   clause: string,
   rulePolarity: Exclude<DAVEAssertionPolarity, 'uncertain'>,
   modality: DAVEAssertionModality,
+  isQuestion: boolean,
 ): DAVEAssertionPolarity {
   if (
+    isQuestion ||
     modality === 'conditional' ||
     UNCERTAINTY_PATTERN.test(clause) ||
     /^\s*(?:is|are|was|were|has|have|could|would|will)\b/i.test(clause) && /\?\s*$/.test(clause)

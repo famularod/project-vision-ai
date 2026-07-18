@@ -43,6 +43,11 @@ jest.mock('../../services/StartupDiagnostics', () => ({
   startupErrorMessage: (error: unknown) => String(error),
 }));
 
+const mockSavePhotoProgress = jest.fn();
+jest.mock('../../services/PIEPhotoProgressIntelligenceStorage', () => ({
+  savePhotoProgressIntelligence: (...args: unknown[]) => mockSavePhotoProgress(...args),
+}));
+
 const buildCoreMock = buildLivePIECoreIntelligence as jest.MockedFunction<
   typeof buildLivePIECoreIntelligence
 >;
@@ -140,6 +145,8 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     createProjectTruthRepositoryMock.mockReturnValue({
       save: saveProjectTruthMock,
     } as unknown as ReturnType<typeof createDAVEProjectTruthRepository>);
+    mockSavePhotoProgress.mockReset();
+    mockSavePhotoProgress.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -154,7 +161,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
       .mockReturnValueOnce(staleRefresh.promise)
       .mockReturnValueOnce(currentRefresh.promise);
 
-    const screen = await render(
+    const screen = render(
       <PIELiveAuthorityProvider input={authorityInput('project-1')}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
@@ -170,7 +177,9 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     );
     await flushAsyncWork();
 
-    expect(buildCoreMock).toHaveBeenCalledTimes(2);
+    // The new scope is immediately stale for UI policy, but its durable build
+    // waits for the previous build to finish instead of running concurrently.
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
     expect(currentAuthority?.state).toBe('loading');
     expect(currentAuthority?.core).toBeNull();
     expect(currentAuthority?.policy.reportGenerationAllowed).toBe(false);
@@ -179,8 +188,10 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     await act(async () => {
       staleRefresh.resolve(coreResult('project-1'));
       await Promise.resolve();
+      await Promise.resolve();
     });
     expect(currentAuthority?.core).toBeNull();
+    expect(buildCoreMock).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       currentRefresh.resolve(coreResult('project-2'));
@@ -190,13 +201,55 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     expect(currentAuthority?.core?.realityModel.projectId).toBe('project-2');
   });
 
+  it('does not publish stale Core when scope changes during photo-history persistence', async () => {
+    const staleSave = deferred<void>();
+    const currentRefresh = deferred<CoreResult>();
+    mockSavePhotoProgress.mockReturnValueOnce(staleSave.promise);
+    buildCoreMock
+      .mockResolvedValueOnce({
+        ...coreResult('project-1'),
+        longitudinalPhotoIntelligence: { projectId: 'project-1' },
+      } as CoreResult)
+      .mockReturnValueOnce(currentRefresh.promise);
+
+    const screen = render(
+      <PIELiveAuthorityProvider input={authorityInput('project-1')}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flushAsyncWork();
+    expect(mockSavePhotoProgress).toHaveBeenCalledTimes(1);
+
+    await screen.rerender(
+      <PIELiveAuthorityProvider input={authorityInput('project-2')}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flushAsyncWork();
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      staleSave.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(currentAuthority?.core).toBeNull();
+    expect(buildCoreMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      currentRefresh.resolve(coreResult('project-2'));
+      await Promise.resolve();
+    });
+    expect(currentAuthority?.core?.realityModel.projectId).toBe('project-2');
+  });
+
   it('revokes ready policy immediately while same-scope evidence is debouncing', async () => {
     const refreshedCore = deferred<CoreResult>();
     buildCoreMock
       .mockResolvedValueOnce(coreResult())
       .mockReturnValueOnce(refreshedCore.promise);
 
-    const screen = await render(
+    const screen = render(
       <PIELiveAuthorityProvider input={authorityInput('project-1', 'revision one')}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
@@ -255,7 +308,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
       .mockRejectedValueOnce(new Error('temporary failure'))
       .mockResolvedValueOnce(coreResult());
 
-    await render(
+    render(
       <PIELiveAuthorityProvider input={authorityInput()}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
@@ -281,7 +334,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
   it('stops after bounded automatic retries and allows a manual retry', async () => {
     buildCoreMock.mockRejectedValue(new Error('still unavailable'));
 
-    await render(
+    render(
       <PIELiveAuthorityProvider input={authorityInput()}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
@@ -318,7 +371,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
   it('cancels an owned retry timer when the provider unmounts', async () => {
     buildCoreMock.mockRejectedValueOnce(new Error('temporary failure'));
 
-    const screen = await render(
+    const screen = render(
       <PIELiveAuthorityProvider input={authorityInput()}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,

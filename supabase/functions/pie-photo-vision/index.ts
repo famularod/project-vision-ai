@@ -1,4 +1,7 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.108.2';
+import {
+  createClient,
+  type SupabaseClient,
+} from 'https://esm.sh/@supabase/supabase-js@2.108.2';
 import {
   buildVisionProvider,
   type ProviderResult,
@@ -17,6 +20,15 @@ import {
   validatePhotoAnalysisContractEnvelope,
 } from '../_shared/pie-photo-analysis-contract.ts';
 import { validateVisionAuthority } from '../_shared/pie-vision-authority.ts';
+import {
+  buildServerPhotoVisionPreflightId,
+  buildServerPhotoVisionRequestId,
+  callerPhotoVisionRequestIdMatches,
+  isCanonicalPhotoEvidenceStoragePath,
+  photoVisionCallerScopeIsAuthorized,
+  readBoundedUtf8Json,
+  type PhotoVisionRequestIdentityVersions,
+} from '../_shared/pie-photo-vision-request-security.ts';
 
 type VisionRequest = {
   operation?: 'config_check';
@@ -47,12 +59,20 @@ type ImageDiagnostics = {
   signedUrlGenerated: boolean;
 };
 
+type VisionPersistenceResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; failedWrite: string }>;
+
+type EdgeSupabaseClient = SupabaseClient<any, 'public', 'public', any, any>;
+
 const POLICY_VERSION = PIE_PHOTO_ANALYSIS_CONTRACT.policyVersion;
 const ANALYZER_ID = PIE_PHOTO_ANALYSIS_CONTRACT.analyzerId;
 const ANALYZER_VERSION = PIE_PHOTO_ANALYSIS_CONTRACT.analyzerVersion;
 const BUCKET = 'pie-project-evidence';
 const SIGNED_URL_EXPIRES_SECONDS = 600;
 const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 64 * 1024;
+const MAX_FIELD_NOTES_LENGTH = 4_000;
 
 function defaultPromptVersion(mode: VisionMode): string {
   return photoAnalysisContractEnvelope(mode).promptVersion;
@@ -60,6 +80,13 @@ function defaultPromptVersion(mode: VisionMode): string {
 
 Deno.serve(async req => {
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+  const declaredRequestBytes = Number(req.headers.get('content-length') || '0');
+  if (
+    Number.isFinite(declaredRequestBytes) &&
+    declaredRequestBytes > MAX_REQUEST_BYTES
+  ) {
+    return json({ error: 'request_too_large' }, 413);
+  }
 
   const supabaseUrl = requiredEnv('SUPABASE_URL');
   const anonKey = requiredEnv('SUPABASE_ANON_KEY');
@@ -76,7 +103,27 @@ Deno.serve(async req => {
   const { data: userData, error: userError } = await userClient.auth.getUser();
   if (userError || !userData.user) return json({ error: 'unauthorized' }, 401);
 
-  const body = await req.json().catch(() => null) as VisionRequest | null;
+  // The service client bypasses RLS and can invoke a paid provider. Require
+  // the server-maintained singleton owner before parsing any analysis input;
+  // organizationId=userId alone is not sufficient authorization.
+  const { data: isAppOwner, error: ownerError } = await userClient
+    .rpc('dave_is_app_owner');
+  if (ownerError) {
+    return json({ error: 'owner_verification_unavailable' }, 503);
+  }
+  if (isAppOwner !== true) return json({ error: 'forbidden' }, 403);
+
+  const bodyRead = await readBoundedUtf8Json<VisionRequest>(
+    req,
+    MAX_REQUEST_BYTES,
+  );
+  if (!bodyRead.ok) {
+    return json(
+      { error: bodyRead.error },
+      bodyRead.error === 'request_too_large' ? 413 : 400,
+    );
+  }
+  const body = bodyRead.value;
   if (body?.operation === 'config_check') {
     return json(buildRedactedConfigCheck());
   }
@@ -95,10 +142,27 @@ Deno.serve(async req => {
     }, 409);
   }
   const contractEnvelope = photoAnalysisContractEnvelope(mode);
-  const requestId = request.requestId ?? buildRequestId(request, mode);
+  const requestIdentityVersions = photoVisionRequestIdentityVersions(mode);
 
-  const hasAccess = await verifyProjectAccess(userData.user.id, request.organizationId, request.projectId);
+  const hasAccess = photoVisionCallerScopeIsAuthorized({
+    isAppOwner,
+    authenticatedUserId: userData.user.id,
+    organizationId: request.organizationId,
+    projectId: request.projectId,
+  });
   if (!hasAccess) return json({ error: 'forbidden' }, 403);
+
+  // Safe provisional ID for failure diagnostics. The primary key is always
+  // derived by this server and never copied from request.requestId.
+  let requestId = buildServerPhotoVisionPreflightId({
+    mode,
+    organizationId: request.organizationId,
+    projectId: request.projectId,
+    evidenceId: request.evidenceId,
+    baselineEvidenceId: request.baselineEvidenceId,
+    currentEvidenceId: request.currentEvidenceId,
+    versions: requestIdentityVersions,
+  });
 
   const evidenceIds = mode === 'single_photo'
     ? [request.evidenceId as string]
@@ -111,7 +175,7 @@ Deno.serve(async req => {
       const preflightResult = image.degraded
         ? buildPreflightDegradedResult(requestId, image.error)
         : null;
-      await persistRequestAndResult(
+      const persisted = await persistRequestAndResult(
         serviceClient,
         request,
         requestId,
@@ -121,17 +185,40 @@ Deno.serve(async req => {
         validateVisionAuthority(mode, preflightResult?.normalized ?? null),
         imageDiagnostics,
       );
+      if (!persisted.ok) {
+        return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+      }
       return json({ requestId, mode, status: preflightResult?.status ?? 'failed', error: image.error }, image.status);
     }
     imageDiagnostics.push(image.diagnostics);
     images.push(image);
   }
 
+  requestId = buildServerPhotoVisionRequestId({
+    mode,
+    organizationId: request.organizationId,
+    projectId: request.projectId,
+    evidenceId: request.evidenceId,
+    baselineEvidenceId: request.baselineEvidenceId,
+    currentEvidenceId: request.currentEvidenceId,
+    evidenceContentSha256: imageDiagnostics[0]?.sha256,
+    baselineContentSha256: imageDiagnostics[0]?.sha256,
+    currentContentSha256: imageDiagnostics[1]?.sha256,
+    versions: requestIdentityVersions,
+  });
+  if (!callerPhotoVisionRequestIdMatches(request.requestId, requestId)) {
+    return json({
+      error: 'request_identity_mismatch',
+      requestId,
+      mode,
+    }, 409);
+  }
+
   if (mode === 'photo_pair') {
     const pairError = validateDistinctImagePair(images);
     if (pairError) {
       const preflightResult = buildPreflightDegradedResult(requestId, pairError);
-      await persistRequestAndResult(
+      const persisted = await persistRequestAndResult(
         serviceClient,
         request,
         requestId,
@@ -141,6 +228,9 @@ Deno.serve(async req => {
         validateVisionAuthority(mode, preflightResult.normalized ?? null),
         imageDiagnostics,
       );
+      if (!persisted.ok) {
+        return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+      }
       console.log(JSON.stringify(buildSafeImageDiagnosticLog({
         event: 'pie_vision_image_pair_rejected',
         requestId,
@@ -232,7 +322,19 @@ Deno.serve(async req => {
     providerResponseStatus: finalResult.status,
   })));
 
-  await persistRequestAndResult(serviceClient, request, requestId, mode, finalResult, null, jarvis, imageDiagnostics);
+  const persisted = await persistRequestAndResult(
+    serviceClient,
+    request,
+    requestId,
+    mode,
+    finalResult,
+    null,
+    jarvis,
+    imageDiagnostics,
+  );
+  if (!persisted.ok) {
+    return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+  }
 
   return json({
     requestId,
@@ -252,22 +354,15 @@ Deno.serve(async req => {
   });
 });
 
-async function verifyProjectAccess(userId: string, organizationId: string, projectId: string): Promise<boolean> {
-  // Single-user app, no team/org sharing: the caller may only act on their own
-  // organizationId (which the client always sets to its own auth uid), mirroring
-  // the "organization_id = auth.uid()::text" ownership check used by the
-  // pie-project-evidence storage/table RLS policies. This intentionally no
-  // longer routes through pie_layer4_has_permission/organization_memberships,
-  // which has no membership rows for this account.
-  return Boolean(organizationId) && organizationId === userId && Boolean(projectId);
-}
-
 async function loadAuthorizedImage(
-  serviceClient: ReturnType<typeof createClient>,
+  serviceClient: EdgeSupabaseClient,
   organizationId: string,
   projectId: string,
   evidenceId: string,
 ): Promise<(VisionImageInput & { diagnostics: ImageDiagnostics }) | { error: string; status: number; degraded?: boolean }> {
+  if (!safeRequestScopeSegment(evidenceId)) {
+    return { error: 'unsafe_evidence_identity', status: 400 };
+  }
   const { data: evidence, error } = await serviceClient
     .from('pie_evidence_records')
     .select('id, organization_id, project_id, evidence_type, storage_refs, content_hash, mime_type')
@@ -276,20 +371,76 @@ async function loadAuthorizedImage(
     .eq('project_id', projectId)
     .maybeSingle();
 
-  if (error || !evidence || evidence.evidence_type !== 'photo') {
+  if (error) {
+    return { error: 'photo_evidence_lookup_failed', status: 502 };
+  }
+  if (!evidence || evidence.evidence_type !== 'photo') {
     return { error: 'photo_evidence_not_found_or_cross_boundary', status: 404 };
   }
   const storagePath = selectOriginalPath(evidence.storage_refs);
   if (!storagePath) return { error: 'missing_original_storage_ref', status: 422 };
   const evidenceSha = sha256FromContentHash(evidence.content_hash);
+  if (!evidenceSha) return { error: 'invalid_evidence_content_hash', status: 422 };
 
-  const { data: asset } = await serviceClient
+  const { data: asset, error: assetError } = await serviceClient
     .from('pie_photo_assets')
-    .select('evidence_id, size_bytes, content_hash')
+    .select('evidence_id, duplicate_of_evidence_id, size_bytes, content_hash, original_storage_path')
     .eq('evidence_id', evidenceId)
     .eq('organization_id', organizationId)
     .eq('project_id', projectId)
     .maybeSingle();
+  if (assetError) return { error: 'photo_asset_lookup_failed', status: 502 };
+  if (!asset) return { error: 'photo_asset_not_found_or_cross_boundary', status: 404 };
+  if (asset.original_storage_path !== storagePath) {
+    return { error: 'photo_asset_storage_ref_mismatch', status: 409 };
+  }
+  const assetSha = sha256FromContentHash(asset.content_hash);
+  if (!assetSha || assetSha !== evidenceSha) {
+    return { error: 'photo_asset_content_hash_mismatch', status: 409 };
+  }
+
+  // Mobile deduplication deliberately lets a byte-identical lineage record
+  // reuse its canonical root object's path. Accept that one exception only
+  // after verifying the root record is in the same owner/project boundary,
+  // carries the same bytes, and names this exact storage object.
+  let storagePathEvidenceId = evidenceId;
+  const duplicateOfEvidenceId = typeof asset.duplicate_of_evidence_id === 'string'
+    ? asset.duplicate_of_evidence_id.trim()
+    : '';
+  if (duplicateOfEvidenceId) {
+    if (!safeRequestScopeSegment(duplicateOfEvidenceId)) {
+      return { error: 'unsafe_duplicate_photo_root_identity', status: 409 };
+    }
+    const { data: duplicateRoot, error: duplicateRootError } = await serviceClient
+      .from('pie_evidence_records')
+      .select('id, evidence_type, storage_refs, content_hash')
+      .eq('id', duplicateOfEvidenceId)
+      .eq('organization_id', organizationId)
+      .eq('project_id', projectId)
+      .maybeSingle();
+    if (duplicateRootError) {
+      return { error: 'duplicate_photo_root_lookup_failed', status: 502 };
+    }
+    const duplicateRootSha = sha256FromContentHash(duplicateRoot?.content_hash);
+    if (
+      !duplicateRoot ||
+      duplicateRoot.evidence_type !== 'photo' ||
+      duplicateRootSha !== evidenceSha ||
+      selectOriginalPath(duplicateRoot.storage_refs) !== storagePath
+    ) {
+      return { error: 'duplicate_photo_root_mismatch', status: 409 };
+    }
+    storagePathEvidenceId = duplicateOfEvidenceId;
+  }
+  if (!isCanonicalPhotoEvidenceStoragePath({
+    path: storagePath,
+    organizationId,
+    projectId,
+    evidenceId: storagePathEvidenceId,
+  })) {
+    return { error: 'noncanonical_or_cross_boundary_storage_ref', status: 403 };
+  }
+
   const parsedSizeBytes = Number(asset?.size_bytes);
   const sizeBytes = Number.isFinite(parsedSizeBytes) ? parsedSizeBytes : null;
   const diagnosticsBase = {
@@ -297,9 +448,12 @@ async function loadAuthorizedImage(
     photoAssetId: typeof asset?.evidence_id === 'string' ? asset.evidence_id : null,
     storagePathHash: stableHash(storagePath),
     sizeBytes,
-    sha256: sha256FromContentHash(asset?.content_hash) ?? evidenceSha,
+    sha256: assetSha,
   };
   if (sizeBytes === null || sizeBytes <= 0) return { error: 'image_missing_or_zero_bytes', status: 422 };
+  if (!isSupportedImageMimeType(evidence.mime_type)) {
+    return { error: 'unsupported_image_mime_type', status: 422 };
+  }
   const maxImageBytes = Number(Deno.env.get('PIE_VISION_MAX_IMAGE_BYTES') ?? DEFAULT_MAX_IMAGE_BYTES);
   if (sizeBytes !== null && sizeBytes > maxImageBytes) {
     console.log(JSON.stringify({
@@ -761,7 +915,7 @@ function buildPreflightDegradedResult(requestId: string, error: string): Provide
 }
 
 async function persistRequestAndResult(
-  client: ReturnType<typeof createClient>,
+  client: EdgeSupabaseClient,
   request: VisionRequest,
   requestId: string,
   mode: VisionMode,
@@ -769,10 +923,10 @@ async function persistRequestAndResult(
   failureReason: string | null,
   jarvis: ReturnType<typeof validateVisionAuthority>,
   imageDiagnostics: ImageDiagnostics[] = [],
-): Promise<void> {
+): Promise<VisionPersistenceResult> {
   const rejectedClaims = jarvis.rejectedClaims;
   const warnings = jarvis.warnings;
-  await client.from('pie_vision_analysis_requests').upsert({
+  const requestWrite = await client.from('pie_vision_analysis_requests').upsert({
     id: requestId,
     organization_id: request.organizationId,
     project_id: request.projectId,
@@ -802,10 +956,13 @@ async function persistRequestAndResult(
       schemaVersion: photoAnalysisContractEnvelope(mode).schemaVersion,
     },
   });
+  if (requestWrite.error) {
+    return { ok: false, failedWrite: 'analysis_request' };
+  }
 
   const evidenceId = mode === 'single_photo' ? request.evidenceId : request.currentEvidenceId;
   if (evidenceId) {
-    await client.from('pie_evidence_analyses').upsert({
+    const analysisWrite = await client.from('pie_evidence_analyses').upsert({
       id: `${requestId}:analysis`,
       evidence_id: evidenceId,
       organization_id: request.organizationId,
@@ -842,8 +999,11 @@ async function persistRequestAndResult(
       raw_response: providerResult?.rawResponse ?? { failureReason },
       usage: providerResult?.usage ?? {},
     });
+    if (analysisWrite.error) {
+      return markVisionPersistenceIncomplete(client, requestId, 'evidence_analysis');
+    }
 
-    await client.from('pie_visual_jarvis_results').upsert({
+    const jarvisWrite = await client.from('pie_visual_jarvis_results').upsert({
       id: `${requestId}:jarvis`,
       analysis_id: `${requestId}:analysis`,
       evidence_id: evidenceId,
@@ -856,10 +1016,13 @@ async function persistRequestAndResult(
       limitations: stringArray(providerResult?.normalized?.limitations),
       policy_version: POLICY_VERSION,
     });
+    if (jarvisWrite.error) {
+      return markVisionPersistenceIncomplete(client, requestId, 'jarvis_result');
+    }
   }
 
   if (mode === 'photo_pair' && request.baselineEvidenceId && request.currentEvidenceId && providerResult?.normalized) {
-    await client.from('pie_photo_semantic_comparison_results').upsert({
+    const comparisonWrite = await client.from('pie_photo_semantic_comparison_results').upsert({
       id: `${requestId}:comparison`,
       request_id: requestId,
       organization_id: request.organizationId,
@@ -936,7 +1099,54 @@ async function persistRequestAndResult(
         policyVersion: POLICY_VERSION,
       },
     });
+    if (comparisonWrite.error) {
+      return markVisionPersistenceIncomplete(client, requestId, 'semantic_comparison');
+    }
   }
+
+  return { ok: true };
+}
+
+async function markVisionPersistenceIncomplete(
+  client: EdgeSupabaseClient,
+  requestId: string,
+  failedWrite: string,
+): Promise<VisionPersistenceResult> {
+  const marker = await client
+    .from('pie_vision_analysis_requests')
+    .update({
+      status: 'failed',
+      failure_reason: `persistence_incomplete:${failedWrite}`,
+    })
+    .eq('id', requestId);
+
+  if (marker.error) {
+    console.error(JSON.stringify({
+      event: 'pie_vision_persistence_failure_marker_failed',
+      requestId,
+      failedWrite,
+    }));
+  }
+  return { ok: false, failedWrite };
+}
+
+function persistenceFailureResponse(
+  requestId: string,
+  mode: VisionMode,
+  failedWrite: string,
+): Response {
+  console.error(JSON.stringify({
+    event: 'pie_vision_persistence_failed',
+    requestId,
+    mode,
+    failedWrite,
+  }));
+  return json({
+    requestId,
+    mode,
+    status: 'failed',
+    error: 'analysis_persistence_failed',
+  }, 502);
 }
 
 function buildSafeImageDiagnosticLog(input: {
@@ -987,29 +1197,67 @@ function stableHash(value: string) {
 function validateRequestShape(body: VisionRequest | null): string | null {
   if (!body?.organizationId || !body.projectId) return 'organizationId and projectId are required';
   const mode = body.mode ?? (body.baselineEvidenceId && body.currentEvidenceId ? 'photo_pair' : 'single_photo');
+  if (mode !== 'single_photo' && mode !== 'photo_pair') return 'unsupported photo analysis mode';
+  if (!safeRequestScopeSegment(body.organizationId) || !safeRequestScopeSegment(body.projectId)) {
+    return 'organizationId and projectId must be safe identity values';
+  }
+  if (body.requestId !== undefined && (
+    typeof body.requestId !== 'string' || body.requestId.length > 4_096
+  )) {
+    return 'requestId is invalid';
+  }
   if (mode === 'single_photo' && !body.evidenceId) return 'evidenceId is required for single_photo';
   if (mode === 'photo_pair' && (!body.baselineEvidenceId || !body.currentEvidenceId)) {
     return 'baselineEvidenceId and currentEvidenceId are required for photo_pair';
   }
+  const evidenceIds = mode === 'single_photo'
+    ? [body.evidenceId]
+    : [body.baselineEvidenceId, body.currentEvidenceId];
+  if (evidenceIds.some(value => !safeRequestScopeSegment(value))) {
+    return 'evidence IDs must be safe identity values';
+  }
+  if (!boundedOptionalText(body.projectName, 256) ||
+    !boundedOptionalText(body.areaName, 256) ||
+    !boundedOptionalText(body.fieldNotes, MAX_FIELD_NOTES_LENGTH)) {
+    return 'photo analysis context is too large';
+  }
   return null;
 }
 
-function buildRequestId(request: VisionRequest, mode: VisionMode): string {
-  const ids = mode === 'single_photo'
-    ? request.evidenceId
-    : `${request.baselineEvidenceId}:${request.currentEvidenceId}`;
+function photoVisionRequestIdentityVersions(
+  mode: VisionMode,
+): PhotoVisionRequestIdentityVersions {
   const contract = photoAnalysisContractEnvelope(mode);
-  return [
-    mode,
-    request.organizationId,
-    request.projectId,
-    ids,
-    contract.contractVersion,
-    contract.analyzerVersion,
-    contract.promptVersion,
-    contract.schemaVersion,
-    contract.policyVersion,
-  ].join(':');
+  return {
+    contractVersion: contract.contractVersion,
+    analyzerId: ANALYZER_ID,
+    analyzerVersion: contract.analyzerVersion,
+    promptVersion: contract.promptVersion,
+    schemaVersion: contract.schemaVersion,
+    policyVersion: contract.policyVersion,
+  };
+}
+
+function safeRequestScopeSegment(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    value !== '.' &&
+    value !== '..' &&
+    !value.includes('/') &&
+    !value.includes('\\') &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function boundedOptionalText(value: unknown, maxLength: number): boolean {
+  return value === undefined ||
+    value === null ||
+    (typeof value === 'string' && value.length <= maxLength);
+}
+
+function isSupportedImageMimeType(value: unknown): boolean {
+  return typeof value === 'string' &&
+    /^image\/(jpeg|jpg|png|heic|heif|webp)$/i.test(value);
 }
 
 function selectOriginalPath(storageRefs: unknown): string | null {

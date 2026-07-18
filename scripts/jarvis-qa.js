@@ -6209,7 +6209,7 @@ if (
     'Check before sharing',
     'Why?',
     'reportApproved',
-    'reportApproved && shareOpen',
+    'reportApproved && reportApprovalAllowed && shareOpen',
     'No report is sent automatically',
     'Project Detail',
     'Review the prepared report, make any edits, and approve it when ready.',
@@ -6393,20 +6393,21 @@ if (
   hasAll(scheduleScreen + app, [
     'isDavePdfTextExtractionAvailable',
     'isDaveTextRecognitionAvailable',
-    'scheduleAiExtractorUrl',
     'no dated activities were extracted',
-  ])
+  ]) &&
+  !app.includes('extractScheduleItemsWithAiEndpoint') &&
+  !adminScreen.includes('Advanced schedule OCR endpoint')
 ) {
   pass(
     'Schedule import',
-    'Schedule import has local extraction, optional fallback extraction, and a user-facing failure path.',
+    'Schedule import uses bounded local extraction, has a user-facing failure path, and exposes no arbitrary upload endpoint.',
     'App.tsx',
   );
 } else {
   fail(
     'Schedule import',
-    'Schedule extraction fallback or failure handling was not found.',
-    'Preserve local extraction, optional fallback extraction, and clear failure handling.',
+    'Safe local schedule extraction or its failure handling was not found.',
+    'Preserve bounded local extraction and clear failure handling without a user-configurable upload endpoint.',
     'App.tsx',
   );
 }
@@ -6748,7 +6749,7 @@ if (
     'AsyncStorage.setItem',
     'setScheduleItems(previous =>',
     'ScheduleImportFlow',
-    'scheduleItems: scopedReportScheduleItems',
+    'reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems',
     'authoritativeScheduleItems',
     'liveAuthority.projectTruth.briefing.schedule',
   ]) &&
@@ -7023,10 +7024,14 @@ if (
 
 if (
   hasAll(daveProjectTruth, [
+    'const hasComparablePrior',
+    'comparisonCompleted',
+    "comparability === 'strong' || comparability === 'probable'",
+    'safeVisualEvidence && hasComparablePrior',
     "evidenceClass: safeVisualEvidence ? 'observation' : intelligence ? 'interpretation' : 'uncertainty'",
-    "progressClaim = safeVisualEvidence",
     "progressClaim !== 'supported'",
-    'No confirmed comparable prior photo is available.',
+    'No confirmed prior photo is available.',
+    'The prior photo is not sufficiently comparable to support a change or progress conclusion.',
     'The result is not supported by visual evidence alone.',
     'The task is marked complete without PM verification or connected completion evidence.',
   ])
@@ -7034,14 +7039,14 @@ if (
   pass(
     'Longitudinal photo claim safety',
     'Photo intelligence separates observation from inference, requires verification/corroboration, avoids unsupported completion percentages, and discloses invisible-work limits.',
-    'services/PIEPhotoProgressIntelligence.ts',
+    'services/DAVEProjectTruth.ts',
   );
 } else {
   fail(
     'Longitudinal photo claim safety',
     'Photo intelligence may be overclaiming completion or progress.',
     'Separate observations from inferences, require corroboration for completion, avoid invented percentages, and disclose invisible-work limits.',
-    'services/PIEPhotoProgressIntelligence.ts',
+    'services/DAVEProjectTruth.ts',
   );
 }
 
@@ -7289,7 +7294,7 @@ if (
   fileExists('supabase/functions/_shared/pie-vision-provider.ts') &&
   hasAll(photoVisionFunction, [
     'auth.getUser()',
-    'verifyProjectAccess',
+    'photoVisionCallerScopeIsAuthorized',
     'loadAuthorizedImage',
     'photo_pair',
     'pie_photo_semantic_comparison_results',
@@ -7579,7 +7584,7 @@ if (
     'Full Written Report',
     'Copy Report',
     'Email Report',
-    'reportApproved && shareOpen',
+    'reportApproved && reportApprovalAllowed && shareOpen',
     'Project Detail',
     'Current conditions and schedule position',
   ]) &&
@@ -7615,7 +7620,7 @@ if (
     'Email Report',
     'Copy, Email, and Text unlock after approval',
     'No report is sent automatically',
-    'reportApproved && shareOpen',
+    'reportApproved && reportApprovalAllowed && shareOpen',
     'ReportShareButton',
     'onEmailReport',
     'onCopyReport',
@@ -7963,7 +7968,7 @@ if (
   hasAll(syncService, [
     'lastError: sanitizedResult',
     'formatQueueItemFailure(item, sanitizedResult)',
-    'await AsyncStorage.setItem(key, result.value)',
+    'await persistVerifiedOfflineQueue(parseOfflineQueueValue(result.value))',
     'await AsyncStorage.setItem(key, nextValue)',
   ])
 ) {

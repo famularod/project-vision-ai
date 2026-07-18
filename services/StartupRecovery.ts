@@ -3,6 +3,7 @@ import {
   logStartupDiagnostic,
   startupErrorMessage,
 } from './StartupDiagnostics';
+import { quarantineCorruptLocalValue } from './LocalStorageCorruptionQuarantine';
 
 export type StartupStorageReadState =
   | 'missing'
@@ -54,6 +55,11 @@ export type StartupNormalizationResult<T> = {
   isolatedRecordCount: number;
   error: string | null;
 };
+
+export type StartupInvalidValueRecovery<T> = Readonly<{
+  value: T;
+  isolatedRecordCount: number;
+}>;
 
 export type StartupHydrationFailure = {
   state: 'corrupt_quarantined' | 'read_failed';
@@ -116,6 +122,10 @@ export async function readStartupJson<T>(
   key: string,
   fallback: T,
   label: string,
+  validate?: (value: unknown) => boolean,
+  recoverInvalidValue?: (
+    value: unknown,
+  ) => StartupInvalidValueRecovery<T> | null,
 ): Promise<StartupStorageReadResult<T>> {
   logStartupDiagnostic('storage_hydration_started', `${label} hydration started.`, {
     key,
@@ -138,8 +148,43 @@ export async function readStartupJson<T>(
       };
     }
 
+    let parsed: T;
     try {
-      const parsed = JSON.parse(raw) as T;
+      parsed = JSON.parse(raw) as T;
+    } catch (error) {
+      return quarantineUnavailableStartupValue({
+        key,
+        raw,
+        label,
+        error,
+        replacementRaw: null,
+        isolatedRecordCount: 1,
+      });
+    }
+
+    if (validate && !validate(parsed)) {
+      const validationError = new Error(`${label} has an invalid stored structure.`);
+      let recovery: StartupInvalidValueRecovery<T> | null = null;
+      try {
+        recovery = recoverInvalidValue?.(parsed) || null;
+      } catch (error) {
+        logStartupDiagnostic(
+          'storage_record_isolated',
+          `${label} invalid-record salvage failed.`,
+          { key, error: startupErrorMessage(error) },
+        );
+      }
+      return quarantineUnavailableStartupValue({
+        key,
+        raw,
+        label,
+        error: validationError,
+        replacementRaw: recovery ? JSON.stringify(recovery.value) : null,
+        isolatedRecordCount: Math.max(1, recovery?.isolatedRecordCount || 0),
+      });
+    }
+
+    try {
       logStartupDiagnostic('storage_hydration_completed', `${label} hydration completed.`, {
         key,
       });
@@ -154,25 +199,13 @@ export async function readStartupJson<T>(
         found: true,
       };
     } catch (error) {
-      const parseError = startupErrorMessage(error);
-      const quarantine = await quarantineStartupStorageValue(key, raw, label, error);
-      if (!quarantine.quarantined) {
-        return unavailableStartupResult({
-          state: 'read_failed',
-          key,
-          label,
-          error: `${parseError}; quarantine failed: ${quarantine.error}`,
-          recovered: false,
-          isolatedRecordCount: 0,
-        });
-      }
       return unavailableStartupResult({
-        state: 'corrupt_quarantined',
+        state: 'read_failed',
         key,
         label,
-        error: parseError,
-        recovered: true,
-        isolatedRecordCount: 1,
+        error: startupErrorMessage(error),
+        recovered: false,
+        isolatedRecordCount: 0,
       });
     }
   } catch (error) {
@@ -189,6 +222,34 @@ export async function readStartupJson<T>(
       isolatedRecordCount: 0,
     });
   }
+}
+
+/**
+ * Reads a required array domain without allowing per-record normalization to
+ * erase malformed rows. On the first read, exact bytes are quarantined and
+ * only records accepted by the supplied legacy-aware predicate are installed
+ * as verified salvage. The caller remains blocked until an explicit retry.
+ */
+export async function readStartupJsonArray<T>(
+  key: string,
+  fallback: T[],
+  label: string,
+  isValidRecord: (value: unknown) => boolean,
+): Promise<StartupStorageReadResult<T[]>> {
+  return readStartupJson<T[]>(
+    key,
+    fallback,
+    label,
+    value => Array.isArray(value) && value.every(isValidRecord),
+    value => {
+      if (!Array.isArray(value)) return null;
+      const salvaged = value.filter(isValidRecord) as T[];
+      return {
+        value: salvaged,
+        isolatedRecordCount: value.length - salvaged.length,
+      };
+    },
+  );
 }
 
 export function normalizeStartupArray<T>(
@@ -238,17 +299,28 @@ export async function quarantineStartupStorageValue(
   raw: string,
   label: string,
   error: unknown,
+  replacementRaw: string | null = null,
 ) {
-  const quarantineKey = `${key}.corrupt.${Date.now()}`;
   try {
-    await AsyncStorage.setItem(quarantineKey, raw);
-    await AsyncStorage.removeItem(key);
+    const recovery = await quarantineCorruptLocalValue({
+      storage: AsyncStorage,
+      storageKey: key,
+      quarantineKeyPrefix: `${key}.corrupt.`,
+      raw,
+      replacementRaw,
+    });
+    const quarantineKey = recovery.quarantineKey;
     logStartupDiagnostic('storage_record_isolated', `${label} storage was quarantined.`, {
       key,
       quarantineKey,
       error: startupErrorMessage(error),
     });
-    return { quarantined: true as const, quarantineKey, error: null };
+    return {
+      quarantined: true as const,
+      quarantineKey,
+      replacementApplied: recovery.replacementApplied,
+      error: null,
+    };
   } catch (quarantineError) {
     const quarantineErrorMessage = startupErrorMessage(quarantineError);
     logStartupDiagnostic('storage_record_isolated', `${label} storage could not be quarantined.`, {
@@ -258,9 +330,55 @@ export async function quarantineStartupStorageValue(
     return {
       quarantined: false as const,
       quarantineKey: null,
+      replacementApplied: false,
       error: quarantineErrorMessage,
     };
   }
+}
+
+async function quarantineUnavailableStartupValue<T>({
+  key,
+  raw,
+  label,
+  error,
+  replacementRaw,
+  isolatedRecordCount,
+}: {
+  key: string;
+  raw: string;
+  label: string;
+  error: unknown;
+  replacementRaw: string | null;
+  isolatedRecordCount: number;
+}): Promise<StartupStorageReadResult<T>> {
+  const detail = startupErrorMessage(error);
+  const quarantine = await quarantineStartupStorageValue(
+    key,
+    raw,
+    label,
+    error,
+    replacementRaw,
+  );
+  if (!quarantine.quarantined) {
+    return unavailableStartupResult({
+      state: 'read_failed',
+      key,
+      label,
+      error: `${detail}; quarantine failed: ${quarantine.error}`,
+      recovered: false,
+      isolatedRecordCount: 0,
+    });
+  }
+  return unavailableStartupResult({
+    state: 'corrupt_quarantined',
+    key,
+    label,
+    error: replacementRaw === null
+      ? detail
+      : `${detail} ${isolatedRecordCount} invalid record${isolatedRecordCount === 1 ? '' : 's'} isolated; valid records were preserved for retry.`,
+    recovered: true,
+    isolatedRecordCount,
+  });
 }
 
 function unavailableStartupResult<T>({

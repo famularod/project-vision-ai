@@ -1,6 +1,6 @@
 {
   "name": "project-photo-update-tool",
-  "version": "1.0.0",
+  "version": "1.0.56",
   "main": "index.ts",
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -43,7 +43,8 @@
     "start": "expo start",
     "typecheck": "tsc --noEmit",
     "check:expo-dependencies": "npx expo install --check",
-    "check": "node scripts/production-secret-guard.js && npm run check:expo-dependencies && npm run typecheck",
+    "check": "node scripts/production-secret-guard.js && npm run check:release-metadata && npm run check:expo-dependencies && npm run typecheck",
+    "check:release-metadata": "node scripts/release-metadata-test.js",
     "jarvis:qa": "npm run jarvis:contracts",
     "jarvis:contracts": "node scripts/jarvis-qa.js",
     "test": "npm run check && npm run test:unit",

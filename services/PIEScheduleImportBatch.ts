@@ -1,6 +1,7 @@
 import type { ReferenceDocument, ScheduleItem } from '../types';
 import { parseFlexibleDate } from '../utils/date';
 import { scheduleItemNeedsCompletionVerification } from './DAVECompletionVerification';
+import { bindScheduleImportBatch } from './ScheduleImportProvenance';
 
 export type PIEScheduleImportKind = 'schedule_file' | 'message_screenshots';
 
@@ -13,6 +14,28 @@ export type PIEScheduleImportBatch = {
   items: ScheduleItem[];
   documents: ReferenceDocument[];
 };
+
+/**
+ * Binds every reviewed task and source document to the batch's immutable ID.
+ * This must be called when the user approves an import, after review edits but
+ * before records are persisted. Same-named files can then never own or remove
+ * one another's tasks by filename coincidence.
+ */
+export function bindPIEScheduleImportBatchProvenance(
+  batch: PIEScheduleImportBatch,
+): PIEScheduleImportBatch {
+  const bound = bindScheduleImportBatch({
+    importBatchId: batch.id,
+    items: batch.items,
+    documents: batch.documents,
+  });
+
+  return {
+    ...batch,
+    items: bound.items,
+    documents: bound.documents,
+  };
+}
 
 export type PIEScheduleProjectGroup = {
   id: string;
