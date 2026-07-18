@@ -1,6 +1,7 @@
 import 'react-native-url-polyfill/auto';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabaseSecureAuthStorage } from './SupabaseAuthStorage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { AppState } from 'react-native';
 import {
@@ -281,11 +282,9 @@ let lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
 let lastAuthEvent = 'UNKNOWN';
 let authAutoRefreshSubscriptionStarted = false;
 
-const supabaseAuthStorage = {
-  getItem: (key: string) => AsyncStorage.getItem(key),
-  setItem: (key: string, value: string) => AsyncStorage.setItem(key, value),
-  removeItem: (key: string) => AsyncStorage.removeItem(key),
-};
+// Audit P0-14/P1-30: tokens live in SecureStore (Keychain/Keystore), never
+// plain AsyncStorage. See services/SupabaseAuthStorage.ts.
+const supabaseAuthStorage = supabaseSecureAuthStorage;
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -2327,10 +2326,12 @@ async function requireAuthenticatedOwnerId(
 }
 
 async function probeAuthStorage(): Promise<boolean> {
+  // Probes the real auth storage adapter (SecureStore-backed), not
+  // AsyncStorage, so storageAvailable reflects where tokens actually live.
   try {
-    await AsyncStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
-    const stored = await AsyncStorage.getItem(AUTH_STORAGE_PROBE_KEY);
-    await AsyncStorage.removeItem(AUTH_STORAGE_PROBE_KEY);
+    await supabaseAuthStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
+    const stored = await supabaseAuthStorage.getItem(AUTH_STORAGE_PROBE_KEY);
+    await supabaseAuthStorage.removeItem(AUTH_STORAGE_PROBE_KEY);
     return stored === 'ok';
   } catch {
     return false;

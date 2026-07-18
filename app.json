@@ -3,7 +3,10 @@
     "name": "Project Photo Update Tool",
     "slug": "project-photo-update-tool",
     "version": "1.0.56",
-    "platforms": ["ios", "android"],
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.png",
@@ -34,7 +37,8 @@
         "ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
-      ]
+      ],
+      "allowBackup": false
     },
     "plugins": [
       "./plugins/withDaveIosAppIcon",
@@ -51,7 +55,8 @@
           "microphonePermission": "Allow DAVE to record project memories.",
           "enableBackgroundRecording": false
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "extra": {
       "buildLabel": "Build 56",
