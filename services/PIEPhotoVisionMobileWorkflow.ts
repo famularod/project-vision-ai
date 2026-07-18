@@ -41,6 +41,11 @@ import {
   readPhotoBase64WithinLimits,
   selectWinningPriorPhotoCandidate,
 } from './PhotoPairPreparation';
+import {
+  buildPhotoEvidenceDeduplicationPlan,
+  decidePhotoEvidencePair,
+  type ExistingPhotoEvidenceVersion,
+} from './PhotoEvidenceDeduplication';
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -95,6 +100,8 @@ type AnalyzeInput = {
 type StagedPhotoEvidence = {
   assetId: string;
   evidenceId: string;
+  evidenceVersion: number;
+  duplicateOfEvidenceId: string | null;
   storagePath: string;
   storagePathHash: string;
   contentHash: string;
@@ -509,7 +516,70 @@ export async function analyzeProjectPhotoWithVision({
     });
     executedStages.push('current_photo_uploaded', 'current_evidence_record_created');
 
-    assertComparableEvidencePair(baselineEvidence, currentEvidence);
+    const pairDecision = decidePhotoEvidencePair({
+      baselineEvidenceId: baselineEvidence.evidenceId,
+      currentEvidenceId: currentEvidence.evidenceId,
+      baselineContentHash: baselineEvidence.contentHash,
+      currentContentHash: currentEvidence.contentHash,
+      baselineSizeBytes: baselineEvidence.sizeBytes,
+      currentSizeBytes: currentEvidence.sizeBytes,
+    });
+    if (pairDecision.kind === 'duplicate_bytes') {
+      executedStages.push('duplicate_evidence_lineage_resolved', 'identical_photo_provider_skipped');
+      return {
+        status: pairDecision.analysisStatus,
+        title: 'Duplicate photo recognized',
+        summary: 'This photo matches existing project evidence exactly and was linked without creating an analysis error.',
+        visibleChange: null,
+        location: photo.selectedAreaName || update.selectedAreaName || null,
+        comparisonConfidence: 'high',
+        comparability: 'identical_bytes',
+        captureLimitations: [
+          'The current and previous photo files are identical.',
+          'A duplicate file is not independent evidence of project progress.',
+        ],
+        projectProgress: pairDecision.projectProgress,
+        assessmentDisposition: 'indeterminate',
+        repeatPhotoGuidance: 'Capture a new photo of the current field condition before assessing change.',
+        authorityMessage: 'The duplicate was preserved as evidence lineage. No progress or project status was inferred.',
+        currentObservation: 'The current photo bytes match existing project evidence.',
+        changedFromPrior: 'No independent visual comparison was run because the files are identical.',
+        additions: [],
+        removals: [],
+        findings: [],
+        possibleProgress: 'No independent progress evidence was added by this duplicate photo.',
+        possibleConcerns: [],
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        currentPhotoAssetId: currentEvidence.assetId,
+        priorPhotoAssetId: baselineEvidence.assetId,
+        currentEvidenceId: currentEvidence.evidenceId,
+        priorEvidenceId: baselineEvidence.evidenceId,
+        semanticComparisonResultId: null,
+        provenance: 'unsupported',
+        visualGroundingRegions: [],
+        diagnostics: buildDiagnostics({
+          baselineEvidence,
+          currentEvidence,
+          providerResponseStatus: 'duplicate_bytes_resolved',
+          selectedPriorPhotoId: priorSelection.selected.photo.id,
+          priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+          selectionCandidateCount: priorSelection.candidateCount,
+          selectedPriorReason: priorSelection.selected.reason,
+          priorSelectionDiagnostics: priorSelection.diagnostics,
+          rejectedPriorReasons: priorSelection.rejectedReasons,
+          currentPhotoPrep: currentPrepared,
+          priorPhotoPrep: priorSelection.selected.preparedFile,
+          usablePriorCandidateFound: true,
+          skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
+          executedStages,
+          resultPairMatchesRequestedPair: true,
+          tokenLookup,
+          retryFetchedFreshToken: retryAttempt,
+          resultProvenance: 'unsupported',
+        }),
+        updatedAt: new Date().toISOString(),
+      };
+    }
 
     const analysisRunIdentity = createPhotoAnalysisRunIdentity({
       organizationId,
@@ -1135,115 +1205,255 @@ async function stagePhotoEvidenceUncached({
   const extension = preparedFile.extension;
   const evidenceId = identity.evidenceId;
   const assetId = identity.assetId;
-  const storagePath = `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
-  const storagePathHash = stableHash(storagePath);
   const contentHash = `sha256:${preparedFile.sha256}`;
   const capturedAt = validCaptureTimestampValue(photo);
+  const receivedAt = new Date().toISOString();
+  let lastConflictMessage = 'photo_evidence_version_conflict';
 
-  const uploadResult = await uploadPreparedPhoto({
-    bucket: PIE_EVIDENCE_BUCKET,
-    path: storagePath,
-    preparedFile,
-    upsert: true,
-  });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const existingVersions = await loadExistingPhotoEvidenceVersions({
+      client,
+      organizationId,
+      projectId,
+      contentHash,
+      role: preparedFile.role,
+    });
+    const plan = buildPhotoEvidenceDeduplicationPlan({
+      intendedEvidenceId: evidenceId,
+      analyzerId: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerId,
+      analyzerVersion: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerVersion,
+      existingVersions,
+    });
+    const storagePath = plan.existingStoragePath
+      || `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
+    const storagePathHash = stableHash(storagePath);
 
-  if (!uploadResult.ok) {
+    if (plan.mode === 'idempotent_existing' && plan.existingStoragePath) {
+      const uploadResult = await uploadPreparedPhoto({
+        bucket: PIE_EVIDENCE_BUCKET,
+        path: storagePath,
+        preparedFile,
+        upsert: true,
+      });
+      if (!uploadResult.ok) {
+        throw new PhotoPreparationError(
+          preparedFile.role,
+          prepReason(preparedFile.role, 'upload_missing'),
+          uploadResult.error || 'Photo evidence upload failed',
+        );
+      }
+      return stagedPhotoEvidenceResult({
+        assetId,
+        evidenceId,
+        evidenceVersion: plan.evidenceVersion,
+        duplicateOfEvidenceId: plan.duplicateOfEvidenceId,
+        storagePath,
+        storagePathHash,
+        contentHash,
+        contentSha256: preparedFile.sha256,
+        sizeBytes: preparedFile.sizeBytes,
+      });
+    }
+
+    if (!plan.existingStoragePath) {
+      const uploadResult = await uploadPreparedPhoto({
+        bucket: PIE_EVIDENCE_BUCKET,
+        path: storagePath,
+        preparedFile,
+        upsert: true,
+      });
+
+      if (!uploadResult.ok) {
+        throw new PhotoPreparationError(
+          preparedFile.role,
+          prepReason(preparedFile.role, 'upload_missing'),
+          uploadResult.error || 'Photo evidence upload failed',
+        );
+      }
+    }
+
+    if (plan.mode !== 'idempotent_existing') {
+      const { data: userData } = await client.auth.getUser();
+      const storageRefs: JsonValue = [{
+        bucket: PIE_EVIDENCE_BUCKET,
+        path: storagePath,
+        variant: 'original',
+        mimeType,
+        sizeBytes: preparedFile.sizeBytes,
+        sha256: preparedFile.sha256,
+      }];
+      const evidencePayload = {
+        id: evidenceId,
+        organization_id: organizationId,
+        project_id: projectId,
+        evidence_type: 'photo',
+        source: 'mobile_photo_update',
+        source_system: 'project_photo_update_tool',
+        captured_at: capturedAt,
+        effective_at: update.date || receivedAt,
+        received_at: receivedAt,
+        author_id: userData.user?.id ?? null,
+        storage_refs: storageRefs,
+        content_hash: contentHash,
+        mime_type: mimeType,
+        evidence_version: plan.evidenceVersion,
+        authority: 'supporting',
+        processing_state: 'queued',
+        analyzer_id: plan.analyzerId,
+        analyzer_version: plan.analyzerVersion,
+        lineage: {
+          parentEvidenceIds: [...plan.parentEvidenceIds],
+          derivedEvidenceIds: [],
+          analyzerRunIds: [],
+          correctionIds: [],
+        },
+        associations: [{
+          type: 'location',
+          id: photo.selectedAreaId || update.selectedAreaId || projectId,
+          role: photo.selectedAreaName || update.selectedAreaName || update.projectName,
+        }],
+        related_evidence_ids: [...plan.parentEvidenceIds],
+        hidden_from_normal_queries: false,
+      };
+      const { error: evidenceError } = await client
+        .from('pie_evidence_records')
+        .upsert(evidencePayload);
+
+      if (evidenceError) {
+        lastConflictMessage = evidenceError.message;
+        if (attempt < 2 && isPhotoEvidenceVersionConflict(evidenceError)) continue;
+        throw new PhotoPreparationError(
+          preparedFile.role,
+          prepReason(preparedFile.role, 'storage_missing'),
+          evidenceError.message,
+        );
+      }
+    }
+
+    const { error: assetError } = await client
+      .from('pie_photo_assets')
+      .upsert({
+        evidence_id: evidenceId,
+        organization_id: organizationId,
+        project_id: projectId,
+        original_storage_path: storagePath,
+        analysis_derivative_path: null,
+        thumbnail_path: null,
+        content_hash: contentHash,
+        duplicate_of_evidence_id: plan.duplicateOfEvidenceId,
+        width: preparedFile.width,
+        height: preparedFile.height,
+        mime_type: mimeType,
+        size_bytes: preparedFile.sizeBytes,
+        capture_source: captureSource,
+        captured_at: capturedAt,
+        exif: {},
+        analysis_status: 'queued',
+        current_analysis_version: plan.currentAnalysisVersion,
+        hidden_from_normal_queries: false,
+      });
+
+    if (assetError) {
+      throw new PhotoPreparationError(
+        preparedFile.role,
+        prepReason(preparedFile.role, 'storage_missing'),
+        assetError.message,
+      );
+    }
+
+    return stagedPhotoEvidenceResult({
+      assetId,
+      evidenceId,
+      evidenceVersion: plan.evidenceVersion,
+      duplicateOfEvidenceId: plan.duplicateOfEvidenceId,
+      storagePath,
+      storagePathHash,
+      contentHash,
+      contentSha256: preparedFile.sha256,
+      sizeBytes: preparedFile.sizeBytes,
+    });
+  }
+
+  throw new PhotoPreparationError(
+    preparedFile.role,
+    prepReason(preparedFile.role, 'storage_missing'),
+    lastConflictMessage,
+  );
+}
+
+async function loadExistingPhotoEvidenceVersions({
+  client,
+  organizationId,
+  projectId,
+  contentHash,
+  role,
+}: {
+  client: NonNullable<ReturnType<typeof getSupabaseClient>>;
+  organizationId: string;
+  projectId: string;
+  contentHash: string;
+  role: PhotoPrepRole;
+}): Promise<ExistingPhotoEvidenceVersion[]> {
+  const { data: evidenceData, error: evidenceError } = await client
+    .from('pie_evidence_records')
+    .select('id,evidence_version,analyzer_id,analyzer_version,processing_state')
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .eq('content_hash', contentHash)
+    .order('evidence_version', { ascending: true });
+  if (evidenceError) {
     throw new PhotoPreparationError(
-      preparedFile.role,
-      prepReason(preparedFile.role, 'upload_missing'),
-      uploadResult.error || 'Photo evidence upload failed',
+      role,
+      prepReason(role, 'storage_missing'),
+      evidenceError.message,
     );
   }
 
-  const { data: userData } = await client.auth.getUser();
-  const receivedAt = new Date().toISOString();
-  const storageRefs: JsonValue = [{
-    bucket: PIE_EVIDENCE_BUCKET,
-    path: storagePath,
-    variant: 'original',
-    mimeType,
-    sizeBytes: preparedFile.sizeBytes,
-    sha256: preparedFile.sha256,
-  }];
+  const evidenceRows = arrayRecords(evidenceData);
+  if (evidenceRows.length === 0) return [];
 
-  const evidencePayload = {
-    id: evidenceId,
-    organization_id: organizationId,
-    project_id: projectId,
-    evidence_type: 'photo',
-    source: 'mobile_photo_update',
-    source_system: 'project_photo_update_tool',
-    captured_at: capturedAt,
-    effective_at: update.date || receivedAt,
-    received_at: receivedAt,
-    author_id: userData.user?.id ?? null,
-    storage_refs: storageRefs,
-    content_hash: contentHash,
-    mime_type: mimeType,
-    evidence_version: 1,
-    authority: 'supporting',
-    processing_state: 'queued',
-    analyzer_id: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerId,
-    analyzer_version: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerVersion,
-    lineage: {
-      parentEvidenceIds: [],
-      derivedEvidenceIds: [],
-      analyzerRunIds: [],
-      correctionIds: [],
-    },
-    associations: [{
-      type: 'location',
-      id: photo.selectedAreaId || update.selectedAreaId || projectId,
-      role: photo.selectedAreaName || update.selectedAreaName || update.projectName,
-    }],
-    related_evidence_ids: [],
-    hidden_from_normal_queries: false,
-  };
-
-  const { error: evidenceError } = await client
-    .from('pie_evidence_records')
-    .upsert(evidencePayload);
-
-  if (evidenceError) {
-    throw new PhotoPreparationError(preparedFile.role, prepReason(preparedFile.role, 'storage_missing'), evidenceError.message);
-  }
-
-  const { error: assetError } = await client
+  const { data: assetData, error: assetError } = await client
     .from('pie_photo_assets')
-    .upsert({
-      evidence_id: evidenceId,
-      organization_id: organizationId,
-      project_id: projectId,
-      original_storage_path: storagePath,
-      analysis_derivative_path: null,
-      thumbnail_path: null,
-      content_hash: contentHash,
-      duplicate_of_evidence_id: null,
-      width: preparedFile.width,
-      height: preparedFile.height,
-      mime_type: mimeType,
-      size_bytes: preparedFile.sizeBytes,
-      capture_source: captureSource,
-      captured_at: capturedAt,
-      exif: {},
-      analysis_status: 'queued',
-      current_analysis_version: null,
-      hidden_from_normal_queries: false,
-    });
-
+    .select('evidence_id,duplicate_of_evidence_id,current_analysis_version,original_storage_path')
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .eq('content_hash', contentHash);
   if (assetError) {
-    throw new PhotoPreparationError(preparedFile.role, prepReason(preparedFile.role, 'storage_missing'), assetError.message);
+    throw new PhotoPreparationError(
+      role,
+      prepReason(role, 'storage_missing'),
+      assetError.message,
+    );
   }
 
-  return {
-    assetId,
-    evidenceId,
-    storagePath,
-    storagePathHash,
-    contentHash,
-    contentSha256: preparedFile.sha256,
-    sizeBytes: preparedFile.sizeBytes,
-  };
+  const assetsByEvidenceId = new Map(
+    arrayRecords(assetData).map(row => [String(row.evidence_id || ''), row]),
+  );
+  return evidenceRows.map(row => {
+    const id = String(row.id || '').trim();
+    const asset = assetsByEvidenceId.get(id) ?? {};
+    return {
+      id,
+      evidenceVersion: finiteNumberOrNull(row.evidence_version) ?? 0,
+      analyzerId: stringOrNull(row.analyzer_id),
+      analyzerVersion: stringOrNull(row.analyzer_version),
+      processingState: stringOrNull(row.processing_state),
+      duplicateOfEvidenceId: stringOrNull(asset.duplicate_of_evidence_id),
+      currentAnalysisVersion: stringOrNull(asset.current_analysis_version),
+      originalStoragePath: stringOrNull(asset.original_storage_path),
+    };
+  });
+}
+
+function stagedPhotoEvidenceResult(value: StagedPhotoEvidence): StagedPhotoEvidence {
+  return value;
+}
+
+function isPhotoEvidenceVersionConflict(error: { code?: string; message?: string }) {
+  const message = String(error.message || '').toLowerCase();
+  return error.code === '23505'
+    || message.includes('duplicate key')
+    || message.includes('unique constraint');
 }
 
 function buildDisplayStateFromComparison(
@@ -1444,16 +1654,6 @@ function failedRetryState(
     }),
     updatedAt: new Date().toISOString(),
   };
-}
-
-function assertComparableEvidencePair(
-  baselineEvidence: StagedPhotoEvidence,
-  currentEvidence: StagedPhotoEvidence,
-) {
-  if (baselineEvidence.evidenceId === currentEvidence.evidenceId) throw new Error('photo_pair_same_evidence_id');
-  if (baselineEvidence.assetId === currentEvidence.assetId) throw new Error('photo_pair_same_asset_id');
-  if (baselineEvidence.contentHash === currentEvidence.contentHash) throw new Error('photo_pair_identical_sha256');
-  if (baselineEvidence.sizeBytes <= 0 || currentEvidence.sizeBytes <= 0) throw new Error('photo_pair_empty_file');
 }
 
 function describeVisibleChange(
@@ -1998,6 +2198,10 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map(String).filter(item => item.trim().length > 0)
     : [];
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
