@@ -7238,19 +7238,31 @@ useEffect(() => {
       const resolvedAt = new Date().toISOString();
 
       if (!sessionTokenPresent) {
+        const failureCategory =
+          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth';
+        // Field fix 2026-07-18 (cpu_resource / diskwrites_resource kills):
+        // stamping is idempotent. Updates already marked failed for this
+        // same auth condition are NOT re-stamped — re-stamping every 30s
+        // rewrote the full saved-updates store to disk and changed the
+        // authority input each pass, driving a continuous core recompute
+        // until iOS terminated the app for CPU/disk-write exhaustion.
+        const needsStamp = queuedUpdates.filter(update =>
+          lifecycleStatusForUpdate(update) !== 'failed' ||
+          update.syncDiagnostics?.lastSyncFailureCategory !== failureCategory,
+        );
+        if (needsStamp.length === 0) return;
+
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+          failureCategory,
           resolvedAt,
-          queuedUpdates.length,
+          needsStamp.length,
           false,
         );
-        const queuedIds = new Set(queuedUpdates.map(update => update.id));
+        const stampIds = new Set(needsStamp.map(update => update.id));
 
         setSavedUpdates(prev =>
           prev.map(update =>
-            queuedIds.has(update.id)
+            stampIds.has(update.id)
               ? {
                   ...update,
                   status: 'failed',
