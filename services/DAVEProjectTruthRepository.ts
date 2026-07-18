@@ -109,6 +109,7 @@ export function createDAVEProjectTruthRepository({
     created: boolean,
   ): Promise<DAVEProjectTruthSaveResult> {
     let candidate = initialSnapshot;
+    let createdRevision = created;
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const cloud = await saveDAVEProjectTruthSnapshotCloud(candidate);
@@ -116,11 +117,11 @@ export function createDAVEProjectTruthRepository({
         const accepted = normalizeSnapshot(cloud.data);
         assertSnapshotBoundary(accepted, candidate.organizationId, candidate.projectId);
         await storeSnapshot(accepted);
-        return { snapshot: accepted, created, cloudStatus: 'saved' };
+        return { snapshot: accepted, created: createdRevision, cloudStatus: 'saved' };
       }
 
       if (cloud.status !== 409 && cloud.code !== 'truth_revision_conflict') {
-        return { snapshot: candidate, created, cloudStatus: 'failed' };
+        return { snapshot: candidate, created: createdRevision, cloudStatus: 'failed' };
       }
 
       const latest = await loadLatestDAVEProjectTruthSnapshotCloud(
@@ -128,32 +129,38 @@ export function createDAVEProjectTruthRepository({
         candidate.projectId,
       );
       if (!latest.ok || !latest.data) {
-        return { snapshot: candidate, created, cloudStatus: 'failed' };
+        return { snapshot: candidate, created: createdRevision, cloudStatus: 'failed' };
       }
       const cloudHead = normalizeSnapshot(latest.data);
       assertSnapshotBoundary(cloudHead, candidate.organizationId, candidate.projectId);
       await storeSnapshot(cloudHead);
-      if (cloudHead.sourceFingerprint === candidate.sourceFingerprint) {
-        return { snapshot: cloudHead, created, cloudStatus: 'saved' };
+      if (
+        fingerprintDAVEProjectTruth(cloudHead.truth) ===
+        fingerprintDAVEProjectTruth(candidate.truth)
+      ) {
+        return { snapshot: cloudHead, created: false, cloudStatus: 'saved' };
       }
 
       const revision = cloudHead.revision + 1;
       const savedAt = new Date().toISOString();
+      const sourceFingerprint = fingerprintDAVEProjectTruth(candidate.truth);
       candidate = deepFreeze({
         ...candidate,
         id: truthSnapshotId(
           candidate.organizationId,
           candidate.projectId,
           revision,
-          candidate.sourceFingerprint,
+          sourceFingerprint,
         ),
         revision,
+        sourceFingerprint,
         savedAt,
       });
+      createdRevision = true;
       await storeSnapshot(candidate);
     }
 
-    return { snapshot: candidate, created, cloudStatus: 'failed' };
+    return { snapshot: candidate, created: createdRevision, cloudStatus: 'failed' };
   }
 
   return Object.freeze({
@@ -175,7 +182,10 @@ export function createDAVEProjectTruthRepository({
         let snapshot = current;
         let created = false;
 
-        if (!current || current.sourceFingerprint !== sourceFingerprint) {
+        if (
+          !current ||
+          fingerprintDAVEProjectTruth(current.truth) !== sourceFingerprint
+        ) {
           const revision = (current?.revision || 0) + 1;
           const savedAt = new Date().toISOString();
           snapshot = deepFreeze({
@@ -242,6 +252,23 @@ function serializeProjectTruthSave<T>(
 
 export function fingerprintDAVEProjectTruth(truth: DAVEProjectTruth): string {
   validateTruthBoundary(truth);
+  const authoritativeContent = {
+    schemaVersion: truth.schemaVersion,
+    projectId: truth.projectId,
+    projectName: truth.projectName,
+    evidence: truth.evidence.records,
+    entityLinks: truth.entityLinks,
+    photoComparisons: truth.photoComparisons,
+    correlations: truth.correlations,
+    reasoning: truth.reasoning,
+    schedule: truth.schedule,
+    verificationQueue: truth.verificationQueue,
+    briefing: truth.briefing,
+  };
+  return stableHash(stableStringify(withoutVolatileGeneratedAt(authoritativeContent)));
+}
+
+function legacyFingerprintDAVEProjectTruth(truth: DAVEProjectTruth): string {
   const authoritativeContent = {
     schemaVersion: truth.schemaVersion,
     projectId: truth.projectId,
@@ -321,7 +348,10 @@ function normalizeSnapshot(value: unknown): DAVEProjectTruthSnapshot {
     snapshot.truthSchemaVersion !== truth.schemaVersion ||
     snapshot.projectId !== truth.projectId ||
     snapshot.projectName !== truth.projectName ||
-    snapshot.sourceFingerprint !== fingerprintDAVEProjectTruth(truth)
+    ![
+      fingerprintDAVEProjectTruth(truth),
+      legacyFingerprintDAVEProjectTruth(truth),
+    ].includes(snapshot.sourceFingerprint)
   ) {
     throw new Error('Project Truth snapshot boundary is invalid.');
   }
@@ -360,6 +390,18 @@ function truthSnapshotId(
 
 function compareSnapshots(a: DAVEProjectTruthSnapshot, b: DAVEProjectTruthSnapshot) {
   return b.revision - a.revision || b.savedAt.localeCompare(a.savedAt) || a.id.localeCompare(b.id);
+}
+
+function withoutVolatileGeneratedAt(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutVolatileGeneratedAt);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => key !== 'generatedAt')
+        .map(([key, child]) => [key, withoutVolatileGeneratedAt(child)]),
+    );
+  }
+  return value;
 }
 
 function stableStringify(value: unknown): string {
