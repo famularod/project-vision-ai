@@ -55,6 +55,41 @@ export type StartupNormalizationResult<T> = {
   error: string | null;
 };
 
+export type StartupHydrationFailure = {
+  state: 'corrupt_quarantined' | 'read_failed';
+  key: string;
+  label: string;
+  error: string;
+};
+
+export type StartupHydrationObservation = Pick<
+  StartupStorageReadBase,
+  'state' | 'key' | 'label' | 'error'
+>;
+
+export function reconcileStartupHydrationFailures(
+  current: readonly StartupHydrationFailure[],
+  observations: readonly StartupHydrationObservation[],
+): StartupHydrationFailure[] {
+  const observedKeys = new Set(observations.map(observation => observation.key));
+  const next = current.filter(failure => !observedKeys.has(failure.key));
+
+  observations.forEach(observation => {
+    if (
+      (observation.state !== 'corrupt_quarantined' && observation.state !== 'read_failed') ||
+      !observation.error
+    ) return;
+    next.push({
+      state: observation.state,
+      key: observation.key,
+      label: observation.label,
+      error: observation.error,
+    });
+  });
+
+  return next;
+}
+
 export class StartupStorageUnavailableError extends Error {
   readonly state: 'corrupt_quarantined' | 'read_failed';
   readonly key: string;

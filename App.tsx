@@ -56,17 +56,18 @@ import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import {
   DailyBriefSection,
-  DAVEProjectDataLoadingPanel,
   DAVEProjectNeedsVerificationLabel,
   DAVEProjectStatusLoadingScreen,
   DAVEProjectTaskOperationalSummary,
   WorkspaceCardSkeleton,
 } from './components/DAVEProjectStatusViews';
 import { StartupErrorBoundary } from './components/StartupErrorBoundary';
+import { StartupHydrationBoundary } from './components/StartupHydrationBoundary';
 import {
   useJsonStoragePersistence,
   useStringStoragePersistence,
 } from './hooks/use-async-storage-persistence';
+import { useStartupHydration } from './hooks/use-startup-hydration';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -5234,6 +5235,15 @@ function AppShell() {
   const [draftLoaded, setDraftLoaded] =
     useState(false);
 
+  const startupHydration = useStartupHydration();
+  const requiredLocalHydrationReady = [
+    updatesLocalLoaded, deletedUpdateTombstonesLoaded, projectsLocalLoaded, deletedProjectNamesLocalLoaded,
+    archivedProjectsLoaded, projectAreasLocalLoaded, referenceDocumentsLocalLoaded, projectDocumentsLoaded,
+    scheduleItemsLocalLoaded, captureMemoriesLoaded, identityCorrectionsLoaded, scheduleIdentityReady,
+    scheduleAiExtractorUrlLoaded, displayNameLoaded, contactsLoaded, draftLoaded,
+  ].every(Boolean);
+  const startupHydrationReady = requiredLocalHydrationReady && startupHydration.failures.length === 0;
+
   const [draftAreaSuggestion, setDraftAreaSuggestion] =
     useState<AreaSuggestion | null>(null);
 
@@ -5254,7 +5264,6 @@ function AppShell() {
   const queuedHydrationInFlight = useRef(false);
   const fieldUpdateSaveInFlightRef = useRef(false);
   const updateDeletionInFlightRef = useRef(false);
-  const skipSavedUpdatesPersistenceOnceRef = useRef(false);
   const legacyProjectStructureMigrationInFlight = useRef(false);
   const scheduleParentProjectsQueuedRef = useRef(new Set<string>());
   const deletedProjectNamesRef = useRef(deletedProjectNames);
@@ -5287,14 +5296,12 @@ useEffect(() => {
         readStartupJson(UPDATES_STORAGE_KEY, [], 'saved updates'),
         readStartupJson(DELETED_UPDATES_STORAGE_KEY, [], 'deleted update records'),
       ]);
+      if (!startupHydration.accept([localResult, tombstoneResult])) return;
       const localUpdates = normalizeStartupArray(
         localResult.value,
         normalizeStoredUpdateRecord,
         'saved updates',
       ).value;
-      if (localResult.recovered && localResult.found !== true) {
-        skipSavedUpdatesPersistenceOnceRef.current = true;
-      }
       const tombstones = normalizeDeletedUpdateTombstones(
         tombstoneResult.value,
       );
@@ -5307,8 +5314,11 @@ useEffect(() => {
         tombstones,
       }));
       setUpdatesLocalLoaded(true);
+      setUpdatesLoaded(true);
+      setDeletedUpdateTombstonesLoaded(true);
 
-      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
+      if (!startupHydrationReady) return;
+      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>().catch(() => []);
       const normalizedCloudUpdates = normalizeStartupArray(
         cloudUpdates,
         normalizeStoredUpdateRecord,
@@ -5320,23 +5330,16 @@ useEffect(() => {
         cloudUpdates: normalizedCloudUpdates,
         tombstones,
       }));
-    } catch {
-      setUpdatesLocalLoaded(true);
-      Alert.alert(
-        'Storage error',
-        'Saved updates could not be loaded.',
-      );
-    } finally {
-      setUpdatesLoaded(true);
-      setDeletedUpdateTombstonesLoaded(true);
+    } catch (error) {
+      startupHydration.fail(UPDATES_STORAGE_KEY, 'saved updates', error);
     }
   }
 
   void loadSavedUpdates();
-}, []);
+}, [startupHydration.retryAttempt, startupHydrationReady]);
 
 useEffect(() => {
-  const ready =
+  const ready = startupHydrationReady &&
     projectsLoaded &&
     deletedProjectNamesLoaded &&
     updatesLoaded &&
@@ -5432,41 +5435,42 @@ useEffect(() => {
 
   void localDAVECaptureMemoryRepository.list()
     .then(memories => {
-      if (active) setCaptureMemories([...memories]);
-    })
-    .catch(() => {
       if (active) {
-        Alert.alert(
-          'Capture memories unavailable',
-          'Confirmed project memories could not be loaded from this device.',
-        );
+        setCaptureMemories([...memories]);
+        startupHydration.loaded('dave-capture-memories', 'confirmed project memories');
+        setCaptureMemoriesLoaded(true);
       }
     })
-    .finally(() => {
-      if (active) setCaptureMemoriesLoaded(true);
+    .catch(error => {
+      if (active) {
+        startupHydration.fail('dave-capture-memories', 'confirmed project memories', error);
+      }
     });
 
   return () => {
     active = false;
   };
-}, []);
+}, [startupHydration.retryAttempt]);
 
 useEffect(() => {
   let active = true;
 
   void localDAVEIdentityRepository.list()
     .then(corrections => {
-      if (active) setIdentityCorrections([...corrections]);
+      if (active) {
+        setIdentityCorrections([...corrections]);
+        startupHydration.loaded('dave-identity-corrections', 'identity corrections');
+        setIdentityCorrectionsLoaded(true);
+      }
     })
-    .catch(() => undefined)
-    .finally(() => {
-      if (active) setIdentityCorrectionsLoaded(true);
+    .catch(error => {
+      if (active) startupHydration.fail('dave-identity-corrections', 'identity corrections', error);
     });
 
   return () => {
     active = false;
   };
-}, []);
+}, [startupHydration.retryAttempt]);
 
 useEffect(() => {
   if (!identityCorrectionsLoaded || !scheduleItemsLocalLoaded || !projectAreasLocalLoaded) return;
@@ -5521,6 +5525,7 @@ useEffect(() => {
         readStartupJson(DELETED_PROJECTS_STORAGE_KEY, [], 'deleted project records'),
         getOfflineQueue(),
       ]);
+      if (!startupHydration.accept([localResult, deletedProjectsResult])) return;
       const localProjects = normalizeProjectRecords(localResult.value);
       const queuedDeletedNames = queuedChanges
         .filter(item => item.entity === 'project' && item.operation === 'delete')
@@ -5550,11 +5555,14 @@ useEffect(() => {
       setProjects(localRecords.map(project => project.name));
       setProjectsLocalLoaded(true);
       setDeletedProjectNamesLocalLoaded(true);
+      setProjectsLoaded(true);
+      setDeletedProjectNamesLoaded(true);
 
+      if (!startupHydrationReady) return;
       const [cloudProjects, cloudArchivedProjects] = await Promise.all([
         loadCloudProjectRecords(),
         loadCloudArchivedProjectNames(),
-      ]);
+      ]).catch((): [ProjectRecord[], string[]] => [[], []]);
       const mergedRecords = mergeProjectRecords(
         starterProjects,
         localProjects,
@@ -5584,23 +5592,16 @@ useEffect(() => {
             : item,
         ));
       }));
-    } catch {
-      setProjectsLocalLoaded(true);
-      setDeletedProjectNamesLocalLoaded(true);
-      Alert.alert(
-        'Storage error',
-        'Saved projects could not be loaded.',
-      );
-    } finally {
-      setProjectsLoaded(true);
-      setDeletedProjectNamesLoaded(true);
+    } catch (error) {
+      startupHydration.fail(PROJECTS_STORAGE_KEY, 'saved projects', error);
     }
   }
 
   void loadProjects();
-}, []);
+}, [startupHydration.retryAttempt, startupHydrationReady]);
 
   useEffect(() => {
+    if (!startupHydrationReady) return;
     void cleanupStoredSyncStatusMessages()
       .then(result => {
         if (result.cleaned || result.missingPhotosRemoved > 0) {
@@ -5608,13 +5609,14 @@ useEffect(() => {
         }
       })
       .catch(() => undefined);
-  }, []);
+  }, [startupHydrationReady]);
 
   useEffect(() => {
     if (!deletedProjectNamesLocalLoaded) return;
 
     readStartupJson(ARCHIVED_PROJECTS_STORAGE_KEY, [], 'archived projects')
       .then(result => {
+        if (!startupHydration.accept([result])) return;
         const parsed = result.value;
 
         if (Array.isArray(parsed)) {
@@ -5627,15 +5629,10 @@ useEffect(() => {
             ),
           );
         }
+        setArchivedProjectsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Archived projects could not be loaded.',
-        ),
-      )
-      .finally(() => setArchivedProjectsLoaded(true));
-  }, [deletedProjectNamesLocalLoaded]);
+      .catch(error => startupHydration.fail(ARCHIVED_PROJECTS_STORAGE_KEY, 'archived projects', error));
+  }, [deletedProjectNamesLocalLoaded, startupHydration.retryAttempt]);
 
   useEffect(() => {
     const localAreasPromise = readStartupJson(
@@ -5644,10 +5641,15 @@ useEffect(() => {
       'project areas',
     );
     void localAreasPromise
-      .then(result => setProjectAreas(normalizeProjectAreas(result.value)))
-      .catch(() => undefined)
-      .finally(() => setProjectAreasLocalLoaded(true));
+      .then(result => {
+        if (!startupHydration.accept([result])) return;
+        setProjectAreas(normalizeProjectAreas(result.value));
+        setProjectAreasLocalLoaded(true);
+        setProjectAreasLoaded(true);
+      })
+      .catch(error => startupHydration.fail(PROJECT_AREAS_STORAGE_KEY, 'project areas', error));
 
+    if (!startupHydrationReady) return;
     Promise.all([
       localAreasPromise,
       listProjectAreas(),
@@ -5674,9 +5676,8 @@ useEffect(() => {
           'Storage error',
           'Project areas could not be loaded.',
         ),
-      )
-      .finally(() => setProjectAreasLoaded(true));
-  }, []);
+      );
+  }, [startupHydration.retryAttempt, startupHydrationReady]);
 
 
   useEffect(() => {
@@ -5686,10 +5687,15 @@ useEffect(() => {
       'reference documents',
     );
     void localDocumentsPromise
-      .then(result => setReferenceDocuments(normalizeReferenceDocuments(result.value)))
-      .catch(() => undefined)
-      .finally(() => setReferenceDocumentsLocalLoaded(true));
+      .then(result => {
+        if (!startupHydration.accept([result])) return;
+        setReferenceDocuments(normalizeReferenceDocuments(result.value));
+        setReferenceDocumentsLocalLoaded(true);
+        setReferenceDocumentsLoaded(true);
+      })
+      .catch(error => startupHydration.fail(REFERENCE_DOCUMENTS_STORAGE_KEY, 'reference documents', error));
 
+    if (!startupHydrationReady) return;
     Promise.all([
       localDocumentsPromise,
       listReferenceDocuments(),
@@ -5716,25 +5722,20 @@ useEffect(() => {
           'Storage error',
           'Reference documents could not be loaded.',
         ),
-      )
-      .finally(() => setReferenceDocumentsLoaded(true));
-  }, []);
+      );
+  }, [startupHydration.retryAttempt, startupHydrationReady]);
 
   useEffect(() => {
     readStartupJson(PROJECT_DOCUMENTS_STORAGE_KEY, [], 'project documents')
       .then(result => {
+        if (!startupHydration.accept([result])) return;
         setProjectDocuments(
           normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument),
         );
+        setProjectDocumentsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Project documents could not be loaded.',
-        ),
-      )
-      .finally(() => setProjectDocumentsLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(PROJECT_DOCUMENTS_STORAGE_KEY, 'project documents', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
     const localScheduleItemsPromise = readStartupJson(
@@ -5743,12 +5744,15 @@ useEffect(() => {
       'schedule items',
     );
     void localScheduleItemsPromise
-      .then(result => setScheduleItems(
-        normalizeScheduleItems(result.value).map(migrateLegacyScheduleItem),
-      ))
-      .catch(() => undefined)
-      .finally(() => setScheduleItemsLocalLoaded(true));
+      .then(result => {
+        if (!startupHydration.accept([result])) return;
+        setScheduleItems(normalizeScheduleItems(result.value).map(migrateLegacyScheduleItem));
+        setScheduleItemsLocalLoaded(true);
+        setScheduleItemsLoaded(true);
+      })
+      .catch(error => startupHydration.fail(SCHEDULE_ITEMS_STORAGE_KEY, 'schedule items', error));
 
+    if (!startupHydrationReady) return;
     Promise.all([
       localScheduleItemsPromise,
       listScheduleItems(),
@@ -5775,46 +5779,45 @@ useEffect(() => {
           'Storage error',
           'Schedule items could not be loaded.',
         ),
-      )
-      .finally(() => setScheduleItemsLoaded(true));
-  }, []);
+      );
+  }, [startupHydration.retryAttempt, startupHydrationReady]);
 
   useEffect(() => {
     AsyncStorage.getItem(SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY)
       .then(value => {
         setScheduleAiExtractorUrl(value || '');
+        startupHydration.loaded(SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY, 'schedule connection settings');
+        setScheduleAiExtractorUrlLoaded(true);
       })
-      .finally(() => setScheduleAiExtractorUrlLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY, 'schedule connection settings', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
     AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY)
       .then(value => {
         setDisplayName(value || '');
+        startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
+        setDisplayNameLoaded(true);
       })
-      .finally(() => setDisplayNameLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(DISPLAY_NAME_STORAGE_KEY, 'profile settings', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
     readStartupJson(CONTACTS_STORAGE_KEY, { contacts: [] }, 'contacts')
       .then(result => {
-        setContactBook(
-          normalizeContacts(result.value),
-        );
+        if (!startupHydration.accept([result])) return;
+        setContactBook(normalizeContacts(result.value));
+        setContactsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Contacts could not be loaded.',
-        ),
-      )
-      .finally(() => setContactsLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(CONTACTS_STORAGE_KEY, 'contacts', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
     readStartupJson<Partial<StoredDraft>>(DRAFT_STORAGE_KEY, {}, 'unfinished field update')
       .then(result => {
+        if (!startupHydration.accept([result])) return;
         const parsed = result.value;
+        setDraftLoaded(true);
 
         if (!parsed.draft) return;
 
@@ -5830,17 +5833,11 @@ useEffect(() => {
           );
         }
       })
-      .catch(() =>
-        Alert.alert(
-          'Draft recovery error',
-          'The unfinished update could not be restored.',
-        ),
-      )
-      .finally(() => setDraftLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(DRAFT_STORAGE_KEY, 'unfinished field update', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
-    const startupReady =
+    const startupReady = startupHydrationReady &&
       updatesLoaded &&
       deletedUpdateTombstonesLoaded &&
       projectsLoaded &&
@@ -5878,15 +5875,12 @@ useEffect(() => {
     scheduleAiExtractorUrlLoaded,
     scheduleItems.length,
     scheduleItemsLoaded,
+    startupHydrationReady,
     updatesLoaded,
   ]);
 
   useEffect(() => {
-    if (!updatesLoaded) return;
-    if (skipSavedUpdatesPersistenceOnceRef.current) {
-      skipSavedUpdatesPersistenceOnceRef.current = false;
-      return;
-    }
+    if (!startupHydrationReady || !updatesLoaded) return;
 
     if (savedUpdatesSaveTimer.current) {
       clearTimeout(savedUpdatesSaveTimer.current);
@@ -5906,7 +5900,7 @@ useEffect(() => {
         clearTimeout(savedUpdatesSaveTimer.current);
       }
     };
-  }, [savedUpdates, updatesLoaded]);
+  }, [savedUpdates, startupHydrationReady, updatesLoaded]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
@@ -5926,69 +5920,69 @@ useEffect(() => {
   }, []);
 
   useJsonStoragePersistence({
-    enabled: deletedUpdateTombstonesLoaded,
+    enabled: startupHydrationReady && deletedUpdateTombstonesLoaded,
     storageKey: DELETED_UPDATES_STORAGE_KEY,
     value: deletedUpdateTombstones,
   });
   useJsonStoragePersistence({
-    enabled: projectsLoaded,
+    enabled: startupHydrationReady && projectsLoaded,
     storageKey: PROJECTS_STORAGE_KEY,
     value: projectRecords,
   });
   useJsonStoragePersistence({
-    enabled: deletedProjectNamesLoaded,
+    enabled: startupHydrationReady && deletedProjectNamesLoaded,
     storageKey: DELETED_PROJECTS_STORAGE_KEY,
     value: deletedProjectNames,
   });
   useJsonStoragePersistence({
-    enabled: archivedProjectsLoaded,
+    enabled: startupHydrationReady && archivedProjectsLoaded,
     storageKey: ARCHIVED_PROJECTS_STORAGE_KEY,
     value: archivedProjects,
   });
   useJsonStoragePersistence({
-    enabled: projectAreasLoaded,
+    enabled: startupHydrationReady && projectAreasLoaded,
     storageKey: PROJECT_AREAS_STORAGE_KEY,
     value: projectAreas,
   });
   useJsonStoragePersistence({
-    enabled: referenceDocumentsLoaded,
+    enabled: startupHydrationReady && referenceDocumentsLoaded,
     storageKey: REFERENCE_DOCUMENTS_STORAGE_KEY,
     value: referenceDocuments,
   });
   useJsonStoragePersistence({
-    enabled: projectDocumentsLoaded,
+    enabled: startupHydrationReady && projectDocumentsLoaded,
     storageKey: PROJECT_DOCUMENTS_STORAGE_KEY,
     value: projectDocuments,
   });
   useJsonStoragePersistence({
-    enabled: scheduleItemsLoaded,
+    enabled: startupHydrationReady && scheduleItemsLoaded,
     storageKey: SCHEDULE_ITEMS_STORAGE_KEY,
     value: scheduleItems,
   });
 
   useEffect(() => {
-    if (!scheduleItemsLoaded || !projectsLoaded) return;
+    if (!startupHydrationReady || !scheduleItemsLoaded || !projectsLoaded) return;
     ensureScheduleParentProjects(scheduleItems);
-  }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded]);
+  }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
 
   useStringStoragePersistence({
-    enabled: scheduleAiExtractorUrlLoaded,
+    enabled: startupHydrationReady && scheduleAiExtractorUrlLoaded,
     storageKey: SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY,
     value: scheduleAiExtractorUrl,
   });
   useStringStoragePersistence({
-    enabled: displayNameLoaded,
+    enabled: startupHydrationReady && displayNameLoaded,
     storageKey: DISPLAY_NAME_STORAGE_KEY,
     value: displayName,
   });
   useJsonStoragePersistence({
-    enabled: contactsLoaded,
+    enabled: startupHydrationReady && contactsLoaded,
     storageKey: CONTACTS_STORAGE_KEY,
     value: contactBook,
   });
 
   useEffect(() => {
-    if (!draftLoaded) return;
+    if (!startupHydrationReady || !draftLoaded) return;
 
     if (draftSaveTimer.current) {
       clearTimeout(draftSaveTimer.current);
@@ -6025,17 +6019,17 @@ useEffect(() => {
         clearTimeout(draftSaveTimer.current);
       }
     };
-  }, [draft, draftLoaded]);
+  }, [draft, draftLoaded, startupHydrationReady]);
 
   useEffect(() => {
-    if (!updatesLoaded || !draftLoaded || photoCleanupRan.current) {
+    if (!startupHydrationReady || !updatesLoaded || !draftLoaded || photoCleanupRan.current) {
       return;
     }
 
     photoCleanupRan.current = true;
 
     void cleanupStoredPhotoDirectory([draft, ...savedUpdates]);
-  }, [updatesLoaded, draftLoaded, draft, savedUpdates]);
+  }, [updatesLoaded, draftLoaded, draft, savedUpdates, startupHydrationReady]);
 
   const hasQueuedSyncRetries = useMemo(
     () => savedUpdates.some(update => updateNeedsAutomaticSyncRetry(update)),
@@ -6043,7 +6037,7 @@ useEffect(() => {
   );
 
   useEffect(() => {
-    if (!updatesLoaded || !hasQueuedSyncRetries) return;
+    if (!startupHydrationReady || !updatesLoaded || !hasQueuedSyncRetries) return;
 
     const timer = setInterval(() => {
       void hydrateQueuedUpdates();
@@ -6052,10 +6046,10 @@ useEffect(() => {
     void hydrateQueuedUpdates();
 
     return () => clearInterval(timer);
-  }, [updatesLoaded, hasQueuedSyncRetries]);
+  }, [updatesLoaded, hasQueuedSyncRetries, startupHydrationReady]);
 
   useEffect(() => {
-    if (!updatesLoaded) return;
+    if (!startupHydrationReady || !updatesLoaded) return;
 
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') {
@@ -6064,7 +6058,7 @@ useEffect(() => {
     });
 
     return () => subscription.remove();
-  }, [updatesLoaded, savedUpdates]);
+  }, [updatesLoaded, savedUpdates, startupHydrationReady]);
 
   const activeProjects = useMemo(
     () =>
@@ -10410,6 +10404,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }, [authoritativeScheduleItems, layer4Identity?.organizationId, savedUpdates, selectedWorkspaceProject]);
 
   useEffect(() => {
+    if (!startupHydrationReady) return;
     let active = true;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -10442,7 +10437,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       if (refreshTimer) clearTimeout(refreshTimer);
       unsubscribe();
     };
-  }, []);
+  }, [startupHydrationReady]);
 
   async function createAutomatedDecisionSnapshot(
     judgment: PIEExecutiveJudgmentRecord | null | undefined,
@@ -10800,20 +10795,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ]);
   }
 
-  const projectStatusReady =
-    projectsLocalLoaded &&
-    deletedProjectNamesLocalLoaded &&
-    archivedProjectsLoaded &&
-    updatesLocalLoaded &&
-    projectAreasLocalLoaded &&
-    identityCorrectionsLoaded &&
-    scheduleIdentityReady &&
-    referenceDocumentsLocalLoaded &&
-    projectDocumentsLoaded &&
-    scheduleItemsLocalLoaded &&
-    captureMemoriesLoaded &&
-    contactsLoaded &&
-    draftLoaded;
+  const projectStatusReady = startupHydrationReady;
 
   const liveAuthorityInput = useMemo<PIELiveAuthorityInput>(() => {
     const workspaceProjectName =
@@ -10937,11 +10919,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   return (
     <PIELiveAuthorityProvider input={liveAuthorityInput}>
-      <AppShellFrame
-        currentScreen={screen}
-        onScreenChange={setScreen}
-        onTalk={openTalk}
+      <StartupHydrationBoundary
+        ready={startupHydrationReady}
+        failures={startupHydration.failures}
+        onRetry={startupHydration.retry}
       >
+        <AppShellFrame currentScreen={screen} onScreenChange={setScreen} onTalk={openTalk}>
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}
@@ -10977,14 +10960,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onSettings={() => setScreen('Admin')}
             />
           )}
-
-          {!projectStatusReady && (
-            screen === 'ProjectWorkspace' ||
-            screen === 'Schedule' ||
-            screen === 'Reports'
-          ) ? (
-            <DAVEProjectDataLoadingPanel contentStyle={contentStyle} />
-          ) : null}
 
           {screen === 'SelectProject' && (
             <SelectProjectScreen
@@ -11621,7 +11596,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
             onCancel={() => setTalkTaskAction(null)}
           />
 
-      </AppShellFrame>
+        </AppShellFrame>
+      </StartupHydrationBoundary>
     </PIELiveAuthorityProvider>
   );
 }

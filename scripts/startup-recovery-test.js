@@ -134,6 +134,8 @@ async function testRecovery() {
   assert.strictEqual(result.state, 'corrupt_quarantined');
   assert.strictEqual(result.key, 'corrupt');
   assert.strictEqual(result.recovered, true);
+  const corruptFailures = recovery.reconcileStartupHydrationFailures([], [result]);
+  assert.strictEqual(corruptFailures.length, 1, 'corrupt required data must block hydration');
   assert.throws(
     () => result.value,
     /cannot hydrate.*corrupt_quarantined/i,
@@ -163,6 +165,8 @@ async function testRecovery() {
   assert.strictEqual(failed.state, 'read_failed');
   assert.strictEqual(failed.key, 'retryable');
   assert.strictEqual(failed.recovered, false);
+  const readFailures = recovery.reconcileStartupHydrationFailures(corruptFailures, [failed]);
+  assert.strictEqual(readFailures.length, 2, 'each failed required domain must remain visible');
   assert.throws(
     () => failed.value,
     /cannot hydrate.*read_failed/i,
@@ -177,18 +181,26 @@ async function testRecovery() {
   );
   assert.strictEqual(retried.state, 'loaded');
   assert.strictEqual(JSON.stringify(retried.value), JSON.stringify([{ id: 'persisted' }]));
+  const recoveredFailures = recovery.reconcileStartupHydrationFailures(readFailures, [retried]);
+  assert.strictEqual(recoveredFailures.length, 1, 'a successful retry must clear only its domain');
 }
 
 function testStaticStartupGuards() {
   const app = fs.readFileSync(path.join(rootDir, 'App.tsx'), 'utf8');
   const provider = fs.readFileSync(path.join(rootDir, 'providers/PIELiveAuthorityProvider.tsx'), 'utf8');
   const boundary = fs.readFileSync(path.join(rootDir, 'components/StartupErrorBoundary.tsx'), 'utf8');
+  const hydrationBoundary = fs.readFileSync(path.join(rootDir, 'components/StartupHydrationBoundary.tsx'), 'utf8');
   assert(app.includes('<StartupErrorBoundary>'), 'App should mount startup error boundary');
   assert(app.includes('readStartupJson'), 'App should use guarded startup JSON reads');
+  assert(app.includes('<StartupHydrationBoundary'), 'App should block live actions until required hydration succeeds');
+  assert(app.includes('enabled: startupHydrationReady &&'), 'Persistence hooks must remain disabled while hydration is blocked');
+  assert(app.includes('if (!startupHydrationReady || !updatesLoaded'), 'Background update save and sync must wait for hydration');
   assert(app.includes('startup_completed'), 'App should log startup completion');
   assert(provider.includes('safeBuildProviderRuntime'), 'Provider should guard Runtime initialization');
   assert(provider.includes('providerRuntimeContext'), 'Provider should sanitize runtime context');
   assert(boundary.includes('Retry'), 'Error boundary should offer retry');
+  assert(hydrationBoundary.includes('Retry Recovery'), 'Hydration failure should offer recovery retry');
+  assert(hydrationBoundary.includes('Nothing will be saved, synced, restored, backed up, or exported'), 'Hydration failure should explain the blocked safety state');
   assert(!boundary.includes('stack trace'), 'Error boundary should not expose stack traces to the user');
 }
 
