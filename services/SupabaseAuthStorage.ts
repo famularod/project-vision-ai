@@ -9,8 +9,8 @@
  * SecureStore values are limited to ~2048 bytes on some platforms, and a
  * Supabase session JSON can exceed that, so values are transparently
  * chunked across multiple SecureStore entries:
- *   `${key}.meta`     -> JSON { v: 1, chunks: n }
- *   `${key}.chunk.N`  -> chunk payload
+ *   `${key}.meta`                  -> JSON { v: 2, generation, chunks: n }
+ *   `${key}.chunk.<generation>.N`  -> chunk payload
  *
  * Any legacy session found in AsyncStorage is migrated to SecureStore on
  * first read and then removed from AsyncStorage, so existing signed-in
@@ -26,11 +26,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 
 const CHUNK_SIZE = 1800;
-const META_VERSION = 1;
+const META_VERSION = 2;
 
-type ChunkMeta = Readonly<{ v: number; chunks: number }>;
+type LegacyChunkMeta = Readonly<{ v: 1; chunks: number }>;
+type ChunkMeta = Readonly<{ v: 2; generation: string; chunks: number }>;
+type AnyChunkMeta = LegacyChunkMeta | ChunkMeta;
 
 let secureAvailability: Promise<boolean> | null = null;
+let operationTail: Promise<void> = Promise.resolve();
+let generationSequence = 0;
 
 function isSecureStoreAvailable(): Promise<boolean> {
   if (secureAvailability === null) {
@@ -54,23 +58,35 @@ function metaKey(key: string): string {
   return `${sanitizeKey(key)}.meta`;
 }
 
-function chunkKey(key: string, index: number): string {
+function chunkKey(key: string, generation: string, index: number): string {
+  return `${sanitizeKey(key)}.chunk.${generation}.${index}`;
+}
+
+function legacyChunkKey(key: string, index: number): string {
   return `${sanitizeKey(key)}.chunk.${index}`;
 }
 
-function parseMeta(raw: string | null): ChunkMeta | null {
+function parseMeta(raw: string | null): AnyChunkMeta | null {
   if (raw === null) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
     if (
       typeof parsed === 'object' &&
       parsed !== null &&
-      (parsed as { v?: unknown }).v === META_VERSION &&
+      ((parsed as { v?: unknown }).v === 1 ||
+        (parsed as { v?: unknown }).v === META_VERSION) &&
       typeof (parsed as { chunks?: unknown }).chunks === 'number' &&
       Number.isInteger((parsed as { chunks: number }).chunks) &&
-      (parsed as { chunks: number }).chunks >= 0
+      (parsed as { chunks: number }).chunks > 0
     ) {
-      return parsed as ChunkMeta;
+      if ((parsed as { v: number }).v === 1) return parsed as LegacyChunkMeta;
+      if (
+        typeof (parsed as { generation?: unknown }).generation === 'string' &&
+        /^[A-Za-z0-9_-]+$/.test((parsed as { generation: string }).generation)
+      ) {
+        return parsed as ChunkMeta;
+      }
+      return null;
     }
     return null;
   } catch {
@@ -78,16 +94,20 @@ function parseMeta(raw: string | null): ChunkMeta | null {
   }
 }
 
-async function secureRead(key: string): Promise<string | null> {
+async function secureReadUnlocked(key: string): Promise<string | null> {
   const meta = parseMeta(await SecureStore.getItemAsync(metaKey(key)));
   if (meta === null) return null;
   const chunks: string[] = [];
   for (let i = 0; i < meta.chunks; i += 1) {
-    const chunk = await SecureStore.getItemAsync(chunkKey(key, i));
+    const chunk = await SecureStore.getItemAsync(
+      meta.v === 1
+        ? legacyChunkKey(key, i)
+        : chunkKey(key, meta.generation, i),
+    );
     if (chunk === null) {
       // Torn/partial state: treat as absent rather than returning a
       // corrupted session, and clean up what remains.
-      await secureRemove(key);
+      await secureRemoveUnlocked(key);
       return null;
     }
     chunks.push(chunk);
@@ -95,45 +115,47 @@ async function secureRead(key: string): Promise<string | null> {
   return chunks.join('');
 }
 
-async function secureWrite(key: string, value: string): Promise<void> {
+async function secureWriteUnlocked(key: string, value: string): Promise<void> {
   const previous = parseMeta(await SecureStore.getItemAsync(metaKey(key)));
   const chunkCount = Math.max(1, Math.ceil(value.length / CHUNK_SIZE));
-  for (let i = 0; i < chunkCount; i += 1) {
-    await SecureStore.setItemAsync(
-      chunkKey(key, i),
-      value.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
-    );
-  }
-  // Meta written last so a torn write is detected as absent, never as a
-  // truncated session.
-  await SecureStore.setItemAsync(
-    metaKey(key),
-    JSON.stringify({ v: META_VERSION, chunks: chunkCount }),
-  );
-  if (previous !== null && previous.chunks > chunkCount) {
-    for (let i = chunkCount; i < previous.chunks; i += 1) {
-      await SecureStore.deleteItemAsync(chunkKey(key, i));
+  const generation = nextGeneration();
+
+  try {
+    for (let i = 0; i < chunkCount; i += 1) {
+      await SecureStore.setItemAsync(
+        chunkKey(key, generation, i),
+        value.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
+      );
     }
+    // Publish the new generation only after all of its chunks exist. Until
+    // this single manifest write succeeds, readers continue using the prior
+    // generation without observing mixed old/new token bytes.
+    await SecureStore.setItemAsync(
+      metaKey(key),
+      JSON.stringify({ v: META_VERSION, generation, chunks: chunkCount }),
+    );
+  } catch (error) {
+    await deleteGenerationBestEffort(key, generation, chunkCount);
+    throw error;
   }
+
+  if (previous !== null) await deleteMetaChunksBestEffort(key, previous);
 }
 
-async function secureRemove(key: string): Promise<void> {
+async function secureRemoveUnlocked(key: string): Promise<void> {
   const meta = parseMeta(await SecureStore.getItemAsync(metaKey(key)));
   await SecureStore.deleteItemAsync(metaKey(key));
-  const knownChunks = meta === null ? 0 : meta.chunks;
-  for (let i = 0; i < knownChunks; i += 1) {
-    await SecureStore.deleteItemAsync(chunkKey(key, i));
-  }
-  // Defensive sweep for a chunk 0 orphaned by a torn write with no meta.
-  await SecureStore.deleteItemAsync(chunkKey(key, 0));
+  if (meta !== null) await deleteMetaChunksBestEffort(key, meta);
+  // Defensive sweep for a legacy chunk 0 orphaned by a torn v1 write.
+  await SecureStore.deleteItemAsync(legacyChunkKey(key, 0));
 }
 
-async function migrateLegacyValue(key: string): Promise<string | null> {
+async function migrateLegacyValueUnlocked(key: string): Promise<string | null> {
   const legacy = await AsyncStorage.getItem(key);
   if (legacy === null) return null;
-  await secureWrite(key, legacy);
+  await secureWriteUnlocked(key, legacy);
   // Only remove the insecure copy once the secure write round-trips.
-  const verified = await secureRead(key);
+  const verified = await secureReadUnlocked(key);
   if (verified === legacy) {
     await AsyncStorage.removeItem(key);
     return verified;
@@ -153,35 +175,83 @@ export async function isAuthStorageSecure(): Promise<boolean> {
 /** Supabase `auth.storage` adapter. */
 export const supabaseSecureAuthStorage = {
   async getItem(key: string): Promise<string | null> {
-    if (!(await isSecureStoreAvailable())) {
-      return AsyncStorage.getItem(key);
-    }
-    const stored = await secureRead(key);
-    if (stored !== null) return stored;
-    return migrateLegacyValue(key);
+    return serializeAuthStorageOperation(async () => {
+      if (!(await isSecureStoreAvailable())) {
+        return AsyncStorage.getItem(key);
+      }
+      const stored = await secureReadUnlocked(key);
+      if (stored !== null) return stored;
+      return migrateLegacyValueUnlocked(key);
+    });
   },
 
   async setItem(key: string, value: string): Promise<void> {
-    if (!(await isSecureStoreAvailable())) {
-      await AsyncStorage.setItem(key, value);
-      return;
-    }
-    await secureWrite(key, value);
-    // A copy must never linger in AsyncStorage once secure writes work.
-    await AsyncStorage.removeItem(key);
+    return serializeAuthStorageOperation(async () => {
+      if (!(await isSecureStoreAvailable())) {
+        await AsyncStorage.setItem(key, value);
+        return;
+      }
+      await secureWriteUnlocked(key, value);
+      // A copy must never linger in AsyncStorage once secure writes work.
+      await AsyncStorage.removeItem(key);
+    });
   },
 
   async removeItem(key: string): Promise<void> {
-    if (!(await isSecureStoreAvailable())) {
+    return serializeAuthStorageOperation(async () => {
+      if (!(await isSecureStoreAvailable())) {
+        await AsyncStorage.removeItem(key);
+        return;
+      }
+      await secureRemoveUnlocked(key);
       await AsyncStorage.removeItem(key);
-      return;
-    }
-    await secureRemove(key);
-    await AsyncStorage.removeItem(key);
+    });
   },
 };
+
+function nextGeneration(): string {
+  generationSequence += 1;
+  return `${Date.now().toString(36)}_${generationSequence.toString(36)}`;
+}
+
+async function deleteMetaChunksBestEffort(
+  key: string,
+  meta: AnyChunkMeta,
+): Promise<void> {
+  for (let i = 0; i < meta.chunks; i += 1) {
+    const keyToDelete = meta.v === 1
+      ? legacyChunkKey(key, i)
+      : chunkKey(key, meta.generation, i);
+    try {
+      await SecureStore.deleteItemAsync(keyToDelete);
+    } catch {
+      // The published manifest no longer references this stale generation,
+      // so cleanup failure cannot corrupt the active session.
+    }
+  }
+}
+
+async function deleteGenerationBestEffort(
+  key: string,
+  generation: string,
+  chunks: number,
+): Promise<void> {
+  await deleteMetaChunksBestEffort(key, {
+    v: META_VERSION,
+    generation,
+    chunks,
+  });
+}
+
+function serializeAuthStorageOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = operationTail.then(operation, operation);
+  operationTail = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 /** Test-only: reset cached SecureStore availability. */
 export function resetAuthStorageAvailabilityForTests(): void {
   secureAvailability = null;
+  operationTail = Promise.resolve();
+  generationSequence = 0;
 }

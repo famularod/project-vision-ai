@@ -6,11 +6,17 @@
 
 const mockSecureState = new Map<string, string>();
 let mockSecureAvailable = true;
+let mockSecureSetCount = 0;
+let mockFailSecureSetAt: number | null = null;
 
 jest.mock('expo-secure-store', () => ({
   isAvailableAsync: jest.fn(async () => mockSecureAvailable),
   getItemAsync: jest.fn(async (key: string) => mockSecureState.get(key) ?? null),
   setItemAsync: jest.fn(async (key: string, value: string) => {
+    mockSecureSetCount += 1;
+    if (mockSecureSetCount === mockFailSecureSetAt) {
+      throw new Error('injected secure write failure');
+    }
     mockSecureState.set(key, value);
   }),
   deleteItemAsync: jest.fn(async (key: string) => {
@@ -45,6 +51,8 @@ beforeEach(() => {
   mockSecureState.clear();
   mockAsyncState.clear();
   mockSecureAvailable = true;
+  mockSecureSetCount = 0;
+  mockFailSecureSetAt = null;
   resetAuthStorageAvailabilityForTests();
 });
 
@@ -100,10 +108,37 @@ describe('supabaseSecureAuthStorage', () => {
 
   it('treats a torn write (missing chunk) as absent, never as a truncated session', async () => {
     await supabaseSecureAuthStorage.setItem(KEY, 'a'.repeat(4000));
-    const someChunk = [...mockSecureState.keys()].find((k) => k.includes('.chunk.1'));
+    const someChunk = [...mockSecureState.keys()].find((k) => k.endsWith('.1'));
     mockSecureState.delete(someChunk as string);
 
     expect(await supabaseSecureAuthStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('keeps the prior complete token when replacement chunk writing is interrupted', async () => {
+    const prior = `prior-${'a'.repeat(4000)}`;
+    const replacement = `replacement-${'b'.repeat(4000)}`;
+    await supabaseSecureAuthStorage.setItem(KEY, prior);
+    mockFailSecureSetAt = mockSecureSetCount + 2;
+
+    await expect(supabaseSecureAuthStorage.setItem(KEY, replacement))
+      .rejects.toThrow('injected secure write failure');
+
+    mockFailSecureSetAt = null;
+    expect(await supabaseSecureAuthStorage.getItem(KEY)).toBe(prior);
+  });
+
+  it('keeps the prior complete token when replacement manifest publication fails', async () => {
+    const prior = `prior-${'a'.repeat(4000)}`;
+    const replacement = `replacement-${'b'.repeat(4000)}`;
+    await supabaseSecureAuthStorage.setItem(KEY, prior);
+    const replacementChunkCount = Math.ceil(replacement.length / 1800);
+    mockFailSecureSetAt = mockSecureSetCount + replacementChunkCount + 1;
+
+    await expect(supabaseSecureAuthStorage.setItem(KEY, replacement))
+      .rejects.toThrow('injected secure write failure');
+
+    mockFailSecureSetAt = null;
+    expect(await supabaseSecureAuthStorage.getItem(KEY)).toBe(prior);
   });
 
   it('falls back to AsyncStorage and reports insecure when SecureStore is unavailable', async () => {
