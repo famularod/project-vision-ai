@@ -201,7 +201,11 @@ export function buildExecutiveJudgmentRecord(input: {
       .filter(object => referencesObject(action, decision, object.name))
       .map(object => object.identity.id)
       .slice(0, 12),
+    // Audit P1-51: assertions are selected ONLY through the chosen
+    // supporting objects — never from every Reality object, which attached
+    // unrelated or contradictory assertions to the judgment's trace.
     supportingAssertionIds: input.realityModel.objects
+      .filter(object => referencesObject(action, decision, object.name))
       .flatMap(object => object.assertions)
       .map(assertion => assertion.id)
       .slice(0, 24),

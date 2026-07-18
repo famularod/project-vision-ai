@@ -33,7 +33,10 @@ export function buildPIERecommendationTrace(input: {
     realitySnapshotId: record.realitySnapshotId,
     realityObjectIds: record.supportingRealityObjectIds,
     assertionIds: record.supportingAssertionIds,
+    // Audit P1-51: evidence in the trace flows only through the judgment's
+    // supporting objects, keeping the trace consistent with the claim graph.
     evidenceIds: input.core.realityModel.objects
+      .filter(object => record.supportingRealityObjectIds.includes(object.identity.id))
       .flatMap(object => object.sourceEvidenceReferences.map(reference => reference.evidenceId))
       .filter((id, index, all) => Boolean(id) && all.indexOf(id) === index),
     conflictIds: record.activeConflictIds,
