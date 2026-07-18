@@ -83,6 +83,8 @@ import type {
 } from './types';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
 import { normalizeStartupArray, readStartupJson } from './services/StartupRecovery';
+import { createDurableLocalTransactionRepository } from './services/DurableLocalTransaction';
+import { createProjectId } from './services/ProjectIdentity';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -621,6 +623,8 @@ const PROJECT_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.projectDocuments.v1';
 const SCHEDULE_ITEMS_STORAGE_KEY = 'projectPhotoUpdate.scheduleItems.v1';
 const SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY = 'projectPhotoUpdate.scheduleAiExtractorUrl.v1';
 const DISPLAY_NAME_STORAGE_KEY = 'projectPhotoUpdate.displayName.v1';
+const FIELD_UPDATE_TRANSACTION_JOURNAL_KEY =
+  'projectPhotoUpdate.fieldUpdateTransaction.v1';
 const ANALYSIS_TIMEOUT_SECONDS = 60;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
 const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
@@ -638,6 +642,13 @@ const PROJECT_DOCUMENT_UPLOAD_FOLDER = 'project-documents';
 const EMPTY_SELECTED_PROJECTS: Set<string> = new Set();
 const LARGE_PROJECT_DOCUMENT_BYTES = 15 * 1024 * 1024;
 const GPS_CAPTURE_ENABLED = true;
+
+const fieldUpdateLocalTransaction = createDurableLocalTransactionRepository({
+  storage: AsyncStorage,
+  journalKey: FIELD_UPDATE_TRANSACTION_JOURNAL_KEY,
+  createTransactionId: createProjectId,
+  now: () => new Date().toISOString(),
+});
 
 const DEFAULT_PROJECTS = [
   '2321 Compliance Project',
@@ -5168,6 +5179,7 @@ function AppShell() {
 
   const [draftSavedAt, setDraftSavedAt] =
     useState<string | null>(null);
+  const [fieldUpdateSaving, setFieldUpdateSaving] = useState(false);
 
   const [updatesLoaded, setUpdatesLoaded] =
     useState(false);
@@ -5240,6 +5252,7 @@ function AppShell() {
   const startupCompletionLogged = useRef(false);
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
+  const fieldUpdateSaveInFlightRef = useRef(false);
   const updateDeletionInFlightRef = useRef(false);
   const skipSavedUpdatesPersistenceOnceRef = useRef(false);
   const legacyProjectStructureMigrationInFlight = useRef(false);
@@ -5250,6 +5263,8 @@ function AppShell() {
   deletedUpdateTombstonesRef.current = deletedUpdateTombstones;
   const savedUpdatesRef = useRef(savedUpdates);
   savedUpdatesRef.current = savedUpdates;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
@@ -5267,6 +5282,7 @@ function AppShell() {
 useEffect(() => {
   async function loadSavedUpdates() {
     try {
+      await fieldUpdateLocalTransaction.recover();
       const [localResult, tombstoneResult] = await Promise.all([
         readStartupJson(UPDATES_STORAGE_KEY, [], 'saved updates'),
         readStartupJson(DELETED_UPDATES_STORAGE_KEY, [], 'deleted update records'),
@@ -6902,7 +6918,13 @@ useEffect(() => {
   }
 
   async function saveFieldUpdateFromReview() {
-    if (!hasSavableUpdate(draft)) {
+    if (fieldUpdateSaveInFlightRef.current) {
+      Alert.alert('Save in progress', 'Wait for the current field update to finish saving.');
+      return;
+    }
+
+    const draftSnapshot = draftRef.current;
+    if (!hasSavableUpdate(draftSnapshot)) {
       Alert.alert(
         'Update is blank',
         'Add a photo, update notes, field note, or action information before saving.',
@@ -6910,7 +6932,7 @@ useEffect(() => {
       return;
     }
 
-    const invalidDueDateIndex = findInvalidDueDatePhoto(draft);
+    const invalidDueDateIndex = findInvalidDueDatePhoto(draftSnapshot);
     if (invalidDueDateIndex >= 0) {
       Alert.alert(
         'Invalid due date',
@@ -6919,12 +6941,15 @@ useEffect(() => {
       return;
     }
 
+    fieldUpdateSaveInFlightRef.current = true;
+    setFieldUpdateSaving(true);
     const now = new Date().toISOString();
-    const pieSummary = summarizePIEStatusForUpdate(draft);
-    const idempotencyKey = draft.idempotencyKey || draft.stableSendId || `send-${draft.id}`;
-    const sendAttempts = (draft.sendAttempts || 0) + 1;
+    const pieSummary = summarizePIEStatusForUpdate(draftSnapshot);
+    const idempotencyKey = draftSnapshot.idempotencyKey ||
+      draftSnapshot.stableSendId || `send-${draftSnapshot.id}`;
+    const sendAttempts = (draftSnapshot.sendAttempts || 0) + 1;
     const baseUpdate: ProjectUpdate = {
-      ...draft,
+      ...draftSnapshot,
       status: 'ready_to_send',
       stableSendId: idempotencyKey,
       idempotencyKey,
@@ -6932,9 +6957,9 @@ useEffect(() => {
       lastSendAttemptAt: now,
       pieStatus: pieSummary.status,
       pieSummary: pieSummary.summary,
-      generatedMessage: buildGeneratedUpdateMessage(draft, pieSummary),
+      generatedMessage: buildGeneratedUpdateMessage(draftSnapshot, pieSummary),
       workflowTimestamps: {
-        ...(draft.workflowTimestamps || {}),
+        ...(draftSnapshot.workflowTimestamps || {}),
         sendTappedAt: now,
       },
     };
@@ -6944,104 +6969,128 @@ useEffect(() => {
       status: 'queued',
     };
 
-    upsertSavedUpdateUnlessDeleted(queuedUpdate);
-    setSelectedWorkspaceProject(queuedUpdate.projectName);
+    try {
+      if (savedUpdatesSaveTimer.current) {
+        clearTimeout(savedUpdatesSaveTimer.current);
+        savedUpdatesSaveTimer.current = null;
+      }
+      if (draftSaveTimer.current) {
+        clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+      }
+      const persistedDraft = await AsyncStorage.getItem(DRAFT_STORAGE_KEY);
+      const nextUpdates = mergeSavedUpdatesWithTombstones({
+        localUpdates: [queuedUpdate, ...savedUpdatesRef.current.filter(
+          item => item.id !== queuedUpdate.id,
+        )],
+        cloudUpdates: [],
+        tombstones: deletedUpdateTombstonesRef.current,
+      });
+      await fieldUpdateLocalTransaction.commit([
+        { kind: 'set', key: UPDATES_STORAGE_KEY, value: JSON.stringify(nextUpdates) },
+        {
+          kind: 'set',
+          key: DELETED_UPDATES_STORAGE_KEY,
+          value: JSON.stringify(deletedUpdateTombstonesRef.current),
+        },
+        { kind: 'remove_if_unchanged', key: DRAFT_STORAGE_KEY, expectedValue: persistedDraft },
+      ]);
+      savedUpdatesRef.current = nextUpdates;
+      setSavedUpdates(nextUpdates);
+      setSelectedWorkspaceProject(queuedUpdate.projectName);
+    } catch {
+      Alert.alert(
+        'Update not saved',
+        'The device could not verify the saved update. Your draft is still here; try again.',
+      );
+      fieldUpdateSaveInFlightRef.current = false;
+      setFieldUpdateSaving(false);
+      return;
+    }
 
+    const draftUnchanged = draftRef.current === draftSnapshot;
+    if (draftUnchanged) {
+      setDraft(createDraft(queuedUpdate.projectName));
+      setDraftSavedAt(null);
+      setScreen('ProjectWorkspace');
+    }
+
+    let finalUpdate: ProjectUpdate;
     try {
       const tokenResult = await getCurrentSessionAccessToken();
       const tokenLookup = tokenResult.data;
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
-        const resolvedAt = new Date().toISOString();
-        const skippedDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+        const syncDiagnostics = buildSkippedSyncDiagnostics(
+          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth',
           now,
           1,
           false,
         );
-        const finalUpdate: ProjectUpdate = {
+        finalUpdate = {
           ...queuedUpdate,
           status: 'failed',
-          syncDiagnostics: skippedDiagnostics,
+          syncDiagnostics,
           workflowTimestamps: {
             ...(queuedUpdate.workflowTimestamps || {}),
-            sendResolvedAt: resolvedAt,
+            sendResolvedAt: new Date().toISOString(),
           },
         };
-        upsertSavedUpdateUnlessDeleted(finalUpdate);
-        Alert.alert(
-          'Field update saved locally',
-          'Sign in from Settings when you are ready to sync this update to the project.',
-        );
-        setDraft(createDraft(queuedUpdate.projectName));
-        setDraftSavedAt(null);
-        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
-        setScreen('ProjectWorkspace');
-        return;
-      }
-
-      const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
-      const syncDiagnostics = buildSyncDiagnosticsFromUpload(
-        syncResult,
-        now,
-        sessionTokenPresent,
-        workAttempt,
-        queuedUpdate.sendAttempts || 1,
-      );
-      const resolvedAt = new Date().toISOString();
-      const finalUpdate: ProjectUpdate = {
-        ...queuedUpdate,
-        status: statusForSyncDiagnostics(syncDiagnostics),
-        syncDiagnostics,
-        workflowTimestamps: {
-          ...(queuedUpdate.workflowTimestamps || {}),
-          sendResolvedAt: resolvedAt,
-        },
-      };
-
-      upsertSavedUpdateUnlessDeleted(finalUpdate);
-
-      if (finalUpdate.status === 'sent') {
-        Alert.alert('Field update saved', 'The update was added to the project workspace.');
       } else {
-        Alert.alert(
-          'Field update saved locally',
-          'The update could not sync to the cloud yet. You can retry from Field Activity.',
+        const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
+        const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+          syncResult,
+          now,
+          true,
+          workAttempt,
+          queuedUpdate.sendAttempts || 1,
         );
+        finalUpdate = {
+          ...queuedUpdate,
+          status: statusForSyncDiagnostics(syncDiagnostics),
+          syncDiagnostics,
+          workflowTimestamps: {
+            ...(queuedUpdate.workflowTimestamps || {}),
+            sendResolvedAt: new Date().toISOString(),
+          },
+        };
       }
     } catch (error) {
-      const resolvedAt = new Date().toISOString();
-      const failureCategory = classifySyncFailureCategory([
-        error instanceof Error ? error.message : 'unknown sync error',
-      ]);
       const syncDiagnostics = buildSkippedSyncDiagnostics(
-        failureCategory,
+        classifySyncFailureCategory([
+          error instanceof Error ? error.message : 'unknown sync error',
+        ]),
         now,
         1,
         null,
       );
-      const failedOrQueuedUpdate: ProjectUpdate = {
+      finalUpdate = {
         ...queuedUpdate,
         status: statusForSyncDiagnostics(syncDiagnostics),
         syncDiagnostics,
         workflowTimestamps: {
           ...(queuedUpdate.workflowTimestamps || {}),
-          sendResolvedAt: resolvedAt,
+          sendResolvedAt: new Date().toISOString(),
         },
       };
-      upsertSavedUpdateUnlessDeleted(failedOrQueuedUpdate);
-      Alert.alert(
-        'Field update saved locally',
-        'The update could not sync to the cloud yet. You can retry from Field Activity.',
-      );
     }
 
-    setDraft(createDraft(queuedUpdate.projectName));
-    setDraftSavedAt(null);
-    AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
-    setScreen('ProjectWorkspace');
+    try {
+      await persistSavedUpdateImmediately(finalUpdate);
+    } catch {
+      // The verified queued update remains durable and will be retried on startup.
+    } finally {
+      fieldUpdateSaveInFlightRef.current = false;
+      setFieldUpdateSaving(false);
+    }
+    Alert.alert(
+      finalUpdate.status === 'sent' ? 'Field update saved' : 'Field update saved locally',
+      draftUnchanged
+        ? finalUpdate.status === 'sent'
+          ? 'The update was added to the project workspace.'
+          : 'The cloud sync is pending. You can retry from Field Activity.'
+        : 'The saved version is safe, and your newer draft changes were kept.',
+    );
   }
 
   async function persistSavedUpdateImmediately(update: ProjectUpdate) {
@@ -7050,9 +7099,11 @@ useEffect(() => {
       cloudUpdates: [],
       tombstones: deletedUpdateTombstonesRef.current,
     });
+    await fieldUpdateLocalTransaction.commit([
+      { kind: 'set', key: UPDATES_STORAGE_KEY, value: JSON.stringify(nextUpdates) },
+    ]);
     savedUpdatesRef.current = nextUpdates;
     setSavedUpdates(nextUpdates);
-    await AsyncStorage.setItem(UPDATES_STORAGE_KEY, JSON.stringify(nextUpdates));
   }
 
   async function syncFieldUpdateWithMissingPhotoRepair(
@@ -10989,6 +11040,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 selectedArea={currentDraftArea}
                 draftSavedAt={draftSavedAt}
                 pieStatus={draftPIEStatus}
+                isSaving={fieldUpdateSaving}
                 onNotesChange={notes =>
                   setDraft(prev => ({
                     ...prev,
@@ -14391,6 +14443,7 @@ function BuildUpdateScreen({
   selectedArea,
   draftSavedAt,
   pieStatus,
+  isSaving,
   onNotesChange,
   onSaveUpdate,
   onEditPhotos,
@@ -14405,6 +14458,7 @@ function BuildUpdateScreen({
   selectedArea: ProjectArea | null;
   draftSavedAt: string | null;
   pieStatus: { status: FieldUpdatePIEStatus; summary: string };
+  isSaving: boolean;
   onNotesChange: (notes: string) => void;
   onSaveUpdate: () => void;
   onEditPhotos: () => void;
@@ -14684,9 +14738,10 @@ function BuildUpdateScreen({
       </View>
 
       <PrimaryButton
-        label="Save Field Update"
+        label={isSaving ? 'Saving…' : 'Save Field Update'}
         icon="checkmark-circle-outline"
         onPress={onSaveUpdate}
+        disabled={isSaving}
       />
 
       <View style={styles.sendRow}>
