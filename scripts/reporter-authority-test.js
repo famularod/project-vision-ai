@@ -34,12 +34,13 @@ assert(
   'Authority refreshes must replay the latest input when scope changes during in-flight work.',
 );
 assert(
-  provider.includes('const currentCore = coreSignature === signature ? core : null') &&
-    provider.includes('setFallbackRuntime(safeBuildProviderRuntime(input))'),
+  provider.includes('const currentCore = scopeIsCurrent && coreSignature === signature ? core : null') &&
+    provider.includes('const displayInput = scopeIsCurrent ? authorityInput : input'),
   'Report UI must not expose a completed draft built for an older project scope.',
 );
 assert(
-  provider.includes('coreSignature === signature ? fallbackRuntime : currentInputRuntime'),
+  provider.includes('scopeIsCurrent ? null : safeBuildProviderRuntime(input)') &&
+    provider.includes('currentCore?.runtime || immediateScopeRuntime || fallbackRuntime'),
   'A newly selected report scope must render its current Runtime immediately without a stale combined-report frame.',
 );
 assert(

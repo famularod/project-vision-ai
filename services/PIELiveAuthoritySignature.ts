@@ -40,6 +40,17 @@ export function authorityInputSignature(input: PIELiveAuthorityInput) {
   });
 }
 
+export function authorityInputScopeSignature(input: PIELiveAuthorityInput) {
+  return JSON.stringify({
+    organizationId: input.organizationId || null,
+    projectId: input.projectId || safeProjectId(input.projectName),
+    projectName: input.projectName,
+    projectNames: input.projectNames,
+    reportType: input.reportType || null,
+    surface: input.surface || 'home',
+  });
+}
+
 function photoSemanticRevision(updateId: string, photo: UpdatePhoto) {
   const intelligence = photo.photoIntelligence;
   return {

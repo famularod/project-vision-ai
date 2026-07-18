@@ -38,7 +38,13 @@ import {
   type DAVEProjectTruth,
 } from '../services/DAVEProjectTruth';
 import { createDAVEProjectTruthRepository } from '../services/DAVEProjectTruthRepository';
-import { authorityInputSignature } from '../services/PIELiveAuthoritySignature';
+import {
+  authorityInputScopeSignature,
+  authorityInputSignature,
+} from '../services/PIELiveAuthoritySignature';
+import { useDebouncedSnapshot } from '../hooks/use-debounced-snapshot';
+
+const LIVE_AUTHORITY_INPUT_DEBOUNCE_MS = 500;
 
 export type PIELiveAuthorityRefreshReason =
   | 'initial_load'
@@ -151,16 +157,29 @@ export function PIELiveAuthorityProvider({
   const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState<string | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const sequenceRef = useRef(0);
-  const latestProjectRef = useRef<string | null>(input.projectId || safeProjectId(input.projectName));
-  const pendingReasonRef = useRef<PIELiveAuthorityRefreshReason | null>(null);
-  const signature = useMemo(() => authorityInputSignature(input), [input]);
-  const currentInputRuntime = useMemo(
-    () => safeBuildProviderRuntime(input),
-    [signature],
+  const rawSignature = useMemo(() => authorityInputSignature(input), [input]);
+  const rawScopeSignature = useMemo(() => authorityInputScopeSignature(input), [input]);
+  const authoritySnapshot = useDebouncedSnapshot({
+    value: input,
+    signature: rawSignature,
+    priorityKey: rawScopeSignature,
+    delayMs: LIVE_AUTHORITY_INPUT_DEBOUNCE_MS,
+  });
+  const authorityInput = authoritySnapshot.value;
+  const signature = authoritySnapshot.signature;
+  const scopeIsCurrent = rawScopeSignature === authoritySnapshot.priorityKey;
+  const immediateScopeRuntime = useMemo(
+    () => scopeIsCurrent ? null : safeBuildProviderRuntime(input),
+    [rawScopeSignature, scopeIsCurrent],
   );
-  const latestInputRef = useRef(input);
+  const displayInput = scopeIsCurrent ? authorityInput : input;
+  const latestProjectRef = useRef<string | null>(
+    authorityInput.projectId || safeProjectId(authorityInput.projectName),
+  );
+  const pendingReasonRef = useRef<PIELiveAuthorityRefreshReason | null>(null);
+  const latestInputRef = useRef(authorityInput);
   const latestSignatureRef = useRef(signature);
-  latestInputRef.current = input;
+  latestInputRef.current = authorityInput;
   latestSignatureRef.current = signature;
 
   const runRefresh = useCallback(async (reason: PIELiveAuthorityRefreshReason) => {
@@ -241,8 +260,7 @@ export function PIELiveAuthorityProvider({
   }, []);
 
   useEffect(() => {
-    latestProjectRef.current = input.projectId || safeProjectId(input.projectName);
-    setFallbackRuntime(safeBuildProviderRuntime(input));
+    latestProjectRef.current = authorityInput.projectId || safeProjectId(authorityInput.projectName);
     void runRefresh(core ? 'project_changed' : 'initial_load');
   }, [signature]);
 
@@ -262,23 +280,22 @@ export function PIELiveAuthorityProvider({
   }, [runRefresh]);
 
   const value = useMemo<PIELiveAuthorityContextValue>(() => {
-    const currentCore = coreSignature === signature ? core : null;
-    const currentRuntime = currentCore?.runtime ||
-      (coreSignature === signature ? fallbackRuntime : currentInputRuntime);
+    const currentCore = scopeIsCurrent && coreSignature === signature ? core : null;
+    const currentRuntime = currentCore?.runtime || immediateScopeRuntime || fallbackRuntime;
     const persistenceStatus = currentCore?.realityAuthority.persistenceStatus || null;
     const nextState = state === 'loading' && currentCore
       ? stateFromPersistence(currentCore.realityAuthority.persistenceStatus)
       : state;
     const policy = policyForCore(nextState, currentCore);
     const projectTruth = buildDAVEProjectTruth({
-      projectId: input.projectId || safeProjectId(input.projectName),
-      projectName: input.projectName,
-      updates: input.updates,
-      scheduleItems: input.scheduleItems,
-      projectAreas: input.projectAreas,
-      referenceDocuments: input.referenceDocuments,
-      projectDocuments: input.projectDocuments,
-      captureMemories: input.captureMemories,
+      projectId: displayInput.projectId || safeProjectId(displayInput.projectName),
+      projectName: displayInput.projectName,
+      updates: displayInput.updates,
+      scheduleItems: displayInput.scheduleItems,
+      projectAreas: displayInput.projectAreas,
+      referenceDocuments: displayInput.referenceDocuments,
+      projectDocuments: displayInput.projectDocuments,
+      captureMemories: displayInput.captureMemories,
       runtime: currentRuntime,
       core: currentCore,
       now: currentRuntime.generatedAt,
@@ -290,8 +307,8 @@ export function PIELiveAuthorityProvider({
       core: currentCore,
       runtime: currentRuntime,
       projectTruth,
-      organizationId: currentCore?.realityModel.organizationId || input.organizationId || null,
-      projectId: currentCore?.realityModel.projectId || input.projectId || null,
+      organizationId: currentCore?.realityModel.organizationId || displayInput.organizationId || null,
+      projectId: currentCore?.realityModel.projectId || displayInput.projectId || null,
       realityModel: currentCore?.realityModel || null,
       realityModelVersion: currentCore?.realityAuthority.modelVersion || null,
       realitySnapshotId: currentCore?.realityAuthority.snapshotId || null,
@@ -318,34 +335,27 @@ export function PIELiveAuthorityProvider({
   }, [
     core,
     coreSignature,
-    currentInputRuntime,
+    displayInput,
     error,
     fallbackRuntime,
-    input.organizationId,
-    input.projectId,
-    input.projectName,
-    input.updates,
-    input.scheduleItems,
-    input.projectAreas,
-    input.referenceDocuments,
-    input.projectDocuments,
-    input.captureMemories,
+    immediateScopeRuntime,
     invalidateEvidence,
     lastSuccessfulRefreshAt,
     notifyEvidenceChanged,
     notifyProjectChanged,
     retryPending,
     runRefresh,
+    scopeIsCurrent,
     signature,
     state,
   ]);
 
   useEffect(() => {
-    const organizationId = input.identityTrusted ? input.organizationId : null;
+    const organizationId = authorityInput.identityTrusted ? authorityInput.organizationId : null;
     if (!organizationId || !value.projectTruth.projectId) return;
     const repository = createDAVEProjectTruthRepository({
-      cloudEnabled: Boolean(input.cloudAvailable),
-      identityTrusted: Boolean(input.identityTrusted),
+      cloudEnabled: Boolean(authorityInput.cloudAvailable),
+      identityTrusted: Boolean(authorityInput.identityTrusted),
     });
     void repository.save(organizationId, value.projectTruth)
       .then(result => {
@@ -367,9 +377,9 @@ export function PIELiveAuthorityProvider({
         );
       });
   }, [
-    input.cloudAvailable,
-    input.identityTrusted,
-    input.organizationId,
+    authorityInput.cloudAvailable,
+    authorityInput.identityTrusted,
+    authorityInput.organizationId,
     value.projectTruth,
   ]);
 

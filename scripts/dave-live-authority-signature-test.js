@@ -16,7 +16,7 @@ new Function('require', 'module', 'exports', compiled)(
   moduleUnderTest,
   moduleUnderTest.exports,
 );
-const { authorityInputSignature } = moduleUnderTest.exports;
+const { authorityInputScopeSignature, authorityInputSignature } = moduleUnderTest.exports;
 
 function input() {
   return {
@@ -84,7 +84,34 @@ status.updates[0].photos[0].photoIntelligence.status = 'completed_with_limitatio
 status.updates[0].photos[0].photoIntelligence.updatedAt = '2026-07-16T12:06:00.000Z';
 assert.notStrictEqual(authorityInputSignature(status), baseSignature);
 
+const editedDraft = input();
+editedDraft.currentUpdate = {
+  ...editedDraft.updates[0],
+  id: 'draft-1',
+  notes: 'Typing a field note.',
+};
+const editedDraftAgain = JSON.parse(JSON.stringify(editedDraft));
+editedDraftAgain.currentUpdate.notes = 'Typing a field note with more detail.';
+assert.notStrictEqual(authorityInputSignature(editedDraftAgain), authorityInputSignature(editedDraft));
+assert.strictEqual(
+  authorityInputScopeSignature(editedDraftAgain),
+  authorityInputScopeSignature(editedDraft),
+  'draft typing should refresh within the same debounced authority scope',
+);
+
+const changedProject = JSON.parse(JSON.stringify(editedDraft));
+changedProject.projectId = 'project-2';
+changedProject.projectName = 'School';
+changedProject.projectNames = ['School'];
+assert.notStrictEqual(
+  authorityInputScopeSignature(changedProject),
+  authorityInputScopeSignature(editedDraft),
+  'project changes must bypass the typing debounce',
+);
+
 const provider = fs.readFileSync(path.join(root, 'providers/PIELiveAuthorityProvider.tsx'), 'utf8');
 assert(provider.includes("from '../services/PIELiveAuthoritySignature'"));
+assert(provider.includes('useDebouncedSnapshot'));
+assert(provider.includes('LIVE_AUTHORITY_INPUT_DEBOUNCE_MS'));
 
 console.log('DAVE live-authority semantic signature tests passed.');
