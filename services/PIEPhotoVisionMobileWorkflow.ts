@@ -24,6 +24,16 @@ import {
   derivePhotoAssessmentDisposition,
   type PhotoAssessmentDisposition,
 } from './PhotoAssessment';
+import {
+  CURRENT_PHOTO_ANALYSIS_VERSIONS,
+  compareImmutablePhotoCapturedAt,
+  createPhotoAnalysisRunIdentity,
+  createPhotoEvidenceIdentity,
+  resolveImmutablePhotoCapturedAt,
+  type ImmutablePhotoCaptureOrder,
+  type ImmutablePhotoCaptureTimestamp,
+  type PhotoEvidenceIdentity,
+} from './PhotoAnalysisIdentity';
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -81,6 +91,7 @@ type StagedPhotoEvidence = {
   storagePath: string;
   storagePathHash: string;
   contentHash: string;
+  contentSha256: string;
   sizeBytes: number;
 };
 
@@ -216,7 +227,9 @@ export type PIEPriorPhotoMatchKey = {
   normalizedAreaKey: string | null;
   normalizedAreaIdKey: string | null;
   normalizedAreaNameKey: string | null;
-  capturedOrSavedAt: string | null;
+  capturedAt: string | null;
+  captureStatus: ImmutablePhotoCaptureTimestamp['status'];
+  captureSource: ImmutablePhotoCaptureTimestamp['source'];
   timestampMs: number | null;
   updateId: string | null;
   photoId: string | null;
@@ -432,12 +445,16 @@ export async function analyzeProjectPhotoWithVision({
 
     assertComparableEvidencePair(baselineEvidence, currentEvidence);
 
-    const requestId = `pie-mobile-photo-pair-${stableHash([
+    const analysisRunIdentity = createPhotoAnalysisRunIdentity({
       organizationId,
       projectId,
-      baselineEvidence.evidenceId,
-      currentEvidence.evidenceId,
-    ].join(':'))}`;
+      priorEvidenceId: baselineEvidence.evidenceId,
+      currentEvidenceId: currentEvidence.evidenceId,
+      priorContentSha256: baselineEvidence.contentSha256,
+      currentContentSha256: currentEvidence.contentSha256,
+      versions: CURRENT_PHOTO_ANALYSIS_VERSIONS,
+    });
+    const requestId = analysisRunIdentity.requestId;
 
     const { data: functionData, error } = await client.functions.invoke('pie-photo-vision', {
       headers: {
@@ -450,6 +467,7 @@ export async function analyzeProjectPhotoWithVision({
         projectId,
         baselineEvidenceId: baselineEvidence.evidenceId,
         currentEvidenceId: currentEvidence.evidenceId,
+        promptVersion: analysisRunIdentity.versions.promptVersion,
         projectName: update.projectName,
         areaName: photo.selectedAreaName || update.selectedAreaName || null,
         fieldNotes: update.notes || null,
@@ -754,12 +772,10 @@ async function findPriorComparablePhoto(
       afterSameArea += 1;
 
       const timestampComparison = comparePriorCandidateTime(candidateKey, currentKey);
-      if (timestampComparison === 'invalid_current') {
-        rejectedReasons.push(`${label} rejected: timestamp_invalid`);
-        continue;
-      }
-      if (timestampComparison === 'not_earlier') {
-        rejectedReasons.push(`${label} rejected: not earlier than current photo`);
+      if (timestampComparison !== 'earlier') {
+        rejectedReasons.push(
+          `${label} rejected: ${priorCaptureRejectionReason(timestampComparison)}`,
+        );
         continue;
       }
       afterTimestamp += 1;
@@ -857,15 +873,7 @@ export function buildPIEPriorPhotoMatchKey(
   update: ProjectUpdate,
   photo?: UpdatePhoto | null,
 ): PIEPriorPhotoMatchKey {
-  const capturedOrSavedAt = firstNonEmptyString([
-    update.workflowTimestamps?.firstPhotoAddedAt,
-    update.workflowTimestamps?.sendTappedAt,
-    update.workflowTimestamps?.sendResolvedAt,
-    photo?.locationCapturedAt,
-    update.locationCapturedAt,
-    update.pieStartedAt,
-    update.date,
-  ]);
+  const captureTimestamp = resolveImmutablePhotoCapturedAt(photo);
 
   const areaIdentity = createDAVEAreaIdentity(
     photo?.selectedAreaId || update.selectedAreaId || null,
@@ -877,8 +885,10 @@ export function buildPIEPriorPhotoMatchKey(
     normalizedAreaKey: areaIdentity.idKey || areaIdentity.nameKey || null,
     normalizedAreaIdKey: areaIdentity.idKey || null,
     normalizedAreaNameKey: areaIdentity.nameKey || null,
-    capturedOrSavedAt,
-    timestampMs: timestampMsOrNull(capturedOrSavedAt),
+    capturedAt: captureTimestamp.value,
+    captureStatus: captureTimestamp.status,
+    captureSource: captureTimestamp.source,
+    timestampMs: captureTimestamp.epochMs,
     updateId: update.id || null,
     photoId: photo?.id || null,
   };
@@ -887,11 +897,46 @@ export function buildPIEPriorPhotoMatchKey(
 function comparePriorCandidateTime(
   candidateKey: PIEPriorPhotoMatchKey,
   currentKey: PIEPriorPhotoMatchKey,
-): 'earlier' | 'not_earlier' | 'invalid_current' {
-  if (currentKey.timestampMs === null) return 'invalid_current';
-  if (candidateKey.timestampMs === null) return 'not_earlier';
-  if (candidateKey.timestampMs < currentKey.timestampMs) return 'earlier';
-  return 'not_earlier';
+): ImmutablePhotoCaptureOrder {
+  return compareImmutablePhotoCapturedAt(
+    captureTimestampFromMatchKey(candidateKey),
+    captureTimestampFromMatchKey(currentKey),
+  );
+}
+
+function captureTimestampFromMatchKey(
+  key: PIEPriorPhotoMatchKey,
+): ImmutablePhotoCaptureTimestamp {
+  return {
+    value: key.capturedAt,
+    epochMs: key.timestampMs,
+    status: key.captureStatus,
+    source: key.captureSource,
+  };
+}
+
+function validCaptureTimestampValue(photo: UpdatePhoto) {
+  const captureTimestamp = resolveImmutablePhotoCapturedAt(photo);
+  return captureTimestamp.status === 'valid' ? captureTimestamp.value : null;
+}
+
+function priorCaptureRejectionReason(order: ImmutablePhotoCaptureOrder) {
+  switch (order) {
+    case 'current_missing':
+      return 'timestamp_invalid (current photo capture time is missing)';
+    case 'current_invalid':
+      return 'timestamp_invalid (current photo capture time is invalid)';
+    case 'candidate_missing':
+      return 'prior photo capture time is missing';
+    case 'candidate_invalid':
+      return 'prior photo capture time is invalid';
+    case 'equal':
+      return 'capture time equals current photo; earlier order is unproven';
+    case 'later':
+      return 'not earlier than current photo';
+    case 'earlier':
+      return 'earlier';
+  }
 }
 
 function noPriorReasonFromCounters({
@@ -913,7 +958,7 @@ function noPriorReasonFromCounters({
 }): PIEPriorNoPriorReason {
   if (!currentKey.normalizedProjectKey) return 'missing_project_key';
   if (!currentKey.normalizedAreaKey) return 'missing_area_key';
-  if (currentKey.timestampMs === null) return 'timestamp_invalid';
+  if (currentKey.captureStatus !== 'valid') return 'timestamp_invalid';
   if (candidateCount === 0) return 'no_earlier_photo';
   if (afterSameProject === 0) return 'no_same_project';
   if (afterSameArea === 0) return 'no_same_area';
@@ -969,28 +1014,10 @@ function buildPriorSelectionDiagnostics(
     selectedPriorUpdateId: input.selected?.update.id || null,
     selectedPriorPhotoId: input.selected?.photo.id || null,
     selectedPriorDate: input.selected
-      ? firstNonEmptyString([
-          input.selected.photo.locationCapturedAt,
-          input.selected.update.workflowTimestamps?.firstPhotoAddedAt,
-          input.selected.update.date,
-        ])
+      ? validCaptureTimestampValue(input.selected.photo)
       : null,
     noPriorReason: input.noPriorReason,
   };
-}
-
-function buildPhotoEvidenceId(
-  organizationId: string,
-  projectId: string,
-  updateId: string,
-  photoId: string,
-) {
-  return `pie-mobile-photo-${stableHash([
-    organizationId,
-    projectId,
-    updateId,
-    photoId,
-  ].join(':'))}`;
 }
 
 const photoEvidenceStagingCache = new Map<string, Promise<StagedPhotoEvidence>>();
@@ -1003,21 +1030,31 @@ function stagePhotoEvidence(params: {
   captureSource: 'camera' | 'library';
   preparedFile: PreparedPhotoFile;
 }): Promise<StagedPhotoEvidence> {
-  const evidenceId = buildPhotoEvidenceId(
-    params.organizationId,
-    params.projectId,
-    params.update.id,
-    params.photo.id,
-  );
+  if (!params.preparedFile.ok) {
+    return Promise.reject(new PhotoPreparationError(
+      params.preparedFile.role,
+      params.preparedFile.reason,
+      params.preparedFile.detail,
+    ));
+  }
 
-  const cached = photoEvidenceStagingCache.get(evidenceId);
+  const identity = createPhotoEvidenceIdentity({
+    organizationId: params.organizationId,
+    projectId: params.projectId,
+    updateId: params.update.id,
+    photoId: params.photo.id,
+    contentSha256: params.preparedFile.sha256,
+  });
+  const stagingCacheKey = identity.stagingCacheKey;
+
+  const cached = photoEvidenceStagingCache.get(stagingCacheKey);
   if (cached) return cached;
 
-  const staging = stagePhotoEvidenceUncached(params).catch(error => {
-    photoEvidenceStagingCache.delete(evidenceId);
+  const staging = stagePhotoEvidenceUncached({ ...params, identity }).catch(error => {
+    photoEvidenceStagingCache.delete(stagingCacheKey);
     throw error;
   });
-  photoEvidenceStagingCache.set(evidenceId, staging);
+  photoEvidenceStagingCache.set(stagingCacheKey, staging);
   return staging;
 }
 
@@ -1028,6 +1065,7 @@ async function stagePhotoEvidenceUncached({
   photo,
   captureSource,
   preparedFile,
+  identity,
 }: {
   organizationId: string;
   projectId: string;
@@ -1035,6 +1073,7 @@ async function stagePhotoEvidenceUncached({
   photo: UpdatePhoto;
   captureSource: 'camera' | 'library';
   preparedFile: PreparedPhotoFile;
+  identity: PhotoEvidenceIdentity;
 }): Promise<StagedPhotoEvidence> {
   const client = getSupabaseClient();
   if (!client) throw new Error('Supabase unavailable');
@@ -1043,11 +1082,12 @@ async function stagePhotoEvidenceUncached({
 
   const mimeType = preparedFile.mimeType;
   const extension = preparedFile.extension;
-  const evidenceId = buildPhotoEvidenceId(organizationId, projectId, update.id, photo.id);
-  const assetId = evidenceId;
+  const evidenceId = identity.evidenceId;
+  const assetId = identity.assetId;
   const storagePath = `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
   const storagePathHash = stableHash(storagePath);
   const contentHash = `sha256:${preparedFile.sha256}`;
+  const capturedAt = validCaptureTimestampValue(photo);
 
   const uploadResult = await uploadPreparedPhoto({
     bucket: PIE_EVIDENCE_BUCKET,
@@ -1082,7 +1122,7 @@ async function stagePhotoEvidenceUncached({
     evidence_type: 'photo',
     source: 'mobile_photo_update',
     source_system: 'project_photo_update_tool',
-    captured_at: photo.locationCapturedAt || update.date || receivedAt,
+    captured_at: capturedAt,
     effective_at: update.date || receivedAt,
     received_at: receivedAt,
     author_id: userData.user?.id ?? null,
@@ -1092,8 +1132,8 @@ async function stagePhotoEvidenceUncached({
     evidence_version: 1,
     authority: 'supporting',
     processing_state: 'queued',
-    analyzer_id: 'pie-production-photo-vision',
-    analyzer_version: null,
+    analyzer_id: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerId,
+    analyzer_version: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerVersion,
     lineage: {
       parentEvidenceIds: [],
       derivedEvidenceIds: [],
@@ -1133,7 +1173,7 @@ async function stagePhotoEvidenceUncached({
       mime_type: mimeType,
       size_bytes: preparedFile.sizeBytes,
       capture_source: captureSource,
-      captured_at: photo.locationCapturedAt || update.date || receivedAt,
+      captured_at: capturedAt,
       exif: {},
       analysis_status: 'queued',
       current_analysis_version: null,
@@ -1150,6 +1190,7 @@ async function stagePhotoEvidenceUncached({
     storagePath,
     storagePathHash,
     contentHash,
+    contentSha256: preparedFile.sha256,
     sizeBytes: preparedFile.sizeBytes,
   };
 }
@@ -1804,11 +1845,6 @@ export function classifyPIEPhotoVisionFailureMessage(
 function timestampMs(value: string | null | undefined): number {
   const time = value ? new Date(value).getTime() : Number.NaN;
   return Number.isFinite(time) ? time : Number.NaN;
-}
-
-function timestampMsOrNull(value: string | null | undefined): number | null {
-  const time = timestampMs(value);
-  return Number.isFinite(time) ? time : null;
 }
 
 function stableHash(value: string) {

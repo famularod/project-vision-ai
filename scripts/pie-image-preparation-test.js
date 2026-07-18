@@ -63,6 +63,21 @@ assertIncludes(
 );
 assertIncludes(
   workflow,
+  'createPhotoEvidenceIdentity({',
+  'staged evidence identity must be derived from immutable photo inputs',
+);
+assertIncludes(
+  workflow,
+  'contentSha256: params.preparedFile.sha256',
+  'staged evidence and its cache identity must include the prepared photo bytes SHA-256',
+);
+assertIncludes(
+  workflow,
+  'photoEvidenceStagingCache.get(stagingCacheKey)',
+  'staging cache lookups must use the content-aware cache key',
+);
+assertIncludes(
+  workflow,
   'continue;',
   'broken prior candidates must be skipped instead of selected',
 );
@@ -92,6 +107,21 @@ assertIncludes(
   workflow,
   'Authorization: `Bearer ${tokenLookup.accessToken}`',
   'pie-photo-vision must use the signed-in Supabase session token',
+);
+assertIncludes(
+  workflow,
+  'createPhotoAnalysisRunIdentity({',
+  'photo analyzer requests must use the immutable analyzer-run identity',
+);
+assertIncludes(
+  workflow,
+  'priorContentSha256: baselineEvidence.contentSha256',
+  'analyzer-run identity must include the prior photo bytes SHA-256',
+);
+assertIncludes(
+  workflow,
+  'currentContentSha256: currentEvidence.contentSha256',
+  'analyzer-run identity must include the current photo bytes SHA-256',
 );
 assertIncludes(
   workflow,
@@ -125,17 +155,18 @@ assertIncludes(
 );
 assertIncludes(
   workflow,
-  'update.workflowTimestamps?.firstPhotoAddedAt',
-  'prior lookup must use saved-photo timestamps, not only date labels',
+  'const captureTimestamp = resolveImmutablePhotoCapturedAt(photo)',
+  'prior lookup must use the immutable per-photo capture timestamp',
 );
 assertIncludes(
   workflow,
-  "if (candidateKey.timestampMs === null) return 'not_earlier'",
-  'undated candidate photos must not be presented as confirmed earlier evidence',
+  "case 'candidate_missing':",
+  'undated candidate photos must be rejected explicitly rather than treated as earlier evidence',
 );
-assert(
-  !workflow.includes("candidateKey.timestampMs === currentKey.timestampMs) {"),
-  'equal timestamps must not be ordered by unrelated IDs or array position',
+assertIncludes(
+  workflow,
+  "case 'equal':",
+  'equal capture times must be rejected because earlier ordering is unproven',
 );
 assertIncludes(
   workflow,
