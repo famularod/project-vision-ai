@@ -106,6 +106,11 @@ import {
   type PIEPhotoIntelligenceDisplayState,
 } from './services/PIEPhotoVisionMobileWorkflow';
 import {
+  aggregatePhotoDisplayResults,
+  photoAssessmentReviewCopy,
+  photoDisplayResultHasExplicitFinding,
+} from './services/PhotoAssessment';
+import {
   attentionCategoryForPhotoCategory,
   buildStableAttentionItemId,
   dedupeAttentionItemsById,
@@ -3381,12 +3386,12 @@ function photoHasVisualChange(photo: UpdatePhoto) {
 
   if (!result) return false;
   if (!pieResultHasCompletedVisualComparison(result)) return false;
+  return photoDisplayResultHasExplicitFinding(result);
+}
 
-  return Boolean(
-    result.visibleChange ||
-      (result.additions?.length || 0) > 0 ||
-      (result.removals?.length || 0) > 0 ||
-      observedFindingsForPIEResult(result).length > 0,
+function photoAssessmentForUpdate(update: ProjectUpdate) {
+  return aggregatePhotoDisplayResults(
+    update.photos.map(photo => photo.photoIntelligence),
   );
 }
 
@@ -3485,44 +3490,7 @@ function waitForPIEAuthHydrationRetry() {
 function pieStatusForUpdate(update: ProjectUpdate) {
   if (update.status === 'queued') return queuedStatusCopyForUpdate(update);
   if (update.status === 'failed') return queuedStatusCopyForUpdate(update);
-
-  const intelligence = update.photos
-    .map(photo => photo.photoIntelligence)
-    .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
-
-  const authCopy = authStatusCopyForPIEResults(intelligence);
-  if (authCopy) return authCopy;
-
-  if (intelligence.some(result => result.status === 'analyzing')) {
-    return PIE_STATUS_COPY.checking;
-  }
-
-  if (
-    intelligence.length > 0 &&
-    intelligence.every(result => result.status === 'no_suitable_prior_photo')
-  ) {
-    return PIE_STATUS_COPY.noPriorPhoto;
-  }
-
-  if (
-    intelligence.some(
-      result =>
-        result.status === 'analysis_failed_retry' ||
-        result.status === 'comparison_unavailable',
-    )
-  ) {
-    return PIE_STATUS_COPY.unavailableRetry;
-  }
-
-  if (update.photos.some(photoHasVisualChange)) {
-    return PIE_STATUS_COPY.possibleChanges;
-  }
-
-  if (intelligence.length > 0) {
-    return PIE_STATUS_COPY.noReliableChange;
-  }
-
-  return PIE_STATUS_COPY.checking;
+  return summarizePIEStatusForUpdate(update).summary;
 }
 
 function summarizePIEStatusForUpdate(update: ProjectUpdate): {
@@ -3541,46 +3509,38 @@ function summarizePIEStatusForUpdate(update: ProjectUpdate): {
     .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
 
   const authCopy = authStatusCopyForPIEResults(results);
+  const assessment = photoAssessmentForUpdate(update);
 
-  if (results.length === 0 || results.some(isPreparingSecurePhotoAnalysisResult)) {
+  if (
+    assessment.state === 'not_assessed' ||
+    assessment.state === 'assessing' ||
+    results.some(isPreparingSecurePhotoAnalysisResult)
+  ) {
     return {
       status: 'analyzing',
-      summary: authCopy || PIE_STATUS_COPY.preparingSecureAnalysis,
+      summary: authCopy || (results.length === 0
+        ? PIE_STATUS_COPY.preparingSecureAnalysis
+        : PIE_STATUS_COPY.checking),
     };
   }
 
-  if (results.some(result => result.status === 'analyzing')) {
-    return {
-      status: 'analyzing',
-      summary: PIE_STATUS_COPY.checking,
-    };
-  }
-
-  if (results.every(result => result.status === 'no_suitable_prior_photo')) {
+  if (assessment.state === 'baseline_only') {
     return {
       status: 'no_prior_photo',
       summary: PIE_STATUS_COPY.noPriorPhoto,
     };
   }
 
-  if (
-    results.some(
-      result =>
-        result.status === 'analysis_failed_retry' ||
-        result.status === 'comparison_unavailable',
-    )
-  ) {
+  if (assessment.state === 'failed' || assessment.state === 'incomparable') {
     return {
       status: 'failed',
       summary: authCopy || PIE_STATUS_COPY.unavailableRetry,
     };
   }
 
-  const changed = update.photos.some(photoHasVisualChange);
-
   return {
     status: 'complete',
-    summary: changed
+    summary: assessment.state === 'assessed_finding'
       ? PIE_STATUS_COPY.possibleChanges
       : PIE_STATUS_COPY.noReliableChange,
   };
@@ -14466,7 +14426,7 @@ function BuildUpdateScreen({
   const firstPriorUpdateUsed = priorUpdateUsedForPIEResult(firstResult);
   const hasSafety = updateHasSafetyConcern(update);
   const hasBlocker = updateHasBlocker(update);
-  const hasPhotoEvidence = update.photos.length > 0;
+  const photoAssessment = photoAssessmentForUpdate(update);
   const failedPhoto = update.photos.find(
     photo =>
       photo.photoIntelligence?.status === 'analysis_failed_retry' ||
@@ -14551,23 +14511,19 @@ function BuildUpdateScreen({
         ) : null}
 
         <PIEFindingRow
-          role={hasSafety ? 'safety' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}
+          role={hasSafety ? 'safety' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}
           title={
             hasSafety
               ? 'Safety concern requires review'
-              : hasPhotoEvidence
-                ? 'No safety concerns detected'
-                : 'No photo evidence available for safety review'
+              : photoAssessmentReviewCopy(photoAssessment.state, 'safety concern')
           }
         />
         <PIEFindingRow
-          role={hasBlocker ? 'interpretation' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}
+          role={hasBlocker ? 'interpretation' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}
           title={
             hasBlocker
               ? 'Possible blocker requires review'
-              : hasPhotoEvidence
-                ? 'No open blockers detected'
-                : 'No photo evidence available for blocker review'
+              : photoAssessmentReviewCopy(photoAssessment.state, 'blocker')
           }
         />
         {firstResult?.comparisonConfidence ? (

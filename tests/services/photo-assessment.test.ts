@@ -1,6 +1,10 @@
 import {
   aggregatePhotoAssessments,
+  aggregatePhotoDisplayResults,
+  derivePhotoAssessmentDisposition,
   derivePhotoAssessmentState,
+  photoAssessmentReviewCopy,
+  photoDisplayResultHasExplicitFinding,
   type PhotoAssessmentInput,
 } from '../../services/PhotoAssessment';
 
@@ -15,6 +19,23 @@ function photo(
 }
 
 describe('PhotoAssessment', () => {
+  it.each([
+    [true, 'no_material_visible_change', 0, 'explicit_clear'],
+    [true, 'progress_visible', 1, 'finding'],
+    [true, 'no_progress_visible', 0, 'indeterminate'],
+    [false, 'no_material_visible_change', 0, 'indeterminate'],
+    [true, 'no_material_visible_change', -1, 'indeterminate'],
+  ] as const)(
+    'derives structured disposition for accepted=%s conclusion=%s findings=%s',
+    (observationAccepted, conclusion, normalizedFindingCount, expected) => {
+      expect(derivePhotoAssessmentDisposition({
+        observationAccepted,
+        conclusion,
+        normalizedFindingCount,
+      })).toBe(expected);
+    },
+  );
+
   it.each([
     [{ analysisStatus: null }, 'not_assessed'],
     [{ analysisStatus: 'analyzing' }, 'assessing'],
@@ -35,6 +56,18 @@ describe('PhotoAssessment', () => {
     }))).toBe('incomparable');
   });
 
+  it('accepts only an explicit structured disposition as a clear result', () => {
+    expect(derivePhotoAssessmentState({
+      analysisStatus: 'analysis_complete',
+      assessmentDisposition: 'explicit_clear',
+    })).toBe('assessed_clear');
+    expect(derivePhotoAssessmentState({
+      analysisStatus: 'analysis_complete',
+      assessmentDisposition: 'indeterminate',
+      currentObservation: 'No issues were mentioned in generic prose.',
+    })).toBe('incomparable');
+  });
+
   it('lets an explicit finding override an inconsistent clear flag', () => {
     expect(derivePhotoAssessmentState(photo({
       hasExplicitFinding: true,
@@ -46,6 +79,33 @@ describe('PhotoAssessment', () => {
       analysisStatus: 'analysis_complete',
       currentObservation: 'The current photo was compared with prior visual evidence.',
     })).toBe('incomparable');
+  });
+
+  it('maps display results without promoting generic observation prose', () => {
+    expect(photoDisplayResultHasExplicitFinding({
+      status: 'analysis_complete',
+      currentObservation: 'The current photo was compared with prior visual evidence.',
+    })).toBe(false);
+    expect(photoDisplayResultHasExplicitFinding({
+      status: 'analysis_complete',
+      findings: [{ description: 'Visible crack' }],
+    })).toBe(true);
+    expect(aggregatePhotoDisplayResults([
+      { status: 'analysis_complete', assessmentDisposition: 'explicit_clear' },
+      { status: 'analyzing', currentObservation: 'Photo queued.' },
+    ]).state).toBe('assessing');
+  });
+
+  it.each([
+    ['assessed_clear', 'No visible safety concern identified in the completed photo review'],
+    ['assessed_finding', 'Photo findings require safety concern review'],
+    ['assessing', 'Safety review is not complete'],
+    ['not_assessed', 'Safety review is not complete'],
+    ['baseline_only', 'A baseline photo cannot confirm the absence of a safety concern'],
+    ['incomparable', 'The photos could not confirm whether a safety concern is present'],
+    ['failed', 'The photos could not confirm whether a safety concern is present'],
+  ] as const)('uses conservative safety copy for %s', (state, expected) => {
+    expect(photoAssessmentReviewCopy(state, 'safety concern')).toBe(expected);
   });
 
   it('returns not_assessed when there are no relevant photos', () => {

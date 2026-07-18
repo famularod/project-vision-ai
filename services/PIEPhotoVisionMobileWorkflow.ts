@@ -20,6 +20,10 @@ import {
   normalizePIEPhotoFindings,
   type PIEPhotoFinding,
 } from './PIEPhotoFindingNormalization';
+import {
+  derivePhotoAssessmentDisposition,
+  type PhotoAssessmentDisposition,
+} from './PhotoAssessment';
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -39,6 +43,7 @@ export type PIEPhotoIntelligenceDisplayState = {
   comparability: string | null;
   captureLimitations: string[];
   projectProgress: 'supported' | 'unsupported' | 'unable_to_determine';
+  assessmentDisposition?: PhotoAssessmentDisposition;
   repeatPhotoGuidance: string | null;
   authorityMessage: string;
   currentObservation?: string | null;
@@ -243,6 +248,7 @@ export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisp
     comparability: null,
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: null,
     authorityMessage: 'Visual observations will not update project progress unless the evidence supports it.',
     updatedAt: new Date().toISOString(),
@@ -263,6 +269,7 @@ export function buildPreparingSecurePhotoAnalysisState(
     comparability: null,
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: null,
     authorityMessage: 'The photos will be compared after the signed-in session is ready.',
     currentObservation: null,
@@ -297,6 +304,7 @@ export function buildNoSuitablePriorPhotoIntelligenceState(
     comparability: null,
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: 'Take the next photo from a similar angle to compare visible construction changes.',
     authorityMessage: 'No project status was changed.',
     currentObservation: null,
@@ -1185,6 +1193,11 @@ function buildDisplayStateFromComparison(
     ? 'completed_with_limitations'
     : 'analysis_complete';
   const progress = progressStatus(String(row.conclusion || ''), String(jarvis.progressDisposition || ''));
+  const assessmentDisposition = derivePhotoAssessmentDisposition({
+    observationAccepted,
+    conclusion: typeof row.conclusion === 'string' ? row.conclusion : null,
+    normalizedFindingCount: findings.length,
+  });
   const provenance = visibleChange ? 'visual_only' : 'unsupported';
   const title = observationAccepted
     ? status === 'completed_with_limitations'
@@ -1206,6 +1219,7 @@ function buildDisplayStateFromComparison(
     comparability: String(row.comparability_classification || 'unknown'),
     captureLimitations: limitations,
     projectProgress: progress,
+    assessmentDisposition,
     repeatPhotoGuidance: stringArray(row.repeat_photo_guidance)[0] ?? null,
     authorityMessage: progress === 'supported'
       ? 'Visual evidence may support progress, but project status still requires normal evidence checks.'
@@ -1275,6 +1289,7 @@ function unavailableState(
       safeUnavailableReason(summary),
     ],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: null,
     authorityMessage: 'The app will continue saving photos and notes without photo intelligence.',
     currentObservation: null,
@@ -1313,6 +1328,7 @@ function failedRetryState(
       safeUnavailableReason(summary),
     ],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: 'Keep the photo. Comparison can retry from cloud evidence later.',
     authorityMessage: 'No project progress was inferred while analysis was unavailable.',
     currentObservation: null,
