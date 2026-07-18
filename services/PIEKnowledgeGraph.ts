@@ -31,6 +31,10 @@ import type {
   PIEUnknown,
 } from './PIERuntime';
 import type { ProjectEvent } from './ProjectEventService';
+import {
+  classifyDAVEBlocker,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIEGraphNodeType =
   | 'project'
@@ -828,7 +832,7 @@ function addScheduleNodes(
       });
     }
 
-    if (isScheduleBlocked(item)) {
+    if (isScheduleBlocked(item, parts.generatedAt)) {
       const issueNode = addIssueLikeNode(builder, parts, {
         type: 'issue',
         id: `schedule-blocker-${item.id}`,
@@ -2170,14 +2174,20 @@ function scheduleSummary(item: ScheduleItem): string {
   );
 }
 
-function isScheduleBlocked(item: ScheduleItem): boolean {
+function isScheduleBlocked(item: ScheduleItem, generatedAt: string): boolean {
   if (item.status === 'Waiting') return true;
-  if (item.priority === 'High' && item.status !== 'Complete') return true;
+  if (
+    classifyDAVEBlocker(
+      parseDAVEAssertions(`${item.status}. ${item.notes || ''}`),
+    ) === 'blocked'
+  ) return true;
 
   const finishTime = Date.parse(item.finishDate);
   if (!Number.isFinite(finishTime)) return false;
+  const comparisonTime = Date.parse(generatedAt);
+  if (!Number.isFinite(comparisonTime)) return false;
 
-  return finishTime < Date.now() && item.status !== 'Complete';
+  return finishTime < comparisonTime && item.status !== 'Complete';
 }
 
 function sameProject(value: string | null | undefined, projectName: string): boolean {

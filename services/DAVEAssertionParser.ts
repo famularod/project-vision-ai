@@ -243,6 +243,14 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'safety issue',
   },
   {
+    pattern: /\bno\s+(?:active\s+|current\s+)?blockers?(?:\s+(?:(?:is|are)\s+)?(?:present|active|identified|reported|noted))?\b/gi,
+    predicate: 'blocker_present',
+    status: 'unblocked',
+    polarity: 'negated',
+    priority: 125,
+    fixedSubject: 'blocker',
+  },
+  {
     pattern: /\b(?:blocker|blocking\s+issue)\b.{0,24}\bnot\s+(?:yet\s+)?(?:resolved|cleared|closed|removed)\b/gi,
     predicate: 'blocker_resolved',
     status: 'blocker_unresolved',

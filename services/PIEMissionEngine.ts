@@ -21,6 +21,10 @@ import type {
 } from './ProjectIntelligenceEngine';
 import type { ProjectEvent } from './ProjectEventService';
 import type { PIERuntimeState } from './PIERuntime';
+import {
+  classifyDAVEBlocker,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIEMissionType =
   | 'morning-brief'
@@ -418,7 +422,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'schedule-recovery': {
     title: 'Schedule Recovery',
     purpose:
-      'Recover attention on overdue, blocked, waiting, or high-priority schedule work.',
+      'Recover attention on overdue, blocked, waiting, or dependency-limited schedule work.',
     objectiveTitle: 'Recover schedule control',
     objectiveSummary:
       'Identify overdue work, blockers, dependencies, missing owners, and next recovery action.',
@@ -1442,8 +1446,6 @@ function missionCriterionMet(
   evidence: PIEMissionEvidence[],
   blockers: PIEMissionBlocker[],
 ): boolean {
-  const text = `${description} ${evidence.map(item => item.detail).join(' ')}`.toLowerCase();
-
   if (description.includes('Top priority')) {
     return Boolean(context.executiveBrief?.topPriority || context.runtime?.currentPriority);
   }
@@ -1462,7 +1464,7 @@ function missionCriterionMet(
   }
   if (description.includes('Project and area')) {
     return Boolean(context.intelligence?.locationIntelligence.currentArea) ||
-      text.includes('area');
+      Boolean(context.knowledgeGraph?.nodes.some(node => node.type === 'area'));
   }
   if (description.includes('Current progress')) {
     return Boolean(
@@ -1472,33 +1474,68 @@ function missionCriterionMet(
     );
   }
   if (description.includes('Inspection')) {
-    return !hasInspectionNeed(context) || text.includes('inspection');
+    return hasTypedMissionEvidence(context, 'inspection');
   }
   if (description.includes('Critical risk')) {
     return blockers.some(blocker => blocker.priority === 'critical') ||
       hasCriticalRisk(context);
   }
   if (description.includes('Safety')) {
-    return hasSafetySignal(context) || text.includes('safety');
+    return hasTypedMissionEvidence(context, 'safety');
   }
   if (description.includes('Issue')) {
-    return hasIssueInvestigationNeed(context) || text.includes('issue');
+    return hasTypedMissionEvidence(context, 'issue');
   }
   if (description.includes('schedule') || description.includes('Schedule')) {
-    return Boolean(
-      (context.intelligence?.metrics.scheduleItemCount ?? 0) > 0 ||
-        context.decisionQueue?.decisions.some(
-          decision => decision.impact.area === 'schedule',
-        ),
-    );
+    return hasTypedMissionEvidence(context, 'schedule');
   }
   if (description.includes('documentation') || description.includes('Documentation')) {
-    return !hasDocumentationNeed(context) ||
-      Boolean((context.intelligence?.metrics.documentCount ?? 0) > 0);
+    return hasTypedMissionEvidence(context, 'document');
   }
   if (description.includes('User approval boundaries')) return true;
 
   return evidence.length > 0;
+}
+
+function hasTypedMissionEvidence(
+  context: MissionContext,
+  kind: 'inspection' | 'safety' | 'issue' | 'schedule' | 'document',
+) {
+  if (kind === 'inspection') {
+    return Boolean(
+      context.knowledgeGraph?.nodes.some(node => node.type === 'inspection') ||
+      context.projectEvents.some(event => event.eventType === 'inspection_event'),
+    );
+  }
+  if (kind === 'safety') {
+    return Boolean(
+      (context.intelligence?.metrics.safetyConcernCount ?? 0) > 0 ||
+      context.knowledgeGraph?.nodes.some(node => node.type === 'safety') ||
+      context.projectEvents.some(event => event.eventType === 'safety_observation'),
+    );
+  }
+  if (kind === 'issue') {
+    return Boolean(
+      (context.intelligence?.metrics.openIssueCount ?? 0) > 0 ||
+      context.knowledgeGraph?.nodes.some(node => node.type === 'issue') ||
+      context.projectEvents.some(event => event.eventType === 'issue_created'),
+    );
+  }
+  if (kind === 'schedule') {
+    return Boolean(
+      (context.intelligence?.metrics.scheduleItemCount ?? 0) > 0 ||
+      context.knowledgeGraph?.nodes.some(node => node.type === 'schedule_item') ||
+      context.projectEvents.some(event =>
+        event.eventType === 'schedule_imported' ||
+        event.eventType === 'schedule_item_overdue'
+      ),
+    );
+  }
+  return Boolean(
+    (context.intelligence?.metrics.documentCount ?? 0) > 0 ||
+    context.knowledgeGraph?.nodes.some(node => node.type === 'document') ||
+    context.projectEvents.some(event => event.relatedDocuments.length > 0),
+  );
 }
 
 function defaultMissionRecommendation(type: PIEMissionType): string {
@@ -1595,7 +1632,12 @@ function hasScheduleRecoveryNeed(
       context.decisionQueue?.decisions.some(
         decision =>
           decision.impact.area === 'schedule' &&
-          (decision.priority === 'high' || decision.priority === 'critical'),
+          classifyDAVEBlocker(parseDAVEAssertions([
+            decision.title,
+            decision.summary,
+            decision.suggestedNextAction,
+            ...decision.evidence,
+          ].join(' '))) === 'blocked',
       ) ||
       context.knowledgeGraph?.relationships.some(
         relationship => relationship.edgeType === 'blocks',
