@@ -74,6 +74,23 @@ export type PIEScheduleImportStatus =
   | 'OCR Required'
   | 'Unsupported Schedule';
 
+export type PIEScheduleDelimitedParseIssue = {
+  code:
+    | 'unexpected_quote'
+    | 'characters_after_closing_quote'
+    | 'unterminated_quote'
+    | 'column_count_mismatch';
+  row: number;
+  column: number;
+  message: string;
+};
+
+export type PIEScheduleDelimitedParseResult = {
+  delimiter: ',' | '\t';
+  rows: string[][];
+  issues: PIEScheduleDelimitedParseIssue[];
+};
+
 export type PIENormalizedScheduleTask = {
   id: string;
   project: string;
@@ -174,6 +191,7 @@ export type NormalizeScheduleImportResult = {
   extractionConfidencePercent: number;
   items: ScheduleItem[];
   reviewItems: PIEScheduleReviewItem[];
+  parseIssues: PIEScheduleDelimitedParseIssue[];
   message: string;
   validationOutput: {
     scheduleSummary: ScheduleSummary;
@@ -440,30 +458,141 @@ export function extractPdfScheduleText(rawPdfText: string): PIEScheduleTextExtra
   };
 }
 
-function csvCells(line: string) {
-  const cells: string[] = [];
-  let current = '';
-  let quoted = false;
+export function parseScheduleDelimitedText(
+  contents: string,
+  delimiter: ',' | '\t' = ',',
+): PIEScheduleDelimitedParseResult {
+  const input = contents.startsWith('\uFEFF') ? contents.slice(1) : contents;
+  const rows: string[][] = [];
+  const issues: PIEScheduleDelimitedParseIssue[] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotedField = false;
+  let afterClosingQuote = false;
+  let reportedCharactersAfterQuote = false;
+  let recordStarted = false;
 
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
+  const currentRowNumber = () => rows.length + 1;
+  const currentColumnNumber = () => row.length + 1;
+  const pushField = () => {
+    row.push(field);
+    field = '';
+    afterClosingQuote = false;
+    reportedCharactersAfterQuote = false;
+  };
+  const pushRow = () => {
+    pushField();
+    rows.push(row);
+    row = [];
+    recordStarted = false;
+  };
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    const isLineBreak = char === '\r' || char === '\n';
+
+    if (inQuotedField) {
+      if (char === '"') {
+        if (input[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          inQuotedField = false;
+          afterClosingQuote = true;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (afterClosingQuote) {
+      if (char === delimiter) {
+        pushField();
+        recordStarted = true;
+        continue;
+      }
+
+      if (isLineBreak) {
+        pushRow();
+        if (char === '\r' && input[index + 1] === '\n') index += 1;
+        continue;
+      }
+
+      if (!reportedCharactersAfterQuote) {
+        issues.push({
+          code: 'characters_after_closing_quote',
+          row: currentRowNumber(),
+          column: currentColumnNumber(),
+          message: `Row ${currentRowNumber()}, column ${currentColumnNumber()} has characters after a closing quote.`,
+        });
+        reportedCharactersAfterQuote = true;
+      }
+      field += char;
+      recordStarted = true;
+      continue;
+    }
+
+    if (char === delimiter) {
+      pushField();
+      recordStarted = true;
+      continue;
+    }
+
+    if (isLineBreak) {
+      pushRow();
+      if (char === '\r' && input[index + 1] === '\n') index += 1;
+      continue;
+    }
 
     if (char === '"') {
-      quoted = !quoted;
+      if (field.length === 0) {
+        inQuotedField = true;
+      } else {
+        issues.push({
+          code: 'unexpected_quote',
+          row: currentRowNumber(),
+          column: currentColumnNumber(),
+          message: `Row ${currentRowNumber()}, column ${currentColumnNumber()} has a quote inside an unquoted field.`,
+        });
+        field += char;
+      }
+      recordStarted = true;
       continue;
     }
 
-    if ((char === ',' || char === '\t') && !quoted) {
-      cells.push(current.trim());
-      current = '';
-      continue;
-    }
-
-    current += char;
+    field += char;
+    recordStarted = true;
   }
 
-  cells.push(current.trim());
-  return cells;
+  if (inQuotedField) {
+    issues.push({
+      code: 'unterminated_quote',
+      row: currentRowNumber(),
+      column: currentColumnNumber(),
+      message: `Row ${currentRowNumber()}, column ${currentColumnNumber()} has an unterminated quoted field.`,
+    });
+  }
+
+  if (recordStarted || row.length > 0 || field.length > 0) pushRow();
+
+  return { delimiter, rows, issues };
+}
+
+function scheduleDelimiter(sourceName: string, mimeType: string | null | undefined, contents: string) {
+  const lowerName = sourceName.toLowerCase();
+  const lowerMime = (mimeType || '').toLowerCase();
+  const firstRecord = contents.replace(/^\uFEFF/, '').split(/\r\n?|\n/, 1)[0] || '';
+
+  if (
+    lowerName.endsWith('.tsv') ||
+    lowerMime.includes('tab-separated') ||
+    (firstRecord.includes('\t') && !firstRecord.includes(','))
+  ) {
+    return '\t' as const;
+  }
+
+  return ',' as const;
 }
 
 function headerKey(value: string) {
@@ -931,6 +1060,7 @@ export function normalizeScheduleImport({
         correctionFields: ['Project', 'Area', 'Dates', 'Task', 'Owner', 'Status'],
         confidence: 'low',
       }],
+      parseIssues: [],
       message:
         extraction?.message ||
         'No schedule items were added automatically, so this import did not silently fail. No readable schedule text was available; OCR or review is required.',
@@ -939,17 +1069,53 @@ export function normalizeScheduleImport({
   }
 
   const importedAt = now.toISOString();
-  const lines = readableText
-    .split(/\r?\n|(?=\b\d{1,2}[\/-]\d{1,2}[\/-](?:\d{2}|\d{4})\b)/)
-    .map(line => line.trim())
-    .filter(Boolean);
-  const firstCells = csvCells(lines[0] || '');
+  const shouldParseWholeInput = format.format === 'csv' || format.format === 'excel';
+  const delimiter = scheduleDelimiter(sourceName, mimeType, readableText);
+  const parsedInput = shouldParseWholeInput
+    ? parseScheduleDelimitedText(readableText, delimiter)
+    : null;
+  const records = (parsedInput
+    ? parsedInput.rows.map((cells, index) => ({ cells, rowNumber: index + 1 }))
+    : readableText
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((line, index) => {
+          const lineDelimiter = line.includes('\t') ? '\t' : ',';
+          const parsedLine = parseScheduleDelimitedText(line, lineDelimiter);
+          return {
+            cells: parsedLine.rows[0] || [''],
+            rowNumber: index + 1,
+          };
+        }))
+    .map(record => ({
+      ...record,
+      cells: record.cells.map(value => value.trim()),
+    }))
+    .filter(record => record.cells.some(value => value.length > 0));
+  const firstCells = records[0]?.cells || [];
   const hasHeader = hasScheduleHeader(firstCells);
   const headers = hasHeader ? firstCells.map(headerKey) : [];
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-  const normalizedTasks = dataLines
-    .map(line => {
-      const cells = csvCells(line);
+  const dataRecords = hasHeader ? records.slice(1) : records;
+  const parseIssues = [...(parsedInput?.issues || [])];
+
+  if (parsedInput && hasHeader) {
+    const expectedColumnCount = firstCells.length;
+    dataRecords.forEach(record => {
+      if (record.cells.length === expectedColumnCount) return;
+
+      parseIssues.push({
+        code: 'column_count_mismatch',
+        row: record.rowNumber,
+        column: Math.min(record.cells.length, expectedColumnCount) + 1,
+        message: `Row ${record.rowNumber} has ${record.cells.length} column${record.cells.length === 1 ? '' : 's'}; the header defines ${expectedColumnCount}.`,
+      });
+    });
+  }
+
+  const normalizedTasks = dataRecords
+    .map(record => {
+      const { cells } = record;
+      const rowText = cells.join(' ');
       const task = cell(cells, headers, ['task', 'task name', 'activity', 'activity name', 'item'], 0);
       const finish = normalizeDate(
         cell(cells, headers, ['finish', 'finish date', 'due', 'due date'], 4),
@@ -958,9 +1124,9 @@ export function normalizeScheduleImport({
         cell(cells, headers, ['start', 'start date'], 3),
       );
       const project = cell(cells, headers, ['project', 'project name'], 1) ||
-        findNameMatch(line, projects);
+        findNameMatch(rowText, projects);
       const area = cell(cells, headers, ['area', 'location', 'work area'], 2) ||
-        findNameMatch(line, projectAreas.map(areaItem => areaItem.name));
+        findNameMatch(rowText, projectAreas.map(areaItem => areaItem.name));
       const status = normalizeStatus(cell(cells, headers, ['status'], 7));
       const owner = cell(cells, headers, ['owner', 'responsible'], 6);
       const contractor = cell(cells, headers, ['contractor', 'company', 'trade'], 9) || owner;
@@ -1030,8 +1196,16 @@ export function normalizeScheduleImport({
     projectName: '',
     now,
   });
-  const totalCandidateLines = Math.max(dataLines.length, normalizedTasks.length);
-  const needsReviewCount = intelligence.reviewItems.length;
+  const parseReviewItems: PIEScheduleReviewItem[] = parseIssues.map(issue => ({
+    id: `schedule-parse-review-${uid()}`,
+    task: `Review imported schedule row ${issue.row}`,
+    reason: issue.message,
+    correctionFields: ['Task', 'Dates', 'Status'],
+    confidence: 'low',
+  }));
+  const reviewItems = [...parseReviewItems, ...intelligence.reviewItems];
+  const totalCandidateLines = Math.max(dataRecords.length, normalizedTasks.length);
+  const needsReviewCount = reviewItems.length;
   const extractionConfidencePercent = normalizedTasks.length === 0
     ? 0
     : clamp(
@@ -1062,9 +1236,10 @@ export function normalizeScheduleImport({
     importStatus,
     extractionConfidencePercent,
     items: normalizedTasks,
-    reviewItems: intelligence.reviewItems,
+    reviewItems,
+    parseIssues,
     message: normalizedTasks.length
-      ? `${normalizedTasks.length} schedule item${normalizedTasks.length === 1 ? '' : 's'} normalized through Schedule Intelligence.`
+      ? `${normalizedTasks.length} schedule item${normalizedTasks.length === 1 ? '' : 's'} normalized through Schedule Intelligence.${parseIssues.length ? ` ${parseIssues.length} delimited row issue${parseIssues.length === 1 ? '' : 's'} need review.` : ''}`
       : 'No schedule activities were normalized. Review the file format and add uncertain items manually.',
     validationOutput: {
       scheduleSummary: intelligence.scheduleSummary,
