@@ -5,6 +5,12 @@ export type DAVEFollowThroughReviewState = Readonly<{
   itemId: string;
   firstSeenAt: string;
   reviewedAt: string | null;
+  cadenceHours: number;
+  lastSeenAt: string;
+  active: boolean;
+  lastResolvedAt: string | null;
+  lastReactivatedAt: string | null;
+  reactivationCount: number;
 }>;
 
 export type DAVEFollowThroughReminder = Readonly<{
@@ -36,14 +42,27 @@ export function planDAVEFollowThrough({
   const priorByFingerprint = new Map(
     reviewStates.map(review => [review.fingerprint, review]),
   );
+  const activeFingerprints = new Set<string>();
   const candidates = items
     .filter(item => item.priority !== 'low')
     .map(item => {
       const fingerprint = stateFingerprint(item);
+      activeFingerprints.add(fingerprint);
       const prior = priorByFingerprint.get(fingerprint);
-      const review = normalizeReviewState(prior, item.id, fingerprint, now);
+      const review = normalizeReviewState(
+        prior,
+        item.id,
+        fingerprint,
+        cadenceFor(item),
+        now,
+      );
       return { reminder: reminderFor(item, review), review };
     });
+  const activeReviews = candidates.map(candidate => candidate.review);
+  const historicalReviews = reviewStates
+    .filter(review => !activeFingerprints.has(review.fingerprint))
+    .map(review => deactivateReviewState(review, now));
+  const retainedReviews = [...activeReviews, ...historicalReviews].slice(0, 200);
   const reminders = candidates
     .filter(candidate => now.getTime() >= new Date(candidate.reminder.reviewDueAt).getTime())
     .map(candidate => candidate.reminder);
@@ -55,7 +74,7 @@ export function planDAVEFollowThrough({
   return Object.freeze({
     generatedAt: now.toISOString(),
     reminders: Object.freeze(reminders) as unknown as DAVEFollowThroughReminder[],
-    reviewStates: Object.freeze(candidates.map(candidate => candidate.review)) as unknown as DAVEFollowThroughReviewState[],
+    reviewStates: Object.freeze(retainedReviews) as unknown as DAVEFollowThroughReviewState[],
     suppressedCount: candidates.length - reminders.length,
     nextReviewAt: nextReviewTime === null ? null : new Date(nextReviewTime).toISOString(),
   });
@@ -80,13 +99,27 @@ export function parseDAVEFollowThroughReviewStates(value: string | null) {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .filter((item): item is DAVEFollowThroughReviewState => Boolean(
+      .filter(item => Boolean(
         item &&
         typeof item.fingerprint === 'string' && item.fingerprint.trim() &&
         typeof item.itemId === 'string' && item.itemId.trim() &&
         validDate(item.firstSeenAt) &&
         (item.reviewedAt === null || validDate(item.reviewedAt)),
       ))
+      .map((item): DAVEFollowThroughReviewState => Object.freeze({
+        fingerprint: item.fingerprint,
+        itemId: item.itemId,
+        firstSeenAt: item.firstSeenAt,
+        reviewedAt: item.reviewedAt,
+        cadenceHours: validCadence(item.cadenceHours) ? item.cadenceHours : 24,
+        lastSeenAt: validDate(item.lastSeenAt) ? item.lastSeenAt : item.firstSeenAt,
+        active: item.active !== false,
+        lastResolvedAt: validDate(item.lastResolvedAt) ? item.lastResolvedAt : null,
+        lastReactivatedAt: validDate(item.lastReactivatedAt) ? item.lastReactivatedAt : null,
+        reactivationCount: Number.isInteger(item.reactivationCount) && item.reactivationCount >= 0
+          ? item.reactivationCount
+          : 0,
+      }))
       .slice(0, 200);
   } catch {
     return [];
@@ -97,16 +130,44 @@ function normalizeReviewState(
   prior: DAVEFollowThroughReviewState | undefined,
   itemId: string,
   fingerprint: string,
+  cadenceHours: number,
   now: Date,
 ): DAVEFollowThroughReviewState {
   if (prior && validDate(prior.firstSeenAt) && (prior.reviewedAt === null || validDate(prior.reviewedAt))) {
-    return Object.freeze({ ...prior });
+    const reactivated = prior.active === false;
+    return Object.freeze({
+      ...prior,
+      itemId,
+      cadenceHours,
+      lastSeenAt: now.toISOString(),
+      active: true,
+      lastReactivatedAt: reactivated ? now.toISOString() : prior.lastReactivatedAt,
+      reactivationCount: prior.reactivationCount + (reactivated ? 1 : 0),
+    });
   }
   return Object.freeze({
     fingerprint,
     itemId,
     firstSeenAt: now.toISOString(),
     reviewedAt: null,
+    cadenceHours,
+    lastSeenAt: now.toISOString(),
+    active: true,
+    lastResolvedAt: null,
+    lastReactivatedAt: null,
+    reactivationCount: 0,
+  });
+}
+
+function deactivateReviewState(
+  review: DAVEFollowThroughReviewState,
+  now: Date,
+): DAVEFollowThroughReviewState {
+  if (!review.active) return Object.freeze({ ...review });
+  return Object.freeze({
+    ...review,
+    active: false,
+    lastResolvedAt: now.toISOString(),
   });
 }
 
@@ -114,7 +175,7 @@ function reminderFor(
   item: DAVEActionInboxItem,
   review: DAVEFollowThroughReviewState,
 ): DAVEFollowThroughReminder {
-  const cadenceHours = cadenceFor(item);
+  const cadenceHours = review.cadenceHours;
   const cadenceMs = cadenceHours * 60 * 60 * 1000;
   const baseline = new Date(review.reviewedAt || review.firstSeenAt).getTime();
   const dueAt = new Date(baseline + cadenceMs).toISOString();
@@ -167,6 +228,10 @@ function reminderReason(item: DAVEActionInboxItem) {
 
 function validDate(value: unknown) {
   return typeof value === 'string' && Number.isFinite(new Date(value).getTime());
+}
+
+function validCadence(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
 function stableHash(value: string) {
