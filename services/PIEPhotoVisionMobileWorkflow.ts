@@ -1,5 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
+import { Image } from 'react-native';
 import {
   getCurrentSessionAccessToken,
   getSupabaseClient,
@@ -34,6 +35,12 @@ import {
   type ImmutablePhotoCaptureTimestamp,
   type PhotoEvidenceIdentity,
 } from './PhotoAnalysisIdentity';
+import {
+  MAX_PHOTO_SOURCE_BYTES,
+  prepareSelectedPhotoPair,
+  readPhotoBase64WithinLimits,
+  selectWinningPriorPhotoCandidate,
+} from './PhotoPairPreparation';
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -103,6 +110,9 @@ export type PIEPhotoPrepDiagnosticReason =
   | 'current_photo_upload_missing'
   | 'current_photo_storage_missing'
   | 'current_photo_unsupported_type'
+  | 'current_photo_too_large'
+  | 'current_photo_invalid_dimensions'
+  | 'current_photo_dimensions_too_large'
   | 'prior_photo_missing'
   | 'prior_photo_unreadable'
   | 'prior_photo_zero_bytes'
@@ -111,7 +121,10 @@ export type PIEPhotoPrepDiagnosticReason =
   | 'prior_photo_storage_missing'
   | 'prior_photo_stale_or_invalid'
   | 'prior_photo_wrong_area'
-  | 'prior_photo_unsupported_type';
+  | 'prior_photo_unsupported_type'
+  | 'prior_photo_too_large'
+  | 'prior_photo_invalid_dimensions'
+  | 'prior_photo_dimensions_too_large';
 
 export type PIEImagePrepareFailureReason =
   | PIEPhotoPrepDiagnosticReason
@@ -128,6 +141,8 @@ type PreparedPhotoFile =
       mimeType: string;
       extension: string;
       sizeBytes: number;
+      width: number;
+      height: number;
       sha256: string;
       base64: string;
     }
@@ -337,7 +352,35 @@ export async function analyzeProjectPhotoWithVision({
   priorUpdates,
   retryAttempt = false,
 }: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
-  const currentPrepared = await preparePhotoFileForVision(photo, 'current');
+  const priorSelectionMetadata = findPriorComparablePhoto(update, photo, priorUpdates);
+  if (!priorSelectionMetadata.selected) {
+    return {
+      ...buildNoSuitablePriorPhotoIntelligenceState(
+        priorSelectionMetadata.candidateCount > 0
+          ? 'This photo is saved as the best available baseline for future comparison.'
+          : 'This first photo is saved for future comparison.',
+      ),
+      diagnostics: buildDiagnostics({
+        currentPhotoPrep: null,
+        selectedPriorPhotoId: null,
+        selectionCandidateCount: priorSelectionMetadata.candidateCount,
+        selectedPriorReason: null,
+        priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
+        rejectedPriorReasons: priorSelectionMetadata.rejectedReasons,
+        usablePriorCandidateFound: false,
+        skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount,
+        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection'],
+        resultProvenance: 'unsupported',
+      }),
+    };
+  }
+
+  const preparedPair = await prepareSelectedPhotoPair({
+    currentPhoto: photo,
+    priorPhoto: priorSelectionMetadata.selected.photo,
+    prepare: preparePhotoFileForVision,
+  });
+  const currentPrepared = preparedPair.current;
   if (!currentPrepared.ok) {
     return failedRetryState('Photo saved. Visual comparison unavailable.', {
       currentPhotoPrep: currentPrepared,
@@ -346,41 +389,64 @@ export async function analyzeProjectPhotoWithVision({
       failureCategory: 'malformed_response',
       selectedPriorPhotoId: null,
       priorUpdateUsed: null,
-      selectionCandidateCount: priorUpdates.reduce((total, item) => total + item.photos.length, 0),
+      selectionCandidateCount: priorSelectionMetadata.candidateCount,
       selectedPriorReason: null,
-      priorSelectionDiagnostics: buildEmptyPriorSelectionDiagnostics(update, photo, {
-        candidateCount: priorUpdates.reduce((total, item) => total + item.photos.length, 0),
-        noPriorReason: 'unknown',
-      }),
+      priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
       rejectedPriorReasons: [`current photo rejected: ${currentPrepared.reason}`],
-      executedStages: ['camera_capture', 'local_image_uri', 'current_photo_preparation_failed'],
+      executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection', 'current_photo_preparation_failed'],
       resultProvenance: 'unsupported',
       retryFetchedFreshToken: retryAttempt,
     });
   }
 
-  const priorSelection = await findPriorComparablePhoto(update, photo, priorUpdates);
-  if (!priorSelection.selected) {
+  const priorPrepared = preparedPair.prior;
+  if (!priorPrepared || !priorPrepared.ok) {
+    const priorFailure = priorPrepared ?? {
+      ok: false as const,
+      role: 'prior' as const,
+      reason: 'prior_photo_unreadable' as const,
+      sizeBytes: null,
+    };
+    const selectedLabel = `${priorSelectionMetadata.selected.update.id || 'update'}:${priorSelectionMetadata.selected.photo.id || 'photo'}`;
     return {
-      ...buildNoSuitablePriorPhotoIntelligenceState(
-        priorSelection.candidateCount > 0
-          ? 'This photo is saved as the best available baseline for future comparison.'
-          : 'This first photo is saved for future comparison.',
-      ),
+      ...buildNoSuitablePriorPhotoIntelligenceState('Prior photo unavailable'),
       diagnostics: buildDiagnostics({
         currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorFailure,
+        providerResponseStatus: priorFailure.reason,
+        imagePrepareFailureReason: priorFailure.reason,
+        failureCategory: 'malformed_response',
         selectedPriorPhotoId: null,
-        selectionCandidateCount: priorSelection.candidateCount,
+        priorUpdateUsed: null,
+        selectionCandidateCount: priorSelectionMetadata.candidateCount,
         selectedPriorReason: null,
-        priorSelectionDiagnostics: priorSelection.diagnostics,
-        rejectedPriorReasons: priorSelection.rejectedReasons,
+        priorSelectionDiagnostics: {
+          ...priorSelectionMetadata.diagnostics,
+          selectedPriorUpdateId: null,
+          selectedPriorPhotoId: null,
+          selectedPriorDate: null,
+          noPriorReason: 'no_usable_image',
+        },
+        rejectedPriorReasons: [
+          ...priorSelectionMetadata.rejectedReasons,
+          `${selectedLabel} rejected: ${priorFailure.reason}`,
+        ],
         usablePriorCandidateFound: false,
-        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
-        executedStages: ['camera_capture', 'local_image_uri', 'current_photo_prepared', 'prior_photo_selection'],
+        skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount + 1,
+        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection', 'current_photo_prepared', 'prior_photo_preparation_failed'],
+        retryFetchedFreshToken: retryAttempt,
         resultProvenance: 'unsupported',
       }),
     };
   }
+
+  const priorSelection = {
+    ...priorSelectionMetadata,
+    selected: {
+      ...priorSelectionMetadata.selected,
+      preparedFile: priorPrepared,
+    },
+  };
 
   const client = getSupabaseClient();
   if (!client) {
@@ -684,7 +750,7 @@ export async function analyzeProjectPhotoWithVision({
   }
 }
 
-async function findPriorComparablePhoto(
+function findPriorComparablePhoto(
   update: ProjectUpdate,
   photo: UpdatePhoto,
   priorUpdates: ProjectUpdate[],
@@ -697,7 +763,6 @@ async function findPriorComparablePhoto(
     capturedAt: number;
     candidateIndex: number;
     continuityScore: number;
-    preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
   }> = [];
   const acceptedAreaFallback: Array<{
     update: ProjectUpdate;
@@ -706,7 +771,6 @@ async function findPriorComparablePhoto(
     capturedAt: number;
     candidateIndex: number;
     continuityScore: number;
-    preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
   }> = [];
   const rejectedReasons: string[] = [];
   let candidateCount = 0;
@@ -791,13 +855,6 @@ async function findPriorComparablePhoto(
         skippedCandidateCount += 1;
         continue;
       }
-
-      const preparedFile = await preparePhotoFileForVision(candidatePhoto, 'prior');
-      if (!preparedFile.ok) {
-        rejectedReasons.push(`${label} rejected: ${preparedFile.reason}`);
-        skippedCandidateCount += 1;
-        continue;
-      }
       afterUsableImage += 1;
 
       const candidateRecord = {
@@ -811,7 +868,6 @@ async function findPriorComparablePhoto(
           candidateUpdate,
           candidatePhoto,
         }),
-        preparedFile,
         reason: isAreaFallbackCandidate
           ? 'most recent valid earlier photo from same project; prior photo has no area set, matched as area-unconfirmed fallback (no same-area candidate was available)'
           : currentKey.normalizedAreaKey
@@ -830,15 +886,10 @@ async function findPriorComparablePhoto(
     }
   }
 
-  const byContinuityThenRecency = (
-    a: { continuityScore: number; capturedAt: number; candidateIndex: number },
-    b: { continuityScore: number; capturedAt: number; candidateIndex: number },
-  ) => b.continuityScore - a.continuityScore ||
-    b.capturedAt - a.capturedAt ||
-    a.candidateIndex - b.candidateIndex;
-  acceptedConfirmedArea.sort(byContinuityThenRecency);
-  acceptedAreaFallback.sort(byContinuityThenRecency);
-  const selected = acceptedConfirmedArea[0] ?? acceptedAreaFallback[0] ?? null;
+  const selected = selectWinningPriorPhotoCandidate(
+    acceptedConfirmedArea,
+    acceptedAreaFallback,
+  );
   const noPriorReason = selected
     ? null
     : noPriorReasonFromCounters({
@@ -1168,8 +1219,8 @@ async function stagePhotoEvidenceUncached({
       thumbnail_path: null,
       content_hash: contentHash,
       duplicate_of_evidence_id: null,
-      width: null,
-      height: null,
+      width: preparedFile.width,
+      height: preparedFile.height,
       mime_type: mimeType,
       size_bytes: preparedFile.sizeBytes,
       capture_source: captureSource,
@@ -1516,7 +1567,10 @@ function prepReason(
     | 'storage_missing'
     | 'stale_or_invalid'
     | 'wrong_area'
-    | 'unsupported_type',
+    | 'unsupported_type'
+    | 'too_large'
+    | 'invalid_dimensions'
+    | 'dimensions_too_large',
 ): PIEPhotoPrepDiagnosticReason {
   return `${role}_photo_${kind}` as PIEPhotoPrepDiagnosticReason;
 }
@@ -1618,10 +1672,43 @@ async function preparePhotoFileForVision(photo: UpdatePhoto, role: PhotoPrepRole
     return { ok: false, role, reason: prepReason(role, 'zero_bytes'), sizeBytes: info.size };
   }
 
+  if (info.size > MAX_PHOTO_SOURCE_BYTES) {
+    return { ok: false, role, reason: prepReason(role, 'too_large'), sizeBytes: info.size };
+  }
+
+  let dimensions: { width: number; height: number };
   try {
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    dimensions = await Image.getSize(uri);
+  } catch (error) {
+    return {
+      ok: false,
+      role,
+      reason: prepReason(role, 'invalid_dimensions'),
+      sizeBytes: info.size,
+      detail: error instanceof Error ? error.message : 'image_dimensions_unavailable',
+    };
+  }
+
+  try {
+    const boundedRead = await readPhotoBase64WithinLimits(
+      {
+        sizeBytes: info.size,
+        width: dimensions.width,
+        height: dimensions.height,
+      },
+      () => FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      }),
+    );
+    if (!boundedRead.ok) {
+      return {
+        ok: false,
+        role,
+        reason: prepReason(role, boundedRead.reason),
+        sizeBytes: info.size,
+      };
+    }
+    const base64 = boundedRead.base64;
     if (!base64) {
       return { ok: false, role, reason: prepReason(role, 'encoding_failed'), sizeBytes: info.size };
     }
@@ -1633,6 +1720,8 @@ async function preparePhotoFileForVision(photo: UpdatePhoto, role: PhotoPrepRole
       mimeType,
       extension: mimeExtension(mimeType),
       sizeBytes: info.size,
+      width: dimensions.width,
+      height: dimensions.height,
       sha256: await sha256(base64),
       base64,
     };
@@ -1644,25 +1733,6 @@ async function preparePhotoFileForVision(photo: UpdatePhoto, role: PhotoPrepRole
       sizeBytes: info.size,
       detail: error instanceof Error ? error.message : 'base64_read_failed',
     };
-  }
-}
-
-async function readPhotoFileDigest(uri: string): Promise<{ exists: boolean; sizeBytes: number; sha256: string }> {
-  try {
-    const info = await FileSystem.getInfoAsync(uri);
-    if (!info.exists || typeof info.size !== 'number') {
-      return { exists: false, sizeBytes: 0, sha256: '' };
-    }
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    return {
-      exists: true,
-      sizeBytes: info.size,
-      sha256: await sha256(base64),
-    };
-  } catch {
-    return { exists: false, sizeBytes: 0, sha256: '' };
   }
 }
 
