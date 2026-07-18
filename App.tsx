@@ -5359,7 +5359,10 @@ useEffect(() => {
       if (
         projectStructureErrors.length > 0 ||
         syncResult.queued > 0 ||
-        syncResult.conflicts > 0
+        syncResult.conflicts > 0 ||
+        // Audit P1-27/P1-21: never proceed to cloud deletions after an
+        // incomplete or failed cloud download.
+        syncResult.downloadStatus !== 'complete'
       ) return;
 
       for (const migration of LEGACY_WORK_CONTAINER_MIGRATIONS) {
@@ -11269,52 +11272,66 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 }));
               }}
               onApplyCloudRecovery={recovered => {
-                const cloudUpdates = (recovered.updates as unknown as Partial<ProjectUpdate>[])
-                  .map(normalizeUpdate)
-                  .map(migrateLegacyProjectUpdate);
-                setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
-                  localUpdates: previous,
-                  cloudUpdates,
-                  tombstones: deletedUpdateTombstones,
-                }));
-                setProjectAreas(previous => mergeDAVECloudRecoveryRecords({
-                  local: previous,
-                  cloud: normalizeProjectAreas(recovered.projectAreas),
-                  deletedIds: deletedDAVERecordIds(
-                    recovered.tombstones,
-                    'project_area',
-                  ),
-                }));
-                setScheduleItems(previous => mergeDAVECloudRecoveryRecords({
-                  local: previous,
-                  cloud: normalizeScheduleItems(recovered.scheduleItems)
-                    .map(migrateLegacyScheduleItem),
-                  deletedIds: deletedDAVERecordIds(
-                    recovered.tombstones,
-                    'schedule_item',
-                  ),
-                }));
-                setReferenceDocuments(previous => mergeDAVECloudRecoveryRecords({
-                  local: previous,
-                  cloud: normalizeReferenceDocuments(recovered.referenceDocuments),
-                  deletedIds: deletedDAVERecordIds(
-                    recovered.tombstones,
-                    'reference_document',
-                  ),
-                }));
-                const cloudProjectRecords = recovered.projects
-                  .filter(project => project.name.trim())
-                  .map(projectRecordFromCloud);
-                setProjectRecords(previous => {
-                  const merged = mergeProjectRecords(
-                    [],
-                    previous,
-                    cloudProjectRecords,
-                    deletedProjectNames,
-                  );
-                  setProjects(merged.map(project => project.name));
-                  return merged;
-                });
+                // Audit P1-27: a collection whose cloud read failed arrives
+                // empty with a non-null error. Skip it entirely — an empty
+                // failed read must never be merged as cloud truth.
+                const failed = recovered.collectionErrors;
+                if (failed.updates === null) {
+                  const cloudUpdates = (recovered.updates as unknown as Partial<ProjectUpdate>[])
+                    .map(normalizeUpdate)
+                    .map(migrateLegacyProjectUpdate);
+                  setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
+                    localUpdates: previous,
+                    cloudUpdates,
+                    tombstones: deletedUpdateTombstones,
+                  }));
+                }
+                if (failed.projectAreas === null) {
+                  setProjectAreas(previous => mergeDAVECloudRecoveryRecords({
+                    local: previous,
+                    cloud: normalizeProjectAreas(recovered.projectAreas),
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'project_area',
+                    ),
+                  }));
+                }
+                if (failed.scheduleItems === null) {
+                  setScheduleItems(previous => mergeDAVECloudRecoveryRecords({
+                    local: previous,
+                    cloud: normalizeScheduleItems(recovered.scheduleItems)
+                      .map(migrateLegacyScheduleItem),
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'schedule_item',
+                    ),
+                  }));
+                }
+                if (failed.referenceDocuments === null) {
+                  setReferenceDocuments(previous => mergeDAVECloudRecoveryRecords({
+                    local: previous,
+                    cloud: normalizeReferenceDocuments(recovered.referenceDocuments),
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'reference_document',
+                    ),
+                  }));
+                }
+                if (failed.projects === null) {
+                  const cloudProjectRecords = recovered.projects
+                    .filter(project => project.name.trim())
+                    .map(projectRecordFromCloud);
+                  setProjectRecords(previous => {
+                    const merged = mergeProjectRecords(
+                      [],
+                      previous,
+                      cloudProjectRecords,
+                      deletedProjectNames,
+                    );
+                    setProjects(merged.map(project => project.name));
+                    return merged;
+                  });
+                }
               }}
               onSaveCaptureMemory={saveCaptureMemory}
             />

@@ -92,6 +92,19 @@ export type SyncUploadResult = {
 
 export type SyncItemOutcome = 'uploaded' | 'conflict' | 'blocked' | 'failed';
 
+/**
+ * Audit P1-27: a failed cloud read must never be silently converted into an
+ * empty, apparently-authoritative collection. Each collection carries its own
+ * read error; consumers must not apply a collection whose error is non-null.
+ */
+export type CloudCollectionErrors = {
+  projects: string | null;
+  updates: string | null;
+  projectAreas: string | null;
+  scheduleItems: string | null;
+  referenceDocuments: string | null;
+};
+
 export type CloudDownloadResult<TUpdate> = {
   configured: boolean;
   projects: CloudProject[];
@@ -103,6 +116,7 @@ export type CloudDownloadResult<TUpdate> = {
   tombstones: DAVESyncTombstone[];
   tombstonesAuthoritative: boolean;
   tombstoneError: string | null;
+  collectionErrors: CloudCollectionErrors;
 };
 
 export type LocalSyncPayload = {
@@ -122,6 +136,12 @@ export type SyncProgressEvent = {
 export type FullSyncResult = {
   configured: boolean;
   connected: boolean;
+  /**
+   * Audit P1-27: 'complete' only when every cloud collection downloaded
+   * successfully. 'partial' means at least one collection failed to read;
+   * its recovered array is empty and must not be treated as authoritative.
+   */
+  downloadStatus: 'complete' | 'partial';
   uploaded: number;
   downloaded: number;
   queued: number;
@@ -151,8 +171,20 @@ export type FullSyncResult = {
     scheduleItems: ScheduleItem[];
     referenceDocuments: ReferenceDocument[];
     tombstones: DAVESyncTombstone[];
+    /** Audit P1-27: appliers must skip any collection with a non-null error. */
+    collectionErrors: CloudCollectionErrors;
   };
 };
+
+export function allCollectionsFailed(message: string): CloudCollectionErrors {
+  return {
+    projects: message,
+    updates: message,
+    projectAreas: message,
+    scheduleItems: message,
+    referenceDocuments: message,
+  };
+}
 
 export type MissingSyncPhoto = {
   updateId: string;
@@ -1040,23 +1072,41 @@ export async function downloadCloudChanges<TUpdate>(
     listReferenceDocuments(),
   ]);
 
+  // Audit P1-27: record WHY a collection is empty. A read failure or an
+  // unverifiable deletion history yields an explicit error, never a silent [].
+  const readError = (result: { ok: boolean; configured: boolean; error?: string; message?: string }, label: string): string | null => {
+    if (!result.configured) return null;
+    if (result.ok) return null;
+    return result.error || result.message || `${label} could not be read from the cloud.`;
+  };
+  const tombstoneGateError = tombstoneSync.cloudAuthoritative
+    ? null
+    : tombstoneSync.cloudError || 'Deletion history could not be verified.';
+  const collectionErrors: CloudCollectionErrors = {
+    projects: readError(projectsResult, 'Projects'),
+    updates: readError(updatesResult, 'Updates'),
+    projectAreas: tombstoneGateError ?? readError(areasResult, 'Areas'),
+    scheduleItems: tombstoneGateError ?? readError(schedulesResult, 'Schedule items'),
+    referenceDocuments: tombstoneGateError ?? readError(documentsResult, 'Reference documents'),
+  };
+
   const projects = projectsResult.ok && projectsResult.data ? projectsResult.data : [];
   const updates = updatesResult.ok && updatesResult.data ? updatesResult.data : [];
-  const projectAreas = tombstoneSync.cloudAuthoritative && areasResult.ok && areasResult.data
+  const projectAreas = collectionErrors.projectAreas === null && areasResult.data
     ? removeDAVETombstonedRecords(
         areasResult.data,
         tombstoneSync.tombstones,
         'project_area',
       )
     : [];
-  const scheduleItems = tombstoneSync.cloudAuthoritative && schedulesResult.ok && schedulesResult.data
+  const scheduleItems = collectionErrors.scheduleItems === null && schedulesResult.data
     ? removeDAVETombstonedRecords(
         schedulesResult.data,
         tombstoneSync.tombstones,
         'schedule_item',
       )
     : [];
-  const referenceDocuments = tombstoneSync.cloudAuthoritative && documentsResult.ok && documentsResult.data
+  const referenceDocuments = collectionErrors.referenceDocuments === null && documentsResult.data
     ? documentsResult.data
     : [];
   const filteredReferenceDocuments = removeDAVETombstonedRecords(
@@ -1067,6 +1117,7 @@ export async function downloadCloudChanges<TUpdate>(
 
   return {
     configured: projectsResult.configured || updatesResult.configured,
+    collectionErrors,
     projects,
     projectNames: projects
       .map(project => project.name)
@@ -1122,6 +1173,8 @@ export async function synchronizeLocalData(
     scheduleItems: [],
     referenceDocuments: [],
     tombstones: [],
+    // Nothing was downloaded, so nothing here may be applied as cloud truth.
+    collectionErrors: allCollectionsFailed('Cloud download did not run.'),
   };
   let syncableProjectAreas = payload.projectAreas;
   let syncableScheduleItems = payload.scheduleItems;
@@ -1145,6 +1198,7 @@ export async function synchronizeLocalData(
     return {
       configured: false,
       connected: false,
+      downloadStatus: 'partial',
       uploaded: 0,
       downloaded: 0,
       queued: (await getOfflineQueue()).length,
@@ -1165,6 +1219,7 @@ export async function synchronizeLocalData(
     return {
       configured: true,
       connected: false,
+      downloadStatus: 'partial',
       uploaded: 0,
       downloaded: 0,
       queued: (await getOfflineQueue()).length,
@@ -1184,6 +1239,7 @@ export async function synchronizeLocalData(
     return {
       configured: true,
       connected: true,
+      downloadStatus: 'partial',
       uploaded: 0,
       downloaded: 0,
       queued: (await getOfflineQueue()).length,
@@ -1333,9 +1389,19 @@ export async function synchronizeLocalData(
   details.cloudSchedulesDownloaded = download.scheduleItems.length;
   details.cloudDocumentsDownloaded = download.referenceDocuments.length;
 
+  // Audit P1-27: a failed collection read is a visible sync failure, and an
+  // incomplete download must not stamp lastSync as if the sync were whole.
+  const collectionFailureMessages = Object.entries(download.collectionErrors)
+    .filter((entry): entry is [string, string] => entry[1] !== null)
+    .map(([collection, error]) => `Cloud ${collection} could not be downloaded: ${error}`);
+  collectionFailureMessages.forEach(message => errors.push(message));
+  const downloadComplete = collectionFailureMessages.length === 0;
+
   const cloudCount = await countCloudProjects();
-  const lastSyncAt = new Date().toISOString();
-  await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, lastSyncAt);
+  const lastSyncAt = downloadComplete ? new Date().toISOString() : null;
+  if (lastSyncAt !== null) {
+    await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, lastSyncAt);
+  }
   const [queue, conflicts] = await Promise.all([
     getOfflineQueue(),
     getSyncConflicts(),
@@ -1358,6 +1424,7 @@ export async function synchronizeLocalData(
   return {
     configured: true,
     connected: true,
+    downloadStatus: downloadComplete ? 'complete' : 'partial',
     uploaded,
     downloaded,
     queued: queue.length,
@@ -1377,6 +1444,7 @@ export async function synchronizeLocalData(
       scheduleItems: download.scheduleItems,
       referenceDocuments: download.referenceDocuments,
       tombstones: download.tombstones,
+      collectionErrors: download.collectionErrors,
     },
   };
 }
