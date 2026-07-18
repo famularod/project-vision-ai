@@ -276,6 +276,11 @@ const SUPABASE_CLIENT_SOURCE = 'SupabaseService.singleton';
 const AUTH_HYDRATION_WAIT_MS = 1500;
 const AUTH_HYDRATION_POLL_MS = 50;
 const AUTH_STORAGE_PROBE_KEY = 'projectVisionAI.supabaseAuthStorage.probe';
+// Field fix 2026-07-18: declared BEFORE createSupabaseClient() runs at module
+// load — logSupabaseUrlBeforeNetworkRequest is called during initialization,
+// so this Set must already exist (a bottom-of-file const hit the temporal
+// dead zone and crashed app boot). Logs each context once per session.
+const loggedSupabaseContexts = new Set<string>();
 
 let authHydrationCompleted = false;
 let lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
@@ -2659,11 +2664,6 @@ function withoutTrailingSlash(value: string) {
   return value.replace(/\/+$/g, '');
 }
 
-// Field fix 2026-07-18: this diagnostic logged on EVERY client access, and
-// each console call crosses the native bridge. Under repeated access it
-// flooded the log and burned main-thread time on device. Log each context
-// once per session — the URL never changes after launch.
-const loggedSupabaseContexts = new Set<string>();
 function logSupabaseUrlBeforeNetworkRequest(context: string) {
   if (loggedSupabaseContexts.has(context)) return;
   loggedSupabaseContexts.add(context);
