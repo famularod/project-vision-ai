@@ -145,6 +145,46 @@ export function scheduleParentProjectNames(items: ScheduleItem[]) {
   );
 }
 
+export type ScheduleParentActions = Readonly<{
+  /** Parents that do not exist yet and should be created. */
+  missingNames: string[];
+  /**
+   * Archived parents that may be reopened. Populated ONLY when
+   * reopenArchivedParents is true (an explicit user transition, e.g. an
+   * approved import into that project). Background schedule mutations must
+   * never reopen an archived project (audit P1-57).
+   */
+  reopeningNames: string[];
+}>;
+
+export function resolveScheduleParentActions({
+  parentNames,
+  existingProjects,
+  archivedProjects,
+  reopenArchivedParents,
+}: Readonly<{
+  parentNames: string[];
+  existingProjects: string[];
+  archivedProjects: string[];
+  reopenArchivedParents: boolean;
+}>): ScheduleParentActions {
+  const existingKeys = new Set(
+    existingProjects.map(project => project.trim().toLowerCase()),
+  );
+  const archivedKeys = new Set(
+    archivedProjects.map(project => project.trim().toLowerCase()),
+  );
+
+  return {
+    missingNames: parentNames.filter(
+      name => !existingKeys.has(name.trim().toLowerCase()),
+    ),
+    reopeningNames: reopenArchivedParents
+      ? parentNames.filter(name => archivedKeys.has(name.trim().toLowerCase()))
+      : [],
+  };
+}
+
 export function scheduleProjectScopeNames(
   parentProjectName: string,
   items: ScheduleItem[],

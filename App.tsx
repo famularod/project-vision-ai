@@ -261,6 +261,7 @@ import {
   dedupeScheduleImportItems,
   scheduleImportItemIdentity,
   scheduleOverviewProjectNames,
+  resolveScheduleParentActions,
   scheduleParentProjectNames,
   scheduleProjectScopeNames,
   type PIEScheduleImportBatch,
@@ -9917,7 +9918,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
 
     if (approvedItems.length) {
-      ensureScheduleParentProjects(approvedItems, true);
+      // Explicit user approval of an import into these projects is the user
+      // transition that permits reopening an archived parent (audit P1-57).
+      ensureScheduleParentProjects(approvedItems, {
+        allowDeletedProjects: true,
+        reopenArchivedParents: true,
+      });
       setScheduleItems(previous => {
         let next = [...previous];
         const additions: ScheduleItem[] = [];
@@ -9981,8 +9987,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function ensureScheduleParentProjects(
     items: ScheduleItem[],
-    allowDeletedProjects = false,
+    options: { allowDeletedProjects?: boolean; reopenArchivedParents?: boolean } = {},
   ) {
+    // Audit P1-57: creating a missing parent project is separate from archive
+    // state. Only an explicit user transition (e.g. approving an import into
+    // that project) may reopen an archived project; background schedule
+    // mutations never do.
+    const { allowDeletedProjects = false, reopenArchivedParents = false } = options;
     const discoveredParentNames = scheduleParentProjectNames(
       items as unknown as import('./types').ScheduleItem[],
     );
@@ -9997,10 +10008,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
     if (!parentNames.length) return;
 
-    const existingKeys = new Set(projects.map(project => project.trim().toLowerCase()));
-    const missingNames = parentNames.filter(name => !existingKeys.has(name.toLowerCase()));
-    const archivedKeys = new Set(archivedProjects.map(project => project.trim().toLowerCase()));
-    const reopeningNames = parentNames.filter(name => archivedKeys.has(name.toLowerCase()));
+    const { missingNames, reopeningNames } = resolveScheduleParentActions({
+      parentNames,
+      existingProjects: projects,
+      archivedProjects,
+      reopenArchivedParents,
+    });
 
     if (missingNames.length) {
       setProjects(previous => mergeProjectNames(previous, missingNames));
