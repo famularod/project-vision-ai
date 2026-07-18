@@ -7,6 +7,7 @@ import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconcili
 import type {
   PIEScheduleDependencyNode,
 } from './PIEScheduleDependencyNetwork';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type DAVEActionInboxKind =
   | 'completion_verification'
@@ -286,7 +287,7 @@ function aggregateScheduleActions(items: DAVEActionInboxItem[]) {
 }
 
 function scheduleComplete(item: ScheduleItem) {
-  return item.status === 'Complete' || item.percentComplete >= 100;
+  return scheduleProgressIsComplete(item);
 }
 
 function projectNameFor(item: ScheduleItem) {

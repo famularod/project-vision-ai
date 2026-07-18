@@ -10,6 +10,7 @@ import {
   parseDueDate,
   parseFlexibleDate,
 } from '../utils/date';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type ProjectEventType =
   | 'update_created'
@@ -527,7 +528,7 @@ function scheduleOverdueEvents({
 
   return scheduleItems
     .filter(item => {
-      if (item.status === 'Complete' || boundedPercent(item.percentComplete) >= 100) {
+      if (scheduleProgressIsComplete(item)) {
         return false;
       }
 

@@ -18,6 +18,7 @@ import {
 } from './dave-project-schedule-rollup';
 import type { ScheduleItem } from '../types';
 import { parseFlexibleDate } from '../utils/date';
+import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 
 export type BuildProjectIntelligenceInput = {
   projectId: string;
@@ -162,10 +163,7 @@ function normalizeScheduleItem(
   item: DAVEDailyBriefScheduleItem,
   projectName: string,
 ): ScheduleItem {
-  const status: ScheduleItem['status'] = item.status === 'Complete' ||
-    item.status === 'In Progress' || item.status === 'Waiting'
-    ? item.status
-    : 'Not Started';
+  const progress = reconcileScheduleProgress(item.status, item.percentComplete);
   const priority: ScheduleItem['priority'] = item.priority === 'High' || item.priority === 'Medium'
     ? item.priority
     : 'Low';
@@ -181,11 +179,9 @@ function normalizeScheduleItem(
     owner: item.owner || '',
     contractor: item.contractor || '',
     durationDays: item.durationDays ?? null,
-    percentComplete: typeof item.percentComplete === 'number'
-      ? item.percentComplete
-      : status === 'Complete' ? 100 : 0,
+    percentComplete: progress.percentComplete,
     priority,
-    status,
+    status: progress.status,
     notes: item.notes || '',
     importedAt: item.importedAt || null,
     createdAt: item.createdAt,

@@ -6,6 +6,7 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import type { PIEDeliberationResult } from './PIEDeliberationEngine';
 import type {
   PIEDecisionQualityScore,
@@ -2101,7 +2102,7 @@ function scheduleSummaryLine(item: ScheduleItem) {
   const scheduleNote = reportScheduleNote(item.notes);
   const parts = [
     cleanReportBulletText(item.taskName),
-    item.status !== 'Complete' && item.finishDate
+    !scheduleProgressIsComplete(item) && item.finishDate
       ? `due ${item.finishDate}`
       : null,
     item.status ? `status ${item.status}` : null,
@@ -2116,7 +2117,7 @@ function scheduleActionLine(item: ScheduleItem) {
   const taskName = cleanReportBulletText(item.taskName);
   if (!taskName) return null;
   if (item.status === 'Waiting') return `Confirm what is blocking ${taskName}.`;
-  if (item.priority === 'High' && item.status !== 'Complete') {
+  if (item.priority === 'High' && !scheduleProgressIsComplete(item)) {
     return `Confirm the current status of ${taskName}.`;
   }
 

@@ -23,6 +23,7 @@ import type {
   ProjectConfidenceLevel,
   ProjectReportHistoryMetadata,
 } from './ProjectIntelligenceEngine';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type PIEMemoryConfidence = ProjectConfidenceLevel;
 
@@ -338,7 +339,7 @@ export function findRelevantPastScheduleItems(
       area: item.locationName || null,
       summary: `${item.taskName || 'Schedule item'} is ${item.status}.`,
       whyRelevant: relevanceReason(input, `${item.taskName} ${item.notes}`, 'past schedule item'),
-      confidence: item.percentComplete >= 100 || item.status === 'Complete' ? 'high' : 'medium',
+      confidence: scheduleProgressIsComplete(item) ? 'high' : 'medium',
       influence: 'Use this schedule history to interpret whether the new evidence supports or contradicts planned progress.',
     }));
 }

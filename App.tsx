@@ -271,6 +271,10 @@ import {
   scheduleTasksForParentProject,
 } from './services/dave-project-schedule-rollup';
 import {
+  normalizeScheduleStatus,
+  reconcileScheduleProgress,
+} from './services/ScheduleProgressInvariant';
+import {
   deriveDAVEProjectOperationalStatus,
   operationalScheduleItemsForProject,
 } from './services/DAVEProjectOperationalStatus';
@@ -2431,7 +2435,7 @@ function daysUntilDate(value: string) {
 }
 
 function isScheduleItemDueToday(item: ScheduleItem) {
-  if (item.status === 'Complete') return false;
+  if (scheduleTaskIsComplete(item)) return false;
 
   return daysUntilDate(item.finishDate) === 0;
 }
@@ -2481,6 +2485,7 @@ function photoAttachmentLabel(count: number) {
 }
 
 function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
+  const progress = reconcileScheduleProgress(value.status, value.percentComplete);
   return {
     id: typeof value.id === 'string' ? value.id : uid(),
     scheduleProjectName: optionalString(value.scheduleProjectName),
@@ -2499,12 +2504,7 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
       typeof value.durationDays === 'number' && Number.isFinite(value.durationDays)
         ? Math.max(0, value.durationDays)
         : null,
-    percentComplete:
-      value.status === 'Complete'
-        ? 100
-        : typeof value.percentComplete === 'number' && Number.isFinite(value.percentComplete)
-        ? Math.max(0, Math.min(100, Math.round(value.percentComplete)))
-        : 0,
+    percentComplete: progress.percentComplete,
     progressSource:
       value.progressSource === 'project_manager' || value.progressSource === 'schedule_import'
         ? value.progressSource
@@ -2514,9 +2514,7 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
     priority: SCHEDULE_PRIORITIES.includes(value.priority as SchedulePriority)
       ? (value.priority as SchedulePriority)
       : 'Medium',
-    status: SCHEDULE_STATUSES.includes(value.status as ScheduleStatus)
-      ? (value.status as ScheduleStatus)
-      : 'Not Started',
+    status: progress.status,
     notes: normalizeImportedScheduleNote(value.notes, value.importedFrom),
     importedFrom: optionalString(value.importedFrom),
     importedAt: optionalString(value.importedAt),
@@ -2577,16 +2575,7 @@ type AiScheduleExtractedItem = {
 };
 
 function normalizeAiScheduleStatus(value: unknown): ScheduleStatus {
-  if (typeof value !== 'string') return 'Not Started';
-
-  const lower = value.trim().toLowerCase();
-
-  if (lower.includes('complete') || lower.includes('done')) return 'Complete';
-  if (lower.includes('progress') || lower.includes('active')) return 'In Progress';
-  if (lower.includes('wait') || lower.includes('hold')) return 'Waiting';
-  if (lower.includes('schedule') || lower.includes('planned') || lower.includes('not started')) return 'Not Started';
-
-  return 'Not Started';
+  return normalizeScheduleStatus(value);
 }
 
 function normalizeAiSchedulePriority(value: unknown, finishDate: string): SchedulePriority {
@@ -12790,7 +12779,7 @@ function getScheduleDrivenWalkRecommendation(
     projectName,
     scheduleItems as unknown as import('./types').ScheduleItem[],
   )
-    .filter(item => item.status !== 'Complete' && item.locationName.trim())
+    .filter(item => !scheduleTaskIsComplete(item) && item.locationName.trim())
     .sort((left, right) => {
       const leftDays = daysUntilDate(left.finishDate) ?? 9999;
       const rightDays = daysUntilDate(right.finishDate) ?? 9999;
@@ -18446,7 +18435,7 @@ function UpcomingScreen({
 
   const combinedItems: UpcomingItem[] = [
     ...scheduleItems
-      .filter(item => item.status !== 'Complete')
+      .filter(item => !scheduleTaskIsComplete(item))
       .map(item => ({
         id: item.id,
         source: 'Schedule',
@@ -18840,7 +18829,7 @@ function ScheduleScreen({
   });
 
   const dueSoon = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
+    if (scheduleTaskIsComplete(item)) return false;
 
     const days = daysUntilDate(item.finishDate);
 
@@ -18848,7 +18837,7 @@ function ScheduleScreen({
   });
 
   const overdue = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
+    if (scheduleTaskIsComplete(item)) return false;
 
     const days = daysUntilDate(item.finishDate);
 
@@ -19475,10 +19464,11 @@ function ScheduleItemRow({
     item as unknown as import('./types').ScheduleItem,
   );
   const days = daysUntilDate(item.finishDate);
-  const isOverdue = days !== null && days < 0 && item.status !== 'Complete';
-  const isDueSoon = days !== null && days >= 0 && days <= 7 && item.status !== 'Complete';
+  const itemComplete = scheduleTaskIsComplete(item);
+  const isOverdue = days !== null && days < 0 && !itemComplete;
+  const isDueSoon = days !== null && days >= 0 && days <= 7 && !itemComplete;
   const priorityColor = item.priority === 'High' ? colors.danger : item.priority === 'Low' ? colors.success : colors.warning;
-  const statusColor = item.status === 'Complete' ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
+  const statusColor = itemComplete ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
   const blockerNames = (dependencyNode?.blockingPredecessorIds || []).map(blockerId =>
     scheduleItems.find(candidate => candidate.id === blockerId)?.taskName || blockerId,
   );

@@ -12,6 +12,7 @@ import type {
   PIERealityModel,
   PIERealityObject,
 } from './PIERealityModel';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type PIEPhotoComparability =
   | 'strong_match'
@@ -852,7 +853,11 @@ function findCorroboratingEvidenceIds(
     if (
       normalized(item.projectName) === normalized(photo.projectName) &&
       (normalized(item.locationName) === area || normalized(item.taskName).includes(subject)) &&
-      (item.status === 'Complete' || item.status === 'In Progress' || item.percentComplete > 0)
+      (
+        scheduleProgressIsComplete(item) ||
+        item.status === 'In Progress' ||
+        (item.percentComplete > 0 && item.percentComplete < 100)
+      )
     ) {
       ids.push(`schedule:${item.id}`);
     }
@@ -893,7 +898,7 @@ function findContradictingEvidenceIds(
       normalized(item.projectName) === normalized(photo.projectName) &&
       (normalized(item.locationName) === area || normalized(item.taskName).includes(subject)) &&
       category === 'completed_construction' &&
-      item.status !== 'Complete'
+      !scheduleProgressIsComplete(item)
     ) {
       ids.push(`schedule:${item.id}`);
     }
@@ -901,7 +906,7 @@ function findContradictingEvidenceIds(
       normalized(item.projectName) === normalized(photo.projectName) &&
       (normalized(item.locationName) === area || normalized(item.taskName).includes(subject)) &&
       (category === 'partial_construction' || category === 'work_started_not_completed') &&
-      item.status === 'Complete'
+      scheduleProgressIsComplete(item)
     ) {
       ids.push(`schedule:${item.id}`);
     }

@@ -4,6 +4,7 @@ import type {
   DAVETaskEvidenceClaim,
   DAVETaskEvidenceCorrelation,
 } from './DAVEEvidenceCorrelation';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export const DAVE_PROJECT_REASONING_VERSION = 'dave-project-reasoning/1.0' as const;
 
@@ -184,7 +185,7 @@ function buildConnections(item: ScheduleItem, correlation: DAVETaskEvidenceCorre
       relationship = 'completes';
       reason = 'A project-manager verification record authorizes the completed state.';
     } else if (
-      (evidence.stance === 'not_complete' && (hasReportedComplete || item.status === 'Complete')) ||
+      (evidence.stance === 'not_complete' && (hasReportedComplete || scheduleProgressIsComplete(item))) ||
       (evidence.stance === 'in_progress' && item.status === 'Not Started')
     ) {
       relationship = 'contradicts';
@@ -331,7 +332,7 @@ function timingFor(item: ScheduleItem, now: string) {
 
 function isOverdue(item: ScheduleItem, now: Date) {
   const due = new Date(item.finishDate);
-  return item.status !== 'Complete' && Boolean(item.finishDate) && Number.isFinite(due.getTime()) && due.getTime() < now.getTime();
+  return !scheduleProgressIsComplete(item) && Boolean(item.finishDate) && Number.isFinite(due.getTime()) && due.getTime() < now.getTime();
 }
 
 function isStale(recordedAt: string | null, now: string) {

@@ -20,6 +20,7 @@ import {
   type ProjectEvent,
   type ProjectStory,
 } from './ProjectEventService';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import {
   analyzeProjectLocationIntelligence,
   type ProjectLocationIntelligence,
@@ -485,9 +486,7 @@ function photoActionStats(photos: UpdatePhoto[], now: Date) {
 }
 
 function scheduleContextStats(scheduleItems: ScheduleItem[]) {
-  const openItems = scheduleItems.filter(
-    item => item.status !== 'Complete' && boundedPercent(item.percentComplete) < 100,
-  );
+  const openItems = scheduleItems.filter(item => !scheduleProgressIsComplete(item));
 
   return {
     ownerCount: uniqueValues(scheduleItems.map(item => item.owner)).length,
@@ -703,9 +702,7 @@ function scheduleStatus({
 }): ProjectScheduleStatus {
   if (scheduleItems.length === 0) return 'not-available';
 
-  const completeCount = scheduleItems.filter(
-    item => item.status === 'Complete' || boundedPercent(item.percentComplete) >= 100,
-  ).length;
+  const completeCount = scheduleItems.filter(scheduleProgressIsComplete).length;
 
   if (completeCount === scheduleItems.length) return 'complete';
   if (overdueCount > 0) return 'overdue';
@@ -2116,7 +2113,7 @@ export function analyzeProjectIntelligence({
     ? daysSinceUpdate(latestUpdate, now)
     : null;
   const incompleteScheduleItems = projectScheduleItems.filter(
-    item => item.status !== 'Complete' && boundedPercent(item.percentComplete) < 100,
+    item => !scheduleProgressIsComplete(item),
   );
   const overdueScheduleItems = incompleteScheduleItems.filter(item => {
     const days = daysUntilScheduleDate(item.finishDate, now);

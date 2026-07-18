@@ -27,6 +27,7 @@ import {
   buildDAVEProjectReasoning,
   type DAVEProjectReasoning,
 } from './DAVEProjectReasoning';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export const DAVE_PROJECT_TRUTH_VERSION = 'dave-project-truth/1.0' as const;
 
@@ -706,8 +707,8 @@ function buildPMBriefing(input: {
   runtime?: PIERuntimeState | null;
   core?: PIECoreOutput | null;
 }): DAVEPMBriefing {
-  const overdue = input.schedule.filter(item => item.urgency === 'overdue' && item.status !== 'Complete');
-  const dueSoon = input.schedule.filter(item => item.urgency === 'due_soon' && item.status !== 'Complete');
+  const overdue = input.schedule.filter(item => item.urgency === 'overdue' && !scheduleProgressIsComplete(item));
+  const dueSoon = input.schedule.filter(item => item.urgency === 'due_soon' && !scheduleProgressIsComplete(item));
   const conflicts = input.schedule.filter(item => item.contradiction);
   const observations = input.photoComparisons
     .filter(item => item.evidenceClass === 'observation')
@@ -747,7 +748,7 @@ function buildPMBriefing(input: {
       : uniqueText([input.runtime?.intelligentSummary.whatChanged, ...input.intelligence.dailyBrief.changedItems.map(item => item.text)]).slice(0, 5),
     schedule: overdue.length > 0
       ? `${overdue.length} overdue; ${dueSoon.length} due within 7 days; ${conflicts.length} status conflict${conflicts.length === 1 ? '' : 's'} require verification.`
-      : `${dueSoon.length} due within 7 days; ${input.schedule.filter(item => item.status === 'Complete').length} of ${input.schedule.length} activities complete.`,
+      : `${dueSoon.length} due within 7 days; ${input.schedule.filter(scheduleProgressIsComplete).length} of ${input.schedule.length} activities complete.`,
     commitments: input.intelligence.commitments
       .filter(item => item.status !== 'Completed')
       .slice(0, 5)
@@ -777,7 +778,7 @@ function summarizeEvidence(records: DAVEEvidenceLedgerRecord[]): DAVEEvidenceAcc
 }
 
 function taskUrgency(item: ScheduleItem, now: Date): DAVEScheduleTruth['urgency'] {
-  if (item.status === 'Complete' || !item.finishDate) return 'not_urgent';
+  if (scheduleProgressIsComplete(item) || !item.finishDate) return 'not_urgent';
   const due = new Date(item.finishDate);
   if (!Number.isFinite(due.getTime())) return 'not_urgent';
   const days = Math.ceil((due.getTime() - now.getTime()) / 86_400_000);

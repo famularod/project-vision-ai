@@ -5,6 +5,7 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export const DAVE_EVIDENCE_CORRELATION_VERSION = 'dave-evidence-correlation/1.0' as const;
 
@@ -168,7 +169,7 @@ function correlateTask(
   const directPMNotComplete = latestPMJudgment?.stance === 'not_complete';
   const reportedNotComplete = uniqueEvidence.some(claim => claim.authority !== 'schedule' && claim.stance === 'not_complete');
   const observedProgress = uniqueEvidence.some(claim => claim.authority === 'observed' && claim.stance === 'in_progress');
-  const scheduleClaimsComplete = item.status === 'Complete' || item.percentComplete >= 100;
+  const scheduleClaimsComplete = scheduleProgressIsComplete(item);
   const scheduleClaimsNotStarted = item.status === 'Not Started' && item.percentComplete === 0;
   const authoritativeCompletionAt = verification?.status === 'pm_verified'
     ? verification.verifiedAt || verification.reportedAt || null
@@ -293,7 +294,7 @@ function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
     id: `correlation:schedule:${item.id}`,
     kind: pmJudgment ? 'pm_confirmation' : 'schedule',
     sourceRecordId: item.id,
-    stance: item.status === 'Complete' || item.percentComplete >= 100
+    stance: scheduleProgressIsComplete(item)
       ? 'complete'
       : item.status === 'Not Started' && item.percentComplete === 0
         ? 'not_complete'

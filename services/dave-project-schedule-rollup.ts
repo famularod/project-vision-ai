@@ -1,5 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { parseFlexibleDate } from '../utils/date';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type DAVEProjectScheduleHealth = 'On Track' | 'At Risk' | 'Blocked';
 
@@ -41,7 +42,7 @@ function relativeDays(value: string, now: Date) {
 }
 
 export function scheduleTaskIsComplete(item: ScheduleItem) {
-  return item.status === 'Complete' || item.percentComplete >= 100;
+  return scheduleProgressIsComplete(item);
 }
 
 export function scheduleTasksForParentProject(

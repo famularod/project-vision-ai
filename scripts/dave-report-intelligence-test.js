@@ -6,13 +6,35 @@ const path = require('path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'services/DAVEReportIntelligence.ts'), 'utf8');
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const moduleUnderTest = { exports: {} };
-new Function('require', 'module', 'exports', compiled)(require, moduleUnderTest, moduleUnderTest.exports);
-const { buildDAVEReportBriefing, enhanceDAVEReportDraft } = moduleUnderTest.exports;
+const moduleCache = new Map();
+
+function loadTypeScriptModule(relativePath) {
+  const absolutePath = path.resolve(root, relativePath);
+  if (moduleCache.has(absolutePath)) return moduleCache.get(absolutePath).exports;
+  const moduleUnderTest = { exports: {} };
+  moduleCache.set(absolutePath, moduleUnderTest);
+  const compiled = ts.transpileModule(fs.readFileSync(absolutePath, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    fileName: absolutePath,
+  }).outputText;
+  const localRequire = specifier => {
+    if (!specifier.startsWith('.')) return require(specifier);
+    const base = path.resolve(path.dirname(absolutePath), specifier);
+    const resolved = [`${base}.ts`, path.join(base, 'index.ts'), base]
+      .find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+    if (!resolved) throw new Error(`Cannot resolve ${specifier}`);
+    return loadTypeScriptModule(path.relative(root, resolved));
+  };
+  new Function('require', 'module', 'exports', compiled)(
+    localRequire,
+    moduleUnderTest,
+    moduleUnderTest.exports,
+  );
+  return moduleUnderTest.exports;
+}
+
+const { buildDAVEReportBriefing, enhanceDAVEReportDraft } =
+  loadTypeScriptModule('services/DAVEReportIntelligence.ts');
 
 function truth(projectName, overrides = {}) {
   return {

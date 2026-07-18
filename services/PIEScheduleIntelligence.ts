@@ -21,6 +21,10 @@ import {
 } from '../utils/schedule';
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
 import { stripScheduleDependencyMetadata } from './PIEScheduleDependencyNetwork';
+import {
+  normalizeScheduleStatus,
+  reconcileScheduleProgress,
+} from './ScheduleProgressInvariant';
 
 export type PIEScheduleInputFormat =
   | 'pdf'
@@ -635,15 +639,7 @@ function cell(
 }
 
 function normalizeStatus(value: string): ScheduleStatus {
-  const lower = normalized(value);
-  const direct = SCHEDULE_STATUSES.find(status => normalized(status) === lower);
-
-  if (direct) return direct;
-  if (lower.includes('complete') || lower.includes('done')) return 'Complete';
-  if (lower.includes('progress') || lower.includes('active')) return 'In Progress';
-  if (lower.includes('wait') || lower.includes('hold')) return 'Waiting';
-
-  return 'Not Started';
+  return normalizeScheduleStatus(value);
 }
 
 function normalizePriority(value: string, finishDate: string): SchedulePriority {
@@ -1127,15 +1123,18 @@ export function normalizeScheduleImport({
         findNameMatch(rowText, projects);
       const area = cell(cells, headers, ['area', 'location', 'work area'], 2) ||
         findNameMatch(rowText, projectAreas.map(areaItem => areaItem.name));
-      const status = normalizeStatus(cell(cells, headers, ['status'], 7));
+      const rawStatus = cell(cells, headers, ['status'], 7);
+      const parsedStatus = normalizeStatus(rawStatus);
       const owner = cell(cells, headers, ['owner', 'responsible'], 6);
       const contractor = cell(cells, headers, ['contractor', 'company', 'trade'], 9) || owner;
       const wbs = cell(cells, headers, ['wbs', 'code', 'activity id'], 10);
       const milestone = cell(cells, headers, ['milestone'], 5);
-      const percentComplete = normalizePercent(
+      const parsedPercent = normalizePercent(
         cell(cells, headers, ['percent complete', '% complete', 'progress'], 11),
-        status,
+        parsedStatus,
       );
+      const progress = reconcileScheduleProgress(parsedStatus, parsedPercent);
+      const { status, percentComplete } = progress;
       const floatValue = parseDuration(
         cell(cells, headers, ['float', 'total float'], 12),
       );

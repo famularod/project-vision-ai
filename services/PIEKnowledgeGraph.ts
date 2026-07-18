@@ -35,6 +35,7 @@ import {
   classifyDAVEBlocker,
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type PIEGraphNodeType =
   | 'project'
@@ -2187,7 +2188,7 @@ function isScheduleBlocked(item: ScheduleItem, generatedAt: string): boolean {
   const comparisonTime = Date.parse(generatedAt);
   if (!Number.isFinite(comparisonTime)) return false;
 
-  return finishTime < comparisonTime && item.status !== 'Complete';
+  return finishTime < comparisonTime && !scheduleProgressIsComplete(item);
 }
 
 function sameProject(value: string | null | undefined, projectName: string): boolean {

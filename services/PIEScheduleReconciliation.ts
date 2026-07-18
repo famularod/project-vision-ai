@@ -13,6 +13,7 @@ import {
   isDAVECurrentCertainAssertion,
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -85,7 +86,7 @@ export function scheduleCompletionOverridesFieldMatch(
   item: ScheduleItem,
   match: Pick<PIEScheduleFieldMatch, 'capturedAt'> | null,
 ) {
-  if (item.status !== 'Complete' && boundedPercent(item.percentComplete) < 100) return false;
+  if (!scheduleProgressIsComplete(item)) return false;
 
   const verification = item.completionVerification;
   const pmVerified = verification?.status === 'pm_verified';
@@ -196,7 +197,7 @@ export function buildPIEScheduleReconciliation({
     const bestMatch = itemMatches[0] || null;
     const daysUntilFinish = relativeDays(item.finishDate, now);
     const urgent =
-      item.status !== 'Complete' &&
+      !scheduleProgressIsComplete(item) &&
       daysUntilFinish !== null &&
       daysUntilFinish <= NEAR_TERM_DAYS;
 
@@ -216,7 +217,7 @@ export function buildPIEScheduleReconciliation({
 
     if (bestMatch?.confidence === 'high' || bestMatch?.confidence === 'medium') {
       if (
-        item.status === 'Complete' &&
+        scheduleProgressIsComplete(item) &&
         ['blocked', 'issue', 'in_progress'].includes(bestMatch.signal) &&
         !scheduleCompletionOverridesFieldMatch(item, bestMatch)
       ) {
@@ -232,7 +233,7 @@ export function buildPIEScheduleReconciliation({
       }
 
       if (
-        item.status !== 'Complete' &&
+        !scheduleProgressIsComplete(item) &&
         bestMatch.signal === 'complete'
       ) {
         warnings.push(makeWarning({

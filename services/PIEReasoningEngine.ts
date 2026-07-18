@@ -16,6 +16,7 @@ import type {
   ProjectRiskSignal,
 } from './ProjectIntelligenceEngine';
 import type { ProjectEvent } from './ProjectEventService';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type PIEPriority = 'low' | 'medium' | 'high';
 
@@ -497,8 +498,7 @@ function buildEvidence({
   scheduleItems.forEach(item => {
     const dueDate = parseFlexibleDate(item.finishDate);
     const isOverdue =
-      item.status !== 'Complete' &&
-      item.percentComplete < 100 &&
+      !scheduleProgressIsComplete(item) &&
       Boolean(dueDate && dueDate < startOfDay(now));
     const shouldSurface =
       isOverdue ||
