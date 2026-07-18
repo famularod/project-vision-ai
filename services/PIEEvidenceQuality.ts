@@ -391,16 +391,35 @@ function qualityLevelFromScore(
   return 'insufficient';
 }
 
-function evidenceReadinessFromItems(
+/**
+ * Audit P1-03: readiness reflects the whole evidence base, not the single
+ * best item. One strong item among many insufficient ones previously read
+ * as strong readiness (reproduced: 1 strong + 9 insufficient = average 25,
+ * readiness "strong"). Rules now:
+ * - conflicts block readiness entirely;
+ * - a majority of insufficient items is itself blocking;
+ * - otherwise readiness comes from the weighted average score, and can
+ *   never exceed what the average supports.
+ */
+export function evidenceReadinessFromItems(
   items: PIEEvidenceQualityItem[],
   conflicts: PIEEvidenceConflict[],
 ): PIEEvidenceQualityLevel {
   if (items.length === 0) return 'insufficient';
   if (conflicts.length > 0) return 'conflicting';
   if (items.every(item => item.score.level === 'stale')) return 'stale';
-  if (items.some(item => item.score.level === 'strong')) return 'strong';
-  if (items.some(item => item.score.level === 'good')) return 'good';
-  return 'weak';
+
+  const insufficientCount = items.filter(
+    item => item.score.level === 'insufficient',
+  ).length;
+  if (insufficientCount * 2 > items.length) return 'insufficient';
+
+  const averageScore =
+    items.reduce((total, item) => total + item.score.value, 0) / items.length;
+  if (averageScore >= 85) return 'strong';
+  if (averageScore >= 70) return 'good';
+  if (averageScore >= 45) return 'weak';
+  return 'insufficient';
 }
 
 function reliabilityReason(evidence: PIEEvidenceQualityInput) {
