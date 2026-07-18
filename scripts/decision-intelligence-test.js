@@ -555,6 +555,32 @@ function testDecisionQuality() {
   assert(sim.sensitivityAnalysis.factors.length >= 12);
   assert(sim.sensitivityAnalysis.factors.some(factor => factor.factor === 'photo_progress_interpretation'));
   assert(sim.sensitivityAnalysis.factors.some(factor => factor.factor === 'deadline'));
+  sim.sensitivityAnalysis.factors.forEach(factor => {
+    assert(
+      factor.rescoredOptions.length === sim.options.length,
+      `${factor.factor} must rescore every option`,
+    );
+    assert(
+      factor.eligibleOptionIds.length === factor.rescoredOptions.filter(score => !score.disqualified).length,
+      `${factor.factor} must report the exact eligible option set`,
+    );
+    assert(Number.isFinite(factor.baselineMargin), `${factor.factor} must report a baseline score margin`);
+    assert(Number.isFinite(factor.perturbedMargin), `${factor.factor} must report a perturbed score margin`);
+    const preferredScore = factor.rescoredOptions.find(
+      score => score.optionId === factor.preferredOptionAfterChange,
+    );
+    assert(
+      factor.preferredOptionAfterChange === 'none' || (preferredScore && !preferredScore.disqualified),
+      `${factor.factor} must never select a disqualified option`,
+    );
+  });
+  const regulatory = sim.sensitivityAnalysis.factors.find(
+    factor => factor.factor === 'regulatory_interpretation',
+  );
+  assert(
+    regulatory.rescoredOptions.some(score => score.disqualified),
+    'stricter regulatory interpretation must exercise the compliance gate',
+  );
   assert(sim.sensitivityAnalysis.robustness);
   assert(sim.provenance.realityModelVersion === model.version);
   assert(sim.provenance.conditionsThatWouldChangeRecommendation.length > 0);
