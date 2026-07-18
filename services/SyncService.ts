@@ -1389,6 +1389,16 @@ export async function synchronizeLocalData(
   details.cloudSchedulesDownloaded = download.scheduleItems.length;
   details.cloudDocumentsDownloaded = download.referenceDocuments.length;
 
+  // Audit P1-28: unacknowledged deletion-history uploads are a visible
+  // partial-sync condition, not a silent retry-later.
+  if ((tombstoneSync.uploadFailures ?? 0) > 0) {
+    errors.push(
+      `${tombstoneSync.uploadFailures} deletion ${
+        tombstoneSync.uploadFailures === 1 ? 'record' : 'records'
+      } could not be confirmed in the cloud. They remain saved on this phone and will retry next sync.`,
+    );
+  }
+
   // Audit P1-27: a failed collection read is a visible sync failure, and an
   // incomplete download must not stamp lastSync as if the sync were whole.
   const collectionFailureMessages = Object.entries(download.collectionErrors)

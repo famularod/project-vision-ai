@@ -9,6 +9,12 @@ import {
 } from './SupabaseService';
 
 export const DAVE_SYNC_TOMBSTONES_STORAGE_KEY = '@dave/sync-tombstones/v1';
+/**
+ * Audit P1-28: deletion history is a durable journal. Corrupt journal bytes
+ * are preserved here for forensic recovery instead of being replaced by [].
+ */
+export const DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY =
+  '@dave/sync-tombstones/quarantine/v1';
 
 let mutationTail: Promise<void> = Promise.resolve();
 let synchronizationInFlight: Promise<DAVESyncTombstoneSyncResult> | null = null;
@@ -17,6 +23,12 @@ export type DAVESyncTombstoneSyncResult = {
   tombstones: DAVESyncTombstone[];
   cloudAuthoritative: boolean;
   cloudError: string | null;
+  /**
+   * Audit P1-28: number of tombstones the cloud did not acknowledge this
+   * pass. They stay in the local journal and are retried on every sync, but
+   * a non-zero count must surface as a visible partial-sync condition.
+   */
+  uploadFailures?: number;
 };
 
 export function parseDAVESyncTombstones(value: unknown): DAVESyncTombstone[] {
@@ -74,14 +86,7 @@ export function removeDAVETombstonedRecords<T extends { id: string }>(
 
 export async function loadDAVESyncTombstones(): Promise<DAVESyncTombstone[]> {
   await mutationTail;
-  const raw = await AsyncStorage.getItem(DAVE_SYNC_TOMBSTONES_STORAGE_KEY);
-  if (!raw) return [];
-
-  try {
-    return parseDAVESyncTombstones(JSON.parse(raw));
-  } catch {
-    return [];
-  }
+  return readLocalTombstones();
 }
 
 export async function recordDAVESyncTombstone(
@@ -163,13 +168,21 @@ async function performTombstoneSynchronization(): Promise<DAVESyncTombstoneSyncR
     return next;
   });
 
-  await Promise.allSettled(
+  // Audit P1-28: count unacknowledged uploads instead of discarding results.
+  // Failed tombstones remain in the durable local journal and are re-sent on
+  // every synchronization pass.
+  const uploadResults = await Promise.allSettled(
     merged.map(tombstone => upsertDAVESyncTombstone(tombstone)),
   );
+  const uploadFailures = uploadResults.filter(result =>
+    result.status === 'rejected' ||
+    (result.value.configured && !result.value.stubbed && !result.value.ok),
+  ).length;
   return {
     tombstones: merged,
     cloudAuthoritative,
     cloudError,
+    uploadFailures,
   };
 }
 
@@ -188,7 +201,48 @@ async function readLocalTombstones(): Promise<DAVESyncTombstone[]> {
   try {
     return parseDAVESyncTombstones(JSON.parse(raw));
   } catch {
+    // Audit P1-28: never destroy the deletion journal. Preserve the corrupt
+    // bytes for recovery, then continue from an explicitly empty journal.
+    await quarantineCorruptTombstoneBytes(raw);
     return [];
+  }
+}
+
+async function quarantineCorruptTombstoneBytes(raw: string): Promise<void> {
+  try {
+    const existing = await AsyncStorage.getItem(
+      DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY,
+    );
+    // Keep the FIRST corrupt payload; later corruption must not overwrite
+    // earlier forensic evidence.
+    if (existing === null) {
+      await AsyncStorage.setItem(
+        DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY,
+        JSON.stringify({ quarantinedAt: new Date().toISOString(), raw }),
+      );
+    }
+    await AsyncStorage.removeItem(DAVE_SYNC_TOMBSTONES_STORAGE_KEY);
+  } catch {
+    // Quarantine is best-effort; the corrupt key is left in place so a later
+    // attempt can still preserve it.
+  }
+}
+
+/** Audit P1-28: expose quarantined journal bytes for recovery/export. */
+export async function loadQuarantinedDAVESyncTombstones(): Promise<
+  { quarantinedAt: string; raw: string } | null
+> {
+  const stored = await AsyncStorage.getItem(DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY);
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored) as { quarantinedAt?: unknown; raw?: unknown };
+    if (typeof parsed.raw !== 'string') return null;
+    return {
+      quarantinedAt: String(parsed.quarantinedAt || ''),
+      raw: parsed.raw,
+    };
+  } catch {
+    return null;
   }
 }
 
