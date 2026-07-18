@@ -3,6 +3,7 @@
     "name": "Project Photo Update Tool",
     "slug": "project-photo-update-tool",
     "version": "1.0.56",
+    "platforms": ["ios", "android"],
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.png",
