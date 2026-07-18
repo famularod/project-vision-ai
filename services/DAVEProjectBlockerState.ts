@@ -1,17 +1,29 @@
 import {
   classifyDAVEBlocker,
-  classifyDAVEIssue,
   classifyDAVESafety,
 } from './DAVEAssertionParser';
 
 export type DAVEBlockerEvidencePhoto = Readonly<{
+  id: string;
   category?: string | null;
   actionStatus?: string | null;
   selectedAreaName?: string | null;
 }>;
 
+export type DAVEBlockerType = 'blocker' | 'safety';
+
+export type DAVEBlockerLifecycleEvent = Readonly<{
+  blockerId: string;
+  blockerType: DAVEBlockerType;
+  action: 'opened' | 'resolved' | 'reopened';
+  projectName: string;
+  areaName?: string | null;
+  occurredAt?: string | null;
+}>;
+
 export type DAVEBlockerEvidenceUpdate = Readonly<{
   id: string;
+  projectName: string;
   date?: string | null;
   notes?: string | null;
   selectedAreaName?: string | null;
@@ -25,30 +37,36 @@ export type DAVEBlockerEvidenceUpdate = Readonly<{
     firstPhotoAddedAt?: string | null;
   }> | null;
   photos?: readonly DAVEBlockerEvidencePhoto[];
+  blockerEvents?: readonly DAVEBlockerLifecycleEvent[];
 }>;
 
 const PROJECT_SCOPE = '__project__';
 
 /**
- * Finds the newest unresolved, explicitly confirmed blocker. A later explicit
- * resolution only clears blocker evidence in the same recorded area.
+ * Finds the newest unresolved, explicitly confirmed blocker. State changes are
+ * replayed by stable blocker identity, type, project, and area. Proximity in an
+ * area is never sufficient to resolve a different blocker.
  */
 export function findCurrentDAVEConfirmedBlocker<
   T extends DAVEBlockerEvidenceUpdate,
 >(updates: readonly T[]): T | null {
-  const resolvedScopes = new Set<string>();
-  const sortedUpdates = [...updates].sort(
-    (left, right) => updateTimestamp(right) - updateTimestamp(left),
-  );
+  const events = updates
+    .flatMap((update, updateOrder) => blockerEventsForUpdate(update, updateOrder))
+    .sort(compareBlockerEvents);
+  const stateByIdentity = new Map<string, DAVEBlockerState<T>>();
 
-  for (const update of sortedUpdates) {
-    for (const scope of resolutionScopes(update)) resolvedScopes.add(scope);
+  events.forEach(event => {
+    stateByIdentity.set(event.identity, {
+      active: event.action !== 'resolved',
+      event,
+    });
+  });
 
-    const blockerScopes = confirmedBlockerScopes(update);
-    if (blockerScopes.some(scope => !resolvedScopes.has(scope))) return update;
-  }
+  const newestActive = [...stateByIdentity.values()]
+    .filter(state => state.active)
+    .sort((left, right) => compareBlockerEvents(right.event, left.event))[0];
 
-  return null;
+  return newestActive?.event.update || null;
 }
 
 export function findCurrentDAVEConfirmedBlockerForScopes<
@@ -66,7 +84,7 @@ export function findCurrentDAVEConfirmedBlockerForScopes<
 export function daveConfirmedBlockerReason(
   update: DAVEBlockerEvidenceUpdate,
 ) {
-  if (hasActiveTopLevelSafetyFlag(update) || openSafetyPhotos(update).length > 0) {
+  if (updateHasOpenDAVESafetyConcern(update)) {
     return 'A field update contains a confirmed safety concern that must be resolved.';
   }
 
@@ -76,120 +94,230 @@ export function daveConfirmedBlockerReason(
 export function updateHasOpenDAVESafetyConcern(
   update: DAVEBlockerEvidenceUpdate,
 ) {
-  return hasActiveTopLevelSafetyFlag(update) || openSafetyPhotos(update).length > 0;
+  return hasActiveBlockerType(update, 'safety');
 }
 
 export function updateHasOpenDAVEIssue(update: DAVEBlockerEvidenceUpdate) {
   return (update.photos ?? []).some(photo =>
-    photo.category === 'Open Issue' && photo.actionStatus !== 'Closed',
+    validPhotoIdentity(update, photo) &&
+    photo.category === 'Open Issue' &&
+    photo.actionStatus !== 'Closed',
   );
 }
 
 export function updateHasOpenDAVEBlocker(update: DAVEBlockerEvidenceUpdate) {
-  return hasActiveTopLevelBlockerFlag(update) || updateHasOpenDAVEIssue(update);
+  return hasActiveBlockerType(update, 'blocker');
 }
 
-function confirmedBlockerScopes(update: DAVEBlockerEvidenceUpdate) {
-  const scopes = new Set<string>();
-
-  if (hasActiveTopLevelSafetyFlag(update)) {
-    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('safety', scope));
-  }
-
-  if (hasActiveTopLevelBlockerFlag(update)) {
-    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('blocker', scope));
-  }
-
-  for (const photo of openSafetyPhotos(update)) {
-    scopes.add(typedScope(
-      'safety',
-      scopeKey(photo.selectedAreaName || update.selectedAreaName),
-    ));
-  }
-
-  return [...scopes];
+export function daveUpdateBlockerId(updateId: string) {
+  return `update:${updateId.trim()}`;
 }
 
-function resolutionScopes(update: DAVEBlockerEvidenceUpdate) {
-  const scopes = new Set<string>();
-  const photos = update.photos ?? [];
+export function davePhotoBlockerId(photoId: string) {
+  return `photo:${photoId.trim()}`;
+}
 
-  for (const photo of photos) {
-    if (
-      (photo.category === 'Safety Concern' || photo.category === 'Open Issue') &&
-      photo.actionStatus === 'Closed'
-    ) {
-      scopes.add(typedScope(
-        photo.category === 'Safety Concern' ? 'safety' : 'blocker',
-        scopeKey(photo.selectedAreaName || update.selectedAreaName),
-      ));
+type DAVEBlockerEvent<T extends DAVEBlockerEvidenceUpdate> = Readonly<{
+  identity: string;
+  blockerId: string;
+  blockerType: DAVEBlockerType;
+  action: DAVEBlockerLifecycleEvent['action'];
+  timestamp: number;
+  updateOrder: number;
+  eventOrder: number;
+  update: T;
+}>;
+
+type DAVEBlockerState<T extends DAVEBlockerEvidenceUpdate> = Readonly<{
+  active: boolean;
+  event: DAVEBlockerEvent<T>;
+}>;
+
+function blockerEventsForUpdate<T extends DAVEBlockerEvidenceUpdate>(
+  update: T,
+  updateOrder: number,
+) {
+  const events: DAVEBlockerEvent<T>[] = [];
+  const projectName = update.projectName?.trim();
+  if (!projectName || !update.id.trim()) return events;
+
+  let eventOrder = 0;
+  const appendEvent = ({
+    blockerId,
+    blockerType,
+    action,
+    eventProjectName,
+    areaName,
+    occurredAt,
+  }: {
+    blockerId: string;
+    blockerType: DAVEBlockerType;
+    action: DAVEBlockerLifecycleEvent['action'];
+    eventProjectName: string;
+    areaName?: string | null;
+    occurredAt?: string | null;
+  }) => {
+    const identity = blockerIdentity({
+      blockerId,
+      blockerType,
+      projectName: eventProjectName,
+      areaName,
+    });
+    if (!identity) return;
+
+    events.push({
+      identity,
+      blockerId,
+      blockerType,
+      action,
+      timestamp: timestampValue(occurredAt, updateTimestamp(update)),
+      updateOrder,
+      eventOrder,
+      update,
+    });
+    eventOrder += 1;
+  };
+
+  const updateAreaName = update.selectedAreaName;
+  if (update.safetyFlag || update.quickContext === 'Safety') {
+    appendEvent({
+      blockerId: daveUpdateBlockerId(update.id),
+      blockerType: 'safety',
+      action: 'opened',
+      eventProjectName: projectName,
+      areaName: updateAreaName,
+    });
+    if (notesResolveSafety(update.notes)) {
+      appendEvent({
+        blockerId: daveUpdateBlockerId(update.id),
+        blockerType: 'safety',
+        action: 'resolved',
+        eventProjectName: projectName,
+        areaName: updateAreaName,
+      });
     }
   }
 
-  if (notesResolveSafety(update.notes)) {
-    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('safety', scope));
+  if (update.blockerFlag || update.quickContext === 'Blocker') {
+    appendEvent({
+      blockerId: daveUpdateBlockerId(update.id),
+      blockerType: 'blocker',
+      action: 'opened',
+      eventProjectName: projectName,
+      areaName: updateAreaName,
+    });
+    if (notesResolveBlocker(update.notes)) {
+      appendEvent({
+        blockerId: daveUpdateBlockerId(update.id),
+        blockerType: 'blocker',
+        action: 'resolved',
+        eventProjectName: projectName,
+        areaName: updateAreaName,
+      });
+    }
   }
 
-  if (notesResolveBlockerOrIssue(update.notes)) {
-    for (const scope of updateScopeKeys(update)) scopes.add(typedScope('blocker', scope));
+  for (const photo of update.photos ?? []) {
+    if (!validPhotoIdentity(update, photo)) continue;
+    const blockerType = photo.category === 'Safety Concern'
+      ? 'safety'
+      : photo.category === 'Open Issue'
+        ? 'blocker'
+        : null;
+    if (!blockerType) continue;
+
+    appendEvent({
+      blockerId: davePhotoBlockerId(photo.id),
+      blockerType,
+      action: photo.actionStatus === 'Closed' ? 'resolved' : 'opened',
+      eventProjectName: projectName,
+      areaName: photo.selectedAreaName || updateAreaName,
+    });
   }
 
-  return [...scopes];
+  for (const event of update.blockerEvents ?? []) {
+    appendEvent({
+      blockerId: event.blockerId,
+      blockerType: event.blockerType,
+      action: event.action,
+      eventProjectName: event.projectName,
+      areaName: event.areaName,
+      occurredAt: event.occurredAt,
+    });
+  }
+
+  return events;
 }
 
-function openSafetyPhotos(update: DAVEBlockerEvidenceUpdate) {
-  return (update.photos ?? []).filter(photo =>
-    photo.category === 'Safety Concern' && photo.actionStatus !== 'Closed',
-  );
-}
-
-function hasActiveTopLevelSafetyFlag(update: DAVEBlockerEvidenceUpdate) {
-  const recorded = Boolean(update.safetyFlag) || update.quickContext === 'Safety';
-  return recorded && !explicitlyResolved(update, 'Safety Concern');
-}
-
-function hasActiveTopLevelBlockerFlag(update: DAVEBlockerEvidenceUpdate) {
-  const recorded = Boolean(update.blockerFlag) || update.quickContext === 'Blocker';
-  return recorded && !explicitlyResolved(update, 'Open Issue');
-}
-
-function explicitlyResolved(
+function hasActiveBlockerType(
   update: DAVEBlockerEvidenceUpdate,
-  category: 'Safety Concern' | 'Open Issue',
+  blockerType: DAVEBlockerType,
 ) {
-  if (category === 'Safety Concern' && notesResolveSafety(update.notes)) return true;
-  if (category === 'Open Issue' && notesResolveBlockerOrIssue(update.notes)) return true;
-  const matchingPhotos = (update.photos ?? []).filter(photo => photo.category === category);
-  return matchingPhotos.length > 0 && matchingPhotos.every(photo => photo.actionStatus === 'Closed');
+  const events = blockerEventsForUpdate(update, 0)
+    .filter(event => event.blockerType === blockerType)
+    .sort(compareBlockerEvents);
+  const activeByIdentity = new Map<string, boolean>();
+  events.forEach(event => {
+    activeByIdentity.set(event.identity, event.action !== 'resolved');
+  });
+  return [...activeByIdentity.values()].some(Boolean);
+}
+
+function compareBlockerEvents<T extends DAVEBlockerEvidenceUpdate>(
+  left: DAVEBlockerEvent<T>,
+  right: DAVEBlockerEvent<T>,
+) {
+  return left.timestamp - right.timestamp ||
+    left.updateOrder - right.updateOrder ||
+    left.eventOrder - right.eventOrder;
 }
 
 function notesResolveSafety(notes: string | null | undefined) {
   return classifyDAVESafety(notes?.trim() || '') === 'no_issue_observed';
 }
 
-function notesResolveBlockerOrIssue(notes: string | null | undefined) {
-  const value = notes?.trim() || '';
-  return classifyDAVEBlocker(value) === 'resolved' ||
-    classifyDAVEIssue(value) === 'no_issue_observed';
+function notesResolveBlocker(notes: string | null | undefined) {
+  return classifyDAVEBlocker(notes?.trim() || '') === 'resolved';
 }
 
-function updateScopeKeys(update: DAVEBlockerEvidenceUpdate) {
-  const areaNames = [
-    update.selectedAreaName,
-    ...(update.photos ?? []).map(photo => photo.selectedAreaName),
-  ].filter((value): value is string => Boolean(value?.trim()));
+function blockerIdentity({
+  blockerId,
+  blockerType,
+  projectName,
+  areaName,
+}: {
+  blockerId: string;
+  blockerType: DAVEBlockerType;
+  projectName: string;
+  areaName?: string | null;
+}) {
+  const stableId = blockerId.trim();
+  const projectScope = scopeKey(projectName);
+  if (!stableId || projectScope === PROJECT_SCOPE) return null;
 
-  return areaNames.length > 0
-    ? [...new Set(areaNames.map(scopeKey))]
-    : [PROJECT_SCOPE];
+  return [
+    blockerType,
+    projectScope,
+    scopeKey(areaName),
+    stableId.toLowerCase(),
+  ].join(':');
 }
 
 function scopeKey(value: string | null | undefined) {
   return value?.trim().toLowerCase() || PROJECT_SCOPE;
 }
 
-function typedScope(type: 'safety' | 'blocker', scope: string) {
-  return `${type}:${scope}`;
+function validPhotoIdentity(
+  update: DAVEBlockerEvidenceUpdate,
+  photo: DAVEBlockerEvidencePhoto,
+) {
+  return Boolean(update.projectName?.trim() && photo.id?.trim());
+}
+
+function timestampValue(value: string | null | undefined, fallback: number) {
+  if (!value) return fallback;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : fallback;
 }
 
 function updateTimestamp(update: DAVEBlockerEvidenceUpdate) {
