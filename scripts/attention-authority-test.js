@@ -8,9 +8,10 @@ const rootDir = path.resolve(__dirname, '..');
 const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
 
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
-const home = read('components/HomeDashboard.tsx');
+const app = read('App.tsx');
+const home = app;
 const reports = read('screens/ReportsScreen.tsx');
-const capture = read('components/PhotoCapturePanel.tsx');
+const capture = app;
 const piePanel = read('components/PIEPanel.tsx');
 
 assert(provider.includes('attention: PIECoreOutput'), 'Provider must expose Attention output.');

@@ -14,7 +14,6 @@ const visibleDaveFiles = new Set([
   'components/DAVEVoiceCaptureSheet.tsx',
   'components/DAVECaptureConfirmationSheet.tsx',
   'components/DAVECaptureMemoryDetailSheet.tsx',
-  'components/ManageAreasPanel.tsx',
   'components/PIEPanel.tsx',
   'services/DAVEDailyBrief.ts',
   'services/DAVEProjectReality.ts',

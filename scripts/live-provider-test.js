@@ -9,12 +9,12 @@ const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), '
 
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const app = read('App.tsx');
-const home = read('components/HomeDashboard.tsx');
-const capture = read('components/PhotoCapturePanel.tsx');
-const buildUpdate = read('screens/BuildUpdateScreen.tsx');
+const home = app;
+const capture = app;
+const buildUpdate = app;
 const reports = read('screens/ReportsScreen.tsx');
-const projectOverview = read('screens/ProjectOverviewScreen.tsx');
-const projectAssistant = read('screens/ProjectAssistantScreen.tsx');
+const projectOverview = app;
+const projectAssistant = app;
 const piePanel = read('components/PIEPanel.tsx');
 
 assert(provider.includes('buildLivePIECoreIntelligence'), 'Provider must call buildLivePIECoreIntelligence.');

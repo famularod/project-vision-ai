@@ -9,20 +9,19 @@ const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), '
 
 const core = read('services/PIECoreIntelligence.ts');
 const reports = read('screens/ReportsScreen.tsx');
-const buildUpdate = read('screens/BuildUpdateScreen.tsx');
+const app = read('App.tsx');
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const reporter = read('services/PIEReporter.ts');
 const runtime = read('services/PIERuntime.ts');
 const evidenceFusion = read('services/PIEEvidenceFusion.ts');
-const app = read('App.tsx');
 
 assert(core.includes('buildPIEReportDraftFromExecutiveJudgment'), 'Live Core must build reports from persisted Executive Judgment.');
 assert(core.includes('executiveJudgmentRecord'), 'Live Core must persist and expose Executive Judgment records.');
 assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must prefer provider report drafts with Runtime recovery only.');
 assert(!reports.includes('buildPIEReportDraft({'), 'Review must not rebuild report drafts from raw arrays.');
-assert(buildUpdate.includes('authoritativeReportDraft'), 'Share/Build Update must use provider report draft when present.');
-assert(buildUpdate.includes('onEmailReport(authoritativeReportDraft)'), 'Email action must use authoritative report draft when available.');
-assert(buildUpdate.includes('onCopyReport(authoritativeReportDraft)'), 'Copy action must use authoritative report draft when available.');
+assert(reports.includes('const baseReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft'), 'Reports must select the authoritative draft before review or sharing.');
+assert(reports.includes('onEmailReport(effectiveReportDraft)'), 'Email action must use the reviewed authoritative report draft.');
+assert(reports.includes('onCopyReport(effectiveReportDraft)'), 'Copy action must use the reviewed authoritative report draft.');
 assert(!reports.includes('MailComposer.composeAsync'), 'Review screen must not auto-send mail directly.');
 assert(
   provider.includes('projectNames: input.projectNames'),

@@ -47,6 +47,15 @@ Deno.serve(async request => {
     });
     const { data: userData, error: userError } = await supabase.auth.getUser();
     if (userError || !userData.user) return json({ error: 'unauthorized' }, 401);
+    const { data: isOwner, error: ownerError } = await supabase.rpc('dave_is_app_owner');
+    if (ownerError) {
+      console.error(JSON.stringify({
+        event: 'dave_voice_owner_check_failed',
+        authenticatedUserIdPresent: true,
+      }));
+      return json({ error: 'authorization_unavailable' }, 503);
+    }
+    if (isOwner !== true) return json({ error: 'forbidden' }, 403);
 
     const form = await request.formData().catch(() => null);
     const audio = form?.get('audio');

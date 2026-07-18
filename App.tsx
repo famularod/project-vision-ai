@@ -48,6 +48,24 @@ import { DAVECaptureMemoryDetailSheet } from './components/DAVECaptureMemoryDeta
 import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import { StartupErrorBoundary } from './components/StartupErrorBoundary';
+import {
+  useJsonStoragePersistence,
+  useStringStoragePersistence,
+} from './hooks/use-async-storage-persistence';
+import type {
+  ActionStatus,
+  AreaSuggestion,
+  ContactBook,
+  PhotoCategory,
+  ProjectArea,
+  ProjectContact,
+  RecipientSelection,
+  ScheduleItem,
+  SchedulePriority,
+  ScheduleStatus,
+  StoredDraft,
+  UpdatePhoto,
+} from './types';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
 import { normalizeStartupArray, readStartupJson } from './services/StartupRecovery';
 import {
@@ -275,44 +293,7 @@ type Screen = AppScreen;
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
-type PhotoCategory =
-  | 'Open Issue'
-  | 'Safety Concern'
-  | 'Update';
-
-type ActionStatus =
-  | 'Open'
-  | 'In Progress'
-  | 'Waiting'
-  | 'Closed';
-
 type PhotoContinuityAnchor = import('./types').PhotoContinuityAnchor;
-
-type UpdatePhoto = {
-  id: string;
-  uri: string;
-  caption: string;
-  category: PhotoCategory;
-  actionRequired: string;
-  actionOwner: string;
-  actionDueDate: string;
-  actionStatus: ActionStatus;
-  fileName?: string | null;
-  mimeType?: string | null;
-  cloudStoragePath?: string | null;
-  cloudRecoveredAt?: string | null;
-  cloudRecoveryStatus?: 'cached' | 'signed_url' | 'unavailable' | null;
-  cloudSignedUrlExpiresAt?: string | null;
-  continuityAnchor?: PhotoContinuityAnchor | null;
-  selectedAreaId?: string | null;
-  selectedAreaName?: string | null;
-  gpsLatitude?: number | null;
-  gpsLongitude?: number | null;
-  gpsAccuracy?: number | null;
-  distanceFromSelectedAreaFeet?: number | null;
-  locationCapturedAt?: string | null;
-  photoIntelligence?: PIEPhotoIntelligenceDisplayState | null;
-};
 
 type ProjectUpdate = {
   id: string;
@@ -523,34 +504,6 @@ type PIEInterpretationDecisionLogEntry = {
   decidedAt: string;
 };
 
-type ProjectContact = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  emails?: string[];
-  phones?: string[];
-  selectedEmail?: string | null;
-  selectedPhone?: string | null;
-};
-
-type ContactBook = {
-  contacts: ProjectContact[];
-};
-
-type RecipientSelection = {
-  contactIds: string[];
-};
-
-type ProjectArea = {
-  id: string;
-  name: string;
-  building?: string;
-  latitude: number;
-  longitude: number;
-  radiusFeet: number;
-  locationCapturedAt?: string | null;
-};
 
 type LocationSnapshot = {
   latitude: number;
@@ -559,16 +512,6 @@ type LocationSnapshot = {
   capturedAt: string;
 };
 
-type AreaSuggestion = {
-  area: ProjectArea;
-  distanceFeet: number;
-  withinRadius: boolean;
-};
-
-type StoredDraft = {
-  draft: ProjectUpdate;
-  savedAt: string;
-};
 
 type ReferenceDocument = {
   id: string;
@@ -5936,109 +5879,67 @@ useEffect(() => {
     return () => subscription.remove();
   }, []);
 
-  useEffect(() => {
-    if (!deletedUpdateTombstonesLoaded) return;
-
-    AsyncStorage.setItem(
-      DELETED_UPDATES_STORAGE_KEY,
-      JSON.stringify(deletedUpdateTombstones),
-    ).catch(() => undefined);
-  }, [deletedUpdateTombstones, deletedUpdateTombstonesLoaded]);
-
-  useEffect(() => {
-    if (!projectsLoaded) return;
-
-    AsyncStorage.setItem(
-      PROJECTS_STORAGE_KEY,
-      JSON.stringify(projectRecords),
-    ).catch(() => undefined);
-  }, [projectRecords, projectsLoaded]);
-
-  useEffect(() => {
-    if (!deletedProjectNamesLoaded) return;
-
-    AsyncStorage.setItem(
-      DELETED_PROJECTS_STORAGE_KEY,
-      JSON.stringify(deletedProjectNames),
-    ).catch(() => undefined);
-  }, [deletedProjectNames, deletedProjectNamesLoaded]);
-
-  useEffect(() => {
-    if (!archivedProjectsLoaded) return;
-
-    AsyncStorage.setItem(
-      ARCHIVED_PROJECTS_STORAGE_KEY,
-      JSON.stringify(archivedProjects),
-    ).catch(() => undefined);
-  }, [archivedProjects, archivedProjectsLoaded]);
-
-  useEffect(() => {
-    if (!projectAreasLoaded) return;
-
-    AsyncStorage.setItem(
-      PROJECT_AREAS_STORAGE_KEY,
-      JSON.stringify(projectAreas),
-    ).catch(() => undefined);
-  }, [projectAreas, projectAreasLoaded]);
-
-
-  useEffect(() => {
-    if (!referenceDocumentsLoaded) return;
-
-    AsyncStorage.setItem(
-      REFERENCE_DOCUMENTS_STORAGE_KEY,
-      JSON.stringify(referenceDocuments),
-    ).catch(() => undefined);
-  }, [referenceDocuments, referenceDocumentsLoaded]);
-
-  useEffect(() => {
-    if (!projectDocumentsLoaded) return;
-
-    AsyncStorage.setItem(
-      PROJECT_DOCUMENTS_STORAGE_KEY,
-      JSON.stringify(projectDocuments),
-    ).catch(() => undefined);
-  }, [projectDocuments, projectDocumentsLoaded]);
-
-  useEffect(() => {
-    if (!scheduleItemsLoaded) return;
-
-    AsyncStorage.setItem(
-      SCHEDULE_ITEMS_STORAGE_KEY,
-      JSON.stringify(scheduleItems),
-    ).catch(() => undefined);
-  }, [scheduleItems, scheduleItemsLoaded]);
+  useJsonStoragePersistence({
+    enabled: deletedUpdateTombstonesLoaded,
+    storageKey: DELETED_UPDATES_STORAGE_KEY,
+    value: deletedUpdateTombstones,
+  });
+  useJsonStoragePersistence({
+    enabled: projectsLoaded,
+    storageKey: PROJECTS_STORAGE_KEY,
+    value: projectRecords,
+  });
+  useJsonStoragePersistence({
+    enabled: deletedProjectNamesLoaded,
+    storageKey: DELETED_PROJECTS_STORAGE_KEY,
+    value: deletedProjectNames,
+  });
+  useJsonStoragePersistence({
+    enabled: archivedProjectsLoaded,
+    storageKey: ARCHIVED_PROJECTS_STORAGE_KEY,
+    value: archivedProjects,
+  });
+  useJsonStoragePersistence({
+    enabled: projectAreasLoaded,
+    storageKey: PROJECT_AREAS_STORAGE_KEY,
+    value: projectAreas,
+  });
+  useJsonStoragePersistence({
+    enabled: referenceDocumentsLoaded,
+    storageKey: REFERENCE_DOCUMENTS_STORAGE_KEY,
+    value: referenceDocuments,
+  });
+  useJsonStoragePersistence({
+    enabled: projectDocumentsLoaded,
+    storageKey: PROJECT_DOCUMENTS_STORAGE_KEY,
+    value: projectDocuments,
+  });
+  useJsonStoragePersistence({
+    enabled: scheduleItemsLoaded,
+    storageKey: SCHEDULE_ITEMS_STORAGE_KEY,
+    value: scheduleItems,
+  });
 
   useEffect(() => {
     if (!scheduleItemsLoaded || !projectsLoaded) return;
     ensureScheduleParentProjects(scheduleItems);
   }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded]);
 
-  useEffect(() => {
-    if (!scheduleAiExtractorUrlLoaded) return;
-
-    AsyncStorage.setItem(
-      SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY,
-      scheduleAiExtractorUrl,
-    ).catch(() => undefined);
-  }, [scheduleAiExtractorUrl, scheduleAiExtractorUrlLoaded]);
-
-  useEffect(() => {
-    if (!displayNameLoaded) return;
-
-    AsyncStorage.setItem(DISPLAY_NAME_STORAGE_KEY, displayName).catch(
-      () => undefined,
-    );
-  }, [displayName, displayNameLoaded]);
-
-  useEffect(() => {
-    if (!contactsLoaded) return;
-
-    AsyncStorage.setItem(
-      CONTACTS_STORAGE_KEY,
-      JSON.stringify(contactBook),
-    ).catch(() => undefined);
-  }, [contactBook, contactsLoaded]);
+  useStringStoragePersistence({
+    enabled: scheduleAiExtractorUrlLoaded,
+    storageKey: SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY,
+    value: scheduleAiExtractorUrl,
+  });
+  useStringStoragePersistence({
+    enabled: displayNameLoaded,
+    storageKey: DISPLAY_NAME_STORAGE_KEY,
+    value: displayName,
+  });
+  useJsonStoragePersistence({
+    enabled: contactsLoaded,
+    storageKey: CONTACTS_STORAGE_KEY,
+    value: contactBook,
+  });
 
   useEffect(() => {
     if (!draftLoaded) return;
@@ -23476,36 +23377,3 @@ const styles = StyleSheet.create({
   },
 
 });
-
-type ScheduleStatus =
-  | 'Not Started'
-  | 'In Progress'
-  | 'Waiting'
-  | 'Complete';
-
-type SchedulePriority = 'Low' | 'Medium' | 'High';
-
-type ScheduleItem = {
-  id: string;
-  scheduleProjectName?: string | null;
-  projectName: string;
-  locationName: string;
-  taskName: string;
-  startDate: string;
-  finishDate: string;
-  milestone: string;
-  owner: string;
-  contractor: string;
-  durationDays?: number | null;
-  percentComplete: number;
-  progressSource?: 'project_manager' | 'schedule_import' | null;
-  progressConfirmedAt?: string | null;
-  progressConfirmedBy?: string | null;
-  priority: SchedulePriority;
-  status: ScheduleStatus;
-  notes: string;
-  importedFrom?: string | null;
-  importedAt?: string | null;
-  completionVerification?: import('./types').DAVECompletionVerification | null;
-  createdAt: string;
-};

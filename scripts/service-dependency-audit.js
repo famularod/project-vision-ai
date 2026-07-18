@@ -129,7 +129,7 @@ for (const service of result.unreachableServices) {
 }
 
 if (process.argv.includes('--assert')) {
-  const maximumUnreachableServices = 5;
+  const maximumUnreachableServices = 3;
   if (result.unreachableServiceCount > maximumUnreachableServices) {
     console.error(
       `FAIL unreachable service count grew beyond ${maximumUnreachableServices}.`,

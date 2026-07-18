@@ -48,9 +48,7 @@ The remaining non-live services fall into two groups.
 
 Preserve until their production integration is explicitly decided:
 
-- `PIEMultimodalEvidence.ts`
 - `PIEPhotoProgressIntelligenceStorage.ts`
-- `PIEPhotoVisionPipeline.ts`
 - `PIERealityModelGuards.ts`
 - `PIETraceability.ts`
 
@@ -71,7 +69,9 @@ These services were connected only to components that were themselves outside th
 - `ProjectRiskService.ts`
 - `WeeklyExecutiveReportService.ts`
 
-After coordinated cleanup, the reachability ratchet is five. Those five files are the deliberate validation and persistence foundations listed above; no legacy product feature island remains in the non-live service list.
+Build 52 removed the unused client-side `PIEMultimodalEvidence.ts` and `PIEPhotoVisionPipeline.ts` implementations. The authenticated `pie-photo-vision` Edge Function, `PIEPhotoVisionMobileWorkflow.ts`, and `PIEPhotoProgressIntelligence.ts` are the production photo path. Their production contracts and scenario validation replaced the orphan test-only pipeline.
+
+After coordinated cleanup, the reachability ratchet is three. Those three files are the deliberate persistence, guard, and traceability foundations listed above; no legacy product feature island remains in the non-live service list.
 
 ## Rules
 

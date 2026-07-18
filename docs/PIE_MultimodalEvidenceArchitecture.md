@@ -24,7 +24,7 @@ The shared evidence model supports:
 
 `PIEEvidenceRecord` stores organization ID, project ID, evidence ID, evidence type, source, source system, captured/effective/received time, author, storage refs, content hash, MIME type, version, authority, processing state, analyzer metadata, lineage, supersession, associations, and related evidence.
 
-The canonical TypeScript implementation is `services/PIEMultimodalEvidence.ts`.
+The production implementation is split across the authenticated `supabase/functions/pie-photo-vision` boundary, `services/PIEPhotoVisionMobileWorkflow.ts`, and `services/PIEPhotoProgressIntelligence.ts`. This avoids maintaining a second client-only evidence engine that the app cannot call.
 
 The Supabase persistence foundation is `supabase/migrations/20260702030000_multimodal_evidence_foundation.sql`.
 

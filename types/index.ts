@@ -43,7 +43,7 @@ export type UpdatePhoto = {
   gpsAccuracy?: number | null;
   distanceFromSelectedAreaFeet?: number | null;
   locationCapturedAt?: string | null;
-  photoIntelligence?: PhotoIntelligenceDisplayState | null;
+  photoIntelligence?: PIEPhotoIntelligenceDisplayState | null;
 };
 
 export type PhotoIntelligenceStatus =
@@ -335,3 +335,4 @@ export const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Medium',
   'High',
 ];
+import type { PIEPhotoIntelligenceDisplayState } from '../services/PIEPhotoVisionMobileWorkflow';

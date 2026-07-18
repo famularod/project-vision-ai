@@ -481,10 +481,8 @@ function validatePerformance() {
 function validateAccessibility() {
   const appUi = [
     readFile('App.tsx'),
-    readFile('components/HomeDashboard.tsx'),
-    readFile('components/PhotoCapturePanel.tsx'),
     readFile('screens/ReportsScreen.tsx'),
-    readFile('components/BottomNavigation.tsx'),
+    readFile('components/app-bottom-tabs.tsx'),
   ].join('\n');
   ['accessibilityLabel', 'accessibilityRole', 'hitSlop', 'SafeAreaView'].forEach(marker => {
     assert(appUi.includes(marker), `Accessibility/mobile marker missing ${marker}`);
@@ -496,8 +494,6 @@ function validateAccessibility() {
 function validateMinimalUiComplete() {
   const visibleUi = [
     readFile('App.tsx'),
-    readFile('components/HomeDashboard.tsx'),
-    readFile('components/PhotoCapturePanel.tsx'),
     readFile('screens/ReportsScreen.tsx'),
   ].join('\n');
   ['Run Simulation', 'Challenge Recommendation', 'Validate with JARVIS', 'Recalculate Confidence', 'Layer 4 Learning'].forEach(label => {

@@ -10,8 +10,8 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const app = read('App.tsx');
 const navigation = read('hooks/use-app-navigation.ts');
 const bottomNav = read('components/app-bottom-tabs.tsx');
-const home = read('components/HomeDashboard.tsx');
-const capture = read('components/PhotoCapturePanel.tsx');
+const home = app;
+const capture = app;
 const review = read('screens/ReportsScreen.tsx');
 const settings = read('screens/AdminScreen.tsx');
 
@@ -35,18 +35,17 @@ assert(bottomNav.indexOf('label="Overview"') < bottomNav.indexOf('label="Tasks"'
 assert(bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('label="Reports"'), 'Tasks should precede Reports');
 assert(app.includes('accessibilityLabel="Open Settings"'), 'Overview should expose Settings from a gear button');
 
-assert(home.includes('PIEMissionCard'), 'Home should start with the mission card');
-assert(home.includes('What should I do now?'), 'Home should answer what to do now');
-assert(home.includes('briefDetailList'), 'Home summary counts should expand to underlying items');
-assert(home.includes('Open Details'), 'Home summary counts should expose details destination');
-assert(home.includes('onMoreTools'), 'More/Admin should remain reachable from Home overflow');
+assert(home.includes('function HomeScreen'), 'Overview must render from the live HomeScreen implementation');
+assert(home.includes('OverviewHeroCard'), 'Overview should lead with the live project portfolio summary');
+assert(home.includes('OverviewBentoCard'), 'Overview should expose bounded project status cards');
+assert(home.includes('accessibilityLabel="Open Settings"'), 'Settings should remain reachable from Overview');
 assert(app.includes('ProjectTaskControlPanel'), 'Parent projects should open a task-first project control view');
 assert(app.includes('onNewFieldUpdateForTask'), 'Each schedule task should support a task-linked field update');
 assert(app.includes('scheduleTaskName'), 'Task-linked field updates should preserve task context');
 
-assert(capture.includes('GuidedCaptureCard'), 'Capture should use guided PIE request');
-assert(capture.includes('DAVE needs'), 'Capture should show what DAVE needs');
-assert(capture.includes('onUploadDocument'), 'document upload should remain reachable');
+assert(capture.includes('Capture Evidence'), 'Field updates should expose the live evidence capture step');
+assert(capture.includes('DAVEVoiceCaptureSheet'), 'Project Walk should expose DAVE voice capture');
+assert(capture.includes('label="Upload Document"'), 'document upload should remain reachable');
 
 assert(review.includes('BeforeYouSharePanel'), 'Reports should consolidate review guidance before sharing');
 assert(review.includes('Before You Share'), 'Reports should present one clear pre-share review area');

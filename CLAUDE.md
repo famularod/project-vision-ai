@@ -27,20 +27,27 @@ instead — see the app's git history for that pass.
 - Repo: `https://github.com/famularod/project-vision-ai`
 - Local path: `/Users/davidfamularo/Downloads/project-photo-update-tool`
 - Backend: Supabase (Postgres, Storage, Edge Functions)
-- Testing: physical iOS device only via Expo dev client, connected to a
-  locally-running `npx expo start` — no simulator in normal use.
+- Testing: physical iOS device is the release authority. Normal field builds
+  are signed local Release builds with an embedded JavaScript bundle, so the
+  phone does not need Metro or the laptop after installation. A simulator may
+  be used for bounded diagnostics, but it does not replace the device pass.
 - David is a beginner developer / product owner. Explain terminal steps
   explicitly and in order. Don't assume familiarity with git, SQL, or
   Supabase's dashboard.
 
 ## Architecture gotchas (read this before assuming anything)
 
-- **The live app is a single ~18,000-line `App.tsx` monolith.** A parallel
+- **The live app is a 23,511-line `App.tsx` monolith (2026-07-17).** A parallel
   `screens/`, `components/`, `hooks/` directory structure exists but is
   **mostly disconnected** from the live app unless explicitly wired into
   `App.tsx`'s navigation. Before touching a file in `screens/` or
   `components/`, confirm it's actually imported and rendered from `App.tsx` —
   don't assume a file's existence means it's reachable by the user.
+- **`App.tsx` has a no-growth ratchet.** New features must ship in a module
+  with only a small wiring block in `App.tsx`. Any PR touching `App.tsx`
+  should leave it no larger than it started unless the PR explicitly records
+  why that was impossible. Prefer extracting one tested behavior at a time;
+  do not attempt a wholesale rewrite.
 - **There are duplicate type systems.** `App.tsx` has its own local
   `ProjectUpdate`/`ProjectArea`/etc. types, separate from the ones in
   `types/index.ts` that `screens/`/`components/` files import. They're
@@ -105,8 +112,11 @@ still read as one considered product, not a patchwork.
    go-ahead.
 3. **Implement on a new branch off `v0.8-architecture-refactor`.** Never
    commit directly to that branch or to `main`.
-4. **Run `npm run check`** (production-secret-guard + `tsc --noEmit`) before
-   calling anything done. No Jest suite exists.
+4. **Run `npm run qa:release`** before calling release work done. The gate
+   includes the production-secret guard, Expo dependency validation,
+   TypeScript, 10 Jest suites (20 tests as of 2026-07-17), DAVE stages 1–8,
+   UI/reporter contracts, and JARVIS contracts. Use `npm run check` as the
+   faster minimum gate during implementation, not as the final release gate.
 5. **Summarize the diff** before committing — what changed, what was
    deliberately left untouched, any tech debt noticed along the way.
 6. **David live-tests on his physical device** before merge, unless the fix
@@ -216,22 +226,17 @@ Still open:
   The "Save GPS" flow works correctly and is reachable via gear icon →
   Settings → Area Mapping. This is a fieldwork task for David (visit each
   area physically, tap "Save GPS"), not a code fix.
-- App.tsx remains large. Continue the gradual behavior-driven extraction
-  above; dead screens//components//hooks/ files remain out of scope unless a
-  real feature is deliberately wired into the live app.
-- Pending verification for the Phase 1 comparability-downgrade hardening
-  above (PR #21, deployed 2026-07-10): no live phone test was meaningful
-  for this change (it only affects the "Comparability" label in a narrow
-  edge case that can't be reliably engineered on demand). An automated
-  scheduled check (task id verify-comparability-downgrade-real-data,
-  one-time, fires 2026-07-13) will query
-  pie_photo_semantic_comparison_results.deterministic_metrics →
-  comparabilityNormalizationReasons in Supabase against real data and
-  report back whether the new specific-trigger format (e.g. "only 1
-  shared visual anchor(s) reported...") is actually showing up instead of
-  the old generic reason string. This is now automated, not a manual
-  follow-up — remove this bullet once the scheduled check reports back
-  confirming the fix.
+- App.tsx remains large. Continue the gradual behavior-driven extraction and
+  enforce the no-growth ratchet above. Verified unreachable files should be
+  removed in reviewable batches after static reachability, release-gate, and
+  device validation rather than preserved as parallel implementations.
+
+Closed tracking note 2026-07-17:
+- The expired one-time comparability scheduled-check note was removed. Its
+  historical result was not recovered. The current structured comparability
+  contract is covered by repository tests, and the live `pie-photo-vision`
+  function was verified active at version 21. Re-open only for a concrete
+  current-data failure, not because the old scheduled task no longer exists.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or

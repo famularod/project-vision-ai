@@ -9,9 +9,9 @@ const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), '
 
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const app = read('App.tsx');
-const home = read('components/HomeDashboard.tsx');
-const buildUpdate = read('screens/BuildUpdateScreen.tsx');
-const projectAssistant = read('screens/ProjectAssistantScreen.tsx');
+const home = app;
+const buildUpdate = app;
+const projectAssistant = app;
 
 assert(provider.includes('experience: PIECoreOutput'), 'Provider must expose Experience output.');
 assert(provider.includes('policyForState'), 'Provider must define screen policy by authority state.');

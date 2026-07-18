@@ -585,8 +585,8 @@ function testEvidenceValue() {
 
 function testMinimalUi() {
   const app = fs.readFileSync(path.join(rootDir, 'App.tsx'), 'utf8');
-  const home = fs.readFileSync(path.join(rootDir, 'components/HomeDashboard.tsx'), 'utf8');
-  const capture = fs.readFileSync(path.join(rootDir, 'components/PhotoCapturePanel.tsx'), 'utf8');
+  const home = app;
+  const capture = app;
   const reports = fs.readFileSync(path.join(rootDir, 'screens/ReportsScreen.tsx'), 'utf8');
   const provider = fs.readFileSync(path.join(rootDir, 'providers/PIELiveAuthorityProvider.tsx'), 'utf8');
   const visibleUi = [app, home, capture, reports].join('\n');

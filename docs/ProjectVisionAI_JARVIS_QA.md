@@ -1146,19 +1146,15 @@ JARVIS must verify the backend-safe foundation for multimodal evidence and raw-p
 
 Required:
 
-- `services/PIEMultimodalEvidence.ts` exists.
+- `services/PIEPhotoVisionMobileWorkflow.ts` and `services/PIEPhotoProgressIntelligence.ts` own the live mobile photo path.
 - `docs/PIE_MultimodalEvidenceArchitecture.md` exists.
 - `docs/PIE_TruePhotoIntelligence.md` exists.
 - `docs/PIE_VisualValidationPlan.md` exists.
 - `supabase/migrations/20260702030000_multimodal_evidence_foundation.sql` exists.
 - `supabase/functions/pie-photo-vision/index.ts` exists.
-- Evidence types include photo, drawing, schedule, contract, inspection_report, email, meeting_note, cost_report, equipment_reading, oee_feed, and field_measurement.
-- Structured analysis includes observations, inferences, entities, dates, commitments, owners, measurements, risks, conflicts, missing information, confidence, limitations, authority, and corroboration requirement.
+- The Edge Function returns structured visual observations, comparison findings, confidence, limitations, authority, and comparability.
 - Photo analysis authority remains `visual_observation_only`.
-- Deterministic checks validate duplicate key, MIME type, dimensions, size, orientation, and perceptual-hash presence where available.
 - JARVIS rejects hidden-work, code-compliance, causation, responsibility, inspection-pass, exact-progress, and non-comparable-change claims.
-- User corrections preserve the original analysis and create explicit correction lineage.
-- Analysis retries are idempotent when content hash, analyzer version, and policy version have not changed.
 - The Supabase bucket is private and organization/project scoped.
 - RLS is enabled on evidence, photo asset, analysis, visual JARVIS, and correction tables.
 - Raw-pixel provider calls live only in the Edge Function.
@@ -1168,13 +1164,10 @@ Required:
 - Baseline failure case 001, `mouse_added_to_table`, is recorded as a failed Build 21 physical-device case and required True Photo Intelligence acceptance case.
 - The mouse baseline case requires exact hashes, perceptual hashes, scene/viewpoint similarity, raw-pixel semantic comparison, object_added detection, persisted comparison, and explicit prevention of project-progress wording.
 - Production vision pipeline requires a provider-neutral server interface, Supabase Edge Function boundary, request persistence, comparison persistence, JARVIS persistence, timeout/retry/degraded behavior, and mobile pending/complete/degraded/hydration/correction state helpers.
-- Scripts exist: `test:multimodal-evidence`, `test:raw-photo-analysis`, `test:photo-comparison-intelligence`, `test:photo-baseline-failure-001`, `test:production-vision-pipeline`, and `test:photo-corrections`.
+- Production coverage exists for photo authority, longitudinal comparison, and adversarial visual validation.
 
 Required commands:
 
-- npm run test:multimodal-evidence
-- npm run test:raw-photo-analysis
-- npm run test:photo-comparison-intelligence
-- npm run test:photo-baseline-failure-001
-- npm run test:production-vision-pipeline
-- npm run test:photo-corrections
+- npm run test:photo-vision-authority
+- npm run test:photo-comparison
+- npm run test:visual-jarvis

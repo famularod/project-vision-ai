@@ -46,12 +46,9 @@ It includes:
 Local commands:
 
 ```sh
-npm run test:multimodal-evidence
-npm run test:raw-photo-analysis
-npm run test:photo-comparison-intelligence
-npm run test:photo-baseline-failure-001
-npm run test:production-vision-pipeline
-npm run test:photo-corrections
+npm run test:photo-vision-authority
+npm run test:photo-comparison
+npm run test:visual-jarvis
 ```
 
 These tests validate architecture markers, storage and policy markers, the secure backend boundary, unsafe-claim rejection, deterministic checks, comparison limitations, user correction history, and idempotent cache behavior.

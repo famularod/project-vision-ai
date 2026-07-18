@@ -10,11 +10,11 @@ const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), '
 const app = read('App.tsx');
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const reports = read('screens/ReportsScreen.tsx');
-const buildUpdate = read('screens/BuildUpdateScreen.tsx');
-const home = read('components/HomeDashboard.tsx');
-const capture = read('components/PhotoCapturePanel.tsx');
-const overview = read('screens/ProjectOverviewScreen.tsx');
-const assistant = read('screens/ProjectAssistantScreen.tsx');
+const buildUpdate = app;
+const home = app;
+const capture = app;
+const overview = app;
+const assistant = app;
 const core = read('services/PIECoreIntelligence.ts');
 const realityRepo = read('services/PIERealityModelRepository.ts');
 const judgmentRepo = read('services/PIEExecutiveJudgmentRepository.ts');
