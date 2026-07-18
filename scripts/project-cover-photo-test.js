@@ -89,14 +89,34 @@ assert.strictEqual(restarted[0].coverPhotoMode, 'manual',
 const projectData = cloudProjectCoverData(selected, 'manual', { organizationId: 'org-1' });
 assert.strictEqual(projectData.organizationId, 'org-1',
   'Cover sync must preserve existing project metadata.');
-const cloudRecord = projectRecordFromCloud({ name: 'Alpha', data: projectData });
+const alphaProjectId = '11111111-1111-4111-8111-111111111111';
+const cloudRecord = projectRecordFromCloud({
+  id: alphaProjectId,
+  name: 'Alpha',
+  data: projectData,
+});
 const merged = mergeProjectRecords([], restarted, [cloudRecord]);
+assert.strictEqual(merged[0].id, alphaProjectId,
+  'Cloud hydration must preserve the immutable project ID.');
 assert.strictEqual(merged[0].coverPhoto.remotePath, selected.remotePath,
   'Cloud hydration must preserve the cover storage reference.');
 assert.strictEqual(merged[0].coverPhoto.localUri, selected.localUri,
   'Cloud merging must retain a valid local cache reference.');
 assert.strictEqual(merged[0].coverPhotoMode, 'manual',
   'Cloud sync must preserve manual cover mode.');
+
+const sameNameProjects = mergeProjectRecords([], [], [
+  projectRecordFromCloud({
+    id: alphaProjectId,
+    name: 'Same Display Name',
+  }),
+  projectRecordFromCloud({
+    id: '22222222-2222-4222-8222-222222222222',
+    name: 'Same Display Name',
+  }),
+]);
+assert.strictEqual(sameNameProjects.length, 2,
+  'Two cloud projects with distinct immutable IDs must not collapse by display name.');
 
 const deletedMerge = mergeProjectRecords(
   ['Starter Project'],
