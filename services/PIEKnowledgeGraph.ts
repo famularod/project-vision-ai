@@ -36,6 +36,7 @@ import {
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { projectDateRelativeDays } from './ProjectDateTime';
 
 export type PIEGraphNodeType =
   | 'project'
@@ -2183,12 +2184,8 @@ function isScheduleBlocked(item: ScheduleItem, generatedAt: string): boolean {
     ) === 'blocked'
   ) return true;
 
-  const finishTime = Date.parse(item.finishDate);
-  if (!Number.isFinite(finishTime)) return false;
-  const comparisonTime = Date.parse(generatedAt);
-  if (!Number.isFinite(comparisonTime)) return false;
-
-  return finishTime < comparisonTime && !scheduleProgressIsComplete(item);
+  const days = projectDateRelativeDays(item.finishDate, generatedAt, item.projectTimeZone || undefined);
+  return days !== null && days < 0 && !scheduleProgressIsComplete(item);
 }
 
 function sameProject(value: string | null | undefined, projectName: string): boolean {

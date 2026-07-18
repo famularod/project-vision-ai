@@ -1,4 +1,9 @@
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  plainDateDueState,
+  type ProjectTimeZone,
+} from './ProjectDateTime';
 
 export type DAVECommitmentStatus = 'Open' | 'Completed' | 'Overdue';
 export type DAVECommitmentEvidenceType = 'update' | 'photo' | 'document' | 'memory' | 'transcript';
@@ -52,6 +57,7 @@ export type BuildProjectCommitmentsInput = {
   documents?: DAVECommitmentDocumentInput[];
   captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
 };
 
 export type BuildProjectCommitmentsFromRealityInput = {
@@ -63,7 +69,7 @@ export function buildProjectCommitments(
 ): DAVEProjectCommitment[] {
   if ('reality' in input) return input.reality.commitments;
   const now = validDate(input.now) ?? new Date();
-  const today = now.toISOString().slice(0, 10);
+  const projectTimeZone = input.projectTimeZone ?? DEFAULT_PROJECT_TIME_ZONE;
   const projectKey = normalizeKey(input.projectName);
   const documents = (input.documents ?? []).filter(document =>
     !document.isArchived && (!document.projectId || document.projectId === input.projectId),
@@ -78,7 +84,7 @@ export function buildProjectCommitments(
       const dueDate = validDateOnly(photo.actionDueDate);
       if (!description && !owner && !dueDate) continue;
 
-      const status = commitmentStatus(photo.actionStatus, dueDate, today);
+      const status = commitmentStatus(photo.actionStatus, dueDate, now, projectTimeZone);
       const linkedEvidence: DAVECommitmentEvidenceLink[] = [
         { type: 'update', recordId: update.id },
         { type: 'photo', recordId: photo.id },
@@ -107,6 +113,7 @@ export function buildProjectCommitments(
     input.captureMemories ?? [],
     input.now,
     input.projectName,
+    projectTimeZone,
   ));
 
   return uniqueById(commitments).sort((a, b) =>
@@ -119,8 +126,9 @@ export function projectCaptureMemoriesToCommitments(
   memories: readonly DAVEConfirmedCaptureMemory[],
   now?: string,
   projectName?: string,
+  projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
 ): DAVEProjectCommitment[] {
-  const today = (validDate(now) ?? new Date()).toISOString().slice(0, 10);
+  const evaluatedAt = validDate(now) ?? new Date();
   return memories
     .filter(memory => {
       const selectedProject = normalizeKey(memory.recommendedProject.value ?? '');
@@ -131,7 +139,10 @@ export function projectCaptureMemoriesToCommitments(
     })
     .map(memory => {
       const dueDate = validDateOnly(memory.fields.dueDate);
-      const status: DAVECommitmentStatus = dueDate && dueDate < today ? 'Overdue' : 'Open';
+      const status: DAVECommitmentStatus = dueDate &&
+        plainDateDueState(dueDate, evaluatedAt, projectTimeZone) === 'overdue'
+        ? 'Overdue'
+        : 'Open';
       const owner = clean(memory.fields.peopleOrCompany) || 'Unassigned';
       return {
         id: ['commitment', projectId, 'memory', memory.id, 'confirmed-commitment']
@@ -155,9 +166,14 @@ export function projectCaptureMemoriesToCommitments(
     });
 }
 
-function commitmentStatus(actionStatus: string | undefined, dueDate: string | null, today: string): DAVECommitmentStatus {
+function commitmentStatus(
+  actionStatus: string | undefined,
+  dueDate: string | null,
+  now: Date,
+  projectTimeZone: ProjectTimeZone | string,
+): DAVECommitmentStatus {
   if (actionStatus === 'Closed') return 'Completed';
-  if (dueDate && dueDate < today) return 'Overdue';
+  if (dueDate && plainDateDueState(dueDate, now, projectTimeZone) === 'overdue') return 'Overdue';
   return 'Open';
 }
 

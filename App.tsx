@@ -275,6 +275,11 @@ import {
   reconcileScheduleProgress,
 } from './services/ScheduleProgressInvariant';
 import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  projectDateRelativeDays,
+  projectTimeZoneOrDefault,
+} from './services/ProjectDateTime';
+import {
   deriveDAVEProjectOperationalStatus,
   operationalScheduleItemsForProject,
 } from './services/DAVEProjectOperationalStatus';
@@ -1211,44 +1216,19 @@ function isOpenAction(photo: UpdatePhoto) {
 
 function isOverdueAction(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return dueDate < today;
+  const days = daysUntilDate(photo.actionDueDate);
+  return days !== null && days < 0;
 }
 
 function isDueThisWeek(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const sevenDaysFromNow = new Date(today);
-  sevenDaysFromNow.setDate(today.getDate() + 7);
-
-  return dueDate >= today && dueDate <= sevenDaysFromNow;
+  const days = daysUntilDate(photo.actionDueDate);
+  return days !== null && days >= 0 && days <= 7;
 }
 
 function isDueTodayAction(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return dueDate.getTime() === today.getTime();
+  return daysUntilDate(photo.actionDueDate) === 0;
 }
 
 function mergeProjectNames(base: string[], ...sources: string[][]) {
@@ -2423,21 +2403,18 @@ function formatAppDate(value: string) {
   return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear()}`;
 }
 
-function daysUntilDate(value: string) {
-  const target = parseFlexibleDate(value);
+function daysUntilDate(value: string, projectTimeZone: string = DEFAULT_PROJECT_TIME_ZONE) {
+  return projectDateRelativeDays(value, new Date(), projectTimeZone);
+}
 
-  if (!target) return null;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return Math.round((target.getTime() - today.getTime()) / 86400000);
+function daysUntilScheduleItem(item: ScheduleItem) {
+  return daysUntilDate(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE);
 }
 
 function isScheduleItemDueToday(item: ScheduleItem) {
   if (scheduleTaskIsComplete(item)) return false;
 
-  return daysUntilDate(item.finishDate) === 0;
+  return daysUntilScheduleItem(item) === 0;
 }
 
 function timeOfDayGreeting(name?: string) {
@@ -2457,8 +2434,8 @@ function todayLongDateLabel() {
   });
 }
 
-function dueStatusText(value: string) {
-  const days = daysUntilDate(value);
+function dueStatusText(value: string, projectTimeZone: string = DEFAULT_PROJECT_TIME_ZONE) {
+  const days = daysUntilDate(value, projectTimeZone);
 
   if (days === null) return 'No valid finish date';
   if (days < 0) return `Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'}`;
@@ -2489,6 +2466,7 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
   return {
     id: typeof value.id === 'string' ? value.id : uid(),
     scheduleProjectName: optionalString(value.scheduleProjectName),
+    projectTimeZone: projectTimeZoneOrDefault(value.projectTimeZone),
     projectName: typeof value.projectName === 'string' ? value.projectName : '',
     locationName: typeof value.locationName === 'string' ? value.locationName : '',
     taskName:
@@ -2722,7 +2700,7 @@ async function extractScheduleItemsWithAiEndpoint({
   } as any);
 
   formData.append('projectName', projects[0] || '');
-  formData.append('timezone', 'America/Los_Angeles');
+  formData.append('timezone', DEFAULT_PROJECT_TIME_ZONE);
   formData.append(
     'locations',
     JSON.stringify(projectAreas.map(area => area.name).filter(Boolean)),
@@ -4909,10 +4887,7 @@ function buildPhase2AttentionItems(
         )
         .map((photo): Phase2AttentionItem => {
           const safety = photo.category === 'Safety Concern';
-          const overdue =
-            photo.actionDueDate &&
-            photo.actionDueDate < new Date().toISOString().slice(0, 10) &&
-            photo.actionStatus !== 'Closed';
+          const overdue = isOverdueAction(photo);
 
           return {
             id: stableOpenItemAttentionId(update, photo),
@@ -12781,15 +12756,15 @@ function getScheduleDrivenWalkRecommendation(
   )
     .filter(item => !scheduleTaskIsComplete(item) && item.locationName.trim())
     .sort((left, right) => {
-      const leftDays = daysUntilDate(left.finishDate) ?? 9999;
-      const rightDays = daysUntilDate(right.finishDate) ?? 9999;
+      const leftDays = daysUntilScheduleItem(left) ?? 9999;
+      const rightDays = daysUntilScheduleItem(right) ?? 9999;
       const leftPriority = left.priority === 'High' ? -20 : 0;
       const rightPriority = right.priority === 'High' ? -20 : 0;
       return leftDays + leftPriority - (rightDays + rightPriority);
     });
   const task = candidates[0];
   if (!task) return null;
-  const days = daysUntilDate(task.finishDate);
+  const days = daysUntilScheduleItem(task);
   const timing = days === null
     ? 'needs field verification'
     : days < 0
@@ -15329,7 +15304,7 @@ function ProjectTaskControlPanel({
     ]);
   });
   const filteredTasks = rollup.tasks.filter(item => {
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
     const isComplete = scheduleTaskIsComplete(item);
     if (filter === 'Complete') return isComplete;
     if (filter === 'Due Soon') {
@@ -18405,6 +18380,7 @@ function UpcomingScreen({
       source: string;
       title: string;
       projectName: string;
+      projectTimeZone?: string | null;
       locationName: string;
       owner: string;
       contractor: string;
@@ -18423,6 +18399,7 @@ function UpcomingScreen({
     source: string;
     title: string;
     projectName: string;
+    projectTimeZone?: string | null;
     locationName: string;
     owner: string;
     contractor: string;
@@ -18441,6 +18418,7 @@ function UpcomingScreen({
         source: 'Schedule',
         title: item.taskName,
         projectName: item.projectName,
+        projectTimeZone: item.projectTimeZone,
         locationName: item.locationName,
         owner: item.owner,
         contractor: item.contractor,
@@ -18455,6 +18433,7 @@ function UpcomingScreen({
       source: 'Action Item',
       title: item.taskName,
       projectName: item.projectName,
+      projectTimeZone: DEFAULT_PROJECT_TIME_ZONE,
       locationName: item.locationName,
       owner: item.owner,
       contractor: '',
@@ -18467,7 +18446,7 @@ function UpcomingScreen({
   ];
 
   const withDueDates = combinedItems
-    .map(item => ({ ...item, days: daysUntilDate(item.dueDate) }))
+    .map(item => ({ ...item, days: daysUntilDate(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE) }))
     .filter(item => item.days !== null)
     .sort((a, b) => (a.days ?? 99999) - (b.days ?? 99999));
 
@@ -18495,7 +18474,7 @@ function UpcomingScreen({
           {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
         </Text>
         <Text style={styles.rowSub}>
-          {dueStatusText(item.dueDate)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
+          {dueStatusText(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
         </Text>
         <View style={styles.scheduleMetaRow}>
           <View style={[styles.statusPill, { backgroundColor: `${colors.primary}1A` }]}>
@@ -18814,8 +18793,8 @@ function ScheduleScreen({
     const bComplete = scheduleTaskIsComplete(b);
     if (aComplete !== bComplete) return Number(aComplete) - Number(bComplete);
 
-    const aDays = daysUntilDate(a.finishDate);
-    const bDays = daysUntilDate(b.finishDate);
+    const aDays = daysUntilScheduleItem(a);
+    const bDays = daysUntilScheduleItem(b);
 
     if (aDays === null && bDays === null) return 0;
     if (aDays === null) return 1;
@@ -18831,7 +18810,7 @@ function ScheduleScreen({
   const dueSoon = sortedItems.filter(item => {
     if (scheduleTaskIsComplete(item)) return false;
 
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
 
     return days !== null && days >= 0 && days <= 7;
   });
@@ -18839,7 +18818,7 @@ function ScheduleScreen({
   const overdue = sortedItems.filter(item => {
     if (scheduleTaskIsComplete(item)) return false;
 
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
 
     return days !== null && days < 0;
   });
@@ -18847,7 +18826,7 @@ function ScheduleScreen({
   const filteredItems = sortedItems.filter(item => {
     if (taskFilter === 'All') return true;
     if (scheduleTaskIsComplete(item)) return false;
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
     if (taskFilter === 'Today') return days === 0;
     if (taskFilter === '7 Days') return days !== null && days >= 0 && days <= 7;
     const dependency = dependencyNodeByItemId.get(item.id);
@@ -19463,7 +19442,7 @@ function ScheduleItemRow({
   const completionVerificationLabel = scheduleCompletionVerificationLabel(
     item as unknown as import('./types').ScheduleItem,
   );
-  const days = daysUntilDate(item.finishDate);
+  const days = daysUntilScheduleItem(item);
   const itemComplete = scheduleTaskIsComplete(item);
   const isOverdue = days !== null && days < 0 && !itemComplete;
   const isDueSoon = days !== null && days >= 0 && days <= 7 && !itemComplete;
@@ -19499,7 +19478,7 @@ function ScheduleItemRow({
             {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
           </Text>
           <Text style={[styles.rowSub, styles.scheduleItemContext]}>
-            {item.finishDate ? dueStatusText(item.finishDate) : 'No finish date'}{item.contractor ? ` • ${item.contractor}` : ''}
+            {item.finishDate ? dueStatusText(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE) : 'No finish date'}{item.contractor ? ` • ${item.contractor}` : ''}
           </Text>
         </TouchableOpacity>
 

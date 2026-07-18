@@ -1,15 +1,24 @@
+import {
+  PIE_PHOTO_ANALYSIS_CONTRACT,
+  photoAnalysisContractEnvelope,
+} from '../supabase/functions/_shared/pie-photo-analysis-contract';
+
 export const PHOTO_ANALYSIS_IDENTITY_VERSION = 'photo-analysis-run/v2' as const;
 export const PHOTO_EVIDENCE_IDENTITY_VERSION = 'photo-evidence/v2' as const;
 
+const CURRENT_PHOTO_PAIR_CONTRACT = photoAnalysisContractEnvelope('photo_pair');
+
 export const CURRENT_PHOTO_ANALYSIS_VERSIONS = Object.freeze({
-  analyzerId: 'pie-production-photo-vision',
-  analyzerVersion: '2026.07.13-structured-comparability-impact',
-  promptVersion: '2026.07.13-structured-comparability-impact',
-  schemaVersion: '2026-07-p1-v1',
-  policyVersion: '2026.07.13-structured-comparability-impact',
+  contractVersion: CURRENT_PHOTO_PAIR_CONTRACT.contractVersion,
+  analyzerId: PIE_PHOTO_ANALYSIS_CONTRACT.analyzerId,
+  analyzerVersion: CURRENT_PHOTO_PAIR_CONTRACT.analyzerVersion,
+  promptVersion: CURRENT_PHOTO_PAIR_CONTRACT.promptVersion,
+  schemaVersion: CURRENT_PHOTO_PAIR_CONTRACT.schemaVersion,
+  policyVersion: CURRENT_PHOTO_PAIR_CONTRACT.policyVersion,
 });
 
 export type PhotoAnalysisVersions = Readonly<{
+  contractVersion: string;
   analyzerId: string;
   analyzerVersion: string;
   promptVersion: string;
@@ -108,6 +117,7 @@ export function createPhotoAnalysisRunIdentity(input: Readonly<{
     currentEvidenceId: requireIdentityPart('currentEvidenceId', input.currentEvidenceId),
     priorContentSha256: requireSha256(input.priorContentSha256),
     currentContentSha256: requireSha256(input.currentContentSha256),
+    contractVersion: versions.contractVersion,
     analyzerId: versions.analyzerId,
     analyzerVersion: versions.analyzerVersion,
     promptVersion: versions.promptVersion,
@@ -167,6 +177,7 @@ export function compareImmutablePhotoCapturedAt(
 
 function validateVersions(value: PhotoAnalysisVersions): PhotoAnalysisVersions {
   return Object.freeze({
+    contractVersion: requireIdentityPart('contractVersion', value.contractVersion),
     analyzerId: requireIdentityPart('analyzerId', value.analyzerId),
     analyzerVersion: requireIdentityPart('analyzerVersion', value.analyzerVersion),
     promptVersion: requireIdentityPart('promptVersion', value.promptVersion),

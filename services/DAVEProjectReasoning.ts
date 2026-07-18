@@ -5,6 +5,11 @@ import type {
   DAVETaskEvidenceCorrelation,
 } from './DAVEEvidenceCorrelation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  projectDateRelativeDays,
+  type ProjectTimeZone,
+} from './ProjectDateTime';
 
 export const DAVE_PROJECT_REASONING_VERSION = 'dave-project-reasoning/1.0' as const;
 
@@ -94,6 +99,7 @@ export function buildDAVEProjectReasoning({
   updates = [],
   correlations,
   now = new Date().toISOString(),
+  projectTimeZone = DEFAULT_PROJECT_TIME_ZONE,
 }: {
   projectId: string;
   projectName: string;
@@ -101,6 +107,7 @@ export function buildDAVEProjectReasoning({
   updates?: readonly ProjectUpdate[];
   correlations: DAVEEvidenceCorrelationResult;
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
 }): DAVEProjectReasoning {
   const generatedAt = validTimestamp(now) ? new Date(now).toISOString() : new Date().toISOString();
   const correlationByTask = new Map(correlations.tasks.map(item => [item.taskId, item]));
@@ -108,6 +115,7 @@ export function buildDAVEProjectReasoning({
     item,
     correlationByTask.get(item.id) || emptyCorrelation(item),
     generatedAt,
+    projectTimeZone,
   ));
   const facts = unique(decisions.flatMap(decision => decision.reasoningSteps.filter(step => step.startsWith('Fact:'))));
   const supportedConclusions = decisions.filter(item => item.classification === 'supported_conclusion').map(item => item.conclusion);
@@ -140,15 +148,16 @@ function reasonAboutTask(
   item: ScheduleItem,
   correlation: DAVETaskEvidenceCorrelation,
   now: string,
+  projectTimeZone: ProjectTimeZone | string,
 ): DAVETaskReasonedDecision {
-  const connections = buildConnections(item, correlation, now);
+  const connections = buildConnections(item, correlation, now, projectTimeZone);
   const hypotheses = buildHypotheses(item, correlation);
   const selected = selectHypothesis(correlation, hypotheses);
   const challenges = challengeConclusion(item, correlation, selected, now);
   const classification = classifyConclusion(item, correlation);
   const confidence = challengedConfidence(correlation.confidence, challenges, classification);
   const conclusion = conclusionText(item, correlation);
-  const recommendation = recommendationFor(item, correlation, challenges, now);
+  const recommendation = recommendationFor(item, correlation, challenges, now, projectTimeZone);
   const learningCues = outcomeLearningCues(item);
   const reasoningSteps = unique([
     `Fact: The schedule records ${item.status} at ${item.percentComplete}% for ${item.taskName}.`,
@@ -176,7 +185,12 @@ function reasonAboutTask(
   });
 }
 
-function buildConnections(item: ScheduleItem, correlation: DAVETaskEvidenceCorrelation, now: string) {
+function buildConnections(
+  item: ScheduleItem,
+  correlation: DAVETaskEvidenceCorrelation,
+  now: string,
+  projectTimeZone: ProjectTimeZone | string,
+) {
   const hasReportedComplete = correlation.evidence.some(value => value.authority === 'reported' && value.stance === 'complete');
   return correlation.evidence.map(evidence => {
     let relationship: DAVEReasoningRelationship = 'supports';
@@ -195,7 +209,7 @@ function buildConnections(item: ScheduleItem, correlation: DAVETaskEvidenceCorre
     } else if (item.status === 'Waiting' && evidence.kind === 'schedule') {
       relationship = 'depends_on';
       reason = 'Waiting status indicates an unresolved dependency that must be identified.';
-    } else if (isOverdue(item, new Date(now))) {
+    } else if (isOverdue(item, new Date(now), projectTimeZone)) {
       relationship = 'delays';
       reason = 'The recorded finish date has passed while the task remains open.';
     } else if (evidence.kind !== 'schedule' && evidence.stance === 'in_progress') {
@@ -281,12 +295,15 @@ function recommendationFor(
   correlation: DAVETaskEvidenceCorrelation,
   challenges: readonly DAVEReasoningChallenge[],
   now: string,
+  projectTimeZone: ProjectTimeZone | string,
 ): DAVEReasonedRecommendation {
   const owner = clean(item.owner) || clean(item.contractor) || 'Project manager';
-  const timing = correlation.conclusion === 'conflicting_evidence' ? 'Now' : timingFor(item, now);
+  const timing = correlation.conclusion === 'conflicting_evidence'
+    ? 'Now'
+    : timingFor(item, now, projectTimeZone);
   const smallest = challenges[0]?.smallestUsefulEvidence || 'Record the next accountable status update.';
   if (correlation.conclusion === 'verified_complete') return { action: 'Preserve the verification and monitor downstream work.', owner, timing: 'No immediate action', consequenceOfInaction: 'No immediate consequence is identified from this task.', smallestNextAction: 'Confirm the next dependent activity is ready.' };
-  if (correlation.needsVerification || challenges.length) return { action: correlation.requestedAction || 'Verify the current task condition.', owner: 'Project manager', timing, consequenceOfInaction: isOverdue(item, new Date(now)) ? 'The project may continue relying on an overdue or incorrect task status.' : 'Downstream decisions may rely on an unsupported task status.', smallestNextAction: smallest };
+  if (correlation.needsVerification || challenges.length) return { action: correlation.requestedAction || 'Verify the current task condition.', owner: 'Project manager', timing, consequenceOfInaction: isOverdue(item, new Date(now), projectTimeZone) ? 'The project may continue relying on an overdue or incorrect task status.' : 'Downstream decisions may rely on an unsupported task status.', smallestNextAction: smallest };
   return { action: 'Continue the planned work and capture the next material change.', owner, timing, consequenceOfInaction: 'DAVE may lose visibility into progress and emerging delay.', smallestNextAction: smallest };
 }
 
@@ -321,18 +338,35 @@ function challengedConfidence(base: 'high' | 'medium' | 'low', challenges: reado
   return base;
 }
 
-function timingFor(item: ScheduleItem, now: string) {
-  if (item.status === 'Waiting' || isOverdue(item, new Date(now))) return 'Today';
+function timingFor(
+  item: ScheduleItem,
+  now: string,
+  projectTimeZone: ProjectTimeZone | string,
+) {
+  if (item.status === 'Waiting' || isOverdue(item, new Date(now), projectTimeZone)) return 'Today';
   if (!item.finishDate) return 'Within 24 hours';
-  const days = Math.ceil((new Date(item.finishDate).getTime() - new Date(now).getTime()) / 86_400_000);
+  const days = projectDateRelativeDays(
+    item.finishDate,
+    now,
+    item.projectTimeZone || projectTimeZone,
+  );
+  if (days === null) return 'Within 24 hours';
   if (days <= 1) return 'Today';
   if (days <= 7) return `Before ${item.finishDate}`;
   return 'At the next field update';
 }
 
-function isOverdue(item: ScheduleItem, now: Date) {
-  const due = new Date(item.finishDate);
-  return !scheduleProgressIsComplete(item) && Boolean(item.finishDate) && Number.isFinite(due.getTime()) && due.getTime() < now.getTime();
+function isOverdue(
+  item: ScheduleItem,
+  now: Date,
+  projectTimeZone: ProjectTimeZone | string,
+) {
+  const days = projectDateRelativeDays(
+    item.finishDate,
+    now,
+    item.projectTimeZone || projectTimeZone,
+  );
+  return !scheduleProgressIsComplete(item) && days !== null && days < 0;
 }
 
 function isStale(recordedAt: string | null, now: string) {

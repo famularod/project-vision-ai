@@ -5,6 +5,7 @@ import type {
   UpdatePhoto,
 } from '../types';
 import {
+  daysUntilDate,
   parseDueDate,
   parseFlexibleDate,
 } from '../utils/date';
@@ -496,10 +497,9 @@ function buildEvidence({
   });
 
   scheduleItems.forEach(item => {
-    const dueDate = parseFlexibleDate(item.finishDate);
-    const isOverdue =
-      !scheduleProgressIsComplete(item) &&
-      Boolean(dueDate && dueDate < startOfDay(now));
+    const daysUntilDue = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
+    const isOverdue = !scheduleProgressIsComplete(item) &&
+      daysUntilDue !== null && daysUntilDue < 0;
     const shouldSurface =
       isOverdue ||
       item.status === 'Waiting' ||
@@ -1727,12 +1727,6 @@ function normalizeDateValue(value: string | null | undefined, fallback: string) 
 
   const date = new Date(trimmed);
   return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
-}
-
-function startOfDay(value: Date) {
-  const date = new Date(value);
-  date.setHours(0, 0, 0, 0);
-  return date;
 }
 
 function comparePriority<T extends { priority: PIEPriority }>(left: T, right: T) {

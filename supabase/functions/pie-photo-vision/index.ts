@@ -11,6 +11,11 @@ import {
   normalizePhotoFindings,
   validateStrictPhotoPairResponse,
 } from '../_shared/pie-photo-comparison-schema.ts';
+import {
+  PIE_PHOTO_ANALYSIS_CONTRACT,
+  photoAnalysisContractEnvelope,
+  validatePhotoAnalysisContractEnvelope,
+} from '../_shared/pie-photo-analysis-contract.ts';
 import { validateVisionAuthority } from '../_shared/pie-vision-authority.ts';
 
 type VisionRequest = {
@@ -22,7 +27,11 @@ type VisionRequest = {
   evidenceId?: string;
   baselineEvidenceId?: string;
   currentEvidenceId?: string;
+  contractVersion?: string;
+  analyzerVersion?: string;
   promptVersion?: string;
+  schemaVersion?: string;
+  policyVersion?: string;
   forceReanalysis?: boolean;
   projectName?: string;
   areaName?: string | null;
@@ -38,17 +47,15 @@ type ImageDiagnostics = {
   signedUrlGenerated: boolean;
 };
 
-const POLICY_VERSION = '2026.07.13-structured-comparability-impact';
-const ANALYZER_ID = 'pie-production-photo-vision';
-const ANALYZER_VERSION = '2026.07.13-structured-comparability-impact';
+const POLICY_VERSION = PIE_PHOTO_ANALYSIS_CONTRACT.policyVersion;
+const ANALYZER_ID = PIE_PHOTO_ANALYSIS_CONTRACT.analyzerId;
+const ANALYZER_VERSION = PIE_PHOTO_ANALYSIS_CONTRACT.analyzerVersion;
 const BUCKET = 'pie-project-evidence';
 const SIGNED_URL_EXPIRES_SECONDS = 600;
 const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 
 function defaultPromptVersion(mode: VisionMode): string {
-  return mode === 'single_photo'
-    ? '2026.07.11-single-photo-schema-enforcement'
-    : '2026.07.13-structured-comparability-impact';
+  return photoAnalysisContractEnvelope(mode).promptVersion;
 }
 
 Deno.serve(async req => {
@@ -79,6 +86,15 @@ Deno.serve(async req => {
 
   const request = body as Required<Pick<VisionRequest, 'organizationId' | 'projectId'>> & VisionRequest;
   const mode: VisionMode = request.mode ?? (request.baselineEvidenceId && request.currentEvidenceId ? 'photo_pair' : 'single_photo');
+  const contractValidation = validatePhotoAnalysisContractEnvelope(mode, request);
+  if (!contractValidation.valid) {
+    return json({
+      error: 'photo_analysis_contract_mismatch',
+      categories: contractValidation.categories,
+      expectedContractVersion: PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion,
+    }, 409);
+  }
+  const contractEnvelope = photoAnalysisContractEnvelope(mode);
   const requestId = request.requestId ?? buildRequestId(request, mode);
 
   const hasAccess = await verifyProjectAccess(userData.user.id, request.organizationId, request.projectId);
@@ -142,7 +158,7 @@ Deno.serve(async req => {
     organizationId: request.organizationId,
     projectId: request.projectId,
     requestId,
-    promptVersion: request.promptVersion ?? defaultPromptVersion(mode),
+    promptVersion: contractEnvelope.promptVersion,
     policyVersion: POLICY_VERSION,
     timeoutMs: Number(Deno.env.get('PIE_VISION_TIMEOUT_MS') ?? '45000'),
     maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '2'),
@@ -221,6 +237,11 @@ Deno.serve(async req => {
   return json({
     requestId,
     mode,
+    contractVersion: contractEnvelope.contractVersion,
+    analyzerVersion: contractEnvelope.analyzerVersion,
+    promptVersion: contractEnvelope.promptVersion,
+    schemaVersion: contractEnvelope.schemaVersion,
+    policyVersion: contractEnvelope.policyVersion,
     status: finalResult.status,
     providerName: finalResult.providerName,
     modelName: finalResult.modelName,
@@ -762,7 +783,7 @@ async function persistRequestAndResult(
     analyzer_id: ANALYZER_ID,
     analyzer_version: ANALYZER_VERSION,
     policy_version: POLICY_VERSION,
-    prompt_version: request.promptVersion ?? defaultPromptVersion(mode),
+    prompt_version: defaultPromptVersion(mode),
     force_reanalysis: Boolean(request.forceReanalysis),
     status: providerResult?.status ?? 'failed',
     failure_reason: failureReason ?? providerResult?.error ?? null,
@@ -777,6 +798,8 @@ async function persistRequestAndResult(
       signedUrlsGenerated: imageDiagnostics.every(image => image.signedUrlGenerated),
       providerInvocationId: requestId,
       providerResponseStatus: providerResult?.status ?? failureReason ?? 'failed',
+      contractVersion: PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion,
+      schemaVersion: photoAnalysisContractEnvelope(mode).schemaVersion,
     },
   });
 
@@ -793,7 +816,7 @@ async function persistRequestAndResult(
       provider_name: providerResult?.providerName ?? null,
       model_name: providerResult?.modelName ?? null,
       model_version: providerResult?.modelVersion ?? null,
-      prompt_version: request.promptVersion ?? defaultPromptVersion(mode),
+      prompt_version: defaultPromptVersion(mode),
       policy_version: POLICY_VERSION,
       status: providerResult?.status ?? 'failed',
       observations: mode === 'single_photo'
@@ -975,7 +998,18 @@ function buildRequestId(request: VisionRequest, mode: VisionMode): string {
   const ids = mode === 'single_photo'
     ? request.evidenceId
     : `${request.baselineEvidenceId}:${request.currentEvidenceId}`;
-  return `${mode}:${request.organizationId}:${request.projectId}:${ids}:${ANALYZER_VERSION}:${request.promptVersion ?? 'default'}`;
+  const contract = photoAnalysisContractEnvelope(mode);
+  return [
+    mode,
+    request.organizationId,
+    request.projectId,
+    ids,
+    contract.contractVersion,
+    contract.analyzerVersion,
+    contract.promptVersion,
+    contract.schemaVersion,
+    contract.policyVersion,
+  ].join(':');
 }
 
 function selectOriginalPath(storageRefs: unknown): string | null {
@@ -1054,6 +1088,8 @@ function buildRedactedConfigCheck() {
     modelName: model ?? null,
     timeoutMs: timeout ? Number(timeout) : null,
     maxRetries: retries ? Number(retries) : null,
+    photoPairContract: photoAnalysisContractEnvelope('photo_pair'),
+    singlePhotoContract: photoAnalysisContractEnvelope('single_photo'),
   };
 }
 

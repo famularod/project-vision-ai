@@ -279,7 +279,7 @@ async function configCheck(userClient) {
   return data;
 }
 
-async function invokeVision(userClient) {
+async function invokeVision(userClient, photoPairContract) {
   const data = await invokeFunction(userClient, 'paired-photo provider analysis', {
     requestId,
     mode: 'photo_pair',
@@ -287,7 +287,7 @@ async function invokeVision(userClient) {
     projectId,
     baselineEvidenceId: beforeEvidenceId,
     currentEvidenceId: afterEvidenceId,
-    promptVersion: '2026.07.03-live-provider-mouse-acceptance',
+    ...(photoPairContract && typeof photoPairContract === 'object' ? photoPairContract : {}),
     forceReanalysis: true,
   });
   if (data?.status === 'degraded') {
@@ -790,7 +790,7 @@ async function main() {
 
     const userClient = await setup(before, after);
     const config = await configCheck(userClient);
-    const invokeResult = await invokeVision(userClient);
+    const invokeResult = await invokeVision(userClient, config.photoPairContract);
     const persisted = await loadPersistence();
     finalReport = validateAcceptance(invokeResult, persisted);
 

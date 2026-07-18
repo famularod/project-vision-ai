@@ -3,7 +3,7 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
-import { parseFlexibleDate } from '../utils/date';
+import { daysUntilDate } from '../utils/date';
 import {
   classifyDAVEBlocker,
   classifyDAVECompletion,
@@ -195,7 +195,7 @@ export function buildPIEScheduleReconciliation({
         timestamp(right.capturedAt) - timestamp(left.capturedAt),
       );
     const bestMatch = itemMatches[0] || null;
-    const daysUntilFinish = relativeDays(item.finishDate, now);
+    const daysUntilFinish = relativeDays(item.finishDate, now, item.projectTimeZone);
     const urgent =
       !scheduleProgressIsComplete(item) &&
       daysUntilFinish !== null &&
@@ -637,12 +637,8 @@ function updateTimestamp(update: ProjectUpdate) {
     null;
 }
 
-function relativeDays(value: string, now: Date) {
-  const date = parseFlexibleDate(value);
-  if (!date) return null;
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  return Math.round((date.getTime() - today.getTime()) / DAY_MS);
+function relativeDays(value: string, now: Date, projectTimeZone?: string | null) {
+  return daysUntilDate(value, now, projectTimeZone || undefined);
 }
 
 function dueWindowLabel(days: number | null) {

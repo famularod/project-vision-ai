@@ -28,6 +28,14 @@ import type {
 } from './PIERealityModel';
 import type { PIEExecutiveJudgmentRecord } from './PIEExecutiveJudgmentRepository';
 import type { DAVEProjectTruthSnapshot } from './DAVEProjectTruthRepository';
+import {
+  chunkSupabaseFilterValues,
+  paginateSupabaseCollection,
+} from './SupabaseCollectionPagination';
+import {
+  verifyPIERealityHistoryRows,
+  type PIERealityHistoryCloudRow,
+} from './PIERealityHistoryIntegrity';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
@@ -831,18 +839,24 @@ export async function deleteProject({
     .eq('project_name', projectName);
   appendRelatedDeleteError(errors, 'schedule items', scheduleResult.error?.message);
 
-  const relatedDocuments = await client
+  const relatedDocuments = await paginateSupabaseCollection(async ({
+    from,
+    to,
+    includeExactCount,
+  }) => client
     .from(REFERENCE_DOCUMENTS_TABLE)
-    .select('id, document_data')
-    .eq('owner_id', owner.data);
+    .select('id, document_data', { count: includeExactCount ? 'exact' : undefined })
+    .eq('owner_id', owner.data)
+    .order('id', { ascending: true })
+    .range(from, to));
   appendRelatedDeleteError(
     errors,
     'reference documents',
-    relatedDocuments.error?.message,
+    relatedDocuments.ok ? undefined : relatedDocuments.error,
   );
 
-  if (!relatedDocuments.error && Array.isArray(relatedDocuments.data)) {
-    const relatedDocumentIds = relatedDocuments.data
+  if (relatedDocuments.ok) {
+    const relatedDocumentIds = relatedDocuments.rows
       .filter(row => recordMatchesProject(toRecord(row).document_data, projectName))
       .map(row => toRecord(row).id)
       .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
@@ -893,16 +907,19 @@ export async function listProjects(): Promise<SupabaseServiceResult<CloudProject
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const { data, error, status } = await client
-    .from(PROJECTS_TABLE)
-    .select('*')
-    .eq('owner_id', owner.data)
-    .eq('archived', false)
-    .order('created_at', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PROJECTS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .eq('archived', false)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) return tableAwareListResult<CloudProject>(error.message, status);
-
-  return okResult(Array.isArray(data) ? data.map(normalizeProject) : [], status);
+  if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
+  return okResult(result.rows.map(normalizeProject), result.status);
 }
 
 export async function listArchivedProjects(): Promise<SupabaseServiceResult<CloudProject[]>> {
@@ -914,16 +931,19 @@ export async function listArchivedProjects(): Promise<SupabaseServiceResult<Clou
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const { data, error, status } = await client
-    .from(PROJECTS_TABLE)
-    .select('*')
-    .eq('owner_id', owner.data)
-    .eq('archived', true)
-    .order('created_at', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PROJECTS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .eq('archived', true)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) return tableAwareListResult<CloudProject>(error.message, status);
-
-  return okResult(Array.isArray(data) ? data.map(normalizeProject) : [], status);
+  if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
+  return okResult(result.rows.map(normalizeProject), result.status);
 }
 
 export async function countCloudProjects(): Promise<SupabaseServiceResult<number>> {
@@ -1030,22 +1050,26 @@ export async function listProjectUpdates<TUpdate>(): Promise<
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const { data, error, status } = await client
-    .from(PROJECT_UPDATES_TABLE)
-    .select('*')
-    .eq('owner_id', owner.data)
-    .order('created_at', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PROJECT_UPDATES_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) {
+  if (!result.ok) {
     return tableAwareListResult<CloudProjectUpdate<TUpdate>>(
-      error.message,
-      status,
+      result.error,
+      result.status,
     );
   }
 
   return okResult(
-    Array.isArray(data) ? data.map(row => normalizeProjectUpdate<TUpdate>(row)) : [],
-    status,
+    result.rows.map(row => normalizeProjectUpdate<TUpdate>(row)),
+    result.status,
   );
 }
 
@@ -1199,16 +1223,22 @@ export async function listDAVESyncTombstones(): Promise<
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const { data, error, status } = await client
-    .from(DAVE_SYNC_TOMBSTONES_TABLE)
-    .select('entity_type, record_id, deleted_at')
-    .eq('owner_id', owner.data)
-    .order('deleted_at', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(DAVE_SYNC_TOMBSTONES_TABLE)
+      .select('entity_type, record_id, deleted_at', {
+        count: includeExactCount ? 'exact' : undefined,
+      })
+      .eq('owner_id', owner.data)
+      .order('deleted_at', { ascending: false })
+      .order('entity_type', { ascending: true })
+      .order('record_id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) return tableAwareListResult<DAVESyncTombstone>(error.message, status);
+  if (!result.ok) return tableAwareListResult<DAVESyncTombstone>(result.error, result.status);
 
-  const tombstones = Array.isArray(data)
-    ? data
+  const tombstones = result.rows
         .map(row => {
           const record = toRecord(row);
           const entityType = String(record.entity_type || '');
@@ -1229,10 +1259,9 @@ export async function listDAVESyncTombstones(): Promise<
             deletedAt,
           };
         })
-        .filter((value): value is DAVESyncTombstone => Boolean(value))
-    : [];
+        .filter((value): value is DAVESyncTombstone => Boolean(value));
 
-  return okResult(tombstones, status);
+  return okResult(tombstones, result.status);
 }
 
 export async function loadLatestDAVEProjectTruthSnapshotCloud(
@@ -1398,17 +1427,23 @@ export async function listPIEExecutiveJudgmentsCloud(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIEExecutiveJudgmentRecord[]>();
 
-  const { data, error, status } = await client
-    .from(PIE_EXECUTIVE_JUDGMENTS_TABLE)
-    .select('*')
-    .eq('organization_id', organizationId)
-    .eq('project_id', projectId)
-    .order('judgment_time', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PIE_EXECUTIVE_JUDGMENTS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('organization_id', organizationId)
+      .eq('project_id', projectId)
+      .order('judgment_time', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) return tableAwareListResult<PIEExecutiveJudgmentRecord>(error.message, status);
+  if (!result.ok) {
+    return tableAwareListResult<PIEExecutiveJudgmentRecord>(result.error, result.status);
+  }
   return okResult(
-    Array.isArray(data) ? data.map(normalizePIEExecutiveJudgmentRow) : [],
-    status,
+    result.rows.map(normalizePIEExecutiveJudgmentRow),
+    result.status,
   );
 }
 
@@ -1605,7 +1640,7 @@ async function savePIERealityHistoryCloud(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<null>();
 
-  const payload = events.map(({ event, objectId }) => ({
+  const payload: PIERealityHistoryCloudRow[] = events.map(({ event, objectId }) => ({
     id: event.id,
     organization_id: model.organizationId,
     project_id: model.projectId,
@@ -1617,14 +1652,56 @@ async function savePIERealityHistoryCloud(
     next_status: event.nextStatus,
   }));
 
+  const inputIntegrity = verifyPIERealityHistoryRows(payload, payload);
+  if (!inputIntegrity.ok) {
+    return errorResult(
+      inputIntegrity.error || 'Reality history contains conflicting duplicate IDs.',
+      409,
+      'reality_history_immutable_conflict',
+    );
+  }
+
   const { error, status } = await client
     .from(PIE_REALITY_OBJECT_HISTORY_TABLE)
-    .insert(payload);
+    .upsert(payload, { onConflict: 'id', ignoreDuplicates: true });
 
-  if (error) {
-    if (isDuplicateKeyError(error.message)) return okResult(null, status);
-    return tableAwareErrorResult<null>(error.message, status);
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+
+  const cloudRows: unknown[] = [];
+  for (const idChunk of chunkSupabaseFilterValues(payload.map(row => row.id))) {
+    const pageResult = await paginateSupabaseCollection(async ({
+      from,
+      to,
+      includeExactCount,
+    }) => {
+      const response = await client
+        .from(PIE_REALITY_OBJECT_HISTORY_TABLE)
+        .select(
+          'id, organization_id, project_id, object_id, occurred_at, event_type, summary, previous_status, next_status',
+          { count: includeExactCount ? 'exact' : undefined },
+        )
+        .eq('organization_id', model.organizationId)
+        .eq('project_id', model.projectId)
+        .in('id', [...idChunk])
+        .order('id', { ascending: true })
+        .range(from, to);
+      return response;
+    });
+    if (!pageResult.ok) {
+      return tableAwareErrorResult<null>(pageResult.error, pageResult.status);
+    }
+    cloudRows.push(...pageResult.rows);
   }
+
+  const verification = verifyPIERealityHistoryRows(payload, cloudRows);
+  if (!verification.ok) {
+    return errorResult(
+      verification.error || 'Reality history immutable verification failed.',
+      409,
+      'reality_history_immutable_conflict',
+    );
+  }
+
   return okResult(null, status);
 }
 
@@ -1810,20 +1887,87 @@ export async function listPIEDecisionRecords(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIEDecisionRecord[]>();
 
-  let query = client
-    .from(PIE_DECISION_RECORDS_TABLE)
-    .select('*, pie_decision_versions(*), pie_decision_outcomes(*), pie_decision_audit_events(*)')
-    .eq('organization_id', organizationId)
-    .order('created_at', { ascending: false });
+  const recordsResult = await paginateSupabaseCollection(async ({
+    from,
+    to,
+    includeExactCount,
+  }) => {
+    let query = client
+      .from(PIE_DECISION_RECORDS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true });
+    if (projectId) query = query.eq('project_id', projectId);
+    return query.range(from, to);
+  });
+  if (!recordsResult.ok) {
+    return tableAwareListResult<PIEDecisionRecord>(recordsResult.error, recordsResult.status);
+  }
+  if (recordsResult.rows.length === 0) return okResult([], recordsResult.status);
 
-  if (projectId) query = query.eq('project_id', projectId);
+  const [versionsResult, outcomesResult, auditResult] = await Promise.all([
+    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
+      let query = client
+        .from(PIE_DECISION_VERSIONS_TABLE)
+        .select('*', { count: includeExactCount ? 'exact' : undefined })
+        .eq('organization_id', organizationId)
+        .order('decision_id', { ascending: true })
+        .order('version', { ascending: true })
+        .order('id', { ascending: true });
+      if (projectId) query = query.eq('project_id', projectId);
+      return query.range(from, to);
+    }),
+    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
+      let query = client
+        .from(PIE_DECISION_OUTCOMES_TABLE)
+        .select('*', { count: includeExactCount ? 'exact' : undefined })
+        .eq('organization_id', organizationId)
+        .order('decision_id', { ascending: true })
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+      if (projectId) query = query.eq('project_id', projectId);
+      return query.range(from, to);
+    }),
+    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
+      let query = client
+        .from(PIE_DECISION_AUDIT_EVENTS_TABLE)
+        .select('*', { count: includeExactCount ? 'exact' : undefined })
+        .eq('organization_id', organizationId)
+        .order('decision_id', { ascending: true })
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+      if (projectId) query = query.eq('project_id', projectId);
+      return query.range(from, to);
+    }),
+  ]);
 
-  const { data, error, status } = await query;
-  if (error) return tableAwareListResult<PIEDecisionRecord>(error.message, status);
+  const failedChildren = [versionsResult, outcomesResult, auditResult]
+    .find(result => !result.ok);
+  if (failedChildren && !failedChildren.ok) {
+    return tableAwareListResult<PIEDecisionRecord>(
+      failedChildren.error,
+      failedChildren.status,
+    );
+  }
+
+  const versionsByDecision = groupRowsByDecisionId(versionsResult.rows);
+  const outcomesByDecision = groupRowsByDecisionId(outcomesResult.rows);
+  const auditByDecision = groupRowsByDecisionId(auditResult.rows);
+  const rowsWithChildren = recordsResult.rows.map(row => {
+    const record = toRecord(row);
+    const decisionId = String(record.id || '');
+    return {
+      ...record,
+      pie_decision_versions: versionsByDecision.get(decisionId) || [],
+      pie_decision_outcomes: outcomesByDecision.get(decisionId) || [],
+      pie_decision_audit_events: auditByDecision.get(decisionId) || [],
+    };
+  });
 
   return okResult(
-    Array.isArray(data) ? data.map(row => normalizePIEDecisionRow(row)) : [],
-    status,
+    rowsWithChildren.map(row => normalizePIEDecisionRow(row)),
+    recordsResult.status,
   );
 }
 
@@ -1957,6 +2101,16 @@ function normalizePIEDecisionRow(row: unknown): PIEDecisionRecord {
       ? record.close_blockers.map(String)
       : [],
   };
+}
+
+function groupRowsByDecisionId(rows: readonly unknown[]) {
+  const grouped = new Map<string, unknown[]>();
+  for (const row of rows) {
+    const decisionId = String(toRecord(row).decision_id || '');
+    if (!decisionId) continue;
+    grouped.set(decisionId, [...(grouped.get(decisionId) || []), row]);
+  }
+  return grouped;
 }
 
 function normalizePIEDecisionVersion(row: unknown): PIEDecisionVersion {
@@ -2365,21 +2519,23 @@ async function listOwnedJsonRecords<T>({
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const { data, error, status } = await client
-    .from(table)
-    .select(jsonColumn)
-    .eq('owner_id', owner.data)
-    .order('updated_at', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(table)
+      .select(jsonColumn, { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) return tableAwareListResult<T>(error.message, status);
+  if (!result.ok) return tableAwareListResult<T>(result.error, result.status);
 
-  const records = Array.isArray(data)
-    ? data
+  const records = result.rows
         .map(row => toRecord(row)[jsonColumn] as T | null | undefined)
-        .filter((value): value is T => Boolean(value))
-    : [];
+        .filter((value): value is T => Boolean(value));
 
-  return okResult(records, status);
+  return okResult(records, result.status);
 }
 
 function isMissingTableError(message: string): boolean {

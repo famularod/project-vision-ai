@@ -46,6 +46,7 @@ import {
   decidePhotoEvidencePair,
   type ExistingPhotoEvidenceVersion,
 } from './PhotoEvidenceDeduplication';
+import { validatePhotoAnalysisContractEnvelope } from '../supabase/functions/_shared/pie-photo-analysis-contract';
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -603,7 +604,11 @@ export async function analyzeProjectPhotoWithVision({
         projectId,
         baselineEvidenceId: baselineEvidence.evidenceId,
         currentEvidenceId: currentEvidence.evidenceId,
+        contractVersion: analysisRunIdentity.versions.contractVersion,
+        analyzerVersion: analysisRunIdentity.versions.analyzerVersion,
         promptVersion: analysisRunIdentity.versions.promptVersion,
+        schemaVersion: analysisRunIdentity.versions.schemaVersion,
+        policyVersion: analysisRunIdentity.versions.policyVersion,
         projectName: update.projectName,
         areaName: photo.selectedAreaName || update.selectedAreaName || null,
         fieldNotes: update.notes || null,
@@ -629,6 +634,33 @@ export async function analyzeProjectPhotoWithVision({
         usablePriorCandidateFound: true,
         skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
         executedStages,
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
+      });
+    }
+
+    const responseContract = validatePhotoAnalysisContractEnvelope('photo_pair', functionData);
+    if (!responseContract.valid) {
+      return failedRetryState('Photo intelligence returned an incompatible analysis contract. Retry after the analysis service is updated.', {
+        baselineEvidence,
+        currentEvidence,
+        requestId,
+        providerResponseStatus: 'photo_analysis_contract_mismatch',
+        failureCategory: 'malformed_response',
+        selectedPriorPhotoId: priorSelection.selected.photo.id,
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: priorSelection.selected.reason,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
+        rejectedPriorReasons: [
+          ...priorSelection.rejectedReasons,
+          ...responseContract.categories.map(category => `contract rejected: ${category}`),
+        ],
+        currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorSelection.selected.preparedFile,
+        usablePriorCandidateFound: true,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
+        executedStages: [...executedStages, 'provider_contract_rejected'],
         tokenLookup,
         retryFetchedFreshToken: retryAttempt,
       });

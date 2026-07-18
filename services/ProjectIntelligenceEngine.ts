@@ -8,6 +8,7 @@ import type {
   UpdatePhoto,
 } from '../types';
 import {
+  daysUntilDate,
   parseDueDate,
   parseFlexibleDate,
 } from '../utils/date';
@@ -381,12 +382,8 @@ function daysSinceUpdate(dateValue: string, now: Date) {
   return Math.max(0, daysBetween(date, startOfDay(now)));
 }
 
-function daysUntilScheduleDate(dateValue: string, now: Date) {
-  const date = parseFlexibleDate(dateValue);
-
-  if (!date) return null;
-
-  return daysBetween(startOfDay(now), date);
+function daysUntilScheduleDate(dateValue: string, now: Date, projectTimeZone?: string | null) {
+  return daysUntilDate(dateValue, now, projectTimeZone || undefined);
 }
 
 function relatedProjectUpdates({
@@ -460,9 +457,8 @@ function narrativeStats(projectUpdates: ProjectUpdate[]) {
 function photoActionStats(photos: UpdatePhoto[], now: Date) {
   const actionPhotos = photos.filter(isOpenAction);
   const overdueActions = actionPhotos.filter(photo => {
-    const dueDate = parseDueDate(photo.actionDueDate);
-
-    return Boolean(dueDate && dueDate < startOfDay(now));
+    const days = daysUntilDate(photo.actionDueDate, now);
+    return days !== null && days < 0;
   });
   const unassignedActions = actionPhotos.filter(
     photo => !photo.actionOwner.trim(),
@@ -2116,12 +2112,12 @@ export function analyzeProjectIntelligence({
     item => !scheduleProgressIsComplete(item),
   );
   const overdueScheduleItems = incompleteScheduleItems.filter(item => {
-    const days = daysUntilScheduleDate(item.finishDate, now);
+    const days = daysUntilScheduleDate(item.finishDate, now, item.projectTimeZone);
 
     return days !== null && days < 0;
   });
   const upcomingScheduleItems = incompleteScheduleItems.filter(item => {
-    const days = daysUntilScheduleDate(item.finishDate, now);
+    const days = daysUntilScheduleDate(item.finishDate, now, item.projectTimeZone);
 
     return days !== null && days >= 0 && days <= UPCOMING_SCHEDULE_WINDOW_DAYS;
   });

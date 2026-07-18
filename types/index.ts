@@ -280,6 +280,7 @@ export type DAVECompletionVerification = {
 export type ScheduleItem = {
   id: string;
   scheduleProjectName?: string | null;
+  projectTimeZone?: string | null;
   projectName: string;
   locationName: string;
   taskName: string;

@@ -1,5 +1,5 @@
 import type { ScheduleItem } from '../types';
-import { parseFlexibleDate } from '../utils/date';
+import { daysUntilDate, parseFlexibleDate } from '../utils/date';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type DAVEProjectScheduleHealth = 'On Track' | 'At Risk' | 'Blocked';
@@ -32,15 +32,6 @@ function taskDurationWeight(item: ScheduleItem) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function relativeDays(value: string, now: Date) {
-  const date = parseFlexibleDate(value);
-  if (!date) return null;
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  date.setHours(0, 0, 0, 0);
-  return Math.round((date.getTime() - start.getTime()) / 86_400_000);
-}
-
 export function scheduleTaskIsComplete(item: ScheduleItem) {
   return scheduleProgressIsComplete(item);
 }
@@ -68,11 +59,11 @@ export function buildDAVEProjectScheduleRollup({
   const incompleteTasks = tasks.filter(item => !scheduleTaskIsComplete(item));
   const completedCount = tasks.length - incompleteTasks.length;
   const overdueCount = incompleteTasks.filter(item => {
-    const days = relativeDays(item.finishDate, now);
+    const days = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
     return days !== null && days < 0;
   }).length;
   const dueSoonCount = incompleteTasks.filter(item => {
-    const days = relativeDays(item.finishDate, now);
+    const days = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
     return days !== null && days >= 0 && days <= 7;
   }).length;
   const waitingCount = incompleteTasks.filter(item => item.status === 'Waiting').length;

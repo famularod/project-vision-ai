@@ -12,6 +12,7 @@ import {
   type DAVEProjectRealityState,
 } from './DAVEProjectReality';
 import type { DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
+import type { ProjectTimeZone } from './ProjectDateTime';
 
 export type DAVEEvidenceClass = 'fact' | 'observation' | 'uncertainty';
 export type DAVEBriefSourceType =
@@ -156,6 +157,7 @@ export type DAVEDailyBriefDocument = {
 export type DAVEDailyBriefScheduleItem = {
   id: string;
   scheduleProjectName?: string | null;
+  projectTimeZone?: string | null;
   projectName: string;
   locationName?: string;
   taskName: string;
@@ -180,6 +182,7 @@ export type BuildProjectDailyBriefInput = {
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
   staleAfterDays?: number;
 };
 
@@ -215,6 +218,7 @@ export function buildProjectDailyBrief(
     documents: input.documents,
     scheduleItems: input.scheduleItems,
     now: now.toISOString(),
+    projectTimeZone: input.projectTimeZone,
   });
   return buildProjectDailyBriefModel(reality, input.staleAfterDays);
 }

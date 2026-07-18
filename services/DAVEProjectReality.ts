@@ -12,6 +12,10 @@ import type {
 } from './DAVEDailyBrief';
 import { buildProjectTimeline, type DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  type ProjectTimeZone,
+} from './ProjectDateTime';
 
 export type DAVEProjectRealityState = 'Moving' | 'Waiting' | 'At Risk' | 'Blocked';
 export type DAVEProjectRealityConfidence = 'high' | 'medium' | 'low';
@@ -83,6 +87,7 @@ export type BuildProjectRealityInput = {
   projectCreatedAt?: string | null;
   captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
 };
 
 export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjectReality {
@@ -93,6 +98,9 @@ export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjec
     !document.isArchived && (!document.projectId || document.projectId === input.projectId),
   );
   const scheduleItems = input.scheduleItems.filter(item => normalizeKey(item.projectName) === projectKey);
+  const projectTimeZone = input.projectTimeZone ||
+    scheduleItems.find(item => item.projectTimeZone)?.projectTimeZone ||
+    DEFAULT_PROJECT_TIME_ZONE;
   const commitments = buildProjectCommitments({
     projectId: input.projectId,
     projectName: input.projectName,
@@ -100,6 +108,7 @@ export function buildProjectReality(input: BuildProjectRealityInput): DAVEProjec
     documents,
     captureMemories: input.captureMemories,
     now: input.now,
+    projectTimeZone,
   });
   const evidenceQuality = buildProjectEvidenceQuality({
     projectId: input.projectId,

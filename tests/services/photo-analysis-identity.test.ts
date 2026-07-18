@@ -49,6 +49,7 @@ describe('PhotoAnalysisIdentity', () => {
   });
 
   it.each([
+    'contractVersion',
     'analyzerVersion',
     'promptVersion',
     'schemaVersion',

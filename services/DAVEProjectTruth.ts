@@ -28,6 +28,11 @@ import {
   type DAVEProjectReasoning,
 } from './DAVEProjectReasoning';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  projectDateRelativeDays,
+  type ProjectTimeZone,
+} from './ProjectDateTime';
 
 export const DAVE_PROJECT_TRUTH_VERSION = 'dave-project-truth/1.0' as const;
 
@@ -169,6 +174,7 @@ export type BuildDAVEProjectTruthInput = {
   runtime?: PIERuntimeState | null;
   core?: PIECoreOutput | null;
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
 };
 
 export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEProjectTruth {
@@ -183,6 +189,9 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     projectAreas: input.projectAreas || [],
   }).items;
   const scheduleItems = canonicalScheduleItems.filter(item => scheduleMatchesProject(projectKey, item));
+  const projectTimeZone = input.projectTimeZone ||
+    scheduleItems.find(item => item.projectTimeZone)?.projectTimeZone ||
+    DEFAULT_PROJECT_TIME_ZONE;
   const scopedUpdateIds = new Set(updates.map(update => update.id));
   const captureMemories = (input.captureMemories ?? []).filter(memory =>
     projectMatches(projectKey, memory.recommendedProject.value),
@@ -228,6 +237,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     scheduleItems,
     captureMemories,
     now: generatedAt,
+    projectTimeZone,
   });
   const records = buildEvidenceLedger({
     ...input,
@@ -251,8 +261,16 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     updates,
     correlations,
     now: generatedAt,
+    projectTimeZone,
   });
-  const schedule = buildScheduleTruth(scheduleItems, records, entityLinks, correlations, generatedAt);
+  const schedule = buildScheduleTruth(
+    scheduleItems,
+    records,
+    entityLinks,
+    correlations,
+    generatedAt,
+    projectTimeZone,
+  );
   const evidence = summarizeEvidence(records);
   const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
   const briefing = buildPMBriefing({
@@ -605,6 +623,7 @@ function buildScheduleTruth(
   links: DAVEEntityLink[],
   correlations: DAVEEvidenceCorrelationResult,
   now: string,
+  projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
 ): DAVEScheduleTruth[] {
   const today = new Date(now);
   return scheduleItems.map(item => {
@@ -628,7 +647,7 @@ function buildScheduleTruth(
       status: item.status,
       percentComplete: item.percentComplete,
       finishDate: clean(item.finishDate),
-      urgency: taskUrgency(item, today),
+      urgency: taskUrgency(item, today, projectTimeZone),
       completionState: conflicting ? 'conflicting_evidence' : completionState,
       relatedEvidenceIds: uniqueText([...relatedEvidenceIds, ...correlationEvidenceIds]),
       needsVerification:
@@ -777,11 +796,18 @@ function summarizeEvidence(records: DAVEEvidenceLedgerRecord[]): DAVEEvidenceAcc
   };
 }
 
-function taskUrgency(item: ScheduleItem, now: Date): DAVEScheduleTruth['urgency'] {
+function taskUrgency(
+  item: ScheduleItem,
+  now: Date,
+  projectTimeZone: ProjectTimeZone | string,
+): DAVEScheduleTruth['urgency'] {
   if (scheduleProgressIsComplete(item) || !item.finishDate) return 'not_urgent';
-  const due = new Date(item.finishDate);
-  if (!Number.isFinite(due.getTime())) return 'not_urgent';
-  const days = Math.ceil((due.getTime() - now.getTime()) / 86_400_000);
+  const days = projectDateRelativeDays(
+    item.finishDate,
+    now,
+    item.projectTimeZone || projectTimeZone,
+  );
+  if (days === null) return 'not_urgent';
   if (days < 0) return 'overdue';
   if (days <= 7) return 'due_soon';
   if (days <= 21) return 'upcoming';

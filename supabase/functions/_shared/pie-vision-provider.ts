@@ -4,6 +4,7 @@ import {
   PIE_SINGLE_PHOTO_RESPONSE_SCHEMA,
   PIE_SINGLE_PHOTO_SCHEMA_VERSION,
 } from './pie-photo-comparison-schema.ts';
+import { PIE_PHOTO_ANALYSIS_CONTRACT } from './pie-photo-analysis-contract.ts';
 
 export type VisionMode = 'single_photo' | 'photo_pair';
 export type ProviderStatus = 'succeeded' | 'degraded' | 'failed' | 'blocked';
@@ -77,6 +78,8 @@ class OpenAIVisionProvider implements VisionProvider {
       const prompt = [
         'Analyze this construction/project photo as visual evidence only.',
         `Return the strict single-photo JSON schema version ${PIE_SINGLE_PHOTO_SCHEMA_VERSION}. Do not return markdown.`,
+        `Contract ${PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion}. Prompt ${context.promptVersion}.`,
+        'Always include limitations as an array. Use [] only when no material limitation applies.',
         'Do not claim hidden work, compliance, causation, blame, inspection outcome, or exact percentage.',
         buildContextLine(context),
         `Evidence ID: ${image.evidenceId}. Content hash: ${image.contentHash}. Policy: ${context.policyVersion}.`,
@@ -90,6 +93,8 @@ class OpenAIVisionProvider implements VisionProvider {
       const prompt = [
         'Compare these two project photos using raw pixels. The first image is the baseline; the second is current.',
         `Return the strict paired-photo JSON schema version ${PIE_PHOTO_PAIR_SCHEMA_VERSION}. Do not return markdown.`,
+        `Contract ${PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion}. Prompt ${context.promptVersion}.`,
+        'Always include limitations as an array. Use [] when no material limitation applies; otherwise list each concrete limitation.',
         'Inventory the baseline and current image independently, then reconcile shared, added, removed, moved, occluding, revealed, material-change, concern, and uncertain findings.',
         'Each finding must use the structured finding schema. Observations must contain only directly visible evidence. Interpretations must remain separate and qualified.',
         'For every object addition/removal, defect, safety concern, installed equipment, material change, damage, obstruction, or work-area finding, include the raw visible object/change name and a concrete location phrase when visible.',

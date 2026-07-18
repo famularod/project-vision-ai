@@ -17,8 +17,9 @@ import {
   type DAVEProjectScheduleHealth,
 } from './dave-project-schedule-rollup';
 import type { ScheduleItem } from '../types';
-import { parseFlexibleDate } from '../utils/date';
+import { daysUntilDate, parseFlexibleDate } from '../utils/date';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
+import type { ProjectTimeZone } from './ProjectDateTime';
 
 export type BuildProjectIntelligenceInput = {
   projectId: string;
@@ -29,6 +30,7 @@ export type BuildProjectIntelligenceInput = {
   scheduleItems: DAVEDailyBriefScheduleItem[];
   captureMemories?: readonly DAVEConfirmedCaptureMemory[];
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
   staleAfterDays?: number;
 };
 
@@ -78,6 +80,7 @@ export function buildProjectIntelligence(input: BuildProjectIntelligenceInput): 
     scheduleItems: input.scheduleItems,
     captureMemories: input.captureMemories,
     now: input.now,
+    projectTimeZone: input.projectTimeZone,
   });
   const timeline = projectReality.timelineEvents;
   const dailyBrief = buildProjectDailyBrief({
@@ -113,14 +116,6 @@ function buildScheduleSummary(input: BuildProjectIntelligenceInput): DAVEProject
     now,
   });
   const incomplete = rollup.tasks.filter(item => !scheduleTaskIsComplete(item));
-  const relativeDays = (value: string) => {
-    const parsed = parseFlexibleDate(value);
-    if (!parsed) return null;
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
-    parsed.setHours(0, 0, 0, 0);
-    return Math.round((parsed.getTime() - today.getTime()) / 86_400_000);
-  };
   const taskSummary = (item: ScheduleItem): DAVEProjectScheduleTaskSummary => ({
     id: item.id,
     taskName: item.taskName,
@@ -144,13 +139,13 @@ function buildScheduleSummary(input: BuildProjectIntelligenceInput): DAVEProject
     percentComplete: rollup.percentComplete,
     forecastFinishDate: rollup.forecastFinishDate,
     overdueTasks: incomplete
-      .filter(item => (relativeDays(item.finishDate) ?? 0) < 0)
+      .filter(item => (daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined) ?? 0) < 0)
       .sort(byFinishDate)
       .slice(0, 5)
       .map(taskSummary),
     dueSoonTasks: incomplete
       .filter(item => {
-        const days = relativeDays(item.finishDate);
+        const days = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
         return days !== null && days >= 0 && days <= 7;
       })
       .sort(byFinishDate)
@@ -170,6 +165,7 @@ function normalizeScheduleItem(
   return {
     id: item.id,
     scheduleProjectName: item.scheduleProjectName ?? item.projectName,
+    projectTimeZone: item.projectTimeZone,
     projectName: item.projectName,
     locationName: item.locationName || '',
     taskName: item.taskName,
