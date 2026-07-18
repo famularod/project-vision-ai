@@ -135,11 +135,19 @@ function normalizeReviewState(
 ): DAVEFollowThroughReviewState {
   if (prior && validDate(prior.firstSeenAt) && (prior.reviewedAt === null || validDate(prior.reviewedAt))) {
     const reactivated = prior.active === false;
+    // Field fix 2026-07-18 (device cpu_resource/diskwrites kills): the plan
+    // must be a FIXPOINT — planning again over its own output with the same
+    // items must return identical states. Re-stamping lastSeenAt on every
+    // call made each pass differ by milliseconds, so the App effect that
+    // persists plan.reviewStates looped forever (setState + full JSON disk
+    // write per cycle) until iOS terminated the app. lastSeenAt now moves
+    // only on creation and on reactivation, which is when the item was
+    // genuinely seen anew.
     return Object.freeze({
       ...prior,
       itemId,
       cadenceHours,
-      lastSeenAt: now.toISOString(),
+      lastSeenAt: reactivated ? now.toISOString() : prior.lastSeenAt,
       active: true,
       lastReactivatedAt: reactivated ? now.toISOString() : prior.lastReactivatedAt,
       reactivationCount: prior.reactivationCount + (reactivated ? 1 : 0),
