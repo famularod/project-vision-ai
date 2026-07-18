@@ -198,6 +198,50 @@ assert(
   'Incomplete field evidence should conflict with a Complete schedule status.',
 );
 
+const pmCompletionOverridesOlderFieldUpdate = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({
+    id: 'pm-complete-after-field-update',
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'project_manager',
+    progressConfirmedAt: '2026-07-16T17:00:00.000Z',
+  })],
+  updates: [update({
+    id: 'older-in-progress-update',
+    date: '2026-07-16T12:00:00.000Z',
+    notes: 'Electrical rough-in is still in progress and not complete.',
+    scheduleItemId: 'pm-complete-after-field-update',
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  !pmCompletionOverridesOlderFieldUpdate.warnings.some(item => item.type === 'schedule_status_conflict'),
+  'A newer PM completion decision must override an older in-progress field update.',
+);
+
+const newerFieldUpdateReopensPmCompletion = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({
+    id: 'pm-complete-before-field-update',
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'project_manager',
+    progressConfirmedAt: '2026-07-16T12:00:00.000Z',
+  })],
+  updates: [update({
+    id: 'newer-in-progress-update',
+    date: '2026-07-16T17:00:00.000Z',
+    notes: 'Electrical rough-in is still in progress and not complete.',
+    scheduleItemId: 'pm-complete-before-field-update',
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  newerFieldUpdateReopensPmCompletion.warnings.some(item => item.type === 'schedule_status_conflict'),
+  'Field evidence recorded after PM completion must reopen the conflict.',
+);
+
 const threatened = buildPIEScheduleReconciliation({
   scheduleItems: [schedule()],
   updates: [update({

@@ -167,19 +167,20 @@ function correlateTask(
   const directPMProgress = latestPMJudgment?.stance === 'in_progress';
   const directPMNotComplete = latestPMJudgment?.stance === 'not_complete';
   const reportedNotComplete = uniqueEvidence.some(claim => claim.authority !== 'schedule' && claim.stance === 'not_complete');
-  const contradictionAfterVerification = directPMComplete && Boolean(latestPMJudgment?.recordedAt) && uniqueEvidence.some(claim =>
-    claim.authority !== 'verified' &&
-    claim.stance === 'not_complete' &&
-    isAfter(claim.recordedAt, latestPMJudgment?.recordedAt || null),
-  );
-  const contradictionAfterPMJudgment = directPMComplete && Boolean(item.progressConfirmedAt) && uniqueEvidence.some(claim =>
-    claim.authority !== 'verified' &&
-    claim.stance === 'not_complete' &&
-    isAfter(claim.recordedAt, item.progressConfirmedAt || null),
-  );
   const observedProgress = uniqueEvidence.some(claim => claim.authority === 'observed' && claim.stance === 'in_progress');
   const scheduleClaimsComplete = item.status === 'Complete' || item.percentComplete >= 100;
   const scheduleClaimsNotStarted = item.status === 'Not Started' && item.percentComplete === 0;
+  const authoritativeCompletionAt = verification?.status === 'pm_verified'
+    ? verification.verifiedAt || verification.reportedAt || null
+    : pmScheduleJudgment && scheduleClaimsComplete
+      ? item.progressConfirmedAt || item.importedAt || item.createdAt || null
+      : null;
+  const newerContradictoryFieldEvidence = Boolean(authoritativeCompletionAt) && uniqueEvidence.some(claim =>
+    (claim.kind === 'field_update' || claim.kind === 'photo') &&
+    claim.authority !== 'verified' &&
+    (claim.stance === 'not_complete' || claim.stance === 'in_progress') &&
+    isAfter(claim.recordedAt, authoritativeCompletionAt),
+  );
 
   let conclusion: DAVETaskCorrelationConclusion = 'schedule_only';
   let confidence: DAVETaskEvidenceCorrelation['confidence'] = 'medium';
@@ -188,7 +189,7 @@ function correlateTask(
   let needsVerification = false;
   let requestedAction: string | null = null;
 
-  if (contradictionAfterVerification || contradictionAfterPMJudgment) {
+  if (newerContradictoryFieldEvidence) {
     conclusion = 'conflicting_evidence';
     confidence = 'high';
     contradiction = 'Newer field evidence reports unfinished or changed work after the task was previously PM verified.';
@@ -205,6 +206,12 @@ function correlateTask(
     explanation = directPMNotComplete
       ? 'A project manager stated that the work is not complete. That statement is the authoritative current-condition evidence.'
       : 'The completion claim was reviewed and rejected; the prior schedule status remains authoritative.';
+    needsVerification = false;
+    requestedAction = null;
+  } else if (directPMProgress && scheduleClaimsComplete) {
+    conclusion = 'progress_observed';
+    confidence = 'high';
+    explanation = 'A newer project-manager field update says the work remains in progress, so it supersedes the earlier completion status.';
     needsVerification = false;
     requestedAction = null;
   } else if (directPMProgress || pmScheduleJudgment) {

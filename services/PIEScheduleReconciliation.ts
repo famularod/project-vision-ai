@@ -72,6 +72,30 @@ export function scheduleHasAuthoritativeProgressJudgment(item: ScheduleItem) {
   return item.status === 'In Progress' && boundedPercent(item.percentComplete) > 0;
 }
 
+export function scheduleCompletionOverridesFieldMatch(
+  item: ScheduleItem,
+  match: Pick<PIEScheduleFieldMatch, 'capturedAt'> | null,
+) {
+  if (item.status !== 'Complete' && boundedPercent(item.percentComplete) < 100) return false;
+
+  const verification = item.completionVerification;
+  const pmVerified = verification?.status === 'pm_verified';
+  const pmRecorded = item.progressSource === 'project_manager';
+  if (!pmVerified && !pmRecorded) return false;
+
+  const completionAt = timestamp(
+    pmVerified
+      ? verification?.verifiedAt || verification?.reportedAt || null
+      : item.progressConfirmedAt || item.importedAt || item.createdAt || null,
+  );
+  const fieldAt = timestamp(match?.capturedAt || null);
+
+  // A PM's completion decision is authoritative when chronology is unavailable.
+  // When both timestamps exist, only genuinely newer field evidence can reopen it.
+  if (completionAt === 0 || fieldAt === 0) return true;
+  return completionAt >= fieldAt;
+}
+
 const DAY_MS = 86_400_000;
 const RECENT_EVIDENCE_DAYS = 14;
 const NEAR_TERM_DAYS = 14;
@@ -184,7 +208,8 @@ export function buildPIEScheduleReconciliation({
     if (bestMatch?.confidence === 'high' || bestMatch?.confidence === 'medium') {
       if (
         item.status === 'Complete' &&
-        ['blocked', 'issue', 'in_progress'].includes(bestMatch.signal)
+        ['blocked', 'issue', 'in_progress'].includes(bestMatch.signal) &&
+        !scheduleCompletionOverridesFieldMatch(item, bestMatch)
       ) {
         warnings.push(makeWarning({
           item,

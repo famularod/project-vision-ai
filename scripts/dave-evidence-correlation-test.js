@@ -70,11 +70,11 @@ function evidence(id, kind, summary) {
   return { id, kind, sourceRecordId: id, sourceName: 'Source', summary, recordedAt: '2026-07-16T12:00:00.000Z' };
 }
 
-function update(id, taskId, notes, photos = []) {
+function update(id, taskId, notes, photos = [], date = '2026-07-16T13:00:00.000Z') {
   return {
     id,
     projectName: 'Alpha',
-    date: '2026-07-16T13:00:00.000Z',
+    date,
     photos,
     notes,
     recipients: { contactIds: [] },
@@ -187,6 +187,45 @@ const pmSaidComplete = buildDAVEEvidenceCorrelations({
 assert.strictEqual(pmSaidComplete.tasks[0].conclusion, 'verified_complete');
 assert.strictEqual(pmSaidComplete.tasks[0].needsVerification, false);
 assert.match(pmSaidComplete.tasks[0].explanation, /authoritative completion evidence/i);
+
+const pmCompletionAfterFieldProgress = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('pm-complete-after-progress', {
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'project_manager',
+    progressConfirmedAt: '2026-07-16T15:00:00.000Z',
+    progressConfirmedBy: 'David',
+  })],
+  updates: [update(
+    'older-progress',
+    'pm-complete-after-progress',
+    'The work is still in progress.',
+    [],
+    '2026-07-16T13:00:00.000Z',
+  )],
+});
+assert.strictEqual(pmCompletionAfterFieldProgress.tasks[0].conclusion, 'verified_complete');
+assert.strictEqual(pmCompletionAfterFieldProgress.tasks[0].needsVerification, false);
+
+const fieldProgressAfterPmCompletion = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('progress-after-pm-complete', {
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'project_manager',
+    progressConfirmedAt: '2026-07-16T12:00:00.000Z',
+    progressConfirmedBy: 'David',
+  })],
+  updates: [update(
+    'newer-progress',
+    'progress-after-pm-complete',
+    'The work is still in progress.',
+    [],
+    '2026-07-16T15:00:00.000Z',
+  )],
+});
+assert.strictEqual(fieldProgressAfterPmCompletion.tasks[0].conclusion, 'progress_observed');
+assert.strictEqual(fieldProgressAfterPmCompletion.tasks[0].needsVerification, false);
+assert.match(fieldProgressAfterPmCompletion.tasks[0].explanation, /supersedes the earlier completion status/i);
 
 const pmFieldStatement = buildDAVEEvidenceCorrelations({
   scheduleItems: [task('pm-field-statement', { status: 'In Progress', percentComplete: 80 })],
