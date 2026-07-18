@@ -43,6 +43,26 @@ const buildCoreMock = buildLivePIECoreIntelligence as jest.MockedFunction<
 const createProjectTruthRepositoryMock = createDAVEProjectTruthRepository as jest.MockedFunction<
   typeof createDAVEProjectTruthRepository
 >;
+type CoreResult = Awaited<ReturnType<typeof buildLivePIECoreIntelligence>>;
+
+function coreResult(projectId = 'project-1'): CoreResult {
+  return {
+    runtime: {
+      generatedAt: '2026-07-17T12:00:00.000Z',
+      response: {},
+    },
+    realityAuthority: {
+      modelId: projectId,
+      persistenceStatus: 'authoritative_local',
+    },
+    realityModel: {
+      organizationId: 'organization-1',
+      projectId,
+      evidenceConflicts: [],
+      activeUncertainties: [],
+    },
+  } as unknown as CoreResult;
+}
 
 function authorityInput(hydrated: boolean): PIELiveAuthorityInput {
   return {
@@ -102,11 +122,15 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
     expect(buildCoreMock).not.toHaveBeenCalled();
     expect(saveProjectTruthMock).not.toHaveBeenCalled();
 
+    buildCoreMock.mockResolvedValueOnce(coreResult());
     await screen.rerender(
       <PIELiveAuthorityProvider input={authorityInput(true)}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     expect(buildCoreMock).toHaveBeenCalledTimes(1);
     expect(createProjectTruthRepositoryMock).toHaveBeenCalled();
@@ -114,7 +138,6 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
   });
 
   it('discards a Core result that finishes after readiness returns to pending', async () => {
-    type CoreResult = Awaited<ReturnType<typeof buildLivePIECoreIntelligence>>;
     let resolveCore!: (result: CoreResult) => void;
     buildCoreMock.mockReturnValue(new Promise(resolve => {
       resolveCore = resolve;
@@ -134,22 +157,7 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
     );
 
     await act(async () => {
-      resolveCore({
-        runtime: {
-          generatedAt: '2026-07-17T12:00:00.000Z',
-          response: {},
-        },
-        realityAuthority: {
-          modelId: 'project-1',
-          persistenceStatus: 'authoritative_local',
-        },
-        realityModel: {
-          organizationId: 'organization-1',
-          projectId: 'project-1',
-          evidenceConflicts: [],
-          activeUncertainties: [],
-        },
-      } as unknown as CoreResult);
+      resolveCore(coreResult());
     });
 
     expect(currentAuthority?.state).toBe('loading');
