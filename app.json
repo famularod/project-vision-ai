@@ -2,14 +2,14 @@
   "expo": {
     "name": "Project Photo Update Tool",
     "slug": "project-photo-update-tool",
-    "version": "1.0.50",
+    "version": "1.0.51",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.png",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.davidfamularo.projectphotoupdate",
-      "buildNumber": "50",
+      "buildNumber": "51",
       "icon": "./assets/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Allow Project Photo Update Tool to capture project photos as field evidence.",
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "com.davidfamularo.projectphotoupdate",
-      "versionCode": 50,
+      "versionCode": 51,
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#19466F"
