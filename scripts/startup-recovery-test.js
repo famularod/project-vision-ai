@@ -78,6 +78,10 @@ async function testStartup() {
   });
   const recovery = loadStartupRecovery(storage);
   const result = await recovery.readStartupJson('valid', [], 'valid records');
+  assert.strictEqual(result.state, 'loaded');
+  assert.strictEqual(result.key, 'valid');
+  assert.strictEqual(result.label, 'valid records');
+  assert.strictEqual(result.found, true);
   assert(Array.isArray(result.value), 'valid JSON should parse');
   const normalized = recovery.normalizeStartupArray(
     result.value,
@@ -89,6 +93,13 @@ async function testStartup() {
   );
   assert.strictEqual(JSON.stringify(normalized.value), JSON.stringify([{ id: 'one' }]));
   assert.strictEqual(normalized.isolatedRecordCount, 0);
+
+  const fallback = [{ id: 'first-run-default' }];
+  const missing = await recovery.readStartupJson('missing', fallback, 'missing records');
+  assert.strictEqual(missing.state, 'missing');
+  assert.strictEqual(missing.key, 'missing');
+  assert.strictEqual(missing.found, false);
+  assert.strictEqual(missing.value, fallback, 'only a truly missing key may hydrate its fallback');
 }
 
 async function testUpgrade() {
@@ -97,6 +108,7 @@ async function testUpgrade() {
   });
   const recovery = loadStartupRecovery(storage);
   const result = await recovery.readStartupJson('older', [], 'older records');
+  assert.strictEqual(result.state, 'loaded');
   const normalized = recovery.normalizeStartupArray(
     result.value,
     record => {
@@ -117,14 +129,54 @@ async function testRecovery() {
     corrupt: '{not-json',
   });
   const recovery = loadStartupRecovery(storage);
-  const result = await recovery.readStartupJson('corrupt', [], 'corrupt records');
-  assert.deepStrictEqual(result.value, []);
+  const fallback = [{ id: 'must-not-hydrate' }];
+  const result = await recovery.readStartupJson('corrupt', fallback, 'corrupt records');
+  assert.strictEqual(result.state, 'corrupt_quarantined');
+  assert.strictEqual(result.key, 'corrupt');
   assert.strictEqual(result.recovered, true);
+  assert.throws(
+    () => result.value,
+    /cannot hydrate.*corrupt_quarantined/i,
+    'corrupt storage must not expose the fallback value',
+  );
   assert.strictEqual(storage.data.has('corrupt'), false, 'corrupt value should be removed from active key');
   assert(
     Array.from(storage.data.keys()).some(key => key.startsWith('corrupt.corrupt.')),
     'corrupt value should be quarantined',
   );
+
+  const retryStorage = memoryStorage({
+    retryable: JSON.stringify([{ id: 'persisted' }]),
+  });
+  const persistedGet = retryStorage.getItem.bind(retryStorage);
+  let failRead = true;
+  retryStorage.getItem = async key => {
+    if (failRead) throw new Error('temporary storage unavailable');
+    return persistedGet(key);
+  };
+  const retryRecovery = loadStartupRecovery(retryStorage);
+  const failed = await retryRecovery.readStartupJson(
+    'retryable',
+    fallback,
+    'retryable records',
+  );
+  assert.strictEqual(failed.state, 'read_failed');
+  assert.strictEqual(failed.key, 'retryable');
+  assert.strictEqual(failed.recovered, false);
+  assert.throws(
+    () => failed.value,
+    /cannot hydrate.*read_failed/i,
+    'a transient read failure must not become fallback hydration',
+  );
+
+  failRead = false;
+  const retried = await retryRecovery.readStartupJson(
+    'retryable',
+    fallback,
+    'retryable records',
+  );
+  assert.strictEqual(retried.state, 'loaded');
+  assert.strictEqual(JSON.stringify(retried.value), JSON.stringify([{ id: 'persisted' }]));
 }
 
 function testStaticStartupGuards() {

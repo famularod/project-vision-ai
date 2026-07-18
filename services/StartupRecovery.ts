@@ -4,13 +4,78 @@ import {
   startupErrorMessage,
 } from './StartupDiagnostics';
 
-export type StartupStorageReadResult<T> = {
+export type StartupStorageReadState =
+  | 'missing'
+  | 'loaded'
+  | 'corrupt_quarantined'
+  | 'read_failed';
+
+type StartupStorageReadBase = {
+  state: StartupStorageReadState;
+  key: string;
+  label: string;
+  recovered: boolean;
+  isolatedRecordCount: number;
+  error: string | null;
+  found: boolean;
+};
+
+export type StartupStorageReadResult<T> =
+  | (StartupStorageReadBase & {
+      state: 'loaded';
+      value: T;
+      error: null;
+      found: true;
+    })
+  | (StartupStorageReadBase & {
+      state: 'missing';
+      value: T;
+      error: null;
+      found: false;
+    })
+  | (StartupStorageReadBase & {
+      state: 'corrupt_quarantined';
+      /** Access throws so legacy consumers cannot hydrate a fallback. */
+      value: never;
+      error: string;
+      found: false;
+    })
+  | (StartupStorageReadBase & {
+      state: 'read_failed';
+      /** Access throws so legacy consumers cannot hydrate a fallback. */
+      value: never;
+      error: string;
+      found: false;
+    });
+
+export type StartupNormalizationResult<T> = {
   value: T;
   recovered: boolean;
   isolatedRecordCount: number;
   error: string | null;
-  found?: boolean;
 };
+
+export class StartupStorageUnavailableError extends Error {
+  readonly state: 'corrupt_quarantined' | 'read_failed';
+  readonly key: string;
+
+  constructor({
+    state,
+    key,
+    label,
+    detail,
+  }: {
+    state: 'corrupt_quarantined' | 'read_failed';
+    key: string;
+    label: string;
+    detail: string;
+  }) {
+    super(`${label} cannot hydrate because storage is ${state}: ${detail}`);
+    this.name = 'StartupStorageUnavailableError';
+    this.state = state;
+    this.key = key;
+  }
+}
 
 export async function readStartupJson<T>(
   key: string,
@@ -22,11 +87,14 @@ export async function readStartupJson<T>(
   });
   try {
     const raw = await AsyncStorage.getItem(key);
-    if (!raw) {
+    if (raw === null) {
       logStartupDiagnostic('storage_hydration_completed', `${label} hydration completed with defaults.`, {
         key,
       });
       return {
+        state: 'missing',
+        key,
+        label,
         value: fallback,
         recovered: false,
         isolatedRecordCount: 0,
@@ -41,6 +109,9 @@ export async function readStartupJson<T>(
         key,
       });
       return {
+        state: 'loaded',
+        key,
+        label,
         value: parsed,
         recovered: false,
         isolatedRecordCount: 0,
@@ -48,27 +119,40 @@ export async function readStartupJson<T>(
         found: true,
       };
     } catch (error) {
-      await quarantineStartupStorageValue(key, raw, label, error);
-      return {
-        value: fallback,
+      const parseError = startupErrorMessage(error);
+      const quarantine = await quarantineStartupStorageValue(key, raw, label, error);
+      if (!quarantine.quarantined) {
+        return unavailableStartupResult({
+          state: 'read_failed',
+          key,
+          label,
+          error: `${parseError}; quarantine failed: ${quarantine.error}`,
+          recovered: false,
+          isolatedRecordCount: 0,
+        });
+      }
+      return unavailableStartupResult({
+        state: 'corrupt_quarantined',
+        key,
+        label,
+        error: parseError,
         recovered: true,
         isolatedRecordCount: 1,
-        error: startupErrorMessage(error),
-        found: false,
-      };
+      });
     }
   } catch (error) {
     logStartupDiagnostic('startup_failure', `${label} storage read failed.`, {
       key,
       error: startupErrorMessage(error),
     });
-    return {
-      value: fallback,
-      recovered: true,
-      isolatedRecordCount: 0,
+    return unavailableStartupResult({
+      state: 'read_failed',
+      key,
+      label,
       error: startupErrorMessage(error),
-      found: false,
-    };
+      recovered: false,
+      isolatedRecordCount: 0,
+    });
   }
 }
 
@@ -76,7 +160,7 @@ export function normalizeStartupArray<T>(
   value: unknown,
   normalizeRecord: (record: unknown) => T,
   label: string,
-): StartupStorageReadResult<T[]> {
+): StartupNormalizationResult<T[]> {
   if (!Array.isArray(value)) {
     if (value !== null && value !== undefined) {
       logStartupDiagnostic('storage_record_isolated', `${label} storage was not an array.`, {
@@ -129,10 +213,52 @@ export async function quarantineStartupStorageValue(
       quarantineKey,
       error: startupErrorMessage(error),
     });
+    return { quarantined: true as const, quarantineKey, error: null };
   } catch (quarantineError) {
+    const quarantineErrorMessage = startupErrorMessage(quarantineError);
     logStartupDiagnostic('storage_record_isolated', `${label} storage could not be quarantined.`, {
       key,
-      error: startupErrorMessage(quarantineError),
+      error: quarantineErrorMessage,
     });
+    return {
+      quarantined: false as const,
+      quarantineKey: null,
+      error: quarantineErrorMessage,
+    };
   }
+}
+
+function unavailableStartupResult<T>({
+  state,
+  key,
+  label,
+  error,
+  recovered,
+  isolatedRecordCount,
+}: {
+  state: 'corrupt_quarantined' | 'read_failed';
+  key: string;
+  label: string;
+  error: string;
+  recovered: boolean;
+  isolatedRecordCount: number;
+}): StartupStorageReadResult<T> {
+  const unavailable = {
+    state,
+    key,
+    label,
+    recovered,
+    isolatedRecordCount,
+    error,
+    found: false as const,
+    get value(): never {
+      throw new StartupStorageUnavailableError({
+        state,
+        key,
+        label,
+        detail: error,
+      });
+    },
+  };
+  return unavailable as StartupStorageReadResult<T>;
 }
