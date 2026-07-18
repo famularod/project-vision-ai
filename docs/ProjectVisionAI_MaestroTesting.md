@@ -8,19 +8,19 @@ The goal is to protect the highest-risk mobile workflows without changing app be
 
 - App launches
 - Bottom navigation works
-- Projects opens
-- Project Overview opens from a project
-- Capture starts from bottom navigation
+- Seed projects appear on Overview
+- Project Brief opens from an active project
+- New Field Update opens from a project
 - Reports opens
-- More/Admin opens
+- Settings opens
 
 These tests are intentionally simple. They use visible text selectors so they reflect the same interface a project manager sees in the field.
 
 ## Current Status
 
-Maestro is not currently installed or configured in this repository.
-
-No packages were installed as part of this sprint.
+The repository contains current Overview, Tasks, Talk, and Reports flows. A
+Maestro CLI plus a booted iOS simulator or Android emulator/device is still
+required to execute them; native execution is not replaced by source checks.
 
 The repository now includes Maestro flow files in:
 

@@ -1,9 +1,10 @@
 appId: ${APP_ID}
 ---
 - launchApp
-- tapOn: "More"
-- assertVisible: "Admin"
-- assertVisible: "Cloud Status"
-- assertVisible: "Admin Actions"
-- assertVisible: "Diagnostics"
-
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- tapOn: "Open Settings"
+- assertVisible: "Settings"
+- assertVisible: "Sync Now"
+- assertVisible: "Back Up Data"

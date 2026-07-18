@@ -1,7 +1,12 @@
 appId: ${APP_ID}
+env:
+  PROJECT_NAME: ${PROJECT_NAME || "2375 Compliance Project"}
 ---
 - launchApp
-- tapOn: "Capture"
-- assertVisible: "Add Photos"
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- tapOn: ${PROJECT_NAME}
+- tapOn: "New Field Update"
+- assertVisible: "Capture Evidence"
 - assertVisible: "Take Photo"
-- assertVisible: "Change Project"
