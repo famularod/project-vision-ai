@@ -10123,6 +10123,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     updateDetailReturnScreenRef.current = returnScreen;
 
     if (lifecycle === 'sent' || lifecycle === 'queued') {
+      // Audit P1-56: opening any update binds the workspace to that update's
+      // project, so Back, Talk, and reports target the right project.
+      setSelectedWorkspaceProject(update.projectName);
       setSelectedDetailUpdate(update);
       setScreen('UpdateDetail');
       return;
