@@ -8,6 +8,7 @@ import {
   renameProjectIdentity,
   requireProjectId,
   requireProjectPersistenceScope,
+  restoreProjectRecords,
   scopeContainsProject,
 } from '../../services/ProjectIdentity';
 
@@ -60,5 +61,27 @@ describe('ProjectIdentity', () => {
   it('rejects blank display and portfolio identifiers', () => {
     expect(() => createProjectIdentity('   ', PROJECT_A_ID)).toThrow(/display name/i);
     expect(() => portfolioScopeFor('  ', [PROJECT_A_ID])).toThrow(/portfolio identifier/i);
+  });
+});
+
+describe('restoreProjectRecords (audit P1-41)', () => {
+  it('drops records absent from the restore so they cannot resurrect', () => {
+    const previous = [{ name: 'Old Site', coverPhoto: 'x' }, { name: 'Kept Site' }];
+
+    const restored = restoreProjectRecords(previous, ['Kept Site', 'New Site']);
+
+    expect(restored.map(record => record.name)).toEqual(['Kept Site', 'New Site']);
+  });
+
+  it('preserves existing record metadata for restored names', () => {
+    const previous = [{ name: 'Kept Site', coverPhoto: 'cover.jpg' }];
+
+    const restored = restoreProjectRecords(previous, ['kept site']);
+
+    expect(restored[0]).toEqual({ name: 'Kept Site', coverPhoto: 'cover.jpg' });
+  });
+
+  it('creates bare records for names with no prior record', () => {
+    expect(restoreProjectRecords([], ['Fresh Site'])).toEqual([{ name: 'Fresh Site' }]);
   });
 });

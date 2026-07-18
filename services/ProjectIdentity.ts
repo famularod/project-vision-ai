@@ -115,3 +115,21 @@ function normalizeProjectDisplayName(value: string): string {
   }
   return name;
 }
+
+/**
+ * Audit P1-41: backup restore must rebuild the canonical project record
+ * repository, not just the derived names array. Records for restored names
+ * keep their existing metadata; records absent from the restore are dropped
+ * so they cannot resurrect on the next launch.
+ */
+export function restoreProjectRecords<T extends { name: string }>(
+  previous: readonly T[],
+  restoredNames: readonly string[],
+): (T | { name: string })[] {
+  const previousByKey = new Map(
+    previous.map(record => [record.name.trim().toLowerCase(), record]),
+  );
+  return restoredNames.map(name =>
+    previousByKey.get(name.trim().toLowerCase()) ?? { name },
+  );
+}

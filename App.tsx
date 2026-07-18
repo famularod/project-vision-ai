@@ -90,7 +90,7 @@ import type {
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
 import { normalizeStartupArray, readStartupJson } from './services/StartupRecovery';
 import { createDurableLocalTransactionRepository } from './services/DurableLocalTransaction';
-import { createProjectId } from './services/ProjectIdentity';
+import { createProjectId, restoreProjectRecords } from './services/ProjectIdentity';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -9106,6 +9106,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       cloudUpdates: [],
       tombstones: deletedUpdateTombstonesRef.current,
     }));
+    // Audit P1-41: projectRecords is the canonical project repository that
+    // rehydrates on restart. Restoring only the derived names array left the
+    // old records in place, resurrecting pre-restore projects after relaunch.
+    setProjectRecords(previous => restoreProjectRecords(previous, restoredProjects));
     setProjects(restoredProjects);
     setArchivedProjects(
       mergeProjectNames([], data.archivedProjects),
