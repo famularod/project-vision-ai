@@ -349,6 +349,21 @@ export function createDecisionRecord(input: PIEDecisionRecordInput): PIEDecision
   return freezeDecision(record);
 }
 
+/**
+ * Audit P1-37: the operative snapshot is the CURRENT corrected version.
+ * `immutableSnapshot` remains only as the original audit baseline; every
+ * transition, automation, validation, and UI consumer must resolve through
+ * this function so corrections actually take effect.
+ */
+export function currentDecisionSnapshot(
+  decision: PIEDecisionRecord,
+): PIEDecisionSnapshot {
+  const current = decision.versions.find(
+    version => version.version === decision.currentVersion,
+  );
+  return current?.snapshot ?? decision.immutableSnapshot;
+}
+
 export function appendDecisionSnapshotVersion(
   decision: PIEDecisionRecord,
   snapshot: PIEDecisionSnapshot,
@@ -594,7 +609,8 @@ export function validateDecisionTransition(input: PIEDecisionTransitionInput): P
     reasons.push('Implemented decisions require an outcome plan.');
   }
 
-  if (nextStatus === 'implemented' && decision.immutableSnapshot.predictedOutcomes.length === 0) {
+  // Audit P1-37: validate against the operative (current) snapshot.
+  if (nextStatus === 'implemented' && currentDecisionSnapshot(decision).predictedOutcomes.length === 0) {
     reasons.push('Implemented decisions require at least one predicted outcome.');
   }
 
@@ -826,7 +842,8 @@ function validateActualOutcome(
     throw new Error('Actual outcome boundary does not match the decision.');
   }
   validateEvidenceBoundaries(decision.organizationId, decision.projectId, outcome.evidenceReferences);
-  const predictedIds = new Set(decision.immutableSnapshot.predictedOutcomes.map(item => item.id));
+  // Audit P1-37: predicted outcomes come from the operative snapshot.
+  const predictedIds = new Set(currentDecisionSnapshot(decision).predictedOutcomes.map(item => item.id));
   outcome.predictionComparisons.forEach(comparison => {
     if (!predictedIds.has(comparison.predictedOutcomeId)) {
       throw new Error('Actual outcome comparison is disconnected from predicted outcomes.');

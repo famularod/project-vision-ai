@@ -40,12 +40,13 @@ import {
 } from '../services/domains/reporting';
 import type { PIEExecutiveJudgmentRecord } from '../services/PIEExecutiveJudgmentRepository';
 import { usePIELiveAuthority } from '../providers/PIELiveAuthorityProvider';
-import type {
-  PIEImplementationQuality,
-  PIEOutcomeClassification,
-  PIEOutcomeValidationStatus,
-  PIEDecisionRecord,
-  PIEEvidenceReference,
+import {
+  currentDecisionSnapshot,
+  type PIEImplementationQuality,
+  type PIEOutcomeClassification,
+  type PIEOutcomeValidationStatus,
+  type PIEDecisionRecord,
+  type PIEEvidenceReference,
 } from '../services/PIEDecisionLedger';
 import type { PIELayer4ActorContext } from '../services/PIELayer4Identity';
 import type {
@@ -1475,7 +1476,7 @@ function DecisionLedgerPanel({
                 ]}
                 onPress={() => setSelectedDecisionId(decision.id)}
                 accessibilityRole="button"
-                accessibilityLabel={`View decision ${decision.immutableSnapshot.selectedOption}`}
+                accessibilityLabel={`View decision ${currentDecisionSnapshot(decision).selectedOption}`}
               >
                 <Text
                   style={[
@@ -1648,7 +1649,8 @@ function DecisionSnapshotSummary({
 }: {
   decision: PIEDecisionRecord;
 }) {
-  const snapshot = decision.immutableSnapshot;
+  // Audit P1-37: display the operative (current corrected) snapshot.
+  const snapshot = currentDecisionSnapshot(decision);
   const latestOutcome = decision.actualOutcomes[decision.actualOutcomes.length - 1];
 
   return (
