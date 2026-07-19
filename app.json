@@ -5,7 +5,8 @@
     "version": "1.0.73",
     "platforms": [
       "ios",
-      "android"
+      "android",
+      "web"
     ],
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -64,8 +65,14 @@
           "enableBackgroundRecording": false
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-router"
     ],
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/icon.png"
+    },
     "extra": {
       "buildLabel": "Build 73",
       "eas": {
