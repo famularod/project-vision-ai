@@ -25,6 +25,7 @@ export function DocumentsWideWorkspace<T extends DocumentWorkspaceItem>({
   selectedDocumentId,
   onSelectDocument,
   masterHeader,
+  inspectorActions,
   inspector,
   emptyState,
 }: {
@@ -32,6 +33,7 @@ export function DocumentsWideWorkspace<T extends DocumentWorkspaceItem>({
   selectedDocumentId: string | null;
   onSelectDocument: (documentId: string) => void;
   masterHeader: ReactElement;
+  inspectorActions?: ReactNode;
   inspector: ReactNode;
   emptyState: ReactElement;
 }) {
@@ -65,7 +67,10 @@ export function DocumentsWideWorkspace<T extends DocumentWorkspaceItem>({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.inspectorEyebrow}>DOCUMENT INSPECTOR</Text>
+        <View style={styles.inspectorToolbar}>
+          <Text style={styles.inspectorEyebrow}>DOCUMENT INSPECTOR</Text>
+          {inspectorActions}
+        </View>
         {inspector}
       </ScrollView>
     </View>
@@ -203,5 +208,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '900',
     letterSpacing: 1.2,
+  },
+  inspectorToolbar: {
+    minHeight: 48,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.lg,
   },
 });

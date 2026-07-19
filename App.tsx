@@ -72,7 +72,7 @@ import { ScheduleWideWorkspace } from './components/schedule-workspace-layout';
 import { NativeDateField } from './components/native-date-field';
 import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
-import { ProjectDocumentsHeader } from './components/project-documents-header';
+import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
 import { resolveScheduleWorkspaceTask, scheduleItemsForWorkspaceProject,
   scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
@@ -16706,6 +16706,7 @@ function ProjectDocumentsScreen({
       onBack={onBack}
       onUpload={onUpload}
       onTakePhoto={onTakePhoto}
+      showActions={sizeClass !== 'wide'}
     />
   );
   const emptyState = documents.length === 0 ? (
@@ -16727,6 +16728,7 @@ function ProjectDocumentsScreen({
         selectedDocumentId={selectedDocument?.id || null}
         onSelectDocument={setSelectedDocumentId}
         masterHeader={listHeader}
+        inspectorActions={<ProjectDocumentActions onUpload={onUpload} onTakePhoto={onTakePhoto} wide />}
         emptyState={emptyState}
         inspector={selectedDocument ? (
           <ProjectDocumentCard

@@ -13,6 +13,7 @@ export function ProjectDocumentsHeader<T extends string>({
   onBack,
   onUpload,
   onTakePhoto,
+  showActions = true,
 }: {
   projectName: string;
   categories: readonly T[];
@@ -21,6 +22,7 @@ export function ProjectDocumentsHeader<T extends string>({
   onBack: () => void;
   onUpload: () => void;
   onTakePhoto: () => void;
+  showActions?: boolean;
 }) {
   return (
     <View style={styles.header} testID="project-documents-header">
@@ -30,19 +32,9 @@ export function ProjectDocumentsHeader<T extends string>({
         onBack={onBack}
       />
 
-      <View style={styles.actionRow}>
-        <DocumentAction
-          label="Upload Document"
-          icon="document-attach-outline"
-          primary
-          onPress={onUpload}
-        />
-        <DocumentAction
-          label="Take Photo of Document"
-          icon="camera-outline"
-          onPress={onTakePhoto}
-        />
-      </View>
+      {showActions ? (
+        <ProjectDocumentActions onUpload={onUpload} onTakePhoto={onTakePhoto} />
+      ) : null}
 
       <ScreenCard style={styles.statusCard}>
         <Text style={styles.statusTitle}>Document Status</Text>
@@ -73,21 +65,55 @@ export function ProjectDocumentsHeader<T extends string>({
   );
 }
 
+export function ProjectDocumentActions({
+  onUpload,
+  onTakePhoto,
+  wide = false,
+}: {
+  onUpload: () => void;
+  onTakePhoto: () => void;
+  wide?: boolean;
+}) {
+  return (
+    <View
+      style={[styles.actionRow, wide && styles.actionRowWide]}
+      testID="project-document-actions"
+    >
+      <DocumentAction
+        label="Upload Document"
+        icon="document-attach-outline"
+        primary
+        wide={wide}
+        onPress={onUpload}
+      />
+      <DocumentAction
+        label="Take Photo of Document"
+        icon="camera-outline"
+        wide={wide}
+        onPress={onTakePhoto}
+      />
+    </View>
+  );
+}
+
 function DocumentAction({
   label,
   icon,
   primary = false,
+  wide = false,
   onPress,
 }: {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   primary?: boolean;
+  wide?: boolean;
   onPress: () => void;
 }) {
   return (
     <Pressable
       style={({ pressed }) => [
         styles.action,
+        wide && styles.actionWide,
         primary && styles.actionPrimary,
         pressed && styles.pressed,
       ]}
@@ -100,7 +126,10 @@ function DocumentAction({
         size={19}
         color={primary ? colors.surface : colors.primary}
       />
-      <Text style={[styles.actionText, primary && styles.actionTextPrimary]}>
+      <Text
+        style={[styles.actionText, primary && styles.actionTextPrimary]}
+        numberOfLines={wide ? 1 : undefined}
+      >
         {label}
       </Text>
     </Pressable>
@@ -150,6 +179,12 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: spacing.sm,
   },
+  actionRowWide: {
+    minWidth: 190,
+    flexGrow: 1,
+    flexShrink: 1,
+    justifyContent: 'flex-end',
+  },
   action: {
     minHeight: 48,
     flexGrow: 1,
@@ -167,6 +202,12 @@ const styles = StyleSheet.create({
   actionPrimary: {
     borderColor: colors.primary,
     backgroundColor: colors.primary,
+  },
+  actionWide: {
+    minWidth: 190,
+    maxWidth: 250,
+    flexGrow: 1,
+    flexBasis: 190,
   },
   actionText: {
     color: colors.primary,

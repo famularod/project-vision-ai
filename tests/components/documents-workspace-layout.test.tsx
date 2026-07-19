@@ -11,6 +11,7 @@ describe('DocumentsWideWorkspace', () => {
     const screen = await render(<DocumentsProbe />);
 
     expect(screen.getByTestId('documents-wide-workspace')).toBeTruthy();
+    expect(screen.getByTestId('document-inspector-actions')).toBeTruthy();
     expect(screen.getByText('Inspecting Site Plan')).toBeTruthy();
 
     await fireEvent.press(screen.getByRole('button', { name: 'Open document Permit Card' }));
@@ -37,6 +38,7 @@ function DocumentsProbe() {
       selectedDocumentId={selectedId}
       onSelectDocument={setSelectedId}
       masterHeader={<Text>Document controls</Text>}
+      inspectorActions={<Text testID="document-inspector-actions">Document actions</Text>}
       inspector={<Text>{`Inspecting ${selected.name}`}</Text>}
       emptyState={<Text>No documents</Text>}
     />

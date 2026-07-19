@@ -34,4 +34,22 @@ describe('ProjectDocumentsHeader', () => {
     expect(onTakePhoto).toHaveBeenCalledTimes(1);
     expect(onCategoryChange).toHaveBeenCalledWith('Permit Card');
   });
+
+  it('can move capture actions out of the narrow master column', async () => {
+    const screen = await render(
+      <ProjectDocumentsHeader
+        projectName="Project A"
+        categories={[] as const}
+        selectedCategory={null}
+        onCategoryChange={jest.fn()}
+        onBack={jest.fn()}
+        onUpload={jest.fn()}
+        onTakePhoto={jest.fn()}
+        showActions={false}
+      />,
+    );
+
+    expect(screen.queryByTestId('project-document-actions')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Upload Document' })).toBeNull();
+  });
 });
