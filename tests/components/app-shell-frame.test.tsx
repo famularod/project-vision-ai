@@ -1,5 +1,6 @@
-import { fireEvent, render } from '@testing-library/react-native';
-import { Text } from 'react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
+import { useState } from 'react';
+import { Dimensions, Pressable, Text } from 'react-native';
 
 import { AppShellFrame } from '../../components/app-shell-frame';
 
@@ -8,7 +9,25 @@ import { AppShellFrame } from '../../components/app-shell-frame';
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 
 describe('AppShellFrame', () => {
-  it('renders the active screen content and delegates primary navigation', async () => {
+  beforeEach(() => {
+    setWindowDimensions({
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    });
+  });
+
+  afterEach(() => {
+    setWindowDimensions({
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    });
+  });
+
+  it('preserves bottom navigation and behavior at compact phone width', async () => {
     const onScreenChange = jest.fn();
     const screen = await render(
       <AppShellFrame
@@ -21,8 +40,121 @@ describe('AppShellFrame', () => {
     );
 
     expect(screen.getByText('Current project overview')).toBeTruthy();
+    expect(screen.getByTestId('app-bottom-tabs')).toBeTruthy();
+    expect(screen.queryByTestId('app-navigation-rail')).toBeNull();
 
     await fireEvent.press(screen.getByRole('tab', { name: 'Tasks' }));
     expect(onScreenChange).toHaveBeenCalledWith('Schedule');
   });
+
+  it('uses a compact navigation rail at medium iPad width', async () => {
+    setWindowDimensions({
+      width: 768,
+      height: 1024,
+      scale: 2,
+      fontScale: 1,
+    });
+    const screen = await render(
+      <AppShellFrame
+        currentScreen="Home"
+        onScreenChange={jest.fn()}
+        onTalk={jest.fn()}
+      >
+        <Text>Portrait iPad workspace</Text>
+      </AppShellFrame>,
+    );
+
+    expect(screen.getByText('Portrait iPad workspace')).toBeTruthy();
+    expect(screen.getByTestId('app-navigation-rail')).toBeTruthy();
+    expect(screen.queryByText('Project Vision AI')).toBeNull();
+    expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
+  });
+
+  it('uses an expanded navigation rail at wide iPad width', async () => {
+    setWindowDimensions({
+      width: 1024,
+      height: 768,
+      scale: 2,
+      fontScale: 1,
+    });
+    const onScreenChange = jest.fn();
+    const onTalk = jest.fn();
+    const screen = await render(
+      <AppShellFrame
+        currentScreen="Schedule"
+        onScreenChange={onScreenChange}
+        onTalk={onTalk}
+      >
+        <Text>Wide project workspace</Text>
+      </AppShellFrame>,
+    );
+
+    expect(screen.getByText('Wide project workspace')).toBeTruthy();
+    expect(screen.getByTestId('app-navigation-rail')).toBeTruthy();
+    expect(screen.getByText('Project Vision AI')).toBeTruthy();
+    expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
+    expect(
+      screen.getByRole('tab', { name: 'Tasks' }).props.accessibilityState,
+    ).toEqual({ selected: true });
+
+    await fireEvent.press(screen.getByRole('tab', { name: 'Reports' }));
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Talk to project assistant' }),
+    );
+
+    expect(onScreenChange).toHaveBeenCalledWith('Reports');
+    expect(onTalk).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves child state when the window crosses a shell breakpoint', async () => {
+    const screen = await render(
+      <AppShellFrame
+        currentScreen="Home"
+        onScreenChange={jest.fn()}
+        onTalk={jest.fn()}
+      >
+        <StatefulDraftProbe />
+      </AppShellFrame>,
+    );
+
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Add draft item' }),
+    );
+    expect(screen.getByText('Draft items: 1')).toBeTruthy();
+
+    setWindowDimensions({
+      width: 1024,
+      height: 768,
+      scale: 2,
+      fontScale: 1,
+    });
+
+    expect(screen.getByTestId('app-navigation-rail')).toBeTruthy();
+    expect(screen.getByText('Draft items: 1')).toBeTruthy();
+  });
 });
+
+function StatefulDraftProbe() {
+  const [draftItems, setDraftItems] = useState(0);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Add draft item"
+      onPress={() => setDraftItems(current => current + 1)}
+    >
+      <Text>{`Draft items: ${draftItems}`}</Text>
+    </Pressable>
+  );
+}
+
+function setWindowDimensions(window: {
+  width: number;
+  height: number;
+  scale: number;
+  fontScale: number;
+}) {
+  act(() => {
+    Dimensions.set({ window, screen: window });
+  });
+}

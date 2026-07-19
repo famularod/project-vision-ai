@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { colors } from '../theme';
 import type { AppScreen } from '../types/app-navigation';
+import { isOverviewPrimaryNavigationActive } from './app-primary-navigation';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -15,18 +16,11 @@ export function AppBottomTabs({
   onTalk: () => void;
 }) {
   return (
-    <View style={styles.bottomTabs}>
+    <View style={styles.bottomTabs} testID="app-bottom-tabs">
       <TabButton
         label="Overview"
         icon="home-outline"
-        active={
-          current === 'Home' ||
-          current === 'ProjectWorkspace' ||
-          current === 'ProjectDocuments' ||
-          current === 'SavedUpdates' ||
-          current === 'UpdateDetail' ||
-          current === 'Admin'
-        }
+        active={isOverviewPrimaryNavigationActive(current)}
         onPress={() => onChange('Home')}
       />
 
