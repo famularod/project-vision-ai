@@ -145,7 +145,7 @@ assert(!screen.includes('Evidence & Uncertainty'));
 assert(screen.includes('Review the prepared report, make any edits, and approve it when ready.'));
 assert(screen.includes('const [completedAreasOpen, setCompletedAreasOpen] = useState(false)'));
 assert(screen.includes('const [writtenReportOpen, setWrittenReportOpen] = useState(false)'));
-assert(screen.includes('numberOfLines={3}'));
+assert(!screen.includes('numberOfLines={3}'));
 assert(screen.includes('Work Areas & Photos'));
 assert(screen.includes('Report Options'));
 assert(screen.includes('Image {reference.imageNumber} —'));

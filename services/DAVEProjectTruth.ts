@@ -766,7 +766,10 @@ function buildPMBriefing(input: {
   ]).slice(0, 3);
   const risks = uniqueText([
     ...input.reasoning.criticalDecisions.flatMap(item => item.challenges.slice(0, 1).map(challenge => `${item.taskName}: ${challenge.impact}`)),
-    ...conflicts.map(item => item.contradiction),
+    ...conflicts.map(item =>
+      `${item.taskName}${item.areaName ? ` (${item.areaName})` : ''}: ${item.contradiction} ` +
+      'Required follow-up: confirm completion in the field with supporting evidence, or correct the task status.',
+    ),
     ...input.core?.situationRisks.map(item => `${item.risk}: ${item.whyItMatters}`) ?? [],
     ...input.runtime?.evidenceConflicts.map(item => item.summary) ?? [],
     ...input.intelligence.projectReality.blockers.map(item => item.text),

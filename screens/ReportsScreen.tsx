@@ -1336,7 +1336,7 @@ function ReportSummaryCard({
     ]}>
       <Text style={styles.reportSummaryTitle}>{title}</Text>
       {items.map((item, index) => (
-        <Text selectable key={`${title}-${index}-${item}`} style={styles.reportSummaryText} numberOfLines={3}>
+        <Text selectable key={`${title}-${index}-${item}`} style={styles.reportSummaryText}>
           {index + 1}. {item}
         </Text>
       ))}

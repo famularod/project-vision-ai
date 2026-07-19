@@ -164,6 +164,9 @@ assert.strictEqual(truth.verificationQueue[0].subjectId, 'reported-overdue');
 assert.strictEqual(byTask('unsupported-complete-a').completionState, 'conflicting_evidence');
 assert.strictEqual(byTask('unsupported-complete-a').needsVerification, true);
 assert.match(byTask('unsupported-complete-a').contradiction, /without PM verification/i);
+assert(truth.briefing.risksAndConflicts.some(item =>
+  /unsupported complete a \(Mechanical Room\).*Required follow-up.*supporting evidence.*correct the task status/i.test(item),
+));
 
 assert.strictEqual(byTask('pm-verified').completionState, 'pm_verified');
 assert.strictEqual(byTask('pm-verified').needsVerification, false);
