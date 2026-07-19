@@ -10,11 +10,23 @@ import {
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  Modal,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
 import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
 import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
 import { colors, spacing } from '../theme';
+import {
+  DAVE_VOICE_CAPTURE_TABLET_MAX_WIDTH,
+  daveVoiceCaptureUsesTabletSheet,
+} from './dave-voice-capture-layout';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 
 const MAX_RECORDING_SECONDS = 180;
@@ -62,6 +74,8 @@ export function DAVEVoiceCaptureSheet({
   onTypeInstead: () => void;
   onCancel: () => void;
 }) {
+  const { width } = useWindowDimensions();
+  const usesTabletSheet = daveVoiceCaptureUsesTabletSheet(width);
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 200);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
@@ -186,11 +200,17 @@ export function DAVEVoiceCaptureSheet({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={() => { void cancel(); }}>
-      <View style={styles.backdrop}>
+      <View style={[styles.backdrop, usesTabletSheet && styles.backdropTablet]}>
         <KeyboardAvoidingModalCard
-          containerStyle={styles.sheetContainer}
-          frameStyle={styles.sheet}
-          contentContainerStyle={styles.content}
+          containerStyle={[
+            styles.sheetContainer,
+            usesTabletSheet && styles.sheetContainerTablet,
+          ]}
+          frameStyle={[styles.sheet, usesTabletSheet && styles.sheetTablet]}
+          contentContainerStyle={[
+            styles.content,
+            usesTabletSheet && styles.contentTablet,
+          ]}
         >
           <View style={styles.handle} />
           <View style={styles.header}>
@@ -388,9 +408,13 @@ function formatDuration(milliseconds: number) {
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(16,24,40,0.35)', justifyContent: 'flex-end' },
+  backdropTablet: { alignItems: 'center', justifyContent: 'center', padding: spacing.xxl },
   sheetContainer: { flex: 1, justifyContent: 'flex-end' },
+  sheetContainerTablet: { maxWidth: DAVE_VOICE_CAPTURE_TABLET_MAX_WIDTH, width: '100%', justifyContent: 'center' },
   sheet: { maxHeight: '92%', backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24 },
+  sheetTablet: { maxHeight: '88%', borderBottomLeftRadius: 24, borderBottomRightRadius: 24 },
   content: { paddingHorizontal: spacing.lg, paddingBottom: 44 },
+  contentTablet: { paddingHorizontal: spacing.xxl, paddingBottom: spacing.xxl },
   handle: { width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: 'center', marginTop: 9 },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingTop: spacing.md, paddingBottom: spacing.lg },
   main: { flex: 1 },

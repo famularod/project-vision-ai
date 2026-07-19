@@ -47,6 +47,11 @@ import {
   type ReportCommunicationOutcome,
 } from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
+import {
+  OverviewResponsiveColumn,
+  OverviewResponsiveFrame,
+  OverviewResponsiveWorkspace,
+} from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
@@ -389,6 +394,7 @@ import type { AppScreen } from './types/app-navigation';
 import { useAndroidHardwareBack, useAppNavigation } from './hooks/use-app-navigation';
 import { useProgressiveListCount } from './hooks/use-progressive-list-count';
 import { useReportSelection } from './hooks/use-report-selection';
+import { countLabel, pluralWord } from './utils/pluralization';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -2609,14 +2615,6 @@ function dueStatusText(value: string, projectTimeZone: string = DEFAULT_PROJECT_
   return `Due ${formatAppDate(value)}`;
 }
 
-
-function pluralWord(count: number, singular: string, plural = `${singular}s`) {
-  return count === 1 ? singular : plural;
-}
-
-function countLabel(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${pluralWord(count, singular, plural)}`;
-}
 
 function photoAttachmentLabel(count: number) {
   if (count === 0) return 'No photos attached';
@@ -12114,6 +12112,7 @@ function HomeScreen({
         contentContainerStyle={contentStyle}
         keyboardShouldPersistTaps="handled"
       >
+      <OverviewResponsiveFrame>
       <View style={styles.overviewGreetingHeader}>
         <View style={styles.overviewGreetingCopy}>
           <Text style={styles.overviewGreetingText}>{timeOfDayGreeting(displayName)}</Text>
@@ -12223,6 +12222,8 @@ function HomeScreen({
         </View>
       </View>
 
+      <OverviewResponsiveWorkspace>
+      <OverviewResponsiveColumn priority="primary">
       <View style={styles.overviewDashboardHeadingRow}>
         <Text style={styles.overviewDashboardHeading}>Today's Priority</Text>
       </View>
@@ -12394,6 +12395,9 @@ function HomeScreen({
         </>
       ) : null}
 
+      </OverviewResponsiveColumn>
+      <OverviewResponsiveColumn priority="secondary">
+
       {archivedProjects.length > 0 ? (
         <View style={styles.phase2BriefCard}>
           <View style={styles.rowMain}>
@@ -12452,6 +12456,9 @@ function HomeScreen({
           <Text style={styles.overviewBriefEmpty}>Recent project activity will show up here.</Text>
         )}
       </View>
+      </OverviewResponsiveColumn>
+      </OverviewResponsiveWorkspace>
+      </OverviewResponsiveFrame>
       </ScrollView>
     </View>
   );
@@ -19192,7 +19199,7 @@ function ScheduleScreen({
                 <Text style={styles.panelTitle}>Action Inbox</Text>
               </View>
               <Text style={styles.rowSub}>
-                {actionInbox.items.length} open {pluralWord(actionInbox.items.length, 'responsibility')}
+                {actionInbox.items.length} open {pluralWord(actionInbox.items.length, 'responsibility', 'responsibilities')}
                 {actionInbox.verificationCount > 0 ? ` · ${actionInbox.verificationCount} need verification` : ''}
                 {actionInbox.undatedActionCount > 0 ? ` · ${actionInbox.undatedActionCount} have no due date` : ''}
               </Text>

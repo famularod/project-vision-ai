@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 const app = read('App.tsx');
 const sheet = read('components/DAVEVoiceCaptureSheet.tsx');
+const sheetLayout = read('components/dave-voice-capture-layout.ts');
 const service = read('services/DAVEVoiceTranscriptionService.ts');
 const understandingSource = read('services/DAVEVoiceUnderstanding.ts');
 const edge = read('supabase/functions/dave-transcribe-memory/index.ts');
@@ -39,8 +40,17 @@ assert(sheet.includes('requestRecordingPermissionsAsync'), 'Recording must reque
 assert(sheet.includes('Record Again'), 'Voice capture must support re-recording.');
 assert(sheet.includes('Replay Recording'), 'Voice capture must support replay.');
 assert(sheet.includes('Type Instead'), 'Voice capture must preserve typed fallback.');
-assert(sheet.includes('containerStyle={styles.sheetContainer}'), 'Voice capture must use a full-height modal layout container.');
+assert(
+  sheet.includes('containerStyle={[') && sheet.includes('styles.sheetContainer,'),
+  'Voice capture must preserve the full-height phone modal layout container.',
+);
 assert(sheet.includes("sheetContainer: { flex: 1, justifyContent: 'flex-end' }"), 'Voice capture must bottom-align the complete scrollable sheet.');
+assert(
+  sheet.includes('usesTabletSheet && styles.sheetContainerTablet') &&
+    sheet.includes('usesTabletSheet && styles.sheetTablet') &&
+    sheetLayout.includes('DAVE_VOICE_CAPTURE_TABLET_MAX_WIDTH = 720'),
+  'Voice capture must use a bounded tablet form without replacing the phone sheet.',
+);
 assert(sheet.includes('Which project is this about?'), 'Global Talk must visibly request project context instead of silently choosing one.');
 assert(sheet.includes('disabled={!projectName}'), 'Voice recording must wait for an explicit project choice when no project context exists.');
 assert(sheet.includes('Specific task (optional)'), 'Talk must offer optional task context after a project is selected.');

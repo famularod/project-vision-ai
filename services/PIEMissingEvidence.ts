@@ -211,7 +211,7 @@ function buildPhotoGap(
   input: PIEMissingEvidenceInput,
   type: 'missing_photo' | 'missing_current_photo',
 ): PIEMissingEvidenceItem {
-  const area = input.areaName || input.schedulePriority || 'the priority work area';
+  const area = evidenceScopeLabel(input, 'the priority work area');
   const current = type === 'missing_current_photo';
 
   return buildItem({
@@ -521,7 +521,7 @@ function minimumRequestForGap(
   gap: string,
   input: PIEMissingEvidenceInput,
 ) {
-  const area = input.areaName || input.schedulePriority || 'the priority area';
+  const area = evidenceScopeLabel(input, 'the priority area');
   if (/photo/i.test(gap)) return `Need one current photo of ${area} to verify this item.`;
   if (/owner|contractor|assigned/i.test(gap)) return 'Identify the responsible owner or contractor.';
   if (/schedule/i.test(gap)) return 'Confirm or import the current schedule.';
@@ -531,6 +531,26 @@ function minimumRequestForGap(
   if (/document|pdf|file/i.test(gap)) return 'Attach the supporting document.';
   if (/location|gps|area|project/i.test(gap)) return 'Confirm the project and area.';
   return gap;
+}
+
+function evidenceScopeLabel(
+  input: PIEMissingEvidenceInput,
+  fallback: string,
+) {
+  const areaName = input.areaName?.trim();
+  if (areaName) return areaName;
+
+  const schedulePriority = input.schedulePriority?.trim();
+  if (
+    schedulePriority &&
+    schedulePriority.length <= 100 &&
+    !/[.!?]$/.test(schedulePriority) &&
+    !schedulePriority.includes('\n')
+  ) {
+    return schedulePriority;
+  }
+
+  return fallback;
 }
 
 function priorityScore(priority: PIEMissingEvidencePriority) {
