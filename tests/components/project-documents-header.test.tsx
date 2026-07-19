@@ -23,6 +23,8 @@ describe('ProjectDocumentsHeader', () => {
     );
 
     expect(screen.getByTestId('project-documents-header')).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'Document Status' })).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'Category' })).toBeTruthy();
     expect(screen.getByRole('radio', { name: 'Show Drawing documents' }).props
       .accessibilityState).toEqual({ selected: true });
 

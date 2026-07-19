@@ -11,6 +11,7 @@ describe('DocumentsWideWorkspace', () => {
     const screen = await render(<DocumentsProbe />);
 
     expect(screen.getByTestId('documents-wide-workspace')).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'DOCUMENT INSPECTOR' })).toBeTruthy();
     expect(screen.getByTestId('document-inspector-actions')).toBeTruthy();
     expect(screen.getByText('Inspecting Site Plan')).toBeTruthy();
 

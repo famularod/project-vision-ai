@@ -37,13 +37,13 @@ export function ProjectDocumentsHeader<T extends string>({
       ) : null}
 
       <ScreenCard style={styles.statusCard}>
-        <Text style={styles.statusTitle}>Document Status</Text>
+        <Text accessibilityRole="header" style={styles.statusTitle}>Document Status</Text>
         <Text selectable style={styles.statusText}>
           Local only, Document upload pending, Document upload failed · Retry, and Uploaded documents remain visible here. Failed uploads can be retried without duplicating the document record.
         </Text>
       </ScreenCard>
 
-      <Text style={styles.categoryTitle}>Category</Text>
+      <Text accessibilityRole="header" style={styles.categoryTitle}>Category</Text>
       <View style={styles.categoryWrap} accessibilityRole="radiogroup">
         <CategoryButton
           label="All"

@@ -68,7 +68,7 @@ export function DocumentsWideWorkspace<T extends DocumentWorkspaceItem>({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.inspectorToolbar}>
-          <Text style={styles.inspectorEyebrow}>DOCUMENT INSPECTOR</Text>
+          <Text accessibilityRole="header" style={styles.inspectorEyebrow}>DOCUMENT INSPECTOR</Text>
           {inspectorActions}
         </View>
         {inspector}

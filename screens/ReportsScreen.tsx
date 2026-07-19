@@ -1334,7 +1334,7 @@ function ReportSummaryCard({
       styles.reportSummaryCard,
       tone === 'risk' ? styles.reportSummaryRisk : tone === 'action' ? styles.reportSummaryAction : styles.reportSummaryProgress,
     ]}>
-      <Text style={styles.reportSummaryTitle}>{title}</Text>
+      <Text accessibilityRole="header" style={styles.reportSummaryTitle}>{title}</Text>
       {items.map((item, index) => (
         <Text selectable key={`${title}-${index}-${item}`} style={styles.reportSummaryText}>
           {index + 1}. {item}

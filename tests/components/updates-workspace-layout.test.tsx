@@ -22,6 +22,8 @@ describe('UpdatesWideWorkspace', () => {
     const screen = await render(<WorkspaceProbe />);
 
     expect(screen.getByTestId('updates-wide-workspace')).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'UPDATE INSPECTOR' })).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'Source-backed photo comparison' })).toBeTruthy();
     expect(screen.getByTestId('update-photo-comparison')).toBeTruthy();
     expect(screen.getByText('Inspecting update-a')).toBeTruthy();
     expect(screen.getByText('Panels now cover the east elevation.')).toBeTruthy();

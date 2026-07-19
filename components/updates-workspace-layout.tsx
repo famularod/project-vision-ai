@@ -75,7 +75,7 @@ export function UpdatesWideWorkspace<T extends IdentifiedUpdate>({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.inspectorEyebrow}>UPDATE INSPECTOR</Text>
+        <Text accessibilityRole="header" style={styles.inspectorEyebrow}>UPDATE INSPECTOR</Text>
         {comparison ? <UpdatePhotoComparison comparison={comparison} /> : null}
         {inspector}
       </ScrollView>
@@ -92,7 +92,7 @@ export function UpdatePhotoComparison({
     <View style={styles.comparisonCard} testID="update-photo-comparison">
       <View style={styles.comparisonHeading}>
         <View style={styles.headingCopy}>
-          <Text style={styles.comparisonTitle}>Source-backed photo comparison</Text>
+          <Text accessibilityRole="header" style={styles.comparisonTitle}>Source-backed photo comparison</Text>
           <Text style={styles.comparisonCaption}>
             These are the exact current and prior photos recorded by the analysis.
           </Text>

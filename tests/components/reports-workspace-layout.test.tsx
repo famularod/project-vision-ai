@@ -15,8 +15,8 @@ describe('ReportsWideWorkspace', () => {
     );
 
     expect(screen.getByTestId('reports-wide-workspace')).toBeTruthy();
-    expect(screen.getByText('REPORT PREVIEW')).toBeTruthy();
-    expect(screen.getByText('REVIEW & APPROVAL')).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'REPORT PREVIEW' })).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'REVIEW & APPROVAL' })).toBeTruthy();
     expect(screen.getByText('Prepared report body')).toBeTruthy();
     expect(screen.getByText('Supporting evidence')).toBeTruthy();
   });

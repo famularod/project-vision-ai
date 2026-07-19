@@ -51,7 +51,7 @@ export function ScheduleWideWorkspace({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.inspectorEyebrow}>TASK INSPECTOR</Text>
+        <Text accessibilityRole="header" style={styles.inspectorEyebrow}>TASK INSPECTOR</Text>
         {inspector}
         {inspectorFooter}
       </ScrollView>

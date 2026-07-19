@@ -70,6 +70,54 @@ describe('AppShellFrame', () => {
     expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
   });
 
+  it('returns to the phone shell in a narrow iPad Split View window', async () => {
+    setWindowDimensions({
+      width: 520,
+      height: 1024,
+      scale: 2,
+      fontScale: 1,
+    });
+    const screen = await render(
+      <AppShellFrame
+        currentScreen="Reports"
+        onScreenChange={jest.fn()}
+        onTalk={jest.fn()}
+      >
+        <Text>Narrow Split View report</Text>
+      </AppShellFrame>,
+    );
+
+    expect(screen.getByText('Narrow Split View report')).toBeTruthy();
+    expect(screen.getByTestId('app-bottom-tabs')).toBeTruthy();
+    expect(screen.queryByTestId('app-navigation-rail')).toBeNull();
+    expect(
+      screen.getByRole('tab', { name: 'Reports' }).props.accessibilityState,
+    ).toEqual({ selected: true });
+  });
+
+  it('keeps the medium iPad navigation usable with large text enabled', async () => {
+    setWindowDimensions({
+      width: 768,
+      height: 1024,
+      scale: 2,
+      fontScale: 2,
+    });
+    const screen = await render(
+      <AppShellFrame
+        currentScreen="ProjectDocuments"
+        onScreenChange={jest.fn()}
+        onTalk={jest.fn()}
+      >
+        <Text>Large text document workspace</Text>
+      </AppShellFrame>,
+    );
+
+    expect(screen.getByText('Large text document workspace')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Documents' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Talk to project assistant' })).toBeTruthy();
+    expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
+  });
+
   it('uses an expanded navigation rail at wide iPad width', async () => {
     setWindowDimensions({
       width: 1024,

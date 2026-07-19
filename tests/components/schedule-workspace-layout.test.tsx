@@ -27,6 +27,7 @@ describe('ScheduleWideWorkspace', () => {
     const screen = await render(<WorkspaceProbe />);
 
     expect(screen.getByTestId('schedule-wide-workspace')).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'TASK INSPECTOR' })).toBeTruthy();
     expect(screen.getByText('Task controls')).toBeTruthy();
     expect(screen.getByText('Schedule tools')).toBeTruthy();
     expect(screen.getByText('Inspecting task-a')).toBeTruthy();

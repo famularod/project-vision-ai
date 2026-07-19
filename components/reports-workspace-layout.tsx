@@ -30,7 +30,7 @@ export function ReportsWideWorkspace({
           showsVerticalScrollIndicator={false}
         >
           {header}
-          <Text style={styles.eyebrow}>REPORT PREVIEW</Text>
+          <Text accessibilityRole="header" style={styles.eyebrow}>REPORT PREVIEW</Text>
           {report}
         </ScrollView>
 
@@ -41,7 +41,7 @@ export function ReportsWideWorkspace({
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.eyebrow}>REVIEW & APPROVAL</Text>
+          <Text accessibilityRole="header" style={styles.eyebrow}>REVIEW & APPROVAL</Text>
           {review}
           {evidence}
         </ScrollView>
