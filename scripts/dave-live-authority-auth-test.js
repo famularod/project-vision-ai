@@ -24,6 +24,10 @@ assert(
   'the verified organization must reach the live authority provider',
 );
 assert(
+  app.includes('hydrated: projectStatusReady && layer4IdentityReady'),
+  'live authority must wait for organization identity before starting expensive persisted-model work',
+);
+assert(
   !app.includes('identityTrusted: false,\n      cloudAvailable: false,'),
   'the live authority must not be permanently forced into degraded mode',
 );

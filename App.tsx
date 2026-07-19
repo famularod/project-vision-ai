@@ -5057,6 +5057,7 @@ function AppShell() {
   const [savedUpdates, setSavedUpdates] = useState<ProjectUpdate[]>([]);
   const [decisionLedger, setDecisionLedger] = useState<PIEDecisionRecord[]>([]);
   const [layer4Identity, setLayer4Identity] = useState<PIELayer4ActorContext | null>(null);
+  const [layer4IdentityReady, setLayer4IdentityReady] = useState(false);
   const [decisionLedgerMigrationStatus, setDecisionLedgerMigrationStatus] =
     useState<PIEDecisionLedgerMigrationStatus | null>(null);
   const [captureMemories, setCaptureMemories] = useState<DAVEConfirmedCaptureMemory[]>([]);
@@ -10584,6 +10585,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setDecisionLedger(state.decisions);
       setDecisionLedgerMigrationStatus(state.migrationStatus);
       setLayer4Identity(resolution.context);
+      setLayer4IdentityReady(true);
     }
 
     function scheduleIdentityRefresh() {
@@ -10591,6 +10593,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       refreshGeneration += 1;
       const generation = refreshGeneration;
       setLayer4Identity(null);
+      setLayer4IdentityReady(false);
       setDecisionLedger([]);
       setDecisionLedgerMigrationStatus(null);
       const elapsed = Date.now() - lastRefreshStartedAt;
@@ -11058,7 +11061,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       referenceDocuments: (reportEvidenceScope ? reportEvidenceScope.referenceDocuments : referenceDocuments) as unknown as PIELiveAuthorityInput['referenceDocuments'],
       projectDocuments: (reportEvidenceScope ? reportEvidenceScope.projectDocuments : projectDocuments) as unknown as PIELiveAuthorityInput['projectDocuments'],
       captureMemories: reportEvidenceScope ? reportEvidenceScope.captureMemories : captureMemories,
-      hydrated: projectStatusReady,
+      // Do not begin live authority work under the anonymous fallback while
+      // the signed-in organization is still resolving. Large legacy Reality
+      // Models otherwise make startup perform the same expensive pass twice.
+      hydrated: projectStatusReady && layer4IdentityReady,
       surface: authoritySurfaceForScreen(screen),
       identityTrusted: Boolean(
         layer4Identity?.cloudTrusted &&
@@ -11077,6 +11083,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     draft,
     captureMemories,
     layer4Identity,
+    layer4IdentityReady,
     overviewProjectName,
     projectAreas,
     projectDocuments,

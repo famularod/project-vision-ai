@@ -148,6 +148,7 @@ export async function runPIERealityModelOrchestration(
       projectId,
       qualifiedEvidence: syncInputEvidence.length ? syncInputEvidence : qualifiedEvidence.slice(0, 0),
       repository,
+      previousModel,
       generatedAt,
       sourceEvidenceCutoffAt: generatedAt,
       reason: 'Live Reality Model orchestration synchronized qualified evidence.',

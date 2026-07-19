@@ -21,6 +21,8 @@ export type PIERealityModelSynchronizationInput = {
   projectId: string;
   qualifiedEvidence: PIEQualifiedRealityEvidence[];
   repository?: PIERealityModelRepository;
+  /** Reuse a model already loaded by the caller instead of parsing storage twice. */
+  previousModel?: PIERealityModel | null;
   generatedAt?: string;
   sourceEvidenceCutoffAt?: string;
   reason?: string;
@@ -43,7 +45,9 @@ export async function synchronizeAuthoritativeRealityModel(
 ): Promise<PIERealityModelSynchronizationResult> {
   const repository = input.repository || localPIERealityModelRepository;
   const generatedAt = input.generatedAt || new Date().toISOString();
-  const previousModel = await repository.loadCurrent(input.organizationId, input.projectId);
+  const previousModel = Object.prototype.hasOwnProperty.call(input, 'previousModel')
+    ? input.previousModel ?? null
+    : await repository.loadCurrent(input.organizationId, input.projectId);
   const usableEvidence = input.qualifiedEvidence
     .filter(evidence => evidence.evidenceQualified)
     .map(evidence => ({

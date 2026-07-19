@@ -224,9 +224,13 @@ function actor() {
   });
   assert.strictEqual(stale.persistenceStatus, 'stale_model', 'stale Reality use should be explicit');
 
+  let failingRepositoryLoadCount = 0;
   const failingRepository = {
     ...storage,
-    loadCurrent: async () => removed.model,
+    loadCurrent: async () => {
+      failingRepositoryLoadCount += 1;
+      return removed.model;
+    },
     saveSynchronized: async () => {
       throw new Error('simulated persistence failure');
     },
@@ -249,6 +253,11 @@ function actor() {
     identityTrusted: true,
   });
   assert.strictEqual(failedPersistence.persistenceStatus, 'persistence_failed');
+  assert.strictEqual(
+    failingRepositoryLoadCount,
+    1,
+    'orchestration must reuse the current model instead of loading and parsing it twice',
+  );
 
   assert.throws(
     () => judgment.buildPIEExecutiveJudgment({ realityModel: changed.model }),

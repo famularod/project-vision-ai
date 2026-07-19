@@ -1,6 +1,6 @@
 {
   "name": "project-photo-update-tool",
-  "version": "1.0.57",
+  "version": "1.0.58",
   "main": "index.ts",
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
