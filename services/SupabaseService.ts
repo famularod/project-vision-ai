@@ -5,6 +5,7 @@ import {
   isAuthStorageSecure,
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage';
+import { accountDisplayNameForMetadata } from './AccountProfile';
 import { AppState } from 'react-native';
 import {
   createClient,
@@ -225,6 +226,8 @@ export type DeleteProjectUpdateParams = {
 export type ProjectUpdateSyncMetadata<TUpdate = JsonValue> = {
   id: string;
   updatedAt: string | null;
+  projectName: string | null;
+  areaName: string | null;
   updateData: TUpdate | null;
 };
 
@@ -542,6 +545,22 @@ export async function getCurrentUser(): Promise<SupabaseServiceResult<User | nul
 
   if (error) return errorResult(error.message);
 
+  return okResult(data.user ?? null);
+}
+
+export function accountDisplayNameForUser(user: User | null | undefined): string {
+  return accountDisplayNameForMetadata(user?.user_metadata);
+}
+
+export async function updateCurrentUserDisplayName(
+  displayName: string,
+): Promise<SupabaseServiceResult<User | null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<User | null>();
+  const { data, error } = await client.auth.updateUser({
+    data: { project_vision_display_name: displayName.trim() },
+  });
+  if (error) return errorResult(error.message);
   return okResult(data.user ?? null);
 }
 
@@ -1062,6 +1081,38 @@ export async function deleteProjectUpdate({
   return okResult(null, deleteResult.status);
 }
 
+export async function archiveProjectUpdate({
+  id,
+  archivedAt,
+}: {
+  id: string;
+  archivedAt: string;
+}): Promise<SupabaseServiceResult<null>> {
+  const metadata = await getProjectUpdateSyncMetadata<Record<string, unknown>>(id);
+  if (!metadata.ok || metadata.stubbed) {
+    return errorResult(metadata.error || metadata.message || 'Field update archive could not be read.');
+  }
+  if (!metadata.data?.updateData) return okResult(null, metadata.status);
+  const updateData = metadata.data.updateData;
+  const projectName = typeof updateData.projectName === 'string'
+    ? updateData.projectName
+    : metadata.data.projectName || '';
+  if (!projectName.trim()) return errorResult('Field update archive requires a project name.');
+  const result = await saveProjectUpdate({
+    id,
+    projectName,
+    areaName: typeof updateData.selectedAreaName === 'string'
+      ? updateData.selectedAreaName
+      : metadata.data.areaName || '',
+    updateData: { ...updateData, isArchived: true, archivedAt },
+    updatedAt: archivedAt,
+  });
+  if (!result.ok || result.stubbed) {
+    return errorResult(result.error || result.message || 'Field update archive could not be saved.');
+  }
+  return okResult(null, result.status);
+}
+
 export async function listProjectUpdates<TUpdate>(): Promise<
   SupabaseServiceResult<CloudProjectUpdate<TUpdate>[]>
 > {
@@ -1111,7 +1162,7 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
 
   const { data, error, status } = await client
     .from(PROJECT_UPDATES_TABLE)
-    .select('id, updated_at, update_data')
+    .select('id, updated_at, project_name, area_name, update_data')
     .eq('owner_id', owner.data)
     .eq('id', id)
     .maybeSingle();
@@ -1131,6 +1182,8 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
     {
       id: String(row.id || id),
       updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+      projectName: typeof row.project_name === 'string' ? row.project_name : null,
+      areaName: typeof row.area_name === 'string' ? row.area_name : null,
       updateData: (row.update_data as TUpdate | null) ?? null,
     },
     status,

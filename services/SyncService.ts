@@ -1,4 +1,5 @@
 import {
+  archiveProjectUpdate,
   countCloudProjects,
   createProject,
   createPhotoSignedUrl,
@@ -418,6 +419,8 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   selectedAreaName?: string | null;
   updateData: TUpdate;
   pendingPhotoAssetIds?: string[];
+  archiveOnly?: boolean;
+  archivedAt?: string;
 };
 
 type ProjectUpdateDeletePayload = {
@@ -1023,6 +1026,20 @@ export async function queueProjectUpdateDelete(update: {
       projectName: update.projectName,
     },
     changedAt: new Date().toISOString(),
+  });
+}
+
+export async function queueProjectUpdateArchive(
+  updateId: string,
+  archivedAt: string,
+): Promise<void> {
+  if (!updateId.trim()) return;
+  await enqueuePendingChange<ProjectUpdateRecordPayload>({
+    id: projectUpdateQueueItemId(updateId),
+    entity: 'project_update',
+    operation: 'update',
+    payload: { id: updateId, updateData: undefined, archiveOnly: true, archivedAt },
+    changedAt: archivedAt,
   });
 }
 
@@ -1971,6 +1988,16 @@ async function uploadProjectUpdateQueueItem(
 
   const payload = item.payload as ProjectUpdateRecordPayload;
   if (await hasProjectUpdateDeletionIntent(payload.id)) return 'uploaded';
+  if (payload.archiveOnly) {
+    const result = await archiveProjectUpdate({
+      id: payload.id,
+      archivedAt: payload.archivedAt || item.changedAt,
+    });
+    return result.ok && !result.stubbed
+      ? 'uploaded'
+      : result.error || result.message || 'Field update archive is waiting for cloud sync.';
+  }
+  if (!payload.updateData) return 'Project update database payload is missing.';
   const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
     ? payload.pendingPhotoAssetIds
     : projectUpdateReferencedPhotoIds(payload.updateData);

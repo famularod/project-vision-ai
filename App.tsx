@@ -2,6 +2,7 @@ import {
   deleteCloudProject,
   loadCloudArchivedProjectNames,
   loadCloudProjectRecords,
+  queueCloudProjectArchives,
   saveCloudProject,
   saveCloudProjectCoverPhoto,
   setCloudProjectArchived,
@@ -28,6 +29,8 @@ import {
   type SyncUploadResult,
 } from './services/SyncService';
 import {
+  accountDisplayNameForUser,
+  getCurrentUser,
   getCurrentSessionAccessToken,
   listArchivedProjects,
   listProjectAreas,
@@ -37,8 +40,14 @@ import {
   signIn,
   signUp,
   subscribeToAuthStateChange,
+  updateCurrentUserDisplayName,
   uploadPhoto,
 } from './services/SupabaseService';
+import {
+  isLegacyNonProjectShellName,
+  legacyNonProjectShellNamesPresent,
+  LEGACY_NON_PROJECT_SHELL_NAMES,
+} from './services/CrossDeviceVisibility';
 import { AdminScreen, SignInModal } from './screens/AdminScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
 import {
@@ -421,13 +430,9 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-
 type Screen = AppScreen;
-
 type IconName = keyof typeof Ionicons.glyphMap;
-
 type PhotoContinuityAnchor = import('./types').PhotoContinuityAnchor;
-
 type ProjectUpdate = {
   id: string;
   projectName: string;
@@ -476,7 +481,6 @@ type ProjectUpdate = {
   isArchived?: boolean;
   workflowTimestamps?: FieldUpdateWorkflowTimestamps;
 };
-
 type QuickContext =
   | 'Progress'
   | 'Safety'
@@ -485,9 +489,7 @@ type QuickContext =
   | 'Material / Delivery'
   | 'Inspection'
   | 'Other';
-
 type FieldUpdateStatus = PersistedFieldUpdateStatus;
-
 type FieldUpdateSyncFailureCategory =
   | 'offline'
   | 'signed_out'
@@ -497,9 +499,7 @@ type FieldUpdateSyncFailureCategory =
   | 'database_insert_failed'
   | 'malformed_payload'
   | 'unknown';
-
 type FieldUpdateSyncStepResult = 'success' | 'failed' | 'skipped';
-
 type FieldUpdateSyncDiagnostics = {
   networkState: 'online' | 'offline' | 'unknown';
   connectionType: 'wifi' | 'cellular' | 'none' | 'unknown';
@@ -542,7 +542,6 @@ type FieldUpdateSyncDiagnostics = {
   projectRollupsIncludeQueuedUpdates: boolean;
   projectCardWorkspaceSameSource: boolean;
 };
-
 type FieldUpdatePIEStatus =
   | 'not_started'
   | 'analyzing'
@@ -551,7 +550,6 @@ type FieldUpdatePIEStatus =
   | 'no_visual_comparison'
   | 'failed'
   | 'taking_longer';
-
 type ProjectDocumentCategory =
   | 'Schedule'
   | 'Permit Card'
@@ -564,13 +562,11 @@ type ProjectDocumentCategory =
   | 'RFI / Field Decision'
   | 'Vendor Document'
   | 'Other';
-
 type ProjectDocumentStatus =
   | 'local'
   | 'uploading'
   | 'uploaded'
   | 'failed';
-
 type ProjectDocument = {
   id: string;
   projectId: string;
@@ -596,9 +592,7 @@ type ProjectDocument = {
   lastUploadAttemptAt?: string | null;
   importedAt: string;
 };
-
 type FieldUpdateDocument = ProjectDocument;
-
 type FieldUpdateWorkflowTimestamps = {
   startedAt?: string;
   cameraActionStartedAt?: string;
@@ -607,7 +601,6 @@ type FieldUpdateWorkflowTimestamps = {
   sendTappedAt?: string;
   sendResolvedAt?: string;
 };
-
 type PIEInterpretationDecisionLogEntry = {
   id: string;
   interpretation: string;
@@ -617,16 +610,12 @@ type PIEInterpretationDecisionLogEntry = {
   areaName: string | null;
   decidedAt: string;
 };
-
-
 type LocationSnapshot = {
   latitude: number;
   longitude: number;
   accuracy: number | null;
   capturedAt: string;
 };
-
-
 type ReferenceDocument = {
   id: string;
   name: string;
@@ -641,9 +630,7 @@ type ReferenceDocument = {
   projectName?: string | null;
   importBatchId?: string | null;
 };
-
 type OverviewProjectSelection = string | null | undefined;
-
 type OverviewDetectionStatus =
   | 'checking'
   | 'detected'
@@ -653,7 +640,6 @@ type OverviewDetectionStatus =
   | 'unmatched'
   | 'none'
   | 'unavailable';
-
 type Phase2ActivityItem = {
   update: ProjectUpdate;
   projectName: string;
@@ -663,7 +649,6 @@ type Phase2ActivityItem = {
   documentCount: number;
   pieStatus: string;
 };
-
 type Phase2AttentionItem = {
   id: string;
   updateId: string;
@@ -679,7 +664,6 @@ type Phase2AttentionItem = {
   retryable: boolean;
   statusRole: StatusStyleRole;
 };
-
 type RestoredAppData = {
   savedUpdates: ProjectUpdate[]; projects: string[]; archivedProjects: string[];
   contactBook: ContactBook; projectAreas: ProjectArea[];
@@ -687,7 +671,6 @@ type RestoredAppData = {
   scheduleItems: ScheduleItem[];
   storedDraft: StoredDraft | null;
 };
-
 type ProjectStats = {
   updates: number;
   photos: number;
@@ -696,7 +679,6 @@ type ProjectStats = {
   dueThisWeek: number;
   lastUpdate?: string;
 };
-
 const UPDATES_STORAGE_KEY = 'projectPhotoUpdates.v2';
 const DELETED_UPDATES_STORAGE_KEY = 'projectPhotoUpdate.deletedUpdates.v1';
 const PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.projects.v2';
@@ -742,7 +724,6 @@ const OWNED_PROJECT_DOCUMENTS_DIR = FileSystem.documentDirectory
 const PROJECT_DOCUMENT_UPLOAD_FOLDER = 'project-documents';
 const EMPTY_SELECTED_PROJECTS: Set<string> = new Set();
 const GPS_CAPTURE_ENABLED = true;
-
 const fieldUpdateLocalPersistence = createFieldUpdateLocalPersistence<ProjectUpdate, DeletedUpdateTombstone>({
   storage: AsyncStorage,
   keys: FIELD_UPDATE_PERSISTENCE_KEYS,
@@ -751,7 +732,6 @@ const fieldUpdateLocalPersistence = createFieldUpdateLocalPersistence<ProjectUpd
   parseUpdate: normalizeStoredUpdateRecord,
   parseTombstone: parseStoredDeletedUpdateTombstone,
 });
-
 const projectDeletionRuntime = createProjectDeletionRuntime({
   storage: AsyncStorage, storageKeys: PROJECT_DELETION_STORAGE_KEYS,
   createTransactionId: createProjectId, now: () => new Date().toISOString(),
@@ -760,7 +740,6 @@ const projectDeletionRuntime = createProjectDeletionRuntime({
     ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR, deleteOwnedReferenceDocument: deleteStoredReferenceDocument,
   }),
 });
-
 const backupRestoreRuntime = createBackupRestoreRuntime({
   storage: AsyncStorage,
   targetKeys: {
@@ -786,14 +765,14 @@ const backupRestoreRuntime = createBackupRestoreRuntime({
       typeof (item.payload as Record<string, unknown>).name === 'string'
       ? [(item.payload as Record<string, string>).name] : []),
 });
-
 const DEFAULT_PROJECTS = [
   '2321 Compliance Project',
   '2375 Compliance Project',
 ];
-
 const LEGACY_PROJECT_STRUCTURE_CLOUD_MIGRATION_KEY =
   'projectPhotoUpdate.projectStructureCloudMigration.v1';
+const LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY =
+  'projectPhotoUpdate.nonProjectShellCloudMigration.v1';
 const LEGACY_WORK_CONTAINER_MIGRATIONS = [
   { legacyName: '2321 North Side Lot', parentProject: '2321 Compliance Project', workArea: 'North Side Lot' },
   { legacyName: '3 Hour Fire wall', parentProject: '2321 Compliance Project', workArea: '3 Hour Fire wall' },
@@ -803,19 +782,16 @@ const LEGACY_WORK_CONTAINER_MIGRATIONS = [
   { legacyName: 'Canopy B', parentProject: '2375 Compliance Project', workArea: 'Canopy B' },
   { legacyName: 'Canopy C', parentProject: '2375 Compliance Project', workArea: 'Canopy C' },
 ] as const;
-
 function legacyWorkContainerMigration(projectName: string | null | undefined) {
   const key = (projectName || '').trim().toLowerCase();
   return LEGACY_WORK_CONTAINER_MIGRATIONS.find(
     migration => migration.legacyName.toLowerCase() === key,
   ) || null;
 }
-
 function migrateLegacyProjectName(projectName: string | null | undefined) {
   const migration = legacyWorkContainerMigration(projectName);
   return migration?.parentProject || projectName || '';
 }
-
 function migratedWorkAreaName(
   currentArea: string | null | undefined,
   fallbackArea: string,
@@ -831,7 +807,6 @@ function migrateLegacyProjectUpdate(update: ProjectUpdate): ProjectUpdate {
     update.selectedAreaName,
     migration.workArea,
   );
-
   return {
     ...update,
     projectName: migration.parentProject,
@@ -852,7 +827,6 @@ function migrateLegacyProjectUpdate(update: ProjectUpdate): ProjectUpdate {
     })),
   };
 }
-
 function migrateLegacyScheduleItem(item: ScheduleItem): ScheduleItem {
   return {
     ...item,
@@ -862,7 +836,6 @@ function migrateLegacyScheduleItem(item: ScheduleItem): ScheduleItem {
       : item.scheduleProjectName,
   };
 }
-
 function migrateLegacyProjectDocument(document: ProjectDocument): ProjectDocument {
   const migration = LEGACY_WORK_CONTAINER_MIGRATIONS.find(item =>
     document.projectId === authorityProjectId(item.legacyName) ||
@@ -872,7 +845,6 @@ function migrateLegacyProjectDocument(document: ProjectDocument): ProjectDocumen
     ? { ...document, projectId: authorityProjectId(migration.parentProject) }
     : document;
 }
-
 const REFERENCE_DOCUMENT_CATEGORIES = [
   'Site Plans',
   'Building 2321',
@@ -885,7 +857,6 @@ const REFERENCE_DOCUMENT_CATEGORIES = [
   'Schedules',
   'Other',
 ];
-
 const PROJECT_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
   'Schedule',
   'Permit Card',
@@ -899,7 +870,6 @@ const PROJECT_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
   'Vendor Document',
   'Other',
 ];
-
 const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
   'Permit Card',
   'Compliance',
@@ -907,7 +877,6 @@ const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
   'Inspection',
   'Safety',
 ];
-
 const PIE_STATUS_COPY = {
   checking: 'Checking photos…',
   preparingSecureAnalysis: 'Preparing secure photo analysis…',
@@ -919,13 +888,11 @@ const PIE_STATUS_COPY = {
   unavailableRetry: 'Analysis unavailable · Retry',
   timeoutRetry: 'Analysis taking longer than expected · Retry',
 } as const;
-
 const PIE_AUTH_HYDRATION_RETRY_COUNT = 3;
 const PIE_AUTH_HYDRATION_RETRY_DELAY_MS = 750;
 const DRAFT_LOCATION_CAPTURE_WAIT_MS = 1500;
 const ENABLE_DEV_AUTH_SIGNUP =
   __DEV__ && process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
-
 const ATTENTION_PRIORITY = {
   safety: 0,
   sendIssue: 1,
@@ -935,7 +902,6 @@ const ATTENTION_PRIORITY = {
   documentIssue: 5,
   otherOpenItem: 6,
 } as const;
-
 type StatusStyleRole =
   | 'safety'
   | 'possibleFinding'
@@ -943,7 +909,6 @@ type StatusStyleRole =
   | 'informational'
   | 'needsRetry'
   | 'confirmedClear';
-
 const STATUS_ICON_COLOR_MAP: Record<
   StatusStyleRole,
   {
@@ -983,7 +948,6 @@ const STATUS_ICON_COLOR_MAP: Record<
     backgroundRole: 'successSoft',
   },
 };
-
 // Placeholder coordinates: stand in each area and use "Use Current Location"
 // in Manage Areas to replace these with real worksite GPS points.
 const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
@@ -1075,13 +1039,11 @@ const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
     radiusFeet: 100,
   },
 ];
-
 const CATEGORIES: PhotoCategory[] = [
   'Open Issue',
   'Safety Concern',
   'Update',
 ];
-
 const QUICK_CONTEXTS: QuickContext[] = [
   'Progress',
   'Safety',
@@ -1091,38 +1053,31 @@ const QUICK_CONTEXTS: QuickContext[] = [
   'Inspection',
   'Other',
 ];
-
 const CATEGORY_ICONS: Record<PhotoCategory, IconName> = {
   'Open Issue': 'alert-circle-outline',
   'Safety Concern': 'warning-outline',
   Update: 'information-circle-outline',
 };
-
 const ACTION_STATUSES: ActionStatus[] = [
   'Open',
   'In Progress',
   'Waiting',
   'Closed',
 ];
-
 const SCHEDULE_STATUSES: ScheduleStatus[] = [
   'Not Started',
   'In Progress',
   'Waiting',
   'Complete',
 ];
-
 const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Low',
   'Medium',
   'High',
 ];
-
 const uid = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-
 const zeroPad = (value: number) => value.toString().padStart(2, '0');
-
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -5339,12 +5294,25 @@ useEffect(() => {
           normalizeStoredUpdateRecord,
           'cloud saved updates',
         ).value;
+        const effectiveTombstones = normalizedCloudUpdates
+          .filter(update => update.isArchived)
+          .map(update => buildUpdateTombstone(
+            update,
+            'hide_cloud_update',
+            update.archivedAt || update.date,
+          ))
+          .reduce(
+            (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
+            deletedUpdateTombstonesRef.current,
+          );
+        deletedUpdateTombstonesRef.current = effectiveTombstones;
+        setDeletedUpdateTombstones(effectiveTombstones);
 
         setSavedUpdates(current => {
           const merged = mergeSavedUpdatesWithTombstones({
             localUpdates: current,
             cloudUpdates: normalizedCloudUpdates,
-            tombstones: deletedUpdateTombstonesRef.current,
+            tombstones: effectiveTombstones,
           });
           savedUpdatesRef.current = merged;
           return merged;
@@ -5593,12 +5561,15 @@ useEffect(() => {
         });
       const deletedNames = mergeProjectNames(
         mergeProjectNames(
-          normalizeStringList(
-            deletedProjectsResult.value,
+          mergeProjectNames(
+            normalizeStringList(
+              deletedProjectsResult.value,
+            ),
+            queuedDeletedNames,
           ),
-          queuedDeletedNames,
+          LEGACY_WORK_CONTAINER_MIGRATIONS.map(item => item.legacyName),
         ),
-        LEGACY_WORK_CONTAINER_MIGRATIONS.map(item => item.legacyName),
+        [...LEGACY_NON_PROJECT_SHELL_NAMES],
       );
       deletedProjectNamesRef.current = deletedNames;
       setDeletedProjectNames(deletedNames);
@@ -5622,6 +5593,23 @@ useEffect(() => {
           loadCloudProjectRecords(),
           loadCloudArchivedProjectNames(),
         ]);
+        const nonProjectShellNames = legacyNonProjectShellNamesPresent(cloudProjects);
+        const visibleCloudProjects = cloudProjects.filter(
+          project => !isLegacyNonProjectShellName(project.name),
+        );
+        const shellMigrationComplete = await AsyncStorage.getItem(
+          LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+        );
+        if (nonProjectShellNames.length > 0 && shellMigrationComplete !== 'complete') {
+          await queueCloudProjectArchives(nonProjectShellNames);
+          const archiveResult = await uploadPendingChanges();
+          if (archiveResult.errors.length === 0 && archiveResult.queued === 0) {
+            await persistStorageItem(
+              LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+              'complete',
+            );
+          }
+        }
         const currentDeletedNames = deletedProjectNamesRef.current;
         const deletedKeys = new Set(
           currentDeletedNames.map(name => name.toLowerCase()),
@@ -5630,13 +5618,13 @@ useEffect(() => {
           return mergeProjectRecords(
             [],
             current,
-            cloudProjects,
+            visibleCloudProjects,
             currentDeletedNames,
           );
         });
         setProjects(current => mergeProjectNames(
           current,
-          cloudProjects.map(project => project.name),
+          visibleCloudProjects.map(project => project.name),
         ).filter(project => !deletedKeys.has(project.toLowerCase())));
         setArchivedProjects(previous =>
           mergeProjectNames(previous, cloudArchivedProjects).filter(
@@ -5805,9 +5793,12 @@ useEffect(() => {
   });
 
   useEffect(() => {
-    AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY)
-      .then(value => {
-        setDisplayName(value || '');
+    Promise.all([
+      AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY),
+      getCurrentUser(),
+    ])
+      .then(([value, userResult]) => {
+        setDisplayName(accountDisplayNameForUser(userResult.data) || value || '');
         startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
         setDisplayNameLoaded(true);
       })
@@ -6008,6 +5999,13 @@ useEffect(() => {
     value: displayName,
     label: 'profile setting',
   });
+  useEffect(() => {
+    if (!startupHydrationReady || !displayNameLoaded || !displayName.trim()) return;
+    const timer = setTimeout(() => {
+      void updateCurrentUserDisplayName(displayName).catch(() => undefined);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [displayName, displayNameLoaded, startupHydrationReady]);
   useJsonStoragePersistence({
     enabled: startupHydrationReady && contactsLoaded,
     storageKey: CONTACTS_STORAGE_KEY,
@@ -10433,7 +10431,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               setDeletedUpdateTombstones(prev =>
                 upsertDeletedUpdateTombstone(prev, tombstone),
               );
-              void removeProjectUpdateFromSyncQueue(update.id);
+              void reconcileProjectUpdateDeletionJournal([tombstone]);
             }
             setSavedUpdates(prev =>
               prev.map(update =>
@@ -10606,9 +10604,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     scheduleIdentityRefresh();
-    const unsubscribe = subscribeToAuthStateChange(() => {
+    const unsubscribe = subscribeToAuthStateChange((_event, session) => {
       // Defer client work until after Supabase's auth callback has returned.
       photoAnalysisCoordinator.clear();
+      const accountName = accountDisplayNameForUser(session?.user);
+      if (accountName) setDisplayName(accountName);
       scheduleIdentityRefresh();
     });
 

@@ -1,6 +1,6 @@
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { useState } from 'react';
-import { Dimensions, Pressable, Text } from 'react-native';
+import { Dimensions, Pressable, StyleSheet, Text } from 'react-native';
 
 import { AppShellFrame } from '../../components/app-shell-frame';
 
@@ -96,6 +96,9 @@ describe('AppShellFrame', () => {
     expect(
       screen.getByRole('tab', { name: 'Tasks' }).props.accessibilityState,
     ).toEqual({ selected: true });
+    expect(StyleSheet.flatten(
+      screen.getByRole('button', { name: 'Talk to project assistant' }).props.style,
+    ).backgroundColor).toBe('transparent');
 
     await fireEvent.press(screen.getByRole('tab', { name: 'Reports' }));
     await fireEvent.press(

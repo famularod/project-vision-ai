@@ -197,7 +197,7 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
   talkButton: {
-    backgroundColor: colors.primarySoft,
+    backgroundColor: 'transparent',
   },
   talkIcon: {
     width: 34,

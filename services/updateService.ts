@@ -2,6 +2,7 @@ import { listProjectUpdates } from './SupabaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   hydrateRecoveredProjectUpdatePhotos,
+  queueProjectUpdateArchive,
   queueProjectUpdateDelete,
   queueProjectUpdateRecord,
   removeProjectUpdateFromSyncQueue,
@@ -136,12 +137,20 @@ export async function persistAndQueueProjectUpdateDeletion<
 }
 
 export async function reconcileProjectUpdateDeletionJournal(
-  tombstones: readonly Pick<DeletedUpdateTombstone, 'updateId' | 'action'>[],
+  tombstones: readonly Pick<DeletedUpdateTombstone, 'updateId' | 'action' | 'deletedAt'>[],
 ): Promise<void> {
   await Promise.allSettled(tombstones.map(async tombstone => {
     await removeProjectUpdateFromSyncQueue(tombstone.updateId);
     if (tombstone.action === 'delete_update_everywhere') {
       await queueProjectUpdateDelete({ id: tombstone.updateId });
+    } else if (
+      tombstone.action === 'archive_sent_update' ||
+      tombstone.action === 'remove_from_device'
+    ) {
+      await queueProjectUpdateArchive(
+        tombstone.updateId,
+        tombstone.deletedAt || new Date().toISOString(),
+      );
     }
   }));
 }

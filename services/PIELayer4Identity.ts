@@ -367,8 +367,12 @@ function fallbackContext(
 
 function displayNameForUser(user: User): string {
   const metadata = user.user_metadata || {};
+  const accountName =
+    typeof metadata.project_vision_display_name === 'string'
+      ? metadata.project_vision_display_name.trim()
+      : '';
   const fullName =
     typeof metadata.full_name === 'string' ? metadata.full_name.trim() : '';
   const name = typeof metadata.name === 'string' ? metadata.name.trim() : '';
-  return fullName || name || user.email || user.id;
+  return accountName || fullName || name || user.email || user.id;
 }

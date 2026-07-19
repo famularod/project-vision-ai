@@ -81,6 +81,12 @@ export function setCloudProjectArchived(projectName: string, archived: boolean) 
   );
 }
 
+export async function queueCloudProjectArchives(projectNames: readonly string[]) {
+  for (const projectName of projectNames) {
+    await queueProjectUpdate({ previousName: projectName, archived: true });
+  }
+}
+
 export async function deleteCloudProject(projectName: string): Promise<void> {
   await queueProjectDelete(projectName);
 }

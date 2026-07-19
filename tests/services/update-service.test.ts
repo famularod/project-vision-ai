@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  queueProjectUpdateArchive,
   queueProjectUpdateDelete,
   removeProjectUpdateFromSyncQueue,
 } from '../../services/SyncService';
@@ -25,6 +26,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 jest.mock('../../services/SyncService', () => ({
+  queueProjectUpdateArchive: jest.fn(),
   queueProjectUpdateDelete: jest.fn(),
   removeProjectUpdateFromSyncQueue: jest.fn(),
 }));
@@ -82,16 +84,27 @@ describe('project update deletion persistence', () => {
     expect(AsyncStorage.setItem).toHaveBeenCalled();
   });
 
-  it('replays only permanent cloud deletions after a restart', async () => {
+  it('replays permanent deletions and account-wide archives after a restart', async () => {
     await reconcileProjectUpdateDeletionJournal([
-      { updateId: 'permanent', action: 'delete_update_everywhere' },
-      { updateId: 'archived', action: 'archive_sent_update' },
-      { updateId: 'device-only', action: 'remove_from_device' },
+      { updateId: 'permanent', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z' },
+      { updateId: 'archived', action: 'archive_sent_update', deletedAt: '2026-07-19T08:01:00.000Z' },
+      { updateId: 'device-only', action: 'remove_from_device', deletedAt: '2026-07-19T08:02:00.000Z' },
     ]);
 
     expect(removeProjectUpdateFromSyncQueue).toHaveBeenCalledTimes(3);
     expect(queueProjectUpdateDelete).toHaveBeenCalledTimes(1);
     expect(queueProjectUpdateDelete).toHaveBeenCalledWith({ id: 'permanent' });
+    expect(queueProjectUpdateArchive).toHaveBeenCalledTimes(2);
+    expect(queueProjectUpdateArchive).toHaveBeenNthCalledWith(
+      1,
+      'archived',
+      '2026-07-19T08:01:00.000Z',
+    );
+    expect(queueProjectUpdateArchive).toHaveBeenNthCalledWith(
+      2,
+      'device-only',
+      '2026-07-19T08:02:00.000Z',
+    );
   });
 
   it('keeps deletion intent when the cloud queue write is interrupted', async () => {
