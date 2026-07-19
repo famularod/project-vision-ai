@@ -35,7 +35,9 @@ assert(
     /normalizeStoredUpdateRecord,\s*'cloud saved updates'/.test(app) &&
     app.includes('return migrateLegacyProjectUpdate(normalizeUpdate('),
   'Both local and cloud field updates must be assigned to their parent project during hydration.');
-assert(app.includes('normalizeScheduleItems(result.value).map(migrateLegacyScheduleItem)'),
+assert(
+  app.includes('normalizeScheduleItems(items).map(migrateLegacyScheduleItem)') &&
+    app.includes('reconcileDAVEScheduleRecords('),
   'Schedule tasks must be assigned to their parent project.');
 assert(app.includes('normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument)'),
   'Project documents must follow the parent project.');

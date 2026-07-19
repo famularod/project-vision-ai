@@ -146,7 +146,7 @@
     "test:identity-repository": "node scripts/dave-identity-repository-test.js",
     "test:photo-vision-authority": "node scripts/pie-photo-vision-authority-test.js",
     "test:project-sync-ownership-policy": "node scripts/project-sync-ownership-policy-test.js",
-    "test:cloud-recovery": "node scripts/dave-cloud-recovery-test.js",
+    "test:cloud-recovery": "node scripts/dave-cloud-recovery-test.js && node scripts/dave-schedule-cloud-recovery-test.js",
     "test:sync-tombstones": "node scripts/dave-sync-tombstones-test.js",
     "test:live-authority-auth": "node scripts/dave-live-authority-auth-test.js",
     "test:voice-owner-auth": "node scripts/dave-transcribe-owner-auth-test.js",

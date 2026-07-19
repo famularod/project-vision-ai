@@ -31,6 +31,7 @@ import type {
 } from './PIERealityModel';
 import type { PIEExecutiveJudgmentRecord } from './PIEExecutiveJudgmentRepository';
 import type { DAVEProjectTruthSnapshot } from './DAVEProjectTruthRepository';
+import { bindDAVECloudDatabaseIdentity } from './DAVECloudRecovery';
 import {
   chunkSupabaseFilterValues,
   paginateSupabaseCollection,
@@ -2547,7 +2548,7 @@ async function listOwnedJsonRecords<T>({
   const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
     client
       .from(table)
-      .select(jsonColumn, { count: includeExactCount ? 'exact' : undefined })
+      .select(`id, updated_at, ${jsonColumn}`, { count: includeExactCount ? 'exact' : undefined })
       .eq('owner_id', owner.data)
       .order('updated_at', { ascending: false })
       .order('id', { ascending: true })
@@ -2557,8 +2558,16 @@ async function listOwnedJsonRecords<T>({
   if (!result.ok) return tableAwareListResult<T>(result.error, result.status);
 
   const records = result.rows
-        .map(row => toRecord(row)[jsonColumn] as T | null | undefined)
-        .filter((value): value is T => Boolean(value));
+    .map(row => {
+      const databaseRow = toRecord(row);
+      const jsonRecord = toRecord(databaseRow[jsonColumn]);
+      if (Object.keys(jsonRecord).length === 0) return null;
+      // The database row is the durable identity. Legacy JSON may omit its id
+      // or contain an old conflicting id; using the row id prevents a later
+      // upload from manufacturing a second cloud record.
+      return bindDAVECloudDatabaseIdentity(jsonRecord, databaseRow.id) as T;
+    })
+    .filter((value): value is T => Boolean(value));
 
   return okResult(records, result.status);
 }

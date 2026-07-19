@@ -20,7 +20,12 @@ const {
   mergeDAVECloudRecoveryRecords,
   mergeDAVECloudRecoveredProjectUpdate,
   countDAVECloudRecoveredRecords,
+  bindDAVECloudDatabaseIdentity,
 } = moduleUnderTest.exports;
+
+assert.strictEqual(bindDAVECloudDatabaseIdentity({ id: 'payload-id' }, 'db-id').id, 'db-id');
+assert.strictEqual(bindDAVECloudDatabaseIdentity({ value: 1 }, 'db-id').id, 'db-id');
+assert.deepStrictEqual(bindDAVECloudDatabaseIdentity({ id: 'payload-id' }, ''), { id: 'payload-id' });
 
 const cloud = [
   { id: 'cloud-only', value: 'recover me' },
@@ -115,7 +120,10 @@ const updateService = fs.readFileSync(path.join(root, 'services/updateService.ts
 for (const marker of ['listProjectAreas', 'listScheduleItems', 'listReferenceDocuments']) {
   assert(supabase.includes(`export async function ${marker}`), `${marker} must be implemented`);
   assert(sync.includes(`${marker}()`), `${marker} must participate in full cloud download`);
-  assert(app.includes(`${marker}()`), `${marker} must participate in startup recovery`);
+  assert(
+    app.includes(`${marker}()`) || app.includes(`loadCloud: ${marker}`),
+    `${marker} must participate in startup recovery`,
+  );
 }
 assert(
   sync.includes('projectUpdateWithCloudPhotoPaths(update)') &&

@@ -4,6 +4,14 @@ export type DAVECloudRecoveryRecord = {
   id: string;
 };
 
+export function bindDAVECloudDatabaseIdentity<T extends Record<string, unknown>>(
+  payload: T,
+  databaseId: unknown,
+): T {
+  const id = typeof databaseId === 'string' ? databaseId.trim() : '';
+  return id ? { ...payload, id } : payload;
+}
+
 /**
  * Combines a cloud recovery snapshot with the device's current records.
  * Device records deliberately win for matching ids because they may contain

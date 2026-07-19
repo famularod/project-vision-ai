@@ -82,6 +82,7 @@ import {
   isStartupHydrationReady,
   useStartupHydration,
 } from './hooks/use-startup-hydration';
+import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -201,9 +202,13 @@ import {
   mergeDAVECloudRecoveryRecords,
 } from './services/DAVECloudRecovery';
 import {
+  isDAVESafeCloudScheduleRecord,
+  reconcileDAVEScheduleRecords,
+  recoverDAVEScheduleRecords,
+} from './services/DAVEScheduleRecovery';
+import {
   DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
   deletedDAVERecordIds,
-  loadDAVESyncTombstones,
   recordDAVESyncTombstone,
   recordDAVESyncTombstones,
   synchronizeDAVESyncTombstones,
@@ -308,6 +313,7 @@ import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgment
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
 import {
   buildPIEScheduleReconciliation,
+  reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
@@ -336,6 +342,7 @@ import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
   scheduleImportItemIdentity,
+  scheduleItemsForExactImportBatch,
   scheduleOverviewProjectNames,
   resolveScheduleParentActions,
   scheduleParentProjectNames,
@@ -2279,9 +2286,9 @@ function normalizeReferenceDocument(value: Partial<ReferenceDocument>): Referenc
 function normalizeReferenceDocuments(value: unknown) {
   if (!Array.isArray(value)) return [];
 
-  return value
+  return reconcileCurrentScheduleDocuments(value
     .map(item => normalizeReferenceDocument(item as Partial<ReferenceDocument>))
-    .filter(document => document.uri);
+    .filter(document => document.uri));
 }
 
 function isStartupDeviceReferenceDocumentRecord(value: unknown) {
@@ -2667,7 +2674,7 @@ function normalizeScheduleItems(value: unknown) {
     .map(item => normalizeScheduleItem(item as Partial<ScheduleItem>))
     .filter(item => item.taskName.trim());
 
-  return canonicalizeScheduleIdentityItems(items);
+  return reconcileDAVEScheduleRecords(canonicalizeScheduleIdentityItems(items));
 }
 
 function canonicalizeScheduleIdentityItems(
@@ -5152,12 +5159,12 @@ function AppShell() {
   const [archivedProjectsLoaded, setArchivedProjectsLoaded] =
     useState(false);
 
-  const [projectAreasLoaded, setProjectAreasLoaded] =
+  const [projectAreasLoaded, setProjectAreasLoadedState] =
     useState(false);
   const [projectAreasLocalLoaded, setProjectAreasLocalLoaded] =
     useState(false);
 
-  const [referenceDocumentsLoaded, setReferenceDocumentsLoaded] =
+  const [referenceDocumentsLoaded, setReferenceDocumentsLoadedState] =
     useState(false);
   const [referenceDocumentsLocalLoaded, setReferenceDocumentsLocalLoaded] =
     useState(false);
@@ -5165,10 +5172,16 @@ function AppShell() {
   const [projectDocumentsLoaded, setProjectDocumentsLoaded] =
     useState(false);
 
-  const [scheduleItemsLoaded, setScheduleItemsLoaded] =
+  const [scheduleItemsLoaded, setScheduleItemsLoadedState] =
     useState(false);
   const [scheduleItemsLocalLoaded, setScheduleItemsLocalLoaded] =
     useState(false);
+  const projectAreasAuthorityRef = useRef(false);
+  const referenceDocumentsAuthorityRef = useRef(false);
+  const scheduleItemsAuthorityRef = useRef(false);
+  const markProjectAreasAuthorityReady = (ready: boolean) => { projectAreasAuthorityRef.current = ready; setProjectAreasLoadedState(ready); };
+  const markReferenceDocumentsAuthorityReady = (ready: boolean) => { referenceDocumentsAuthorityRef.current = ready; setReferenceDocumentsLoadedState(ready); };
+  const markScheduleItemsAuthorityReady = (ready: boolean) => { scheduleItemsAuthorityRef.current = ready; setScheduleItemsLoadedState(ready); };
   const [captureMemoriesLoaded, setCaptureMemoriesLoaded] =
     useState(false);
   const [identityCorrectionsLoaded, setIdentityCorrectionsLoaded] =
@@ -5708,100 +5721,41 @@ useEffect(() => {
       .catch(error => startupHydration.fail(ARCHIVED_PROJECTS_STORAGE_KEY, 'archived projects', error));
   }, [deletedProjectNamesLocalLoaded, startupHydration.retryAttempt]);
 
-  useEffect(() => {
-    const localAreasPromise = backupRestoreRuntime.recoverBeforeStartupReads()
-      .then(() => readStartupJsonArray<ProjectArea>(
-        PROJECT_AREAS_STORAGE_KEY,
-        DEFAULT_PROJECT_AREAS,
-        'project areas',
-        isStartupProjectAreaRecord,
-      ));
-    void localAreasPromise
-      .then(result => {
-        if (!startupHydration.accept([result])) return;
-        setProjectAreas(normalizeProjectAreas(result.value));
-        setProjectAreasLocalLoaded(true);
-        setProjectAreasLoaded(true);
-      })
-      .catch(error => startupHydration.fail(PROJECT_AREAS_STORAGE_KEY, 'project areas', error));
+  useStartupLocalFirstRecovery<ProjectArea, ProjectArea, ProjectArea>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: projectAreasLocalLoaded, localAuthorityReady: projectAreasLoaded, localAuthorityRef: projectAreasAuthorityRef, resetLocalLoaded: () => { setProjectAreasLocalLoaded(false); markProjectAreasAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(PROJECT_AREAS_STORAGE_KEY, DEFAULT_PROJECT_AREAS, 'project areas', isStartupProjectAreaRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: normalizeProjectAreas,
+    applyLocal: (areas, found) => { setProjectAreas(areas); setProjectAreasLocalLoaded(true); markProjectAreasAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(PROJECT_AREAS_STORAGE_KEY, 'project areas', error),
+    loadCloud: listProjectAreas, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: areas => normalizeProjectAreas(areas.filter(isStartupProjectAreaRecord)),
+    applyCloud: (areas, tombstones) => setProjectAreas(current => mergeDAVECloudRecoveryRecords({
+      local: areas, cloud: current, deletedIds: deletedDAVERecordIds(tombstones, 'project_area'),
+    })),
+    onCloudApplied: () => markProjectAreasAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud area recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
 
-    if (!startupHydrationReady) return;
-    Promise.all([
-      localAreasPromise,
-      listProjectAreas(),
-      synchronizeDAVESyncTombstones(),
-    ])
-      .then(async ([, cloudResult, tombstoneSync]) => {
-        const currentTombstones = await loadDAVESyncTombstones();
-        const cloudAreas = tombstoneSync.cloudAuthoritative && cloudResult.ok
-          ? normalizeProjectAreas(cloudResult.data)
-          : [];
-        setProjectAreas(current =>
-          mergeDAVECloudRecoveryRecords({
-            local: current,
-            cloud: cloudAreas,
-            deletedIds: deletedDAVERecordIds(
-              currentTombstones,
-              'project_area',
-            ),
-          }),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Project areas could not be loaded.',
-        ),
-      );
-  }, [startupHydration.retryAttempt, startupHydrationReady]);
-
-
-  useEffect(() => {
-    const localDocumentsPromise = backupRestoreRuntime.recoverBeforeStartupReads()
-      .then(() => readStartupJsonArray<ReferenceDocument>(
-        REFERENCE_DOCUMENTS_STORAGE_KEY,
-        [],
-        'reference documents',
-        isStartupDeviceReferenceDocumentRecord,
-      ));
-    void localDocumentsPromise
-      .then(result => {
-        if (!startupHydration.accept([result])) return;
-        setReferenceDocuments(normalizeReferenceDocuments(result.value));
-        setReferenceDocumentsLocalLoaded(true);
-        setReferenceDocumentsLoaded(true);
-      })
-      .catch(error => startupHydration.fail(REFERENCE_DOCUMENTS_STORAGE_KEY, 'reference documents', error));
-
-    if (!startupHydrationReady) return;
-    Promise.all([
-      localDocumentsPromise,
-      listReferenceDocuments(),
-      synchronizeDAVESyncTombstones(),
-    ])
-      .then(async ([, cloudResult, tombstoneSync]) => {
-        const currentTombstones = await loadDAVESyncTombstones();
-        const cloudDocuments = tombstoneSync.cloudAuthoritative && cloudResult.ok
-          ? normalizeReferenceDocuments(cloudResult.data)
-          : [];
-        setReferenceDocuments(current =>
-          mergeDAVECloudRecoveryRecords({
-            local: current,
-            cloud: cloudDocuments,
-            deletedIds: deletedDAVERecordIds(
-              currentTombstones,
-              'reference_document',
-            ),
-          }),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Reference documents could not be loaded.',
-        ),
-      );
-  }, [startupHydration.retryAttempt, startupHydrationReady]);
+  useStartupLocalFirstRecovery<ReferenceDocument, ReferenceDocument, ReferenceDocument>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: referenceDocumentsLocalLoaded, localAuthorityReady: referenceDocumentsLoaded, localAuthorityRef: referenceDocumentsAuthorityRef, resetLocalLoaded: () => { setReferenceDocumentsLocalLoaded(false); markReferenceDocumentsAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(REFERENCE_DOCUMENTS_STORAGE_KEY, [], 'reference documents', isStartupDeviceReferenceDocumentRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: normalizeReferenceDocuments,
+    applyLocal: (documents, found) => { setReferenceDocuments(documents); setReferenceDocumentsLocalLoaded(true); markReferenceDocumentsAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(REFERENCE_DOCUMENTS_STORAGE_KEY, 'reference documents', error),
+    loadCloud: listReferenceDocuments, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: documents => normalizeReferenceDocuments(documents.filter(isStartupReferenceDocumentRecord)),
+    applyCloud: (documents, tombstones) => setReferenceDocuments(current => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
+      local: current, cloud: documents, deletedIds: deletedDAVERecordIds(tombstones, 'reference_document'),
+    }))),
+    onCloudApplied: () => markReferenceDocumentsAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud document recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
 
   useEffect(() => {
     backupRestoreRuntime.recoverBeforeStartupReads()
@@ -5825,52 +5779,28 @@ useEffect(() => {
       .catch(error => startupHydration.fail(PROJECT_DOCUMENTS_STORAGE_KEY, 'project documents', error));
   }, [startupHydration.retryAttempt]);
 
-  useEffect(() => {
-    const localScheduleItemsPromise = backupRestoreRuntime.recoverBeforeStartupReads()
-      .then(() => readStartupJsonArray<ScheduleItem>(
-        SCHEDULE_ITEMS_STORAGE_KEY,
-        [],
-        'schedule items',
-        isStartupScheduleItemRecord,
-      ));
-    void localScheduleItemsPromise
-      .then(result => {
-        if (!startupHydration.accept([result])) return;
-        setScheduleItems(normalizeScheduleItems(result.value).map(migrateLegacyScheduleItem));
-        setScheduleItemsLocalLoaded(true);
-        setScheduleItemsLoaded(true);
-      })
-      .catch(error => startupHydration.fail(SCHEDULE_ITEMS_STORAGE_KEY, 'schedule items', error));
-
-    if (!startupHydrationReady) return;
-    Promise.all([
-      localScheduleItemsPromise,
-      listScheduleItems(),
-      synchronizeDAVESyncTombstones(),
-    ])
-      .then(async ([, cloudResult, tombstoneSync]) => {
-        const currentTombstones = await loadDAVESyncTombstones();
-        const cloudItems = tombstoneSync.cloudAuthoritative && cloudResult.ok
-          ? normalizeScheduleItems(cloudResult.data).map(migrateLegacyScheduleItem)
-          : [];
-        setScheduleItems(current =>
-          mergeDAVECloudRecoveryRecords({
-            local: current,
-            cloud: cloudItems,
-            deletedIds: deletedDAVERecordIds(
-              currentTombstones,
-              'schedule_item',
-            ),
-          }),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Schedule items could not be loaded.',
-        ),
-      );
-  }, [startupHydration.retryAttempt, startupHydrationReady]);
+  useStartupLocalFirstRecovery<ScheduleItem, ScheduleItem, ScheduleItem>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: scheduleItemsLocalLoaded, localAuthorityReady: scheduleItemsLoaded, localAuthorityRef: scheduleItemsAuthorityRef, resetLocalLoaded: () => { setScheduleItemsLocalLoaded(false); markScheduleItemsAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(SCHEDULE_ITEMS_STORAGE_KEY, [], 'schedule items', isStartupScheduleItemRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: items => reconcileDAVEScheduleRecords(
+      normalizeScheduleItems(items).map(migrateLegacyScheduleItem),
+    ),
+    applyLocal: (items, found) => { setScheduleItems(items); setScheduleItemsLocalLoaded(true); markScheduleItemsAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(SCHEDULE_ITEMS_STORAGE_KEY, 'schedule items', error),
+    loadCloud: listScheduleItems, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: items => normalizeScheduleItems(
+      items.filter(isDAVESafeCloudScheduleRecord),
+    ).map(migrateLegacyScheduleItem),
+    applyCloud: (items, tombstones) => setScheduleItems(current => recoverDAVEScheduleRecords({
+      local: current, cloud: items, deletedIds: deletedDAVERecordIds(tombstones, 'schedule_item'),
+      allowCloudOnly: true,
+    })),
+    onCloudApplied: () => markScheduleItemsAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud schedule recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
 
   useEffect(() => {
     AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY)
@@ -8188,6 +8118,7 @@ function addProject(projectName: string) {
       setArchivedProjects(cascade.remainingArchivedProjects);
       setSavedUpdates(cascade.remainingUpdates);
       setProjectDocuments(cascade.remainingProjectDocuments);
+      markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
       setReferenceDocuments(cascade.remainingReferenceDocuments);
       setScheduleItems(cascade.remainingScheduleItems);
 
@@ -8245,6 +8176,7 @@ function addProject(projectName: string) {
       return false;
     }
 
+    markProjectAreasAuthorityReady(true);
     setProjectAreas(prev => [
       {
         id: uid(),
@@ -8266,6 +8198,7 @@ function addProject(projectName: string) {
     areaId: string,
     next: Partial<ProjectArea>,
   ) {
+    markProjectAreasAuthorityReady(true);
     setProjectAreas(prev =>
       prev.map(area =>
         area.id === areaId
@@ -8297,6 +8230,7 @@ function addProject(projectName: string) {
           onPress: () => {
             void recordDAVESyncTombstone('project_area', areaId)
               .then(() => {
+                markProjectAreasAuthorityReady(true);
                 setProjectAreas(prev => prev.filter(item => item.id !== areaId));
 
                 if (draft.selectedAreaId === areaId) {
@@ -9388,6 +9322,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setContactBook(restored.contactBook); setProjectAreas(restored.projectAreas);
       setReferenceDocuments(restored.referenceDocuments); setProjectDocuments(restored.projectDocuments);
       setScheduleItems(restored.scheduleItems); setDraft(restored.draft);
+      markProjectAreasAuthorityReady(true); markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
       setDraftSavedAt(restored.storedDraft?.savedAt || null); setSelectedWorkspaceProject(restored.activeProject);
       setOverviewProjectSelection(undefined); setOverviewProjectManuallySelected(false);
 
@@ -9531,6 +9466,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         importedAt: new Date().toISOString(),
       });
 
+      markReferenceDocumentsAuthorityReady(true);
       setReferenceDocuments(prev => [nextDocument, ...prev]);
 
       Alert.alert('Document imported', `${nextDocument.name} was saved to Reference Documents.`);
@@ -9544,6 +9480,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     documentId: string,
     next: Partial<ReferenceDocument>,
   ) {
+    markReferenceDocumentsAuthorityReady(true);
     setReferenceDocuments(prev =>
       prev.map(document =>
         document.id === documentId
@@ -9559,12 +9496,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
   function markReferenceDocumentCurrent(documentId: string) {
     const target = referenceDocuments.find(document => document.id === documentId);
 
+    markReferenceDocumentsAuthorityReady(true);
     setReferenceDocuments(prev =>
       prev.map(document => ({
         ...document,
         isCurrent:
           document.id === documentId
-            ? !document.isCurrent
+            ? true
             : target && document.category === target.category
               ? false
               : document.isCurrent,
@@ -9741,6 +9679,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           onPress: () => {
             void recordDAVESyncTombstone('reference_document', documentId)
               .then(() => {
+                markReferenceDocumentsAuthorityReady(true);
                 setReferenceDocuments(prev =>
                   prev.filter(item => item.id !== documentId),
                 );
@@ -9759,6 +9698,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function setActiveScheduleDocument(documentId: string) {
+    markReferenceDocumentsAuthorityReady(true);
     setReferenceDocuments(prev =>
       prev.map(document =>
         document.category === 'Schedules'
@@ -9772,11 +9712,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const document = referenceDocuments.find(item => item.id === documentId);
 
     if (!document) return;
-    const relatedScheduleItems = scheduleItems.filter(
-      item =>
-        item.importedFrom === document.originalFileName ||
-        item.importedFrom === document.name,
-    );
+    const relatedScheduleItems = document.importBatchId
+      ? scheduleItemsForExactImportBatch(scheduleItems, document)
+      : scheduleItems.filter(item =>
+          item.importedFrom === document.originalFileName || item.importedFrom === document.name);
 
     Alert.alert(
       'Delete uploaded schedule?',
@@ -9788,6 +9727,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           onPress: () => {
             void recordDAVESyncTombstone('reference_document', documentId)
               .then(() => {
+                markReferenceDocumentsAuthorityReady(true);
                 setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
@@ -9812,6 +9752,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             ])
               .then(() => {
                 const deletedItemIds = new Set(relatedScheduleItems.map(item => item.id));
+                markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
                 setScheduleItems(prev =>
                   prev.filter(item => !deletedItemIds.has(item.id)),
@@ -9841,10 +9782,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       createdAt: now,
     });
 
+    markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev => [next, ...prev]);
   }
 
   function updateScheduleItem(itemId: string, next: Partial<ScheduleItem>) {
+    markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev =>
       prev.map(item => {
         if (item.id !== itemId) return item;
@@ -9860,6 +9803,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             progressSource: 'project_manager' as const,
             progressConfirmedAt: new Date().toISOString(),
             progressConfirmedBy: displayName.trim() || 'Project manager',
+            completionVerification: next.completionVerification ?? null,
           } : {}),
         });
       }),
@@ -9881,6 +9825,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           onPress: () => {
             void recordDAVESyncTombstone('schedule_item', itemId)
               .then(() => {
+                markScheduleItemsAuthorityReady(true);
                 setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
               })
               .catch(() => {
@@ -10191,6 +10136,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
 
     if (approvedItems.length) {
+      markScheduleItemsAuthorityReady(true);
       // Explicit user approval of an import into these projects is the user
       // transition that permits reopening an archived parent (audit P1-57).
       ensureScheduleParentProjects(approvedItems, {
@@ -10226,11 +10172,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
           if (!duplicate) additions.push(importedItem);
         });
 
-        return [...additions, ...next];
+        return reconcileDAVEScheduleRecords([...additions, ...next]);
       });
     }
 
     if (approvedBatch.documents.length) {
+      markReferenceDocumentsAuthorityReady(true);
       const importedProjectNames = scheduleParentProjectNames(
         approvedItems as unknown as import('./types').ScheduleItem[],
       );
@@ -11539,33 +11486,43 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 if (failed.projectAreas === null) {
                   setProjectAreas(previous => mergeDAVECloudRecoveryRecords({
                     local: previous,
-                    cloud: normalizeProjectAreas(recovered.projectAreas),
+                    cloud: normalizeProjectAreas(
+                      recovered.projectAreas.filter(isStartupProjectAreaRecord),
+                    ),
                     deletedIds: deletedDAVERecordIds(
                       recovered.tombstones,
                       'project_area',
                     ),
                   }));
+                  markProjectAreasAuthorityReady(true);
                 }
                 if (failed.scheduleItems === null) {
-                  setScheduleItems(previous => mergeDAVECloudRecoveryRecords({
+                  const safeCloudItems = normalizeScheduleItems(
+                    recovered.scheduleItems.filter(isDAVESafeCloudScheduleRecord),
+                  ).map(migrateLegacyScheduleItem);
+                  setScheduleItems(previous => recoverDAVEScheduleRecords({
                     local: previous,
-                    cloud: normalizeScheduleItems(recovered.scheduleItems)
-                      .map(migrateLegacyScheduleItem),
+                    cloud: safeCloudItems,
                     deletedIds: deletedDAVERecordIds(
                       recovered.tombstones,
                       'schedule_item',
                     ),
+                    allowCloudOnly: true,
                   }));
+                  markScheduleItemsAuthorityReady(true);
                 }
                 if (failed.referenceDocuments === null) {
-                  setReferenceDocuments(previous => mergeDAVECloudRecoveryRecords({
+                  setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
                     local: previous,
-                    cloud: normalizeReferenceDocuments(recovered.referenceDocuments),
+                    cloud: normalizeReferenceDocuments(
+                      recovered.referenceDocuments.filter(isStartupReferenceDocumentRecord),
+                    ),
                     deletedIds: deletedDAVERecordIds(
                       recovered.tombstones,
                       'reference_document',
                     ),
-                  }));
+                  })));
+                  markReferenceDocumentsAuthorityReady(true);
                 }
                 if (failed.projects === null) {
                   const cloudProjectRecords = recovered.projects

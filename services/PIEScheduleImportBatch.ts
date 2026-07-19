@@ -1,7 +1,12 @@
 import type { ReferenceDocument, ScheduleItem } from '../types';
 import { parseFlexibleDate } from '../utils/date';
 import { scheduleItemNeedsCompletionVerification } from './DAVECompletionVerification';
-import { bindScheduleImportBatch } from './ScheduleImportProvenance';
+import {
+  bindScheduleImportBatch,
+  scheduleItemsForExactImportBatch,
+} from './ScheduleImportProvenance';
+
+export { scheduleItemsForExactImportBatch };
 
 export type PIEScheduleImportKind = 'schedule_file' | 'message_screenshots';
 

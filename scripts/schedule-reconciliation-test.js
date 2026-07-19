@@ -41,6 +41,7 @@ function loadTypeScriptModule(relativePath) {
 
 const {
   buildPIEScheduleReconciliation,
+  reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
 } = loadTypeScriptModule('services/PIEScheduleReconciliation.ts');
 
@@ -527,6 +528,67 @@ assert.deepStrictEqual(
   activeItems.map(item => item.id),
   ['current', 'manual'],
   'Only active-upload and manual schedule items may drive intelligence.',
+);
+
+const sameFilenameByBatch = selectAuthoritativeScheduleItems({
+  scheduleItems: [
+    schedule({ id: 'batch-current-task', importedFrom: 'schedule.pdf', importBatchId: 'batch-current', sourceDocumentId: 'document-current-batch' }),
+    schedule({ id: 'batch-old-task', importedFrom: 'schedule.pdf', importBatchId: 'batch-old', sourceDocumentId: 'document-old-batch' }),
+  ],
+  scheduleDocuments: [
+    {
+      id: 'document-current-batch', name: 'Schedule', originalFileName: 'schedule.pdf',
+      uri: 'file:///current-batch.pdf', category: 'Schedules', notes: '', isCurrent: true,
+      importedAt: '2026-07-18T12:00:00.000Z', importBatchId: 'batch-current',
+    },
+    {
+      id: 'document-old-batch', name: 'Schedule', originalFileName: 'schedule.pdf',
+      uri: 'file:///old-batch.pdf', category: 'Schedules', notes: '', isCurrent: false,
+      importedAt: '2026-07-10T12:00:00.000Z', importBatchId: 'batch-old',
+    },
+  ],
+});
+assert.deepStrictEqual(
+  sameFilenameByBatch.map(item => item.id),
+  ['batch-current-task'],
+  'Immutable document and batch identity must outrank a reused schedule filename.',
+);
+
+const noCurrentItems = selectAuthoritativeScheduleItems({
+  scheduleItems: [
+    schedule({ id: 'inactive-upload', importedFrom: 'inactive.pdf', importBatchId: 'inactive-batch' }),
+    schedule({ id: 'manual-without-source', importedFrom: null, importBatchId: null, sourceDocumentId: null }),
+  ],
+  scheduleDocuments: [{
+    id: 'inactive-document', name: 'Inactive', originalFileName: 'inactive.pdf', uri: 'file:///inactive.pdf',
+    category: 'Schedules', notes: '', isCurrent: false, importedAt: '2026-07-10T12:00:00.000Z', importBatchId: 'inactive-batch',
+  }],
+});
+assert.deepStrictEqual(
+  noCurrentItems.map(item => item.id),
+  ['manual-without-source'],
+  'An explicitly inactive upload must not reactivate merely because no schedule is current.',
+);
+
+const competingCurrentDocuments = [
+  { id: 'older-current', name: 'Schedule', originalFileName: 'same.pdf', uri: 'file:///older.pdf', category: 'Schedules', notes: '', isCurrent: true, importedAt: '2026-07-10T12:00:00.000Z', importBatchId: 'older-batch' },
+  { id: 'newer-current', name: 'Schedule', originalFileName: 'same.pdf', uri: 'file:///newer.pdf', category: 'Schedules', notes: '', isCurrent: true, importedAt: '2026-07-18T12:00:00.000Z', importBatchId: 'newer-batch' },
+];
+assert.deepStrictEqual(
+  selectAuthoritativeScheduleItems({
+    scheduleItems: [
+      schedule({ id: 'older-current-task', importedFrom: 'same.pdf', importBatchId: 'older-batch', sourceDocumentId: 'older-current' }),
+      schedule({ id: 'newer-current-task', importedFrom: 'same.pdf', importBatchId: 'newer-batch', sourceDocumentId: 'newer-current' }),
+    ],
+    scheduleDocuments: competingCurrentDocuments,
+  }).map(item => item.id),
+  ['newer-current-task'],
+  'Only the newest marked-current schedule may drive intelligence after a merge conflict.',
+);
+assert.deepStrictEqual(
+  reconcileCurrentScheduleDocuments(competingCurrentDocuments).filter(document => document.isCurrent).map(document => document.id),
+  ['newer-current'],
+  'Merged reference documents must converge to one deterministic current schedule.',
 );
 
 const dedupedItems = selectAuthoritativeScheduleItems({

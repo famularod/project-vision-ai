@@ -14,6 +14,7 @@ import {
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -127,24 +128,44 @@ export function selectAuthoritativeScheduleItems({
   scheduleItems?: ScheduleItem[];
   scheduleDocuments?: ReferenceDocument[];
 }) {
+  const scheduleSources = scheduleDocuments.filter(document => document.category === 'Schedules');
+  const activeSchedules = scheduleSources
+    .filter(document => document.isCurrent)
+    .sort(compareScheduleDocumentAuthority)
+    .slice(0, 1);
   const activeScheduleSources = new Set(
-    scheduleDocuments
-      .filter(document => document.category === 'Schedules' && document.isCurrent)
+    activeSchedules
       .flatMap(document => [document.name, document.originalFileName])
       .map(normalize)
       .filter(Boolean),
   );
   const knownScheduleSources = new Set(
-    scheduleDocuments
-      .filter(document => document.category === 'Schedules')
+    scheduleSources
       .flatMap(document => [document.name, document.originalFileName])
       .map(normalize)
       .filter(Boolean),
   );
+  const activeBatchIds = new Set(activeSchedules.map(document => normalize(document.importBatchId || '')).filter(Boolean));
+  const knownBatchIds = new Set(scheduleSources.map(document => normalize(document.importBatchId || '')).filter(Boolean));
+  const activeDocumentIds = new Set(activeSchedules.map(document => normalize(document.id)).filter(Boolean));
+  const knownDocumentIds = new Set(scheduleSources.map(document => normalize(document.id)).filter(Boolean));
 
-  const selectedItems = activeScheduleSources.size === 0
+  const selectedItems = scheduleSources.length === 0
     ? scheduleItems
+    : activeSchedules.length === 0
+      ? scheduleItems.filter(item =>
+          !normalize(item.importedFrom || '') &&
+          !normalize(item.importBatchId || '') &&
+          !normalize(item.sourceDocumentId || ''))
     : scheduleItems.filter(item => {
+    const sourceDocumentId = normalize(item.sourceDocumentId || '');
+    if (sourceDocumentId && knownDocumentIds.has(sourceDocumentId)) {
+      return activeDocumentIds.has(sourceDocumentId);
+    }
+    const importBatchId = normalize(item.importBatchId || '');
+    if (importBatchId && knownBatchIds.has(importBatchId)) {
+      return activeBatchIds.has(importBatchId);
+    }
     const importedFrom = normalize(item.importedFrom || '');
     return !importedFrom ||
       !knownScheduleSources.has(importedFrom) ||
@@ -152,6 +173,23 @@ export function selectAuthoritativeScheduleItems({
   });
 
   return dedupeScheduleItems(selectedItems);
+}
+
+export function reconcileCurrentScheduleDocuments(
+  documents: readonly ReferenceDocument[],
+): ReferenceDocument[] {
+  const winner = documents
+    .filter(document => document.category === 'Schedules' && document.isCurrent)
+    .sort(compareScheduleDocumentAuthority)[0];
+  if (!winner) return [...documents];
+  return documents.map(document => document.category === 'Schedules'
+    ? { ...document, isCurrent: document.id === winner.id }
+    : document);
+}
+
+function compareScheduleDocumentAuthority(left: ReferenceDocument, right: ReferenceDocument) {
+  const timeDifference = timestamp(right.importedAt) - timestamp(left.importedAt);
+  return timeDifference || normalize(left.id).localeCompare(normalize(right.id));
 }
 
 export function buildPIEScheduleReconciliation({
@@ -604,28 +642,7 @@ function canonicalToken(token: string) {
 }
 
 function dedupeScheduleItems(items: ScheduleItem[]) {
-  const selectedBySignature = new Map<string, ScheduleItem>();
-
-  items.forEach(item => {
-    const signature = [
-      item.importedFrom ? 'imported' : 'manual',
-      item.projectName,
-      item.locationName,
-      item.taskName,
-      item.milestone,
-      item.startDate,
-      item.finishDate,
-    ].map(normalize).join('|');
-    const current = selectedBySignature.get(signature);
-    const itemTimestamp = timestamp(item.importedAt || item.createdAt);
-    const currentTimestamp = timestamp(current?.importedAt || current?.createdAt);
-
-    if (!current || itemTimestamp >= currentTimestamp) {
-      selectedBySignature.set(signature, item);
-    }
-  });
-
-  return Array.from(selectedBySignature.values());
+  return reconcileDAVEScheduleRecords(items);
 }
 
 function updateTimestamp(update: ProjectUpdate) {
