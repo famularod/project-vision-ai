@@ -845,6 +845,13 @@ export async function updateProject(
 
   const { data, error, status } = await query.limit(1).maybeSingle();
 
+  if (error && project.archived === true && error.code === 'PGRST116') {
+    return okResult<CloudProject>(
+      null,
+      status,
+      'Project was already absent from the cloud project list.',
+    );
+  }
   if (error) return tableAwareErrorResult<CloudProject>(error.message, status);
   if (!data && project.archived === true) {
     return okResult<CloudProject>(

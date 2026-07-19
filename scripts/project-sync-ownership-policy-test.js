@@ -161,8 +161,16 @@ includes(
   ".eq('owner_id', owner.data)",
   'cloud reads and mutations must filter by the current authenticated owner',
 );
+const updateProjectSource = service.match(
+  /export async function updateProject\([\s\S]*?\n\}\n\nexport async function deleteProject/m,
+)?.[0] || '';
 includes(
-  service,
+  updateProjectSource,
+  "project.archived === true && error.code === 'PGRST116'",
+  'a one-row archive must treat the backend no-row code as an idempotent success',
+);
+includes(
+  updateProjectSource,
   'if (!data && project.archived === true)',
   'archiving an already-absent project must complete idempotently instead of retrying forever',
 );
