@@ -5602,13 +5602,10 @@ useEffect(() => {
         );
         if (nonProjectShellNames.length > 0 && shellMigrationComplete !== 'complete') {
           await queueCloudProjectArchives(nonProjectShellNames);
-          const archiveResult = await uploadPendingChanges();
-          if (archiveResult.errors.length === 0 && archiveResult.queued === 0) {
-            await persistStorageItem(
-              LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
-              'complete',
-            );
-          }
+          await persistStorageItem(
+            LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+            'complete',
+          );
         }
         const currentDeletedNames = deletedProjectNamesRef.current;
         const deletedKeys = new Set(

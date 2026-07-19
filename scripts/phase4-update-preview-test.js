@@ -76,7 +76,7 @@ assert(
 assert(
   sync.includes('id: projectUpdateQueueItemId(update.id)') &&
     sync.includes('return `project-update-${updateId}`') &&
-    sync.includes('queue.filter(existing => existing.id !== queueItem.id)'),
+    sync.includes('existing.id !== queueItem.id &&'),
   'Queued sends should use stable ids and replace duplicate queue entries.',
 );
 assert(

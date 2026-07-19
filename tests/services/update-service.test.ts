@@ -86,12 +86,13 @@ describe('project update deletion persistence', () => {
 
   it('replays permanent deletions and account-wide archives after a restart', async () => {
     await reconcileProjectUpdateDeletionJournal([
-      { updateId: 'permanent', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z' },
-      { updateId: 'archived', action: 'archive_sent_update', deletedAt: '2026-07-19T08:01:00.000Z' },
-      { updateId: 'device-only', action: 'remove_from_device', deletedAt: '2026-07-19T08:02:00.000Z' },
+      { updateId: 'permanent', action: 'delete_update_everywhere', deletedAt: '2026-07-19T08:00:00.000Z', cloudIdPresent: true },
+      { updateId: 'archived', action: 'archive_sent_update', deletedAt: '2026-07-19T08:01:00.000Z', cloudIdPresent: true },
+      { updateId: 'device-only-cloud', action: 'remove_from_device', deletedAt: '2026-07-19T08:02:00.000Z', cloudIdPresent: true },
+      { updateId: 'device-only-draft', action: 'remove_from_device', deletedAt: '2026-07-19T08:03:00.000Z', cloudIdPresent: false },
     ]);
 
-    expect(removeProjectUpdateFromSyncQueue).toHaveBeenCalledTimes(3);
+    expect(removeProjectUpdateFromSyncQueue).toHaveBeenCalledTimes(4);
     expect(queueProjectUpdateDelete).toHaveBeenCalledTimes(1);
     expect(queueProjectUpdateDelete).toHaveBeenCalledWith({ id: 'permanent' });
     expect(queueProjectUpdateArchive).toHaveBeenCalledTimes(2);
@@ -102,7 +103,7 @@ describe('project update deletion persistence', () => {
     );
     expect(queueProjectUpdateArchive).toHaveBeenNthCalledWith(
       2,
-      'device-only',
+      'device-only-cloud',
       '2026-07-19T08:02:00.000Z',
     );
   });

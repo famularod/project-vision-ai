@@ -935,7 +935,10 @@ export async function enqueuePendingChange<TPayload>(
 
     return {
       nextQueue: [
-        ...queue.filter(existing => existing.id !== queueItem.id),
+        ...queue.filter(existing => (
+          existing.id !== queueItem.id &&
+          !sameProjectArchiveMutation(existing, queueItem as unknown as SyncQueueItem)
+        )),
         queueItem as unknown as SyncQueueItem,
       ],
       result: undefined,
@@ -975,12 +978,46 @@ export async function queueProjectCreate(name: string): Promise<void> {
 export async function queueProjectUpdate(
   payload: ProjectUpdatePayload,
 ): Promise<void> {
+  const archiveQueueId = projectArchiveQueueItemId(payload);
   await enqueuePendingChange<ProjectUpdatePayload>({
+    id: archiveQueueId ?? undefined,
     entity: 'project',
     operation: 'update',
     payload,
     changedAt: new Date().toISOString(),
   });
+}
+
+function projectArchiveQueueItemId(payload: ProjectUpdatePayload): string | null {
+  const projectName = normalizedProjectArchiveName(payload.previousName);
+  if (typeof payload.archived !== 'boolean' || !projectName) return null;
+  return `project-archive-${encodeURIComponent(projectName)}`;
+}
+
+function sameProjectArchiveMutation(
+  current: SyncQueueItem,
+  attempted: SyncQueueItem,
+): boolean {
+  if (
+    current.entity !== 'project' ||
+    attempted.entity !== 'project' ||
+    current.operation !== 'update' ||
+    attempted.operation !== 'update'
+  ) return false;
+
+  const currentPayload = current.payload as Partial<ProjectUpdatePayload>;
+  const attemptedPayload = attempted.payload as Partial<ProjectUpdatePayload>;
+  return (
+    typeof currentPayload.archived === 'boolean' &&
+    typeof attemptedPayload.archived === 'boolean' &&
+    normalizedProjectArchiveName(currentPayload.previousName) ===
+      normalizedProjectArchiveName(attemptedPayload.previousName) &&
+    normalizedProjectArchiveName(attemptedPayload.previousName).length > 0
+  );
+}
+
+function normalizedProjectArchiveName(name: unknown): string {
+  return typeof name === 'string' ? name.trim().toLowerCase() : '';
 }
 
 export async function queueProjectDelete(name: string): Promise<void> {

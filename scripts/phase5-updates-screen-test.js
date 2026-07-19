@@ -174,7 +174,7 @@ assert(
 );
 assert(
   sync.includes('id: projectUpdateQueueItemId(update.id)') &&
-    sync.includes('queue.filter(existing => existing.id !== queueItem.id)'),
+    sync.includes('existing.id !== queueItem.id &&'),
   'Inline retry should reuse Phase 4 stable queue id behavior.',
 );
 assert(

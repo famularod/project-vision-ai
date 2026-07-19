@@ -32,9 +32,17 @@ assert(
   sync.includes('function projectUpdateQueueItemId(updateId: string)') &&
     sync.includes('id: projectUpdateQueueItemId(update.id)') &&
     sync.includes('mutateOfflineQueue(queue =>') &&
-    sync.includes('...queue.filter(existing => existing.id !== queueItem.id)') &&
+    sync.includes('existing.id !== queueItem.id &&') &&
+    sync.includes('!sameProjectArchiveMutation(existing, queueItem as unknown as SyncQueueItem)') &&
     sync.includes('projectUpdateIdempotencyKey(payload.updateData, payload.id)'),
   'Offline queue must use a stable queue item id and pass a stable idempotency key to the cloud write.',
+);
+
+assert(
+  sync.includes('const archiveQueueId = projectArchiveQueueItemId(payload)') &&
+    sync.includes('id: archiveQueueId ?? undefined') &&
+    sync.includes('function sameProjectArchiveMutation('),
+  'Project archive queue work must use a stable identity and collapse legacy duplicates.',
 );
 
 assert(
@@ -389,6 +397,50 @@ async function testConcurrentEnqueuePreservesBothItems() {
     stableQueue[0].payload.name,
     'Newest',
     'the newest same-ID queue payload must win',
+  );
+
+  data.set('projectVisionAI.syncQueue.v1', JSON.stringify([
+    {
+      id: 'legacy-shell-archive-a',
+      entity: 'project',
+      operation: 'update',
+      payload: { previousName: 'Fire Pump House', archived: true },
+      createdAt: '2026-07-19T08:00:00.000Z',
+      changedAt: '2026-07-19T08:00:00.000Z',
+      retryCount: 0,
+      lastError: null,
+    },
+    {
+      id: 'legacy-shell-archive-b',
+      entity: 'project',
+      operation: 'update',
+      payload: { previousName: ' fire pump house ', archived: true },
+      createdAt: '2026-07-19T08:00:01.000Z',
+      changedAt: '2026-07-19T08:00:01.000Z',
+      retryCount: 0,
+      lastError: null,
+    },
+  ]));
+  await service.enqueuePendingChange({
+    id: 'project-archive-fire%20pump%20house',
+    entity: 'project',
+    operation: 'update',
+    payload: { previousName: 'FIRE PUMP HOUSE', archived: true },
+    changedAt: '2026-07-19T08:00:02.000Z',
+    autoUpload: false,
+  });
+  const collapsedProjectArchiveQueue = JSON.parse(
+    data.get('projectVisionAI.syncQueue.v1'),
+  );
+  assert.strictEqual(
+    collapsedProjectArchiveQueue.length,
+    1,
+    'equivalent legacy project archives must collapse to one current queue item',
+  );
+  assert.strictEqual(
+    collapsedProjectArchiveQueue[0].id,
+    'project-archive-fire%20pump%20house',
+    'project archives must use a stable normalized queue identity',
   );
 
   data.delete('projectVisionAI.syncQueue.v1');

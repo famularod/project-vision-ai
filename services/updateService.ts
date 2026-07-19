@@ -137,7 +137,10 @@ export async function persistAndQueueProjectUpdateDeletion<
 }
 
 export async function reconcileProjectUpdateDeletionJournal(
-  tombstones: readonly Pick<DeletedUpdateTombstone, 'updateId' | 'action' | 'deletedAt'>[],
+  tombstones: readonly Pick<
+    DeletedUpdateTombstone,
+    'updateId' | 'action' | 'deletedAt' | 'cloudIdPresent'
+  >[],
 ): Promise<void> {
   await Promise.allSettled(tombstones.map(async tombstone => {
     await removeProjectUpdateFromSyncQueue(tombstone.updateId);
@@ -145,7 +148,7 @@ export async function reconcileProjectUpdateDeletionJournal(
       await queueProjectUpdateDelete({ id: tombstone.updateId });
     } else if (
       tombstone.action === 'archive_sent_update' ||
-      tombstone.action === 'remove_from_device'
+      (tombstone.action === 'remove_from_device' && tombstone.cloudIdPresent)
     ) {
       await queueProjectUpdateArchive(
         tombstone.updateId,
