@@ -3,6 +3,8 @@ export type StartupDiagnosticStage =
   | 'storage_hydration_started'
   | 'storage_hydration_completed'
   | 'storage_record_isolated'
+  | 'reality_model_cache_recovered'
+  | 'reality_model_cache_recovery_failed'
   | 'identity_resolved'
   | 'organization_resolved'
   | 'project_resolved'

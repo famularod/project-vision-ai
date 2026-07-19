@@ -217,12 +217,23 @@ assert(
   'Ephemeral portfolio authority must skip photo-progress and project-truth persistence.',
 );
 assert(
-  provider.includes('() => scopeIsCurrent ? null : safeBuildProviderRuntime(input)') &&
+  provider.includes('cachedGenerationCore?.runtime || safeBuildProviderRuntime(input)') &&
     provider.includes('currentCore?.runtime || immediateInputRuntime || fallbackRuntime'),
   'Live authority may build an immediate Runtime only for genuine project/report scope changes.',
 );
+assert(
+  provider.includes('LIVE_AUTHORITY_CORE_CACHE_MAX_ENTRIES = 4') &&
+    provider.includes('rememberLiveAuthorityCore(coreCacheRef.current, refreshGeneration, result)') &&
+    provider.includes("reason === 'initial_load' || reason === 'project_changed'") &&
+    provider.includes('waitForLiveAuthorityInteractionIdle()'),
+  'Exact authority generations must be reused and cache misses must wait until navigation interactions finish.',
+);
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const realityCacheRecovery = fs.readFileSync(
+  path.join(root, 'services/PIERealityModelCacheRecovery.ts'),
+  'utf8',
+);
 const progressiveListHook = fs.readFileSync(
   path.join(root, 'hooks/use-progressive-list-count.ts'),
   'utf8',
@@ -236,6 +247,13 @@ assert(
   app.includes('useProgressiveListCount(') &&
     progressiveListHook.includes('InteractionManager.runAfterInteractions'),
   'The Action Inbox must mount progressively after the navigation interaction.',
+);
+assert(
+  app.includes('useRealityModelCacheRecovery()') &&
+    realityCacheRecovery.includes("'projectVisionAI.pieRealityModel.v1.'") &&
+    realityCacheRecovery.includes("'projectVisionAI.pieRealityModel.snapshots.v1.'") &&
+    !realityCacheRecovery.includes("'projectPhotoUpdates.v2'"),
+  'Startup must remove only legacy derived Reality Model cache keys before v2 authority starts.',
 );
 
 console.log('DAVE live-authority semantic signature tests passed.');

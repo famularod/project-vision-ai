@@ -1,5 +1,5 @@
 import { act, render } from '@testing-library/react-native';
-import { Text } from 'react-native';
+import { InteractionManager, Text } from 'react-native';
 
 import {
   PIELiveAuthorityProvider,
@@ -133,6 +133,10 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
+    jest.spyOn(InteractionManager, 'runAfterInteractions').mockImplementation(callback => {
+      if (typeof callback === 'function') callback();
+      return { cancel: jest.fn() } as never;
+    });
     currentAuthority = null;
     buildCoreMock.mockReset();
     saveProjectTruthMock.mockReset();
@@ -150,6 +154,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     jest.clearAllTimers();
     jest.useRealTimers();
   });

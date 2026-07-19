@@ -77,7 +77,7 @@ export type PIERealityModelOrchestrationResult = {
   diagnostics: string[];
 };
 
-export const EVIDENCE_DELTA_PREFIX = 'projectVisionAI.pieRealityModel.evidenceDeltas.v1';
+export const EVIDENCE_DELTA_PREFIX = 'projectVisionAI.pieRealityModel.evidenceDeltas.v2';
 
 export class PIEEvidenceDeltaStorageCorruptionError extends Error {
   readonly code = 'corrupt_evidence_delta_storage';

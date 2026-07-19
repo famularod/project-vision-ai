@@ -82,6 +82,7 @@ import {
   isStartupHydrationReady,
   useStartupHydration,
 } from './hooks/use-startup-hydration';
+import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-recovery';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import type {
   ActionStatus,
@@ -5199,8 +5200,9 @@ function AppShell() {
     useState(false);
 
   const startupHydration = useStartupHydration();
+  const realityModelCacheRecoveryFinished = useRealityModelCacheRecovery();
   const requiredLocalHydrationDomains = [
-    updatesLocalLoaded, deletedUpdateTombstonesLoaded, projectsLocalLoaded, deletedProjectNamesLocalLoaded,
+    realityModelCacheRecoveryFinished, updatesLocalLoaded, deletedUpdateTombstonesLoaded, projectsLocalLoaded, deletedProjectNamesLocalLoaded,
     archivedProjectsLoaded, projectAreasLocalLoaded, referenceDocumentsLocalLoaded, projectDocumentsLoaded,
     scheduleItemsLocalLoaded, captureMemoriesLoaded, identityCorrectionsLoaded, scheduleIdentityReady,
     displayNameLoaded, contactsLoaded, draftLoaded,

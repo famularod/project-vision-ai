@@ -48,11 +48,12 @@ assert(
 assert(
   provider.includes('const inputSnapshotIsCurrent = scopeIsCurrent && rawSignature === signature') &&
     provider.includes('const displayInput = inputSnapshotIsCurrent ? authorityInput : input') &&
-    provider.includes('const currentCore = authorityResolution.coreIsCurrent ? core : null'),
+    provider.includes('const cachedGenerationCore = coreCacheRef.current.get(authorityGeneration) || null') &&
+    provider.includes('const currentCore = authorityResolution.coreIsCurrent ? core : cachedGenerationCore'),
   'Report UI must not expose a completed draft built before hydration or for an older project scope.',
 );
 assert(
-  provider.includes('() => scopeIsCurrent ? null : safeBuildProviderRuntime(input)') &&
+  provider.includes('cachedGenerationCore?.runtime || safeBuildProviderRuntime(input)') &&
     provider.includes('currentCore?.runtime || immediateInputRuntime || fallbackRuntime'),
   'A newly selected report scope must render its current Runtime immediately without rebuilding for same-scope input changes.',
 );

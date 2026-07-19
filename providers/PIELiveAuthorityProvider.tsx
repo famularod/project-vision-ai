@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { InteractionManager } from 'react-native';
 import {
   buildPIECoreIntelligence,
   buildLivePIECoreIntelligence,
@@ -60,6 +61,7 @@ import { savePhotoProgressIntelligence } from '../services/PIEPhotoProgressIntel
 export type { PIELiveAuthorityStateName } from '../services/PIELiveAuthorityStateMachine';
 
 const LIVE_AUTHORITY_INPUT_DEBOUNCE_MS = 500;
+const LIVE_AUTHORITY_CORE_CACHE_MAX_ENTRIES = 4;
 
 export type PIELiveAuthorityRefreshReason =
   | 'initial_load'
@@ -172,6 +174,7 @@ export function PIELiveAuthorityProvider({
   const [retryPending, setRetryPending] = useState(false);
   const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState<string | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
+  const coreCacheRef = useRef(new Map<string, PIECoreOutput>());
   const sequenceRef = useRef(0);
   const mountedRef = useRef(true);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -187,6 +190,7 @@ export function PIELiveAuthorityProvider({
     [hydrationKey, input],
   );
   const authorityGeneration = `${rawScopeSignature}::${rawSignature}`;
+  const cachedGenerationCore = coreCacheRef.current.get(authorityGeneration) || null;
   const authoritySnapshot = useDebouncedSnapshot({
     value: input,
     signature: rawSignature,
@@ -205,8 +209,10 @@ export function PIELiveAuthorityProvider({
   // signature, so this does not run for ordinary tab changes or same-project
   // evidence refreshes.
   const immediateInputRuntime = useMemo(
-    () => scopeIsCurrent ? null : safeBuildProviderRuntime(input),
-    [input, scopeIsCurrent],
+    () => scopeIsCurrent
+      ? null
+      : cachedGenerationCore?.runtime || safeBuildProviderRuntime(input),
+    [cachedGenerationCore, input, scopeIsCurrent],
   );
   const pendingReasonRef = useRef<PIELiveAuthorityRefreshReason | null>(null);
   const latestInputRef = useRef(authorityInput);
@@ -260,6 +266,21 @@ export function PIELiveAuthorityProvider({
     const refreshScopeSignature = latestScopeSignatureRef.current;
     const refreshGeneration = latestAuthorityGenerationRef.current;
     pendingReasonRef.current = null;
+    const cachedCore = coreCacheRef.current.get(refreshGeneration);
+    if (
+      cachedCore &&
+      (reason === 'initial_load' || reason === 'project_changed')
+    ) {
+      cancelScheduledRetry(true);
+      setFallbackRuntime(cachedCore.runtime);
+      setCore(cachedCore);
+      setCoreSignature(refreshSignature);
+      setCoreGeneration(refreshGeneration);
+      setState(stateFromPersistence(cachedCore.realityAuthority.persistenceStatus));
+      setError(null);
+      setLastSuccessfulRefreshAt(new Date().toISOString());
+      return;
+    }
     const refreshSequence = sequenceRef.current + 1;
     sequenceRef.current = refreshSequence;
     setState('loading');
@@ -279,6 +300,8 @@ export function PIELiveAuthorityProvider({
       );
 
       try {
+        await waitForLiveAuthorityInteractionIdle();
+        if (!refreshIsCurrent()) return;
         const runtime = safeBuildProviderRuntime(refreshInput);
         if (mountedRef.current) setFallbackRuntime(runtime);
         const coreInput = {
@@ -329,6 +352,7 @@ export function PIELiveAuthorityProvider({
         if (!refreshIsCurrent()) return;
 
         cancelScheduledRetry(true);
+        rememberLiveAuthorityCore(coreCacheRef.current, refreshGeneration, result);
         setCore(result);
         setCoreSignature(refreshSignature);
         setCoreGeneration(refreshGeneration);
@@ -405,12 +429,15 @@ export function PIELiveAuthorityProvider({
     sequenceRef.current += 1;
     pendingReasonRef.current = 'project_changed';
     cancelScheduledRetry(true);
-    setState('loading');
+    const cachedCore = coreCacheRef.current.get(authorityGeneration);
+    setState(cachedCore
+      ? stateFromPersistence(cachedCore.realityAuthority.persistenceStatus)
+      : 'loading');
     setError(null);
-    if (previous.scopeSignature !== rawScopeSignature) {
+    if (previous.scopeSignature !== rawScopeSignature && !cachedCore) {
       setLastSuccessfulRefreshAt(null);
     }
-  }, [cancelScheduledRetry, rawScopeSignature, rawSignature]);
+  }, [authorityGeneration, cancelScheduledRetry, rawScopeSignature, rawSignature]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -473,13 +500,15 @@ export function PIELiveAuthorityProvider({
   });
 
   const value = useMemo<PIELiveAuthorityContextValue>(() => {
-    const currentCore = authorityResolution.coreIsCurrent ? core : null;
+    const currentCore = authorityResolution.coreIsCurrent ? core : cachedGenerationCore;
     // Keep the last accepted Runtime for same-scope evidence refreshes. A real
     // project/report scope change gets an immediate scoped Runtime so stale
     // report content cannot flash while the authoritative Core is rebuilding.
     const currentRuntime = currentCore?.runtime || immediateInputRuntime || fallbackRuntime;
     const persistenceStatus = currentCore?.realityAuthority.persistenceStatus || null;
-    const nextState = authorityResolution.state;
+    const nextState = cachedGenerationCore
+      ? stateFromPersistence(cachedGenerationCore.realityAuthority.persistenceStatus)
+      : authorityResolution.state;
     const policy = policyForCore(nextState, currentCore);
     const projectTruth = buildDAVEProjectTruth({
       projectId: displayInput.projectId || safeProjectId(displayInput.projectName),
@@ -536,6 +565,7 @@ export function PIELiveAuthorityProvider({
   }, [
     authorityResolution.coreIsCurrent,
     authorityResolution.state,
+    cachedGenerationCore,
     core,
     displayInput,
     error,
@@ -711,6 +741,26 @@ export function policyForCore(
         ? 'DAVE needs human review before this recommendation can be final.'
         : 'DAVE blocked this recommendation because reasoning validation failed.',
   };
+}
+
+function waitForLiveAuthorityInteractionIdle(): Promise<void> {
+  return new Promise(resolve => {
+    InteractionManager.runAfterInteractions(() => resolve());
+  });
+}
+
+function rememberLiveAuthorityCore(
+  cache: Map<string, PIECoreOutput>,
+  generation: string,
+  core: PIECoreOutput,
+) {
+  cache.delete(generation);
+  cache.set(generation, core);
+  while (cache.size > LIVE_AUTHORITY_CORE_CACHE_MAX_ENTRIES) {
+    const oldestGeneration = cache.keys().next().value as string | undefined;
+    if (!oldestGeneration) break;
+    cache.delete(oldestGeneration);
+  }
 }
 
 function buildProviderRuntime(input: PIELiveAuthorityInput) {

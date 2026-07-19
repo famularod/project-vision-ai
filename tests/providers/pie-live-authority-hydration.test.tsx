@@ -1,5 +1,5 @@
 import { act, render } from '@testing-library/react-native';
-import { Text } from 'react-native';
+import { InteractionManager, Text } from 'react-native';
 
 import {
   PIELiveAuthorityProvider,
@@ -123,6 +123,10 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
   }
 
   beforeEach(() => {
+    jest.spyOn(InteractionManager, 'runAfterInteractions').mockImplementation(callback => {
+      if (typeof callback === 'function') callback();
+      return { cancel: jest.fn() } as never;
+    });
     currentAuthority = null;
     buildInMemoryCoreMock.mockReset();
     buildCoreMock.mockImplementation(() => new Promise(() => undefined));
@@ -271,5 +275,46 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
 
     expect(buildCoreMock).toHaveBeenCalledTimes(1);
     expect(currentAuthority?.core).not.toBeNull();
+  });
+
+  it('reuses an exact prior Core generation when returning to a project scope', async () => {
+    buildCoreMock
+      .mockResolvedValueOnce(coreResult('project-1'))
+      .mockResolvedValueOnce(coreResult('project-2'));
+    const screen = await render(
+      <PIELiveAuthorityProvider input={authorityInput(true)}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const projectTwoInput = {
+      ...authorityInput(true),
+      projectId: 'project-2',
+      projectName: 'Project Two',
+      projectNames: ['Project Two'],
+    };
+    await screen.rerender(
+      <PIELiveAuthorityProvider input={projectTwoInput}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await screen.rerender(
+      <PIELiveAuthorityProvider input={authorityInput(true)}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(buildCoreMock).toHaveBeenCalledTimes(2);
+    expect(currentAuthority?.core?.realityModel.projectId).toBe('project-1');
   });
 });

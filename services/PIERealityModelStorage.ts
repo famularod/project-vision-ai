@@ -15,7 +15,7 @@ import type {
   PIERealityUncertaintyRecord,
 } from './PIERealityModel';
 
-export const PIE_REALITY_MODEL_STORAGE_VERSION = 'v1';
+export const PIE_REALITY_MODEL_STORAGE_VERSION = 'v2';
 export const PIE_REALITY_SNAPSHOT_MAX_COUNT = 3;
 export const PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT = 3;
 export const PIE_REALITY_SNAPSHOT_MAX_BYTES = 12 * 1024 * 1024;
@@ -128,8 +128,7 @@ async function saveRealityModelWithinLock(
 
   const knownSnapshots = uniqueSnapshots([...recentSnapshots, ...archivedSnapshots]);
   const snapshotNeeded = !knownSnapshots.some(snapshot =>
-    snapshot.modelVersion === model.version &&
-    JSON.stringify(snapshot.model) === JSON.stringify(model));
+    snapshot.modelVersion === model.version);
   let embeddedHead = recentSnapshots;
   let candidateForArchive: PIERealityModelSnapshot | null = null;
   let snapshotArchiveFrozen = archiveWasPreviouslyFrozen || !storedSnapshotArchiveFits(archive);
@@ -463,22 +462,28 @@ function compactRecentSnapshots(
   snapshots: readonly PIERealityModelSnapshot[],
 ): PIERealityModelSnapshot[] {
   const unique = uniqueSnapshots(snapshots);
-  if (!snapshotArchiveFits(unique.slice(0, PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT))) {
-    // An already oversized embedded legacy set is never silently truncated.
-    throw new Error('Reality Model legacy snapshot history requires a safe migration before saving.');
+  const selected: PIERealityModelSnapshot[] = [];
+  let selectedBytes = 2;
+  for (const snapshot of unique) {
+    if (selected.length >= PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT) break;
+    const snapshotBytes = utf8ByteLength(JSON.stringify(snapshot));
+    const nextBytes = selectedBytes + snapshotBytes + (selected.length > 0 ? 1 : 0);
+    if (nextBytes > PIE_REALITY_SNAPSHOT_MAX_BYTES) continue;
+    selected.push(snapshot);
+    selectedBytes = nextBytes;
   }
-  return unique.slice(0, PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT);
+  return selected;
 }
 
 function uniqueSnapshots(
   snapshots: readonly PIERealityModelSnapshot[],
 ): PIERealityModelSnapshot[] {
   const selected: PIERealityModelSnapshot[] = [];
-  const fingerprints = new Set<string>();
+  const seenFingerprints = new Set<string>();
   snapshots.forEach(snapshot => {
     const fingerprint = snapshotFingerprint(snapshot);
-    if (fingerprints.has(fingerprint)) return;
-    fingerprints.add(fingerprint);
+    if (seenFingerprints.has(fingerprint)) return;
+    seenFingerprints.add(fingerprint);
     selected.push(snapshot);
   });
   return selected;
@@ -515,15 +520,7 @@ function visibleSnapshots(
 }
 
 function snapshotFingerprint(snapshot: PIERealityModelSnapshot) {
-  const raw = JSON.stringify(snapshot);
-  let first = 0x811c9dc5;
-  let second = 0x9e3779b9;
-  for (let index = 0; index < raw.length; index += 1) {
-    const code = raw.charCodeAt(index);
-    first = Math.imul(first ^ code, 0x01000193);
-    second = Math.imul(second ^ (code + index), 0x85ebca6b);
-  }
-  return `${raw.length.toString(36)}-${(first >>> 0).toString(36)}-${(second >>> 0).toString(36)}`;
+  return `${snapshot.id}::${snapshot.modelVersion}`;
 }
 
 function utf8ByteLength(value: string) {
