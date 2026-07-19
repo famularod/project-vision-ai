@@ -843,9 +843,17 @@ export async function updateProject(
     return errorResult('Project update requires an id, previousName, or name.');
   }
 
-  const { data, error, status } = await query.limit(1).single();
+  const { data, error, status } = await query.limit(1).maybeSingle();
 
   if (error) return tableAwareErrorResult<CloudProject>(error.message, status);
+  if (!data && project.archived === true) {
+    return okResult<CloudProject>(
+      null,
+      status,
+      'Project was already absent from the cloud project list.',
+    );
+  }
+  if (!data) return errorResult('Project could not be found.', status);
 
   return okResult(normalizeProject(data), status);
 }

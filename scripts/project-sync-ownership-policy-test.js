@@ -161,6 +161,11 @@ includes(
   ".eq('owner_id', owner.data)",
   'cloud reads and mutations must filter by the current authenticated owner',
 );
+includes(
+  service,
+  'if (!data && project.archived === true)',
+  'archiving an already-absent project must complete idempotently instead of retrying forever',
+);
 const createProjectParams = service.match(
   /export type CreateProjectParams\s*=\s*\{([\s\S]*?)\n\};/m,
 )?.[1] || '';
