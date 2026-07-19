@@ -17,6 +17,9 @@ export function AppNavigationRail({
   taskProjects = [],
   selectedTaskProject = null,
   onTaskProjectChange,
+  updateProjects = [],
+  selectedUpdateProject = null,
+  onUpdateProjectChange,
 }: {
   current: AppScreen;
   expanded: boolean;
@@ -25,6 +28,9 @@ export function AppNavigationRail({
   taskProjects?: string[];
   selectedTaskProject?: string | null;
   onTaskProjectChange?: (projectName: string | null) => void;
+  updateProjects?: string[];
+  selectedUpdateProject?: string | null;
+  onUpdateProjectChange?: (projectName: string | null) => void;
 }) {
   return (
     <SafeAreaView
@@ -90,6 +96,16 @@ export function AppNavigationRail({
           projects={taskProjects}
           selectedProject={selectedTaskProject}
           onChange={onTaskProjectChange}
+        />
+      ) : null}
+      {expanded && current === 'SavedUpdates' && onUpdateProjectChange ? (
+        <AppProjectSwitcher
+          projects={updateProjects}
+          selectedProject={selectedUpdateProject}
+          onChange={onUpdateProjectChange}
+          title="UPDATE PROJECT"
+          itemNoun="updates"
+          testID="update-project-switcher"
         />
       ) : null}
     </SafeAreaView>

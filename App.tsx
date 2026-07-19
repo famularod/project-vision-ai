@@ -69,9 +69,13 @@ import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
 import { ScheduleTaskListControls, type ScheduleTaskFilter } from './components/schedule-task-list-controls';
 import { ScheduleWideWorkspace } from './components/schedule-workspace-layout';
+import { NativeDateField } from './components/native-date-field';
+import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
 import { resolveScheduleWorkspaceTask, scheduleItemsForWorkspaceProject,
   scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
+import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
+  resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
@@ -4998,6 +5002,7 @@ function AppShell() {
   const [scheduleEntryFilter, setScheduleEntryFilter] = useState<'Attention' | 'Today' | '7 Days' | 'All'>('Attention');
   const [scheduleAddProjectName, setScheduleAddProjectName] = useState<string | null>(null);
   const [scheduleProjectFilter, setScheduleProjectFilter] = useState<string | null>(null);
+  const [updatesProjectFilter, setUpdatesProjectFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (screen === 'SavedUpdates' && savedUpdatesEntryFilter) {
@@ -10450,6 +10455,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const targetUpdate = brief.latestUpdate;
 
     if (!targetUpdate) {
+      setUpdatesProjectFilter(projectName);
       setScreen('SavedUpdates');
       return;
     }
@@ -11257,6 +11263,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
             setScheduleProjectFilter(projectName);
             if (projectName) setSelectedWorkspaceProject(projectName);
           }}
+          updateProjects={updateWorkspaceProjectOptions(activeProjects, savedUpdates)}
+          selectedUpdateProject={updatesProjectFilter}
+          onUpdateProjectChange={projectName => {
+            setUpdatesProjectFilter(projectName);
+            if (projectName) setSelectedWorkspaceProject(projectName);
+          }}
         >
           {screen === 'Home' && (
             <HomeScreen
@@ -11288,6 +11300,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }}
               onOpenAllActivity={() => {
                 setSavedUpdatesEntryFilter({ tab: 'Sent', withinDays: null });
+                setUpdatesProjectFilter(null);
                 setScreen('SavedUpdates');
               }}
               onSettings={() => setScreen('Admin')}
@@ -11451,6 +11464,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   withinDays: null,
                   project: selectedWorkspaceProject,
                 });
+                setUpdatesProjectFilter(selectedWorkspaceProject);
                 setScreen('SavedUpdates');
               }}
               onOpenUpdate={openSavedUpdate}
@@ -11508,7 +11522,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onCreateDecisionSnapshot={(judgment, silent) => {
                 void createAutomatedDecisionSnapshot(judgment, silent);
               }}
-              onSavedUpdates={() => setScreen('SavedUpdates')}
+              onSavedUpdates={() => {
+                setUpdatesProjectFilter(null);
+                setScreen('SavedUpdates');
+              }}
               onCopyReport={copyReport}
               onEmailReport={emailReport}
               onTextReport={textReport}
@@ -11743,6 +11760,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               initialTab={savedUpdatesEntryFilter?.tab}
               initialWithinDays={savedUpdatesEntryFilter?.withinDays}
               initialProject={savedUpdatesEntryFilter?.project}
+              projectFilter={updatesProjectFilter}
+              onProjectFilterChange={setUpdatesProjectFilter}
             />
           )}
 
@@ -15082,6 +15101,8 @@ function ReadOnlyUpdateDetailScreen({
   onRetryPhotoAnalysis,
   onDelete,
   onArchive,
+  embedded = false,
+  onResume,
 }: {
   update: ProjectUpdate;
   backLabel: string;
@@ -15090,6 +15111,8 @@ function ReadOnlyUpdateDetailScreen({
   onRetryPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onDelete: () => void;
   onArchive: () => void;
+  embedded?: boolean;
+  onResume?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const lifecycle = lifecycleStatusForUpdate(update);
@@ -15115,10 +15138,10 @@ function ReadOnlyUpdateDetailScreen({
 
   return (
     <View>
-      <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
+      {!embedded ? <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
         <Ionicons name="chevron-back" size={21} color={colors.primary} />
         <Text style={styles.dashboardManageText}>{backLabel}</Text>
-      </TouchableOpacity>
+      </TouchableOpacity> : null}
       <ScreenTitle
         title={update.projectName}
         subtitle="Update Detail"
@@ -15150,6 +15173,7 @@ function ReadOnlyUpdateDetailScreen({
             <Text style={styles.photoControlText}>Retry Sync</Text>
           </TouchableOpacity>
         ) : null}
+        {onResume ? <PrimaryButton label="Resume Update" icon="create-outline" onPress={onResume} /> : null}
       </View>
       <UpdateDeleteControl onDelete={onDelete} />
       <View style={styles.panel}>
@@ -17889,6 +17913,8 @@ function SavedUpdatesScreen({
   initialTab,
   initialWithinDays,
   initialProject,
+  projectFilter,
+  onProjectFilterChange,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   updates: ProjectUpdate[];
@@ -17903,7 +17929,10 @@ function SavedUpdatesScreen({
   initialTab?: 'Needs Review' | 'Drafts' | 'Sent' | 'All';
   initialWithinDays?: number | null;
   initialProject?: string | null;
+  projectFilter: string | null;
+  onProjectFilterChange: (projectName: string | null) => void;
 }) {
+  const { sizeClass } = useAppShellLayout();
   const [activeTab, setActiveTab] = useState<'Needs Action' | 'Drafts' | 'All Activity'>(
     initialTab === 'Drafts'
       ? 'Drafts'
@@ -17920,12 +17949,19 @@ function SavedUpdatesScreen({
     lifecycleStatus: FieldUpdateStatus | null;
     withinDays: number | null;
   }>({
-    project: initialProject ?? null,
+    project: projectFilter ?? initialProject ?? null,
     areaId: null,
     pieStatus: null,
     lifecycleStatus: null,
     withinDays: initialWithinDays ?? null,
   });
+  const [selectedUpdateId, setSelectedUpdateId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFilters(current => current.project === projectFilter
+      ? current
+      : { ...current, project: projectFilter });
+  }, [projectFilter]);
 
   const contactNamesById = useMemo(() => {
     const map = new Map<string, string>();
@@ -17935,54 +17971,28 @@ function SavedUpdatesScreen({
     return map;
   }, [contactBook]);
 
-  const filteredUpdates = [...updates]
-    .filter(update => activeTab === 'All Activity' || !update.isArchived)
-    .filter(update => {
-      const lifecycle = lifecycleStatusForUpdate(update);
+  const filteredUpdates = filterDAVEUpdateWorkspace({
+    updates,
+    activeTab,
+    filters,
+    searchText,
+    contactNameForId: id => contactNamesById.get(id) || '',
+    lifecycleForUpdate: lifecycleStatusForUpdate,
+    pieStatusForUpdate: updatePIEAnalysisStatus,
+    updateNeedsAction: updateNeedsReview,
+    withinDaysMatches: (update, withinDays) => {
+      const daysSince = daysUntilDate(update.date);
+      return daysSince !== null && daysSince <= 0 && daysSince >= -withinDays;
+    },
+    updateTime: update => updateDateValue(update.date)?.getTime() || 0,
+  });
+  const selectedUpdate = resolveUpdateWorkspaceUpdate(filteredUpdates, selectedUpdateId);
+  const exactComparison = buildDAVEUpdatePhotoComparison(selectedUpdate, updates);
 
-      if (activeTab === 'Needs Action') return updateNeedsReview(update);
-      if (activeTab === 'Drafts') return lifecycle === 'draft';
-      if (activeTab === 'All Activity') return true;
-
-      return true;
-    })
-    .filter(update => {
-      if (filters.project && update.projectName !== filters.project) return false;
-      if (
-        filters.areaId &&
-        update.selectedAreaId !== filters.areaId &&
-        !update.photos.some(photo => photo.selectedAreaId === filters.areaId)
-      ) {
-        return false;
-      }
-      if (filters.lifecycleStatus && lifecycleStatusForUpdate(update) !== filters.lifecycleStatus) {
-        return false;
-      }
-      if (filters.pieStatus && updatePIEAnalysisStatus(update) !== filters.pieStatus) {
-        return false;
-      }
-      if (filters.withinDays !== null) {
-        const daysSince = daysUntilDate(update.date);
-
-        if (daysSince === null || daysSince > 0 || daysSince < -filters.withinDays) {
-          return false;
-        }
-      }
-      return true;
-    })
-    .filter(update => {
-      const search = searchText.trim().toLowerCase();
-
-      if (!search) return true;
-
-      const recipientNames = update.recipients.contactIds
-        .map(id => contactNamesById.get(id) || '')
-        .join(' ');
-      const searchable = `${update.projectName} ${update.selectedAreaName || ''} ${recipientNames}`.toLowerCase();
-
-      return searchable.includes(search);
-    })
-    .sort((left, right) => (updateDateValue(right.date)?.getTime() || 0) - (updateDateValue(left.date)?.getTime() || 0));
+  useEffect(() => {
+    const resolvedId = selectedUpdate?.id || null;
+    if (resolvedId !== selectedUpdateId) setSelectedUpdateId(resolvedId);
+  }, [selectedUpdate?.id, selectedUpdateId]);
 
   const emptyTitle =
     activeTab === 'Needs Action'
@@ -18016,7 +18026,12 @@ function SavedUpdatesScreen({
     if (targetPhoto) onRetryPhotoAnalysis(update, targetPhoto);
   }
 
-  const renderUpdate = ({ item: update, index }: { item: ProjectUpdate; index: number }) => {
+  function renderUpdateCard(
+    update: ProjectUpdate,
+    index: number,
+    onSelect: () => void,
+    selected = false,
+  ) {
     const group = updateTimelineGroup(update.date);
     const previousGroup = index > 0 ? updateTimelineGroup(filteredUpdates[index - 1].date) : null;
 
@@ -18027,14 +18042,87 @@ function SavedUpdatesScreen({
           update={update}
           lifecycle={lifecycleStatusForUpdate(update)}
           pieStatus={updatePIEAnalysisStatus(update)}
-          onOpen={() => onOpen(update)}
+          onOpen={onSelect}
           onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}
           onDelete={() => onDelete(update.id)}
           onArchive={() => onArchive(update.id)}
+          selected={selected}
         />
       </>
     );
-  };
+  }
+
+  const renderUpdate = ({ item, index }: { item: ProjectUpdate; index: number }) =>
+    renderUpdateCard(item, index, () => onOpen(item));
+
+  const listHeader = (
+    <>
+      <TouchableOpacity style={styles.phase2BackButton} onPress={onBack} accessibilityRole="button" accessibilityLabel="Back to Overview">
+        <Ionicons name="chevron-back" size={21} color={colors.primary} />
+        <Text style={styles.dashboardManageText}>Overview</Text>
+      </TouchableOpacity>
+      <ScreenTitle title="Field Activity" subtitle="Search field records, drafts, and items that need action." />
+      <View style={styles.updateSearchPanel}>
+        <View style={styles.updateTopControlRow}>
+          <View style={styles.updateSearchBox}>
+            <Ionicons name="search-outline" size={19} color={colors.muted} />
+            <TextInput style={styles.projectSearchInput} value={searchText} onChangeText={setSearchText} placeholder="Search updates" placeholderTextColor={colors.muted} />
+          </View>
+          <TouchableOpacity style={styles.updateFilterButton} onPress={() => setFilterOpen(true)} accessibilityRole="button" accessibilityLabel="Filter updates">
+            <Ionicons name="filter-outline" size={20} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+      </View>
+      <View style={styles.updateSegmentRow}>
+        {(['Needs Action', 'Drafts', 'All Activity'] as const).map(tab => {
+          const selected = activeTab === tab;
+          return <TouchableOpacity key={tab} style={[styles.updateSegment, selected && styles.updateSegmentSelected]} onPress={() => setActiveTab(tab)} accessibilityRole="tab" accessibilityState={{ selected }} accessibilityLabel={`${tab} updates`}><Text style={[styles.updateSegmentText, selected && styles.updateSegmentTextSelected]}>{tab}</Text></TouchableOpacity>;
+        })}
+      </View>
+      <UpdateFilterSheet visible={filterOpen} updates={updates} projectAreas={projectAreas} filters={filters} onChange={next => {
+        setFilters(next);
+        onProjectFilterChange(next.project);
+      }} onClose={() => setFilterOpen(false)} />
+    </>
+  );
+  const emptyState = (
+    <View style={styles.updateEmptyState}>
+      <Text style={styles.updateEmptyTitle}>{emptyTitle}</Text>
+      <Text style={styles.updateEmptyText}>{activeTab === 'Needs Action' ? 'No field records require action today.' : activeTab === 'Drafts' ? 'Start from Overview or a project when you are ready to capture field work.' : 'Saved field activity will appear here.'}</Text>
+    </View>
+  );
+  const comparison = exactComparison ? {
+    priorUri: exactComparison.priorPhotoUri,
+    priorLabel: formatDisplayDate(exactComparison.priorUpdateDate),
+    currentUri: exactComparison.currentPhotoUri,
+    currentLabel: formatDisplayDate(exactComparison.currentUpdateDate),
+    summary: exactComparison.summary,
+    confidence: exactComparison.comparisonConfidence,
+    comparability: exactComparison.comparability,
+  } : null;
+
+  if (sizeClass === 'wide') {
+    return <UpdatesWideWorkspace
+      items={filteredUpdates}
+      selectedUpdateId={selectedUpdate?.id || null}
+      onSelectUpdate={setSelectedUpdateId}
+      renderMasterItem={({ item, index, selected, onSelect }) => renderUpdateCard(item, index, onSelect, selected)}
+      masterHeader={listHeader}
+      comparison={comparison}
+      emptyState={emptyState}
+      inspector={selectedUpdate ? <ReadOnlyUpdateDetailScreen
+        update={selectedUpdate}
+        backLabel="Updates"
+        onBack={() => undefined}
+        embedded
+        onResume={lifecycleStatusForUpdate(selectedUpdate) === 'sent' ? undefined : () => onOpen(selectedUpdate)}
+        onRetry={['queued', 'failed'].includes(lifecycleStatusForUpdate(selectedUpdate)) ? () => onRetryQueuedUpdate(selectedUpdate) : undefined}
+        onRetryPhotoAnalysis={onRetryPhotoAnalysis}
+        onDelete={() => onDelete(selectedUpdate.id)}
+        onArchive={() => onArchive(selectedUpdate.id)}
+      /> : emptyState}
+    />;
+  }
 
   return (
     <FlatList
@@ -18045,96 +18133,8 @@ function SavedUpdatesScreen({
       data={filteredUpdates}
       keyExtractor={update => update.id}
       renderItem={renderUpdate}
-      ListHeaderComponent={
-        <>
-          <TouchableOpacity
-            style={styles.phase2BackButton}
-            onPress={onBack}
-            accessibilityRole="button"
-            accessibilityLabel="Back to Overview"
-          >
-            <Ionicons name="chevron-back" size={21} color={colors.primary} />
-            <Text style={styles.dashboardManageText}>Overview</Text>
-          </TouchableOpacity>
-
-          <ScreenTitle
-            title="Field Activity"
-            subtitle="Search field records, drafts, and items that need action."
-          />
-
-          <View style={styles.updateSearchPanel}>
-            <View style={styles.updateTopControlRow}>
-              <View style={styles.updateSearchBox}>
-                <Ionicons name="search-outline" size={19} color={colors.muted} />
-                <TextInput
-                  style={styles.projectSearchInput}
-                  value={searchText}
-                  onChangeText={setSearchText}
-                  placeholder="Search updates"
-                  placeholderTextColor={colors.muted}
-                />
-              </View>
-              <TouchableOpacity
-                style={styles.updateFilterButton}
-                onPress={() => setFilterOpen(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Filter updates"
-              >
-                <Ionicons name="filter-outline" size={20} color={colors.primary} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.updateSegmentRow}>
-            {(['Needs Action', 'Drafts', 'All Activity'] as const).map(tab => {
-              const selected = activeTab === tab;
-              return (
-                <TouchableOpacity
-                  key={tab}
-                  style={[
-                    styles.updateSegment,
-                    selected && styles.updateSegmentSelected,
-                  ]}
-                  onPress={() => setActiveTab(tab)}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`${tab} updates`}
-                >
-                  <Text
-                    style={[
-                      styles.updateSegmentText,
-                      selected && styles.updateSegmentTextSelected,
-                    ]}
-                  >
-                    {tab}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          <UpdateFilterSheet
-            visible={filterOpen}
-            updates={updates}
-            projectAreas={projectAreas}
-            filters={filters}
-            onChange={setFilters}
-            onClose={() => setFilterOpen(false)}
-          />
-        </>
-      }
-      ListEmptyComponent={
-        <View style={styles.updateEmptyState}>
-          <Text style={styles.updateEmptyTitle}>{emptyTitle}</Text>
-          <Text style={styles.updateEmptyText}>
-            {activeTab === 'Needs Action'
-              ? 'No field records require action today.'
-              : activeTab === 'Drafts'
-                ? 'Start from Overview or a project when you are ready to capture field work.'
-                : 'Saved field activity will appear here.'}
-          </Text>
-        </View>
-      }
+      ListHeaderComponent={listHeader}
+      ListEmptyComponent={emptyState}
     />
   );
 }
@@ -18278,6 +18278,7 @@ function UpdateHistoryCard({
   onRetry,
   onDelete,
   onArchive,
+  selected = false,
 }: {
   update: ProjectUpdate;
   lifecycle: FieldUpdateStatus;
@@ -18286,6 +18287,7 @@ function UpdateHistoryCard({
   onRetry?: () => void;
   onDelete: () => void;
   onArchive: () => void;
+  selected?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
@@ -18313,9 +18315,10 @@ function UpdateHistoryCard({
 
   return (
     <TouchableOpacity
-      style={styles.updateCard}
+      style={[styles.updateCard, selected && { borderColor: colors.primary, borderLeftWidth: 5, backgroundColor: colors.primarySoft }]}
       onPress={onOpen}
       accessibilityRole="button"
+      accessibilityState={{ selected }}
       accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${relativeUpdateTimestamp(update.date)}`}
     >
       <View style={styles.updateCardMedia}>
@@ -19858,15 +19861,11 @@ function ScheduleItemRow({
               />
             ) : null}
 
-            <Text style={styles.label}>Finish / Due Date</Text>
-            <TextInput
-              style={styles.input}
+            <NativeDateField
+              label="Finish / Due Date"
               value={item.finishDate}
-              onChangeText={finishDate => onUpdate({ finishDate: normalizeDateInput(finishDate) })}
-              placeholder="MM/DD/YYYY"
-              placeholderTextColor={colors.muted}
-              keyboardType="numbers-and-punctuation"
-              maxLength={10}
+              onChange={finishDate => onUpdate({ finishDate })}
+              testID={`schedule-finish-date-${item.id}`}
             />
 
             <Text style={styles.label}>Owner</Text>

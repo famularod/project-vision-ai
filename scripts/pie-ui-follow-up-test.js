@@ -276,7 +276,7 @@ assert(
   'Queued or failed send Needs Attention retry must route to the source queued update.',
 );
 assert(
-  savedUpdatesScreen.includes('onOpen={() => onOpen(update)}'),
+  savedUpdatesScreen.includes('renderUpdateCard(item, index, () => onOpen(item))'),
   'Needs Attention cards must route to their source update.',
 );
 

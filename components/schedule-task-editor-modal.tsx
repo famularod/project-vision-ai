@@ -19,6 +19,7 @@ import type {
 } from '../types';
 import { normalizeDateInput, parseFlexibleDate } from '../utils/date';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+import { NativeDateField } from './native-date-field';
 
 const PRIORITIES: SchedulePriority[] = ['Low', 'Medium', 'High'];
 const STATUSES: ScheduleStatus[] = ['Not Started', 'In Progress', 'Waiting', 'Complete'];
@@ -155,8 +156,7 @@ export function ScheduleTaskEditorModal({
                 <Input value={startDate} onChange={value => setStartDate(normalizeDateInput(value))} placeholder="MM/DD/YYYY" numeric />
               </View>
               <View style={styles.flex}>
-                <Label text="Finish / Due" />
-                <Input value={finishDate} onChange={value => setFinishDate(normalizeDateInput(value))} placeholder="MM/DD/YYYY" numeric />
+                <NativeDateField label="Finish / Due" value={finishDate} onChange={setFinishDate} testID="new-task-finish-date" />
                 <Chips values={['Today', '+7 Days', '+14 Days', '+30 Days']} selected="" onSelect={label => {
                   const days = label === 'Today' ? 0 : Number(label.match(/\d+/)?.[0] || 0);
                   setFinishDate(appDateFromToday(days));

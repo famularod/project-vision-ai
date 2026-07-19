@@ -6,14 +6,20 @@ export function AppProjectSwitcher({
   projects,
   selectedProject,
   onChange,
+  title = 'TASK PROJECT',
+  itemNoun = 'tasks',
+  testID = 'task-project-switcher',
 }: {
   projects: string[];
   selectedProject: string | null;
   onChange: (projectName: string | null) => void;
+  title?: string;
+  itemNoun?: string;
+  testID?: string;
 }) {
   return (
-    <View style={styles.container} testID="task-project-switcher">
-      <Text style={styles.eyebrow}>TASK PROJECT</Text>
+    <View style={styles.container} testID={testID}>
+      <Text style={styles.eyebrow}>{title}</Text>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.options}
@@ -24,6 +30,7 @@ export function AppProjectSwitcher({
           label="All Projects"
           selected={selectedProject === null}
           onPress={() => onChange(null)}
+          itemNoun={itemNoun}
         />
         {projects.map(projectName => (
           <ProjectOption
@@ -31,6 +38,7 @@ export function AppProjectSwitcher({
             label={projectName}
             selected={selectedProject === projectName}
             onPress={() => onChange(projectName)}
+            itemNoun={itemNoun}
           />
         ))}
       </ScrollView>
@@ -42,10 +50,12 @@ function ProjectOption({
   label,
   selected,
   onPress,
+  itemNoun,
 }: {
   label: string;
   selected: boolean;
   onPress: () => void;
+  itemNoun: string;
 }) {
   return (
     <Pressable
@@ -57,8 +67,8 @@ function ProjectOption({
       onPress={onPress}
       accessibilityRole="radio"
       accessibilityLabel={label === 'All Projects'
-        ? 'Show tasks for all projects'
-        : `Show tasks for ${label}`}
+        ? `Show ${itemNoun} for all projects`
+        : `Show ${itemNoun} for ${label}`}
       accessibilityState={{ selected }}
     >
       <View style={[styles.indicator, selected && styles.indicatorSelected]} />

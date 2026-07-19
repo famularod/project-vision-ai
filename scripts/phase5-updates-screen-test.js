@@ -10,6 +10,7 @@ const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8')
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
 const updateService = fs.readFileSync(path.join(root, 'services/updateService.ts'), 'utf8');
 const deleteControl = fs.readFileSync(path.join(root, 'components/update-delete-control.tsx'), 'utf8');
+const updateWorkspace = fs.readFileSync(path.join(root, 'services/DAVEUpdateWorkspace.ts'), 'utf8');
 const updatesScreen = app.slice(
   app.indexOf('function SavedUpdatesScreen'),
   app.indexOf('function UpdateFilterSheet'),
@@ -70,7 +71,8 @@ assert(
   'Updates cards should not have always-visible red trash icons.',
 );
 assert(
-  app.includes("if (activeTab === 'Needs Action') return updateNeedsReview(update);"),
+  updatesScreen.includes('updateNeedsAction: updateNeedsReview') &&
+    updateWorkspace.includes("if (activeTab === 'Needs Action') return updateNeedsAction(update);"),
   'Needs Action tab should derive from shared lifecycle and DAVE status.',
 );
 assert(
@@ -169,7 +171,7 @@ assert(
   'Permanent field-update deletion must be queued and owner-scoped in the cloud.',
 );
 assert(
-  app.includes('recipientNames') && app.includes('contactNamesById'),
+  updateWorkspace.includes('recipientNames') && app.includes('contactNamesById'),
   'Search should include local recipient names without blocking lookups.',
 );
 assert(
