@@ -15,6 +15,8 @@ import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
 import { PIEPanel } from '../components/PIEPanel';
+import { ReportsWideWorkspace } from '../components/reports-workspace-layout';
+import { useAppShellLayout } from '../components/app-shell-layout';
 import {
   colors,
   spacing,
@@ -182,6 +184,7 @@ export function ReportsScreen({
   onEmailReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
   onTextReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
 }) {
+  const { sizeClass } = useAppShellLayout();
   const [reporterOpen, setReporterOpen] = useState(true);
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
@@ -442,14 +445,14 @@ export function ReportsScreen({
     setReporterOpen(true);
   };
 
-  return (
-    <Screen contentStyle={contentStyle}>
-      <ScreenHeader
-        title="Reports"
-        subtitle={`${selectedProjectNames.join(', ')} · Review, approve, and communicate the prepared report.`}
-      />
-
-      <ScreenCard style={styles.reporterCard}>
+  const reportHeader = (
+    <ScreenHeader
+      title="Reports"
+      subtitle={`${selectedProjectNames.join(', ')} · Review, approve, and communicate the prepared report.`}
+    />
+  );
+  const preparedReport = (
+    <ScreenCard style={styles.reporterCard}>
         <View style={styles.reporterHeader}>
           <View style={styles.reporterIcon}>
             <Ionicons
@@ -531,43 +534,58 @@ export function ReportsScreen({
               completeCommunication(onTextReport);
             }}
           />
-      </ScreenCard>
+    </ScreenCard>
+  );
+  const reviewPanel = (
+    <BeforeYouSharePanel
+      experience={reviewExperience}
+      reportDraft={effectiveReportDraft}
+      reportApproved={reportApproved}
+      reportApprovalAllowed={reportApprovalPolicy.allowed}
+      expanded={advancedReviewOpen}
+      onToggleDetails={() => setAdvancedReviewOpen(open => !open)}
+      onPrimaryAction={() =>
+        handleReviewExperienceAction(reviewExperience.primaryAction)
+      }
+      onSecondaryAction={
+        reviewExperience.secondaryAction
+          ? () => handleReviewExperienceAction(reviewExperience.secondaryAction!)
+          : undefined
+      }
+    />
+  );
+  const evidencePanel = advancedReviewOpen ? (
+    <PIEPanel
+      projectName={projectName}
+      updates={updates}
+      scheduleItems={scheduleItems}
+      currentUpdate={currentUpdate}
+      projectAreas={projectAreas}
+      contacts={contacts}
+      referenceDocuments={referenceDocuments}
+      syncMetadata={syncMetadata}
+      title="Supporting Evidence"
+      subtitle="Evidence, uncertainty, and reasoning behind this recommendation."
+    />
+  ) : null;
 
-      <BeforeYouSharePanel
-        experience={reviewExperience}
-        reportDraft={effectiveReportDraft}
-        reportApproved={reportApproved}
-        reportApprovalAllowed={reportApprovalPolicy.allowed}
-        expanded={advancedReviewOpen}
-        onToggleDetails={() => setAdvancedReviewOpen(open => !open)}
-        onPrimaryAction={() =>
-          handleReviewExperienceAction(reviewExperience.primaryAction)
-        }
-        onSecondaryAction={
-          reviewExperience.secondaryAction
-            ? () => handleReviewExperienceAction(reviewExperience.secondaryAction!)
-            : undefined
-        }
+  if (sizeClass === 'wide') {
+    return (
+      <ReportsWideWorkspace
+        header={reportHeader}
+        report={preparedReport}
+        review={reviewPanel}
+        evidence={evidencePanel}
       />
+    );
+  }
 
-      {advancedReviewOpen ? (
-        <>
-          <PIEPanel
-            projectName={projectName}
-            updates={updates}
-            scheduleItems={scheduleItems}
-            currentUpdate={currentUpdate}
-            projectAreas={projectAreas}
-            contacts={contacts}
-            referenceDocuments={referenceDocuments}
-            syncMetadata={syncMetadata}
-            title="Supporting Evidence"
-            subtitle="Evidence, uncertainty, and reasoning behind this recommendation."
-          />
-
-        </>
-      ) : null}
-
+  return (
+    <Screen contentStyle={contentStyle}>
+      {reportHeader}
+      {preparedReport}
+      {reviewPanel}
+      {evidencePanel}
     </Screen>
   );
 }

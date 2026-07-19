@@ -6,6 +6,11 @@ const assert = require('assert');
 
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const projectDocumentsHeader = fs.readFileSync(
+  path.join(root, 'components/project-documents-header.tsx'),
+  'utf8',
+);
+const documentRuntimeSource = `${app}\n${projectDocumentsHeader}`;
 const fileSizePreflight = fs.readFileSync(
   path.join(root, 'services/FileSizePreflight.ts'),
   'utf8',
@@ -47,7 +52,7 @@ const projectDocumentsScreen = app.slice(
   "Attach to Update",
   "Add note",
 ].forEach(marker => {
-  assert(app.includes(marker), `Phase 6 documents foundation should include ${marker}`);
+  assert(documentRuntimeSource.includes(marker), `Phase 6 documents foundation should include ${marker}`);
 });
 
 assert(

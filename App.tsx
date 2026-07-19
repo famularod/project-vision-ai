@@ -71,11 +71,15 @@ import { ScheduleTaskListControls, type ScheduleTaskFilter } from './components/
 import { ScheduleWideWorkspace } from './components/schedule-workspace-layout';
 import { NativeDateField } from './components/native-date-field';
 import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
+import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
+import { ProjectDocumentsHeader } from './components/project-documents-header';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
 import { resolveScheduleWorkspaceTask, scheduleItemsForWorkspaceProject,
   scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
 import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
   resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
+import { filterDAVEDocumentWorkspace,
+  resolveDAVEDocumentWorkspaceDocument } from './services/DAVEDocumentWorkspace';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
@@ -11269,6 +11273,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
             setUpdatesProjectFilter(projectName);
             if (projectName) setSelectedWorkspaceProject(projectName);
           }}
+          documentProjects={activeProjects}
+          selectedDocumentProject={selectedWorkspaceProject}
+          onDocumentProjectChange={projectName => {
+            if (projectName) setSelectedWorkspaceProject(projectName);
+          }}
         >
           {screen === 'Home' && (
             <HomeScreen
@@ -16658,11 +16667,23 @@ function ProjectDocumentsScreen({
   onRetry: (documentId: string) => void;
   onDelete: (documentId: string) => void;
 }) {
+  const { sizeClass } = useAppShellLayout();
   const [categoryFilter, setCategoryFilter] =
     useState<ProjectDocumentCategory | null>(null);
-  const visibleDocuments = categoryFilter
-    ? documents.filter(document => document.category === categoryFilter)
-    : documents;
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
+  const visibleDocuments = filterDAVEDocumentWorkspace({
+    documents,
+    category: categoryFilter,
+  });
+  const selectedDocument = resolveDAVEDocumentWorkspaceDocument(
+    visibleDocuments,
+    selectedDocumentId,
+  );
+
+  useEffect(() => {
+    const resolvedId = selectedDocument?.id || null;
+    if (resolvedId !== selectedDocumentId) setSelectedDocumentId(resolvedId);
+  }, [selectedDocument?.id, selectedDocumentId]);
 
   const renderDocument = ({ item }: { item: ProjectDocument }) => (
     <ProjectDocumentCard
@@ -16676,6 +16697,52 @@ function ProjectDocumentsScreen({
     />
   );
 
+  const listHeader = (
+    <ProjectDocumentsHeader
+      projectName={projectName}
+      categories={PROJECT_DOCUMENT_CATEGORIES}
+      selectedCategory={categoryFilter}
+      onCategoryChange={setCategoryFilter}
+      onBack={onBack}
+      onUpload={onUpload}
+      onTakePhoto={onTakePhoto}
+    />
+  );
+  const emptyState = documents.length === 0 ? (
+    <EmptyState
+      title="No documents yet — upload your first document."
+      text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, review, or saving."
+    />
+  ) : (
+    <EmptyState
+      title="No documents in this category."
+      text="Choose All or change a document category."
+    />
+  );
+
+  if (sizeClass === 'wide') {
+    return (
+      <DocumentsWideWorkspace
+        documents={visibleDocuments}
+        selectedDocumentId={selectedDocument?.id || null}
+        onSelectDocument={setSelectedDocumentId}
+        masterHeader={listHeader}
+        emptyState={emptyState}
+        inspector={selectedDocument ? (
+          <ProjectDocumentCard
+            document={selectedDocument}
+            projectAreas={projectAreas}
+            updates={updates}
+            onOpen={() => onOpen(selectedDocument)}
+            onUpdate={next => onUpdate(selectedDocument.id, next)}
+            onRetry={() => onRetry(selectedDocument.id)}
+            onDelete={() => onDelete(selectedDocument.id)}
+          />
+        ) : emptyState}
+      />
+    );
+  }
+
   return (
     <FlatList
       style={styles.appFrame}
@@ -16684,94 +16751,8 @@ function ProjectDocumentsScreen({
       data={visibleDocuments}
       keyExtractor={document => document.id}
       renderItem={renderDocument}
-      ListHeaderComponent={
-        <>
-          <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
-            <Ionicons name="chevron-back" size={21} color={colors.primary} />
-            <Text style={styles.dashboardManageText}>Workspace</Text>
-          </TouchableOpacity>
-
-          <ScreenTitle
-            title="Project Documents"
-            subtitle={projectName}
-          />
-
-          <PrimaryButton
-            label="Upload Document"
-            icon="document-attach-outline"
-            onPress={onUpload}
-          />
-
-          <SecondaryButton
-            label="Take Photo of Document"
-            icon="camera-outline"
-            onPress={onTakePhoto}
-          />
-
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Document Status</Text>
-            <Text style={styles.bodyText}>
-              Local only, Document upload pending, Document upload failed · Retry, and Uploaded documents remain visible here. Failed uploads can be retried without duplicating the document record.
-            </Text>
-          </View>
-
-          <Text style={styles.sectionLabel}>Category</Text>
-          <View style={styles.areaChipWrap}>
-            <TouchableOpacity
-              style={[
-                styles.areaChip,
-                !categoryFilter && styles.areaChipSelected,
-              ]}
-              onPress={() => setCategoryFilter(null)}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  !categoryFilter && styles.areaChipTextSelected,
-                ]}
-              >
-                All
-              </Text>
-            </TouchableOpacity>
-            {PROJECT_DOCUMENT_CATEGORIES.map(category => {
-              const selected = categoryFilter === category;
-
-              return (
-                <TouchableOpacity
-                  key={category}
-                  style={[
-                    styles.areaChip,
-                    selected && styles.areaChipSelected,
-                  ]}
-                  onPress={() => setCategoryFilter(category)}
-                >
-                  <Text
-                    style={[
-                      styles.areaChipText,
-                      selected && styles.areaChipTextSelected,
-                    ]}
-                  >
-                    {category}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </>
-      }
-      ListEmptyComponent={
-        documents.length === 0 ? (
-          <EmptyState
-            title="No documents yet — upload your first document."
-            text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, review, or saving."
-          />
-        ) : (
-          <EmptyState
-            title="No documents in this category."
-            text="Choose All or change a document category."
-          />
-        )
-      }
+      ListHeaderComponent={listHeader}
+      ListEmptyComponent={emptyState}
     />
   );
 }

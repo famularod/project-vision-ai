@@ -191,6 +191,33 @@ describe('AppShellFrame', () => {
     setWindowDimensions({ width: 1180, height: 820, scale: 2, fontScale: 1 });
     expect(
       screen.getByRole('radio', { name: 'Show updates for Project B' }).props
+      .accessibilityState,
+    ).toEqual({ selected: true });
+  });
+
+  it('keeps project documents directly accessible and preserves their project on resize', async () => {
+    setWindowDimensions({ width: 1180, height: 820, scale: 2, fontScale: 1 });
+    const screen = await render(<DocumentProjectShellProbe />);
+
+    expect(
+      screen.getByRole('tab', { name: 'Documents' }).props.accessibilityState,
+    ).toEqual({ selected: true });
+    expect(
+      screen.getByRole('tab', { name: 'Overview' }).props.accessibilityState,
+    ).toEqual({ selected: false });
+    expect(screen.queryByRole('radio', { name: 'Show documents for all projects' }))
+      .toBeNull();
+
+    await fireEvent.press(
+      screen.getByRole('radio', { name: 'Show documents for Project B' }),
+    );
+
+    setWindowDimensions({ width: 768, height: 1024, scale: 2, fontScale: 1 });
+    expect(screen.queryByTestId('document-project-switcher')).toBeNull();
+
+    setWindowDimensions({ width: 1180, height: 820, scale: 2, fontScale: 1 });
+    expect(
+      screen.getByRole('radio', { name: 'Show documents for Project B' }).props
         .accessibilityState,
     ).toEqual({ selected: true });
   });
@@ -240,6 +267,23 @@ function UpdateProjectShellProbe() {
       onUpdateProjectChange={setSelectedProject}
     >
       <Text>Update workspace</Text>
+    </AppShellFrame>
+  );
+}
+
+function DocumentProjectShellProbe() {
+  const [selectedProject, setSelectedProject] = useState<string | null>('Project A');
+
+  return (
+    <AppShellFrame
+      currentScreen="ProjectDocuments"
+      onScreenChange={jest.fn()}
+      onTalk={jest.fn()}
+      documentProjects={['Project A', 'Project B']}
+      selectedDocumentProject={selectedProject}
+      onDocumentProjectChange={setSelectedProject}
+    >
+      <Text>Document workspace</Text>
     </AppShellFrame>
   );
 }

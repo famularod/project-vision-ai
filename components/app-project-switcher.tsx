@@ -9,6 +9,7 @@ export function AppProjectSwitcher({
   title = 'TASK PROJECT',
   itemNoun = 'tasks',
   testID = 'task-project-switcher',
+  includeAll = true,
 }: {
   projects: string[];
   selectedProject: string | null;
@@ -16,6 +17,7 @@ export function AppProjectSwitcher({
   title?: string;
   itemNoun?: string;
   testID?: string;
+  includeAll?: boolean;
 }) {
   return (
     <View style={styles.container} testID={testID}>
@@ -26,12 +28,14 @@ export function AppProjectSwitcher({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <ProjectOption
-          label="All Projects"
-          selected={selectedProject === null}
-          onPress={() => onChange(null)}
-          itemNoun={itemNoun}
-        />
+        {includeAll ? (
+          <ProjectOption
+            label="All Projects"
+            selected={selectedProject === null}
+            onPress={() => onChange(null)}
+            itemNoun={itemNoun}
+          />
+        ) : null}
         {projects.map(projectName => (
           <ProjectOption
             key={projectName}

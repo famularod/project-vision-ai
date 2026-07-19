@@ -20,6 +20,9 @@ export function AppNavigationRail({
   updateProjects = [],
   selectedUpdateProject = null,
   onUpdateProjectChange,
+  documentProjects = [],
+  selectedDocumentProject = null,
+  onDocumentProjectChange,
 }: {
   current: AppScreen;
   expanded: boolean;
@@ -31,6 +34,9 @@ export function AppNavigationRail({
   updateProjects?: string[];
   selectedUpdateProject?: string | null;
   onUpdateProjectChange?: (projectName: string | null) => void;
+  documentProjects?: string[];
+  selectedDocumentProject?: string | null;
+  onDocumentProjectChange?: (projectName: string | null) => void;
 }) {
   return (
     <SafeAreaView
@@ -55,7 +61,7 @@ export function AppNavigationRail({
         <RailButton
           label="Overview"
           icon="home-outline"
-          active={isOverviewPrimaryNavigationActive(current)}
+          active={current !== 'ProjectDocuments' && isOverviewPrimaryNavigationActive(current)}
           expanded={expanded}
           onPress={() => onChange('Home')}
         />
@@ -65,6 +71,13 @@ export function AppNavigationRail({
           active={current === 'Schedule'}
           expanded={expanded}
           onPress={() => onChange('Schedule')}
+        />
+        <RailButton
+          label="Documents"
+          icon="folder-open-outline"
+          active={current === 'ProjectDocuments'}
+          expanded={expanded}
+          onPress={() => onChange('ProjectDocuments')}
         />
         <Pressable
           style={({ pressed }) => [
@@ -106,6 +119,17 @@ export function AppNavigationRail({
           title="UPDATE PROJECT"
           itemNoun="updates"
           testID="update-project-switcher"
+        />
+      ) : null}
+      {expanded && current === 'ProjectDocuments' && onDocumentProjectChange ? (
+        <AppProjectSwitcher
+          projects={documentProjects}
+          selectedProject={selectedDocumentProject}
+          onChange={onDocumentProjectChange}
+          title="DOCUMENT PROJECT"
+          itemNoun="documents"
+          testID="document-project-switcher"
+          includeAll={false}
         />
       ) : null}
     </SafeAreaView>

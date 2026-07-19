@@ -11,7 +11,7 @@ const app = read('App.tsx');
 const navigation = read('hooks/use-app-navigation.ts');
 const bottomNav = read('components/app-bottom-tabs.tsx');
 const home = app;
-const capture = app;
+const capture = `${app}\n${read('components/project-documents-header.tsx')}`;
 const review = read('screens/ReportsScreen.tsx');
 const settings = read('screens/AdminScreen.tsx');
 
