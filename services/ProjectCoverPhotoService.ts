@@ -14,6 +14,11 @@ export type ProjectCoverPhoto = {
 export type ProjectCoverPhotoMode = 'automatic' | 'manual';
 
 export type ProjectRecord = {
+  /**
+   * Transitional immutable identity. Legacy name-only records remain readable
+   * until the journaled identity migration assigns or reconciles a UUID.
+   */
+  id?: string | null;
   name: string;
   coverPhoto?: ProjectCoverPhoto | null;
   coverPhotoMode?: ProjectCoverPhotoMode;
@@ -58,17 +63,28 @@ export function normalizeProjectCoverPhoto(value: unknown): ProjectCoverPhoto | 
 export function normalizeProjectRecord(value: unknown): ProjectRecord | null {
   if (typeof value === 'string') {
     const name = value.trim();
-    return name ? { name } : null;
+    return name ? { id: null, name } : null;
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const name = optionalText(record.name);
   if (!name) return null;
+  const id = optionalText(record.id);
   const coverPhoto = normalizeProjectCoverPhoto(record.coverPhoto);
   const coverPhotoUpdatedAt = optionalText(record.coverPhotoUpdatedAt) || coverPhoto?.updatedAt || null;
   const coverPhotoMode = normalizeCoverPhotoMode(record.coverPhotoMode, coverPhoto);
   const data = record.data && typeof record.data === 'object' ? record.data as JsonValue : null;
-  return { name, coverPhoto, coverPhotoMode, coverPhotoUpdatedAt, data };
+  return { id, name, coverPhoto, coverPhotoMode, coverPhotoUpdatedAt, data };
+}
+
+function sameProjectIdentity(
+  left: ProjectRecord,
+  right: ProjectRecord,
+): boolean {
+  const leftId = optionalText(left.id);
+  const rightId = optionalText(right.id);
+  if (leftId && rightId) return leftId === rightId;
+  return left.name.toLowerCase() === right.name.toLowerCase();
 }
 
 export function normalizeProjectRecords(values: unknown): ProjectRecord[] {
@@ -77,9 +93,7 @@ export function normalizeProjectRecords(values: unknown): ProjectRecord[] {
   for (const value of values) {
     const next = normalizeProjectRecord(value);
     if (!next) continue;
-    const existingIndex = records.findIndex(
-      item => item.name.toLowerCase() === next.name.toLowerCase(),
-    );
+    const existingIndex = records.findIndex(item => sameProjectIdentity(item, next));
     if (existingIndex < 0) records.push(next);
     else if (next.coverPhoto) records[existingIndex] = next;
   }
@@ -87,6 +101,7 @@ export function normalizeProjectRecords(values: unknown): ProjectRecord[] {
 }
 
 export function projectRecordFromCloud(value: {
+  id?: string | null;
   name: string;
   data?: JsonValue | null;
 }): ProjectRecord {
@@ -95,6 +110,7 @@ export function projectRecordFromCloud(value: {
     : {};
   const coverPhoto = normalizeProjectCoverPhoto(data.coverPhoto);
   return {
+    id: optionalText(value.id),
     name: value.name,
     coverPhoto,
     coverPhotoMode: normalizeCoverPhotoMode(data.coverPhotoMode, coverPhoto),
@@ -109,24 +125,25 @@ export function mergeProjectRecords(
   cloudRecords: ProjectRecord[],
   deletedProjectNames: string[] = [],
 ): ProjectRecord[] {
-  const records = new Map<string, ProjectRecord>();
+  const records: ProjectRecord[] = [];
   const deletedKeys = new Set(
     deletedProjectNames.map(name => name.trim().toLowerCase()).filter(Boolean),
   );
   const add = (record: ProjectRecord) => {
-    const key = record.name.toLowerCase();
-    if (deletedKeys.has(key)) return;
-    const previous = records.get(key);
-    if (!previous) {
-      records.set(key, record);
+    const deletedKey = record.name.toLowerCase();
+    if (deletedKeys.has(deletedKey)) return;
+    const existingIndex = records.findIndex(item => sameProjectIdentity(item, record));
+    if (existingIndex < 0) {
+      records.push(record);
       return;
     }
+    const previous = records[existingIndex];
     const localCover = previous.coverPhoto;
     const incomingCover = record.coverPhoto;
     const previousUpdatedAt = previous.coverPhotoUpdatedAt || localCover?.updatedAt || '';
     const incomingUpdatedAt = record.coverPhotoUpdatedAt || incomingCover?.updatedAt || '';
     if (incomingUpdatedAt && incomingUpdatedAt >= previousUpdatedAt) {
-      records.set(key, {
+      records[existingIndex] = {
         ...previous,
         ...record,
         coverPhoto: incomingCover
@@ -135,15 +152,21 @@ export function mergeProjectRecords(
               localUri: incomingCover.localUri || localCover?.localUri || null,
             }
           : null,
-      });
+      };
     } else if (record.data && !previous.data) {
-      records.set(key, { ...previous, data: record.data });
+      records[existingIndex] = {
+        ...previous,
+        id: record.id || previous.id || null,
+        data: record.data,
+      };
+    } else if (!previous.id && record.id) {
+      records[existingIndex] = { ...previous, id: record.id };
     }
   };
   localRecords.forEach(add);
   cloudRecords.forEach(add);
   baseNames.forEach(name => add({ name }));
-  return Array.from(records.values());
+  return records;
 }
 
 export function coverPhotoForProject(

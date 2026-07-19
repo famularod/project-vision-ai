@@ -96,17 +96,7 @@ export function extractScheduleItemsFromCommunicationText({
       percentComplete: 0,
       priority: communicationPriority(finishDate),
       status,
-      notes: [
-        `Extracted locally from ${sourceName}.`,
-        `Original message: ${context}`,
-        `Extraction confidence: ${confidencePercent}%.`,
-        reportedComplete
-          ? 'Completion was reported by the message source and still requires PM verification.'
-          : 'The message does not independently verify field status.',
-        missingFields.length
-          ? `Review missing ${missingFields.join(', ')} before relying on this activity.`
-          : 'Review this extracted activity before relying on it.',
-      ].join(' '),
+      notes: context,
       importedFrom: sourceName,
       importedAt,
       completionVerification: reportedComplete
@@ -127,10 +117,13 @@ export function extractScheduleItemsFromCommunicationText({
     !item.projectName || !item.locationName || !item.finishDate || !item.owner || item.completionVerification?.status === 'reported_complete',
   ).length;
   const extractionConfidencePercent = items.length
-    ? Math.round(items.reduce((total, item) => {
-        const match = item.notes.match(/Extraction confidence: (\d+)%/);
-        return total + Number(match?.[1] || 0);
-      }, 0) / items.length)
+    ? Math.round(items.reduce((total, item) => total + communicationConfidence({
+        finishDate: item.finishDate,
+        projectName: item.projectName,
+        locationName: item.locationName,
+        owner: item.owner,
+        recognitionConfidence,
+      }), 0) / items.length)
     : 0;
 
   return {

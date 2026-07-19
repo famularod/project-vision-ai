@@ -49,6 +49,7 @@ export type BuildProjectEvidenceQualityFromRealityInput = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const FUTURE_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
 
 export function buildProjectEvidenceQuality(
   input: BuildProjectEvidenceQualityInput | BuildProjectEvidenceQualityFromRealityInput,
@@ -57,6 +58,7 @@ export function buildProjectEvidenceQuality(
   const now = validDate(input.now) ?? new Date();
   const recentCutoff = now.getTime() - (input.recentAfterDays ?? 14) * DAY_MS;
   const staleCutoff = now.getTime() - (input.staleAfterDays ?? 30) * DAY_MS;
+  const maximumCurrentTimestamp = now.getTime() + FUTURE_CLOCK_SKEW_TOLERANCE_MS;
   const projectKey = normalizeKey(input.projectName);
   const updates = input.updates.filter(update => normalizeKey(update.projectName) === projectKey);
   const documents = input.documents.filter(document =>
@@ -64,9 +66,15 @@ export function buildProjectEvidenceQuality(
   );
   const scheduleItems = input.scheduleItems.filter(item => normalizeKey(item.projectName) === projectKey);
 
-  const recentUpdates = updates.filter(update => timestampMs(updateTimestamp(update)) >= recentCutoff);
+  const recentUpdates = updates.filter(update => {
+    const timestamp = timestampMs(updateTimestamp(update));
+    return timestamp >= recentCutoff && timestamp <= maximumCurrentTimestamp;
+  });
   const recentPhotos = recentUpdates.flatMap(update =>
-    update.photos.filter(photo => timestampMs(photo.locationCapturedAt || updateTimestamp(update)) >= recentCutoff),
+    update.photos.filter(photo => {
+      const timestamp = timestampMs(photo.locationCapturedAt || updateTimestamp(update));
+      return timestamp >= recentCutoff && timestamp <= maximumCurrentTimestamp;
+    }),
   );
   const inspectionDocuments = documents.filter(document =>
     normalizeKey(document.category) === 'inspection' && document.status !== 'failed',
@@ -76,7 +84,9 @@ export function buildProjectEvidenceQuality(
   const latestDocumentAt = latestTimestamp(documents.filter(document => document.status !== 'failed').map(documentTimestamp));
   const analyzedPhotos = recentPhotos.filter(photo => photo.photoIntelligence);
   const failedAnalyses = analyzedPhotos.filter(photo => isAnalysisFailure(photo.photoIntelligence?.status));
-  const completedAnalyses = analyzedPhotos.filter(photo => isCompletedAnalysis(photo.photoIntelligence?.status));
+  const completedAnalyses = analyzedPhotos.filter(photo =>
+    isCompletedComparableAnalysis(photo.photoIntelligence),
+  );
 
   const signals: DAVEProjectEvidenceSignal[] = [
     countSignal(
@@ -100,6 +110,7 @@ export function buildProjectEvidenceQuality(
       timestamp: latestInspectionAt,
       recentCutoff,
       staleCutoff,
+      maximumCurrentTimestamp,
       missingValue: 'Not recorded',
       currentValue: 'Evidence recorded recently',
       limitedValue: 'Evidence recorded, but not recently',
@@ -113,6 +124,7 @@ export function buildProjectEvidenceQuality(
       timestamp: latestScheduleAt,
       recentCutoff,
       staleCutoff,
+      maximumCurrentTimestamp,
       missingValue: 'No schedule record',
       currentValue: 'Updated recently',
       limitedValue: 'Not recently updated',
@@ -126,6 +138,7 @@ export function buildProjectEvidenceQuality(
       timestamp: latestDocumentAt,
       recentCutoff,
       staleCutoff,
+      maximumCurrentTimestamp,
       missingValue: 'No current documents',
       currentValue: 'Added or updated recently',
       limitedValue: 'No recent document activity',
@@ -165,6 +178,7 @@ function freshnessSignal(input: {
   timestamp: number;
   recentCutoff: number;
   staleCutoff: number;
+  maximumCurrentTimestamp: number;
   missingValue: string;
   currentValue: string;
   limitedValue: string;
@@ -173,6 +187,16 @@ function freshnessSignal(input: {
 }): DAVEProjectEvidenceSignal {
   if (!input.timestamp) {
     return signal(input.projectId, input.key, input.label, input.missingValue, 0, input.weakWhy);
+  }
+  if (input.timestamp > input.maximumCurrentTimestamp) {
+    return signal(
+      input.projectId,
+      input.key,
+      input.label,
+      'Future timestamp needs review',
+      0,
+      'A future timestamp cannot establish current freshness. Confirm the device or import clock before relying on it.',
+    );
   }
   if (input.timestamp >= input.recentCutoff) {
     return signal(input.projectId, input.key, input.label, input.currentValue, 2, null);
@@ -256,8 +280,14 @@ function normalizeKey(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-function isCompletedAnalysis(status: string | undefined): boolean {
-  return status === 'analysis_complete' || status === 'completed_with_limitations' || status === 'no_suitable_prior_photo';
+function isCompletedComparableAnalysis(
+  result: DAVEDailyBriefUpdate['photos'][number]['photoIntelligence'],
+): boolean {
+  const status = result?.status;
+  const comparability = result?.comparability?.trim().toLowerCase();
+  return (status === 'analysis_complete' || status === 'completed_with_limitations') &&
+    Boolean(result?.priorUpdateUsed || result?.priorEvidenceId) &&
+    (comparability === 'strong' || comparability === 'probable');
 }
 
 function isAnalysisFailure(status: string | undefined): boolean {

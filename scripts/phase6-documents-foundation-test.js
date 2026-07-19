@@ -6,6 +6,10 @@ const assert = require('assert');
 
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const fileSizePreflight = fs.readFileSync(
+  path.join(root, 'services/FileSizePreflight.ts'),
+  'utf8',
+);
 const projectDocumentsScreen = app.slice(
   app.indexOf('function ProjectDocumentsScreen'),
   app.indexOf('function ReferenceDocumentsScreen'),
@@ -32,7 +36,6 @@ const projectDocumentsScreen = app.slice(
   "No documents yet — upload your first document.",
   "Possible duplicate document",
   "Upload Anyway",
-  "Large document",
   "projectDocumentStatusDetail",
   "duplicateProjectDocumentForAsset",
   "retryProjectDocumentUpload",
@@ -46,6 +49,14 @@ const projectDocumentsScreen = app.slice(
 ].forEach(marker => {
   assert(app.includes(marker), `Phase 6 documents foundation should include ${marker}`);
 });
+
+assert(
+  app.includes('await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size })') &&
+    app.includes('error instanceof FileSizePreflightError') &&
+    fileSizePreflight.includes("code: 'file_too_large'") &&
+    fileSizePreflight.includes('Choose a smaller file and retry.'),
+  'Project documents must reject oversized files before copying or uploading them.',
+);
 
 [
   "Schedule",

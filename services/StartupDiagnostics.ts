@@ -11,6 +11,7 @@ export type StartupDiagnosticStage =
   | 'shared_provider_ready'
   | 'project_truth_persisted'
   | 'project_truth_persistence_failed'
+  | 'photo_progress_intelligence_persistence_failed'
   | 'cloud_connection_attempted'
   | 'degraded_mode_entered'
   | 'startup_completed'

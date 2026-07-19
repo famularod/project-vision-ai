@@ -197,10 +197,12 @@ import {
   type PIEExecutiveJudgmentRecord,
 } from './PIEExecutiveJudgmentRepository';
 import {
+  resolvePIERealityAuthorityScope,
   runPIERealityModelOrchestration,
   type PIERealityModelOrchestrationResult,
   type PIERealityPersistenceStatus,
 } from './PIERealityModelOrchestrator';
+import { runExclusivePIEAuthorityMutation } from './PIEAuthorityMutationCoordinator';
 import {
   buildPIEAdaptiveIntelligence,
   type PIEAdaptiveIntelligence,
@@ -1305,6 +1307,22 @@ export async function buildLivePIECoreIntelligence(
   input: PIECoreInput = {},
 ): Promise<PIECoreOutput> {
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const scope = resolvePIERealityAuthorityScope(
+    input.organizationId,
+    input.projectId,
+    runtime,
+  );
+  return runExclusivePIEAuthorityMutation(
+    scope.organizationId,
+    scope.projectId,
+    () => buildLivePIECoreIntelligenceForScope({ ...input, runtime }),
+  );
+}
+
+async function buildLivePIECoreIntelligenceForScope(
+  input: PIECoreInput,
+): Promise<PIECoreOutput> {
+  const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
   const reportScope = coreReportScope(input, runtime);
   const liveRealityAuthority = await runPIERealityModelOrchestration({
     runtime,
@@ -1474,14 +1492,75 @@ function scheduleSummaryText(value: unknown): string {
   return '';
 }
 
-function buildRuntimeEvidenceQualityInputs(
+/**
+ * Audit P1-02: evidence freshness comes from real captured timestamps on the
+ * underlying evidence, never from the analysis run time. Missing timestamps
+ * stay null so quality scoring treats them honestly as unknown-age.
+ */
+function latestRealCapturedAt(
+  candidates: readonly (string | null | undefined)[],
+): string | null {
+  let best: string | null = null;
+  let bestMs = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const ms = Date.parse(candidate);
+    if (!Number.isFinite(ms)) continue;
+    if (ms > bestMs) {
+      bestMs = ms;
+      best = new Date(ms).toISOString();
+    }
+  }
+  return best;
+}
+
+function conservativeEvidenceConfidence(
+  values: readonly ProjectConfidenceLevel[],
+): ProjectConfidenceLevel {
+  if (values.length === 0 || values.some(value => value === 'low')) return 'low';
+  if (values.some(value => value === 'medium')) return 'medium';
+  return 'high';
+}
+
+export function buildRuntimeEvidenceQualityInputs(
   runtime: PIERuntimeState,
   memoryRecall: PIEMemoryRecallResult,
 ): PIEEvidenceQualityInput[] {
   const projectName = runtime.projectName || runtime.projectNames[0] || null;
   const areaName = runtime.recommendedWalkAreas[0] || null;
-  const generatedAt = runtime.generatedAt;
   const fused = runtime.fusedEvidence;
+  const scheduleCapturedAt = latestRealCapturedAt(
+    fused.scheduleEvidence.flatMap(item => [
+      item.importedAt,
+      ...item.sources.map(source => source.capturedAt),
+    ]),
+  );
+  const photoCapturedAt = latestRealCapturedAt(
+    fused.photoEvidence.map(item => item.timestamp),
+  );
+  const gpsCapturedAt = latestRealCapturedAt(
+    fused.gpsEvidence.sources.map(source => source.capturedAt),
+  );
+  const notesCapturedAt = latestRealCapturedAt(
+    fused.userUpdateEvidence.flatMap(item => [
+      item.date,
+      ...item.sources.map(source => source.capturedAt),
+    ]),
+  );
+  const issuesCapturedAt = latestRealCapturedAt(
+    fused.issueEvidence.flatMap(item => item.sources.map(source => source.capturedAt)),
+  );
+  const safetyCapturedAt = latestRealCapturedAt(
+    fused.safetyEvidence.flatMap(item => item.sources.map(source => source.capturedAt)),
+  );
+  const overallCapturedAt = latestRealCapturedAt([
+    scheduleCapturedAt,
+    photoCapturedAt,
+    gpsCapturedAt,
+    notesCapturedAt,
+    issuesCapturedAt,
+    safetyCapturedAt,
+  ]);
 
   const inputs: PIEEvidenceQualityInput[] = [
     {
@@ -1490,7 +1569,7 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.whatChanged || runtime.evidenceFusionSummary.summary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: overallCapturedAt,
       gpsConfirmed: fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.confidenceScore >= 70,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: fused.scheduleEvidence.length > 0,
@@ -1504,14 +1583,20 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.scheduleStatus,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: scheduleCapturedAt,
       gpsConfirmed: false,
       photoSupported: false,
       scheduleSupported: fused.scheduleEvidence.length > 0,
-      userConfirmed: runtime.scheduleSummary.needsReviewCount === 0,
+      // A clean import is not a human confirmation. Only an explicit PM
+      // progress source carries that authority.
+      userConfirmed: fused.scheduleEvidence.some(item =>
+        item.sources.some(source => source.type === 'typed-update'),
+      ),
       matchesPriorEvidence: memoryRecall.patterns.length > 0,
       unreviewedOCR: runtime.scheduleSummary.needsReviewCount > 0,
-      confidence: runtime.scheduleConfidence,
+      confidence: fused.scheduleEvidence.length > 0
+        ? runtime.scheduleConfidence
+        : 'low',
     },
     {
       id: 'quality-photo',
@@ -1519,13 +1604,16 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.photoEvidenceSummary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: photoCapturedAt,
       gpsConfirmed: fused.gpsEvidence.gpsAvailable,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
-      userConfirmed: runtime.comparisonNeedsReview === false,
+      // Provider/JARVIS review state is not a human confirmation event.
+      userConfirmed: false,
       matchesPriorEvidence: runtime.lastComparison !== null,
-      confidence: runtime.comparisonConfidence === 'high' ? 'high' : runtime.overallConfidence,
+      confidence: fused.photoEvidence.length > 0
+        ? runtime.comparisonConfidence
+        : 'low',
     },
     {
       id: 'quality-gps',
@@ -1533,7 +1621,7 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.gpsLocationConfidence,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: gpsCapturedAt,
       gpsConfirmed: fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.confidenceScore >= 70,
       photoSupported: false,
       scheduleSupported: false,
@@ -1551,13 +1639,18 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.userUpdateSummary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: notesCapturedAt,
       gpsConfirmed: false,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
-      userConfirmed: true,
+      // Audit P1-02: confirmed only when an actual user note exists.
+      userConfirmed: fused.userUpdateEvidence.some(item => Boolean(item.notes?.trim())),
       matchesPriorEvidence: memoryRecall.memories.length > 0,
-      confidence: runtime.overallConfidence,
+      confidence: fused.userUpdateEvidence.length > 0
+        ? conservativeEvidenceConfidence(
+            fused.userUpdateEvidence.map(item => item.confidence),
+          )
+        : 'low',
     },
     {
       id: 'quality-issues',
@@ -1565,13 +1658,16 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.risksAndIssues,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: issuesCapturedAt,
       gpsConfirmed: false,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: fused.scheduleEvidence.length > 0,
-      userConfirmed: true,
+      // Audit P1-02: derived issue summaries carry no confirmation event.
+      userConfirmed: false,
       matchesPriorEvidence: memoryRecall.comparisons.length > 0,
-      confidence: runtime.overallConfidence,
+      confidence: conservativeEvidenceConfidence(
+        fused.issueEvidence.map(item => item.confidence),
+      ),
     },
     {
       id: 'quality-safety',
@@ -1579,13 +1675,16 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.safetySummary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: safetyCapturedAt,
       gpsConfirmed: false,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
-      userConfirmed: true,
+      // Audit P1-02: derived safety summaries carry no confirmation event.
+      userConfirmed: false,
       matchesPriorEvidence: memoryRecall.patterns.length > 0,
-      confidence: fused.safetyEvidence.length > 0 ? 'high' : runtime.overallConfidence,
+      confidence: conservativeEvidenceConfidence(
+        fused.safetyEvidence.map(item => item.confidence),
+      ),
     },
     {
       id: 'quality-report-history',

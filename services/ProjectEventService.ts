@@ -7,9 +7,12 @@ import type {
   UpdatePhoto,
 } from '../types';
 import {
+  daysUntilDate,
   parseDueDate,
   parseFlexibleDate,
 } from '../utils/date';
+import { plainDateEndOfDayInstant } from './ProjectDateTime';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type ProjectEventType =
   | 'update_created'
@@ -523,17 +526,14 @@ function scheduleOverdueEvents({
   projectIdsByName: Record<string, string | null | undefined>;
   now: Date;
 }) {
-  const today = startOfDay(now);
-
   return scheduleItems
     .filter(item => {
-      if (item.status === 'Complete' || boundedPercent(item.percentComplete) >= 100) {
+      if (scheduleProgressIsComplete(item)) {
         return false;
       }
 
-      const finishDate = parseFlexibleDate(item.finishDate);
-
-      return Boolean(finishDate && finishDate < today);
+      const days = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
+      return days !== null && days < 0;
     })
     .map(item => ({
       id: stableId('schedule_item_overdue', item.id, item.finishDate),
@@ -542,7 +542,10 @@ function scheduleOverdueEvents({
       eventType: 'schedule_item_overdue' as const,
       title: 'Schedule item overdue',
       description: `${item.taskName || 'Schedule item'} is overdue.`,
-      occurredAt: normalizeDateValue(item.finishDate || item.createdAt),
+      occurredAt: plainDateEndOfDayInstant(
+        item.finishDate,
+        item.projectTimeZone || undefined,
+      ) || normalizeDateValue(item.finishDate || item.createdAt),
       source: 'schedule' as const,
       confidence: 'high' as const,
       relatedArea: item.locationName
@@ -962,12 +965,6 @@ function normalizeDateValue(value: string) {
   const date = new Date(trimmed);
 
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
-}
-
-function startOfDay(value: Date) {
-  const date = new Date(value);
-  date.setHours(0, 0, 0, 0);
-  return date;
 }
 
 function boundedPercent(value: number) {

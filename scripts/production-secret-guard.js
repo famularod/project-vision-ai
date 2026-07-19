@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 
@@ -42,8 +43,8 @@ function shouldRead(filePath) {
   const stat = fs.statSync(filePath);
   if (!stat.isFile()) return false;
   if (stat.size > 2_000_000) return false;
-  return /\.(?:ts|tsx|js|jsx|json|env|example|mjs|cjs)$/.test(filePath) ||
-    path.basename(filePath).startsWith('.env');
+  const sample = fs.readFileSync(filePath);
+  return !sample.includes(0);
 }
 
 function walk(entry) {
@@ -75,6 +76,13 @@ function relative(filePath) {
   return path.relative(rootDir, filePath) || filePath;
 }
 
+function isClientRuntimeFile(filePath) {
+  const file = relative(filePath);
+  return clientRoots.some(entry =>
+    file === entry || file.startsWith(`${entry}${path.sep}`),
+  );
+}
+
 const failures = [];
 
 for (const name of Object.keys(process.env)) {
@@ -86,20 +94,38 @@ for (const name of Object.keys(process.env)) {
   }
 }
 
-const files = Array.from(new Set(clientRoots.flatMap(walk)));
+function trackedFiles() {
+  try {
+    return execFileSync('git', ['ls-files', '-z'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+    })
+      .split('\0')
+      .filter(Boolean)
+      .map(entry => path.join(rootDir, entry))
+      .filter(shouldRead);
+  } catch {
+    return clientRoots.flatMap(walk);
+  }
+}
+
+// Scan the complete tracked source tree. Limiting this guard to known client
+// folders allowed secrets in workflows, migrations, scripts, or documents to
+// bypass the release gate.
+const files = Array.from(new Set(trackedFiles()));
 
 for (const filePath of files) {
   const source = fs.readFileSync(filePath, 'utf8');
   const file = relative(filePath);
 
   for (const name of forbiddenPublicOpenAI) {
-    if (source.includes(name)) {
+    if (isClientRuntimeFile(filePath) && source.includes(name)) {
       failures.push(`${file} references forbidden public OpenAI variable ${name}`);
     }
   }
 
   const publicServiceRoleMatch = source.match(/EXPO_PUBLIC_[A-Z0-9_]*SERVICE_ROLE[A-Z0-9_]*/i);
-  if (publicServiceRoleMatch) {
+  if (isClientRuntimeFile(filePath) && publicServiceRoleMatch) {
     failures.push(`${file} references forbidden public service-role variable ${publicServiceRoleMatch[0]}`);
   }
 

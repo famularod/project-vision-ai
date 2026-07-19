@@ -6,7 +6,13 @@ import {
   saveCloudProjectCoverPhoto,
   setCloudProjectArchived,
 } from './services/projectService';
-import { loadCloudUpdates } from './services/updateService';
+import {
+  loadCloudUpdates,
+  persistAndQueueProjectUpdateDeletion,
+  reconcileProjectUpdateDeletionJournal,
+  type DeletedUpdateTombstone,
+  type FieldUpdateDeleteDiagnostics,
+} from './services/updateService';
 import {
   cleanupStoredSyncStatusMessages,
   getOfflineQueue,
@@ -23,6 +29,7 @@ import {
 } from './services/SyncService';
 import {
   getCurrentSessionAccessToken,
+  listArchivedProjects,
   listProjectAreas,
   listProjects,
   listReferenceDocuments,
@@ -34,9 +41,17 @@ import {
 } from './services/SupabaseService';
 import { AdminScreen, SignInModal } from './screens/AdminScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
+import {
+  mailComposerOutcome,
+  smsComposerOutcome,
+  type ReportCommunicationOutcome,
+} from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
+import { UpdateDeleteControl } from './components/update-delete-control';
+import { HoldToDeleteButton } from './components/hold-to-delete-button';
+import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEAskExperience } from './components/DAVEAskExperience';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
 import {
@@ -47,11 +62,27 @@ import { DAVECaptureConfirmationSheet } from './components/DAVECaptureConfirmati
 import { DAVECaptureMemoryDetailSheet } from './components/DAVECaptureMemoryDetailSheet';
 import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
-import { StartupErrorBoundary } from './components/StartupErrorBoundary';
 import {
+  DailyBriefSection,
+  DAVEProjectNeedsVerificationLabel,
+  DAVEProjectStatusLoadingScreen,
+  DAVEProjectTaskOperationalSummary,
+  WorkspaceCardSkeleton,
+} from './components/DAVEProjectStatusViews';
+import { StartupErrorBoundary } from './components/StartupErrorBoundary';
+import { StartupHydrationBoundary } from './components/StartupHydrationBoundary';
+import {
+  persistStorageItem,
+  removePersistedStorageItem,
+  reportStoragePersistenceFailure,
   useJsonStoragePersistence,
   useStringStoragePersistence,
 } from './hooks/use-async-storage-persistence';
+import {
+  isStartupHydrationReady,
+  useStartupHydration,
+} from './hooks/use-startup-hydration';
+import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import type {
   ActionStatus,
   AreaSuggestion,
@@ -67,7 +98,65 @@ import type {
   UpdatePhoto,
 } from './types';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
-import { normalizeStartupArray, readStartupJson } from './services/StartupRecovery';
+import {
+  normalizeStartupArray,
+  readStartupJson,
+  readStartupJsonArray,
+} from './services/StartupRecovery';
+import {
+  isStartupContactBook,
+  isStartupDeletedUpdateRecord,
+  isStartupDraftEnvelope,
+  isStartupProjectAreaRecord,
+  isStartupProjectName,
+  isStartupProjectRecord,
+  isStartupReferenceDocumentRecord,
+  isStartupSavedUpdateRecord,
+  isStartupScheduleItemRecord,
+  isStartupStandaloneProjectDocumentRecord,
+  salvageStartupContactBook,
+} from './services/StartupRecordValidation';
+import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
+import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
+import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
+import {
+  runAutomaticSyncQueue,
+  shouldPersistAutomaticSyncOutcome,
+  startAutomaticSyncBackgroundTask,
+} from './services/AutomaticSyncState';
+import { createProjectId, restoreProjectRecords } from './services/ProjectIdentity';
+import { buildProjectDeletionCascade, buildProjectDeletionOperations,
+  referenceDocumentMatchesProject as referenceDocumentMatchesDeletedProject,
+  scheduleItemMatchesProject as scheduleItemMatchesDeletedProject, selectProjectDeletionFallback,
+  PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
+  PROJECT_DELETION_TRANSACTION_JOURNAL_KEY, type ProjectDeletionStorageKeys } from './services/ProjectDeletionTransaction';
+import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileCleaner, createProjectDeletionRuntime, ProjectDeletionIntentRecoveryRequiredError, ProjectDeletionRecoveryRequiredError } from './services/ProjectDeletionRuntime';
+import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
+import { FileSizePreflightError, preflightExpoFileRead } from './services/FileSizePreflight';
+import {
+  APP_BACKUP_VERSION,
+  BackupRestoreRecoveryRequiredError,
+  buildDeletionSafeRestoreState,
+  createBackupRestoreRuntime,
+  preflightAppBackup,
+} from './services/BackupRestoreRuntime';
+import {
+  buildCombinedReportAuthorityScope,
+  buildDailyReportAuthorityScope,
+} from './services/ReportAuthorityScope';
+import {
+  isLegacyOwnedLocalFileReadDeleteAuthorized,
+  isOwnedLocalFileManifestMember,
+  resolveLegacyOwnedLocalFilePath,
+} from './services/OwnedLocalFileRepository';
+import {
+  createProjectDocumentOwnedFileStore,
+  importProjectDocumentIntoOwnedStorage,
+  OWNED_PROJECT_DOCUMENTS_FOLDER,
+  PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE,
+  recoverStaleUploadingDocuments,
+  requireOwnedProjectDocumentAccess,
+} from './services/ProjectDocumentLifecycle';
 import {
   fieldUpdateLifecycleLabel,
   persistedStatusForSyncResult,
@@ -90,6 +179,15 @@ import {
   buildAnalyzingPhotoIntelligenceState,
   type PIEPhotoIntelligenceDisplayState,
 } from './services/PIEPhotoVisionMobileWorkflow';
+import { createPhotoAnalysisCoordinator } from './services/PhotoAnalysisCoordinator';
+import {
+  type PhotoAnalysisTarget,
+} from './services/PhotoAnalysisTarget';
+import {
+  aggregatePhotoDisplayResults,
+  photoAssessmentReviewCopy,
+  photoDisplayResultHasExplicitFinding,
+} from './services/PhotoAssessment';
 import {
   attentionCategoryForPhotoCategory,
   buildStableAttentionItemId,
@@ -97,8 +195,6 @@ import {
 } from './services/PIEAttentionIdentity';
 import {
   type DAVEBriefNavigationTarget,
-  type DAVEProjectDailyBriefAttentionItem,
-  type DAVEProjectDailyBriefItem,
 } from './services/DAVEDailyBrief';
 import { buildDAVEProjectTruth } from './services/DAVEProjectTruth';
 import {
@@ -106,6 +202,12 @@ import {
   mergeDAVECloudRecoveryRecords,
 } from './services/DAVECloudRecovery';
 import {
+  isDAVESafeCloudScheduleRecord,
+  reconcileDAVEScheduleRecords,
+  recoverDAVEScheduleRecords,
+} from './services/DAVEScheduleRecovery';
+import {
+  DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
   deletedDAVERecordIds,
   recordDAVESyncTombstone,
   recordDAVESyncTombstones,
@@ -117,7 +219,7 @@ import {
   type DAVEActionInboxItem,
 } from './services/DAVEActionInbox';
 import {
-  parseDAVEFollowThroughReviewStates,
+  parseDAVEFollowThroughReviewStatesResult,
   planDAVEFollowThrough,
   reviewedDAVEFollowThroughStates,
   type DAVEFollowThroughReminder,
@@ -137,9 +239,8 @@ import {
   type DAVETaskUpdateCommand,
 } from './services/DAVETaskConversation';
 import {
-  appendDAVEAskHistory,
+  createDAVEAskHistoryPersistence,
   daveAskHistoryStorageKey,
-  parseDAVEAskHistory,
   resolveDAVEAskEvidenceNavigation,
   type DAVEAskConversationEntry,
 } from './services/DAVEAskConversation';
@@ -212,16 +313,18 @@ import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgment
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
 import {
   buildPIEScheduleReconciliation,
+  reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
   type PIEScheduleFieldMatch,
   type PIEScheduleReconciliationWarning,
 } from './services/PIEScheduleReconciliation';
 import {
   buildPIEScheduleDependencyNetwork,
-  stripScheduleDependencyMetadata,
   type PIEScheduleDependencyNode,
 } from './services/PIEScheduleDependencyNetwork';
 import {
+  explicitScheduleNote,
+  normalizeImportedScheduleNote,
   normalizeMicrosoftProjectPdfRows,
   normalizeScheduleImport,
 } from './services/PIEScheduleIntelligence';
@@ -236,9 +339,12 @@ import {
   verifyScheduleItemCompletion,
 } from './services/DAVECompletionVerification';
 import {
+  bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
   scheduleImportItemIdentity,
+  scheduleItemsForExactImportBatch,
   scheduleOverviewProjectNames,
+  resolveScheduleParentActions,
   scheduleParentProjectNames,
   scheduleProjectScopeNames,
   type PIEScheduleImportBatch,
@@ -248,6 +354,25 @@ import {
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
 } from './services/dave-project-schedule-rollup';
+import {
+  normalizeScheduleStatus,
+  reconcileScheduleProgress,
+} from './services/ScheduleProgressInvariant';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  projectDateRelativeDays,
+  projectTimeZoneOrDefault,
+} from './services/ProjectDateTime';
+import {
+  deriveDAVEProjectOperationalStatus,
+  operationalScheduleItemsForProject,
+} from './services/DAVEProjectOperationalStatus';
+import {
+  daveConfirmedBlockerReason,
+  findCurrentDAVEConfirmedBlockerForScopes,
+  updateHasOpenDAVEBlocker,
+  updateHasOpenDAVESafetyConcern,
+} from './services/DAVEProjectBlockerState';
 import {
   canonicalizeDAVEScheduleItems,
   scheduleTaskGroupName,
@@ -260,7 +385,7 @@ import {
   recognizeTextFromImage,
 } from './modules/dave-text-recognition';
 import type { AppScreen } from './types/app-navigation';
-import { useAppNavigation } from './hooks/use-app-navigation';
+import { useAndroidHardwareBack, useAppNavigation } from './hooks/use-app-navigation';
 import { useReportSelection } from './hooks/use-report-selection';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -410,27 +535,6 @@ type FieldUpdateSyncDiagnostics = {
   projectCardWorkspaceSameSource: boolean;
 };
 
-type FieldUpdateDeleteDiagnostics = {
-  updateId: string;
-  localId: string;
-  cloudIdPresent: boolean;
-  lifecycleStatus: FieldUpdateStatus;
-  pendingSync: boolean;
-  tombstoned: boolean;
-  deletedAt: string | null;
-  sourceAfterReload: 'local' | 'cloud' | 'pending' | 'orphaned-photo' | 'unknown';
-  mergeDecision: 'included' | 'excluded' | 'tombstoned';
-  orphanedPhotoCountIgnored: number;
-};
-
-type DeletedUpdateTombstone = FieldUpdateDeleteDiagnostics & {
-  action:
-    | 'delete_failed_update'
-    | 'remove_from_device'
-    | 'archive_sent_update'
-    | 'hide_cloud_update';
-};
-
 type FieldUpdatePIEStatus =
   | 'not_started'
   | 'analyzing'
@@ -469,6 +573,8 @@ type ProjectDocument = {
   mimeType?: string | null;
   sizeBytes?: number | null;
   localUri?: string | null;
+  ownedFileId?: string | null;
+  ownedFileManifest?: unknown;
   storagePath?: string | null;
   uploadedAt?: string | null;
   createdAt: string;
@@ -525,6 +631,7 @@ type ReferenceDocument = {
   importedAt: string;
   projectId?: string | null;
   projectName?: string | null;
+  importBatchId?: string | null;
 };
 
 type OverviewProjectSelection = string | null | undefined;
@@ -565,28 +672,10 @@ type Phase2AttentionItem = {
   statusRole: StatusStyleRole;
 };
 
-type AppBackup = {
-  version: number;
-  exportedAt: string;
-  savedUpdates: ProjectUpdate[];
-  projects: string[];
-  archivedProjects: string[];
-  contacts: ContactBook;
-  projectAreas: ProjectArea[];
-  referenceDocuments: ReferenceDocument[];
-  projectDocuments: ProjectDocument[];
-  scheduleItems: ScheduleItem[];
-  activeDraft: StoredDraft | null;
-};
-
 type RestoredAppData = {
-  savedUpdates: ProjectUpdate[];
-  projects: string[];
-  archivedProjects: string[];
-  contactBook: ContactBook;
-  projectAreas: ProjectArea[];
-  referenceDocuments: ReferenceDocument[];
-  projectDocuments: ProjectDocument[];
+  savedUpdates: ProjectUpdate[]; projects: string[]; archivedProjects: string[];
+  contactBook: ContactBook; projectAreas: ProjectArea[];
+  referenceDocuments: ReferenceDocument[]; projectDocuments: ProjectDocument[];
   scheduleItems: ScheduleItem[];
   storedDraft: StoredDraft | null;
 };
@@ -611,25 +700,84 @@ const PROJECT_AREAS_STORAGE_KEY = 'projectPhotoUpdate.projectAreas.v1';
 const REFERENCE_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.referenceDocuments.v1';
 const PROJECT_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.projectDocuments.v1';
 const SCHEDULE_ITEMS_STORAGE_KEY = 'projectPhotoUpdate.scheduleItems.v1';
-const SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY = 'projectPhotoUpdate.scheduleAiExtractorUrl.v1';
 const DISPLAY_NAME_STORAGE_KEY = 'projectPhotoUpdate.displayName.v1';
+const FIELD_UPDATE_TRANSACTION_JOURNAL_KEY =
+  'projectPhotoUpdate.fieldUpdateTransaction.v1';
+const FIELD_UPDATE_PERSISTENCE_KEYS = { journal: FIELD_UPDATE_TRANSACTION_JOURNAL_KEY, updates: UPDATES_STORAGE_KEY, tombstones: DELETED_UPDATES_STORAGE_KEY, draft: DRAFT_STORAGE_KEY };
+const PROJECT_DELETION_STORAGE_KEYS: ProjectDeletionStorageKeys = {
+  projects: PROJECTS_STORAGE_KEY, deletedProjects: DELETED_PROJECTS_STORAGE_KEY,
+  archivedProjects: ARCHIVED_PROJECTS_STORAGE_KEY, updates: UPDATES_STORAGE_KEY,
+  deletedUpdates: DELETED_UPDATES_STORAGE_KEY, updateDeletionJournal: PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
+  projectDocuments: PROJECT_DOCUMENTS_STORAGE_KEY, referenceDocuments: REFERENCE_DOCUMENTS_STORAGE_KEY,
+  scheduleItems: SCHEDULE_ITEMS_STORAGE_KEY, daveSyncTombstones: DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
+  activeDraft: DRAFT_STORAGE_KEY, cloudIntents: PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY,
+  fileCleanupIntents: PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
+};
 const ANALYSIS_TIMEOUT_SECONDS = 60;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
 const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
-const BACKUP_VERSION = 1;
 const MAX_BACKUP_FILE_BYTES = 5 * 1024 * 1024;
 const PHOTO_STORAGE_FOLDER = 'project-photos';
 const PHOTO_STORAGE_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${PHOTO_STORAGE_FOLDER}/`
   : null;
+const RECOVERED_PHOTO_CACHE_FOLDER = 'dave-recovered-project-photos';
 const REFERENCE_DOCUMENTS_FOLDER = 'project-documents';
 const REFERENCE_DOCUMENTS_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${REFERENCE_DOCUMENTS_FOLDER}/`
   : null;
+// Manifest-owned project attachments must not share the legacy reference
+// directory: legacy reference deletion authorizes direct children by path.
+const OWNED_PROJECT_DOCUMENTS_DIR = FileSystem.documentDirectory
+  ? `${FileSystem.documentDirectory}${OWNED_PROJECT_DOCUMENTS_FOLDER}/`
+  : null;
 const PROJECT_DOCUMENT_UPLOAD_FOLDER = 'project-documents';
 const EMPTY_SELECTED_PROJECTS: Set<string> = new Set();
-const LARGE_PROJECT_DOCUMENT_BYTES = 15 * 1024 * 1024;
 const GPS_CAPTURE_ENABLED = true;
+
+const fieldUpdateLocalPersistence = createFieldUpdateLocalPersistence<ProjectUpdate, DeletedUpdateTombstone>({
+  storage: AsyncStorage,
+  keys: FIELD_UPDATE_PERSISTENCE_KEYS,
+  createTransactionId: createProjectId,
+  now: () => new Date().toISOString(),
+  parseUpdate: normalizeStoredUpdateRecord,
+  parseTombstone: parseStoredDeletedUpdateTombstone,
+});
+
+const projectDeletionRuntime = createProjectDeletionRuntime({
+  storage: AsyncStorage, storageKeys: PROJECT_DELETION_STORAGE_KEYS,
+  createTransactionId: createProjectId, now: () => new Date().toISOString(),
+  getOfflineQueue, queueCloudProjectDelete: deleteCloudProject,
+  cleanupLocalFile: createProjectDeletionLocalFileCleaner({
+    ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR, deleteOwnedReferenceDocument: deleteStoredReferenceDocument,
+  }),
+});
+
+const backupRestoreRuntime = createBackupRestoreRuntime({
+  storage: AsyncStorage,
+  targetKeys: {
+    updates: UPDATES_STORAGE_KEY, projects: PROJECTS_STORAGE_KEY, archivedProjects: ARCHIVED_PROJECTS_STORAGE_KEY,
+    contacts: CONTACTS_STORAGE_KEY,
+    projectAreas: PROJECT_AREAS_STORAGE_KEY, referenceDocuments: REFERENCE_DOCUMENTS_STORAGE_KEY,
+    projectDocuments: PROJECT_DOCUMENTS_STORAGE_KEY, scheduleItems: SCHEDULE_ITEMS_STORAGE_KEY,
+    activeDraft: DRAFT_STORAGE_KEY,
+  },
+  barrierKeys: {
+    deletedProjects: DELETED_PROJECTS_STORAGE_KEY, deletedUpdates: DELETED_UPDATES_STORAGE_KEY,
+    updateDeletionJournal: PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
+    projectDeletionCloudIntents: PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY,
+    projectDeletionFileCleanupIntents: PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
+    daveSyncTombstones: DAVE_SYNC_TOMBSTONES_STORAGE_KEY, fieldUpdateTransactionJournal: FIELD_UPDATE_TRANSACTION_JOURNAL_KEY,
+    projectDeletionTransactionJournal: PROJECT_DELETION_TRANSACTION_JOURNAL_KEY,
+  },
+  createTransactionId: createProjectId, now: () => new Date().toISOString(),
+  recoverProjectDeletion: projectDeletionRuntime.recoverBeforeStartupReads,
+  recoverFieldUpdate: fieldUpdateLocalPersistence.recoverBeforeStartupReads,
+  loadQueuedProjectDeletionNames: async () => (await getOfflineQueue())
+    .flatMap(item => item.entity === 'project' && item.operation === 'delete' &&
+      typeof (item.payload as Record<string, unknown>).name === 'string'
+      ? [(item.payload as Record<string, string>).name] : []),
+});
 
 const DEFAULT_PROJECTS = [
   '2321 Compliance Project',
@@ -768,7 +916,7 @@ const PIE_AUTH_HYDRATION_RETRY_COUNT = 3;
 const PIE_AUTH_HYDRATION_RETRY_DELAY_MS = 750;
 const DRAFT_LOCATION_CAPTURE_WAIT_MS = 1500;
 const ENABLE_DEV_AUTH_SIGNUP =
-  process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
+  __DEV__ && process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
 
 const ATTENTION_PRIORITY = {
   safety: 0,
@@ -1187,44 +1335,19 @@ function isOpenAction(photo: UpdatePhoto) {
 
 function isOverdueAction(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return dueDate < today;
+  const days = daysUntilDate(photo.actionDueDate);
+  return days !== null && days < 0;
 }
 
 function isDueThisWeek(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const sevenDaysFromNow = new Date(today);
-  sevenDaysFromNow.setDate(today.getDate() + 7);
-
-  return dueDate >= today && dueDate <= sevenDaysFromNow;
+  const days = daysUntilDate(photo.actionDueDate);
+  return days !== null && days >= 0 && days <= 7;
 }
 
 function isDueTodayAction(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return dueDate.getTime() === today.getTime();
+  return daysUntilDate(photo.actionDueDate) === 0;
 }
 
 function mergeProjectNames(base: string[], ...sources: string[][]) {
@@ -1290,7 +1413,7 @@ function uniqueStrings(values: string[]) {
 function normalizePhoto(photo: Partial<UpdatePhoto>): UpdatePhoto {
   return {
     id: typeof photo.id === 'string' ? photo.id : uid(),
-    uri: typeof photo.uri === 'string' ? photo.uri : '',
+    uri: typeof photo.uri === 'string' ? resolveProjectPhotoUri(photo) : '',
     caption: typeof photo.caption === 'string' ? photo.caption : '',
     category: CATEGORIES.includes(photo.category as PhotoCategory)
       ? (photo.category as PhotoCategory)
@@ -1386,6 +1509,11 @@ function normalizeProjectDocument(
   const storagePath = optionalString(value.storagePath);
   const uploadedAt = optionalString(value.uploadedAt);
   const status = normalizeProjectDocumentStatus(value.status);
+  const ownedFileId = optionalString(value.ownedFileId);
+  const ownedFileManifest = ownedFileId && ownsProjectDocumentFile(
+    value.ownedFileManifest,
+    ownedFileId,
+  ) ? value.ownedFileManifest : null;
 
   return {
     id: optionalString(value.id) || uid(),
@@ -1400,6 +1528,8 @@ function normalizeProjectDocument(
       optionalString(value.localUri) ||
       optionalString(value.uri) ||
       null,
+    ownedFileId: ownedFileManifest ? ownedFileId : null,
+    ownedFileManifest,
     storagePath,
     uploadedAt,
     createdAt,
@@ -1413,6 +1543,14 @@ function normalizeProjectDocument(
     lastUploadAttemptAt: optionalString(value.lastUploadAttemptAt),
     importedAt: optionalString(value.importedAt) || createdAt,
   };
+}
+
+function ownsProjectDocumentFile(manifest: unknown, fileId: string) {
+  try {
+    return isOwnedLocalFileManifestMember(manifest, fileId, 'project_document');
+  } catch {
+    return false;
+  }
 }
 
 function normalizeFieldUpdateDocuments(
@@ -1680,6 +1818,7 @@ function normalizeDeletedUpdateTombstones(value: unknown): DeletedUpdateTombston
       const record = isRecord(item) ? item : {};
       const action =
         record.action === 'delete_failed_update' ||
+        record.action === 'delete_update_everywhere' ||
         record.action === 'remove_from_device' ||
         record.action === 'archive_sent_update' ||
         record.action === 'hide_cloud_update'
@@ -1696,6 +1835,13 @@ function normalizeDeletedUpdateTombstones(value: unknown): DeletedUpdateTombston
       };
     })
     .filter((item): item is DeletedUpdateTombstone => Boolean(item));
+}
+
+function parseStoredDeletedUpdateTombstone(value: unknown): DeletedUpdateTombstone {
+  if (!isStartupDeletedUpdateRecord(value)) throw new Error('Saved update deletion record is invalid.');
+  const tombstone = normalizeDeletedUpdateTombstones([value])[0];
+  if (!tombstone) throw new Error('Saved update deletion record could not be normalized.');
+  return tombstone;
 }
 
 function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
@@ -1808,6 +1954,14 @@ function normalizeStoredUpdateRecord(value: unknown): ProjectUpdate {
     throw new Error('Saved update record is missing a stable ID.');
   }
   return migrateLegacyProjectUpdate(normalizeUpdate(value as Partial<ProjectUpdate>));
+}
+
+function isStartupDeviceSavedUpdateRecord(value: unknown) {
+  if (!isStartupSavedUpdateRecord(value) || !isRecord(value)) return false;
+  if (!Array.isArray(value.photos)) return true;
+  return value.photos.every(photo =>
+    Boolean(resolveProjectPhotoUri(photo as Partial<UpdatePhoto>)),
+  );
 }
 
 function normalizeRecipientSelection(value: unknown): RecipientSelection {
@@ -2086,15 +2240,12 @@ function normalizeProjectAreas(value: unknown) {
 
 
 function resolveReferenceDocumentUri(uri: string) {
-  if (!REFERENCE_DOCUMENTS_DIR || !uri) return uri;
-
-  const folderMarker = `/${REFERENCE_DOCUMENTS_FOLDER}/`;
-  const folderIndex = uri.indexOf(folderMarker);
-
-  if (folderIndex < 0) return uri;
-
-  const storedFilename = uri.slice(folderIndex + folderMarker.length);
-  return storedFilename ? `${REFERENCE_DOCUMENTS_DIR}${storedFilename}` : uri;
+  if (!REFERENCE_DOCUMENTS_DIR || !uri) return '';
+  return resolveLegacyOwnedLocalFilePath({
+    ownedRoot: REFERENCE_DOCUMENTS_DIR,
+    legacyFolderName: REFERENCE_DOCUMENTS_FOLDER,
+    candidatePath: uri,
+  }) || '';
 }
 
 function normalizeReferenceDocument(value: Partial<ReferenceDocument>): ReferenceDocument {
@@ -2128,15 +2279,27 @@ function normalizeReferenceDocument(value: Partial<ReferenceDocument>): Referenc
         : new Date().toISOString(),
     projectId: optionalString(value.projectId),
     projectName: optionalString(value.projectName),
+    importBatchId: optionalString(value.importBatchId),
   };
 }
 
 function normalizeReferenceDocuments(value: unknown) {
   if (!Array.isArray(value)) return [];
 
-  return value
+  return reconcileCurrentScheduleDocuments(value
     .map(item => normalizeReferenceDocument(item as Partial<ReferenceDocument>))
-    .filter(document => document.uri);
+    .filter(document => document.uri));
+}
+
+function isStartupDeviceReferenceDocumentRecord(value: unknown) {
+  if (!isStartupReferenceDocumentRecord(value) || !isRecord(value)) return false;
+  return typeof value.uri === 'string' && Boolean(resolveReferenceDocumentUri(value.uri));
+}
+
+function isStartupDeviceDraftEnvelope(value: unknown) {
+  if (!isStartupDraftEnvelope(value) || !isRecord(value)) return false;
+  if (!('draft' in value)) return true;
+  return isStartupDeviceSavedUpdateRecord(value.draft);
 }
 
 async function ensureReferenceDocumentsDirectory() {
@@ -2156,16 +2319,19 @@ async function ensureReferenceDocumentsDirectory() {
 }
 
 function isStoredReferenceDocument(uri: string) {
-  return Boolean(
-    REFERENCE_DOCUMENTS_DIR &&
-    resolveReferenceDocumentUri(uri).startsWith(REFERENCE_DOCUMENTS_DIR),
-  );
+  if (!REFERENCE_DOCUMENTS_DIR) return false;
+  const resolved = resolveReferenceDocumentUri(uri);
+  return Boolean(resolved && isLegacyOwnedLocalFileReadDeleteAuthorized({
+    ownedRoot: REFERENCE_DOCUMENTS_DIR,
+    legacyFolderName: REFERENCE_DOCUMENTS_FOLDER,
+    candidatePath: resolved,
+  }));
 }
 
 function deleteStoredReferenceDocument(uri: string) {
-  if (!isStoredReferenceDocument(uri)) return Promise.resolve();
-
-  return FileSystem.deleteAsync(resolveReferenceDocumentUri(uri), {
+  const resolved = resolveReferenceDocumentUri(uri);
+  if (!isStoredReferenceDocument(resolved)) return Promise.resolve();
+  return FileSystem.deleteAsync(resolved, {
     idempotent: true,
   });
 }
@@ -2398,21 +2564,18 @@ function formatAppDate(value: string) {
   return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear()}`;
 }
 
-function daysUntilDate(value: string) {
-  const target = parseFlexibleDate(value);
+function daysUntilDate(value: string, projectTimeZone: string = DEFAULT_PROJECT_TIME_ZONE) {
+  return projectDateRelativeDays(value, new Date(), projectTimeZone);
+}
 
-  if (!target) return null;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return Math.round((target.getTime() - today.getTime()) / 86400000);
+function daysUntilScheduleItem(item: ScheduleItem) {
+  return daysUntilDate(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE);
 }
 
 function isScheduleItemDueToday(item: ScheduleItem) {
-  if (item.status === 'Complete') return false;
+  if (scheduleTaskIsComplete(item)) return false;
 
-  return daysUntilDate(item.finishDate) === 0;
+  return daysUntilScheduleItem(item) === 0;
 }
 
 function timeOfDayGreeting(name?: string) {
@@ -2432,8 +2595,8 @@ function todayLongDateLabel() {
   });
 }
 
-function dueStatusText(value: string) {
-  const days = daysUntilDate(value);
+function dueStatusText(value: string, projectTimeZone: string = DEFAULT_PROJECT_TIME_ZONE) {
+  const days = daysUntilDate(value, projectTimeZone);
 
   if (days === null) return 'No valid finish date';
   if (days < 0) return `Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'}`;
@@ -2460,9 +2623,11 @@ function photoAttachmentLabel(count: number) {
 }
 
 function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
+  const progress = reconcileScheduleProgress(value.status, value.percentComplete);
   return {
     id: typeof value.id === 'string' ? value.id : uid(),
     scheduleProjectName: optionalString(value.scheduleProjectName),
+    projectTimeZone: projectTimeZoneOrDefault(value.projectTimeZone),
     projectName: typeof value.projectName === 'string' ? value.projectName : '',
     locationName: typeof value.locationName === 'string' ? value.locationName : '',
     taskName:
@@ -2478,12 +2643,7 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
       typeof value.durationDays === 'number' && Number.isFinite(value.durationDays)
         ? Math.max(0, value.durationDays)
         : null,
-    percentComplete:
-      value.status === 'Complete'
-        ? 100
-        : typeof value.percentComplete === 'number' && Number.isFinite(value.percentComplete)
-        ? Math.max(0, Math.min(100, Math.round(value.percentComplete)))
-        : 0,
+    percentComplete: progress.percentComplete,
     progressSource:
       value.progressSource === 'project_manager' || value.progressSource === 'schedule_import'
         ? value.progressSource
@@ -2493,12 +2653,12 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
     priority: SCHEDULE_PRIORITIES.includes(value.priority as SchedulePriority)
       ? (value.priority as SchedulePriority)
       : 'Medium',
-    status: SCHEDULE_STATUSES.includes(value.status as ScheduleStatus)
-      ? (value.status as ScheduleStatus)
-      : 'Not Started',
-    notes: typeof value.notes === 'string' ? stripScheduleDependencyMetadata(value.notes) : '',
+    status: progress.status,
+    notes: normalizeImportedScheduleNote(value.notes, value.importedFrom),
     importedFrom: optionalString(value.importedFrom),
     importedAt: optionalString(value.importedAt),
+    importBatchId: optionalString(value.importBatchId),
+    sourceDocumentId: optionalString(value.sourceDocumentId),
     completionVerification: normalizeDAVECompletionVerification(value.completionVerification),
     createdAt:
       typeof value.createdAt === 'string'
@@ -2514,7 +2674,7 @@ function normalizeScheduleItems(value: unknown) {
     .map(item => normalizeScheduleItem(item as Partial<ScheduleItem>))
     .filter(item => item.taskName.trim());
 
-  return canonicalizeScheduleIdentityItems(items);
+  return reconcileDAVEScheduleRecords(canonicalizeScheduleIdentityItems(items));
 }
 
 function canonicalizeScheduleIdentityItems(
@@ -2535,230 +2695,6 @@ function canonicalizeScheduleIdentityItems(
       corrections,
     },
   ).items as unknown as ScheduleItem[];
-}
-
-type AiScheduleExtractedItem = {
-  taskName?: string;
-  projectName?: string | null;
-  locationName?: string | null;
-  startDate?: string | null;
-  finishDate?: string | null;
-  dueDate?: string | null;
-  milestone?: string | null;
-  owner?: string | null;
-  contractor?: string | null;
-  percentComplete?: number | string | null;
-  priority?: string | null;
-  status?: string | null;
-  notes?: string | null;
-  confidence?: string | null;
-  sourcePage?: number | null;
-};
-
-function normalizeAiScheduleStatus(value: unknown): ScheduleStatus {
-  if (typeof value !== 'string') return 'Not Started';
-
-  const lower = value.trim().toLowerCase();
-
-  if (lower.includes('complete') || lower.includes('done')) return 'Complete';
-  if (lower.includes('progress') || lower.includes('active')) return 'In Progress';
-  if (lower.includes('wait') || lower.includes('hold')) return 'Waiting';
-  if (lower.includes('schedule') || lower.includes('planned') || lower.includes('not started')) return 'Not Started';
-
-  return 'Not Started';
-}
-
-function normalizeAiSchedulePriority(value: unknown, finishDate: string): SchedulePriority {
-  if (typeof value === 'string') {
-    const lower = value.trim().toLowerCase();
-
-    if (lower.includes('high')) return 'High';
-    if (lower.includes('low')) return 'Low';
-    if (lower.includes('medium') || lower.includes('normal')) return 'Medium';
-  }
-
-  const days = daysUntilDate(finishDate);
-
-  if (days !== null && days < 0) return 'High';
-  if (days !== null && days <= 7) return 'High';
-
-  return 'Medium';
-}
-
-function percentFromAiItem(item: AiScheduleExtractedItem) {
-  const direct = item.percentComplete;
-
-  if (typeof direct === 'number' && Number.isFinite(direct)) {
-    return Math.max(0, Math.min(100, Math.round(direct)));
-  }
-
-  const text = [direct, item.notes, item.status]
-    .filter(value => typeof value === 'string')
-    .join(' ');
-  const match = text.match(/(\d{1,3})\s*%/);
-
-  if (!match) return 0;
-
-  return Math.max(0, Math.min(100, Number(match[1])));
-}
-
-function contractorFromAiItem(item: AiScheduleExtractedItem) {
-  if (typeof item.contractor === 'string' && item.contractor.trim()) {
-    return item.contractor.trim();
-  }
-
-  if (typeof item.owner === 'string' && item.owner.trim()) {
-    return item.owner.trim();
-  }
-
-  return '';
-}
-
-function normalizeAiScheduleDate(value: unknown) {
-  if (typeof value !== 'string') return '';
-
-  const trimmed = value.trim();
-
-  if (!trimmed) return '';
-
-  const parsed = parseFlexibleDate(trimmed);
-
-  if (!parsed) return '';
-
-  return `${zeroPad(parsed.getMonth() + 1)}/${zeroPad(parsed.getDate())}/${parsed.getFullYear()}`;
-}
-
-function firstValidAiDate(...values: unknown[]) {
-  for (const value of values) {
-    const normalized = normalizeAiScheduleDate(value);
-
-    if (normalized) return normalized;
-  }
-
-  return '';
-}
-
-function scheduleItemsFromAiPayload(payload: unknown, sourceName: string) {
-  const importedAt = new Date().toISOString();
-  const rawItems =
-    payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown }).items)
-      ? ((payload as { items: unknown[] }).items)
-      : Array.isArray(payload)
-        ? payload
-        : [];
-
-  return rawItems
-    .map(raw => {
-      if (!raw || typeof raw !== 'object') return null;
-
-      const item = raw as AiScheduleExtractedItem;
-      const taskName = typeof item.taskName === 'string' ? item.taskName.trim() : '';
-
-      if (!taskName) return null;
-
-      const startDate = firstValidAiDate(item.startDate);
-      const finishDate = firstValidAiDate(item.finishDate, item.dueDate, item.startDate);
-      const contractor = contractorFromAiItem(item);
-      const percentComplete = percentFromAiItem(item);
-      const confidenceNote =
-        typeof item.confidence === 'string' && item.confidence.trim()
-          ? ` Review strength: ${item.confidence.trim()}.`
-          : '';
-      const sourcePageNote =
-        typeof item.sourcePage === 'number' && Number.isFinite(item.sourcePage)
-          ? ` Source page: ${item.sourcePage}.`
-          : '';
-
-      return normalizeScheduleItem({
-        taskName,
-        projectName: typeof item.projectName === 'string' ? item.projectName.trim() : '',
-        locationName: typeof item.locationName === 'string' ? item.locationName.trim() : '',
-        startDate,
-        finishDate,
-        milestone: typeof item.milestone === 'string' ? item.milestone.trim() : '',
-        owner: typeof item.owner === 'string' ? item.owner.trim() : '',
-        contractor,
-        percentComplete,
-        priority: normalizeAiSchedulePriority(item.priority, finishDate),
-        status: normalizeAiScheduleStatus(item.status),
-        notes:
-          typeof item.notes === 'string' && item.notes.trim()
-            ? `${item.notes.trim()}${confidenceNote}${sourcePageNote} Review this AI-extracted item before relying on it.`
-            : `AI/OCR extraction from imported Gantt PDF.${confidenceNote}${sourcePageNote} Review task name, location, and dates before relying on this item.`,
-        importedFrom: sourceName,
-        importedAt,
-      });
-    })
-    .filter(Boolean) as ScheduleItem[];
-}
-
-async function extractScheduleItemsWithAiEndpoint({
-  endpointUrl,
-  fileUri,
-  fileName,
-  mimeType,
-  projects,
-  projectAreas,
-}: {
-  endpointUrl: string;
-  fileUri: string;
-  fileName: string;
-  mimeType: string;
-  projects: string[];
-  projectAreas: ProjectArea[];
-}) {
-  const trimmedEndpoint = endpointUrl.trim();
-
-  if (
-    !trimmedEndpoint ||
-    !/^https:\/\//i.test(trimmedEndpoint) ||
-    /(?:example\.com|your-secure-schedule-extractor)/i.test(trimmedEndpoint)
-  ) return [];
-
-  const formData = new FormData();
-
-  formData.append('file', {
-    uri: fileUri,
-    name: fileName || 'schedule.pdf',
-    type: mimeType || 'application/octet-stream',
-  } as any);
-
-  formData.append('projectName', projects[0] || '');
-  formData.append('timezone', 'America/Los_Angeles');
-  formData.append(
-    'locations',
-    JSON.stringify(projectAreas.map(area => area.name).filter(Boolean)),
-  );
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
-  let response: Response;
-
-  try {
-    response = await fetch(trimmedEndpoint, {
-      method: 'POST',
-      body: formData,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  const payload = await response.json();
-
-  if (!response.ok) {
-    const message =
-      payload &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      typeof (payload as { error?: unknown }).error === 'string'
-        ? (payload as { error: string }).error
-        : `AI extractor failed with HTTP ${response.status}`;
-
-    throw new Error(message);
-  }
-
-  return scheduleItemsFromAiPayload(payload, fileName);
 }
 
 async function withScheduleImportTimeout<T>(
@@ -2819,31 +2755,26 @@ function normalizeStoredDraft(value: unknown): StoredDraft | null {
   };
 }
 
-function normalizeBackupData(value: unknown): RestoredAppData | null {
-  if (!isRecord(value) || typeof value.version !== 'number') {
-    return null;
-  }
-
-  if (
-    !Array.isArray(value.savedUpdates) ||
-    !Array.isArray(value.projects) ||
-    !Array.isArray(value.archivedProjects)
-  ) {
-    return null;
-  }
-
+function normalizeBackupData(value: unknown) {
+  const preflight = preflightAppBackup(value, {
+    savedUpdate: isStartupDeviceSavedUpdateRecord, projectName: isStartupProjectName,
+    contactBook: isStartupContactBook, projectArea: isStartupProjectAreaRecord,
+    referenceDocument: isStartupDeviceReferenceDocumentRecord,
+    projectDocument: isStartupStandaloneProjectDocumentRecord, scheduleItem: isStartupScheduleItemRecord,
+    draftEnvelope: isStartupDeviceDraftEnvelope,
+  });
+  if (!preflight.ok) return preflight;
+  const data = preflight.data;
   return {
-    savedUpdates: value.savedUpdates.map(item =>
-      normalizeUpdate(item as Partial<ProjectUpdate>),
-    ),
-    projects: normalizeStringList(value.projects),
-    archivedProjects: normalizeStringList(value.archivedProjects),
-    contactBook: normalizeContacts(value.contacts),
-    projectAreas: normalizeProjectAreas(value.projectAreas),
-    referenceDocuments: normalizeReferenceDocuments(value.referenceDocuments),
-    projectDocuments: normalizeProjectDocuments(value.projectDocuments),
-    scheduleItems: normalizeScheduleItems(value.scheduleItems),
-    storedDraft: normalizeStoredDraft(value.activeDraft),
+    ok: true as const,
+    data: {
+      savedUpdates: data.savedUpdates.map(item => normalizeUpdate(item as Partial<ProjectUpdate>)),
+      projects: normalizeStringList(data.projects), archivedProjects: normalizeStringList(data.archivedProjects),
+      contactBook: normalizeContacts(data.contacts), projectAreas: normalizeProjectAreas(data.projectAreas),
+      referenceDocuments: normalizeReferenceDocuments(data.referenceDocuments),
+      projectDocuments: normalizeProjectDocuments(data.projectDocuments), scheduleItems: normalizeScheduleItems(data.scheduleItems),
+      storedDraft: normalizeStoredDraft(data.activeDraft),
+    } satisfies RestoredAppData,
   };
 }
 
@@ -2894,7 +2825,28 @@ async function ensurePhotoStorageDirectory() {
 }
 
 function isStoredProjectPhoto(uri: string) {
-  return Boolean(PHOTO_STORAGE_DIR && uri.startsWith(PHOTO_STORAGE_DIR));
+  if (!PHOTO_STORAGE_DIR) return false;
+  return isLegacyOwnedLocalFileReadDeleteAuthorized({
+    ownedRoot: PHOTO_STORAGE_DIR,
+    legacyFolderName: PHOTO_STORAGE_FOLDER,
+    candidatePath: uri,
+  });
+}
+
+function resolveProjectPhotoUri(photo: Partial<UpdatePhoto>) {
+  const uri = typeof photo.uri === 'string' ? photo.uri : '';
+  if (/^https:\/\//i.test(uri)) return uri;
+  if (!uri) return '';
+  const ownedPhoto = PHOTO_STORAGE_DIR && resolveLegacyOwnedLocalFilePath({
+    ownedRoot: PHOTO_STORAGE_DIR, legacyFolderName: PHOTO_STORAGE_FOLDER, candidatePath: uri,
+  });
+  if (ownedPhoto) return ownedPhoto;
+  const cacheRoot = FileSystem.cacheDirectory
+    ? `${FileSystem.cacheDirectory}${RECOVERED_PHOTO_CACHE_FOLDER}/`
+    : null;
+  return photo.cloudRecoveryStatus === 'cached' && cacheRoot
+    ? resolveLegacyOwnedLocalFilePath({ ownedRoot: cacheRoot, legacyFolderName: RECOVERED_PHOTO_CACHE_FOLDER, candidatePath: uri }) || ''
+    : '';
 }
 
 async function deleteStoredPhotoIfUnused(
@@ -3320,6 +3272,25 @@ function buildProjectDocumentStoragePath(
   )}/${documentId}/${sanitizeFilename(fileName)}`;
 }
 
+function ownedProjectDocumentAccess(document: ProjectDocument) {
+  if (!OWNED_PROJECT_DOCUMENTS_DIR) throw new Error('Project document storage is unavailable.');
+  return {
+    store: createProjectDocumentOwnedFileStore({ ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR }),
+    input: requireOwnedProjectDocumentAccess(document),
+  };
+}
+
+async function verifyOwnedProjectDocument(document: ProjectDocument) {
+  const access = ownedProjectDocumentAccess(document);
+  await access.store.readAuthorizedFile(access.input);
+}
+
+async function deleteOwnedProjectDocument(document: ProjectDocument) {
+  if (!document.ownedFileId || !document.ownedFileManifest || !document.localUri) return;
+  const access = ownedProjectDocumentAccess(document);
+  await access.store.deleteAuthorizedFile(access.input);
+}
+
 function projectDocumentStatusDetail(document: ProjectDocument) {
   if (document.status === 'failed') {
     return 'Document upload failed · Retry';
@@ -3389,12 +3360,12 @@ function photoHasVisualChange(photo: UpdatePhoto) {
 
   if (!result) return false;
   if (!pieResultHasCompletedVisualComparison(result)) return false;
+  return photoDisplayResultHasExplicitFinding(result);
+}
 
-  return Boolean(
-    result.visibleChange ||
-      (result.additions?.length || 0) > 0 ||
-      (result.removals?.length || 0) > 0 ||
-      observedFindingsForPIEResult(result).length > 0,
+function photoAssessmentForUpdate(update: ProjectUpdate) {
+  return aggregatePhotoDisplayResults(
+    update.photos.map(photo => photo.photoIntelligence),
   );
 }
 
@@ -3493,44 +3464,7 @@ function waitForPIEAuthHydrationRetry() {
 function pieStatusForUpdate(update: ProjectUpdate) {
   if (update.status === 'queued') return queuedStatusCopyForUpdate(update);
   if (update.status === 'failed') return queuedStatusCopyForUpdate(update);
-
-  const intelligence = update.photos
-    .map(photo => photo.photoIntelligence)
-    .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
-
-  const authCopy = authStatusCopyForPIEResults(intelligence);
-  if (authCopy) return authCopy;
-
-  if (intelligence.some(result => result.status === 'analyzing')) {
-    return PIE_STATUS_COPY.checking;
-  }
-
-  if (
-    intelligence.length > 0 &&
-    intelligence.every(result => result.status === 'no_suitable_prior_photo')
-  ) {
-    return PIE_STATUS_COPY.noPriorPhoto;
-  }
-
-  if (
-    intelligence.some(
-      result =>
-        result.status === 'analysis_failed_retry' ||
-        result.status === 'comparison_unavailable',
-    )
-  ) {
-    return PIE_STATUS_COPY.unavailableRetry;
-  }
-
-  if (update.photos.some(photoHasVisualChange)) {
-    return PIE_STATUS_COPY.possibleChanges;
-  }
-
-  if (intelligence.length > 0) {
-    return PIE_STATUS_COPY.noReliableChange;
-  }
-
-  return PIE_STATUS_COPY.checking;
+  return summarizePIEStatusForUpdate(update).summary;
 }
 
 function summarizePIEStatusForUpdate(update: ProjectUpdate): {
@@ -3549,46 +3483,38 @@ function summarizePIEStatusForUpdate(update: ProjectUpdate): {
     .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
 
   const authCopy = authStatusCopyForPIEResults(results);
+  const assessment = photoAssessmentForUpdate(update);
 
-  if (results.length === 0 || results.some(isPreparingSecurePhotoAnalysisResult)) {
+  if (
+    assessment.state === 'not_assessed' ||
+    assessment.state === 'assessing' ||
+    results.some(isPreparingSecurePhotoAnalysisResult)
+  ) {
     return {
       status: 'analyzing',
-      summary: authCopy || PIE_STATUS_COPY.preparingSecureAnalysis,
+      summary: authCopy || (results.length === 0
+        ? PIE_STATUS_COPY.preparingSecureAnalysis
+        : PIE_STATUS_COPY.checking),
     };
   }
 
-  if (results.some(result => result.status === 'analyzing')) {
-    return {
-      status: 'analyzing',
-      summary: PIE_STATUS_COPY.checking,
-    };
-  }
-
-  if (results.every(result => result.status === 'no_suitable_prior_photo')) {
+  if (assessment.state === 'baseline_only') {
     return {
       status: 'no_prior_photo',
       summary: PIE_STATUS_COPY.noPriorPhoto,
     };
   }
 
-  if (
-    results.some(
-      result =>
-        result.status === 'analysis_failed_retry' ||
-        result.status === 'comparison_unavailable',
-    )
-  ) {
+  if (assessment.state === 'failed' || assessment.state === 'incomparable') {
     return {
       status: 'failed',
       summary: authCopy || PIE_STATUS_COPY.unavailableRetry,
     };
   }
 
-  const changed = update.photos.some(photoHasVisualChange);
-
   return {
     status: 'complete',
-    summary: changed
+    summary: assessment.state === 'assessed_finding'
       ? PIE_STATUS_COPY.possibleChanges
       : PIE_STATUS_COPY.noReliableChange,
   };
@@ -3739,17 +3665,11 @@ function buildGeneratedUpdateMessage(
 }
 
 function updateHasSafetyConcern(update: ProjectUpdate) {
-  if (update.safetyFlag || update.quickContext === 'Safety') return true;
-
-  return update.photos.some(photo => photo.category === 'Safety Concern');
+  return updateHasOpenDAVESafetyConcern(update);
 }
 
 function updateHasBlocker(update: ProjectUpdate) {
-  return (
-    Boolean(update.blockerFlag) ||
-    update.quickContext === 'Blocker' ||
-    update.photos.some(photo => photo.category === 'Open Issue')
-  );
+  return updateHasOpenDAVEBlocker(update);
 }
 
 function lifecycleStatusForUpdate(update: ProjectUpdate): FieldUpdateStatus {
@@ -4447,11 +4367,10 @@ function buildProjectCardPIEStatus(
   const scopedUpdates = savedUpdates
     .filter(update => projectNames.some(projectName => projectMatchesScope(update, projectName)))
     .sort((a, b) => b.date.localeCompare(a.date));
-
-  if (scopedUpdates.some(update => updateHasSafetyConcern(update))) {
+  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlockerForScopes(projectNames, savedUpdates, projectMatchesScope);
+  if (currentConfirmedBlocker && updateHasSafetyConcern(currentConfirmedBlocker)) {
     return 'Safety item needs review';
   }
-
   const failedSync = scopedUpdates.find(update => lifecycleStatusForUpdate(update) === 'failed');
   if (failedSync) return queuedStatusCopyForUpdate(failedSync);
 
@@ -4603,7 +4522,9 @@ type OverviewProjectRow = {
   project: string;
   scopeProjects: string[];
   needsAttention: boolean;
-  severity: 'high' | 'medium';
+  priorityRank: number;
+  health: 'Healthy' | 'Needs Setup' | 'At Risk' | 'Blocked';
+  needsVerification: boolean;
   subtitle: string;
   dueTodayLabel: string | null;
   observationCount: number;
@@ -4633,14 +4554,12 @@ function buildOverviewProjectRows(
       savedUpdates,
       scheduleItems,
     );
-    const normalizedProject = project.trim().toLowerCase();
-    const normalizedScopes = new Set(
-      scopeProjects.map(scope => scope.trim().toLowerCase()),
+    const projectScheduleItems = operationalScheduleItemsForProject(
+      project,
+      scheduleItems,
     );
-    const projectScheduleItems = scheduleItems.filter(item =>
-      item.scheduleProjectName?.trim().toLowerCase() === normalizedProject ||
-      normalizedScopes.has(item.projectName.trim().toLowerCase()) ||
-      normalizedScopes.has(item.locationName.trim().toLowerCase()),
+    const scopedFieldUpdates = savedUpdates.filter(update =>
+      scopeProjects.some(scope => projectMatchesScope(update, scope)),
     );
     const scheduleRollup = buildDAVEProjectScheduleRollup({
       projectName: project,
@@ -4650,34 +4569,40 @@ function buildOverviewProjectRows(
       scheduleItems: projectScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
       updates: savedUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     });
-    const scheduleWarning = scheduleReconciliation.warnings.find(
-      warning => warning.type !== 'schedule_mapping_incomplete',
-    ) || null;
-    const needsAttention =
-      attentionItems.length > 0 ||
-      dueTodayLabel !== null ||
-      scheduleWarning !== null ||
-      scheduleRollup.health !== 'On Track';
+    const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlockerForScopes(
+      scopeProjects,
+      savedUpdates,
+      projectMatchesScope,
+    );
+    const operationalStatus = deriveDAVEProjectOperationalStatus({
+      scheduleHealth: scheduleRollup.health,
+      scheduleReason: scheduleRollup.healthReason,
+      reconciliationWarnings: scheduleReconciliation.warnings,
+      hasConfirmedBlocker: Boolean(confirmedBlockingUpdate),
+      confirmedBlockerReason: confirmedBlockingUpdate
+        ? daveConfirmedBlockerReason(confirmedBlockingUpdate)
+        : null,
+      hasAttention: attentionItems.length > 0,
+      attentionReason: attentionItems[0]?.detail || attentionItems[0]?.title || null,
+      hasScheduleData: scheduleRollup.taskCount > 0,
+      hasFieldData: scopedFieldUpdates.length > 0,
+    });
+    const needsAttention = operationalStatus.status !== 'Healthy';
     const briefs = scopeProjects.map(scope => buildPIEProjectBriefModel(scope, savedUpdates));
     const observations = briefs
       .flatMap(brief => brief.observations)
       .sort((left, right) => updateSortTime(right.update) - updateSortTime(left.update));
     const subtitle = needsAttention
-      ? scheduleWarning?.summary || scheduleRollup.healthReason || observations[0]?.text || briefs[0]?.summary.split('\n')[0]
+      ? operationalStatus.reason || operationalStatus.primaryWarning?.summary || observations[0]?.text || briefs[0]?.summary.split('\n')[0]
       : buildProjectCardPIEStatus(scopeProjects, savedUpdates);
 
     return {
       project,
       scopeProjects,
       needsAttention,
-      severity: (
-        attentionItems.length > 0 ||
-        scheduleRollup.health === 'Blocked' ||
-        scheduleWarning?.severity === 'critical' ||
-        scheduleWarning?.severity === 'high'
-          ? 'high'
-          : 'medium'
-      ) as OverviewProjectRow['severity'],
+      priorityRank: operationalStatus.priorityRank,
+      health: operationalStatus.status,
+      needsVerification: operationalStatus.needsVerification,
       subtitle,
       dueTodayLabel,
       observationCount: observations.length,
@@ -4687,7 +4612,7 @@ function buildOverviewProjectRows(
     };
   }).sort((left, right) =>
     Number(right.needsAttention) - Number(left.needsAttention) ||
-    (right.severity === 'high' ? 1 : 0) - (left.severity === 'high' ? 1 : 0) ||
+    right.priorityRank - left.priorityRank ||
     left.project.localeCompare(right.project),
   );
 }
@@ -4730,13 +4655,14 @@ function buildPhase2ActivityItems(
 
 function buildPhase2AttentionItems(
   savedUpdates: ProjectUpdate[],
-  projectName: string | null,
+  projectName: string,
 ) {
+  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlockerForScopes([projectName], savedUpdates, projectMatchesScope);
   const items = savedUpdates
     .filter(update => projectMatchesScope(update, projectName))
     .flatMap(update => {
       const recurringContext = recurringOpenItemContext(update, savedUpdates);
-      const safetyDraftItem = update.safetyFlag
+      const safetyDraftItem = currentConfirmedBlocker?.id === update.id && (update.safetyFlag || update.quickContext === 'Safety')
         ? [
             {
               id: `${update.id}-safety-quick-context`,
@@ -4760,7 +4686,7 @@ function buildPhase2AttentionItems(
             },
           ]
         : [];
-      const blockerItem = updateHasBlocker(update)
+      const blockerItem = currentConfirmedBlocker?.id === update.id && (update.blockerFlag || update.quickContext === 'Blocker')
         ? [
             {
               id: `${update.id}-blocker`,
@@ -4956,10 +4882,7 @@ function buildPhase2AttentionItems(
         )
         .map((photo): Phase2AttentionItem => {
           const safety = photo.category === 'Safety Concern';
-          const overdue =
-            photo.actionDueDate &&
-            photo.actionDueDate < new Date().toISOString().slice(0, 10) &&
-            photo.actionStatus !== 'Closed';
+          const overdue = isOverdueAction(photo);
 
           return {
             id: stableOpenItemAttentionId(update, photo),
@@ -5094,8 +5017,10 @@ export default function App() {
 
 function AppShell() {
   const insets = useSafeAreaInsets();
+  const scheduleScreenshotOcrAvailable =
+    Platform.OS === 'ios' && isDaveTextRecognitionAvailable();
 
-  const { screen, setScreen, returnScreen: contactsReturnScreen,
+  const { screen, setScreen, goBack, returnScreen: contactsReturnScreen,
     setReturnScreen: setContactsReturnScreen } = useAppNavigation('Home');
 
   const [savedUpdatesEntryFilter, setSavedUpdatesEntryFilter] = useState<{
@@ -5185,9 +5110,6 @@ function AppShell() {
   const [scheduleItems, setScheduleItems] =
     useState<ScheduleItem[]>([]);
 
-  const [scheduleAiExtractorUrl, setScheduleAiExtractorUrl] =
-    useState('');
-
   const [displayName, setDisplayName] =
     useState('');
 
@@ -5216,35 +5138,55 @@ function AppShell() {
 
   const [draftSavedAt, setDraftSavedAt] =
     useState<string | null>(null);
+  const [fieldUpdateSaving, setFieldUpdateSaving] = useState(false);
 
   const [updatesLoaded, setUpdatesLoaded] =
+    useState(false);
+  const [updatesLocalLoaded, setUpdatesLocalLoaded] =
     useState(false);
   const [deletedUpdateTombstonesLoaded, setDeletedUpdateTombstonesLoaded] =
     useState(false);
 
   const [projectsLoaded, setProjectsLoaded] =
     useState(false);
+  const [projectsLocalLoaded, setProjectsLocalLoaded] =
+    useState(false);
   const [deletedProjectNamesLoaded, setDeletedProjectNamesLoaded] =
+    useState(false);
+  const [deletedProjectNamesLocalLoaded, setDeletedProjectNamesLocalLoaded] =
     useState(false);
 
   const [archivedProjectsLoaded, setArchivedProjectsLoaded] =
     useState(false);
 
-  const [projectAreasLoaded, setProjectAreasLoaded] =
+  const [projectAreasLoaded, setProjectAreasLoadedState] =
+    useState(false);
+  const [projectAreasLocalLoaded, setProjectAreasLocalLoaded] =
     useState(false);
 
-  const [referenceDocumentsLoaded, setReferenceDocumentsLoaded] =
+  const [referenceDocumentsLoaded, setReferenceDocumentsLoadedState] =
+    useState(false);
+  const [referenceDocumentsLocalLoaded, setReferenceDocumentsLocalLoaded] =
     useState(false);
 
   const [projectDocumentsLoaded, setProjectDocumentsLoaded] =
     useState(false);
 
-  const [scheduleItemsLoaded, setScheduleItemsLoaded] =
+  const [scheduleItemsLoaded, setScheduleItemsLoadedState] =
     useState(false);
-
-  const [scheduleAiExtractorUrlLoaded, setScheduleAiExtractorUrlLoaded] =
+  const [scheduleItemsLocalLoaded, setScheduleItemsLocalLoaded] =
     useState(false);
-
+  const projectAreasAuthorityRef = useRef(false);
+  const referenceDocumentsAuthorityRef = useRef(false);
+  const scheduleItemsAuthorityRef = useRef(false);
+  const markProjectAreasAuthorityReady = (ready: boolean) => { projectAreasAuthorityRef.current = ready; setProjectAreasLoadedState(ready); };
+  const markReferenceDocumentsAuthorityReady = (ready: boolean) => { referenceDocumentsAuthorityRef.current = ready; setReferenceDocumentsLoadedState(ready); };
+  const markScheduleItemsAuthorityReady = (ready: boolean) => { scheduleItemsAuthorityRef.current = ready; setScheduleItemsLoadedState(ready); };
+  const [captureMemoriesLoaded, setCaptureMemoriesLoaded] =
+    useState(false);
+  const [identityCorrectionsLoaded, setIdentityCorrectionsLoaded] =
+    useState(false);
+  const [scheduleIdentityReady, setScheduleIdentityReady] = useState(false);
   const [displayNameLoaded, setDisplayNameLoaded] =
     useState(false);
 
@@ -5253,6 +5195,18 @@ function AppShell() {
 
   const [draftLoaded, setDraftLoaded] =
     useState(false);
+
+  const startupHydration = useStartupHydration();
+  const requiredLocalHydrationDomains = [
+    updatesLocalLoaded, deletedUpdateTombstonesLoaded, projectsLocalLoaded, deletedProjectNamesLocalLoaded,
+    archivedProjectsLoaded, projectAreasLocalLoaded, referenceDocumentsLocalLoaded, projectDocumentsLoaded,
+    scheduleItemsLocalLoaded, captureMemoriesLoaded, identityCorrectionsLoaded, scheduleIdentityReady,
+    displayNameLoaded, contactsLoaded, draftLoaded,
+  ];
+  const startupHydrationReady = isStartupHydrationReady(
+    requiredLocalHydrationDomains,
+    startupHydration.failures,
+  );
 
   const [draftAreaSuggestion, setDraftAreaSuggestion] =
     useState<AreaSuggestion | null>(null);
@@ -5267,17 +5221,29 @@ function AppShell() {
   const savedUpdatesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const updateDetailReturnScreenRef = useRef<AppScreen>('SavedUpdates');
 
   const startupCompletionLogged = useRef(false);
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
-  const skipSavedUpdatesPersistenceOnceRef = useRef(false);
+  const fieldUpdateSaveInFlightRef = useRef(false);
+  const updateDeletionInFlightRef = useRef(false);
+  const backupRestoreInFlightRef = useRef(false);
+  const photoAnalysisCoordinator = useRef(createPhotoAnalysisCoordinator()).current;
+  const talkHistoryPersistence = useRef(createDAVEAskHistoryPersistence({
+    readItem: storageKey => AsyncStorage.getItem(storageKey),
+    persistItem: persistStorageItem,
+  })).current;
   const legacyProjectStructureMigrationInFlight = useRef(false);
   const scheduleParentProjectsQueuedRef = useRef(new Set<string>());
   const deletedProjectNamesRef = useRef(deletedProjectNames);
   deletedProjectNamesRef.current = deletedProjectNames;
+  const deletedUpdateTombstonesRef = useRef(deletedUpdateTombstones);
+  deletedUpdateTombstonesRef.current = deletedUpdateTombstones;
   const savedUpdatesRef = useRef(savedUpdates);
   savedUpdatesRef.current = savedUpdates;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
@@ -5288,69 +5254,113 @@ function AppShell() {
   const [photoAuthMessage, setPhotoAuthMessage] = useState<string | null>(null);
   const [photoAuthSubmitting, setPhotoAuthSubmitting] = useState(false);
 
+  useAndroidHardwareBack({
+    onBack: goBack,
+    blocked:
+      screen === 'SelectProject' ||
+      screen === 'AddPhotos' ||
+      screen === 'BuildUpdate' ||
+      Boolean(
+        photoAuthRequest ||
+        previewPhoto ||
+        documentUploadRequest ||
+        talkVoiceOpen ||
+        talkTypedOpen ||
+        talkCaptureDraft ||
+        talkAnswer ||
+        talkTaskAction,
+      ),
+  });
+
   useEffect(() => {
     logStartupDiagnostic('app_shell_mounted', 'App shell mounted.');
   }, []);
 
+  useEffect(() => {
+    void backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => projectDeletionRuntime.recoverPendingIntentStores())
+      .then(() => startupHydration.loaded(PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, 'pending project deletion cleanup'))
+      .then(() => Promise.allSettled([
+        projectDeletionRuntime.processPendingCloudIntents(),
+        projectDeletionRuntime.processPendingFileCleanupIntents(),
+      ]))
+      .catch(error => { if (error instanceof ProjectDeletionIntentRecoveryRequiredError) startupHydration.fail(PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, 'pending project deletion cleanup', error); });
+  }, [startupHydration.retryAttempt]);
+
 useEffect(() => {
   async function loadSavedUpdates() {
     try {
+      await backupRestoreRuntime.recoverBeforeStartupReads();
       const [localResult, tombstoneResult] = await Promise.all([
-        readStartupJson(UPDATES_STORAGE_KEY, [], 'saved updates'),
-        readStartupJson(DELETED_UPDATES_STORAGE_KEY, [], 'deleted update records'),
+        readStartupJsonArray<ProjectUpdate>(
+          UPDATES_STORAGE_KEY,
+          [],
+          'saved updates',
+          isStartupDeviceSavedUpdateRecord,
+        ),
+        readStartupJsonArray<DeletedUpdateTombstone>(
+          DELETED_UPDATES_STORAGE_KEY,
+          [],
+          'deleted update records',
+          isStartupDeletedUpdateRecord,
+        ),
       ]);
+      if (!startupHydration.accept([localResult, tombstoneResult])) return;
       const localUpdates = normalizeStartupArray(
         localResult.value,
         normalizeStoredUpdateRecord,
         'saved updates',
       ).value;
-      if (localResult.recovered && localResult.found !== true) {
-        skipSavedUpdatesPersistenceOnceRef.current = true;
-      }
       const tombstones = normalizeDeletedUpdateTombstones(
         tombstoneResult.value,
       );
       setDeletedUpdateTombstones(tombstones);
-      await Promise.allSettled(
-        tombstones.map(tombstone =>
-          removeProjectUpdateFromSyncQueue(tombstone.updateId),
-        ),
-      );
+      // Field fix 2026-07-18: deletion-journal reconciliation talks to the
+      // cloud; its failure is a sync concern retried later, never a local
+      // hydration failure (that mis-filing drove the startup loop).
+      await reconcileProjectUpdateDeletionJournal(tombstones).catch(() => undefined);
 
       setSavedUpdates(mergeSavedUpdatesWithTombstones({
         localUpdates,
         cloudUpdates: [],
         tombstones,
       }));
-
-      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
-      const normalizedCloudUpdates = normalizeStartupArray(
-        cloudUpdates,
-        normalizeStoredUpdateRecord,
-        'cloud saved updates',
-      ).value;
-
-      setSavedUpdates(mergeSavedUpdatesWithTombstones({
-        localUpdates,
-        cloudUpdates: normalizedCloudUpdates,
-        tombstones,
-      }));
-    } catch {
-      Alert.alert(
-        'Storage error',
-        'Saved updates could not be loaded.',
-      );
-    } finally {
+      setUpdatesLocalLoaded(true);
       setUpdatesLoaded(true);
       setDeletedUpdateTombstonesLoaded(true);
+
+      if (!startupHydrationReady) return;
+      try {
+        const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
+        const normalizedCloudUpdates = normalizeStartupArray(
+          cloudUpdates,
+          normalizeStoredUpdateRecord,
+          'cloud saved updates',
+        ).value;
+
+        setSavedUpdates(current => {
+          const merged = mergeSavedUpdatesWithTombstones({
+            localUpdates: current,
+            cloudUpdates: normalizedCloudUpdates,
+            tombstones: deletedUpdateTombstonesRef.current,
+          });
+          savedUpdatesRef.current = merged;
+          return merged;
+        });
+      } catch {
+        // Cloud recovery failures are retried by sync (audit P1-27); local
+        // hydration already succeeded and must stay hydrated.
+      }
+    } catch (error) {
+      startupHydration.fail(UPDATES_STORAGE_KEY, 'saved updates', error);
     }
   }
 
   void loadSavedUpdates();
-}, []);
+}, [startupHydration.retryAttempt, startupHydrationReady]);
 
 useEffect(() => {
-  const ready =
+  const ready = startupHydrationReady &&
     projectsLoaded &&
     deletedProjectNamesLoaded &&
     updatesLoaded &&
@@ -5373,11 +5383,27 @@ useEffect(() => {
       const tokenResult = await getCurrentSessionAccessToken();
       if (!tokenResult.ok || tokenResult.data?.status !== 'token_present') return;
 
-      const cloudProjects = await listProjects();
-      const remainingLegacyProjects = cloudProjects.data?.filter(project =>
+      const [cloudProjects, cloudArchivedProjects] = await Promise.all([
+        listProjects(),
+        listArchivedProjects(),
+      ]);
+      // Field fix 2026-07-18 (cpu_resource kill, audit P1-21): a failed or
+      // unverifiable cloud inventory must SKIP the migration this launch —
+      // it previously fell through to a full synchronizeLocalData, which
+      // base64-encodes and uploads every photo of every update on the JS
+      // thread at every app start (84% CPU for ~107s in the crash report)
+      // because the completion marker only writes after a fully clean sync.
+      if (
+        !cloudProjects.ok || cloudProjects.stubbed || !cloudProjects.data ||
+        !cloudArchivedProjects.ok || cloudArchivedProjects.stubbed || !cloudArchivedProjects.data
+      ) return;
+      const remainingLegacyProjects = [
+        ...cloudProjects.data,
+        ...cloudArchivedProjects.data,
+      ].filter(project =>
         Boolean(legacyWorkContainerMigration(project.name)),
       );
-      if (cloudProjects.ok && remainingLegacyProjects?.length === 0) {
+      if (remainingLegacyProjects.length === 0) {
         await AsyncStorage.setItem(
           LEGACY_PROJECT_STRUCTURE_CLOUD_MIGRATION_KEY,
           'complete',
@@ -5405,7 +5431,10 @@ useEffect(() => {
       if (
         projectStructureErrors.length > 0 ||
         syncResult.queued > 0 ||
-        syncResult.conflicts > 0
+        syncResult.conflicts > 0 ||
+        // Audit P1-27/P1-21: never proceed to cloud deletions after an
+        // incomplete or failed cloud download.
+        syncResult.downloadStatus !== 'complete'
       ) return;
 
       for (const migration of LEGACY_WORK_CONTAINER_MIGRATIONS) {
@@ -5423,6 +5452,10 @@ useEffect(() => {
           'Project records reorganized under the 2321 and 2375 parent projects. Existing updates and photos were preserved.',
         );
       }
+    } catch {
+      // This is an opportunistic signed-in cleanup. A transient storage or
+      // network failure must never become an unhandled startup rejection;
+      // leaving the completion marker unset safely retries on a later launch.
     } finally {
       legacyProjectStructureMigrationInFlight.current = false;
     }
@@ -5438,6 +5471,7 @@ useEffect(() => {
   projectsLoaded,
   referenceDocumentsLoaded,
   scheduleItemsLoaded,
+  startupHydrationReady,
   updatesLoaded,
 ]);
 
@@ -5446,50 +5480,66 @@ useEffect(() => {
 
   void localDAVECaptureMemoryRepository.list()
     .then(memories => {
-      if (active) setCaptureMemories([...memories]);
-    })
-    .catch(() => {
       if (active) {
-        Alert.alert(
-          'Capture memories unavailable',
-          'Confirmed project memories could not be loaded from this device.',
-        );
+        setCaptureMemories([...memories]);
+        startupHydration.loaded('dave-capture-memories', 'confirmed project memories');
+        setCaptureMemoriesLoaded(true);
+      }
+    })
+    .catch(error => {
+      if (active) {
+        startupHydration.fail('dave-capture-memories', 'confirmed project memories', error);
       }
     });
 
   return () => {
     active = false;
   };
-}, []);
+}, [startupHydration.retryAttempt]);
 
 useEffect(() => {
   let active = true;
 
   void localDAVEIdentityRepository.list()
     .then(corrections => {
-      if (active) setIdentityCorrections([...corrections]);
+      if (active) {
+        setIdentityCorrections([...corrections]);
+        startupHydration.loaded('dave-identity-corrections', 'identity corrections');
+        setIdentityCorrectionsLoaded(true);
+      }
     })
-    .catch(() => undefined);
+    .catch(error => {
+      if (active) startupHydration.fail('dave-identity-corrections', 'identity corrections', error);
+    });
 
   return () => {
     active = false;
   };
-}, []);
+}, [startupHydration.retryAttempt]);
 
 useEffect(() => {
-  if (identityCorrections.length === 0 || scheduleItems.length === 0) return;
-
-  setScheduleItems(previous => {
-    const canonical = canonicalizeScheduleIdentityItems(
-      previous,
-      projectAreas,
-      identityCorrections,
-    );
-    return JSON.stringify(canonical) === JSON.stringify(previous)
-      ? previous
+  if (!identityCorrectionsLoaded || !scheduleItemsLocalLoaded || !projectAreasLocalLoaded) return;
+  if (identityCorrections.length > 0 && scheduleItems.length > 0) {
+    setScheduleItems(previous => {
+      const canonical = canonicalizeScheduleIdentityItems(
+        previous,
+        projectAreas,
+        identityCorrections,
+      );
+      return JSON.stringify(canonical) === JSON.stringify(previous)
+        ? previous
       : canonical;
-  });
-}, [identityCorrections, projectAreas]);
+    });
+  }
+  setScheduleIdentityReady(true);
+}, [
+  identityCorrections,
+  identityCorrectionsLoaded,
+  projectAreas,
+  projectAreasLocalLoaded,
+  scheduleItems.length,
+  scheduleItemsLocalLoaded,
+]);
 
 useEffect(() => {
   let active = true;
@@ -5515,11 +5565,23 @@ useEffect(() => {
 useEffect(() => {
   async function loadProjects() {
     try {
+      await backupRestoreRuntime.recoverBeforeStartupReads();
       const [localResult, deletedProjectsResult, queuedChanges] = await Promise.all([
-        readStartupJson(PROJECTS_STORAGE_KEY, [], 'saved projects'),
-        readStartupJson(DELETED_PROJECTS_STORAGE_KEY, [], 'deleted project records'),
+        readStartupJsonArray<ProjectRecord>(
+          PROJECTS_STORAGE_KEY,
+          [],
+          'saved projects',
+          isStartupProjectRecord,
+        ),
+        readStartupJsonArray<string>(
+          DELETED_PROJECTS_STORAGE_KEY,
+          [],
+          'deleted project records',
+          isStartupProjectName,
+        ),
         getOfflineQueue(),
       ]);
+      if (!startupHydration.accept([localResult, deletedProjectsResult])) return;
       const localProjects = normalizeProjectRecords(localResult.value);
       const queuedDeletedNames = queuedChanges
         .filter(item => item.entity === 'project' && item.operation === 'delete')
@@ -5538,55 +5600,89 @@ useEffect(() => {
       );
       deletedProjectNamesRef.current = deletedNames;
       setDeletedProjectNames(deletedNames);
-      const [cloudProjects, cloudArchivedProjects] = await Promise.all([
-        loadCloudProjectRecords(),
-        loadCloudArchivedProjectNames(),
-      ]);
       const starterProjects = localResult.found ? [] : DEFAULT_PROJECTS;
-      const mergedRecords = mergeProjectRecords(
+      const localRecords = mergeProjectRecords(
         starterProjects,
         localProjects,
-        cloudProjects,
+        [],
         deletedNames,
       );
-      const deletedKeys = new Set(deletedNames.map(name => name.toLowerCase()));
-
-      setProjectRecords(mergedRecords);
-      setProjects(mergedRecords.map(project => project.name));
-      setArchivedProjects(previous =>
-        mergeProjectNames(previous, cloudArchivedProjects).filter(
-          project => !deletedKeys.has(project.toLowerCase()),
-        ),
-      );
-
-      void Promise.all(mergedRecords.map(async project => {
-        if (!project.coverPhoto?.remotePath) return;
-        const hydrated = await hydrateProjectCoverPhotoCache(
-          authorityProjectId(project.name),
-          project.coverPhoto,
-        );
-        if (hydrated.localUri === project.coverPhoto?.localUri) return;
-        setProjectRecords(previous => previous.map(item =>
-          item.name.toLowerCase() === project.name.toLowerCase()
-            ? { ...item, coverPhoto: hydrated }
-            : item,
-        ));
-      }));
-    } catch {
-      Alert.alert(
-        'Storage error',
-        'Saved projects could not be loaded.',
-      );
-    } finally {
+      setProjectRecords(localRecords);
+      setProjects(localRecords.map(project => project.name));
+      setProjectsLocalLoaded(true);
+      setDeletedProjectNamesLocalLoaded(true);
       setProjectsLoaded(true);
       setDeletedProjectNamesLoaded(true);
+
+      if (!startupHydrationReady) return;
+      try {
+        const [cloudProjects, cloudArchivedProjects] = await Promise.all([
+          loadCloudProjectRecords(),
+          loadCloudArchivedProjectNames(),
+        ]);
+        const currentDeletedNames = deletedProjectNamesRef.current;
+        const deletedKeys = new Set(
+          currentDeletedNames.map(name => name.toLowerCase()),
+        );
+        setProjectRecords(current => {
+          return mergeProjectRecords(
+            [],
+            current,
+            cloudProjects,
+            currentDeletedNames,
+          );
+        });
+        setProjects(current => mergeProjectNames(
+          current,
+          cloudProjects.map(project => project.name),
+        ).filter(project => !deletedKeys.has(project.toLowerCase())));
+        setArchivedProjects(previous =>
+          mergeProjectNames(previous, cloudArchivedProjects).filter(
+            project => !deletedKeys.has(project.toLowerCase()),
+          ),
+        );
+
+      } catch {
+        // Field fix 2026-07-18: cloud recovery failures are sync concerns
+        // (audit P1-27) and must never mis-file as a LOCAL hydration failure
+        // — that oscillated startupHydrationReady in an infinite loop.
+      }
+    } catch (error) {
+      startupHydration.fail(PROJECTS_STORAGE_KEY, 'saved projects', error);
     }
   }
 
   void loadProjects();
-}, []);
+}, [startupHydration.retryAttempt, startupHydrationReady]);
+
+useEffect(() => {
+  if (!startupHydrationReady) return;
+  void Promise.all(projectRecords.map(async project => {
+    if (!project.coverPhoto?.remotePath) return;
+    const hydrationTarget = project.coverPhoto;
+    const hydrationVersion =
+      project.coverPhotoUpdatedAt || hydrationTarget.updatedAt || null;
+    const hydrated = await hydrateProjectCoverPhotoCache(
+      authorityProjectId(project.name),
+      hydrationTarget,
+    );
+    if (hydrated.localUri === hydrationTarget.localUri) return;
+    // Audit P1-58: compare-and-swap — apply hydrated bytes only if the record
+    // still references the exact cover version downloaded by this attempt.
+    setProjectRecords(previous => previous.map(item => {
+      if (item.name.toLowerCase() !== project.name.toLowerCase()) return item;
+      if (!item.coverPhoto) return item;
+      if (item.coverPhoto.remotePath !== hydrationTarget.remotePath) return item;
+      const currentVersion =
+        item.coverPhotoUpdatedAt || item.coverPhoto.updatedAt || null;
+      if (currentVersion !== hydrationVersion) return item;
+      return { ...item, coverPhoto: hydrated };
+    }));
+  })).catch(() => undefined);
+}, [projectRecords, startupHydrationReady]);
 
   useEffect(() => {
+    if (!startupHydrationReady) return;
     void cleanupStoredSyncStatusMessages()
       .then(result => {
         if (result.cleaned || result.missingPhotosRemoved > 0) {
@@ -5594,13 +5690,20 @@ useEffect(() => {
         }
       })
       .catch(() => undefined);
-  }, []);
+  }, [startupHydrationReady]);
 
   useEffect(() => {
-    if (!deletedProjectNamesLoaded) return;
+    if (!deletedProjectNamesLocalLoaded) return;
 
-    readStartupJson(ARCHIVED_PROJECTS_STORAGE_KEY, [], 'archived projects')
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJsonArray<string>(
+        ARCHIVED_PROJECTS_STORAGE_KEY,
+        [],
+        'archived projects',
+        isStartupProjectName,
+      ))
       .then(result => {
+        if (!startupHydration.accept([result])) return;
         const parsed = result.value;
 
         if (Array.isArray(parsed)) {
@@ -5613,162 +5716,139 @@ useEffect(() => {
             ),
           );
         }
+        setArchivedProjectsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Archived projects could not be loaded.',
-        ),
-      )
-      .finally(() => setArchivedProjectsLoaded(true));
-  }, [deletedProjectNamesLoaded]);
+      .catch(error => startupHydration.fail(ARCHIVED_PROJECTS_STORAGE_KEY, 'archived projects', error));
+  }, [deletedProjectNamesLocalLoaded, startupHydration.retryAttempt]);
+
+  useStartupLocalFirstRecovery<ProjectArea, ProjectArea, ProjectArea>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: projectAreasLocalLoaded, localAuthorityReady: projectAreasLoaded, localAuthorityRef: projectAreasAuthorityRef, resetLocalLoaded: () => { setProjectAreasLocalLoaded(false); markProjectAreasAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(PROJECT_AREAS_STORAGE_KEY, DEFAULT_PROJECT_AREAS, 'project areas', isStartupProjectAreaRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: normalizeProjectAreas,
+    applyLocal: (areas, found) => { setProjectAreas(areas); setProjectAreasLocalLoaded(true); markProjectAreasAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(PROJECT_AREAS_STORAGE_KEY, 'project areas', error),
+    loadCloud: listProjectAreas, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: areas => normalizeProjectAreas(areas.filter(isStartupProjectAreaRecord)),
+    applyCloud: (areas, tombstones) => setProjectAreas(current => mergeDAVECloudRecoveryRecords({
+      local: areas, cloud: current, deletedIds: deletedDAVERecordIds(tombstones, 'project_area'),
+    })),
+    onCloudApplied: () => markProjectAreasAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud area recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
+
+  useStartupLocalFirstRecovery<ReferenceDocument, ReferenceDocument, ReferenceDocument>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: referenceDocumentsLocalLoaded, localAuthorityReady: referenceDocumentsLoaded, localAuthorityRef: referenceDocumentsAuthorityRef, resetLocalLoaded: () => { setReferenceDocumentsLocalLoaded(false); markReferenceDocumentsAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(REFERENCE_DOCUMENTS_STORAGE_KEY, [], 'reference documents', isStartupDeviceReferenceDocumentRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: normalizeReferenceDocuments,
+    applyLocal: (documents, found) => { setReferenceDocuments(documents); setReferenceDocumentsLocalLoaded(true); markReferenceDocumentsAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(REFERENCE_DOCUMENTS_STORAGE_KEY, 'reference documents', error),
+    loadCloud: listReferenceDocuments, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: documents => normalizeReferenceDocuments(documents.filter(isStartupReferenceDocumentRecord)),
+    applyCloud: (documents, tombstones) => setReferenceDocuments(current => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
+      local: current, cloud: documents, deletedIds: deletedDAVERecordIds(tombstones, 'reference_document'),
+    }))),
+    onCloudApplied: () => markReferenceDocumentsAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud document recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
 
   useEffect(() => {
-    Promise.all([
-      readStartupJson(PROJECT_AREAS_STORAGE_KEY, DEFAULT_PROJECT_AREAS, 'project areas'),
-      listProjectAreas(),
-      synchronizeDAVESyncTombstones(),
-    ])
-      .then(([result, cloudResult, tombstoneSync]) => {
-        const localAreas = normalizeProjectAreas(result.value);
-        const cloudAreas = tombstoneSync.cloudAuthoritative && cloudResult.ok
-          ? normalizeProjectAreas(cloudResult.data)
-          : [];
-        setProjectAreas(
-          mergeDAVECloudRecoveryRecords({
-            local: localAreas,
-            cloud: cloudAreas,
-            deletedIds: deletedDAVERecordIds(
-              tombstoneSync.tombstones,
-              'project_area',
-            ),
-          }),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Project areas could not be loaded.',
-        ),
-      )
-      .finally(() => setProjectAreasLoaded(true));
-  }, []);
-
-
-  useEffect(() => {
-    Promise.all([
-      readStartupJson(REFERENCE_DOCUMENTS_STORAGE_KEY, [], 'reference documents'),
-      listReferenceDocuments(),
-      synchronizeDAVESyncTombstones(),
-    ])
-      .then(([result, cloudResult, tombstoneSync]) => {
-        const localDocuments = normalizeReferenceDocuments(result.value);
-        const cloudDocuments = tombstoneSync.cloudAuthoritative && cloudResult.ok
-          ? normalizeReferenceDocuments(cloudResult.data)
-          : [];
-        setReferenceDocuments(
-          mergeDAVECloudRecoveryRecords({
-            local: localDocuments,
-            cloud: cloudDocuments,
-            deletedIds: deletedDAVERecordIds(
-              tombstoneSync.tombstones,
-              'reference_document',
-            ),
-          }),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Reference documents could not be loaded.',
-        ),
-      )
-      .finally(() => setReferenceDocumentsLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    readStartupJson(PROJECT_DOCUMENTS_STORAGE_KEY, [], 'project documents')
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJsonArray<ProjectDocument>(
+        PROJECT_DOCUMENTS_STORAGE_KEY,
+        [],
+        'project documents',
+        isStartupStandaloneProjectDocumentRecord,
+      ))
       .then(result => {
+        if (!startupHydration.accept([result])) return;
+        // Audit P1-23: uploads cannot survive relaunch; stale 'uploading'
+        // documents become retryable 'failed' instead of pending forever.
         setProjectDocuments(
-          normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument),
+          recoverStaleUploadingDocuments(
+            normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument),
+          ),
         );
+        setProjectDocumentsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Project documents could not be loaded.',
-        ),
-      )
-      .finally(() => setProjectDocumentsLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(PROJECT_DOCUMENTS_STORAGE_KEY, 'project documents', error));
+  }, [startupHydration.retryAttempt]);
 
-  useEffect(() => {
-    Promise.all([
-      readStartupJson(SCHEDULE_ITEMS_STORAGE_KEY, [], 'schedule items'),
-      listScheduleItems(),
-      synchronizeDAVESyncTombstones(),
-    ])
-      .then(([result, cloudResult, tombstoneSync]) => {
-        const localItems = normalizeScheduleItems(result.value).map(migrateLegacyScheduleItem);
-        const cloudItems = tombstoneSync.cloudAuthoritative && cloudResult.ok
-          ? normalizeScheduleItems(cloudResult.data).map(migrateLegacyScheduleItem)
-          : [];
-        setScheduleItems(
-          mergeDAVECloudRecoveryRecords({
-            local: localItems,
-            cloud: cloudItems,
-            deletedIds: deletedDAVERecordIds(
-              tombstoneSync.tombstones,
-              'schedule_item',
-            ),
-          }),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Schedule items could not be loaded.',
-        ),
-      )
-      .finally(() => setScheduleItemsLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    AsyncStorage.getItem(SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY)
-      .then(value => {
-        setScheduleAiExtractorUrl(value || '');
-      })
-      .finally(() => setScheduleAiExtractorUrlLoaded(true));
-  }, []);
+  useStartupLocalFirstRecovery<ScheduleItem, ScheduleItem, ScheduleItem>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: scheduleItemsLocalLoaded, localAuthorityReady: scheduleItemsLoaded, localAuthorityRef: scheduleItemsAuthorityRef, resetLocalLoaded: () => { setScheduleItemsLocalLoaded(false); markScheduleItemsAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(SCHEDULE_ITEMS_STORAGE_KEY, [], 'schedule items', isStartupScheduleItemRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: items => reconcileDAVEScheduleRecords(
+      normalizeScheduleItems(items).map(migrateLegacyScheduleItem),
+    ),
+    applyLocal: (items, found) => { setScheduleItems(items); setScheduleItemsLocalLoaded(true); markScheduleItemsAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(SCHEDULE_ITEMS_STORAGE_KEY, 'schedule items', error),
+    loadCloud: listScheduleItems, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: items => normalizeScheduleItems(
+      items.filter(isDAVESafeCloudScheduleRecord),
+    ).map(migrateLegacyScheduleItem),
+    applyCloud: (items, tombstones) => setScheduleItems(current => recoverDAVEScheduleRecords({
+      local: current, cloud: items, deletedIds: deletedDAVERecordIds(tombstones, 'schedule_item'),
+      allowCloudOnly: true,
+    })),
+    onCloudApplied: () => markScheduleItemsAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud schedule recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
 
   useEffect(() => {
     AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY)
       .then(value => {
         setDisplayName(value || '');
+        startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
+        setDisplayNameLoaded(true);
       })
-      .finally(() => setDisplayNameLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(DISPLAY_NAME_STORAGE_KEY, 'profile settings', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
-    readStartupJson(CONTACTS_STORAGE_KEY, { contacts: [] }, 'contacts')
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJson(
+        CONTACTS_STORAGE_KEY,
+        { contacts: [] },
+        'contacts',
+        isStartupContactBook,
+        value => {
+          const salvaged = salvageStartupContactBook(value);
+          return salvaged
+            ? {
+                value: salvaged.value as ContactBook,
+                isolatedRecordCount: salvaged.isolatedRecordCount,
+              }
+            : null;
+        },
+      ))
       .then(result => {
-        setContactBook(
-          normalizeContacts(result.value),
-        );
+        if (!startupHydration.accept([result])) return;
+        setContactBook(normalizeContacts(result.value));
+        setContactsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Contacts could not be loaded.',
-        ),
-      )
-      .finally(() => setContactsLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(CONTACTS_STORAGE_KEY, 'contacts', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
-    readStartupJson<Partial<StoredDraft>>(DRAFT_STORAGE_KEY, {}, 'unfinished field update')
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJson<Partial<StoredDraft>>(
+        DRAFT_STORAGE_KEY,
+        {},
+        'unfinished field update',
+        isStartupDeviceDraftEnvelope,
+      ))
       .then(result => {
+        if (!startupHydration.accept([result])) return;
         const parsed = result.value;
+        setDraftLoaded(true);
 
         if (!parsed.draft) return;
 
@@ -5784,17 +5864,11 @@ useEffect(() => {
           );
         }
       })
-      .catch(() =>
-        Alert.alert(
-          'Draft recovery error',
-          'The unfinished update could not be restored.',
-        ),
-      )
-      .finally(() => setDraftLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(DRAFT_STORAGE_KEY, 'unfinished field update', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
-    const startupReady =
+    const startupReady = startupHydrationReady &&
       updatesLoaded &&
       deletedUpdateTombstonesLoaded &&
       projectsLoaded &&
@@ -5804,7 +5878,6 @@ useEffect(() => {
       referenceDocumentsLoaded &&
       projectDocumentsLoaded &&
       scheduleItemsLoaded &&
-      scheduleAiExtractorUrlLoaded &&
       displayNameLoaded &&
       contactsLoaded &&
       draftLoaded;
@@ -5829,18 +5902,14 @@ useEffect(() => {
     projectsLoaded,
     referenceDocumentsLoaded,
     savedUpdates.length,
-    scheduleAiExtractorUrlLoaded,
     scheduleItems.length,
     scheduleItemsLoaded,
+    startupHydrationReady,
     updatesLoaded,
   ]);
 
   useEffect(() => {
-    if (!updatesLoaded) return;
-    if (skipSavedUpdatesPersistenceOnceRef.current) {
-      skipSavedUpdatesPersistenceOnceRef.current = false;
-      return;
-    }
+    if (!startupHydrationReady || !updatesLoaded) return;
 
     if (savedUpdatesSaveTimer.current) {
       clearTimeout(savedUpdatesSaveTimer.current);
@@ -5849,10 +5918,9 @@ useEffect(() => {
     savedUpdatesSaveTimer.current = setTimeout(() => {
       savedUpdatesSaveTimer.current = null;
 
-      AsyncStorage.setItem(
-        UPDATES_STORAGE_KEY,
-        JSON.stringify(savedUpdates),
-      ).catch(() => undefined);
+      persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdates)).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
+      );
     }, 750);
 
     return () => {
@@ -5860,7 +5928,7 @@ useEffect(() => {
         clearTimeout(savedUpdatesSaveTimer.current);
       }
     };
-  }, [savedUpdates, updatesLoaded]);
+  }, [savedUpdates, startupHydrationReady, updatesLoaded]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
@@ -5870,79 +5938,83 @@ useEffect(() => {
       clearTimeout(savedUpdatesSaveTimer.current);
       savedUpdatesSaveTimer.current = null;
 
-      AsyncStorage.setItem(
-        UPDATES_STORAGE_KEY,
-        JSON.stringify(savedUpdatesRef.current),
-      ).catch(() => undefined);
+      persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
+      );
     });
 
     return () => subscription.remove();
   }, []);
 
   useJsonStoragePersistence({
-    enabled: deletedUpdateTombstonesLoaded,
+    enabled: startupHydrationReady && deletedUpdateTombstonesLoaded,
     storageKey: DELETED_UPDATES_STORAGE_KEY,
     value: deletedUpdateTombstones,
+    label: 'deleted update records',
   });
   useJsonStoragePersistence({
-    enabled: projectsLoaded,
+    enabled: startupHydrationReady && projectsLoaded,
     storageKey: PROJECTS_STORAGE_KEY,
     value: projectRecords,
+    label: 'projects',
   });
   useJsonStoragePersistence({
-    enabled: deletedProjectNamesLoaded,
+    enabled: startupHydrationReady && deletedProjectNamesLoaded,
     storageKey: DELETED_PROJECTS_STORAGE_KEY,
     value: deletedProjectNames,
+    label: 'deleted project records',
   });
   useJsonStoragePersistence({
-    enabled: archivedProjectsLoaded,
+    enabled: startupHydrationReady && archivedProjectsLoaded,
     storageKey: ARCHIVED_PROJECTS_STORAGE_KEY,
     value: archivedProjects,
+    label: 'archived projects',
   });
   useJsonStoragePersistence({
-    enabled: projectAreasLoaded,
+    enabled: startupHydrationReady && projectAreasLoaded,
     storageKey: PROJECT_AREAS_STORAGE_KEY,
     value: projectAreas,
+    label: 'project areas',
   });
   useJsonStoragePersistence({
-    enabled: referenceDocumentsLoaded,
+    enabled: startupHydrationReady && referenceDocumentsLoaded,
     storageKey: REFERENCE_DOCUMENTS_STORAGE_KEY,
     value: referenceDocuments,
+    label: 'reference documents',
   });
   useJsonStoragePersistence({
-    enabled: projectDocumentsLoaded,
+    enabled: startupHydrationReady && projectDocumentsLoaded,
     storageKey: PROJECT_DOCUMENTS_STORAGE_KEY,
     value: projectDocuments,
+    label: 'project documents',
   });
   useJsonStoragePersistence({
-    enabled: scheduleItemsLoaded,
+    enabled: startupHydrationReady && scheduleItemsLoaded,
     storageKey: SCHEDULE_ITEMS_STORAGE_KEY,
     value: scheduleItems,
+    label: 'schedule',
   });
 
   useEffect(() => {
-    if (!scheduleItemsLoaded || !projectsLoaded) return;
+    if (!startupHydrationReady || !scheduleItemsLoaded || !projectsLoaded) return;
     ensureScheduleParentProjects(scheduleItems);
-  }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded]);
+  }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
 
   useStringStoragePersistence({
-    enabled: scheduleAiExtractorUrlLoaded,
-    storageKey: SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY,
-    value: scheduleAiExtractorUrl,
-  });
-  useStringStoragePersistence({
-    enabled: displayNameLoaded,
+    enabled: startupHydrationReady && displayNameLoaded,
     storageKey: DISPLAY_NAME_STORAGE_KEY,
     value: displayName,
+    label: 'profile setting',
   });
   useJsonStoragePersistence({
-    enabled: contactsLoaded,
+    enabled: startupHydrationReady && contactsLoaded,
     storageKey: CONTACTS_STORAGE_KEY,
     value: contactBook,
+    label: 'contacts',
   });
 
   useEffect(() => {
-    if (!draftLoaded) return;
+    if (!startupHydrationReady || !draftLoaded) return;
 
     if (draftSaveTimer.current) {
       clearTimeout(draftSaveTimer.current);
@@ -5952,8 +6024,8 @@ useEffect(() => {
       if (!hasMeaningfulDraft(draft)) {
         setDraftSavedAt(null);
 
-        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
-          () => undefined,
+        removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+          reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
         );
 
         return;
@@ -5968,10 +6040,9 @@ useEffect(() => {
 
       setDraftSavedAt(savedAt);
 
-      AsyncStorage.setItem(
-        DRAFT_STORAGE_KEY,
-        JSON.stringify(storedDraft),
-      ).catch(() => undefined);
+      persistStorageItem(DRAFT_STORAGE_KEY, JSON.stringify(storedDraft)).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+      );
     }, 750);
 
     return () => {
@@ -5979,17 +6050,17 @@ useEffect(() => {
         clearTimeout(draftSaveTimer.current);
       }
     };
-  }, [draft, draftLoaded]);
+  }, [draft, draftLoaded, startupHydrationReady]);
 
   useEffect(() => {
-    if (!updatesLoaded || !draftLoaded || photoCleanupRan.current) {
+    if (!startupHydrationReady || !updatesLoaded || !draftLoaded || photoCleanupRan.current) {
       return;
     }
 
     photoCleanupRan.current = true;
 
     void cleanupStoredPhotoDirectory([draft, ...savedUpdates]);
-  }, [updatesLoaded, draftLoaded, draft, savedUpdates]);
+  }, [updatesLoaded, draftLoaded, draft, savedUpdates, startupHydrationReady]);
 
   const hasQueuedSyncRetries = useMemo(
     () => savedUpdates.some(update => updateNeedsAutomaticSyncRetry(update)),
@@ -5997,28 +6068,28 @@ useEffect(() => {
   );
 
   useEffect(() => {
-    if (!updatesLoaded || !hasQueuedSyncRetries) return;
+    if (!startupHydrationReady || !updatesLoaded || !hasQueuedSyncRetries) return;
 
     const timer = setInterval(() => {
-      void hydrateQueuedUpdates();
+      startAutomaticSyncBackgroundTask('interval', hydrateQueuedUpdates);
     }, 30000);
 
-    void hydrateQueuedUpdates();
+    startAutomaticSyncBackgroundTask('queued_updates_detected', hydrateQueuedUpdates);
 
     return () => clearInterval(timer);
-  }, [updatesLoaded, hasQueuedSyncRetries]);
+  }, [updatesLoaded, hasQueuedSyncRetries, startupHydrationReady]);
 
   useEffect(() => {
-    if (!updatesLoaded) return;
+    if (!startupHydrationReady || !updatesLoaded) return;
 
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') {
-        void hydrateQueuedUpdates();
+        startAutomaticSyncBackgroundTask('app_foreground', hydrateQueuedUpdates);
       }
     });
 
     return () => subscription.remove();
-  }, [updatesLoaded, savedUpdates]);
+  }, [updatesLoaded, savedUpdates, startupHydrationReady]);
 
   const activeProjects = useMemo(
     () =>
@@ -6494,6 +6565,7 @@ useEffect(() => {
     }));
 
     try {
+      await verifyOwnedProjectDocument(target);
       const result = await uploadPhoto({
         bucket: PROJECT_DOCUMENT_UPLOAD_FOLDER,
         path: storagePath,
@@ -6511,7 +6583,11 @@ useEffect(() => {
         uploadedAt: result.ok ? completedAt : document.uploadedAt,
         updatedAt: completedAt,
       }));
-    } catch {
+    } catch (error) {
+      if (!providedDocument && error instanceof Error &&
+          error.message === PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE) {
+        Alert.alert('Add document again', 'Delete this attachment record, then add the original file again before uploading it.');
+      }
       updateDocumentEverywhere(documentId, document => ({
         ...document,
         status: 'failed',
@@ -6530,7 +6606,7 @@ useEffect(() => {
     void retryProjectDocumentUpload(document.id, document);
   }
 
-  function createProjectDocumentFromAsset(asset: {
+  async function createProjectDocumentFromAsset(asset: {
     uri: string;
     name?: string | null;
     mimeType?: string | null;
@@ -6551,6 +6627,16 @@ useEffect(() => {
       );
     const projectName = context?.projectName || draft.projectName;
     const projectId = authorityProjectId(projectName);
+    if (!OWNED_PROJECT_DOCUMENTS_DIR) {
+      throw new Error('Project document storage is unavailable.');
+    }
+    const owned = await importProjectDocumentIntoOwnedStorage({
+      sourceUri: asset.uri,
+      ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+      fileName: name,
+      mimeType: asset.mimeType || 'application/octet-stream',
+      reportedSizeBytes: asset.size,
+    });
 
     return normalizeProjectDocument({
       id,
@@ -6566,8 +6652,10 @@ useEffect(() => {
       name,
       category: 'Other',
       mimeType: asset.mimeType || null,
-      sizeBytes: typeof asset.size === 'number' ? asset.size : null,
-      localUri: asset.uri,
+      sizeBytes: owned.record.sizeBytes,
+      localUri: owned.localUri,
+      ownedFileId: owned.fileId,
+      ownedFileManifest: owned.manifest,
       storagePath: buildProjectDocumentStoragePath(id, projectId, name),
       createdAt: now,
       updatedAt: now,
@@ -6587,10 +6675,9 @@ useEffect(() => {
         'Possible duplicate document',
         `${document.name} looks like it already exists for this project.`,
         [
-          {
-            text: 'Cancel',
-            style: 'cancel',
-          },
+          { text: 'Cancel', style: 'cancel', onPress: () => {
+            void deleteOwnedProjectDocument(document).catch(() => undefined);
+          } },
           {
             text: 'Upload Anyway',
             onPress: () =>
@@ -6605,6 +6692,7 @@ useEffect(() => {
                   }),
           },
         ],
+        { cancelable: false },
       );
       return;
     }
@@ -6657,7 +6745,7 @@ useEffect(() => {
     setDocumentUploadRequest(null);
   }
 
-  function confirmDocumentProjectSelection() {
+  async function confirmDocumentProjectSelection() {
     if (!documentUploadRequest) return;
 
     const { asset, selected } = documentUploadRequest;
@@ -6667,24 +6755,21 @@ useEffect(() => {
     // Same picked file, one ProjectDocument record per selected project -
     // each project keeps its own independent upload/retry/status lifecycle,
     // matching how documents already work everywhere else in this screen.
-    selected.forEach(projectName => {
-      const document = createProjectDocumentFromAsset(asset, {
-        projectName,
-        areaId: null,
-        updateId: null,
-      });
-      const duplicate = duplicateProjectDocumentForAsset(
-        projectDocuments,
-        document.projectId,
-        {
-          name: document.name,
-          mimeType: document.mimeType,
-          size: document.sizeBytes,
-        },
-      );
-
-      confirmAndAttachProjectDocument(document, duplicate, false);
-    });
+    try {
+      for (const projectName of selected) {
+        const document = await createProjectDocumentFromAsset(asset, {
+          projectName, areaId: null, updateId: null,
+        });
+        const duplicate = duplicateProjectDocumentForAsset(
+          projectDocuments, document.projectId, {
+            name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
+          },
+        );
+        confirmAndAttachProjectDocument(document, duplicate, false);
+      }
+    } catch {
+      Alert.alert('Document unavailable', 'The selected document could not be copied into secure app storage.');
+    }
   }
 
   async function importFieldUpdateDocument() {
@@ -6709,14 +6794,9 @@ useEffect(() => {
 
       if (!asset) return;
 
-      if (asset.size && asset.size > LARGE_PROJECT_DOCUMENT_BYTES) {
-        Alert.alert(
-          'Large document',
-          'This file may take longer to upload. You can continue the field update while upload runs in the background.',
-        );
-      }
+      await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size });
 
-      const document = createProjectDocumentFromAsset({
+      const document = await createProjectDocumentFromAsset({
         uri: asset.uri,
         name: asset.name,
         mimeType: asset.mimeType,
@@ -6733,10 +6813,12 @@ useEffect(() => {
       );
 
       confirmAndAttachProjectDocument(document, duplicate);
-    } catch {
+    } catch (error) {
       Alert.alert(
         'Document unavailable',
-        'The selected document could not be attached to this update.',
+        error instanceof FileSizePreflightError
+          ? error.message
+          : 'The selected document could not be attached to this update.',
       );
     }
   }
@@ -6763,12 +6845,7 @@ useEffect(() => {
 
       if (!asset) return;
 
-      if (asset.size && asset.size > LARGE_PROJECT_DOCUMENT_BYTES) {
-        Alert.alert(
-          'Large document',
-          'This file may take longer to upload. You can continue using the project workspace while upload runs in the background.',
-        );
-      }
+      await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size });
 
       promptDocumentProjectSelection(
         {
@@ -6779,10 +6856,12 @@ useEffect(() => {
         },
         projectName,
       );
-    } catch {
+    } catch (error) {
       Alert.alert(
         'Document unavailable',
-        'The selected document could not be added to this project.',
+        error instanceof FileSizePreflightError
+          ? error.message
+          : 'The selected document could not be added to this project.',
       );
     }
   }
@@ -6825,7 +6904,7 @@ useEffect(() => {
         return;
       }
 
-      const document = createProjectDocumentFromAsset(photoAsset, {
+      const document = await createProjectDocumentFromAsset(photoAsset, {
         projectName,
         areaId: draft.selectedAreaId || null,
         updateId: draft.id,
@@ -6863,8 +6942,53 @@ useEffect(() => {
     return null;
   }
 
+  function upsertSavedUpdateUnlessDeleted(update: ProjectUpdate) {
+    const nextUpdates = mergeSavedUpdatesWithTombstones({
+      localUpdates: [
+        update,
+        ...savedUpdatesRef.current.filter(item => item.id !== update.id),
+      ],
+      cloudUpdates: [],
+      tombstones: deletedUpdateTombstonesRef.current,
+    });
+    savedUpdatesRef.current = nextUpdates;
+    setSavedUpdates(nextUpdates);
+  }
+
+  function applyFieldUpdateSyncResultIfCurrent(
+    attemptedUpdate: ProjectUpdate,
+    syncResult: ProjectUpdate,
+  ) {
+    const reconciliation = reconcileFieldUpdateSyncResult(
+      savedUpdatesRef.current,
+      attemptedUpdate,
+      syncResult,
+    );
+    if (!reconciliation.applied) return reconciliation;
+
+    const nextUpdates = mergeSavedUpdatesWithTombstones({
+      localUpdates: reconciliation.updates,
+      cloudUpdates: [],
+      tombstones: deletedUpdateTombstonesRef.current,
+    });
+    const applied = nextUpdates.some(item => item.id === syncResult.id);
+    savedUpdatesRef.current = nextUpdates;
+    setSavedUpdates(nextUpdates);
+    return {
+      updates: nextUpdates,
+      applied,
+      current: applied ? syncResult : null,
+    };
+  }
+
   async function saveFieldUpdateFromReview() {
-    if (!hasSavableUpdate(draft)) {
+    if (fieldUpdateSaveInFlightRef.current) {
+      Alert.alert('Save in progress', 'Wait for the current field update to finish saving.');
+      return;
+    }
+
+    const draftSnapshot = draftRef.current;
+    if (!hasSavableUpdate(draftSnapshot)) {
       Alert.alert(
         'Update is blank',
         'Add a photo, update notes, field note, or action information before saving.',
@@ -6872,7 +6996,7 @@ useEffect(() => {
       return;
     }
 
-    const invalidDueDateIndex = findInvalidDueDatePhoto(draft);
+    const invalidDueDateIndex = findInvalidDueDatePhoto(draftSnapshot);
     if (invalidDueDateIndex >= 0) {
       Alert.alert(
         'Invalid due date',
@@ -6881,12 +7005,15 @@ useEffect(() => {
       return;
     }
 
+    fieldUpdateSaveInFlightRef.current = true;
+    setFieldUpdateSaving(true);
     const now = new Date().toISOString();
-    const pieSummary = summarizePIEStatusForUpdate(draft);
-    const idempotencyKey = draft.idempotencyKey || draft.stableSendId || `send-${draft.id}`;
-    const sendAttempts = (draft.sendAttempts || 0) + 1;
+    const pieSummary = summarizePIEStatusForUpdate(draftSnapshot);
+    const idempotencyKey = draftSnapshot.idempotencyKey ||
+      draftSnapshot.stableSendId || `send-${draftSnapshot.id}`;
+    const sendAttempts = (draftSnapshot.sendAttempts || 0) + 1;
     const baseUpdate: ProjectUpdate = {
-      ...draft,
+      ...draftSnapshot,
       status: 'ready_to_send',
       stableSendId: idempotencyKey,
       idempotencyKey,
@@ -6894,9 +7021,9 @@ useEffect(() => {
       lastSendAttemptAt: now,
       pieStatus: pieSummary.status,
       pieSummary: pieSummary.summary,
-      generatedMessage: buildGeneratedUpdateMessage(draft, pieSummary),
+      generatedMessage: buildGeneratedUpdateMessage(draftSnapshot, pieSummary),
       workflowTimestamps: {
-        ...(draft.workflowTimestamps || {}),
+        ...(draftSnapshot.workflowTimestamps || {}),
         sendTappedAt: now,
       },
     };
@@ -6906,126 +7033,141 @@ useEffect(() => {
       status: 'queued',
     };
 
-    setSavedUpdates(prev => [
-      queuedUpdate,
-      ...prev.filter(item => item.id !== queuedUpdate.id),
-    ]);
-    setSelectedWorkspaceProject(queuedUpdate.projectName);
+    try {
+      if (savedUpdatesSaveTimer.current) {
+        clearTimeout(savedUpdatesSaveTimer.current);
+        savedUpdatesSaveTimer.current = null;
+      }
+      if (draftSaveTimer.current) {
+        clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+      }
+      const persisted = await fieldUpdateLocalPersistence.commit(snapshot =>
+        prepareQueuedFieldUpdateSave({ snapshot, queuedUpdate,
+          currentUpdates: savedUpdatesRef.current, currentTombstones: deletedUpdateTombstonesRef.current,
+          keys: FIELD_UPDATE_PERSISTENCE_KEYS, mergeVisibleUpdates: mergeSavedUpdatesWithTombstones }),
+      );
+      savedUpdatesRef.current = persisted.nextUpdates;
+      deletedUpdateTombstonesRef.current = persisted.nextTombstones;
+      setSavedUpdates(persisted.nextUpdates);
+      setDeletedUpdateTombstones(persisted.nextTombstones);
+      setSelectedWorkspaceProject(queuedUpdate.projectName);
+    } catch (error) {
+      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      Alert.alert(
+        'Update not saved',
+        'The device could not verify the saved update. Your draft is still here; try again.',
+      );
+      fieldUpdateSaveInFlightRef.current = false;
+      setFieldUpdateSaving(false);
+      return;
+    }
 
+    const draftUnchanged = draftRef.current === draftSnapshot;
+    if (draftUnchanged) {
+      setDraft(createDraft(queuedUpdate.projectName));
+      setDraftSavedAt(null);
+      setScreen('ProjectWorkspace');
+    }
+
+    let finalUpdate: ProjectUpdate;
     try {
       const tokenResult = await getCurrentSessionAccessToken();
       const tokenLookup = tokenResult.data;
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
-        const resolvedAt = new Date().toISOString();
-        const skippedDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+        const syncDiagnostics = buildSkippedSyncDiagnostics(
+          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth',
           now,
           1,
           false,
         );
-        const finalUpdate: ProjectUpdate = {
+        finalUpdate = {
           ...queuedUpdate,
           status: 'failed',
-          syncDiagnostics: skippedDiagnostics,
+          syncDiagnostics,
           workflowTimestamps: {
             ...(queuedUpdate.workflowTimestamps || {}),
-            sendResolvedAt: resolvedAt,
+            sendResolvedAt: new Date().toISOString(),
           },
         };
-        setSavedUpdates(prev => [
-          finalUpdate,
-          ...prev.filter(item => item.id !== finalUpdate.id),
-        ]);
-        Alert.alert(
-          'Field update saved locally',
-          'Sign in from Settings when you are ready to sync this update to the project.',
-        );
-        setDraft(createDraft(queuedUpdate.projectName));
-        setDraftSavedAt(null);
-        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
-        setScreen('ProjectWorkspace');
-        return;
-      }
-
-      const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
-      const syncDiagnostics = buildSyncDiagnosticsFromUpload(
-        syncResult,
-        now,
-        sessionTokenPresent,
-        workAttempt,
-        queuedUpdate.sendAttempts || 1,
-      );
-      const resolvedAt = new Date().toISOString();
-      const finalUpdate: ProjectUpdate = {
-        ...queuedUpdate,
-        status: statusForSyncDiagnostics(syncDiagnostics),
-        syncDiagnostics,
-        workflowTimestamps: {
-          ...(queuedUpdate.workflowTimestamps || {}),
-          sendResolvedAt: resolvedAt,
-        },
-      };
-
-      setSavedUpdates(prev => [
-        finalUpdate,
-        ...prev.filter(item => item.id !== finalUpdate.id),
-      ]);
-
-      if (finalUpdate.status === 'sent') {
-        Alert.alert('Field update saved', 'The update was added to the project workspace.');
       } else {
-        Alert.alert(
-          'Field update saved locally',
-          'The update could not sync to the cloud yet. You can retry from Field Activity.',
+        const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
+        const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+          syncResult,
+          now,
+          true,
+          workAttempt,
+          queuedUpdate.sendAttempts || 1,
         );
+        finalUpdate = {
+          ...queuedUpdate,
+          status: statusForSyncDiagnostics(syncDiagnostics),
+          syncDiagnostics,
+          workflowTimestamps: {
+            ...(queuedUpdate.workflowTimestamps || {}),
+            sendResolvedAt: new Date().toISOString(),
+          },
+        };
       }
     } catch (error) {
-      const resolvedAt = new Date().toISOString();
-      const failureCategory = classifySyncFailureCategory([
-        error instanceof Error ? error.message : 'unknown sync error',
-      ]);
       const syncDiagnostics = buildSkippedSyncDiagnostics(
-        failureCategory,
+        classifySyncFailureCategory([
+          error instanceof Error ? error.message : 'unknown sync error',
+        ]),
         now,
         1,
         null,
       );
-      const failedOrQueuedUpdate: ProjectUpdate = {
+      finalUpdate = {
         ...queuedUpdate,
         status: statusForSyncDiagnostics(syncDiagnostics),
         syncDiagnostics,
         workflowTimestamps: {
           ...(queuedUpdate.workflowTimestamps || {}),
-          sendResolvedAt: resolvedAt,
+          sendResolvedAt: new Date().toISOString(),
         },
       };
-      setSavedUpdates(prev => [
-        failedOrQueuedUpdate,
-        ...prev.filter(item => item.id !== failedOrQueuedUpdate.id),
-      ]);
-      Alert.alert(
-        'Field update saved locally',
-        'The update could not sync to the cloud yet. You can retry from Field Activity.',
-      );
     }
 
-    setDraft(createDraft(queuedUpdate.projectName));
-    setDraftSavedAt(null);
-    AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
-    setScreen('ProjectWorkspace');
+    try {
+      await persistSavedUpdateImmediately(finalUpdate, queuedUpdate);
+    } catch {
+      // The verified queued update remains durable and will be retried on startup.
+    } finally {
+      fieldUpdateSaveInFlightRef.current = false;
+      setFieldUpdateSaving(false);
+    }
+    Alert.alert(
+      finalUpdate.status === 'sent' ? 'Field update saved' : 'Field update saved locally',
+      draftUnchanged
+        ? finalUpdate.status === 'sent'
+          ? 'The update was added to the project workspace.'
+          : 'The cloud sync is pending. You can retry from Field Activity.'
+        : 'The saved version is safe, and your newer draft changes were kept.',
+    );
   }
 
-  async function persistSavedUpdateImmediately(update: ProjectUpdate) {
-    const nextUpdates = [
-      update,
-      ...savedUpdatesRef.current.filter(item => item.id !== update.id),
-    ];
-    savedUpdatesRef.current = nextUpdates;
-    setSavedUpdates(nextUpdates);
-    await AsyncStorage.setItem(UPDATES_STORAGE_KEY, JSON.stringify(nextUpdates));
+  async function persistSavedUpdateImmediately(
+    update: ProjectUpdate,
+    expectedUpdate: ProjectUpdate = update,
+  ) {
+    try {
+      const persisted = await fieldUpdateLocalPersistence.commit(snapshot =>
+        prepareFieldUpdateStatusSave({ snapshot, update, expectedUpdate,
+          currentUpdates: savedUpdatesRef.current, currentTombstones: deletedUpdateTombstonesRef.current,
+          keys: FIELD_UPDATE_PERSISTENCE_KEYS, mergeVisibleUpdates: mergeSavedUpdatesWithTombstones,
+          reconcile: reconcileFieldUpdateSyncResult }),
+      );
+      savedUpdatesRef.current = persisted.nextUpdates;
+      deletedUpdateTombstonesRef.current = persisted.nextTombstones;
+      setSavedUpdates(persisted.nextUpdates);
+      setDeletedUpdateTombstones(persisted.nextTombstones);
+      return persisted.applied;
+    } catch (error) {
+      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      throw error;
+    }
   }
 
   async function syncFieldUpdateWithMissingPhotoRepair(
@@ -7042,8 +7184,9 @@ useEffect(() => {
       firstAttempt.missingPhotos,
     );
     await removeMissingPhotosFromSyncQueue(firstAttempt.missingPhotos);
+    const repairPersisted = await persistSavedUpdateImmediately(repairedUpdate, update);
+    if (!repairPersisted) return { ...firstAttempt, update };
     onRepair?.(repairedUpdate);
-    await persistSavedUpdateImmediately(repairedUpdate);
     const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate);
     return { ...repairedAttempt, update: repairedUpdate };
   }
@@ -7060,10 +7203,7 @@ useEffect(() => {
     };
     let activeRetryUpdate = retryUpdate;
 
-    setSavedUpdates(prev => [
-      retryUpdate,
-      ...prev.filter(item => item.id !== retryUpdate.id),
-    ]);
+    upsertSavedUpdateUnlessDeleted(retryUpdate);
 
     try {
       const tokenResult = await getCurrentSessionAccessToken();
@@ -7087,11 +7227,11 @@ useEffect(() => {
             sendResolvedAt: new Date().toISOString(),
           },
         };
-        setSavedUpdates(prev => [
+        const reconciliation = applyFieldUpdateSyncResultIfCurrent(
+          retryUpdate,
           finalUpdate,
-          ...prev.filter(item => item.id !== finalUpdate.id),
-        ]);
-        return finalUpdate;
+        );
+        return reconciliation.current || finalUpdate;
       }
 
       const {
@@ -7122,11 +7262,11 @@ useEffect(() => {
         },
       };
 
-      setSavedUpdates(prev => [
+      const reconciliation = applyFieldUpdateSyncResultIfCurrent(
+        syncReadyUpdate,
         finalUpdate,
-        ...prev.filter(item => item.id !== finalUpdate.id),
-      ]);
-      return finalUpdate;
+      );
+      return reconciliation.current || finalUpdate;
     } catch (error) {
       const syncDiagnostics = buildSkippedSyncDiagnostics(
         classifySyncFailureCategory([
@@ -7141,11 +7281,11 @@ useEffect(() => {
         status: statusForSyncDiagnostics(syncDiagnostics),
         syncDiagnostics,
       };
-      setSavedUpdates(prev => [
+      const reconciliation = applyFieldUpdateSyncResultIfCurrent(
+        activeRetryUpdate,
         failedOrQueuedUpdate,
-        ...prev.filter(item => item.id !== failedOrQueuedUpdate.id),
-      ]);
-      return failedOrQueuedUpdate;
+      );
+      return reconciliation.current || failedOrQueuedUpdate;
     }
   }
 
@@ -7166,67 +7306,71 @@ useEffect(() => {
       const resolvedAt = new Date().toISOString();
 
       if (!sessionTokenPresent) {
+        const failureCategory =
+          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth';
+        // Field fix 2026-07-18 (cpu_resource / diskwrites_resource kills):
+        // stamping is idempotent. Updates already marked failed for this
+        // same auth condition are NOT re-stamped — re-stamping every 30s
+        // rewrote the full saved-updates store to disk and changed the
+        // authority input each pass, driving a continuous core recompute
+        // until iOS terminated the app for CPU/disk-write exhaustion.
+        const needsStamp = queuedUpdates.filter(update =>
+          lifecycleStatusForUpdate(update) !== 'failed' ||
+          update.syncDiagnostics?.lastSyncFailureCategory !== failureCategory,
+        );
+        if (needsStamp.length === 0) return;
+
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+          failureCategory,
           resolvedAt,
-          queuedUpdates.length,
+          needsStamp.length,
           false,
         );
-        const queuedIds = new Set(queuedUpdates.map(update => update.id));
-
-        setSavedUpdates(prev =>
-          prev.map(update =>
-            queuedIds.has(update.id)
-              ? {
-                  ...update,
-                  status: 'failed',
-                  syncDiagnostics,
-                  workflowTimestamps: {
-                    ...(update.workflowTimestamps || {}),
-                    sendResolvedAt:
-                      update.workflowTimestamps?.sendResolvedAt || resolvedAt,
-                  },
-                }
-              : update,
-          ),
-        );
+        needsStamp.forEach(update => {
+          applyFieldUpdateSyncResultIfCurrent(update, {
+            ...update,
+            status: 'failed',
+            syncDiagnostics,
+            workflowTimestamps: {
+              ...(update.workflowTimestamps || {}),
+              sendResolvedAt:
+                update.workflowTimestamps?.sendResolvedAt || resolvedAt,
+            },
+          });
+        });
         return;
       }
 
-      for (const update of queuedUpdates) {
-        const attemptStartedAt = new Date().toISOString();
-        const {
-          syncResult,
-          workAttempt,
-          update: syncReadyUpdate,
-        } = await syncFieldUpdateWithMissingPhotoRepair(update);
-        const syncDiagnostics = buildSyncDiagnosticsFromUpload(
-          syncResult,
-          attemptStartedAt,
-          sessionTokenPresent,
-          workAttempt,
-          update.sendAttempts || null,
-        );
-
-        setSavedUpdates(prev =>
-          prev.map(item =>
-            item.id === update.id
-              ? {
-                  ...syncReadyUpdate,
-                  status: statusForSyncDiagnostics(syncDiagnostics),
-                  syncDiagnostics,
-                  workflowTimestamps: {
-                    ...(syncReadyUpdate.workflowTimestamps || {}),
-                    sendResolvedAt:
-                      syncReadyUpdate.workflowTimestamps?.sendResolvedAt || resolvedAt,
-                  },
-                }
-              : item,
-          ),
-        );
-      }
+      await runAutomaticSyncQueue(queuedUpdates, async update => {
+          const attemptStartedAt = new Date().toISOString();
+          const {
+            syncResult,
+            workAttempt,
+            update: syncReadyUpdate,
+          } = await syncFieldUpdateWithMissingPhotoRepair(update);
+          const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+            syncResult,
+            attemptStartedAt,
+            sessionTokenPresent,
+            workAttempt,
+            update.sendAttempts || null,
+          );
+          const nextUpdate: ProjectUpdate = {
+            ...syncReadyUpdate,
+            status: statusForSyncDiagnostics(syncDiagnostics),
+            syncDiagnostics,
+            workflowTimestamps: {
+              ...(syncReadyUpdate.workflowTimestamps || {}),
+              sendResolvedAt:
+                syncReadyUpdate.workflowTimestamps?.sendResolvedAt || resolvedAt,
+            },
+          };
+          const current = savedUpdatesRef.current.find(item => item.id === update.id);
+          if (current && !shouldPersistAutomaticSyncOutcome(current, nextUpdate)) {
+            return;
+          }
+          applyFieldUpdateSyncResultIfCurrent(syncReadyUpdate, nextUpdate);
+      });
     } finally {
       queuedHydrationInFlight.current = false;
     }
@@ -7234,30 +7378,21 @@ useEffect(() => {
 
   async function removeMissingSyncPhotos(missingPhotos: MissingSyncPhoto[]) {
     const affectedUpdateIds = new Set(missingPhotos.map(photo => photo.updateId));
+    await removeMissingPhotosFromSyncQueue(missingPhotos);
     let repairedUpdates = savedUpdatesRef.current.map(update =>
       affectedUpdateIds.has(update.id)
         ? markMissingPhotosUnavailable(update, missingPhotos)
         : update,
     );
-
-    await removeMissingPhotosFromSyncQueue(missingPhotos);
     savedUpdatesRef.current = repairedUpdates;
     setSavedUpdates(repairedUpdates);
-    await AsyncStorage.setItem(UPDATES_STORAGE_KEY, JSON.stringify(repairedUpdates));
+    await persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(repairedUpdates));
 
     for (const updateId of affectedUpdateIds) {
-      const update = repairedUpdates.find(item => item.id === updateId);
+      const update = savedUpdatesRef.current.find(item => item.id === updateId);
       if (!update) continue;
-      const finalUpdate = await retryQueuedUpdate(update);
-      repairedUpdates = [
-        finalUpdate,
-        ...repairedUpdates.filter(item => item.id !== finalUpdate.id),
-      ];
+      await retryQueuedUpdate(update);
     }
-
-    savedUpdatesRef.current = repairedUpdates;
-    setSavedUpdates(repairedUpdates);
-    await AsyncStorage.setItem(UPDATES_STORAGE_KEY, JSON.stringify(repairedUpdates));
   }
 
   function beginDraftForProject(projectName: string) {
@@ -7747,14 +7882,14 @@ useEffect(() => {
           onPress: () => {
             const discardedDraft = draft;
             const projectName =
-              activeProjects[0] || DEFAULT_PROJECTS[0];
+              activeProjects[0] || '';
 
             setDraft(createDraft(projectName));
             setDraftSavedAt(null);
 
-            AsyncStorage.removeItem(
-              DRAFT_STORAGE_KEY,
-            ).catch(() => undefined);
+            removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+              reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+            );
 
             void deleteUnreferencedPhotosFromUpdate(
               discardedDraft,
@@ -7775,10 +7910,9 @@ useEffect(() => {
   function persistDeletedProjectNames(nextNames: string[]) {
     deletedProjectNamesRef.current = nextNames;
     setDeletedProjectNames(nextNames);
-    AsyncStorage.setItem(
-      DELETED_PROJECTS_STORAGE_KEY,
-      JSON.stringify(nextNames),
-    ).catch(() => undefined);
+    persistStorageItem(DELETED_PROJECTS_STORAGE_KEY, JSON.stringify(nextNames)).catch(error =>
+      reportStoragePersistenceFailure({ storageKey: DELETED_PROJECTS_STORAGE_KEY, label: 'deleted project records', error }),
+    );
   }
 
   function markProjectDeleted(projectName: string) {
@@ -7883,61 +8017,115 @@ function addProject(projectName: string) {
     setDeletingProjectName(projectName);
 
     try {
-      await deleteCloudProject(projectName);
-      const removedScheduleItems = scheduleItems.filter(
-        item =>
-          item.projectName.toLowerCase() === projectName.toLowerCase() ||
-          item.scheduleProjectName?.toLowerCase() === projectName.toLowerCase(),
-      );
-      await recordDAVESyncTombstones(
-        removedScheduleItems.map(item => ({
-          entityType: 'schedule_item' as const,
-          recordId: item.id,
-        })),
-      );
-      markProjectDeleted(projectName);
+      if (savedUpdatesSaveTimer.current) {
+        clearTimeout(savedUpdatesSaveTimer.current);
+        savedUpdatesSaveTimer.current = null;
+      }
+      if (draftSaveTimer.current) {
+        clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+      }
 
-      const remainingProjects = projects.filter(
-        project => project.toLowerCase() !== projectName.toLowerCase(),
+      const deletionResult = await projectDeletionRuntime.commit(
+        support => {
+          const deletedAt = new Date().toISOString();
+          const remainingProjectNames = projectRecords
+            .filter(project => project.name.toLowerCase() !== projectName.toLowerCase())
+            .map(project => project.name);
+          const fallbackProject = selectProjectDeletionFallback({
+            remainingProjectNames, archivedProjectNames: archivedProjects,
+            deletedProjectNames: [...deletedProjectNamesRef.current, projectName],
+          });
+          const replacementDraft = createDraft(fallbackProject);
+          const currentDraftEnvelope: StoredDraft = {
+            draft: draftRef.current,
+            savedAt: draftSavedAt || deletedAt,
+          };
+          const replacementDraftEnvelope: StoredDraft = {
+            draft: replacementDraft,
+            savedAt: deletedAt,
+          };
+          const explicitlyOwnedReferenceDocuments = referenceDocuments.filter(document =>
+            referenceDocumentMatchesDeletedProject(
+              document,
+              projectName,
+              authorityProjectId(projectName),
+            ),
+          );
+          const removedUpdates = savedUpdatesRef.current.filter(update =>
+            projectMatchesScope(update, projectName),
+          );
+          const ownedProjectDocumentCandidates = [
+            ...projectDocuments.filter(document =>
+              projectDocumentMatchesProject(document, projectName),
+            ),
+            ...removedUpdates.flatMap(update => update.documents || []),
+            ...(projectMatchesScope(draftRef.current, projectName)
+              ? draftRef.current.documents || []
+              : []),
+          ];
+          const newFileCleanupIntents = buildProjectDeletionFileCleanupIntents({
+            projectName,
+            projectDocuments: ownedProjectDocumentCandidates,
+            referenceDocuments: explicitlyOwnedReferenceDocuments,
+            isOwnedReferenceDocument: document => isStoredReferenceDocument(document.uri),
+          });
+          const cascade = buildProjectDeletionCascade({
+            projectName,
+            authorityProjectId: authorityProjectId(projectName),
+            deletedAt,
+            projectRecords,
+            deletedProjectNames: deletedProjectNamesRef.current,
+            archivedProjects,
+            updates: savedUpdatesRef.current,
+            updateTombstones: deletedUpdateTombstonesRef.current,
+            updateDeletionIntents: support.updateDeletionIntents,
+            projectDocuments,
+            referenceDocuments,
+            scheduleItems,
+            daveSyncTombstones: support.daveSyncTombstones,
+            draft: currentDraftEnvelope,
+            draftBelongsToProject: projectMatchesScope(draftRef.current, projectName),
+            replacementDraft: replacementDraftEnvelope,
+            cloudIntents: support.cloudIntents,
+            fileCleanupIntents: support.fileCleanupIntents,
+            newFileCleanupIntents,
+            buildUpdateTombstone: (update, deletionTimestamp) =>
+              buildUpdateTombstone(
+                update,
+                'delete_update_everywhere',
+                deletionTimestamp,
+              ),
+          });
+          return {
+            operations: buildProjectDeletionOperations(
+              cascade,
+              PROJECT_DELETION_STORAGE_KEYS,
+            ),
+            result: { cascade, fallbackProject, replacementDraft },
+          };
+        },
       );
-      const remainingActiveProjects = remainingProjects.filter(
-        project =>
-          !archivedProjects.some(
-            archived => archived.toLowerCase() === project.toLowerCase(),
-          ),
-      );
-      const fallbackProject =
-        remainingActiveProjects[0] || DEFAULT_PROJECTS[0];
+      const { cascade, fallbackProject, replacementDraft } = deletionResult;
 
-      setProjects(remainingProjects);
-      setProjectRecords(prev => prev.filter(
-        project => project.name.toLowerCase() !== projectName.toLowerCase(),
-      ));
-      setArchivedProjects(prev =>
-        prev.filter(
-          project => project.toLowerCase() !== projectName.toLowerCase(),
-        ),
-      );
-      setSavedUpdates(prev =>
-        prev.filter(update => !projectMatchesScope(update, projectName)),
-      );
-      setProjectDocuments(prev =>
-        prev.filter(
-          document => !projectDocumentMatchesProject(document, projectName),
-        ),
-      );
-      setScheduleItems(prev =>
-        prev.filter(
-          item =>
-            item.projectName.toLowerCase() !== projectName.toLowerCase() &&
-            item.scheduleProjectName?.toLowerCase() !== projectName.toLowerCase(),
-        ),
-      );
+      deletedProjectNamesRef.current = cascade.nextDeletedProjectNames;
+      deletedUpdateTombstonesRef.current = cascade.nextUpdateTombstones;
+      savedUpdatesRef.current = cascade.remainingUpdates;
+      setDeletedProjectNames(cascade.nextDeletedProjectNames);
+      setDeletedUpdateTombstones(cascade.nextUpdateTombstones);
+      setProjects(cascade.remainingProjectRecords.map(project => project.name));
+      setProjectRecords(cascade.remainingProjectRecords);
+      setArchivedProjects(cascade.remainingArchivedProjects);
+      setSavedUpdates(cascade.remainingUpdates);
+      setProjectDocuments(cascade.remainingProjectDocuments);
+      markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
+      setReferenceDocuments(cascade.remainingReferenceDocuments);
+      setScheduleItems(cascade.remainingScheduleItems);
 
-      if (draft.projectName.toLowerCase() === projectName.toLowerCase()) {
-        setDraft(createDraft(fallbackProject));
+      if (cascade.draftReplaced) {
+        draftRef.current = replacementDraft;
+        setDraft(replacementDraft);
         setDraftSavedAt(null);
-        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
       }
 
       if (
@@ -7950,11 +8138,27 @@ function addProject(projectName: string) {
 
       setSelectedWorkspaceProject(fallbackProject);
       setScreen('Home');
-    } catch {
-      Alert.alert(
-        'Delete failed',
-        `${projectName} could not be deleted. Check your connection and try again.`,
-      );
+      void reconcileProjectUpdateDeletionJournal(cascade.nextUpdateTombstones).catch(() => undefined);
+      void synchronizeDAVESyncTombstones().catch(() => undefined);
+      const [cloudQueueResult, fileCleanupResult] = await Promise.allSettled([
+        projectDeletionRuntime.processPendingCloudIntents(),
+        projectDeletionRuntime.processPendingFileCleanupIntents(),
+      ]);
+      if (
+        cloudQueueResult.status === 'rejected' ||
+        fileCleanupResult.status === 'rejected' ||
+        (fileCleanupResult.status === 'fulfilled' && fileCleanupResult.value > 0)
+      ) {
+        Alert.alert(
+          'Project removed',
+          'The project is safely removed from this app. Pending active-cloud or device-file cleanup will retry automatically. Secure cloud audit evidence may remain until separately authorized.',
+        );
+      }
+    } catch (error) {
+      const recoveryBlocked = error instanceof ProjectDeletionRecoveryRequiredError; if (recoveryBlocked) startupHydration.fail(PROJECTS_STORAGE_KEY, 'project deletion recovery', error);
+      Alert.alert(recoveryBlocked ? 'Recovery required' : 'Delete failed', recoveryBlocked
+        ? 'Project deletion was partially saved. Editing is locked until Retry Recovery succeeds or the app restarts.'
+        : `${projectName} could not be safely saved as deleted. No cloud deletion was queued; try again.`);
     } finally {
       setDeletingProjectName(null);
     }
@@ -7972,6 +8176,7 @@ function addProject(projectName: string) {
       return false;
     }
 
+    markProjectAreasAuthorityReady(true);
     setProjectAreas(prev => [
       {
         id: uid(),
@@ -7993,6 +8198,7 @@ function addProject(projectName: string) {
     areaId: string,
     next: Partial<ProjectArea>,
   ) {
+    markProjectAreasAuthorityReady(true);
     setProjectAreas(prev =>
       prev.map(area =>
         area.id === areaId
@@ -8024,14 +8230,8 @@ function addProject(projectName: string) {
           onPress: () => {
             void recordDAVESyncTombstone('project_area', areaId)
               .then(() => {
-                setProjectAreas(prev => {
-                  const next = prev.filter(item => item.id !== areaId);
-                  AsyncStorage.setItem(
-                    PROJECT_AREAS_STORAGE_KEY,
-                    JSON.stringify(next),
-                  ).catch(() => undefined);
-                  return next;
-                });
+                markProjectAreasAuthorityReady(true);
+                setProjectAreas(prev => prev.filter(item => item.id !== areaId));
 
                 if (draft.selectedAreaId === areaId) {
                   changeDraftArea('');
@@ -8476,14 +8676,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
     retryAttempt?: boolean;
   }) {
     for (let attempt = 0; attempt <= PIE_AUTH_HYDRATION_RETRY_COUNT; attempt += 1) {
+      const entityAttempt = photoAnalysisCoordinator.beginAttempt({
+        projectId: authorityProjectId(update.projectName),
+        updateId: update.id,
+        photoId: photo.id,
+      });
+      let submittedTarget: PhotoAnalysisTarget | null = null;
       const result = await analyzeProjectPhotoWithVision({
         update,
         photo,
         priorUpdates,
         retryAttempt,
+        onTargetPrepared: target => {
+          submittedTarget = photoAnalysisCoordinator.bindTargetIfCurrent(entityAttempt, target);
+        },
       });
 
-      applyPhotoIntelligenceResult(photo.id, result);
+      const commit = () => applyPhotoIntelligenceResult(
+        authorityProjectId(update.projectName), update.id, photo.id, result,
+      );
+      if (submittedTarget) {
+        photoAnalysisCoordinator.commitIfCurrent(submittedTarget, commit);
+      } else {
+        photoAnalysisCoordinator.commitAttemptIfCurrent(entityAttempt, commit);
+      }
 
       if (!photoIntelligenceNeedsAuthHydrationRetry(result)) return;
       if (attempt === PIE_AUTH_HYDRATION_RETRY_COUNT) return;
@@ -8493,10 +8709,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function applyPhotoIntelligenceResult(
+    projectId: string,
+    updateId: string,
     photoId: string,
     result: PIEPhotoIntelligenceDisplayState,
   ) {
     const applyToUpdate = (update: ProjectUpdate): ProjectUpdate => {
+      if (
+        update.id !== updateId ||
+        authorityProjectId(update.projectName) !== projectId ||
+        !update.photos.some(photo => photo.id === photoId)
+      ) return update;
       const nextUpdate = {
         ...update,
         photos: update.photos.map(photo =>
@@ -8615,7 +8838,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setPhotoAuthRequest(null);
       setPhotoAuthPassword('');
       setPhotoAuthMessage(null);
-      void hydrateQueuedUpdates();
+      startAutomaticSyncBackgroundTask('photo_analysis_sign_in', hydrateQueuedUpdates);
       await runPhotoAnalysisRetry(pending.update, pending.photo);
     } finally {
       setPhotoAuthSubmitting(false);
@@ -8663,7 +8886,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setPhotoAuthRequest(null);
       setPhotoAuthPassword('');
       setPhotoAuthMessage(null);
-      void hydrateQueuedUpdates();
+      startAutomaticSyncBackgroundTask('photo_analysis_development_sign_up', hydrateQueuedUpdates);
       await runPhotoAnalysisRetry(pending.update, pending.photo);
     } finally {
       setPhotoAuthSubmitting(false);
@@ -8671,7 +8894,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   async function runPhotoAnalysisRetry(update: ProjectUpdate, photo: UpdatePhoto) {
-    applyPhotoIntelligenceResult(photo.id, buildAnalyzingPhotoIntelligenceState());
+    applyPhotoIntelligenceResult(
+      authorityProjectId(update.projectName),
+      update.id,
+      photo.id,
+      buildAnalyzingPhotoIntelligenceState(),
+    );
 
     await analyzePhotoWithAuthHydrationRetry({
       update,
@@ -8709,6 +8937,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ...draft,
       photos: draft.photos.filter(photo => photo.id !== photoId),
     };
+    photoAnalysisCoordinator.invalidate({
+      projectId: authorityProjectId(draft.projectName),
+      updateId: draft.id,
+      photoId,
+    });
 
     setDraft(prev => ({
       ...prev,
@@ -8912,7 +9145,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
-  async function copyReport(report: PIEReportDraft) {
+  // Audit P1-40: every report communication returns its real outcome so the
+  // UI marks communication complete only when it actually happened. A canceled
+  // or undetermined composer result must never read as "sent".
+  async function copyReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
     await Clipboard.setStringAsync(
       `${report.title}\n\n${report.body}`,
     );
@@ -8921,9 +9157,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       'Report copied',
       'The approved report is ready to paste.',
     );
+    return 'completed';
   }
 
-  async function emailReport(report: PIEReportDraft) {
+  async function emailReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
     const available = await MailComposer.isAvailableAsync();
 
     if (!available) {
@@ -8932,16 +9169,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Email unavailable',
         'The report was copied instead. Open your email app and paste it into a new message.',
       );
-      return;
+      return 'unknown';
     }
 
-    await MailComposer.composeAsync({
+    const result = await MailComposer.composeAsync({
       subject: report.subject || report.title,
       body: report.body,
     });
+    return mailComposerOutcome(result.status);
   }
 
-  async function textReport(report: PIEReportDraft) {
+  async function textReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
     const available = await SMS.isAvailableAsync();
 
     if (!available) {
@@ -8950,10 +9188,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Text unavailable',
         'The report was copied instead. Open Messages and paste it into a new text.',
       );
-      return;
+      return 'unknown';
     }
 
-    await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}`);
+    const { result } = await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}`);
+    return smsComposerOutcome(result);
   }
 
   async function openSystemShareSheet() {
@@ -8988,20 +9227,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   async function exportBackup() {
-    const targetDirectory =
-      FileSystem.cacheDirectory || FileSystem.documentDirectory;
-
+    const targetDirectory = FileSystem.cacheDirectory;
     if (!targetDirectory) {
       Alert.alert(
         'Backup unavailable',
-        'A local folder for the backup file could not be found.',
+        'A secure temporary folder for the backup file could not be found. No plaintext backup was left on this phone.',
       );
-
       return;
     }
 
-    const backup: AppBackup = {
-      version: BACKUP_VERSION,
+    const backup = {
+      version: APP_BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
       savedUpdates,
       projects,
@@ -9026,13 +9262,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
         fileUri,
         JSON.stringify(backup, null, 2),
       );
-
       const canShare = await Sharing.isAvailableAsync();
 
       if (!canShare) {
         Alert.alert(
-          'Backup created',
-          'The backup file was created, but sharing is not available on this device. Reference document metadata is included; document files remain stored locally on this phone.',
+          'Backup sharing unavailable',
+          'No backup was retained on this phone. A backup JSON contains project data plus photo and document metadata, but it does not contain the photo or document files themselves.',
         );
 
         return;
@@ -9043,52 +9278,72 @@ Note: This update was opened through Outlook because PLZ email security may reje
         mimeType: 'application/json',
         UTI: 'public.json',
       });
+      Alert.alert(
+        'Backup shared',
+        'The JSON contains project data plus photo and document metadata. It does not contain photo or document files, so missing media cannot be recreated from this backup.',
+      );
     } catch {
       Alert.alert(
         'Backup failed',
         'The backup file could not be created.',
       );
+    } finally {
+      await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
     }
   }
 
-  function applyRestoredData(data: RestoredAppData) {
-    const restoredProjects = mergeProjectNames(
-      [],
-      data.projects,
-    );
-    const restoredKeys = new Set(restoredProjects.map(name => name.toLowerCase()));
-    persistDeletedProjectNames(
-      deletedProjectNamesRef.current.filter(name => !restoredKeys.has(name.toLowerCase())),
-    );
-
-    setSavedUpdates(data.savedUpdates);
-    setProjects(restoredProjects);
-    setArchivedProjects(
-      mergeProjectNames([], data.archivedProjects),
-    );
-    setContactBook(data.contactBook);
-    setProjectAreas(data.projectAreas);
-    setReferenceDocuments(data.referenceDocuments);
-    setProjectDocuments(data.projectDocuments);
-    setScheduleItems(data.scheduleItems);
-
-    if (data.storedDraft) {
-      setDraft(data.storedDraft.draft);
-      setDraftSavedAt(data.storedDraft.savedAt);
-    } else {
-      setDraft(
-        createDraft(restoredProjects[0] || DEFAULT_PROJECTS[0]),
-      );
-      setDraftSavedAt(null);
-      AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
-        () => undefined,
-      );
+  async function applyRestoredData(data: RestoredAppData) {
+    if (backupRestoreInFlightRef.current) return;
+    backupRestoreInFlightRef.current = true;
+    if (savedUpdatesSaveTimer.current) {
+      clearTimeout(savedUpdatesSaveTimer.current); savedUpdatesSaveTimer.current = null;
+    }
+    if (draftSaveTimer.current) {
+      clearTimeout(draftSaveTimer.current); draftSaveTimer.current = null;
     }
 
-    Alert.alert(
-      'Backup restored',
-      'Project data was restored successfully.',
-    );
+    try {
+      const restored = await backupRestoreRuntime.commit(barriers => {
+        const result = buildDeletionSafeRestoreState({
+          data, barriers, currentProjectRecords: projectRecords,
+          rebuildProjectRecords: restoreProjectRecords,
+          referenceDocumentBelongsToProject: (document, name) =>
+            referenceDocumentMatchesDeletedProject(document, name, authorityProjectId(name)),
+          projectDocumentBelongsToProject: projectDocumentMatchesProject,
+          scheduleItemBelongsToProject: scheduleItemMatchesDeletedProject,
+          createEmptyDraft: createDraft,
+        });
+        return { values: result.values, result };
+      });
+
+      savedUpdatesRef.current = restored.savedUpdates; draftRef.current = restored.draft;
+      setSavedUpdates(restored.savedUpdates); setProjectRecords(restored.projectRecords);
+      setProjects(restored.projects); setArchivedProjects(restored.archivedProjects);
+      setContactBook(restored.contactBook); setProjectAreas(restored.projectAreas);
+      setReferenceDocuments(restored.referenceDocuments); setProjectDocuments(restored.projectDocuments);
+      setScheduleItems(restored.scheduleItems); setDraft(restored.draft);
+      markProjectAreasAuthorityReady(true); markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
+      setDraftSavedAt(restored.storedDraft?.savedAt || null); setSelectedWorkspaceProject(restored.activeProject);
+      setOverviewProjectSelection(undefined); setOverviewProjectManuallySelected(false);
+
+      Alert.alert(
+        'Backup restored',
+        'Project data and usable media metadata were restored and verified. Existing deletion records and queued deletions were preserved. Photo and document files are not contained in the JSON, so missing files were not recreated.',
+      );
+    } catch (error) {
+      const recoveryBlocked = error instanceof BackupRestoreRecoveryRequiredError;
+      if (recoveryBlocked) {
+        startupHydration.fail(PROJECTS_STORAGE_KEY, 'backup restore recovery', error);
+      }
+      Alert.alert(
+        recoveryBlocked ? 'Restore recovery required' : 'Restore failed',
+        recoveryBlocked
+          ? 'The restore was partially written and editing is locked until Retry Recovery succeeds or the app restarts.'
+          : 'The backup could not be safely restored. Existing app data and deletion records were not intentionally replaced.',
+      );
+    } finally {
+      backupRestoreInFlightRef.current = false;
+    }
   }
 
   async function restoreBackup() {
@@ -9137,12 +9392,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       const contents = await FileSystem.readAsStringAsync(file.uri);
       const parsed: unknown = JSON.parse(contents);
-      const data = normalizeBackupData(parsed);
+      const normalized = normalizeBackupData(parsed);
 
-      if (!data) {
+      if (!normalized.ok) {
         Alert.alert(
-          'Invalid backup',
-          'Choose a valid Project Photo Update Tool backup JSON file.',
+          normalized.reason === 'incompatible_version' ? 'Incompatible backup' : 'Invalid backup',
+          normalized.message,
         );
 
         return;
@@ -9150,7 +9405,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       Alert.alert(
         'Restore backup?',
-        'This will replace saved updates, projects, contacts, and the active draft on this phone.',
+        'This replaces saved projects, updates, schedules, contacts, and the active draft on this phone. Existing deletion records and queued deletions stay enforced. The JSON contains media metadata, not photo or document files, so missing files cannot be recreated.',
         [
           {
             text: 'Cancel',
@@ -9159,7 +9414,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {
             text: 'Restore',
             style: 'destructive',
-            onPress: () => applyRestoredData(data),
+            onPress: () => { void applyRestoredData(normalized.data); },
           },
         ],
       );
@@ -9187,6 +9442,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         Alert.alert('Import failed', 'No document was selected.');
         return;
       }
+      await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size });
 
       const directory = await ensureReferenceDocumentsDirectory();
       const originalFileName = filenameFromDocumentAsset(asset);
@@ -9210,11 +9466,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
         importedAt: new Date().toISOString(),
       });
 
+      markReferenceDocumentsAuthorityReady(true);
       setReferenceDocuments(prev => [nextDocument, ...prev]);
 
       Alert.alert('Document imported', `${nextDocument.name} was saved to Reference Documents.`);
-    } catch {
-      Alert.alert('Import failed', 'The selected reference document could not be imported.');
+    } catch (error) {
+      Alert.alert('Import failed', error instanceof FileSizePreflightError
+        ? error.message : 'The selected reference document could not be imported.');
     }
   }
 
@@ -9222,6 +9480,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     documentId: string,
     next: Partial<ReferenceDocument>,
   ) {
+    markReferenceDocumentsAuthorityReady(true);
     setReferenceDocuments(prev =>
       prev.map(document =>
         document.id === documentId
@@ -9237,12 +9496,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
   function markReferenceDocumentCurrent(documentId: string) {
     const target = referenceDocuments.find(document => document.id === documentId);
 
+    markReferenceDocumentsAuthorityReady(true);
     setReferenceDocuments(prev =>
       prev.map(document => ({
         ...document,
         isCurrent:
           document.id === documentId
-            ? !document.isCurrent
+            ? true
             : target && document.category === target.category
               ? false
               : document.isCurrent,
@@ -9280,12 +9540,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (!document.localUri) {
       Alert.alert(
         'Document unavailable',
-        'This document is saved as metadata only on this device.',
+        'This attachment has no verified local file. Delete this record and add the original file again.',
       );
       return;
     }
 
     try {
+      await verifyOwnedProjectDocument(document);
       const info = await FileSystem.getInfoAsync(document.localUri);
 
       if (!info.exists) {
@@ -9310,7 +9571,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     } catch {
       Alert.alert(
         'Open failed',
-        'This document could not be opened right now.',
+        'This document could not be verified. Delete this attachment and add the original file again before opening it.',
       );
     }
   }
@@ -9352,7 +9613,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
         {
           text: sensitive ? `Archive ${document.category}` : 'Delete',
           style: 'destructive',
-          onPress: () => {
+          onPress: async () => {
+            if (!sensitive) {
+              try {
+                await deleteOwnedProjectDocument(document);
+              } catch {
+                Alert.alert('Delete failed', 'The document file could not be verified and removed safely.');
+                return;
+              }
+            }
             const archivedAt = new Date().toISOString();
 
             setProjectDocuments(prev =>
@@ -9410,6 +9679,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           onPress: () => {
             void recordDAVESyncTombstone('reference_document', documentId)
               .then(() => {
+                markReferenceDocumentsAuthorityReady(true);
                 setReferenceDocuments(prev =>
                   prev.filter(item => item.id !== documentId),
                 );
@@ -9428,6 +9698,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function setActiveScheduleDocument(documentId: string) {
+    markReferenceDocumentsAuthorityReady(true);
     setReferenceDocuments(prev =>
       prev.map(document =>
         document.category === 'Schedules'
@@ -9441,11 +9712,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const document = referenceDocuments.find(item => item.id === documentId);
 
     if (!document) return;
-    const relatedScheduleItems = scheduleItems.filter(
-      item =>
-        item.importedFrom === document.originalFileName ||
-        item.importedFrom === document.name,
-    );
+    const relatedScheduleItems = document.importBatchId
+      ? scheduleItemsForExactImportBatch(scheduleItems, document)
+      : scheduleItems.filter(item =>
+          item.importedFrom === document.originalFileName || item.importedFrom === document.name);
 
     Alert.alert(
       'Delete uploaded schedule?',
@@ -9457,6 +9727,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           onPress: () => {
             void recordDAVESyncTombstone('reference_document', documentId)
               .then(() => {
+                markReferenceDocumentsAuthorityReady(true);
                 setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
@@ -9481,6 +9752,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             ])
               .then(() => {
                 const deletedItemIds = new Set(relatedScheduleItems.map(item => item.id));
+                markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
                 setScheduleItems(prev =>
                   prev.filter(item => !deletedItemIds.has(item.id)),
@@ -9510,10 +9782,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       createdAt: now,
     });
 
+    markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev => [next, ...prev]);
   }
 
   function updateScheduleItem(itemId: string, next: Partial<ScheduleItem>) {
+    markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev =>
       prev.map(item => {
         if (item.id !== itemId) return item;
@@ -9529,6 +9803,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             progressSource: 'project_manager' as const,
             progressConfirmedAt: new Date().toISOString(),
             progressConfirmedBy: displayName.trim() || 'Project manager',
+            completionVerification: next.completionVerification ?? null,
           } : {}),
         });
       }),
@@ -9550,6 +9825,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           onPress: () => {
             void recordDAVESyncTombstone('schedule_item', itemId)
               .then(() => {
+                markScheduleItemsAuthorityReady(true);
                 setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
               })
               .catch(() => {
@@ -9584,6 +9860,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const file = result.assets[0];
 
       if (!file) return null;
+      await preflightExpoFileRead({ uri: file.uri, reportedSizeBytes: file.size });
       onProcessingStart();
 
       const fileName = file.name || 'Imported schedule';
@@ -9651,22 +9928,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
           }
         }
 
-        if (extractedItems.length === 0 && scheduleAiExtractorUrl.trim()) {
-          try {
-            extractedItems = await extractScheduleItemsWithAiEndpoint({
-              endpointUrl: scheduleAiExtractorUrl,
-              fileUri: targetUri,
-              fileName: originalFileName,
-              mimeType: file.mimeType || 'application/pdf',
-              projects,
-              projectAreas,
-            });
-            extractionMethod = 'AI/OCR';
-          } catch {
-            extractedItems = [];
-          }
-        }
-
         if (extractedItems.length > 0) {
           const items = dedupeScheduleImportItems(extractedItems as unknown as import('./types').ScheduleItem[]);
           return {
@@ -9690,8 +9951,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             milestone: 'Imported PDF Schedule',
             owner: '',
             status: 'Not Started',
-            notes:
-              'The PDF was saved, but no dated schedule activity could be extracted automatically. Enter the actual task or milestone and verify every highlighted field before approval.',
+            notes: '',
             importedFrom: originalFileName,
             importedAt: new Date().toISOString(),
           }),
@@ -9703,9 +9963,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           kind: 'schedule_file',
           sourceCount: 1,
           sourceLabel: originalFileName,
-          message: scheduleAiExtractorUrl.trim()
-            ? 'No complete dated activities were extracted. Enter the actual task name and complete every highlighted field below.'
-            : 'The PDF was saved, but no dated activities were extracted. Enter the actual task name and complete every highlighted field below.',
+          message: 'The PDF was saved, but no dated activities were extracted. Enter the actual task name and complete every highlighted field below.',
           items: [reviewItem] as unknown as import('./types').ScheduleItem[],
           documents: [scheduleDocument],
         };
@@ -9751,6 +10009,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
   async function importScheduleCommunicationScreenshot(
     onProcessingStart: () => void = () => undefined,
   ): Promise<PIEScheduleImportBatch | null> {
+    if (!scheduleScreenshotOcrAvailable) {
+      Alert.alert(
+        'Screenshot recognition unavailable',
+        Platform.OS === 'ios'
+          ? 'This installed app does not yet include local screenshot recognition. Install the updated app build, then import the screenshots again.'
+          : 'Message and email screenshot recognition is currently available only on iPhone and iPad. Use a schedule file or add the task manually on this device.',
+      );
+      return null;
+    }
+
     const stagedDocuments: ReferenceDocument[] = [];
 
     try {
@@ -9772,14 +10040,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
       });
       if (result.canceled || !result.assets.length) return null;
 
-      if (!isDaveTextRecognitionAvailable() && !scheduleAiExtractorUrl.trim()) {
-        Alert.alert(
-          'Screenshot recognition unavailable',
-          'This installed app does not yet include local screenshot recognition. Install the updated app build, then import the screenshots again.',
-        );
-        return null;
-      }
-
       onProcessingStart();
 
       const directory = await ensureReferenceDocumentsDirectory();
@@ -9787,6 +10047,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const extractedItems: ScheduleItem[] = [];
 
       for (const [index, asset] of result.assets.entries()) {
+        await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.fileSize });
         const mimeType = asset.mimeType || 'image/jpeg';
         const originalFileName = asset.fileName || filenameFromUri(asset.uri, index, mimeType);
         const storedFileName = `${uid()}-${sanitizeFilename(originalFileName)}`;
@@ -9821,21 +10082,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
               recognitionConfidence: recognized.averageConfidence,
             });
             sourceItems = communicationImport.items as unknown as ScheduleItem[];
-          } catch {
-            sourceItems = [];
-          }
-        }
-
-        if (sourceItems.length === 0 && scheduleAiExtractorUrl.trim()) {
-          try {
-            sourceItems = await extractScheduleItemsWithAiEndpoint({
-              endpointUrl: scheduleAiExtractorUrl,
-              fileUri: targetUri,
-              fileName: originalFileName,
-              mimeType,
-              projects,
-              projectAreas,
-            });
           } catch {
             sourceItems = [];
           }
@@ -9880,8 +10126,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function approveScheduleImport(batch: PIEScheduleImportBatch) {
+    const approvedBatch = bindPIEScheduleImportBatchProvenance(batch);
     const approvedItems = canonicalizeScheduleIdentityItems(
-      batch.items.map(item =>
+      approvedBatch.items.map(item =>
         normalizeScheduleItem(item as unknown as Partial<ScheduleItem>),
       ),
       projectAreas,
@@ -9889,7 +10136,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
 
     if (approvedItems.length) {
-      ensureScheduleParentProjects(approvedItems, true);
+      markScheduleItemsAuthorityReady(true);
+      // Explicit user approval of an import into these projects is the user
+      // transition that permits reopening an archived parent (audit P1-57).
+      ensureScheduleParentProjects(approvedItems, {
+        allowDeletedProjects: true,
+        reopenArchivedParents: true,
+      });
       setScheduleItems(previous => {
         let next = [...previous];
         const additions: ScheduleItem[] = [];
@@ -9919,18 +10172,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
           if (!duplicate) additions.push(importedItem);
         });
 
-        return [...additions, ...next];
+        return reconcileDAVEScheduleRecords([...additions, ...next]);
       });
     }
 
-    if (batch.documents.length) {
+    if (approvedBatch.documents.length) {
+      markReferenceDocumentsAuthorityReady(true);
       const importedProjectNames = scheduleParentProjectNames(
         approvedItems as unknown as import('./types').ScheduleItem[],
       );
       const importedProjectName = importedProjectNames.length === 1
         ? importedProjectNames[0]
         : null;
-      const scopedDocuments = batch.documents.map(document =>
+      const scopedDocuments = approvedBatch.documents.map(document =>
         normalizeReferenceDocument({
           ...document,
           projectId: importedProjectName ? authorityProjectId(importedProjectName) : null,
@@ -9953,8 +10207,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function ensureScheduleParentProjects(
     items: ScheduleItem[],
-    allowDeletedProjects = false,
+    options: { allowDeletedProjects?: boolean; reopenArchivedParents?: boolean } = {},
   ) {
+    // Audit P1-57: creating a missing parent project is separate from archive
+    // state. Only an explicit user transition (e.g. approving an import into
+    // that project) may reopen an archived project; background schedule
+    // mutations never do.
+    const { allowDeletedProjects = false, reopenArchivedParents = false } = options;
     const discoveredParentNames = scheduleParentProjectNames(
       items as unknown as import('./types').ScheduleItem[],
     );
@@ -9969,10 +10228,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
     if (!parentNames.length) return;
 
-    const existingKeys = new Set(projects.map(project => project.trim().toLowerCase()));
-    const missingNames = parentNames.filter(name => !existingKeys.has(name.toLowerCase()));
-    const archivedKeys = new Set(archivedProjects.map(project => project.trim().toLowerCase()));
-    const reopeningNames = parentNames.filter(name => archivedKeys.has(name.toLowerCase()));
+    const { missingNames, reopeningNames } = resolveScheduleParentActions({
+      parentNames,
+      existingProjects: projects,
+      archivedProjects,
+      reopenArchivedParents,
+    });
 
     if (missingNames.length) {
       setProjects(previous => mergeProjectNames(previous, missingNames));
@@ -10006,63 +10267,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
   }
 
-  function saveUpdate() {
-  if (!hasSavableUpdate(draft)) {
-    Alert.alert(
-      'Update is blank',
-      'Add a photo, update notes, field note, or action information before saving.',
-    );
-
-    return;
-  }
-
-  const invalidDueDateIndex = findInvalidDueDatePhoto(draft);
-
-  if (invalidDueDateIndex >= 0) {
-    Alert.alert(
-      'Invalid due date',
-      `Photo ${invalidDueDateIndex + 1} has a due date that is not in YYYY-MM-DD format.`,
-    );
-
-    return;
-  }
-
-  const saved = {
-    ...draft,
-    id: draft.id || uid(),
-  };
-
-  setSavedUpdates(prev => [
-    saved,
-    ...prev.filter(item => item.id !== saved.id),
-  ]);
-
-  void runFieldUpdateCloudSync(saved);
-
-  const nextProject =
-    activeProjects[0] || DEFAULT_PROJECTS[0];
-
-  setDraft(createDraft(nextProject));
-  setDraftSavedAt(null);
-
-  AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
-    () => undefined,
-  );
-
-  Alert.alert(
-    'Saved',
-    'This project update was saved.',
-  );
-
-  setScreen('SavedUpdates');
-}
-
-  function openSavedUpdate(update: ProjectUpdate) {
+  function openSavedUpdate(update: ProjectUpdate, returnScreen: AppScreen = 'SavedUpdates') {
     const lifecycle = lifecycleStatusForUpdate(update);
+    updateDetailReturnScreenRef.current = returnScreen;
 
     if (lifecycle === 'sent' || lifecycle === 'queued') {
+      // Audit P1-56: opening any update binds the workspace to that update's
+      // project, so Back, Talk, and reports target the right project.
+      setSelectedWorkspaceProject(update.projectName);
       setSelectedDetailUpdate(update);
-      setScreen('UpdateDetail');
+      setScreen('UpdateDetail', { backTarget: returnScreen });
       return;
     }
 
@@ -10116,67 +10330,62 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     setSelectedWorkspaceProject(projectName);
+    updateDetailReturnScreenRef.current = 'ProjectWorkspace';
     setSelectedDetailUpdate(targetUpdate);
-    setScreen('UpdateDetail');
+    setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' });
   }
 
   function deleteSavedUpdate(updateId: string, onConfirmed?: () => void) {
-    const update = savedUpdates.find(item => item.id === updateId);
-    const lifecycle = update ? lifecycleStatusForUpdate(update) : 'draft';
-    const deleteTitle =
-      lifecycle === 'sent'
-        ? 'Delete cloud-synced update from this device?'
-        : lifecycle === 'failed'
-          ? 'Delete failed update?'
-          : 'Remove update from device?';
-    const deleteCopy =
-      lifecycle === 'sent'
-        ? "This removes the local copy and local photos from this device. The cloud record remains available. If you only want it out of the default view, use Archive instead."
-        : lifecycle === 'failed'
-          ? 'This removes the failed local update from this device and stops retrying it.'
-          : 'This removes the local saved copy from this device.';
-    const deleteAction =
-      lifecycle === 'sent'
-        ? 'Delete from Device'
-        : lifecycle === 'failed'
-          ? 'Delete failed update'
-          : 'Remove from device';
+    const update = savedUpdatesRef.current.find(item => item.id === updateId);
+    if (!update) return;
+    const updateLocation = [
+      update.projectName,
+      update.selectedAreaName,
+      update.scheduleTaskName,
+      formatDisplayDate(update.date),
+    ].filter(Boolean).join(' · ');
 
     Alert.alert(
-      deleteTitle,
-      deleteCopy,
+      'Permanently delete this update?',
+      `This removes the saved field update for ${updateLocation || 'this project'} from this phone and stops it affecting project status. Its cloud record will be deleted automatically when sync is available. Warnings caused only by this update will clear. Original evidence files may remain in secure audit storage. This cannot be undone.`,
       [
         {
           text: 'Cancel',
           style: 'cancel',
         },
         {
-          text: deleteAction,
+          text: 'Delete Update',
           style: 'destructive',
-          onPress: () => {
-            const deletedUpdate = savedUpdates.find(
+          onPress: async () => {
+            if (updateDeletionInFlightRef.current) return;
+            const currentUpdates = savedUpdatesRef.current;
+            const deletedUpdate = currentUpdates.find(
               update => update.id === updateId,
             );
-            const remainingUpdates = savedUpdates.filter(
-              update => update.id !== updateId,
+            if (!deletedUpdate) return;
+            updateDeletionInFlightRef.current = true;
+
+            const tombstone = buildUpdateTombstone(
+              deletedUpdate,
+              'delete_update_everywhere',
             );
 
-            if (deletedUpdate) {
-              const tombstone = buildUpdateTombstone(
-                deletedUpdate,
-                lifecycleStatusForUpdate(deletedUpdate) === 'failed'
-                  ? 'delete_failed_update'
-                  : 'remove_from_device',
-              );
-              setDeletedUpdateTombstones(prev =>
-                upsertDeletedUpdateTombstone(prev, tombstone),
-              );
-              void removeProjectUpdateFromSyncQueue(deletedUpdate.id);
-            }
+            try {
+              const deletion = await persistAndQueueProjectUpdateDeletion({
+                update: deletedUpdate,
+                tombstone,
+                getCurrentUpdates: () => savedUpdatesRef.current,
+                getCurrentTombstones: () => deletedUpdateTombstonesRef.current,
+                updatesStorageKey: UPDATES_STORAGE_KEY,
+                tombstonesStorageKey: DELETED_UPDATES_STORAGE_KEY,
+              });
+              const { remainingUpdates, nextTombstones } = deletion;
 
-            setSavedUpdates(remainingUpdates);
+              savedUpdatesRef.current = remainingUpdates;
+              deletedUpdateTombstonesRef.current = nextTombstones;
+              setDeletedUpdateTombstones(nextTombstones);
+              setSavedUpdates(remainingUpdates);
 
-            if (deletedUpdate) {
               void deleteUnreferencedPhotosFromUpdate(
                 deletedUpdate,
                 [
@@ -10184,9 +10393,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   ...remainingUpdates,
                 ],
               );
+              if (deletion.phase === 'barrier_committed') {
+                void reconcileProjectUpdateDeletionJournal(nextTombstones).catch(() => undefined);
+                Alert.alert('Update removed', 'The deletion barrier is saved and the update no longer affects project status. Remaining device or cloud cleanup will retry automatically.');
+              }
+              onConfirmed?.();
+            } catch {
+              Alert.alert(
+                'Update not deleted',
+                'No deletion barrier could be saved, so nothing was removed. Please try again.',
+              );
+            } finally {
+              updateDeletionInFlightRef.current = false;
             }
-
-            onConfirmed?.();
           },
         },
       ],
@@ -10262,9 +10481,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
     deleteSavedUpdate(draft.id, () => {
       setDraft(createDraft(projectName));
       setDraftSavedAt(null);
-      AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
+      removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+      );
       setSelectedWorkspaceProject(projectName);
-      setScreen('ProjectWorkspace');
+      setScreen(updateDetailReturnScreenRef.current);
     });
   }
 
@@ -10341,39 +10562,59 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }, [authoritativeScheduleItems, layer4Identity?.organizationId, savedUpdates, selectedWorkspaceProject]);
 
   useEffect(() => {
+    if (!startupHydrationReady) return;
     let active = true;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let refreshGeneration = 0;
+    let lastRefreshStartedAt = 0;
+    // Field fix 2026-07-18: auth events can arrive in bursts (each identity
+    // resolve touches the Supabase client, which can itself emit events).
+    // A minimum interval and an in-flight guard make this cycle-proof.
+    const MIN_REFRESH_INTERVAL_MS = 2000;
 
-    async function refreshLayer4Identity() {
+    async function refreshLayer4Identity(generation: number) {
+      lastRefreshStartedAt = Date.now();
       const resolution = await resolvePIELayer4ActorContext();
-      if (!active) return;
-      setLayer4Identity(resolution.context);
+      if (!active || generation !== refreshGeneration) return;
       const state = await loadPIEDecisionLedgerForOrganization(resolution.context.organizationId);
-      if (!active) return;
+      if (!active || generation !== refreshGeneration) return;
+      // Commit identity and its organization-scoped ledger together only after
+      // both reads succeed. A failed/account-switched read therefore leaves no
+      // prior account decisions visible in the new session.
       setDecisionLedger(state.decisions);
       setDecisionLedgerMigrationStatus(state.migrationStatus);
+      setLayer4Identity(resolution.context);
     }
 
     function scheduleIdentityRefresh() {
       if (refreshTimer) clearTimeout(refreshTimer);
+      refreshGeneration += 1;
+      const generation = refreshGeneration;
+      setLayer4Identity(null);
+      setDecisionLedger([]);
+      setDecisionLedgerMigrationStatus(null);
+      const elapsed = Date.now() - lastRefreshStartedAt;
+      const delay = Math.max(0, MIN_REFRESH_INTERVAL_MS - elapsed);
       refreshTimer = setTimeout(() => {
         refreshTimer = null;
-        void refreshLayer4Identity().catch(() => undefined);
-      }, 0);
+        void refreshLayer4Identity(generation).catch(() => undefined);
+      }, delay);
     }
 
     scheduleIdentityRefresh();
     const unsubscribe = subscribeToAuthStateChange(() => {
       // Defer client work until after Supabase's auth callback has returned.
+      photoAnalysisCoordinator.clear();
       scheduleIdentityRefresh();
     });
 
     return () => {
       active = false;
       if (refreshTimer) clearTimeout(refreshTimer);
+      photoAnalysisCoordinator.clear();
       unsubscribe();
     };
-  }, []);
+  }, [photoAnalysisCoordinator, startupHydrationReady]);
 
   async function createAutomatedDecisionSnapshot(
     judgment: PIEExecutiveJudgmentRecord | null | undefined,
@@ -10535,8 +10776,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
         update.photos.some(photo => photo.id === destination.sourceRecordId),
       );
       if (sourceUpdate) {
+        updateDetailReturnScreenRef.current = screen;
         setSelectedDetailUpdate(sourceUpdate);
-        setScreen('UpdateDetail');
+        setScreen('UpdateDetail', { backTarget: screen });
         return;
       }
     }
@@ -10550,11 +10792,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     context?: ReturnType<typeof resolveDAVEConversationContext>,
   ) {
     const projectId = authorityProjectId(projectName);
-    const storageKey = daveAskHistoryStorageKey(projectId);
-    const history = parseDAVEAskHistory(await AsyncStorage.getItem(storageKey), projectId);
     const createdAt = new Date().toISOString();
     const entry: DAVEAskConversationEntry = {
-      id: `ask:${encodeURIComponent(projectId)}:${createdAt}:${history.length}`,
+      id: `ask:${encodeURIComponent(projectId)}:${createdAt}:${uid()}`,
       projectId,
       question,
       answer,
@@ -10565,10 +10805,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
         : null,
       priorEntryId: context?.priorEntryId || null,
     };
-    await AsyncStorage.setItem(
-      storageKey,
-      JSON.stringify(appendDAVEAskHistory(history, entry)),
-    );
+    await talkHistoryPersistence.append(projectId, entry);
+  }
+
+  function reportTalkAnswerPersistenceFailure(projectName: string, error: unknown) {
+    reportStoragePersistenceFailure({
+      storageKey: daveAskHistoryStorageKey(authorityProjectId(projectName)),
+      label: 'Talk history',
+      error,
+    });
   }
 
   function talkMemoryDraft(
@@ -10620,10 +10865,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
       interface: voiceResult ? 'voice' : 'text',
     });
     const projectId = authorityProjectId(projectName);
-    const history = parseDAVEAskHistory(
-      await AsyncStorage.getItem(daveAskHistoryStorageKey(projectId)).catch(() => null),
-      projectId,
-    );
+    let history: DAVEAskConversationEntry[];
+    try {
+      history = await talkHistoryPersistence.read(projectId);
+    } catch {
+      Alert.alert(
+        'Talk history unavailable',
+        'The saved conversation could not be opened safely. No history was changed. Try again after checking available phone storage.',
+      );
+      return;
+    }
     const context = resolveDAVEConversationContext({
       transcript,
       history,
@@ -10650,13 +10901,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     if (contextualAnswer) {
       setTalkAnswer({ projectName, question: transcript.trim(), answer: contextualAnswer });
-      void persistTalkAnswer(projectName, transcript.trim(), contextualAnswer, context).catch(() => undefined);
+      void persistTalkAnswer(projectName, transcript.trim(), contextualAnswer, context)
+        .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
       return;
     }
 
     if (route.intent === 'ask') {
       setTalkAnswer({ projectName, question: transcript.trim(), answer: route.answer });
-      void persistTalkAnswer(projectName, transcript.trim(), route.answer, context).catch(() => undefined);
+      void persistTalkAnswer(projectName, transcript.trim(), route.answer, context)
+        .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
       return;
     }
 
@@ -10730,6 +10983,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ]);
   }
 
+  const projectStatusReady = startupHydrationReady;
+
   const liveAuthorityInput = useMemo<PIELiveAuthorityInput>(() => {
     const workspaceProjectName =
       screen === 'ProjectWorkspace' ||
@@ -10744,72 +10999,66 @@ Note: This update was opened through Outlook because PLZ email security may reje
       activeProjects[0] ||
       DEFAULT_PROJECTS[0] ||
       'Current Project';
-    const singleProjectReport =
-      screen === 'Reports' && reportType === 'daily_project_update';
     const authorityReportType: PIEReportType | undefined =
       screen !== 'Reports'
         ? undefined
         : reportFormat === 'executive'
           ? 'executive_summary'
           : reportType;
-    const reportScopeNames = screen === 'Reports'
-      ? mergeProjectNames(
-          [],
-          selectedReportProjectNames.flatMap(selectedProject =>
-            workspaceScopeNames(selectedProject),
-          ),
-        )
-      : [projectName];
-    const reportScopeKeys = new Set(
-      reportScopeNames.map(name => name.trim().toLowerCase()),
-    );
-    const matchesReportProject = (candidate: string | null | undefined) =>
-      Boolean(candidate && reportScopeKeys.has(candidate.trim().toLowerCase()));
-    const scopedReportScheduleItems = screen === 'Reports'
-      ? authoritativeScheduleItems.filter(item =>
-          matchesReportProject(item.scheduleProjectName) ||
-          matchesReportProject(item.projectName) ||
-          matchesReportProject(item.locationName),
-        )
-      : authoritativeScheduleItems;
-    const reportScheduleAreaNames = new Set(
-      scopedReportScheduleItems
-        .map(item => item.locationName.trim().toLowerCase())
-        .filter(Boolean),
-    );
-    const matchesReportUpdate = (candidate: string) =>
-      matchesReportProject(candidate) ||
-      reportScheduleAreaNames.has(candidate.trim().toLowerCase());
+    const combinedReportScope = screen === 'Reports' && reportType === 'combined_project_update'
+      ? buildCombinedReportAuthorityScope({
+          selectedProjectNames: selectedReportProjectNames,
+          projectRecords,
+          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          scheduleItems: authoritativeScheduleItems,
+          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
+          projectAreas,
+          referenceDocuments,
+          projectDocuments,
+          captureMemories,
+          contacts: contactBook,
+        })
+      : null;
+    const dailyReportScope = screen === 'Reports' && reportType === 'daily_project_update'
+      ? buildDailyReportAuthorityScope({
+          selectedProjectName: projectName,
+          selectedProjectNames: [projectName],
+          projectRecords,
+          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          scheduleItems: authoritativeScheduleItems,
+          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
+          projectAreas,
+          referenceDocuments,
+          projectDocuments,
+          captureMemories,
+          contacts: contactBook,
+        })
+      : null;
+    const reportEvidenceScope = combinedReportScope || dailyReportScope;
 
     return {
       organizationId: layer4Identity?.cloudTrusted
         ? layer4Identity.organizationId
         : null,
-      projectId: authorityProjectId(projectName),
-      projectName,
-      projectNames: screen === 'Reports' ? reportScopeNames : [projectName],
+      projectId: combinedReportScope?.projectId || authorityProjectId(projectName),
+      projectName: reportEvidenceScope?.projectName || projectName,
+      projectNames: reportEvidenceScope?.projectNames || [projectName],
       reportType: authorityReportType,
       updates: (
-        screen === 'Reports'
-          ? savedUpdates.filter(update =>
-              matchesReportProject(update.scheduleProjectName) ||
-              matchesReportUpdate(update.projectName),
-            )
-          : savedUpdates
+        reportEvidenceScope ? reportEvidenceScope.updates : savedUpdates
       ) as unknown as PIELiveAuthorityInput['updates'],
-      scheduleItems: scopedReportScheduleItems as unknown as PIELiveAuthorityInput['scheduleItems'],
+      scheduleItems: (
+        reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems
+      ) as unknown as PIELiveAuthorityInput['scheduleItems'],
       currentUpdate: (
-        screen === 'Reports' &&
-        !matchesReportProject(draft.scheduleProjectName) &&
-        !matchesReportProject(draft.projectName)
-          ? null
-          : draft
+        reportEvidenceScope ? reportEvidenceScope.currentUpdate : draft
       ) as unknown as PIELiveAuthorityInput['currentUpdate'],
-      projectAreas: projectAreas as unknown as PIELiveAuthorityInput['projectAreas'],
-      contacts: contactBook as unknown as PIELiveAuthorityInput['contacts'],
-      referenceDocuments: referenceDocuments as unknown as PIELiveAuthorityInput['referenceDocuments'],
-      projectDocuments: projectDocuments as unknown as PIELiveAuthorityInput['projectDocuments'],
-      captureMemories,
+      projectAreas: (reportEvidenceScope ? reportEvidenceScope.projectAreas : projectAreas) as unknown as PIELiveAuthorityInput['projectAreas'],
+      contacts: (reportEvidenceScope ? reportEvidenceScope.contacts : contactBook) as unknown as PIELiveAuthorityInput['contacts'],
+      referenceDocuments: (reportEvidenceScope ? reportEvidenceScope.referenceDocuments : referenceDocuments) as unknown as PIELiveAuthorityInput['referenceDocuments'],
+      projectDocuments: (reportEvidenceScope ? reportEvidenceScope.projectDocuments : projectDocuments) as unknown as PIELiveAuthorityInput['projectDocuments'],
+      captureMemories: reportEvidenceScope ? reportEvidenceScope.captureMemories : captureMemories,
+      hydrated: projectStatusReady,
       surface: authoritySurfaceForScreen(screen),
       identityTrusted: Boolean(
         layer4Identity?.cloudTrusted &&
@@ -10819,6 +11068,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         layer4Identity?.cloudTrusted &&
         layer4Identity.organizationStatus === 'verified',
       ),
+      projectTruthPersistencePolicy:
+        combinedReportScope?.projectTruthPersistencePolicy || 'persist_project',
     };
   }, [
     activeProjects,
@@ -10829,6 +11080,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
     overviewProjectName,
     projectAreas,
     projectDocuments,
+    projectRecords,
+    projectStatusReady,
     referenceDocuments,
     reportType,
     reportFormat,
@@ -10850,11 +11103,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   return (
     <PIELiveAuthorityProvider input={liveAuthorityInput}>
-      <AppShellFrame
-        currentScreen={screen}
-        onScreenChange={setScreen}
-        onTalk={openTalk}
+      <StartupHydrationBoundary
+        ready={startupHydrationReady}
+        failures={startupHydration.failures}
+        onRetry={startupHydration.retry}
       >
+        <AppShellFrame currentScreen={screen} onScreenChange={setScreen} onTalk={openTalk}>
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}
@@ -10870,12 +11124,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
               gpsCandidateProjectNames={gpsCandidateProjectNames}
               projectDetectionStatus={projectDetectionStatus}
               projectRecords={projectRecords}
+              statusReady={projectStatusReady}
               onResumeDraft={resumeDraft}
               onDiscardDraft={discardDraft}
               onNewUpdate={createNewUpdate}
               onSelectProject={selectOverviewProject}
               onOpenProject={openProjectWorkspace}
-              onOpenUpdate={openSavedUpdate}
+              onOpenUpdate={update => openSavedUpdate(update, 'ProjectWorkspace')}
               onAddProject={addProject}
               onReopenProject={reopenProject}
               onOpenDueToday={() => {
@@ -10944,6 +11199,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 selectedArea={currentDraftArea}
                 draftSavedAt={draftSavedAt}
                 pieStatus={draftPIEStatus}
+                isSaving={fieldUpdateSaving}
                 onNotesChange={notes =>
                   setDraft(prev => ({
                     ...prev,
@@ -10973,7 +11229,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             </ScreenScroll>
           )}
 
-          {screen === 'ProjectWorkspace' && (
+          {screen === 'ProjectWorkspace' && projectStatusReady && (
             <ProjectWorkspaceScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
@@ -11061,8 +11317,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 }
                 const sourceUpdate = savedUpdates.find(update => update.id === item.sourceRecordId);
                 if (sourceUpdate) {
+                  updateDetailReturnScreenRef.current = 'ProjectWorkspace';
                   setSelectedDetailUpdate(sourceUpdate);
-                  setScreen('UpdateDetail');
+                  setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' });
                 }
               }}
               onRetryQueuedUpdate={retryQueuedUpdate}
@@ -11072,7 +11329,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             />
           )}
 
-          {screen === 'Reports' && (
+          {screen === 'Reports' && projectStatusReady && (
             <ReportsScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
@@ -11083,12 +11340,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onToggleProject={toggleReportProject}
               reportFormat={reportFormat}
               onReportFormatChange={setReportFormat}
-              updates={savedUpdates as unknown as Parameters<typeof ReportsScreen>[0]['updates']}
-              scheduleItems={authoritativeScheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['scheduleItems']}
-              currentUpdate={draft as unknown as Parameters<typeof ReportsScreen>[0]['currentUpdate']}
-              projectAreas={projectAreas as unknown as Parameters<typeof ReportsScreen>[0]['projectAreas']}
-              contacts={contactBook as unknown as Parameters<typeof ReportsScreen>[0]['contacts']}
-              referenceDocuments={referenceDocuments as unknown as Parameters<typeof ReportsScreen>[0]['referenceDocuments']}
+              updates={liveAuthorityInput.updates as unknown as Parameters<typeof ReportsScreen>[0]['updates']}
+              scheduleItems={liveAuthorityInput.scheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['scheduleItems']}
+              currentUpdate={liveAuthorityInput.currentUpdate as unknown as Parameters<typeof ReportsScreen>[0]['currentUpdate']}
+              projectAreas={liveAuthorityInput.projectAreas as unknown as Parameters<typeof ReportsScreen>[0]['projectAreas']}
+              contacts={liveAuthorityInput.contacts as unknown as Parameters<typeof ReportsScreen>[0]['contacts']}
+              referenceDocuments={liveAuthorityInput.referenceDocuments as unknown as Parameters<typeof ReportsScreen>[0]['referenceDocuments']}
               decisionLedger={decisionLedger}
               layer4Identity={layer4Identity}
               decisionLedgerMigrationStatus={decisionLedgerMigrationStatus}
@@ -11097,15 +11354,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 void createAutomatedDecisionSnapshot(judgment, silent);
               }}
               onSavedUpdates={() => setScreen('SavedUpdates')}
-              onCopyReport={report => {
-                void copyReport(report);
-              }}
-              onEmailReport={report => {
-                void emailReport(report);
-              }}
-              onTextReport={report => {
-                void textReport(report);
-              }}
+              onCopyReport={copyReport}
+              onEmailReport={emailReport}
+              onTextReport={textReport}
             />
           )}
 
@@ -11138,9 +11389,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
             />
           )}
 
-          {screen === 'Schedule' && (
+          {screen === 'Schedule' && projectStatusReady && (
             <ScheduleScreen
               contentStyle={contentStyle}
+              screenshotImportAvailable={scheduleScreenshotOcrAvailable}
               scheduleItems={authoritativeScheduleItems}
               savedUpdates={savedUpdates}
               projectAreas={projectAreas}
@@ -11166,7 +11418,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   item,
                 )
               }
-              onOpenUpdate={openSavedUpdate}
+              onOpenUpdate={update => openSavedUpdate(update, 'Schedule')}
               initialFilter={scheduleEntryFilter}
             />
           )}
@@ -11189,8 +11441,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={projectAreas}
               scheduleItems={scheduleItems}
               referenceDocuments={referenceDocuments}
-              scheduleAiExtractorUrl={scheduleAiExtractorUrl}
-              onScheduleAiExtractorUrlChange={setScheduleAiExtractorUrl}
               syncCleanupNotice={syncCleanupNotice}
               displayName={displayName}
               onDisplayNameChange={setDisplayName}
@@ -11212,58 +11462,83 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRetryUpdateSync={update => retryQueuedUpdate(update as unknown as ProjectUpdate)}
               onApplyCloudConflictUpdate={update => {
                 const cloudUpdate = update as unknown as ProjectUpdate;
-                setSavedUpdates(previous => [
-                  cloudUpdate,
-                  ...previous.filter(item => item.id !== cloudUpdate.id),
-                ]);
-              }}
-              onApplyCloudRecovery={recovered => {
-                const cloudUpdates = (recovered.updates as unknown as Partial<ProjectUpdate>[])
-                  .map(normalizeUpdate)
-                  .map(migrateLegacyProjectUpdate);
                 setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
                   localUpdates: previous,
-                  cloudUpdates,
-                  tombstones: deletedUpdateTombstones,
+                  cloudUpdates: [cloudUpdate],
+                  tombstones: deletedUpdateTombstonesRef.current,
                 }));
-                setProjectAreas(previous => mergeDAVECloudRecoveryRecords({
-                  local: previous,
-                  cloud: normalizeProjectAreas(recovered.projectAreas),
-                  deletedIds: deletedDAVERecordIds(
-                    recovered.tombstones,
-                    'project_area',
-                  ),
-                }));
-                setScheduleItems(previous => mergeDAVECloudRecoveryRecords({
-                  local: previous,
-                  cloud: normalizeScheduleItems(recovered.scheduleItems)
-                    .map(migrateLegacyScheduleItem),
-                  deletedIds: deletedDAVERecordIds(
-                    recovered.tombstones,
-                    'schedule_item',
-                  ),
-                }));
-                setReferenceDocuments(previous => mergeDAVECloudRecoveryRecords({
-                  local: previous,
-                  cloud: normalizeReferenceDocuments(recovered.referenceDocuments),
-                  deletedIds: deletedDAVERecordIds(
-                    recovered.tombstones,
-                    'reference_document',
-                  ),
-                }));
-                const cloudProjectRecords = recovered.projects
-                  .filter(project => project.name.trim())
-                  .map(projectRecordFromCloud);
-                setProjectRecords(previous => {
-                  const merged = mergeProjectRecords(
-                    [],
-                    previous,
-                    cloudProjectRecords,
-                    deletedProjectNames,
-                  );
-                  setProjects(merged.map(project => project.name));
-                  return merged;
-                });
+              }}
+              onApplyCloudRecovery={recovered => {
+                // Audit P1-27: a collection whose cloud read failed arrives
+                // empty with a non-null error. Skip it entirely — an empty
+                // failed read must never be merged as cloud truth.
+                const failed = recovered.collectionErrors;
+                if (failed.updates === null) {
+                  const cloudUpdates = (recovered.updates as unknown as Partial<ProjectUpdate>[])
+                    .map(normalizeUpdate)
+                    .map(migrateLegacyProjectUpdate);
+                  setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
+                    localUpdates: previous,
+                    cloudUpdates,
+                    tombstones: deletedUpdateTombstones,
+                  }));
+                }
+                if (failed.projectAreas === null) {
+                  setProjectAreas(previous => mergeDAVECloudRecoveryRecords({
+                    local: previous,
+                    cloud: normalizeProjectAreas(
+                      recovered.projectAreas.filter(isStartupProjectAreaRecord),
+                    ),
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'project_area',
+                    ),
+                  }));
+                  markProjectAreasAuthorityReady(true);
+                }
+                if (failed.scheduleItems === null) {
+                  const safeCloudItems = normalizeScheduleItems(
+                    recovered.scheduleItems.filter(isDAVESafeCloudScheduleRecord),
+                  ).map(migrateLegacyScheduleItem);
+                  setScheduleItems(previous => recoverDAVEScheduleRecords({
+                    local: previous,
+                    cloud: safeCloudItems,
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'schedule_item',
+                    ),
+                    allowCloudOnly: true,
+                  }));
+                  markScheduleItemsAuthorityReady(true);
+                }
+                if (failed.referenceDocuments === null) {
+                  setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
+                    local: previous,
+                    cloud: normalizeReferenceDocuments(
+                      recovered.referenceDocuments.filter(isStartupReferenceDocumentRecord),
+                    ),
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'reference_document',
+                    ),
+                  })));
+                  markReferenceDocumentsAuthorityReady(true);
+                }
+                if (failed.projects === null) {
+                  const cloudProjectRecords = recovered.projects
+                    .filter(project => project.name.trim())
+                    .map(projectRecordFromCloud);
+                  setProjectRecords(previous => {
+                    const merged = mergeProjectRecords(
+                      [],
+                      previous,
+                      cloudProjectRecords,
+                      deletedProjectNames,
+                    );
+                    setProjects(merged.map(project => project.name));
+                    return merged;
+                  });
+                }
               }}
               onSaveCaptureMemory={saveCaptureMemory}
             />
@@ -11314,7 +11589,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ScreenScroll contentStyle={contentStyle}>
               <ReadOnlyUpdateDetailScreen
                 update={liveDetailUpdate}
-                onBack={() => setScreen('SavedUpdates')}
+                backLabel={updateDetailReturnScreenRef.current === 'Schedule' ? 'Tasks' : updateDetailReturnScreenRef.current === 'ProjectWorkspace' ? 'Project' : 'Updates'}
+                onBack={() => setScreen(updateDetailReturnScreenRef.current)}
                 onRetry={
                   liveDetailUpdate.status === 'queued' ||
                   liveDetailUpdate.status === 'failed'
@@ -11328,12 +11604,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 }}
                 onDelete={() => {
                   deleteSavedUpdate(liveDetailUpdate.id, () =>
-                    setScreen('SavedUpdates'),
+                    setScreen(updateDetailReturnScreenRef.current),
                   );
                 }}
                 onArchive={() => {
                   archiveSavedUpdate(liveDetailUpdate.id, () =>
-                    setScreen('SavedUpdates'),
+                    setScreen(updateDetailReturnScreenRef.current),
                   );
                 }}
               />
@@ -11521,7 +11797,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
             onCancel={() => setTalkTaskAction(null)}
           />
 
-      </AppShellFrame>
+        </AppShellFrame>
+      </StartupHydrationBoundary>
     </PIELiveAuthorityProvider>
   );
 }
@@ -11676,6 +11953,7 @@ function HomeScreen({
   gpsCandidateProjectNames,
   projectDetectionStatus,
   projectRecords,
+  statusReady,
   onResumeDraft,
   onDiscardDraft,
   onNewUpdate,
@@ -11701,6 +11979,7 @@ function HomeScreen({
   gpsCandidateProjectNames: string[];
   projectDetectionStatus: OverviewDetectionStatus;
   projectRecords: ProjectRecord[];
+  statusReady: boolean;
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
   onNewUpdate: (projectName?: string) => void;
@@ -11715,6 +11994,17 @@ function HomeScreen({
 }) {
   const liveAuthority = usePIELiveAuthority();
   const [showAddProject, setShowAddProject] = useState(false);
+
+  if (!statusReady) {
+    return (
+      <DAVEProjectStatusLoadingScreen
+        contentStyle={contentStyle}
+        greeting={timeOfDayGreeting(displayName)}
+        dateLabel={todayLongDateLabel()}
+        onSettings={onSettings}
+      />
+    );
+  }
   const scopedProjects = scheduleOverviewProjectNames(
     projects,
     scheduleItems as unknown as import('./types').ScheduleItem[],
@@ -11724,10 +12014,11 @@ function HomeScreen({
     savedUpdates,
     scheduleItems,
   );
-  const attentionRows = overviewRows.filter(row => row.needsAttention);
-  const caughtUpRows = overviewRows.filter(row => !row.needsAttention);
-  const blockedRows = attentionRows.filter(row => row.severity === 'high');
-  const atRiskRows = attentionRows.filter(row => row.severity !== 'high');
+  const attentionRows = overviewRows.filter(row => row.health !== 'Healthy');
+  const caughtUpRows = overviewRows.filter(row => row.health === 'Healthy');
+  const needsSetupRows = overviewRows.filter(row => row.health === 'Needs Setup');
+  const blockedRows = overviewRows.filter(row => row.health === 'Blocked');
+  const atRiskRows = overviewRows.filter(row => row.health === 'At Risk');
   const topPriority = attentionRows[0] || null;
   const authoritativePriority = topPriority &&
     topPriority.project.trim().toLowerCase() === liveAuthority.projectTruth.projectName.trim().toLowerCase()
@@ -11892,6 +12183,7 @@ function HomeScreen({
           {[
             { label: 'Active Projects', value: scopedProjects.length },
             { label: 'Healthy', value: caughtUpRows.length },
+            { label: 'Needs Setup', value: needsSetupRows.length },
             { label: 'At Risk', value: atRiskRows.length },
             { label: 'Blocked', value: blockedRows.length },
           ].map(metric => (
@@ -12024,8 +12316,14 @@ function HomeScreen({
             />
           ) : null}
           {overviewRows.map(row => {
-            const health = row.severity === 'high' ? 'Blocked' : row.needsAttention ? 'At Risk' : 'Healthy';
-            const healthColor = health === 'Blocked' ? colors.danger : health === 'At Risk' ? colors.warning : colors.success;
+            const health = row.health;
+            const healthColor = health === 'Blocked'
+              ? colors.danger
+              : health === 'At Risk'
+                ? colors.warning
+                : health === 'Needs Setup'
+                  ? colors.muted
+                  : colors.success;
             const photo = overviewPhotoForProject(row.project, row.scopeProjects);
             const lastUpdate = row.scopeProjects
               .map(scope => projectStatsForName(projectStatsByName, scope).lastUpdate)
@@ -12051,6 +12349,7 @@ function HomeScreen({
                     <Text style={[styles.overviewProjectHealth, { color: healthColor }]}>{health}</Text>
                   </View>
                   <Text style={styles.overviewProjectSummary} numberOfLines={2}>{row.subtitle}</Text>
+                  {row.needsVerification ? <DAVEProjectNeedsVerificationLabel /> : null}
                   <Text style={styles.overviewProjectActivity}>
                     {row.taskCount} {pluralWord(row.taskCount, 'task')} • {row.percentComplete}% complete
                   </Text>
@@ -12358,64 +12657,6 @@ function ProjectSelectorSheet({
   );
 }
 
-function ProjectActionSheet({
-  visible,
-  title,
-  children,
-  onClose,
-}: {
-  visible: boolean;
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-}) {
-  const dragResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gesture) =>
-          gesture.dy > 10 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2,
-        onPanResponderRelease: (_event, gesture) => {
-          if (gesture.dy > 52) {
-            onClose();
-          }
-        },
-      }),
-    [onClose],
-  );
-
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.projectSelectorBackdrop}>
-        <TouchableOpacity style={styles.projectSelectorScrim} onPress={onClose} />
-        <View style={styles.projectSelectorSheet}>
-          <View
-            style={styles.projectSelectorDragHandleArea}
-            {...dragResponder.panHandlers}
-          >
-            <View style={styles.projectSelectorHandle} />
-          </View>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.panelTitle}>{title}</Text>
-            <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
-              <Ionicons name="close-outline" size={22} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView
-            style={styles.projectSelectorScroll}
-            contentContainerStyle={styles.projectSelectorScrollContent}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-            showsVerticalScrollIndicator
-          >
-            {children}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 function PhotoIntelligenceSignInModal({
   visible,
   email,
@@ -12692,17 +12933,17 @@ function getScheduleDrivenWalkRecommendation(
     projectName,
     scheduleItems as unknown as import('./types').ScheduleItem[],
   )
-    .filter(item => item.status !== 'Complete' && item.locationName.trim())
+    .filter(item => !scheduleTaskIsComplete(item) && item.locationName.trim())
     .sort((left, right) => {
-      const leftDays = daysUntilDate(left.finishDate) ?? 9999;
-      const rightDays = daysUntilDate(right.finishDate) ?? 9999;
+      const leftDays = daysUntilScheduleItem(left) ?? 9999;
+      const rightDays = daysUntilScheduleItem(right) ?? 9999;
       const leftPriority = left.priority === 'High' ? -20 : 0;
       const rightPriority = right.priority === 'High' ? -20 : 0;
       return leftDays + leftPriority - (rightDays + rightPriority);
     });
   const task = candidates[0];
   if (!task) return null;
-  const days = daysUntilDate(task.finishDate);
+  const days = daysUntilScheduleItem(task);
   const timing = days === null
     ? 'needs field verification'
     : days < 0
@@ -14321,6 +14562,7 @@ function BuildUpdateScreen({
   selectedArea,
   draftSavedAt,
   pieStatus,
+  isSaving,
   onNotesChange,
   onSaveUpdate,
   onEditPhotos,
@@ -14335,6 +14577,7 @@ function BuildUpdateScreen({
   selectedArea: ProjectArea | null;
   draftSavedAt: string | null;
   pieStatus: { status: FieldUpdatePIEStatus; summary: string };
+  isSaving: boolean;
   onNotesChange: (notes: string) => void;
   onSaveUpdate: () => void;
   onEditPhotos: () => void;
@@ -14356,7 +14599,7 @@ function BuildUpdateScreen({
   const firstPriorUpdateUsed = priorUpdateUsedForPIEResult(firstResult);
   const hasSafety = updateHasSafetyConcern(update);
   const hasBlocker = updateHasBlocker(update);
-  const hasPhotoEvidence = update.photos.length > 0;
+  const photoAssessment = photoAssessmentForUpdate(update);
   const failedPhoto = update.photos.find(
     photo =>
       photo.photoIntelligence?.status === 'analysis_failed_retry' ||
@@ -14441,23 +14684,19 @@ function BuildUpdateScreen({
         ) : null}
 
         <PIEFindingRow
-          role={hasSafety ? 'safety' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}
+          role={hasSafety ? 'safety' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}
           title={
             hasSafety
               ? 'Safety concern requires review'
-              : hasPhotoEvidence
-                ? 'No safety concerns detected'
-                : 'No photo evidence available for safety review'
+              : photoAssessmentReviewCopy(photoAssessment.state, 'safety concern')
           }
         />
         <PIEFindingRow
-          role={hasBlocker ? 'interpretation' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}
+          role={hasBlocker ? 'interpretation' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}
           title={
             hasBlocker
               ? 'Possible blocker requires review'
-              : hasPhotoEvidence
-                ? 'No open blockers detected'
-                : 'No photo evidence available for blocker review'
+              : photoAssessmentReviewCopy(photoAssessment.state, 'blocker')
           }
         />
         {firstResult?.comparisonConfidence ? (
@@ -14618,9 +14857,10 @@ function BuildUpdateScreen({
       </View>
 
       <PrimaryButton
-        label="Save Field Update"
+        label={isSaving ? 'Saving…' : 'Save Field Update'}
         icon="checkmark-circle-outline"
         onPress={onSaveUpdate}
+        disabled={isSaving}
       />
 
       <View style={styles.sendRow}>
@@ -14650,30 +14890,9 @@ function BuildUpdateScreen({
   );
 }
 
-function MoreOptionRow({
-  label,
-  icon,
-  onPress,
-}: {
-  label: string;
-  icon: IconName;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity style={styles.projectSelectorRow} onPress={onPress}>
-      <View style={styles.rowIconBubble}>
-        <Ionicons name={icon} size={20} color={colors.primary} />
-      </View>
-      <View style={styles.rowMain}>
-        <Text style={styles.projectName}>{label}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-    </TouchableOpacity>
-  );
-}
-
 function ReadOnlyUpdateDetailScreen({
   update,
+  backLabel,
   onBack,
   onRetry,
   onRetryPhotoAnalysis,
@@ -14681,6 +14900,7 @@ function ReadOnlyUpdateDetailScreen({
   onArchive,
 }: {
   update: ProjectUpdate;
+  backLabel: string;
   onBack: () => void;
   onRetry?: () => void;
   onRetryPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
@@ -14713,7 +14933,7 @@ function ReadOnlyUpdateDetailScreen({
     <View>
       <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
         <Ionicons name="chevron-back" size={21} color={colors.primary} />
-        <Text style={styles.dashboardManageText}>Updates</Text>
+        <Text style={styles.dashboardManageText}>{backLabel}</Text>
       </TouchableOpacity>
       <ScreenTitle
         title={update.projectName}
@@ -14747,6 +14967,7 @@ function ReadOnlyUpdateDetailScreen({
           </TouchableOpacity>
         ) : null}
       </View>
+      <UpdateDeleteControl onDelete={onDelete} />
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>Photo Analysis</Text>
         <Text style={styles.projectName}>
@@ -15142,59 +15363,6 @@ function Phase2ProjectCard({
   );
 }
 
-function DailyBriefSection({
-  title,
-  items,
-  emptyText,
-  onOpen,
-}: {
-  title: string;
-  items: Array<DAVEProjectDailyBriefItem | DAVEProjectDailyBriefAttentionItem>;
-  emptyText: string;
-  onOpen: (item: DAVEProjectDailyBriefItem | DAVEProjectDailyBriefAttentionItem) => void;
-}) {
-  return (
-    <View>
-      <Text style={styles.sectionLabelNoMargin}>{title}</Text>
-      {items.length === 0 ? (
-        <Text style={styles.locationDetailText}>{emptyText}</Text>
-      ) : (
-        items.map(item => (
-          <TouchableOpacity
-            key={item.id}
-            style={styles.projectSelectorRow}
-            onPress={() => onOpen(item)}
-            accessibilityRole="button"
-            accessibilityLabel={`${title}: ${item.text}`}
-          >
-            <View style={styles.rowMain}>
-              <Text style={styles.locationDetailText}>• {item.text}</Text>
-              {'whyItMatters' in item ? (
-                <Text style={styles.rowSub}>{item.whyItMatters} {item.actionText}</Text>
-              ) : null}
-            </View>
-            <Ionicons name="chevron-forward" size={17} color={colors.muted} />
-          </TouchableOpacity>
-        ))
-      )}
-    </View>
-  );
-}
-
-function WorkspaceCardSkeleton() {
-  return (
-    <View
-      style={styles.workspaceSkeleton}
-      accessible
-      accessibilityLabel="Loading project priority"
-    >
-      <View style={[styles.workspaceSkeletonLine, { width: '72%' }]} />
-      <View style={[styles.workspaceSkeletonLine, { width: '94%' }]} />
-      <View style={[styles.workspaceSkeletonLine, { width: '58%' }]} />
-    </View>
-  );
-}
-
 type DAVEWorkspaceOpenItem = {
   navigationTarget: DAVEBriefNavigationTarget;
   sourceRecordId: string;
@@ -15220,6 +15388,23 @@ function ProjectTaskControlPanel({
   const [filter, setFilter] = useState<ProjectTaskFilter>('All');
   const [expanded, setExpanded] = useState(false);
   const [completedGroupOpen, setCompletedGroupOpen] = useState(false);
+  const projectScopeNames = useMemo(
+    () => scheduleProjectScopeNames(
+      projectName,
+      scheduleItems as unknown as import('./types').ScheduleItem[],
+    ),
+    [projectName, scheduleItems],
+  );
+  const operationalScheduleItems = useMemo(
+    () => operationalScheduleItemsForProject(projectName, scheduleItems),
+    [projectName, scheduleItems],
+  );
+  const scopedFieldUpdates = useMemo(
+    () => savedUpdates.filter(update =>
+      projectScopeNames.some(scope => projectMatchesScope(update, scope)),
+    ),
+    [projectScopeNames, savedUpdates],
+  );
   const rollup = useMemo(
     () => buildDAVEProjectScheduleRollup({
       projectName,
@@ -15229,11 +15414,37 @@ function ProjectTaskControlPanel({
   );
   const reconciliation = useMemo(
     () => buildPIEScheduleReconciliation({
-      scheduleItems: rollup.tasks,
+      scheduleItems: operationalScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
       updates: savedUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     }),
-    [rollup.tasks, savedUpdates],
+    [operationalScheduleItems, savedUpdates],
   );
+  const attentionItems = useMemo(
+    () => Array.from(new Map(
+      projectScopeNames
+        .flatMap(scope => buildPhase2AttentionItems(savedUpdates, scope))
+        .map(item => [item.id, item]),
+    ).values()),
+    [projectScopeNames, savedUpdates],
+  );
+  const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlockerForScopes(
+    projectScopeNames,
+    savedUpdates,
+    projectMatchesScope,
+  );
+  const operationalStatus = deriveDAVEProjectOperationalStatus({
+    scheduleHealth: rollup.health,
+    scheduleReason: rollup.healthReason,
+    reconciliationWarnings: reconciliation.warnings,
+    hasConfirmedBlocker: Boolean(confirmedBlockingUpdate),
+    confirmedBlockerReason: confirmedBlockingUpdate
+      ? daveConfirmedBlockerReason(confirmedBlockingUpdate)
+      : null,
+    hasAttention: attentionItems.length > 0,
+    attentionReason: attentionItems[0]?.detail || attentionItems[0]?.title || null,
+    hasScheduleData: rollup.taskCount > 0,
+    hasFieldData: scopedFieldUpdates.length > 0,
+  });
   const fieldMatches = new Map(
     reconciliation.matches.map(match => [match.scheduleItemId, match]),
   );
@@ -15245,7 +15456,7 @@ function ProjectTaskControlPanel({
     ]);
   });
   const filteredTasks = rollup.tasks.filter(item => {
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
     const isComplete = scheduleTaskIsComplete(item);
     if (filter === 'Complete') return isComplete;
     if (filter === 'Due Soon') {
@@ -15273,29 +15484,17 @@ function ProjectTaskControlPanel({
   if (completedTasks.length > 0) {
     groupedTasks.set('Completed', completedTasks);
   }
-  const healthColor = rollup.health === 'Blocked'
-    ? colors.danger
-    : rollup.health === 'At Risk'
-      ? colors.warning
-      : colors.success;
-
   return (
     <View style={styles.projectTaskPanel}>
-      <View style={styles.projectTaskHeader}>
-        <View style={styles.rowMain}>
-          <Text style={styles.projectTaskEyebrow}>PROJECT CONTROL</Text>
-          <Text style={styles.panelTitle}>Tasks and Schedule</Text>
-        </View>
-        <View style={[styles.projectTaskHealthPill, { backgroundColor: `${healthColor}1A` }]}>
-          <Text style={[styles.projectTaskHealthText, { color: healthColor }]}>{rollup.health}</Text>
-        </View>
-      </View>
-
-      <Text style={styles.projectTaskProgressValue}>{rollup.percentComplete}% complete</Text>
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${rollup.percentComplete}%` }]} />
-      </View>
-      <Text style={styles.projectTaskReason}>{rollup.healthReason}</Text>
+      <DAVEProjectTaskOperationalSummary
+        status={operationalStatus.status}
+        scheduleStatus={rollup.health}
+        percentComplete={rollup.percentComplete}
+        operationalReason={operationalStatus.reason}
+        scheduleReason={rollup.healthReason}
+        needsVerification={operationalStatus.needsVerification}
+        verificationSummary={operationalStatus.primaryWarning?.summary || null}
+      />
       <View style={styles.projectTaskMetrics}>
         {[
           ['Tasks', rollup.taskCount],
@@ -15551,6 +15750,17 @@ function ProjectWorkspaceScreen({
   const legacyUnusedWalkMemories = unusedWalkMemories.filter(
     memory => !projectWalkMemoryIds.has(memory.id),
   );
+  const projectCaptureMemories = useMemo(
+    () => captureMemories
+      .filter(memory => {
+        const memoryProject = memory.recommendedProject.value?.trim().toLowerCase();
+        return Boolean(memoryProject && projectScopeNames.some(
+          scope => scope.trim().toLowerCase() === memoryProject,
+        ));
+      })
+      .sort((left, right) => right.confirmedAt.localeCompare(left.confirmedAt)),
+    [captureMemories, projectScopeNames],
+  );
   const projectDocumentCount = scopedProjectDocuments.length;
   const projectActivity = buildPhase2ActivityItems(
     projectUpdates,
@@ -15708,7 +15918,7 @@ function ProjectWorkspaceScreen({
           <View style={styles.rowMain}>
             <Text style={styles.panelTitle}>Project Brief</Text>
             <Text style={styles.rowSub}>
-              {dailyBrief.reality.state} · {dailyBrief.reality.confidence} confidence · {evidenceQuality.strength} evidence
+              Evidence state: {dailyBrief.reality.state} · {dailyBrief.reality.confidence} confidence · {evidenceQuality.strength} evidence
             </Text>
             <Text style={styles.sectionLabelNoMargin}>What matters now</Text>
             <Text style={styles.bodyText}>{actionCenter.priority}</Text>
@@ -15768,6 +15978,7 @@ function ProjectWorkspaceScreen({
                 ))}
                 <Text style={styles.rowSub}>{evidenceQuality.limitation}</Text>
                 <Text style={styles.rowSub}>{pmBriefing.evidenceCoverage}</Text>
+                <Text style={styles.sectionLabelNoMargin}>Recent timeline evidence</Text>
                 {dailyBrief.reality.recentTimelineEvents.slice(0, 3).map(event => (
                   <Text key={event.id} style={styles.locationDetailText}>• {event.title}: {event.summary}</Text>
                 ))}
@@ -16024,6 +16235,37 @@ function ProjectWorkspaceScreen({
         }}
       />
 
+      {projectCaptureMemories.length > 0 ? (
+        <>
+          <Text style={styles.sectionLabel}>Project Memory</Text>
+          {projectCaptureMemories.slice(0, 3).map(memory => (
+            <TouchableOpacity
+              key={memory.id}
+              style={styles.savedRow}
+              onPress={() => setSelectedCaptureMemory(memory)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open saved memory from ${formatSavedTime(memory.confirmedAt)}`}
+            >
+              <View style={styles.rowIconBubble}>
+                <Ionicons name="bookmark-outline" size={20} color={colors.primary} />
+              </View>
+              <View style={styles.rowMain}>
+                <Text style={styles.projectName}>Saved Memory</Text>
+                <Text style={styles.rowSub}>{formatSavedTime(memory.confirmedAt)}</Text>
+                <Text style={styles.locationDetailText} numberOfLines={2}>
+                  {memory.fields.commitment ||
+                    memory.fields.issue ||
+                    memory.fields.decision ||
+                    memory.fields.generalMemory ||
+                    memory.transcript}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+            </TouchableOpacity>
+          ))}
+        </>
+      ) : null}
+
       <Text style={styles.sectionLabel}>Recent Project Activity</Text>
       {projectActivity.length === 0 ? (
         <EmptyState
@@ -16137,7 +16379,7 @@ function ProjectWorkspaceScreen({
           onConfirm={() => onDeleteProject(projectName)}
         />
         <Text style={styles.locationDetailText}>
-          Press and hold for 3 seconds to permanently delete {projectName} and its cloud data.
+          Hold for 3 seconds to remove {projectName}. Active cloud records are queued for deletion. Secure cloud audit evidence and uploaded files may remain until separately authorized.
         </Text>
       </ProjectActionSheet>
     </ScrollView>
@@ -17976,11 +18218,7 @@ function UpdateOverflowMenu({
   onArchive: () => void;
 }) {
   const cloudSynced = lifecycle === 'sent';
-  const deleteLabel = lifecycle === 'sent'
-    ? 'Delete cloud-synced update'
-    : lifecycle === 'failed'
-      ? 'Delete failed update'
-      : 'Remove from device';
+  const deleteLabel = 'Delete This Update';
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
@@ -18294,6 +18532,7 @@ function UpcomingScreen({
       source: string;
       title: string;
       projectName: string;
+      projectTimeZone?: string | null;
       locationName: string;
       owner: string;
       contractor: string;
@@ -18312,6 +18551,7 @@ function UpcomingScreen({
     source: string;
     title: string;
     projectName: string;
+    projectTimeZone?: string | null;
     locationName: string;
     owner: string;
     contractor: string;
@@ -18324,12 +18564,13 @@ function UpcomingScreen({
 
   const combinedItems: UpcomingItem[] = [
     ...scheduleItems
-      .filter(item => item.status !== 'Complete')
+      .filter(item => !scheduleTaskIsComplete(item))
       .map(item => ({
         id: item.id,
         source: 'Schedule',
         title: item.taskName,
         projectName: item.projectName,
+        projectTimeZone: item.projectTimeZone,
         locationName: item.locationName,
         owner: item.owner,
         contractor: item.contractor,
@@ -18344,6 +18585,7 @@ function UpcomingScreen({
       source: 'Action Item',
       title: item.taskName,
       projectName: item.projectName,
+      projectTimeZone: DEFAULT_PROJECT_TIME_ZONE,
       locationName: item.locationName,
       owner: item.owner,
       contractor: '',
@@ -18356,7 +18598,7 @@ function UpcomingScreen({
   ];
 
   const withDueDates = combinedItems
-    .map(item => ({ ...item, days: daysUntilDate(item.dueDate) }))
+    .map(item => ({ ...item, days: daysUntilDate(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE) }))
     .filter(item => item.days !== null)
     .sort((a, b) => (a.days ?? 99999) - (b.days ?? 99999));
 
@@ -18384,7 +18626,7 @@ function UpcomingScreen({
           {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
         </Text>
         <Text style={styles.rowSub}>
-          {dueStatusText(item.dueDate)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
+          {dueStatusText(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
         </Text>
         <View style={styles.scheduleMetaRow}>
           <View style={[styles.statusPill, { backgroundColor: `${colors.primary}1A` }]}>
@@ -18547,6 +18789,7 @@ function UpcomingScreen({
 
 function ScheduleScreen({
   contentStyle,
+  screenshotImportAvailable,
   scheduleItems,
   savedUpdates,
   projectAreas,
@@ -18568,6 +18811,7 @@ function ScheduleScreen({
   initialFilter,
 }: {
   contentStyle: StyleProp<ViewStyle>;
+  screenshotImportAvailable: boolean;
   scheduleItems: ScheduleItem[];
   savedUpdates: ProjectUpdate[];
   projectAreas: ProjectArea[];
@@ -18611,11 +18855,24 @@ function ScheduleScreen({
     let active = true;
     AsyncStorage.getItem('dave-follow-through-reviews:v2')
       .then(value => {
-        if (active) setFollowThroughReviewStates(parseDAVEFollowThroughReviewStates(value));
+        if (!active) return;
+        const parsed = parseDAVEFollowThroughReviewStatesResult(value);
+        if (parsed.status === 'corrupt') {
+          Alert.alert(
+            'Review reminders unavailable',
+            'Saved follow-through review timing could not be read safely. No reminder history was changed.',
+          );
+          return;
+        }
+        setFollowThroughReviewStates(parsed.reviewStates);
+        setFollowThroughReviewsLoaded(true);
       })
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) setFollowThroughReviewsLoaded(true);
+      .catch(() => {
+        if (!active) return;
+        Alert.alert(
+          'Review reminders unavailable',
+          'Saved follow-through review timing could not be opened. No reminder history was changed.',
+        );
       });
     return () => { active = false; };
   }, []);
@@ -18654,13 +18911,23 @@ function ScheduleScreen({
     () => new Set(actionInbox.items.flatMap(item => item.scheduleItemId ? [item.scheduleItemId] : [])),
     [actionInbox.items],
   );
+  const [followThroughClock, setFollowThroughClock] = useState(() => Date.now());
   const followThroughPlan = useMemo(
     () => planDAVEFollowThrough({
       items: actionInbox.items,
       reviewStates: followThroughReviewStates,
+      now: new Date(followThroughClock),
     }),
-    [actionInbox.items, followThroughReviewStates],
+    [actionInbox.items, followThroughClock, followThroughReviewStates],
   );
+  useEffect(() => {
+    if (!followThroughPlan.nextReviewAt) return;
+    const dueAt = new Date(followThroughPlan.nextReviewAt).getTime();
+    if (!Number.isFinite(dueAt) || dueAt <= followThroughClock) return;
+    const delay = Math.max(250, Math.min(dueAt - Date.now(), 2_147_483_647));
+    const timer = setTimeout(() => setFollowThroughClock(Date.now()), delay);
+    return () => clearTimeout(timer);
+  }, [followThroughPlan.nextReviewAt, followThroughClock]);
   const followThroughByItemId = useMemo(
     () => new Map(followThroughPlan.reminders.map(reminder => [reminder.item.id, reminder])),
     [followThroughPlan.reminders],
@@ -18671,15 +18938,18 @@ function ScheduleScreen({
     const next = followThroughPlan.reviewStates;
     if (JSON.stringify(next) === JSON.stringify(followThroughReviewStates)) return;
     setFollowThroughReviewStates([...next]);
-    AsyncStorage.setItem('dave-follow-through-reviews:v2', JSON.stringify(next)).catch(() => undefined);
   }, [followThroughPlan.reviewStates, followThroughReviewStates, followThroughReviewsLoaded]);
 
+  useEffect(() => {
+    if (!followThroughReviewsLoaded) return;
+    persistStorageItem('dave-follow-through-reviews:v2', JSON.stringify(followThroughReviewStates)).catch(error =>
+      reportStoragePersistenceFailure({ storageKey: 'dave-follow-through-reviews:v2', label: 'follow-through reviews', error }),
+    );
+  }, [followThroughReviewStates, followThroughReviewsLoaded]);
+
   function markFollowThroughReviewed(fingerprint: string) {
-    setFollowThroughReviewStates(current => {
-      const next = reviewedDAVEFollowThroughStates(current, fingerprint);
-      AsyncStorage.setItem('dave-follow-through-reviews:v2', JSON.stringify(next)).catch(() => undefined);
-      return next;
-    });
+    setFollowThroughReviewStates(current =>
+      reviewedDAVEFollowThroughStates(current, fingerprint));
   }
   const scheduleFieldResults = useMemo(() => {
     const matches = new Map<string, PIEScheduleFieldMatch>();
@@ -18703,8 +18973,8 @@ function ScheduleScreen({
     const bComplete = scheduleTaskIsComplete(b);
     if (aComplete !== bComplete) return Number(aComplete) - Number(bComplete);
 
-    const aDays = daysUntilDate(a.finishDate);
-    const bDays = daysUntilDate(b.finishDate);
+    const aDays = daysUntilScheduleItem(a);
+    const bDays = daysUntilScheduleItem(b);
 
     if (aDays === null && bDays === null) return 0;
     if (aDays === null) return 1;
@@ -18718,17 +18988,17 @@ function ScheduleScreen({
   });
 
   const dueSoon = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
+    if (scheduleTaskIsComplete(item)) return false;
 
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
 
     return days !== null && days >= 0 && days <= 7;
   });
 
   const overdue = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
+    if (scheduleTaskIsComplete(item)) return false;
 
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
 
     return days !== null && days < 0;
   });
@@ -18736,7 +19006,7 @@ function ScheduleScreen({
   const filteredItems = sortedItems.filter(item => {
     if (taskFilter === 'All') return true;
     if (scheduleTaskIsComplete(item)) return false;
-    const days = daysUntilDate(item.finishDate);
+    const days = daysUntilScheduleItem(item);
     if (taskFilter === 'Today') return days === 0;
     if (taskFilter === '7 Days') return days !== null && days >= 0 && days <= 7;
     const dependency = dependencyNodeByItemId.get(item.id);
@@ -18898,7 +19168,7 @@ function ScheduleScreen({
                   key={item.id}
                   item={item}
                   reminder={followThroughByItemId.get(item.id) || null}
-                  onReview={followThroughByItemId.has(item.id)
+                  onReview={followThroughReviewsLoaded && followThroughByItemId.has(item.id)
                     ? () => markFollowThroughReviewed(followThroughByItemId.get(item.id)!.fingerprint)
                     : undefined}
                   onPress={item.updateId
@@ -18993,6 +19263,7 @@ function ScheduleScreen({
 
           {scheduleManagementOpen ? (
             <ScheduleImportFlow
+              screenshotImportAvailable={screenshotImportAvailable}
               onImportFile={onImport}
               onImportScreenshots={onImportScreenshot}
               onAddManually={() => setShowAdd(true)}
@@ -19352,11 +19623,12 @@ function ScheduleItemRow({
   const completionVerificationLabel = scheduleCompletionVerificationLabel(
     item as unknown as import('./types').ScheduleItem,
   );
-  const days = daysUntilDate(item.finishDate);
-  const isOverdue = days !== null && days < 0 && item.status !== 'Complete';
-  const isDueSoon = days !== null && days >= 0 && days <= 7 && item.status !== 'Complete';
+  const days = daysUntilScheduleItem(item);
+  const itemComplete = scheduleTaskIsComplete(item);
+  const isOverdue = days !== null && days < 0 && !itemComplete;
+  const isDueSoon = days !== null && days >= 0 && days <= 7 && !itemComplete;
   const priorityColor = item.priority === 'High' ? colors.danger : item.priority === 'Low' ? colors.success : colors.warning;
-  const statusColor = item.status === 'Complete' ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
+  const statusColor = itemComplete ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
   const blockerNames = (dependencyNode?.blockingPredecessorIds || []).map(blockerId =>
     scheduleItems.find(candidate => candidate.id === blockerId)?.taskName || blockerId,
   );
@@ -19387,7 +19659,7 @@ function ScheduleItemRow({
             {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
           </Text>
           <Text style={[styles.rowSub, styles.scheduleItemContext]}>
-            {item.finishDate ? dueStatusText(item.finishDate) : 'No finish date'}{item.contractor ? ` • ${item.contractor}` : ''}
+            {item.finishDate ? dueStatusText(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE) : 'No finish date'}{item.contractor ? ` • ${item.contractor}` : ''}
           </Text>
         </TouchableOpacity>
 
@@ -19895,89 +20167,6 @@ function PrimaryButton({
   );
 }
 
-const HOLD_TO_DELETE_DURATION_MS = 3000;
-const HOLD_TO_DELETE_TICK_MS = 50;
-
-function HoldToDeleteButton({
-  label,
-  holdingLabel,
-  deletingLabel,
-  isDeleting,
-  onConfirm,
-}: {
-  label: string;
-  holdingLabel: string;
-  deletingLabel: string;
-  isDeleting: boolean;
-  onConfirm: () => void;
-}) {
-  const [progress, setProgress] = useState(0);
-  const [holding, setHolding] = useState(false);
-  const holdTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  function clearHoldTimer() {
-    if (holdTimer.current) {
-      clearInterval(holdTimer.current);
-      holdTimer.current = null;
-    }
-  }
-
-  function startHold() {
-    if (isDeleting) return;
-
-    setHolding(true);
-    setProgress(0);
-
-    const startedAt = Date.now();
-
-    holdTimer.current = setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      const nextProgress = Math.min(
-        100,
-        (elapsed / HOLD_TO_DELETE_DURATION_MS) * 100,
-      );
-
-      setProgress(nextProgress);
-
-      if (nextProgress >= 100) {
-        clearHoldTimer();
-        setHolding(false);
-        setProgress(0);
-        onConfirm();
-      }
-    }, HOLD_TO_DELETE_TICK_MS);
-  }
-
-  function cancelHold() {
-    clearHoldTimer();
-    setHolding(false);
-    setProgress(0);
-  }
-
-  useEffect(() => clearHoldTimer, []);
-
-  return (
-    <TouchableOpacity
-      style={styles.holdToDeleteButton}
-      activeOpacity={0.85}
-      disabled={isDeleting}
-      onPressIn={startHold}
-      onPressOut={cancelHold}
-    >
-      <View
-        style={[
-          styles.holdToDeleteFill,
-          { width: `${progress}%` },
-        ]}
-      />
-      <Ionicons name="trash-outline" size={19} color={colors.danger} />
-      <Text style={styles.holdToDeleteText}>
-        {isDeleting ? deletingLabel : holding ? holdingLabel : label}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
 function SecondaryButton({
   label,
   icon,
@@ -20246,37 +20435,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     minHeight: 54,
     justifyContent: 'center',
-  },
-
-  holdToDeleteButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: colors.dangerSoft,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.danger,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    minHeight: 54,
-    marginBottom: 10,
-    overflow: 'hidden',
-  },
-
-  holdToDeleteFill: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: colors.danger,
-    opacity: 0.25,
-  },
-
-  holdToDeleteText: {
-    color: colors.danger,
-    fontSize: 16,
-    fontWeight: '700',
   },
 
   secondaryButton: {
@@ -21688,17 +21846,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
 
-  workspaceSkeleton: {
-    gap: 9,
-    paddingVertical: 8,
-  },
-
-  workspaceSkeletonLine: {
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.fill,
-  },
-
   projectWorkspaceCoverTitle: {
     color: colors.text,
     fontSize: 14,
@@ -22358,42 +22505,6 @@ const styles = StyleSheet.create({
   projectSelectorScrim: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(15, 23, 42, 0.34)',
-  },
-
-  projectSelectorSheet: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 28,
-    borderColor: colors.line,
-    borderWidth: 1,
-    maxHeight: '82%',
-  },
-
-  projectSelectorDragHandleArea: {
-    minHeight: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  projectSelectorHandle: {
-    width: 42,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: colors.line,
-    alignSelf: 'center',
-  },
-
-  projectSelectorScroll: {
-    flexGrow: 0,
-    flexShrink: 1,
-  },
-
-  projectSelectorScrollContent: {
-    paddingTop: 2,
-    paddingBottom: 8,
   },
 
   projectSelectorRow: {
@@ -23202,36 +23313,11 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     padding: 14,
   },
-  projectTaskHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 12,
-  },
   projectTaskEyebrow: {
     color: colors.primary,
     fontSize: 12,
     fontWeight: '900',
     letterSpacing: 1.1,
-  },
-  projectTaskHealthPill: {
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  projectTaskHealthText: {
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  projectTaskProgressValue: {
-    color: colors.text,
-    fontSize: 25,
-    fontWeight: '900',
-  },
-  projectTaskReason: {
-    color: colors.muted,
-    fontSize: 14,
-    fontWeight: '600',
-    lineHeight: 20,
   },
   projectTaskMetrics: {
     flexDirection: 'row',

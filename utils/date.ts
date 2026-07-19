@@ -1,3 +1,10 @@
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  projectDateRelativeDays,
+  type Instant,
+  type ProjectTimeZone,
+} from '../services/ProjectDateTime';
+
 export function formatDisplayDate(date: string) {
   const [year, month, day] = date.split('-').map(Number);
 
@@ -119,19 +126,20 @@ export function formatAppDate(value: string) {
   });
 }
 
-export function daysUntilDate(value: string) {
-  const date = parseFlexibleDate(value);
-
-  if (!date) return null;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return Math.round((date.getTime() - today.getTime()) / 86400000);
+export function daysUntilDate(
+  value: string,
+  now: Date | Instant | string = new Date(),
+  projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
+) {
+  return projectDateRelativeDays(value, now, projectTimeZone);
 }
 
-export function dueStatusText(value: string) {
-  const days = daysUntilDate(value);
+export function dueStatusText(
+  value: string,
+  now: Date | Instant | string = new Date(),
+  projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
+) {
+  const days = daysUntilDate(value, now, projectTimeZone);
 
   if (days === null) return value.trim() ? `Due ${value}` : 'No due date';
   if (days < 0) return `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} overdue`;

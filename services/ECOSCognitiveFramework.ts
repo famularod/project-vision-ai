@@ -199,10 +199,10 @@ export function runECOSCognitiveFramework(
   const hypotheses = buildHypotheses(interpretations, patterns, evidenceReview);
   const challenges = buildChallenges(hypotheses, constraints, evidenceReview);
   const beliefs = buildBeliefs(hypotheses, challenges);
-  const deliberation = buildDeliberation(goal, candidateActions, decisions, risks, constraints, challenges);
+  const deliberation = buildDeliberation(goal, candidateActions, decisions, risks, constraints, challenges, evidenceReview.confidence);
   const predictions = buildPredictions(candidateActions, risks, evidenceReview);
-  const decisionScores = buildDecisionScores(decisions, candidateActions, deliberation, evidenceReview);
-  const recommendations = buildRecommendations(candidateActions, deliberation, evidenceReview, beliefs);
+  const decisionScores = buildDecisionScores(decisions, candidateActions, deliberation, evidenceReview, risks, constraints);
+  const recommendations = buildRecommendations(candidateActions, deliberation, evidenceReview, beliefs, risks, constraints);
   const explanations = buildExplanations(recommendations, beliefs, evidenceReview, challenges);
   const reflection = buildReflection(input.outcomes || [], input.feedback || [], beliefs);
   const learning = buildLearning(input.feedback || [], input.outcomes || [], reflection);
@@ -247,7 +247,8 @@ function buildObservations(
     subject,
     observation: item.summary,
     source: item.source,
-    confidence: item.confidence || 'medium',
+    // Audit P1-14: unknown confidence stays low, never defaults upward.
+    confidence: normalizeECOSConfidence(item.confidence),
   }));
 
   const contextObservations = context.map((item, index) => ({
@@ -261,12 +262,82 @@ function buildObservations(
   return [...evidenceObservations, ...contextObservations];
 }
 
+/**
+ * Audit P1-14: evidence without a stated confidence is treated as LOW, never
+ * silently elevated. One undefined-confidence rumor can no longer produce a
+ * high-confidence review.
+ */
+export function normalizeECOSConfidence(
+  confidence: ECOSConfidence | undefined | null,
+): ECOSConfidence {
+  return confidence === 'high' || confidence === 'medium' ? confidence : 'low';
+}
+
+export type ECOSOptionScore = {
+  option: string;
+  score: number;
+  disqualified: boolean;
+  reason: string;
+};
+
+const HAZARD_CONTEXT_RE = /hazard|unsafe|safety|injur|danger|exposed|fall|shock|fire|collapse/i;
+const HAZARD_DISMISSAL_RE = /\b(ignore|dismiss|skip|bypass|postpone|delay|defer)\b/i;
+const HAZARD_MITIGATION_RE = /\b(stop|halt|pause|inspect|secure|verify|evacuate|barricade|shut|isolate)\b/i;
+
+/**
+ * Audit P1-14: every option is scored deterministically from its content and
+ * the evidence confidence — never from list position. When the situation
+ * carries hazard context, options that dismiss the hazard are disqualified
+ * outright and mitigating options are preferred. Original order is only the
+ * final tie-break, so results are stable.
+ */
+export function scoreECOSOptions(
+  options: string[],
+  risks: string[],
+  constraints: string[],
+  evidenceConfidence: ECOSConfidence,
+): ECOSOptionScore[] {
+  const hazardContext = [...risks, ...constraints].some(item => HAZARD_CONTEXT_RE.test(item));
+  const confidenceScore =
+    evidenceConfidence === 'high' ? 30 : evidenceConfidence === 'medium' ? 20 : 10;
+
+  const scored = options.map((option, index) => {
+    if (hazardContext && HAZARD_DISMISSAL_RE.test(option)) {
+      return {
+        option,
+        index,
+        score: 0,
+        disqualified: true,
+        reason: 'Disqualified: this option dismisses an identified safety hazard.',
+      };
+    }
+    const safetyBonus = hazardContext && HAZARD_MITIGATION_RE.test(option) ? 25 : 0;
+    return {
+      option,
+      index,
+      score: 50 + confidenceScore + safetyBonus,
+      disqualified: false,
+      reason: safetyBonus > 0
+        ? 'Preferred: this option addresses the identified safety hazard.'
+        : 'Scored from current evidence confidence.',
+    };
+  });
+
+  return scored
+    .sort((left, right) =>
+      right.score - left.score || left.index - right.index,
+    )
+    .map(({ option, score, disqualified, reason }) => ({ option, score, disqualified, reason }));
+}
+
 function buildEvidenceReview(
   evidence: ECOSEvidenceInput[],
   constraints: string[],
   risks: string[],
 ): ECOSEvidenceReview {
-  const lowConfidenceEvidence = evidence.filter(item => item.confidence === 'low');
+  const lowConfidenceEvidence = evidence.filter(
+    item => normalizeECOSConfidence(item.confidence) === 'low',
+  );
 
   return {
     summary:
@@ -399,12 +470,17 @@ function buildDeliberation(
   risks: string[],
   constraints: string[],
   challenges: ECOSSelfChallenge[],
+  evidenceConfidence: ECOSConfidence,
 ): ECOSDeliberation {
   const options = candidateActions.length > 0
     ? candidateActions
     : decisions.length > 0
       ? decisions
       : ['Collect more evidence'];
+  // Audit P1-14: the strongest option is the highest-scoring eligible one,
+  // never simply the first in the list.
+  const ranked = scoreECOSOptions(options, risks, constraints, evidenceConfidence);
+  const strongest = ranked.find(item => !item.disqualified);
 
   return {
     question: `What action best supports the goal: ${goal}?`,
@@ -413,7 +489,7 @@ function buildDeliberation(
       ...risks.map(risk => `Risk: ${risk}`),
       ...constraints.map(constraint => `Constraint: ${constraint}`),
     ],
-    strongestOption: options[0] || null,
+    strongestOption: strongest?.option || null,
     whatWouldChangeThis: challenges.flatMap(challenge => challenge.evidenceNeeded).slice(0, 5),
     readiness: 'uncertain',
   };
@@ -443,18 +519,33 @@ function buildDecisionScores(
   candidateActions: string[],
   deliberation: ECOSDeliberation,
   evidenceReview: ECOSEvidenceReview,
+  risks: string[],
+  constraints: string[],
 ): ECOSDecisionScore[] {
   const decisionList = decisions.length > 0 ? decisions : candidateActions;
+  // Audit P1-14: scores come from option content and evidence confidence,
+  // not list position; disqualified options score zero and stay blocked.
+  const ranked = scoreECOSOptions(
+    decisionList.slice(0, 5),
+    risks,
+    constraints,
+    evidenceReview.confidence,
+  );
 
-  return decisionList.slice(0, 5).map((decision, index) => ({
+  return ranked.map((item, index) => ({
     id: `decision-${index + 1}`,
-    decision,
-    score: scoreForDecision(index, evidenceReview.confidence),
-    reason:
-      decision === deliberation.strongestOption
+    decision: item.option,
+    score: item.score,
+    reason: item.disqualified
+      ? item.reason
+      : item.option === deliberation.strongestOption
         ? 'This is the strongest available option from current evidence.'
-        : 'This option may be useful but is not the strongest current option.',
-    readiness: evidenceReview.confidence === 'high' ? 'ready' : 'needs_verification',
+        : item.reason,
+    readiness: item.disqualified
+      ? 'blocked'
+      : evidenceReview.confidence === 'high'
+        ? 'ready'
+        : 'needs_verification',
   }));
 }
 
@@ -463,10 +554,17 @@ function buildRecommendations(
   deliberation: ECOSDeliberation,
   evidenceReview: ECOSEvidenceReview,
   beliefs: ECOSBelief[],
+  risks: string[],
+  constraints: string[],
 ): ECOSRecommendation[] {
-  const actions = candidateActions.length > 0
+  const rawActions = candidateActions.length > 0
     ? candidateActions
     : [deliberation.strongestOption || 'Collect more evidence'];
+  // Audit P1-14: recommendations are ranked safest/strongest first and never
+  // include a safety-disqualified option.
+  const actions = scoreECOSOptions(rawActions, risks, constraints, evidenceReview.confidence)
+    .filter(item => !item.disqualified)
+    .map(item => item.option);
 
   return actions.slice(0, 3).map((action, index) => ({
     id: `recommendation-${index + 1}`,
@@ -582,9 +680,4 @@ function determineReadiness(
   if (uncertainty.unknowns.length > 0 || !deliberation.strongestOption) return 'uncertain';
   if (evidenceReview.confidence === 'high') return 'ready';
   return 'needs_verification';
-}
-
-function scoreForDecision(index: number, confidence: ECOSConfidence): number {
-  const confidenceScore = confidence === 'high' ? 30 : confidence === 'medium' ? 20 : 10;
-  return Math.max(0, 100 - index * 15 - (30 - confidenceScore));
 }

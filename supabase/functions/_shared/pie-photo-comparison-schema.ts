@@ -1,21 +1,15 @@
-export const PIE_PHOTO_PAIR_SCHEMA_VERSION = '2026-07-p1-v1';
+import {
+  PIE_PHOTO_ANALYSIS_CONTRACT,
+  PIE_PHOTO_CONTRACT_COMPARABILITY_IMPACTS,
+  PIE_PHOTO_CONTRACT_FINDING_TYPES,
+} from './pie-photo-analysis-contract.ts';
 
-export const PIE_COMPARABILITY_IMPACTS = [
-  'none',
-  'minor',
-  'limiting',
-] as const;
+export const PIE_PHOTO_PAIR_SCHEMA_VERSION =
+  PIE_PHOTO_ANALYSIS_CONTRACT.modes.photo_pair.schemaVersion;
 
-export const PIE_PHOTO_FINDING_TYPES = [
-  'added',
-  'removed',
-  'moved',
-  'occluding',
-  'revealed',
-  'material_change',
-  'visible_concern',
-  'uncertain',
-] as const;
+export const PIE_COMPARABILITY_IMPACTS = PIE_PHOTO_CONTRACT_COMPARABILITY_IMPACTS;
+
+export const PIE_PHOTO_FINDING_TYPES = PIE_PHOTO_CONTRACT_FINDING_TYPES;
 
 export type PIEPhotoFindingType = typeof PIE_PHOTO_FINDING_TYPES[number];
 
@@ -50,13 +44,17 @@ const findingSchema = {
   ],
   properties: {
     findingType: { type: 'string', enum: [...PIE_PHOTO_FINDING_TYPES] },
-    description: { type: 'string' },
+    description: { type: 'string', minLength: 1 },
     objectName: nullableStringSchema,
     baselineState: nullableStringSchema,
     currentState: nullableStringSchema,
     location: nullableStringSchema,
-    confidence: { type: 'number' },
-    limitations: { type: 'array', items: { type: 'string' } },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    limitations: {
+      type: 'array',
+      minItems: PIE_PHOTO_ANALYSIS_CONTRACT.responseRules.limitationsMinItems,
+      items: { type: 'string' },
+    },
     evidenceRegions: { type: 'array', items: { type: 'string' } },
   },
 };
@@ -106,8 +104,8 @@ export const PIE_PHOTO_PAIR_RESPONSE_SCHEMA = {
   ],
   properties: {
     schemaVersion: { type: 'string', const: PIE_PHOTO_PAIR_SCHEMA_VERSION },
-    sameSceneProbability: { type: 'number' },
-    sameSubjectProbability: { type: 'number' },
+    sameSceneProbability: { type: 'number', minimum: 0, maximum: 1 },
+    sameSubjectProbability: { type: 'number', minimum: 0, maximum: 1 },
     sharedVisualAnchors: { type: 'array', items: { type: 'string' } },
     sceneOverlapAssessment: { type: 'string' },
     viewpointAssessment: { type: 'string' },
@@ -144,7 +142,11 @@ export const PIE_PHOTO_PAIR_RESPONSE_SCHEMA = {
       enum: ['progress_visible', 'partial_progress_visible', 'no_material_visible_change', 'possible_regression', 'unable_to_determine'],
     },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
-    limitations: { type: 'array', items: { type: 'string' } },
+    limitations: {
+      type: 'array',
+      minItems: PIE_PHOTO_ANALYSIS_CONTRACT.responseRules.limitationsMinItems,
+      items: { type: 'string' },
+    },
     repeatPhotoGuidance: { type: 'array', items: { type: 'string' } },
     observations: { type: 'array', items: { type: 'string' } },
     interpretations: { type: 'array', items: { type: 'string' } },
@@ -152,7 +154,8 @@ export const PIE_PHOTO_PAIR_RESPONSE_SCHEMA = {
   },
 };
 
-export const PIE_SINGLE_PHOTO_SCHEMA_VERSION = '2026-07-p0-v1';
+export const PIE_SINGLE_PHOTO_SCHEMA_VERSION =
+  PIE_PHOTO_ANALYSIS_CONTRACT.modes.single_photo.schemaVersion;
 
 export const PIE_SINGLE_PHOTO_RESPONSE_SCHEMA = {
   type: 'object',
@@ -200,7 +203,11 @@ export const PIE_SINGLE_PHOTO_RESPONSE_SCHEMA = {
     directObservations: { type: 'array', items: { type: 'string' } },
     inferences: { type: 'array', items: { type: 'string' } },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
-    limitations: { type: 'array', items: { type: 'string' } },
+    limitations: {
+      type: 'array',
+      minItems: PIE_PHOTO_ANALYSIS_CONTRACT.responseRules.limitationsMinItems,
+      items: { type: 'string' },
+    },
     requiredCorroboration: { type: 'array', items: { type: 'string' } },
     recommendedFollowUpEvidence: { type: 'array', items: { type: 'string' } },
   },
@@ -299,6 +306,10 @@ export function validateStrictPhotoPairResponse(value: unknown): { valid: true }
   const record = value as Record<string, unknown>;
   const categories: string[] = [];
   const required = PIE_PHOTO_PAIR_RESPONSE_SCHEMA.required;
+  const allowed = new Set(Object.keys(PIE_PHOTO_PAIR_RESPONSE_SCHEMA.properties));
+  for (const key of Object.keys(record)) {
+    if (!allowed.has(key)) categories.push(`unexpected_${key}`);
+  }
   for (const key of required) {
     if (!(key in record)) categories.push(`missing_${key}`);
   }
@@ -357,7 +368,10 @@ export function validateStrictPhotoPairResponse(value: unknown): { valid: true }
     ['camera_or_capture_change', 'physical_scene_change', 'uncertain_change', 'mixed_change'].includes(String(item)))) {
     categories.push('invalid_differenceClassifications_items');
   }
-  if (!Array.isArray(record.limitations) || record.limitations.length === 0) categories.push('limitations_required');
+  if (
+    Array.isArray(record.limitations) &&
+    record.limitations.length < PIE_PHOTO_ANALYSIS_CONTRACT.responseRules.limitationsMinItems
+  ) categories.push('limitations_too_short');
   return categories.length === 0 ? { valid: true } : { valid: false, categories: [...new Set(categories)] };
 }
 

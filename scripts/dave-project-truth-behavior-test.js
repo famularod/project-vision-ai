@@ -113,6 +113,7 @@ function photo(id) {
       visibleChange: 'Visible equipment position changed.',
       location: 'Mechanical Room',
       comparisonConfidence: 'high',
+      comparability: 'strong',
       captureLimitations: ['The equipment label is partly obscured.'],
       projectProgress: 'unsupported',
       repeatPhotoGuidance: 'Repeat from the same marked position.',
@@ -177,9 +178,26 @@ assert.strictEqual(truth.briefing.nextActions.length, 3);
 
 const unsupportedPhoto = truth.photoComparisons.find(item => item.photoId === 'photo-alpha');
 assert.strictEqual(unsupportedPhoto.progressClaim, 'unsupported');
+assert.strictEqual(unsupportedPhoto.comparablePriorAvailable, true);
 assert.strictEqual(unsupportedPhoto.needsVerification, true);
 assert(truth.verificationQueue.some(item =>
   item.subjectType === 'photo' && item.subjectId === 'photo-alpha',
 ));
+
+const notComparableInput = photo('photo-not-comparable');
+notComparableInput.photoIntelligence.comparability = 'not_comparable';
+notComparableInput.photoIntelligence.projectProgress = 'supported';
+const notComparableTruth = buildDAVEProjectTruth({
+  projectId: 'project-alpha',
+  projectName: 'Alpha',
+  now,
+  updates: [update('update-not-comparable', 'Alpha', notComparableInput)],
+  scheduleItems: [],
+});
+const notComparable = notComparableTruth.photoComparisons[0];
+assert.strictEqual(notComparable.comparablePriorAvailable, false);
+assert.strictEqual(notComparable.changeFromPrior, null);
+assert.strictEqual(notComparable.progressClaim, 'unable_to_determine');
+assert(notComparable.limitations.some(item => /not sufficiently comparable/i.test(item)));
 
 console.log('PASS DAVE Project Truth behavior');

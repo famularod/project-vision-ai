@@ -7,6 +7,9 @@ const assert = require('assert');
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
+const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
+const updateService = fs.readFileSync(path.join(root, 'services/updateService.ts'), 'utf8');
+const deleteControl = fs.readFileSync(path.join(root, 'components/update-delete-control.tsx'), 'utf8');
 const updatesScreen = app.slice(
   app.indexOf('function SavedUpdatesScreen'),
   app.indexOf('function UpdateFilterSheet'),
@@ -14,6 +17,10 @@ const updatesScreen = app.slice(
 const updateCard = app.slice(
   app.indexOf('function UpdateHistoryCard'),
   app.indexOf('function UpdateOverflowMenu'),
+);
+const updateDetail = app.slice(
+  app.indexOf('function ReadOnlyUpdateDetailScreen'),
+  app.indexOf('function ProjectsScreen'),
 );
 
 [
@@ -42,8 +49,7 @@ const updateCard = app.slice(
   'Retry',
   'stableSendId',
   'Archive cloud-synced update',
-  'Delete failed update',
-  'Remove from device',
+  'Delete This Update',
   'DELETED_UPDATES_STORAGE_KEY',
   'mergeSavedUpdatesWithTombstones',
   'removeProjectUpdateFromSyncQueue',
@@ -106,15 +112,39 @@ assert(
   'Updates should render timeline headers only at group boundaries.',
 );
 assert(
-  app.includes("lifecycle === 'sent'") && app.includes('archiveSavedUpdate'),
-  'Cloud-synced updates should archive instead of permanently deleting.',
+  app.includes('archiveSavedUpdate') &&
+    app.includes('persistAndQueueProjectUpdateDeletion') &&
+    updateService.includes('queueProjectUpdateDelete(update)') &&
+    app.includes("'delete_update_everywhere'"),
+  'Cloud-synced updates should support both archive and permanent owner-scoped deletion.',
 );
 assert(
   app.includes('const tombstone = buildUpdateTombstone(') &&
     app.includes('deletedUpdate,') &&
+    app.includes("'delete_update_everywhere'") &&
     app.includes("action === 'archive_sent_update'") &&
     app.includes("mergeDecision: 'tombstoned'"),
   'Deleted and archived updates must record local tombstones to prevent resurrection.',
+);
+assert(
+  updateDetail.includes('<UpdateDeleteControl onDelete={onDelete} />') &&
+    deleteControl.includes('accessibilityLabel="Permanently delete this saved update"') &&
+    deleteControl.includes('Delete This Update') &&
+    deleteControl.includes('stops it from affecting project status and related warnings'),
+  'Read-only update detail must expose a visible, plain-language delete action.',
+);
+assert(
+  app.includes("updateDetailReturnScreenRef = useRef<AppScreen>('SavedUpdates')") &&
+    app.includes("onOpenUpdate={update => openSavedUpdate(update, 'Schedule')}") &&
+    app.includes('setScreen(updateDetailReturnScreenRef.current)') &&
+    app.includes("onOpenUpdate={update => openSavedUpdate(update, 'ProjectWorkspace')}") &&
+    updateDetail.includes('{backLabel}') &&
+    app.includes('update.scheduleTaskName') &&
+    app.includes('cloud record will be deleted automatically when sync is available') &&
+    app.includes('updateDeletionInFlightRef.current') &&
+    app.includes('upsertSavedUpdateUnlessDeleted') &&
+    app.includes('await reconcileProjectUpdateDeletionJournal(tombstones)'),
+  'Update deletion must identify the exact source and return Action Inbox users to Tasks.',
 );
 assert(
   app.includes('{__DEV__ && update.deleteDiagnostics') &&
@@ -126,8 +156,17 @@ assert(
 assert(
   sync.includes('removeProjectUpdateFromSyncQueue') &&
     sync.includes("item.entity !== 'project_update'") &&
+    sync.includes("if (item.operation === 'delete') return true") &&
     sync.includes('payload.id !== updateId'),
-  'Deleting a failed update must remove matching project_update work from the pending sync queue.',
+  'Cleanup must remove stale update work while preserving a queued permanent delete.',
+);
+assert(
+  sync.includes("if (item.operation === 'delete')") &&
+    sync.includes('deleteProjectUpdate({') &&
+    supabase.includes(".from(PROJECT_UPDATES_TABLE)\n    .delete()") &&
+    supabase.includes(".eq('owner_id', owner.data)") &&
+    supabase.includes(".eq('id', updateId)"),
+  'Permanent field-update deletion must be queued and owner-scoped in the cloud.',
 );
 assert(
   app.includes('recipientNames') && app.includes('contactNamesById'),

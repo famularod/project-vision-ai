@@ -16,10 +16,17 @@ const piePanel = read('components/PIEPanel.tsx');
 
 assert(provider.includes('attention: PIECoreOutput'), 'Provider must expose Attention output.');
 assert(provider.includes('attention: currentCore?.attention || null'), 'Provider value must include current scope attention.');
-assert(home.includes('liveAuthority.attention || buildPIEAttentionState'), 'Home must prefer provider attention.');
+assert(
+  home.includes('liveAuthority.projectTruth.briefing.nextActions') &&
+    home.includes('liveAuthority.projectTruth.briefing.evidenceCoverage'),
+  'Home must prefer the provider-backed Project Truth briefing.',
+);
 assert(reports.includes('liveAuthority.attention || buildPIEAttentionState'), 'Review must prefer provider attention.');
 assert(capture.includes('usePIELiveAuthority'), 'Capture must consume provider authority state.');
-assert(capture.includes('liveAuthority.policy.userMessage'), 'Capture must show friendly degraded authority status.');
+assert(
+  capture.includes('liveAuthority.core?.photoRepeatGuidance.find'),
+  'Capture must consume qualified repeat-photo guidance from provider authority.',
+);
 assert(piePanel.includes('liveAuthority?.runtime || fallbackRuntime'), 'Shared PIEPanel must prefer provider Runtime.');
 
 console.log('PASS attention authority routing');

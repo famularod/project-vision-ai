@@ -12,10 +12,11 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const app = read('App.tsx');
 const sync = read('services/SyncService.ts');
 const supabase = read('services/SupabaseService.ts');
+const deletionJournal = read('services/ProjectUpdateDeletionJournal.ts');
 const migration = read('supabase/migrations/20260706010000_project_update_idempotency_key.sql');
 
 assert(
-  app.includes('const idempotencyKey = draft.idempotencyKey || draft.stableSendId || `send-${draft.id}`') &&
+  /const idempotencyKey = draftSnapshot\.idempotencyKey\s*\|\|\s*\n?\s*draftSnapshot\.stableSendId\s*\|\|\s*`send-\$\{draftSnapshot\.id\}`/.test(app) &&
     app.includes('stableSendId: idempotencyKey') &&
     app.includes('idempotencyKey,'),
   'Initial send must create one stable idempotency key from the draft id.',
@@ -34,6 +35,29 @@ assert(
     sync.includes('...queue.filter(existing => existing.id !== queueItem.id)') &&
     sync.includes('projectUpdateIdempotencyKey(payload.updateData, payload.id)'),
   'Offline queue must use a stable queue item id and pass a stable idempotency key to the cloud write.',
+);
+
+assert(
+  sync.includes('queueProjectUpdateDelete') &&
+    sync.includes("operation: 'delete'") &&
+    sync.includes("if (item.operation === 'delete')") &&
+    sync.includes("existing.operation === 'delete'") &&
+    sync.includes("queueItem.operation !== 'delete'") &&
+    sync.includes('deleteProjectUpdate({') &&
+    sync.includes('hasProjectUpdateDeletionIntent') &&
+    sync.includes('confirmProjectUpdateCloudDeletion') &&
+    sync.includes("if (item.operation === 'delete') return true") &&
+    supabase.includes('export async function deleteProjectUpdate') &&
+    supabase.includes(".eq('owner_id', owner.data)") &&
+    supabase.includes(".eq('id', updateId)"),
+  'A field-update delete must replace same-id pending work, survive cleanup, and execute as an owner-scoped cloud delete.',
+);
+
+assert(
+  deletionJournal.includes('projectPhotoUpdate.deletionJournal.v1') &&
+    deletionJournal.includes('cloudDeleteConfirmedAt') &&
+    deletionJournal.includes('recordProjectUpdateDeletionIntent'),
+  'Permanent field-update deletion must keep a durable local barrier after its queue item finishes.',
 );
 
 assert(
@@ -102,7 +126,7 @@ async function testConcurrentEnqueuePreservesBothItems() {
     },
   };
   const cache = new Map();
-  const supabaseCalls = { metadataReads: 0, updateWrites: 0 };
+  const supabaseCalls = { metadataReads: 0, updateWrites: 0, updateDeletes: 0 };
   let signedUrlResult = {
     ok: false,
     configured: true,
@@ -115,6 +139,7 @@ async function testConcurrentEnqueuePreservesBothItems() {
   let photoUploadResult = { ok: true, configured: true, stubbed: false, data: {} };
   let localFileInfo = { exists: false, isDirectory: false };
   let remoteMetadataData = null;
+  let projectUpdateDeleteResult = { ok: true, configured: true, stubbed: false };
   let enqueueNewerSameIdOnSave = false;
   let service;
   const supabaseMock = {
@@ -144,6 +169,10 @@ async function testConcurrentEnqueuePreservesBothItems() {
         });
       }
       return { ok: true, stubbed: false };
+    },
+    async deleteProjectUpdate() {
+      supabaseCalls.updateDeletes += 1;
+      return projectUpdateDeleteResult;
     },
     async createPhotoSignedUrl() {
       return signedUrlResult;
@@ -417,6 +446,82 @@ async function testConcurrentEnqueuePreservesBothItems() {
   assert.strictEqual(queueAfterScopedA[0].payload.id, 'blocked-b');
 
   await service.removeProjectUpdateFromSyncQueue('blocked-b');
+
+  data.delete('projectVisionAI.syncQueue.v1');
+  const updateWritesBeforeDelete = supabaseCalls.updateWrites;
+  const updateToDelete = {
+    id: 'delete-update',
+    projectName: 'Project Delete',
+    selectedAreaName: 'Canopy A',
+    photos: [{
+      id: 'delete-photo',
+      uri: 'file:///delete-photo.jpg',
+      fileName: 'delete-photo.jpg',
+      mimeType: 'image/jpeg',
+    }],
+  };
+  await service.queueProjectUpdateRecord(updateToDelete, false);
+  projectUpdateDeleteResult = {
+    ok: false,
+    configured: true,
+    stubbed: false,
+    error: 'Network request failed',
+  };
+  await service.queueProjectUpdateDelete(updateToDelete);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const queuedDelete = JSON.parse(data.get('projectVisionAI.syncQueue.v1'));
+  assert.strictEqual(queuedDelete.length, 1, 'delete must replace the same-id pending upsert');
+  assert.strictEqual(queuedDelete[0].operation, 'delete', 'the replacement queue operation must remain a delete');
+  assert.strictEqual(supabaseCalls.updateWrites, updateWritesBeforeDelete, 'delete must never fall through to project-update upsert');
+  assert(supabaseCalls.updateDeletes > 0, 'delete queue work must call the cloud delete operation');
+
+  await service.queueProjectUpdateRecord(
+    { ...updateToDelete, notes: 'Late in-flight update completion' },
+    false,
+  );
+  const deleteAfterLateUpdate = JSON.parse(data.get('projectVisionAI.syncQueue.v1'));
+  assert.strictEqual(deleteAfterLateUpdate[0].operation, 'delete', 'a late in-flight update must not replace a queued delete');
+
+  await service.removeProjectUpdateFromSyncQueue('delete-update');
+  const deleteAfterStartupCleanup = JSON.parse(data.get('projectVisionAI.syncQueue.v1'));
+  assert.strictEqual(deleteAfterStartupCleanup[0].operation, 'delete', 'startup tombstone cleanup must preserve a pending delete');
+
+  projectUpdateDeleteResult = { ok: true, configured: true, stubbed: false };
+  const completedDelete = await service.uploadPendingChanges();
+  assert.strictEqual(completedDelete.queued, 0, 'successful cloud deletion must clear its queue item');
+  assert.strictEqual(JSON.parse(data.get('projectVisionAI.syncQueue.v1')).length, 0);
+
+  const writesAfterCompletedDelete = supabaseCalls.updateWrites;
+  await service.queueProjectUpdateRecord(
+    { ...updateToDelete, notes: 'Photo work completed after cloud deletion' },
+    false,
+  );
+  assert.strictEqual(
+    JSON.parse(data.get('projectVisionAI.syncQueue.v1')).length,
+    0,
+    'a durable delete barrier must reject a late update after the delete queue item is gone',
+  );
+  await service.enqueuePendingChange({
+    id: 'project-update-delete-update',
+    entity: 'project_update',
+    operation: 'update',
+    payload: {
+      id: 'delete-update',
+      projectName: 'Project Delete',
+      updateData: { ...updateToDelete, notes: 'Already captured in an upload snapshot' },
+      pendingPhotoAssetIds: [],
+    },
+    changedAt: '2099-01-01T00:00:00.000Z',
+    autoUpload: false,
+  });
+  await service.uploadPendingChanges();
+  assert.strictEqual(
+    supabaseCalls.updateWrites,
+    writesAfterCompletedDelete,
+    'an already-captured late upload must not recreate a permanently deleted cloud row',
+  );
+  assert.strictEqual(JSON.parse(data.get('projectVisionAI.syncQueue.v1')).length, 0);
+
   remoteMetadataData = {
     updatedAt: '2099-01-01T00:00:00.000Z',
     updateData: { id: 'conflict-c', projectName: 'Different cloud data', photos: [] },

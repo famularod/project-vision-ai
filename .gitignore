@@ -97,3 +97,6 @@ supabase/.temp/
 # Temporary local reports
 pie_current_git_status.txt
 pie_current_diff_stat.txt
+
+# Local agent/editor settings (P2-14)
+.claude/settings.local.json

@@ -101,7 +101,6 @@ const liveAuthorityProvider = readFile('providers/PIELiveAuthorityProvider.tsx')
 const daveProjectTruth = readFile('services/DAVEProjectTruth.ts');
 const daveProjectReasoning = readFile('services/DAVEProjectReasoning.ts');
 const projectAssistantScreen = projectOverviewScreen;
-const criticalPathSummary = readFile('components/CriticalPathSummary.tsx');
 const scheduleScreen = liveAppSlice('function ScheduleScreen', 'function ScheduleItemRow');
 const scheduleImportFlow = readFile('components/ScheduleImportFlow.tsx');
 const adminScreen = readFile('screens/AdminScreen.tsx');
@@ -213,7 +212,6 @@ const majorUiSource = [
   adminScreen,
   projectOverviewScreen,
   projectAssistantScreen,
-  criticalPathSummary,
   piePanel,
 ].join('\n');
 
@@ -6183,14 +6181,14 @@ if (
   pass(
     'Capture Experience integration',
     'Capture consumes PIEExperienceEngine, starts with PIE guidance, preserves correction and capture controls, keeps users in Capture after photo capture, and keeps document, note, issue, and safety actions reachable.',
-    'components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Capture Experience integration',
     'Guided Capture Experience Engine integration markers were not detected.',
     'Use buildPIEWalkExperience in PhotoCapturePanel with GuidedCaptureCard, one dominant primary action, location correction, after-photo recommendation, and secondary Upload Document, Add Note, Add Issue, and Add Safety actions.',
-    'components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
@@ -6211,7 +6209,7 @@ if (
     'Check before sharing',
     'Why?',
     'reportApproved',
-    'reportApproved && shareOpen',
+    'reportApproved && reportApprovalAllowed && shareOpen',
     'No report is sent automatically',
     'Project Detail',
     'Review the prepared report, make any edits, and approve it when ready.',
@@ -6395,20 +6393,21 @@ if (
   hasAll(scheduleScreen + app, [
     'isDavePdfTextExtractionAvailable',
     'isDaveTextRecognitionAvailable',
-    'scheduleAiExtractorUrl',
     'no dated activities were extracted',
-  ])
+  ]) &&
+  !app.includes('extractScheduleItemsWithAiEndpoint') &&
+  !adminScreen.includes('Advanced schedule OCR endpoint')
 ) {
   pass(
     'Schedule import',
-    'Schedule import has local extraction, optional fallback extraction, and a user-facing failure path.',
+    'Schedule import uses bounded local extraction, has a user-facing failure path, and exposes no arbitrary upload endpoint.',
     'App.tsx',
   );
 } else {
   fail(
     'Schedule import',
-    'Schedule extraction fallback or failure handling was not found.',
-    'Preserve local extraction, optional fallback extraction, and clear failure handling.',
+    'Safe local schedule extraction or its failure handling was not found.',
+    'Preserve bounded local extraction and clear failure handling without a user-configurable upload endpoint.',
     'App.tsx',
   );
 }
@@ -6710,14 +6709,14 @@ if (
   pass(
     'Walk recommendation updated',
     'Walk recommendations can be driven by urgent imported schedule activities.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Walk recommendation updated',
     'Schedule-driven Walk recommendation markers were not found.',
     'Use imported schedule urgency to recommend the next walk area.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
@@ -6750,7 +6749,7 @@ if (
     'AsyncStorage.setItem',
     'setScheduleItems(previous =>',
     'ScheduleImportFlow',
-    'scheduleItems: scopedReportScheduleItems',
+    'reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems',
     'authoritativeScheduleItems',
     'liveAuthority.projectTruth.briefing.schedule',
   ]) &&
@@ -6765,14 +6764,14 @@ if (
   pass(
     'Schedule import to Today Runtime path',
     'Imported schedules are committed to state/storage and flow through the shared provider Runtime into HomeDashboard.',
-    'App.tsx, providers/PIELiveAuthorityProvider.tsx, components/HomeDashboard.tsx, services/PIERuntime.ts',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 } else {
   fail(
     'Schedule import to Today Runtime path',
     'Schedule import state/storage/Runtime/HomeDashboard connection is incomplete.',
     'Commit imported schedules to scheduleItems and AsyncStorage, pass scheduleItems into the shared live authority provider Runtime, and prevent Today from rendering the empty schedule summary when scheduleItems exist.',
-    'App.tsx, providers/PIELiveAuthorityProvider.tsx, components/HomeDashboard.tsx, services/PIERuntime.ts',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 }
 
@@ -7025,10 +7024,14 @@ if (
 
 if (
   hasAll(daveProjectTruth, [
+    'const hasComparablePrior',
+    'comparisonCompleted',
+    "comparability === 'strong' || comparability === 'probable'",
+    'safeVisualEvidence && hasComparablePrior',
     "evidenceClass: safeVisualEvidence ? 'observation' : intelligence ? 'interpretation' : 'uncertainty'",
-    "progressClaim = safeVisualEvidence",
     "progressClaim !== 'supported'",
-    'No confirmed comparable prior photo is available.',
+    'No confirmed prior photo is available.',
+    'The prior photo is not sufficiently comparable to support a change or progress conclusion.',
     'The result is not supported by visual evidence alone.',
     'The task is marked complete without PM verification or connected completion evidence.',
   ])
@@ -7036,14 +7039,14 @@ if (
   pass(
     'Longitudinal photo claim safety',
     'Photo intelligence separates observation from inference, requires verification/corroboration, avoids unsupported completion percentages, and discloses invisible-work limits.',
-    'services/PIEPhotoProgressIntelligence.ts',
+    'services/DAVEProjectTruth.ts',
   );
 } else {
   fail(
     'Longitudinal photo claim safety',
     'Photo intelligence may be overclaiming completion or progress.',
     'Separate observations from inferences, require corroboration for completion, avoid invented percentages, and disclose invisible-work limits.',
-    'services/PIEPhotoProgressIntelligence.ts',
+    'services/DAVEProjectTruth.ts',
   );
 }
 
@@ -7291,7 +7294,7 @@ if (
   fileExists('supabase/functions/_shared/pie-vision-provider.ts') &&
   hasAll(photoVisionFunction, [
     'auth.getUser()',
-    'verifyProjectAccess',
+    'photoVisionCallerScopeIsAuthorized',
     'loadAuthorizedImage',
     'photo_pair',
     'pie_photo_semantic_comparison_results',
@@ -7581,7 +7584,7 @@ if (
     'Full Written Report',
     'Copy Report',
     'Email Report',
-    'reportApproved && shareOpen',
+    'reportApproved && reportApprovalAllowed && shareOpen',
     'Project Detail',
     'Current conditions and schedule position',
   ]) &&
@@ -7617,7 +7620,7 @@ if (
     'Email Report',
     'Copy, Email, and Text unlock after approval',
     'No report is sent automatically',
-    'reportApproved && shareOpen',
+    'reportApproved && reportApprovalAllowed && shareOpen',
     'ReportShareButton',
     'onEmailReport',
     'onCopyReport',
@@ -7627,14 +7630,14 @@ if (
   pass(
     'PIE Reporter review boundary',
     'PIE Reporter is integrated into Review/Build Update preview and does not send, text, copy, or auto-approve anything by itself.',
-    'App.tsx, screens/ReportsScreen.tsx, screens/BuildUpdateScreen.tsx, services/PIEReporter.ts',
+    'App.tsx, screens/ReportsScreen.tsx, services/PIEReporter.ts',
   );
 } else {
   fail(
     'PIE Reporter review boundary',
     'Reporter review boundary or Build Update integration was incomplete.',
     'Show Generate PIE Project Update in Review/Build Update, preserve Single/Combined choices, and keep send/copy behind explicit user actions.',
-    'App.tsx, screens/ReportsScreen.tsx, screens/BuildUpdateScreen.tsx, services/PIEReporter.ts',
+    'App.tsx, screens/ReportsScreen.tsx, services/PIEReporter.ts',
   );
 }
 
@@ -7697,14 +7700,14 @@ if (
   pass(
     'GPS recommendation exists',
     'GPS recommendation priority order is present: exact area, radius, project boundary, last active project, last active area, and user selection.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'GPS recommendation exists',
     'GPS recommendation priority markers were not fully detected.',
     'Add exact GPS area, radius, project boundary, last active project, last active area, and user selection recommendation logic.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
@@ -7720,14 +7723,14 @@ if (
   pass(
     'Walk correction flow',
     'Accept, change/choose project, change/choose area, and correction confidence penalty behavior are exposed.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Walk correction flow',
     'Accept/correction controls or correction memory were not found.',
     'Expose Accept, Change/Choose Project, Change/Choose Area, and remember corrections for the current session.',
-    'components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
@@ -7743,14 +7746,14 @@ if (
   pass(
     'Capture location confidence and reason',
     'Capture keeps location confidence in the recommendation model while displaying plain-language why, low-location uncertainty, and next area guidance.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Capture location confidence and reason',
     'Location confidence, why/reason, low-location uncertainty, or next area guidance was not detected.',
     'Keep confidence in the model, display plain-language why, low-location uncertainty copy, and next area recommendation.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
@@ -7767,14 +7770,14 @@ if (
   pass(
     'Capture photo flow',
     'Photo confirmation, current area, next action, and repeat/save buttons keep the user in Capture.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Capture photo flow',
     'Capture photo flow may not keep the user in context after adding a photo.',
     'Show Photo saved, Current Area, Next Suggested Action, Add Another Photo, Add Note, Save Walk Update, and return to Capture after photos.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
@@ -7823,14 +7826,14 @@ if (
   pass(
     'Photo sync resilience',
     'Missing photos are detected before upload, skipped, reported with friendly actions, and removable from local updates plus sync queue.',
-    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx',
   );
 } else {
   fail(
     'Photo sync resilience',
     'Graceful missing photo sync handling was not fully detected.',
     'Detect missing local photos before upload, preserve the field update, show Keep Update, Skip Photo / Retry / Dismiss, and clear orphaned queue references after confirmation.',
-    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx',
   );
 }
 
@@ -7858,14 +7861,14 @@ if (
   pass(
     'Photo sync user-safe errors',
     'Admin and Diagnostics sync UI do not expose raw exceptions, file paths, stack traces, or readAsStringAsync.',
-    'screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'screens/AdminScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'Photo sync user-safe errors',
     'Raw exception, file path, stack, or readAsStringAsync marker was found in sync UI.',
     'Never display raw exceptions, file paths, stack traces, internal errors, or readAsStringAsync in user-facing sync UI.',
-    'screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'screens/AdminScreen.tsx, App.tsx',
   );
 }
 
@@ -7915,14 +7918,14 @@ if (
   pass(
     'Sync status display sanitizer',
     'Admin renders bounded, non-technical sync summaries while Diagnostics sync display paths use sanitizeUserFacingSyncMessage.',
-    'services/SyncService.ts, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'services/SyncService.ts, screens/AdminScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'Sync status display sanitizer',
     'Sync display paths are not fully protected by sanitizeUserFacingSyncMessage.',
     'Apply sanitizeUserFacingSyncMessage to syncStatus, sync result, sync progress, alerts/status messages, and keep raw diagnostics under Developer Support > Raw Diagnostics.',
-    'services/SyncService.ts, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'services/SyncService.ts, screens/AdminScreen.tsx, App.tsx',
   );
 }
 
@@ -7965,7 +7968,7 @@ if (
   hasAll(syncService, [
     'lastError: sanitizedResult',
     'formatQueueItemFailure(item, sanitizedResult)',
-    'await AsyncStorage.setItem(key, result.value)',
+    'await persistVerifiedOfflineQueue(parseOfflineQueueValue(result.value))',
     'await AsyncStorage.setItem(key, nextValue)',
   ])
 ) {
@@ -8011,14 +8014,14 @@ if (
   pass(
     'Location workflow placement',
     'Locations/Project Areas are not primary navigation and Area Mapping is in advanced admin configuration.',
-    'components/BottomNavigation.tsx, screens/AdminScreen.tsx',
+    'components/app-bottom-tabs.tsx, screens/AdminScreen.tsx',
   );
 } else {
   warn(
     'Location workflow placement',
     'Location or Project Areas may still appear as a primary workflow.',
     'Keep location/project-area setup behind More > Admin > Advanced Configuration > Area Mapping.',
-    'components/BottomNavigation.tsx, screens/AdminScreen.tsx',
+    'components/app-bottom-tabs.tsx, screens/AdminScreen.tsx',
   );
 }
 
@@ -8110,14 +8113,14 @@ if (
   pass(
     'Today schedule loaded fallback',
     'Today renders a non-empty Schedule loaded summary whenever scheduleItems are present, even while Runtime is preparing insights.',
-    'components/HomeDashboard.tsx',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 } else {
   fail(
     'Today schedule loaded fallback',
     'Today can still render the empty schedule message while scheduleItems are present.',
     'Build Today schedule text from scheduleItems first, show Schedule loaded: X activities, and reserve the empty Runtime summary only for zero scheduleItems.',
-    'components/HomeDashboard.tsx',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 }
 
@@ -8295,14 +8298,14 @@ if (
   pass(
     'UX QA - one dominant action',
     'PIE, Capture, and Review expose one dominant action with secondary actions kept subordinate.',
-    'HomeDashboard, PhotoCapturePanel, ReportsScreen',
+    'App.tsx, screens/ReportsScreen.tsx',
   );
 } else {
   fail(
     'UX QA - one dominant action',
     'JARVIS cannot verify that major daily screens keep one dominant next action.',
     'Render one primary action on PIE, Capture, and Review, with secondary controls visually subordinate.',
-    'HomeDashboard, PhotoCapturePanel, ReportsScreen',
+    'App.tsx, screens/ReportsScreen.tsx',
   );
 }
 
@@ -8467,6 +8470,33 @@ if (
     'PIE Core Intelligence output is missing required reusable intelligence fields.',
     'Restore the core output contract for evidenceReview, interpretations, relationships, beliefs, opinions, decisionsNeeded, recommendations, explanations, learningSignals, and nextBestActions.',
     'services/PIECoreIntelligence.ts',
+  );
+}
+
+const missingEvidencePaths = Array.from(new Set(
+  results.flatMap(result => {
+    const concretePaths = result.evidence?.match(
+      /(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:tsx|ts|js|md|json|sql)\b/g,
+    ) || [];
+
+    return concretePaths.filter(relativePath =>
+      !relativePath.includes('*') && !fileExists(relativePath),
+    );
+  }),
+));
+
+if (missingEvidencePaths.length > 0) {
+  fail(
+    'QA evidence integrity',
+    `JARVIS results cite missing files: ${missingEvidencePaths.join(', ')}.`,
+    'Update each affected result to cite the live implementation or remove the stale check.',
+    'scripts/jarvis-qa.js',
+  );
+} else {
+  pass(
+    'QA evidence integrity',
+    'Every concrete file cited by a JARVIS result exists in the current repository.',
+    'scripts/jarvis-qa.js',
   );
 }
 

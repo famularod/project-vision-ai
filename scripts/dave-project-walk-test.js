@@ -8,17 +8,29 @@ const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
+const cache = new Map();
 
 function load(relative) {
+  const absolute = path.resolve(root, relative);
+  if (cache.has(absolute)) return cache.get(absolute).exports;
   const source = read(relative);
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
   });
   const moduleValue = { exports: {} };
+  cache.set(absolute, moduleValue);
+  const localRequire = specifier => {
+    if (!specifier.startsWith('.')) return require(specifier);
+    const base = path.resolve(path.dirname(absolute), specifier);
+    const resolved = [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')]
+      .find(candidate => fs.existsSync(candidate));
+    if (!resolved) throw new Error(`Cannot resolve ${specifier}`);
+    return load(path.relative(root, resolved));
+  };
   vm.runInNewContext(compiled.outputText, {
     module: moduleValue,
     exports: moduleValue.exports,
-    require,
+    require: localRequire,
     Date,
     Set,
     Math,

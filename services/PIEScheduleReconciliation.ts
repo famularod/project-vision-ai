@@ -3,7 +3,18 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
-import { parseFlexibleDate } from '../utils/date';
+import { daysUntilDate } from '../utils/date';
+import {
+  classifyDAVEBlocker,
+  classifyDAVECompletion,
+  classifyDAVEImplementation,
+  classifyDAVEIssue,
+  classifyDAVESafety,
+  isDAVECurrentCertainAssertion,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -76,7 +87,7 @@ export function scheduleCompletionOverridesFieldMatch(
   item: ScheduleItem,
   match: Pick<PIEScheduleFieldMatch, 'capturedAt'> | null,
 ) {
-  if (item.status !== 'Complete' && boundedPercent(item.percentComplete) < 100) return false;
+  if (!scheduleProgressIsComplete(item)) return false;
 
   const verification = item.completionVerification;
   const pmVerified = verification?.status === 'pm_verified';
@@ -117,24 +128,44 @@ export function selectAuthoritativeScheduleItems({
   scheduleItems?: ScheduleItem[];
   scheduleDocuments?: ReferenceDocument[];
 }) {
+  const scheduleSources = scheduleDocuments.filter(document => document.category === 'Schedules');
+  const activeSchedules = scheduleSources
+    .filter(document => document.isCurrent)
+    .sort(compareScheduleDocumentAuthority)
+    .slice(0, 1);
   const activeScheduleSources = new Set(
-    scheduleDocuments
-      .filter(document => document.category === 'Schedules' && document.isCurrent)
+    activeSchedules
       .flatMap(document => [document.name, document.originalFileName])
       .map(normalize)
       .filter(Boolean),
   );
   const knownScheduleSources = new Set(
-    scheduleDocuments
-      .filter(document => document.category === 'Schedules')
+    scheduleSources
       .flatMap(document => [document.name, document.originalFileName])
       .map(normalize)
       .filter(Boolean),
   );
+  const activeBatchIds = new Set(activeSchedules.map(document => normalize(document.importBatchId || '')).filter(Boolean));
+  const knownBatchIds = new Set(scheduleSources.map(document => normalize(document.importBatchId || '')).filter(Boolean));
+  const activeDocumentIds = new Set(activeSchedules.map(document => normalize(document.id)).filter(Boolean));
+  const knownDocumentIds = new Set(scheduleSources.map(document => normalize(document.id)).filter(Boolean));
 
-  const selectedItems = activeScheduleSources.size === 0
+  const selectedItems = scheduleSources.length === 0
     ? scheduleItems
+    : activeSchedules.length === 0
+      ? scheduleItems.filter(item =>
+          !normalize(item.importedFrom || '') &&
+          !normalize(item.importBatchId || '') &&
+          !normalize(item.sourceDocumentId || ''))
     : scheduleItems.filter(item => {
+    const sourceDocumentId = normalize(item.sourceDocumentId || '');
+    if (sourceDocumentId && knownDocumentIds.has(sourceDocumentId)) {
+      return activeDocumentIds.has(sourceDocumentId);
+    }
+    const importBatchId = normalize(item.importBatchId || '');
+    if (importBatchId && knownBatchIds.has(importBatchId)) {
+      return activeBatchIds.has(importBatchId);
+    }
     const importedFrom = normalize(item.importedFrom || '');
     return !importedFrom ||
       !knownScheduleSources.has(importedFrom) ||
@@ -142,6 +173,23 @@ export function selectAuthoritativeScheduleItems({
   });
 
   return dedupeScheduleItems(selectedItems);
+}
+
+export function reconcileCurrentScheduleDocuments(
+  documents: readonly ReferenceDocument[],
+): ReferenceDocument[] {
+  const winner = documents
+    .filter(document => document.category === 'Schedules' && document.isCurrent)
+    .sort(compareScheduleDocumentAuthority)[0];
+  if (!winner) return [...documents];
+  return documents.map(document => document.category === 'Schedules'
+    ? { ...document, isCurrent: document.id === winner.id }
+    : document);
+}
+
+function compareScheduleDocumentAuthority(left: ReferenceDocument, right: ReferenceDocument) {
+  const timeDifference = timestamp(right.importedAt) - timestamp(left.importedAt);
+  return timeDifference || normalize(left.id).localeCompare(normalize(right.id));
 }
 
 export function buildPIEScheduleReconciliation({
@@ -185,9 +233,9 @@ export function buildPIEScheduleReconciliation({
         timestamp(right.capturedAt) - timestamp(left.capturedAt),
       );
     const bestMatch = itemMatches[0] || null;
-    const daysUntilFinish = relativeDays(item.finishDate, now);
+    const daysUntilFinish = relativeDays(item.finishDate, now, item.projectTimeZone);
     const urgent =
-      item.status !== 'Complete' &&
+      !scheduleProgressIsComplete(item) &&
       daysUntilFinish !== null &&
       daysUntilFinish <= NEAR_TERM_DAYS;
 
@@ -207,7 +255,7 @@ export function buildPIEScheduleReconciliation({
 
     if (bestMatch?.confidence === 'high' || bestMatch?.confidence === 'medium') {
       if (
-        item.status === 'Complete' &&
+        scheduleProgressIsComplete(item) &&
         ['blocked', 'issue', 'in_progress'].includes(bestMatch.signal) &&
         !scheduleCompletionOverridesFieldMatch(item, bestMatch)
       ) {
@@ -216,14 +264,14 @@ export function buildPIEScheduleReconciliation({
           match: bestMatch,
           type: 'schedule_status_conflict',
           title: 'Field evidence conflicts with schedule status',
-          summary: `${scheduleLabel(item)} is marked Complete, but the latest matching field update indicates ${signalLabel(bestMatch.signal)}.`,
+          summary: `${scheduleLabel(item)} is marked Complete, but the best task-specific field update indicates ${signalLabel(bestMatch.signal)}.`,
           severity: bestMatch.signal === 'blocked' || bestMatch.signal === 'issue' ? 'critical' : 'high',
           suggestedAction: 'Verify the field condition before relying on the Complete schedule status.',
         }));
       }
 
       if (
-        item.status !== 'Complete' &&
+        !scheduleProgressIsComplete(item) &&
         bestMatch.signal === 'complete'
       ) {
         warnings.push(makeWarning({
@@ -313,9 +361,12 @@ function matchScheduleItemToUpdate(
   item: ScheduleItem,
   update: ProjectUpdate,
 ): PIEScheduleFieldMatch | null {
+  const explicitScheduleItemId = update.scheduleItemId?.trim() || '';
   const explicitTaskMatched = Boolean(
-    update.scheduleItemId?.trim() && update.scheduleItemId.trim() === item.id,
+    explicitScheduleItemId && explicitScheduleItemId === item.id,
   );
+  if (explicitScheduleItemId && !explicitTaskMatched) return null;
+
   const projectMatched =
     Boolean(item.projectName.trim()) &&
     [update.projectName, update.scheduleProjectName || '']
@@ -328,6 +379,14 @@ function matchScheduleItemToUpdate(
   const areaMatched = Boolean(item.locationName.trim()) && updateAreaNames.some(
     area => sameName(area, item.locationName),
   );
+  const confirmedAreaMismatch =
+    Boolean(item.locationName.trim()) &&
+    updateAreaNames.length > 0 &&
+    !areaMatched;
+  if (!explicitTaskMatched && confirmedAreaMismatch) return null;
+
+  const scopedEvidence = updateEvidenceForScheduleItem(item, update);
+
   const legacyProjectAreaMatched =
     Boolean(item.locationName.trim()) &&
     sameName(item.locationName, update.projectName);
@@ -336,7 +395,7 @@ function matchScheduleItemToUpdate(
     normalize(update.scheduleTaskName) === normalize(scheduleLabel(item)),
   );
   if (!explicitTaskMatched && !projectMatched && !legacyProjectAreaMatched) return null;
-  const fieldText = updateEvidenceText(update);
+  const fieldText = scopedEvidence.matchText;
   const overlap = scheduleTaskTokenOverlap(item, fieldText);
   const taskMatched = overlap >= 0.34;
 
@@ -366,14 +425,14 @@ function matchScheduleItemToUpdate(
     : score >= 65
       ? 'medium'
       : 'low';
-  const signal = fieldSignal(fieldText, update);
+  const signal = fieldSignal(scopedEvidence.signalText, scopedEvidence.photos);
 
   return {
     scheduleItemId: item.id,
     updateId: update.id,
-    photoIds: update.photos.map(photo => photo.id),
+    photoIds: scopedEvidence.photos.map(photo => photo.id),
     projectName: update.projectName,
-    areaName: updateAreaNames[0] || null,
+    areaName: scopedEvidence.areaName,
     capturedAt: updateTimestamp(update),
     signal,
     score,
@@ -382,15 +441,43 @@ function matchScheduleItemToUpdate(
     taskTokenOverlap: Math.round(overlap * 100) / 100,
     projectMatched,
     areaMatched,
-    summary: conciseEvidenceSummary(update, signal),
+    summary: conciseEvidenceSummary(update, signal, scopedEvidence),
   };
 }
 
-function updateEvidenceText(update: ProjectUpdate) {
-  return [
-    update.scheduleTaskName,
-    update.notes,
-    ...update.photos.flatMap(photo => [
+type ScheduleItemUpdateEvidence = {
+  photos: ProjectUpdate['photos'];
+  includeUpdateText: boolean;
+  matchText: string;
+  signalText: string;
+  areaName: string | null;
+};
+
+function updateEvidenceForScheduleItem(
+  item: ScheduleItem,
+  update: ProjectUpdate,
+): ScheduleItemUpdateEvidence {
+  const itemArea = item.locationName.trim();
+  const updateArea = update.selectedAreaName?.trim() || '';
+  const hasAreaTaggedPhotos = update.photos.some(photo => Boolean(photo.selectedAreaName?.trim()));
+  const photos = !itemArea
+    ? update.photos
+    : update.photos.filter(photo => {
+        const photoArea = photo.selectedAreaName?.trim() || '';
+        if (photoArea) return sameName(photoArea, itemArea);
+        if (updateArea) return sameName(updateArea, itemArea);
+
+        // Preserve legacy records only when the whole update predates area tagging.
+        // An untagged photo beside area-tagged photos is ambiguous and must not
+        // leak its signal into every same-named task across those areas.
+        return !hasAreaTaggedPhotos;
+      });
+  const includeUpdateText = !itemArea || (
+    updateArea
+      ? sameName(updateArea, itemArea)
+      : !hasAreaTaggedPhotos
+  );
+  const photoEvidence = photos.flatMap(photo => [
       photo.caption,
       photo.category,
       photo.actionRequired,
@@ -398,8 +485,30 @@ function updateEvidenceText(update: ProjectUpdate) {
       photo.photoIntelligence?.visibleChange,
       photo.photoIntelligence?.possibleProgress,
       ...(photo.photoIntelligence?.possibleConcerns || []),
-    ]),
-  ].filter(Boolean).join(' ');
+    ]);
+  const matchingParts = [
+    update.scheduleTaskName,
+    includeUpdateText ? update.notes : null,
+    ...photoEvidence,
+  ];
+  const signalParts = [
+    includeUpdateText ? update.notes : null,
+    ...photoEvidence,
+  ];
+  const taggedPhotoArea = photos
+    .map(photo => photo.selectedAreaName?.trim() || '')
+    .find(area => Boolean(area));
+  const matchedUpdateArea = updateArea && (!itemArea || sameName(updateArea, itemArea))
+    ? update.selectedAreaName || null
+    : null;
+
+  return {
+    photos,
+    includeUpdateText,
+    matchText: matchingParts.filter(Boolean).join(' '),
+    signalText: signalParts.filter(Boolean).join(' '),
+    areaName: taggedPhotoArea || matchedUpdateArea || null,
+  };
 }
 
 function scheduleTaskText(item: ScheduleItem) {
@@ -408,18 +517,43 @@ function scheduleTaskText(item: ScheduleItem) {
     .join(' ');
 }
 
-function fieldSignal(text: string, update: ProjectUpdate): PIEScheduleFieldSignal {
-  const value = normalize(text);
-  const hasOpenIssue = update.photos.some(photo =>
+function fieldSignal(
+  text: string,
+  photos: ProjectUpdate['photos'],
+): PIEScheduleFieldSignal {
+  const hasOpenIssue = photos.some(photo =>
     (photo.category === 'Open Issue' || photo.category === 'Safety Concern') &&
     photo.actionStatus !== 'Closed',
   );
+  if (hasOpenIssue) return 'issue';
 
-  if (/\b(blocked|blocker|waiting|on hold|cannot proceed|delayed)\b/.test(value)) return 'blocked';
-  if (hasOpenIssue || /\b(issue|problem|defect|failed|hazard|unsafe)\b/.test(value)) return 'issue';
-  if (/\b(not complete|incomplete|partially complete|still in progress)\b/.test(value)) return 'in_progress';
-  if (/\b(completed|complete|finished|closed|done)\b/.test(value)) return 'complete';
-  if (/\b(in progress|started|underway|rough-in|installed|installation|currently working|working on|work ongoing)\b/.test(value)) return 'in_progress';
+  const parsed = parseDAVEAssertions(text);
+  const blocker = classifyDAVEBlocker(parsed);
+  const safety = classifyDAVESafety(parsed);
+  const issue = classifyDAVEIssue(parsed);
+  const completion = classifyDAVECompletion(parsed);
+  const implementation = classifyDAVEImplementation(parsed);
+  const uncertainOrConflicting = [blocker, safety, issue, completion, implementation]
+    .some(classification =>
+      classification === 'uncertain' || classification === 'conflicting',
+    );
+
+  if (uncertainOrConflicting) return 'unknown';
+  if (blocker === 'blocked') return 'blocked';
+  if (
+    safety === 'issue_present' ||
+    issue === 'issue_present' ||
+    parsed.assertions.some(assertion =>
+      assertion.status === 'outcome_failed' && isDAVECurrentCertainAssertion(assertion),
+    )
+  ) {
+    return 'issue';
+  }
+  if (completion === 'not_complete') return 'in_progress';
+  if (completion === 'complete') return 'complete';
+  if (implementation === 'implemented' || implementation === 'in_progress') {
+    return 'in_progress';
+  }
   return 'unknown';
 }
 
@@ -468,9 +602,13 @@ function makeWarning({
   };
 }
 
-function conciseEvidenceSummary(update: ProjectUpdate, signal: PIEScheduleFieldSignal) {
-  const text = update.notes.trim() ||
-    update.photos.find(photo => photo.caption.trim())?.caption ||
+function conciseEvidenceSummary(
+  update: ProjectUpdate,
+  signal: PIEScheduleFieldSignal,
+  evidence: ScheduleItemUpdateEvidence,
+) {
+  const text = (evidence.includeUpdateText ? update.notes.trim() : '') ||
+    evidence.photos.find(photo => photo.caption.trim())?.caption ||
     `Field update indicates ${signalLabel(signal)}.`;
   return shorten(text, 180);
 }
@@ -504,28 +642,7 @@ function canonicalToken(token: string) {
 }
 
 function dedupeScheduleItems(items: ScheduleItem[]) {
-  const selectedBySignature = new Map<string, ScheduleItem>();
-
-  items.forEach(item => {
-    const signature = [
-      item.importedFrom ? 'imported' : 'manual',
-      item.projectName,
-      item.locationName,
-      item.taskName,
-      item.milestone,
-      item.startDate,
-      item.finishDate,
-    ].map(normalize).join('|');
-    const current = selectedBySignature.get(signature);
-    const itemTimestamp = timestamp(item.importedAt || item.createdAt);
-    const currentTimestamp = timestamp(current?.importedAt || current?.createdAt);
-
-    if (!current || itemTimestamp >= currentTimestamp) {
-      selectedBySignature.set(signature, item);
-    }
-  });
-
-  return Array.from(selectedBySignature.values());
+  return reconcileDAVEScheduleRecords(items);
 }
 
 function updateTimestamp(update: ProjectUpdate) {
@@ -537,12 +654,8 @@ function updateTimestamp(update: ProjectUpdate) {
     null;
 }
 
-function relativeDays(value: string, now: Date) {
-  const date = parseFlexibleDate(value);
-  if (!date) return null;
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  return Math.round((date.getTime() - today.getTime()) / DAY_MS);
+function relativeDays(value: string, now: Date, projectTimeZone?: string | null) {
+  return daysUntilDate(value, now, projectTimeZone || undefined);
 }
 
 function dueWindowLabel(days: number | null) {

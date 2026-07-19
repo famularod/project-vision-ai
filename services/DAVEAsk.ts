@@ -158,7 +158,7 @@ function projectStatus(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
     `${reality.openCommitments.length} open recorded ${reality.openCommitments.length === 1 ? 'commitment' : 'commitments'}.`,
   ];
   const interpretations = [
-    `Schedule health is ${schedule.health}. Evidence-backed project status is ${reality.state}.`,
+    `Schedule health is ${schedule.health}. Evidence reality state is ${reality.state}.`,
     `Field-status confidence is ${reality.confidence}; evidence strength is ${intelligence.evidenceQuality.strength}.`,
   ];
   const scheduleRecommendation = schedule.overdueCount > 0

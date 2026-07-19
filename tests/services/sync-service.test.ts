@@ -80,4 +80,5 @@ describe('SyncService user-safe behavior', () => {
       cloudSignedUrlExpiresAt: null,
     })).toBe(true);
   });
+
 });

@@ -7,8 +7,14 @@ import {
   removeMemoryFromDAVEProjectWalkSession,
   type DAVEProjectWalkSession,
 } from './DAVEProjectWalkSession';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 
 export const DAVE_PROJECT_WALK_SESSION_STORAGE_KEY = '@dave/project-walk-session/v1';
+export const DAVE_PROJECT_WALK_SESSION_QUARANTINE_KEY_PREFIX =
+  `${DAVE_PROJECT_WALK_SESSION_STORAGE_KEY}.corrupt.`;
 export type DAVEProjectWalkSessionStorage = Pick<typeof AsyncStorage, 'getItem' | 'setItem' | 'removeItem'>;
 
 export type DAVEProjectWalkSessionRepository = Readonly<{
@@ -26,17 +32,31 @@ export function createDAVEProjectWalkSessionRepository(
   async function readActive() {
     const raw = await storage.getItem(DAVE_PROJECT_WALK_SESSION_STORAGE_KEY);
     if (!raw) return null;
+
+    let session: DAVEProjectWalkSession;
     try {
-      const session = normalizeDAVEProjectWalkSession(JSON.parse(raw));
-      if (session.status !== 'active') {
-        await storage.removeItem(DAVE_PROJECT_WALK_SESSION_STORAGE_KEY);
-        return null;
-      }
-      return session;
+      session = normalizeDAVEProjectWalkSession(JSON.parse(raw));
     } catch {
+      const recovery = await quarantineCorruptLocalValue({
+        storage,
+        storageKey: DAVE_PROJECT_WALK_SESSION_STORAGE_KEY,
+        quarantineKeyPrefix: DAVE_PROJECT_WALK_SESSION_QUARANTINE_KEY_PREFIX,
+        raw,
+        replacementRaw: null,
+      });
+      throw localCorruptionRecoveryError({
+        label: 'Stored Project Walk session',
+        recovery,
+      });
+    }
+
+    // Completed/cancelled sessions are valid but no longer active. Preserve
+    // the established cleanup behavior; quarantine is only for corruption.
+    if (session.status !== 'active') {
       await storage.removeItem(DAVE_PROJECT_WALK_SESSION_STORAGE_KEY);
       return null;
     }
+    return session;
   }
 
   async function write(session: DAVEProjectWalkSession) {

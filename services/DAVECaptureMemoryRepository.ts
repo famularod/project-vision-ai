@@ -10,9 +10,15 @@ import {
   type DAVECaptureRecommendation,
   type DAVEConfirmedCaptureMemory,
 } from './DAVECaptureMemory';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 
 export const DAVE_CAPTURE_MEMORY_REPOSITORY_VERSION = 'dave-capture-memory-repository/1.0' as const;
 export const DAVE_CAPTURE_MEMORY_STORAGE_KEY = '@dave/capture-memories/v1';
+export const DAVE_CAPTURE_MEMORY_QUARANTINE_KEY_PREFIX =
+  `${DAVE_CAPTURE_MEMORY_STORAGE_KEY}.corrupt.`;
 
 export type DAVECaptureMemoryStorage = Pick<typeof AsyncStorage, 'getItem' | 'setItem' | 'removeItem'>;
 
@@ -33,15 +39,14 @@ export function createDAVECaptureMemoryRepository(
   storage: DAVECaptureMemoryStorage = AsyncStorage,
 ): DAVECaptureMemoryRepository {
   async function write(records: readonly DAVEConfirmedCaptureMemory[]): Promise<void> {
-    const value: StoredCaptureMemories = {
-      schemaVersion: DAVE_CAPTURE_MEMORY_REPOSITORY_VERSION,
-      records,
-    };
-    await storage.setItem(DAVE_CAPTURE_MEMORY_STORAGE_KEY, JSON.stringify(value));
+    await storage.setItem(
+      DAVE_CAPTURE_MEMORY_STORAGE_KEY,
+      serializeCaptureMemories(records),
+    );
   }
 
   async function list(projectId?: string): Promise<readonly DAVEConfirmedCaptureMemory[]> {
-    const records = await hydrateRecords(storage, write);
+    const records = await hydrateRecords(storage);
     const projectKey = normalizeKey(projectId);
     return Object.freeze(records
       .filter(memory => !projectKey || normalizeKey(memory.recommendedProject.value) === projectKey)
@@ -96,36 +101,85 @@ export const localDAVECaptureMemoryRepository = createDAVECaptureMemoryRepositor
 
 async function hydrateRecords(
   storage: DAVECaptureMemoryStorage,
-  write: (records: readonly DAVEConfirmedCaptureMemory[]) => Promise<void>,
 ): Promise<DAVEConfirmedCaptureMemory[]> {
   const raw = await storage.getItem(DAVE_CAPTURE_MEMORY_STORAGE_KEY);
   if (!raw) return [];
+
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed) || parsed.schemaVersion !== DAVE_CAPTURE_MEMORY_REPOSITORY_VERSION || !Array.isArray(parsed.records)) {
-      throw new Error('Stored capture memory envelope is invalid.');
-    }
-    const records: DAVEConfirmedCaptureMemory[] = [];
-    let recovered = false;
-    for (const value of parsed.records) {
-      try {
-        const memory = normalizeConfirmedMemory(value);
-        if (records.some(item => item.id === memory.id)) {
-          recovered = true;
-          continue;
-        }
-        records.push(memory);
-      } catch {
-        recovered = true;
-      }
-    }
-    const sorted = records.sort(compareMemories);
-    if (recovered) await write(sorted);
-    return sorted;
+    parsed = JSON.parse(raw) as unknown;
   } catch {
-    await storage.removeItem(DAVE_CAPTURE_MEMORY_STORAGE_KEY);
-    return [];
+    const recovery = await quarantineCorruptLocalValue({
+      storage,
+      storageKey: DAVE_CAPTURE_MEMORY_STORAGE_KEY,
+      quarantineKeyPrefix: DAVE_CAPTURE_MEMORY_QUARANTINE_KEY_PREFIX,
+      raw,
+      replacementRaw: null,
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Stored capture memories',
+      recovery,
+    });
   }
+
+  if (
+    !isRecord(parsed) ||
+    parsed.schemaVersion !== DAVE_CAPTURE_MEMORY_REPOSITORY_VERSION ||
+    !Array.isArray(parsed.records)
+  ) {
+    const recovery = await quarantineCorruptLocalValue({
+      storage,
+      storageKey: DAVE_CAPTURE_MEMORY_STORAGE_KEY,
+      quarantineKeyPrefix: DAVE_CAPTURE_MEMORY_QUARANTINE_KEY_PREFIX,
+      raw,
+      replacementRaw: null,
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Stored capture memories',
+      recovery,
+    });
+  }
+
+  const records: DAVEConfirmedCaptureMemory[] = [];
+  let recovered = false;
+  for (const value of parsed.records) {
+    try {
+      const memory = normalizeConfirmedMemory(value);
+      if (records.some(item => item.id === memory.id)) {
+        recovered = true;
+        continue;
+      }
+      records.push(memory);
+    } catch {
+      recovered = true;
+    }
+  }
+  const sorted = records.sort(compareMemories);
+  if (recovered) {
+    const recovery = await quarantineCorruptLocalValue({
+      storage,
+      storageKey: DAVE_CAPTURE_MEMORY_STORAGE_KEY,
+      quarantineKeyPrefix: DAVE_CAPTURE_MEMORY_QUARANTINE_KEY_PREFIX,
+      raw,
+      replacementRaw: serializeCaptureMemories(sorted),
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Stored capture memories',
+      recovery,
+      salvagedRecords: sorted.length,
+    });
+  }
+  return sorted;
+}
+
+function serializeCaptureMemories(
+  records: readonly DAVEConfirmedCaptureMemory[],
+): string {
+  const value: StoredCaptureMemories = {
+    schemaVersion: DAVE_CAPTURE_MEMORY_REPOSITORY_VERSION,
+    records,
+  };
+  return JSON.stringify(value);
 }
 
 function normalizeConfirmedMemory(value: unknown): DAVEConfirmedCaptureMemory {

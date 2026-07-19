@@ -1,4 +1,14 @@
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import {
+  classifyDAVEBlocker,
+  classifyDAVECompletion,
+  classifyDAVEImplementation,
+  classifyDAVEIssue,
+  classifyDAVEOutcome,
+  classifyDAVESafety,
+  isDAVECurrentCertainAssertion,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIERealityObjectType =
   | 'project'
@@ -256,7 +266,11 @@ export type PIERealityObjectIntelligenceResult = {
 export type PIERealityObjectIdentity = {
   id: string;
   sourceIds: string[];
+  /** Namespaced source identifiers, for example `schedule:activity-42`. */
+  sourceIdentityKeys?: string[];
   stableKey: string;
+  /** Former name/location-derived keys retained after a canonical rename. */
+  stableKeyAliases?: string[];
 };
 
 export type PIERealityObjectState = {
@@ -273,6 +287,8 @@ export type PIERealityEvidenceLink = {
   id: string;
   evidenceId: string;
   evidenceType: string;
+  evidenceVersionId?: string | null;
+  evidenceContentHash?: string | null;
   summary: string;
   confidence: ProjectConfidenceLevel;
   linkedAt: string;
@@ -471,10 +487,13 @@ export function createRealityObject(
         summary: `Expected state for ${source.name}: ${source.expectedStatus}.`,
       }
     : null;
+  const evidenceVersionIdentity = source.evidenceVersionId || source.evidenceContentHash || 'unversioned';
   const evidenceLink: PIERealityEvidenceLink = {
-    id: `reality-evidence-${organizationId}-${projectId}-${source.evidenceId || source.id}`,
+    id: `reality-evidence-${organizationId}-${projectId}-${source.evidenceId || source.id}-${normalizeId(evidenceVersionIdentity)}`,
     evidenceId: source.evidenceId || source.id,
     evidenceType: source.evidenceType || source.type,
+    evidenceVersionId: source.evidenceVersionId || null,
+    evidenceContentHash: source.evidenceContentHash || null,
     summary: source.summary || source.name,
     confidence: source.confidence || 'medium',
     linkedAt: generatedAt,
@@ -495,7 +514,9 @@ export function createRealityObject(
     identity: {
       id: source.id || stableIdForSource(source),
       sourceIds: [source.id].filter(Boolean),
+      sourceIdentityKeys: canonicalSourceIdentityKeys(source),
       stableKey: stableKeyForSource(source),
+      stableKeyAliases: [],
     },
     type: source.type,
     name: source.name,
@@ -561,51 +582,157 @@ export function mergeRealityObjects(
   incoming: PIERealityObject,
   generatedAt: string = new Date().toISOString(),
 ): PIERealityObject {
-  const mergedStatus = strongerStatus(existing.currentStatus, incoming.currentStatus);
+  // Current Reality follows the newest observation. Risk/status rank is not a
+  // time machine: an old Blocked or high-confidence state must not permanently
+  // overpower newer completion, resolution, retirement, or uncertainty.
+  const existingObservationTime = observationTime(existing);
+  const incomingObservationTime = observationTime(incoming);
+  const equalObservationTime = incomingObservationTime === existingObservationTime;
+  const equalTimeConflict = equalObservationTime &&
+    !realityCurrentClaimSemanticallyEqual(existing, incoming);
+  const equalTimeWinner = deterministicRealityWinner(existing, incoming);
+  const active = incomingObservationTime > existingObservationTime
+    ? incoming
+    : incomingObservationTime < existingObservationTime
+      ? existing
+      : realityObservationSemanticallyEqual(existing, incoming)
+        ? existing
+        : equalTimeWinner;
+  const historical = active === incoming ? existing : incoming;
+  const mergedStatus = equalTimeConflict ? 'contradicted' : active.currentStatus;
+  const conflictSummaries = Array.from(new Set([
+    existing.currentState.summary.trim(),
+    incoming.currentState.summary.trim(),
+  ].filter(Boolean))).sort((left, right) => left.localeCompare(right));
+  const mergedCurrentState: PIERealityObjectState = equalTimeConflict
+    ? {
+        summary: `Conflicting equally timed observations require verification: ${conflictSummaries.join(' | ')}`,
+        status: 'contradicted',
+        confidence: 'low',
+        readiness: 'contradicted',
+        nextAction: `Confirm the current state of ${active.name} with authoritative evidence.`,
+        stale: false,
+        uncertain: true,
+      }
+    : {
+        ...active.currentState,
+        status: mergedStatus,
+        readiness: active.currentState.readiness,
+        confidence: active.currentState.confidence,
+        stale: active.currentState.stale,
+        uncertain: active.currentState.uncertain,
+      };
+  const conflictUncertainty: PIERealityUncertainty[] = equalTimeConflict
+    ? [{
+        id: `uncertainty-equal-time-${active.identity.id}`,
+        uncertainty: `${active.name} has materially different observations with the same timestamp.`,
+        recommendedEvidence: `Confirm the current state of ${active.name} and correct the source timestamp if needed.`,
+        severity: 'high',
+      }]
+    : active.uncertainty;
+  const conflictConfidence: PIERealityConfidence = equalTimeConflict
+    ? {
+        level: 'low',
+        score: 20,
+        reasons: ['Materially different observations share the same authoritative timestamp.'],
+      }
+    : active.confidence;
+  const conflictNextAction: PIERealityNextAction = equalTimeConflict
+    ? {
+        action: `Confirm the current state of ${active.name} with authoritative evidence.`,
+        reason: 'Equal-time evidence disagrees, so arrival order cannot select project reality.',
+        priority: 'high',
+        ownerNeeded: true,
+      }
+    : active.nextBestAction;
   const changed =
-    existing.currentStatus !== mergedStatus ||
-    existing.currentState.summary !== incoming.currentState.summary ||
-    existing.currentState.confidence !== incoming.currentState.confidence;
-  return appendRealityHistory({
+    JSON.stringify(existing.currentState) !== JSON.stringify(mergedCurrentState);
+  const merged: PIERealityObject = {
     ...existing,
     identity: {
       ...existing.identity,
       sourceIds: Array.from(new Set([
         ...existing.identity.sourceIds,
         ...incoming.identity.sourceIds,
-      ])),
+      ])).sort(),
+      sourceIdentityKeys: Array.from(new Set([
+        ...sourceIdentityKeysForObject(existing),
+        ...sourceIdentityKeysForObject(incoming),
+      ])).sort(),
+      stableKey: active.identity.stableKey,
+      stableKeyAliases: Array.from(new Set([
+        ...(existing.identity.stableKeyAliases || []),
+        ...(incoming.identity.stableKeyAliases || []),
+        existing.identity.stableKey,
+        incoming.identity.stableKey,
+      ]))
+        .filter(key => key !== active.identity.stableKey)
+        .sort(),
     },
-    currentState: {
-      ...incoming.currentState,
-      status: mergedStatus,
-      readiness: incoming.currentState.readiness,
-      confidence: strongerConfidence(existing.currentState.confidence, incoming.currentState.confidence),
-      stale: existing.currentState.stale || incoming.currentState.stale,
-      uncertain: existing.currentState.uncertain || incoming.currentState.uncertain,
-    },
-    priorState: changed ? existing.currentState : existing.priorState,
-    expectedState: incoming.expectedState || existing.expectedState,
+    name: active.name,
+    description: active.description,
+    projectName: active.projectName,
+    areaName: active.areaName,
+    owner: active.owner,
+    location: active.location,
+    currentState: mergedCurrentState,
+    priorState: equalTimeConflict
+      ? equalTimeWinner.currentState
+      : changed
+        ? existing.currentState
+        : existing.priorState,
+    expectedState: equalTimeConflict &&
+      JSON.stringify(existing.expectedState) !== JSON.stringify(incoming.expectedState)
+      ? null
+      : active.expectedState || (active === incoming ? existing.expectedState : incoming.expectedState),
     currentStatus: mergedStatus,
     sourceEvidenceReferences: dedupeById([
-      ...existing.sourceEvidenceReferences,
-      ...incoming.sourceEvidenceReferences,
+      ...historical.sourceEvidenceReferences,
+      ...active.sourceEvidenceReferences,
     ]),
-    assertions: dedupeById([...existing.assertions, ...incoming.assertions]),
-    relationships: dedupeById([...existing.relationships, ...incoming.relationships]),
-    dependencies: dedupeById([...existing.dependencies, ...incoming.dependencies]),
-    goals: dedupeById([...existing.goals, ...incoming.goals]),
-    evidenceLinks: dedupeById([...existing.evidenceLinks, ...incoming.evidenceLinks]),
-    knowledgeLinks: dedupeById([...existing.knowledgeLinks, ...incoming.knowledgeLinks]),
-    history: [...existing.history, ...incoming.history],
+    assertions: dedupeById([...historical.assertions, ...active.assertions]),
+    relationships: dedupeById([...historical.relationships, ...active.relationships]),
+    dependencies: dedupeById([...historical.dependencies, ...active.dependencies]),
+    goals: dedupeById([...historical.goals, ...active.goals]),
+    evidenceLinks: dedupeById([...historical.evidenceLinks, ...active.evidenceLinks]),
+    knowledgeLinks: dedupeById([...historical.knowledgeLinks, ...active.knowledgeLinks]),
+    // The incoming object is a synchronization candidate, not a second object
+    // creation. Preserve the original lifecycle and add only the merge event.
+    history: existing.history,
+    readiness: equalTimeConflict ? 'Needs Verification' : active.readiness,
+    risk: equalTimeConflict ? 'high' : active.risk,
+    uncertainty: conflictUncertainty,
+    confidence: conflictConfidence,
+    nextBestAction: conflictNextAction,
     lastObservedAt: maxDate(existing.lastObservedAt, incoming.lastObservedAt),
     lastChangedAt: changed ? generatedAt : existing.lastChangedAt,
     lastUpdated: maxDate(existing.lastUpdated, incoming.lastUpdated),
-    intelligence: incoming.intelligence,
-  }, {
+    intelligence: equalTimeConflict
+      ? {
+          ...active.intelligence,
+          readiness: 'Needs Verification',
+          riskLevel: 'high',
+          momentum: 'unknown',
+          nextBestAction: conflictNextAction,
+          uncertainty: conflictUncertainty,
+          confidence: conflictConfidence,
+          ownerNeeded: true,
+          summary: `${active.name}: Needs Verification. ${conflictNextAction.action}`,
+        }
+      : active.intelligence,
+  };
+
+  // Exact evidence replay is a no-op. This prevents refreshes from inventing
+  // model versions or replacing the original creation timestamp.
+  if (realityObjectSemanticallyEqual(existing, merged)) return existing;
+
+  return appendRealityHistory(merged, {
     id: `reality-history-merged-${existing.identity.id}-${generatedAt}`,
     occurredAt: generatedAt,
     eventType: 'merged',
-    summary: `Merged duplicate reality object evidence into ${existing.name}.`,
+    summary: equalTimeConflict
+      ? `Detected conflicting equally timed observations for ${existing.name}.`
+      : `Merged duplicate reality object evidence into ${existing.name}.`,
     previousStatus: existing.currentStatus,
     nextStatus: mergedStatus,
   });
@@ -682,21 +809,27 @@ export function synchronizeRealityModel(
   const createdObjects: PIERealityObject[] = [];
   const updatedObjects: PIERealityObject[] = [];
   const mergedObjects: PIERealityObject[] = [];
+  const historyEvents: PIERealityHistoryEvent[] = [];
 
   for (const source of sources) {
     const incoming = createRealityObject(source, generatedAt);
-    const existingKey = Object.keys(registry).find(key =>
-      registry[key].identity.stableKey === incoming.identity.stableKey,
-    );
+    const existingKey = findExistingRealityObjectKey(registry, incoming);
 
     if (existingKey) {
-      const merged = mergeRealityObjects(registry[existingKey], incoming, generatedAt);
+      const existing = registry[existingKey];
+      const merged = mergeRealityObjects(existing, incoming, generatedAt);
       registry[existingKey] = merged;
-      updatedObjects.push(merged);
-      mergedObjects.push(merged);
+      if (merged !== existing) {
+        updatedObjects.push(merged);
+        mergedObjects.push(merged);
+        const previousHistoryIds = new Set(existing.history.map(event => event.id));
+        historyEvents.push(...merged.history.filter(event => !previousHistoryIds.has(event.id)));
+      }
     } else {
-      registry[incoming.identity.id] = incoming;
-      createdObjects.push(incoming);
+      const created = ensureUniqueRealityObjectIdentity(registry, incoming);
+      registry[created.identity.id] = created;
+      createdObjects.push(created);
+      historyEvents.push(...created.history);
     }
   }
 
@@ -714,7 +847,7 @@ export function synchronizeRealityModel(
     {},
   );
   const objectIntelligence = buildRealityObjectIntelligence(intelligentObjects, generatedAt);
-  const changeHistory = [...createdObjects, ...updatedObjects].flatMap(object => object.history);
+  const changeHistory = historyEvents;
   const hasMeaningfulChange = changeHistory.length > 0;
   const organizationId = options.organizationId || previousModel.organizationId || 'local-unverified-anonymous';
   const projectId = options.projectId || previousModel.projectId || 'project-unassigned';
@@ -766,7 +899,7 @@ export function synchronizeRealityModel(
     createdObjects,
     updatedObjects,
     mergedObjects,
-    historyEvents: [...createdObjects, ...updatedObjects].flatMap(object => object.history),
+    historyEvents,
   };
 }
 
@@ -1145,8 +1278,150 @@ function stableKeyForSource(source: PIERealitySourceObject) {
   ].join('|').toLowerCase();
 }
 
+function canonicalSourceIdentityKeys(source: PIERealitySourceObject) {
+  if (!source.id?.trim()) return [];
+  const namespace = normalizeId(source.evidenceType || source.type) || 'unknown-source';
+  return [`${namespace}:${source.id.trim().toLowerCase()}`];
+}
+
 function stableIdForSource(source: PIERealitySourceObject) {
   return `reality-${normalizeId(stableKeyForSource(source))}`;
+}
+
+function sourceIdentityKeysForObject(object: PIERealityObject) {
+  const explicit = object.identity.sourceIdentityKeys?.filter(Boolean) || [];
+  if (explicit.length > 0) return explicit;
+
+  // Backward-compatible migration for models persisted before namespaced
+  // source identities existed. Pair known source IDs only with source types
+  // already attached to this object; never compare a raw ID by itself.
+  const namespaces = Array.from(new Set([
+    ...object.sourceEvidenceReferences.map(link => link.evidenceType),
+    ...object.assertions.map(assertion => assertion.source),
+  ].map(normalizeId).filter(Boolean)));
+  return Array.from(new Set(object.identity.sourceIds.flatMap(sourceId =>
+    namespaces.map(namespace => `${namespace}:${sourceId.trim().toLowerCase()}`),
+  ))).sort();
+}
+
+function findExistingRealityObjectKey(
+  registry: Record<string, PIERealityObject>,
+  incoming: PIERealityObject,
+) {
+  const entries = Object.entries(registry).filter(([, object]) =>
+    object.organizationId === incoming.organizationId &&
+    object.projectId === incoming.projectId,
+  );
+  const incomingSourceKeys = new Set(sourceIdentityKeysForObject(incoming));
+  const sourceMatches = entries.filter(([, object]) =>
+    object.type === incoming.type &&
+    sourceIdentityKeysForObject(object).some(key => incomingSourceKeys.has(key)),
+  );
+  const compatibleSourceMatches = sourceMatches.filter(([, object]) =>
+    canonicalSourceMatchIsCompatible(object, incoming),
+  );
+  const stableMatches = entries.filter(([, object]) =>
+    object.type === incoming.type &&
+    (
+      object.identity.stableKey === incoming.identity.stableKey ||
+      (object.identity.stableKeyAliases || []).includes(incoming.identity.stableKey)
+    ),
+  );
+
+  if (compatibleSourceMatches.length === 1) {
+    const [sourceKey] = compatibleSourceMatches[0];
+    if (stableMatches.length === 1 && stableMatches[0][0] !== sourceKey) {
+      // The canonical source points at one object while the legacy name-based
+      // key points at another. Creating a separate conflicted identity is safer
+      // than overwriting either object.
+      return null;
+    }
+    return sourceKey;
+  }
+  if (compatibleSourceMatches.length > 1) {
+    const disambiguated = stableMatches.filter(([key]) =>
+      compatibleSourceMatches.some(([sourceKey]) => sourceKey === key),
+    );
+    return disambiguated.length === 1 ? disambiguated[0][0] : null;
+  }
+  if (sourceMatches.length > 0) return null;
+  return stableMatches.length === 1 ? stableMatches[0][0] : null;
+}
+
+function canonicalSourceMatchIsCompatible(
+  existing: PIERealityObject,
+  incoming: PIERealityObject,
+) {
+  if (
+    existing.identity.stableKey === incoming.identity.stableKey ||
+    (existing.identity.stableKeyAliases || []).includes(incoming.identity.stableKey)
+  ) return true;
+
+  const sameNonEmpty = (left: string | null, right: string | null) =>
+    Boolean(left?.trim() && right?.trim() && normalizeId(left) === normalizeId(right));
+  if (
+    sameNonEmpty(existing.areaName, incoming.areaName) ||
+    sameNonEmpty(existing.location, incoming.location)
+  ) return true;
+
+  // Project and area labels are themselves expected to be renamed. Their
+  // stable parent project context is sufficient; lower-level work objects need
+  // a matching area/location so a duplicated task ID cannot silently merge.
+  return (existing.type === 'project' || existing.type === 'area') &&
+    sameNonEmpty(existing.projectName, incoming.projectName);
+}
+
+function ensureUniqueRealityObjectIdentity(
+  registry: Record<string, PIERealityObject>,
+  object: PIERealityObject,
+) {
+  const usedIds = new Set(Object.values(registry).map(item => item.identity.id));
+  if (!usedIds.has(object.identity.id)) return object;
+
+  const baseId = object.stableObjectId;
+  let uniqueId = baseId;
+  let suffix = 2;
+  while (usedIds.has(uniqueId)) {
+    uniqueId = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+  return rekeyRealityObject(object, uniqueId);
+}
+
+function rekeyRealityObject(
+  object: PIERealityObject,
+  identityId: string,
+): PIERealityObject {
+  const suffix = normalizeId(identityId);
+  const scopedId = (id: string) => `${id}-${suffix}`;
+  return {
+    ...object,
+    identity: {
+      ...object.identity,
+      id: identityId,
+    },
+    sourceEvidenceReferences: object.sourceEvidenceReferences.map(link => ({
+      ...link,
+      id: scopedId(link.id),
+    })),
+    assertions: object.assertions.map(assertion => ({
+      ...assertion,
+      id: scopedId(assertion.id),
+      objectId: identityId,
+    })),
+    evidenceLinks: object.evidenceLinks.map(link => ({
+      ...link,
+      id: scopedId(link.id),
+    })),
+    knowledgeLinks: object.knowledgeLinks.map(link => ({
+      ...link,
+      id: scopedId(link.id),
+    })),
+    history: object.history.map(event => ({
+      ...event,
+      id: scopedId(event.id),
+    })),
+  };
 }
 
 function stableProjectId(projectName: string) {
@@ -1181,7 +1456,7 @@ function buildRealityAssertion({
   }
 
   return {
-    id: `assertion-${objectId}-${normalizeId(classification)}-${normalizeId(evidenceId || source.id)}`,
+    id: `assertion-${objectId}-${normalizeId(classification)}-${normalizeId(evidenceId || source.id)}-${normalizeId(source.evidenceVersionId || source.evidenceContentHash || 'unversioned')}`,
     organizationId,
     projectId,
     objectId,
@@ -1249,20 +1524,24 @@ function buildModelConflictRecords(
   projectId: string,
   generatedAt: string,
 ): PIERealityConflict[] {
-  const contradicted = objects.filter(object =>
-    object.currentStatus === 'contradicted' ||
-    object.assertions.some(assertion => assertion.contradictingEvidenceIds.length > 0),
-  );
+  const contradicted = objects.filter(object => {
+    const activeAssertions = currentRealityAssertions(object);
+    return object.currentStatus === 'contradicted' ||
+      activeAssertions.some(assertion => assertion.contradictingEvidenceIds.length > 0);
+  });
   const duplicateCandidates = findDuplicateCandidates(objects);
+  const identityCollisions = findSourceIdentityCollisions(objects);
   return [
-    ...contradicted.map(object => ({
+    ...contradicted.map(object => {
+      const activeAssertions = currentRealityAssertions(object);
+      return {
       id: `conflict-${object.identity.id}`,
       organizationId,
       projectId,
       affectedObjectIds: [object.identity.id],
-      affectedAssertionIds: object.assertions.map(assertion => assertion.id),
-      supportingEvidenceSideA: object.assertions.flatMap(assertion => assertion.supportingEvidenceIds),
-      supportingEvidenceSideB: object.assertions.flatMap(assertion => assertion.contradictingEvidenceIds),
+      affectedAssertionIds: activeAssertions.map(assertion => assertion.id),
+      supportingEvidenceSideA: activeAssertions.flatMap(assertion => assertion.supportingEvidenceIds),
+      supportingEvidenceSideB: activeAssertions.flatMap(assertion => assertion.contradictingEvidenceIds),
       conflictType: 'evidence_contradiction' as const,
       severity: object.currentStatus === 'blocked' ? 'critical' as const : 'high' as const,
       confidence: object.confidence.level,
@@ -1272,7 +1551,8 @@ function buildModelConflictRecords(
       createdAt: generatedAt,
       resolvedAt: null,
       resolutionExplanation: null,
-    })),
+    };
+    }),
     ...duplicateCandidates.map(([left, right]) => ({
       id: `conflict-duplicate-${left.identity.id}-${right.identity.id}`,
       organizationId,
@@ -1291,7 +1571,46 @@ function buildModelConflictRecords(
       resolvedAt: null,
       resolutionExplanation: null,
     })),
+    ...identityCollisions.map(([left, right, sourceIdentityKey]) => ({
+      id: `conflict-identity-${[left.identity.id, right.identity.id].sort().join('-')}`,
+      organizationId,
+      projectId,
+      affectedObjectIds: [left.identity.id, right.identity.id].sort(),
+      affectedAssertionIds: [...left.assertions, ...right.assertions].map(assertion => assertion.id),
+      supportingEvidenceSideA: left.assertions.flatMap(assertion => assertion.supportingEvidenceIds),
+      supportingEvidenceSideB: right.assertions.flatMap(assertion => assertion.supportingEvidenceIds),
+      conflictType: 'identity_mismatch' as const,
+      severity: 'high' as const,
+      confidence: 'high' as const,
+      status: 'open' as const,
+      resolutionOwner: left.owner || right.owner,
+      recommendedNextEvidence: [
+        `Correct the duplicated source identity ${sourceIdentityKey} before merging these objects.`,
+      ],
+      createdAt: generatedAt,
+      resolvedAt: null,
+      resolutionExplanation: null,
+    })),
   ];
+}
+
+function findSourceIdentityCollisions(
+  objects: PIERealityObject[],
+): Array<[PIERealityObject, PIERealityObject, string]> {
+  const collisions: Array<[PIERealityObject, PIERealityObject, string]> = [];
+  objects.forEach((left, leftIndex) => {
+    const leftKeys = new Set(sourceIdentityKeysForObject(left));
+    objects.slice(leftIndex + 1).forEach(right => {
+      if (
+        left.organizationId !== right.organizationId ||
+        left.projectId !== right.projectId ||
+        left.identity.id === right.identity.id
+      ) return;
+      const sharedKey = sourceIdentityKeysForObject(right).find(key => leftKeys.has(key));
+      if (sharedKey) collisions.push([left, right, sharedKey]);
+    });
+  });
+  return collisions.slice(0, 8);
 }
 
 function findDuplicateCandidates(objects: PIERealityObject[]): Array<[PIERealityObject, PIERealityObject]> {
@@ -1332,15 +1651,66 @@ function readinessForObjects(objects: PIERealityObject[]): PIERealityReadiness {
 }
 
 function inferStatus(source: PIERealitySourceObject): PIERealityObjectStatus {
-  const text = `${source.name} ${source.summary || ''}`.toLowerCase();
   if (source.stale || source.uncertain) return 'needs_verification';
-  if (/contradict|conflict|does not match|disputed/.test(text)) return 'contradicted';
-  if (/blocked|failed|rejected|overdue|open issue|safety concern/.test(text)) return 'blocked';
-  if (/risk|at risk|delay|slip|concern/.test(text)) return 'at_risk';
-  if (/complete|resolved|approved|accepted|done/.test(text)) return 'complete';
-  if (/ready|inspection/.test(text)) return 'ready';
-  if (/start|started|progress|active|install|rough-in/.test(text)) return 'in_progress';
-  if (/not started|waiting/.test(text)) return 'not_started';
+  const text = `${source.name} ${source.summary || ''}`;
+  const parsed = parseDAVEAssertions(text);
+  const completion = classifyDAVECompletion(parsed);
+  const implementation = classifyDAVEImplementation(parsed);
+  const blocker = classifyDAVEBlocker(parsed);
+  const safety = classifyDAVESafety(parsed);
+  const issue = classifyDAVEIssue(parsed);
+  const outcome = classifyDAVEOutcome(parsed);
+  const currentAssertions = parsed.assertions.filter(isDAVECurrentCertainAssertion);
+  const languageConflict = parsed.conflicts.length > 0 ||
+    [completion, implementation, blocker, safety, issue, outcome]
+      .some(classification => classification === 'conflicting');
+
+  if (languageConflict || /\b(?:contradicting|contradictory|does not match|disputed)\b/i.test(text)) {
+    return 'contradicted';
+  }
+  if (currentAssertions.some(assertion => assertion.status === 'delayed')) return 'at_risk';
+  if (
+    blocker === 'blocked' ||
+    safety === 'issue_present' ||
+    currentAssertions.some(assertion => assertion.status === 'outcome_failed') ||
+    (issue === 'issue_present' &&
+      (source.type === 'issue' || source.type === 'risk' || source.type === 'safety_observation'))
+  ) {
+    return 'blocked';
+  }
+  if (/\b(?:risk|at risk|slip|concern|overdue)\b/i.test(text)) return 'at_risk';
+  if (
+    completion === 'complete' ||
+    blocker === 'resolved' ||
+    safety === 'no_issue_observed' ||
+    issue === 'no_issue_observed' ||
+    outcome === 'successful' ||
+    currentAssertions.some(assertion => assertion.status === 'approved')
+  ) {
+    return 'complete';
+  }
+  if (currentAssertions.some(assertion => assertion.status === 'not_started')) {
+    return 'not_started';
+  }
+  if (
+    completion === 'not_complete' ||
+    implementation === 'implemented' ||
+    implementation === 'in_progress'
+  ) {
+    return 'in_progress';
+  }
+  if (implementation === 'not_implemented') return 'not_started';
+  if (
+    currentAssertions.some(assertion => assertion.status === 'not_approved') ||
+    parsed.assertions.some(assertion =>
+      assertion.polarity === 'uncertain' ||
+      assertion.modality === 'conditional' ||
+      assertion.temporality === 'future'
+    )
+  ) {
+    return 'needs_verification';
+  }
+  if (/\b(?:ready|inspection)\b/i.test(text)) return 'ready';
   return 'unknown';
 }
 
@@ -1471,31 +1841,137 @@ function actionPriorityScore(priority: PIERealityNextAction['priority']) {
   return 1;
 }
 
-function strongerStatus(
-  left: PIERealityObjectStatus,
-  right: PIERealityObjectStatus,
-): PIERealityObjectStatus {
-  const rank: Record<PIERealityObjectStatus, number> = {
-    blocked: 9,
-    contradicted: 9,
-    at_risk: 8,
-    needs_verification: 7,
-    in_progress: 6,
-    ready: 5,
-    not_started: 4,
-    complete: 3,
-    unknown: 2,
-    retired: 1,
-  };
-  return rank[right] > rank[left] ? right : left;
+function observationTime(object: PIERealityObject) {
+  const observedAt = new Date(object.lastObservedAt).getTime();
+  if (Number.isFinite(observedAt)) return observedAt;
+  const updatedAt = new Date(object.lastUpdated).getTime();
+  return Number.isFinite(updatedAt) ? updatedAt : 0;
 }
 
-function strongerConfidence(
-  left: ProjectConfidenceLevel,
-  right: ProjectConfidenceLevel,
-): ProjectConfidenceLevel {
-  const rank: Record<ProjectConfidenceLevel, number> = { low: 1, medium: 2, high: 3 };
-  return rank[right] > rank[left] ? right : left;
+function currentRealityAssertions(object: PIERealityObject) {
+  if (
+    object.currentStatus === 'contradicted' &&
+    object.currentState.summary.startsWith('Conflicting equally timed observations')
+  ) {
+    return object.assertions;
+  }
+  const currentSummary = object.currentState.summary.trim();
+  const matching = object.assertions.filter(assertion =>
+    assertion.statement.trim() === currentSummary,
+  );
+  return matching.length > 0
+    ? matching
+    : object.assertions.slice(-1);
+}
+
+function realityCurrentClaimSemanticallyEqual(
+  left: PIERealityObject,
+  right: PIERealityObject,
+) {
+  return JSON.stringify({
+    currentState: left.currentState,
+    expectedState: left.expectedState,
+    currentStatus: left.currentStatus,
+  }) === JSON.stringify({
+    currentState: right.currentState,
+    expectedState: right.expectedState,
+    currentStatus: right.currentStatus,
+  });
+}
+
+function deterministicRealityWinner(
+  left: PIERealityObject,
+  right: PIERealityObject,
+) {
+  const leftKey = JSON.stringify(realityObservationSemanticValue(left));
+  const rightKey = JSON.stringify(realityObservationSemanticValue(right));
+  return leftKey.localeCompare(rightKey) >= 0 ? left : right;
+}
+
+function realityObjectSemanticallyEqual(
+  left: PIERealityObject,
+  right: PIERealityObject,
+) {
+  return JSON.stringify(realityObjectSemanticValue(left)) ===
+    JSON.stringify(realityObjectSemanticValue(right));
+}
+
+function realityObservationSemanticallyEqual(
+  left: PIERealityObject,
+  right: PIERealityObject,
+) {
+  return JSON.stringify(realityObservationSemanticValue(left)) ===
+    JSON.stringify(realityObservationSemanticValue(right));
+}
+
+function realityObservationSemanticValue(object: PIERealityObject) {
+  return {
+    organizationId: object.organizationId,
+    projectId: object.projectId,
+    stableObjectId: object.stableObjectId,
+    identity: object.identity,
+    type: object.type,
+    name: object.name,
+    description: object.description,
+    projectName: object.projectName,
+    areaName: object.areaName,
+    owner: object.owner,
+    location: object.location,
+    currentState: object.currentState,
+    expectedState: object.expectedState,
+    currentStatus: object.currentStatus,
+    sourceEvidenceReferences: object.sourceEvidenceReferences.map(({ linkedAt: _linkedAt, ...link }) => link),
+    assertions: object.assertions.map(({
+      createdAt: _createdAt,
+      lastReviewedAt: _lastReviewedAt,
+      reviewAt: _reviewAt,
+      expiresAt: _expiresAt,
+      ...assertion
+    }) => assertion),
+    evidenceLinks: object.evidenceLinks.map(({ linkedAt: _linkedAt, ...link }) => link),
+    knowledgeLinks: object.knowledgeLinks,
+    lastObservedAt: object.lastObservedAt,
+    lastUpdated: object.lastUpdated,
+  };
+}
+
+function realityObjectSemanticValue(object: PIERealityObject) {
+  return {
+    organizationId: object.organizationId,
+    projectId: object.projectId,
+    stableObjectId: object.stableObjectId,
+    identity: object.identity,
+    type: object.type,
+    name: object.name,
+    description: object.description,
+    projectName: object.projectName,
+    areaName: object.areaName,
+    owner: object.owner,
+    location: object.location,
+    currentState: object.currentState,
+    expectedState: object.expectedState,
+    currentStatus: object.currentStatus,
+    sourceEvidenceReferences: object.sourceEvidenceReferences.map(({ linkedAt: _linkedAt, ...link }) => link),
+    assertions: object.assertions.map(({
+      createdAt: _createdAt,
+      lastReviewedAt: _lastReviewedAt,
+      reviewAt: _reviewAt,
+      expiresAt: _expiresAt,
+      ...assertion
+    }) => assertion),
+    relationships: object.relationships,
+    dependencies: object.dependencies,
+    goals: object.goals,
+    readiness: object.readiness,
+    risk: object.risk,
+    uncertainty: object.uncertainty,
+    confidence: object.confidence,
+    nextBestAction: object.nextBestAction,
+    evidenceLinks: object.evidenceLinks.map(({ linkedAt: _linkedAt, ...link }) => link),
+    knowledgeLinks: object.knowledgeLinks,
+    lastObservedAt: object.lastObservedAt,
+    lastUpdated: object.lastUpdated,
+  };
 }
 
 function dedupeById<T extends { id: string }>(items: T[]): T[] {

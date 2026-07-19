@@ -130,6 +130,11 @@ export function DAVECaptureConfirmationSheet({
   }
 
   function cancel() {
+    // Audit P1-43: a commit in flight cannot be canceled by dismissing the
+    // sheet — doing so previously hid the save while it still completed.
+    // Cancel is inert until the save resolves (this also guards the close
+    // icon and the system back gesture via onRequestClose).
+    if (isSaving) return;
     cancelCaptureMemory(working, new Date().toISOString());
     setConversation(current => transitionConversation(current, 'cancelled'));
     onCancel();
@@ -216,7 +221,7 @@ export function DAVECaptureConfirmationSheet({
             >
               <Text style={styles.saveText}>{isSaving ? 'Saving…' : 'Save Memory'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelButton} onPress={cancel} accessibilityRole="button"><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.cancelButton} onPress={cancel} disabled={isSaving} accessibilityRole="button" accessibilityState={{ disabled: isSaving }}><Text style={styles.cancelText}>{isSaving ? 'Saving…' : 'Cancel'}</Text></TouchableOpacity>
           </ScrollView>
         </View>
       </View>

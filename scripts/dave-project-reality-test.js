@@ -82,6 +82,61 @@ assert.strictEqual(safety.state, 'Blocked', 'Open safety evidence must produce B
 assert.strictEqual(safety.blockers[0].evidenceClass, 'fact');
 assert(safety.topRecommendation.supportingEvidence.length > 0);
 
+const selfClearedSafety = build({ updates: [update('self-cleared-safety', [], {
+  safetyFlag: true,
+  notes: 'No safety issues were observed.',
+})] });
+assert.notStrictEqual(selfClearedSafety.state, 'Blocked',
+  'An explicitly cleared safety assertion must not remain Blocked forever.');
+assert.strictEqual(selfClearedSafety.blockers.length, 0);
+
+const lifecycleBlockerId = 'update:lifecycle-blocker';
+const lifecycleResolved = build({ updates: [
+  update('lifecycle-blocker', [], {
+    date: '2026-07-09T10:00:00.000Z',
+    blockerFlag: true,
+  }),
+  update('lifecycle-resolution', [], {
+    date: '2026-07-10T10:00:00.000Z',
+    blockerEvents: [{
+      blockerId: lifecycleBlockerId,
+      blockerType: 'blocker',
+      action: 'resolved',
+      projectName: 'Alpha',
+      areaName: null,
+      occurredAt: '2026-07-10T10:00:00.000Z',
+    }],
+  }),
+] });
+assert.notStrictEqual(lifecycleResolved.state, 'Blocked',
+  'An explicitly resolved stable blocker identity must no longer block Project Reality.');
+assert.strictEqual(lifecycleResolved.blockers.length, 0);
+
+const oneStillActive = build({ updates: [
+  update('resolved-blocker', [], {
+    date: '2026-07-08T10:00:00.000Z',
+    blockerFlag: true,
+  }),
+  update('separate-active-blocker', [], {
+    date: '2026-07-09T10:00:00.000Z',
+    blockerFlag: true,
+  }),
+  update('resolution-of-first', [], {
+    date: '2026-07-10T10:00:00.000Z',
+    blockerEvents: [{
+      blockerId: 'update:resolved-blocker',
+      blockerType: 'blocker',
+      action: 'resolved',
+      projectName: 'Alpha',
+      areaName: null,
+      occurredAt: '2026-07-10T10:00:00.000Z',
+    }],
+  }),
+] });
+assert.strictEqual(oneStillActive.state, 'Blocked',
+  'Resolving one blocker must not clear a separate active blocker.');
+assert.strictEqual(oneStillActive.blockers.length, 1);
+
 const waiting = build({
   updates: [update('waiting-update', [photo('waiting-photo', { actionStatus: 'Waiting', actionRequired: 'Await utility release' })])],
 });

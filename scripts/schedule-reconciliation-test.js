@@ -41,6 +41,7 @@ function loadTypeScriptModule(relativePath) {
 
 const {
   buildPIEScheduleReconciliation,
+  reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
 } = loadTypeScriptModule('services/PIEScheduleReconciliation.ts');
 
@@ -70,6 +71,9 @@ function schedule(overrides = {}) {
 
 function update(overrides = {}) {
   const photo = overrides.photo || {};
+  const areaName = Object.prototype.hasOwnProperty.call(overrides, 'areaName')
+    ? overrides.areaName
+    : 'Canopy B';
   return {
     id: overrides.id || 'update-1',
     projectName: overrides.projectName || 'Building 2375',
@@ -78,8 +82,8 @@ function update(overrides = {}) {
     scheduleItemId: overrides.scheduleItemId || null,
     scheduleTaskName: overrides.scheduleTaskName || null,
     scheduleProjectName: overrides.scheduleProjectName || null,
-    selectedAreaId: 'area-canopy-b',
-    selectedAreaName: overrides.areaName || 'Canopy B',
+    selectedAreaId: areaName ? `area-${String(areaName).toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : null,
+    selectedAreaName: areaName,
     recipients: { contactIds: [] },
     status: 'sent',
     photos: [{
@@ -91,8 +95,8 @@ function update(overrides = {}) {
       actionOwner: '',
       actionDueDate: '',
       actionStatus: photo.actionStatus || 'In Progress',
-      selectedAreaId: 'area-canopy-b',
-      selectedAreaName: overrides.areaName || 'Canopy B',
+      selectedAreaId: areaName ? `area-${String(areaName).toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : null,
+      selectedAreaName: areaName,
       photoIntelligence: null,
     }],
   };
@@ -150,6 +154,168 @@ const explicitBeatsNewerSemantic = buildPIEScheduleReconciliation({
 });
 assert.strictEqual(explicitBeatsNewerSemantic.matches[0].updateId, 'older-explicit');
 assert.strictEqual(explicitBeatsNewerSemantic.matches[0].matchBasis, 'explicit_task_id');
+
+const repeatedWallPackTasks = ['A', 'B', 'C'].map(canopy => schedule({
+  id: `wall-packs-canopy-${canopy.toLowerCase()}`,
+  locationName: `Canopy ${canopy}`,
+  taskName: 'INSTALL ELECTRICAL WALL PACKS',
+  status: 'Complete',
+  percentComplete: 100,
+}));
+
+const explicitCanopyAOnly = buildPIEScheduleReconciliation({
+  scheduleItems: repeatedWallPackTasks,
+  updates: [update({
+    id: 'wall-packs-update-canopy-a',
+    areaName: 'Canopy A',
+    scheduleItemId: 'wall-packs-canopy-a',
+    scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+    notes: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+    photo: { caption: 'Wall pack installation remains in progress.' },
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert.deepStrictEqual(
+  explicitCanopyAOnly.matches.map(match => match.scheduleItemId),
+  ['wall-packs-canopy-a'],
+  'An explicit Canopy A task link must not fall back to same-named Canopy B or C tasks.',
+);
+assert.deepStrictEqual(
+  explicitCanopyAOnly.warnings
+    .filter(warning => warning.type === 'schedule_status_conflict')
+    .map(warning => warning.scheduleItemId),
+  ['wall-packs-canopy-a'],
+  'An explicit Canopy A update must create at most the Canopy A schedule conflict.',
+);
+
+const orphanedExplicitTaskLink = buildPIEScheduleReconciliation({
+  scheduleItems: repeatedWallPackTasks,
+  updates: [update({
+    id: 'wall-packs-update-orphaned-link',
+    areaName: 'Canopy A',
+    scheduleItemId: 'wall-packs-task-no-longer-present',
+    scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+    notes: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert.strictEqual(
+  orphanedExplicitTaskLink.matches.length,
+  0,
+  'An update targeting a missing explicit task ID must not fall back to any same-named task.',
+);
+
+const confirmedCanopyBOnly = buildPIEScheduleReconciliation({
+  scheduleItems: repeatedWallPackTasks,
+  updates: [update({
+    id: 'wall-packs-update-canopy-b',
+    areaName: 'Canopy B',
+    scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+    notes: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+    photo: { caption: 'Wall pack installation remains in progress.' },
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert.deepStrictEqual(
+  confirmedCanopyBOnly.matches.map(match => match.scheduleItemId),
+  ['wall-packs-canopy-b'],
+  'A confirmed Canopy B area must not match same-named Canopy A or C tasks.',
+);
+
+const legacyNoAreaMatch = buildPIEScheduleReconciliation({
+  scheduleItems: [repeatedWallPackTasks[2]],
+  updates: [update({
+    id: 'wall-packs-update-without-area',
+    areaName: null,
+    scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+    notes: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+    photo: { caption: 'Wall pack installation remains in progress.' },
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert.strictEqual(
+  legacyNoAreaMatch.matches.length,
+  1,
+  'A legacy update with no recorded area must retain task-name fallback matching.',
+);
+assert.strictEqual(legacyNoAreaMatch.matches[0].scheduleItemId, 'wall-packs-canopy-c');
+
+const multiAreaWallPackUpdate = update({
+  id: 'wall-packs-multi-area-update',
+  areaName: null,
+  scheduleTaskName: 'INSTALL ELECTRICAL WALL PACKS',
+});
+multiAreaWallPackUpdate.notes = '';
+multiAreaWallPackUpdate.photos = [
+  {
+    ...multiAreaWallPackUpdate.photos[0],
+    id: 'wall-packs-photo-canopy-a',
+    caption: 'INSTALL ELECTRICAL WALL PACKS is complete.',
+    selectedAreaId: 'area-canopy-a',
+    selectedAreaName: 'Canopy A',
+  },
+  {
+    ...multiAreaWallPackUpdate.photos[0],
+    id: 'wall-packs-photo-canopy-b',
+    caption: 'INSTALL ELECTRICAL WALL PACKS is still in progress.',
+    selectedAreaId: 'area-canopy-b',
+    selectedAreaName: 'Canopy B',
+  },
+];
+const isolatedMultiAreaEvidence = buildPIEScheduleReconciliation({
+  scheduleItems: repeatedWallPackTasks.slice(0, 2),
+  updates: [multiAreaWallPackUpdate],
+  projectName: 'Building 2375',
+  now,
+});
+const isolatedMatches = Object.fromEntries(
+  isolatedMultiAreaEvidence.matches.map(match => [match.scheduleItemId, match]),
+);
+assert.strictEqual(
+  isolatedMatches['wall-packs-canopy-a'].signal,
+  'complete',
+  'Canopy B in-progress text must not override Canopy A completion evidence.',
+);
+assert.deepStrictEqual(
+  isolatedMatches['wall-packs-canopy-a'].photoIds,
+  ['wall-packs-photo-canopy-a'],
+  'Canopy A must return only Canopy A evidence IDs.',
+);
+assert.strictEqual(
+  isolatedMatches['wall-packs-canopy-b'].signal,
+  'in_progress',
+  'Canopy A completion text must not override Canopy B in-progress evidence.',
+);
+assert.deepStrictEqual(
+  isolatedMatches['wall-packs-canopy-b'].photoIds,
+  ['wall-packs-photo-canopy-b'],
+  'Canopy B must return only Canopy B evidence IDs.',
+);
+const canopyBConflict = isolatedMultiAreaEvidence.warnings.find(warning =>
+  warning.type === 'schedule_status_conflict' &&
+  warning.scheduleItemId === 'wall-packs-canopy-b',
+);
+assert(canopyBConflict, 'Only Canopy B should conflict with its Complete schedule status.');
+assert.deepStrictEqual(
+  canopyBConflict.evidenceIds,
+  [
+    'schedule:wall-packs-canopy-b',
+    'update:wall-packs-multi-area-update',
+    'photo:wall-packs-photo-canopy-b',
+  ],
+  'The Canopy B warning must cite only Canopy B photo evidence.',
+);
+assert(
+  !isolatedMultiAreaEvidence.warnings.some(warning =>
+    warning.type === 'schedule_status_conflict' &&
+    warning.scheduleItemId === 'wall-packs-canopy-a'
+  ),
+  'Canopy A completion evidence must not create a false conflict.',
+);
 
 for (const actionStatus of ['Closed', 'In Progress']) {
   const workflowStatusOnly = buildPIEScheduleReconciliation({
@@ -362,6 +528,67 @@ assert.deepStrictEqual(
   activeItems.map(item => item.id),
   ['current', 'manual'],
   'Only active-upload and manual schedule items may drive intelligence.',
+);
+
+const sameFilenameByBatch = selectAuthoritativeScheduleItems({
+  scheduleItems: [
+    schedule({ id: 'batch-current-task', importedFrom: 'schedule.pdf', importBatchId: 'batch-current', sourceDocumentId: 'document-current-batch' }),
+    schedule({ id: 'batch-old-task', importedFrom: 'schedule.pdf', importBatchId: 'batch-old', sourceDocumentId: 'document-old-batch' }),
+  ],
+  scheduleDocuments: [
+    {
+      id: 'document-current-batch', name: 'Schedule', originalFileName: 'schedule.pdf',
+      uri: 'file:///current-batch.pdf', category: 'Schedules', notes: '', isCurrent: true,
+      importedAt: '2026-07-18T12:00:00.000Z', importBatchId: 'batch-current',
+    },
+    {
+      id: 'document-old-batch', name: 'Schedule', originalFileName: 'schedule.pdf',
+      uri: 'file:///old-batch.pdf', category: 'Schedules', notes: '', isCurrent: false,
+      importedAt: '2026-07-10T12:00:00.000Z', importBatchId: 'batch-old',
+    },
+  ],
+});
+assert.deepStrictEqual(
+  sameFilenameByBatch.map(item => item.id),
+  ['batch-current-task'],
+  'Immutable document and batch identity must outrank a reused schedule filename.',
+);
+
+const noCurrentItems = selectAuthoritativeScheduleItems({
+  scheduleItems: [
+    schedule({ id: 'inactive-upload', importedFrom: 'inactive.pdf', importBatchId: 'inactive-batch' }),
+    schedule({ id: 'manual-without-source', importedFrom: null, importBatchId: null, sourceDocumentId: null }),
+  ],
+  scheduleDocuments: [{
+    id: 'inactive-document', name: 'Inactive', originalFileName: 'inactive.pdf', uri: 'file:///inactive.pdf',
+    category: 'Schedules', notes: '', isCurrent: false, importedAt: '2026-07-10T12:00:00.000Z', importBatchId: 'inactive-batch',
+  }],
+});
+assert.deepStrictEqual(
+  noCurrentItems.map(item => item.id),
+  ['manual-without-source'],
+  'An explicitly inactive upload must not reactivate merely because no schedule is current.',
+);
+
+const competingCurrentDocuments = [
+  { id: 'older-current', name: 'Schedule', originalFileName: 'same.pdf', uri: 'file:///older.pdf', category: 'Schedules', notes: '', isCurrent: true, importedAt: '2026-07-10T12:00:00.000Z', importBatchId: 'older-batch' },
+  { id: 'newer-current', name: 'Schedule', originalFileName: 'same.pdf', uri: 'file:///newer.pdf', category: 'Schedules', notes: '', isCurrent: true, importedAt: '2026-07-18T12:00:00.000Z', importBatchId: 'newer-batch' },
+];
+assert.deepStrictEqual(
+  selectAuthoritativeScheduleItems({
+    scheduleItems: [
+      schedule({ id: 'older-current-task', importedFrom: 'same.pdf', importBatchId: 'older-batch', sourceDocumentId: 'older-current' }),
+      schedule({ id: 'newer-current-task', importedFrom: 'same.pdf', importBatchId: 'newer-batch', sourceDocumentId: 'newer-current' }),
+    ],
+    scheduleDocuments: competingCurrentDocuments,
+  }).map(item => item.id),
+  ['newer-current-task'],
+  'Only the newest marked-current schedule may drive intelligence after a merge conflict.',
+);
+assert.deepStrictEqual(
+  reconcileCurrentScheduleDocuments(competingCurrentDocuments).filter(document => document.isCurrent).map(document => document.id),
+  ['newer-current'],
+  'Merged reference documents must converge to one deterministic current schedule.',
 );
 
 const dedupedItems = selectAuthoritativeScheduleItems({

@@ -12,6 +12,7 @@ import {
   type DAVEProjectRealityState,
 } from './DAVEProjectReality';
 import type { DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
+import type { ProjectTimeZone } from './ProjectDateTime';
 
 export type DAVEEvidenceClass = 'fact' | 'observation' | 'uncertainty';
 export type DAVEBriefSourceType =
@@ -104,6 +105,7 @@ export type DAVEDailyBriefPhotoResult = {
   removals?: string[];
   findings?: DAVEDailyBriefPhotoFinding[];
   comparisonConfidence?: string | null;
+  comparability?: string | null;
   captureLimitations?: string[];
   priorUpdateUsed?: string | null;
   priorEvidenceId?: string | null;
@@ -156,6 +158,7 @@ export type DAVEDailyBriefDocument = {
 export type DAVEDailyBriefScheduleItem = {
   id: string;
   scheduleProjectName?: string | null;
+  projectTimeZone?: string | null;
   projectName: string;
   locationName?: string;
   taskName: string;
@@ -180,6 +183,7 @@ export type BuildProjectDailyBriefInput = {
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
   staleAfterDays?: number;
 };
 
@@ -215,6 +219,7 @@ export function buildProjectDailyBrief(
     documents: input.documents,
     scheduleItems: input.scheduleItems,
     now: now.toISOString(),
+    projectTimeZone: input.projectTimeZone,
   });
   return buildProjectDailyBriefModel(reality, input.staleAfterDays);
 }
@@ -378,6 +383,19 @@ function buildUncertaintyItems(
           confidence: null,
           navigationTarget: 'update_detail',
           limitations: ['No visual conclusion was accepted from this analysis.'],
+        });
+      } else if (isCompletedComparison(result) && !hasPriorComparison(result)) {
+        items.push({
+          id: stableBriefId('uncertainty', update.id, photo.id, 'comparison-limited'),
+          evidenceClass: 'uncertainty',
+          category: 'missing_verification',
+          text: 'The available photos are not sufficiently comparable.',
+          sourceType: 'photo',
+          sourceRecordId: update.id,
+          timestamp: result.updatedAt || updateTimestamp(update),
+          confidence: null,
+          navigationTarget: 'update_detail',
+          limitations: ['No change or progress conclusion was accepted from this comparison.'],
         });
       }
     }
@@ -657,7 +675,11 @@ function isCompletedComparison(result: DAVEDailyBriefPhotoResult | null | undefi
 }
 
 function hasPriorComparison(result: DAVEDailyBriefPhotoResult): boolean {
-  return Boolean(result.priorUpdateUsed || result.priorEvidenceId);
+  const comparability = result.comparability?.trim().toLowerCase();
+  return Boolean(
+    (result.priorUpdateUsed || result.priorEvidenceId) &&
+    (comparability === 'strong' || comparability === 'probable'),
+  );
 }
 
 function isFailedAnalysis(result: DAVEDailyBriefPhotoResult | null | undefined): boolean {

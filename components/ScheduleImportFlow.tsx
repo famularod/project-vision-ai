@@ -27,12 +27,14 @@ import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { PrimaryButton, SecondaryButton } from './ProjectDetailsCard';
 
 export function ScheduleImportFlow({
+  screenshotImportAvailable,
   onImportFile,
   onImportScreenshots,
   onAddManually,
   onApprove,
   onCancel,
 }: {
+  screenshotImportAvailable: boolean;
   onImportFile: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onImportScreenshots: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onAddManually: () => void;
@@ -99,6 +101,8 @@ export function ScheduleImportFlow({
   }
 
   function chooseSource(choice: 'file' | 'screenshots' | 'manual') {
+    if (choice === 'screenshots' && !screenshotImportAvailable) return;
+
     pendingChoiceRef.current = choice;
     setChoiceOpen(false);
 
@@ -205,7 +209,10 @@ export function ScheduleImportFlow({
             <ImportChoice
               icon="images-outline"
               title="Message or Email Screenshots"
-              detail="Select several JPEG, JPG, PNG, or iPhone images"
+              detail={screenshotImportAvailable
+                ? 'Select several JPEG, JPG, PNG, or iPhone images'
+                : 'Available on iPhone and iPad'}
+              disabled={!screenshotImportAvailable}
               onPress={() => chooseSource('screenshots')}
             />
             <ImportChoice
@@ -363,6 +370,8 @@ function ImportChoice({ icon, title, detail, disabled = false, onPress }: { icon
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
+      accessibilityLabel={`${title}. ${detail}`}
+      accessibilityState={{ disabled }}
     >
       <View style={styles.choiceIcon}><Ionicons name={icon} size={24} color={colors.primary} /></View>
       <View style={styles.itemHeaderText}>

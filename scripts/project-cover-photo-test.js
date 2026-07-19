@@ -89,14 +89,34 @@ assert.strictEqual(restarted[0].coverPhotoMode, 'manual',
 const projectData = cloudProjectCoverData(selected, 'manual', { organizationId: 'org-1' });
 assert.strictEqual(projectData.organizationId, 'org-1',
   'Cover sync must preserve existing project metadata.');
-const cloudRecord = projectRecordFromCloud({ name: 'Alpha', data: projectData });
+const alphaProjectId = '11111111-1111-4111-8111-111111111111';
+const cloudRecord = projectRecordFromCloud({
+  id: alphaProjectId,
+  name: 'Alpha',
+  data: projectData,
+});
 const merged = mergeProjectRecords([], restarted, [cloudRecord]);
+assert.strictEqual(merged[0].id, alphaProjectId,
+  'Cloud hydration must preserve the immutable project ID.');
 assert.strictEqual(merged[0].coverPhoto.remotePath, selected.remotePath,
   'Cloud hydration must preserve the cover storage reference.');
 assert.strictEqual(merged[0].coverPhoto.localUri, selected.localUri,
   'Cloud merging must retain a valid local cache reference.');
 assert.strictEqual(merged[0].coverPhotoMode, 'manual',
   'Cloud sync must preserve manual cover mode.');
+
+const sameNameProjects = mergeProjectRecords([], [], [
+  projectRecordFromCloud({
+    id: alphaProjectId,
+    name: 'Same Display Name',
+  }),
+  projectRecordFromCloud({
+    id: '22222222-2222-4222-8222-222222222222',
+    name: 'Same Display Name',
+  }),
+]);
+assert.strictEqual(sameNameProjects.length, 2,
+  'Two cloud projects with distinct immutable IDs must not collapse by display name.');
 
 const deletedMerge = mergeProjectRecords(
   ['Starter Project'],
@@ -129,8 +149,13 @@ assert.strictEqual(resolveProjectDisplayPhotoUri(
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
 const projectService = fs.readFileSync(path.join(root, 'services/projectService.ts'), 'utf8');
+const projectActionSheet = fs.readFileSync(
+  path.join(root, 'components/project-action-sheet.tsx'),
+  'utf8',
+);
 for (const marker of [
-  'Set Project Cover',
+  'title="Project Options"',
+  '<Text style={styles.sectionLabel}>Cover Photo</Text>',
   'Take New Photo',
   'Choose From Library',
   'Use Best Project Photo',
@@ -153,18 +178,21 @@ assert(!overviewSource.includes('Set Project Cover') &&
   'Overview project cards must not expose cover-photo actions.');
 const workspaceStart = app.indexOf('function ProjectWorkspaceScreen');
 const workspaceSource = app.slice(workspaceStart);
-assert(workspaceSource.indexOf('>Set Project Cover<') >= 0 &&
-  workspaceSource.indexOf('>Set Project Cover<') < workspaceSource.indexOf(">Today's Priority<"),
-  'Project Workspace must show Set Project Cover near the top, before intelligence cards.');
-for (const accessibilityLabel of [
-  'Take New Photo for project cover',
-  'Choose project cover from library',
-  'Use Best Project Photo automatically',
-  'Remove Cover Photo',
-]) {
-  assert(workspaceSource.includes(`accessibilityLabel="${accessibilityLabel}"`),
-    `Project Workspace is missing accessible cover control: ${accessibilityLabel}.`);
-}
+assert(
+  workspaceSource.includes('title="Project Options"') &&
+    workspaceSource.includes('<Text style={styles.sectionLabel}>Cover Photo</Text>'),
+  'Project Workspace must keep cover-photo controls in Project Options.',
+);
+assert(
+  projectActionSheet.includes('export function MoreOptionRow') &&
+    projectActionSheet.includes('accessibilityRole="button"') &&
+    projectActionSheet.includes('accessibilityLabel={label}'),
+  'Project option rows must expose accessible button labels.',
+);
+assert(
+  projectActionSheet.includes('accessibilityLabel={`Close ${title}`}'),
+  'Project Options must expose an accessible close control tied to the sheet title.',
+);
 assert((app.match(/resolveProjectCoverPhotoUri\(/g) || []).length >= 3,
   'Overview, Projects, and Project Workspace must use the canonical project cover resolver.');
 assert(app.includes('projectRecords={projectRecords}'),

@@ -95,7 +95,8 @@ export function DAVEVoiceCaptureSheet({
     recordingActiveRef.current = false;
     setRecordingUri(recorderState.url);
     setRecordingDuration(recorderState.durationMillis);
-    void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+    void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true })
+      .catch(() => setError('Recording ended, but audio settings could not be reset. Close and reopen Talk.'));
   }, [recorderState.durationMillis, recorderState.isRecording, recorderState.url]);
 
   async function startRecording() {

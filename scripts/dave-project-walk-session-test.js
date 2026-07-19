@@ -8,12 +8,15 @@ const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
 
-function createStorage(initial = {}) {
+function createStorage(initial = {}, options = {}) {
   const values = new Map(Object.entries(initial));
   return {
     values,
     async getItem(key) { return values.get(key) ?? null; },
-    async setItem(key, value) { values.set(key, value); },
+    async setItem(key, value) {
+      if (options.failSetItem?.(key, value)) throw new Error('injected set failure');
+      values.set(key, value);
+    },
     async removeItem(key) { values.delete(key); },
   };
 }
@@ -115,15 +118,53 @@ async function run() {
   assert.strictEqual(cancelled.status, 'cancelled');
   assert.strictEqual(await restartedRepository.readActive(), null);
 
+  const validInactiveStorage = createStorage({
+    [repositoryModule.DAVE_PROJECT_WALK_SESSION_STORAGE_KEY]: JSON.stringify(completed),
+  });
+  const validInactiveRepository = repositoryModule.createDAVEProjectWalkSessionRepository(
+    validInactiveStorage,
+  );
+  assert.strictEqual(await validInactiveRepository.readActive(), null,
+    'A valid completed session remains normal inactive data.');
+  assert(![...validInactiveStorage.values.keys()].some(key =>
+    key.startsWith(repositoryModule.DAVE_PROJECT_WALK_SESSION_QUARANTINE_KEY_PREFIX)),
+  'Valid inactive sessions must not be quarantined.');
+
+  const corruptRaw = '{bad-json';
   const corruptStorage = createStorage({
-    [repositoryModule.DAVE_PROJECT_WALK_SESSION_STORAGE_KEY]: '{bad-json',
+    [repositoryModule.DAVE_PROJECT_WALK_SESSION_STORAGE_KEY]: corruptRaw,
   });
   const corruptRepository = repositoryModule.createDAVEProjectWalkSessionRepository(corruptStorage);
-  assert.strictEqual(await corruptRepository.readActive(), null);
+  await assert.rejects(() => corruptRepository.readActive(), /corrupt.*quarantin/i,
+    'Corrupt Project Walk hydration must surface an error to App.');
   assert.strictEqual(
     corruptStorage.values.has(repositoryModule.DAVE_PROJECT_WALK_SESSION_STORAGE_KEY),
     false,
     'Corrupted active session storage must be removed safely.',
+  );
+  const corruptQuarantine = [...corruptStorage.values.entries()].find(([key]) =>
+    key.startsWith(repositoryModule.DAVE_PROJECT_WALK_SESSION_QUARANTINE_KEY_PREFIX));
+  assert(corruptQuarantine);
+  assert.strictEqual(corruptQuarantine[1], corruptRaw,
+    'Project Walk quarantine must preserve exact raw bytes.');
+  assert.strictEqual(await corruptRepository.readActive(), null,
+    'A retry may safely continue after quarantine removes the corrupt active value.');
+
+  const quarantineFailureStorage = createStorage({
+    [repositoryModule.DAVE_PROJECT_WALK_SESSION_STORAGE_KEY]: corruptRaw,
+  }, {
+    failSetItem: key => key.startsWith(
+      repositoryModule.DAVE_PROJECT_WALK_SESSION_QUARANTINE_KEY_PREFIX,
+    ),
+  });
+  const blockedRepository = repositoryModule.createDAVEProjectWalkSessionRepository(
+    quarantineFailureStorage,
+  );
+  await assert.rejects(() => blockedRepository.readActive(), /could not be quarantined/i);
+  assert.strictEqual(
+    quarantineFailureStorage.values.get(repositoryModule.DAVE_PROJECT_WALK_SESSION_STORAGE_KEY),
+    corruptRaw,
+    'A failed walk quarantine must not overwrite or remove active bytes.',
   );
 
   const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');

@@ -1,14 +1,16 @@
-# Project Photo Update Tool
+# Project Vision AI — DAVE
 
-MVP mobile app for creating clean project updates from field photos.
+Mobile project-intelligence app for capturing field evidence, reviewing schedule
+and action risks, asking DAVE about a project, and producing evidence-backed
+reports. The supported platforms are iOS and Android.
 
-## Core Flow
+## Current field workflow
 
-1. Select a project.
-2. Take or pick project photos.
-3. Add captions.
-4. Generate an email/text-ready update.
-5. Send, copy, or save the update.
+1. Use **Overview** to choose or create a project and review the current priority.
+2. Use **Tasks** to review schedule work and items needing verification.
+3. Use **New Field Update** to capture photos, location, status, and useful notes.
+4. Use **Talk** to ask about the selected project or record a confirmed memory.
+5. Use **Reports** to review, correct, approve, and share an evidence-backed report.
 
 ## Run
 
@@ -17,25 +19,34 @@ npm install
 npm run start
 ```
 
-Open the app in Expo Go from the QR code, or run the iOS/Android commands from the Expo terminal.
+Open the app in Expo Go from the QR code, or run the native iOS/Android commands
+from the Expo terminal. Web is intentionally not a supported release platform.
 
-## MVP Screens
+## Quality gates
 
-- Home
-- Select Project
-- Projects with manual add and archive/reopen
-- Add Photos with camera and photo library support
-- Build Update
-- Send actions
-- Saved Updates
+```bash
+npm test
+npm run qa:release
+```
 
-## Project Management
+`npm test` runs dependency/configuration checks, strict TypeScript, and executable
+Jest tests. `npm run qa:release` adds behavioral, UI-contract, architecture,
+security, and JARVIS contract gates. Maestro and physical-device checks remain
+required for a release candidate.
 
-- Add project names manually from Select Project or Projects.
-- Close active projects to move them into Archived Projects.
-- Reopen archived projects when they become active again.
+## Native source policy
 
-## Saved Updates
+This repository uses Expo Continuous Native Generation. The complete `ios/` and
+`android/` projects are generated release artifacts and are not the source of
+truth; reviewed app configuration, plugins, privacy strings, permissions, and
+version metadata live in `app.json`, `eas.json`, and `plugins/`. Product icon
+assets are intentionally versioned. Signed artifacts still require platform
+entitlement, permission, backup-policy, and signing review before release.
 
-- Open a saved update to revise, send, copy, or save it again.
-- Delete saved updates that are no longer needed.
+## Release configuration
+
+- Product: Project Vision AI
+- In-app assistant: DAVE
+- Bundle/package ID: `com.davidfamularo.projectphotoupdate`
+- Supported platforms: iOS and Android
+- Current version/build: see `app.json`

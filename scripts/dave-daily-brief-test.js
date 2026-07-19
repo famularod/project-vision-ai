@@ -82,6 +82,7 @@ const tanCaseResult = {
   status: 'analysis_complete',
   visibleChange: 'A tan case appears in the foreground near the laptop.',
   comparisonConfidence: 'high',
+  comparability: 'strong',
   captureLimitations: [],
   priorEvidenceId: 'baseline-evidence',
   updatedAt: '2026-07-11T10:01:00.000Z',
@@ -117,6 +118,13 @@ const failed = brief({ updates: [update({ photos: [photo({ photoIntelligence: {
 } })] })] });
 assert.strictEqual(failed.changedItems.length, 0, 'Failed analysis must not create a changed claim.');
 assert(failed.uncertaintyItems.some(item => item.text === 'Analysis unavailable · Retry'));
+
+const notComparable = brief({ updates: [update({ photos: [photo({ photoIntelligence: {
+  ...tanCaseResult,
+  comparability: 'not_comparable',
+} })] })] });
+assert.strictEqual(notComparable.changedItems.length, 0, 'Not-comparable photos must not be presented as changes.');
+assert(notComparable.uncertaintyItems.some(item => /not sufficiently comparable/i.test(item.text)));
 
 const missing = brief();
 assert(!JSON.stringify(missing).toLowerCase().includes('work is incomplete'), 'Missing evidence must not claim incomplete work.');

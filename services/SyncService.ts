@@ -2,6 +2,7 @@ import {
   countCloudProjects,
   createProject,
   createPhotoSignedUrl,
+  deleteProjectUpdate,
   deleteProject,
   getProjectUpdateSyncMetadata,
   getSupabaseConfigurationStatus,
@@ -31,6 +32,13 @@ import {
   synchronizeDAVESyncTombstones,
   type DAVESyncTombstoneSyncResult,
 } from './DAVESyncTombstones';
+import {
+  confirmProjectUpdateCloudDeletion,
+  hasProjectUpdateDeletionIntent,
+  recordProjectUpdateDeletionIntent,
+} from './ProjectUpdateDeletionJournal';
+import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
+import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -70,6 +78,8 @@ export type SyncStatus = {
   configured: boolean;
   queuedChanges: number;
   conflicts: number;
+  recoveryAvailable: boolean;
+  recoveryCopies: number;
   lastSyncAt: string | null;
   message: string;
 };
@@ -86,6 +96,19 @@ export type SyncUploadResult = {
 
 export type SyncItemOutcome = 'uploaded' | 'conflict' | 'blocked' | 'failed';
 
+/**
+ * Audit P1-27: a failed cloud read must never be silently converted into an
+ * empty, apparently-authoritative collection. Each collection carries its own
+ * read error; consumers must not apply a collection whose error is non-null.
+ */
+export type CloudCollectionErrors = {
+  projects: string | null;
+  updates: string | null;
+  projectAreas: string | null;
+  scheduleItems: string | null;
+  referenceDocuments: string | null;
+};
+
 export type CloudDownloadResult<TUpdate> = {
   configured: boolean;
   projects: CloudProject[];
@@ -97,6 +120,7 @@ export type CloudDownloadResult<TUpdate> = {
   tombstones: DAVESyncTombstone[];
   tombstonesAuthoritative: boolean;
   tombstoneError: string | null;
+  collectionErrors: CloudCollectionErrors;
 };
 
 export type LocalSyncPayload = {
@@ -116,6 +140,12 @@ export type SyncProgressEvent = {
 export type FullSyncResult = {
   configured: boolean;
   connected: boolean;
+  /**
+   * Audit P1-27: 'complete' only when every cloud collection downloaded
+   * successfully. 'partial' means at least one collection failed to read;
+   * its recovered array is empty and must not be treated as authoritative.
+   */
+  downloadStatus: 'complete' | 'partial';
   uploaded: number;
   downloaded: number;
   queued: number;
@@ -145,8 +175,20 @@ export type FullSyncResult = {
     scheduleItems: ScheduleItem[];
     referenceDocuments: ReferenceDocument[];
     tombstones: DAVESyncTombstone[];
+    /** Audit P1-27: appliers must skip any collection with a non-null error. */
+    collectionErrors: CloudCollectionErrors;
   };
 };
+
+export function allCollectionsFailed(message: string): CloudCollectionErrors {
+  return {
+    projects: message,
+    updates: message,
+    projectAreas: message,
+    scheduleItems: message,
+    referenceDocuments: message,
+  };
+}
 
 export type MissingSyncPhoto = {
   updateId: string;
@@ -220,6 +262,30 @@ export type StagedProjectUpdateSync = {
   pendingPhotoAssetIds: string[];
 };
 
+export type OfflineQueueQuarantineExport = {
+  storageKey: string;
+  rawValue: string;
+};
+
+export type OfflineQueueRecoveryState = {
+  activeItems: number;
+  quarantineKeys: string[];
+  unresolvedQuarantineKeys: string[];
+  recoveryAvailable: boolean;
+};
+
+export type OfflineQueueRecoveryAttempt = {
+  status:
+    | 'recovered'
+    | 'already_recovered'
+    | 'still_corrupt'
+    | 'active_queue_not_empty'
+    | 'not_found';
+  quarantineKey: string;
+  restoredItems: number;
+  activeItems: number;
+};
+
 const PROJECT_PHOTOS_BUCKET = 'project-photos';
 const RECOVERED_PHOTOS_FOLDER = 'dave-recovered-project-photos';
 
@@ -265,15 +331,25 @@ export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageClea
   let missingPhotosRemoved = 0;
 
   for (const key of syncKeys) {
+    if (isOfflineQueueRecoveryInternalKey(key)) continue;
+
     if (key === SYNC_QUEUE_STORAGE_KEY) {
       const queueCleanup = await serializeOfflineQueueMutation(async () => {
-        const value = await AsyncStorage.getItem(key);
-        if (value === null) {
+        const recovered = await readOfflineQueueUnsafe();
+        if (recovered.rawValue === null) {
           return { changed: false, missingPhotosRemoved: 0 };
         }
-        const result = await cleanupSyncQueueValue(value);
-        const changed = result.value !== value;
-        if (changed) await AsyncStorage.setItem(key, result.value);
+        const result = await cleanupSyncQueueValue(recovered.rawValue);
+        const contentChanged = result.value !== recovered.rawValue;
+        const changed =
+          recovered.quarantineKey !== null ||
+          contentChanged;
+        // Discovery already committed and verified the salvaged active queue.
+        // Do not immediately rewrite those bytes. If message cleanup really
+        // changed the content, route it through the same durable verifier.
+        if (contentChanged) {
+          await persistVerifiedOfflineQueue(parseOfflineQueueValue(result.value));
+        }
         return {
           changed,
           missingPhotosRemoved: result.missingPhotosRemoved,
@@ -344,12 +420,31 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   pendingPhotoAssetIds?: string[];
 };
 
+type ProjectUpdateDeletePayload = {
+  id: string;
+  projectName?: string;
+};
+
 const SYNC_QUEUE_STORAGE_KEY = 'projectVisionAI.syncQueue.v1';
+export const SYNC_QUEUE_QUARANTINE_KEY_PREFIX =
+  `${SYNC_QUEUE_STORAGE_KEY}.quarantine.`;
+const SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX =
+  `${SYNC_QUEUE_STORAGE_KEY}.quarantine-metadata.`;
+const SYNC_QUEUE_RECOVERY_TRANSACTION_KEY =
+  `${SYNC_QUEUE_STORAGE_KEY}.recovery-transaction.v1`;
 const SYNC_CONFLICTS_STORAGE_KEY = 'projectVisionAI.syncConflicts.v1';
 const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
 const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
 
 let offlineQueueMutationTail: Promise<void> = Promise.resolve();
+let syncConflictMutationTail: Promise<void> = Promise.resolve();
+const offlineQueueRecoveryTransaction = createDurableLocalTransactionRepository({
+  storage: AsyncStorage,
+  journalKey: SYNC_QUEUE_RECOVERY_TRANSACTION_KEY,
+  createTransactionId: () =>
+    `offline-queue-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+  now: () => new Date().toISOString(),
+});
 
 function serializeOfflineQueueMutation<T>(
   operation: () => Promise<T>,
@@ -362,6 +457,237 @@ function serializeOfflineQueueMutation<T>(
   return result;
 }
 
+type OfflineQueueReadResult = {
+  queue: SyncQueueItem[];
+  rawValue: string | null;
+  quarantineKey: string | null;
+};
+
+type OfflineQueueQuarantineMetadata = {
+  version: 1;
+  quarantineKey: string;
+  salvagedItemIds: string[];
+  restoredItemIds: string[];
+  invalidItemCount: number;
+  resolvedAt: string | null;
+};
+
+type OfflineQueueValueAnalysis = {
+  queue: SyncQueueItem[];
+  invalidItemCount: number;
+};
+
+function isOfflineQueueQuarantineKey(key: string): boolean {
+  return key.startsWith(SYNC_QUEUE_QUARANTINE_KEY_PREFIX);
+}
+
+function parseOfflineQueueValue(rawValue: string): SyncQueueItem[] {
+  const analysis = analyzeOfflineQueueValue(rawValue);
+  if (analysis.invalidItemCount > 0) {
+    throw new Error('Stored offline queue is not a valid queue.');
+  }
+  return analysis.queue;
+}
+
+/**
+ * Parse each queue row independently so a single malformed row cannot erase
+ * unrelated valid offline work. Duplicate IDs are also isolated: normal queue
+ * mutations maintain one current revision per ID, so the last valid revision
+ * is retained and the anomalous duplicates remain in the exact quarantine.
+ */
+function analyzeOfflineQueueValue(rawValue: string): OfflineQueueValueAnalysis {
+  const parsed = JSON.parse(rawValue) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error('Stored offline queue is not an array.');
+  }
+
+  const lastValidIndexById = new Map<string, number>();
+  parsed.forEach((value, index) => {
+    if (isValidSyncQueueItem(value)) lastValidIndexById.set(value.id, index);
+  });
+
+  const queue: SyncQueueItem[] = [];
+  let invalidItemCount = 0;
+  parsed.forEach((value, index) => {
+    if (!isValidSyncQueueItem(value)) {
+      invalidItemCount += 1;
+      return;
+    }
+    if (lastValidIndexById.get(value.id) !== index) {
+      invalidItemCount += 1;
+      return;
+    }
+    queue.push(value);
+  });
+
+  return { queue, invalidItemCount };
+}
+
+function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
+  if (!isRecord(value) || !isRecord(value.payload)) return false;
+  if (typeof value.id !== 'string' || value.id.trim().length === 0) return false;
+  if (value.entity !== 'project' && value.entity !== 'project_update') return false;
+  if (
+    value.operation !== 'create' &&
+    value.operation !== 'update' &&
+    value.operation !== 'delete'
+  ) return false;
+  if (!isFiniteSyncTimestamp(value.createdAt)) return false;
+  if (!isFiniteSyncTimestamp(value.changedAt)) return false;
+  if (
+    typeof value.retryCount !== 'number' ||
+    !Number.isInteger(value.retryCount) ||
+    value.retryCount < 0
+  ) return false;
+  const lastErrorIsValid = (
+    value.lastError === undefined ||
+    value.lastError === null ||
+    typeof value.lastError === 'string'
+  );
+  if (!lastErrorIsValid) return false;
+
+  if (value.entity === 'project_update') {
+    if (value.operation === 'create') return false;
+    if (
+      typeof value.payload.id !== 'string' ||
+      value.payload.id.trim().length === 0
+    ) return false;
+    return value.operation === 'delete' || isRecord(value.payload.updateData);
+  }
+
+  if (value.operation === 'create' || value.operation === 'delete') {
+    return typeof value.payload.name === 'string' && value.payload.name.trim().length > 0;
+  }
+  return [value.payload.id, value.payload.name, value.payload.previousName]
+    .some(item => typeof item === 'string' && item.trim().length > 0);
+}
+
+function isFiniteSyncTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(new Date(value).getTime());
+}
+
+async function nextOfflineQueueQuarantineKey(): Promise<string> {
+  const keys = new Set(await AsyncStorage.getAllKeys());
+  const baseKey = `${SYNC_QUEUE_QUARANTINE_KEY_PREFIX}${new Date().toISOString()}`;
+  let key = baseKey;
+  let suffix = 1;
+  while (keys.has(key)) {
+    key = `${baseKey}.${suffix}`;
+    suffix += 1;
+  }
+  return key;
+}
+
+function offlineQueueQuarantineMetadataKey(quarantineKey: string): string {
+  const suffix = quarantineKey.slice(SYNC_QUEUE_QUARANTINE_KEY_PREFIX.length);
+  return `${SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX}${suffix}`;
+}
+
+function isOfflineQueueQuarantineMetadata(
+  value: unknown,
+  quarantineKey: string,
+): value is OfflineQueueQuarantineMetadata {
+  if (!isRecord(value) || value.version !== 1) return false;
+  if (value.quarantineKey !== quarantineKey) return false;
+  if (
+    !Array.isArray(value.salvagedItemIds) ||
+    !value.salvagedItemIds.every(id => typeof id === 'string' && id.length > 0) ||
+    !Array.isArray(value.restoredItemIds) ||
+    !value.restoredItemIds.every(id => typeof id === 'string' && id.length > 0)
+  ) return false;
+  if (
+    typeof value.invalidItemCount !== 'number' ||
+    !Number.isInteger(value.invalidItemCount) ||
+    value.invalidItemCount < 1
+  ) return false;
+  return value.resolvedAt === null || isFiniteSyncTimestamp(value.resolvedAt);
+}
+
+async function readOfflineQueueQuarantineMetadata(
+  quarantineKey: string,
+  strict = false,
+): Promise<OfflineQueueQuarantineMetadata | null> {
+  const rawValue = await AsyncStorage.getItem(
+    offlineQueueQuarantineMetadataKey(quarantineKey),
+  );
+  if (rawValue === null) return null;
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (isOfflineQueueQuarantineMetadata(parsed, quarantineKey)) return parsed;
+  } catch {
+    // Handled by the strict recovery gate below.
+  }
+  if (strict) {
+    throw new Error(
+      'Offline queue recovery metadata is damaged. Manual restore is blocked to prevent duplicate or resurrected work.',
+    );
+  }
+  return null;
+}
+
+async function quarantineCorruptOfflineQueue(
+  rawValue: string,
+  salvage: OfflineQueueValueAnalysis,
+): Promise<string> {
+  const quarantineKey = await nextOfflineQueueQuarantineKey();
+  await AsyncStorage.setItem(quarantineKey, rawValue);
+
+  const verifiedQuarantine = await AsyncStorage.getItem(quarantineKey);
+  if (verifiedQuarantine !== rawValue) {
+    throw new Error('Offline queue quarantine could not be verified.');
+  }
+
+  const metadata: OfflineQueueQuarantineMetadata = {
+    version: 1,
+    quarantineKey,
+    salvagedItemIds: salvage.queue.map(item => item.id),
+    restoredItemIds: [],
+    invalidItemCount: Math.max(1, salvage.invalidItemCount),
+    resolvedAt: null,
+  };
+
+  const salvageValue = JSON.stringify(salvage.queue);
+  await offlineQueueRecoveryTransaction.commit([
+    {
+      kind: 'set',
+      key: offlineQueueQuarantineMetadataKey(quarantineKey),
+      value: JSON.stringify(metadata),
+    },
+    { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value: salvageValue },
+  ]);
+  const verifiedActiveQueue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
+  if (verifiedActiveQueue !== salvageValue) {
+    throw new Error('Offline queue salvage write could not be verified.');
+  }
+
+  return quarantineKey;
+}
+
+async function readOfflineQueueUnsafe(): Promise<OfflineQueueReadResult> {
+  // Complete a verified recovery transaction before accepting the active
+  // queue. This closes the process-kill window between queue and metadata
+  // writes and prevents a repaired snapshot from being replayed twice.
+  await offlineQueueRecoveryTransaction.recover();
+  const rawValue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
+  if (rawValue === null) {
+    return { queue: [], rawValue: null, quarantineKey: null };
+  }
+
+  let analysis: OfflineQueueValueAnalysis;
+  try {
+    analysis = analyzeOfflineQueueValue(rawValue);
+  } catch {
+    analysis = { queue: [], invalidItemCount: 1 };
+  }
+  if (analysis.invalidItemCount === 0) {
+    return { queue: analysis.queue, rawValue, quarantineKey: null };
+  }
+
+  const quarantineKey = await quarantineCorruptOfflineQueue(rawValue, analysis);
+  const salvagedRawValue = JSON.stringify(analysis.queue);
+  return { queue: analysis.queue, rawValue: salvagedRawValue, quarantineKey };
+}
+
 function mutateOfflineQueue<T>(
   mutator: (queue: SyncQueueItem[]) => {
     nextQueue: SyncQueueItem[];
@@ -370,40 +696,193 @@ function mutateOfflineQueue<T>(
   },
 ): Promise<T> {
   return serializeOfflineQueueMutation(async () => {
-    const queue = await getOfflineQueue();
+    const { queue } = await readOfflineQueueUnsafe();
     const mutation = mutator(queue);
     if (mutation.persist !== false) {
-      await setStoredJson(SYNC_QUEUE_STORAGE_KEY, mutation.nextQueue);
+      await persistVerifiedOfflineQueue(mutation.nextQueue);
     }
     return mutation.result;
   });
 }
 
+async function persistVerifiedOfflineQueue(
+  queue: readonly SyncQueueItem[],
+): Promise<void> {
+  const value = JSON.stringify(queue);
+  await offlineQueueRecoveryTransaction.commit([
+    { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value },
+  ]);
+}
+
 export async function getOfflineQueue(): Promise<SyncQueueItem[]> {
-  return getStoredJson<SyncQueueItem[]>(SYNC_QUEUE_STORAGE_KEY, []);
+  return serializeOfflineQueueMutation(async () =>
+    (await readOfflineQueueUnsafe()).queue,
+  );
+}
+
+export async function listOfflineQueueQuarantines(): Promise<string[]> {
+  const keys = await AsyncStorage.getAllKeys();
+  return keys.filter(isOfflineQueueQuarantineKey).sort().reverse();
+}
+
+export async function exportOfflineQueueQuarantine(
+  quarantineKey: string,
+): Promise<OfflineQueueQuarantineExport | null> {
+  if (!isOfflineQueueQuarantineKey(quarantineKey)) return null;
+  const rawValue = await AsyncStorage.getItem(quarantineKey);
+  return rawValue === null ? null : { storageKey: quarantineKey, rawValue };
+}
+
+export async function getOfflineQueueRecoveryState(): Promise<OfflineQueueRecoveryState> {
+  const activeItems = (await getOfflineQueue()).length;
+  const quarantineKeys = await listOfflineQueueQuarantines();
+  const metadata = await Promise.all(
+    quarantineKeys.map(key => readOfflineQueueQuarantineMetadata(key)),
+  );
+  const unresolvedQuarantineKeys = quarantineKeys.filter(
+    (_key, index) => metadata[index]?.resolvedAt == null,
+  );
+  return {
+    activeItems,
+    quarantineKeys,
+    unresolvedQuarantineKeys,
+    recoveryAvailable: unresolvedQuarantineKeys.length > 0,
+  };
+}
+
+export async function retryOfflineQueueRecovery(
+  quarantineKey: string,
+  repairedRawValue?: string,
+): Promise<OfflineQueueRecoveryAttempt> {
+  if (!isOfflineQueueQuarantineKey(quarantineKey)) {
+    return {
+      status: 'not_found',
+      quarantineKey,
+      restoredItems: 0,
+      activeItems: (await getOfflineQueue()).length,
+    };
+  }
+
+  return serializeOfflineQueueMutation(async () => {
+    await offlineQueueRecoveryTransaction.recover();
+    const quarantinedRawValue = await AsyncStorage.getItem(quarantineKey);
+    if (quarantinedRawValue === null) {
+      const { queue } = await readOfflineQueueUnsafe();
+      return {
+        status: 'not_found',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: queue.length,
+      };
+    }
+
+    const metadata = await readOfflineQueueQuarantineMetadata(quarantineKey, true);
+    if (metadata?.resolvedAt) {
+      const { queue } = await readOfflineQueueUnsafe();
+      return {
+        status: 'already_recovered',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: queue.length,
+      };
+    }
+
+    let recoveredQueue: SyncQueueItem[];
+    try {
+      recoveredQueue = parseOfflineQueueValue(
+        repairedRawValue === undefined ? quarantinedRawValue : repairedRawValue,
+      );
+    } catch {
+      const { queue } = await readOfflineQueueUnsafe();
+      return {
+        status: 'still_corrupt',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: queue.length,
+      };
+    }
+
+    const { queue: activeQueue } = await readOfflineQueueUnsafe();
+    if (activeQueue.length > 0) {
+      return {
+        status: 'active_queue_not_empty',
+        quarantineKey,
+        restoredItems: 0,
+        activeItems: activeQueue.length,
+      };
+    }
+
+    // Rows already salvaged automatically must never be restored again after
+    // they have synced and left the active queue. The same protection applies
+    // to a repeated manual recovery attempt.
+    const previouslyRecoveredIds = new Set([
+      ...(metadata?.salvagedItemIds || []),
+      ...(metadata?.restoredItemIds || []),
+    ]);
+    const uniqueRecoveredQueue = recoveredQueue.filter(
+      item => !previouslyRecoveredIds.has(item.id),
+    );
+    const recoveredQueueValue = JSON.stringify(uniqueRecoveredQueue);
+    const resolvedMetadata: OfflineQueueQuarantineMetadata = {
+      version: 1,
+      quarantineKey,
+      salvagedItemIds: metadata?.salvagedItemIds || [],
+      restoredItemIds: [
+        ...(metadata?.restoredItemIds || []),
+        ...uniqueRecoveredQueue.map(item => item.id),
+      ],
+      invalidItemCount: Math.max(1, metadata?.invalidItemCount || 1),
+      resolvedAt: new Date().toISOString(),
+    };
+    await offlineQueueRecoveryTransaction.commit([
+      { kind: 'set', key: SYNC_QUEUE_STORAGE_KEY, value: recoveredQueueValue },
+      {
+        kind: 'set',
+        key: offlineQueueQuarantineMetadataKey(quarantineKey),
+        value: JSON.stringify(resolvedMetadata),
+      },
+    ]);
+    const restoredRawValue = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
+    if (restoredRawValue !== recoveredQueueValue) {
+      throw new Error('Offline queue recovery write could not be verified.');
+    }
+    const restoredQueue = parseOfflineQueueValue(restoredRawValue);
+    return {
+      status: 'recovered',
+      quarantineKey,
+      restoredItems: restoredQueue.length,
+      activeItems: restoredQueue.length,
+    };
+  });
 }
 
 export async function getSyncConflicts(): Promise<SyncConflict[]> {
-  const conflicts = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
-  return normalizeSyncConflicts(conflicts);
+  await syncConflictMutationTail;
+  return readSyncConflictsUnsafe();
 }
 
 export async function reconcileSyncConflicts(): Promise<SyncConflict[]> {
-  const stored = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
-  const reconciled = normalizeSyncConflicts(stored);
+  return serializeSyncConflictMutation(async () => {
+    const stored = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
+    const reconciled = normalizeSyncConflicts(stored);
 
-  if (JSON.stringify(stored) !== JSON.stringify(reconciled)) {
-    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, reconciled);
-  }
+    if (JSON.stringify(stored) !== JSON.stringify(reconciled)) {
+      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, reconciled);
+    }
 
-  return reconciled;
+    return reconciled;
+  });
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {
-  const [queue, conflicts, lastSyncAt] = await Promise.all([
-    getOfflineQueue(),
+  // Read the queue first because that read can discover and quarantine damage.
+  // The recovery state must be computed afterward so status cannot race and
+  // incorrectly report that the queue is clear.
+  const queue = await getOfflineQueue();
+  const [conflicts, lastSyncAt, recovery] = await Promise.all([
     getSyncConflicts(),
     getStoredJson<string | null>(SYNC_LAST_RUN_STORAGE_KEY, null),
+    getOfflineQueueRecoveryState(),
   ]);
   const configuration = getSupabaseConfigurationStatus();
 
@@ -411,8 +890,15 @@ export async function getSyncStatus(): Promise<SyncStatus> {
     configured: configuration.configured,
     queuedChanges: queue.length,
     conflicts: conflicts.length,
+    recoveryAvailable: recovery.recoveryAvailable,
+    recoveryCopies: recovery.unresolvedQuarantineKeys.length,
     lastSyncAt,
-    message: buildSyncStatusMessage(configuration, queue.length, conflicts.length),
+    message: buildSyncStatusMessage(
+      configuration,
+      queue.length,
+      conflicts.length,
+      recovery.recoveryAvailable,
+    ),
   };
 }
 
@@ -436,18 +922,42 @@ export async function enqueuePendingChange<TPayload>(
     lastError: null,
   };
 
-  await mutateOfflineQueue(queue => ({
-    nextQueue: [
-      ...queue.filter(existing => existing.id !== queueItem.id),
-      queueItem as unknown as SyncQueueItem,
-    ],
-    result: undefined,
-  }));
+  await mutateOfflineQueue(queue => {
+    const existingDelete = queue.find(existing =>
+      existing.id === queueItem.id && existing.operation === 'delete',
+    );
+    if (existingDelete && queueItem.operation !== 'delete') {
+      return { nextQueue: queue, result: undefined, persist: false };
+    }
+
+    return {
+      nextQueue: [
+        ...queue.filter(existing => existing.id !== queueItem.id),
+        queueItem as unknown as SyncQueueItem,
+      ],
+      result: undefined,
+    };
+  });
   if (item.autoUpload !== false) {
-    void uploadPendingChanges();
+    requestPendingChangesUpload('queue_item_enqueued');
   }
 
   return queueItem;
+}
+
+/**
+ * Safe fire-and-forget entry point for the durable queue. The queue remains
+ * authoritative on failure; errors are diagnostic-only and never escape as
+ * unhandled promise rejections.
+ */
+export function requestPendingChangesUpload(trigger: string): void {
+  startGuardedBackgroundTask({
+    key: 'offline-queue-upload',
+    label: 'Pending cloud sync',
+    trigger,
+    maxConsecutiveRuns: 2,
+    task: uploadPendingChanges,
+  });
 }
 
 export async function queueProjectCreate(name: string): Promise<void> {
@@ -495,6 +1005,27 @@ export async function queueProjectUpdateRecord<TUpdate extends {
   );
 }
 
+export async function queueProjectUpdateDelete(update: {
+  id: string;
+  projectName?: string;
+}): Promise<void> {
+  const updateId = update.id.trim();
+  if (!updateId) return;
+
+  const intent = await recordProjectUpdateDeletionIntent(update);
+  if (intent.cloudDeleteConfirmedAt) return;
+  await enqueuePendingChange<ProjectUpdateDeletePayload>({
+    id: projectUpdateQueueItemId(updateId),
+    entity: 'project_update',
+    operation: 'delete',
+    payload: {
+      id: updateId,
+      projectName: update.projectName,
+    },
+    changedAt: new Date().toISOString(),
+  });
+}
+
 async function persistProjectUpdateRecord<TUpdate extends {
   id: string;
   projectName?: string;
@@ -504,6 +1035,7 @@ async function persistProjectUpdateRecord<TUpdate extends {
   autoUpload: boolean,
   pendingPhotoAssetIds: readonly string[],
 ) {
+  if (await hasProjectUpdateDeletionIntent(update.id)) return;
   const pendingPhotos = uniquePhotoAssetIds(pendingPhotoAssetIds);
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
     id: projectUpdateQueueItemId(update.id),
@@ -531,6 +1063,7 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
   return mutateOfflineQueue(queue => {
     const nextQueue = queue.filter(item => {
       if (item.entity !== 'project_update') return true;
+      if (item.operation === 'delete') return true;
 
       const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
       return payload.id !== updateId;
@@ -593,7 +1126,7 @@ export async function runFieldUpdateCloudSync(
   const workAttempt = staged.workAttempt;
   const queueItemId = projectUpdateQueueItemId(update.id);
   let aggregateResult = await uploadPendingChanges();
-  let remainingQueue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+  let remainingQueue = await getOfflineQueue();
   let remainingItem = remainingQueue.find(item => item.id === queueItemId);
 
   // If another upload pass was already in flight, this newly staged item may
@@ -606,7 +1139,7 @@ export async function runFieldUpdateCloudSync(
       aggregateResult.itemOutcomes[queueItemId] === 'uploaded')
   ) {
     aggregateResult = await uploadPendingChanges();
-    remainingQueue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+    remainingQueue = await getOfflineQueue();
     remainingItem = remainingQueue.find(item => item.id === queueItemId);
   }
 
@@ -681,14 +1214,14 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
     if (anotherUploadPassRequested) {
       anotherUploadPassRequested = false;
-      void uploadPendingChanges();
+      requestPendingChangesUpload('coalesced_follow_up');
     }
   }
 }
 
 async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
-  const queue = await serializeOfflineQueueMutation(() => getOfflineQueue());
+  const queue = await getOfflineQueue();
 
   if (!configuration.configured) {
     return {
@@ -793,23 +1326,50 @@ export async function downloadCloudChanges<TUpdate>(
     listReferenceDocuments(),
   ]);
 
+  // Audit P1-27: record WHY a collection is empty. A read failure or an
+  // unverifiable deletion history yields an explicit error, never a silent [].
+  const readError = (
+    result: {
+      ok: boolean;
+      configured: boolean;
+      stubbed?: boolean;
+      error?: string;
+      message?: string;
+    },
+    label: string,
+  ): string | null => {
+    if (!result.configured) return null;
+    if (result.ok && !result.stubbed) return null;
+    return result.error || result.message || `${label} could not be read from the cloud.`;
+  };
+  const tombstoneGateError = tombstoneSync.cloudAuthoritative
+    ? null
+    : tombstoneSync.cloudError || 'Deletion history could not be verified.';
+  const collectionErrors: CloudCollectionErrors = {
+    projects: readError(projectsResult, 'Projects'),
+    updates: readError(updatesResult, 'Updates'),
+    projectAreas: tombstoneGateError ?? readError(areasResult, 'Areas'),
+    scheduleItems: tombstoneGateError ?? readError(schedulesResult, 'Schedule items'),
+    referenceDocuments: tombstoneGateError ?? readError(documentsResult, 'Reference documents'),
+  };
+
   const projects = projectsResult.ok && projectsResult.data ? projectsResult.data : [];
   const updates = updatesResult.ok && updatesResult.data ? updatesResult.data : [];
-  const projectAreas = tombstoneSync.cloudAuthoritative && areasResult.ok && areasResult.data
+  const projectAreas = collectionErrors.projectAreas === null && areasResult.data
     ? removeDAVETombstonedRecords(
         areasResult.data,
         tombstoneSync.tombstones,
         'project_area',
       )
     : [];
-  const scheduleItems = tombstoneSync.cloudAuthoritative && schedulesResult.ok && schedulesResult.data
+  const scheduleItems = collectionErrors.scheduleItems === null && schedulesResult.data
     ? removeDAVETombstonedRecords(
         schedulesResult.data,
         tombstoneSync.tombstones,
         'schedule_item',
       )
     : [];
-  const referenceDocuments = tombstoneSync.cloudAuthoritative && documentsResult.ok && documentsResult.data
+  const referenceDocuments = collectionErrors.referenceDocuments === null && documentsResult.data
     ? documentsResult.data
     : [];
   const filteredReferenceDocuments = removeDAVETombstonedRecords(
@@ -820,6 +1380,7 @@ export async function downloadCloudChanges<TUpdate>(
 
   return {
     configured: projectsResult.configured || updatesResult.configured,
+    collectionErrors,
     projects,
     projectNames: projects
       .map(project => project.name)
@@ -875,6 +1436,8 @@ export async function synchronizeLocalData(
     scheduleItems: [],
     referenceDocuments: [],
     tombstones: [],
+    // Nothing was downloaded, so nothing here may be applied as cloud truth.
+    collectionErrors: allCollectionsFailed('Cloud download did not run.'),
   };
   let syncableProjectAreas = payload.projectAreas;
   let syncableScheduleItems = payload.scheduleItems;
@@ -898,6 +1461,7 @@ export async function synchronizeLocalData(
     return {
       configured: false,
       connected: false,
+      downloadStatus: 'partial',
       uploaded: 0,
       downloaded: 0,
       queued: (await getOfflineQueue()).length,
@@ -918,6 +1482,7 @@ export async function synchronizeLocalData(
     return {
       configured: true,
       connected: false,
+      downloadStatus: 'partial',
       uploaded: 0,
       downloaded: 0,
       queued: (await getOfflineQueue()).length,
@@ -937,6 +1502,7 @@ export async function synchronizeLocalData(
     return {
       configured: true,
       connected: true,
+      downloadStatus: 'partial',
       uploaded: 0,
       downloaded: 0,
       queued: (await getOfflineQueue()).length,
@@ -1086,9 +1652,29 @@ export async function synchronizeLocalData(
   details.cloudSchedulesDownloaded = download.scheduleItems.length;
   details.cloudDocumentsDownloaded = download.referenceDocuments.length;
 
+  // Audit P1-28: unacknowledged deletion-history uploads are a visible
+  // partial-sync condition, not a silent retry-later.
+  if ((tombstoneSync.uploadFailures ?? 0) > 0) {
+    errors.push(
+      `${tombstoneSync.uploadFailures} deletion ${
+        tombstoneSync.uploadFailures === 1 ? 'record' : 'records'
+      } could not be confirmed in the cloud. They remain saved on this phone and will retry next sync.`,
+    );
+  }
+
+  // Audit P1-27: a failed collection read is a visible sync failure, and an
+  // incomplete download must not stamp lastSync as if the sync were whole.
+  const collectionFailureMessages = Object.entries(download.collectionErrors)
+    .filter((entry): entry is [string, string] => entry[1] !== null)
+    .map(([collection, error]) => `Cloud ${collection} could not be downloaded: ${error}`);
+  collectionFailureMessages.forEach(message => errors.push(message));
+  const downloadComplete = collectionFailureMessages.length === 0;
+
   const cloudCount = await countCloudProjects();
-  const lastSyncAt = new Date().toISOString();
-  await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, lastSyncAt);
+  const lastSyncAt = downloadComplete ? new Date().toISOString() : null;
+  if (lastSyncAt !== null) {
+    await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, lastSyncAt);
+  }
   const [queue, conflicts] = await Promise.all([
     getOfflineQueue(),
     getSyncConflicts(),
@@ -1111,6 +1697,7 @@ export async function synchronizeLocalData(
   return {
     configured: true,
     connected: true,
+    downloadStatus: downloadComplete ? 'complete' : 'partial',
     uploaded,
     downloaded,
     queued: queue.length,
@@ -1130,6 +1717,7 @@ export async function synchronizeLocalData(
       scheduleItems: download.scheduleItems,
       referenceDocuments: download.referenceDocuments,
       tombstones: download.tombstones,
+      collectionErrors: download.collectionErrors,
     },
   };
 }
@@ -1217,78 +1805,64 @@ export function markMissingPhotosUnavailable<TUpdate extends ProjectUpdate>(
 }
 
 async function cleanupSyncQueueValue(value: string) {
-  try {
-    const queue = JSON.parse(value) as SyncQueueItem[];
+  const queue = parseOfflineQueueValue(value);
+  let missingPhotosRemoved = 0;
+  const nextQueue: SyncQueueItem[] = [];
 
-    if (!Array.isArray(queue)) {
-      return {
-        value: sanitizeStoredSyncValue(value),
-        missingPhotosRemoved: 0,
-      };
-    }
+  for (const item of queue) {
+    let nextItem: SyncQueueItem = {
+      ...item,
+      lastError:
+        typeof item.lastError === 'string'
+          ? sanitizeUserFacingSyncMessage(item.lastError)
+          : item.lastError,
+    };
 
-    let missingPhotosRemoved = 0;
-    const nextQueue: SyncQueueItem[] = [];
+    if (item.entity === 'project_update') {
+      const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
+      const updateData = payload.updateData;
 
-    for (const item of queue) {
-      let nextItem: SyncQueueItem = {
-        ...item,
-        lastError:
-          typeof item.lastError === 'string'
-            ? sanitizeUserFacingSyncMessage(item.lastError)
-            : item.lastError,
-      };
+      if (Array.isArray(updateData?.photos)) {
+        const referencedPhotoIds = new Set(updateData.photos.map(photo => photo.id));
+        const pendingPhotoAssetIds = uniquePhotoAssetIds(
+          Array.isArray(payload.pendingPhotoAssetIds)
+            ? payload.pendingPhotoAssetIds
+            : updateData.photos.map(photo => photo.id),
+        ).filter(photoId => referencedPhotoIds.has(photoId));
 
-      if (item.entity === 'project_update') {
-        const payload = item.payload as ProjectUpdateRecordPayload<ProjectUpdate>;
-        const updateData = payload.updateData;
-
-        if (Array.isArray(updateData?.photos)) {
-          const referencedPhotoIds = new Set(updateData.photos.map(photo => photo.id));
-          const pendingPhotoAssetIds = uniquePhotoAssetIds(
-            Array.isArray(payload.pendingPhotoAssetIds)
-              ? payload.pendingPhotoAssetIds
-              : updateData.photos.map(photo => photo.id),
-          ).filter(photoId => referencedPhotoIds.has(photoId));
-
-          nextItem = {
-            ...nextItem,
-            payload: {
-              ...payload,
-              pendingPhotoAssetIds,
-              updateData,
-            },
-          };
-        }
+        nextItem = {
+          ...nextItem,
+          payload: {
+            ...payload,
+            pendingPhotoAssetIds,
+            updateData,
+          },
+        };
       }
-
-      nextQueue.push(nextItem);
     }
 
-    return {
-      value: JSON.stringify(nextQueue),
-      missingPhotosRemoved,
-    };
-  } catch {
-    return {
-      value: sanitizeStoredSyncValue(value),
-      missingPhotosRemoved: 0,
-    };
+    nextQueue.push(nextItem);
   }
+
+  return {
+    value: JSON.stringify(nextQueue),
+    missingPhotosRemoved,
+  };
 }
 
 export async function clearResolvedConflict(conflictId: string): Promise<void> {
-  const conflicts = await getSyncConflicts();
-  const conflict = conflicts.find(item => item.id === conflictId);
-
-  await setStoredJson(
-    SYNC_CONFLICTS_STORAGE_KEY,
-    conflicts.filter(item =>
-      conflict
-        ? item.entity !== conflict.entity || item.localId !== conflict.localId
-        : item.id !== conflictId,
-    ),
-  );
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const conflict = conflicts.find(item => item.id === conflictId);
+    await setStoredJson(
+      SYNC_CONFLICTS_STORAGE_KEY,
+      conflicts.filter(item =>
+        conflict
+          ? item.entity !== conflict.entity || item.localId !== conflict.localId
+          : item.id !== conflictId,
+      ),
+    );
+  });
 }
 
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
@@ -1378,7 +1952,25 @@ async function uploadProjectQueueItem(
 async function uploadProjectUpdateQueueItem(
   item: SyncQueueItem,
 ): Promise<'uploaded' | 'conflict' | string> {
+  if (item.operation === 'delete') {
+    const deletePayload = item.payload as ProjectUpdateDeletePayload;
+    const result = await deleteProjectUpdate({
+      id: deletePayload.id,
+    });
+
+    if (result.ok && !result.stubbed) {
+      await confirmProjectUpdateCloudDeletion(deletePayload.id).catch(() => undefined);
+      await clearConflictsForLocalRecord('project_update', deletePayload.id);
+      return 'uploaded';
+    }
+
+    return result.error
+      ? `Field update delete failed: ${result.error}`
+      : result.message || 'Field update deletion is waiting for cloud sync.';
+  }
+
   const payload = item.payload as ProjectUpdateRecordPayload;
+  if (await hasProjectUpdateDeletionIntent(payload.id)) return 'uploaded';
   const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
     ? payload.pendingPhotoAssetIds
     : projectUpdateReferencedPhotoIds(payload.updateData);
@@ -1433,26 +2025,42 @@ async function uploadProjectUpdateQueueItem(
 }
 
 async function recordConflict(conflict: SyncConflict): Promise<void> {
-  const conflicts = await getSyncConflicts();
-  const nextConflicts = conflicts.filter(item =>
-    item.entity !== conflict.entity || item.localId !== conflict.localId,
-  );
-
-  await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...nextConflicts, conflict]);
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const nextConflicts = conflicts.filter(item =>
+      item.entity !== conflict.entity || item.localId !== conflict.localId,
+    );
+    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, [...nextConflicts, conflict]);
+  });
 }
 
 async function clearConflictsForLocalRecord(
   entity: SyncEntity,
   localId: string,
 ): Promise<void> {
-  const conflicts = await getSyncConflicts();
-  const nextConflicts = conflicts.filter(item =>
-    item.entity !== entity || item.localId !== localId,
-  );
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const nextConflicts = conflicts.filter(item =>
+      item.entity !== entity || item.localId !== localId,
+    );
+    if (nextConflicts.length !== conflicts.length) {
+      await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, nextConflicts);
+    }
+  });
+}
 
-  if (nextConflicts.length !== conflicts.length) {
-    await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, nextConflicts);
-  }
+async function readSyncConflictsUnsafe(): Promise<SyncConflict[]> {
+  const conflicts = await getStoredJson<SyncConflict[]>(SYNC_CONFLICTS_STORAGE_KEY, []);
+  return normalizeSyncConflicts(conflicts);
+}
+
+function serializeSyncConflictMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = syncConflictMutationTail.then(operation, operation);
+  syncConflictMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 function normalizeSyncConflicts(conflicts: SyncConflict[]): SyncConflict[] {
@@ -1537,7 +2145,14 @@ function buildSyncStatusMessage(
   configuration: SupabaseConfigurationStatus,
   queuedChanges: number,
   conflicts: number,
+  recoveryAvailable: boolean,
 ): string {
+  if (recoveryAvailable) {
+    return queuedChanges > 0
+      ? 'Some local changes are waiting to sync, and saved sync data needs recovery review.'
+      : 'Saved sync data needs recovery review. The active offline queue has no pending items.';
+  }
+
   if (!configuration.configured) {
     return 'Local storage is active. Supabase sync will start after environment configuration is added.';
   }
@@ -2088,6 +2703,14 @@ async function isPhotoFileAvailable(uri: string): Promise<{
 
 function isSyncStorageKey(key: string) {
   return /sync|admin|status|diagnostic|cloud|queue|lastSync/i.test(key);
+}
+
+function isOfflineQueueRecoveryInternalKey(key: string) {
+  return (
+    isOfflineQueueQuarantineKey(key) ||
+    key.startsWith(SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX) ||
+    key === SYNC_QUEUE_RECOVERY_TRANSACTION_KEY
+  );
 }
 
 function sanitizeStoredSyncValue(value: string) {

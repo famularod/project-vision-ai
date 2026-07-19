@@ -21,6 +21,9 @@ function assertIncludes(source, needle, message) {
   'current_photo_upload_missing',
   'current_photo_storage_missing',
   'current_photo_unsupported_type',
+  'current_photo_too_large',
+  'current_photo_invalid_dimensions',
+  'current_photo_dimensions_too_large',
   'prior_photo_missing',
   'prior_photo_unreadable',
   'prior_photo_zero_bytes',
@@ -30,6 +33,9 @@ function assertIncludes(source, needle, message) {
   'prior_photo_stale_or_invalid',
   'prior_photo_wrong_area',
   'prior_photo_unsupported_type',
+  'prior_photo_too_large',
+  'prior_photo_invalid_dimensions',
+  'prior_photo_dimensions_too_large',
   'edge_payload_invalid',
   'unknown_image_prepare_failure',
 ].forEach(reason => {
@@ -38,18 +44,24 @@ function assertIncludes(source, needle, message) {
 
 assertIncludes(
   workflow,
-  "const currentPrepared = await preparePhotoFileForVision(photo, 'current')",
-  'current photo must be checked before prior selection and Edge invocation',
+  'const priorSelectionMetadata = findPriorComparablePhoto(update, photo, priorUpdates)',
+  'prior candidates must be ranked from metadata before image preparation',
 );
 assertIncludes(
   workflow,
-  "const priorSelection = await findPriorComparablePhoto(update, photo, priorUpdates)",
-  'prior selection must support async local file validation',
+  'const preparedPair = await prepareSelectedPhotoPair({',
+  'only the selected prior/current pair may be prepared',
 );
-assertIncludes(
-  workflow,
-  "const preparedFile = await preparePhotoFileForVision(candidatePhoto, 'prior')",
-  'prior candidates must be locally prepared before being selected',
+assert(
+  !workflow.includes("preparePhotoFileForVision(candidatePhoto, 'prior')"),
+  'prior candidate ranking must not load or encode every candidate image',
+);
+assert(
+  workflow.indexOf('const priorSelectionMetadata = findPriorComparablePhoto') <
+    workflow.indexOf('const preparedPair = await prepareSelectedPhotoPair') &&
+    workflow.indexOf('const preparedPair = await prepareSelectedPhotoPair') <
+    workflow.indexOf("client.functions.invoke('pie-photo-vision'"),
+  'metadata selection and bounded pair preparation must finish before provider invocation',
 );
 assertIncludes(
   workflow,
@@ -60,6 +72,36 @@ assertIncludes(
   workflow,
   'uploadPreparedPhoto',
   'staging must upload the already-prepared photo data instead of rereading a stale iOS URI',
+);
+assertIncludes(
+  workflow,
+  'if (info.size > MAX_PHOTO_SOURCE_BYTES)',
+  'photo byte limits must be checked before dimensions or base64 encoding',
+);
+assertIncludes(
+  workflow,
+  'dimensions = await Image.getSize(uri)',
+  'source image dimensions must be inspected before base64 encoding',
+);
+assertIncludes(
+  workflow,
+  'readPhotoBase64WithinLimits(',
+  'base64 reads must be guarded by the shared byte and dimension policy',
+);
+assertIncludes(
+  workflow,
+  'createPhotoEvidenceIdentity({',
+  'staged evidence identity must be derived from immutable photo inputs',
+);
+assertIncludes(
+  workflow,
+  'contentSha256: params.preparedFile.sha256',
+  'staged evidence and its cache identity must include the prepared photo bytes SHA-256',
+);
+assertIncludes(
+  workflow,
+  'photoEvidenceStagingCache.get(stagingCacheKey)',
+  'staging cache lookups must use the content-aware cache key',
 );
 assertIncludes(
   workflow,
@@ -95,6 +137,21 @@ assertIncludes(
 );
 assertIncludes(
   workflow,
+  'createPhotoAnalysisRunIdentity({',
+  'photo analyzer requests must use the immutable analyzer-run identity',
+);
+assertIncludes(
+  workflow,
+  'priorContentSha256: baselineEvidence.contentSha256',
+  'analyzer-run identity must include the prior photo bytes SHA-256',
+);
+assertIncludes(
+  workflow,
+  'currentContentSha256: currentEvidence.contentSha256',
+  'analyzer-run identity must include the current photo bytes SHA-256',
+);
+assertIncludes(
+  workflow,
   'currentPhotoPrepStatus',
   'diagnostics must include current photo preparation status',
 );
@@ -125,17 +182,18 @@ assertIncludes(
 );
 assertIncludes(
   workflow,
-  'update.workflowTimestamps?.firstPhotoAddedAt',
-  'prior lookup must use saved-photo timestamps, not only date labels',
+  'const captureTimestamp = resolveImmutablePhotoCapturedAt(photo)',
+  'prior lookup must use the immutable per-photo capture timestamp',
 );
 assertIncludes(
   workflow,
-  "if (candidateKey.timestampMs === null) return 'not_earlier'",
-  'undated candidate photos must not be presented as confirmed earlier evidence',
+  "case 'candidate_missing':",
+  'undated candidate photos must be rejected explicitly rather than treated as earlier evidence',
 );
-assert(
-  !workflow.includes("candidateKey.timestampMs === currentKey.timestampMs) {"),
-  'equal timestamps must not be ordered by unrelated IDs or array position',
+assertIncludes(
+  workflow,
+  "case 'equal':",
+  'equal capture times must be rejected because earlier ordering is unproven',
 );
 assertIncludes(
   workflow,

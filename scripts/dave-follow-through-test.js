@@ -18,6 +18,7 @@ new Function('require', 'module', 'exports', compiled)(
 );
 const {
   parseDAVEFollowThroughReviewStates,
+  parseDAVEFollowThroughReviewStatesResult,
   planDAVEFollowThrough,
   reviewedDAVEFollowThroughStates,
 } = moduleUnderTest.exports;
@@ -113,6 +114,53 @@ const changed = planDAVEFollowThrough({
 assert.strictEqual(changed.reminders.length, 0, 'a materially changed state starts a new truthful review cadence instead of appearing retroactively overdue');
 assert.notStrictEqual(changed.reviewStates[0].fingerprint, reviewed[0].fingerprint);
 
+const criticalBeforeDisappearance = reviewed.find(review => review.itemId === 'critical');
+const temporarilyAbsent = planDAVEFollowThrough({
+  items: [
+    item({ id: 'verify', requiresVerification: true }),
+    item({ id: 'medium', priority: 'medium' }),
+  ],
+  reviewStates: reviewed,
+  now: new Date('2026-07-16T21:00:00.000Z'),
+});
+const inactiveCritical = temporarilyAbsent.reviewStates.find(review => review.itemId === 'critical');
+assert(inactiveCritical, 'temporarily absent responsibility history must be retained');
+assert.strictEqual(inactiveCritical.active, false);
+assert.strictEqual(inactiveCritical.firstSeenAt, criticalBeforeDisappearance.firstSeenAt);
+assert.strictEqual(inactiveCritical.cadenceHours, 4);
+assert.strictEqual(inactiveCritical.lastResolvedAt, '2026-07-16T21:00:00.000Z');
+
+const reactivated = planDAVEFollowThrough({
+  items: [
+    item({ id: 'critical', priority: 'critical' }),
+    item({ id: 'verify', requiresVerification: true }),
+    item({ id: 'medium', priority: 'medium' }),
+  ],
+  reviewStates: temporarilyAbsent.reviewStates,
+  now: new Date('2026-07-16T22:00:00.000Z'),
+});
+const reactivatedCritical = reactivated.reviewStates.find(review => review.itemId === 'critical');
+assert.strictEqual(reactivatedCritical.active, true);
+assert.strictEqual(reactivatedCritical.firstSeenAt, criticalBeforeDisappearance.firstSeenAt);
+assert.strictEqual(reactivatedCritical.lastResolvedAt, '2026-07-16T21:00:00.000Z');
+assert.strictEqual(reactivatedCritical.lastReactivatedAt, '2026-07-16T22:00:00.000Z');
+assert.strictEqual(reactivatedCritical.reactivationCount, 1);
+assert(
+  reactivated.reminders.some(reminder => reminder.item.id === 'critical'),
+  'an unresolved reactivated responsibility must resume its original review cadence',
+);
+
+const parsedLegacy = parseDAVEFollowThroughReviewStates(JSON.stringify([{
+  fingerprint: 'legacy-fingerprint',
+  itemId: 'legacy-item',
+  firstSeenAt: '2026-07-15T12:00:00.000Z',
+  reviewedAt: null,
+}]));
+assert.strictEqual(parsedLegacy.length, 1, 'legacy persisted review state must remain readable');
+assert.strictEqual(parsedLegacy[0].active, true);
+assert.strictEqual(parsedLegacy[0].lastSeenAt, parsedLegacy[0].firstSeenAt);
+assert.strictEqual(parsedLegacy[0].reactivationCount, 0);
+
 const deterministic = planDAVEFollowThrough({ items: [item()], now });
 assert.strictEqual(
   deterministic.reviewStates[0].fingerprint,
@@ -126,9 +174,25 @@ assert.deepStrictEqual(
   'review timing must survive app restart',
 );
 
+assert.deepStrictEqual(
+  parseDAVEFollowThroughReviewStatesResult('{broken'),
+  { status: 'corrupt', reviewStates: [] },
+  'corrupt reminder history must be distinguishable from a new installation',
+);
+assert.deepStrictEqual(
+  parseDAVEFollowThroughReviewStatesResult(JSON.stringify([
+    ...deterministic.reviewStates,
+    { fingerprint: '', itemId: 'invalid' },
+  ])),
+  { status: 'corrupt', reviewStates: [] },
+  'one invalid review record must fail the whole read instead of being silently dropped',
+);
+
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 assert(app.includes("'dave-follow-through-reviews:v2'"));
 assert(app.includes('Reviewed for Now'));
 assert(app.includes('planDAVEFollowThrough'));
+assert(app.includes('parseDAVEFollowThroughReviewStatesResult'));
+assert(app.includes('No reminder history was changed.'));
 
 console.log('DAVE follow-through planner behavior tests passed.');

@@ -60,6 +60,10 @@ const scheduleScreenSource = appSource.slice(
   appSource.indexOf('function ScheduleScreen'),
   appSource.indexOf('function ScheduleItemRow'),
 );
+const screenshotImporterSource = appSource.slice(
+  appSource.indexOf('async function importScheduleCommunicationScreenshot'),
+  appSource.indexOf('function approveScheduleImport'),
+);
 
 function scheduleItem(overrides = {}) {
   return {
@@ -175,7 +179,7 @@ const parentRollup = buildDAVEProjectScheduleRollup({
   ],
 });
 assert.strictEqual(parentRollup.percentComplete, 63, 'Parent completion should be weighted by task duration.');
-assert.strictEqual(parentRollup.completedCount, 1, 'A task at 100 percent should count as complete even before its status is corrected.');
+assert.strictEqual(parentRollup.completedCount, 0, 'A task must satisfy the canonical Complete status and 100-percent invariant before it counts as complete.');
 assert.strictEqual(parentRollup.overdueCount, 1, 'Incomplete overdue tasks should roll up to the parent.');
 assert.strictEqual(parentRollup.health, 'At Risk', 'An overdue task should make the parent project At Risk.');
 assert(
@@ -194,6 +198,12 @@ assert.deepStrictEqual(
   scheduleImportBatchCounts([ready, incomplete, invalidDate]),
   { total: 3, ready: 1, needsReview: 2 },
   'Batch counts should separate one-tap approvals from items needing review.',
+);
+
+assert(
+  appSource.includes('notes: normalizeImportedScheduleNote(value.notes, value.importedFrom)') &&
+    appSource.includes('value={item.notes}'),
+  'Imported-note cleanup must run during local/cloud hydration before the live task Notes field renders.',
 );
 
 assert(
@@ -243,19 +253,24 @@ assert(
 );
 assert(
   appSource.includes('function resolveReferenceDocumentUri(uri: string)') &&
-    appSource.includes('const folderMarker = `/${REFERENCE_DOCUMENTS_FOLDER}/`') &&
+    appSource.includes('resolveLegacyOwnedLocalFilePath({') &&
+    appSource.includes('isLegacyOwnedLocalFileReadDeleteAuthorized({') &&
     appSource.includes('FileSystem.getInfoAsync(resolvedUri)') &&
     appSource.includes('Sharing.shareAsync(resolvedUri'),
-  'Reference documents must rebase stale app-container paths before opening them.',
+  'Reference documents must safely rebase stale app-container paths and authorize exact owned children before opening them.',
 );
 assert(
-  appSource.includes('new AbortController()') &&
+  appSource.includes('withScheduleImportTimeout(') &&
     appSource.includes('20_000') &&
-    appSource.includes('your-secure-schedule-extractor'),
-  'Advanced extractor requests must be bounded and example endpoints must never be called.',
+    !appSource.includes('extractScheduleItemsWithAiEndpoint') &&
+    !appSource.includes('scheduleAiExtractorUrl') &&
+    !appSource.includes('your-secure-schedule-extractor'),
+  'Schedule extraction must stay bounded and must not upload jobsite files to a user-configurable endpoint.',
 );
 assert(
-  appSource.includes("value.status === 'Complete'\n        ? 100"),
+  appSource.includes('const progress = reconcileScheduleProgress(value.status, value.percentComplete);') &&
+    appSource.includes('percentComplete: progress.percentComplete') &&
+    appSource.includes('status: progress.status'),
   'Marking a schedule item Complete must normalize its progress to 100 percent everywhere.',
 );
 assert(
@@ -269,6 +284,23 @@ assert(
     flowSource.includes('title="Message or Email Screenshots"') &&
     flowSource.includes('title="Manual Task"'),
   'Tasks should expose one clear Add Schedule or Task entry point with three source choices.',
+);
+assert(
+  appSource.includes("Platform.OS === 'ios' && isDaveTextRecognitionAvailable()") &&
+    appSource.includes('screenshotImportAvailable={scheduleScreenshotOcrAvailable}') &&
+    flowSource.includes('screenshotImportAvailable: boolean') &&
+    flowSource.includes('disabled={!screenshotImportAvailable}') &&
+    flowSource.includes("if (choice === 'screenshots' && !screenshotImportAvailable) return;") &&
+    flowSource.includes('Available on iPhone and iPad'),
+  'Screenshot OCR must be an explicit App-provided capability and unavailable on unsupported devices.',
+);
+assert(
+  screenshotImporterSource.indexOf('if (!scheduleScreenshotOcrAvailable)') >= 0 &&
+    screenshotImporterSource.indexOf('if (!scheduleScreenshotOcrAvailable)') <
+      screenshotImporterSource.indexOf('ImagePicker.requestMediaLibraryPermissionsAsync()') &&
+    screenshotImporterSource.indexOf('if (!scheduleScreenshotOcrAvailable)') <
+      screenshotImporterSource.indexOf('ImagePicker.launchImageLibraryAsync({'),
+  'Unsupported screenshot OCR must fail before requesting permission or opening the image picker.',
 );
 assert(
   scheduleScreenSource.indexOf('<ScheduleImportFlow') >
@@ -286,7 +318,9 @@ assert(
   'Tasks should render as one urgency-first list with completed work last and collapsed schedule sources.',
 );
 assert(
-  appSource.includes('ensureScheduleParentProjects(approvedItems, true)') &&
+  appSource.includes('ensureScheduleParentProjects(approvedItems, {') &&
+    appSource.includes('allowDeletedProjects: true') &&
+    appSource.includes('reopenArchivedParents: true') &&
     appSource.includes('scheduleOverviewProjectNames(') &&
     appSource.includes('scheduleProjectScopeNames('),
   'Approving a Gantt import must persist only parent projects and aggregate child work on Overview.',

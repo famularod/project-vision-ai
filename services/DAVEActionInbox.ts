@@ -1,5 +1,5 @@
 import type { ProjectUpdate, ScheduleItem } from '../types';
-import { parseFlexibleDate } from '../utils/date';
+import { daysUntilDate } from '../utils/date';
 import type {
   PIEScheduleReconciliationWarning,
 } from './PIEScheduleReconciliation';
@@ -7,6 +7,7 @@ import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconcili
 import type {
   PIEScheduleDependencyNode,
 } from './PIEScheduleDependencyNetwork';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type DAVEActionInboxKind =
   | 'completion_verification'
@@ -81,7 +82,7 @@ export function buildDAVEActionInbox({
           : 'Confirm the work in the field, attach evidence, or mark the completion report not confirmed.',
         owner: clean(item.owner) || clean(item.contractor),
         dueDate: clean(item.finishDate),
-        dueDays: relativeDays(item.finishDate, now),
+        dueDays: daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined),
         scheduleItemId: item.id,
         updateId: null,
         photoId: null,
@@ -90,7 +91,7 @@ export function buildDAVEActionInbox({
     }
 
     if (scheduleComplete(item)) return;
-    const dueDays = relativeDays(item.finishDate, now);
+    const dueDays = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
     const requiresDeadlineAttention = dueDays !== null && dueDays <= 7;
     const undatedPriorityWork = dueDays === null && (
       item.priority === 'High' || item.status === 'Waiting'
@@ -140,7 +141,7 @@ export function buildDAVEActionInbox({
       requestedAction: warning.suggestedAction,
       owner: clean(item?.owner) || clean(item?.contractor),
       dueDate: clean(item?.finishDate),
-      dueDays: relativeDays(item?.finishDate || '', now),
+      dueDays: daysUntilDate(item?.finishDate || '', now, item?.projectTimeZone || undefined),
       scheduleItemId: warning.scheduleItemId,
       updateId: warning.updateId,
       photoId: null,
@@ -167,7 +168,7 @@ export function buildDAVEActionInbox({
           : `Map ${node.unresolvedPredecessors.join(', ')} to the correct schedule activity.`,
       owner: clean(item.owner) || clean(item.contractor),
       dueDate: clean(item.finishDate),
-      dueDays: relativeDays(item.finishDate, now),
+      dueDays: daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined),
       scheduleItemId: item.id,
       updateId: null,
       photoId: null,
@@ -181,7 +182,7 @@ export function buildDAVEActionInbox({
       photo.category === 'Open Issue' ||
       photo.category === 'Safety Concern';
     if (!open || !actionable) return;
-    const dueDays = relativeDays(photo.actionDueDate, now);
+    const dueDays = daysUntilDate(photo.actionDueDate, now);
     const safety = photo.category === 'Safety Concern';
     const issue = photo.category === 'Open Issue';
     items.push(inboxItem({
@@ -286,7 +287,7 @@ function aggregateScheduleActions(items: DAVEActionInboxItem[]) {
 }
 
 function scheduleComplete(item: ScheduleItem) {
-  return item.status === 'Complete' || item.percentComplete >= 100;
+  return scheduleProgressIsComplete(item);
 }
 
 function projectNameFor(item: ScheduleItem) {
@@ -295,16 +296,6 @@ function projectNameFor(item: ScheduleItem) {
 
 function label(item: ScheduleItem) {
   return clean(item.taskName) || clean(item.milestone) || 'Untitled schedule activity';
-}
-
-function relativeDays(value: string, now: Date) {
-  const parsed = parseFlexibleDate(value);
-  if (!parsed) return null;
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  const due = new Date(parsed);
-  due.setHours(0, 0, 0, 0);
-  return Math.round((due.getTime() - today.getTime()) / 86_400_000);
 }
 
 function dueLabel(days: number) {

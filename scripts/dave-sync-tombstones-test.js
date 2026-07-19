@@ -22,6 +22,9 @@ const asyncStorage = {
   async setItem(key, value) {
     storage.set(key, value);
   },
+  async removeItem(key) {
+    storage.delete(key);
+  },
 };
 
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
@@ -44,6 +47,39 @@ const mockedRequire = request => {
       async upsertDAVESyncTombstone(tombstone) {
         uploaded.push(tombstone);
         return { ok: true, configured: true, data: tombstone };
+      },
+    };
+  }
+  if (request === './LocalStorageCorruptionQuarantine') {
+    return {
+      async quarantineCorruptLocalValue({
+        storage: targetStorage,
+        storageKey,
+        quarantineKeyPrefix,
+        raw,
+        replacementRaw,
+      }) {
+        const quarantineKey = `${quarantineKeyPrefix}test-payload`;
+        await targetStorage.setItem(quarantineKey, raw);
+        if (replacementRaw === null) {
+          await targetStorage.removeItem(storageKey);
+        } else {
+          await targetStorage.setItem(storageKey, replacementRaw);
+        }
+        return {
+          quarantineKey,
+          replacementApplied: replacementRaw !== null,
+        };
+      },
+      localCorruptionRecoveryError({ label, recovery }) {
+        return new Error(`${label} was quarantined at ${recovery.quarantineKey}.`);
+      },
+    };
+  }
+  if (request === './LocalStorageMutationCoordinator') {
+    return {
+      runExclusiveLocalStorageMutation(_storageKeys, operation) {
+        return operation();
       },
     };
   }

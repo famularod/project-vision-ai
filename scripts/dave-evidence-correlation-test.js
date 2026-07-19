@@ -70,7 +70,7 @@ function evidence(id, kind, summary) {
   return { id, kind, sourceRecordId: id, sourceName: 'Source', summary, recordedAt: '2026-07-16T12:00:00.000Z' };
 }
 
-function update(id, taskId, notes, photos = [], date = '2026-07-16T13:00:00.000Z') {
+function update(id, taskId, notes, photos = [], date = '2026-07-16T13:00:00.000Z', overrides = {}) {
   return {
     id,
     projectName: 'Alpha',
@@ -82,6 +82,7 @@ function update(id, taskId, notes, photos = [], date = '2026-07-16T13:00:00.000Z
     scheduleTaskName: taskId,
     selectedAreaName: 'Pump House',
     status: 'sent',
+    ...overrides,
   };
 }
 
@@ -103,11 +104,13 @@ function photo(id, progress = 'supported') {
       visibleChange: 'Additional equipment is visible.',
       location: 'Pump House',
       comparisonConfidence: 'high',
+      comparability: 'strong',
       captureLimitations: [],
       projectProgress: progress,
       repeatPhotoGuidance: null,
       authorityMessage: 'PM verification required.',
       currentObservation: 'Additional installed equipment is visible.',
+      priorEvidenceId: 'prior-photo-evidence',
       provenance: 'visual_only',
       updatedAt: '2026-07-16T13:01:00.000Z',
     },
@@ -133,10 +136,10 @@ const conflict = buildDAVEEvidenceCorrelations({
   scheduleItems: [reportedTask],
   updates: [update('update-conflict', 'reported', 'Work remains unfinished.')],
 });
-assert.strictEqual(conflict.tasks[0].conclusion, 'not_complete');
+assert.strictEqual(conflict.tasks[0].conclusion, 'conflicting_evidence');
 assert.strictEqual(conflict.tasks[0].confidence, 'high');
-assert.strictEqual(conflict.tasks[0].needsVerification, false);
-assert.match(conflict.tasks[0].explanation, /project manager stated/i);
+assert.strictEqual(conflict.tasks[0].needsVerification, true);
+assert.match(conflict.tasks[0].explanation, /one source reports completion/i);
 
 const externalConflictTask = task('external-conflict', {
   completionVerification: verification('conflicting_evidence', [
@@ -223,22 +226,65 @@ const fieldProgressAfterPmCompletion = buildDAVEEvidenceCorrelations({
     '2026-07-16T15:00:00.000Z',
   )],
 });
-assert.strictEqual(fieldProgressAfterPmCompletion.tasks[0].conclusion, 'progress_observed');
-assert.strictEqual(fieldProgressAfterPmCompletion.tasks[0].needsVerification, false);
-assert.match(fieldProgressAfterPmCompletion.tasks[0].explanation, /supersedes the earlier completion status/i);
+assert.strictEqual(fieldProgressAfterPmCompletion.tasks[0].conclusion, 'conflicting_evidence');
+assert.strictEqual(fieldProgressAfterPmCompletion.tasks[0].needsVerification, true);
+assert.match(fieldProgressAfterPmCompletion.tasks[0].explanation, /newer field evidence/i);
 
 const pmFieldStatement = buildDAVEEvidenceCorrelations({
   scheduleItems: [task('pm-field-statement', { status: 'In Progress', percentComplete: 80 })],
   updates: [update('pm-done-update', 'pm-field-statement', 'The work was completed.')],
 });
-assert.strictEqual(pmFieldStatement.tasks[0].conclusion, 'verified_complete');
-assert.strictEqual(pmFieldStatement.tasks[0].needsVerification, false);
+assert.strictEqual(pmFieldStatement.tasks[0].conclusion, 'completion_reported');
+assert.strictEqual(pmFieldStatement.tasks[0].needsVerification, true);
+
+const fieldQuestion = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('field-question', { status: 'In Progress', percentComplete: 80 })],
+  updates: [update('field-question-update', 'field-question', 'Is the work complete?')],
+});
+assert.notStrictEqual(fieldQuestion.tasks[0].conclusion, 'verified_complete');
+assert.notStrictEqual(fieldQuestion.tasks[0].conclusion, 'completion_reported');
 
 const pmFutureStatement = buildDAVEEvidenceCorrelations({
   scheduleItems: [task('pm-future-statement', { status: 'In Progress', percentComplete: 80 })],
   updates: [update('pm-future-update', 'pm-future-statement', 'The work will be completed tomorrow.')],
 });
 assert.notStrictEqual(pmFutureStatement.tasks[0].conclusion, 'verified_complete');
+
+const workflowTimestampAfterPm = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('workflow-after-pm', {
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'project_manager',
+    progressConfirmedAt: '2026-07-16T12:00:00.000Z',
+    progressConfirmedBy: 'David',
+  })],
+  updates: [update(
+    'workflow-after-pm-update',
+    'workflow-after-pm',
+    'The work is still in progress.',
+    [],
+    '2026-07-15T12:00:00.000Z',
+    { workflowTimestamps: { sendResolvedAt: '2026-07-16T15:00:00.000Z' } },
+  )],
+});
+assert.strictEqual(workflowTimestampAfterPm.tasks[0].conclusion, 'conflicting_evidence',
+  'The actual send timestamp, not a stale display date, must determine evidence recency.');
+
+const oldPhotoWithNewAnalysis = photo('old-photo-new-analysis');
+oldPhotoWithNewAnalysis.locationCapturedAt = '2026-07-16T10:00:00.000Z';
+oldPhotoWithNewAnalysis.photoIntelligence.updatedAt = '2026-07-16T16:00:00.000Z';
+const oldPhotoAfterPmAnalysis = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('old-photo-analysis', {
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'project_manager',
+    progressConfirmedAt: '2026-07-16T12:00:00.000Z',
+    progressConfirmedBy: 'David',
+  })],
+  updates: [update('old-photo-analysis-update', 'old-photo-analysis', '', [oldPhotoWithNewAnalysis])],
+});
+assert.strictEqual(oldPhotoAfterPmAnalysis.tasks[0].conclusion, 'verified_complete',
+  'A later analysis timestamp must not make an older captured photo supersede PM authority.');
 
 const unverifiedScheduleComplete = buildDAVEEvidenceCorrelations({
   scheduleItems: [task('schedule-complete', { status: 'Complete', percentComplete: 100 })],
@@ -252,6 +298,23 @@ const visibleAgainstNotStarted = buildDAVEEvidenceCorrelations({
 });
 assert.strictEqual(visibleAgainstNotStarted.tasks[0].conclusion, 'conflicting_evidence');
 assert.match(visibleAgainstNotStarted.tasks[0].contradiction, /schedule still says not started/i);
+
+const blockedVisual = photo('blocked-visual-photo');
+blockedVisual.photoIntelligence.comparability = 'not_comparable';
+blockedVisual.photoIntelligence.projectProgress = 'supported';
+const blockedVisualAgainstNotStarted = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('blocked-visual-task', { status: 'Not Started', percentComplete: 0 })],
+  updates: [update('blocked-visual-update', 'blocked-visual-task', '', [blockedVisual])],
+});
+assert.notStrictEqual(
+  blockedVisualAgainstNotStarted.tasks[0].conclusion,
+  'conflicting_evidence',
+  'a not-comparable photo must not contradict schedule status even when legacy data says projectProgress=supported',
+);
+assert.notStrictEqual(
+  blockedVisualAgainstNotStarted.tasks[0].conclusion,
+  'progress_observed',
+);
 
 const duplicateNameTasks = [
   task('first', { taskName: 'Install Pump', locationName: 'Pump House' }),

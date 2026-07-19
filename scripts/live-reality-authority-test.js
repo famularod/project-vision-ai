@@ -285,7 +285,18 @@ function actor() {
     runtime: {},
     selectedProjectNames: ['Building 2375'],
   });
-  assert(report.body.includes(record.primaryRecommendation) || report.executiveSummary.join(' ').includes(record.primaryRecommendation));
+  const reportIncludesRecommendation =
+    report.body.includes(record.primaryRecommendation) ||
+    report.executiveSummary.join(' ').includes(record.primaryRecommendation);
+  if (judgmentResult.executiveReadiness === 'Ready') {
+    assert(reportIncludesRecommendation, 'Ready recommendations must remain traceable in the report.');
+  } else {
+    assert(!reportIncludesRecommendation, 'Unready recommendations must not be communicated as final guidance.');
+    assert(
+      /need review before this report is ready to send/i.test(report.body),
+      'Unready reports must explain that review is still required.',
+    );
+  }
 
   const sourceEvidence = [{
     id: 'schedule-canopy-b',

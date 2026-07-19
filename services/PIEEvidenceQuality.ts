@@ -1,4 +1,9 @@
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import {
+  isDAVECurrentCertainAssertion,
+  parseDAVEAssertions,
+  type DAVENormalizedAssertion,
+} from './DAVEAssertionParser';
 
 export type PIEEvidenceQualityLevel =
   | 'strong'
@@ -177,6 +182,14 @@ export function scoreEvidenceFreshness(
     };
   }
 
+  if (ageDays < 0) {
+    return {
+      score: 20,
+      level: 'insufficient',
+      reason: 'Evidence timestamp is in the future and must be verified.',
+      ageDays,
+    };
+  }
   if (ageDays <= 3) return { score: 95, level: 'strong', reason: 'Evidence is recent.', ageDays };
   if (ageDays <= 14) return { score: 80, level: 'good', reason: 'Evidence is reasonably current.', ageDays };
   if (ageDays <= 45) return { score: 55, level: 'weak', reason: 'Evidence is aging.', ageDays };
@@ -244,18 +257,119 @@ export function scoreEvidenceRelevance(
 export function detectEvidenceConflicts(
   evidence: PIEEvidenceQualityInput[],
 ): PIEEvidenceConflict[] {
-  const summaries = evidence.map(item => item.summary.toLowerCase());
-  const hasComplete = summaries.some(item => /complete|resolved|approved|accepted|done/.test(item));
-  const hasBlocked = summaries.some(item => /blocked|failed|rejected|overdue|open issue|safety concern/.test(item));
+  const signals = evidence.flatMap(item =>
+    parseDAVEAssertions(item.summary).assertions
+      .filter(isDAVECurrentCertainAssertion)
+      .map(assertion => evidenceAuthoritySignal(item.id, assertion))
+      .filter((signal): signal is EvidenceAuthoritySignal => Boolean(signal)),
+  );
+  const conflictEvidenceIds = new Set<string>();
 
-  return hasComplete && hasBlocked
+  for (let leftIndex = 0; leftIndex < signals.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < signals.length; rightIndex += 1) {
+      const left = signals[leftIndex];
+      const right = signals[rightIndex];
+      if (
+        authoritySignalsConflict(left, right) &&
+        left.subject === right.subject
+      ) {
+        conflictEvidenceIds.add(left.evidenceId);
+        conflictEvidenceIds.add(right.evidenceId);
+      }
+    }
+  }
+
+  return conflictEvidenceIds.size > 0
     ? [{
         id: 'evidence-conflict-status',
-        evidenceIds: evidence.map(item => item.id),
-        summary: 'Evidence contains both complete/resolved and blocked/open-risk signals.',
+        evidenceIds: [...conflictEvidenceIds],
+        summary: 'Evidence contains contradictory current status assertions for the same subject.',
         severity: 'high',
       }]
     : [];
+}
+
+type EvidenceAuthoritySignal = Readonly<{
+  evidenceId: string;
+  subject: string | null;
+  domain:
+    | 'completion'
+    | 'implementation'
+    | 'approval'
+    | 'outcome'
+    | 'issue'
+    | 'safety'
+    | 'blocker';
+  stance: 'positive' | 'negative';
+  status: DAVENormalizedAssertion['status'];
+}>;
+
+function authoritySignalsConflict(
+  left: EvidenceAuthoritySignal,
+  right: EvidenceAuthoritySignal,
+) {
+  if (left.domain === right.domain) return left.stance !== right.stance;
+
+  const completion = left.domain === 'completion' ? left : right.domain === 'completion' ? right : null;
+  const blocker = left.domain === 'blocker' ? left : right.domain === 'blocker' ? right : null;
+  return Boolean(
+    completion?.status === 'complete' &&
+    (blocker?.status === 'blocked' ||
+      blocker?.status === 'delayed' ||
+      blocker?.status === 'blocker_unresolved'),
+  );
+}
+
+function evidenceAuthoritySignal(
+  evidenceId: string,
+  assertion: DAVENormalizedAssertion,
+): EvidenceAuthoritySignal | null {
+  const positiveStatuses = new Set([
+    'complete',
+    'approved',
+    'outcome_succeeded',
+    'blocker_resolved',
+    'unblocked',
+    'safety_clear',
+    'issue_clear',
+  ]);
+  const negativeStatuses = new Set([
+    'incomplete',
+    'not_started',
+    'in_progress',
+    'not_approved',
+    'outcome_failed',
+    'outcome_partial',
+    'blocked',
+    'delayed',
+    'blocker_unresolved',
+    'safety_issue_present',
+    'issue_present',
+  ]);
+  const domain: EvidenceAuthoritySignal['domain'] =
+    assertion.predicate === 'complete' ||
+    assertion.predicate === 'started' ||
+    assertion.predicate === 'in_progress'
+      ? 'completion'
+      : assertion.predicate === 'implemented'
+        ? 'implementation'
+        : assertion.predicate === 'approved'
+          ? 'approval'
+          : assertion.predicate === 'outcome_succeeded'
+            ? 'outcome'
+            : assertion.predicate === 'issue_present'
+              ? 'issue'
+              : assertion.predicate === 'safety_issue_present'
+                ? 'safety'
+                : 'blocker';
+
+  if (positiveStatuses.has(assertion.status)) {
+    return { evidenceId, subject: assertion.subject, domain, stance: 'positive', status: assertion.status };
+  }
+  if (negativeStatuses.has(assertion.status)) {
+    return { evidenceId, subject: assertion.subject, domain, stance: 'negative', status: assertion.status };
+  }
+  return null;
 }
 
 export function rankEvidenceByUsefulness(
@@ -326,16 +440,35 @@ function qualityLevelFromScore(
   return 'insufficient';
 }
 
-function evidenceReadinessFromItems(
+/**
+ * Audit P1-03: readiness reflects the whole evidence base, not the single
+ * best item. One strong item among many insufficient ones previously read
+ * as strong readiness (reproduced: 1 strong + 9 insufficient = average 25,
+ * readiness "strong"). Rules now:
+ * - conflicts block readiness entirely;
+ * - a majority of insufficient items is itself blocking;
+ * - otherwise readiness comes from the weighted average score, and can
+ *   never exceed what the average supports.
+ */
+export function evidenceReadinessFromItems(
   items: PIEEvidenceQualityItem[],
   conflicts: PIEEvidenceConflict[],
 ): PIEEvidenceQualityLevel {
   if (items.length === 0) return 'insufficient';
   if (conflicts.length > 0) return 'conflicting';
   if (items.every(item => item.score.level === 'stale')) return 'stale';
-  if (items.some(item => item.score.level === 'strong')) return 'strong';
-  if (items.some(item => item.score.level === 'good')) return 'good';
-  return 'weak';
+
+  const insufficientCount = items.filter(
+    item => item.score.level === 'insufficient',
+  ).length;
+  if (insufficientCount * 2 > items.length) return 'insufficient';
+
+  const averageScore =
+    items.reduce((total, item) => total + item.score.value, 0) / items.length;
+  if (averageScore >= 85) return 'strong';
+  if (averageScore >= 70) return 'good';
+  if (averageScore >= 45) return 'weak';
+  return 'insufficient';
 }
 
 function reliabilityReason(evidence: PIEEvidenceQualityInput) {
@@ -357,7 +490,13 @@ function ageInDays(capturedAt: string | null | undefined, generatedAt: string) {
   const captured = new Date(capturedAt).getTime();
   const generated = new Date(generatedAt).getTime();
   if (!Number.isFinite(captured) || !Number.isFinite(generated)) return null;
-  return Math.max(0, Math.round((generated - captured) / 86_400_000));
+  const ageMs = generated - captured;
+  // Future device clocks and malformed imports are not "fresh" evidence.
+  // Preserve a negative sentinel instead of clamping to zero.
+  if (ageMs < -5 * 60_000) {
+    return -Math.max(1, Math.ceil(Math.abs(ageMs) / 86_400_000));
+  }
+  return Math.max(0, Math.round(ageMs / 86_400_000));
 }
 
 function clampScore(value: number) {

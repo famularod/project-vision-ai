@@ -1,5 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
+import {
   buildQualifiedRealityEvidence,
   synchronizeAuthoritativeRealityModel,
   type PIEQualifiedRealityEvidence,
@@ -73,15 +77,27 @@ export type PIERealityModelOrchestrationResult = {
   diagnostics: string[];
 };
 
-const EVIDENCE_DELTA_PREFIX = 'projectVisionAI.pieRealityModel.evidenceDeltas.v1';
+export const EVIDENCE_DELTA_PREFIX = 'projectVisionAI.pieRealityModel.evidenceDeltas.v1';
+
+export class PIEEvidenceDeltaStorageCorruptionError extends Error {
+  readonly code = 'corrupt_evidence_delta_storage';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'PIEEvidenceDeltaStorageCorruptionError';
+  }
+}
 
 export async function runPIERealityModelOrchestration(
   input: PIERealityModelOrchestrationInput = {},
 ): Promise<PIERealityModelOrchestrationResult> {
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
   const generatedAt = input.generatedAt || runtime.generatedAt || new Date().toISOString();
-  const organizationId = resolveOrganizationId(input.organizationId, runtime);
-  const projectId = resolveProjectId(input.projectId, runtime);
+  const { organizationId, projectId } = resolvePIERealityAuthorityScope(
+    input.organizationId,
+    input.projectId,
+    runtime,
+  );
   const repository = input.repository || createPIERealityModelRepository({
     cloudEnabled: input.cloudAvailable,
     identityTrusted: input.identityTrusted,
@@ -151,6 +167,9 @@ export async function runPIERealityModelOrchestration(
       processedAt: generatedAt,
     })));
   } catch (error) {
+    if (error instanceof PIEEvidenceDeltaStorageCorruptionError) {
+      throw error;
+    }
     if (!previousModel) {
       throw error;
     }
@@ -355,6 +374,17 @@ function buildRuntimeRealityEvidence(
   return sources;
 }
 
+export function resolvePIERealityAuthorityScope(
+  organizationId: string | null | undefined,
+  projectId: string | null | undefined,
+  runtime: PIERuntimeState,
+) {
+  return {
+    organizationId: resolveOrganizationId(organizationId, runtime),
+    projectId: resolveProjectId(projectId, runtime),
+  };
+}
+
 function resolveOrganizationId(input: string | null | undefined, runtime: PIERuntimeState): string {
   const runtimeWithOrg = runtime as PIERuntimeState & { organizationId?: string | null };
   return input || runtimeWithOrg.organizationId || 'local-unverified-anonymous';
@@ -369,13 +399,19 @@ async function loadEvidenceDeltaState(
   organizationId: string,
   projectId: string,
 ): Promise<Record<string, PIERealityEvidenceDelta>> {
-  const value = await AsyncStorage.getItem(deltaKey(organizationId, projectId));
-  if (!value) return {};
+  const storageKey = evidenceDeltaStorageKey(organizationId, projectId);
+  const value = await AsyncStorage.getItem(storageKey);
+  if (value === null) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(value) as Record<string, PIERealityEvidenceDelta>;
+    parsed = JSON.parse(value) as unknown;
   } catch {
-    return {};
+    return quarantineInvalidEvidenceDeltaState(storageKey, value);
   }
+  if (!isEvidenceDeltaStateForScope(parsed, organizationId, projectId)) {
+    return quarantineInvalidEvidenceDeltaState(storageKey, value);
+  }
+  return parsed;
 }
 
 async function saveEvidenceDeltas(
@@ -383,16 +419,91 @@ async function saveEvidenceDeltas(
   projectId: string,
   deltas: PIERealityEvidenceDelta[],
 ) {
+  if (!deltas.every(delta => isEvidenceDeltaForScope(delta, organizationId, projectId))) {
+    throw new Error('Cannot store invalid or cross-scope Reality Model evidence deltas.');
+  }
   const previous = await loadEvidenceDeltaState(organizationId, projectId);
   const next = { ...previous };
   for (const delta of deltas) {
     next[delta.evidenceId] = delta;
   }
-  await AsyncStorage.setItem(deltaKey(organizationId, projectId), JSON.stringify(next));
+  await AsyncStorage.setItem(evidenceDeltaStorageKey(organizationId, projectId), JSON.stringify(next));
 }
 
-function deltaKey(organizationId: string, projectId: string) {
+export function evidenceDeltaStorageKey(organizationId: string, projectId: string): string {
   return `${EVIDENCE_DELTA_PREFIX}.${safeId(organizationId)}.${safeId(projectId)}`;
+}
+
+async function quarantineInvalidEvidenceDeltaState(
+  storageKey: string,
+  raw: string,
+): Promise<never> {
+  try {
+    const recovery = await quarantineCorruptLocalValue({
+      storage: AsyncStorage,
+      storageKey,
+      quarantineKeyPrefix: `${storageKey}.corrupt.`,
+      raw,
+      replacementRaw: null,
+    });
+    throw new PIEEvidenceDeltaStorageCorruptionError(
+      localCorruptionRecoveryError({
+        label: 'Stored Reality Model evidence deltas',
+        recovery,
+      }).message,
+    );
+  } catch (error) {
+    if (error instanceof PIEEvidenceDeltaStorageCorruptionError) throw error;
+    throw new PIEEvidenceDeltaStorageCorruptionError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+function isEvidenceDeltaStateForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is Record<string, PIERealityEvidenceDelta> {
+  return (
+    isRecord(value) &&
+    Object.entries(value).every(([evidenceId, delta]) =>
+      isEvidenceDeltaForScope(delta, organizationId, projectId) &&
+      delta.evidenceId === evidenceId)
+  );
+}
+
+function isEvidenceDeltaForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIERealityEvidenceDelta {
+  if (
+    !isRecord(value) ||
+    typeof value.evidenceId !== 'string' ||
+    value.evidenceId.length === 0 ||
+    value.organizationId !== organizationId ||
+    value.projectId !== projectId ||
+    typeof value.evidenceVersionOrHash !== 'string' ||
+    !['new', 'changed', 'unchanged', 'removed', 'invalidated'].includes(String(value.status)) ||
+    (value.lastProcessedModelVersion !== null &&
+      (typeof value.lastProcessedModelVersion !== 'number' ||
+        !Number.isFinite(value.lastProcessedModelVersion))) ||
+    typeof value.processedAt !== 'string' ||
+    !['active', 'removed', 'invalidated'].includes(String(value.evidenceStatus))
+  ) {
+    return false;
+  }
+  return value.sourceObject === undefined || (
+    isRecord(value.sourceObject) &&
+    value.sourceObject.organizationId === organizationId &&
+    value.sourceObject.projectId === projectId &&
+    value.sourceObject.evidenceQualified === true
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function evidenceVersionHash(evidence: PIEQualifiedRealityEvidence): string {

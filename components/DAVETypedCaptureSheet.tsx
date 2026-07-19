@@ -36,19 +36,25 @@ export function DAVETypedCaptureSheet({
 }) {
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
     setText('');
     setError(null);
+    setSubmitted(false);
   }, [visible]);
 
   function continueToConfirmation() {
+    // Audit P1-50: Continue is not re-entrant; a double tap must not launch
+    // two competing captures. The flag resets when the sheet reopens.
+    if (submitted) return;
     const value = text.trim();
     if (!value) {
       setError('Enter a question or project information.');
       return;
     }
+    setSubmitted(true);
     onContinue(value);
   }
 

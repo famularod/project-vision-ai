@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -12,9 +12,9 @@ import { type DAVEAskAnswer, type DAVEAskEvidence } from '../services/DAVEAsk';
 import {
   appendDAVEAskHistory,
   buildDAVEAskWhyModel,
+  createDAVEAskHistoryPersistence,
   DAVE_ASK_SUGGESTED_QUESTIONS,
   daveAskHistoryStorageKey,
-  parseDAVEAskHistory,
   resolveDAVEAskEvidenceNavigation,
   resolveDAVEAskTimelineNavigation,
   type DAVEAskConversationEntry,
@@ -25,6 +25,7 @@ import {
   answerDAVEConversationContext,
   resolveDAVEConversationContext,
 } from '../services/DAVEConversationContext';
+import { persistStorageItem } from '../hooks/use-async-storage-persistence';
 
 type Props = {
   intelligence: DAVEProjectIntelligence;
@@ -37,7 +38,17 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
   const [followUp, setFollowUp] = useState('');
   const [clarification, setClarification] = useState<string | null>(null);
   const [expandedWhyId, setExpandedWhyId] = useState<string | null>(null);
+  const [persistenceError, setPersistenceError] = useState(false);
+  const [historyLoadError, setHistoryLoadError] = useState(false);
+  const [historyLoadAttempt, setHistoryLoadAttempt] = useState(0);
+  const historyRef = useRef<DAVEAskConversationEntry[]>([]);
   const storageKey = daveAskHistoryStorageKey(intelligence.projectId);
+  const activeStorageKeyRef = useRef(storageKey);
+  activeStorageKeyRef.current = storageKey;
+  const historyPersistence = useRef(createDAVEAskHistoryPersistence({
+    readItem: key => AsyncStorage.getItem(key),
+    persistItem: persistStorageItem,
+  })).current;
 
   useEffect(() => {
     let active = true;
@@ -45,20 +56,30 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
     setHistoryLoaded(false);
     setExpandedWhyId(null);
     setClarification(null);
-    AsyncStorage.getItem(storageKey)
-      .then(value => {
-        if (active) setHistory(parseDAVEAskHistory(value, intelligence.projectId));
+    setHistoryLoadError(false);
+    historyPersistence.read(intelligence.projectId)
+      .then(loaded => {
+        if (!active) return;
+        historyRef.current = loaded;
+        setHistory(loaded);
+        setHistoryLoaded(true);
       })
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) setHistoryLoaded(true);
+      .catch(() => {
+        if (!active) return;
+        // A failed read is not an authoritative empty history. Keep input
+        // disabled so a later write cannot erase records that remain on disk.
+        setHistoryLoadError(true);
+        setHistoryLoaded(false);
       });
     return () => {
       active = false;
     };
-  }, [intelligence.projectId, storageKey]);
+  }, [historyLoadAttempt, historyPersistence, intelligence.projectId, storageKey]);
 
   function executeQuestion(question: string) {
+    // Audit P1-50: a tap before hydration finishes would answer against an
+    // empty history and then overwrite the stored history on save.
+    if (!historyLoaded) return;
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) return;
     const context = resolveDAVEConversationContext({
@@ -89,11 +110,19 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
       resolvedQuestion: context.status === 'standalone' ? null : context.effectiveQuestion,
       priorEntryId: context.priorEntryId,
     };
-    setHistory(current => {
-      const next = appendDAVEAskHistory(current, entry);
-      AsyncStorage.setItem(storageKey, JSON.stringify(next)).catch(() => undefined);
-      return next;
-    });
+    const next = appendDAVEAskHistory(historyRef.current, entry);
+    historyRef.current = next;
+    setHistory(next);
+    // Audit P1-50: same-project writes are ordered, transient failures are
+    // retried, and persistent failure remains visible to the user.
+    void historyPersistence.append(intelligence.projectId, entry)
+      .then(persisted => {
+        if (activeStorageKeyRef.current !== storageKey) return;
+        historyRef.current = persisted;
+        setHistory(persisted);
+        setPersistenceError(false);
+      })
+      .catch(() => setPersistenceError(true));
     setFollowUp('');
   }
 
@@ -120,7 +149,9 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
             key={question}
             style={styles.suggestion}
             onPress={() => executeQuestion(question)}
+            disabled={!historyLoaded}
             accessibilityRole="button"
+            accessibilityState={{ disabled: !historyLoaded }}
             accessibilityLabel={`Ask project assistant: ${question}`}
           >
             <Text style={styles.suggestionText}>• {question}</Text>
@@ -128,7 +159,30 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
         ))}
       </View>
 
-      {!historyLoaded ? <AskHistorySkeleton /> : null}
+      {!historyLoaded && !historyLoadError ? <AskHistorySkeleton /> : null}
+
+      {historyLoadError ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.answerText}>Saved questions could not be opened.</Text>
+          <Text style={styles.metaText}>
+            Asking is paused so existing history is not overwritten.
+          </Text>
+          <TouchableOpacity
+            style={styles.suggestion}
+            onPress={() => setHistoryLoadAttempt(attempt => attempt + 1)}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading saved questions"
+          >
+            <Text style={styles.suggestionText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {persistenceError ? (
+        <Text style={styles.metaText}>
+          The last answer could not be saved to this phone. It stays visible here, but may be missing after an app restart.
+        </Text>
+      ) : null}
 
       {historyLoaded && history.length === 0 ? (
         <View style={styles.emptyState}>

@@ -6,7 +6,16 @@ const assert = require('assert');
 
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const statusViews = fs.readFileSync(
+  path.join(root, 'components/DAVEProjectStatusViews.tsx'),
+  'utf8',
+);
+const uiSource = `${app}\n${statusViews}`;
 const projectTruth = fs.readFileSync(path.join(root, 'services/DAVEProjectTruth.ts'), 'utf8');
+const projectStatus = fs.readFileSync(
+  path.join(root, 'services/DAVEProjectOperationalStatus.ts'),
+  'utf8',
+);
 
 [
   'function HomeScreen({',
@@ -23,6 +32,7 @@ const projectTruth = fs.readFileSync(path.join(root, 'services/DAVEProjectTruth.
   'View all activity',
   'Active Projects',
   'Healthy',
+  'Needs Setup',
   'At Risk',
   'Blocked',
   'title="Project Management"',
@@ -35,6 +45,11 @@ const projectTruth = fs.readFileSync(path.join(root, 'services/DAVEProjectTruth.
   'ProjectWorkspace',
   'ProjectTaskControlPanel',
   'Tasks and Schedule',
+  'Restoring project status…',
+  'Loading projects, schedules, documents, and field updates before showing project health.',
+  'deriveDAVEProjectOperationalStatus({',
+  'Needs Verification',
+  'Schedule: {scheduleStatus}',
   'title="Project Options"',
   'View All Tasks',
   'New Field Update',
@@ -52,7 +67,7 @@ const projectTruth = fs.readFileSync(path.join(root, 'services/DAVEProjectTruth.
   'onOpenPhotoDifferences',
   'onNewFieldUpdate(projectName)',
 ].forEach(marker => {
-  assert(app.includes(marker), `Phase 2 screen should include ${marker}`);
+  assert(uiSource.includes(marker), `Phase 2 screen should include ${marker}`);
 });
 
 assert(!app.includes("Today's Brief"), 'Overview should not render a separate Today\'s Brief section.');
@@ -68,6 +83,62 @@ assert(!app.includes("Today's Brief"), 'Overview should not render a separate To
 assert(
   app.includes('onPress={() => onOpenProject(row.project)}'),
   'Project cards should open Project Workspace.',
+);
+assert(
+  app.includes('statusReady={projectStatusReady}') &&
+    app.includes('if (!statusReady)') &&
+    app.includes('const requiredLocalHydrationDomains = [') &&
+    app.includes('updatesLocalLoaded') &&
+    app.includes('deletedUpdateTombstonesLoaded') &&
+    app.includes('projectsLocalLoaded') &&
+    app.includes('deletedProjectNamesLocalLoaded') &&
+    app.includes('archivedProjectsLoaded') &&
+    app.includes('projectAreasLocalLoaded') &&
+    app.includes('referenceDocumentsLocalLoaded') &&
+    app.includes('projectDocumentsLoaded') &&
+    app.includes('scheduleItemsLocalLoaded') &&
+    app.includes('captureMemoriesLoaded') &&
+    app.includes('identityCorrectionsLoaded') &&
+    app.includes('scheduleIdentityReady') &&
+    app.includes('displayNameLoaded') &&
+    app.includes('contactsLoaded') &&
+    app.includes('draftLoaded') &&
+    app.includes('const startupHydrationReady = isStartupHydrationReady(') &&
+    app.includes('requiredLocalHydrationDomains,') &&
+    app.includes('startupHydration.failures,') &&
+    app.includes('hydrated: projectStatusReady'),
+  'Status surfaces and the shared authority must wait for the complete local project snapshot.',
+);
+assert(
+  app.includes('const health = row.health;') &&
+    app.includes('right.priorityRank - left.priorityRank') &&
+    !app.includes("row.severity === 'high' ? 'Blocked'"),
+  'Overview must render the canonical project health instead of translating generic severity into Blocked.',
+);
+assert(
+  projectStatus.includes("status: 'Blocked'") &&
+    projectStatus.includes("status: 'At Risk'") &&
+    projectStatus.includes("status: 'Needs Setup'") &&
+    projectStatus.includes('priorityRank') &&
+    projectStatus.includes('needsVerification') &&
+    projectStatus.includes("input.scheduleHealth === 'Blocked'") &&
+    projectStatus.includes('if (primaryWarning)'),
+  'Canonical project health must reserve Blocked for actual blocking input and keep conflicts reviewable.',
+);
+assert(
+  app.includes('findCurrentDAVEConfirmedBlockerForScopes(') &&
+    app.includes('updateHasOpenDAVESafetyConcern(update)') &&
+    app.includes('updateHasOpenDAVEBlocker(update)') &&
+    app.includes('currentConfirmedBlocker?.id === update.id'),
+  'Project health must use current unresolved blocker and safety evidence only.',
+);
+assert(
+  app.split('operationalScheduleItemsForProject(').length >= 3,
+  'Overview and Workspace must reconcile the same canonical project schedule slice.',
+);
+assert(
+  app.includes('Evidence state: {dailyBrief.reality.state}'),
+  'The independent Reality evidence state must be labeled as a distinct dimension.',
 );
 assert(
   app.includes('Archived Projects') && app.includes('onReopenProject(projectName)'),
@@ -113,8 +184,8 @@ assert(
 );
 assert(
   app.includes('openLatestProjectPhotoDifference') &&
-    app.includes("setScreen('UpdateDetail')") &&
-    app.includes('setSelectedDetailUpdate(targetUpdate)'),
+    app.includes('setSelectedDetailUpdate(targetUpdate)') &&
+    app.includes("setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' })"),
   'View photo differences action must open an existing update detail path.',
 );
 assert(
@@ -130,7 +201,9 @@ assert(
 );
 assert(
   app.includes('authoritativeScheduleItems') &&
-    app.includes("warning.type !== 'schedule_mapping_incomplete'"),
+    app.includes('reconciliationWarnings: scheduleReconciliation.warnings') &&
+    projectStatus.includes('ACTIONABLE_WARNING_TYPES') &&
+    projectStatus.includes('highestSeverityWarning(actionableWarnings)'),
   'Overview must use authoritative schedule rows and surface actionable field reconciliation warnings.',
 );
 assert(

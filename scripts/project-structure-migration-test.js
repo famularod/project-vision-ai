@@ -31,11 +31,13 @@ assert(!defaults.includes('Canopy') && !defaults.includes('Driveway'),
   'Work areas must not be seeded as projects.');
 
 assert(
-  app.includes("normalizeStoredUpdateRecord,\n        'saved updates'") &&
-    app.includes("normalizeStoredUpdateRecord,\n        'cloud saved updates'") &&
+  /normalizeStoredUpdateRecord,\s*'saved updates'/.test(app) &&
+    /normalizeStoredUpdateRecord,\s*'cloud saved updates'/.test(app) &&
     app.includes('return migrateLegacyProjectUpdate(normalizeUpdate('),
   'Both local and cloud field updates must be assigned to their parent project during hydration.');
-assert(app.includes('normalizeScheduleItems(result.value).map(migrateLegacyScheduleItem)'),
+assert(
+  app.includes('normalizeScheduleItems(items).map(migrateLegacyScheduleItem)') &&
+    app.includes('reconcileDAVEScheduleRecords('),
   'Schedule tasks must be assigned to their parent project.');
 assert(app.includes('normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument)'),
   'Project documents must follow the parent project.');
@@ -53,11 +55,18 @@ assert(cloudMigration.indexOf('await synchronizeLocalData({') < cloudMigration.i
   'Parent project data must sync before obsolete cloud containers are deleted.');
 assert(cloudMigration.includes("tokenResult.data?.status !== 'token_present'"),
   'Cloud migration must wait for a real authenticated session.');
-assert(cloudMigration.includes('remainingLegacyProjects?.length === 0'),
-  'A previously completed cloud cleanup must be marked complete without repeating the full migration.');
+assert(cloudMigration.includes('!cloudProjects.ok || cloudProjects.stubbed || !cloudProjects.data') &&
+  cloudMigration.includes('!cloudArchivedProjects.ok || cloudArchivedProjects.stubbed || !cloudArchivedProjects.data') &&
+  cloudMigration.includes('...cloudArchivedProjects.data') &&
+  cloudMigration.includes('remainingLegacyProjects.length === 0'),
+  'A verified active and archived inventory must gate cloud cleanup and avoid repeating a completed migration.');
 assert(cloudMigration.includes('projectStructureErrors.length > 0') &&
   cloudMigration.includes('syncResult.queued > 0') &&
   cloudMigration.includes('syncResult.conflicts > 0'),
   'Cloud deletion must stop for parent-project, schedule, queue, or conflict failures.');
+assert(
+  /scheduleItemsLoaded,\s*startupHydrationReady,\s*updatesLoaded,\s*\]\);/.test(app),
+  'Cloud migration must re-evaluate when required local hydration becomes ready.',
+);
 
 console.log('Project structure migration checks passed.');

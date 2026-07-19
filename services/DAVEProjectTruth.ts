@@ -27,6 +27,12 @@ import {
   buildDAVEProjectReasoning,
   type DAVEProjectReasoning,
 } from './DAVEProjectReasoning';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  projectDateRelativeDays,
+  type ProjectTimeZone,
+} from './ProjectDateTime';
 
 export const DAVE_PROJECT_TRUTH_VERSION = 'dave-project-truth/1.0' as const;
 
@@ -168,6 +174,7 @@ export type BuildDAVEProjectTruthInput = {
   runtime?: PIERuntimeState | null;
   core?: PIECoreOutput | null;
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
 };
 
 export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEProjectTruth {
@@ -182,6 +189,9 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     projectAreas: input.projectAreas || [],
   }).items;
   const scheduleItems = canonicalScheduleItems.filter(item => scheduleMatchesProject(projectKey, item));
+  const projectTimeZone = input.projectTimeZone ||
+    scheduleItems.find(item => item.projectTimeZone)?.projectTimeZone ||
+    DEFAULT_PROJECT_TIME_ZONE;
   const scopedUpdateIds = new Set(updates.map(update => update.id));
   const captureMemories = (input.captureMemories ?? []).filter(memory =>
     projectMatches(projectKey, memory.recommendedProject.value),
@@ -227,6 +237,7 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     scheduleItems,
     captureMemories,
     now: generatedAt,
+    projectTimeZone,
   });
   const records = buildEvidenceLedger({
     ...input,
@@ -250,8 +261,16 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     updates,
     correlations,
     now: generatedAt,
+    projectTimeZone,
   });
-  const schedule = buildScheduleTruth(scheduleItems, records, entityLinks, correlations, generatedAt);
+  const schedule = buildScheduleTruth(
+    scheduleItems,
+    records,
+    entityLinks,
+    correlations,
+    generatedAt,
+    projectTimeZone,
+  );
   const evidence = summarizeEvidence(records);
   const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
   const briefing = buildPMBriefing({
@@ -569,14 +588,28 @@ function buildPhotoComparisons(updates: ProjectUpdate[], links: DAVEEntityLink[]
     const intelligence = photo.photoIntelligence;
     const taskLink = links.find(item => item.sourceEvidenceId === `photo:${photo.id}` && item.targetType === 'schedule-task');
     const observation = clean(intelligence?.currentObservation) || clean(intelligence?.visibleChange) || clean(photo.caption) || 'No specific visible condition was recorded.';
-    const hasComparablePrior = Boolean(intelligence?.priorUpdateUsed || intelligence?.priorEvidenceId);
+    const hasPriorPhoto = Boolean(
+      intelligence?.priorUpdateUsed || intelligence?.priorEvidenceId,
+    );
+    const comparability = clean(intelligence?.comparability)?.toLowerCase();
+    const comparisonCompleted =
+      intelligence?.status === 'analysis_complete' ||
+      intelligence?.status === 'completed_with_limitations';
+    const hasComparablePrior = Boolean(
+      hasPriorPhoto &&
+      comparisonCompleted &&
+      (comparability === 'strong' || comparability === 'probable'),
+    );
     const safeVisualEvidence = intelligence?.provenance === 'visual_only' || intelligence?.provenance === 'visual_and_caption';
-    const progressClaim = safeVisualEvidence
+    const progressClaim = safeVisualEvidence && hasComparablePrior
       ? intelligence?.projectProgress || 'unable_to_determine'
       : 'unable_to_determine';
     const limitations = uniqueText([
       ...(intelligence?.captureLimitations ?? []),
-      !hasComparablePrior ? 'No confirmed comparable prior photo is available.' : null,
+      !hasPriorPhoto ? 'No confirmed prior photo is available.' : null,
+      hasPriorPhoto && !hasComparablePrior
+        ? 'The prior photo is not sufficiently comparable to support a change or progress conclusion.'
+        : null,
       !safeVisualEvidence && intelligence ? 'The result is not supported by visual evidence alone.' : null,
       !taskLink ? 'The photo is not confidently connected to a schedule activity.' : null,
     ]);
@@ -604,6 +637,7 @@ function buildScheduleTruth(
   links: DAVEEntityLink[],
   correlations: DAVEEvidenceCorrelationResult,
   now: string,
+  projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
 ): DAVEScheduleTruth[] {
   const today = new Date(now);
   return scheduleItems.map(item => {
@@ -627,7 +661,7 @@ function buildScheduleTruth(
       status: item.status,
       percentComplete: item.percentComplete,
       finishDate: clean(item.finishDate),
-      urgency: taskUrgency(item, today),
+      urgency: taskUrgency(item, today, projectTimeZone),
       completionState: conflicting ? 'conflicting_evidence' : completionState,
       relatedEvidenceIds: uniqueText([...relatedEvidenceIds, ...correlationEvidenceIds]),
       needsVerification:
@@ -706,8 +740,8 @@ function buildPMBriefing(input: {
   runtime?: PIERuntimeState | null;
   core?: PIECoreOutput | null;
 }): DAVEPMBriefing {
-  const overdue = input.schedule.filter(item => item.urgency === 'overdue' && item.status !== 'Complete');
-  const dueSoon = input.schedule.filter(item => item.urgency === 'due_soon' && item.status !== 'Complete');
+  const overdue = input.schedule.filter(item => item.urgency === 'overdue' && !scheduleProgressIsComplete(item));
+  const dueSoon = input.schedule.filter(item => item.urgency === 'due_soon' && !scheduleProgressIsComplete(item));
   const conflicts = input.schedule.filter(item => item.contradiction);
   const observations = input.photoComparisons
     .filter(item => item.evidenceClass === 'observation')
@@ -747,7 +781,7 @@ function buildPMBriefing(input: {
       : uniqueText([input.runtime?.intelligentSummary.whatChanged, ...input.intelligence.dailyBrief.changedItems.map(item => item.text)]).slice(0, 5),
     schedule: overdue.length > 0
       ? `${overdue.length} overdue; ${dueSoon.length} due within 7 days; ${conflicts.length} status conflict${conflicts.length === 1 ? '' : 's'} require verification.`
-      : `${dueSoon.length} due within 7 days; ${input.schedule.filter(item => item.status === 'Complete').length} of ${input.schedule.length} activities complete.`,
+      : `${dueSoon.length} due within 7 days; ${input.schedule.filter(scheduleProgressIsComplete).length} of ${input.schedule.length} activities complete.`,
     commitments: input.intelligence.commitments
       .filter(item => item.status !== 'Completed')
       .slice(0, 5)
@@ -776,11 +810,18 @@ function summarizeEvidence(records: DAVEEvidenceLedgerRecord[]): DAVEEvidenceAcc
   };
 }
 
-function taskUrgency(item: ScheduleItem, now: Date): DAVEScheduleTruth['urgency'] {
-  if (item.status === 'Complete' || !item.finishDate) return 'not_urgent';
-  const due = new Date(item.finishDate);
-  if (!Number.isFinite(due.getTime())) return 'not_urgent';
-  const days = Math.ceil((due.getTime() - now.getTime()) / 86_400_000);
+function taskUrgency(
+  item: ScheduleItem,
+  now: Date,
+  projectTimeZone: ProjectTimeZone | string,
+): DAVEScheduleTruth['urgency'] {
+  if (scheduleProgressIsComplete(item) || !item.finishDate) return 'not_urgent';
+  const days = projectDateRelativeDays(
+    item.finishDate,
+    now,
+    item.projectTimeZone || projectTimeZone,
+  );
+  if (days === null) return 'not_urgent';
   if (days < 0) return 'overdue';
   if (days <= 7) return 'due_soon';
   if (days <= 21) return 'upcoming';

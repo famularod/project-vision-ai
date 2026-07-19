@@ -40,10 +40,10 @@ assert(
 );
 assert(
   app.includes('role={hasSafety && interpretation.toLowerCase().includes') &&
-    app.includes("role={hasBlocker ? 'interpretation' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}") &&
-    app.includes("role={hasSafety ? 'safety' : hasPhotoEvidence ? 'confirmedClear' : 'possibleFinding'}") &&
-    app.includes('No photo evidence available for safety review') &&
-    app.includes('No photo evidence available for blocker review'),
+    app.includes("role={hasBlocker ? 'interpretation' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}") &&
+    app.includes("role={hasSafety ? 'safety' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}") &&
+    app.includes("photoAssessmentReviewCopy(photoAssessment.state, 'safety concern')") &&
+    app.includes("photoAssessmentReviewCopy(photoAssessment.state, 'blocker')"),
   'Preview should reserve confirmed-clear states for updates with photo evidence.',
 );
 const livePreview = app.slice(
@@ -60,13 +60,16 @@ assert(
 );
 assert(
   app.includes('function saveFieldUpdateFromReview()') &&
-    app.includes('if (!hasSavableUpdate(draft))') &&
+    app.includes('const draftSnapshot = draftRef.current;') &&
+    app.includes('if (!hasSavableUpdate(draftSnapshot))') &&
     !livePreview.includes('onSendEmail') &&
     !livePreview.includes('onSendText'),
   'Saving a Field Update should not require recipients or route through email/text actions.',
 );
 assert(
-  app.includes('summary: PIE_STATUS_COPY.checking') &&
+  app.includes("status: 'analyzing'") &&
+    app.includes('summary: authCopy || (results.length === 0') &&
+    app.includes(': PIE_STATUS_COPY.checking') &&
     app.includes('Photo analysis is still in progress.'),
   'Pending PIE sends should use neutral in-progress language.',
 );

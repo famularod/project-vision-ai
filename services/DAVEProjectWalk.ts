@@ -5,6 +5,11 @@ import type {
   DAVEBriefSourceType,
 } from './DAVEDailyBrief';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  plainDateDueState,
+  type ProjectTimeZone,
+} from './ProjectDateTime';
 
 export const DAVE_PROJECT_WALK_VERSION = 'dave-project-walk/1.0' as const;
 
@@ -65,6 +70,7 @@ export type BuildDAVEProjectWalkContextInput = Readonly<{
   scheduleItems: readonly DAVEProjectWalkScheduleItem[];
   intelligence: DAVEProjectIntelligence;
   now?: string;
+  projectTimeZone?: ProjectTimeZone | string;
 }>;
 
 type PromptCandidate = DAVEProjectWalkPrompt & Readonly<{
@@ -177,7 +183,7 @@ function selectPrompt(
         if (!isOpenIssue(photo.category, photo.actionStatus)) continue;
         const action = clean(photo.actionRequired);
         const safety = photo.category === 'Safety Concern';
-        const overdue = isPastDate(photo.actionDueDate, nowDate);
+        const overdue = isPastDate(photo.actionDueDate, nowDate, input.projectTimeZone);
         candidates.push({
           rank: safety ? 0 : overdue ? 1 : 3,
           tieBreak: `${update.date}:${photo.id}`,
@@ -203,7 +209,11 @@ function selectPrompt(
     for (const item of input.scheduleItems) {
       if (key(item.projectName) !== projectKey || key(item.locationName ?? '') !== areaKey) continue;
       if (key(item.status) === 'complete') continue;
-      const overdue = isPastDate(item.finishDate, nowDate);
+      const overdue = isPastDate(
+        item.finishDate,
+        nowDate,
+        item.projectTimeZone || input.projectTimeZone,
+      );
       const highPriority = key(item.priority ?? '') === 'high';
       candidates.push({
         rank: overdue ? 1 : highPriority || key(item.status) === 'waiting' ? 2 : 5,
@@ -289,9 +299,12 @@ function isOpenIssue(category: string, status: string | undefined) {
   return (category === 'Open Issue' || category === 'Safety Concern') && status !== 'Closed';
 }
 
-function isPastDate(value: string | null | undefined, now: Date) {
-  const parsed = validDateOnly(value);
-  return parsed ? parsed < now.toISOString().slice(0, 10) : false;
+function isPastDate(
+  value: string | null | undefined,
+  now: Date,
+  projectTimeZone: ProjectTimeZone | string = DEFAULT_PROJECT_TIME_ZONE,
+) {
+  return plainDateDueState(value, now, projectTimeZone) === 'overdue';
 }
 
 function validDateOnly(value: string | null | undefined) {

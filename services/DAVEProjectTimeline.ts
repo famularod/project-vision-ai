@@ -14,6 +14,10 @@ import type {
   DAVEProjectRealityRecommendation,
   DAVEProjectRealityState,
 } from './DAVEProjectReality';
+import {
+  reconcileScheduleProgress,
+  scheduleProgressIsComplete,
+} from './ScheduleProgressInvariant';
 
 export type DAVEProjectTimelineEventType =
   | 'project_created'
@@ -310,7 +314,10 @@ export function buildProjectTimeline(input: BuildProjectTimelineInput): DAVEProj
       stateMarkers.push(marker('Waiting', timestamp, evidence('schedule', item.id,
         'Structured schedule item with Waiting status.'), 'schedule'));
     }
-    if (item.status === 'Complete' && item.milestone && validTimestamp(item.finishDate || timestamp)) {
+    const scheduleComplete = scheduleProgressIsComplete(
+      reconcileScheduleProgress(item.status, item.percentComplete),
+    );
+    if (scheduleComplete && item.milestone && validTimestamp(item.finishDate || timestamp)) {
       events.push(event({
         projectId: input.projectId,
         timestamp: validTimestamp(item.finishDate) ? dateTimestamp(item.finishDate!)! : timestamp,

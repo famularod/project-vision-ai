@@ -183,8 +183,10 @@ for (const forbidden of [
 }
 
 const ledger = load('services/PIEDecisionLedger.ts');
+const assertionParser = load('services/DAVEAssertionParser.ts');
 const layer4 = load('services/PIELayer4Automation.ts', {
   './PIEDecisionLedger': ledger.exports,
+  './DAVEAssertionParser': assertionParser.exports,
   './PIEExecutiveJudgmentRepository': { requirePersistedExecutiveJudgment: value => value },
 });
 const { collectRelevantOutcomeEvidence } = layer4.exports;

@@ -1,5 +1,6 @@
 import type { DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/1.0' as const;
 
@@ -200,14 +201,14 @@ function buildDashboardMetrics({
     ...task,
     projectName: truth.projectName,
   })));
-  const complete = tasks.filter(task => task.status === 'Complete' || task.percentComplete >= 100).length;
+  const complete = tasks.filter(scheduleProgressIsComplete).length;
   const waiting = tasks.filter(task => task.status === 'Waiting').length;
   const inProgress = tasks.filter(task => task.status === 'In Progress').length;
   const notStarted = tasks.filter(task => task.status === 'Not Started').length;
-  const overdue = tasks.filter(task => task.status !== 'Complete' && task.urgency === 'overdue').length;
-  const dueSoon = tasks.filter(task => task.status !== 'Complete' && task.urgency === 'due_soon').length;
+  const overdue = tasks.filter(task => !scheduleProgressIsComplete(task) && task.urgency === 'overdue').length;
+  const dueSoon = tasks.filter(task => !scheduleProgressIsComplete(task) && task.urgency === 'due_soon').length;
   const onTrack = tasks.filter(task =>
-    task.status !== 'Complete' && task.urgency !== 'overdue' && task.urgency !== 'due_soon',
+    !scheduleProgressIsComplete(task) && task.urgency !== 'overdue' && task.urgency !== 'due_soon',
   ).length;
   const areaMap = new Map<string, typeof tasks>();
   for (const task of tasks) {
@@ -219,7 +220,7 @@ function buildDashboardMetrics({
     const averagePercent = areaTasks.length
       ? Math.round(areaTasks.reduce((total, task) => total + boundedPercent(task.percentComplete), 0) / areaTasks.length)
       : 0;
-    const completeTaskCount = areaTasks.filter(task => task.status === 'Complete' || task.percentComplete >= 100).length;
+    const completeTaskCount = areaTasks.filter(scheduleProgressIsComplete).length;
     return {
       id: `report-area:${key}`,
       projectName: areaTasks[0]?.projectName || 'Project',

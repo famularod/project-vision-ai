@@ -8,6 +8,7 @@ import {
   buildOutcomePlan,
   buildPredictedOutcome,
   createDecisionRecord,
+  currentDecisionSnapshot,
   transitionDecisionStatus,
   type PIEActor,
   type PIEAutomationAuditDetail,
@@ -19,6 +20,14 @@ import {
   type PIEOutcomePlan,
   type PIEPredictedOutcome,
 } from './PIEDecisionLedger';
+import {
+  classifyDAVEBlocker,
+  classifyDAVEImplementation,
+  classifyDAVEIssue,
+  classifyDAVEOutcome,
+  classifyDAVESafety,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIELayer4AutomationImpact =
   | 'low'
@@ -126,11 +135,6 @@ const HIGH_AUTHORITY_PATTERN =
   /safety|compliance|legal|capital|cost|personnel|irreversible|policy|escalat/i;
 const DECISION_PATTERN =
   /approve|approved|assign|owner|decision|recommend|corrective|escalat|risk|mitigat|commit|schedule|cost|safety|compliance|change|implement|resolve/i;
-const IMPLEMENTATION_PATTERN =
-  /implemented|complete|completed|installed|resolved|closed|finished|started|began/i;
-const OUTCOME_PATTERN =
-  /verified|confirmed|passed|failed|resolved|complete|completed|not achieved|partially/i;
-
 export function classifyLayer4AutomationPolicy(
   input: PIELayer4AutomationPolicyInput,
 ): PIELayer4AutomationPolicyResult {
@@ -220,6 +224,8 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
   const now = input.now || new Date().toISOString();
   const duplicate = input.existingDecisions.find(decision =>
     decision.immutableSnapshot.recommendationId === judgment.id ||
+    currentDecisionSnapshot(decision).recommendationId === judgment.id ||
+    currentDecisionSnapshot(decision).selectedOption === judgment.primaryRecommendation ||
     decision.immutableSnapshot.selectedOption === judgment.primaryRecommendation,
   );
   if (duplicate) {
@@ -387,7 +393,7 @@ export function buildAutomaticOutcomePlan(
   evidence: PIEEvidenceReference[],
   now: string = new Date().toISOString(),
 ): PIEOutcomePlan {
-  const snapshot = decision.immutableSnapshot;
+  const snapshot = currentDecisionSnapshot(decision);
   const acceptedEvidence = Array.from(new Set(
     snapshot.predictedOutcomes.flatMap(outcome => outcome.evidenceRequired),
   ));
@@ -400,7 +406,7 @@ export function buildAutomaticOutcomePlan(
     reviewDate,
     responsibleOwner: snapshot.decisionOwner || 'Decision owner',
     acceptedEvidence: acceptedEvidence.length ? acceptedEvidence : ['Project evidence that verifies the result'],
-    evidenceReferences: collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot, decision),
+    evidenceReferences: collectRelevantOutcomeEvidence(evidence, currentDecisionSnapshot(decision), decision),
     validationAuthority: snapshot.decisionAuthority || snapshot.decisionOwner || 'Validation authority',
     createdAt: now,
     updatedAt: now,
@@ -438,10 +444,13 @@ export function proposeImplementationQualityFromEvidence(
   confidence: 'low' | 'medium' | 'high';
   supportingEvidence: PIEEvidenceReference[];
 } {
-  const relevant = collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot, decision);
+  const relevant = collectRelevantOutcomeEvidence(evidence, currentDecisionSnapshot(decision), decision);
   const text = relevant.map(item => item.summary).join(' ');
-  const hasImplementation = IMPLEMENTATION_PATTERN.test(text);
-  const hasConflict = /partial|miss|deviation|delayed|failed|blocked/i.test(text);
+  const parsed = parseDAVEAssertions(text);
+  const implementation = classifyDAVEImplementation(parsed);
+  const outcome = classifyDAVEOutcome(parsed);
+  const hasImplementation = implementation === 'implemented' || implementation === 'in_progress';
+  const hasConflict = evidenceLanguageNeedsReview(parsed);
 
   if (!relevant.length) {
     return {
@@ -452,7 +461,7 @@ export function proposeImplementationQualityFromEvidence(
     };
   }
 
-  if (hasImplementation && !hasConflict) {
+  if (implementation === 'implemented' && !hasConflict) {
     return {
       quality: 'high_fidelity',
       reason: 'Available evidence indicates implementation occurred without visible deviations.',
@@ -461,10 +470,12 @@ export function proposeImplementationQualityFromEvidence(
     };
   }
 
-  if (hasImplementation && hasConflict) {
+  if (hasImplementation) {
     return {
       quality: 'partial_fidelity',
-      reason: 'Evidence indicates implementation occurred with possible deviations or unresolved concerns.',
+      reason: outcome === 'partially_successful'
+        ? 'Evidence indicates implementation occurred with a partial result.'
+        : 'Evidence indicates implementation activity with possible deviations or unresolved concerns.',
       confidence: 'medium',
       supportingEvidence: relevant,
     };
@@ -484,16 +495,17 @@ export function comparePredictedAndActualOutcomesAutomatically(
   actor: PIEActor,
   now: string = new Date().toISOString(),
 ) {
-  const relevant = collectRelevantOutcomeEvidence(evidence, decision.immutableSnapshot, decision);
+  const relevant = collectRelevantOutcomeEvidence(evidence, currentDecisionSnapshot(decision), decision);
   const text = relevant.map(item => item.summary).join(' ');
-  const hasOutcomeEvidence = OUTCOME_PATTERN.test(text);
-  const classification: PIEOutcomeClassification = !hasOutcomeEvidence
-    ? 'inconclusive'
-    : /failed|not achieved|blocked/i.test(text)
-      ? 'unsuccessful'
-      : /partial|partly|mixed/i.test(text)
-        ? 'partially_successful'
-        : 'successful';
+  const outcome = classifyDAVEOutcome(text);
+  const classification: PIEOutcomeClassification = outcome === 'successful'
+    ? 'successful'
+    : outcome === 'partially_successful'
+      ? 'partially_successful'
+      : outcome === 'unsuccessful'
+        ? 'unsuccessful'
+        : 'inconclusive';
+  const hasOutcomeEvidence = classification !== 'inconclusive';
 
   return buildActualOutcomeRecord({
     decisionId: decision.id,
@@ -507,7 +519,7 @@ export function comparePredictedAndActualOutcomesAutomatically(
       ? relevant.map(item => item.summary)
       : ['No reliable outcome evidence available yet.'],
     measuredValues: {},
-    predictedOutcomes: decision.immutableSnapshot.predictedOutcomes,
+    predictedOutcomes: currentDecisionSnapshot(decision).predictedOutcomes,
     evidenceReferences: relevant,
     unintendedConsequences: [],
     confoundingFactors: hasOutcomeEvidence ? [] : ['Outcome evidence is not strong enough for causation.'],
@@ -523,6 +535,41 @@ export function comparePredictedAndActualOutcomesAutomatically(
   });
 }
 
+function evidenceLanguageNeedsReview(
+  parsed: ReturnType<typeof parseDAVEAssertions>,
+) {
+  const implementation = classifyDAVEImplementation(parsed);
+  const outcome = classifyDAVEOutcome(parsed);
+  const blocker = classifyDAVEBlocker(parsed);
+  const safety = classifyDAVESafety(parsed);
+  const issue = classifyDAVEIssue(parsed);
+
+  return implementation === 'not_implemented' ||
+    implementation === 'in_progress' ||
+    implementation === 'uncertain' ||
+    implementation === 'conflicting' ||
+    outcome === 'partially_successful' ||
+    outcome === 'unsuccessful' ||
+    outcome === 'uncertain' ||
+    outcome === 'conflicting' ||
+    blocker === 'blocked' ||
+    blocker === 'uncertain' ||
+    blocker === 'conflicting' ||
+    safety === 'issue_present' ||
+    safety === 'uncertain' ||
+    safety === 'conflicting' ||
+    issue === 'issue_present' ||
+    issue === 'uncertain' ||
+    issue === 'conflicting';
+}
+
+function hasConservativeOutcomeEvidence(text: string) {
+  const outcome = classifyDAVEOutcome(text);
+  return outcome === 'successful' ||
+    outcome === 'partially_successful' ||
+    outcome === 'unsuccessful';
+}
+
 export function automateLayer4DecisionLifecycle(
   input: PIELayer4LifecycleAutomationInput,
 ): PIELayer4AutomationReview {
@@ -530,9 +577,11 @@ export function automateLayer4DecisionLifecycle(
   let decision = input.decision;
   const actions: PIELayer4AutomationAction[] = [];
   const exceptions: PIELayer4AutomationException[] = [];
-  const linkedEvidence = collectRelevantOutcomeEvidence(input.evidence, decision.immutableSnapshot, decision);
+  const linkedEvidence = collectRelevantOutcomeEvidence(input.evidence, currentDecisionSnapshot(decision), decision);
   const authorityRequired = requiresHumanAuthority(decision);
-  const hasConflict = linkedEvidence.some(item => /conflict|dispute|failed|unsafe|blocked/i.test(item.summary));
+  const hasConflict = linkedEvidence.some(item =>
+    evidenceLanguageNeedsReview(parseDAVEAssertions(item.summary)),
+  );
 
   if (hasConflict) {
     exceptions.push({
@@ -544,17 +593,17 @@ export function automateLayer4DecisionLifecycle(
   }
 
   const policy = classifyLayer4AutomationPolicy({
-    confidence: decision.immutableSnapshot.recommendationConfidence,
+    confidence: currentDecisionSnapshot(decision).recommendationConfidence,
     evidenceSufficient: linkedEvidence.length > 0,
     reversible: true,
     impact: authorityRequired
       ? 'high'
-      : decision.immutableSnapshot.recommendationConfidence === 'high'
+      : currentDecisionSnapshot(decision).recommendationConfidence === 'high'
         ? 'low'
         : 'moderate',
     authorityRequired,
     evidenceConflicts: hasConflict,
-    projectRecordMateriallyChanges: decision.immutableSnapshot.recommendationConfidence !== 'high',
+    projectRecordMateriallyChanges: currentDecisionSnapshot(decision).recommendationConfidence !== 'high',
   });
 
   if (decision.currentStatus === 'approved' && !decision.outcomePlan) {
@@ -572,7 +621,7 @@ export function automateLayer4DecisionLifecycle(
           actionTaken: 'Generated outcome plan',
           triggeringEvent: 'Decision approved',
           evidenceUsed: linkedEvidence,
-          confidence: decision.immutableSnapshot.recommendationConfidence,
+          confidence: currentDecisionSnapshot(decision).recommendationConfidence,
           automationLevel: policy.level === 'human_decision_required' ? 'confirmation_required' : policy.level,
           humanApprovalReason: 'Outcome plan is generated from approved decision evidence; user can correct it.',
           reversible: true,
@@ -630,7 +679,7 @@ export function automateLayer4DecisionLifecycle(
       actionTaken: 'Moved decision to awaiting outcome',
       triggeringEvent: 'Implementation was recorded',
       evidenceUsed: linkedEvidence,
-      confidence: decision.immutableSnapshot.recommendationConfidence,
+      confidence: currentDecisionSnapshot(decision).recommendationConfidence,
       automationLevel: 'automatic',
       reasonHumanApprovalWasOrWasNotRequired: 'This transition only opens outcome review and does not claim success.',
       correctionAvailable: true,
@@ -639,7 +688,10 @@ export function automateLayer4DecisionLifecycle(
     });
   }
 
-  if (decision.currentStatus === 'awaiting_outcome' && OUTCOME_PATTERN.test(linkedEvidence.map(item => item.summary).join(' '))) {
+  if (
+    decision.currentStatus === 'awaiting_outcome' &&
+    hasConservativeOutcomeEvidence(linkedEvidence.map(item => item.summary).join(' '))
+  ) {
     const outcome = comparePredictedAndActualOutcomesAutomatically(decision, linkedEvidence, input.actor, now);
     decision = transitionDecisionStatus({
       decision,
@@ -723,7 +775,8 @@ export function findDuplicateLayer4Decision(
   const reportKey = normalizeDecisionText(selectDecisionOption(report));
   return decisions.find(decision => {
     if (decision.immutableSnapshot.recommendationId === report.id) return true;
-    return normalizeDecisionText(decision.immutableSnapshot.selectedOption) === reportKey &&
+    if (currentDecisionSnapshot(decision).recommendationId === report.id) return true;
+    return normalizeDecisionText(currentDecisionSnapshot(decision).selectedOption) === reportKey &&
       decision.currentStatus !== 'closed' &&
       decision.currentStatus !== 'cancelled';
   }) || null;
@@ -840,7 +893,7 @@ function reviewResult(
   return {
     decision,
     detected: [
-      decision ? `Decision: ${decision.immutableSnapshot.selectedOption}` : 'No decision selected',
+      decision ? `Decision: ${currentDecisionSnapshot(decision).selectedOption}` : 'No decision selected',
       `${linkedEvidence.length} evidence reference${linkedEvidence.length === 1 ? '' : 's'} linked automatically`,
     ],
     automaticActions: actions,
@@ -856,10 +909,10 @@ function reviewResult(
 
 function requiresHumanAuthority(decision: PIEDecisionRecord) {
   return HIGH_AUTHORITY_PATTERN.test([
-    decision.immutableSnapshot.selectedOption,
-    ...decision.immutableSnapshot.risks,
-    ...decision.immutableSnapshot.constraints,
-    decision.immutableSnapshot.selectedReason,
+    currentDecisionSnapshot(decision).selectedOption,
+    ...currentDecisionSnapshot(decision).risks,
+    ...currentDecisionSnapshot(decision).constraints,
+    currentDecisionSnapshot(decision).selectedReason,
   ].join(' '));
 }
 

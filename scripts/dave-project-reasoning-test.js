@@ -52,7 +52,7 @@ function verification(status, records) {
 function update(id, taskId, notes, photoProgress = null, date = '2026-07-16T13:00:00.000Z') {
   const photos = photoProgress ? [{
     id: `${id}-photo`, uri: `file:///${id}.jpg`, caption: 'Visible installed equipment.', category: 'Update', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open', selectedAreaName: 'Pump House',
-    photoIntelligence: { status: 'analysis_complete', title: 'Comparison', summary: 'Visible change.', visibleChange: 'Additional equipment is visible.', location: 'Pump House', comparisonConfidence: 'high', captureLimitations: ['Electrical terminations are not visible.'], projectProgress: photoProgress, repeatPhotoGuidance: null, authorityMessage: 'PM verification required.', currentObservation: 'Equipment body is installed.', provenance: 'visual_only', updatedAt: date },
+    photoIntelligence: { status: 'analysis_complete', title: 'Comparison', summary: 'Visible change.', visibleChange: 'Additional equipment is visible.', location: 'Pump House', comparisonConfidence: 'high', comparability: 'strong', captureLimitations: ['Electrical terminations are not visible.'], projectProgress: photoProgress, repeatPhotoGuidance: null, authorityMessage: 'PM verification required.', currentObservation: 'Equipment body is installed.', priorEvidenceId: 'prior-photo-evidence', provenance: 'visual_only', updatedAt: date },
   }] : [];
   return { id, projectName: 'Alpha', date, photos, notes, recipients: { contactIds: [] }, scheduleItemId: taskId, scheduleTaskName: taskId, selectedAreaName: 'Pump House', status: 'sent' };
 }
@@ -109,12 +109,13 @@ assert(verified.decisions[0].connections.some(item => item.relationship === 'com
 assert.strictEqual(verified.learnedOutcomeCount, 1);
 assert.match(verified.decisions[0].learningCues[0], /preserve its evidence pattern/i);
 
-// A later PM statement supersedes an older PM judgment; an older statement must not.
+// A generic field statement is not a PM decision. Newer contrary field evidence
+// reopens verification; older field evidence does not supersede later PM truth.
 const reopened = reason([verifiedTask], [update('post-verification', verifiedTask.id, 'Connections remain incomplete.', null, '2026-07-16T17:00:00.000Z')]);
-assert.strictEqual(reopened.decisions[0].classification, 'supported_conclusion');
-assert.strictEqual(reopened.decisions[0].confidence, 'high');
-assert.match(reopened.decisions[0].conclusion, /remain open/i);
-assert(!reopened.decisions[0].challenges.some(item => item.kind === 'missing_evidence'));
+assert.strictEqual(reopened.decisions[0].classification, 'unresolved_uncertainty');
+assert.strictEqual(reopened.decisions[0].confidence, 'low');
+assert.match(reopened.decisions[0].conclusion, /sources conflict/i);
+assert(reopened.decisions[0].challenges.some(item => item.kind === 'source_conflict'));
 const superseded = reason([verifiedTask], [update('pre-verification', verifiedTask.id, 'Connections remain incomplete.', null, '2026-07-16T14:00:00.000Z')]);
 assert.strictEqual(superseded.decisions[0].classification, 'supported_conclusion');
 assert.match(superseded.decisions[0].conclusion, /verified complete/i);

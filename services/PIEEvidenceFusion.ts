@@ -26,6 +26,7 @@ import {
   scheduleHasAuthoritativeProgressJudgment,
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type PIEEvidenceSourceType =
   | 'schedule'
@@ -435,7 +436,7 @@ export function extractScheduleEvidence({
     .filter(item => matchesProject(projectName, item.projectName))
     .map(item => {
       const days = daysUntilDate(item.finishDate);
-      const isComplete = item.status === 'Complete';
+      const isComplete = scheduleProgressIsComplete(item);
       const notes = trimOrNull(item.notes);
       const importedFrom = trimOrNull(item.importedFrom ?? '');
       const importedAt = trimOrNull(item.importedAt ?? '');
