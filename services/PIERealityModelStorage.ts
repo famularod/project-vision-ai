@@ -4,21 +4,22 @@ import {
   localCorruptionRecoveryError,
   quarantineCorruptLocalValue,
 } from './LocalStorageCorruptionQuarantine';
-import type {
-  PIERealityConflict,
-  PIERealityHistoryEvent,
-  PIERealityModel,
-  PIERealityObject,
-  PIERealityObjectStatus,
-  PIERealityReadiness,
-  PIERealityRiskLevel,
-  PIERealityUncertaintyRecord,
+import {
+  buildRealityObjectIntelligence,
+  type PIERealityConflict,
+  type PIERealityHistoryEvent,
+  type PIERealityModel,
+  type PIERealityObject,
+  type PIERealityObjectStatus,
+  type PIERealityReadiness,
+  type PIERealityRiskLevel,
+  type PIERealityUncertaintyRecord,
 } from './PIERealityModel';
 
-export const PIE_REALITY_MODEL_STORAGE_VERSION = 'v2';
-export const PIE_REALITY_SNAPSHOT_MAX_COUNT = 3;
-export const PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT = 3;
-export const PIE_REALITY_SNAPSHOT_MAX_BYTES = 12 * 1024 * 1024;
+export const PIE_REALITY_MODEL_STORAGE_VERSION = 'v3';
+export const PIE_REALITY_SNAPSHOT_MAX_COUNT = 2;
+export const PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT = 0;
+export const PIE_REALITY_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
 
 const REALITY_MODEL_PREFIX = 'projectVisionAI.pieRealityModel';
 const REALITY_SNAPSHOT_PREFIX = 'projectVisionAI.pieRealityModel.snapshots';
@@ -120,7 +121,7 @@ async function saveRealityModelWithinLock(
     const proposedMigration = uniqueSnapshots([...embeddedOnly, ...archivedSnapshots]);
     if (archive.raw === null || snapshotArchiveFits(proposedMigration)) {
       archivedSnapshots = proposedMigration;
-      nextArchiveRaw = JSON.stringify(archivedSnapshots);
+      nextArchiveRaw = serializeSnapshotsForStorage(archivedSnapshots);
     } else {
       recentSnapshots = embeddedOnly;
     }
@@ -137,12 +138,12 @@ async function saveRealityModelWithinLock(
       throw new Error('Reality Model legacy snapshot history requires a safe migration before saving.');
     }
     const candidate = buildSnapshot(model, reason);
-    const proposedArchive = recentSnapshots.length === 0
+    const proposedArchive = !archiveWasPreviouslyFrozen && recentSnapshots.length === 0
       ? uniqueSnapshots([candidate, ...archivedSnapshots])
       : [];
     if (proposedArchive.length > 0 && snapshotArchiveFits(proposedArchive)) {
       archivedSnapshots = proposedArchive;
-      nextArchiveRaw = JSON.stringify(archivedSnapshots);
+      nextArchiveRaw = serializeSnapshotsForStorage(archivedSnapshots);
       candidateForArchive = candidate;
     } else {
       // Do not rewrite or prune a legacy archive just to make room. The newest
@@ -162,7 +163,7 @@ async function saveRealityModelWithinLock(
     snapshotArchiveFrozen,
     savedAt: new Date().toISOString(),
   };
-  const currentRaw = JSON.stringify(persistedEnvelope);
+  const currentRaw = serializeEnvelopeForStorage(persistedEnvelope);
   const archiveWriteNeeded = nextArchiveRaw !== null && nextArchiveRaw !== archive.raw;
   let stagedEnvelope: PIERealityModelStoredState | null = null;
 
@@ -177,7 +178,7 @@ async function saveRealityModelWithinLock(
     };
     await writeVerifiedStorageValue(
       currentKey,
-      JSON.stringify(stagedEnvelope),
+      serializeEnvelopeForStorage(stagedEnvelope),
       'Reality Model staged current state',
     );
   }
@@ -327,7 +328,10 @@ async function loadRealitySnapshotArchive(
       'Reality Model snapshots',
     );
   }
-  return { raw, snapshots: parsed as PIERealityModelSnapshot[] };
+  return {
+    raw,
+    snapshots: (parsed as PIERealityModelSnapshot[]).map(hydrateSnapshotFromStorage),
+  };
 }
 
 export async function getRealityConflicts(
@@ -417,7 +421,7 @@ async function loadRealityModelEnvelope(
       'Reality Model state',
     );
   }
-  return parsed;
+  return hydrateEnvelopeFromStorage(parsed);
 }
 
 export async function clearRealityModelForTesting(
@@ -447,7 +451,7 @@ function buildSnapshot(model: PIERealityModel, reason: string): PIERealityModelS
 
 function snapshotArchiveFits(snapshots: readonly PIERealityModelSnapshot[]) {
   return snapshots.length <= PIE_REALITY_SNAPSHOT_MAX_COUNT &&
-    utf8ByteLength(JSON.stringify(snapshots)) <= PIE_REALITY_SNAPSHOT_MAX_BYTES;
+    utf8ByteLength(serializeSnapshotsForStorage(snapshots)) <= PIE_REALITY_SNAPSHOT_MAX_BYTES;
 }
 
 function storedSnapshotArchiveFits(archive: {
@@ -466,7 +470,7 @@ function compactRecentSnapshots(
   let selectedBytes = 2;
   for (const snapshot of unique) {
     if (selected.length >= PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT) break;
-    const snapshotBytes = utf8ByteLength(JSON.stringify(snapshot));
+    const snapshotBytes = utf8ByteLength(serializeSnapshotsForStorage([snapshot]));
     const nextBytes = selectedBytes + snapshotBytes + (selected.length > 0 ? 1 : 0);
     if (nextBytes > PIE_REALITY_SNAPSHOT_MAX_BYTES) continue;
     selected.push(snapshot);
@@ -521,6 +525,87 @@ function visibleSnapshots(
 
 function snapshotFingerprint(snapshot: PIERealityModelSnapshot) {
   return `${snapshot.id}::${snapshot.modelVersion}`;
+}
+
+function compactRealityModelForStorage(model: PIERealityModel): PIERealityModel {
+  return {
+    ...model,
+    // Both values are derived from `objects`; persisting them duplicates the
+    // full object graph several times inside one JSON value.
+    objectRegistry: {},
+    intelligence: {
+      ...model.intelligence,
+      objectIntelligence: {},
+      objectsReady: [],
+      objectsUncertain: [],
+      objectsBlocked: [],
+      objectsWithHighRisk: [],
+    },
+  };
+}
+
+function hydrateRealityModelFromStorage(model: PIERealityModel): PIERealityModel {
+  const objects = model.objects;
+  const objectRegistry = objects.reduce<Record<string, PIERealityObject>>(
+    (registry, object) => {
+      registry[object.identity.id] = object;
+      return registry;
+    },
+    {},
+  );
+  return {
+    ...model,
+    objectRegistry,
+    intelligence: buildRealityObjectIntelligence(objects, model.generatedAt),
+  };
+}
+
+function compactSnapshotForStorage(
+  snapshot: PIERealityModelSnapshot,
+): PIERealityModelSnapshot {
+  return {
+    ...snapshot,
+    model: compactRealityModelForStorage(snapshot.model),
+  };
+}
+
+function hydrateSnapshotFromStorage(
+  snapshot: PIERealityModelSnapshot,
+): PIERealityModelSnapshot {
+  return {
+    ...snapshot,
+    model: hydrateRealityModelFromStorage(snapshot.model),
+  };
+}
+
+function serializeSnapshotsForStorage(
+  snapshots: readonly PIERealityModelSnapshot[],
+): string {
+  return JSON.stringify(snapshots.map(compactSnapshotForStorage));
+}
+
+function serializeEnvelopeForStorage(
+  envelope: PIERealityModelStoredState,
+): string {
+  return JSON.stringify({
+    ...envelope,
+    currentModel: envelope.currentModel
+      ? compactRealityModelForStorage(envelope.currentModel)
+      : null,
+    snapshots: envelope.snapshots.map(compactSnapshotForStorage),
+  });
+}
+
+function hydrateEnvelopeFromStorage(
+  envelope: PIERealityModelStoredState,
+): PIERealityModelStoredState {
+  return {
+    ...envelope,
+    currentModel: envelope.currentModel
+      ? hydrateRealityModelFromStorage(envelope.currentModel)
+      : null,
+    snapshots: envelope.snapshots.map(hydrateSnapshotFromStorage),
+  };
 }
 
 function utf8ByteLength(value: string) {

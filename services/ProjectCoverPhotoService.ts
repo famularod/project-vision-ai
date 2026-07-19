@@ -83,8 +83,19 @@ function sameProjectIdentity(
 ): boolean {
   const leftId = optionalText(left.id);
   const rightId = optionalText(right.id);
-  if (leftId && rightId) return leftId === rightId;
-  return left.name.toLowerCase() === right.name.toLowerCase();
+  if (leftId && rightId && leftId === rightId) return true;
+
+  // The current product addresses projects by display name throughout the
+  // update, schedule, deletion, and authority paths. Treating two cloud rows
+  // with different UUIDs but the same normalized name as separate projects
+  // creates duplicate cards and lets stale duplicate rows appear to
+  // resurrect a deleted project. Preserve the first canonical record and
+  // merge later same-name rows into it until every consumer is UUID-native.
+  return normalizedProjectName(left.name) === normalizedProjectName(right.name);
+}
+
+function normalizedProjectName(value: string): string {
+  return value.trim().toLocaleLowerCase();
 }
 
 export function normalizeProjectRecords(values: unknown): ProjectRecord[] {
@@ -95,7 +106,14 @@ export function normalizeProjectRecords(values: unknown): ProjectRecord[] {
     if (!next) continue;
     const existingIndex = records.findIndex(item => sameProjectIdentity(item, next));
     if (existingIndex < 0) records.push(next);
-    else if (next.coverPhoto) records[existingIndex] = next;
+    else if (next.coverPhoto) {
+      records[existingIndex] = {
+        ...next,
+        id: records[existingIndex].id || next.id || null,
+      };
+    } else if (!records[existingIndex].id && next.id) {
+      records[existingIndex] = { ...records[existingIndex], id: next.id };
+    }
   }
   return records;
 }
@@ -146,6 +164,7 @@ export function mergeProjectRecords(
       records[existingIndex] = {
         ...previous,
         ...record,
+        id: previous.id || record.id || null,
         coverPhoto: incomingCover
           ? {
               ...incomingCover,

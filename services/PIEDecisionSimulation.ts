@@ -224,6 +224,8 @@ const BASE_SCENARIOS: PIEDecisionSimulationScenarioType[] = [
   'execution_failure_case',
 ];
 
+const OPTIONAL_SCENARIO_TEXT_CACHE = new WeakMap<object, string>();
+
 const SCORE_WEIGHTS: Record<PIEDecisionScoreCategory, number> = {
   safety: 12,
   compliance: 12,
@@ -601,7 +603,7 @@ function buildEscalationOption(input: PIEDecisionSimulationInput): PIEDecisionOp
 }
 
 function relevantOptionalScenarios(input: PIEDecisionSimulationInput): PIEDecisionSimulationScenarioType[] {
-  const text = stableStringify(input).toLowerCase();
+  const text = optionalScenarioSignalText(input);
   return [
     text.includes('resource') || text.includes('crew') ? 'resource_shortage' : null,
     text.includes('vendor') ? 'vendor_delay' : null,
@@ -614,6 +616,52 @@ function relevantOptionalScenarios(input: PIEDecisionSimulationInput): PIEDecisi
     input.executiveJudgment.executiveJudgment.whenNoActionIsCorrect ? 'recurrence_of_original_issue' : null,
     hasVisualWrittenConflict(input) ? 'visual_progress_not_matching_reported_progress' : null,
   ].filter((item): item is PIEDecisionSimulationScenarioType => Boolean(item));
+}
+
+function optionalScenarioSignalText(input: PIEDecisionSimulationInput): string {
+  const cached = OPTIONAL_SCENARIO_TEXT_CACHE.get(input);
+  if (cached !== undefined) return cached;
+
+  // Optional scenario selection needs only compact semantic signals. The old
+  // implementation recursively sorted and stringified the entire input,
+  // including the multi-megabyte Reality Model, once per option and again for
+  // every sensitivity perturbation. That work dominated the mobile JS thread.
+  const text = [
+    input.realityModel.summary.summary,
+    input.realityModel.expectedFutureState,
+    ...input.realityModel.activeRisks,
+    ...input.realityModel.objects.flatMap(object => [
+      object.name,
+      object.currentState.summary,
+      object.currentState.nextAction || '',
+    ]),
+    input.executiveJudgment.executiveJudgmentSummary,
+    input.executiveJudgment.highestValueAction?.action || '',
+    input.executiveJudgment.highestValueAction?.why || '',
+    ...input.executiveJudgment.executiveRisks.flatMap(risk => [risk.risk, risk.whyItMatters]),
+    ...input.executiveJudgment.executiveConstraints.flatMap(constraint => [
+      constraint.constraint,
+      constraint.limits,
+      constraint.actionRequired,
+    ]),
+    ...input.executiveJudgment.executiveOpportunities.flatMap(opportunity => [
+      opportunity.opportunity,
+      opportunity.valueCreated,
+      opportunity.action,
+    ]),
+    ...input.executiveJudgment.executiveResourceNeeds.flatMap(need => [need.resource, need.reason]),
+    ...(input.projectGoals || []),
+    ...(input.activeRisks || []),
+    ...(input.activeConstraints || []),
+    ...(input.dependencies || []),
+    ...(input.scheduleState || []),
+    ...(input.costInformation || []),
+    ...(input.resourceAvailability || []),
+    ...(input.authorityBoundaries || []),
+    input.missingEvidence?.summary || '',
+  ].join(' ').toLowerCase();
+  OPTIONAL_SCENARIO_TEXT_CACHE.set(input, text);
+  return text;
 }
 
 function scoreCategory(

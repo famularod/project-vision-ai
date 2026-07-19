@@ -132,7 +132,26 @@ describe('core pipeline at device data scale', () => {
     // eslint-disable-next-line no-console
     console.log(`[scale] buildLivePIECoreIntelligence: ${tCore}ms`);
 
+    const t2 = Date.now();
+    const unchangedCore = await buildLivePIECoreIntelligence({
+      runtime,
+      runtimeContext: runtimeContext as never,
+      organizationId: 'local-unverified-anonymous',
+      projectId: 'project-2321-compliance-project',
+      identityTrusted: false,
+      cloudAvailable: false,
+    });
+    const tUnchanged = Date.now() - t2;
+    // eslint-disable-next-line no-console
+    console.log(`[scale] unchanged authority refresh: ${tUnchanged}ms`);
+
     expect(core.realityModel).toBeTruthy();
-    expect(tRuntime + tCore).toBeLessThan(20000);
+    expect(unchangedCore.realityModel.version).toBe(core.realityModel.version);
+    expect(unchangedCore.realityModel.generatedAt).toBe(core.realityModel.generatedAt);
+    // Keep generous CI headroom while preventing the prior whole-model
+    // stringify regression (~1 second on a fast Mac and several seconds on
+    // the physical phone) from returning.
+    expect(tRuntime + tCore).toBeLessThan(5000);
+    expect(tUnchanged).toBeLessThan(500);
   }, 60000);
 });

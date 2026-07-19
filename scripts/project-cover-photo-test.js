@@ -115,8 +115,10 @@ const sameNameProjects = mergeProjectRecords([], [], [
     name: 'Same Display Name',
   }),
 ]);
-assert.strictEqual(sameNameProjects.length, 2,
-  'Two cloud projects with distinct immutable IDs must not collapse by display name.');
+assert.strictEqual(sameNameProjects.length, 1,
+  'Duplicate cloud rows with the same display name must collapse into one visible project.');
+assert.strictEqual(sameNameProjects[0].id, alphaProjectId,
+  'Same-name duplicate merging must preserve the first canonical project identity.');
 
 const deletedMerge = mergeProjectRecords(
   ['Starter Project'],

@@ -20,8 +20,9 @@ export function useRealityModelCacheRecovery(): boolean {
         );
       })
       .catch(error => {
-        // v2 uses separate keys, so authority can still start safely. Leave v1
-        // untouched for a future retry if the native removal failed.
+        // v3 uses separate keys, so authority can still start safely. Leave
+        // prior derived cache keys untouched for a future retry if native
+        // removal failed.
         logStartupDiagnostic(
           'reality_model_cache_recovery_failed',
           'Derived DAVE Reality Model cache cleanup will retry on the next launch.',

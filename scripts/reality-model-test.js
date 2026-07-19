@@ -175,6 +175,26 @@ function source(overrides = {}) {
   const snapshotKey = storage.realitySnapshotStorageKey('org-1', 'project-2375');
   const persistedEnvelope = JSON.parse(memoryStore.get(currentKey));
   assert.deepStrictEqual(
+    persistedEnvelope.currentModel.objectRegistry,
+    {},
+    'the stored current model must not duplicate every object in a registry copy',
+  );
+  assert.deepStrictEqual(
+    persistedEnvelope.currentModel.intelligence.objectsUncertain,
+    [],
+    'the stored current model must not duplicate full objects in intelligence indexes',
+  );
+  assert.strictEqual(
+    Object.keys(loaded.objectRegistry).length,
+    loaded.objects.length,
+    'loading a compact current model must rebuild its object registry',
+  );
+  assert.strictEqual(
+    loaded.intelligence.objectsUncertain.length,
+    first.intelligence.objectsUncertain.length,
+    'loading a compact current model must rebuild its intelligence indexes',
+  );
+  assert.deepStrictEqual(
     persistedEnvelope.snapshots,
     [],
     'the current-state envelope must not duplicate the snapshot archive',
@@ -250,8 +270,13 @@ function source(overrides = {}) {
   );
   assert.strictEqual(
     JSON.parse(memoryStore.get(storage.realityModelStorageKey(legacyOrg, legacyProject))).snapshots.length,
-    1,
-    'new authority must still receive a recent snapshot when the legacy archive is frozen',
+    0,
+    'a frozen legacy archive must not force a duplicate full model into the current envelope',
+  );
+  assert.strictEqual(
+    (await storage.loadCurrentRealityModel(legacyOrg, legacyProject)).version,
+    5,
+    'current authority must remain available when no duplicate recent snapshot is stored',
   );
   storageReads.length = 0;
   await storage.saveSynchronizedRealityModel(

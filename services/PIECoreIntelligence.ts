@@ -1348,52 +1348,21 @@ async function buildLivePIECoreIntelligenceForScope(
     cloudEnabled: input.cloudAvailable,
     identityTrusted: input.identityTrusted,
   });
-  const decisionSimulation = buildPIEDecisionSimulation({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    executiveJudgmentRecord,
-    predictiveReality: core.predictiveReality,
-    missingEvidence: core.missingEvidence,
-    longitudinalPhotoIntelligence: core.longitudinalPhotoIntelligence,
-    projectGoals: core.realityModel.goals.map(goal => goal.goal),
-    activeRisks: core.realityModel.activeRisks,
-    activeConstraints: core.executiveConstraints.map(constraint => constraint.constraint),
-    dependencies: core.realityModel.dependencies.map(dependency => dependency.summary),
-    scheduleState: core.runtime.scheduleSummary ? [scheduleSummaryText(core.runtime.scheduleSummary)] : [],
-    resourceAvailability: core.executiveJudgmentResult.executiveResourceNeeds.map(need => need.resource),
-    authorityBoundaries: [core.executiveJudgmentResult.escalationAnalysis.target.role],
-    generatedAt: core.generatedAt,
-  });
-  const recommendationChallenge = challengePIERecommendation({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    simulation: decisionSimulation,
-    generatedAt: core.generatedAt,
-  });
-  const jarvisReasoningValidation = validatePIEReasoningWithJARVIS({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    simulation: decisionSimulation,
-    challenge: recommendationChallenge,
-    generatedAt: core.generatedAt,
-  });
-  const confidenceDecomposition = decomposePIERecommendationConfidence({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    evidenceQuality: core.evidenceQuality,
-    predictiveReality: core.predictiveReality,
-    simulation: decisionSimulation,
-    challenge: recommendationChallenge,
-    jarvisValidation: jarvisReasoningValidation,
-    generatedAt: core.generatedAt,
-  });
-  const evidenceValuePrioritization = prioritizeEvidenceByDecisionValue({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    missingEvidence: core.missingEvidence,
-    simulation: decisionSimulation,
-    generatedAt: core.generatedAt,
-  });
+  // Core already computed and validated these deterministic products. The
+  // live wrapper persists the judgment record, then attaches its immutable ID
+  // to simulation provenance instead of rerunning the full option/sensitivity
+  // pipeline on the React Native JS thread.
+  const decisionSimulation = {
+    ...core.decisionSimulation,
+    provenance: {
+      ...core.decisionSimulation.provenance,
+      executiveJudgmentId: executiveJudgmentRecord.id,
+    },
+  };
+  const recommendationChallenge = core.recommendationChallenge;
+  const jarvisReasoningValidation = core.jarvisReasoningValidation;
+  const confidenceDecomposition = core.confidenceDecomposition;
+  const evidenceValuePrioritization = core.evidenceValuePrioritization;
   const reportDraft = buildPIEReportDraftFromExecutiveJudgment({
     reportType: reportScope.reportType,
     audience: 'internal_team',

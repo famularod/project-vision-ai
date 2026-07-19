@@ -142,7 +142,30 @@ export async function runPIERealityModelOrchestration(
     ? 'queued_for_cloud'
     : 'degraded_local_only';
 
-  try {
+  const evidenceIsUnchanged = Boolean(
+    previousModel &&
+    actionableEvidence.length === 0 &&
+    removedOrInvalidatedEvidence.length === 0,
+  );
+
+  if (evidenceIsUnchanged && previousModel) {
+    // A no-op synchronization used to rebuild intelligence for every Reality
+    // Object, stringify the full registry, and enter the persistence path even
+    // though every evidence hash was unchanged. On a real project that work
+    // can monopolize the React Native JS thread for seconds. Reuse the already
+    // authoritative model without changing timestamps or writing storage.
+    synchronization = unchangedRealitySynchronization(previousModel);
+    if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
+      persistenceStatus = 'degraded_local_only';
+      diagnostics.push('Identity is local or untrusted; Reality Model is authoritative locally only.');
+    } else if (input.cloudAvailable) {
+      persistenceStatus = 'authoritative_cloud';
+    } else {
+      persistenceStatus = 'degraded_local_only';
+      diagnostics.push('Cloud synchronization is unavailable; queued local authority only.');
+    }
+    diagnostics.push('Evidence is unchanged; the prior Reality Model was reused without rebuilding or rewriting it.');
+  } else try {
     synchronization = await synchronizeAuthoritativeRealityModel({
       organizationId,
       projectId,
@@ -214,6 +237,22 @@ export async function runPIERealityModelOrchestration(
     synchronization,
     evidenceDeltas: deltas,
     diagnostics,
+  };
+}
+
+function unchangedRealitySynchronization(
+  model: PIERealityModel,
+): PIERealityModelSynchronizationResult {
+  return {
+    model,
+    previousModel: model,
+    changed: false,
+    createdObjectCount: 0,
+    changedObjectCount: 0,
+    conflictedObjectCount: model.evidenceConflicts.length,
+    uncertaintyCount: model.activeUncertainties.length,
+    snapshotCreated: false,
+    conflicts: model.evidenceConflicts,
   };
 }
 
