@@ -22,6 +22,17 @@ assert.equal(expo.ios?.buildNumber, String(build), 'iOS buildNumber must match t
 assert.equal(expo.android?.versionCode, build, 'Android versionCode must match the app version patch.');
 assert.equal(expo.extra?.buildLabel, `Build ${build}`, 'The visible build label must match native build metadata.');
 assert.equal(
+  expo.orientation,
+  'portrait',
+  'The shared app orientation must remain portrait so iPhone stays portrait-only.',
+);
+assert.equal(expo.ios?.supportsTablet, true, 'The iOS app must continue to support iPad.');
+assert.equal(
+  expo.ios?.requireFullScreen,
+  false,
+  'iPad full-screen mode must remain optional so Split View and Slide Over stay available.',
+);
+assert.equal(
   expo.android?.allowBackup,
   false,
   'Android backup must remain disabled for the local workspace and auth boundary.',
