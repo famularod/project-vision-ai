@@ -56,6 +56,8 @@ assert(sheet.includes('disabled={!projectName}'), 'Voice recording must wait for
 assert(sheet.includes('Specific task (optional)'), 'Talk must offer optional task context after a project is selected.');
 assert(sheet.includes('Search tasks'), 'A project with many tasks must provide searchable task selection.');
 assert(sheet.includes('General project conversation'), 'Task selection must preserve a general-project option.');
+assert(sheet.includes('Show completed'), 'Task selection must keep completed work behind an explicit control.');
+assert(app.includes('isComplete: scheduleTaskIsComplete(item)'), 'Talk must identify completed tasks from the canonical schedule invariant.');
 assert(app.includes("setTalkProjectName(contextualProject || '')"), 'Global Talk must not fall back to a stale workspace project.');
 assert(app.includes("screen === 'ProjectWorkspace'"), 'Talk opened inside a project must retain that explicit project context.');
 assert(app.includes('candidateTasks={talkCandidateTasks}'), 'Live Talk must receive tasks for the selected project.');

@@ -27,15 +27,13 @@ import {
   DAVE_VOICE_CAPTURE_TABLET_MAX_WIDTH,
   daveVoiceCaptureUsesTabletSheet,
 } from './dave-voice-capture-layout';
+import {
+  buildDAVEVoiceTaskPickerState,
+  type DAVEVoiceTaskOption,
+} from './dave-voice-task-options';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 
 const MAX_RECORDING_SECONDS = 180;
-
-export type DAVEVoiceTaskOption = {
-  id: string;
-  taskName: string;
-  detail: string;
-};
 
 export function DAVEVoiceCaptureSheet({
   visible,
@@ -84,6 +82,7 @@ export function DAVEVoiceCaptureSheet({
   const [error, setError] = useState<string | null>(null);
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [taskSearch, setTaskSearch] = useState('');
+  const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const recordingActiveRef = useRef(false);
   const transcriptionOperationRef = useRef(0);
 
@@ -93,16 +92,16 @@ export function DAVEVoiceCaptureSheet({
     setIsTranscribing(false);
     setTaskPickerOpen(false);
     setTaskSearch('');
+    setShowCompletedTasks(false);
   }, [visible]);
 
   const selectedTask = candidateTasks.find(task => task.id === selectedTaskId) || null;
-  const normalizedTaskSearch = taskSearch.trim().toLowerCase();
-  const visibleTasks = candidateTasks
-    .filter(task =>
-      !normalizedTaskSearch ||
-      `${task.taskName} ${task.detail}`.toLowerCase().includes(normalizedTaskSearch),
-    )
-    .slice(0, 10);
+  const { completedCount, openCount, visibleTasks } = buildDAVEVoiceTaskPickerState({
+    tasks: candidateTasks,
+    search: taskSearch,
+    showCompleted: showCompletedTasks,
+    selectedTaskId,
+  });
 
   useEffect(() => {
     if (!recordingActiveRef.current || recorderState.isRecording || !recorderState.url) return;
@@ -274,6 +273,29 @@ export function DAVEVoiceCaptureSheet({
                     placeholderTextColor={colors.mutedText}
                     autoCorrect={false}
                   />
+                  <View style={styles.taskFilterRow}>
+                    <Text style={styles.taskFilterSummary}>
+                      {openCount} open {openCount === 1 ? 'task' : 'tasks'}
+                    </Text>
+                    {completedCount > 0 ? (
+                      <TouchableOpacity
+                        style={styles.completedTasksButton}
+                        onPress={() => setShowCompletedTasks(value => !value)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${showCompletedTasks ? 'Hide' : 'Show'} ${completedCount} completed ${completedCount === 1 ? 'task' : 'tasks'}`}
+                        accessibilityState={{ expanded: showCompletedTasks }}
+                      >
+                        <Text style={styles.completedTasksButtonText}>
+                          {showCompletedTasks ? 'Hide' : 'Show'} completed ({completedCount})
+                        </Text>
+                        <Ionicons
+                          name={showCompletedTasks ? 'chevron-up' : 'chevron-down'}
+                          size={16}
+                          color={colors.primary}
+                        />
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
                   <TouchableOpacity
                     style={[styles.taskOption, !selectedTaskId && styles.taskOptionSelected]}
                     onPress={() => {
@@ -308,7 +330,11 @@ export function DAVEVoiceCaptureSheet({
                     );
                   })}
                   {visibleTasks.length === 0 ? (
-                    <Text style={styles.taskEmpty}>No matching tasks.</Text>
+                    <Text style={styles.taskEmpty}>
+                      {taskSearch.trim()
+                        ? 'No matching tasks.'
+                        : 'No open tasks. Show completed tasks to choose finished work.'}
+                    </Text>
                   ) : null}
                 </View>
               ) : null}
@@ -432,6 +458,10 @@ const styles = StyleSheet.create({
   taskContextValue: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: '800', marginTop: 2 },
   taskPicker: { borderTopWidth: 1, borderTopColor: colors.border, gap: spacing.xs, padding: spacing.sm },
   taskSearch: { minHeight: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 15, paddingHorizontal: spacing.md, marginBottom: spacing.xs },
+  taskFilterRow: { minHeight: 40, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, paddingHorizontal: spacing.sm },
+  taskFilterSummary: { color: colors.mutedText, fontSize: 13, lineHeight: 18, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  completedTasksButton: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: spacing.sm },
+  completedTasksButtonText: { color: colors.primary, fontSize: 13, lineHeight: 18, fontWeight: '800' },
   taskOption: { minHeight: 54, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   taskOptionSelected: { backgroundColor: colors.primarySoft },
   taskOptionName: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '700', flexShrink: 1 },

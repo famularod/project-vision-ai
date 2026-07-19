@@ -10824,6 +10824,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         id: item.id,
         taskName: item.taskName,
         detail: `${item.locationName || 'No area'} · ${item.status} · ${item.percentComplete}%`,
+        isComplete: scheduleTaskIsComplete(item),
       }));
   }, [authoritativeScheduleItems, talkProjectName]);
 
