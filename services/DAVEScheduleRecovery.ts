@@ -242,6 +242,7 @@ function scheduleAuthorityRank(record: ScheduleItem) {
 function scheduleTimestamp(record: ScheduleItem) {
   const values = record.progressSource === 'project_manager'
     ? [
+        record.updatedAt,
         record.progressConfirmedAt,
         record.completionVerification?.status === 'pm_verified'
           ? record.completionVerification.verifiedAt || record.completionVerification.reportedAt
@@ -250,8 +251,8 @@ function scheduleTimestamp(record: ScheduleItem) {
         record.createdAt,
       ]
     : record.completionVerification?.status === 'pm_verified'
-      ? [record.completionVerification.verifiedAt || record.completionVerification.reportedAt]
-      : [record.importedAt, record.createdAt];
+      ? [record.updatedAt, record.completionVerification.verifiedAt || record.completionVerification.reportedAt]
+      : [record.updatedAt, record.importedAt, record.createdAt];
   return Math.max(0, ...values.map(value => {
     const parsed = value ? new Date(value).getTime() : Number.NaN;
     return Number.isFinite(parsed) ? parsed : 0;

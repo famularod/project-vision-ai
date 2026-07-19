@@ -9,8 +9,11 @@ export type DAVEProjectScheduleRollup = {
   tasks: ScheduleItem[];
   taskCount: number;
   completedCount: number;
+  openCount: number;
   overdueCount: number;
   dueSoonCount: number;
+  scheduledLaterCount: number;
+  undatedCount: number;
   waitingCount: number;
   percentComplete: number;
   forecastFinishDate: string | null;
@@ -66,6 +69,13 @@ export function buildDAVEProjectScheduleRollup({
     const days = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
     return days !== null && days >= 0 && days <= 7;
   }).length;
+  const scheduledLaterCount = incompleteTasks.filter(item => {
+    const days = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
+    return days !== null && days > 7;
+  }).length;
+  const undatedCount = incompleteTasks.filter(item =>
+    daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined) === null,
+  ).length;
   const waitingCount = incompleteTasks.filter(item => item.status === 'Waiting').length;
   const totalWeight = tasks.reduce((total, item) => total + taskDurationWeight(item), 0);
   const weightedProgress = tasks.reduce(
@@ -100,8 +110,11 @@ export function buildDAVEProjectScheduleRollup({
     tasks,
     taskCount: tasks.length,
     completedCount,
+    openCount: incompleteTasks.length,
     overdueCount,
     dueSoonCount,
+    scheduledLaterCount,
+    undatedCount,
     waitingCount,
     percentComplete,
     forecastFinishDate,

@@ -136,7 +136,7 @@ export function DAVEProjectTaskOperationalSummary({
           <Text style={[styles.healthText, { color: statusColor }]}>{status}</Text>
         </View>
       </View>
-      <Text style={styles.progressValue}>{percentComplete}% complete</Text>
+      <Text style={styles.progressValue}>{percentComplete}% weighted schedule progress</Text>
       <View style={styles.progressTrack}>
         <View style={[styles.progressFill, { width: `${percentComplete}%` }]} />
       </View>

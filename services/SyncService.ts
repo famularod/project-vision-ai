@@ -29,10 +29,13 @@ import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getStoredJson, setStoredJson } from './StorageService';
 import {
+  deletedDAVERecordIds,
   removeDAVETombstonedRecords,
   synchronizeDAVESyncTombstones,
   type DAVESyncTombstoneSyncResult,
 } from './DAVESyncTombstones';
+import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
+import { recoverDAVEScheduleRecords } from './DAVEScheduleRecovery';
 import {
   confirmProjectUpdateCloudDeletion,
   hasProjectUpdateDeletionIntent,
@@ -49,7 +52,11 @@ import type {
   UpdatePhoto,
 } from '../types';
 
-export type SyncEntity = 'project' | 'project_update';
+export type SyncEntity =
+  | 'project'
+  | 'project_update'
+  | 'project_area'
+  | 'schedule_item';
 export type SyncOperation = 'create' | 'update' | 'delete';
 
 export type SyncQueueItem<TPayload = Record<string, unknown>> = {
@@ -428,6 +435,16 @@ type ProjectUpdateDeletePayload = {
   projectName?: string;
 };
 
+type ProjectAreaRecordPayload = {
+  id: string;
+  areaData: ProjectArea;
+};
+
+type ScheduleItemRecordPayload = {
+  id: string;
+  itemData: ScheduleItem;
+};
+
 const SYNC_QUEUE_STORAGE_KEY = 'projectVisionAI.syncQueue.v1';
 export const SYNC_QUEUE_QUARANTINE_KEY_PREFIX =
   `${SYNC_QUEUE_STORAGE_KEY}.quarantine.`;
@@ -529,7 +546,12 @@ function analyzeOfflineQueueValue(rawValue: string): OfflineQueueValueAnalysis {
 function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
   if (!isRecord(value) || !isRecord(value.payload)) return false;
   if (typeof value.id !== 'string' || value.id.trim().length === 0) return false;
-  if (value.entity !== 'project' && value.entity !== 'project_update') return false;
+  if (
+    value.entity !== 'project' &&
+    value.entity !== 'project_update' &&
+    value.entity !== 'project_area' &&
+    value.entity !== 'schedule_item'
+  ) return false;
   if (
     value.operation !== 'create' &&
     value.operation !== 'update' &&
@@ -556,6 +578,14 @@ function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
       value.payload.id.trim().length === 0
     ) return false;
     return value.operation === 'delete' || isRecord(value.payload.updateData);
+  }
+
+  if (value.entity === 'project_area' || value.entity === 'schedule_item') {
+    if (value.operation !== 'update') return false;
+    if (typeof value.payload.id !== 'string' || !value.payload.id.trim()) return false;
+    return value.entity === 'project_area'
+      ? isRecord(value.payload.areaData)
+      : isRecord(value.payload.itemData);
   }
 
   if (value.operation === 'create' || value.operation === 'delete') {
@@ -1029,6 +1059,45 @@ export async function queueProjectDelete(name: string): Promise<void> {
   });
 }
 
+export async function queueProjectAreaRecord(area: ProjectArea): Promise<void> {
+  const changedAt = area.updatedAt || area.locationCapturedAt || new Date().toISOString();
+  await enqueuePendingChange<ProjectAreaRecordPayload>({
+    id: `project-area-${encodeURIComponent(area.id)}`,
+    entity: 'project_area',
+    operation: 'update',
+    payload: { id: area.id, areaData: area },
+    changedAt,
+  });
+}
+
+export async function queueScheduleItemRecord(item: ScheduleItem): Promise<void> {
+  const changedAt = item.updatedAt || item.progressConfirmedAt || new Date().toISOString();
+  await enqueuePendingChange<ScheduleItemRecordPayload>({
+    id: `schedule-item-${encodeURIComponent(item.id)}`,
+    entity: 'schedule_item',
+    operation: 'update',
+    payload: { id: item.id, itemData: item },
+    changedAt,
+  });
+}
+
+export async function removeOperationalRecordFromSyncQueue(
+  entity: 'project_area' | 'schedule_item',
+  recordId: string,
+): Promise<number> {
+  const queueId = entity === 'project_area'
+    ? `project-area-${encodeURIComponent(recordId)}`
+    : `schedule-item-${encodeURIComponent(recordId)}`;
+  return mutateOfflineQueue(queue => {
+    const nextQueue = queue.filter(item => item.id !== queueId);
+    return {
+      nextQueue,
+      result: queue.length - nextQueue.length,
+      persist: nextQueue.length !== queue.length,
+    };
+  });
+}
+
 export async function queueProjectUpdateRecord<TUpdate extends {
   id: string;
   projectName?: string;
@@ -1296,6 +1365,8 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const uploadedByEntity: Record<SyncEntity, number> = {
     project: 0,
     project_update: 0,
+    project_area: 0,
+    schedule_item: 0,
   };
 
   for (const item of queue) {
@@ -1497,7 +1568,7 @@ export async function synchronizeLocalData(
   let syncableScheduleItems = payload.scheduleItems;
   let syncableReferenceDocuments = payload.referenceDocuments;
   let total =
-    4 +
+    5 +
     payload.projects.length +
     payload.savedUpdates.length +
     countPhotos(payload.savedUpdates) +
@@ -1593,7 +1664,59 @@ export async function synchronizeLocalData(
     'reference_document',
   );
   total =
-    4 +
+    5 +
+    payload.projects.length +
+    payload.savedUpdates.length +
+    countPhotos(payload.savedUpdates) +
+    syncableProjectAreas.length +
+    syncableScheduleItems.length +
+    syncableReferenceDocuments.length;
+
+  progress('Reconciling current task and GPS records');
+  const [cloudAreasBeforeUpload, cloudSchedulesBeforeUpload] = await Promise.all([
+    listProjectAreas(),
+    listScheduleItems(),
+  ]);
+  const deletedAreaIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'project_area');
+  const deletedScheduleIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'schedule_item');
+
+  if (
+    cloudAreasBeforeUpload.ok &&
+    !cloudAreasBeforeUpload.stubbed &&
+    Array.isArray(cloudAreasBeforeUpload.data)
+  ) {
+    syncableProjectAreas = mergeDAVEProjectAreaRecoveryRecords({
+      local: syncableProjectAreas,
+      cloud: cloudAreasBeforeUpload.data,
+      deletedIds: deletedAreaIds,
+    });
+  } else {
+    // A placeholder must never be uploaded blindly when the device cannot
+    // first verify whether another device already captured real GPS.
+    syncableProjectAreas = syncableProjectAreas.filter(area => Boolean(area.locationCapturedAt));
+    errors.push('Cloud GPS areas could not be checked before upload. Placeholder locations were not uploaded.');
+  }
+
+  if (
+    cloudSchedulesBeforeUpload.ok &&
+    !cloudSchedulesBeforeUpload.stubbed &&
+    Array.isArray(cloudSchedulesBeforeUpload.data)
+  ) {
+    syncableScheduleItems = recoverDAVEScheduleRecords({
+      local: syncableScheduleItems,
+      cloud: cloudSchedulesBeforeUpload.data,
+      deletedIds: deletedScheduleIds,
+      allowCloudOnly: true,
+    });
+  } else {
+    // Uploading a stale local snapshot before a successful read can erase a
+    // newer edit from another device. Preserve the phone and retry later.
+    syncableScheduleItems = [];
+    errors.push('Cloud tasks could not be checked before upload. Local tasks were preserved and will retry.');
+  }
+
+  total =
+    5 +
     payload.projects.length +
     payload.savedUpdates.length +
     countPhotos(payload.savedUpdates) +
@@ -1970,6 +2093,48 @@ async function uploadQueueItem(
     return uploadProjectUpdateQueueItem(item);
   }
 
+  if (item.entity === 'project_area') {
+    const payload = item.payload as ProjectAreaRecordPayload;
+    const cloud = await listProjectAreas();
+    if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
+      return cloud.error || cloud.message || 'GPS area authority could not be checked.';
+    }
+    const remote = cloud.data.find(area => area.id === payload.id);
+    const authoritative = remote
+      ? mergeDAVEProjectAreaRecoveryRecords({
+          local: [payload.areaData],
+          cloud: [remote],
+        })[0]
+      : payload.areaData;
+    const result = await upsertProjectArea(authoritative);
+    return result.ok && !result.stubbed
+      ? 'uploaded'
+      : result.error || result.message || 'GPS area sync is waiting for Supabase.';
+  }
+
+  if (item.entity === 'schedule_item') {
+    const payload = item.payload as ScheduleItemRecordPayload;
+    const cloud = await listScheduleItems();
+    if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
+      return cloud.error || cloud.message || 'Task authority could not be checked.';
+    }
+    const remote = cloud.data.find(candidate => candidate.id === payload.id);
+    const authoritative = remote
+      ? recoverDAVEScheduleRecords({
+          local: [payload.itemData],
+          cloud: [remote],
+          allowCloudOnly: true,
+        }).find(candidate => candidate.id === payload.id) || payload.itemData
+      : payload.itemData;
+    if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
+      return 'uploaded';
+    }
+    const result = await upsertScheduleItem(authoritative);
+    return result.ok && !result.stubbed
+      ? 'uploaded'
+      : result.error || result.message || 'Task sync is waiting for Supabase.';
+  }
+
   return `Unsupported sync entity: ${item.entity}`;
 }
 
@@ -2248,6 +2413,15 @@ function formatQueueItemFailure(item: SyncQueueItem, reason: string): string {
     const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
     const projectName = payload.projectName?.trim() || 'Unassigned Project';
     return `Field update for “${projectName}” could not sync. ${reason}`;
+  }
+
+  if (item.entity === 'project_area') {
+    const payload = item.payload as Partial<ProjectAreaRecordPayload>;
+    return `GPS area “${payload.areaData?.name || 'Unnamed Area'}” could not sync. ${reason}`;
+  }
+  if (item.entity === 'schedule_item') {
+    const payload = item.payload as Partial<ScheduleItemRecordPayload>;
+    return `Task “${payload.itemData?.taskName || 'Unnamed Task'}” could not sync. ${reason}`;
   }
 
   const payload = item.payload as Partial<ProjectCreatePayload & ProjectUpdatePayload & ProjectDeletePayload>;

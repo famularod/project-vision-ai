@@ -21,6 +21,9 @@ import {
   removeMissingPhotosFromSyncQueue,
   removeProjectUpdateFromSyncQueue,
   runFieldUpdateCloudSync,
+  queueProjectAreaRecord,
+  queueScheduleItemRecord,
+  removeOperationalRecordFromSyncQueue,
   synchronizeLocalData,
   uploadPendingChanges,
   type FieldUpdateSyncWorkAttempt,
@@ -62,6 +65,8 @@ import {
   OverviewResponsiveWorkspace,
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
+import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
+import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
@@ -2174,6 +2179,7 @@ function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
         ? value.radiusFeet
         : 250,
     locationCapturedAt: optionalString(value.locationCapturedAt),
+    updatedAt: optionalString(value.updatedAt),
   };
 }
 
@@ -2619,6 +2625,7 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
       typeof value.createdAt === 'string'
         ? value.createdAt
         : new Date().toISOString(),
+    updatedAt: optionalString(value.updatedAt),
   };
 }
 
@@ -4984,6 +4991,7 @@ function AppShell() {
     project?: string | null;
   } | null>(null);
   const [scheduleEntryFilter, setScheduleEntryFilter] = useState<'Attention' | 'Today' | '7 Days' | 'All'>('Attention');
+  const [scheduleAddProjectName, setScheduleAddProjectName] = useState<string | null>(null);
 
   useEffect(() => {
     if (screen === 'SavedUpdates' && savedUpdatesEntryFilter) {
@@ -4992,6 +5000,12 @@ function AppShell() {
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen]);
+
+  useEffect(() => {
+    if (screen !== 'Schedule' && scheduleAddProjectName !== null) {
+      setScheduleAddProjectName(null);
+    }
+  }, [scheduleAddProjectName, screen]);
 
   const [selectedWorkspaceProject, setSelectedWorkspaceProject] =
     useState(DEFAULT_PROJECTS[0]);
@@ -5065,6 +5079,16 @@ function AppShell() {
 
   const [scheduleItems, setScheduleItems] =
     useState<ScheduleItem[]>([]);
+  const projectAreasCurrentRef = useRef(projectAreas);
+  const scheduleItemsCurrentRef = useRef(scheduleItems);
+
+  useEffect(() => {
+    projectAreasCurrentRef.current = projectAreas;
+  }, [projectAreas]);
+
+  useEffect(() => {
+    scheduleItemsCurrentRef.current = scheduleItems;
+  }, [scheduleItems]);
 
   const [displayName, setDisplayName] =
     useState('');
@@ -5719,8 +5743,8 @@ useEffect(() => {
     onLocalError: error => startupHydration.fail(PROJECT_AREAS_STORAGE_KEY, 'project areas', error),
     loadCloud: listProjectAreas, synchronizeTombstones: synchronizeDAVESyncTombstones,
     normalizeCloud: areas => normalizeProjectAreas(areas.filter(isStartupProjectAreaRecord)),
-    applyCloud: (areas, tombstones) => setProjectAreas(current => mergeDAVECloudRecoveryRecords({
-      local: areas, cloud: current, deletedIds: deletedDAVERecordIds(tombstones, 'project_area'),
+    applyCloud: (areas, tombstones) => setProjectAreas(current => mergeDAVEProjectAreaRecoveryRecords({
+      local: current, cloud: areas, deletedIds: deletedDAVERecordIds(tombstones, 'project_area'),
     })),
     onCloudApplied: () => markProjectAreasAuthorityReady(true),
     onCloudDeferred: () => setSyncCleanupNotice('Cloud area recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
@@ -6087,6 +6111,93 @@ useEffect(() => {
 
     return () => subscription.remove();
   }, [updatesLoaded, savedUpdates, startupHydrationReady]);
+
+  useEffect(() => {
+    if (!startupHydrationReady || !projectAreasLoaded || !scheduleItemsLoaded) return;
+    let active = true;
+    let inFlight = false;
+
+    async function refreshOperationalCollections() {
+      if (!active || inFlight || AppState.currentState !== 'active') return;
+      inFlight = true;
+      try {
+        // The durable queue writes this device's latest edits first. Reads then
+        // pull in cloud-only or newer authoritative work from other devices.
+        await uploadPendingChanges();
+        const [tombstones, areasResult, schedulesResult] = await Promise.all([
+          synchronizeDAVESyncTombstones(),
+          listProjectAreas(),
+          listScheduleItems(),
+        ]);
+        if (!active || !tombstones.cloudAuthoritative) return;
+
+        if (areasResult.ok && !areasResult.stubbed && Array.isArray(areasResult.data)) {
+          const cloudAreas = normalizeProjectAreas(
+            areasResult.data.filter(isStartupProjectAreaRecord),
+          );
+          const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'project_area');
+          const currentAreas = projectAreasCurrentRef.current;
+          const mergedAreas = mergeDAVEProjectAreaRecoveryRecords({
+            local: currentAreas,
+            cloud: cloudAreas,
+            deletedIds,
+          });
+          projectAreasCurrentRef.current = mergedAreas;
+          setProjectAreas(
+            JSON.stringify(mergedAreas) === JSON.stringify(currentAreas)
+              ? currentAreas
+              : mergedAreas,
+          );
+          const cloudAreaById = new Map(cloudAreas.map(area => [area.id, area]));
+          await Promise.all(mergedAreas
+            .filter(area => JSON.stringify(area) !== JSON.stringify(cloudAreaById.get(area.id)))
+            .map(area => queueProjectAreaRecord(area)));
+        }
+
+        if (schedulesResult.ok && !schedulesResult.stubbed && Array.isArray(schedulesResult.data)) {
+          const cloudItems = normalizeScheduleItems(
+            schedulesResult.data.filter(isDAVESafeCloudScheduleRecord),
+          ).map(migrateLegacyScheduleItem);
+          const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'schedule_item');
+          const currentItems = scheduleItemsCurrentRef.current;
+          const mergedItems = recoverDAVEScheduleRecords({
+            local: currentItems,
+            cloud: cloudItems,
+            deletedIds,
+            allowCloudOnly: true,
+          });
+          scheduleItemsCurrentRef.current = mergedItems;
+          setScheduleItems(
+            JSON.stringify(mergedItems) === JSON.stringify(currentItems)
+              ? currentItems
+              : mergedItems,
+          );
+          const cloudItemById = new Map(cloudItems.map(item => [item.id, item]));
+          await Promise.all(mergedItems
+            .filter(item => JSON.stringify(item) !== JSON.stringify(cloudItemById.get(item.id)))
+            .map(item => queueScheduleItemRecord(item)));
+        }
+      } catch {
+        // Local state and the durable queue remain authoritative. The next
+        // bounded interval or foreground transition retries automatically.
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    const initialTimer = setTimeout(() => { void refreshOperationalCollections(); }, 750);
+    const interval = setInterval(() => { void refreshOperationalCollections(); }, 12_000);
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') void refreshOperationalCollections();
+    });
+
+    return () => {
+      active = false;
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+      subscription.remove();
+    };
+  }, [projectAreasLoaded, scheduleItemsLoaded, startupHydrationReady]);
 
   const activeProjects = useMemo(
     () =>
@@ -8173,20 +8284,21 @@ function addProject(projectName: string) {
       return false;
     }
 
+    const now = new Date().toISOString();
+    const nextArea = normalizeProjectArea({
+      id: uid(),
+      name: trimmed,
+      latitude: DEFAULT_PROJECT_AREAS[0].latitude,
+      longitude: DEFAULT_PROJECT_AREAS[0].longitude,
+      radiusFeet: 250,
+      locationCapturedAt: null,
+      updatedAt: now,
+    });
     markProjectAreasAuthorityReady(true);
-    setProjectAreas(prev => [
-      {
-        id: uid(),
-        name: trimmed,
-        latitude:
-          DEFAULT_PROJECT_AREAS[0].latitude,
-        longitude:
-          DEFAULT_PROJECT_AREAS[0].longitude,
-        radiusFeet: 250,
-        locationCapturedAt: null,
-      },
-      ...prev,
-    ]);
+    setProjectAreas(prev => [nextArea, ...prev]);
+    void queueProjectAreaRecord(nextArea).catch(() => {
+      Alert.alert('Area saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
 
     return true;
   }
@@ -8195,17 +8307,18 @@ function addProject(projectName: string) {
     areaId: string,
     next: Partial<ProjectArea>,
   ) {
+    const current = projectAreas.find(area => area.id === areaId);
+    if (!current) return;
+    const updated = normalizeProjectArea({
+      ...current,
+      ...next,
+      updatedAt: new Date().toISOString(),
+    });
     markProjectAreasAuthorityReady(true);
-    setProjectAreas(prev =>
-      prev.map(area =>
-        area.id === areaId
-          ? normalizeProjectArea({
-              ...area,
-              ...next,
-            })
-          : area,
-      ),
-    );
+    setProjectAreas(prev => prev.map(area => area.id === areaId ? updated : area));
+    void queueProjectAreaRecord(updated).catch(() => {
+      Alert.alert('Area saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
   }
 
   function deleteProjectArea(areaId: string) {
@@ -8226,6 +8339,7 @@ function addProject(projectName: string) {
           style: 'destructive',
           onPress: () => {
             void recordDAVESyncTombstone('project_area', areaId)
+              .then(() => removeOperationalRecordFromSyncQueue('project_area', areaId))
               .then(() => {
                 markProjectAreasAuthorityReady(true);
                 setProjectAreas(prev => prev.filter(item => item.id !== areaId));
@@ -9777,34 +9891,41 @@ Note: This update was opened through Outlook because PLZ email security may reje
       progressConfirmedAt: now,
       progressConfirmedBy: displayName.trim() || 'Project manager',
       createdAt: now,
+      updatedAt: now,
     });
 
     markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev => [next, ...prev]);
+    void queueScheduleItemRecord(next).catch(() => {
+      Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
   }
 
   function updateScheduleItem(itemId: string, next: Partial<ScheduleItem>) {
-    markScheduleItemsAuthorityReady(true);
-    setScheduleItems(prev =>
-      prev.map(item => {
-        if (item.id !== itemId) return item;
-        const progressChanged = (
-          typeof next.percentComplete === 'number' && next.percentComplete !== item.percentComplete
-        ) || (
-          typeof next.status === 'string' && next.status !== item.status
-        );
-        return normalizeScheduleItem({
-          ...item,
-          ...next,
-          ...(progressChanged ? {
-            progressSource: 'project_manager' as const,
-            progressConfirmedAt: new Date().toISOString(),
-            progressConfirmedBy: displayName.trim() || 'Project manager',
-            completionVerification: next.completionVerification ?? null,
-          } : {}),
-        });
-      }),
+    const current = scheduleItems.find(item => item.id === itemId);
+    if (!current) return;
+    const now = new Date().toISOString();
+    const progressChanged = (
+      typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete
+    ) || (
+      typeof next.status === 'string' && next.status !== current.status
     );
+    const updated = normalizeScheduleItem({
+      ...current,
+      ...next,
+      updatedAt: now,
+      ...(progressChanged ? {
+        progressSource: 'project_manager' as const,
+        progressConfirmedAt: now,
+        progressConfirmedBy: displayName.trim() || 'Project manager',
+        completionVerification: next.completionVerification ?? null,
+      } : {}),
+    });
+    markScheduleItemsAuthorityReady(true);
+    setScheduleItems(prev => prev.map(item => item.id === itemId ? updated : item));
+    void queueScheduleItemRecord(updated).catch(() => {
+      Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
   }
 
   function deleteScheduleItem(itemId: string) {
@@ -9821,6 +9942,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           style: 'destructive',
           onPress: () => {
             void recordDAVESyncTombstone('schedule_item', itemId)
+              .then(() => removeOperationalRecordFromSyncQueue('schedule_item', itemId))
               .then(() => {
                 markScheduleItemsAuthorityReady(true);
                 setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
@@ -11283,6 +11405,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onNewFieldUpdateForTask={item =>
                 createNewUpdateForScheduleTask(selectedWorkspaceProject, item)
               }
+              onAddTask={() => {
+                setScheduleEntryFilter('All');
+                setScheduleAddProjectName(selectedWorkspaceProject);
+                setScreen('Schedule');
+              }}
               onUpdateScheduleItem={updateScheduleItem}
               onDeleteScheduleItem={deleteScheduleItem}
               onStartProjectWalk={() => startProjectWalk(selectedWorkspaceProject)}
@@ -11410,7 +11537,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 document.category === 'Schedules' ||
                 document.notes.includes('[Schedule communication screenshot]'),
               )}
-              onBack={() => setScreen('Home')}
+              onBack={() => {
+                setScheduleAddProjectName(null);
+                setScreen('Home');
+              }}
               onOpenDocument={openReferenceDocument}
               onDeleteDocument={deleteScheduleDocument}
               onSetActiveDocument={setActiveScheduleDocument}
@@ -11429,6 +11559,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }
               onOpenUpdate={update => openSavedUpdate(update, 'Schedule')}
               initialFilter={scheduleEntryFilter}
+              initialAddProjectName={scheduleAddProjectName}
+              defaultOwner={displayName}
             />
           )}
 
@@ -11493,7 +11625,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   }));
                 }
                 if (failed.projectAreas === null) {
-                  setProjectAreas(previous => mergeDAVECloudRecoveryRecords({
+                  setProjectAreas(previous => mergeDAVEProjectAreaRecoveryRecords({
                     local: previous,
                     cloud: normalizeProjectAreas(
                       recovered.projectAreas.filter(isStartupProjectAreaRecord),
@@ -15409,6 +15541,7 @@ function ProjectTaskControlPanel({
   onUpdate,
   onDelete,
   onNewFieldUpdate,
+  onAddTask,
 }: {
   projectName: string;
   scheduleItems: ScheduleItem[];
@@ -15416,6 +15549,7 @@ function ProjectTaskControlPanel({
   onUpdate: (itemId: string, next: Partial<ScheduleItem>) => void;
   onDelete: (itemId: string) => void;
   onNewFieldUpdate: (item: ScheduleItem) => void;
+  onAddTask: () => void;
 }) {
   const [filter, setFilter] = useState<ProjectTaskFilter>('All');
   const [expanded, setExpanded] = useState(false);
@@ -15527,12 +15661,16 @@ function ProjectTaskControlPanel({
         needsVerification={operationalStatus.needsVerification}
         verificationSummary={operationalStatus.primaryWarning?.summary || null}
       />
+      <SecondaryButton
+        label="Add Task"
+        icon="add-circle-outline"
+        onPress={onAddTask}
+      />
       <View style={styles.projectTaskMetrics}>
         {[
           ['Tasks', rollup.taskCount],
           ['Complete', rollup.completedCount],
-          ['Overdue', rollup.overdueCount],
-          ['Due Soon', rollup.dueSoonCount],
+          ['Open', rollup.openCount],
         ].map(([label, value]) => (
           <View key={String(label)} style={styles.projectTaskMetric}>
             <Text style={styles.projectTaskMetricValue}>{value}</Text>
@@ -15540,6 +15678,12 @@ function ProjectTaskControlPanel({
           </View>
         ))}
       </View>
+      {rollup.openCount > 0 ? (
+        <Text style={styles.projectTaskForecast}>
+          Open work: {rollup.overdueCount} overdue · {rollup.dueSoonCount} due soon · {rollup.scheduledLaterCount} scheduled later
+          {rollup.undatedCount > 0 ? ` · ${rollup.undatedCount} without a date` : ''}
+        </Text>
+      ) : null}
       {rollup.forecastFinishDate ? (
         <Text style={styles.projectTaskForecast}>
           Current scheduled finish: {formatAppDate(rollup.forecastFinishDate)}
@@ -15662,6 +15806,7 @@ function ProjectWorkspaceScreen({
   onBack,
   onNewFieldUpdate,
   onNewFieldUpdateForTask,
+  onAddTask,
   onUpdateScheduleItem,
   onDeleteScheduleItem,
   onStartProjectWalk,
@@ -15704,6 +15849,7 @@ function ProjectWorkspaceScreen({
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
   onNewFieldUpdateForTask: (item: ScheduleItem) => void;
+  onAddTask: () => void;
   onUpdateScheduleItem: (itemId: string, next: Partial<ScheduleItem>) => void;
   onDeleteScheduleItem: (itemId: string) => void;
   onStartProjectWalk: () => Promise<boolean>;
@@ -16074,6 +16220,7 @@ function ProjectWorkspaceScreen({
         onUpdate={onUpdateScheduleItem}
         onDelete={onDeleteScheduleItem}
         onNewFieldUpdate={onNewFieldUpdateForTask}
+        onAddTask={onAddTask}
       />
 
       {projectWalkSession ? (
@@ -18841,6 +18988,8 @@ function ScheduleScreen({
   onNewFieldUpdateForTask,
   onOpenUpdate,
   initialFilter,
+  initialAddProjectName,
+  defaultOwner,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   screenshotImportAvailable: boolean;
@@ -18863,25 +19012,20 @@ function ScheduleScreen({
   onNewFieldUpdateForTask: (item: ScheduleItem) => void;
   onOpenUpdate: (update: ProjectUpdate) => void;
   initialFilter?: 'Attention' | 'Today' | '7 Days' | 'All';
+  initialAddProjectName?: string | null;
+  defaultOwner?: string;
 }) {
   const [taskFilter, setTaskFilter] = useState<'Attention' | 'Today' | '7 Days' | 'All'>(initialFilter || 'Attention');
   const [scheduleManagementOpen, setScheduleManagementOpen] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState(Boolean(initialAddProjectName));
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [taskName, setTaskName] = useState('');
-  const [projectName, setProjectName] = useState(projects[0] || '');
-  const [locationName, setLocationName] = useState(projectAreas[0]?.name || '');
-  const [startDate, setStartDate] = useState('');
-  const [finishDate, setFinishDate] = useState('');
-  const [milestone, setMilestone] = useState('');
-  const [owner, setOwner] = useState('');
-  const [contractor, setContractor] = useState('');
-  const [percentComplete, setPercentComplete] = useState('0');
-  const [priority, setPriority] = useState<SchedulePriority>('Medium');
-  const [status, setStatus] = useState<ScheduleStatus>('Not Started');
-  const [notes, setNotes] = useState('');
   const [followThroughReviewStates, setFollowThroughReviewStates] = useState<DAVEFollowThroughReviewState[]>([]);
   const [followThroughReviewsLoaded, setFollowThroughReviewsLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!initialAddProjectName) return;
+    setShowAdd(true);
+  }, [initialAddProjectName]);
 
   useEffect(() => {
     let active = true;
@@ -19065,56 +19209,6 @@ function ScheduleScreen({
     taskFilter,
   ]);
 
-  function resetForm() {
-    setTaskName('');
-    setProjectName(projects[0] || '');
-    setLocationName(projectAreas[0]?.name || '');
-    setStartDate('');
-    setFinishDate('');
-    setMilestone('');
-    setOwner('');
-    setContractor('');
-    setPercentComplete('0');
-    setPriority('Medium');
-    setStatus('Not Started');
-    setNotes('');
-  }
-
-  function submitManualItem() {
-    if (!taskName.trim()) {
-      Alert.alert('Task needed', 'Enter the schedule task or milestone first.');
-      return;
-    }
-
-    if (finishDate.trim() && !parseFlexibleDate(finishDate)) {
-      Alert.alert('Invalid finish date', 'Use MM/DD/YYYY for the finish or due date.');
-      return;
-    }
-
-    if (startDate.trim() && !parseFlexibleDate(startDate)) {
-      Alert.alert('Invalid start date', 'Use MM/DD/YYYY for the start date.');
-      return;
-    }
-
-    onAdd({
-      taskName,
-      projectName,
-      locationName,
-      startDate,
-      finishDate,
-      milestone,
-      owner,
-      contractor,
-      percentComplete: Number(percentComplete) || 0,
-      priority,
-      status,
-      notes,
-    });
-
-    resetForm();
-    setShowAdd(false);
-  }
-
   return (
     <FlatList
       style={styles.appFrame}
@@ -19138,6 +19232,12 @@ function ScheduleScreen({
           <ScreenTitle
             title="Tasks"
             subtitle="Manage project work, deadlines, ownership, and field follow-up."
+          />
+
+          <PrimaryButton
+            label="Add Task"
+            icon="add-circle-outline"
+            onPress={() => setShowAdd(true)}
           />
 
           <View style={styles.dashboardGrid}>
@@ -19298,7 +19398,7 @@ function ScheduleScreen({
             </View>
             <View style={styles.rowMain}>
               <Text style={styles.panelTitle}>Manage Schedule</Text>
-              <Text style={styles.rowSub}>Import, add, and review schedule sources</Text>
+              <Text style={styles.rowSub}>Import and review schedule sources</Text>
             </View>
             <Ionicons name={scheduleManagementOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.muted} />
           </TouchableOpacity>
@@ -19391,168 +19491,16 @@ function ScheduleScreen({
               }) : null}
             </View>
           ) : null}
-
-
-          {scheduleManagementOpen && showAdd ? (
-            <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Add Schedule Item</Text>
-
-              <Text style={styles.label}>Task or milestone</Text>
-              <TextInput
-                style={styles.input}
-                value={taskName}
-                onChangeText={setTaskName}
-                placeholder="Example: East driveway striping"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Project</Text>
-              <TextInput
-                style={styles.input}
-                value={projectName}
-                onChangeText={setProjectName}
-                placeholder="Project name"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Location</Text>
-              <TextInput
-                style={styles.input}
-                value={locationName}
-                onChangeText={setLocationName}
-                placeholder="Location / work area"
-                placeholderTextColor={colors.muted}
-              />
-
-              <View style={styles.sendRow}>
-                <View style={styles.rowMain}>
-                  <Text style={styles.label}>Start</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={startDate}
-                    onChangeText={value => setStartDate(normalizeDateInput(value))}
-                    placeholder="MM/DD/YYYY"
-                    placeholderTextColor={colors.muted}
-                    keyboardType="numbers-and-punctuation"
-                    maxLength={10}
-                  />
-                </View>
-
-                <View style={styles.rowMain}>
-                  <Text style={styles.label}>Finish / Due</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={finishDate}
-                    onChangeText={value => setFinishDate(normalizeDateInput(value))}
-                    placeholder="MM/DD/YYYY"
-                    placeholderTextColor={colors.muted}
-                    keyboardType="numbers-and-punctuation"
-                    maxLength={10}
-                  />
-                </View>
-              </View>
-
-              <Text style={styles.label}>Owner</Text>
-              <TextInput
-                style={styles.input}
-                value={owner}
-                onChangeText={setOwner}
-                placeholder="PLZ owner or internal owner"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Contractor</Text>
-              <TextInput
-                style={styles.input}
-                value={contractor}
-                onChangeText={setContractor}
-                placeholder="Contractor / responsible company"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Percent Complete</Text>
-              <TextInput
-                style={styles.input}
-                value={percentComplete}
-                onChangeText={value => setPercentComplete(value.replace(/[^0-9]/g, '').slice(0, 3))}
-                placeholder="0"
-                placeholderTextColor={colors.muted}
-                keyboardType="number-pad"
-                maxLength={3}
-              />
-
-              <Text style={styles.label}>Priority</Text>
-              <View style={styles.statusGrid}>
-                {SCHEDULE_PRIORITIES.map(itemPriority => (
-                  <TouchableOpacity
-                    key={itemPriority}
-                    style={[
-                      styles.statusButton,
-                      priority === itemPriority && styles.statusButtonActive,
-                    ]}
-                    onPress={() => setPriority(itemPriority)}
-                  >
-                    <Text
-                      style={[
-                        styles.statusButtonText,
-                        priority === itemPriority && styles.statusButtonTextActive,
-                      ]}
-                    >
-                      {itemPriority}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.label}>Milestone</Text>
-              <TextInput
-                style={styles.input}
-                value={milestone}
-                onChangeText={setMilestone}
-                placeholder="Optional milestone"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Status</Text>
-              <View style={styles.statusGrid}>
-                {SCHEDULE_STATUSES.map(itemStatus => (
-                  <TouchableOpacity
-                    key={itemStatus}
-                    style={[
-                      styles.statusButton,
-                      status === itemStatus && styles.statusButtonActive,
-                    ]}
-                    onPress={() => setStatus(itemStatus)}
-                  >
-                    <Text
-                      style={[
-                        styles.statusButtonText,
-                        status === itemStatus && styles.statusButtonTextActive,
-                      ]}
-                    >
-                      {itemStatus}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.label}>Notes</Text>
-              <TextInput
-                style={[styles.input, styles.notesInput]}
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="Schedule notes, constraints, or next step."
-                placeholderTextColor={colors.muted}
-                multiline
-              />
-
-              <PrimaryButton
-                label="Save Schedule Item"
-                icon="checkmark-circle-outline"
-                onPress={submitManualItem}
-              />
-            </View>
-          ) : null}
+          <ScheduleTaskEditorModal
+            visible={showAdd}
+            projects={projects}
+            projectAreas={projectAreas}
+            scheduleItems={scheduleItems}
+            initialProjectName={initialAddProjectName}
+            defaultOwner={defaultOwner}
+            onClose={() => setShowAdd(false)}
+            onSubmit={onAdd}
+          />
 
           <Text style={styles.sectionLabel}>{taskFilter} Tasks</Text>
           <Text style={styles.rowSub}>{filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.</Text>

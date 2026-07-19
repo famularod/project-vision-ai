@@ -113,6 +113,50 @@ describe('project PlainDate and Instant semantics', () => {
     })).toMatchObject({ overdueCount: 1, dueSoonCount: 0 });
   });
 
+  it('accounts for every open task in an explicit timing bucket', () => {
+    const base: ScheduleItem = {
+      id: 'base',
+      projectName: 'Project 1',
+      locationName: 'Area 1',
+      taskName: 'Base task',
+      startDate: '',
+      finishDate: '',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: '',
+      createdAt: '2026-07-18T12:00:00.000Z',
+    };
+    const rollup = buildDAVEProjectScheduleRollup({
+      projectName: 'Project 1',
+      now: new Date('2026-07-19T12:00:00.000Z'),
+      items: [
+        { ...base, id: 'complete', status: 'Complete', percentComplete: 100 },
+        { ...base, id: 'overdue', finishDate: '07/18/2026' },
+        { ...base, id: 'due-soon', finishDate: '07/25/2026' },
+        { ...base, id: 'later', finishDate: '08/15/2026' },
+        { ...base, id: 'undated' },
+      ],
+    });
+
+    expect(rollup).toMatchObject({
+      taskCount: 5,
+      completedCount: 1,
+      openCount: 4,
+      overdueCount: 1,
+      dueSoonCount: 1,
+      scheduledLaterCount: 1,
+      undatedCount: 1,
+    });
+    expect(
+      rollup.overdueCount + rollup.dueSoonCount +
+      rollup.scheduledLaterCount + rollup.undatedCount,
+    ).toBe(rollup.openCount);
+  });
+
   it('propagates project timezone through Truth and Reasoning authority', () => {
     const scheduleItem: ScheduleItem = {
       id: 'schedule-truth-1',

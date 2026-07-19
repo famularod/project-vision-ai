@@ -187,6 +187,8 @@ export type ProjectArea = {
   longitude: number;
   radiusFeet: number;
   locationCapturedAt?: string | null;
+  /** Last user-authored change to area metadata or GPS. */
+  updatedAt?: string | null;
 };
 
 export type DAVESyncTombstoneEntity =
@@ -307,6 +309,8 @@ export type ScheduleItem = {
   sourceDocumentId?: string | null;
   completionVerification?: DAVECompletionVerification | null;
   createdAt: string;
+  /** Last user-authored task change. Imported legacy rows may omit it. */
+  updatedAt?: string | null;
 };
 
 export const EMPTY_PROJECT_STATS: ProjectStats = {
