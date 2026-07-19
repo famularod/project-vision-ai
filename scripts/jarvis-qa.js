@@ -996,7 +996,7 @@ if (
   ]) &&
   hasAll(app, [
     '<PIELiveAuthorityProvider input={liveAuthorityInput}>',
-    'authoritySurfaceForScreen',
+    'authoritySurfaceForMode',
     'const liveAuthority = usePIELiveAuthority();',
     'const projectIntelligence = liveAuthority.projectTruth.intelligence',
   ]) &&

@@ -52,9 +52,9 @@ assert(
   'Report UI must not expose a completed draft built before hydration or for an older project scope.',
 );
 assert(
-  provider.includes('inputSnapshotIsCurrent ? null : safeBuildProviderRuntime(input)') &&
+  provider.includes('() => scopeIsCurrent ? null : safeBuildProviderRuntime(input)') &&
     provider.includes('currentCore?.runtime || immediateInputRuntime || fallbackRuntime'),
-  'A newly selected report scope must render its current Runtime immediately without a stale combined-report frame.',
+  'A newly selected report scope must render its current Runtime immediately without rebuilding for same-scope input changes.',
 );
 assert(
   provider.includes('reportType: refreshInput.reportType') &&

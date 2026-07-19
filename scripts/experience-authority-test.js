@@ -16,7 +16,7 @@ assert(provider.includes('experience: PIECoreOutput'), 'Provider must expose Exp
 assert(provider.includes('policyForState'), 'Provider must define screen policy by authority state.');
 assert(provider.includes('highImpactAutomationAllowed'), 'Provider must block high-impact automation outside ready state.');
 assert(provider.includes('reportGenerationAllowed'), 'Provider must control report generation policy.');
-assert(app.includes('surface: authoritySurfaceForScreen(screen)'), 'App must send current surface into provider input.');
+assert(app.includes('surface: authoritySurfaceForMode(authorityMode)'), 'App must send the stable authority mode into provider input.');
 assert(home.includes('liveAuthority.projectTruth.briefing.nextActions'), 'Home must prefer provider-backed Project Truth actions.');
 assert(reports.includes('liveAuthority.policy.reportGenerationAllowed'), 'Reports must enforce report authority state.');
 assert(reports.includes('liveAuthority.policy.userMessage'), 'Reports must show the friendly authority-block reason.');

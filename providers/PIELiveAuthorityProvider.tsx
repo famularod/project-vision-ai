@@ -199,11 +199,15 @@ export function PIELiveAuthorityProvider({
   const readyForAuthority = inputHydrated && authorityInputHydrated;
   const scopeIsCurrent = rawScopeSignature === authoritySnapshot.priorityKey;
   const inputSnapshotIsCurrent = scopeIsCurrent && rawSignature === signature;
-  const immediateInputRuntime = useMemo(
-    () => inputSnapshotIsCurrent ? null : safeBuildProviderRuntime(input),
-    [input, inputSnapshotIsCurrent, rawSignature],
-  );
   const displayInput = inputSnapshotIsCurrent ? authorityInput : input;
+  // A genuine project/report scope change must not display the previous
+  // scope's report draft. Surface-only navigation is excluded from the scope
+  // signature, so this does not run for ordinary tab changes or same-project
+  // evidence refreshes.
+  const immediateInputRuntime = useMemo(
+    () => scopeIsCurrent ? null : safeBuildProviderRuntime(input),
+    [input, scopeIsCurrent],
+  );
   const pendingReasonRef = useRef<PIELiveAuthorityRefreshReason | null>(null);
   const latestInputRef = useRef(authorityInput);
   const latestSignatureRef = useRef(signature);
@@ -470,6 +474,9 @@ export function PIELiveAuthorityProvider({
 
   const value = useMemo<PIELiveAuthorityContextValue>(() => {
     const currentCore = authorityResolution.coreIsCurrent ? core : null;
+    // Keep the last accepted Runtime for same-scope evidence refreshes. A real
+    // project/report scope change gets an immediate scoped Runtime so stale
+    // report content cannot flash while the authoritative Core is rebuilding.
     const currentRuntime = currentCore?.runtime || immediateInputRuntime || fallbackRuntime;
     const persistenceStatus = currentCore?.realityAuthority.persistenceStatus || null;
     const nextState = authorityResolution.state;

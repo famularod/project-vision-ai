@@ -60,7 +60,11 @@ assert(review.includes('title="Reports"'), 'live report surface should identify 
 assert(review.includes('reportEditing ? ('), 'report correction must expose editable title and body fields');
 assert(review.includes('Copy, Email, and Text unlock after approval'), 'report sharing must remain approval-gated');
 assert(app.includes("screen === 'Reports'"), 'App must render Reports from the live screen union');
-assert(app.includes("screen === 'BuildUpdate' || screen === 'Reports'"), 'Reports must use the shared report authority surface');
+assert(
+  app.includes("if (screen === 'BuildUpdate') return 'capture-review';") &&
+    app.includes("mode === 'reports' || mode === 'capture-review'"),
+  'Reports and capture review must use the shared report authority surface',
+);
 assert(app.includes('Plan vs Field'), 'Live Tasks should summarize planned work against field evidence.');
 assert(
   app.includes('buildPIEScheduleReconciliation({') &&

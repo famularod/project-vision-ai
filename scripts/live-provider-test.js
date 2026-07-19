@@ -39,7 +39,7 @@ assert(provider.includes('notifyProjectChanged'), 'Provider must expose notifyPr
 });
 
 assert(app.includes('<PIELiveAuthorityProvider input={liveAuthorityInput}>'), 'App must mount provider above primary screens.');
-assert(app.includes('authoritySurfaceForScreen'), 'App must map screens to PIE surfaces.');
+assert(app.includes('authoritySurfaceForMode'), 'App must map stable authority modes to PIE surfaces.');
 assert(app.includes('authorityProjectId'), 'App must provide stable local project IDs.');
 
 assert((app.match(/usePIELiveAuthority\(\)/g) || []).length >= 3, 'Home, Capture, and Project Workspace must consume live authority provider.');

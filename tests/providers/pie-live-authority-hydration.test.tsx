@@ -244,4 +244,32 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
     expect(currentAuthority?.state).toBe('loading');
     expect(currentAuthority?.core).toBeNull();
   });
+
+  it('does not rebuild authority for a presentation-only surface change', async () => {
+    let resolveCore!: (result: CoreResult) => void;
+    buildCoreMock.mockReturnValueOnce(new Promise(resolve => {
+      resolveCore = resolve;
+    }));
+    const screen = await render(
+      <PIELiveAuthorityProvider input={{ ...authorityInput(true), surface: 'home' }}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await act(async () => {
+      resolveCore(coreResult());
+    });
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
+
+    await screen.rerender(
+      <PIELiveAuthorityProvider input={{ ...authorityInput(true), surface: 'reports' }}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
+    expect(currentAuthority?.core).not.toBeNull();
+  });
 });

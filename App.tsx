@@ -386,6 +386,7 @@ import {
 } from './modules/dave-text-recognition';
 import type { AppScreen } from './types/app-navigation';
 import { useAndroidHardwareBack, useAppNavigation } from './hooks/use-app-navigation';
+import { useProgressiveListCount } from './hooks/use-progressive-list-count';
 import { useReportSelection } from './hooks/use-report-selection';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -10987,28 +10988,32 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   const projectStatusReady = startupHydrationReady;
+  const authorityMode = authorityModeForScreen(screen);
 
   const liveAuthorityInput = useMemo<PIELiveAuthorityInput>(() => {
     const workspaceProjectName =
-      screen === 'ProjectWorkspace' ||
-      screen === 'ProjectDocuments' ||
-      screen === 'Reports'
+      authorityMode === 'workspace' || authorityMode === 'reports'
         ? selectedWorkspaceProject
         : null;
-    const projectName =
-      (screen === 'Reports' ? selectedReportProjectNames[0] : workspaceProjectName) ||
-      (screen === 'Home' ? overviewProjectName : null) ||
-      draft.projectName ||
+    const primaryProjectName =
+      overviewProjectName ||
+      selectedWorkspaceProject ||
       activeProjects[0] ||
       DEFAULT_PROJECTS[0] ||
       'Current Project';
+    const projectName =
+      (authorityMode === 'reports' ? selectedReportProjectNames[0] : workspaceProjectName) ||
+      (authorityMode === 'capture' || authorityMode === 'capture-review'
+        ? draft.projectName
+        : primaryProjectName) ||
+      primaryProjectName;
     const authorityReportType: PIEReportType | undefined =
-      screen !== 'Reports'
+      authorityMode !== 'reports'
         ? undefined
         : reportFormat === 'executive'
           ? 'executive_summary'
           : reportType;
-    const combinedReportScope = screen === 'Reports' && reportType === 'combined_project_update'
+    const combinedReportScope = authorityMode === 'reports' && reportType === 'combined_project_update'
       ? buildCombinedReportAuthorityScope({
           selectedProjectNames: selectedReportProjectNames,
           projectRecords,
@@ -11022,7 +11027,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           contacts: contactBook,
         })
       : null;
-    const dailyReportScope = screen === 'Reports' && reportType === 'daily_project_update'
+    const dailyReportScope = authorityMode === 'reports' && reportType === 'daily_project_update'
       ? buildDailyReportAuthorityScope({
           selectedProjectName: projectName,
           selectedProjectNames: [projectName],
@@ -11065,7 +11070,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       // the signed-in organization is still resolving. Large legacy Reality
       // Models otherwise make startup perform the same expensive pass twice.
       hydrated: projectStatusReady && layer4IdentityReady,
-      surface: authoritySurfaceForScreen(screen),
+      surface: authoritySurfaceForMode(authorityMode),
       identityTrusted: Boolean(
         layer4Identity?.cloudTrusted &&
         layer4Identity.organizationStatus === 'verified',
@@ -11079,6 +11084,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     };
   }, [
     activeProjects,
+    authorityMode,
     contactBook,
     draft,
     captureMemories,
@@ -11095,7 +11101,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     selectedReportProjectNames,
     savedUpdates,
     authoritativeScheduleItems,
-    screen,
     selectedWorkspaceProject,
   ]);
 
@@ -11840,19 +11845,33 @@ function talkContextProjectForScreen(
   return null;
 }
 
-function authoritySurfaceForScreen(screen: Screen): PIELiveAuthorityInput['surface'] {
-  if (screen === 'AddPhotos' || screen === 'SelectProject') {
+type PIELiveAuthorityMode =
+  | 'primary'
+  | 'capture'
+  | 'capture-review'
+  | 'workspace'
+  | 'reports';
+
+function authorityModeForScreen(screen: Screen): PIELiveAuthorityMode {
+  if (screen === 'Reports') return 'reports';
+  if (screen === 'BuildUpdate') return 'capture-review';
+  if (screen === 'ProjectWorkspace' || screen === 'ProjectDocuments') return 'workspace';
+  if (
+    screen === 'SelectProject' ||
+    screen === 'AddPhotos' ||
+    screen === 'Contacts'
+  ) {
     return 'capture';
   }
+  return 'primary';
+}
 
-  if (screen === 'BuildUpdate' || screen === 'Reports') {
-    return 'reports';
-  }
-
-  if (screen === 'ProjectWorkspace') {
-    return 'projects';
-  }
-
+function authoritySurfaceForMode(
+  mode: PIELiveAuthorityMode,
+): PIELiveAuthorityInput['surface'] {
+  if (mode === 'capture') return 'capture';
+  if (mode === 'reports' || mode === 'capture-review') return 'reports';
+  if (mode === 'workspace') return 'projects';
   return 'home';
 }
 
@@ -18914,6 +18933,14 @@ function ScheduleScreen({
     }),
     [actionableScheduleWarnings, dependencyNetwork.nodes, savedUpdates, scheduleItems],
   );
+  const actionInboxIdentity = useMemo(
+    () => actionInbox.items.map(item => item.id).join('|'),
+    [actionInbox.items],
+  );
+  const visibleActionInboxCount = useProgressiveListCount(
+    actionInbox.items.length,
+    actionInboxIdentity,
+  );
   const attentionScheduleItemIds = useMemo(
     () => new Set(actionInbox.items.flatMap(item => item.scheduleItemId ? [item.scheduleItemId] : [])),
     [actionInbox.items],
@@ -18975,7 +19002,7 @@ function ScheduleScreen({
     return { matches, warnings };
   }, [actionableScheduleWarnings, scheduleReconciliation.matches]);
 
-  const sortedItems = [...scheduleItems].sort((a, b) => {
+  const sortedItems = useMemo(() => [...scheduleItems].sort((a, b) => {
     const aComplete = scheduleTaskIsComplete(a);
     const bComplete = scheduleTaskIsComplete(b);
     if (aComplete !== bComplete) return Number(aComplete) - Number(bComplete);
@@ -18992,25 +19019,21 @@ function ScheduleScreen({
     const priorityRank: Record<SchedulePriority, number> = { High: 0, Medium: 1, Low: 2 };
     return priorityRank[a.priority] - priorityRank[b.priority] ||
       a.taskName.localeCompare(b.taskName);
-  });
+  }), [scheduleItems]);
 
-  const dueSoon = sortedItems.filter(item => {
+  const dueSoon = useMemo(() => sortedItems.filter(item => {
     if (scheduleTaskIsComplete(item)) return false;
-
     const days = daysUntilScheduleItem(item);
-
     return days !== null && days >= 0 && days <= 7;
-  });
+  }), [sortedItems]);
 
-  const overdue = sortedItems.filter(item => {
+  const overdue = useMemo(() => sortedItems.filter(item => {
     if (scheduleTaskIsComplete(item)) return false;
-
     const days = daysUntilScheduleItem(item);
-
     return days !== null && days < 0;
-  });
+  }), [sortedItems]);
 
-  const filteredItems = sortedItems.filter(item => {
+  const filteredItems = useMemo(() => sortedItems.filter(item => {
     if (taskFilter === 'All') return true;
     if (scheduleTaskIsComplete(item)) return false;
     const days = daysUntilScheduleItem(item);
@@ -19028,7 +19051,13 @@ function ScheduleScreen({
       Boolean(dependency?.blocked || dependency?.unresolvedPredecessors.length) ||
       attentionScheduleItemIds.has(item.id)
     );
-  });
+  }), [
+    attentionScheduleItemIds,
+    dependencyNodeByItemId,
+    scheduleFieldResults.warnings,
+    sortedItems,
+    taskFilter,
+  ]);
 
   function resetForm() {
     setTaskName('');
@@ -19170,7 +19199,7 @@ function ScheduleScreen({
                   ? `${followThroughPlan.reminders.length} need a fresh review now. Reviewed items resurface automatically if unresolved.`
                   : 'All current reminders were reviewed for this follow-through window.'}
               </Text>
-              {actionInbox.items.map(item => (
+              {actionInbox.items.slice(0, visibleActionInboxCount).map(item => (
                 <DAVEActionInboxRow
                   key={item.id}
                   item={item}

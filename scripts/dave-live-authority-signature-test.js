@@ -22,7 +22,7 @@ const {
   authorityInputSignature,
 } = moduleUnderTest.exports;
 
-assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.1');
+assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.2');
 
 function input() {
   return {
@@ -72,6 +72,18 @@ function input() {
 const base = input();
 const baseSignature = authorityInputSignature(base);
 assert.strictEqual(authorityInputSignature(JSON.parse(JSON.stringify(base))), baseSignature);
+
+const presentationOnlySurfaceChange = { ...input(), surface: 'reports' };
+assert.strictEqual(
+  authorityInputSignature(presentationOnlySurfaceChange),
+  baseSignature,
+  'presentation-only navigation must not rebuild project authority',
+);
+assert.strictEqual(
+  authorityInputScopeSignature(presentationOnlySurfaceChange),
+  authorityInputScopeSignature(base),
+  'presentation-only navigation must not invalidate the authority scope',
+);
 
 const sameLengthSummary = input();
 sameLengthSummary.updates[0].photos[0].photoIntelligence.summary = 'Unit appears removed...';
@@ -203,6 +215,27 @@ assert(
   provider.includes('if (!ephemeralPortfolio && result.longitudinalPhotoIntelligence)') &&
     provider.includes("if (authorityInput.projectTruthPersistencePolicy === 'ephemeral_portfolio') return;"),
   'Ephemeral portfolio authority must skip photo-progress and project-truth persistence.',
+);
+assert(
+  provider.includes('() => scopeIsCurrent ? null : safeBuildProviderRuntime(input)') &&
+    provider.includes('currentCore?.runtime || immediateInputRuntime || fallbackRuntime'),
+  'Live authority may build an immediate Runtime only for genuine project/report scope changes.',
+);
+
+const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const progressiveListHook = fs.readFileSync(
+  path.join(root, 'hooks/use-progressive-list-count.ts'),
+  'utf8',
+);
+assert(
+  app.includes("| 'capture-review'") &&
+    app.includes('const authorityMode = authorityModeForScreen(screen);'),
+  'Primary navigation must share a stable authority mode.',
+);
+assert(
+  app.includes('useProgressiveListCount(') &&
+    progressiveListHook.includes('InteractionManager.runAfterInteractions'),
+  'The Action Inbox must mount progressively after the navigation interaction.',
 );
 
 console.log('DAVE live-authority semantic signature tests passed.');
