@@ -59,6 +59,7 @@ import {
   type ReportCommunicationOutcome,
 } from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
+import { useAppShellLayout } from './components/app-shell-layout';
 import {
   OverviewResponsiveColumn,
   OverviewResponsiveFrame,
@@ -66,7 +67,11 @@ import {
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
+import { ScheduleTaskListControls, type ScheduleTaskFilter } from './components/schedule-task-list-controls';
+import { ScheduleWideWorkspace } from './components/schedule-workspace-layout';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
+import { resolveScheduleWorkspaceTask, scheduleItemsForWorkspaceProject,
+  scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
@@ -4992,6 +4997,7 @@ function AppShell() {
   } | null>(null);
   const [scheduleEntryFilter, setScheduleEntryFilter] = useState<'Attention' | 'Today' | '7 Days' | 'All'>('Attention');
   const [scheduleAddProjectName, setScheduleAddProjectName] = useState<string | null>(null);
+  const [scheduleProjectFilter, setScheduleProjectFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (screen === 'SavedUpdates' && savedUpdatesEntryFilter) {
@@ -10861,6 +10867,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
     if (target === 'tasks') {
+      setScheduleProjectFilter(projectName || null);
       setScreen('Schedule');
       return;
     }
@@ -10882,6 +10889,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     if (destination.target === 'schedule') {
       setScheduleEntryFilter('All');
+      setScheduleProjectFilter(projectName || null);
       setScreen('Schedule');
       return;
     }
@@ -11239,7 +11247,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
         failures={startupHydration.failures}
         onRetry={startupHydration.retry}
       >
-        <AppShellFrame currentScreen={screen} onScreenChange={setScreen} onTalk={openTalk}>
+        <AppShellFrame
+          currentScreen={screen}
+          onScreenChange={setScreen}
+          onTalk={openTalk}
+          taskProjects={scheduleWorkspaceProjectOptions(activeProjects, authoritativeScheduleItems)}
+          selectedTaskProject={scheduleProjectFilter}
+          onTaskProjectChange={projectName => {
+            setScheduleProjectFilter(projectName);
+            if (projectName) setSelectedWorkspaceProject(projectName);
+          }}
+        >
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}
@@ -11408,6 +11426,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onAddTask={() => {
                 setScheduleEntryFilter('All');
                 setScheduleAddProjectName(selectedWorkspaceProject);
+                setScheduleProjectFilter(selectedWorkspaceProject);
                 setScreen('Schedule');
               }}
               onUpdateScheduleItem={updateScheduleItem}
@@ -11560,6 +11579,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onOpenUpdate={update => openSavedUpdate(update, 'Schedule')}
               initialFilter={scheduleEntryFilter}
               initialAddProjectName={scheduleAddProjectName}
+              projectFilter={scheduleProjectFilter}
               defaultOwner={displayName}
             />
           )}
@@ -18989,6 +19009,7 @@ function ScheduleScreen({
   onOpenUpdate,
   initialFilter,
   initialAddProjectName,
+  projectFilter,
   defaultOwner,
 }: {
   contentStyle: StyleProp<ViewStyle>;
@@ -19013,9 +19034,13 @@ function ScheduleScreen({
   onOpenUpdate: (update: ProjectUpdate) => void;
   initialFilter?: 'Attention' | 'Today' | '7 Days' | 'All';
   initialAddProjectName?: string | null;
+  projectFilter?: string | null;
   defaultOwner?: string;
 }) {
-  const [taskFilter, setTaskFilter] = useState<'Attention' | 'Today' | '7 Days' | 'All'>(initialFilter || 'Attention');
+  const { sizeClass } = useAppShellLayout();
+  const isWideWorkspace = sizeClass === 'wide';
+  const [taskFilter, setTaskFilter] = useState<ScheduleTaskFilter>(initialFilter || 'Attention');
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [scheduleManagementOpen, setScheduleManagementOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(Boolean(initialAddProjectName));
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -19026,6 +19051,20 @@ function ScheduleScreen({
     if (!initialAddProjectName) return;
     setShowAdd(true);
   }, [initialAddProjectName]);
+
+  const workspaceScheduleItems = useMemo(
+    () => scheduleItemsForWorkspaceProject(
+      scheduleItems,
+      isWideWorkspace ? projectFilter || null : null,
+    ),
+    [isWideWorkspace, projectFilter, scheduleItems],
+  );
+  const workspaceSavedUpdates = useMemo(
+    () => isWideWorkspace && projectFilter
+      ? savedUpdates.filter(update => projectMatchesScope(update, projectFilter))
+      : savedUpdates,
+    [isWideWorkspace, projectFilter, savedUpdates],
+  );
 
   useEffect(() => {
     let active = true;
@@ -19055,10 +19094,10 @@ function ScheduleScreen({
 
   const scheduleReconciliation = useMemo(
     () => buildPIEScheduleReconciliation({
-      scheduleItems,
-      updates: savedUpdates,
+      scheduleItems: workspaceScheduleItems,
+      updates: workspaceSavedUpdates,
     }),
-    [savedUpdates, scheduleItems],
+    [workspaceSavedUpdates, workspaceScheduleItems],
   );
   const actionableScheduleWarnings = useMemo(
     () => scheduleReconciliation.warnings.filter(scheduleWarningIsUserActionable),
@@ -19066,9 +19105,9 @@ function ScheduleScreen({
   );
   const dependencyNetwork = useMemo(
     () => buildPIEScheduleDependencyNetwork(
-      scheduleItems as unknown as import('./types').ScheduleItem[],
+      workspaceScheduleItems as unknown as import('./types').ScheduleItem[],
     ),
-    [scheduleItems],
+    [workspaceScheduleItems],
   );
   const dependencyNodeByItemId = useMemo(
     () => new Map(dependencyNetwork.nodes.map(node => [node.scheduleItemId, node])),
@@ -19076,12 +19115,12 @@ function ScheduleScreen({
   );
   const actionInbox = useMemo(
     () => buildDAVEActionInbox({
-      scheduleItems: scheduleItems as unknown as import('./types').ScheduleItem[],
-      updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+      scheduleItems: workspaceScheduleItems as unknown as import('./types').ScheduleItem[],
+      updates: workspaceSavedUpdates as unknown as import('./types').ProjectUpdate[],
       reconciliationWarnings: actionableScheduleWarnings,
       dependencyNodes: dependencyNetwork.nodes,
     }),
-    [actionableScheduleWarnings, dependencyNetwork.nodes, savedUpdates, scheduleItems],
+    [actionableScheduleWarnings, dependencyNetwork.nodes, workspaceSavedUpdates, workspaceScheduleItems],
   );
   const actionInboxIdentity = useMemo(
     () => actionInbox.items.map(item => item.id).join('|'),
@@ -19152,7 +19191,7 @@ function ScheduleScreen({
     return { matches, warnings };
   }, [actionableScheduleWarnings, scheduleReconciliation.matches]);
 
-  const sortedItems = useMemo(() => [...scheduleItems].sort((a, b) => {
+  const sortedItems = useMemo(() => [...workspaceScheduleItems].sort((a, b) => {
     const aComplete = scheduleTaskIsComplete(a);
     const bComplete = scheduleTaskIsComplete(b);
     if (aComplete !== bComplete) return Number(aComplete) - Number(bComplete);
@@ -19169,7 +19208,7 @@ function ScheduleScreen({
     const priorityRank: Record<SchedulePriority, number> = { High: 0, Medium: 1, Low: 2 };
     return priorityRank[a.priority] - priorityRank[b.priority] ||
       a.taskName.localeCompare(b.taskName);
-  }), [scheduleItems]);
+  }), [workspaceScheduleItems]);
 
   const dueSoon = useMemo(() => sortedItems.filter(item => {
     if (scheduleTaskIsComplete(item)) return false;
@@ -19209,82 +19248,21 @@ function ScheduleScreen({
     taskFilter,
   ]);
 
-  return (
-    <FlatList
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-      data={filteredItems}
-      keyExtractor={item => item.id}
-      renderItem={({ item }) => (
-        <ScheduleItemRow
-          item={item}
-          scheduleItems={scheduleItems}
-          dependencyNode={dependencyNodeByItemId.get(item.id) || null}
-          fieldWarnings={scheduleFieldResults.warnings.get(item.id) || []}
-          onUpdate={next => onUpdate(item.id, next)}
-          onDelete={() => onDelete(item.id)}
-          onAddFieldUpdate={() => onNewFieldUpdateForTask(item)}
-        />
-      )}
-      ListHeaderComponent={
-        <>
-          <ScreenTitle
-            title="Tasks"
-            subtitle="Manage project work, deadlines, ownership, and field follow-up."
-          />
-
-          <PrimaryButton
-            label="Add Task"
-            icon="add-circle-outline"
-            onPress={() => setShowAdd(true)}
-          />
-
-          <View style={styles.dashboardGrid}>
-            <DashboardMetric
-              label="Tasks"
-              value={scheduleItems.length}
-              icon="calendar-outline"
-            />
-
-            <DashboardMetric
-              label="Due 7 Days"
-              value={dueSoon.length}
-              icon="time-outline"
-            />
-
-            <DashboardMetric
-              label="Overdue"
-              value={overdue.length}
-              icon="alert-circle-outline"
-              danger={overdue.length > 0}
-            />
-
-            <DashboardMetric
-              label="Needs Action"
-              value={actionInbox.items.length}
-              icon="checkbox-outline"
-            />
-          </View>
-
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Work requiring attention</Text>
-            <Text style={styles.rowSub}>Verification, blockers, overdue work, and owner follow-ups appear first.</Text>
-            <View style={styles.statusGrid}>
-              {(['Attention', 'Today', '7 Days', 'All'] as const).map(filter => (
-                <TouchableOpacity
-                  key={filter}
-                  style={[styles.statusButton, taskFilter === filter && styles.statusButtonActive]}
-                  onPress={() => setTaskFilter(filter)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: taskFilter === filter }}
-                >
-                  <Text style={[styles.statusButtonText, taskFilter === filter && styles.statusButtonTextActive]}>{filter}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
+  const selectedTask = resolveScheduleWorkspaceTask(filteredItems, selectedTaskId);
+  const taskControls = (
+    <ScheduleTaskListControls
+      scopeLabel={isWideWorkspace ? projectFilter || 'All Projects' : undefined}
+      taskCount={workspaceScheduleItems.length}
+      dueSoonCount={dueSoon.length}
+      overdueCount={overdue.length}
+      needsActionCount={actionInbox.items.length}
+      activeFilter={taskFilter}
+      onFilterChange={setTaskFilter}
+      onAddTask={() => setShowAdd(true)}
+    />
+  );
+  const scheduleTools = (
+    <>
           {actionInbox.items.length > 0 ? (
             <View style={styles.panel}>
               <View style={styles.areaStatusLine}>
@@ -19491,28 +19469,97 @@ function ScheduleScreen({
               }) : null}
             </View>
           ) : null}
-          <ScheduleTaskEditorModal
-            visible={showAdd}
-            projects={projects}
-            projectAreas={projectAreas}
-            scheduleItems={scheduleItems}
-            initialProjectName={initialAddProjectName}
-            defaultOwner={defaultOwner}
-            onClose={() => setShowAdd(false)}
-            onSubmit={onAdd}
-          />
-
-          <Text style={styles.sectionLabel}>{taskFilter} Tasks</Text>
-          <Text style={styles.rowSub}>{filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.</Text>
-        </>
-      }
-      ListEmptyComponent={
-        <EmptyState
-          title="No schedule items yet"
-          text="Import a CSV/text schedule or add a schedule item manually."
-        />
-      }
+    </>
+  );
+  const emptyState = (
+    <EmptyState
+      title="No schedule items yet"
+      text="Import a CSV/text schedule or add a schedule item manually."
     />
+  );
+  const taskEditor = (
+    <ScheduleTaskEditorModal
+      visible={showAdd}
+      projects={projects}
+      projectAreas={projectAreas}
+      scheduleItems={scheduleItems}
+      initialProjectName={initialAddProjectName || (isWideWorkspace ? projectFilter : null)}
+      defaultOwner={defaultOwner}
+      onClose={() => setShowAdd(false)}
+      onSubmit={onAdd}
+    />
+  );
+
+  if (isWideWorkspace) {
+    return (
+      <>
+        <ScheduleWideWorkspace
+          items={filteredItems}
+          selectedTaskId={selectedTask?.id || null}
+          onSelectTask={setSelectedTaskId}
+          masterHeader={(
+            <>
+              {taskControls}
+              <Text style={styles.sectionLabel}>{taskFilter} Tasks</Text>
+              <Text style={styles.rowSub}>
+                {filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.
+              </Text>
+            </>
+          )}
+          inspector={selectedTask ? (
+            <ScheduleItemRow
+              item={selectedTask}
+              scheduleItems={scheduleItems}
+              dependencyNode={dependencyNodeByItemId.get(selectedTask.id) || null}
+              fieldWarnings={scheduleFieldResults.warnings.get(selectedTask.id) || []}
+              expanded
+              onUpdate={next => onUpdate(selectedTask.id, next)}
+              onDelete={() => onDelete(selectedTask.id)}
+              onAddFieldUpdate={() => onNewFieldUpdateForTask(selectedTask)}
+            />
+          ) : emptyState}
+          inspectorFooter={scheduleTools}
+          emptyState={emptyState}
+        />
+        {taskEditor}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <FlatList
+        style={styles.appFrame}
+        contentContainerStyle={contentStyle}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled"
+        data={filteredItems}
+        keyExtractor={item => item.id}
+        renderItem={({ item }) => (
+          <ScheduleItemRow
+            item={item}
+            scheduleItems={scheduleItems}
+            dependencyNode={dependencyNodeByItemId.get(item.id) || null}
+            fieldWarnings={scheduleFieldResults.warnings.get(item.id) || []}
+            onUpdate={next => onUpdate(item.id, next)}
+            onDelete={() => onDelete(item.id)}
+            onAddFieldUpdate={() => onNewFieldUpdateForTask(item)}
+          />
+        )}
+        ListHeaderComponent={(
+          <>
+            {taskControls}
+            {scheduleTools}
+            <Text style={styles.sectionLabel}>{taskFilter} Tasks</Text>
+            <Text style={styles.rowSub}>
+              {filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.
+            </Text>
+          </>
+        )}
+        ListEmptyComponent={emptyState}
+      />
+      {taskEditor}
+    </>
   );
 }
 
@@ -19593,6 +19640,7 @@ function ScheduleItemRow({
   scheduleItems = [],
   dependencyNode,
   fieldWarnings,
+  expanded: expandedOverride,
   onUpdate,
   onDelete,
   onAddFieldUpdate,
@@ -19601,11 +19649,18 @@ function ScheduleItemRow({
   scheduleItems?: ScheduleItem[];
   dependencyNode?: PIEScheduleDependencyNode | null;
   fieldWarnings?: PIEScheduleReconciliationWarning[];
+  expanded?: boolean;
   onUpdate: (next: Partial<ScheduleItem>) => void;
   onDelete: () => void;
   onAddFieldUpdate?: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const expanded = expandedOverride ?? internalExpanded;
+  const toggleExpanded = () => {
+    if (expandedOverride === undefined) {
+      setInternalExpanded(current => !current);
+    }
+  };
   const [verificationNote, setVerificationNote] = useState('');
   const needsCompletionVerification = scheduleItemNeedsCompletionVerification(
     item as unknown as import('./types').ScheduleItem,
@@ -19629,7 +19684,7 @@ function ScheduleItemRow({
       <View style={styles.scheduleItemHeader}>
         <TouchableOpacity
           style={styles.rowIconBubble}
-          onPress={() => setExpanded(prev => !prev)}
+          onPress={toggleExpanded}
           accessibilityRole="button"
           accessibilityLabel={`Open ${item.taskName}`}
         >
@@ -19642,7 +19697,7 @@ function ScheduleItemRow({
 
         <TouchableOpacity
           style={[styles.rowMain, styles.scheduleItemHeaderText]}
-          onPress={() => setExpanded(prev => !prev)}
+          onPress={toggleExpanded}
         >
           <Text style={[styles.projectName, styles.scheduleItemTitle]}>{item.taskName}</Text>
           <Text style={[styles.rowSub, styles.scheduleItemContext]}>
@@ -19665,7 +19720,7 @@ function ScheduleItemRow({
 
       <TouchableOpacity
         style={styles.scheduleItemBody}
-        onPress={() => setExpanded(prev => !prev)}
+        onPress={toggleExpanded}
       >
 
         <View style={styles.scheduleMetaRow}>

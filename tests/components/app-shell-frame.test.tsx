@@ -135,6 +135,43 @@ describe('AppShellFrame', () => {
     expect(screen.getByTestId('app-navigation-rail')).toBeTruthy();
     expect(screen.getByText('Draft items: 1')).toBeTruthy();
   });
+
+  it('preserves the selected task project while a wide iPad resizes', async () => {
+    setWindowDimensions({
+      width: 1180,
+      height: 820,
+      scale: 2,
+      fontScale: 1,
+    });
+    const screen = await render(<TaskProjectShellProbe />);
+
+    await fireEvent.press(
+      screen.getByRole('radio', { name: 'Show tasks for Project B' }),
+    );
+    expect(
+      screen.getByRole('radio', { name: 'Show tasks for Project B' }).props
+        .accessibilityState,
+    ).toEqual({ selected: true });
+
+    setWindowDimensions({
+      width: 768,
+      height: 1024,
+      scale: 2,
+      fontScale: 1,
+    });
+    expect(screen.queryByTestId('task-project-switcher')).toBeNull();
+
+    setWindowDimensions({
+      width: 1180,
+      height: 820,
+      scale: 2,
+      fontScale: 1,
+    });
+    expect(
+      screen.getByRole('radio', { name: 'Show tasks for Project B' }).props
+        .accessibilityState,
+    ).toEqual({ selected: true });
+  });
 });
 
 function StatefulDraftProbe() {
@@ -148,6 +185,23 @@ function StatefulDraftProbe() {
     >
       <Text>{`Draft items: ${draftItems}`}</Text>
     </Pressable>
+  );
+}
+
+function TaskProjectShellProbe() {
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+
+  return (
+    <AppShellFrame
+      currentScreen="Schedule"
+      onScreenChange={jest.fn()}
+      onTalk={jest.fn()}
+      taskProjects={['Project A', 'Project B']}
+      selectedTaskProject={selectedProject}
+      onTaskProjectChange={setSelectedProject}
+    >
+      <Text>Task workspace</Text>
+    </AppShellFrame>
   );
 }
 

@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius, spacing } from '../theme';
 import type { AppScreen } from '../types/app-navigation';
 import { isOverviewPrimaryNavigationActive } from './app-primary-navigation';
+import { AppProjectSwitcher } from './app-project-switcher';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -13,11 +14,17 @@ export function AppNavigationRail({
   expanded,
   onChange,
   onTalk,
+  taskProjects = [],
+  selectedTaskProject = null,
+  onTaskProjectChange,
 }: {
   current: AppScreen;
   expanded: boolean;
   onChange: (screen: AppScreen) => void;
   onTalk: () => void;
+  taskProjects?: string[];
+  selectedTaskProject?: string | null;
+  onTaskProjectChange?: (projectName: string | null) => void;
 }) {
   return (
     <SafeAreaView
@@ -77,6 +84,14 @@ export function AppNavigationRail({
           onPress={() => onChange('Reports')}
         />
       </View>
+
+      {expanded && current === 'Schedule' && onTaskProjectChange ? (
+        <AppProjectSwitcher
+          projects={taskProjects}
+          selectedProject={selectedTaskProject}
+          onChange={onTaskProjectChange}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -121,6 +136,7 @@ function RailButton({
 
 const styles = StyleSheet.create({
   rail: {
+    flexShrink: 0,
     backgroundColor: colors.surface,
     borderRightColor: colors.border,
     borderRightWidth: 1,

@@ -22,11 +22,17 @@ export function AppShellFrame({
   currentScreen,
   onScreenChange,
   onTalk,
+  taskProjects,
+  selectedTaskProject,
+  onTaskProjectChange,
 }: {
   children: ReactNode;
   currentScreen: AppScreen;
   onScreenChange: (screen: AppScreen) => void;
   onTalk: () => void;
+  taskProjects?: string[];
+  selectedTaskProject?: string | null;
+  onTaskProjectChange?: (projectName: string | null) => void;
 }) {
   const { width } = useWindowDimensions();
   const layout = appShellLayoutForWidth(width);
@@ -55,6 +61,9 @@ export function AppShellFrame({
                 expanded={layout.expandedRail}
                 onChange={onScreenChange}
                 onTalk={onTalk}
+                taskProjects={taskProjects}
+                selectedTaskProject={selectedTaskProject}
+                onTaskProjectChange={onTaskProjectChange}
               />
             ) : null}
 
