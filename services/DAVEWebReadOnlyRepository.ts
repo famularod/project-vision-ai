@@ -50,11 +50,15 @@ export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnap
     scheduleDocuments: reconciledDocuments,
   }) as DAVEWebScheduleItem[];
   const projects = portfolioProjects(rawProjects, scheduleItems);
+  const projectUpdates = removeUpdatesLinkedToDeletedTasks(
+    rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent),
+    tombstones,
+  );
 
   return Object.freeze({
     projects: Object.freeze(projects),
     scheduleItems: Object.freeze(scheduleItems),
-    projectUpdates: Object.freeze(rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent)),
+    projectUpdates: Object.freeze(projectUpdates),
     referenceDocuments: Object.freeze(reconciledDocuments),
     refreshedAt: new Date().toISOString(),
   });
@@ -168,6 +172,21 @@ function removeTombstonedRecords<T extends { id: string }>(
   return records.filter(record => !deletedIds.has(normalized(record.id)));
 }
 
+function removeUpdatesLinkedToDeletedTasks(
+  updates: readonly CloudProjectUpdate<ProjectUpdate>[],
+  tombstones: readonly DAVESyncTombstone[],
+): CloudProjectUpdate<ProjectUpdate>[] {
+  const deletedTaskIds = new Set(
+    tombstones
+      .filter(tombstone => tombstone.entityType === 'schedule_item')
+      .map(tombstone => normalized(tombstone.recordId)),
+  );
+  return updates.filter(update => {
+    const linkedTaskId = normalized(update.updateData.scheduleItemId ?? '');
+    return !linkedTaskId || !deletedTaskIds.has(linkedTaskId);
+  });
+}
+
 function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdate> | null {
   const row = toRecord(value);
   const data = toRecord(row.update_data);
@@ -195,6 +214,9 @@ function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdat
       date: readString(data.date) ?? readString(row.updated_at) ?? readString(row.created_at) ?? '',
       photos,
       notes: readString(data.notes) ?? '',
+      scheduleItemId: readString(data.scheduleItemId),
+      scheduleTaskName: readString(data.scheduleTaskName),
+      scheduleProjectName: readString(data.scheduleProjectName),
       recipients: isRecord(data.recipients) && Array.isArray(data.recipients.contactIds)
         ? { contactIds: data.recipients.contactIds.filter((item): item is string => typeof item === 'string') }
         : { contactIds: [] },

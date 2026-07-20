@@ -78,6 +78,81 @@ describe('DAVE browser read-only repository', () => {
     expect(snapshot.referenceDocuments).toEqual([]);
   });
 
+  test('excludes evidence linked to a deleted task without hiding project-only evidence', async () => {
+    mockedLoadRows.mockResolvedValue({
+      projects: [{ id: 'p1', name: '2375 Compliance Project', archived: false }],
+      scheduleItems: [
+        {
+          id: 'current-task',
+          item_data: {
+            id: 'current-task',
+            projectName: '2375 Compliance Project',
+            taskName: 'Install handrails',
+            status: 'In Progress',
+            percentComplete: 70,
+          },
+        },
+        {
+          id: 'deleted-task',
+          item_data: {
+            id: 'deleted-task',
+            projectName: '2375 Compliance Project',
+            taskName: 'Form ramp and protective curbs',
+            status: 'In Progress',
+            percentComplete: 50,
+          },
+        },
+      ],
+      referenceDocuments: [],
+      projectUpdates: [
+        {
+          id: 'current-task-update',
+          project_name: '2375 Compliance Project',
+          update_data: {
+            id: 'current-task-update',
+            scheduleItemId: 'current-task',
+            scheduleTaskName: 'Install handrails',
+            photos: [],
+            notes: 'Current task evidence',
+          },
+        },
+        {
+          id: 'deleted-task-update',
+          project_name: '2375 Compliance Project',
+          update_data: {
+            id: 'deleted-task-update',
+            scheduleItemId: 'deleted-task',
+            scheduleTaskName: 'Form ramp and protective curbs',
+            photos: [],
+            notes: 'Evidence from a deleted task',
+          },
+        },
+        {
+          id: 'project-only-update',
+          project_name: '2375 Compliance Project',
+          update_data: {
+            id: 'project-only-update',
+            photos: [],
+            notes: 'General project evidence',
+          },
+        },
+      ],
+      syncTombstones: [{
+        entity_type: 'schedule_item',
+        record_id: 'deleted-task',
+        deleted_at: '2026-07-19T11:00:00.000Z',
+      }],
+    });
+
+    const snapshot = await loadDAVEWebReadOnlySnapshot();
+
+    expect(snapshot.scheduleItems.map(item => item.id)).toEqual(['current-task']);
+    expect(snapshot.projectUpdates.map(update => update.id)).toEqual([
+      'current-task-update',
+      'project-only-update',
+    ]);
+  });
+
   test('matches mobile cloud accounting by applying deletion, safety, authority, and parent-project rules', async () => {
     mockedLoadRows.mockResolvedValue({
       projects: [
