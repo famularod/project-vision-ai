@@ -10,8 +10,25 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import type { ProjectUpdate, ReferenceDocument, ScheduleItem, UpdatePhoto } from '../../types';
+import {
+  SCHEDULE_PRIORITIES,
+  SCHEDULE_STATUSES,
+  type ProjectUpdate,
+  type ReferenceDocument,
+  type ScheduleItem,
+  type SchedulePriority,
+  type ScheduleStatus,
+  type UpdatePhoto,
+} from '../../types';
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
+import { DAVEWebTaskMutationError } from '../../services/DAVEWebSupabaseClient';
+import {
+  buildDAVEWebScheduleItem,
+  createDAVEWebTaskId,
+  DAVEWebTaskValidationError,
+  type DAVEWebScheduleItem,
+  type DAVEWebTaskDraft,
+} from '../../services/DAVEWebTaskEditing';
 import {
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
@@ -37,7 +54,7 @@ const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
   overview: {
     eyebrow: 'DESKTOP PILOT',
     title: 'DAVE Command Center',
-    description: 'A secure, read-only view of the same authorized project records used by the field app.',
+    description: 'A secure, owner-authorized view of the field record with controlled task editing.',
   },
   projects: {
     eyebrow: 'PROJECTS',
@@ -46,8 +63,8 @@ const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
   },
   tasks: {
     eyebrow: 'TASKS & SCHEDULE',
-    title: 'Schedule review',
-    description: 'Review activities, progress, dates, and completion authority.',
+    title: 'Schedule workspace',
+    description: 'Create, edit, and safely delete tasks while preserving shared project authority.',
   },
   evidence: {
     eyebrow: 'DAVE EVIDENCE',
@@ -72,7 +89,7 @@ const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
   settings: {
     eyebrow: 'SETTINGS',
     title: 'Account and cloud sync',
-    description: 'Review the browser connection and pull the latest authorized cloud records into this read-only workspace.',
+    description: 'Review the browser connection and keep this task-editing workspace aligned with the shared cloud record.',
   },
 };
 
@@ -110,9 +127,9 @@ function DesktopSessionGate() {
       </View>
       <View style={styles.gateCard}>
         <Text style={styles.eyebrow}>SECURE DESKTOP PILOT</Text>
-        <Text style={styles.gateTitle}>Sign in to your read-only workspace</Text>
+        <Text style={styles.gateTitle}>Sign in to your authorized workspace</Text>
         <Text style={styles.description}>
-          Access is verified by the server before any project record is loaded. This browser cannot create, edit, delete, upload, approve, or send data.
+          Access is verified by the server before any project record is loaded. Task editing is enabled in this staging pilot; project deletion, uploads, approvals, and sending remain disabled.
         </Text>
 
         {checking ? (
@@ -216,8 +233,8 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
             <Text style={styles.description}>{copy.description}</Text>
           </View>
           <View style={styles.accountPanel}>
-            <View style={styles.readOnlyBadge} accessibilityLabel="Read-only pilot">
-              <Text style={styles.readOnlyBadgeText}>READ ONLY</Text>
+            <View style={styles.readOnlyBadge} accessibilityLabel="Controlled task editing pilot">
+              <Text style={styles.readOnlyBadgeText}>TASK EDITING</Text>
             </View>
             <Text style={styles.accountEmail} numberOfLines={1}>{auth.userEmail}</Text>
             <Pressable onPress={() => { void auth.signOutOfDesktop(); }} accessibilityRole="button">
@@ -227,9 +244,9 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
         </View>
 
         <View style={styles.safetyBanner} accessibilityRole="alert">
-          <Text style={styles.safetyTitle}>Server-authorized browser session</Text>
+          <Text style={styles.safetyTitle}>Owner-authorized staging session</Text>
           <Text style={styles.safetyDetail}>
-            All records are owner-scoped by server policy. Editing, deletion, upload, report approval, and sending are disabled in this pilot.
+            Task creation, editing, and tombstone-protected deletion are enabled. Project deletion, file uploads, report approval, and sending remain disabled.
           </Text>
         </View>
 
@@ -333,9 +350,11 @@ function DesktopPageData({
 
   if (page === 'tasks') {
     return (
-      <Section title={`${tasks.length} schedule item${tasks.length === 1 ? '' : 's'}`} detail="Completed work remains visible in this review page and is clearly labeled.">
-        <TaskList tasks={sortTasksForReview(tasks)} />
-      </Section>
+      <TaskEditingWorkspace
+        tasks={sortTasksForReview(tasks) as DAVEWebScheduleItem[]}
+        projects={snapshot.projects.map(project => project.name)}
+        selectedProject={selectedProject}
+      />
     );
   }
 
@@ -366,7 +385,7 @@ function DesktopPageData({
   if (page === 'settings') {
     return (
       <>
-        <Section title="Cloud connection" detail="This browser reads the owner-authorized cloud record and cannot modify project data.">
+        <Section title="Cloud connection" detail="This browser reads the owner-authorized cloud record and can modify schedule tasks only.">
           <View style={styles.cardGrid}>
             <View style={styles.dataCard}>
               <Text style={styles.cardTitle}>Signed-in account</Text>
@@ -376,7 +395,7 @@ function DesktopPageData({
             <View style={styles.dataCard}>
               <Text style={styles.cardTitle}>Last cloud refresh</Text>
               <Text style={styles.dataDetail}>{formatDateTime(snapshot.refreshedAt)}</Text>
-              <StatusBadge label="Read only" tone="neutral" />
+              <StatusBadge label="Task editing enabled" tone="attention" />
             </View>
           </View>
           <Pressable
@@ -390,7 +409,7 @@ function DesktopPageData({
         <View style={styles.syncBoundaryBanner} accessibilityRole="alert">
           <Text style={styles.syncBoundaryTitle}>What this sync does</Text>
           <Text style={styles.syncBoundaryDetail}>
-            The website pulls the latest cloud records. It cannot upload a change that still exists only on an iPhone or iPad. Use Sync Now on that device first, then return here and select Sync from Cloud Now.
+            The website pulls the latest cloud records automatically every 12 seconds while open. Task changes made here save directly to the shared cloud record. A change that still exists only on an iPhone or iPad must be uploaded with Sync Now on that device first.
           </Text>
         </View>
       </>
@@ -465,7 +484,439 @@ function ProjectCard({
   );
 }
 
-function TaskList({ tasks }: { tasks: readonly ScheduleItem[] }) {
+type TaskFormState = Omit<DAVEWebTaskDraft, 'percentComplete'> & {
+  percentComplete: string;
+};
+
+function TaskEditingWorkspace({
+  tasks,
+  projects,
+  selectedProject,
+}: {
+  tasks: readonly DAVEWebScheduleItem[];
+  projects: readonly string[];
+  selectedProject: string | null;
+}) {
+  const auth = useDesktopAuth();
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<DAVEWebScheduleItem | null>(null);
+  const [pending, setPending] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  const projectOptions = uniqueOptions([
+    ...(selectedProject ? [selectedProject] : []),
+    ...projects,
+    ...tasks.map(task => task.scheduleProjectName || task.projectName),
+  ]);
+  const locationOptions = uniqueOptions(tasks.map(task => task.locationName));
+  const ownerOptions = uniqueOptions(tasks.map(task => task.owner));
+  const contractorOptions = uniqueOptions(tasks.map(task => task.contractor));
+
+  const openCreate = () => {
+    setEditingTask(null);
+    setDeleteCandidate(null);
+    setNotice(null);
+    setEditorOpen(true);
+  };
+
+  const openEdit = (task: ScheduleItem) => {
+    setEditingTask(task as DAVEWebScheduleItem);
+    setDeleteCandidate(null);
+    setNotice(null);
+    setEditorOpen(true);
+  };
+
+  const saveTask = async (draft: DAVEWebTaskDraft) => {
+    if (pending) return;
+    setPending(true);
+    setNotice(null);
+    try {
+      const item = buildDAVEWebScheduleItem({
+        draft,
+        current: editingTask,
+        id: editingTask?.id ?? createDAVEWebTaskId(),
+        now: new Date().toISOString(),
+        actor: auth.userEmail || 'Project manager',
+      });
+      if (editingTask) await auth.updateTask(item);
+      else await auth.createTask(item);
+      setEditorOpen(false);
+      setEditingTask(null);
+      setNotice({
+        tone: 'good',
+        text: editingTask ? 'Task updated and synced to the cloud.' : 'Task created and synced to the cloud.',
+      });
+    } catch (error) {
+      if (
+        error instanceof DAVEWebTaskMutationError &&
+        (error.code === 'conflict' || error.code === 'deleted' || error.code === 'not_found')
+      ) {
+        await auth.refreshSnapshot().catch(() => undefined);
+      }
+      setNotice({ tone: 'danger', text: taskMutationMessage(error) });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const deleteTask = async () => {
+    if (!deleteCandidate || pending) return;
+    setPending(true);
+    setNotice(null);
+    try {
+      await auth.deleteTask(deleteCandidate);
+      setDeleteCandidate(null);
+      setNotice({ tone: 'good', text: 'Task deleted and protected from returning on another device.' });
+    } catch (error) {
+      if (error instanceof DAVEWebTaskMutationError) {
+        await auth.refreshSnapshot().catch(() => undefined);
+      }
+      setNotice({ tone: 'danger', text: taskMutationMessage(error) });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <Section
+      title={`${tasks.length} schedule item${tasks.length === 1 ? '' : 's'}`}
+      detail="Task changes save directly to the owner-authorized cloud record and appear on active mobile devices within the shared refresh window."
+    >
+      <View style={styles.taskActionRow}>
+        <Pressable
+          style={({ pressed }) => [styles.primaryButton, styles.addTaskButton, pressed && styles.buttonPressed]}
+          onPress={openCreate}
+          disabled={pending}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>+ Add Task</Text>
+        </Pressable>
+        <Text style={styles.taskSyncHint}>Automatic cloud refresh: every 12 seconds</Text>
+      </View>
+
+      {notice ? (
+        <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
+          <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+        </View>
+      ) : null}
+
+      {deleteCandidate ? (
+        <View style={styles.deleteConfirm} accessibilityRole="alert">
+          <View style={styles.dataGrow}>
+            <Text style={styles.deleteConfirmTitle}>Delete “{deleteCandidate.taskName}”?</Text>
+            <Text style={styles.dataDetail}>A permanent deletion marker prevents this task from returning after another device syncs.</Text>
+          </View>
+          <View style={styles.inlineButtons}>
+            <Pressable
+              style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+              onPress={() => setDeleteCandidate(null)}
+              disabled={pending}
+              accessibilityRole="button"
+            >
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+              onPress={() => { void deleteTask(); }}
+              disabled={pending}
+              accessibilityRole="button"
+            >
+              {pending ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>Delete Task</Text>}
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {editorOpen ? (
+        <TaskEditor
+          key={editingTask?.id ?? 'new-task'}
+          task={editingTask}
+          defaultProject={selectedProject || projectOptions[0] || ''}
+          projectOptions={projectOptions}
+          locationOptions={locationOptions}
+          ownerOptions={ownerOptions}
+          contractorOptions={contractorOptions}
+          pending={pending}
+          onCancel={() => {
+            if (pending) return;
+            setEditorOpen(false);
+            setEditingTask(null);
+          }}
+          onSave={saveTask}
+        />
+      ) : null}
+
+      <TaskList
+        tasks={tasks}
+        onEdit={openEdit}
+        onDelete={task => {
+          setEditorOpen(false);
+          setEditingTask(null);
+          setNotice(null);
+          setDeleteCandidate(task as DAVEWebScheduleItem);
+        }}
+      />
+    </Section>
+  );
+}
+
+function TaskEditor({
+  task,
+  defaultProject,
+  projectOptions,
+  locationOptions,
+  ownerOptions,
+  contractorOptions,
+  pending,
+  onCancel,
+  onSave,
+}: {
+  task: DAVEWebScheduleItem | null;
+  defaultProject: string;
+  projectOptions: readonly string[];
+  locationOptions: readonly string[];
+  ownerOptions: readonly string[];
+  contractorOptions: readonly string[];
+  pending: boolean;
+  onCancel: () => void;
+  onSave: (draft: DAVEWebTaskDraft) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<TaskFormState>(() => taskFormState(task, defaultProject));
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+
+  const updateField = <K extends keyof TaskFormState,>(key: K, value: TaskFormState[K]) => {
+    setDraft(previous => ({ ...previous, [key]: value }));
+  };
+
+  const submit = async () => {
+    setValidationMessage(null);
+    const percentComplete = Number(draft.percentComplete);
+    if (!Number.isFinite(percentComplete) || percentComplete < 0 || percentComplete > 100) {
+      setValidationMessage('Percent complete must be a number from 0 to 100.');
+      return;
+    }
+    try {
+      await onSave({ ...draft, percentComplete });
+    } catch (error) {
+      setValidationMessage(taskMutationMessage(error));
+    }
+  };
+
+  return (
+    <View style={styles.editorCard}>
+      <Text style={styles.editorTitle}>{task ? 'Edit Task' : 'Add Task'}</Text>
+      <Text style={styles.sectionDetail}>Choose an existing value when available, or type the correct value manually.</Text>
+
+      <LabeledTextField label="Task name" value={draft.taskName} onChangeText={value => updateField('taskName', value)} />
+      <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
+      <ChoiceOrTypeField label="Location / area" value={draft.locationName} options={locationOptions} onChange={value => updateField('locationName', value)} optional />
+
+      <View style={styles.twoColumnFields}>
+        <View style={styles.flexField}>
+          <LabeledTextField label="Start date" value={draft.startDate} onChangeText={value => updateField('startDate', value)} placeholder="YYYY-MM-DD" optional />
+        </View>
+        <View style={styles.flexField}>
+          <LabeledTextField label="Finish / due date" value={draft.finishDate} onChangeText={value => updateField('finishDate', value)} placeholder="YYYY-MM-DD" optional />
+        </View>
+      </View>
+
+      <ChoiceOrTypeField label="Owner" value={draft.owner} options={ownerOptions} onChange={value => updateField('owner', value)} optional />
+      <ChoiceOrTypeField label="Contractor" value={draft.contractor} options={contractorOptions} onChange={value => updateField('contractor', value)} optional />
+      <LabeledTextField label="Milestone" value={draft.milestone} onChangeText={value => updateField('milestone', value)} optional />
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Status</Text>
+        <OptionButtons<ScheduleStatus>
+          options={SCHEDULE_STATUSES}
+          value={draft.status}
+          onChange={value => updateField('status', value)}
+        />
+      </View>
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Priority</Text>
+        <OptionButtons<SchedulePriority>
+          options={SCHEDULE_PRIORITIES}
+          value={draft.priority}
+          onChange={value => updateField('priority', value)}
+        />
+      </View>
+      <LabeledTextField
+        label="Percent complete"
+        value={draft.percentComplete}
+        onChangeText={value => updateField('percentComplete', value)}
+        placeholder="0"
+        numeric
+      />
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Notes <Text style={styles.optionalLabel}>(optional)</Text></Text>
+        <TextInput
+          value={draft.notes}
+          onChangeText={value => updateField('notes', value)}
+          multiline
+          numberOfLines={4}
+          placeholder="Jobsite note"
+          placeholderTextColor="#8A909C"
+          style={[styles.input, styles.notesInput]}
+        />
+      </View>
+
+      {validationMessage ? (
+        <View style={styles.errorBanner} accessibilityRole="alert"><Text style={styles.errorText}>{validationMessage}</Text></View>
+      ) : null}
+      <View style={styles.inlineButtons}>
+        <Pressable style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]} onPress={onCancel} disabled={pending} accessibilityRole="button">
+          <Text style={styles.secondaryButtonText}>Cancel</Text>
+        </Pressable>
+        <Pressable style={({ pressed }) => [styles.primaryButton, styles.saveTaskButton, pressed && styles.buttonPressed]} onPress={() => { void submit(); }} disabled={pending} accessibilityRole="button">
+          {pending ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{task ? 'Save Task Changes' : 'Create Task'}</Text>}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function LabeledTextField({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  optional = false,
+  numeric = false,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder?: string;
+  optional?: boolean;
+  numeric?: boolean;
+}) {
+  return (
+    <View style={styles.fieldGroup}>
+      <Text style={styles.fieldLabel}>{label} {optional ? <Text style={styles.optionalLabel}>(optional)</Text> : null}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#8A909C"
+        keyboardType={numeric ? 'number-pad' : 'default'}
+        inputMode={numeric ? 'numeric' : 'text'}
+        style={styles.input}
+      />
+    </View>
+  );
+}
+
+function ChoiceOrTypeField({
+  label,
+  value,
+  options,
+  onChange,
+  optional = false,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  onChange: (value: string) => void;
+  optional?: boolean;
+}) {
+  return (
+    <View style={styles.fieldGroup}>
+      <Text style={styles.fieldLabel}>{label} {optional ? <Text style={styles.optionalLabel}>(optional)</Text> : null}</Text>
+      {options.length > 0 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.optionRow}>
+          {options.map(option => (
+            <Pressable
+              key={option}
+              onPress={() => onChange(option)}
+              style={({ pressed }) => [styles.smallChoice, normalizedName(value) === normalizedName(option) && styles.choiceActive, pressed && styles.buttonPressed]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: normalizedName(value) === normalizedName(option) }}
+            >
+              <Text style={[styles.choiceText, normalizedName(value) === normalizedName(option) && styles.choiceTextActive]}>{option}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      ) : null}
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        placeholder={`Type ${label.toLowerCase()}`}
+        placeholderTextColor="#8A909C"
+        style={styles.input}
+      />
+    </View>
+  );
+}
+
+function OptionButtons<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly T[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <View style={styles.optionRow}>
+      {options.map(option => (
+        <Pressable
+          key={option}
+          onPress={() => onChange(option)}
+          style={({ pressed }) => [styles.smallChoice, value === option && styles.choiceActive, pressed && styles.buttonPressed]}
+          accessibilityRole="button"
+          accessibilityState={{ selected: value === option }}
+        >
+          <Text style={[styles.choiceText, value === option && styles.choiceTextActive]}>{option}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function taskFormState(task: DAVEWebScheduleItem | null, defaultProject: string): TaskFormState {
+  return {
+    taskName: task?.taskName ?? '',
+    projectName: task?.scheduleProjectName || task?.projectName || defaultProject,
+    locationName: task?.locationName ?? '',
+    startDate: task?.startDate ?? '',
+    finishDate: task?.finishDate ?? '',
+    milestone: task?.milestone ?? '',
+    owner: task?.owner ?? '',
+    contractor: task?.contractor ?? '',
+    percentComplete: String(task?.percentComplete ?? 0),
+    priority: task?.priority ?? 'Medium',
+    status: task?.status ?? 'Not Started',
+    notes: task?.notes ?? '',
+  };
+}
+
+function taskMutationMessage(error: unknown): string {
+  if (error instanceof DAVEWebTaskMutationError || error instanceof DAVEWebTaskValidationError) {
+    return error.message;
+  }
+  return 'The task could not be saved. Refresh the workspace and try again.';
+}
+
+function uniqueOptions(values: readonly (string | null | undefined)[]) {
+  const options = new Map<string, string>();
+  values.forEach(value => {
+    const text = value?.trim();
+    const key = normalizedName(text);
+    if (text && key && !options.has(key)) options.set(key, text);
+  });
+  return [...options.values()];
+}
+
+function TaskList({
+  tasks,
+  onEdit,
+  onDelete,
+}: {
+  tasks: readonly ScheduleItem[];
+  onEdit?: (task: ScheduleItem) => void;
+  onDelete?: (task: ScheduleItem) => void;
+}) {
   if (tasks.length === 0) return <EmptyState text="No schedule items match this scope." />;
   return (
     <View style={styles.list}>
@@ -480,6 +931,20 @@ function TaskList({ tasks }: { tasks: readonly ScheduleItem[] }) {
           </View>
           <Text style={styles.dataDetail}>{task.percentComplete}% complete · Finish {formatDate(task.finishDate)} · {task.priority} priority</Text>
           {task.owner ? <Text style={styles.dataMeta}>Owner: {task.owner}</Text> : null}
+          {onEdit || onDelete ? (
+            <View style={styles.taskCardActions}>
+              {onEdit ? (
+                <Pressable style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]} onPress={() => onEdit(task)} accessibilityRole="button">
+                  <Text style={styles.secondaryButtonText}>Edit</Text>
+                </Pressable>
+              ) : null}
+              {onDelete ? (
+                <Pressable style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]} onPress={() => onDelete(task)} accessibilityRole="button">
+                  <Text style={styles.deleteText}>Delete</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       ))}
     </View>
@@ -572,7 +1037,7 @@ function DesktopSidebar({ pathname, selectedProject }: { pathname: string; selec
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} />
         ))}
       </View>
-      <Text style={styles.pilotNote}>Phase 3 · Authorized read-only pilot</Text>
+      <Text style={styles.pilotNote}>Phase 4 · Controlled task-editing pilot</Text>
     </View>
   );
 }
@@ -731,6 +1196,28 @@ const styles = StyleSheet.create({
   cardTitle: { color: '#1B1F27', fontSize: 17, lineHeight: 23, fontWeight: '900' },
   dataMeta: { color: '#737A87', fontSize: 13, lineHeight: 19 },
   dataDetail: { color: '#4E5562', fontSize: 15, lineHeight: 22 },
+  taskActionRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md },
+  addTaskButton: { minWidth: 180 },
+  taskSyncHint: { color: '#68717E', fontSize: 13, lineHeight: 19 },
+  taskCardActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.xs },
+  compactActionButton: { minWidth: 90 },
+  deleteTextButton: { minHeight: 42, justifyContent: 'center', paddingHorizontal: spacing.md },
+  deleteText: { color: '#B52D2D', fontSize: 14, lineHeight: 20, fontWeight: '900' },
+  deleteConfirm: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#E5A4A4', backgroundColor: '#FFF3F3', padding: spacing.lg, gap: spacing.lg },
+  deleteConfirmTitle: { color: '#8F2222', fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  dangerButton: { minHeight: 42, borderRadius: 12, backgroundColor: '#C73535', alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
+  editorCard: { borderRadius: 20, borderWidth: 1, borderColor: '#9ABFE9', backgroundColor: '#F8FBFF', padding: spacing.xl, gap: spacing.lg },
+  editorTitle: { color: '#171A21', fontSize: 24, lineHeight: 31, fontWeight: '900' },
+  twoColumnFields: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
+  flexField: { flexGrow: 1, flexBasis: 280 },
+  optionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  smallChoice: { minHeight: 38, borderRadius: 999, borderWidth: 1, borderColor: '#CDD4DF', paddingHorizontal: spacing.md, justifyContent: 'center', backgroundColor: '#FFFFFF' },
+  optionalLabel: { color: '#7B828E', fontWeight: '500' },
+  notesInput: { minHeight: 112, paddingTop: spacing.md, textAlignVertical: 'top' },
+  inlineButtons: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: spacing.sm },
+  saveTaskButton: { minWidth: 190 },
+  successBanner: { borderRadius: 12, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md },
+  successText: { color: '#195B35', fontSize: 14, lineHeight: 21 },
   statusBadge: { borderRadius: 999, paddingHorizontal: spacing.sm, paddingVertical: 5 },
   statusBadge_good: { backgroundColor: '#EAF8EF' },
   statusBadge_attention: { backgroundColor: '#FFF3DD' },

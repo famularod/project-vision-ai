@@ -17,6 +17,10 @@ import {
   DAVEWebAuthorizationError,
   daveWebSupabaseGateway,
 } from '../../services/DAVEWebSupabaseClient';
+import {
+  scheduleItemForCloud,
+  type DAVEWebScheduleItem,
+} from '../../services/DAVEWebTaskEditing';
 
 export type DesktopAuthPhase =
   | 'checking'
@@ -36,6 +40,9 @@ type DesktopAuthContextValue = Readonly<{
   signInWithPassword: (email: string, password: string) => Promise<boolean>;
   signOutOfDesktop: () => Promise<void>;
   refreshSnapshot: () => Promise<void>;
+  createTask: (item: DAVEWebScheduleItem) => Promise<void>;
+  updateTask: (item: DAVEWebScheduleItem) => Promise<void>;
+  deleteTask: (item: DAVEWebScheduleItem) => Promise<void>;
 }>;
 
 const DesktopAuthContext = createContext<DesktopAuthContextValue | null>(null);
@@ -59,7 +66,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     setPhase(nextPhase);
   }, []);
 
-  const loadAuthorizedSnapshot = useCallback(async (session: Session | null) => {
+  const loadAuthorizedSnapshot = useCallback(async (
+    session: Session | null,
+    options: { background?: boolean } = {},
+  ) => {
     if (!session?.user) {
       clearSessionView();
       return false;
@@ -67,7 +77,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
     const loadSequence = loadSequenceRef.current + 1;
     loadSequenceRef.current = loadSequence;
-    if (mountedRef.current) {
+    if (mountedRef.current && !options.background) {
       setPhase('loading');
       setMessage(null);
       setUserEmail(session.user.email ?? null);
@@ -82,7 +92,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       return true;
     } catch (error) {
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
-      setSnapshot(null);
+      if (!options.background) setSnapshot(null);
       if (error instanceof DAVEWebAuthorizationError) {
         await daveWebSupabaseGateway.signOut();
         if (mountedRef.current) {
@@ -91,8 +101,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         }
         return false;
       }
-      setPhase('error');
-      setMessage('Authorized project data could not be loaded. Try refreshing the workspace.');
+      if (options.background) {
+        setMessage('Automatic cloud refresh is waiting. Your current workspace remains available.');
+      } else {
+        setPhase('error');
+        setMessage('Authorized project data could not be loaded. Try refreshing the workspace.');
+      }
       return false;
     }
   }, [clearSessionView]);
@@ -172,6 +186,61 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     await loadAuthorizedSnapshot(status.session);
   }, [clearSessionView, loadAuthorizedSnapshot]);
 
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    let active = true;
+    let inFlight = false;
+
+    const refreshInBackground = async () => {
+      if (!active || inFlight) return;
+      inFlight = true;
+      try {
+        const status = await daveWebSupabaseGateway.getSessionStatus();
+        if (!active) return;
+        if (!status.session) {
+          clearSessionView();
+          return;
+        }
+        await loadAuthorizedSnapshot(status.session, { background: true });
+      } catch {
+        if (active) {
+          setMessage('Automatic cloud refresh is waiting. Your current workspace remains available.');
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = setInterval(() => { void refreshInBackground(); }, 12_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [clearSessionView, loadAuthorizedSnapshot, phase]);
+
+  const createTask = useCallback(async (item: DAVEWebScheduleItem) => {
+    await daveWebSupabaseGateway.createAuthorizedScheduleItem(
+      scheduleItemForCloud(item),
+    );
+    await refreshSnapshot();
+  }, [refreshSnapshot]);
+
+  const updateTask = useCallback(async (item: DAVEWebScheduleItem) => {
+    await daveWebSupabaseGateway.updateAuthorizedScheduleItem(
+      scheduleItemForCloud(item),
+      item.cloudUpdatedAt,
+    );
+    await refreshSnapshot();
+  }, [refreshSnapshot]);
+
+  const deleteTask = useCallback(async (item: DAVEWebScheduleItem) => {
+    await daveWebSupabaseGateway.deleteAuthorizedScheduleItem(
+      item.id,
+      item.cloudUpdatedAt,
+    );
+    await refreshSnapshot();
+  }, [refreshSnapshot]);
+
   const value = useMemo<DesktopAuthContextValue>(() => ({
     phase,
     userEmail,
@@ -181,7 +250,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     signInWithPassword,
     signOutOfDesktop,
     refreshSnapshot,
+    createTask,
+    updateTask,
+    deleteTask,
   }), [
+    createTask,
+    deleteTask,
     message,
     phase,
     refreshSnapshot,
@@ -189,6 +263,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     signInWithPassword,
     signOutOfDesktop,
     snapshot,
+    updateTask,
     userEmail,
   ]);
 

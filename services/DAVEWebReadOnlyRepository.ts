@@ -17,10 +17,11 @@ import {
 } from './PIEScheduleReconciliation';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
+import type { DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
-  scheduleItems: readonly ScheduleItem[];
+  scheduleItems: readonly DAVEWebScheduleItem[];
   projectUpdates: readonly CloudProjectUpdate<ProjectUpdate>[];
   referenceDocuments: readonly ReferenceDocument[];
   refreshedAt: string;
@@ -47,7 +48,7 @@ export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnap
   const scheduleItems = selectAuthoritativeScheduleItems({
     scheduleItems: reconciledScheduleItems,
     scheduleDocuments: reconciledDocuments,
-  });
+  }) as DAVEWebScheduleItem[];
   const projects = portfolioProjects(rawProjects, scheduleItems);
 
   return Object.freeze({
@@ -99,7 +100,7 @@ function normalizeProject(value: unknown): CloudProject | null {
   };
 }
 
-function normalizeScheduleItem(value: unknown): ScheduleItem | null {
+function normalizeScheduleItem(value: unknown): DAVEWebScheduleItem | null {
   const row = toRecord(value);
   const data = toRecord(row.item_data);
   if (!isDAVESafeCloudScheduleRecord(data)) return null;
@@ -137,6 +138,7 @@ function normalizeScheduleItem(value: unknown): ScheduleItem | null {
     sourceDocumentId: readString(data.sourceDocumentId),
     createdAt: readString(data.createdAt) ?? readString(row.created_at) ?? '',
     updatedAt: readString(data.updatedAt) ?? readString(row.updated_at),
+    cloudUpdatedAt: readString(row.updated_at),
   };
 }
 

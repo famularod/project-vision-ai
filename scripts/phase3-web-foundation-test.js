@@ -33,8 +33,8 @@ for (const dependency of ['expo-router', 'react-dom', 'react-native-web', '@expo
 for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'app/tasks.tsx', 'app/evidence.tsx', 'app/photos.tsx', 'app/documents.tsx', 'app/reports.tsx', 'app/settings.tsx', 'app/+not-found.tsx']) {
   assert(exists(route), `${route} must exist.`);
 }
-assert(shell.includes('Server-authorized browser session'), 'The pilot must visibly identify its authorization boundary.');
-assert(shell.includes('Editing, deletion, upload, report approval, and sending are disabled'), 'The pilot must visibly preserve its read-only boundary.');
+assert(shell.includes('Owner-authorized staging session'), 'The pilot must visibly identify its authorization boundary.');
+assert(shell.includes('Project deletion, file uploads, report approval, and sending remain disabled'), 'The pilot must visibly preserve non-task mutation boundaries.');
 assert(shell.includes('Cloud task accounting'), 'The Command Center must expose an auditable task total breakdown.');
 assert(shell.includes('Sync from Cloud Now'), 'The browser must expose its cloud refresh action in Settings.');
 assert(!provider.includes('SupabaseService'), 'The web provider must not import the native sync service.');
@@ -48,9 +48,9 @@ assert(readOnlyRepository.includes('scheduleOverviewProjectNames'), 'The browser
 for (const forbiddenMutation of ['createProject(', 'updateProject(', 'deleteProject(', 'saveProjectUpdate(', 'upsertScheduleItem(', 'upsertReferenceDocument(']) {
   assert(!readOnlyRepository.includes(forbiddenMutation), `The read-only repository must not call ${forbiddenMutation}.`);
 }
-for (const forbiddenOperation of ['.insert(', '.upsert(', '.update(', '.delete(', '.storage.']) {
-  assert(!webSupabaseClient.includes(forbiddenOperation), `The browser Supabase gateway must not expose ${forbiddenOperation}.`);
-}
+assert(!webSupabaseClient.includes(".from('projects').update("), 'The browser gateway must not expose project editing.');
+assert(!webSupabaseClient.includes(".from('projects').delete("), 'The browser gateway must not expose project deletion.');
+assert(!webSupabaseClient.includes('.storage.'), 'The browser gateway must not expose file storage mutations.');
 assert(!webSupabaseClient.includes('expo-file-system'), 'The browser Supabase gateway must not import native file support.');
 assert(!webSupabaseClient.includes('expo-secure-store'), 'The browser Supabase gateway must not import native SecureStore.');
 assert(!readOnlyRepository.includes("from '@react-native-async-storage/async-storage'"), 'The browser read repository must not import native AsyncStorage.');
