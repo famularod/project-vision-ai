@@ -1,8 +1,20 @@
 import type { ScheduleItem } from '../types';
 import { daysUntilDate, parseFlexibleDate } from '../utils/date';
-import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  normalizeScheduleStatus,
+  scheduleProgressIsComplete,
+} from './ScheduleProgressInvariant';
 
 export type DAVEProjectScheduleHealth = 'On Track' | 'At Risk' | 'Blocked';
+
+export type ScheduleTaskAccounting = Readonly<{
+  total: number;
+  complete: number;
+  open: number;
+  inProgress: number;
+  waiting: number;
+  notStarted: number;
+}>;
 
 export type DAVEProjectScheduleRollup = {
   projectName: string;
@@ -39,6 +51,43 @@ export function scheduleTaskIsComplete(item: ScheduleItem) {
   return scheduleProgressIsComplete(item);
 }
 
+/** One canonical accounting model for every task total shown in the app. */
+export function buildScheduleTaskAccounting(
+  records: readonly Readonly<{ status: unknown; percentComplete: unknown }>[],
+): ScheduleTaskAccounting {
+  let complete = 0;
+  let inProgress = 0;
+  let waiting = 0;
+  let notStarted = 0;
+
+  for (const record of records) {
+    const status = normalizeScheduleStatus(record.status);
+    const numericPercent = typeof record.percentComplete === 'number'
+      ? record.percentComplete
+      : typeof record.percentComplete === 'string' && record.percentComplete.trim()
+        ? Number(record.percentComplete.replace('%', '').trim())
+        : Number.NaN;
+    const percentComplete = Number.isFinite(numericPercent)
+      ? Math.max(0, Math.min(100, Math.round(numericPercent)))
+      : 0;
+
+    if (status === 'Complete' && percentComplete === 100) complete += 1;
+    else if (status === 'Waiting') waiting += 1;
+    else if (status === 'Not Started' && percentComplete === 0) notStarted += 1;
+    else inProgress += 1;
+  }
+
+  const total = records.length;
+  return Object.freeze({
+    total,
+    complete,
+    open: total - complete,
+    inProgress,
+    waiting,
+    notStarted,
+  });
+}
+
 export function scheduleTasksForParentProject(
   projectName: string,
   items: ScheduleItem[],
@@ -59,8 +108,8 @@ export function buildDAVEProjectScheduleRollup({
   now?: Date;
 }): DAVEProjectScheduleRollup {
   const tasks = scheduleTasksForParentProject(projectName, items);
+  const accounting = buildScheduleTaskAccounting(tasks);
   const incompleteTasks = tasks.filter(item => !scheduleTaskIsComplete(item));
-  const completedCount = tasks.length - incompleteTasks.length;
   const overdueCount = incompleteTasks.filter(item => {
     const days = daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined);
     return days !== null && days < 0;
@@ -76,7 +125,7 @@ export function buildDAVEProjectScheduleRollup({
   const undatedCount = incompleteTasks.filter(item =>
     daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined) === null,
   ).length;
-  const waitingCount = incompleteTasks.filter(item => item.status === 'Waiting').length;
+  const waitingCount = accounting.waiting;
   const totalWeight = tasks.reduce((total, item) => total + taskDurationWeight(item), 0);
   const weightedProgress = tasks.reduce(
     (total, item) => total + taskDurationWeight(item) * item.percentComplete,
@@ -108,9 +157,9 @@ export function buildDAVEProjectScheduleRollup({
   return {
     projectName,
     tasks,
-    taskCount: tasks.length,
-    completedCount,
-    openCount: incompleteTasks.length,
+    taskCount: accounting.total,
+    completedCount: accounting.complete,
+    openCount: accounting.open,
     overdueCount,
     dueSoonCount,
     scheduledLaterCount,

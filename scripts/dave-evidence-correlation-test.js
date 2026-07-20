@@ -289,8 +289,44 @@ assert.strictEqual(oldPhotoAfterPmAnalysis.tasks[0].conclusion, 'verified_comple
 const unverifiedScheduleComplete = buildDAVEEvidenceCorrelations({
   scheduleItems: [task('schedule-complete', { status: 'Complete', percentComplete: 100 })],
 });
-assert.strictEqual(unverifiedScheduleComplete.tasks[0].conclusion, 'conflicting_evidence');
-assert.match(unverifiedScheduleComplete.tasks[0].explanation, /without PM verification/i);
+assert.strictEqual(unverifiedScheduleComplete.tasks[0].conclusion, 'schedule_only');
+assert.strictEqual(unverifiedScheduleComplete.tasks[0].needsVerification, false);
+assert.match(unverifiedScheduleComplete.tasks[0].explanation, /current schedule records this task complete/i);
+
+const importedCompletionAfterOlderFieldProgress = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('imported-complete-after-progress', {
+    status: 'Complete',
+    percentComplete: 100,
+    importedAt: '2026-07-16T15:00:00.000Z',
+  })],
+  updates: [update(
+    'older-import-progress',
+    'imported-complete-after-progress',
+    'The work is still in progress.',
+    [],
+    '2026-07-16T13:00:00.000Z',
+  )],
+});
+assert.strictEqual(importedCompletionAfterOlderFieldProgress.tasks[0].conclusion, 'schedule_only');
+assert.strictEqual(importedCompletionAfterOlderFieldProgress.tasks[0].needsVerification, false);
+
+const fieldProgressAfterImportedCompletion = buildDAVEEvidenceCorrelations({
+  scheduleItems: [task('progress-after-imported-complete', {
+    status: 'Complete',
+    percentComplete: 100,
+    importedAt: '2026-07-16T12:00:00.000Z',
+  })],
+  updates: [update(
+    'newer-import-progress',
+    'progress-after-imported-complete',
+    'The work is still in progress.',
+    [],
+    '2026-07-16T15:00:00.000Z',
+  )],
+});
+assert.strictEqual(fieldProgressAfterImportedCompletion.tasks[0].conclusion, 'conflicting_evidence');
+assert.strictEqual(fieldProgressAfterImportedCompletion.tasks[0].needsVerification, true);
+assert.match(fieldProgressAfterImportedCompletion.tasks[0].explanation, /newer field evidence/i);
 
 const visibleAgainstNotStarted = buildDAVEEvidenceCorrelations({
   scheduleItems: [task('visual-task', { status: 'Not Started', percentComplete: 0 })],

@@ -390,6 +390,7 @@ import {
 import {
   normalizeScheduleStatus,
   reconcileScheduleProgress,
+  reconcileScheduleProgressEdit,
 } from './services/ScheduleProgressInvariant';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -9925,9 +9926,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ) || (
       typeof next.status === 'string' && next.status !== current.status
     );
+    const progress = progressChanged
+      ? reconcileScheduleProgressEdit(current, {
+          ...(typeof next.status === 'string' && next.status !== current.status
+            ? { status: next.status }
+            : {}),
+          ...(typeof next.percentComplete === 'number' &&
+          next.percentComplete !== current.percentComplete
+            ? { percentComplete: next.percentComplete }
+            : {}),
+        })
+      : null;
     const updated = normalizeScheduleItem({
       ...current,
       ...next,
+      ...(progress || {}),
       updatedAt: now,
       ...(progressChanged ? {
         progressSource: 'project_manager' as const,

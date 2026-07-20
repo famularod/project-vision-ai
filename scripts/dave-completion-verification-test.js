@@ -39,6 +39,45 @@ function loadTypeScriptModule(relativePath) {
 const completion = loadTypeScriptModule('services/DAVECompletionVerification.ts');
 const communication = loadTypeScriptModule('services/PIEScheduleCommunicationImport.ts');
 const importBatch = loadTypeScriptModule('services/PIEScheduleImportBatch.ts');
+const progress = loadTypeScriptModule('services/ScheduleProgressInvariant.ts');
+
+assert.deepStrictEqual(
+  progress.reconcileScheduleProgressEdit(
+    { status: 'Complete', percentComplete: 100 },
+    { status: 'In Progress' },
+  ),
+  { status: 'In Progress', percentComplete: 99 },
+  'Changing only status must reopen a completed task.',
+);
+assert.deepStrictEqual(
+  progress.reconcileScheduleProgressEdit(
+    { status: 'Complete', percentComplete: 100 },
+    { percentComplete: 50 },
+  ),
+  { status: 'In Progress', percentComplete: 50 },
+  'Reducing only percent must reopen a completed task.',
+);
+assert.deepStrictEqual(
+  progress.reconcileScheduleProgressEdit(
+    { status: 'Complete', percentComplete: 100 },
+    { status: 'Not Started' },
+  ),
+  { status: 'Not Started', percentComplete: 0 },
+);
+assert.deepStrictEqual(
+  progress.reconcileScheduleProgressEdit(
+    { status: 'In Progress', percentComplete: 65 },
+    { status: 'Complete' },
+  ),
+  { status: 'Complete', percentComplete: 100 },
+);
+assert.deepStrictEqual(
+  progress.reconcileScheduleProgressEdit(
+    { status: 'Complete', percentComplete: 100 },
+    { status: 'In Progress', percentComplete: 40 },
+  ),
+  { status: 'In Progress', percentComplete: 40 },
+);
 
 const imported = communication.extractScheduleItemsFromCommunicationText({
   text: 'Task A was completed in Canopy B.',
@@ -108,5 +147,6 @@ assert.strictEqual(negative.items[0].completionVerification, null, 'A negative s
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 assert(app.includes('Confirm Completed') && app.includes('Capture Verification Photo') && app.includes('Not Complete'));
 assert(app.includes('findExactScheduleTaskForCompletionClaim') && app.includes('mergeReportedCompletionClaim'));
+assert(app.includes('reconcileScheduleProgressEdit(current'), 'Mobile task edits must use the reopening-aware progress rule.');
 
 console.log('PASS DAVE completion verification');

@@ -668,7 +668,7 @@ function buildScheduleTruth(
         conflicting || completionState === 'reported_complete' ||
         (completionState === 'evidence_supported' && verification?.status !== 'pm_verified'),
       contradiction: correlation?.contradiction || (conflicting
-        ? 'The task is marked complete without PM verification or connected completion evidence.'
+        ? 'Current project records disagree about task completion.'
         : null),
     };
   });

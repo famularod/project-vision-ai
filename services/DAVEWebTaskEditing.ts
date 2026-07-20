@@ -3,7 +3,10 @@ import type {
   SchedulePriority,
   ScheduleStatus,
 } from '../types';
-import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
+import {
+  reconcileScheduleProgress,
+  reconcileScheduleProgressEdit,
+} from './ScheduleProgressInvariant';
 
 export type DAVEWebScheduleItem = ScheduleItem & Readonly<{
   /** Exact cloud row revision used for optimistic concurrency checks. */
@@ -56,7 +59,24 @@ export function buildDAVEWebScheduleItem({
 }): DAVEWebScheduleItem {
   const taskName = requiredText(draft.taskName, 'Task name');
   const projectName = requiredText(draft.projectName, 'Project');
-  const progress = reconcileScheduleProgress(draft.status, draft.percentComplete);
+  const normalizedDraftProgress = reconcileScheduleProgress(
+    draft.status,
+    draft.percentComplete,
+  );
+  const statusChanged = !current || draft.status !== current.status;
+  const draftPercentNumber = typeof draft.percentComplete === 'number'
+    ? draft.percentComplete
+    : Number(draft.percentComplete.replace('%', '').trim());
+  const boundedDraftPercent = Number.isFinite(draftPercentNumber)
+    ? Math.max(0, Math.min(100, Math.round(draftPercentNumber)))
+    : current?.percentComplete;
+  const percentChanged = !current || boundedDraftPercent !== current.percentComplete;
+  const progress = current
+    ? reconcileScheduleProgressEdit(current, {
+        ...(statusChanged ? { status: draft.status } : {}),
+        ...(percentChanged ? { percentComplete: draft.percentComplete } : {}),
+      })
+    : normalizedDraftProgress;
   const currentProjectScope = normalized(current?.scheduleProjectName || current?.projectName);
   const projectNameForRecord = current && currentProjectScope === normalized(projectName)
     ? current.projectName

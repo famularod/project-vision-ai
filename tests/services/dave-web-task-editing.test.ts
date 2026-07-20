@@ -85,6 +85,46 @@ describe('DAVE desktop task editing model', () => {
     expect(updated.cloudUpdatedAt).toBe('2026-07-18T18:00:01.000Z');
   });
 
+  test('reopens a completed task when only its status is changed', () => {
+    const current = buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, status: 'Complete', percentComplete: 100 },
+      id: 'task-reopen-status',
+      now: '2026-07-18T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    const updated = buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, status: 'In Progress', percentComplete: 100 },
+      current,
+      id: current.id,
+      now: '2026-07-19T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(updated.status).toBe('In Progress');
+    expect(updated.percentComplete).toBe(99);
+  });
+
+  test('reopens a completed task when only its percent is reduced', () => {
+    const current = buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, status: 'Complete', percentComplete: 100 },
+      id: 'task-reopen-percent',
+      now: '2026-07-18T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    const updated = buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, status: 'Complete', percentComplete: 50 },
+      current,
+      id: current.id,
+      now: '2026-07-19T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(updated.status).toBe('In Progress');
+    expect(updated.percentComplete).toBe(50);
+  });
+
   test('removes browser-only revision metadata before cloud persistence', () => {
     const task = buildDAVEWebScheduleItem({
       draft: BASE_DRAFT,

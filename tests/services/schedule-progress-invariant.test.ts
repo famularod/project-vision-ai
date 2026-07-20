@@ -1,6 +1,7 @@
 import {
   normalizeScheduleStatus,
   reconcileScheduleProgress,
+  reconcileScheduleProgressEdit,
   scheduleProgressIsComplete,
 } from '../../services/ScheduleProgressInvariant';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
@@ -57,6 +58,21 @@ describe('schedule progress invariant', () => {
       status: 'Waiting',
       percentComplete: 0,
     });
+  });
+
+  it('allows either progress control to reopen a completed task', () => {
+    expect(reconcileScheduleProgressEdit(
+      { status: 'Complete', percentComplete: 100 },
+      { status: 'In Progress' },
+    )).toEqual({ status: 'In Progress', percentComplete: 99 });
+    expect(reconcileScheduleProgressEdit(
+      { status: 'Complete', percentComplete: 100 },
+      { percentComplete: 50 },
+    )).toEqual({ status: 'In Progress', percentComplete: 50 });
+    expect(reconcileScheduleProgressEdit(
+      { status: 'Complete', percentComplete: 100 },
+      { status: 'Not Started' },
+    )).toEqual({ status: 'Not Started', percentComplete: 0 });
   });
 
   it('applies exact status semantics to imported CSV rows', () => {

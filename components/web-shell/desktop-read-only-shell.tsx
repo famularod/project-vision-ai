@@ -34,6 +34,7 @@ import {
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
 import {
+  buildScheduleTaskAccounting,
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
@@ -313,24 +314,23 @@ function DesktopPageData({
   const updates = snapshot.projectUpdates.filter(update => matchesProjectScope(update.projectName, selectedScopes));
   const documents = snapshot.referenceDocuments.filter(document => matchesProjectScope(document.projectName, selectedScopes));
   const photos = updates.flatMap(update => update.updateData.photos.map(photo => ({ update, photo })));
-  const completedTasks = tasks.filter(taskIsComplete);
-  const openTaskCount = tasks.length - completedTasks.length;
+  const taskAccounting = buildScheduleTaskAccounting(tasks);
 
   if (page === 'overview') {
     return (
       <>
         <View style={styles.metricGrid}>
           <MetricCard label="Active projects" value={projects.length} />
-          <MetricCard label="Total tasks" value={tasks.length} />
-          <MetricCard label="Complete tasks" value={completedTasks.length} />
-          <MetricCard label="Open tasks" value={openTaskCount} />
+          <MetricCard label="Total tasks" value={taskAccounting.total} />
+          <MetricCard label="Complete tasks" value={taskAccounting.complete} />
+          <MetricCard label="Open tasks" value={taskAccounting.open} />
           <MetricCard label="Field updates" value={updates.length} />
           <MetricCard label="Documents" value={documents.length} />
         </View>
         <View style={styles.accountingBanner} accessibilityRole="summary">
           <Text style={styles.accountingTitle}>Cloud task accounting</Text>
           <Text style={styles.accountingDetail}>
-            {tasks.length} total = {completedTasks.length} complete + {openTaskCount} open. Deleted tasks, unsafe legacy rows, superseded imports, and prior schedule versions are excluded.
+            {taskAccounting.total} total = {taskAccounting.complete} complete + {taskAccounting.open} open. Deleted tasks, unsafe legacy rows, superseded imports, and prior schedule versions are excluded.
           </Text>
         </View>
         <Section title="Current attention" detail="Incomplete and overdue work appears first.">

@@ -178,8 +178,8 @@ function correlateTask(
   const scheduleClaimsNotStarted = item.status === 'Not Started' && item.percentComplete === 0;
   const authoritativeCompletionAt = verification?.status === 'pm_verified'
     ? verification.verifiedAt || verification.reportedAt || null
-    : pmScheduleJudgment && scheduleClaimsComplete
-      ? item.progressConfirmedAt || item.importedAt || item.createdAt || null
+    : scheduleClaimsComplete
+      ? item.progressConfirmedAt || item.importedAt || item.updatedAt || item.createdAt || null
       : null;
   const newerContradictoryFieldEvidence = Boolean(authoritativeCompletionAt) && uniqueEvidence.some(claim =>
     (claim.kind === 'field_update' || claim.kind === 'photo') &&
@@ -198,7 +198,7 @@ function correlateTask(
   if (newerContradictoryFieldEvidence) {
     conclusion = 'conflicting_evidence';
     confidence = 'high';
-    contradiction = 'Newer field evidence reports unfinished or changed work after the task was previously PM verified.';
+    contradiction = 'Newer field evidence reports unfinished or changed work after the current schedule recorded the task complete.';
     explanation = contradiction;
     needsVerification = true;
     requestedAction = 'Reinspect the changed condition and confirm whether the task must be reopened.';
@@ -226,7 +226,10 @@ function correlateTask(
     explanation = `A project manager recorded ${item.status.toLowerCase()} at ${item.percentComplete}% complete. That professional judgment is the current progress evidence.`;
     needsVerification = false;
     requestedAction = null;
-  } else if (explicitConflict || (reportedComplete && reportedNotComplete)) {
+  } else if (
+    explicitConflict ||
+    (!scheduleClaimsComplete && reportedComplete && reportedNotComplete)
+  ) {
     conclusion = 'conflicting_evidence';
     confidence = 'high';
     contradiction = 'One source reports completion while another source reports unfinished or remaining work.';
@@ -234,12 +237,12 @@ function correlateTask(
     needsVerification = true;
     requestedAction = 'Inspect the work or obtain a current verification photo, then confirm or reject completion.';
   } else if (scheduleClaimsComplete) {
-    conclusion = 'conflicting_evidence';
+    conclusion = 'schedule_only';
     confidence = 'high';
-    contradiction = 'The task is marked complete without PM verification or connected completion evidence.';
-    explanation = contradiction;
-    needsVerification = true;
-    requestedAction = 'Confirm completion in the field or attach evidence and identify the verifier.';
+    contradiction = null;
+    explanation = 'The current schedule records this task complete at 100%.';
+    needsVerification = false;
+    requestedAction = null;
   } else if (reportedNotComplete) {
     conclusion = 'not_complete';
     confidence = 'medium';
@@ -308,7 +311,7 @@ function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
     summary: pmJudgment
       ? `${item.progressConfirmedBy || 'Project manager'} recorded ${item.taskName} as ${item.status}, ${item.percentComplete}% complete.`
       : `${item.taskName}: ${item.status}, ${item.percentComplete}% complete.`,
-    recordedAt: item.progressConfirmedAt || item.importedAt || item.createdAt || null,
+    recordedAt: item.progressConfirmedAt || item.importedAt || item.updatedAt || item.createdAt || null,
   };
 }
 

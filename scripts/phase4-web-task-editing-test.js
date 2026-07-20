@@ -29,6 +29,7 @@ assert(gateway.includes("entity_type: 'reference_document'"), 'Document deletion
 assert(!gateway.includes(".from('schedule_items').delete("), 'Desktop deletion must not bypass the shared tombstone contract.');
 assert(!gateway.includes(".from('reference_documents').delete("), 'Desktop document deletion must not hard-delete cloud rows.');
 assert(editing.includes('reconcileScheduleProgress'), 'Desktop task writes must preserve the shared status/progress invariant.');
+assert(editing.includes('reconcileScheduleProgressEdit'), 'Desktop task edits must allow a completed task to be reopened safely.');
 assert(editing.includes("progressSource: 'project_manager'"), 'Desktop edits must be recorded as explicit PM authority.');
 assert(editing.includes('cloudUpdatedAt'), 'Desktop task models must retain the exact cloud revision for conflict checks.');
 assert(provider.includes('12_000'), 'The open desktop workspace must refresh cloud truth every 12 seconds.');

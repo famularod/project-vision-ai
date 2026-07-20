@@ -400,6 +400,7 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
     .from(PROJECTS_TABLE)
     .select('name', { count: 'exact' })
     .eq('owner_id', owner.data)
+    .eq('archived', false)
     .limit(1);
 
   if (error) {

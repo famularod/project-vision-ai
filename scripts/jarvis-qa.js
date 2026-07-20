@@ -7033,7 +7033,7 @@ if (
     'No confirmed prior photo is available.',
     'The prior photo is not sufficiently comparable to support a change or progress conclusion.',
     'The result is not supported by visual evidence alone.',
-    'The task is marked complete without PM verification or connected completion evidence.',
+    'Current project records disagree about task completion.',
   ])
 ) {
   pass(

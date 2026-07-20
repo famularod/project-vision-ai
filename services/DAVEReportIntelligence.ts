@@ -1,5 +1,6 @@
 import type { DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
+import { buildScheduleTaskAccounting } from './dave-project-schedule-rollup';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/1.0' as const;
@@ -201,10 +202,7 @@ function buildDashboardMetrics({
     ...task,
     projectName: truth.projectName,
   })));
-  const complete = tasks.filter(scheduleProgressIsComplete).length;
-  const waiting = tasks.filter(task => task.status === 'Waiting').length;
-  const inProgress = tasks.filter(task => task.status === 'In Progress').length;
-  const notStarted = tasks.filter(task => task.status === 'Not Started').length;
+  const accounting = buildScheduleTaskAccounting(tasks);
   const overdue = tasks.filter(task => !scheduleProgressIsComplete(task) && task.urgency === 'overdue').length;
   const dueSoon = tasks.filter(task => !scheduleProgressIsComplete(task) && task.urgency === 'due_soon').length;
   const onTrack = tasks.filter(task =>
@@ -238,7 +236,13 @@ function buildDashboardMetrics({
   );
 
   return Object.freeze({
-    taskStatus: Object.freeze({ total: tasks.length, complete, inProgress, notStarted, waiting }),
+    taskStatus: Object.freeze({
+      total: accounting.total,
+      complete: accounting.complete,
+      inProgress: accounting.inProgress,
+      notStarted: accounting.notStarted,
+      waiting: accounting.waiting,
+    }),
     scheduleHealth: Object.freeze({ onTrack, dueSoon, overdue }),
     attention: Object.freeze({ risks, decisions, verification }),
     workAreas: Object.freeze(workAreas.map(item => Object.freeze(item))),

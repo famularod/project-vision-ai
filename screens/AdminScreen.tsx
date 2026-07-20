@@ -237,7 +237,6 @@ export function AdminScreen({
     connectionStatus?.clientReady &&
     connectionStatus.authenticated,
   );
-  const cloudProjectCount = testResult?.projectCount;
   const connectionLabel = isCheckingConnection
     ? 'Checking…'
     : connected
@@ -474,7 +473,7 @@ export function AdminScreen({
             <ScreenMetricGrid>
               <ScreenMetric label="Cloud" value={supabaseConfig.configured ? 'Ready' : 'Needs Setup'} detail={supabaseConfig.configured ? 'Cloud configuration is ready.' : 'Cloud setup needs review.'} tone={supabaseConfig.configured ? 'success' : 'warning'} icon={<Ionicons name="cloud-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Connection" value={connectionLabel} detail={formatCheckedAt(testResult?.checkedAt)} tone={connected ? 'success' : 'warning'} icon={<Ionicons name="wifi-outline" size={18} color={colors.primary} />} />
-              <ScreenMetric label="Cloud Projects" value={cloudProjectCount ?? 'Unknown'} detail="Projects synced through cloud" tone={cloudProjectCount == null ? 'warning' : 'default'} icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />} />
+              <ScreenMetric label="Active Projects" value={localProjects.length} detail="Projects currently shown in Vitruvius" icon={<Ionicons name="folder-open-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="AI Assist" value="Server Routed" detail={aiStatus.message} tone="success" icon={<Ionicons name="sparkles-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Build" value={APP_BUILD_NUMBER} detail={`Version ${APP_VERSION} · True Photo Intelligence`} tone="success" icon={<Ionicons name="construct-outline" size={18} color={colors.primary} />} />
               <ScreenMetric label="Auth" value={connectionStatus?.authenticated ? 'Signed In' : 'No Session'} detail={connectionStatus?.userEmail || 'No active account session'} tone={connectionStatus?.authenticated ? 'success' : 'default'} icon={<Ionicons name="person-circle-outline" size={18} color={colors.primary} />} />

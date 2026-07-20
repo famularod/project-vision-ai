@@ -16,6 +16,11 @@ export type CanonicalScheduleProgress = Readonly<{
   percentComplete: number;
 }>;
 
+export type ScheduleProgressEdit = Readonly<{
+  status?: unknown;
+  percentComplete?: unknown;
+}>;
+
 /**
  * Parses schedule status without treating negative completion phrases as
  * completion. Display variants are normalized to the four persisted enums.
@@ -70,6 +75,69 @@ export function reconcileScheduleProgress(
   }
   if (status === 'Not Started') percentComplete = 0;
   return Object.freeze({ status, percentComplete });
+}
+
+/**
+ * Reconciles an intentional progress edit against the current task. This is
+ * different from normalizing a stored record: changing just one control must
+ * be allowed to reopen a completed task instead of the unchanged 100%/Complete
+ * counterpart immediately forcing it closed again.
+ */
+export function reconcileScheduleProgressEdit(
+  current: Pick<CanonicalScheduleProgress, 'status' | 'percentComplete'>,
+  changes: ScheduleProgressEdit,
+): CanonicalScheduleProgress {
+  const statusProvided = Object.prototype.hasOwnProperty.call(changes, 'status');
+  const percentProvided = Object.prototype.hasOwnProperty.call(changes, 'percentComplete');
+
+  if (statusProvided && percentProvided) {
+    return reconcileScheduleProgress(changes.status, changes.percentComplete);
+  }
+
+  const currentProgress = reconcileScheduleProgress(
+    current.status,
+    current.percentComplete,
+  );
+
+  if (statusProvided) {
+    const status = normalizeScheduleStatus(changes.status);
+    if (status === 'Complete') {
+      return Object.freeze({ status: 'Complete', percentComplete: 100 });
+    }
+    if (status === 'Not Started') {
+      return Object.freeze({ status: 'Not Started', percentComplete: 0 });
+    }
+    return Object.freeze({
+      status,
+      percentComplete: currentProgress.percentComplete === 100
+        ? 99
+        : currentProgress.percentComplete,
+    });
+  }
+
+  if (percentProvided) {
+    const numericPercent = typeof changes.percentComplete === 'number'
+      ? changes.percentComplete
+      : typeof changes.percentComplete === 'string' && changes.percentComplete.trim()
+        ? Number(changes.percentComplete.replace('%', '').trim())
+        : Number.NaN;
+    const percentComplete = Number.isFinite(numericPercent)
+      ? Math.max(0, Math.min(100, Math.round(numericPercent)))
+      : currentProgress.percentComplete;
+
+    if (percentComplete === 100) {
+      return Object.freeze({ status: 'Complete', percentComplete: 100 });
+    }
+    if (currentProgress.status === 'Complete') {
+      return Object.freeze({
+        status: percentComplete === 0 ? 'Not Started' : 'In Progress',
+        percentComplete,
+      });
+    }
+    return reconcileScheduleProgress(currentProgress.status, percentComplete);
+  }
+
+  return currentProgress;
 }
 
 export function scheduleProgressIsComplete(
