@@ -37,6 +37,10 @@ assert(shell.includes('permanent deletion marker'), 'The delete confirmation mus
 assert(shell.includes('style={[styles.dataCard, styles.taskListCard]}'), 'Vertical task rows must use the compact list-card style.');
 assert(shell.includes('gridDataCard: { flexGrow: 1, flexBasis: 320 }'), 'Flexible card growth must remain limited to dashboard grids.');
 assert(!/dataCard:\s*\{[^}]*flexGrow/.test(shell), 'The shared card style must not stretch vertical list rows.');
+assert(shell.includes('<TaskStatusBadge task={task} />'), 'Task cards must use the prominent task-specific status treatment.');
+assert(shell.includes("const label = isComplete ? 'Completed' : task.status;"), 'Completed tasks must use a clear past-tense status label.');
+assert(shell.includes("isNotStarted ? 'notStarted' : 'inProgress'"), 'Not-started work must be visually distinct from work in progress.');
+assert(shell.includes('taskStatusBadge: { minWidth: 116'), 'Task status pills must be large enough to scan quickly.');
 assert(!gateway.includes("from '@react-native-async-storage/async-storage'"), 'Desktop task writes must not import native AsyncStorage.');
 assert(!gateway.includes("from 'expo-secure-store'"), 'Desktop task writes must not import native SecureStore.');
 

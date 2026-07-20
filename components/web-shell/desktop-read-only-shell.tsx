@@ -927,7 +927,7 @@ function TaskList({
               <Text style={styles.dataTitle}>{task.taskName}</Text>
               <Text style={styles.dataMeta}>{task.projectName}{task.locationName ? ` · ${task.locationName}` : ''}</Text>
             </View>
-            <StatusBadge label={task.status} tone={taskIsComplete(task) ? 'good' : taskIsOverdue(task) ? 'danger' : 'attention'} />
+            <TaskStatusBadge task={task} />
           </View>
           <Text style={styles.dataDetail}>{task.percentComplete}% complete · Finish {formatDate(task.finishDate)} · {task.priority} priority</Text>
           {task.owner ? <Text style={styles.dataMeta}>Owner: {task.owner}</Text> : null}
@@ -1017,6 +1017,24 @@ function StatusBadge({ label, tone }: { label: string; tone: 'good' | 'attention
   return (
     <View style={[styles.statusBadge, styles[`statusBadge_${tone}`]]}>
       <Text style={[styles.statusBadgeText, styles[`statusBadgeText_${tone}`]]}>{label}</Text>
+    </View>
+  );
+}
+
+function TaskStatusBadge({ task }: { task: ScheduleItem }) {
+  const isComplete = taskIsComplete(task);
+  const isOverdue = taskIsOverdue(task);
+  const isNotStarted = task.status === 'Not Started';
+  const tone = isComplete ? 'completed' : isOverdue ? 'overdue' : isNotStarted ? 'notStarted' : 'inProgress';
+  const label = isComplete ? 'Completed' : task.status;
+
+  return (
+    <View
+      style={[styles.taskStatusBadge, styles[`taskStatusBadge_${tone}`]]}
+      accessibilityRole="text"
+      accessibilityLabel={`Task status: ${label}`}
+    >
+      <Text style={[styles.taskStatusBadgeText, styles[`taskStatusBadgeText_${tone}`]]}>{label}</Text>
     </View>
   );
 }
@@ -1230,6 +1248,16 @@ const styles = StyleSheet.create({
   statusBadgeText_attention: { color: '#956000' },
   statusBadgeText_danger: { color: '#B52D2D' },
   statusBadgeText_neutral: { color: '#5D6571' },
+  taskStatusBadge: { minWidth: 116, borderRadius: 999, borderWidth: 1, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, alignItems: 'center', justifyContent: 'center' },
+  taskStatusBadge_completed: { borderColor: '#86CDA1', backgroundColor: '#E5F7EB' },
+  taskStatusBadge_overdue: { borderColor: '#E29A9A', backgroundColor: '#FDE7E7' },
+  taskStatusBadge_notStarted: { borderColor: '#8EB8E8', backgroundColor: '#E8F2FF' },
+  taskStatusBadge_inProgress: { borderColor: '#E3B45A', backgroundColor: '#FFF0D1' },
+  taskStatusBadgeText: { fontSize: 14, lineHeight: 18, fontWeight: '900' },
+  taskStatusBadgeText_completed: { color: '#146B37' },
+  taskStatusBadgeText_overdue: { color: '#9C2323' },
+  taskStatusBadgeText_notStarted: { color: '#145AA6' },
+  taskStatusBadgeText_inProgress: { color: '#7A4C00' },
   emptyState: { borderRadius: 18, borderWidth: 1, borderStyle: 'dashed', borderColor: '#C9D0DB', backgroundColor: '#F8F9FB', padding: spacing.xl },
   emptyStateText: { color: '#666D79', fontSize: 15, lineHeight: 23 },
   fieldGroup: { gap: spacing.xs },
