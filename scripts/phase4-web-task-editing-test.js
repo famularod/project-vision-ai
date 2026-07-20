@@ -49,6 +49,12 @@ assert(shell.includes('This is the current schedule and is protected'), 'The cur
 assert(shell.includes('Prior schedule versions ('), 'Schedule history must be separated from the authoritative current schedule.');
 assert(shell.includes('groupDAVEWebDocuments'), 'Document management must use the tested schedule-version grouping contract.');
 assert(shell.includes('permanent cloud deletion marker'), 'Document deletion must explain cross-device resurrection protection.');
+const currentScheduleStart = shell.indexOf('title="Current schedule"');
+const nextDocumentGroup = shell.indexOf('<DocumentGroup', currentScheduleStart + 1);
+const currentScheduleBlock = shell.slice(currentScheduleStart, nextDocumentGroup);
+assert(currentScheduleStart >= 0 && nextDocumentGroup > currentScheduleStart, 'The current schedule section must remain explicit.');
+assert(!currentScheduleBlock.includes('onDelete='), 'The protected current schedule must not expose a Delete action.');
+assert(shell.includes('{onDelete ? ('), 'Only explicitly deletable document groups may render a Delete action.');
 assert(!gateway.includes("from '@react-native-async-storage/async-storage'"), 'Desktop task writes must not import native AsyncStorage.');
 assert(!gateway.includes("from 'expo-secure-store'"), 'Desktop task writes must not import native SecureStore.');
 

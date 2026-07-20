@@ -1103,10 +1103,9 @@ function DocumentManagementWorkspace({ documents }: { documents: readonly DAVEWe
       <View style={styles.documentGroups}>
         <DocumentGroup
           title="Current schedule"
-          detail="Only the authoritative current schedule is shown here. It cannot be deleted accidentally."
+          detail="Only the authoritative current schedule is shown here. It is protected from deletion."
           documents={groups.currentSchedule}
           emptyText="No current schedule is designated in this project scope."
-          onDelete={openDeleteCandidate}
         />
         <DocumentGroup
           title={`Prior schedule versions (${groups.priorScheduleVersions.length})`}
@@ -1143,7 +1142,7 @@ function DocumentGroup({
   detail: string;
   documents: readonly DAVEWebReferenceDocument[];
   emptyText: string;
-  onDelete: (document: DAVEWebReferenceDocument) => void;
+  onDelete?: (document: DAVEWebReferenceDocument) => void;
 }) {
   return (
     <View style={styles.documentGroup}>
@@ -1162,7 +1161,7 @@ function DocumentList({
   emptyText = 'No documents match this scope.',
 }: {
   documents: readonly DAVEWebReferenceDocument[];
-  onDelete: (document: DAVEWebReferenceDocument) => void;
+  onDelete?: (document: DAVEWebReferenceDocument) => void;
   emptyText?: string;
 }) {
   if (documents.length === 0) return <EmptyState text={emptyText} />;
@@ -1182,15 +1181,17 @@ function DocumentList({
             <Text style={styles.dataMeta}>{document.linkedScheduleItems.length} linked imported task{document.linkedScheduleItems.length === 1 ? '' : 's'}</Text>
           ) : null}
           {document.notes ? <Text style={styles.dataMeta}>{document.notes}</Text> : null}
-          <View style={styles.taskCardActions}>
-            <Pressable
-              style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
-              onPress={() => onDelete(document)}
-              accessibilityRole="button"
-            >
-              <Text style={styles.deleteText}>Delete</Text>
-            </Pressable>
-          </View>
+          {onDelete ? (
+            <View style={styles.taskCardActions}>
+              <Pressable
+                style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
+                onPress={() => onDelete(document)}
+                accessibilityRole="button"
+              >
+                <Text style={styles.deleteText}>Delete</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       ))}
     </View>
