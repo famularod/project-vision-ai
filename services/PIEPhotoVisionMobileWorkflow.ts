@@ -47,7 +47,15 @@ import {
   decidePhotoEvidencePair,
   type ExistingPhotoEvidenceVersion,
 } from './PhotoEvidenceDeduplication';
-import { validatePhotoAnalysisContractEnvelope } from '../supabase/functions/_shared/pie-photo-analysis-contract';
+import {
+  type PIEPhotoVisionProviderFailureReason,
+  validatePhotoAnalysisContractEnvelope,
+} from '../supabase/functions/_shared/pie-photo-analysis-contract';
+import {
+  providerFailureSummary,
+  readPIEPhotoVisionProviderResponse,
+  type PIEPhotoVisionFailureCategory,
+} from './PIEPhotoVisionResponse';
 import type { PhotoAnalysisTarget } from './PhotoAnalysisTarget';
 
 export type PIEPhotoIntelligenceStatus =
@@ -193,7 +201,8 @@ export type PIEPhotoVisionDiagnostics = {
   signedUrlsGenerated: boolean | null;
   providerInvocationId: string | null;
   providerResponseStatus: string | null;
-  failureCategory: 'network' | 'auth' | 'malformed_response' | 'provider_side' | 'unknown' | null;
+  providerFailureReason: PIEPhotoVisionProviderFailureReason | null;
+  failureCategory: PIEPhotoVisionFailureCategory | null;
   supabaseAuthState: 'loading' | 'signed_in' | 'signed_out' | 'expired' | 'unknown';
   tokenLookupResult: 'token_present' | 'token_missing' | null;
   tokenMissingReason: SupabaseSessionMissingReason | null;
@@ -680,14 +689,15 @@ export async function analyzeProjectPhotoWithVision({
       });
     }
 
-    const functionStatus = providerStatus(functionData);
-    if (functionStatus !== 'succeeded') {
-      return failedRetryState('Photo intelligence returned an unavailable comparison. Retry analysis.', {
+    const providerResponse = readPIEPhotoVisionProviderResponse(functionData);
+    if (providerResponse.status !== 'succeeded') {
+      return failedRetryState(providerFailureSummary(providerResponse.failureReason), {
         baselineEvidence,
         currentEvidence,
         requestId,
-        providerResponseStatus: functionStatus,
-        failureCategory: functionStatus === 'degraded' ? 'malformed_response' : 'provider_side',
+        providerResponseStatus: providerResponse.status,
+        providerFailureReason: providerResponse.failureReason,
+        failureCategory: providerResponse.failureCategory,
         selectedPriorPhotoId: priorSelection.selected.photo.id,
         priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
         selectionCandidateCount: priorSelection.candidateCount,
@@ -1984,6 +1994,7 @@ type PIEPhotoVisionDiagnosticInput = {
   analysisRequestId: string | null;
   semanticComparisonResultId: string | null;
   providerResponseStatus: string | null;
+  providerFailureReason: PIEPhotoVisionProviderFailureReason | null;
   failureCategory: PIEPhotoVisionDiagnostics['failureCategory'];
   selectedPriorPhotoId: string | null;
   priorUpdateUsed: string | null;
@@ -2044,6 +2055,7 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     signedUrlsGenerated: input.signedUrlsGenerated ?? null,
     providerInvocationId: input.requestId ?? input.analysisRequestId ?? null,
     providerResponseStatus: input.providerResponseStatus ?? null,
+    providerFailureReason: input.providerFailureReason ?? null,
     failureCategory: input.failureCategory ?? null,
     supabaseAuthState: input.tokenLookup?.authState ?? 'unknown',
     tokenLookupResult: input.tokenLookup?.status ?? null,

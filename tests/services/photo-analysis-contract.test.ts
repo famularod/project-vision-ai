@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   PIE_PHOTO_ANALYSIS_CONTRACT,
+  normalizePhotoVisionProviderFailureReason,
   photoAnalysisContractEnvelope,
   validatePhotoAnalysisContractEnvelope,
 } from '../../supabase/functions/_shared/pie-photo-analysis-contract';
@@ -12,6 +13,10 @@ import {
 } from '../../supabase/functions/_shared/pie-photo-comparison-schema';
 import { CURRENT_PHOTO_ANALYSIS_VERSIONS } from '../../services/PhotoAnalysisIdentity';
 import { PIE_PHOTO_FINDING_SCHEMA_VERSION } from '../../services/PIEPhotoFindingNormalization';
+import {
+  providerFailureSummary,
+  readPIEPhotoVisionProviderResponse,
+} from '../../services/PIEPhotoVisionResponse';
 
 function validFinding() {
   return {
@@ -67,6 +72,33 @@ function validPairResponse() {
     observations: ['The same wall and door opening are visible.'],
     interpretations: [],
     plainLanguageSummary: 'No material visible change was found in the shared work area.',
+  };
+}
+
+function crossAngleSameAreaResponse() {
+  return {
+    ...validPairResponse(),
+    sameSceneProbability: 0.88,
+    sameSubjectProbability: 0.91,
+    sharedVisualAnchors: [
+      'corrugated metal wall',
+      'concrete ramp edge',
+      'canopy support column',
+    ],
+    sceneOverlapAssessment: 'Both photos show the Canopy C ramp from different sides.',
+    viewpointAssessment: 'The camera moved to the opposite side of the ramp.',
+    viewpointChange: 'Material viewpoint change with sufficient shared scene overlap.',
+    cameraAngleChange: 'Large horizontal angle change.',
+    framingChange: 'The current photo emphasizes the ramp surface and support column.',
+    alignmentConfidence: 'medium',
+    changeDetectionConfidence: 'high',
+    comparabilityClassification: 'probable',
+    comparabilityReasons: ['Three stable physical anchors identify the same work area.'],
+    differenceClassifications: ['camera_or_capture_change', 'physical_scene_change'],
+    conclusion: 'partial_progress_visible',
+    limitations: [],
+    observations: ['The same ramp edge, wall, and support column are visible from a different angle.'],
+    plainLanguageSummary: 'The photos show the same Canopy C ramp from different angles and remain usable for comparison.',
   };
 }
 
@@ -143,6 +175,36 @@ describe('shared photo analysis contract', () => {
     expect(validatorResult.valid).toBe(schemaValid);
   });
 
+  it('accepts the same work area from a materially different camera angle', () => {
+    const fixture = crossAngleSameAreaResponse();
+    expect(validatesJsonSchema(PIE_PHOTO_PAIR_RESPONSE_SCHEMA, fixture)).toBe(true);
+    expect(validateStrictPhotoPairResponse(fixture)).toEqual({ valid: true });
+  });
+
+  it('preserves a bounded provider failure code through the Edge response boundary', () => {
+    expect(normalizePhotoVisionProviderFailureReason(
+      'malformed_comparison_result; request=private-request-id',
+    )).toBe('malformed_comparison_result');
+    expect(normalizePhotoVisionProviderFailureReason(
+      'PIE_OPENAI_API_KEY is missing; request=private-request-id',
+    )).toBe('provider_configuration_missing');
+    expect(normalizePhotoVisionProviderFailureReason(
+      'unexpected provider detail with secret-looking text',
+    )).toBe('provider_failure');
+
+    expect(readPIEPhotoVisionProviderResponse({
+      status: 'degraded',
+      failureReason: 'malformed_comparison_result',
+    })).toEqual({
+      status: 'degraded',
+      failureReason: 'malformed_comparison_result',
+      failureCategory: 'malformed_response',
+    });
+    expect(providerFailureSummary('malformed_comparison_result')).toBe(
+      'The photo comparison response could not be processed. Retry analysis.',
+    );
+  });
+
   it('wires the canonical envelope into mobile requests, edge validation, and provider prompts', () => {
     const root = path.resolve(__dirname, '../..');
     const mobile = fs.readFileSync(path.join(root, 'services/PIEPhotoVisionMobileWorkflow.ts'), 'utf8');
@@ -154,6 +216,7 @@ describe('shared photo analysis contract', () => {
     }
     expect(edge).toContain("validatePhotoAnalysisContractEnvelope(mode, request)");
     expect(edge).toContain("photoAnalysisContractEnvelope(mode)");
+    expect(edge).toContain('failureReason: normalizePhotoVisionProviderFailureReason(finalResult.error)');
     expect(provider).toContain('PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion');
     expect(provider).toContain('Use [] when no material limitation applies');
   });

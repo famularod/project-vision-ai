@@ -66,7 +66,9 @@ assert(
 assert(
   unavailable.includes('safeUnavailableReason(summary)') &&
     failed.includes('safeUnavailableReason(summary)') &&
-    workflow.includes('providerResponseStatus: safeUnavailableReason(summary)'),
+    workflow.includes('providerResponseStatus: safeUnavailableReason(summary)') &&
+    workflow.includes('providerFailureReason: providerResponse.failureReason') &&
+    workflow.includes('readPIEPhotoVisionProviderResponse(functionData)'),
   'Failure reasons must remain available through limitations and diagnostics.',
 );
 

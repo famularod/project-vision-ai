@@ -53,6 +53,15 @@ export type PIEPhotoAnalysisContractValidation = Readonly<{
   categories: readonly string[];
 }>;
 
+export type PIEPhotoVisionProviderFailureReason =
+  | 'malformed_comparison_result'
+  | 'provider_response_not_json'
+  | 'provider_timeout'
+  | 'provider_configuration_missing'
+  | 'signed_image_unavailable'
+  | `provider_http_${number}`
+  | 'provider_failure';
+
 export function photoAnalysisContractEnvelope(
   mode: PIEPhotoAnalysisMode,
 ): PIEPhotoAnalysisContractEnvelope {
@@ -105,6 +114,28 @@ export function validatePhotoAnalysisContractEnvelope(
     legacyEnvelope: false,
     categories: Object.freeze(categories),
   });
+}
+
+/**
+ * The Edge Function keeps the provider's raw failure in protected persistence,
+ * but the client only receives a bounded code that cannot leak request IDs,
+ * credentials, URLs, or provider response bodies.
+ */
+export function normalizePhotoVisionProviderFailureReason(
+  value: unknown,
+): PIEPhotoVisionProviderFailureReason | null {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!normalized) return null;
+  if (normalized.includes('malformed_comparison_result')) return 'malformed_comparison_result';
+  const providerHttpStatus = normalized.match(/provider_http_(\d{3})/);
+  if (providerHttpStatus) return `provider_http_${Number(providerHttpStatus[1])}`;
+  if (normalized.includes('provider_response_not_json')) return 'provider_response_not_json';
+  if (/timeout|timed out|aborterror|provider_timeout/.test(normalized)) return 'provider_timeout';
+  if (/api[_ ]key|provider is not configured|vision_provider|provider_configuration/.test(normalized)) {
+    return 'provider_configuration_missing';
+  }
+  if (/missing signed image url|signed_image/.test(normalized)) return 'signed_image_unavailable';
+  return 'provider_failure';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -16,6 +16,7 @@ import {
 } from '../_shared/pie-photo-comparison-schema.ts';
 import {
   PIE_PHOTO_ANALYSIS_CONTRACT,
+  normalizePhotoVisionProviderFailureReason,
   photoAnalysisContractEnvelope,
   validatePhotoAnalysisContractEnvelope,
 } from '../_shared/pie-photo-analysis-contract.ts';
@@ -350,6 +351,7 @@ Deno.serve(async req => {
     modelVersion: finalResult.modelVersion,
     latencyMs: finalResult.latencyMs,
     attempts: finalResult.attempts,
+    failureReason: normalizePhotoVisionProviderFailureReason(finalResult.error),
     jarvis,
   });
 });
