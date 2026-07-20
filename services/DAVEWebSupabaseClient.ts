@@ -27,7 +27,7 @@ export type DAVEWebSessionStatus = Readonly<{
 }>;
 
 export class DAVEWebAuthorizationError extends Error {
-  constructor(message = 'This account is not authorized for the DAVE desktop pilot.') {
+  constructor(message = 'This account is not authorized for the Vitruvius desktop pilot.') {
     super(message);
     this.name = 'DAVEWebAuthorizationError';
   }
@@ -328,7 +328,7 @@ async function requireAuthorizedOwner(client: SupabaseClient): Promise<string> {
   const { data: userResult, error: userError } = await client.auth.getUser();
   const userId = userResult.user?.id ?? null;
   if (userError || !userId) {
-    throw new DAVEWebAuthorizationError('Sign in is required for the DAVE desktop pilot.');
+    throw new DAVEWebAuthorizationError('Sign in is required for the Vitruvius desktop pilot.');
   }
 
   const { data: authorized, error: authorizationError } = await client.rpc('dave_is_app_owner');

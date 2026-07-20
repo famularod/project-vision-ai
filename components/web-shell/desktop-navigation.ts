@@ -18,7 +18,7 @@ export const desktopNavigationItems: readonly DesktopNavigationItem[] = Object.f
   { page: 'overview', label: 'Overview', href: '/' },
   { page: 'projects', label: 'Projects', href: '/projects' },
   { page: 'tasks', label: 'Tasks & Schedule', href: '/tasks' },
-  { page: 'evidence', label: 'DAVE Evidence', href: '/evidence' },
+  { page: 'evidence', label: 'Project Evidence', href: '/evidence' },
   { page: 'photos', label: 'Photos', href: '/photos' },
   { page: 'documents', label: 'Documents', href: '/documents' },
   { page: 'reports', label: 'Reports', href: '/reports' },

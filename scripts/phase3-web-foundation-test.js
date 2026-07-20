@@ -14,6 +14,7 @@ const provider = read('components/web-shell/desktop-auth-provider.tsx');
 const browserAuthStorage = read('services/SupabaseAuthStorage.web.ts');
 const readOnlyRepository = read('services/DAVEWebReadOnlyRepository.ts');
 const webSupabaseClient = read('services/DAVEWebSupabaseClient.ts');
+const rootLayout = read('app/_layout.tsx');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -24,6 +25,11 @@ assert(nativeEntry.includes("import App from './App'"), 'Native must keep the es
 assert(nativeEntry.includes('registerRootComponent(App)'), 'Native must keep Expo root registration.');
 assert(webEntry.includes("import 'expo-router/entry'"), 'Web must use the URL-addressable Expo Router entry.');
 assert(appConfig.platforms.includes('web'), 'Web must be an explicit application platform.');
+assert(appConfig.name === 'Vitruvius', 'The installed application name must use the approved Vitruvius brand.');
+assert(appConfig.icon === './assets/icon-vitruvius.png', 'Native builds must use the Vitruvius application icon.');
+assert(appConfig.web?.favicon === './assets/icon-vitruvius.png', 'Desktop web installs must use the Vitruvius favicon.');
+assert(rootLayout.includes('expo-router/head'), 'The static web shell must define installable page metadata.');
+assert(rootLayout.includes('apple-mobile-web-app-title'), 'Safari web-app installs must receive the Vitruvius application title.');
 assert(appConfig.web?.bundler === 'metro', 'Web must use Metro for shared Expo module resolution.');
 assert(appConfig.web?.output === 'static', 'The first read-only browser pilot must produce a static export.');
 assert(appConfig.plugins.includes('expo-router'), 'Expo Router must be configured explicitly.');
@@ -34,6 +40,7 @@ for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'ap
   assert(exists(route), `${route} must exist.`);
 }
 assert(shell.includes('Owner-authorized staging session'), 'The pilot must visibly identify its authorization boundary.');
+assert(shell.includes('PRODUCT_BRAND.name'), 'The desktop shell must use the shared Vitruvius product brand.');
 assert(shell.includes('Project deletion, file uploads, report approval, and sending remain disabled'), 'The pilot must visibly preserve non-task mutation boundaries.');
 assert(shell.includes('Cloud task accounting'), 'The Command Center must expose an auditable task total breakdown.');
 assert(shell.includes('Sync from Cloud Now'), 'The browser must expose its cloud refresh action in Settings.');

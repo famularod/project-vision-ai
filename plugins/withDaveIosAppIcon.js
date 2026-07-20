@@ -5,7 +5,7 @@ const { promisify } = require('util');
 const { withDangerousMod, withXcodeProject } = require('@expo/config-plugins');
 
 const APP_ICON_NAME = 'DaveAppIcon';
-const APP_ICON_FILENAME = 'icon.png';
+const APP_ICON_FILENAME = 'icon-vitruvius.png';
 const execFileAsync = promisify(execFile);
 
 const contents = {

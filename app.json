@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Project Photo Update Tool",
+    "name": "Vitruvius",
     "slug": "project-photo-update-tool",
     "version": "1.0.73",
     "platforms": [
@@ -10,18 +10,18 @@
     ],
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/icon-vitruvius.png",
     "ios": {
       "supportsTablet": true,
       "requireFullScreen": false,
       "bundleIdentifier": "com.davidfamularo.projectphotoupdate",
       "buildNumber": "73",
-      "icon": "./assets/icon.png",
+      "icon": "./assets/icon-vitruvius.png",
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow Project Photo Update Tool to capture project photos as field evidence.",
-        "NSPhotoLibraryUsageDescription": "Allow Project Photo Update Tool to select project photos and supporting evidence from your photo library.",
-        "NSPhotoLibraryAddUsageDescription": "Allow Project Photo Update Tool to save captured project photos to your photo library when requested.",
-        "NSContactsUsageDescription": "Allow Project Photo Update Tool to choose update recipients from your contacts.",
+        "NSCameraUsageDescription": "Allow Vitruvius to capture project photos as field evidence.",
+        "NSPhotoLibraryUsageDescription": "Allow Vitruvius to select project photos and supporting evidence from your photo library.",
+        "NSPhotoLibraryAddUsageDescription": "Allow Vitruvius to save captured project photos to your photo library when requested.",
+        "NSContactsUsageDescription": "Allow Vitruvius to choose update recipients from your contacts.",
         "NSLocationWhenInUseUsageDescription": "This app uses your location to tag project photos and suggest the correct work area.",
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -30,7 +30,7 @@
       "package": "com.davidfamularo.projectphotoupdate",
       "versionCode": 73,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
+        "foregroundImage": "./assets/icon-vitruvius.png",
         "backgroundColor": "#19466F"
       },
       "permissions": [
@@ -61,7 +61,7 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Allow DAVE to record project memories.",
+          "microphonePermission": "Allow Vitruvius to record project memories.",
           "enableBackgroundRecording": false
         }
       ],
@@ -71,7 +71,7 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/icon.png"
+      "favicon": "./assets/icon-vitruvius.png"
     },
     "extra": {
       "buildLabel": "Build 73",

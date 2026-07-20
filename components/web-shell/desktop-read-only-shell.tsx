@@ -25,6 +25,7 @@ import {
   DAVEWebTaskMutationError,
 } from '../../services/DAVEWebSupabaseClient';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
+import { groupDAVEWebDocuments } from '../../services/DAVEWebDocumentManagement';
 import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
@@ -40,6 +41,7 @@ import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch
 import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
 import { colors, spacing } from '../../theme';
 import { daysUntilDate } from '../../utils/date';
+import { PRODUCT_BRAND } from '../../product-brand';
 import { useDesktopAuth } from './desktop-auth-provider';
 import {
   desktopNavigationItems,
@@ -57,7 +59,7 @@ type ReadOnlyPageCopy = Readonly<{
 const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
   overview: {
     eyebrow: 'DESKTOP PILOT',
-    title: 'DAVE Command Center',
+    title: `${PRODUCT_BRAND.name} Command Center`,
     description: 'A secure, owner-authorized view of the field record with controlled task editing.',
   },
   projects: {
@@ -71,7 +73,7 @@ const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
     description: 'Create, edit, and safely delete tasks while preserving shared project authority.',
   },
   evidence: {
-    eyebrow: 'DAVE EVIDENCE',
+    eyebrow: 'PROJECT EVIDENCE',
     title: 'Field evidence',
     description: 'Review source-backed field updates and their project and area context.',
   },
@@ -123,10 +125,10 @@ function DesktopSessionGate() {
   return (
     <ScrollView style={styles.gateRoot} contentContainerStyle={styles.gateContent}>
       <View style={styles.gateBrandRow}>
-        <View style={styles.brandMark}><Text style={styles.brandMarkText}>D</Text></View>
+        <View style={styles.brandMark}><Text style={styles.brandMarkText}>{PRODUCT_BRAND.monogram}</Text></View>
         <View>
-          <Text style={styles.brandName}>DAVE</Text>
-          <Text style={styles.brandSubtitle}>Project Vision AI</Text>
+          <Text style={styles.brandName}>{PRODUCT_BRAND.name}</Text>
+          <Text style={styles.brandSubtitle}>{PRODUCT_BRAND.subtitle}</Text>
         </View>
       </View>
       <View style={styles.gateCard}>
@@ -998,6 +1000,7 @@ function PhotoList({
 
 function DocumentManagementWorkspace({ documents }: { documents: readonly DAVEWebReferenceDocument[] }) {
   const auth = useDesktopAuth();
+  const groups = groupDAVEWebDocuments(documents);
   const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
@@ -1047,7 +1050,7 @@ function DocumentManagementWorkspace({ documents }: { documents: readonly DAVEWe
             <Text style={styles.deleteConfirmTitle}>Delete “{deleteCandidate.name}”?</Text>
             <Text style={styles.dataDetail}>Imported {formatDateTime(deleteCandidate.importedAt)}.</Text>
             {protectedCurrentSchedule ? (
-              <Text style={styles.errorText}>This is the current schedule. Keep it, or select another current schedule before deleting it.</Text>
+              <Text style={styles.errorText}>This is the current schedule and is protected. Keep it; obsolete prior versions can be deleted below.</Text>
             ) : (
               <Text style={styles.dataMeta}>
                 A permanent cloud deletion marker prevents this document from returning on another signed-in device.
@@ -1097,29 +1100,76 @@ function DocumentManagementWorkspace({ documents }: { documents: readonly DAVEWe
         </View>
       ) : null}
 
-      <DocumentList
-        documents={documents}
-        onDelete={document => {
-          setNotice(null);
-          setDeleteCandidateId(document.id);
-        }}
-      />
+      <View style={styles.documentGroups}>
+        <DocumentGroup
+          title="Current schedule"
+          detail="Only the authoritative current schedule is shown here. It cannot be deleted accidentally."
+          documents={groups.currentSchedule}
+          emptyText="No current schedule is designated in this project scope."
+          onDelete={openDeleteCandidate}
+        />
+        <DocumentGroup
+          title={`Prior schedule versions (${groups.priorScheduleVersions.length})`}
+          detail="Older schedule imports are kept for history until you deliberately delete them."
+          documents={groups.priorScheduleVersions}
+          emptyText="No prior schedule versions remain."
+          onDelete={openDeleteCandidate}
+        />
+        <DocumentGroup
+          title={`Other project documents (${groups.otherDocuments.length})`}
+          detail="Permits, drawings, contracts, and other project reference records."
+          documents={groups.otherDocuments}
+          emptyText="No other documents match this scope."
+          onDelete={openDeleteCandidate}
+        />
+      </View>
     </>
+  );
+
+  function openDeleteCandidate(document: DAVEWebReferenceDocument) {
+    setNotice(null);
+    setDeleteCandidateId(document.id);
+  }
+}
+
+function DocumentGroup({
+  title,
+  detail,
+  documents,
+  emptyText,
+  onDelete,
+}: {
+  title: string;
+  detail: string;
+  documents: readonly DAVEWebReferenceDocument[];
+  emptyText: string;
+  onDelete: (document: DAVEWebReferenceDocument) => void;
+}) {
+  return (
+    <View style={styles.documentGroup}>
+      <View style={styles.documentGroupHeading}>
+        <Text style={styles.documentGroupTitle}>{title}</Text>
+        <Text style={styles.documentGroupDetail}>{detail}</Text>
+      </View>
+      <DocumentList documents={documents} onDelete={onDelete} emptyText={emptyText} />
+    </View>
   );
 }
 
 function DocumentList({
   documents,
   onDelete,
+  emptyText = 'No documents match this scope.',
 }: {
   documents: readonly DAVEWebReferenceDocument[];
   onDelete: (document: DAVEWebReferenceDocument) => void;
+  emptyText?: string;
 }) {
-  if (documents.length === 0) return <EmptyState text="No documents match this scope." />;
+  if (documents.length === 0) return <EmptyState text={emptyText} />;
   return (
     <View style={styles.list}>
       {documents.map(document => (
-        <View key={document.id} style={styles.dataCard}>
+        <View key={document.id} style={[styles.dataCard, styles.documentCard]}>
           <View style={styles.dataRow}>
             <View style={styles.dataGrow}>
               <Text style={styles.dataTitle}>{document.name}</Text>
@@ -1186,8 +1236,8 @@ function DesktopSidebar({ pathname, selectedProject }: { pathname: string; selec
   return (
     <View style={styles.sidebar}>
       <View style={styles.gateBrandRow}>
-        <View style={styles.brandMark}><Text style={styles.brandMarkText}>D</Text></View>
-        <View><Text style={styles.brandName}>DAVE</Text><Text style={styles.brandSubtitle}>Project Vision AI</Text></View>
+        <View style={styles.brandMark}><Text style={styles.brandMarkText}>{PRODUCT_BRAND.monogram}</Text></View>
+        <View><Text style={styles.brandName}>{PRODUCT_BRAND.name}</Text><Text style={styles.brandSubtitle}>{PRODUCT_BRAND.subtitle}</Text></View>
       </View>
       <View style={styles.navigation} role="navigation">
         {desktopNavigationItems.map(item => (
@@ -1202,7 +1252,7 @@ function DesktopSidebar({ pathname, selectedProject }: { pathname: string; selec
 function DesktopTopNavigation({ pathname, selectedProject }: { pathname: string; selectedProject: string | null }) {
   return (
     <View style={styles.topNavigation}>
-      <View style={styles.compactBrand}><View style={styles.brandMark}><Text style={styles.brandMarkText}>D</Text></View><Text style={styles.brandName}>DAVE</Text></View>
+      <View style={styles.compactBrand}><View style={styles.brandMark}><Text style={styles.brandMarkText}>{PRODUCT_BRAND.monogram}</Text></View><Text style={styles.brandName}>{PRODUCT_BRAND.name}</Text></View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.topNavigationLinks}>
         {desktopNavigationItems.map(item => (
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} compact />
@@ -1349,6 +1399,12 @@ const styles = StyleSheet.create({
   dataCard: { borderRadius: 18, borderWidth: 1, borderColor: '#D9DFEA', backgroundColor: '#FFFFFF', padding: spacing.lg, gap: spacing.sm },
   gridDataCard: { flexGrow: 1, flexBasis: 320 },
   taskListCard: { paddingVertical: spacing.md, gap: spacing.xs },
+  documentGroups: { gap: spacing.xl },
+  documentGroup: { gap: spacing.sm },
+  documentGroupHeading: { gap: 3 },
+  documentGroupTitle: { color: '#1B1F27', fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  documentGroupDetail: { color: '#737A87', fontSize: 13, lineHeight: 19 },
+  documentCard: { paddingVertical: spacing.md, gap: spacing.xs },
   dataRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
   dataGrow: { flex: 1 },
   dataTitle: { color: '#1B1F27', fontSize: 18, lineHeight: 24, fontWeight: '900' },

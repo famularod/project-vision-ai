@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { colors, radius, spacing } from '../theme';
 import type { AppScreen } from '../types/app-navigation';
+import { PRODUCT_BRAND } from '../product-brand';
 import { isOverviewPrimaryNavigationActive } from './app-primary-navigation';
 import { AppProjectSwitcher } from './app-project-switcher';
 
@@ -43,16 +44,16 @@ export function AppNavigationRail({
       style={[styles.rail, expanded ? styles.railExpanded : styles.railMedium]}
       edges={['top']}
       testID="app-navigation-rail"
-      accessibilityLabel="DAVE navigation rail"
+      accessibilityLabel={`${PRODUCT_BRAND.name} navigation rail`}
     >
       <View style={[styles.brand, expanded && styles.brandExpanded]}>
         <View style={styles.brandMark}>
-          <Text style={styles.brandMarkText}>D</Text>
+          <Text style={styles.brandMarkText}>{PRODUCT_BRAND.monogram}</Text>
         </View>
         {expanded ? (
           <View>
-            <Text style={styles.brandName}>DAVE</Text>
-            <Text style={styles.brandCaption}>Project Vision AI</Text>
+            <Text style={styles.brandName}>{PRODUCT_BRAND.name}</Text>
+            <Text style={styles.brandCaption}>{PRODUCT_BRAND.subtitle}</Text>
           </View>
         ) : null}
       </View>

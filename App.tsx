@@ -9400,7 +9400,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
 
       await Sharing.shareAsync(fileUri, {
-        dialogTitle: 'Backup Project Photo Update Tool',
+        dialogTitle: 'Backup Vitruvius',
         mimeType: 'application/json',
         UTI: 'public.json',
       });
@@ -9495,7 +9495,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       if (isOversizedBackup(file.size)) {
         Alert.alert(
           'Backup too large',
-          'Choose a smaller Project Photo Update Tool backup file.',
+          'Choose a smaller Vitruvius backup file.',
         );
 
         return;
@@ -9510,7 +9510,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ) {
         Alert.alert(
           'Backup too large',
-          'Choose a smaller Project Photo Update Tool backup file.',
+          'Choose a smaller Vitruvius backup file.',
         );
 
         return;

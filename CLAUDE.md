@@ -7,22 +7,21 @@ convention drift.
 
 ## What this app is
 
-DAVE, running on ECOS (formerly PIE / Project Intelligence Engine) — a
+Vitruvius, with the DAVE intelligence layer running on ECOS (formerly PIE / Project Intelligence Engine) — a
 single-user React Native/Expo field documentation tool for construction
 project managers. Core goal: submit a photo-based project update in ~60
 seconds, with AI-powered visual comparison of baseline vs. update photos,
 GPS-based project auto-detection, and background intelligence processing.
 
-### Naming (as of 2026-07-09)
-The product-facing name changed from PIE to **DAVE**, running on **ECOS**.
-This rename is **docs/UI-only for now** — do not rename `pie_*` tables,
-files, functions, or other identifiers in the codebase as part of this.
-Internal naming (`pie_layer4_has_permission`, `PIEStatusCopy`,
-`services/PIEPhotoVisionMobileWorkflow.ts`, migration filenames, etc.) stays
-exactly as-is unless there's a separate, explicit decision to rename code
-too. User-facing display strings (things the user actually reads on screen,
-like "PIE Brief" or "PIE checking photos...") are being updated to say DAVE
-instead — see the app's git history for that pass.
+### Naming (as of 2026-07-19)
+The product-facing application name is **Vitruvius**. The established DAVE
+assistant/intelligence layer continues running on **ECOS**.
+This application rename is **docs/UI-only for now** — do not rename `pie_*`
+tables, files, functions, or other identifiers in the codebase as part of
+this. Internal `DAVE*` and `PIE*` identifiers remain unchanged unless there
+is a separate, explicit decision to migrate those contracts. Product-shell
+branding, installed-app names, permission copy, and product icons should say
+Vitruvius.
 
 - Repo: `https://github.com/famularod/project-vision-ai`
 - Local path: `/Users/davidfamularo/Downloads/project-photo-update-tool`

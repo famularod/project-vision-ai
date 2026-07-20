@@ -45,7 +45,9 @@ assert(shell.includes("const label = isComplete ? 'Completed' : task.status;"), 
 assert(shell.includes("isNotStarted ? 'notStarted' : 'inProgress'"), 'Not-started work must be visually distinct from work in progress.');
 assert(shell.includes('taskStatusBadge: { minWidth: 116'), 'Task status pills must be large enough to scan quickly.');
 assert(shell.includes('Delete Document Only') && shell.includes('Delete Document +'), 'Document deletion must distinguish keeping or deleting linked tasks.');
-assert(shell.includes('This is the current schedule. Keep it'), 'The current schedule must be protected from accidental deletion.');
+assert(shell.includes('This is the current schedule and is protected'), 'The current schedule must be protected from accidental deletion.');
+assert(shell.includes('Prior schedule versions ('), 'Schedule history must be separated from the authoritative current schedule.');
+assert(shell.includes('groupDAVEWebDocuments'), 'Document management must use the tested schedule-version grouping contract.');
 assert(shell.includes('permanent cloud deletion marker'), 'Document deletion must explain cross-device resurrection protection.');
 assert(!gateway.includes("from '@react-native-async-storage/async-storage'"), 'Desktop task writes must not import native AsyncStorage.');
 assert(!gateway.includes("from 'expo-secure-store'"), 'Desktop task writes must not import native SecureStore.');
