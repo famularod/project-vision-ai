@@ -137,8 +137,11 @@ assert(
   'Overview and Workspace must reconcile the same canonical project schedule slice.',
 );
 assert(
-  app.includes('Evidence state: {dailyBrief.reality.state}'),
-  'The independent Reality evidence state must be labeled as a distinct dimension.',
+  app.includes('>Project Snapshot<') &&
+    app.includes('>Current status<') &&
+    app.includes('{pmBriefing.currentReality}') &&
+    app.includes('{pmBriefing.schedule}'),
+  'The Project Snapshot must lead with the current project and schedule status.',
 );
 assert(
   app.includes('Archived Projects') && app.includes('onReopenProject(projectName)'),

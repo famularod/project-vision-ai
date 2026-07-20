@@ -122,12 +122,12 @@ for (const [question, intent] of supportedQuestions) {
 }
 
 const unknown = askDAVE({ question: 'What color should the office walls be?', intelligence });
-assert.strictEqual(unknown.answer, "I don't have enough project evidence to answer that.");
+assert.strictEqual(unknown.answer, "I don't have enough current project information to answer that yet.");
 assert.strictEqual(unknown.supportingEvidence.length, 0);
 assert.strictEqual(unknown.recommendedNextAction, null);
 
 const changed = askDAVE({ question: 'What changed?', intelligence });
-assert.match(changed.answer, /Observations/);
+assert.match(changed.answer, /Field observations/);
 assert.match(changed.answer, /tan case/i);
 assert(changed.supportingEvidence.length > 0);
 assert(changed.timelineReferences.some(item => item.eventType === 'qualified_photo_observation'));
@@ -136,8 +136,8 @@ assert(!/work progressed significantly|work is complete|percent complete/i.test(
 const recommendation = askDAVE({ question: 'Why did DAVE recommend this?', intelligence });
 assert(recommendation.recommendedNextAction);
 assert(recommendation.supportingEvidence.length > 0, 'Recommendation explanation must cite Reality evidence.');
-assert.match(recommendation.answer, /Interpretations/);
-assert.match(recommendation.answer, /Recommendations/);
+assert.match(recommendation.answer, /Assessment/);
+assert.match(recommendation.answer, /Recommended next step/);
 
 const support = askDAVE({ question: 'Show supporting evidence.', intelligence });
 assert(support.supportingEvidence.length > 0);
@@ -153,7 +153,7 @@ assert(sinceUpdate.timelineReferences.some(item => item.eventType === 'qualified
 
 const ownerDraft = askDAVE({ question: 'Draft an owner update.', intelligence });
 assert.match(ownerDraft.answer, /Owner Update/);
-assert.match(ownerDraft.answer, /Facts|Observations|Recommendations/);
+assert.match(ownerDraft.answer, /Current status|Field observations|Recommended next step/);
 assert(ownerDraft.supportingEvidence.length > 0);
 
 const contractorDraft = askDAVE({ question: 'Draft a contractor follow-up.', intelligence });
@@ -175,10 +175,10 @@ const weakIntelligence = buildProjectIntelligence({
 });
 const weak = askDAVE({ question: 'Summarize this project.', intelligence: weakIntelligence });
 assert.strictEqual(weak.confidence, 'low');
-assert.match(weak.answer, /^Evidence note: Project evidence is weak\./);
-assert(weak.limitations.some(item => /evidence is weak/i.test(item)));
+assert(!/^Evidence note:/i.test(weak.answer), 'Low confidence must not bury the answer under diagnostic copy.');
+assert(weak.limitations.some(item => /details may be incomplete/i.test(item)));
 const weakUnknown = askDAVE({ question: 'Predict the weather.', intelligence: weakIntelligence });
-assert.strictEqual(weakUnknown.answer, "I don't have enough project evidence to answer that.");
+assert.strictEqual(weakUnknown.answer, "I don't have enough current project information to answer that yet.");
 
 const scheduleIntelligence = buildProjectIntelligence({
   projectId: 'project-2375',

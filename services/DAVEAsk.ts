@@ -64,7 +64,7 @@ export type DAVEAskRequest = {
   interface?: 'text' | 'voice';
 };
 
-const UNKNOWN_ANSWER = "I don't have enough project evidence to answer that.";
+const UNKNOWN_ANSWER = "I don't have enough current project information to answer that yet.";
 
 export function askDAVE(request: DAVEAskRequest): DAVEAskAnswer {
   const intent = routeDAVEAskIntent(request.question);
@@ -154,12 +154,11 @@ function projectStatus(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
   );
   const facts = [
     ...scheduleFacts,
-    ...(latestFieldEvent ? [`Latest field evidence: ${latestFieldEvent.summary}`] : ['No field update is currently recorded for this project.']),
+    ...(latestFieldEvent ? [`Latest field update: ${latestFieldEvent.summary}`] : ['No field update is currently recorded for this project.']),
     `${reality.openCommitments.length} open recorded ${reality.openCommitments.length === 1 ? 'commitment' : 'commitments'}.`,
   ];
   const interpretations = [
-    `Schedule health is ${schedule.health}. Evidence reality state is ${reality.state}.`,
-    `Field-status confidence is ${reality.confidence}; evidence strength is ${intelligence.evidenceQuality.strength}.`,
+    `The current project condition is ${reality.state}; schedule health is ${schedule.health}.`,
   ];
   const scheduleRecommendation = schedule.overdueCount > 0
     ? `Set recovery plans for ${schedule.overdueCount} overdue ${schedule.overdueCount === 1 ? 'task' : 'tasks'}, starting with ${schedule.overdueTasks.slice(0, 3).map(item => item.taskName).join(', ')}.`
@@ -192,7 +191,7 @@ function needsAttention(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
     .filter((item, index, all) => all.findIndex(candidate => candidate.id === item.id) === index);
   if (items.length === 0 && schedule.overdueCount === 0 && schedule.dueSoonCount === 0 && schedule.waitingCount === 0) {
     return answerFromEvents(
-      `Facts\n${intelligence.dailyBrief.emptyStates.attention}`,
+      `Current status\n${intelligence.dailyBrief.emptyStates.attention}`,
       intelligence,
       [],
       [],
@@ -307,8 +306,19 @@ function summarizeProject(intelligence: DAVEProjectIntelligence): DAVEAskAnswer 
 function whatChanged(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
   const items = intelligence.dailyBrief.changedItems;
   if (items.length === 0) {
+    const recentChangeEvents = intelligence.timeline.filter(item =>
+      item.eventType === 'qualified_photo_observation' ||
+      item.eventType === 'update_recorded' ||
+      item.eventType === 'action_created' ||
+      item.eventType === 'action_completed' ||
+      item.eventType === 'safety_issue_opened' ||
+      item.eventType === 'safety_issue_resolved',
+    ).slice(0, 5);
+    if (recentChangeEvents.length > 0) {
+      return timelineAnswer(recentChangeEvents, intelligence, intelligence.dailyBrief.emptyStates.changed);
+    }
     return answerFromEvents(
-      intelligence.dailyBrief.emptyStates.changed,
+      `What changed\n${intelligence.dailyBrief.emptyStates.changed}`,
       intelligence,
       [],
       [],
@@ -333,8 +343,8 @@ function explainRisk(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
   const reality = intelligence.projectReality;
   const overdue = reality.openCommitments.filter(item => item.status === 'Overdue');
   const interpretations = reality.state === 'At Risk'
-    ? ['Project Reality is interpreted as At Risk.']
-    : [`Project Reality is ${reality.state}, not At Risk, based on current structured evidence.`];
+    ? ['The project is currently At Risk.']
+    : [`The project is currently ${reality.state}, not At Risk.`];
   const facts = overdue.map(item => `${item.description} is recorded overdue with due date ${item.dueDate}.`);
   const evidenceItems = [
     ...reality.supportingEvidence,
@@ -582,10 +592,9 @@ function answerFromEvents(
 
 function withEvidenceQuality(answer: DAVEAskAnswer, intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
   if (intelligence.projectReality.confidence !== 'low') return answer;
-  const limitation = 'Project evidence is weak; verify the cited records before relying on this answer.';
+  const limitation = 'Some current project details may be incomplete. Review the source details before relying on this answer.';
   return {
     ...answer,
-    answer: `Evidence note: Project evidence is weak.\n${answer.answer}`,
     confidence: 'low',
     limitations: uniqueStrings([...answer.limitations, limitation]),
   };
@@ -596,9 +605,9 @@ function unknownAnswer(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
     answer: UNKNOWN_ANSWER,
     confidence: 'low',
     limitations: uniqueStrings([
-      'No supported intent and evidence-backed answer matched this question.',
+      'This question does not match an available project answer yet.',
       ...(intelligence.projectReality.confidence === 'low'
-        ? ['Project evidence is weak; verify available records before asking a more specific question.']
+        ? ['Some current project details may be incomplete. Try one of the suggested project questions.']
         : []),
     ]),
     supportingEvidence: [],
@@ -615,10 +624,10 @@ function sectionedAnswer(
   recommendations: string[],
 ): string {
   const sections = [
-    section('Facts', facts),
-    section('Observations', observations),
-    section('Interpretations', interpretations),
-    section('Recommendations', recommendations),
+    section('Current status', facts),
+    section('Field observations', observations),
+    section('Assessment', interpretations),
+    section('Recommended next step', recommendations),
   ].filter(Boolean);
   return sections.length > 0 ? sections.join('\n\n') : UNKNOWN_ANSWER;
 }

@@ -16018,7 +16018,6 @@ function ProjectWorkspaceScreen({
   const projectTruth = liveAuthority.projectTruth;
   const pmBriefing = projectTruth.briefing;
   const dailyBrief = projectIntelligence.dailyBrief;
-  const evidenceQuality = projectIntelligence.evidenceQuality;
   const actionCenter = projectIntelligence.actionCenter;
   const [voiceCaptureOpen, setVoiceCaptureOpen] = useState(false);
   const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
@@ -16161,13 +16160,33 @@ function ProjectWorkspaceScreen({
             <Ionicons name="sparkles-outline" size={21} color={projectHealthColor} />
           </View>
           <View style={styles.rowMain}>
-            <Text style={styles.panelTitle}>Project Brief</Text>
-            <Text style={styles.rowSub}>
-              Evidence state: {dailyBrief.reality.state} · {dailyBrief.reality.confidence} confidence · {evidenceQuality.strength} evidence
-            </Text>
-            <Text style={styles.sectionLabelNoMargin}>What matters now</Text>
-            <Text style={styles.bodyText}>{actionCenter.priority}</Text>
-            <Text style={styles.locationDetailText}>{actionCenter.reason}</Text>
+            <Text style={styles.panelTitle}>Project Snapshot</Text>
+            <Text style={styles.sectionLabelNoMargin}>Current status</Text>
+            <Text style={styles.locationDetailText}>{pmBriefing.currentReality}</Text>
+            <Text style={styles.locationDetailText}>{pmBriefing.schedule}</Text>
+
+            <Text style={styles.sectionLabelNoMargin}>What changed</Text>
+            {pmBriefing.whatChanged.length > 0 ? pmBriefing.whatChanged.slice(0, 3).map((change, index) => (
+              <Text key={`truth-change-${index}`} style={styles.locationDetailText}>• {change}</Text>
+            )) : (
+              <Text style={styles.locationDetailText}>No new project changes have been recorded since the last update.</Text>
+            )}
+
+            <Text style={styles.sectionLabelNoMargin}>Needs attention</Text>
+            {actionCenter.priority !== 'No priority today.' ? (
+              <Text style={styles.bodyText}>{actionCenter.priority}</Text>
+            ) : null}
+            {pmBriefing.risksAndConflicts.slice(0, 3).map((risk, index) => (
+              <Text key={`truth-risk-${index}`} style={styles.locationDetailText}>• {risk}</Text>
+            ))}
+            {pmBriefing.verificationNeeded.slice(0, 3).map((item, index) => (
+              <Text key={`truth-verify-${index}`} style={styles.locationDetailText}>• {item}</Text>
+            ))}
+            {actionCenter.priority === 'No priority today.' &&
+            pmBriefing.risksAndConflicts.length === 0 &&
+            pmBriefing.verificationNeeded.length === 0 ? (
+                <Text style={styles.locationDetailText}>No current issue requires attention.</Text>
+              ) : null}
             {actionCenter.recommendedAction ? (
               <TouchableOpacity
                 style={styles.photoControlButton}
@@ -16185,45 +16204,18 @@ function ProjectWorkspaceScreen({
               </TouchableOpacity>
             ) : null}
 
-            <Text style={styles.sectionLabelNoMargin}>Current reality</Text>
-            <Text style={styles.locationDetailText}>{pmBriefing.currentReality}</Text>
-
-            <Text style={styles.sectionLabelNoMargin}>What changed</Text>
-            {pmBriefing.whatChanged.length > 0 ? pmBriefing.whatChanged.slice(0, 3).map((change, index) => (
-              <Text key={`truth-change-${index}`} style={styles.locationDetailText}>• {change}</Text>
-            )) : (
-              <Text style={styles.locationDetailText}>No verified change is available from current evidence.</Text>
-            )}
-
-            <Text style={styles.sectionLabelNoMargin}>Schedule and risk</Text>
-            <Text style={styles.locationDetailText}>{pmBriefing.schedule}</Text>
-            {pmBriefing.risksAndConflicts.slice(0, 3).map((risk, index) => (
-              <Text key={`truth-risk-${index}`} style={styles.locationDetailText}>• {risk}</Text>
-            ))}
-
-            {pmBriefing.verificationNeeded.length > 0 ? (
-              <>
-                <Text style={styles.sectionLabelNoMargin}>Needs verification</Text>
-                {pmBriefing.verificationNeeded.slice(0, 3).map((item, index) => (
-                  <Text key={`truth-verify-${index}`} style={styles.locationDetailText}>• {item}</Text>
-                ))}
-              </>
-            ) : null}
-
-            <Text style={styles.sectionLabelNoMargin}>Next best actions</Text>
-            {pmBriefing.nextActions.slice(0, 3).map((action, index) => (
+            <Text style={styles.sectionLabelNoMargin}>Next steps</Text>
+            {pmBriefing.nextActions.length > 0 ? pmBriefing.nextActions.slice(0, 3).map((action, index) => (
               <Text key={`truth-action-${index}`} style={styles.locationDetailText}>{index + 1}. {action}</Text>
-            ))}
+            )) : (
+              <Text style={styles.locationDetailText}>No additional action is needed right now.</Text>
+            )}
 
             {projectIntelligenceOpen ? (
               <>
-                <Text style={styles.sectionLabelNoMargin}>Why this brief</Text>
-                {evidenceQuality.signals.map(signal => (
-                  <Text key={signal.id} style={styles.rowSub}>{signal.label}: {signal.value}</Text>
-                ))}
-                <Text style={styles.rowSub}>{evidenceQuality.limitation}</Text>
+                <Text style={styles.sectionLabelNoMargin}>Source details</Text>
                 <Text style={styles.rowSub}>{pmBriefing.evidenceCoverage}</Text>
-                <Text style={styles.sectionLabelNoMargin}>Recent timeline evidence</Text>
+                <Text style={styles.sectionLabelNoMargin}>Recent project records</Text>
                 {dailyBrief.reality.recentTimelineEvents.slice(0, 3).map(event => (
                   <Text key={event.id} style={styles.locationDetailText}>• {event.title}: {event.summary}</Text>
                 ))}
@@ -16243,7 +16235,7 @@ function ProjectWorkspaceScreen({
               accessibilityState={{ expanded: projectIntelligenceOpen }}
             >
               <Ionicons name={projectIntelligenceOpen ? 'chevron-up-outline' : 'chevron-down-outline'} size={17} color={colors.primary} />
-              <Text style={styles.photoControlText}>{projectIntelligenceOpen ? 'Hide supporting evidence' : 'Why this brief'}</Text>
+              <Text style={styles.photoControlText}>{projectIntelligenceOpen ? 'Hide source details' : 'View source details'}</Text>
             </TouchableOpacity>
           </View>
         </View>

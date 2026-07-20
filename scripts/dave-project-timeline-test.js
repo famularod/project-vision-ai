@@ -246,7 +246,7 @@ for (const item of [...deterministic, ...commitmentEvents, ...recommendationEven
 }
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-assert(app.includes('>Recent timeline evidence<') && /dailyBrief\.reality\.recentTimelineEvents\.slice\(0, \d+\)/.test(app),
+assert(app.includes('>Recent project records<') && /dailyBrief\.reality\.recentTimelineEvents\.slice\(0, \d+\)/.test(app),
   'Project Workspace must render a bounded set of recent canonical timeline events.');
 assert(!app.includes("title=\"Project Timeline\""), 'Timeline must not add a new navigation screen.');
 

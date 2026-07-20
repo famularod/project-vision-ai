@@ -282,11 +282,11 @@ function classifyConclusion(item: ScheduleItem, correlation: DAVETaskEvidenceCor
 
 function conclusionText(item: ScheduleItem, correlation: DAVETaskEvidenceCorrelation) {
   if (correlation.conclusion === 'verified_complete') return `${item.taskName} is verified complete.`;
-  if (correlation.conclusion === 'completion_supported') return `Evidence supports completion of ${item.taskName}, but PM verification is still required.`;
-  if (correlation.conclusion === 'completion_reported') return `${item.taskName} was reported complete, but DAVE cannot verify full completion.`;
-  if (correlation.conclusion === 'progress_observed') return `Visible progress is supported for ${item.taskName}; total task completion is not established.`;
-  if (correlation.conclusion === 'not_complete') return `${item.taskName} should remain open based on the current reviewed evidence.`;
-  if (correlation.conclusion === 'conflicting_evidence') return `The actual condition of ${item.taskName} is unresolved because current sources conflict.`;
+  if (correlation.conclusion === 'completion_supported') return `${item.taskName} appears complete in current field records and is ready for PM approval.`;
+  if (correlation.conclusion === 'completion_reported') return `${item.taskName} is marked complete and is awaiting PM approval.`;
+  if (correlation.conclusion === 'progress_observed') return `${item.taskName} shows visible progress; full completion has not been recorded.`;
+  if (correlation.conclusion === 'not_complete') return `${item.taskName} remains open.`;
+  if (correlation.conclusion === 'conflicting_evidence') return `${item.taskName} has conflicting current status information.`;
   return `The schedule state for ${item.taskName} is not corroborated by current field evidence.`;
 }
 

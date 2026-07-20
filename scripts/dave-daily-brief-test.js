@@ -172,10 +172,10 @@ for (const forbidden of ['providerName', 'diagnostics', 'signedUrl', 'storagePat
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 assert(
-  app.includes('Project Brief') &&
+  app.includes('Project Snapshot') &&
     app.includes('const dailyBrief = projectIntelligence.dailyBrief') &&
     app.includes('liveAuthority.projectTruth.intelligence'),
-  'Project Workspace must render the consolidated Project Brief from canonical Project Truth intelligence.',
+  'Project Workspace must render the PM-facing Project Snapshot from canonical Project Truth intelligence.',
 );
 assert(!app.includes("title=\"DAVE Daily Brief\""), 'Daily Brief must not add a top-level navigation screen.');
 

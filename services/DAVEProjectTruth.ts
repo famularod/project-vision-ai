@@ -747,11 +747,11 @@ function buildPMBriefing(input: {
     .filter(item => item.evidenceClass === 'observation')
     .map(item => `${item.areaName ? `${item.areaName}: ` : ''}${item.changeFromPrior || item.observation}`);
   const correlatedChanges = input.correlations.tasks.flatMap(item => {
-    if (item.conclusion === 'verified_complete') return [`Verified complete: ${item.taskName}.`];
-    if (item.conclusion === 'completion_supported') return [`Evidence supports completion of ${item.taskName}; PM verification remains required.`];
-    if (item.conclusion === 'completion_reported') return [`Completion reported: ${item.taskName}; PM verification remains required.`];
-    if (item.conclusion === 'progress_observed') return [`Visible progress is connected to ${item.taskName}.`];
-    if (item.conclusion === 'conflicting_evidence') return [`Conflicting evidence: ${item.taskName}.`];
+    if (item.conclusion === 'verified_complete') return [`${item.taskName} was verified complete.`];
+    if (item.conclusion === 'completion_supported') return [`${item.taskName} appears complete in current field records and is ready for PM approval.`];
+    if (item.conclusion === 'completion_reported') return [`${item.taskName} is marked complete and is awaiting PM approval.`];
+    if (item.conclusion === 'progress_observed') return [`${item.taskName} shows visible progress.`];
+    if (item.conclusion === 'conflicting_evidence') return [`${item.taskName} has conflicting current status information.`];
     return [];
   });
   const state = input.intelligence.projectReality.state;
@@ -768,7 +768,7 @@ function buildPMBriefing(input: {
     ...input.reasoning.criticalDecisions.flatMap(item => item.challenges.slice(0, 1).map(challenge => `${item.taskName}: ${challenge.impact}`)),
     ...conflicts.map(item =>
       `${item.taskName}${item.areaName ? ` (${item.areaName})` : ''}: ${item.contradiction} ` +
-      'Required follow-up: confirm completion in the field with supporting evidence, or correct the task status.',
+      'Confirm the field condition or correct the task status.',
     ),
     ...input.core?.situationRisks.map(item => `${item.risk}: ${item.whyItMatters}`) ?? [],
     ...input.runtime?.evidenceConflicts.map(item => item.summary) ?? [],
@@ -790,9 +790,12 @@ function buildPMBriefing(input: {
       .slice(0, 5)
       .map(item => `${item.description}${item.owner ? ` — ${item.owner}` : ''}${item.dueDate ? ` — due ${item.dueDate}` : ''}`),
     risksAndConflicts: risks,
-    verificationNeeded: input.verificationQueue.slice(0, 5).map(item => `${item.title}: ${item.reason}`),
+    verificationNeeded: input.verificationQueue
+      .filter(item => item.subjectType === 'conflict' || item.subjectType === 'schedule-task')
+      .slice(0, 5)
+      .map(item => `${item.title}: ${item.requestedAction}`),
     nextActions,
-    evidenceCoverage: `${input.evidence.connected} of ${input.evidence.total} evidence records connected (${input.evidence.coveragePercent}%); ${input.correlations.multiSourceTaskCount} task${input.correlations.multiSourceTaskCount === 1 ? '' : 's'} correlated across multiple source types. ${input.reasoning.summary}`,
+    evidenceCoverage: `${input.evidence.connected} of ${input.evidence.total} current project records are linked to project work. ${input.evidence.unresolved} record${input.evidence.unresolved === 1 ? '' : 's'} still need review.`,
     confidence,
   };
 }

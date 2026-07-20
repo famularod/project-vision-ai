@@ -47,7 +47,14 @@ describe('DAVE report intelligence', () => {
       'Reported installation progress is supported',
     );
     expect(briefing.uncertainties).toEqual([]);
-    expect(briefing.nextActions).toEqual([]);
+    expect(briefing.nextActions).toHaveLength(1);
+    expect(briefing.nextActions[0]).toMatchObject({
+      taskName: 'Place concrete paving',
+      action: 'Prepare the crew, materials, and access for Place concrete paving.',
+      owner: 'Project manager',
+      timing: 'Within 7 days',
+      confidence: 'high',
+    });
     expect(briefing.schedulePosition).toEqual(['The inspection is due tomorrow.']);
     expect(JSON.stringify(briefing)).not.toMatch(/not verified|verification needed|missing evidence/i);
   });

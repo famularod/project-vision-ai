@@ -66,7 +66,7 @@ const reportedTask = task('Install Pump', { completionVerification: verification
 const reported = reason([reportedTask], [update('update-1', reportedTask.id, '', 'supported')]);
 const reportedDecision = reported.decisions[0];
 assert.strictEqual(reportedDecision.classification, 'reasonable_inference');
-assert.match(reportedDecision.conclusion, /cannot verify full completion/i);
+assert.match(reportedDecision.conclusion, /marked complete and is awaiting PM approval/i);
 assert(reportedDecision.hypotheses.length >= 4, 'DAVE must consider competing explanations.');
 assert(reportedDecision.hypotheses.some(item => /visible or partial scope/i.test(item.statement)));
 assert(reportedDecision.challenges.some(item => item.kind === 'authority_gap'));
@@ -114,7 +114,7 @@ assert.match(verified.decisions[0].learningCues[0], /preserve its evidence patte
 const reopened = reason([verifiedTask], [update('post-verification', verifiedTask.id, 'Connections remain incomplete.', null, '2026-07-16T17:00:00.000Z')]);
 assert.strictEqual(reopened.decisions[0].classification, 'unresolved_uncertainty');
 assert.strictEqual(reopened.decisions[0].confidence, 'low');
-assert.match(reopened.decisions[0].conclusion, /sources conflict/i);
+assert.match(reopened.decisions[0].conclusion, /conflicting current status information/i);
 assert(reopened.decisions[0].challenges.some(item => item.kind === 'source_conflict'));
 const superseded = reason([verifiedTask], [update('pre-verification', verifiedTask.id, 'Connections remain incomplete.', null, '2026-07-16T14:00:00.000Z')]);
 assert.strictEqual(superseded.decisions[0].classification, 'supported_conclusion');
@@ -128,8 +128,8 @@ assert.strictEqual(waiting.decisions[0].recommendation.timing, 'Today');
 // Project Truth must make the deeper reasoning available to the existing UI briefing.
 const truth = buildDAVEProjectTruth({ projectId: 'alpha', projectName: 'Alpha', scheduleItems: [reportedTask], updates: [update('truth-update', reportedTask.id, '', 'supported')], now: NOW });
 assert.strictEqual(truth.reasoning.decisions.length, 1);
-assert.match(truth.briefing.currentReality, /cannot verify full completion/i);
-assert.match(truth.briefing.evidenceCoverage, /task reasoned across/i);
+assert.match(truth.briefing.currentReality, /marked complete and is awaiting PM approval/i);
+assert.match(truth.briefing.evidenceCoverage, /current project records are linked to project work/i);
 assert(truth.verificationQueue.some(item => /Named PM verification|current verification photo|current field update|PM verification/i.test(item.requestedAction)));
 
 console.log('PASS DAVE Project Reasoning and adversarial challenge');

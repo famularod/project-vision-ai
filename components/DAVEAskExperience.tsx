@@ -138,8 +138,8 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
           <Ionicons name="chatbubble-ellipses-outline" size={20} color="#3656A7" />
         </View>
         <View style={styles.flex}>
-          <Text style={styles.title}>Project Assistant</Text>
-          <Text style={styles.subtitle}>Suggested questions</Text>
+          <Text style={styles.title}>Ask Vitruvius</Text>
+          <Text style={styles.subtitle}>Current project questions</Text>
         </View>
       </View>
 
@@ -152,9 +152,9 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
             disabled={!historyLoaded}
             accessibilityRole="button"
             accessibilityState={{ disabled: !historyLoaded }}
-            accessibilityLabel={`Ask project assistant: ${question}`}
+            accessibilityLabel={`Ask Vitruvius: ${question}`}
           >
-            <Text style={styles.suggestionText}>• {question}</Text>
+            <Text style={styles.suggestionText}>{question}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -199,54 +199,35 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
           ) : null}
           <Text style={styles.sectionLabel}>Answer</Text>
           <Text style={styles.answerText}>{entry.answer.answer}</Text>
-          <Text style={styles.metaText}>Confidence: {entry.answer.confidence}</Text>
-          {entry.answer.limitations.length > 0 ? (
-            <AnswerList title="Limitations" items={entry.answer.limitations} />
-          ) : null}
-          {entry.answer.supportingEvidence.length > 0 ? (
+          {entry.answer.recommendedNextAction && !entry.answer.answer.includes(entry.answer.recommendedNextAction) ? (
             <View>
-              <Text style={styles.sectionLabel}>Supporting Evidence</Text>
-              {entry.answer.supportingEvidence.map(citation => (
-                <CitationButton key={citationKey(citation)} citation={citation} onPress={() => openEvidence(citation)} />
-              ))}
-            </View>
-          ) : null}
-          {entry.answer.timelineReferences.length > 0 ? (
-            <View>
-              <Text style={styles.sectionLabel}>Timeline References</Text>
-              {entry.answer.timelineReferences.map(reference => (
-                <TouchableOpacity
-                  key={reference.id}
-                  style={styles.citation}
-                  onPress={() => {
-                    const destination = resolveDAVEAskTimelineNavigation(intelligence, reference.id);
-                    if (destination) onOpenSupportingRecord(destination.target, destination.sourceRecordId);
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open timeline reference: ${reference.title}`}
-                >
-                  <Text style={styles.citationText}>{reference.title}</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#697386" />
-                </TouchableOpacity>
-              ))}
-            </View>
-          ) : null}
-          {entry.answer.recommendedNextAction ? (
-            <View>
-              <Text style={styles.sectionLabel}>Recommended Action</Text>
+              <Text style={styles.sectionLabel}>Next step</Text>
               <Text style={styles.answerText}>{entry.answer.recommendedNextAction}</Text>
-              <TouchableOpacity
-                style={styles.whyButton}
-                onPress={() => setExpandedWhyId(current => current === entry.id ? null : entry.id)}
-                accessibilityRole="button"
-                accessibilityState={{ expanded: expandedWhyId === entry.id }}
-                accessibilityLabel="Explain this recommendation"
-              >
-                <Text style={styles.whyText}>Why?</Text>
-              </TouchableOpacity>
-              {expandedWhyId === entry.id ? <DAVEWhy answer={entry.answer} onOpenEvidence={openEvidence} /> : null}
             </View>
           ) : null}
+          {entry.answer.limitations.length > 0 ||
+          entry.answer.supportingEvidence.length > 0 ||
+          entry.answer.timelineReferences.length > 0 ? (
+              <>
+                <TouchableOpacity
+                  style={styles.whyButton}
+                  onPress={() => setExpandedWhyId(current => current === entry.id ? null : entry.id)}
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: expandedWhyId === entry.id }}
+                  accessibilityLabel={expandedWhyId === entry.id ? 'Hide source details' : 'View source details'}
+                >
+                  <Text style={styles.whyText}>{expandedWhyId === entry.id ? 'Hide source details' : 'View source details'}</Text>
+                </TouchableOpacity>
+                {expandedWhyId === entry.id ? (
+                  <DAVEWhy
+                    answer={entry.answer}
+                    intelligence={intelligence}
+                    onOpenEvidence={openEvidence}
+                    onOpenTimelineRecord={onOpenSupportingRecord}
+                  />
+                ) : null}
+              </>
+            ) : null}
         </View>
       ))}
 
@@ -266,14 +247,14 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
           placeholderTextColor="#858B98"
           returnKeyType="send"
           onSubmitEditing={() => executeQuestion(followUp)}
-          accessibilityLabel="Ask the project assistant a follow-up question"
+          accessibilityLabel="Ask Vitruvius a follow-up question"
         />
         <TouchableOpacity
           style={[styles.askButton, !followUp.trim() && styles.askButtonDisabled]}
           disabled={!followUp.trim()}
           onPress={() => executeQuestion(followUp)}
           accessibilityRole="button"
-          accessibilityLabel="Send question to the project assistant"
+          accessibilityLabel="Send question to Vitruvius"
         >
           <Text style={styles.askButtonText}>Ask</Text>
         </TouchableOpacity>
@@ -284,7 +265,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
 
 function AskHistorySkeleton() {
   return (
-    <View style={styles.skeleton} accessible accessibilityLabel="Loading project assistant history">
+    <View style={styles.skeleton} accessible accessibilityLabel="Loading Vitruvius question history">
       <View style={[styles.skeletonLine, { width: '68%' }]} />
       <View style={[styles.skeletonLine, { width: '92%' }]} />
       <View style={[styles.skeletonLine, { width: '54%' }]} />
@@ -294,30 +275,45 @@ function AskHistorySkeleton() {
 
 function DAVEWhy({
   answer,
+  intelligence,
   onOpenEvidence,
+  onOpenTimelineRecord,
 }: {
   answer: DAVEAskAnswer;
+  intelligence: DAVEProjectIntelligence;
   onOpenEvidence: (citation: DAVEAskEvidence) => void;
+  onOpenTimelineRecord: (target: DAVEBriefNavigationTarget, sourceRecordId: string) => void;
 }) {
   const why = buildDAVEAskWhyModel(answer);
   return (
     <View style={styles.whyPanel}>
-      <Text style={styles.sectionLabel}>Evidence Used</Text>
+      <Text style={styles.sectionLabel}>Answer confidence</Text>
+      <Text style={styles.metaText}>{why.confidence}</Text>
+      <Text style={styles.sectionLabel}>Project records</Text>
       {why.evidenceUsed.map(citation => (
         <CitationButton key={`why:${citationKey(citation)}`} citation={citation} onPress={() => onOpenEvidence(citation)} />
       ))}
-      <AnswerList
-        title="Evidence Missing"
-        items={why.evidenceMissing.length > 0 ? why.evidenceMissing : ['No additional evidence gaps identified for this answer.']}
-      />
-      <Text style={styles.sectionLabel}>Confidence</Text>
-      <Text style={styles.metaText}>{why.confidence}</Text>
-      <AnswerList title="Limitations" items={why.limitations.length > 0 ? why.limitations : ['No additional limitations recorded.']} />
-      <AnswerList title="Timeline Events" items={why.timelineEvents.map(item => item.title)} />
-      <Text style={styles.sectionLabel}>Supporting Records</Text>
-      {why.supportingRecords.map(citation => (
-        <CitationButton key={`record:${citationKey(citation)}`} citation={citation} onPress={() => onOpenEvidence(citation)} />
-      ))}
+      {why.timelineEvents.length > 0 ? (
+        <View>
+          <Text style={styles.sectionLabel}>Related activity</Text>
+          {why.timelineEvents.map(reference => (
+            <TouchableOpacity
+              key={reference.id}
+              style={styles.citation}
+              onPress={() => {
+                const destination = resolveDAVEAskTimelineNavigation(intelligence, reference.id);
+                if (destination) onOpenTimelineRecord(destination.target, destination.sourceRecordId);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Open related activity: ${reference.title}`}
+            >
+              <Text style={styles.citationText}>{reference.title}</Text>
+              <Ionicons name="chevron-forward" size={16} color="#697386" />
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : null}
+      <AnswerList title="Important notes" items={why.limitations} />
     </View>
   );
 }

@@ -14,7 +14,6 @@ import {
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
-import { PIEPanel } from '../components/PIEPanel';
 import { ReportsWideWorkspace } from '../components/reports-workspace-layout';
 import { useAppShellLayout } from '../components/app-shell-layout';
 import {
@@ -58,6 +57,7 @@ import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync'
 import { buildDAVEProjectTruth } from '../services/DAVEProjectTruth';
 import {
   buildDAVEReportBriefing,
+  buildPMReportReviewWarnings,
   enhanceDAVEReportDraft,
   type DAVEReportBriefing,
 } from '../services/DAVEReportIntelligence';
@@ -554,20 +554,7 @@ export function ReportsScreen({
       }
     />
   );
-  const evidencePanel = advancedReviewOpen ? (
-    <PIEPanel
-      projectName={projectName}
-      updates={updates}
-      scheduleItems={scheduleItems}
-      currentUpdate={currentUpdate}
-      projectAreas={projectAreas}
-      contacts={contacts}
-      referenceDocuments={referenceDocuments}
-      syncMetadata={syncMetadata}
-      title="Supporting Evidence"
-      subtitle="Evidence, uncertainty, and reasoning behind this recommendation."
-    />
-  ) : null;
+  const evidencePanel = null;
 
   if (sizeClass === 'wide') {
     return (
@@ -623,10 +610,10 @@ function BeforeYouSharePanel({
   onPrimaryAction: () => void;
   onSecondaryAction?: () => void;
 }) {
-  const warnings = Array.from(new Set([
+  const warnings = buildPMReportReviewWarnings([
     ...experience.reviewWarnings,
     ...reportDraft.reviewFlags,
-  ])).filter(value => value.trim().length > 0);
+  ]);
   const reportActions = reportDraft.actionItems.filter(item =>
     isReportableShareAction(item.action) && !item.needsOwner,
   );
@@ -649,7 +636,7 @@ function BeforeYouSharePanel({
 
         <View style={styles.experienceTextGroup}>
           <Text style={styles.experienceEyebrow}>
-            Before You Share
+            Review &amp; Approval
           </Text>
 
           <Text style={styles.experienceState}>
@@ -659,13 +646,13 @@ function BeforeYouSharePanel({
       </View>
 
       <Text style={styles.experienceMessage}>
-        Review the prepared report, make any edits, and approve it when ready.
+        Confirm the report matches the current project status, then edit or approve it.
       </Text>
 
       {warnings.length > 0 ? (
         <View style={styles.reviewFlagsPanel}>
           <Text style={styles.reportPreviewLabel}>
-            Check before sharing
+            Resolve before sharing
           </Text>
 
           {warnings.slice(0, expanded ? warnings.length : 2).map((warning, index) => (
@@ -683,7 +670,7 @@ function BeforeYouSharePanel({
         <View style={styles.beforeShareDetails}>
           {reportActions.length > 0 ? (
             <View style={styles.reportList}>
-              <Text style={styles.reportPreviewLabel}>Included Actions</Text>
+              <Text style={styles.reportPreviewLabel}>Current report actions</Text>
               {reportActions.slice(0, 5).map((item, index) => (
                 <Text key={`${item.id}-${index}`} style={styles.reportListText}>
                   • {item.owner} — {item.action}
@@ -700,7 +687,7 @@ function BeforeYouSharePanel({
         accessibilityRole="button"
         accessibilityState={{ expanded }}
       >
-        <Text style={styles.advancedToggleText}>{expanded ? 'Hide Why' : 'Why?'}</Text>
+        <Text style={styles.advancedToggleText}>{expanded ? 'Hide review details' : 'Review details'}</Text>
         <Ionicons
           name={expanded ? 'chevron-up-outline' : 'chevron-down-outline'}
           size={18}

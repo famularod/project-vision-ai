@@ -170,13 +170,15 @@ const workspace = app.slice(
   app.indexOf('function ProjectWorkspaceScreen'),
   app.indexOf('function SavedUpdatesScreen'),
 );
-const briefIndex = workspace.indexOf('>Project Brief<');
+const briefIndex = workspace.indexOf('>Project Snapshot<');
 const askIndex = workspace.indexOf('<DAVEAskExperience');
-const evidenceQualityIndex = workspace.indexOf('evidenceQuality.signals.map');
+const sourceDetailsIndex = workspace.indexOf('>Source details<');
 assert(
-  briefIndex >= 0 && evidenceQualityIndex > briefIndex && askIndex > evidenceQualityIndex,
-  'Evidence Quality must remain available inside the consolidated Project Brief before Ask DAVE.',
+  briefIndex >= 0 && sourceDetailsIndex > briefIndex && askIndex > sourceDetailsIndex,
+  'Project source details must remain available inside the Project Snapshot before Ask Vitruvius.',
 );
-assert(app.includes('evidenceQuality.limitation'));
+assert(workspace.includes('pmBriefing.evidenceCoverage'));
+assert(!workspace.includes('evidenceQuality.signals.map'),
+  'Diagnostic evidence scoring must not lead the PM-facing Project Snapshot.');
 
 console.log('DAVE Evidence Quality behavioral tests passed.');

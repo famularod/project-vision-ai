@@ -110,8 +110,7 @@ export function buildDAVEReportBriefing({
     isReportableCurrentState(decision.recommendation.action) &&
     !isVerificationOnlyAction(decision.recommendation.action),
   );
-  const nextActions = uniqueBy(
-    reportableActionDecisions.map(decision => ({
+  const reasoningActions = reportableActionDecisions.map(decision => ({
       id: `report-action:${decision.taskId}`,
       projectName: truthProjectName(truths, decision.taskId),
       taskName: decision.taskName,
@@ -122,7 +121,14 @@ export function buildDAVEReportBriefing({
       consequence: decision.recommendation.consequenceOfInaction,
       smallestNextAction: decision.recommendation.smallestNextAction,
       confidence: decision.confidence,
-    })),
+    }));
+  const scheduleActions = truths.flatMap(truth => truth.schedule
+    .filter(task => !scheduleProgressIsComplete(task))
+    .filter(task => task.urgency === 'overdue' || task.urgency === 'due_soon' || task.status === 'Waiting')
+    .sort((left, right) => reportScheduleActionRank(left) - reportScheduleActionRank(right))
+    .map(task => scheduleBackedReportAction(truth.projectName, task)));
+  const nextActions = uniqueBy(
+    [...scheduleActions, ...reasoningActions],
     item => `${normalized(item.projectName)}|${normalized(item.taskName)}|${normalized(item.action)}`,
   ).slice(0, 8);
   const decisionsRequired = unique(reportableActionDecisions
@@ -354,6 +360,92 @@ function conditionLabel(condition: DAVEReportBriefing['overallCondition']) {
   if (condition === 'attention') return 'Active Work';
   if (condition === 'stable') return 'On Track';
   return 'Current Status';
+}
+
+function reportScheduleActionRank(task: DAVEProjectTruth['schedule'][number]) {
+  if (task.urgency === 'overdue') return 0;
+  if (task.status === 'Waiting') return 1;
+  if (task.urgency === 'due_soon') return 2;
+  return 3;
+}
+
+function scheduleBackedReportAction(
+  projectName: string,
+  task: DAVEProjectTruth['schedule'][number],
+): DAVEReportAction {
+  const owner = clean(task.owner) || 'Project manager';
+  if (task.urgency === 'overdue') {
+    return Object.freeze({
+      id: `report-schedule-action:${task.taskId}`,
+      projectName,
+      taskName: task.taskName,
+      areaName: task.areaName,
+      action: `Set a recovery date and accountable next step for ${task.taskName}.`,
+      owner,
+      timing: 'Today',
+      consequence: `${task.taskName} remains overdue without a recovery plan.`,
+      smallestNextAction: 'Assign the recovery owner and date.',
+      confidence: 'high',
+    });
+  }
+  if (task.status === 'Waiting') {
+    return Object.freeze({
+      id: `report-schedule-action:${task.taskId}`,
+      projectName,
+      taskName: task.taskName,
+      areaName: task.areaName,
+      action: `Resolve the blocker holding ${task.taskName}.`,
+      owner,
+      timing: 'Today',
+      consequence: `${task.taskName} cannot advance while the blocker remains open.`,
+      smallestNextAction: 'Name the blocker and responsible party.',
+      confidence: 'high',
+    });
+  }
+  return Object.freeze({
+    id: `report-schedule-action:${task.taskId}`,
+    projectName,
+    taskName: task.taskName,
+    areaName: task.areaName,
+    action: `Prepare the crew, materials, and access for ${task.taskName}.`,
+    owner,
+    timing: task.finishDate ? `Before ${task.finishDate}` : 'Within 7 days',
+    consequence: `${task.taskName} may miss its scheduled finish without advance coordination.`,
+    smallestNextAction: 'Confirm crew, materials, and access.',
+    confidence: 'high',
+  });
+}
+
+export function buildPMReportReviewWarnings(values: readonly string[]): string[] {
+  return unique(values.map(value => {
+    const normalizedValue = normalized(value);
+    if (!normalizedValue) return '';
+    if (/no supporting|no evidence|missing supporting/.test(normalizedValue)) {
+      return 'Add a current project update before sharing.';
+    }
+    if (/missing project|project assignment/.test(normalizedValue)) {
+      return 'Assign each included item to the correct project.';
+    }
+    if (/owner|assigned/.test(normalizedValue)) {
+      return 'Assign an owner to each report action.';
+    }
+    if (/work area|location|area/.test(normalizedValue)) {
+      return 'Assign each included item to the correct work area.';
+    }
+    if (/schedule|date|impact|conflict|completion|status/.test(normalizedValue)) {
+      return 'Resolve the highlighted schedule or status conflict before sharing.';
+    }
+    if (/photo|image/.test(normalizedValue)) {
+      return 'Confirm the report includes the project photos needed for this update.';
+    }
+    if (/grammar|typo|wording|unclear/.test(normalizedValue)) {
+      return 'Edit unclear report wording before approval.';
+    }
+    if (/confidence|uncertain|unknown|review|verify|validation/.test(normalizedValue)) {
+      return 'Review the highlighted project detail and correct anything inaccurate.';
+    }
+    return 'Review the highlighted report detail before sharing.';
+  }));
 }
 
 const NON_REPORTABLE_STATE =

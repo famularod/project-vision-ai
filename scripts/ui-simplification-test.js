@@ -48,9 +48,9 @@ assert(capture.includes('DAVEVoiceCaptureSheet'), 'Project Walk should expose DA
 assert(capture.includes('label="Upload Document"'), 'document upload should remain reachable');
 
 assert(review.includes('BeforeYouSharePanel'), 'Reports should consolidate review guidance before sharing');
-assert(review.includes('Before You Share'), 'Reports should present one clear pre-share review area');
+assert(review.includes('Review &amp; Approval'), 'Reports should present one clear review and approval area');
 assert(review.includes('advancedReviewOpen'), 'Advanced review and decision controls should be hidden by default');
-assert(review.includes("expanded ? 'Hide Why' : 'Why?'"), 'Reports should expose reasoning behind one disclosure');
+assert(review.includes("expanded ? 'Hide review details' : 'Review details'"), 'Reports should expose concise review details behind one disclosure');
 assert(review.includes('Approve Report'), 'Review should keep approval action');
 assert(review.includes('Edit Report'), 'Review should keep correction action');
 assert(review.includes('Copy Report'), 'Review should keep share/copy action');

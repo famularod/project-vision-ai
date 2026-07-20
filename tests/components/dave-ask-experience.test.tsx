@@ -36,7 +36,7 @@ describe('DAVE Ask history hydration', () => {
 
     expect(await screen.findByText('Saved questions could not be opened.')).toBeTruthy();
     const suggestedQuestion = screen.getByRole('button', {
-      name: 'Ask project assistant: What changed today?',
+      name: 'Ask Vitruvius: What changed?',
     });
     expect(suggestedQuestion.props.accessibilityState).toEqual({ disabled: true });
     fireEvent.press(suggestedQuestion);
@@ -59,7 +59,7 @@ describe('DAVE Ask history hydration', () => {
 
     expect(await screen.findByText('Saved questions could not be opened.')).toBeTruthy();
     fireEvent.press(screen.getByRole('button', {
-      name: 'Ask project assistant: What changed today?',
+      name: 'Ask Vitruvius: What changed?',
     }));
     expect(mockSetItem).not.toHaveBeenCalled();
   });

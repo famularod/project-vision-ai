@@ -6198,7 +6198,7 @@ if (
     'BeforeYouSharePanel',
     'reviewExperience.primaryAction',
     'reviewExperience.secondaryAction',
-    'Before You Share',
+    'Review &amp; Approval',
     'Prepared Report',
     'Review Draft',
     'Edit Report',
@@ -6206,13 +6206,13 @@ if (
     'Share Report',
     'Copy Report',
     'Email Report',
-    'Check before sharing',
-    'Why?',
+    'Resolve before sharing',
+    'Review details',
     'reportApproved',
     'reportApproved && reportApprovalAllowed && shareOpen',
     'No report is sent automatically',
     'Project Detail',
-    'Review the prepared report, make any edits, and approve it when ready.',
+    'Confirm the report matches the current project status, then edit or approve it.',
   ]) &&
   !hasAny(reportsScreen, [
     'Validation Requests',
@@ -6315,7 +6315,7 @@ if (
   ]) &&
   hasAll(reportsScreen, [
     'advancedReviewOpen',
-    'Before You Share',
+    'Review &amp; Approval',
     'BeforeYouSharePanel',
   ]) &&
   hasAll(photoCapture, [
@@ -7573,8 +7573,8 @@ if (
   ]) &&
   hasAll(reportsScreen, [
     'reviewFlagsPanel',
-    'Check before sharing',
-    'Before You Share',
+    'Resolve before sharing',
+    'Review &amp; Approval',
     'Task Status',
     'Schedule Health',
     'What Changed',
@@ -8043,7 +8043,7 @@ if (diagnosticsIndex === -1) {
 ) {
   pass(
     'Admin diagnostics',
-    'Diagnostics is under Advanced Configuration / Developer Support with raw cloud diagnostics, connection tests, and debug data framed as support tools.',
+    'Diagnostics is under Advanced Configuration / Developer Support with friendly setup checks and connection tools.',
     'screens/AdminScreen.tsx',
   );
 } else {
@@ -8073,7 +8073,7 @@ if (
   adminRawDiagnosticLeaks.length === 0 &&
   hasAll(adminScreen, [
     'Cloud configuration is ready.',
-    'Projects synced through cloud',
+    'Projects currently shown in Vitruvius',
     'Developer Support',
     'label="Diagnostics"',
   ]) &&
@@ -8312,8 +8312,8 @@ if (
 if (
   hasAll(app, ['Why:', 'Photo saved.', 'Next Suggested Action', 'recommendedAction']) &&
   hasAll(reportsScreen, [
-    'Before You Share',
-    'Review the prepared report, make any edits, and approve it when ready.',
+    'Review &amp; Approval',
+    'Confirm the report matches the current project status, then edit or approve it.',
     'Approve Report',
     'No report is sent automatically',
   ])

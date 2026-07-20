@@ -3,11 +3,11 @@ import type { DAVEBriefNavigationTarget } from './DAVEDailyBrief';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
 
 export const DAVE_ASK_SUGGESTED_QUESTIONS = [
-  'What changed today?',
+  'How is this project doing?',
+  'What needs attention?',
+  'What changed?',
+  'What is overdue?',
   'What should I do next?',
-  'Why is this project At Risk?',
-  'What evidence am I missing?',
-  'Summarize this project.',
 ] as const;
 
 export type DAVEAskConversationEntry = {
@@ -57,7 +57,7 @@ export class DAVEAskHistoryPersistenceError extends Error {
   }
 }
 
-// Talk and the inline Project Assistant share these keys. Keeping the tails
+// Talk and the inline Ask Vitruvius experience share these keys. Keeping the tails
 // module-scoped serializes read-modify-write transactions across both views.
 const daveAskHistoryMutationTails = new Map<string, Promise<void>>();
 

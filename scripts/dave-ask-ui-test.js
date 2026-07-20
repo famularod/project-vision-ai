@@ -52,8 +52,8 @@ const {
 
 assert.strictEqual(
   Array.from(DAVE_ASK_SUGGESTED_QUESTIONS).join('|'),
-  'What changed today?|What should I do next?|Why is this project At Risk?|What evidence am I missing?|Summarize this project.',
-  'Ask DAVE must expose the five required suggestions.',
+  'How is this project doing?|What needs attention?|What changed?|What is overdue?|What should I do next?',
+  'Ask Vitruvius must expose five schedule-backed project questions.',
 );
 
 const now = '2026-07-12T12:00:00.000Z';
@@ -128,22 +128,34 @@ const timelineDestination = resolveDAVEAskTimelineNavigation(intelligence, timel
 assert(timelineDestination && timelineDestination.target === 'update_detail');
 
 const component = fs.readFileSync(path.join(root, 'components/DAVEAskExperience.tsx'), 'utf8');
+const conversation = fs.readFileSync(path.join(root, 'services/DAVEAskConversation.ts'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 for (const marker of [
-  'Project Assistant',
-  'Suggested questions',
+  'Ask Vitruvius',
+  'Current project questions',
   'Ask me about this project.',
   'Examples are listed above.',
   'Ask a follow-up...',
-  'Supporting Evidence',
-  'Timeline References',
-  'Recommended Action',
-  'Why?',
-  'Evidence Used',
-  'Evidence Missing',
-  'Supporting Records',
+  'Next step',
+  'View source details',
+  'Answer confidence',
+  'Project records',
+  'Related activity',
+  'Important notes',
 ]) {
   assert(component.includes(marker), `Ask DAVE experience must include ${marker}`);
+}
+for (const question of [
+  'How is this project doing?',
+  'What needs attention?',
+  'What changed?',
+  'What is overdue?',
+  'What should I do next?',
+]) {
+  assert(conversation.includes(question), `Suggested question must remain directly answerable: ${question}`);
+}
+for (const developerFacingLabel of ['Supporting Evidence', 'Timeline References', 'Evidence Used', 'Evidence Missing', 'Supporting Records']) {
+  assert(!component.includes(`>${developerFacingLabel}<`), `${developerFacingLabel} must not lead the PM-facing answer.`);
 }
 assert(component.includes('resolveDAVEConversationContext'));
 assert(component.includes('answerDAVEConversationContext'));
@@ -164,9 +176,9 @@ for (const forbidden of ['buildProjectIntelligence(', 'projectRealitySourceRecor
 const workspaceStart = app.indexOf('function ProjectWorkspaceScreen');
 const workspace = app.slice(workspaceStart);
 assert(workspace.indexOf('<DAVEAskExperience') >= 0);
-assert(workspace.indexOf('>Project Brief<') < workspace.indexOf('<DAVEAskExperience') &&
+assert(workspace.indexOf('>Project Snapshot<') < workspace.indexOf('<DAVEAskExperience') &&
   workspace.indexOf('<DAVEAskExperience') < workspace.indexOf('<ProjectTaskControlPanel'),
-  'Ask DAVE must appear after the unified Project Brief and before task controls.');
+  'Ask Vitruvius must appear after the Project Snapshot and before task controls.');
 assert(app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence'));
 assert(app.includes('createDAVEAskHistoryPersistence'));
 assert(app.includes('history = await talkHistoryPersistence.read(projectId)'));
