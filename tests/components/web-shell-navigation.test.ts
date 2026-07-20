@@ -10,6 +10,7 @@ describe('desktop read-only navigation', () => {
       '/projects',
       '/tasks',
       '/evidence',
+      '/photos',
       '/documents',
       '/reports',
     ]);

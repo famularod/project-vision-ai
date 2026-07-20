@@ -75,9 +75,12 @@ for (const file of files) {
   for (const dependency of resolved) consumers.get(dependency)?.add(file);
 }
 
-const roots = ['index.ts', 'index.tsx', 'App.tsx']
+const explicitRoots = ['index.ts', 'index.tsx', 'App.tsx', 'entry.web.ts']
   .map(file => path.join(root, file))
   .filter(file => fileSet.has(file));
+const routerDirectory = path.join(root, 'app');
+const routerRoots = files.filter(file => file.startsWith(`${routerDirectory}${path.sep}`));
+const roots = [...new Set([...explicitRoots, ...routerRoots])];
 const reachable = new Set();
 const queue = [...roots];
 while (queue.length > 0) {
@@ -119,7 +122,7 @@ if (process.argv.includes('--json')) {
 }
 
 console.log(`Services: ${result.serviceCount}`);
-console.log(`Reachable from mobile entry: ${result.reachableServiceCount}`);
+console.log(`Reachable from production entries: ${result.reachableServiceCount}`);
 console.log(`Not statically reachable: ${result.unreachableServiceCount}`);
 for (const service of result.unreachableServices) {
   const consumerNote = service.staticConsumers.length > 0

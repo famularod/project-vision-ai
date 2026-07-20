@@ -3,13 +3,14 @@ export type DesktopReadOnlyPage =
   | 'projects'
   | 'tasks'
   | 'evidence'
+  | 'photos'
   | 'documents'
   | 'reports';
 
 export type DesktopNavigationItem = {
   page: DesktopReadOnlyPage;
   label: string;
-  href: '/' | '/projects' | '/tasks' | '/evidence' | '/documents' | '/reports';
+  href: '/' | '/projects' | '/tasks' | '/evidence' | '/photos' | '/documents' | '/reports';
 };
 
 export const desktopNavigationItems: readonly DesktopNavigationItem[] = Object.freeze([
@@ -17,6 +18,7 @@ export const desktopNavigationItems: readonly DesktopNavigationItem[] = Object.f
   { page: 'projects', label: 'Projects', href: '/projects' },
   { page: 'tasks', label: 'Tasks & Schedule', href: '/tasks' },
   { page: 'evidence', label: 'DAVE Evidence', href: '/evidence' },
+  { page: 'photos', label: 'Photos', href: '/photos' },
   { page: 'documents', label: 'Documents', href: '/documents' },
   { page: 'reports', label: 'Reports', href: '/reports' },
 ]);

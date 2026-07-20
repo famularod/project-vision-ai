@@ -1,8 +1,8 @@
 import 'react-native-url-polyfill/auto';
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   isAuthStorageSecure,
+  SUPABASE_AUTH_STORAGE_LABEL,
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage';
 import { accountDisplayNameForMetadata } from './AccountProfile';
@@ -59,7 +59,7 @@ export type SupabaseConfigurationStatus = {
   rawProjectUrl: string | null;
   projectUrl: string | null;
   createClientUrl: string | null;
-  authStorage: 'SecureStore adapter';
+  authStorage: typeof SUPABASE_AUTH_STORAGE_LABEL;
   message: string;
 };
 
@@ -333,7 +333,7 @@ export function getSupabaseConfigurationStatus(): SupabaseConfigurationStatus {
     rawProjectUrl: urlConfigured ? RAW_SUPABASE_URL : null,
     projectUrl: urlConfigured ? SUPABASE_URL : null,
     createClientUrl: supabase ? SUPABASE_URL : null,
-    authStorage: 'SecureStore adapter',
+    authStorage: SUPABASE_AUTH_STORAGE_LABEL,
     message: configured
       ? 'Supabase is configured from Expo public environment variables.'
       : 'Supabase is not configured. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to enable cloud sync.',

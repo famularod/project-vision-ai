@@ -25,6 +25,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 
+export const SUPABASE_AUTH_STORAGE_LABEL = 'SecureStore adapter' as const;
+
 const CHUNK_SIZE = 1800;
 const META_VERSION = 2;
 

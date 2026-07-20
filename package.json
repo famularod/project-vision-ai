@@ -102,7 +102,7 @@
     "test:stage1-behavior": "npm run test:startup && npm run test:startup-upgrade && npm run test:startup-recovery && npm run test:field-update-lifecycle && npm run test:project-truth && npm run test:project-reasoning && npm run test:photo-vision-authority && npm run test:offline-queue-idempotency && npm run test:project-sync-ownership-policy && npm run test:jarvis-reasoning",
     "test:capture-confirmation-ui": "node scripts/dave-capture-confirmation-ui-test.js",
     "test:voice-capture": "node scripts/dave-voice-capture-test.js",
-    "test:web-foundation": "node scripts/phase3-web-foundation-test.js",
+    "test:web-foundation": "node scripts/phase3-web-foundation-test.js && jest --runInBand tests/components/web-shell-navigation.test.ts tests/services/supabase-auth-storage-web.test.ts tests/services/dave-web-read-only-repository.test.ts tests/services/dave-web-supabase-client.test.ts",
     "web:export": "expo export --platform web --output-dir dist --clear",
     "test:project-walk": "node scripts/dave-project-walk-test.js",
     "test:project-walk-field-update": "node scripts/dave-project-walk-field-update-test.js",
