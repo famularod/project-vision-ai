@@ -34,6 +34,9 @@ assert(shell.includes('+ Add Task'), 'Task creation must be directly accessible 
 assert(shell.includes('Choose an existing value when available, or type the correct value manually.'), 'Task fields must support choices plus manual entry.');
 assert(shell.includes('Save Task Changes') && shell.includes('Delete Task'), 'Desktop tasks must expose explicit edit and protected delete actions.');
 assert(shell.includes('permanent deletion marker'), 'The delete confirmation must explain resurrection protection.');
+assert(shell.includes('style={[styles.dataCard, styles.taskListCard]}'), 'Vertical task rows must use the compact list-card style.');
+assert(shell.includes('gridDataCard: { flexGrow: 1, flexBasis: 320 }'), 'Flexible card growth must remain limited to dashboard grids.');
+assert(!/dataCard:\s*\{[^}]*flexGrow/.test(shell), 'The shared card style must not stretch vertical list rows.');
 assert(!gateway.includes("from '@react-native-async-storage/async-storage'"), 'Desktop task writes must not import native AsyncStorage.');
 assert(!gateway.includes("from 'expo-secure-store'"), 'Desktop task writes must not import native SecureStore.');
 

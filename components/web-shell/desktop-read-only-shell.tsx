@@ -387,12 +387,12 @@ function DesktopPageData({
       <>
         <Section title="Cloud connection" detail="This browser reads the owner-authorized cloud record and can modify schedule tasks only.">
           <View style={styles.cardGrid}>
-            <View style={styles.dataCard}>
+            <View style={[styles.dataCard, styles.gridDataCard]}>
               <Text style={styles.cardTitle}>Signed-in account</Text>
               <Text style={styles.dataDetail}>{auth.userEmail || 'Authorized account'}</Text>
               <StatusBadge label="Owner verified" tone="good" />
             </View>
-            <View style={styles.dataCard}>
+            <View style={[styles.dataCard, styles.gridDataCard]}>
               <Text style={styles.cardTitle}>Last cloud refresh</Text>
               <Text style={styles.dataDetail}>{formatDateTime(snapshot.refreshedAt)}</Text>
               <StatusBadge label="Task editing enabled" tone="attention" />
@@ -476,7 +476,7 @@ function ProjectCard({
   const projectScopes = scheduleProjectScopeNames(project.name, [...tasks]);
   const completed = projectTasks.filter(taskIsComplete).length;
   return (
-    <View style={styles.dataCard}>
+    <View style={[styles.dataCard, styles.gridDataCard]}>
       <Text style={styles.dataTitle}>{project.name}</Text>
       <Text style={styles.dataMeta}>{project.status ?? 'Active'} · {completed} of {projectTasks.length} tasks complete</Text>
       <Text style={styles.dataDetail}>{updates.filter(update => matchesProjectScope(update.projectName, projectScopes)).length} field updates</Text>
@@ -921,7 +921,7 @@ function TaskList({
   return (
     <View style={styles.list}>
       {tasks.map(task => (
-        <View key={task.id} style={styles.dataCard}>
+        <View key={task.id} style={[styles.dataCard, styles.taskListCard]}>
           <View style={styles.dataRow}>
             <View style={styles.dataGrow}>
               <Text style={styles.dataTitle}>{task.taskName}</Text>
@@ -981,7 +981,7 @@ function PhotoList({
   return (
     <View style={styles.cardGrid}>
       {photos.map(({ update, photo }) => (
-        <View key={`${update.id}:${photo.id}`} style={styles.dataCard}>
+        <View key={`${update.id}:${photo.id}`} style={[styles.dataCard, styles.gridDataCard]}>
           <Text style={styles.dataTitle}>{photo.caption?.trim() || 'Project photo'}</Text>
           <Text style={styles.dataMeta}>{update.projectName}{update.areaName ? ` · ${update.areaName}` : ''}</Text>
           <Text style={styles.dataDetail}>{photo.category} · Captured {formatDateTime(update.updateData.date)}</Text>
@@ -1189,7 +1189,9 @@ const styles = StyleSheet.create({
   sectionDetail: { color: '#6A717E', fontSize: 15, lineHeight: 22 },
   cardGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
   list: { gap: spacing.md },
-  dataCard: { flexGrow: 1, flexBasis: 320, borderRadius: 18, borderWidth: 1, borderColor: '#D9DFEA', backgroundColor: '#FFFFFF', padding: spacing.lg, gap: spacing.sm },
+  dataCard: { borderRadius: 18, borderWidth: 1, borderColor: '#D9DFEA', backgroundColor: '#FFFFFF', padding: spacing.lg, gap: spacing.sm },
+  gridDataCard: { flexGrow: 1, flexBasis: 320 },
+  taskListCard: { paddingVertical: spacing.md, gap: spacing.xs },
   dataRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
   dataGrow: { flex: 1 },
   dataTitle: { color: '#1B1F27', fontSize: 18, lineHeight: 24, fontWeight: '900' },
