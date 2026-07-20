@@ -1,4 +1,5 @@
 import {
+  groupScheduleWorkspaceItemsByProject,
   resolveScheduleWorkspaceTask,
   scheduleItemsForWorkspaceProject,
   scheduleWorkspaceProjectOptions,
@@ -58,5 +59,24 @@ describe('DAVE schedule workspace', () => {
     expect(resolveScheduleWorkspaceTask(tasks, 'task-b')?.id).toBe('task-b');
     expect(resolveScheduleWorkspaceTask(tasks, 'missing')?.id).toBe('task-a');
     expect(resolveScheduleWorkspaceTask([], 'task-b')).toBeNull();
+  });
+
+  it('groups the All Projects task list under stable project headings', () => {
+    const tasks = [
+      { ...baseItem, id: 'task-b', projectName: 'Project B' },
+      { ...baseItem, id: 'task-a2', projectName: 'Project A', taskName: 'Install rails' },
+      { ...baseItem, id: 'task-a1', projectName: 'Project A' },
+    ];
+
+    expect(groupScheduleWorkspaceItemsByProject(tasks)).toEqual([
+      {
+        projectName: 'Project A',
+        data: [tasks[1], tasks[2]],
+      },
+      {
+        projectName: 'Project B',
+        data: [tasks[0]],
+      },
+    ]);
   });
 });

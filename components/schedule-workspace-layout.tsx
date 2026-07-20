@@ -1,8 +1,9 @@
 import type { ReactElement, ReactNode } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, SectionList, StyleSheet, Text, View } from 'react-native';
 
 import { colors, radius, spacing } from '../theme';
 import type { ScheduleItem } from '../types';
+import { groupScheduleWorkspaceItemsByProject } from '../services/DAVEScheduleWorkspace';
 
 export function ScheduleWideWorkspace({
   items,
@@ -12,6 +13,7 @@ export function ScheduleWideWorkspace({
   inspector,
   inspectorFooter,
   emptyState,
+  groupByProject = false,
 }: {
   items: ScheduleItem[];
   selectedTaskId: string | null;
@@ -20,12 +22,17 @@ export function ScheduleWideWorkspace({
   inspector: ReactNode;
   inspectorFooter: ReactNode;
   emptyState: ReactElement;
+  groupByProject?: boolean;
 }) {
+  const sections = groupByProject
+    ? groupScheduleWorkspaceItemsByProject(items)
+    : [{ projectName: '', data: items }];
+
   return (
     <View style={styles.workspace} testID="schedule-wide-workspace">
       <View style={styles.masterColumn}>
-        <FlatList
-          data={items}
+        <SectionList
+          sections={sections}
           keyExtractor={item => item.id}
           renderItem={({ item }) => (
             <ScheduleTaskMasterRow
@@ -34,6 +41,14 @@ export function ScheduleWideWorkspace({
               onPress={() => onSelectTask(item.id)}
             />
           )}
+          renderSectionHeader={({ section }) => groupByProject ? (
+            <View style={styles.projectGroupHeader}>
+              <Text accessibilityRole="header" style={styles.projectGroupTitle}>{section.projectName}</Text>
+              <Text style={styles.projectGroupCount}>
+                {section.data.length} {section.data.length === 1 ? 'task' : 'tasks'}
+              </Text>
+            </View>
+          ) : null}
           ListHeaderComponent={masterHeader}
           ListEmptyComponent={emptyState}
           contentContainerStyle={styles.masterContent}
@@ -128,7 +143,7 @@ const styles = StyleSheet.create({
     height: spacing.sm,
   },
   taskRow: {
-    minHeight: 116,
+    minHeight: 132,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.md,
@@ -152,20 +167,44 @@ const styles = StyleSheet.create({
   taskTitle: {
     flex: 1,
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 17,
+    lineHeight: 23,
     fontWeight: '900',
   },
   taskPercent: {
     color: colors.primary,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '900',
     fontVariant: ['tabular-nums'],
   },
   taskContext: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  projectGroupHeader: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
+    backgroundColor: colors.surface,
+  },
+  projectGroupTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '900',
+  },
+  projectGroupCount: {
+    color: colors.mutedText,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
   progressTrack: {
     height: 5,

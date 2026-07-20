@@ -73,6 +73,7 @@ import { NativeDateField } from './components/native-date-field';
 import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
+import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
 import { resolveScheduleWorkspaceTask, scheduleItemsForWorkspaceProject,
   scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
@@ -80,6 +81,11 @@ import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
   resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
 import { filterDAVEDocumentWorkspace,
   resolveDAVEDocumentWorkspaceDocument } from './services/DAVEDocumentWorkspace';
+import {
+  PROJECT_DOCUMENT_CATEGORIES,
+  suggestProjectDocumentCategory,
+  type ProjectDocumentCategory,
+} from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
 import { UpdateDeleteControl } from './components/update-delete-control';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
@@ -569,18 +575,6 @@ type FieldUpdatePIEStatus =
   | 'no_visual_comparison'
   | 'failed'
   | 'taking_longer';
-type ProjectDocumentCategory =
-  | 'Schedule'
-  | 'Permit Card'
-  | 'Drawing'
-  | 'Scope'
-  | 'Contract'
-  | 'Inspection'
-  | 'Safety'
-  | 'Compliance'
-  | 'RFI / Field Decision'
-  | 'Vendor Document'
-  | 'Other';
 type ProjectDocumentStatus =
   | 'local'
   | 'uploading'
@@ -874,19 +868,6 @@ const REFERENCE_DOCUMENT_CATEGORIES = [
   'Electrical',
   'Mechanical',
   'Schedules',
-  'Other',
-];
-const PROJECT_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
-  'Schedule',
-  'Permit Card',
-  'Drawing',
-  'Scope',
-  'Contract',
-  'Inspection',
-  'Safety',
-  'Compliance',
-  'RFI / Field Decision',
-  'Vendor Document',
   'Other',
 ];
 const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
@@ -5127,6 +5108,10 @@ function AppShell() {
       size?: number | null;
     };
     selected: Set<string>;
+    category: ProjectDocumentCategory;
+    attachToDraft: boolean;
+    areaId: string | null;
+    updateId: string | null;
   } | null>(null);
 
   const [selectedDetailUpdate, setSelectedDetailUpdate] =
@@ -6739,6 +6724,7 @@ useEffect(() => {
     projectName?: string;
     areaId?: string | null;
     updateId?: string | null;
+    category?: ProjectDocumentCategory;
   }) {
     const now = new Date().toISOString();
     const id = uid();
@@ -6774,7 +6760,7 @@ useEffect(() => {
           ? context.updateId
           : draft.id,
       name,
-      category: 'Other',
+      category: context?.category || 'Other',
       mimeType: asset.mimeType || null,
       sizeBytes: owned.record.sizeBytes,
       localUri: owned.localUri,
@@ -6842,11 +6828,24 @@ useEffect(() => {
       size?: number | null;
     },
     defaultProjectName: string,
+    options?: {
+      attachToDraft?: boolean;
+      areaId?: string | null;
+      updateId?: string | null;
+    },
   ) {
     setDocumentUploadRequest({
       asset,
       selected: new Set([defaultProjectName]),
+      category: suggestProjectDocumentCategory(asset),
+      attachToDraft: Boolean(options?.attachToDraft),
+      areaId: options?.areaId || null,
+      updateId: options?.updateId || null,
     });
+  }
+
+  function setDocumentUploadCategory(category: ProjectDocumentCategory) {
+    setDocumentUploadRequest(current => current ? { ...current, category } : current);
   }
 
   function toggleDocumentUploadProject(projectName: string) {
@@ -6872,7 +6871,14 @@ useEffect(() => {
   async function confirmDocumentProjectSelection() {
     if (!documentUploadRequest) return;
 
-    const { asset, selected } = documentUploadRequest;
+    const {
+      asset,
+      selected,
+      category,
+      attachToDraft,
+      areaId,
+      updateId,
+    } = documentUploadRequest;
 
     setDocumentUploadRequest(null);
 
@@ -6882,14 +6888,17 @@ useEffect(() => {
     try {
       for (const projectName of selected) {
         const document = await createProjectDocumentFromAsset(asset, {
-          projectName, areaId: null, updateId: null,
+          projectName,
+          areaId: attachToDraft ? areaId : null,
+          updateId: attachToDraft ? updateId : null,
+          category,
         });
         const duplicate = duplicateProjectDocumentForAsset(
           projectDocuments, document.projectId, {
             name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
           },
         );
-        confirmAndAttachProjectDocument(document, duplicate, false);
+        confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
       }
     } catch {
       Alert.alert('Document unavailable', 'The selected document could not be copied into secure app storage.');
@@ -6919,24 +6928,20 @@ useEffect(() => {
       if (!asset) return;
 
       await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size });
-
-      const document = await createProjectDocumentFromAsset({
-        uri: asset.uri,
-        name: asset.name,
-        mimeType: asset.mimeType,
-        size: asset.size,
-      });
-      const duplicate = duplicateProjectDocumentForAsset(
-        projectDocuments,
-        document.projectId,
+      promptDocumentProjectSelection(
         {
-          name: document.name,
-          mimeType: document.mimeType,
-          size: document.sizeBytes,
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType,
+          size: asset.size,
+        },
+        draft.projectName,
+        {
+          attachToDraft: true,
+          areaId: draft.selectedAreaId || null,
+          updateId: draft.id,
         },
       );
-
-      confirmAndAttachProjectDocument(document, duplicate);
     } catch (error) {
       Alert.alert(
         'Document unavailable',
@@ -7023,18 +7028,17 @@ useEffect(() => {
         size: asset.fileSize || null,
       };
 
-      if (!attachToDraft) {
-        promptDocumentProjectSelection(photoAsset, projectName);
-        return;
-      }
-
-      const document = await createProjectDocumentFromAsset(photoAsset, {
+      promptDocumentProjectSelection(
+        photoAsset,
         projectName,
-        areaId: draft.selectedAreaId || null,
-        updateId: draft.id,
-      });
-
-      confirmAndAttachProjectDocument(document, null, true);
+        attachToDraft
+          ? {
+              attachToDraft: true,
+              areaId: draft.selectedAreaId || null,
+              updateId: draft.id,
+            }
+          : undefined,
+      );
     } catch {
       Alert.alert(
         'Document photo unavailable',
@@ -11904,11 +11908,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
             </View>
           </Modal>
 
-          <DocumentProjectSelectionSheet
+          <DocumentUploadDetailsSheet
             visible={Boolean(documentUploadRequest)}
-            projects={activeProjects}
-            selected={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
-            onToggle={toggleDocumentUploadProject}
+            projects={documentUploadRequest?.attachToDraft ? [draft.projectName] : activeProjects}
+            selectedProjects={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
+            categories={PROJECT_DOCUMENT_CATEGORIES}
+            selectedCategory={documentUploadRequest?.category || 'Other'}
+            onCategoryChange={setDocumentUploadCategory}
+            onToggleProject={toggleDocumentUploadProject}
             onConfirm={confirmDocumentProjectSelection}
             onClose={cancelDocumentProjectSelection}
           />
@@ -13692,50 +13699,6 @@ function AreaSelectionRow({
         <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
       ) : null}
     </TouchableOpacity>
-  );
-}
-
-function DocumentProjectSelectionSheet({
-  visible,
-  projects,
-  selected,
-  onToggle,
-  onConfirm,
-  onClose,
-}: {
-  visible: boolean;
-  projects: string[];
-  selected: Set<string>;
-  onToggle: (projectName: string) => void;
-  onConfirm: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <ProjectActionSheet visible={visible} title="Select Projects" onClose={onClose}>
-      <Text style={styles.bodyText}>
-        This document will be added to every project you select below.
-      </Text>
-
-      {projects.map(projectName => (
-        <AreaSelectionRow
-          key={projectName}
-          name={projectName}
-          selected={selected.has(projectName)}
-          onPress={() => onToggle(projectName)}
-        />
-      ))}
-
-      <PrimaryButton
-        label={
-          selected.size > 0
-            ? `Add to ${selected.size} Project${selected.size === 1 ? '' : 's'}`
-            : 'Select at least one project'
-        }
-        icon="checkmark-done-outline"
-        onPress={onConfirm}
-        disabled={selected.size === 0}
-      />
-    </ProjectActionSheet>
   );
 }
 
@@ -19487,6 +19450,7 @@ function ScheduleScreen({
       <>
         <ScheduleWideWorkspace
           items={filteredItems}
+          groupByProject={!projectFilter && taskFilter === 'All'}
           selectedTaskId={selectedTask?.id || null}
           onSelectTask={setSelectedTaskId}
           masterHeader={(
@@ -20843,6 +20807,7 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     flexDirection: 'column',
     gap: 12,
+    padding: 16,
   },
 
   scheduleItemHeader: {
@@ -20858,12 +20823,14 @@ const styles = StyleSheet.create({
 
   scheduleItemTitle: {
     flexShrink: 1,
-    lineHeight: 21,
+    fontSize: 18,
+    lineHeight: 24,
   },
 
   scheduleItemContext: {
     flexShrink: 1,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 20,
   },
 
   scheduleItemBody: {
@@ -21954,8 +21921,8 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     borderRadius: 20,
     padding: 20,
-    backgroundColor: '#123F8C',
-    shadowColor: '#0B2A6B',
+    backgroundColor: colors.primary,
+    shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.2,
     shadowRadius: 16,

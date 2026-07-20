@@ -10,7 +10,15 @@ const projectDocumentsHeader = fs.readFileSync(
   path.join(root, 'components/project-documents-header.tsx'),
   'utf8',
 );
-const documentRuntimeSource = `${app}\n${projectDocumentsHeader}`;
+const documentClassification = fs.readFileSync(
+  path.join(root, 'services/ProjectDocumentClassification.ts'),
+  'utf8',
+);
+const documentUploadDetails = fs.readFileSync(
+  path.join(root, 'components/document-upload-details-sheet.tsx'),
+  'utf8',
+);
+const documentRuntimeSource = `${app}\n${projectDocumentsHeader}\n${documentClassification}\n${documentUploadDetails}`;
 const fileSizePreflight = fs.readFileSync(
   path.join(root, 'services/FileSizePreflight.ts'),
   'utf8',
@@ -51,6 +59,9 @@ const projectDocumentsScreen = app.slice(
   "Attach to Area",
   "Attach to Update",
   "Add note",
+  "Document Type",
+  "suggestProjectDocumentCategory(asset)",
+  "selectedCategory",
 ].forEach(marker => {
   assert(documentRuntimeSource.includes(marker), `Phase 6 documents foundation should include ${marker}`);
 });
@@ -76,7 +87,7 @@ assert(
   "Vendor Document",
   "Other",
 ].forEach(category => {
-  assert(app.includes(`'${category}'`), `Project documents should support ${category}`);
+  assert(documentRuntimeSource.includes(`'${category}'`), `Project documents should support ${category}`);
 });
 
 assert(

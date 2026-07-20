@@ -38,6 +38,26 @@ export function scheduleWorkspaceProjectOptions(
   );
 }
 
+export type ScheduleWorkspaceProjectGroup = Readonly<{
+  projectName: string;
+  data: ScheduleItem[];
+}>;
+
+export function groupScheduleWorkspaceItemsByProject(
+  items: ScheduleItem[],
+): ScheduleWorkspaceProjectGroup[] {
+  const groups = new Map<string, ScheduleItem[]>();
+
+  items.forEach(item => {
+    const projectName = scheduleItemProjectName(item) || 'No project';
+    groups.set(projectName, [...(groups.get(projectName) || []), item]);
+  });
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([projectName, data]) => Object.freeze({ projectName, data }));
+}
+
 export function resolveScheduleWorkspaceTask(
   items: ScheduleItem[],
   selectedTaskId: string | null,

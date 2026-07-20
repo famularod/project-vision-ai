@@ -3,13 +3,13 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
-  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '../theme';
 import type {
   ProjectArea,
@@ -17,7 +17,7 @@ import type {
   SchedulePriority,
   ScheduleStatus,
 } from '../types';
-import { normalizeDateInput, parseFlexibleDate } from '../utils/date';
+import { parseFlexibleDate } from '../utils/date';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { NativeDateField } from './native-date-field';
 
@@ -151,12 +151,11 @@ export function ScheduleTaskEditorModal({
             <ChoiceOrText label="Location" value={locationName} onChange={setLocationName} options={locationOptions} placeholder="Location / work area" />
 
             <View style={styles.twoColumns}>
-              <View style={styles.flex}>
-                <Label text="Start" />
-                <Input value={startDate} onChange={value => setStartDate(normalizeDateInput(value))} placeholder="MM/DD/YYYY" numeric />
+              <View style={styles.dateColumn}>
+                <NativeDateField label="Start Date" value={startDate} onChange={setStartDate} testID="new-task-start-date" />
               </View>
-              <View style={styles.flex}>
-                <NativeDateField label="Finish / Due" value={finishDate} onChange={setFinishDate} testID="new-task-finish-date" />
+              <View style={styles.dateColumn}>
+                <NativeDateField label="Finish / Due Date" value={finishDate} onChange={setFinishDate} testID="new-task-finish-date" />
                 <Chips values={['Today', '+7 Days', '+14 Days', '+30 Days']} selected="" onSelect={label => {
                   const days = label === 'Today' ? 0 : Number(label.match(/\d+/)?.[0] || 0);
                   setFinishDate(appDateFromToday(days));
@@ -227,7 +226,7 @@ const styles = StyleSheet.create({
   header: { alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between' }, flex: { flex: 1 }, title: { color: colors.text, fontSize: 22, fontWeight: '800' }, help: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 4 },
   label: { color: colors.text, fontSize: 15, fontWeight: '700', marginBottom: 6, marginTop: 14 },
   input: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 10, borderWidth: 1, color: colors.text, fontSize: 16, minHeight: 48, paddingHorizontal: 12, paddingVertical: 10 }, notes: { minHeight: 112, textAlignVertical: 'top' },
-  twoColumns: { flexDirection: 'row', gap: 10 }, choiceRow: { alignItems: 'center', flexDirection: 'row', gap: 8 }, iconButton: { alignItems: 'center', backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 10, borderWidth: 1, justifyContent: 'center', minHeight: 48, minWidth: 48 },
+  twoColumns: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, dateColumn: { flexBasis: 260, flexGrow: 1, minWidth: 0 }, choiceRow: { alignItems: 'center', flexDirection: 'row', gap: 8 }, iconButton: { alignItems: 'center', backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 10, borderWidth: 1, justifyContent: 'center', minHeight: 48, minWidth: 48 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }, chip: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 999, borderWidth: 1, paddingHorizontal: 11, paddingVertical: 8 }, chipActive: { backgroundColor: colors.primary, borderColor: colors.primary }, chipText: { color: colors.text, fontSize: 13, fontWeight: '700' }, chipTextActive: { color: '#FFFFFF' },
   saveButton: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 12, flexDirection: 'row', gap: 8, justifyContent: 'center', marginTop: 18, minHeight: 52, paddingHorizontal: 18 }, saveText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
 });

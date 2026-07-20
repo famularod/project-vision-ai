@@ -40,6 +40,28 @@ describe('ScheduleWideWorkspace', () => {
         .accessibilityState,
     ).toEqual({ selected: true });
   });
+
+  it('shows project headings when All Projects tasks are grouped', async () => {
+    const screen = await render(
+      <ScheduleWideWorkspace
+        items={[
+          { ...taskA, id: 'task-b', projectName: 'Project B' },
+          taskA,
+        ]}
+        selectedTaskId="task-a"
+        onSelectTask={jest.fn()}
+        masterHeader={<Text>All Tasks</Text>}
+        inspector={<Text>Inspector</Text>}
+        inspectorFooter={null}
+        emptyState={<Text>No tasks</Text>}
+        groupByProject
+      />,
+    );
+
+    expect(screen.getByRole('header', { name: 'Project A' })).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'Project B' })).toBeTruthy();
+    expect(screen.getAllByText('1 task')).toHaveLength(2);
+  });
 });
 
 function WorkspaceProbe() {

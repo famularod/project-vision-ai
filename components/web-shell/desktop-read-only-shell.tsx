@@ -1386,7 +1386,7 @@ const styles = StyleSheet.create({
   choiceText: { color: '#5C6370', fontSize: 14, lineHeight: 20, fontWeight: '800' },
   choiceTextActive: { color: '#0874DF' },
   metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  metricCard: { flexGrow: 1, flexBasis: 190, minHeight: 132, borderRadius: 20, backgroundColor: '#194A91', padding: spacing.lg, justifyContent: 'space-between' },
+  metricCard: { flexGrow: 1, flexBasis: 190, minHeight: 132, borderRadius: 20, backgroundColor: colors.primary, padding: spacing.lg, justifyContent: 'space-between' },
   metricValue: { color: '#FFFFFF', fontSize: 36, lineHeight: 42, fontWeight: '900' },
   metricLabel: { color: '#D8E6FA', fontSize: 14, lineHeight: 20, fontWeight: '800' },
   accountingBanner: { borderRadius: 18, borderWidth: 1, borderColor: '#8CB9ED', backgroundColor: '#EDF6FF', padding: spacing.lg, gap: spacing.xs },

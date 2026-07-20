@@ -140,7 +140,7 @@ describe('AppShellFrame', () => {
     expect(screen.getByText('Wide project workspace')).toBeTruthy();
     expect(screen.getByTestId('app-navigation-rail')).toBeTruthy();
     expect(screen.getByText('Vitruvius')).toBeTruthy();
-    expect(screen.getByText('Construction Intelligence')).toBeTruthy();
+    expect(screen.getByText('Project Intelligence')).toBeTruthy();
     expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
     expect(
       screen.getByRole('tab', { name: 'Tasks' }).props.accessibilityState,
