@@ -14,14 +14,17 @@ import {
   SCHEDULE_PRIORITIES,
   SCHEDULE_STATUSES,
   type ProjectUpdate,
-  type ReferenceDocument,
   type ScheduleItem,
   type SchedulePriority,
   type ScheduleStatus,
   type UpdatePhoto,
 } from '../../types';
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
-import { DAVEWebTaskMutationError } from '../../services/DAVEWebSupabaseClient';
+import {
+  DAVEWebDocumentMutationError,
+  DAVEWebTaskMutationError,
+} from '../../services/DAVEWebSupabaseClient';
+import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
@@ -34,6 +37,7 @@ import {
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
 import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
+import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
 import { colors, spacing } from '../../theme';
 import { daysUntilDate } from '../../utils/date';
 import { useDesktopAuth } from './desktop-auth-provider';
@@ -376,8 +380,8 @@ function DesktopPageData({
 
   if (page === 'documents') {
     return (
-      <Section title={`${documents.length} document${documents.length === 1 ? '' : 's'}`} detail="Document uploads and downloads remain disabled during the read-only pilot.">
-        <DocumentList documents={documents} />
+      <Section title={`${documents.length} document${documents.length === 1 ? '' : 's'}`} detail="Delete obsolete copies with a permanent cloud deletion marker. Uploads and downloads remain disabled.">
+        <DocumentManagementWorkspace documents={documents} />
       </Section>
     );
   }
@@ -992,7 +996,125 @@ function PhotoList({
   );
 }
 
-function DocumentList({ documents }: { documents: readonly ReferenceDocument[] }) {
+function DocumentManagementWorkspace({ documents }: { documents: readonly DAVEWebReferenceDocument[] }) {
+  const auth = useDesktopAuth();
+  const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  const deleteCandidate = deleteCandidateId
+    ? documents.find(document => document.id === deleteCandidateId) ?? null
+    : null;
+  const protectedCurrentSchedule = Boolean(
+    deleteCandidate?.isCurrent && scheduleDocumentIsScheduleLike(deleteCandidate),
+  );
+  const linkedTasksAreRevisionSafe = Boolean(
+    deleteCandidate?.linkedScheduleItems.every(item => Boolean(item.cloudUpdatedAt)),
+  );
+
+  async function confirmDelete(deleteLinkedTasks: boolean) {
+    if (!deleteCandidate || protectedCurrentSchedule || deleting) return;
+    setDeleting(true);
+    setNotice(null);
+    try {
+      await auth.deleteDocument(deleteCandidate, deleteLinkedTasks);
+      const taskCount = deleteLinkedTasks ? deleteCandidate.linkedScheduleItems.length : 0;
+      setDeleteCandidateId(null);
+      setNotice({
+        tone: 'good',
+        text: taskCount > 0
+          ? `Document and ${taskCount} linked task${taskCount === 1 ? '' : 's'} deleted and protected from returning.`
+          : 'Document deleted and protected from returning on another device.',
+      });
+    } catch (error) {
+      setNotice({ tone: 'danger', text: documentMutationMessage(error) });
+      await auth.refreshSnapshot();
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <>
+      {notice ? (
+        <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
+          <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+        </View>
+      ) : null}
+
+      {deleteCandidate ? (
+        <View style={styles.deleteConfirm} accessibilityRole="alert">
+          <View style={styles.dataGrow}>
+            <Text style={styles.deleteConfirmTitle}>Delete “{deleteCandidate.name}”?</Text>
+            <Text style={styles.dataDetail}>Imported {formatDateTime(deleteCandidate.importedAt)}.</Text>
+            {protectedCurrentSchedule ? (
+              <Text style={styles.errorText}>This is the current schedule. Keep it, or select another current schedule before deleting it.</Text>
+            ) : (
+              <Text style={styles.dataMeta}>
+                A permanent cloud deletion marker prevents this document from returning on another signed-in device.
+                {deleteCandidate.linkedScheduleItems.length > 0
+                  ? ` This import has ${deleteCandidate.linkedScheduleItems.length} linked task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}.`
+                  : ' No linked imported tasks were found.'}
+                {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
+                  ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
+                  : ''}
+              </Text>
+            )}
+          </View>
+          <View style={styles.inlineButtons}>
+            <Pressable
+              style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]}
+              onPress={() => setDeleteCandidateId(null)}
+              disabled={deleting}
+              accessibilityRole="button"
+            >
+              <Text style={styles.secondaryButtonText}>{protectedCurrentSchedule ? 'Keep Current Schedule' : 'Cancel'}</Text>
+            </Pressable>
+            {!protectedCurrentSchedule ? (
+              <Pressable
+                style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+                onPress={() => { void confirmDelete(false); }}
+                disabled={deleting}
+                accessibilityRole="button"
+              >
+                <Text style={styles.primaryButtonText}>
+                  {deleting ? 'Deleting…' : deleteCandidate.linkedScheduleItems.length > 0 ? 'Delete Document Only' : 'Delete Document'}
+                </Text>
+              </Pressable>
+            ) : null}
+            {!protectedCurrentSchedule && deleteCandidate.linkedScheduleItems.length > 0 && linkedTasksAreRevisionSafe ? (
+              <Pressable
+                style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+                onPress={() => { void confirmDelete(true); }}
+                disabled={deleting}
+                accessibilityRole="button"
+              >
+                <Text style={styles.primaryButtonText}>
+                  {`Delete Document + ${deleteCandidate.linkedScheduleItems.length} Task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}`}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
+      <DocumentList
+        documents={documents}
+        onDelete={document => {
+          setNotice(null);
+          setDeleteCandidateId(document.id);
+        }}
+      />
+    </>
+  );
+}
+
+function DocumentList({
+  documents,
+  onDelete,
+}: {
+  documents: readonly DAVEWebReferenceDocument[];
+  onDelete: (document: DAVEWebReferenceDocument) => void;
+}) {
   if (documents.length === 0) return <EmptyState text="No documents match this scope." />;
   return (
     <View style={styles.list}>
@@ -1006,11 +1128,28 @@ function DocumentList({ documents }: { documents: readonly ReferenceDocument[] }
             <StatusBadge label={document.isCurrent ? 'Current' : 'Prior version'} tone={document.isCurrent ? 'good' : 'neutral'} />
           </View>
           <Text style={styles.dataDetail}>Imported {formatDateTime(document.importedAt)}</Text>
+          {document.linkedScheduleItems.length > 0 ? (
+            <Text style={styles.dataMeta}>{document.linkedScheduleItems.length} linked imported task{document.linkedScheduleItems.length === 1 ? '' : 's'}</Text>
+          ) : null}
           {document.notes ? <Text style={styles.dataMeta}>{document.notes}</Text> : null}
+          <View style={styles.taskCardActions}>
+            <Pressable
+              style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
+              onPress={() => onDelete(document)}
+              accessibilityRole="button"
+            >
+              <Text style={styles.deleteText}>Delete</Text>
+            </Pressable>
+          </View>
         </View>
       ))}
     </View>
   );
+}
+
+function documentMutationMessage(error: unknown): string {
+  if (error instanceof DAVEWebDocumentMutationError) return error.message;
+  return 'The document could not be deleted. Refresh the workspace and try again.';
 }
 
 function StatusBadge({ label, tone }: { label: string; tone: 'good' | 'attention' | 'danger' | 'neutral' }) {

@@ -10,7 +10,10 @@ import {
   isDAVESafeCloudScheduleRecord,
   reconcileDAVEScheduleRecords,
 } from './DAVEScheduleRecovery';
-import { scheduleOverviewProjectNames } from './PIEScheduleImportBatch';
+import {
+  scheduleItemsForExactImportBatch,
+  scheduleOverviewProjectNames,
+} from './PIEScheduleImportBatch';
 import {
   reconcileCurrentScheduleDocuments,
   selectAuthoritativeScheduleItems,
@@ -23,8 +26,16 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
   scheduleItems: readonly DAVEWebScheduleItem[];
   projectUpdates: readonly CloudProjectUpdate<ProjectUpdate>[];
-  referenceDocuments: readonly ReferenceDocument[];
+  referenceDocuments: readonly DAVEWebReferenceDocument[];
   refreshedAt: string;
+}>;
+
+export type DAVEWebReferenceDocument = ReferenceDocument & Readonly<{
+  cloudUpdatedAt: string | null;
+  linkedScheduleItems: readonly Readonly<{
+    id: string;
+    cloudUpdatedAt: string | null;
+  }>[];
 }>;
 
 export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnapshot> {
@@ -45,9 +56,18 @@ export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnap
       'schedule_item',
     ),
   );
+  const referenceDocuments = reconciledDocuments.map(document => ({
+    ...document,
+    linkedScheduleItems: Object.freeze(
+      scheduleItemsForExactImportBatch(reconciledScheduleItems, document).map(item => ({
+        id: item.id,
+        cloudUpdatedAt: (item as DAVEWebScheduleItem).cloudUpdatedAt,
+      })),
+    ),
+  }));
   const scheduleItems = selectAuthoritativeScheduleItems({
     scheduleItems: reconciledScheduleItems,
-    scheduleDocuments: reconciledDocuments,
+    scheduleDocuments: referenceDocuments,
   }) as DAVEWebScheduleItem[];
   const projects = portfolioProjects(rawProjects, scheduleItems);
   const projectUpdates = removeUpdatesLinkedToDeletedTasks(
@@ -59,7 +79,7 @@ export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnap
     projects: Object.freeze(projects),
     scheduleItems: Object.freeze(scheduleItems),
     projectUpdates: Object.freeze(projectUpdates),
-    referenceDocuments: Object.freeze(reconciledDocuments),
+    referenceDocuments: Object.freeze(referenceDocuments),
     refreshedAt: new Date().toISOString(),
   });
 }
@@ -247,7 +267,7 @@ function normalizePhoto(value: unknown): UpdatePhoto | null {
   };
 }
 
-function normalizeDocument(value: unknown): ReferenceDocument | null {
+function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
   const row = toRecord(value);
   const data = toRecord(row.document_data);
   const id = readString(data.id) ?? readString(row.id);
@@ -263,11 +283,13 @@ function normalizeDocument(value: unknown): ReferenceDocument | null {
     mimeType: readString(data.mimeType),
     category: readString(data.category) ?? readString(row.category) ?? 'Other',
     notes: readString(data.notes) ?? '',
-    isCurrent: data.isCurrent !== false,
+    isCurrent: data.isCurrent === true,
     importedAt: readString(data.importedAt) ?? readString(row.updated_at) ?? '',
     projectId: readString(data.projectId),
     projectName: readString(data.projectName),
     importBatchId: readString(data.importBatchId),
+    cloudUpdatedAt: readString(row.updated_at),
+    linkedScheduleItems: Object.freeze([]),
   };
 }
 

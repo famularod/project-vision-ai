@@ -49,6 +49,16 @@ export class DAVEWebTaskMutationError extends Error {
   }
 }
 
+export class DAVEWebDocumentMutationError extends Error {
+  constructor(
+    public readonly code: DAVEWebTaskMutationErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'DAVEWebDocumentMutationError';
+  }
+}
+
 export type DAVEWebSupabaseGateway = ReturnType<typeof createDAVEWebSupabaseGateway>;
 
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ?? '';
@@ -215,6 +225,100 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       }
       return deletedAt;
     },
+
+    async deleteAuthorizedReferenceDocument(
+      documentId: string,
+      expectedCloudUpdatedAt: string | null,
+      linkedScheduleItems: readonly Readonly<{ id: string; cloudUpdatedAt: string | null }>[] = [],
+    ): Promise<string> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      if (!expectedCloudUpdatedAt) throw staleDocumentError();
+      const ownerId = await requireAuthorizedOwner(client);
+
+      if (await recordWasDeleted(client, ownerId, 'reference_document', documentId)) {
+        return new Date().toISOString();
+      }
+
+      const { data: current, error: currentError } = await client
+        .from('reference_documents')
+        .select('updated_at')
+        .eq('owner_id', ownerId)
+        .eq('id', documentId)
+        .maybeSingle();
+      if (currentError) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The document could not be checked before deletion. Refresh and try again.',
+        );
+      }
+      if (!current) {
+        throw new DAVEWebDocumentMutationError(
+          'not_found',
+          'This document no longer exists. The workspace has been refreshed.',
+        );
+      }
+      if (readCloudTimestamp(current) !== expectedCloudUpdatedAt) throw staleDocumentError();
+
+      const requestedTaskRevisions = new Map<string, string | null>();
+      linkedScheduleItems.forEach(item => {
+        const id = item.id.trim();
+        if (id) requestedTaskRevisions.set(id, item.cloudUpdatedAt);
+      });
+      const requestedTaskIds = [...requestedTaskRevisions.keys()];
+      if (requestedTaskIds.length > 0) {
+        const { data: ownedTasks, error: ownedTasksError } = await client
+          .from('schedule_items')
+          .select('id,updated_at')
+          .eq('owner_id', ownerId)
+          .in('id', requestedTaskIds);
+        const ownedRevisions = new Map(
+          (ownedTasks ?? [])
+            .map(row => [
+              typeof row?.id === 'string' ? row.id : '',
+              readCloudTimestamp(row),
+            ] as const)
+            .filter(([id]) => Boolean(id)),
+        );
+        if (
+          ownedTasksError ||
+          requestedTaskIds.some(id => (
+            !requestedTaskRevisions.get(id) ||
+            ownedRevisions.get(id) !== requestedTaskRevisions.get(id)
+          ))
+        ) {
+          throw new DAVEWebDocumentMutationError(
+            'conflict',
+            'The document task links changed on another device. Refresh and review them before deleting.',
+          );
+        }
+      }
+
+      const deletedAt = new Date().toISOString();
+      const deletionMarkers = [
+        {
+          owner_id: ownerId,
+          entity_type: 'reference_document',
+          record_id: documentId,
+          deleted_at: deletedAt,
+        },
+        ...requestedTaskIds.map(recordId => ({
+          owner_id: ownerId,
+          entity_type: 'schedule_item',
+          record_id: recordId,
+          deleted_at: deletedAt,
+        })),
+      ];
+      const { error } = await client
+        .from('dave_sync_tombstones')
+        .upsert(deletionMarkers, { onConflict: 'owner_id,entity_type,record_id' });
+      if (error) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The document deletion marker could not be saved. Nothing was deleted.',
+        );
+      }
+      return deletedAt;
+    },
   });
 }
 
@@ -264,6 +368,28 @@ async function scheduleItemWasDeleted(
   return Boolean(data);
 }
 
+async function recordWasDeleted(
+  client: SupabaseClient,
+  ownerId: string,
+  entityType: 'reference_document',
+  recordId: string,
+): Promise<boolean> {
+  const { data, error } = await client
+    .from('dave_sync_tombstones')
+    .select('deleted_at')
+    .eq('owner_id', ownerId)
+    .eq('entity_type', entityType)
+    .eq('record_id', recordId)
+    .maybeSingle();
+  if (error) {
+    throw new DAVEWebDocumentMutationError(
+      'write_failed',
+      'Document deletion history could not be checked. Refresh and try again.',
+    );
+  }
+  return Boolean(data);
+}
+
 function readCloudTimestamp(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const updatedAt = (value as Record<string, unknown>).updated_at;
@@ -274,6 +400,13 @@ function staleTaskError() {
   return new DAVEWebTaskMutationError(
     'conflict',
     'This task changed on another device. The workspace has been refreshed; review the latest values before saving again.',
+  );
+}
+
+function staleDocumentError() {
+  return new DAVEWebDocumentMutationError(
+    'conflict',
+    'This document changed on another device. The workspace has been refreshed; review the latest record before deleting.',
   );
 }
 

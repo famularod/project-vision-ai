@@ -1,6 +1,7 @@
 import {
   createDAVEWebSupabaseGateway,
   DAVEWebAuthorizationError,
+  DAVEWebDocumentMutationError,
   DAVEWebTaskMutationError,
 } from '../../services/DAVEWebSupabaseClient';
 import type { ScheduleItem } from '../../types';
@@ -133,6 +134,57 @@ describe('DAVE browser Supabase gateway', () => {
     );
     expect(scheduleQuery.delete).not.toHaveBeenCalled();
   });
+
+  test('deletes a document and its explicitly linked tasks through one durable tombstone write', async () => {
+    const documentQuery = mutationQuery({ data: { updated_at: 'document-revision' }, error: null });
+    const taskOwnershipQuery = mutationQuery({ data: [{ id: 'task-1', updated_at: 'task-revision' }], error: null });
+    const tombstoneCheck = mutationQuery({ data: null, error: null });
+    const tombstoneWrite = mutationQuery({ data: null, error: null });
+    let tombstoneCalls = 0;
+    const fixture = mutationClient(table => {
+      if (table === 'reference_documents') return documentQuery;
+      if (table === 'schedule_items') return taskOwnershipQuery;
+      tombstoneCalls += 1;
+      return tombstoneCalls === 1 ? tombstoneCheck : tombstoneWrite;
+    });
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await gateway.deleteAuthorizedReferenceDocument(
+      'document-1',
+      'document-revision',
+      [{ id: 'task-1', cloudUpdatedAt: 'task-revision' }],
+    );
+
+    expect(taskOwnershipQuery.in).toHaveBeenCalledWith('id', ['task-1']);
+    expect(tombstoneWrite.upsert).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ entity_type: 'reference_document', record_id: 'document-1' }),
+        expect.objectContaining({ entity_type: 'schedule_item', record_id: 'task-1' }),
+      ],
+      { onConflict: 'owner_id,entity_type,record_id' },
+    );
+    expect(documentQuery.delete).not.toHaveBeenCalled();
+  });
+
+  test('rejects document deletion when a linked task is no longer owner-visible', async () => {
+    const documentQuery = mutationQuery({ data: { updated_at: 'document-revision' }, error: null });
+    const taskOwnershipQuery = mutationQuery({ data: [], error: null });
+    const tombstoneCheck = mutationQuery({ data: null, error: null });
+    const fixture = mutationClient(table => {
+      if (table === 'reference_documents') return documentQuery;
+      if (table === 'schedule_items') return taskOwnershipQuery;
+      return tombstoneCheck;
+    });
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await expect(
+      gateway.deleteAuthorizedReferenceDocument(
+        'document-1',
+        'document-revision',
+        [{ id: 'task-1', cloudUpdatedAt: 'task-revision' }],
+      ),
+    ).rejects.toBeInstanceOf(DAVEWebDocumentMutationError);
+  });
 });
 
 const SCHEDULE_ITEM: ScheduleItem = {
@@ -164,6 +216,7 @@ function mutationQuery(result: { data: unknown; error: unknown }) {
   }
   query.single = jest.fn(async () => result);
   query.maybeSingle = jest.fn(async () => result);
+  query.in = jest.fn(async () => result);
   return query;
 }
 

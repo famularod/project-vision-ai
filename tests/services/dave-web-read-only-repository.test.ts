@@ -27,13 +27,16 @@ describe('DAVE browser read-only repository', () => {
           taskName: 'Install handrails',
           status: 'In Progress',
           percentComplete: 70,
+          importBatchId: 'batch-1',
+          sourceDocumentId: 'd1',
         },
       }],
       referenceDocuments: [{
         id: 'd1',
         name: 'Schedule.pdf',
         category: 'Schedules',
-        document_data: { id: 'd1', name: 'Schedule.pdf', projectName: '2375 Compliance Project' },
+        updated_at: '2026-07-19T17:00:00.000Z',
+        document_data: { id: 'd1', name: 'Schedule.pdf', projectName: '2375 Compliance Project', importBatchId: 'batch-1', isCurrent: true },
       }],
       projectUpdates: [
         {
@@ -58,6 +61,10 @@ describe('DAVE browser read-only repository', () => {
     expect(snapshot.scheduleItems.map(item => item.taskName)).toEqual(['Install handrails']);
     expect(snapshot.projectUpdates.map(update => update.id)).toEqual(['visible-update']);
     expect(snapshot.referenceDocuments.map(document => document.name)).toEqual(['Schedule.pdf']);
+    expect(snapshot.referenceDocuments[0]).toMatchObject({
+      cloudUpdatedAt: '2026-07-19T17:00:00.000Z',
+      linkedScheduleItems: [{ id: 't1', cloudUpdatedAt: null }],
+    });
     expect(Object.isFrozen(snapshot)).toBe(true);
   });
 

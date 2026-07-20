@@ -11,6 +11,7 @@ import {
 } from 'react';
 import {
   loadDAVEWebReadOnlySnapshot,
+  type DAVEWebReferenceDocument,
   type DAVEWebReadOnlySnapshot,
 } from '../../services/DAVEWebReadOnlyRepository';
 import {
@@ -43,6 +44,7 @@ type DesktopAuthContextValue = Readonly<{
   createTask: (item: DAVEWebScheduleItem) => Promise<void>;
   updateTask: (item: DAVEWebScheduleItem) => Promise<void>;
   deleteTask: (item: DAVEWebScheduleItem) => Promise<void>;
+  deleteDocument: (document: DAVEWebReferenceDocument, deleteLinkedTasks: boolean) => Promise<void>;
 }>;
 
 const DesktopAuthContext = createContext<DesktopAuthContextValue | null>(null);
@@ -241,6 +243,18 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     await refreshSnapshot();
   }, [refreshSnapshot]);
 
+  const deleteDocument = useCallback(async (
+    document: DAVEWebReferenceDocument,
+    deleteLinkedTasks: boolean,
+  ) => {
+    await daveWebSupabaseGateway.deleteAuthorizedReferenceDocument(
+      document.id,
+      document.cloudUpdatedAt,
+      deleteLinkedTasks ? document.linkedScheduleItems : [],
+    );
+    await refreshSnapshot();
+  }, [refreshSnapshot]);
+
   const value = useMemo<DesktopAuthContextValue>(() => ({
     phase,
     userEmail,
@@ -253,8 +267,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     createTask,
     updateTask,
     deleteTask,
+    deleteDocument,
   }), [
     createTask,
+    deleteDocument,
     deleteTask,
     message,
     phase,

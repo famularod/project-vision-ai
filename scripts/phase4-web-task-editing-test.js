@@ -16,6 +16,7 @@ for (const action of [
   'createAuthorizedScheduleItem',
   'updateAuthorizedScheduleItem',
   'deleteAuthorizedScheduleItem',
+  'deleteAuthorizedReferenceDocument',
 ]) {
   assert(gateway.includes(action), `The desktop task gateway must implement ${action}.`);
 }
@@ -24,7 +25,9 @@ assert(gateway.includes(".eq('owner_id', ownerId)"), 'Task updates and checks mu
 assert(gateway.includes(".eq('updated_at', expectedCloudUpdatedAt)"), 'Task updates must reject stale cloud revisions.');
 assert(gateway.includes(".from('dave_sync_tombstones')"), 'Task deletion must use the shared durable deletion journal.');
 assert(gateway.includes("entity_type: 'schedule_item'"), 'Task deletion markers must use the shared schedule-item entity identity.');
+assert(gateway.includes("entity_type: 'reference_document'"), 'Document deletion markers must use the shared reference-document entity identity.');
 assert(!gateway.includes(".from('schedule_items').delete("), 'Desktop deletion must not bypass the shared tombstone contract.');
+assert(!gateway.includes(".from('reference_documents').delete("), 'Desktop document deletion must not hard-delete cloud rows.');
 assert(editing.includes('reconcileScheduleProgress'), 'Desktop task writes must preserve the shared status/progress invariant.');
 assert(editing.includes("progressSource: 'project_manager'"), 'Desktop edits must be recorded as explicit PM authority.');
 assert(editing.includes('cloudUpdatedAt'), 'Desktop task models must retain the exact cloud revision for conflict checks.');
@@ -41,6 +44,9 @@ assert(shell.includes('<TaskStatusBadge task={task} />'), 'Task cards must use t
 assert(shell.includes("const label = isComplete ? 'Completed' : task.status;"), 'Completed tasks must use a clear past-tense status label.');
 assert(shell.includes("isNotStarted ? 'notStarted' : 'inProgress'"), 'Not-started work must be visually distinct from work in progress.');
 assert(shell.includes('taskStatusBadge: { minWidth: 116'), 'Task status pills must be large enough to scan quickly.');
+assert(shell.includes('Delete Document Only') && shell.includes('Delete Document +'), 'Document deletion must distinguish keeping or deleting linked tasks.');
+assert(shell.includes('This is the current schedule. Keep it'), 'The current schedule must be protected from accidental deletion.');
+assert(shell.includes('permanent cloud deletion marker'), 'Document deletion must explain cross-device resurrection protection.');
 assert(!gateway.includes("from '@react-native-async-storage/async-storage'"), 'Desktop task writes must not import native AsyncStorage.');
 assert(!gateway.includes("from 'expo-secure-store'"), 'Desktop task writes must not import native SecureStore.');
 

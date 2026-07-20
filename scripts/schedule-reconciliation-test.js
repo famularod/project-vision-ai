@@ -591,6 +591,16 @@ assert.deepStrictEqual(
   'Merged reference documents must converge to one deterministic current schedule.',
 );
 
+const misclassifiedScheduleCopies = [
+  { id: 'legacy-copy', name: 'MASTER CONSTRUCTION SCHEDULE 3-WEEK LOOKAHEAD', originalFileName: 'lookahead.pdf', uri: '', category: 'Other', notes: '', isCurrent: true, importedAt: '2026-06-30T12:00:00.000Z' },
+  { id: 'latest-copy', name: 'MASTER CONSTRUCTION SCHEDULE 3-WEEK LOOKAHEAD', originalFileName: 'lookahead.pdf', uri: '', category: 'Schedules', notes: '', isCurrent: true, importedAt: '2026-07-18T12:00:00.000Z' },
+];
+assert.deepStrictEqual(
+  reconcileCurrentScheduleDocuments(misclassifiedScheduleCopies).map(document => [document.id, document.isCurrent]),
+  [['legacy-copy', false], ['latest-copy', true]],
+  'Schedule-like legacy copies categorized as Other must not remain concurrently Current.',
+);
+
 const dedupedItems = selectAuthoritativeScheduleItems({
   scheduleItems: [
     schedule({ id: 'duplicate-old', importedAt: '2026-07-01T12:00:00.000Z' }),

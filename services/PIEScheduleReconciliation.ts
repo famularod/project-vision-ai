@@ -128,7 +128,7 @@ export function selectAuthoritativeScheduleItems({
   scheduleItems?: ScheduleItem[];
   scheduleDocuments?: ReferenceDocument[];
 }) {
-  const scheduleSources = scheduleDocuments.filter(document => document.category === 'Schedules');
+  const scheduleSources = scheduleDocuments.filter(scheduleDocumentIsScheduleLike);
   const activeSchedules = scheduleSources
     .filter(document => document.isCurrent)
     .sort(compareScheduleDocumentAuthority)
@@ -175,16 +175,23 @@ export function selectAuthoritativeScheduleItems({
   return dedupeScheduleItems(selectedItems);
 }
 
-export function reconcileCurrentScheduleDocuments(
-  documents: readonly ReferenceDocument[],
-): ReferenceDocument[] {
+export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
+  documents: readonly T[],
+): T[] {
   const winner = documents
-    .filter(document => document.category === 'Schedules' && document.isCurrent)
+    .filter(document => scheduleDocumentIsScheduleLike(document) && document.isCurrent)
     .sort(compareScheduleDocumentAuthority)[0];
   if (!winner) return [...documents];
-  return documents.map(document => document.category === 'Schedules'
+  return documents.map(document => scheduleDocumentIsScheduleLike(document)
     ? { ...document, isCurrent: document.id === winner.id }
     : document);
+}
+
+export function scheduleDocumentIsScheduleLike(document: ReferenceDocument): boolean {
+  if (document.category === 'Schedules') return true;
+  return /\b(schedule|look[\s-]?ahead)\b/i.test(
+    `${document.name} ${document.originalFileName}`,
+  );
 }
 
 function compareScheduleDocumentAuthority(left: ReferenceDocument, right: ReferenceDocument) {
