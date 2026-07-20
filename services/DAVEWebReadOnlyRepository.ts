@@ -1,5 +1,21 @@
-import type { ProjectUpdate, ReferenceDocument, ScheduleItem, UpdatePhoto } from '../types';
+import type {
+  DAVESyncTombstone,
+  ProjectUpdate,
+  ReferenceDocument,
+  ScheduleItem,
+  UpdatePhoto,
+} from '../types';
 import type { CloudProject, CloudProjectUpdate, JsonValue } from './SupabaseService';
+import {
+  isDAVESafeCloudScheduleRecord,
+  reconcileDAVEScheduleRecords,
+} from './DAVEScheduleRecovery';
+import { scheduleOverviewProjectNames } from './PIEScheduleImportBatch';
+import {
+  reconcileCurrentScheduleDocuments,
+  selectAuthoritativeScheduleItems,
+} from './PIEScheduleReconciliation';
+import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
@@ -12,13 +28,57 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
 
 export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnapshot> {
   const rows = await daveWebSupabaseGateway.loadAuthorizedRows();
+  const rawProjects = rows.projects.map(normalizeProject).filter(isPresent);
+  const tombstones = rows.syncTombstones.map(normalizeTombstone).filter(isPresent);
+  const reconciledDocuments = reconcileCurrentScheduleDocuments(
+    removeTombstonedRecords(
+      rows.referenceDocuments.map(normalizeDocument).filter(isPresent),
+      tombstones,
+      'reference_document',
+    ),
+  );
+  const reconciledScheduleItems = reconcileDAVEScheduleRecords(
+    removeTombstonedRecords(
+      rows.scheduleItems.map(normalizeScheduleItem).filter(isPresent),
+      tombstones,
+      'schedule_item',
+    ),
+  );
+  const scheduleItems = selectAuthoritativeScheduleItems({
+    scheduleItems: reconciledScheduleItems,
+    scheduleDocuments: reconciledDocuments,
+  });
+  const projects = portfolioProjects(rawProjects, scheduleItems);
 
   return Object.freeze({
-    projects: Object.freeze(rows.projects.map(normalizeProject).filter(isPresent)),
-    scheduleItems: Object.freeze(rows.scheduleItems.map(normalizeScheduleItem).filter(isPresent)),
+    projects: Object.freeze(projects),
+    scheduleItems: Object.freeze(scheduleItems),
     projectUpdates: Object.freeze(rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent)),
-    referenceDocuments: Object.freeze(rows.referenceDocuments.map(normalizeDocument).filter(isPresent)),
+    referenceDocuments: Object.freeze(reconciledDocuments),
     refreshedAt: new Date().toISOString(),
+  });
+}
+
+function portfolioProjects(
+  projects: readonly CloudProject[],
+  scheduleItems: readonly ScheduleItem[],
+): CloudProject[] {
+  const projectByName = new Map(
+    projects.map(project => [normalized(project.name), project]),
+  );
+  return scheduleOverviewProjectNames(
+    projects.map(project => project.name),
+    [...scheduleItems],
+  ).map(name => projectByName.get(normalized(name)) ?? {
+    id: null,
+    name,
+    status: 'Active',
+    archived: false,
+    isFavorite: false,
+    createdAt: null,
+    updatedAt: null,
+    ownerId: null,
+    data: null,
   });
 }
 
@@ -42,30 +102,68 @@ function normalizeProject(value: unknown): CloudProject | null {
 function normalizeScheduleItem(value: unknown): ScheduleItem | null {
   const row = toRecord(value);
   const data = toRecord(row.item_data);
-  const id = readString(data.id) ?? readString(row.id);
-  const projectName = readString(data.projectName) ?? readString(row.project_name);
-  const taskName = readString(data.taskName) ?? readString(row.task_name);
-  if (!id || !projectName || !taskName) return null;
+  if (!isDAVESafeCloudScheduleRecord(data)) return null;
+  const progress = reconcileScheduleProgress(data.status, data.percentComplete);
+  const projectName = readString(data.projectName) ?? readString(data.scheduleProjectName) ?? '';
 
   return {
     ...(data as Partial<ScheduleItem>),
-    id,
+    id: data.id.trim(),
+    scheduleProjectName: readString(data.scheduleProjectName),
+    projectTimeZone: readString(data.projectTimeZone),
     projectName,
-    taskName,
+    taskName: data.taskName.trim(),
     locationName: readString(data.locationName) ?? '',
     startDate: readString(data.startDate) ?? '',
     finishDate: readString(data.finishDate) ?? '',
     milestone: readString(data.milestone) ?? '',
     owner: readString(data.owner) ?? '',
     contractor: readString(data.contractor) ?? '',
-    percentComplete: finiteNumber(data.percentComplete),
+    durationDays: typeof data.durationDays === 'number' && Number.isFinite(data.durationDays)
+      ? Math.max(0, data.durationDays)
+      : null,
+    percentComplete: progress.percentComplete,
+    progressSource: data.progressSource === 'project_manager' || data.progressSource === 'schedule_import'
+      ? data.progressSource
+      : null,
+    progressConfirmedAt: readString(data.progressConfirmedAt),
+    progressConfirmedBy: readString(data.progressConfirmedBy),
     priority: data.priority === 'Low' || data.priority === 'High' ? data.priority : 'Medium',
-    status: data.status === 'In Progress' || data.status === 'Waiting' || data.status === 'Complete'
-      ? data.status
-      : 'Not Started',
+    status: progress.status,
     notes: readString(data.notes) ?? '',
+    importedFrom: readString(data.importedFrom),
+    importedAt: readString(data.importedAt),
+    importBatchId: readString(data.importBatchId),
+    sourceDocumentId: readString(data.sourceDocumentId),
     createdAt: readString(data.createdAt) ?? readString(row.created_at) ?? '',
+    updatedAt: readString(data.updatedAt) ?? readString(row.updated_at),
   };
+}
+
+function normalizeTombstone(value: unknown): DAVESyncTombstone | null {
+  const row = toRecord(value);
+  const entityType = readString(row.entity_type);
+  const recordId = readString(row.record_id);
+  const deletedAt = readString(row.deleted_at);
+  if (
+    !recordId ||
+    !deletedAt ||
+    (entityType !== 'project_area' && entityType !== 'schedule_item' && entityType !== 'reference_document')
+  ) return null;
+  return { entityType, recordId, deletedAt };
+}
+
+function removeTombstonedRecords<T extends { id: string }>(
+  records: readonly T[],
+  tombstones: readonly DAVESyncTombstone[],
+  entityType: DAVESyncTombstone['entityType'],
+): T[] {
+  const deletedIds = new Set(
+    tombstones
+      .filter(tombstone => tombstone.entityType === entityType)
+      .map(tombstone => normalized(tombstone.recordId)),
+  );
+  return records.filter(record => !deletedIds.has(normalized(record.id)));
 }
 
 function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdate> | null {
@@ -161,12 +259,12 @@ function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
-function finiteNumber(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-}
-
 function isPresent<T>(value: T | null): value is T {
   return value !== null;
+}
+
+function normalized(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

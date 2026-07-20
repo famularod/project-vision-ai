@@ -12,7 +12,13 @@ import {
 } from 'react-native';
 import type { ProjectUpdate, ReferenceDocument, ScheduleItem, UpdatePhoto } from '../../types';
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
+import {
+  scheduleTaskIsComplete,
+  scheduleTasksForParentProject,
+} from '../../services/dave-project-schedule-rollup';
+import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
 import { colors, spacing } from '../../theme';
+import { daysUntilDate } from '../../utils/date';
 import { useDesktopAuth } from './desktop-auth-provider';
 import {
   desktopNavigationItems,
@@ -62,6 +68,11 @@ const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
     eyebrow: 'REPORTS',
     title: 'Report readiness',
     description: 'Review the cloud evidence available to reports; generation and approval remain disabled.',
+  },
+  settings: {
+    eyebrow: 'SETTINGS',
+    title: 'Account and cloud sync',
+    description: 'Review the browser connection and pull the latest authorized cloud records into this read-only workspace.',
   },
 };
 
@@ -265,23 +276,39 @@ function DesktopPageData({
   page: DesktopReadOnlyPage;
   selectedProject: string | null;
 }) {
-  const { snapshot } = useDesktopAuth();
+  const auth = useDesktopAuth();
+  const { snapshot } = auth;
   if (!snapshot) return null;
 
   const projects = snapshot.projects.filter(project => matchesProject(project.name, selectedProject));
-  const tasks = snapshot.scheduleItems.filter(item => matchesProject(item.projectName, selectedProject));
-  const updates = snapshot.projectUpdates.filter(update => matchesProject(update.projectName, selectedProject));
-  const documents = snapshot.referenceDocuments.filter(document => matchesProject(document.projectName, selectedProject));
+  const selectedScopes = selectedProject
+    ? scheduleProjectScopeNames(selectedProject, [...snapshot.scheduleItems])
+    : [];
+  const tasks = selectedProject
+    ? scheduleTasksForParentProject(selectedProject, [...snapshot.scheduleItems])
+    : snapshot.scheduleItems;
+  const updates = snapshot.projectUpdates.filter(update => matchesProjectScope(update.projectName, selectedScopes));
+  const documents = snapshot.referenceDocuments.filter(document => matchesProjectScope(document.projectName, selectedScopes));
   const photos = updates.flatMap(update => update.updateData.photos.map(photo => ({ update, photo })));
+  const completedTasks = tasks.filter(taskIsComplete);
+  const openTaskCount = tasks.length - completedTasks.length;
 
   if (page === 'overview') {
     return (
       <>
         <View style={styles.metricGrid}>
           <MetricCard label="Active projects" value={projects.length} />
-          <MetricCard label="Open tasks" value={tasks.filter(task => !taskIsComplete(task)).length} />
+          <MetricCard label="Total tasks" value={tasks.length} />
+          <MetricCard label="Complete tasks" value={completedTasks.length} />
+          <MetricCard label="Open tasks" value={openTaskCount} />
           <MetricCard label="Field updates" value={updates.length} />
           <MetricCard label="Documents" value={documents.length} />
+        </View>
+        <View style={styles.accountingBanner} accessibilityRole="summary">
+          <Text style={styles.accountingTitle}>Cloud task accounting</Text>
+          <Text style={styles.accountingDetail}>
+            {tasks.length} total = {completedTasks.length} complete + {openTaskCount} open. Deleted tasks, unsafe legacy rows, superseded imports, and prior schedule versions are excluded.
+          </Text>
         </View>
         <Section title="Current attention" detail="Incomplete and overdue work appears first.">
           <TaskList tasks={tasks.filter(task => !taskIsComplete(task)).slice(0, 12)} />
@@ -333,6 +360,40 @@ function DesktopPageData({
       <Section title={`${documents.length} document${documents.length === 1 ? '' : 's'}`} detail="Document uploads and downloads remain disabled during the read-only pilot.">
         <DocumentList documents={documents} />
       </Section>
+    );
+  }
+
+  if (page === 'settings') {
+    return (
+      <>
+        <Section title="Cloud connection" detail="This browser reads the owner-authorized cloud record and cannot modify project data.">
+          <View style={styles.cardGrid}>
+            <View style={styles.dataCard}>
+              <Text style={styles.cardTitle}>Signed-in account</Text>
+              <Text style={styles.dataDetail}>{auth.userEmail || 'Authorized account'}</Text>
+              <StatusBadge label="Owner verified" tone="good" />
+            </View>
+            <View style={styles.dataCard}>
+              <Text style={styles.cardTitle}>Last cloud refresh</Text>
+              <Text style={styles.dataDetail}>{formatDateTime(snapshot.refreshedAt)}</Text>
+              <StatusBadge label="Read only" tone="neutral" />
+            </View>
+          </View>
+          <Pressable
+            style={({ pressed }) => [styles.primaryButton, styles.syncButton, pressed && styles.buttonPressed]}
+            onPress={() => { void auth.refreshSnapshot(); }}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>Sync from Cloud Now</Text>
+          </Pressable>
+        </Section>
+        <View style={styles.syncBoundaryBanner} accessibilityRole="alert">
+          <Text style={styles.syncBoundaryTitle}>What this sync does</Text>
+          <Text style={styles.syncBoundaryDetail}>
+            The website pulls the latest cloud records. It cannot upload a change that still exists only on an iPhone or iPad. Use Sync Now on that device first, then return here and select Sync from Cloud Now.
+          </Text>
+        </View>
+      </>
     );
   }
 
@@ -392,13 +453,14 @@ function ProjectCard({
   tasks: readonly ScheduleItem[];
   updates: readonly CloudProjectUpdate<ProjectUpdate>[];
 }) {
-  const projectTasks = tasks.filter(task => task.projectName === project.name);
+  const projectTasks = scheduleTasksForParentProject(project.name, [...tasks]);
+  const projectScopes = scheduleProjectScopeNames(project.name, [...tasks]);
   const completed = projectTasks.filter(taskIsComplete).length;
   return (
     <View style={styles.dataCard}>
       <Text style={styles.dataTitle}>{project.name}</Text>
       <Text style={styles.dataMeta}>{project.status ?? 'Active'} · {completed} of {projectTasks.length} tasks complete</Text>
-      <Text style={styles.dataDetail}>{updates.filter(update => update.projectName === project.name).length} field updates</Text>
+      <Text style={styles.dataDetail}>{updates.filter(update => matchesProjectScope(update.projectName, projectScopes)).length} field updates</Text>
     </View>
   );
 }
@@ -555,17 +617,27 @@ function DesktopNavigationLink({
 }
 
 function matchesProject(projectName: string | null | undefined, selectedProject: string | null): boolean {
-  return !selectedProject || projectName === selectedProject;
+  return !selectedProject || normalizedName(projectName) === normalizedName(selectedProject);
+}
+
+function matchesProjectScope(projectName: string | null | undefined, scopeProjects: readonly string[]): boolean {
+  if (scopeProjects.length === 0) return true;
+  const projectKey = normalizedName(projectName);
+  return scopeProjects.some(scope => normalizedName(scope) === projectKey);
 }
 
 function taskIsComplete(task: ScheduleItem): boolean {
-  return task.status === 'Complete' || task.percentComplete >= 100;
+  return scheduleTaskIsComplete(task);
 }
 
 function taskIsOverdue(task: ScheduleItem): boolean {
   if (taskIsComplete(task)) return false;
-  const finish = Date.parse(task.finishDate);
-  return Number.isFinite(finish) && finish < Date.now();
+  const days = daysUntilDate(task.finishDate, new Date(), task.projectTimeZone || undefined);
+  return days !== null && days < 0;
+}
+
+function normalizedName(value: string | null | undefined) {
+  return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 function sortTasksForReview(tasks: readonly ScheduleItem[]): ScheduleItem[] {
@@ -644,6 +716,9 @@ const styles = StyleSheet.create({
   metricCard: { flexGrow: 1, flexBasis: 190, minHeight: 132, borderRadius: 20, backgroundColor: '#194A91', padding: spacing.lg, justifyContent: 'space-between' },
   metricValue: { color: '#FFFFFF', fontSize: 36, lineHeight: 42, fontWeight: '900' },
   metricLabel: { color: '#D8E6FA', fontSize: 14, lineHeight: 20, fontWeight: '800' },
+  accountingBanner: { borderRadius: 18, borderWidth: 1, borderColor: '#8CB9ED', backgroundColor: '#EDF6FF', padding: spacing.lg, gap: spacing.xs },
+  accountingTitle: { color: '#164F86', fontSize: 17, lineHeight: 23, fontWeight: '900' },
+  accountingDetail: { color: '#315F88', fontSize: 14, lineHeight: 21 },
   section: { gap: spacing.md },
   sectionTitle: { color: '#171A21', fontSize: 24, lineHeight: 31, fontWeight: '900' },
   sectionDetail: { color: '#6A717E', fontSize: 15, lineHeight: 22 },
@@ -677,6 +752,10 @@ const styles = StyleSheet.create({
   errorText: { color: '#9B2525', fontSize: 14, lineHeight: 21 },
   primaryButton: { minHeight: 52, borderRadius: 12, backgroundColor: '#087EF5', alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
   primaryButtonText: { color: '#FFFFFF', fontSize: 16, lineHeight: 22, fontWeight: '900' },
+  syncButton: { alignSelf: 'flex-start', minWidth: 240 },
+  syncBoundaryBanner: { borderRadius: 18, borderWidth: 1, borderColor: '#E7B766', backgroundColor: '#FFF7E8', padding: spacing.lg, gap: spacing.xs },
+  syncBoundaryTitle: { color: '#7B4D00', fontSize: 17, lineHeight: 23, fontWeight: '900' },
+  syncBoundaryDetail: { color: '#72551F', fontSize: 14, lineHeight: 21, maxWidth: 1000 },
   secondaryButton: { minHeight: 42, borderRadius: 12, borderWidth: 1, borderColor: '#BFC8D5', backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
   secondaryButtonText: { color: '#0874DF', fontSize: 14, lineHeight: 20, fontWeight: '900' },
   buttonDisabled: { opacity: 0.48 },

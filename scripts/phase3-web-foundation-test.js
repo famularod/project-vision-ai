@@ -30,15 +30,21 @@ assert(appConfig.plugins.includes('expo-router'), 'Expo Router must be configure
 for (const dependency of ['expo-router', 'react-dom', 'react-native-web', '@expo/metro-runtime']) {
   assert(packageJson.dependencies[dependency], `${dependency} must be a direct SDK-compatible dependency.`);
 }
-for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'app/tasks.tsx', 'app/evidence.tsx', 'app/photos.tsx', 'app/documents.tsx', 'app/reports.tsx', 'app/+not-found.tsx']) {
+for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'app/tasks.tsx', 'app/evidence.tsx', 'app/photos.tsx', 'app/documents.tsx', 'app/reports.tsx', 'app/settings.tsx', 'app/+not-found.tsx']) {
   assert(exists(route), `${route} must exist.`);
 }
 assert(shell.includes('Server-authorized browser session'), 'The pilot must visibly identify its authorization boundary.');
 assert(shell.includes('Editing, deletion, upload, report approval, and sending are disabled'), 'The pilot must visibly preserve its read-only boundary.');
+assert(shell.includes('Cloud task accounting'), 'The Command Center must expose an auditable task total breakdown.');
+assert(shell.includes('Sync from Cloud Now'), 'The browser must expose its cloud refresh action in Settings.');
 assert(!provider.includes('SupabaseService'), 'The web provider must not import the native sync service.');
 assert(provider.includes('loadDAVEWebReadOnlySnapshot'), 'The provider must load only through the reviewed read-only repository.');
 assert(webSupabaseClient.includes("client.rpc('dave_is_app_owner')"), 'Every snapshot load must pass the server owner check first.');
 assert(webSupabaseClient.includes(".from(table)") && webSupabaseClient.includes(".eq('owner_id', ownerId)"), 'Every desktop collection must be explicitly owner-scoped in addition to RLS.');
+assert(webSupabaseClient.includes("'dave_sync_tombstones'"), 'The browser must load owner-scoped deletion history before counting cloud records.');
+assert(readOnlyRepository.includes('isDAVESafeCloudScheduleRecord'), 'The browser must reject unsafe legacy schedule rows.');
+assert(readOnlyRepository.includes('selectAuthoritativeScheduleItems'), 'The browser must count only the authoritative current schedule.');
+assert(readOnlyRepository.includes('scheduleOverviewProjectNames'), 'The browser must use the mobile parent-project portfolio scope.');
 for (const forbiddenMutation of ['createProject(', 'updateProject(', 'deleteProject(', 'saveProjectUpdate(', 'upsertScheduleItem(', 'upsertReferenceDocument(']) {
   assert(!readOnlyRepository.includes(forbiddenMutation), `The read-only repository must not call ${forbiddenMutation}.`);
 }
@@ -47,6 +53,7 @@ for (const forbiddenOperation of ['.insert(', '.upsert(', '.update(', '.delete('
 }
 assert(!webSupabaseClient.includes('expo-file-system'), 'The browser Supabase gateway must not import native file support.');
 assert(!webSupabaseClient.includes('expo-secure-store'), 'The browser Supabase gateway must not import native SecureStore.');
+assert(!readOnlyRepository.includes("from '@react-native-async-storage/async-storage'"), 'The browser read repository must not import native AsyncStorage.');
 assert(browserAuthStorage.includes('window.sessionStorage'), 'Browser sessions must use the reviewed tab-scoped adapter.');
 assert(!browserAuthStorage.includes('window.localStorage'), 'Browser auth tokens must not persist in localStorage.');
 assert(!browserAuthStorage.includes("from '@react-native-async-storage/async-storage'"), 'The browser auth adapter must not fall back to native AsyncStorage.');

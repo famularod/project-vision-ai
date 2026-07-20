@@ -5,12 +5,13 @@ export type DesktopReadOnlyPage =
   | 'evidence'
   | 'photos'
   | 'documents'
-  | 'reports';
+  | 'reports'
+  | 'settings';
 
 export type DesktopNavigationItem = {
   page: DesktopReadOnlyPage;
   label: string;
-  href: '/' | '/projects' | '/tasks' | '/evidence' | '/photos' | '/documents' | '/reports';
+  href: '/' | '/projects' | '/tasks' | '/evidence' | '/photos' | '/documents' | '/reports' | '/settings';
 };
 
 export const desktopNavigationItems: readonly DesktopNavigationItem[] = Object.freeze([
@@ -21,6 +22,7 @@ export const desktopNavigationItems: readonly DesktopNavigationItem[] = Object.f
   { page: 'photos', label: 'Photos', href: '/photos' },
   { page: 'documents', label: 'Documents', href: '/documents' },
   { page: 'reports', label: 'Reports', href: '/reports' },
+  { page: 'settings', label: 'Settings', href: '/settings' },
 ]);
 
 export function desktopRouteIsActive(pathname: string, href: DesktopNavigationItem['href']) {

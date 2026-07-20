@@ -13,6 +13,7 @@ describe('desktop read-only navigation', () => {
       '/photos',
       '/documents',
       '/reports',
+      '/settings',
     ]);
     expect(new Set(desktopNavigationItems.map(item => item.href)).size).toBe(desktopNavigationItems.length);
   });
@@ -26,5 +27,6 @@ describe('desktop read-only navigation', () => {
     expect(desktopRouteIsActive('/projects/project-123', '/projects')).toBe(true);
     expect(desktopRouteIsActive('/reports/report-456', '/reports')).toBe(true);
     expect(desktopRouteIsActive('/documents', '/reports')).toBe(false);
+    expect(desktopRouteIsActive('/settings', '/settings')).toBe(true);
   });
 });

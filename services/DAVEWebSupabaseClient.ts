@@ -12,6 +12,7 @@ export type DAVEWebRawRows = Readonly<{
   scheduleItems: readonly unknown[];
   projectUpdates: readonly unknown[];
   referenceDocuments: readonly unknown[];
+  syncTombstones: readonly unknown[];
 }>;
 
 export type DAVEWebSignInResult = Readonly<{
@@ -87,14 +88,15 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       const { data: authorized, error: authorizationError } = await client.rpc('dave_is_app_owner');
       if (authorizationError || authorized !== true) throw new DAVEWebAuthorizationError();
 
-      const [projects, scheduleItems, projectUpdates, referenceDocuments] = await Promise.all([
+      const [projects, scheduleItems, projectUpdates, referenceDocuments, syncTombstones] = await Promise.all([
         readOwnerRows(client, 'projects', userId, query => query.eq('archived', false).order('created_at', { ascending: false })),
         readOwnerRows(client, 'schedule_items', userId, query => query.order('updated_at', { ascending: false })),
         readOwnerRows(client, 'project_updates', userId, query => query.order('created_at', { ascending: false })),
         readOwnerRows(client, 'reference_documents', userId, query => query.order('updated_at', { ascending: false })),
+        readOwnerRows(client, 'dave_sync_tombstones', userId, query => query.order('deleted_at', { ascending: false })),
       ]);
 
-      return Object.freeze({ projects, scheduleItems, projectUpdates, referenceDocuments });
+      return Object.freeze({ projects, scheduleItems, projectUpdates, referenceDocuments, syncTombstones });
     },
   });
 }

@@ -15,6 +15,7 @@ function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
     ['schedule_items', queryWithRows([])],
     ['project_updates', queryWithRows([])],
     ['reference_documents', queryWithRows([])],
+    ['dave_sync_tombstones', queryWithRows([])],
   ]);
   const from = jest.fn((table: string) => queries.get(table));
   const rpc = jest.fn(async () => ({ data: authorized, error: null, status: 200 }));
@@ -49,6 +50,7 @@ describe('DAVE browser Supabase gateway', () => {
       'schedule_items',
       'project_updates',
       'reference_documents',
+      'dave_sync_tombstones',
     ]);
     for (const query of fixture.queries.values()) {
       expect(query.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
