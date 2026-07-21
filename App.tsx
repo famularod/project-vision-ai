@@ -68,11 +68,8 @@ import {
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
-import {
-  ScheduleTaskListControls,
-  type ScheduleTaskFilter,
-  type ScheduleTaskView,
-} from './components/schedule-task-list-controls';
+import { ScheduleTaskListControls, type ScheduleTaskFilter,
+  type ScheduleTaskView } from './components/schedule-task-list-controls';
 import { ScheduleTaskGroupHeader, ScheduleWideWorkspace } from './components/schedule-workspace-layout';
 import { NativeDateField } from './components/native-date-field';
 import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
@@ -80,12 +77,8 @@ import { DocumentsWideWorkspace } from './components/documents-workspace-layout'
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
-import {
-  groupScheduleWorkspaceItemsByProjectAndArea,
-  resolveScheduleWorkspaceTask,
-  scheduleItemsForWorkspaceProject,
-  scheduleWorkspaceProjectOptions,
-} from './services/DAVEScheduleWorkspace';
+import { groupScheduleWorkspaceItemsByProjectAndArea, resolveScheduleWorkspaceTask,
+  scheduleItemsForWorkspaceProject, scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
 import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
   resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
 import { filterDAVEDocumentWorkspace, markCurrentProjectScheduleDocument,
@@ -19196,7 +19189,6 @@ function ScheduleScreen({
     [sortedItems],
   );
   const completedTaskCount = sortedItems.length - openTaskCount;
-
   const filteredItems = useMemo(() => sortedItems.filter(item => {
     const complete = scheduleTaskIsComplete(item);
     if (taskView === 'Completed Tasks') return complete;
