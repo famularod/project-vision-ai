@@ -188,6 +188,7 @@ import {
   resolveLegacyOwnedLocalFilePath,
 } from './services/OwnedLocalFileRepository';
 import {
+  cleanupProjectDocumentOwnedFileForRecordRemoval,
   createProjectDocumentOwnedFileStore,
   importProjectDocumentIntoOwnedStorage,
   OWNED_PROJECT_DOCUMENTS_FOLDER,
@@ -3239,9 +3240,11 @@ async function verifyOwnedProjectDocument(document: ProjectDocument) {
 }
 
 async function deleteOwnedProjectDocument(document: ProjectDocument) {
-  if (!document.ownedFileId || !document.ownedFileManifest || !document.localUri) return;
-  const access = ownedProjectDocumentAccess(document);
-  await access.store.deleteAuthorizedFile(access.input);
+  if (!OWNED_PROJECT_DOCUMENTS_DIR) return { status: 'unavailable' as const };
+  return cleanupProjectDocumentOwnedFileForRecordRemoval({
+    document,
+    ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+  });
 }
 
 function projectDocumentStatusDetail(document: ProjectDocument) {
@@ -9741,13 +9744,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: sensitive ? `Archive ${document.category}` : 'Delete',
           style: 'destructive',
           onPress: async () => {
+            let localFileCleanupStatus: 'deleted' | 'not_recorded' | 'unavailable' =
+              'not_recorded';
             if (!sensitive) {
-              try {
-                await deleteOwnedProjectDocument(document);
-              } catch {
-                Alert.alert('Delete failed', 'The document file could not be verified and removed safely.');
-                return;
-              }
+              const cleanup = await deleteOwnedProjectDocument(document);
+              localFileCleanupStatus = cleanup.status;
             }
             const archivedAt = new Date().toISOString();
 
@@ -9781,6 +9782,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 ),
               })),
             );
+
+            if (!sensitive && localFileCleanupStatus === 'unavailable') {
+              Alert.alert(
+                'Document removed',
+                'The document record was removed. Its older local file was already unavailable and was left untouched.',
+              );
+            }
           },
         },
       ],

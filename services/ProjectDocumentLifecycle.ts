@@ -159,3 +159,39 @@ export function createProjectDocumentOwnedFileStore({
 }>): OwnedLocalFileStore {
   return createOwnedLocalFileStore({ ownedRoot, dependencies });
 }
+
+export type ProjectDocumentOwnedFileCleanupResult = Readonly<{
+  status: 'deleted' | 'not_recorded' | 'unavailable';
+}>;
+
+/**
+ * Removing a document record must not be blocked by an unavailable local
+ * attachment. Reinstalls legitimately invalidate the previous app-container
+ * path. The owned-file boundary still decides whether bytes may be deleted;
+ * an unverified path is left untouched while the caller removes the record.
+ */
+export async function cleanupProjectDocumentOwnedFileForRecordRemoval({
+  document,
+  ownedRoot,
+  dependencies = createExpoSdk54OwnedLocalFileStoreDependencies(),
+}: Readonly<{
+  document: Readonly<{
+    ownedFileId?: string | null;
+    ownedFileManifest?: unknown;
+    localUri?: string | null;
+  }>;
+  ownedRoot: string;
+  dependencies?: OwnedLocalFileStoreDependencies;
+}>): Promise<ProjectDocumentOwnedFileCleanupResult> {
+  if (!document.ownedFileId || !document.ownedFileManifest || !document.localUri) {
+    return Object.freeze({ status: 'not_recorded' });
+  }
+
+  try {
+    const store = createProjectDocumentOwnedFileStore({ ownedRoot, dependencies });
+    await store.deleteAuthorizedFile(requireOwnedProjectDocumentAccess(document));
+    return Object.freeze({ status: 'deleted' });
+  } catch {
+    return Object.freeze({ status: 'unavailable' });
+  }
+}
