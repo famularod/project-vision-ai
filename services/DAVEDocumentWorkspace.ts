@@ -6,6 +6,7 @@ export type DAVEWorkspaceDocument = {
 export type DAVEProjectScheduleDocument = DAVEWorkspaceDocument & {
   projectId: string;
   isCurrent?: boolean;
+  referenceDocumentId?: string | null;
   updatedAt: string;
 };
 
@@ -37,20 +38,20 @@ export function markCurrentProjectScheduleDocument<
 >({
   documents,
   documentId,
-  projectId,
+  referenceDocumentId,
   updatedAt,
 }: {
   documents: T[];
   documentId: string;
-  projectId: string;
+  referenceDocumentId?: string | null;
   updatedAt: string;
 }) {
   return documents.map(document => {
-    if (document.projectId !== projectId || document.category !== 'Schedule') {
-      return document;
-    }
+    if (document.category !== 'Schedule') return document;
 
-    const isCurrent = document.id === documentId;
+    const isCurrent = document.id === documentId || Boolean(
+      referenceDocumentId && document.referenceDocumentId === referenceDocumentId,
+    );
     if (Boolean(document.isCurrent) === isCurrent) return document;
 
     return {

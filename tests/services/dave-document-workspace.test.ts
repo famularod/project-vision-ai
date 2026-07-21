@@ -26,7 +26,7 @@ describe('DAVE document workspace', () => {
     expect(resolveDAVEDocumentWorkspaceDocument([], 'permit-a')).toBeNull();
   });
 
-  it('keeps exactly one current schedule per project', () => {
+  it('keeps one shared current schedule across project document copies', () => {
     const scheduleDocuments = [
       {
         id: 'schedule-a-old',
@@ -40,6 +40,7 @@ describe('DAVE document workspace', () => {
         projectId: 'project-a',
         category: 'Schedule',
         isCurrent: false,
+        referenceDocumentId: 'reference-new',
         updatedAt: '2026-07-20T10:00:00.000Z',
       },
       {
@@ -47,6 +48,15 @@ describe('DAVE document workspace', () => {
         projectId: 'project-b',
         category: 'Schedule',
         isCurrent: true,
+        referenceDocumentId: 'reference-old',
+        updatedAt: '2026-07-20T10:00:00.000Z',
+      },
+      {
+        id: 'schedule-b-new',
+        projectId: 'project-b',
+        category: 'Schedule',
+        isCurrent: false,
+        referenceDocumentId: 'reference-new',
         updatedAt: '2026-07-20T10:00:00.000Z',
       },
       {
@@ -61,7 +71,7 @@ describe('DAVE document workspace', () => {
     const result = markCurrentProjectScheduleDocument({
       documents: scheduleDocuments,
       documentId: 'schedule-a-new',
-      projectId: 'project-a',
+      referenceDocumentId: 'reference-new',
       updatedAt: '2026-07-20T12:00:00.000Z',
     });
 
@@ -70,8 +80,10 @@ describe('DAVE document workspace', () => {
     expect(result.find(document => document.id === 'schedule-a-new')?.isCurrent)
       .toBe(true);
     expect(result.find(document => document.id === 'schedule-b')?.isCurrent)
+      .toBe(false);
+    expect(result.find(document => document.id === 'schedule-b-new')?.isCurrent)
       .toBe(true);
     expect(result.find(document => document.id === 'drawing-a'))
-      .toBe(scheduleDocuments[3]);
+      .toBe(scheduleDocuments[4]);
   });
 });

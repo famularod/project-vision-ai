@@ -44,6 +44,7 @@ import {
   signUp,
   subscribeToAuthStateChange,
   updateCurrentUserDisplayName,
+  upsertReferenceDocument,
   uploadPhoto,
 } from './services/SupabaseService';
 import {
@@ -589,6 +590,7 @@ type ProjectDocument = {
   localUri?: string | null;
   ownedFileId?: string | null;
   ownedFileManifest?: unknown;
+  referenceDocumentId?: string | null;
   storagePath?: string | null;
   uploadedAt?: string | null;
   createdAt: string;
@@ -1492,6 +1494,7 @@ function normalizeProjectDocument(
       null,
     ownedFileId: ownedFileManifest ? ownedFileId : null,
     ownedFileManifest,
+    referenceDocumentId: optionalString(value.referenceDocumentId),
     storagePath,
     uploadedAt,
     createdAt,
@@ -9727,16 +9730,104 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
-  function makeProjectScheduleDocumentCurrent(documentId: string) {
+  async function makeProjectScheduleDocumentCurrent(documentId: string) {
     const document = projectDocuments.find(item => item.id === documentId);
     if (!document || document.category !== 'Schedule') return;
 
-    const updatedAt = new Date().toISOString();
+    let referenceDocument = document.referenceDocumentId
+      ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
+      : null;
+
+    try {
+      if (!referenceDocument) {
+        if (!document.localUri) {
+          Alert.alert(
+            'Schedule file unavailable',
+            'Add the original schedule file again before making it current.',
+          );
+          return;
+        }
+
+        await verifyOwnedProjectDocument(document);
+        const directory = await ensureReferenceDocumentsDirectory();
+        const originalFileName = document.name;
+        const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
+        await FileSystem.copyAsync({ from: document.localUri, to: targetUri });
+
+        const matchingProjectDocuments = projectDocuments.filter(item =>
+          item.category === 'Schedule' &&
+          item.name === document.name &&
+          item.mimeType === document.mimeType &&
+          item.sizeBytes === document.sizeBytes &&
+          Math.abs(Date.parse(item.importedAt) - Date.parse(document.importedAt)) < 5 * 60 * 1000,
+        );
+        const matchingProjectIds = new Set(
+          matchingProjectDocuments.map(item => item.projectId),
+        );
+        const projectName = matchingProjectIds.size === 1
+          ? projects.find(name => authorityProjectId(name) === document.projectId) || null
+          : null;
+
+        referenceDocument = normalizeReferenceDocument({
+          id: uid(),
+          name: originalFileName.replace(/\.[^/.]+$/, ''),
+          originalFileName,
+          uri: targetUri,
+          mimeType: document.mimeType,
+          category: 'Schedules',
+          notes: document.note || '',
+          isCurrent: true,
+          importedAt: document.importedAt,
+          projectId: projectName ? document.projectId : null,
+          projectName,
+        });
+
+        const linkedReferenceDocumentId = referenceDocument.id;
+        const linkMatchingUploads = (documents: ProjectDocument[]) =>
+          documents.map(item => matchingProjectDocuments.some(match => match.id === item.id)
+            ? { ...item, referenceDocumentId: linkedReferenceDocumentId }
+            : item);
+        setProjectDocuments(linkMatchingUploads);
+        setDraft(prev => ({
+          ...prev,
+          documents: linkMatchingUploads(prev.documents || []),
+        }));
+        setSavedUpdates(prev => prev.map(update => ({
+          ...update,
+          documents: linkMatchingUploads(update.documents || []),
+        })));
+      }
+    } catch {
+      Alert.alert(
+        'Current schedule not changed',
+        'The schedule file could not be verified and copied into the shared schedule record.',
+      );
+      return;
+    }
+
+    const selectedReferenceDocument = referenceDocument;
+    const referenceUpdatedAt = new Date().toISOString();
+    const nextReferenceDocuments = [
+      ...(referenceDocuments.some(item => item.id === selectedReferenceDocument.id)
+        ? []
+        : [selectedReferenceDocument]),
+      ...referenceDocuments,
+    ].map(item => ({
+      ...item,
+      isCurrent: item.category === 'Schedules'
+        ? item.id === selectedReferenceDocument.id
+        : item.isCurrent,
+    }));
+
+    markReferenceDocumentsAuthorityReady(true);
+    setReferenceDocuments(nextReferenceDocuments);
+
+    const updatedAt = referenceUpdatedAt;
     const markCurrent = (documents: ProjectDocument[]) =>
       markCurrentProjectScheduleDocument({
         documents,
         documentId,
-        projectId: document.projectId,
+        referenceDocumentId: selectedReferenceDocument.id,
         updatedAt,
       });
 
@@ -9751,6 +9842,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
         documents: markCurrent(update.documents || []),
       })),
     );
+
+    const cloudResults = await Promise.all(
+      nextReferenceDocuments
+        .filter(item => item.category === 'Schedules')
+        .map(item => upsertReferenceDocument(item)),
+    );
+    if (cloudResults.some(result => !result.ok || result.stubbed)) {
+      Alert.alert(
+        'Current schedule saved on this device',
+        'The shared cloud record could not be updated yet. Use Sync Now when connected.',
+      );
+    }
   }
 
   function deleteProjectDocument(documentId: string) {
