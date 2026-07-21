@@ -49,6 +49,8 @@
   },
   "scripts": {
     "start": "expo start",
+    "sync:native-release-metadata": "node scripts/sync-native-release-metadata.js",
+    "preios": "npm run sync:native-release-metadata",
     "typecheck": "tsc --noEmit",
     "check:expo-dependencies": "npx expo install --check",
     "check": "node scripts/production-secret-guard.js && npm run check:release-metadata && npm run check:expo-dependencies && npm run typecheck",
