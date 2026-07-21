@@ -614,6 +614,37 @@ assert.deepStrictEqual(
   'Duplicate imported activities should collapse to the newest record before warnings run.',
 );
 
+const latestInferredBatch = selectAuthoritativeScheduleItems({
+  scheduleItems: [
+    schedule({
+      id: 'older-device-import',
+      importedFrom: 'shared-lookahead.pdf',
+      importBatchId: 'device-import-a',
+      sourceDocumentId: 'device-document-a',
+      importedAt: '2026-07-20T22:55:37.883Z',
+    }),
+    schedule({
+      id: 'newer-device-import',
+      importedFrom: 'shared-lookahead.pdf',
+      importBatchId: 'device-import-b',
+      sourceDocumentId: 'device-document-b',
+      importedAt: '2026-07-20T23:56:29.181Z',
+    }),
+    schedule({
+      id: 'manual-task',
+      importedFrom: null,
+      importBatchId: null,
+      sourceDocumentId: null,
+    }),
+  ],
+  scheduleDocuments: [],
+});
+assert.deepStrictEqual(
+  latestInferredBatch.map(item => item.id),
+  ['newer-device-import', 'manual-task'],
+  'When a document row is unavailable, repeated device imports of the same schedule must select only the newest batch.',
+);
+
 assert.strictEqual(
   schedule().status,
   'Not Started',

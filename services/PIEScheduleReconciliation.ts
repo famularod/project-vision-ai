@@ -151,7 +151,7 @@ export function selectAuthoritativeScheduleItems({
   const knownDocumentIds = new Set(scheduleSources.map(document => normalize(document.id)).filter(Boolean));
 
   const selectedItems = scheduleSources.length === 0
-    ? scheduleItems
+    ? selectLatestImportedScheduleBatches(scheduleItems)
     : activeSchedules.length === 0
       ? scheduleItems.filter(item =>
           !normalize(item.importedFrom || '') &&
@@ -173,6 +173,37 @@ export function selectAuthoritativeScheduleItems({
   });
 
   return dedupeScheduleItems(selectedItems);
+}
+
+function selectLatestImportedScheduleBatches(
+  scheduleItems: readonly ScheduleItem[],
+): ScheduleItem[] {
+  const latestBatchBySource = new Map<string, {
+    batchId: string;
+    importedAt: number;
+  }>();
+
+  scheduleItems.forEach(item => {
+    const source = normalize(item.importedFrom || '');
+    const batchId = normalize(item.importBatchId || '');
+    if (!source || !batchId) return;
+    const importedAt = timestamp(item.importedAt || item.createdAt || null);
+    const current = latestBatchBySource.get(source);
+    if (
+      !current ||
+      importedAt > current.importedAt ||
+      (importedAt === current.importedAt && batchId > current.batchId)
+    ) {
+      latestBatchBySource.set(source, { batchId, importedAt });
+    }
+  });
+
+  return scheduleItems.filter(item => {
+    const source = normalize(item.importedFrom || '');
+    const batchId = normalize(item.importBatchId || '');
+    if (!source || !batchId) return true;
+    return latestBatchBySource.get(source)?.batchId === batchId;
+  });
 }
 
 export function reconcileCurrentScheduleDocuments<T extends ReferenceDocument>(
