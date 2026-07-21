@@ -90,7 +90,6 @@ import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCar
 import { UpdateDeleteControl } from './components/update-delete-control';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
-import { DAVEAskExperience } from './components/DAVEAskExperience';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
 import {
   DAVETaskActionConfirmationSheet,
@@ -232,9 +231,6 @@ import {
   buildStableAttentionItemId,
   dedupeAttentionItemsById,
 } from './services/PIEAttentionIdentity';
-import {
-  type DAVEBriefNavigationTarget,
-} from './services/DAVEDailyBrief';
 import { buildDAVEProjectTruth } from './services/DAVEProjectTruth';
 import {
   mergeDAVECloudRecoveredProjectUpdate,
@@ -10467,26 +10463,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setScreen(screenForUpdateResume(update));
   }
 
-  function openLatestProjectPhotoDifference(projectName: string) {
-    const scopedUpdates = projectUpdatesForScopes(
-      savedUpdates,
-      workspaceScopeNames(projectName),
-    ).map(update => ({ ...update, projectName }));
-    const brief = buildPIEProjectBriefModel(projectName, scopedUpdates);
-    const targetUpdate = brief.latestUpdate;
-
-    if (!targetUpdate) {
-      setUpdatesProjectFilter(projectName);
-      setScreen('SavedUpdates');
-      return;
-    }
-
-    setSelectedWorkspaceProject(projectName);
-    updateDetailReturnScreenRef.current = 'ProjectWorkspace';
-    setSelectedDetailUpdate(targetUpdate);
-    setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' });
-  }
-
   function deleteSavedUpdate(updateId: string, onConfirmed?: () => void) {
     const update = savedUpdatesRef.current.find(item => item.id === updateId);
     if (!update) return;
@@ -11495,29 +11471,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 setScreen('SavedUpdates');
               }}
               onOpenUpdate={openSavedUpdate}
-              onOpenPhotoDifferences={openLatestProjectPhotoDifference}
               onOpenDocuments={() => setScreen('ProjectDocuments')}
-              onOpenDailyBriefItem={item => {
-                setSelectedWorkspaceProject(selectedWorkspaceProject);
-                if (item.navigationTarget === 'project_documents') {
-                  setScreen('ProjectDocuments');
-                  return;
-                }
-                if (item.navigationTarget === 'schedule') {
-                  setScreen('Schedule');
-                  return;
-                }
-                if (item.navigationTarget === 'capture') {
-                  createNewUpdate(selectedWorkspaceProject);
-                  return;
-                }
-                const sourceUpdate = savedUpdates.find(update => update.id === item.sourceRecordId);
-                if (sourceUpdate) {
-                  updateDetailReturnScreenRef.current = 'ProjectWorkspace';
-                  setSelectedDetailUpdate(sourceUpdate);
-                  setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' });
-                }
-              }}
               onRetryQueuedUpdate={retryQueuedUpdate}
               onDeleteProject={deleteProjectPermanently}
               onCloseProject={closeProject}
@@ -12473,12 +12427,12 @@ function HomeScreen({
           </Text>
           <Text style={styles.overviewPrioritySupport}>
             {topPriority
-              ? liveAuthority.projectTruth.briefing.evidenceCoverage
-              : 'The next evidence-backed item will appear here.'}
+              ? `${topPriority.taskCount} ${pluralWord(topPriority.taskCount, 'task')} · ${topPriority.percentComplete}% complete`
+              : 'New priorities will appear here as project conditions change.'}
           </Text>
           {topPriority ? (
             <Text style={styles.overviewPrioritySupport}>
-              {liveAuthority.projectTruth.briefing.schedule}
+              Schedule: {topPriority.scheduleHealth}
             </Text>
           ) : null}
           {priorityObservation ? (
@@ -15557,11 +15511,6 @@ function Phase2ProjectCard({
   );
 }
 
-type DAVEWorkspaceOpenItem = {
-  navigationTarget: DAVEBriefNavigationTarget;
-  sourceRecordId: string;
-};
-
 type ProjectTaskFilter = 'All' | 'At Risk' | 'Due Soon' | 'Complete';
 
 function ProjectTaskControlPanel({
@@ -15851,9 +15800,7 @@ function ProjectWorkspaceScreen({
   onUseCurrentLocationForArea,
   onOpenUpdates,
   onOpenUpdate,
-  onOpenPhotoDifferences,
   onOpenDocuments,
-  onOpenDailyBriefItem,
   onRetryQueuedUpdate,
   onDeleteProject,
   onCloseProject,
@@ -15897,11 +15844,7 @@ function ProjectWorkspaceScreen({
   onUseCurrentLocationForArea: (areaId: string) => void;
   onOpenUpdates: () => void;
   onOpenUpdate: (update: ProjectUpdate) => void;
-  onOpenPhotoDifferences: (projectName: string) => void;
   onOpenDocuments: () => void;
-  onOpenDailyBriefItem: (
-    item: DAVEWorkspaceOpenItem,
-  ) => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
   onDeleteProject: (projectName: string) => void;
   onCloseProject: (projectName: string) => void;
@@ -15978,14 +15921,9 @@ function ProjectWorkspaceScreen({
   const notesCount = projectUpdates.filter(update => update.notes.trim()).length;
   const issuesCount = workspaceProjectStats.openActions + workspaceProjectStats.overdueActions;
   const projectIntelligence = liveAuthority.projectTruth.intelligence;
-  const projectTruth = liveAuthority.projectTruth;
-  const pmBriefing = projectTruth.briefing;
-  const dailyBrief = projectIntelligence.dailyBrief;
-  const actionCenter = projectIntelligence.actionCenter;
   const [voiceCaptureOpen, setVoiceCaptureOpen] = useState(false);
   const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
   const [projectOptionsOpen, setProjectOptionsOpen] = useState(false);
-  const [projectIntelligenceOpen, setProjectIntelligenceOpen] = useState(false);
   const [captureDraft, setCaptureDraft] = useState<DAVECaptureMemory | null>(null);
   const [selectedCaptureMemory, setSelectedCaptureMemory] = useState<DAVEConfirmedCaptureMemory | null>(null);
   const [areaMappingOpen, setAreaMappingOpen] = useState(false);
@@ -16005,17 +15943,6 @@ function ProjectWorkspaceScreen({
   );
   const projectWalkLocationRequest = useRef(0);
   const projectWalkStartInFlight = useRef(false);
-
-  const actionCenterSource = actionCenter.supportingEvidence.find(evidence => evidence.sourceType === 'update') ||
-    actionCenter.supportingEvidence[0];
-  const workspaceFadeStyle = useFadeSlideIn(260);
-  const projectHealthIsProblem = dailyBrief.reality.state === 'Blocked' || dailyBrief.reality.state === 'At Risk';
-  const projectHealthIsHealthy = dailyBrief.reality.state === 'Moving';
-  const projectHealthColor = projectHealthIsProblem
-    ? colors.danger
-    : projectHealthIsHealthy
-      ? colors.success
-      : colors.warning;
 
   function contextForProjectWalk(location: DAVEProjectWalkLocationInput) {
     return buildDAVEProjectWalkContext({
@@ -16109,107 +16036,6 @@ function ProjectWorkspaceScreen({
           </View>
         )}
       </View>
-
-      <Animated.View style={workspaceFadeStyle}>
-        <View style={styles.phase2BriefCard}>
-          <View style={[
-            styles.phase2BriefIcon,
-            projectHealthIsProblem
-              ? styles.phase2BriefIconProblem
-              : projectHealthIsHealthy
-                ? styles.phase2BriefIconHealthy
-                : styles.phase2BriefIconAttention,
-          ]}>
-            <Ionicons name="sparkles-outline" size={21} color={projectHealthColor} />
-          </View>
-          <View style={styles.rowMain}>
-            <Text style={styles.panelTitle}>Project Snapshot</Text>
-            <Text style={styles.sectionLabelNoMargin}>Current status</Text>
-            <Text style={styles.locationDetailText}>{pmBriefing.currentReality}</Text>
-            <Text style={styles.locationDetailText}>{pmBriefing.schedule}</Text>
-
-            <Text style={styles.sectionLabelNoMargin}>What changed</Text>
-            {pmBriefing.whatChanged.length > 0 ? pmBriefing.whatChanged.slice(0, 3).map((change, index) => (
-              <Text key={`truth-change-${index}`} style={styles.locationDetailText}>• {change}</Text>
-            )) : (
-              <Text style={styles.locationDetailText}>No new project changes have been recorded since the last update.</Text>
-            )}
-
-            <Text style={styles.sectionLabelNoMargin}>Needs attention</Text>
-            {actionCenter.priority !== 'No priority today.' ? (
-              <Text style={styles.bodyText}>{actionCenter.priority}</Text>
-            ) : null}
-            {pmBriefing.risksAndConflicts.slice(0, 3).map((risk, index) => (
-              <Text key={`truth-risk-${index}`} style={styles.locationDetailText}>• {risk}</Text>
-            ))}
-            {pmBriefing.verificationNeeded.slice(0, 3).map((item, index) => (
-              <Text key={`truth-verify-${index}`} style={styles.locationDetailText}>• {item}</Text>
-            ))}
-            {actionCenter.priority === 'No priority today.' &&
-            pmBriefing.risksAndConflicts.length === 0 &&
-            pmBriefing.verificationNeeded.length === 0 ? (
-                <Text style={styles.locationDetailText}>No current issue requires attention.</Text>
-              ) : null}
-            {actionCenter.recommendedAction ? (
-              <TouchableOpacity
-                style={styles.photoControlButton}
-                onPress={() => {
-                  if (!actionCenterSource) return;
-                  onOpenDailyBriefItem({
-                    navigationTarget: actionCenter.navigationTarget,
-                    sourceRecordId: actionCenterSource.recordId,
-                  });
-                }}
-                disabled={!actionCenterSource}
-              >
-                <Ionicons name="arrow-forward-circle-outline" size={17} color={colors.primary} />
-                <Text style={styles.photoControlText}>{actionCenter.recommendedAction}</Text>
-              </TouchableOpacity>
-            ) : null}
-
-            <Text style={styles.sectionLabelNoMargin}>Next steps</Text>
-            {pmBriefing.nextActions.length > 0 ? pmBriefing.nextActions.slice(0, 3).map((action, index) => (
-              <Text key={`truth-action-${index}`} style={styles.locationDetailText}>{index + 1}. {action}</Text>
-            )) : (
-              <Text style={styles.locationDetailText}>No additional action is needed right now.</Text>
-            )}
-
-            {projectIntelligenceOpen ? (
-              <>
-                <Text style={styles.sectionLabelNoMargin}>Source details</Text>
-                <Text style={styles.rowSub}>{pmBriefing.evidenceCoverage}</Text>
-                <Text style={styles.sectionLabelNoMargin}>Recent project records</Text>
-                {dailyBrief.reality.recentTimelineEvents.slice(0, 3).map(event => (
-                  <Text key={event.id} style={styles.locationDetailText}>• {event.title}: {event.summary}</Text>
-                ))}
-                {projectTruth.photoComparisons.length > 0 ? (
-                  <TouchableOpacity style={styles.photoControlButton} onPress={() => onOpenPhotoDifferences(projectName)}>
-                    <Ionicons name="git-compare-outline" size={17} color={colors.primary} />
-                    <Text style={styles.photoControlText}>View photo differences</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </>
-            ) : null}
-
-            <TouchableOpacity
-              style={styles.photoControlButton}
-              onPress={() => setProjectIntelligenceOpen(open => !open)}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: projectIntelligenceOpen }}
-            >
-              <Ionicons name={projectIntelligenceOpen ? 'chevron-up-outline' : 'chevron-down-outline'} size={17} color={colors.primary} />
-              <Text style={styles.photoControlText}>{projectIntelligenceOpen ? 'Hide source details' : 'View source details'}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Animated.View>
-
-      <DAVEAskExperience
-        intelligence={projectIntelligence}
-        onOpenSupportingRecord={(target, sourceRecordId) => {
-          onOpenDailyBriefItem({ navigationTarget: target, sourceRecordId });
-        }}
-      />
 
       <PrimaryButton
         label="New Field Update"
@@ -16515,14 +16341,6 @@ function ProjectWorkspaceScreen({
           onPress={() => {
             setProjectOptionsOpen(false);
             onOpenDocuments();
-          }}
-        />
-        <MoreOptionRow
-          label="Project Intelligence"
-          icon="pulse-outline"
-          onPress={() => {
-            setProjectOptionsOpen(false);
-            setProjectIntelligenceOpen(true);
           }}
         />
         <Text style={styles.sectionLabel}>Cover Photo</Text>

@@ -20,7 +20,9 @@ const checks = [
       signature.includes('projectDocuments: input.projectDocuments')],
   ['workspace consumes live Project Truth', app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence')],
   ['Ask DAVE uses Project Truth builder', app.includes('return buildDAVEProjectTruth({')],
-  ['Home displays evidence coverage', app.includes('liveAuthority.projectTruth.briefing.evidenceCoverage')],
+  ['Home displays the authoritative next action',
+    app.includes('liveAuthority.projectTruth.briefing.nextActions') &&
+      app.includes('const authoritativePriority =')],
   ['evidence accounting records connected evidence', truth.includes("disposition: input.connected ? 'connected' : 'unresolved'")],
   ['evidence accounting exposes unresolved records', truth.includes("unresolvedRecords: records.filter(item => item.disposition === 'unresolved')")],
   ['duplicate evidence is identified', truth.includes("disposition: 'duplicate' as const")],
@@ -37,8 +39,9 @@ const checks = [
   ['PM briefing contains risks and conflicts', truth.includes('risksAndConflicts: risks')],
   ['PM briefing contains exactly prioritized next actions', truth.includes(').slice(0, 3)')],
   ['PM briefing reports evidence coverage', truth.includes('evidenceCoverage:')],
-  ['workspace renders verification needs', app.includes('Needs verification')],
-  ['workspace renders next actions', app.includes('pmBriefing.nextActions.slice(0, 3).map')],
+  ['workspace keeps project task control available', app.includes('<ProjectTaskControlPanel')],
+  ['Overview renders current task and schedule facts',
+    app.includes('topPriority.taskCount') && app.includes('topPriority.scheduleHealth')],
 ];
 
 let failures = 0;

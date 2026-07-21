@@ -65,7 +65,10 @@ assert(
 assert(app.includes('const liveAuthorityInput = useMemo') && app.includes('updates: (') && app.includes('currentUpdate: (') && app.includes('captureMemories,'), 'App must include live evidence in provider input.');
 assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must prefer provider report draft with Runtime recovery only.');
 assert(app.includes('liveAuthority.projectTruth.briefing.nextActions'), 'Home must prefer provider-backed Project Truth actions.');
-assert(app.includes('const projectTruth = liveAuthority.projectTruth;'), 'Project Workspace must consume provider Project Truth directly.');
+assert(
+  app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence;'),
+  'Project Workspace must consume provider Project Truth intelligence directly.',
+);
 assert(reports.includes('const runtime = liveAuthority.runtime;'), 'Review must consume provider Runtime directly.');
 assert(piePanel.includes('useOptionalPIELiveAuthority'), 'PIEPanel must consume optional provider authority.');
 assert(piePanel.includes('liveAuthority?.runtime || fallbackRuntime'), 'PIEPanel must prefer provider Runtime when available.');

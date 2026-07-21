@@ -155,9 +155,11 @@ assert.strictEqual(empty.recommendedAction, null);
 assert.strictEqual(empty.supportingEvidence.length, 0);
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-const briefIndex = app.indexOf('>Project Snapshot<');
-const priorityIndex = app.indexOf('>Needs attention<', briefIndex);
-assert(briefIndex >= 0 && priorityIndex > briefIndex, 'The selected priority must remain in the Project Snapshot attention section.');
-assert(app.includes('onOpenDailyBriefItem({') && app.includes('sourceRecordId: actionCenterSource.recordId'));
+assert(!app.includes('>Project Snapshot<'), 'Action Center must not restore the retired Project Snapshot.');
+assert(
+  app.includes('liveAuthority.projectTruth.briefing.nextActions[0]') &&
+    app.includes('{authoritativePriority || topPriority?.dueTodayLabel || topPriority?.subtitle'),
+  'The canonical next action must remain available in the concise Overview priority card.',
+);
 
 console.log('DAVE Action Center behavioral tests passed.');

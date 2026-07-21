@@ -61,10 +61,7 @@ const projectStatus = fs.readFileSync(
   'name="settings-outline"',
   'accessibilityLabel="Open Settings"',
   'const projectIntelligence = liveAuthority.projectTruth.intelligence',
-  'const pmBriefing = projectTruth.briefing',
-  'pmBriefing.evidenceCoverage',
   'buildPIEScheduleReconciliation({',
-  'onOpenPhotoDifferences',
   'onNewFieldUpdate(projectName)',
 ].forEach(marker => {
   assert(uiSource.includes(marker), `Phase 2 screen should include ${marker}`);
@@ -136,13 +133,8 @@ assert(
   app.split('operationalScheduleItemsForProject(').length >= 3,
   'Overview and Workspace must reconcile the same canonical project schedule slice.',
 );
-assert(
-  app.includes('>Project Snapshot<') &&
-    app.includes('>Current status<') &&
-    app.includes('{pmBriefing.currentReality}') &&
-    app.includes('{pmBriefing.schedule}'),
-  'The Project Snapshot must lead with the current project and schedule status.',
-);
+assert(!app.includes('>Project Snapshot<'), 'The retired Project Brief/Snapshot must stay hidden.');
+assert(!app.includes('<DAVEAskExperience'), 'The suggested-question Project Assistant must stay hidden.');
 assert(
   app.includes('Archived Projects') && app.includes('onReopenProject(projectName)'),
   'Overview must preserve archived-project recovery after removing the duplicate Projects route.',
@@ -150,8 +142,9 @@ assert(
 assert(
   projectTruth.includes("evidenceClass: safeVisualEvidence ? 'observation'") &&
     projectTruth.includes('changeFromPrior: hasComparablePrior') &&
-    app.includes('pmBriefing.whatChanged.length'),
-  'Project brief with findings must show top observed finding text, not only a count.',
+    app.includes('buildPIEProjectBriefModel') &&
+    app.includes('.observations.map'),
+  'Observed photo findings must remain available to concise Overview activity without restoring Project Brief.',
 );
 assert(
   projectTruth.includes("intelligence?.provenance === 'visual_only'") &&
@@ -184,12 +177,6 @@ assert(
     app.includes('Baseline saved for future comparison.') &&
     app.includes("pieSummary.status === 'no_prior_photo'"),
   'Update detail no-prior state must show informational baseline copy, not an observed finding.',
-);
-assert(
-  app.includes('openLatestProjectPhotoDifference') &&
-    app.includes('setSelectedDetailUpdate(targetUpdate)') &&
-    app.includes("setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' })"),
-  'View photo differences action must open an existing update detail path.',
 );
 assert(
   app.includes('Photo Analysis') &&

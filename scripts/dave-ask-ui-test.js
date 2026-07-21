@@ -175,10 +175,12 @@ for (const forbidden of ['buildProjectIntelligence(', 'projectRealitySourceRecor
 
 const workspaceStart = app.indexOf('function ProjectWorkspaceScreen');
 const workspace = app.slice(workspaceStart);
-assert(workspace.indexOf('<DAVEAskExperience') >= 0);
-assert(workspace.indexOf('>Project Snapshot<') < workspace.indexOf('<DAVEAskExperience') &&
-  workspace.indexOf('<DAVEAskExperience') < workspace.indexOf('<ProjectTaskControlPanel'),
-  'Ask Vitruvius must appear after the Project Snapshot and before task controls.');
+assert(workspace.indexOf('<DAVEAskExperience') < 0,
+  'The suggested-question Project Assistant must remain hidden until its answers are dependable.');
+assert(workspace.indexOf('>Project Snapshot<') < 0,
+  'The retired Project Brief/Snapshot must not return with the hidden Assistant.');
+assert(workspace.indexOf('<ProjectTaskControlPanel') >= 0,
+  'Hiding the Assistant must leave the task-first project workflow available.');
 assert(app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence'));
 assert(app.includes('createDAVEAskHistoryPersistence'));
 assert(app.includes('history = await talkHistoryPersistence.read(projectId)'));
@@ -189,6 +191,5 @@ assert(!app.includes('AsyncStorage.getItem(daveAskHistoryStorageKey(projectId)).
   'Talk must never convert a failed history read into authoritative empty history.');
 assert.strictEqual((workspace.match(/buildProjectIntelligence\s*\(/g) || []).length, 0,
   'Project Workspace must consume shared Project Truth without rebuilding intelligence.');
-assert(workspace.includes('intelligence={projectIntelligence}'));
 
 console.log('DAVE Ask Experience behavioral tests passed.');

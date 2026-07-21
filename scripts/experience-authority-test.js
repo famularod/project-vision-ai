@@ -19,7 +19,10 @@ assert(provider.includes('reportGenerationAllowed'), 'Provider must control repo
 assert(app.includes('surface: authoritySurfaceForMode(authorityMode)'), 'App must send the stable authority mode into provider input.');
 assert(home.includes('liveAuthority.projectTruth.briefing.nextActions'), 'Home must prefer provider-backed Project Truth actions.');
 assert(reports.includes('liveAuthority.policy.reportGenerationAllowed'), 'Reports must enforce report authority state.');
-assert(reports.includes('liveAuthority.policy.userMessage'), 'Reports must show the friendly authority-block reason.');
+assert(
+  reports.includes('Current project data is still loading. Refresh before approving.'),
+  'Reports must show a concise authority-block reason.',
+);
 assert(
   reports.includes('evaluateReportApprovalPolicy({') &&
     reports.includes('reportGenerationAllowed,') &&

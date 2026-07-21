@@ -499,7 +499,7 @@ function validateMinimalUiComplete() {
   ['Run Simulation', 'Challenge Recommendation', 'Validate with JARVIS', 'Recalculate Confidence', 'Layer 4 Learning'].forEach(label => {
     assert(!visibleUi.includes(label), `${label} should not be a routine user control`);
   });
-  assert(/recommendedAction|primaryAction|whatMattersNow/i.test(visibleUi), 'Home must expose a current recommended action');
+  assert(/authoritativePriority|briefing\.nextActions/i.test(visibleUi), 'Home must expose a current recommended action');
   return { duplicateRoutineControlsRemoved: true, onePrimaryAction: true };
 }
 

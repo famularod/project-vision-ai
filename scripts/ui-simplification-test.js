@@ -48,9 +48,9 @@ assert(capture.includes('DAVEVoiceCaptureSheet'), 'Project Walk should expose DA
 assert(capture.includes('label="Upload Document"'), 'document upload should remain reachable');
 
 assert(review.includes('BeforeYouSharePanel'), 'Reports should consolidate review guidance before sharing');
-assert(review.includes('Review &amp; Approval'), 'Reports should present one clear review and approval area');
-assert(review.includes('advancedReviewOpen'), 'Advanced review and decision controls should be hidden by default');
-assert(review.includes("expanded ? 'Hide review details' : 'Review details'"), 'Reports should expose concise review details behind one disclosure');
+assert(review.includes('Report Check'), 'Reports should present one concise report readiness area');
+assert(!review.includes('advancedReviewOpen'), 'The report check should not expose a second advanced review workflow');
+assert(!review.includes("expanded ? 'Hide review details' : 'Review details'"), 'The report check should not add explanatory review disclosures');
 assert(review.includes('Approve Report'), 'Review should keep approval action');
 assert(review.includes('Edit Report'), 'Review should keep correction action');
 assert(review.includes('Copy Report'), 'Review should keep share/copy action');
@@ -87,7 +87,7 @@ assert(
 );
 assert(
   review.includes('<View style={styles.reportProgressHeading}>') &&
-    review.includes('Unweighted average of tasks in each area'),
+    review.includes('Average task completion by area'),
   'The work-area progress explanation should sit below its heading instead of competing for horizontal space.',
 );
 assert(

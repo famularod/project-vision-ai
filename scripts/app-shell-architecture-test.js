@@ -31,7 +31,7 @@ if (
 
 if (
   !source.includes("setScreen('UpdateDetail', { backTarget: returnScreen })") ||
-  !source.includes("setScreen('UpdateDetail', { backTarget: 'ProjectWorkspace' })")
+  !source.includes("setScreen('UpdateDetail', { backTarget: screen })")
 ) {
   failures.push('Context-specific update details do not share their visible and hardware Back destination.');
 }

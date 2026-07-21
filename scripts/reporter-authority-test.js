@@ -32,8 +32,9 @@ assert(
 );
 assert(
   !reports.includes('isReportableShareWarning') &&
-    reports.includes('...reportDraft.reviewFlags'),
-  'Evidence, confidence, verification, uncertainty, and owner warnings must remain visible before sharing.',
+    reports.includes('buildPMReportReviewWarnings(reportDraft.reviewFlags)') &&
+    reports.includes('Fix before approval'),
+  'Report safeguards must remain visible as concise, actionable PM warnings before sharing.',
 );
 assert(!reports.includes('MailComposer.composeAsync'), 'Review screen must not auto-send mail directly.');
 assert(
@@ -102,7 +103,7 @@ assert(
   'Repeated report warnings must retain unique React keys.',
 );
 assert(
-  reports.includes('key={`${item.id}-${index}`}') &&
+  reports.includes('key={`${index}-${warning}`}') &&
     reports.includes('key={`${group.id}-${groupIndex}`}') &&
     reports.includes('key={`${area.id}-${areaIndex}`}') &&
     reporter.includes('stableSlugHash(normalized)'),

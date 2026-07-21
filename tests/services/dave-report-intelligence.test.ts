@@ -44,9 +44,11 @@ describe('DAVE report intelligence', () => {
     const briefing = buildDAVEReportBriefing({ truths: [projectTruth()] });
 
     expect(briefing.projectConditions[0].currentReality).toBe(
-      'Reported installation progress is supported',
+      '0 of 1 tasks complete; 1 in progress.',
     );
-    expect(briefing.uncertainties).toEqual([]);
+    expect(briefing.currentWork).toEqual([
+      'Place concrete paving (North Lot): In Progress; 60% complete.',
+    ]);
     expect(briefing.nextActions).toHaveLength(1);
     expect(briefing.nextActions[0]).toMatchObject({
       taskName: 'Place concrete paving',
@@ -55,7 +57,7 @@ describe('DAVE report intelligence', () => {
       timing: 'Within 7 days',
       confidence: 'high',
     });
-    expect(briefing.schedulePosition).toEqual(['The inspection is due tomorrow.']);
+    expect(briefing.schedulePosition).toEqual(['1 due within 7 days.']);
     expect(JSON.stringify(briefing)).not.toMatch(/not verified|verification needed|missing evidence/i);
   });
 });

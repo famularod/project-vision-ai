@@ -1003,7 +1003,7 @@ if (
   hasAll(homeDashboard, [
     'usePIELiveAuthority',
     'liveAuthority.projectTruth.briefing.nextActions',
-    'liveAuthority.projectTruth.briefing.evidenceCoverage',
+    'const authoritativePriority =',
   ]) &&
   hasAll(reportsScreen, [
     'usePIELiveAuthority',
@@ -6054,8 +6054,8 @@ if (
     'usePIELiveAuthority',
     "Today's Priority",
     'liveAuthority.projectTruth.briefing.nextActions',
-    'liveAuthority.projectTruth.briefing.evidenceCoverage',
-    'liveAuthority.projectTruth.briefing.schedule',
+    'topPriority.taskCount',
+    'topPriority.scheduleHealth',
     'Review priority',
   ])
 ) {
@@ -6068,7 +6068,7 @@ if (
   fail(
     'Today Experience integration',
     'Overview does not clearly render the current DAVE priority and one next action.',
-    'Render live project-truth priority, evidence and schedule context, and one dominant review action on Overview.',
+    'Render the live project-truth priority, current task and schedule facts, and one dominant review action on Overview.',
     'App.tsx',
   );
 }
@@ -6194,25 +6194,20 @@ if (
 
 if (
   hasAll(reportsScreen, [
-    'buildPIEReviewExperience',
     'BeforeYouSharePanel',
-    'reviewExperience.primaryAction',
-    'reviewExperience.secondaryAction',
-    'Review &amp; Approval',
+    'Report Check',
     'Prepared Report',
-    'Review Draft',
     'Edit Report',
     'Approve Report',
     'Share Report',
     'Copy Report',
     'Email Report',
-    'Resolve before sharing',
-    'Review details',
+    'Fix before approval',
     'reportApproved',
     'reportApproved && reportApprovalAllowed && shareOpen',
     'No report is sent automatically',
-    'Project Detail',
-    'Confirm the report matches the current project status, then edit or approve it.',
+    'Project Status Details',
+    'Read the report and approve it when it matches the current project status.',
   ]) &&
   !hasAny(reportsScreen, [
     'Validation Requests',
@@ -6228,14 +6223,14 @@ if (
 ) {
   pass(
     'Review Experience integration',
-    'Review consumes PIEExperienceEngine, keeps internal verification gaps out of the report surface, approval-gates copy/email, avoids automatic sending, and keeps existing report functions reachable.',
+    'Review presents a concise PM report check, keeps internal diagnostics out of the report surface, approval-gates copy/email, avoids automatic sending, and keeps existing report functions reachable.',
     'screens/ReportsScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'Review Experience integration',
-    'Review Experience Engine integration or approval boundary markers were not detected.',
-    'Use buildPIEReviewExperience in ReportsScreen, keep internal verification diagnostics out of the published report, require approval before copy/email, and preserve existing report actions.',
+    'The concise report check or approval boundary markers were not detected.',
+    'Keep internal diagnostics out of the published report, show actionable PM warnings, require approval before copy/email, and preserve existing report actions.',
     'screens/ReportsScreen.tsx, App.tsx',
   );
 }
@@ -6314,9 +6309,9 @@ if (
     'Recent Activity',
   ]) &&
   hasAll(reportsScreen, [
-    'advancedReviewOpen',
-    'Review &amp; Approval',
     'BeforeYouSharePanel',
+    'Report Check',
+    'Fix before approval',
   ]) &&
   hasAll(photoCapture, [
     'Capture Evidence',
@@ -6327,14 +6322,14 @@ if (
 ) {
   pass(
     'ECOS UI simplification workflow',
-    'Overview presents one actionable priority, Capture keeps guided evidence collection, and Review hides advanced reasoning by default.',
+    'Overview presents one actionable priority, Capture keeps guided collection, and Review presents a concise PM report check.',
     'App.tsx, screens/ReportsScreen.tsx',
   );
 } else {
   fail(
     'ECOS UI simplification workflow',
-    'JARVIS cannot verify actionable summaries, guided Capture, or progressive Review disclosure.',
-    'Keep Overview action-led, Capture guided, and Review advanced details behind a disclosure.',
+    'JARVIS cannot verify actionable summaries, guided Capture, or the concise PM report check.',
+    'Keep Overview action-led, Capture guided, and Review focused on current facts and actionable approval warnings.',
     'App.tsx, screens/ReportsScreen.tsx',
   );
 }
@@ -6681,7 +6676,7 @@ if (
     'recommendedWalkAreas:',
     'recommendedInspectionAreas:',
     'executiveSummary:',
-    'pmBriefing.schedule',
+    'topPriority.scheduleHealth',
   ])
 ) {
   pass(
@@ -6722,7 +6717,7 @@ if (
 
 if (
   hasAll(homeDashboard, [
-    'liveAuthority.projectTruth.briefing.schedule',
+    'const authoritativePriority =',
     'overviewPrioritySupport',
     'buildOverviewProjectRows',
     'scheduleItems',
@@ -6751,7 +6746,7 @@ if (
     'ScheduleImportFlow',
     'reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems',
     'authoritativeScheduleItems',
-    'liveAuthority.projectTruth.briefing.schedule',
+    'topPriority.scheduleHealth',
   ]) &&
   hasAll(daveProjectTruth, [
     'function buildScheduleTruth',
@@ -7573,20 +7568,21 @@ if (
   ]) &&
   hasAll(reportsScreen, [
     'reviewFlagsPanel',
-    'Resolve before sharing',
-    'Review &amp; Approval',
+    'Fix before approval',
+    'Report Check',
     'Task Status',
     'Schedule Health',
-    'What Changed',
+    'Current Work',
     'Needs Attention',
-    'Next Action',
+    'Next Steps',
+    'Recent Changes',
     'Progress by Work Area',
     'Full Written Report',
     'Copy Report',
     'Email Report',
     'reportApproved && reportApprovalAllowed && shareOpen',
-    'Project Detail',
-    'Current conditions and schedule position',
+    'Project Status Details',
+    'Current task position and schedule',
   ]) &&
   !hasAny(reportsScreen, [
     'No image references included.',
@@ -8100,9 +8096,9 @@ if (
 
 if (
   hasAll(app, [
-    'liveAuthority.projectTruth.briefing.schedule',
     'authoritativeScheduleItems',
     'overviewPrioritySupport',
+    'topPriority.scheduleHealth',
   ]) &&
   hasAll(daveProjectTruth, [
     'function buildScheduleTruth',
@@ -8293,7 +8289,7 @@ if (hasAll(majorUiSource, ['spacing']) && hasAll(majorUiSource, ['typography']))
 if (
   hasAll(homeDashboard, ["Today's Priority", 'Review priority']) &&
   hasAll(photoCapture, ['Capture Evidence', 'Add Another Photo', 'Add Note']) &&
-  hasAll(reportsScreen, ['BeforeYouSharePanel', 'reviewExperienceActionLabel', 'reportActionButtonPrimary'])
+  hasAll(reportsScreen, ['BeforeYouSharePanel', 'Approve Report', 'reportActionButtonPrimary'])
 ) {
   pass(
     'UX QA - one dominant action',
@@ -8310,10 +8306,10 @@ if (
 }
 
 if (
-  hasAll(app, ['Why:', 'Photo saved.', 'Next Suggested Action', 'recommendedAction']) &&
+  hasAll(app, ['Why:', 'Photo saved.', 'Next Suggested Action']) &&
   hasAll(reportsScreen, [
-    'Review &amp; Approval',
-    'Confirm the report matches the current project status, then edit or approve it.',
+    'Report Check',
+    'Read the report and approve it when it matches the current project status.',
     'Approve Report',
     'No report is sent automatically',
   ])

@@ -96,9 +96,14 @@ assert.match(briefing.nextActions[0].action, /recovery date and accountable next
 assert.match(briefing.nextActions[1].action, /resolve the blocker/i);
 assert.match(briefing.nextActions[2].action, /crew, materials, and access/i);
 assert(briefing.nextActions.every(item => item.owner === 'Project manager' && item.confidence === 'high'));
-assert.deepStrictEqual(briefing.uncertainties, []);
-assert.strictEqual(briefing.projectConditions[0].currentReality, 'Reported installation progress is supported');
-assert.match(briefing.evidenceStatement, /6 current project records/i);
+assert.strictEqual(briefing.projectConditions[0].currentReality, '2 of 5 tasks complete; 1 in progress; 1 waiting; 1 not started.');
+assert.deepStrictEqual(briefing.currentWork.map(item => item.split(':')[0]), [
+  'Terminate pump (Pump House)',
+  'Install gates (Trash Enclosure)',
+  'Place concrete (East Driveway)',
+]);
+assert(!Object.prototype.hasOwnProperty.call(briefing, 'uncertainties'));
+assert(!Object.prototype.hasOwnProperty.call(briefing, 'evidenceStatement'));
 assert.match(briefing.executiveSnapshot, /1 overdue/i);
 assert.deepStrictEqual(briefing.dashboard.taskStatus, {
   total: 5, complete: 2, inProgress: 1, notStarted: 1, waiting: 1,
@@ -121,16 +126,17 @@ const baseDraft = {
 };
 const pm = enhanceDAVEReportDraft(baseDraft, briefing, 'project_manager');
 const executive = enhanceDAVEReportDraft(baseDraft, briefing, 'executive');
-assert.match(pm.body, /PROJECT OVERVIEW/);
-assert.match(pm.body, /WORK COMPLETED \/ IN PROGRESS/);
-assert.match(pm.body, /ACTIVE ISSUES/);
-assert.match(pm.body, /NEXT PERIOD \/ ACTIONS/);
+assert.match(pm.body, /PROJECT STATUS/);
+assert.match(pm.body, /ACTIVE WORK/);
+assert.match(pm.body, /RECENT CHANGES/);
+assert.match(pm.body, /SCHEDULE ISSUES/);
+assert.match(pm.body, /NEXT STEPS/);
 assert.match(pm.body, /WORK AREAS \/ PHOTO NOTES/);
 assert(!/REPORT NOTES/.test(pm.body));
 assert(!/verification|not verified|uncertain|unknown|missing evidence|low confidence/i.test(pm.body));
 assert(!/No material field change|No immediate action|No problem requiring/i.test(pm.body));
 assert(!/verified construction progress/i.test(pm.body));
-assert.match(executive.body, /PROJECT OVERVIEW/);
+assert.match(executive.body, /PROJECT STATUS/);
 assert(!/WORK AREAS \/ PHOTO NOTES/.test(executive.body));
 assert.notStrictEqual(pm.body, executive.body);
 assert.strictEqual(pm.daveBriefing, briefing);
@@ -148,29 +154,30 @@ assert.deepStrictEqual(buildPMReportReviewWarnings([
 
 const screen = fs.readFileSync(path.join(root, 'screens/ReportsScreen.tsx'), 'utf8');
 const reporter = fs.readFileSync(path.join(root, 'services/PIEReporter.ts'), 'utf8');
-assert(screen.includes('PROJECT CONDITION'));
+assert(screen.includes('CURRENT PROJECT STATUS'));
 assert(screen.includes('Task Status'));
 assert(screen.includes('Schedule Health'));
-assert(screen.includes('What Changed'));
+assert(screen.includes('Current Work'));
+assert(screen.includes('Recent Changes'));
 assert(screen.includes('Needs Attention'));
-assert(screen.includes('Next Action'));
+assert(screen.includes('Next Steps'));
 assert(screen.includes('Progress by Work Area'));
-assert(screen.includes('Unweighted average of tasks in each area'));
+assert(screen.includes('Average task completion by area'));
 assert(screen.includes('Completed Areas'));
 assert(screen.includes('Full Written Report'));
-assert(screen.includes('Project Detail'));
+assert(screen.includes('Project Status Details'));
 assert(!screen.includes('Validation Requests'));
 assert(!screen.includes('Evidence & Uncertainty'));
-assert(screen.includes('Confirm the report matches the current project status, then edit or approve it.'));
-assert(screen.includes('Resolve before sharing'));
-assert(screen.includes("expanded ? 'Hide review details' : 'Review details'"));
+assert(screen.includes('Report Check'));
+assert(screen.includes('Fix before approval'));
+assert(!screen.includes("expanded ? 'Hide review details' : 'Review details'"));
 assert(!screen.includes('title="Supporting Evidence"'));
 assert(screen.includes('const [completedAreasOpen, setCompletedAreasOpen] = useState(false)'));
 assert(screen.includes('const [writtenReportOpen, setWrittenReportOpen] = useState(false)'));
 assert(!screen.includes('numberOfLines={3}'));
 assert(screen.includes('Work Areas & Photos'));
 assert(screen.includes('Report Options'));
-assert(screen.includes('Image {reference.imageNumber} —'));
+assert(screen.includes('Photo {reference.imageNumber} —'));
 assert(screen.includes('const [optionsOpen, setOptionsOpen] = useState(false)'));
 assert(!reporter.includes('Verified construction progress was identified'));
 

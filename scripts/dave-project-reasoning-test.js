@@ -129,7 +129,7 @@ assert.strictEqual(waiting.decisions[0].recommendation.timing, 'Today');
 const truth = buildDAVEProjectTruth({ projectId: 'alpha', projectName: 'Alpha', scheduleItems: [reportedTask], updates: [update('truth-update', reportedTask.id, '', 'supported')], now: NOW });
 assert.strictEqual(truth.reasoning.decisions.length, 1);
 assert.match(truth.briefing.currentReality, /marked complete and is awaiting PM approval/i);
-assert.match(truth.briefing.evidenceCoverage, /current project records are linked to project work/i);
+assert.match(truth.briefing.evidenceCoverage, /recent records are assigned to project work/i);
 assert(truth.verificationQueue.some(item => /Named PM verification|current verification photo|current field update|PM verification/i.test(item.requestedAction)));
 
 console.log('PASS DAVE Project Reasoning and adversarial challenge');

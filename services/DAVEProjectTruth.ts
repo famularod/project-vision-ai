@@ -759,7 +759,7 @@ function buildPMBriefing(input: {
   const nextActions = uniqueText([
     ...input.reasoning.criticalDecisions.slice(0, 2).map(item => `${item.recommendation.action} Owner: ${item.recommendation.owner}. ${item.recommendation.timing}.`),
     ...overdue.slice(0, 2).map(item => `Resolve overdue work: ${item.taskName}${item.owner ? ` with ${item.owner}` : ''}.`),
-    ...conflicts.slice(0, 2).map(item => `Verify the recorded completion of ${item.taskName}.`),
+    ...conflicts.slice(0, 2).map(item => `Resolve the recorded status conflict for ${item.taskName}.`),
     input.core?.bestNextStep,
     input.runtime?.nextBestAction.summary,
     input.intelligence.projectReality.topRecommendation?.action,
@@ -768,14 +768,14 @@ function buildPMBriefing(input: {
     ...input.reasoning.criticalDecisions.flatMap(item => item.challenges.slice(0, 1).map(challenge => `${item.taskName}: ${challenge.impact}`)),
     ...conflicts.map(item =>
       `${item.taskName}${item.areaName ? ` (${item.areaName})` : ''}: ${item.contradiction} ` +
-      'Confirm the field condition or correct the task status.',
+      'Check the field condition or correct the task status.',
     ),
     ...input.core?.situationRisks.map(item => `${item.risk}: ${item.whyItMatters}`) ?? [],
     ...input.runtime?.evidenceConflicts.map(item => item.summary) ?? [],
     ...input.intelligence.projectReality.blockers.map(item => item.text),
   ]).slice(0, 5);
   return {
-    headline: `${input.projectName} is ${state.toLowerCase()} with ${confidence} confidence.`,
+    headline: `${input.projectName}: ${state}.`,
     currentReality: input.reasoning.criticalDecisions[0]?.conclusion || input.core?.situationSummary.whatUserShouldKnowNow ||
       input.runtime?.intelligentSummary.projectStatus ||
       `${input.intelligence.scheduleSummary.percentComplete}% scheduled completion; ${input.intelligence.projectReality.openCommitments.length} open commitment${input.intelligence.projectReality.openCommitments.length === 1 ? '' : 's'}.`,
@@ -783,7 +783,7 @@ function buildPMBriefing(input: {
       ? uniqueText([...correlatedChanges, ...observations]).slice(0, 5)
       : uniqueText([input.runtime?.intelligentSummary.whatChanged, ...input.intelligence.dailyBrief.changedItems.map(item => item.text)]).slice(0, 5),
     schedule: overdue.length > 0
-      ? `${overdue.length} overdue; ${dueSoon.length} due within 7 days; ${conflicts.length} status conflict${conflicts.length === 1 ? '' : 's'} require verification.`
+      ? `${overdue.length} overdue; ${dueSoon.length} due within 7 days; ${conflicts.length} status conflict${conflicts.length === 1 ? '' : 's'} need review.`
       : `${dueSoon.length} due within 7 days; ${input.schedule.filter(scheduleProgressIsComplete).length} of ${input.schedule.length} activities complete.`,
     commitments: input.intelligence.commitments
       .filter(item => item.status !== 'Completed')
@@ -795,7 +795,7 @@ function buildPMBriefing(input: {
       .slice(0, 5)
       .map(item => `${item.title}: ${item.requestedAction}`),
     nextActions,
-    evidenceCoverage: `${input.evidence.connected} of ${input.evidence.total} current project records are linked to project work. ${input.evidence.unresolved} record${input.evidence.unresolved === 1 ? '' : 's'} still need review.`,
+    evidenceCoverage: `${input.evidence.connected} of ${input.evidence.total} recent records are assigned to project work. ${input.evidence.unresolved} record${input.evidence.unresolved === 1 ? '' : 's'} still need a project, work area, or task assignment.`,
     confidence,
   };
 }

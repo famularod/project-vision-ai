@@ -8,12 +8,10 @@ export function ReportsWideWorkspace({
   header,
   report,
   review,
-  evidence,
 }: {
   header: ReactNode;
   report: ReactNode;
   review: ReactNode;
-  evidence: ReactNode;
 }) {
   return (
     <SafeAreaView
@@ -41,9 +39,8 @@ export function ReportsWideWorkspace({
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Text accessibilityRole="header" style={styles.eyebrow}>REVIEW & APPROVAL</Text>
+          <Text accessibilityRole="header" style={styles.eyebrow}>REPORT CHECK</Text>
           {review}
-          {evidence}
         </ScrollView>
       </View>
     </SafeAreaView>

@@ -29,12 +29,6 @@ import type {
   ScheduleItem,
 } from '../types';
 import type { ProjectSyncFreshnessMetadata } from '../services/ProjectIntelligenceEngine';
-import { buildPIEAttentionState } from '../services/PIEAttentionEngine';
-import {
-  buildPIEReviewExperience,
-  type PIEExperienceAction,
-  type PIEExperienceOutput,
-} from '../services/PIEExperienceEngine';
 import {
   type PIEReportDraft,
   type PIEReportType,
@@ -59,6 +53,7 @@ import {
   buildDAVEReportBriefing,
   buildPMReportReviewWarnings,
   enhanceDAVEReportDraft,
+  toPMReportLanguage,
   type DAVEReportBriefing,
 } from '../services/DAVEReportIntelligence';
 
@@ -185,17 +180,14 @@ export function ReportsScreen({
   onTextReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
 }) {
   const { sizeClass } = useAppShellLayout();
-  const [reporterOpen, setReporterOpen] = useState(true);
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
   const [reportEdits, setReportEdits] = useState<{
     title: string;
     body: string;
   } | null>(null);
-  const [communicationComplete, setCommunicationComplete] = useState(false);
   const [communicationPending, setCommunicationPending] = useState(false);
   const [communicationError, setCommunicationError] = useState('');
-  const [advancedReviewOpen, setAdvancedReviewOpen] = useState(false);
   const [autoDecisionKey, setAutoDecisionKey] = useState('');
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
@@ -268,6 +260,9 @@ export function ReportsScreen({
     }),
     [effectiveReportDraft, reportGenerationAllowed],
   );
+  const reportApprovalMessage = reportGenerationAllowed
+    ? reportApprovalPolicy.message
+    : 'Current project data is still loading. Refresh before approving.';
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
   const reportApprovalAllowedRef = useRef(reportApprovalPolicy.allowed);
   const reportApprovedRef = useRef(reportApproved);
@@ -302,7 +297,6 @@ export function ReportsScreen({
   useEffect(() => {
     if (reportApprovalPolicy.allowed) return;
     setReportApproved(false);
-    setCommunicationComplete(false);
   }, [reportApprovalPolicy.allowed]);
 
   useEffect(() => {
@@ -322,27 +316,10 @@ export function ReportsScreen({
     liveAuthority.executiveJudgmentRecord,
     onCreateDecisionSnapshot,
   ]);
-  const attentionState = liveAuthority.attention || buildPIEAttentionState({ runtime });
-  const reviewExperience = buildPIEReviewExperience({
-    runtime,
-    attentionState,
-    context: {
-      surface: 'review',
-      reportDraft: reporterOpen ? effectiveReportDraft : null,
-      reportApproved: reportApproved && reportApprovalPolicy.allowed,
-      reportEditing,
-      communicationReady: reportApproved && reportApprovalPolicy.allowed && !communicationPending,
-      communicationComplete,
-      combinedUpdateSelectedItems: selectedProjectNames.length,
-      scheduleImportStatus: scheduleItems.length > 0 ? 'loaded' : 'missing',
-      photoProgressStatus: runtime.photoProgressSummary,
-    },
-  });
   useEffect(() => {
     setReportApproved(false);
     setReportEditing(false);
     setReportEdits(null);
-    setCommunicationComplete(false);
     setCommunicationPending(false);
     setCommunicationError('');
     pendingCommunicationTokenRef.current = null;
@@ -352,8 +329,7 @@ export function ReportsScreen({
     communicate: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>,
   ) => {
     if (!reportApproved || !reportApprovalPolicy.allowed) {
-      setCommunicationError(reportApprovalPolicy.message);
-      setAdvancedReviewOpen(true);
+      setCommunicationError(reportApprovalMessage);
       return;
     }
 
@@ -379,9 +355,7 @@ export function ReportsScreen({
             approvalAllowed: reportApprovalAllowedRef.current,
             reportApproved: reportApprovedRef.current,
           })
-        ) {
-          setCommunicationComplete(true);
-        }
+        ) setCommunicationError('');
       } catch {
         if (
           mountedRef.current &&
@@ -401,54 +375,17 @@ export function ReportsScreen({
 
   const markReportApproved = () => {
     if (!reportApprovalPolicy.allowed) {
-      setReporterOpen(true);
-      setAdvancedReviewOpen(true);
-      setCommunicationError(reportApprovalPolicy.message);
+      setCommunicationError(reportApprovalMessage);
       return;
     }
-    setReporterOpen(true);
     setReportEditing(false);
     setReportApproved(true);
-    setCommunicationComplete(false);
     setCommunicationError('');
   };
-  const handleReviewExperienceAction = (action: PIEExperienceAction) => {
-    if (action === 'approve') {
-      markReportApproved();
-      return;
-    }
-
-    if (action === 'communicate') {
-      if (!reportApprovalPolicy.allowed) {
-        setAdvancedReviewOpen(true);
-        setCommunicationError(reportApprovalPolicy.message);
-        return;
-      }
-      if (!reportApproved) {
-        markReportApproved();
-        return;
-      }
-
-      completeCommunication(onCopyReport);
-      return;
-    }
-
-    if (action === 'correct') {
-      setReporterOpen(true);
-      setReportEditing(true);
-      return;
-    }
-
-    if (action === 'review') {
-      setAdvancedReviewOpen(true);
-    }
-    setReporterOpen(true);
-  };
-
   const reportHeader = (
     <ScreenHeader
       title="Reports"
-      subtitle={`${selectedProjectNames.join(', ')} · Review, approve, and communicate the prepared report.`}
+      subtitle={`${selectedProjectNames.join(', ')} · Current task status, recent field updates, and next steps.`}
     />
   );
   const preparedReport = (
@@ -468,7 +405,7 @@ export function ReportsScreen({
             </Text>
 
             <Text style={styles.reporterHelp}>
-              Review the prepared project update before copying, texting, or emailing it.
+              Built from the current tasks and recorded field updates for the selected project.
             </Text>
           </View>
         </View>
@@ -486,20 +423,16 @@ export function ReportsScreen({
               setReportApproved(false);
               setReportEditing(false);
               setReportEdits(null);
-              setCommunicationComplete(false);
             }}
             onReportFormatChange={nextFormat => {
               onReportFormatChange(nextFormat);
               setReportApproved(false);
               setReportEditing(false);
               setReportEdits(null);
-              setCommunicationComplete(false);
             }}
             reportApproved={reportApproved}
             reportApprovalAllowed={reportApprovalPolicy.allowed}
-            approvalMessage={reportGenerationAllowed
-              ? reportApprovalPolicy.message
-              : `${liveAuthority.policy.userMessage} ${reportApprovalPolicy.message}`}
+            approvalMessage={reportApprovalMessage}
             communicationPending={communicationPending}
             communicationError={communicationError}
             reportEditing={reportEditing}
@@ -507,7 +440,6 @@ export function ReportsScreen({
             onEditReport={() => {
               setReportEditing(true);
               setReportApproved(false);
-              setCommunicationComplete(false);
               setCommunicationPending(false);
               setCommunicationError('');
               pendingCommunicationTokenRef.current = null;
@@ -538,23 +470,11 @@ export function ReportsScreen({
   );
   const reviewPanel = (
     <BeforeYouSharePanel
-      experience={reviewExperience}
       reportDraft={effectiveReportDraft}
       reportApproved={reportApproved}
       reportApprovalAllowed={reportApprovalPolicy.allowed}
-      expanded={advancedReviewOpen}
-      onToggleDetails={() => setAdvancedReviewOpen(open => !open)}
-      onPrimaryAction={() =>
-        handleReviewExperienceAction(reviewExperience.primaryAction)
-      }
-      onSecondaryAction={
-        reviewExperience.secondaryAction
-          ? () => handleReviewExperienceAction(reviewExperience.secondaryAction!)
-          : undefined
-      }
     />
   );
-  const evidencePanel = null;
 
   if (sizeClass === 'wide') {
     return (
@@ -562,7 +482,6 @@ export function ReportsScreen({
         header={reportHeader}
         report={preparedReport}
         review={reviewPanel}
-        evidence={evidencePanel}
       />
     );
   }
@@ -572,56 +491,35 @@ export function ReportsScreen({
       {reportHeader}
       {preparedReport}
       {reviewPanel}
-      {evidencePanel}
     </Screen>
   );
 }
 
-function reviewExperienceActionLabel(
-  action: PIEExperienceAction,
-  reportApproved: boolean,
-) {
-  if (action === 'approve') return 'Approve Report';
-  if (action === 'communicate') {
-    return reportApproved ? 'Copy Report' : 'Approve Report';
-  }
-  if (action === 'correct') return 'Edit Report';
-  if (action === 'review') return 'Review Draft';
-
-  return 'Generate Report';
-}
-
 function BeforeYouSharePanel({
-  experience,
   reportDraft,
   reportApproved,
   reportApprovalAllowed,
-  expanded,
-  onToggleDetails,
-  onPrimaryAction,
-  onSecondaryAction,
 }: {
-  experience: PIEExperienceOutput;
   reportDraft: PIEReportDraft;
   reportApproved: boolean;
   reportApprovalAllowed: boolean;
-  expanded: boolean;
-  onToggleDetails: () => void;
-  onPrimaryAction: () => void;
-  onSecondaryAction?: () => void;
 }) {
-  const warnings = buildPMReportReviewWarnings([
-    ...experience.reviewWarnings,
-    ...reportDraft.reviewFlags,
-  ]);
-  const reportActions = reportDraft.actionItems.filter(item =>
-    isReportableShareAction(item.action) && !item.needsOwner,
-  );
+  const warnings = buildPMReportReviewWarnings(reportDraft.reviewFlags);
+  const visibleWarnings = warnings.length > 0
+    ? warnings
+    : !reportApprovalAllowed
+      ? ['Correct the highlighted project details before approval.']
+      : [];
   const reviewState = reportApproved && reportApprovalAllowed
     ? 'Approved'
-    : warnings.length > 0
-      ? 'Needs Review'
+    : visibleWarnings.length > 0
+      ? 'Needs Changes'
       : 'Ready to Review';
+  const reviewMessage = reportApproved && reportApprovalAllowed
+    ? 'This report is approved and ready to share.'
+    : visibleWarnings.length > 0
+      ? 'Update the items below, then review the report again.'
+      : 'Read the report and approve it when it matches the current project status.';
 
   return (
     <ScreenCard style={styles.experienceCard}>
@@ -636,7 +534,7 @@ function BeforeYouSharePanel({
 
         <View style={styles.experienceTextGroup}>
           <Text style={styles.experienceEyebrow}>
-            Review &amp; Approval
+            Report Check
           </Text>
 
           <Text style={styles.experienceState}>
@@ -646,16 +544,16 @@ function BeforeYouSharePanel({
       </View>
 
       <Text style={styles.experienceMessage}>
-        Confirm the report matches the current project status, then edit or approve it.
+        {reviewMessage}
       </Text>
 
-      {warnings.length > 0 ? (
+      {visibleWarnings.length > 0 ? (
         <View style={styles.reviewFlagsPanel}>
           <Text style={styles.reportPreviewLabel}>
-            Resolve before sharing
+            Fix before approval
           </Text>
 
-          {warnings.slice(0, expanded ? warnings.length : 2).map((warning, index) => (
+          {visibleWarnings.slice(0, 3).map((warning, index) => (
             <Text
               key={`${index}-${warning}`}
               style={styles.reviewFlagText}
@@ -663,88 +561,15 @@ function BeforeYouSharePanel({
               • {warning}
             </Text>
           ))}
-        </View>
-      ) : null}
-
-      {expanded ? (
-        <View style={styles.beforeShareDetails}>
-          {reportActions.length > 0 ? (
-            <View style={styles.reportList}>
-              <Text style={styles.reportPreviewLabel}>Current report actions</Text>
-              {reportActions.slice(0, 5).map((item, index) => (
-                <Text key={`${item.id}-${index}`} style={styles.reportListText}>
-                  • {item.owner} — {item.action}
-                </Text>
-              ))}
-            </View>
-          ) : <Text style={styles.reportListText}>The report contains current project conditions and recorded progress.</Text>}
-        </View>
-      ) : null}
-
-      <TouchableOpacity
-        style={styles.beforeShareWhyButton}
-        onPress={onToggleDetails}
-        accessibilityRole="button"
-        accessibilityState={{ expanded }}
-      >
-        <Text style={styles.advancedToggleText}>{expanded ? 'Hide review details' : 'Review details'}</Text>
-        <Ionicons
-          name={expanded ? 'chevron-up-outline' : 'chevron-down-outline'}
-          size={18}
-          color={colors.primary}
-        />
-      </TouchableOpacity>
-
-      <View style={styles.reportActionRow}>
-        <TouchableOpacity
-          style={styles.reportActionButtonPrimary}
-          onPress={onPrimaryAction}
-          accessibilityRole="button"
-          accessibilityLabel={reviewExperienceActionLabel(
-            experience.primaryAction,
-            reportApproved,
-          )}
-        >
-          <Ionicons
-            name="arrow-forward-outline"
-            size={18}
-            color="#FFFFFF"
-          />
-
-          <Text style={styles.reportActionTextPrimary}>
-            {reviewExperienceActionLabel(
-              experience.primaryAction,
-              reportApproved,
-            )}
-          </Text>
-        </TouchableOpacity>
-
-        {experience.secondaryAction && onSecondaryAction ? (
-          <TouchableOpacity
-            style={styles.reportActionButton}
-            onPress={onSecondaryAction}
-            accessibilityRole="button"
-            accessibilityLabel={reviewExperienceActionLabel(
-              experience.secondaryAction,
-              reportApproved,
-            )}
-          >
-            <Text style={styles.reportActionText}>
-              {reviewExperienceActionLabel(
-                experience.secondaryAction,
-                reportApproved,
-              )}
+          {visibleWarnings.length > 3 ? (
+            <Text style={styles.reportListText}>
+              {visibleWarnings.length - 3} more {visibleWarnings.length - 3 === 1 ? 'item is' : 'items are'} highlighted in the report.
             </Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
+          ) : null}
+        </View>
+      ) : null}
     </ScreenCard>
   );
-}
-
-function isReportableShareAction(value: string) {
-  return !/\b(?:confirm|validate|verification|verify)\b/i.test(value) &&
-    !/\breview\b.*\b(?:evidence|status|completion|confidence|claim)\b/i.test(value);
 }
 
 function PIEReporterPreview({
@@ -1005,7 +830,7 @@ function PIEReporterPreview({
         <Text style={styles.approvalBoundaryText}>
           {reportApprovalAllowed
             ? 'Copy, Email, and Text unlock after approval. No report is sent automatically.'
-            : `${approvalMessage} Review the items below or correct the underlying project evidence, then regenerate the report.`}
+            : `${approvalMessage} Correct the highlighted project details, then refresh the report.`}
         </Text>
       ) : null}
 
@@ -1159,7 +984,7 @@ function DAVEReportOverview({
   return (
     <>
       <View style={[styles.reportConditionBanner, conditionTone]}>
-        <Text style={styles.reportConditionEyebrow}>PROJECT CONDITION</Text>
+        <Text style={styles.reportConditionEyebrow}>CURRENT PROJECT STATUS</Text>
         <Text style={styles.reportConditionTitle}>{briefing.conditionLabel}</Text>
         <Text selectable style={styles.reportConditionText}>{briefing.executiveSnapshot}</Text>
       </View>
@@ -1167,11 +992,12 @@ function DAVEReportOverview({
       <ReportStatusDistribution briefing={briefing} />
       <ReportScheduleHealth briefing={briefing} />
 
-      {changes.length || attention.length || actions.length ? (
+      {briefing.currentWork.length || changes.length || attention.length || actions.length ? (
         <View style={styles.reportSummaryStack}>
-          {changes.length ? <ReportSummaryCard title="What Changed" items={changes} tone="progress" /> : null}
+          {briefing.currentWork.length ? <ReportSummaryCard title="Current Work" items={briefing.currentWork.slice(0, 5)} tone="progress" /> : null}
           {attention.length ? <ReportSummaryCard title="Needs Attention" items={attention} tone="risk" /> : null}
-          {actions.length ? <ReportSummaryCard title="Next Action" items={actions} tone="action" /> : null}
+          {actions.length ? <ReportSummaryCard title="Next Steps" items={actions} tone="action" /> : null}
+          {changes.length ? <ReportSummaryCard title="Recent Changes" items={changes} tone="progress" /> : null}
         </View>
       ) : null}
 
@@ -1180,7 +1006,7 @@ function DAVEReportOverview({
           <View style={styles.reportProgressSection}>
             <View style={styles.reportProgressHeading}>
               <Text style={styles.reportDocumentSectionTitle}>Progress by Work Area</Text>
-              <Text style={styles.reportProgressHelper}>Unweighted average of tasks in each area</Text>
+              <Text style={styles.reportProgressHelper}>Average task completion by area</Text>
             </View>
             <View style={styles.reportAreaProgressList}>
               {activeAreas.map(area => <ReportAreaProgressRow key={area.id} area={area} />)}
@@ -1217,20 +1043,20 @@ function DAVEReportOverview({
           onPress={() => setDetailsOpen(open => !open)}
           accessibilityRole="button"
           accessibilityState={{ expanded: detailsOpen }}
-          accessibilityLabel="Project Detail"
+          accessibilityLabel="Project status details"
         >
           <View style={styles.reportDisclosureHeaderText}>
-            <Text style={styles.reportDisclosureTitle}>Project Detail</Text>
-            <Text style={styles.reportDisclosureSummary}>Current conditions and schedule position</Text>
+            <Text style={styles.reportDisclosureTitle}>Project Status Details</Text>
+            <Text style={styles.reportDisclosureSummary}>Current task position and schedule</Text>
           </View>
           <Ionicons name={detailsOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
         </TouchableOpacity>
         {detailsOpen ? (
           <View style={styles.reportDisclosureContent}>
-            <ReportInsightSection title="Current Conditions" items={briefing.projectConditions.map(condition =>
+            <ReportInsightSection title="Current Task Position" items={briefing.projectConditions.map(condition =>
               `${briefing.projectConditions.length > 1 ? `${condition.projectName}: ` : ''}${condition.currentReality}`
             ).filter(item => item.replace(/^[^:]+:\s*/, '').trim())} />
-            <ReportInsightSection title="Schedule Position" items={briefing.schedulePosition} />
+            <ReportInsightSection title="Schedule" items={briefing.schedulePosition} />
           </View>
         ) : null}
       </View>
@@ -1394,6 +1220,9 @@ function ReportWorkArea({
   const title = area.projectName !== area.title
     ? `${area.projectName} — ${area.title}`
     : area.title;
+  const bullets = area.bullets
+    .map(bullet => ({ ...bullet, text: toPMReportLanguage(bullet.text) }))
+    .filter(bullet => Boolean(bullet.text));
   return (
     <View style={styles.reportDocumentArea}>
       <TouchableOpacity
@@ -1406,13 +1235,13 @@ function ReportWorkArea({
         <View style={styles.reportAreaHeaderText}>
           <Text style={styles.reportDocumentAreaTitle}>{title}</Text>
           <Text style={styles.reportAreaMeta}>
-            {area.bullets.length} update{area.bullets.length === 1 ? '' : 's'} · {area.imageReferences.length} image{area.imageReferences.length === 1 ? '' : 's'}
+            {bullets.length} update{bullets.length === 1 ? '' : 's'} · {area.imageReferences.length} photo{area.imageReferences.length === 1 ? '' : 's'}
           </Text>
         </View>
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
       </TouchableOpacity>
       {open ? <View style={styles.reportDocumentBulletList}>
-        {area.bullets.map((bullet, index) => (
+        {bullets.map((bullet, index) => (
           <View key={`${bullet.id}-${index}`} style={styles.reportDocumentBulletRow}>
             <Text style={styles.reportDocumentBulletMarker}>•</Text>
             <Text style={styles.reportDocumentBulletText}>
@@ -1425,7 +1254,7 @@ function ReportWorkArea({
           <View key={`${reference.photoId}-${index}`} style={styles.reportEvidenceReference}>
             <Ionicons name="image-outline" size={16} color={colors.primary} />
             <Text style={styles.reportEvidenceReferenceText}>
-              Image {reference.imageNumber} — {reference.caption || `Evidence from ${reference.areaName}`}
+              Photo {reference.imageNumber} — {reference.caption || `Project photo from ${reference.areaName}`}
             </Text>
           </View>
         ))}
@@ -1475,7 +1304,7 @@ function reportPreviewBulletLabel(kind: string) {
   if (kind === 'issue') return 'Issue';
   if (kind === 'next_step') return 'Action';
   if (kind === 'schedule') return 'Schedule';
-  if (kind === 'image_reference') return 'Evidence';
+  if (kind === 'image_reference') return 'Photo';
 
   return 'Progress';
 }

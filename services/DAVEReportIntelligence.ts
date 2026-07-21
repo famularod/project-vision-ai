@@ -3,7 +3,7 @@ import type { PIEReportDraft } from './PIEReporter';
 import { buildScheduleTaskAccounting } from './dave-project-schedule-rollup';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
-export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/1.0' as const;
+export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/1.1' as const;
 
 export type DAVEReportAction = Readonly<{
   id: string;
@@ -20,11 +20,8 @@ export type DAVEReportAction = Readonly<{
 
 export type DAVEReportProjectCondition = Readonly<{
   projectName: string;
-  headline: string;
   currentReality: string;
   schedule: string;
-  evidenceCoverage: string;
-  confidence: 'high' | 'medium' | 'low';
 }>;
 
 export type DAVEReportWorkAreaProgress = Readonly<{
@@ -68,14 +65,12 @@ export type DAVEReportBriefing = Readonly<{
   executiveSnapshot: string;
   dashboard: DAVEReportDashboardMetrics;
   projectConditions: readonly DAVEReportProjectCondition[];
+  currentWork: readonly string[];
   whatChanged: readonly string[];
   schedulePosition: readonly string[];
   criticalRisks: readonly string[];
   decisionsRequired: readonly string[];
   nextActions: readonly DAVEReportAction[];
-  uncertainties: readonly string[];
-  evidenceStatement: string;
-  reasoningSummary: string;
 }>;
 
 export function buildDAVEReportBriefing({
@@ -91,16 +86,8 @@ export function buildDAVEReportBriefing({
       .filter(Boolean),
   );
   const generatedAt = truths.map(truth => truth.generatedAt).sort().at(-1) || new Date().toISOString();
-  const projectConditions = truths.map(truth => ({
-    projectName: truth.projectName,
-    headline: reportableCurrentState(truth.briefing.headline),
-    currentReality: reportableCurrentState(truth.briefing.currentReality),
-    schedule: reportableCurrentState(truth.briefing.schedule),
-    evidenceCoverage: '',
-    confidence: truth.briefing.confidence,
-  }));
+  const projectConditions = truths.map(projectConditionFromTruth);
   const criticalDecisions = truths.flatMap(truth => truth.reasoning.criticalDecisions);
-  const evidenceConnected = truths.reduce((total, truth) => total + truth.evidence.connected, 0);
   const actionDecisions = uniqueBy([
     ...criticalDecisions,
     ...truths.flatMap(truth => truth.reasoning.decisions),
@@ -136,13 +123,21 @@ export function buildDAVEReportBriefing({
     .map(decision =>
       `${truthProjectName(truths, decision.taskId)} — ${decision.taskName}: ${decision.recommendation.action}`,
     )).slice(0, 8);
-  const criticalRisks = unique(truths.flatMap(truth =>
-    truth.briefing.risksAndConflicts
-      .map(item => reportableCurrentState(item))
-      .filter(Boolean)
-      .map(item => `${truth.projectName}: ${item}`),
-  )).slice(0, 8);
-  const uncertainties: string[] = [];
+  const currentWork = unique(truths.flatMap(truth => truth.schedule
+    .filter(task => !scheduleProgressIsComplete(task))
+    .sort((left, right) => reportScheduleActionRank(left) - reportScheduleActionRank(right))
+    .map(task => reportTaskFact(truth.projectName, task, truths.length > 1))),
+  ).slice(0, 12);
+  const scheduleConcerns = truths.flatMap(truth => truth.schedule
+    .filter(task => !scheduleProgressIsComplete(task))
+    .filter(task => task.urgency === 'overdue' || task.status === 'Waiting' || Boolean(task.contradiction))
+    .sort((left, right) => reportScheduleActionRank(left) - reportScheduleActionRank(right))
+    .map(task => reportTaskConcern(truth.projectName, task, truths.length > 1)));
+  const statedRisks = truths.flatMap(truth => truth.briefing.risksAndConflicts
+    .map(item => toPMReportLanguage(item))
+    .filter(Boolean)
+    .map(item => `${truths.length > 1 ? `${truth.projectName}: ` : ''}${item}`));
+  const criticalRisks = unique([...scheduleConcerns, ...statedRisks]).slice(0, 8);
   const dashboard = buildDashboardMetrics({
     truths,
     risks: criticalRisks.length,
@@ -172,25 +167,100 @@ export function buildDAVEReportBriefing({
     }),
     dashboard,
     projectConditions,
+    currentWork,
     whatChanged: unique(truths.flatMap(truth =>
       truth.briefing.whatChanged
-        .map(item => reportableCurrentState(item))
+        .map(item => toPMReportLanguage(item))
         .filter(Boolean)
         .map(item => `${truths.length > 1 ? `${truth.projectName}: ` : ''}${item}`),
     )).slice(0, 8),
-    schedulePosition: unique(truths.flatMap(truth => {
-      const schedule = reportableCurrentState(truth.briefing.schedule);
-      return schedule ? [`${truths.length > 1 ? `${truth.projectName}: ` : ''}${schedule}`] : [];
-    })).slice(0, 8),
+    schedulePosition: projectConditions.map(condition =>
+      `${projectConditions.length > 1 ? `${condition.projectName}: ` : ''}${condition.schedule}`,
+    ),
     criticalRisks,
     decisionsRequired,
     nextActions,
-    uncertainties,
-    evidenceStatement: evidenceConnected > 0
-      ? `${evidenceConnected} current project record${evidenceConnected === 1 ? '' : 's'} informed this report.`
-      : '',
-    reasoningSummary: '',
   });
+}
+
+function projectConditionFromTruth(
+  truth: DAVEProjectTruth,
+): DAVEReportProjectCondition {
+  const accounting = buildScheduleTaskAccounting(truth.schedule);
+  if (accounting.total === 0) {
+    return Object.freeze({
+      projectName: truth.projectName,
+      currentReality: 'No schedule tasks are assigned to this project.',
+      schedule: 'No current schedule dates are available.',
+    });
+  }
+
+  const currentParts = [
+    `${accounting.complete} of ${accounting.total} tasks complete`,
+    accounting.inProgress > 0 ? `${accounting.inProgress} in progress` : '',
+    accounting.waiting > 0 ? `${accounting.waiting} waiting` : '',
+    accounting.notStarted > 0 ? `${accounting.notStarted} not started` : '',
+  ].filter(Boolean);
+  const overdue = truth.schedule.filter(task =>
+    !scheduleProgressIsComplete(task) && task.urgency === 'overdue',
+  ).length;
+  const dueSoon = truth.schedule.filter(task =>
+    !scheduleProgressIsComplete(task) && task.urgency === 'due_soon',
+  ).length;
+  const scheduleParts = [
+    overdue > 0 ? `${overdue} ${taskWord(overdue)} overdue` : '',
+    dueSoon > 0 ? `${dueSoon} due within 7 days` : '',
+    accounting.waiting > 0 ? `${accounting.waiting} waiting` : '',
+  ].filter(Boolean);
+
+  return Object.freeze({
+    projectName: truth.projectName,
+    currentReality: `${currentParts.join('; ')}.`,
+    schedule: scheduleParts.length > 0
+      ? `${scheduleParts.join('; ')}.`
+      : accounting.open === 0
+        ? 'All scheduled tasks are complete.'
+        : `${accounting.open} open ${taskWord(accounting.open)}; none overdue or due within 7 days.`,
+  });
+}
+
+function reportTaskFact(
+  projectName: string,
+  task: DAVEProjectTruth['schedule'][number],
+  includeProject: boolean,
+) {
+  const prefix = includeProject ? `${projectName} — ` : '';
+  const area = task.areaName ? ` (${task.areaName})` : '';
+  const parts = [
+    task.status,
+    `${boundedPercent(task.percentComplete)}% complete`,
+    task.finishDate ? `due ${task.finishDate}` : '',
+  ].filter(Boolean);
+  return `${prefix}${task.taskName}${area}: ${parts.join('; ')}.`;
+}
+
+function reportTaskConcern(
+  projectName: string,
+  task: DAVEProjectTruth['schedule'][number],
+  includeProject: boolean,
+) {
+  const prefix = includeProject ? `${projectName} — ` : '';
+  const area = task.areaName ? ` (${task.areaName})` : '';
+  const percent = `${boundedPercent(task.percentComplete)}% complete`;
+  if (task.contradiction) {
+    return `${prefix}${task.taskName}${area} has conflicting status information; the schedule shows ${task.status.toLowerCase()} at ${percent}.`;
+  }
+  if (task.urgency === 'overdue' && task.status === 'Waiting') {
+    return `${prefix}${task.taskName}${area} is overdue and waiting at ${percent}.`;
+  }
+  if (task.urgency === 'overdue') {
+    return `${prefix}${task.taskName}${area} is overdue at ${percent}.`;
+  }
+  return `${prefix}${task.taskName}${area} is waiting at ${percent}.`;
+}
+
+function taskWord(count: number) {
+  return count === 1 ? 'task' : 'tasks';
 }
 
 function buildDashboardMetrics({
@@ -282,7 +352,7 @@ export function enhanceDAVEReportDraft(
   format: 'project_manager' | 'executive',
 ): PIEReportDraft {
   const title = format === 'executive'
-    ? `${briefing.scopeLabel} Executive Project Brief`
+    ? `${briefing.scopeLabel} Executive Status Report`
     : `${briefing.scopeLabel} Project Status Report`;
   return {
     ...draft,
@@ -304,7 +374,7 @@ function formatReportBody(
   ]).slice(0, 4);
   const workAreaUpdates = unique(draft.locationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.bullets
-      .map(bullet => reportableCurrentState(bullet.text))
+      .map(bullet => toPMReportLanguage(bullet.text))
       .filter(Boolean)
       .map(bullet => `${area.projectName} — ${area.title}: ${bullet}`)),
   )).slice(0, 6);
@@ -314,14 +384,14 @@ function formatReportBody(
   const lines = [
     draft.openingLine,
     '',
-    'PROJECT OVERVIEW',
+    'PROJECT STATUS',
     briefing.executiveSnapshot,
     '',
     ...textSection('CURRENT CONDITIONS', currentReality),
-    ...textSection('WORK COMPLETED / IN PROGRESS', briefing.whatChanged.slice(0, 4)),
-    ...textSection('SCHEDULE POSITION', briefing.schedulePosition.slice(0, 4)),
-    ...textSection('ACTIVE ISSUES', attentionNeeded),
-    ...textSection('NEXT PERIOD / ACTIONS', briefing.nextActions.slice(0, 4).map(action =>
+    ...textSection('ACTIVE WORK', briefing.currentWork.slice(0, 6)),
+    ...textSection('RECENT CHANGES', briefing.whatChanged.slice(0, 4)),
+    ...textSection('SCHEDULE ISSUES', attentionNeeded),
+    ...textSection('NEXT STEPS', briefing.nextActions.slice(0, 4).map(action =>
       `${action.action} — ${action.owner}, ${action.timing}.`,
     )),
   ];
@@ -462,6 +532,22 @@ function reportableCurrentState(value: string) {
     .map(clean)
     .filter(isReportableCurrentState)
     .join(' ');
+}
+
+export function toPMReportLanguage(value: string) {
+  return reportableCurrentState(value)
+    .replace(/correlated across multiple source types/gi, 'matched to the task')
+    .replace(/source-backed/gi, 'recorded')
+    .replace(/field evidence/gi, 'field update')
+    .replace(/supporting evidence/gi, 'project records')
+    .replace(/\bevidence\b/gi, 'project record')
+    .replace(/supported conclusions?/gi, 'current status')
+    .replace(/unresolved uncertainties?/gi, 'open questions')
+    .replace(/\binferences?\b/gi, 'assessments')
+    .replace(/\bverification\b/gi, 'review')
+    .replace(/\bverify\b/gi, 'confirm')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function isVerificationOnlyAction(value: string) {
