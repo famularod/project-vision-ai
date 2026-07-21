@@ -39,10 +39,12 @@ for (const dependency of ['expo-router', 'react-dom', 'react-native-web', '@expo
 for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'app/tasks.tsx', 'app/evidence.tsx', 'app/photos.tsx', 'app/documents.tsx', 'app/reports.tsx', 'app/settings.tsx', 'app/+not-found.tsx']) {
   assert(exists(route), `${route} must exist.`);
 }
-assert(shell.includes('Owner-authorized staging session'), 'The pilot must visibly identify its authorization boundary.');
+assert(shell.includes('Connected to the shared project record'), 'The web workspace must visibly identify its shared-record connection.');
 assert(shell.includes('PRODUCT_BRAND.name'), 'The desktop shell must use the shared Vitruvius product brand.');
-assert(shell.includes('Project deletion, file uploads, report approval, and sending remain disabled'), 'The pilot must visibly preserve non-task mutation boundaries.');
-assert(shell.includes('Cloud task accounting'), 'The Command Center must expose an auditable task total breakdown.');
+assert(shell.includes('Project deletion, document uploads, report approval, and report sending remain available only in the mobile app'), 'The web workspace must visibly preserve non-task mutation boundaries.');
+assert(shell.includes('Task progress'), 'The overview must expose a clear task total breakdown.');
+assert(shell.includes('Completed Tasks'), 'The task workspace must provide a separate completed-task view.');
+assert(shell.includes('groupScheduleWorkspaceItemsByProjectAndArea'), 'The task workspace must group tasks by project and area.');
 assert(shell.includes('Sync from Cloud Now'), 'The browser must expose its cloud refresh action in Settings.');
 assert(!provider.includes('SupabaseService'), 'The web provider must not import the native sync service.');
 assert(provider.includes('loadDAVEWebReadOnlySnapshot'), 'The provider must load only through the reviewed read-only repository.');

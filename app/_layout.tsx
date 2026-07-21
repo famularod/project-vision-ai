@@ -7,7 +7,7 @@ export default function RootLayout() {
   return (
     <DesktopAuthProvider>
       <Head>
-        <title>{`${PRODUCT_BRAND.name} Command Center`}</title>
+        <title>{`${PRODUCT_BRAND.name} ${PRODUCT_BRAND.subtitle}`}</title>
         <link rel="icon" href="/favicon.ico?brand=vitruvius-v1" />
         <link rel="shortcut icon" href="/favicon.ico?brand=vitruvius-v1" />
         <meta name="application-name" content={PRODUCT_BRAND.name} />

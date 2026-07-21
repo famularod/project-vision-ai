@@ -38,6 +38,7 @@ import {
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
+import { groupScheduleWorkspaceItemsByProjectAndArea } from '../../services/DAVEScheduleWorkspace';
 import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
 import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
 import { colors, spacing } from '../../theme';
@@ -59,44 +60,44 @@ type ReadOnlyPageCopy = Readonly<{
 
 const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
   overview: {
-    eyebrow: 'DESKTOP PILOT',
-    title: `${PRODUCT_BRAND.name} Command Center`,
-    description: 'A secure, owner-authorized view of the field record with controlled task editing.',
+    eyebrow: 'PORTFOLIO',
+    title: 'Project Health',
+    description: 'A current view of project progress, priorities, and recent field activity.',
   },
   projects: {
     eyebrow: 'PROJECTS',
-    title: 'Authorized projects',
-    description: 'Review active projects without changing field data.',
+    title: 'Projects',
+    description: 'Review the current status, progress, and activity for each active project.',
   },
   tasks: {
-    eyebrow: 'TASKS & SCHEDULE',
-    title: 'Schedule workspace',
-    description: 'Create, edit, and safely delete tasks while preserving shared project authority.',
+    eyebrow: 'PROJECT CONTROL',
+    title: 'Tasks and Schedule',
+    description: 'Manage project work by project and area, with completed work kept in its own view.',
   },
   evidence: {
-    eyebrow: 'PROJECT EVIDENCE',
-    title: 'Field evidence',
-    description: 'Review source-backed field updates and their project and area context.',
+    eyebrow: 'FIELD ACTIVITY',
+    title: 'Field Activity',
+    description: 'Review recent field updates with their project, area, task, and photo context.',
   },
   photos: {
     eyebrow: 'PHOTOS',
-    title: 'Photo evidence',
-    description: 'Review authorized photo evidence metadata without changing or downloading source files.',
+    title: 'Project Photos',
+    description: 'Review photos organized by the project updates that captured them.',
   },
   documents: {
     eyebrow: 'DOCUMENTS',
-    title: 'Project document library',
-    description: 'Review authorized document metadata, versions, and import status.',
+    title: 'Project Documents',
+    description: 'Review current documents, prior versions, and schedule imports.',
   },
   reports: {
     eyebrow: 'REPORTS',
-    title: 'Report readiness',
-    description: 'Review the cloud evidence available to reports; generation and approval remain disabled.',
+    title: 'Project Reports',
+    description: 'Review project facts and report status from the shared project record.',
   },
   settings: {
     eyebrow: 'SETTINGS',
-    title: 'Account and cloud sync',
-    description: 'Review the browser connection and keep this task-editing workspace aligned with the shared cloud record.',
+    title: 'Account and Sync',
+    description: 'Review the signed-in account and keep this computer aligned with the shared project record.',
   },
 };
 
@@ -133,10 +134,10 @@ function DesktopSessionGate() {
         </View>
       </View>
       <View style={styles.gateCard}>
-        <Text style={styles.eyebrow}>SECURE DESKTOP PILOT</Text>
-        <Text style={styles.gateTitle}>Sign in to your authorized workspace</Text>
+        <Text style={styles.eyebrow}>VITRUVIUS PROJECT INTELLIGENCE</Text>
+        <Text style={styles.gateTitle}>Sign in to your project workspace</Text>
         <Text style={styles.description}>
-          Access is verified by the server before any project record is loaded. Task editing is enabled in this staging pilot; project deletion, uploads, approvals, and sending remain disabled.
+          Use the same account as your Vitruvius iPhone or iPad app to review projects and manage tasks from this computer.
         </Text>
 
         {checking ? (
@@ -240,8 +241,8 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
             <Text style={styles.description}>{copy.description}</Text>
           </View>
           <View style={styles.accountPanel}>
-            <View style={styles.readOnlyBadge} accessibilityLabel="Controlled task editing pilot">
-              <Text style={styles.readOnlyBadgeText}>TASK EDITING</Text>
+            <View style={styles.readOnlyBadge} accessibilityLabel="Connected workspace">
+              <Text style={styles.readOnlyBadgeText}>CONNECTED</Text>
             </View>
             <Text style={styles.accountEmail} numberOfLines={1}>{auth.userEmail}</Text>
             <Pressable onPress={() => { void auth.signOutOfDesktop(); }} accessibilityRole="button">
@@ -251,17 +252,17 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
         </View>
 
         <View style={styles.safetyBanner} accessibilityRole="alert">
-          <Text style={styles.safetyTitle}>Owner-authorized staging session</Text>
+          <Text style={styles.safetyTitle}>Connected to the shared project record</Text>
           <Text style={styles.safetyDetail}>
-            Task creation, editing, and tombstone-protected deletion are enabled. Project deletion, file uploads, report approval, and sending remain disabled.
+            Task changes made here sync to Vitruvius on your iPhone and iPad. Project deletion, document uploads, report approval, and report sending remain available only in the mobile app.
           </Text>
         </View>
 
         <View style={styles.filterPanel}>
           <View style={styles.filterHeadingRow}>
             <View>
-              <Text style={styles.cardTitle}>Project scope</Text>
-              <Text style={styles.mutedText}>{selectedProject ?? 'All authorized projects'}</Text>
+              <Text style={styles.cardTitle}>Projects</Text>
+              <Text style={styles.mutedText}>{selectedProject ?? 'All active projects'}</Text>
             </View>
             <Pressable
               style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
@@ -319,18 +320,27 @@ function DesktopPageData({
   if (page === 'overview') {
     return (
       <>
-        <View style={styles.metricGrid}>
-          <MetricCard label="Active projects" value={projects.length} />
-          <MetricCard label="Total tasks" value={taskAccounting.total} />
-          <MetricCard label="Complete tasks" value={taskAccounting.complete} />
-          <MetricCard label="Open tasks" value={taskAccounting.open} />
-          <MetricCard label="Field updates" value={updates.length} />
-          <MetricCard label="Documents" value={documents.length} />
+        <View style={styles.projectHealthCard}>
+          <View style={styles.projectHealthHeading}>
+            <View>
+              <Text style={styles.projectHealthEyebrow}>PORTFOLIO</Text>
+              <Text style={styles.projectHealthTitle}>Project Health</Text>
+            </View>
+            <Text style={styles.projectHealthMark}>⌁</Text>
+          </View>
+          <View style={styles.metricGrid}>
+            <MetricCard label="Active Projects" value={projects.length} />
+            <MetricCard label="Total Tasks" value={taskAccounting.total} />
+            <MetricCard label="Completed" value={taskAccounting.complete} />
+            <MetricCard label="Open" value={taskAccounting.open} />
+            <MetricCard label="Field Updates" value={updates.length} />
+            <MetricCard label="Documents" value={documents.length} />
+          </View>
         </View>
         <View style={styles.accountingBanner} accessibilityRole="summary">
-          <Text style={styles.accountingTitle}>Cloud task accounting</Text>
+          <Text style={styles.accountingTitle}>Task progress</Text>
           <Text style={styles.accountingDetail}>
-            {taskAccounting.total} total = {taskAccounting.complete} complete + {taskAccounting.open} open. Deleted tasks, unsafe legacy rows, superseded imports, and prior schedule versions are excluded.
+            {taskAccounting.total} current tasks: {taskAccounting.complete} completed and {taskAccounting.open} open. Deleted tasks and prior schedule versions are not included.
           </Text>
         </View>
         <Section title="Current attention" detail="Incomplete and overdue work appears first.">
@@ -507,6 +517,7 @@ function TaskEditingWorkspace({
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<DAVEWebScheduleItem | null>(null);
+  const [taskView, setTaskView] = useState<'open' | 'completed'>('open');
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
   const projectOptions = uniqueOptions([
@@ -517,6 +528,9 @@ function TaskEditingWorkspace({
   const locationOptions = uniqueOptions(tasks.map(task => task.locationName));
   const ownerOptions = uniqueOptions(tasks.map(task => task.owner));
   const contractorOptions = uniqueOptions(tasks.map(task => task.contractor));
+  const openTasks = useMemo(() => tasks.filter(task => !taskIsComplete(task)), [tasks]);
+  const completedTasks = useMemo(() => tasks.filter(taskIsComplete), [tasks]);
+  const visibleTasks = taskView === 'completed' ? completedTasks : openTasks;
 
   const openCreate = () => {
     setEditingTask(null);
@@ -585,8 +599,8 @@ function TaskEditingWorkspace({
 
   return (
     <Section
-      title={`${tasks.length} schedule item${tasks.length === 1 ? '' : 's'}`}
-      detail="Task changes save directly to the owner-authorized cloud record and appear on active mobile devices within the shared refresh window."
+      title={`${tasks.length} task${tasks.length === 1 ? '' : 's'}`}
+      detail="Changes sync automatically to the shared project record and appear on active Vitruvius devices."
     >
       <View style={styles.taskActionRow}>
         <Pressable
@@ -598,6 +612,21 @@ function TaskEditingWorkspace({
           <Text style={styles.primaryButtonText}>+ Add Task</Text>
         </Pressable>
         <Text style={styles.taskSyncHint}>Automatic cloud refresh: every 12 seconds</Text>
+      </View>
+
+      <View style={styles.taskViewTabs} accessibilityRole="tablist">
+        <TaskViewTab
+          label="Open Tasks"
+          count={openTasks.length}
+          active={taskView === 'open'}
+          onPress={() => setTaskView('open')}
+        />
+        <TaskViewTab
+          label="Completed Tasks"
+          count={completedTasks.length}
+          active={taskView === 'completed'}
+          onPress={() => setTaskView('completed')}
+        />
       </View>
 
       {notice ? (
@@ -652,8 +681,8 @@ function TaskEditingWorkspace({
         />
       ) : null}
 
-      <TaskList
-        tasks={tasks}
+      <GroupedTaskList
+        tasks={visibleTasks}
         onEdit={openEdit}
         onDelete={task => {
           setEditorOpen(false);
@@ -663,6 +692,65 @@ function TaskEditingWorkspace({
         }}
       />
     </Section>
+  );
+}
+
+function TaskViewTab({
+  label,
+  count,
+  active,
+  onPress,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.taskViewTab, active && styles.taskViewTabActive, pressed && styles.buttonPressed]}
+      onPress={onPress}
+      accessibilityRole="tab"
+      accessibilityState={{ selected: active }}
+    >
+      <Text style={[styles.taskViewTabText, active && styles.taskViewTabTextActive]}>{label}</Text>
+      <View style={[styles.taskViewCount, active && styles.taskViewCountActive]}>
+        <Text style={[styles.taskViewCountText, active && styles.taskViewCountTextActive]}>{count}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function GroupedTaskList({
+  tasks,
+  onEdit,
+  onDelete,
+}: {
+  tasks: readonly ScheduleItem[];
+  onEdit?: (task: ScheduleItem) => void;
+  onDelete?: (task: ScheduleItem) => void;
+}) {
+  if (tasks.length === 0) return <EmptyState text="No tasks are in this view." />;
+  const groups = groupScheduleWorkspaceItemsByProjectAndArea([...tasks]);
+
+  return (
+    <View style={styles.taskGroups}>
+      {groups.map(group => (
+        <View key={`${group.projectName}:${group.areaName}`} style={styles.taskGroup}>
+          {group.isFirstAreaInProject ? (
+            <View style={styles.taskProjectHeading}>
+              <Text style={styles.taskProjectTitle} accessibilityRole="header">{group.projectName}</Text>
+              <Text style={styles.taskProjectCount}>{group.projectTaskCount} {group.projectTaskCount === 1 ? 'task' : 'tasks'}</Text>
+            </View>
+          ) : null}
+          <View style={styles.taskAreaHeading}>
+            <Text style={styles.taskAreaTitle} accessibilityRole="header">{group.areaName}</Text>
+            <Text style={styles.taskAreaCount}>{group.data.length}</Text>
+          </View>
+          <TaskList tasks={group.data} onEdit={onEdit} onDelete={onDelete} />
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -923,7 +1011,7 @@ function TaskList({
   onEdit?: (task: ScheduleItem) => void;
   onDelete?: (task: ScheduleItem) => void;
 }) {
-  if (tasks.length === 0) return <EmptyState text="No schedule items match this scope." />;
+  if (tasks.length === 0) return <EmptyState text="No tasks match this view." />;
   return (
     <View style={styles.list}>
       {tasks.map(task => (
@@ -1245,7 +1333,7 @@ function DesktopSidebar({ pathname, selectedProject }: { pathname: string; selec
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} />
         ))}
       </View>
-      <Text style={styles.pilotNote}>Phase 4 · Controlled task-editing pilot</Text>
+      <Text style={styles.pilotNote}>{PRODUCT_BRAND.name} · {PRODUCT_BRAND.subtitle}</Text>
     </View>
   );
 }
@@ -1344,13 +1432,13 @@ const styles = StyleSheet.create({
   root: { flex: 1, minHeight: '100%', backgroundColor: '#F3F5F9' },
   rootWide: { flexDirection: 'row' },
   scroll: { flex: 1 },
-  content: { width: '100%', maxWidth: 1540, alignSelf: 'center', padding: spacing.xl, gap: spacing.xl },
+  content: { width: '100%', maxWidth: 1540, alignSelf: 'center', padding: spacing.xl, gap: spacing.lg },
   gateRoot: { flex: 1, minHeight: '100%', backgroundColor: '#F3F5F9' },
   gateContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, gap: spacing.xl },
   gateBrandRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   gateCard: { width: '100%', maxWidth: 560, borderRadius: 24, borderWidth: 1, borderColor: '#D9DFEA', backgroundColor: '#FFFFFF', padding: spacing.xxl, gap: spacing.lg },
   gateTitle: { color: '#171A21', fontSize: 32, lineHeight: 39, fontWeight: '900' },
-  sidebar: { width: 258, minHeight: '100%', backgroundColor: '#FFFFFF', borderRightWidth: 1, borderRightColor: '#D9DFEA', padding: spacing.lg, gap: spacing.xxl },
+  sidebar: { width: 258, minHeight: '100%', backgroundColor: '#FFFFFF', borderRightWidth: 1, borderRightColor: '#D9DFEA', padding: spacing.lg, gap: spacing.xl },
   brandMark: { width: 42, height: 42, borderRadius: 12, backgroundColor: '#087EF5', alignItems: 'center', justifyContent: 'center' },
   brandMarkText: { color: '#FFFFFF', fontSize: 22, fontWeight: '900' },
   brandName: { color: '#171A21', fontSize: 17, fontWeight: '900', letterSpacing: 0.4 },
@@ -1375,20 +1463,25 @@ const styles = StyleSheet.create({
   readOnlyBadge: { borderRadius: 999, backgroundColor: '#E7F2FF', paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   readOnlyBadgeText: { color: '#0874DF', fontSize: 12, lineHeight: 16, fontWeight: '900', letterSpacing: 0.8 },
   textButton: { color: '#0874DF', fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  safetyBanner: { borderRadius: 18, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.lg, gap: spacing.xs },
-  safetyTitle: { color: '#195B35', fontSize: 17, lineHeight: 23, fontWeight: '900' },
-  safetyDetail: { color: '#37684B', fontSize: 14, lineHeight: 21, maxWidth: 1000 },
-  filterPanel: { borderRadius: 18, borderWidth: 1, borderColor: '#D9DFEA', backgroundColor: '#FFFFFF', padding: spacing.lg, gap: spacing.md },
+  safetyBanner: { borderRadius: 14, borderWidth: 1, borderColor: '#B9D8C4', backgroundColor: '#F2FAF5', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
+  safetyTitle: { color: '#195B35', fontSize: 14, lineHeight: 20, fontWeight: '900' },
+  safetyDetail: { color: '#4D6D59', fontSize: 13, lineHeight: 19, flexGrow: 1, flexBasis: 460 },
+  filterPanel: { borderRadius: 18, borderWidth: 1, borderColor: '#D9DFEA', backgroundColor: '#FFFFFF', padding: spacing.md, gap: spacing.sm },
   filterHeadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   projectChoices: { gap: spacing.sm },
   choice: { borderRadius: 999, borderWidth: 1, borderColor: '#CDD4DF', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: '#FFFFFF' },
   choiceActive: { borderColor: '#087EF5', backgroundColor: '#E7F2FF' },
   choiceText: { color: '#5C6370', fontSize: 14, lineHeight: 20, fontWeight: '800' },
   choiceTextActive: { color: '#0874DF' },
-  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  metricCard: { flexGrow: 1, flexBasis: 190, minHeight: 132, borderRadius: 20, backgroundColor: colors.primary, padding: spacing.lg, justifyContent: 'space-between' },
-  metricValue: { color: '#FFFFFF', fontSize: 36, lineHeight: 42, fontWeight: '900' },
-  metricLabel: { color: '#D8E6FA', fontSize: 14, lineHeight: 20, fontWeight: '800' },
+  projectHealthCard: { borderRadius: 22, backgroundColor: colors.primary, padding: spacing.lg, gap: spacing.lg, boxShadow: '0 8px 16px rgba(0,122,255,0.18)' },
+  projectHealthHeading: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
+  projectHealthEyebrow: { color: 'rgba(255,255,255,0.68)', fontSize: 12, lineHeight: 17, fontWeight: '900', letterSpacing: 1.4 },
+  projectHealthTitle: { color: '#FFFFFF', fontSize: 26, lineHeight: 32, fontWeight: '900', marginTop: 2 },
+  projectHealthMark: { color: 'rgba(255,255,255,0.78)', fontSize: 32, lineHeight: 34, fontWeight: '700' },
+  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  metricCard: { flexGrow: 1, flexBasis: 150, minHeight: 74, justifyContent: 'space-between', gap: spacing.xs },
+  metricValue: { color: '#FFFFFF', fontSize: 30, lineHeight: 36, fontWeight: '900' },
+  metricLabel: { color: 'rgba(255,255,255,0.72)', fontSize: 13, lineHeight: 18, fontWeight: '800' },
   accountingBanner: { borderRadius: 18, borderWidth: 1, borderColor: '#8CB9ED', backgroundColor: '#EDF6FF', padding: spacing.lg, gap: spacing.xs },
   accountingTitle: { color: '#164F86', fontSize: 17, lineHeight: 23, fontWeight: '900' },
   accountingDetail: { color: '#315F88', fontSize: 14, lineHeight: 21 },
@@ -1415,6 +1508,23 @@ const styles = StyleSheet.create({
   taskActionRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md },
   addTaskButton: { minWidth: 180 },
   taskSyncHint: { color: '#68717E', fontSize: 13, lineHeight: 19 },
+  taskViewTabs: { alignSelf: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', borderRadius: 14, backgroundColor: '#E9EDF3', padding: 4, gap: 4 },
+  taskViewTab: { minHeight: 42, borderRadius: 11, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
+  taskViewTabActive: { backgroundColor: '#FFFFFF', boxShadow: '0 1px 4px rgba(23,33,58,0.08)' },
+  taskViewTabText: { color: '#606875', fontSize: 14, lineHeight: 20, fontWeight: '900' },
+  taskViewTabTextActive: { color: colors.primary },
+  taskViewCount: { minWidth: 26, height: 24, borderRadius: 12, backgroundColor: '#D7DCE5', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  taskViewCountActive: { backgroundColor: '#E5F2FF' },
+  taskViewCountText: { color: '#616977', fontSize: 12, lineHeight: 16, fontWeight: '900' },
+  taskViewCountTextActive: { color: colors.primary },
+  taskGroups: { gap: spacing.lg },
+  taskGroup: { gap: spacing.sm },
+  taskProjectHeading: { minHeight: 42, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: spacing.sm, paddingTop: spacing.sm },
+  taskProjectTitle: { flex: 1, color: '#171A21', fontSize: 20, lineHeight: 26, fontWeight: '900' },
+  taskProjectCount: { color: '#737A87', fontSize: 13, lineHeight: 19, fontWeight: '800' },
+  taskAreaHeading: { minHeight: 44, borderLeftWidth: 4, borderLeftColor: colors.primary, borderRadius: 10, backgroundColor: '#EAF4FF', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  taskAreaTitle: { flex: 1, color: '#1B1F27', fontSize: 15, lineHeight: 20, fontWeight: '900' },
+  taskAreaCount: { color: '#5F6875', fontSize: 12, lineHeight: 17, fontWeight: '900' },
   taskCardActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.xs },
   compactActionButton: { minWidth: 90 },
   deleteTextButton: { minHeight: 42, justifyContent: 'center', paddingHorizontal: spacing.md },
