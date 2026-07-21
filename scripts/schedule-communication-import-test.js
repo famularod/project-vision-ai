@@ -296,6 +296,15 @@ assert.strictEqual(
 );
 assert.strictEqual(
   normalizeImportedScheduleNote(
+    'Currently grading ',
+    'schedule.pdf',
+    { preserveEditingWhitespace: true },
+  ),
+  'Currently grading ',
+  'PM task-note editing must preserve a typed trailing space.',
+);
+assert.strictEqual(
+  normalizeImportedScheduleNote(
     'Protect finished lobby floors.',
     'schedule-with-notes.csv',
   ),

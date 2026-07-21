@@ -1,5 +1,6 @@
 import {
   filterDAVEDocumentWorkspace,
+  markCurrentProjectScheduleDocument,
   resolveDAVEDocumentWorkspaceDocument,
 } from '../../services/DAVEDocumentWorkspace';
 
@@ -23,5 +24,54 @@ describe('DAVE document workspace', () => {
     expect(resolveDAVEDocumentWorkspaceDocument([documents[0], documents[2]], 'permit-a'))
       .toBe(documents[0]);
     expect(resolveDAVEDocumentWorkspaceDocument([], 'permit-a')).toBeNull();
+  });
+
+  it('keeps exactly one current schedule per project', () => {
+    const scheduleDocuments = [
+      {
+        id: 'schedule-a-old',
+        projectId: 'project-a',
+        category: 'Schedule',
+        isCurrent: true,
+        updatedAt: '2026-07-19T10:00:00.000Z',
+      },
+      {
+        id: 'schedule-a-new',
+        projectId: 'project-a',
+        category: 'Schedule',
+        isCurrent: false,
+        updatedAt: '2026-07-20T10:00:00.000Z',
+      },
+      {
+        id: 'schedule-b',
+        projectId: 'project-b',
+        category: 'Schedule',
+        isCurrent: true,
+        updatedAt: '2026-07-20T10:00:00.000Z',
+      },
+      {
+        id: 'drawing-a',
+        projectId: 'project-a',
+        category: 'Drawing',
+        isCurrent: false,
+        updatedAt: '2026-07-20T10:00:00.000Z',
+      },
+    ];
+
+    const result = markCurrentProjectScheduleDocument({
+      documents: scheduleDocuments,
+      documentId: 'schedule-a-new',
+      projectId: 'project-a',
+      updatedAt: '2026-07-20T12:00:00.000Z',
+    });
+
+    expect(result.find(document => document.id === 'schedule-a-old')?.isCurrent)
+      .toBe(false);
+    expect(result.find(document => document.id === 'schedule-a-new')?.isCurrent)
+      .toBe(true);
+    expect(result.find(document => document.id === 'schedule-b')?.isCurrent)
+      .toBe(true);
+    expect(result.find(document => document.id === 'drawing-a'))
+      .toBe(scheduleDocuments[3]);
   });
 });

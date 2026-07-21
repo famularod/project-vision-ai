@@ -79,7 +79,7 @@ import { resolveScheduleWorkspaceTask, scheduleItemsForWorkspaceProject,
   scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
 import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
   resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
-import { filterDAVEDocumentWorkspace,
+import { filterDAVEDocumentWorkspace, markCurrentProjectScheduleDocument,
   resolveDAVEDocumentWorkspaceDocument } from './services/DAVEDocumentWorkspace';
 import {
   PROJECT_DOCUMENT_CATEGORIES,
@@ -597,6 +597,7 @@ type ProjectDocument = {
   status: ProjectDocumentStatus;
   archivedAt?: string | null;
   isArchived?: boolean;
+  isCurrent?: boolean;
   duplicateOf?: string | null;
   uploadAttemptCount?: number;
   lastUploadAttemptAt?: string | null;
@@ -1469,6 +1470,7 @@ function normalizeProjectDocument(
   const storagePath = optionalString(value.storagePath);
   const uploadedAt = optionalString(value.uploadedAt);
   const status = normalizeProjectDocumentStatus(value.status);
+  const category = normalizeProjectDocumentCategory(value.category);
   const ownedFileId = optionalString(value.ownedFileId);
   const ownedFileManifest = ownedFileId && ownsProjectDocumentFile(
     value.ownedFileManifest,
@@ -1481,7 +1483,7 @@ function normalizeProjectDocument(
     areaId: optionalString(value.areaId) || fallback?.areaId || null,
     updateId: optionalString(value.updateId) || fallback?.updateId || null,
     name,
-    category: normalizeProjectDocumentCategory(value.category),
+    category,
     mimeType: optionalString(value.mimeType),
     sizeBytes: optionalFiniteNumber(value.sizeBytes),
     localUri:
@@ -1498,6 +1500,7 @@ function normalizeProjectDocument(
     status: uploadedAt ? 'uploaded' : status,
     archivedAt: optionalString(value.archivedAt),
     isArchived: optionalBoolean(value.isArchived),
+    isCurrent: category === 'Schedule' && optionalBoolean(value.isCurrent),
     duplicateOf: optionalString(value.duplicateOf),
     uploadAttemptCount: optionalFiniteNumber(value.uploadAttemptCount) || 0,
     lastUploadAttemptAt: optionalString(value.lastUploadAttemptAt),
@@ -2575,7 +2578,10 @@ function photoAttachmentLabel(count: number) {
   return `${count} Photos Attached`;
 }
 
-function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
+function normalizeScheduleItem(
+  value: Partial<ScheduleItem>,
+  options?: { preserveEditedNotes?: boolean },
+): ScheduleItem {
   const progress = reconcileScheduleProgress(value.status, value.percentComplete);
   return {
     id: typeof value.id === 'string' ? value.id : uid(),
@@ -2607,7 +2613,9 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
       ? (value.priority as SchedulePriority)
       : 'Medium',
     status: progress.status,
-    notes: normalizeImportedScheduleNote(value.notes, value.importedFrom),
+    notes: normalizeImportedScheduleNote(value.notes, value.importedFrom, {
+      preserveEditingWhitespace: options?.preserveEditedNotes,
+    }),
     importedFrom: optionalString(value.importedFrom),
     importedAt: optionalString(value.importedAt),
     importBatchId: optionalString(value.importBatchId),
@@ -9719,6 +9727,32 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
+  function makeProjectScheduleDocumentCurrent(documentId: string) {
+    const document = projectDocuments.find(item => item.id === documentId);
+    if (!document || document.category !== 'Schedule') return;
+
+    const updatedAt = new Date().toISOString();
+    const markCurrent = (documents: ProjectDocument[]) =>
+      markCurrentProjectScheduleDocument({
+        documents,
+        documentId,
+        projectId: document.projectId,
+        updatedAt,
+      });
+
+    setProjectDocuments(markCurrent);
+    setDraft(prev => ({
+      ...prev,
+      documents: markCurrent(prev.documents || []),
+    }));
+    setSavedUpdates(prev =>
+      prev.map(update => ({
+        ...update,
+        documents: markCurrent(update.documents || []),
+      })),
+    );
+  }
+
   function deleteProjectDocument(documentId: string) {
     const document = projectDocuments.find(item => item.id === documentId);
 
@@ -9945,18 +9979,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
             : {}),
         })
       : null;
-    const updated = normalizeScheduleItem({
-      ...current,
-      ...next,
-      ...(progress || {}),
-      updatedAt: now,
-      ...(progressChanged ? {
-        progressSource: 'project_manager' as const,
-        progressConfirmedAt: now,
-        progressConfirmedBy: displayName.trim() || 'Project manager',
-        completionVerification: next.completionVerification ?? null,
-      } : {}),
-    });
+    const updated = normalizeScheduleItem(
+      {
+        ...current,
+        ...next,
+        ...(progress || {}),
+        updatedAt: now,
+        ...(progressChanged ? {
+          progressSource: 'project_manager' as const,
+          progressConfirmedAt: now,
+          progressConfirmedBy: displayName.trim() || 'Project manager',
+          completionVerification: next.completionVerification ?? null,
+        } : {}),
+      },
+      { preserveEditedNotes: typeof next.notes === 'string' },
+    );
     markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev => prev.map(item => item.id === itemId ? updated : item));
     void queueScheduleItemRecord(updated).catch(() => {
@@ -11543,6 +11580,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }}
               onOpen={openProjectDocument}
               onUpdate={updateProjectDocument}
+              onSetCurrentSchedule={makeProjectScheduleDocumentCurrent}
               onRetry={documentId => {
                 void retryProjectDocumentUpload(documentId);
               }}
@@ -16446,6 +16484,7 @@ function ProjectDocumentsScreen({
   onTakePhoto,
   onOpen,
   onUpdate,
+  onSetCurrentSchedule,
   onRetry,
   onDelete,
 }: {
@@ -16459,6 +16498,7 @@ function ProjectDocumentsScreen({
   onTakePhoto: () => void;
   onOpen: (document: ProjectDocument) => void;
   onUpdate: (documentId: string, next: Partial<ProjectDocument>) => void;
+  onSetCurrentSchedule: (documentId: string) => void;
   onRetry: (documentId: string) => void;
   onDelete: (documentId: string) => void;
 }) {
@@ -16487,6 +16527,7 @@ function ProjectDocumentsScreen({
       updates={updates}
       onOpen={() => onOpen(item)}
       onUpdate={next => onUpdate(item.id, next)}
+      onSetCurrentSchedule={() => onSetCurrentSchedule(item.id)}
       onRetry={() => onRetry(item.id)}
       onDelete={() => onDelete(item.id)}
     />
@@ -16532,6 +16573,7 @@ function ProjectDocumentsScreen({
             updates={updates}
             onOpen={() => onOpen(selectedDocument)}
             onUpdate={next => onUpdate(selectedDocument.id, next)}
+            onSetCurrentSchedule={() => onSetCurrentSchedule(selectedDocument.id)}
             onRetry={() => onRetry(selectedDocument.id)}
             onDelete={() => onDelete(selectedDocument.id)}
           />
@@ -16560,6 +16602,7 @@ function ProjectDocumentCard({
   updates,
   onOpen,
   onUpdate,
+  onSetCurrentSchedule,
   onRetry,
   onDelete,
 }: {
@@ -16568,6 +16611,7 @@ function ProjectDocumentCard({
   updates: ProjectUpdate[];
   onOpen: () => void;
   onUpdate: (next: Partial<ProjectDocument>) => void;
+  onSetCurrentSchedule: () => void;
   onRetry: () => void;
   onDelete: () => void;
 }) {
@@ -16590,6 +16634,11 @@ function ProjectDocumentCard({
           <Text style={styles.rowSub}>
             {document.category} · {projectDocumentStatusDetail(document)}
           </Text>
+          {document.category === 'Schedule' && document.isCurrent ? (
+            <View style={[styles.statusPill, styles.documentCurrentBadge]}>
+              <Text style={[styles.statusPillText, { color: colors.success }]}>Current Schedule</Text>
+            </View>
+          ) : null}
           {selectedArea ? (
             <Text style={styles.locationDetailText}>Area: {selectedArea.name}</Text>
           ) : null}
@@ -16623,6 +16672,32 @@ function ProjectDocumentCard({
           <Text style={styles.photoControlText}>Edit</Text>
         </TouchableOpacity>
       </View>
+
+      {document.category === 'Schedule' ? (
+        <TouchableOpacity
+          style={[
+            styles.photoControlButton,
+            styles.documentCurrentControl,
+            document.isCurrent && { backgroundColor: colors.successSoft, borderColor: colors.success },
+          ]}
+          onPress={onSetCurrentSchedule}
+          disabled={document.isCurrent}
+        >
+          <Ionicons
+            name={document.isCurrent ? 'checkmark-circle' : 'calendar-outline'}
+            size={18}
+            color={document.isCurrent ? colors.success : colors.primary}
+          />
+          <Text
+            style={[
+              styles.photoControlText,
+              document.isCurrent && { color: colors.success },
+            ]}
+          >
+            {document.isCurrent ? 'Current Schedule' : 'Make Current Schedule'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
 
       {detailsOpen ? (
         <View style={styles.phase4DetailBlock}>
@@ -21018,6 +21093,17 @@ const styles = StyleSheet.create({
 
   photoControlTextDisabled: {
     color: colors.tertiaryText,
+  },
+
+  documentCurrentBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    backgroundColor: colors.successSoft,
+  },
+
+  documentCurrentControl: {
+    flex: 0,
+    marginBottom: 10,
   },
 
   photoModalBackdrop: {

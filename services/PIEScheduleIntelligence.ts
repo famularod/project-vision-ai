@@ -244,7 +244,12 @@ export function explicitScheduleNote(value: unknown) {
 export function normalizeImportedScheduleNote(
   value: unknown,
   importedFrom?: string | null,
+  options?: { preserveEditingWhitespace?: boolean },
 ) {
+  if (options?.preserveEditingWhitespace && typeof value === 'string') {
+    return value;
+  }
+
   const note = explicitScheduleNote(value);
   if (!note || !importedFrom?.trim()) return note;
 
