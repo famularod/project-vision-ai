@@ -1,5 +1,6 @@
 import {
   groupScheduleWorkspaceItemsByProject,
+  groupScheduleWorkspaceItemsByProjectAndArea,
   resolveScheduleWorkspaceTask,
   scheduleItemsForWorkspaceProject,
   scheduleWorkspaceProjectOptions,
@@ -75,6 +76,46 @@ describe('DAVE schedule workspace', () => {
       },
       {
         projectName: 'Project B',
+        data: [tasks[0]],
+      },
+    ]);
+  });
+
+  it('groups open and completed views consistently by project and area', () => {
+    const tasks = [
+      { ...baseItem, id: 'task-b2', projectName: 'Project B', locationName: '' },
+      { ...baseItem, id: 'task-a2', projectName: 'Project A', locationName: 'Canopy C' },
+      { ...baseItem, id: 'task-a1', projectName: 'Project A', locationName: 'Canopy A' },
+      { ...baseItem, id: 'task-b1', projectName: 'Project B', locationName: 'North Lot' },
+    ];
+
+    expect(groupScheduleWorkspaceItemsByProjectAndArea(tasks)).toEqual([
+      {
+        projectName: 'Project A',
+        areaName: 'Canopy A',
+        projectTaskCount: 2,
+        isFirstAreaInProject: true,
+        data: [tasks[2]],
+      },
+      {
+        projectName: 'Project A',
+        areaName: 'Canopy C',
+        projectTaskCount: 2,
+        isFirstAreaInProject: false,
+        data: [tasks[1]],
+      },
+      {
+        projectName: 'Project B',
+        areaName: 'North Lot',
+        projectTaskCount: 2,
+        isFirstAreaInProject: true,
+        data: [tasks[3]],
+      },
+      {
+        projectName: 'Project B',
+        areaName: 'No Area Assigned',
+        projectTaskCount: 2,
+        isFirstAreaInProject: false,
         data: [tasks[0]],
       },
     ]);

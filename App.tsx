@@ -68,16 +68,24 @@ import {
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
-import { ScheduleTaskListControls, type ScheduleTaskFilter } from './components/schedule-task-list-controls';
-import { ScheduleWideWorkspace } from './components/schedule-workspace-layout';
+import {
+  ScheduleTaskListControls,
+  type ScheduleTaskFilter,
+  type ScheduleTaskView,
+} from './components/schedule-task-list-controls';
+import { ScheduleTaskGroupHeader, ScheduleWideWorkspace } from './components/schedule-workspace-layout';
 import { NativeDateField } from './components/native-date-field';
 import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
-import { resolveScheduleWorkspaceTask, scheduleItemsForWorkspaceProject,
-  scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
+import {
+  groupScheduleWorkspaceItemsByProjectAndArea,
+  resolveScheduleWorkspaceTask,
+  scheduleItemsForWorkspaceProject,
+  scheduleWorkspaceProjectOptions,
+} from './services/DAVEScheduleWorkspace';
 import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
   resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
 import { filterDAVEDocumentWorkspace, markCurrentProjectScheduleDocument,
@@ -440,6 +448,7 @@ import {
   PanResponder,
   Platform,
   ScrollView,
+  SectionList,
   StyleProp,
   StyleSheet,
   Text,
@@ -18998,6 +19007,7 @@ function ScheduleScreen({
 }) {
   const { sizeClass } = useAppShellLayout();
   const isWideWorkspace = sizeClass === 'wide';
+  const [taskView, setTaskView] = useState<ScheduleTaskView>('Open Tasks');
   const [taskFilter, setTaskFilter] = useState<ScheduleTaskFilter>(initialFilter || 'Attention');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [scheduleManagementOpen, setScheduleManagementOpen] = useState(false);
@@ -19181,9 +19191,17 @@ function ScheduleScreen({
     return days !== null && days < 0;
   }), [sortedItems]);
 
+  const openTaskCount = useMemo(
+    () => sortedItems.filter(item => !scheduleTaskIsComplete(item)).length,
+    [sortedItems],
+  );
+  const completedTaskCount = sortedItems.length - openTaskCount;
+
   const filteredItems = useMemo(() => sortedItems.filter(item => {
+    const complete = scheduleTaskIsComplete(item);
+    if (taskView === 'Completed Tasks') return complete;
+    if (complete) return false;
     if (taskFilter === 'All') return true;
-    if (scheduleTaskIsComplete(item)) return false;
     const days = daysUntilScheduleItem(item);
     if (taskFilter === 'Today') return days === 0;
     if (taskFilter === '7 Days') return days !== null && days >= 0 && days <= 7;
@@ -19205,7 +19223,18 @@ function ScheduleScreen({
     scheduleFieldResults.warnings,
     sortedItems,
     taskFilter,
+    taskView,
   ]);
+
+  const groupedTaskSections = useMemo(
+    () => groupScheduleWorkspaceItemsByProjectAndArea(filteredItems),
+    [filteredItems],
+  );
+  const taskViewLabel = taskView === 'Completed Tasks'
+    ? 'Completed Tasks'
+    : taskFilter === 'All'
+      ? 'Open Tasks'
+      : `${taskFilter} Tasks`;
 
   const selectedTask = resolveScheduleWorkspaceTask(filteredItems, selectedTaskId);
   const taskControls = (
@@ -19215,7 +19244,14 @@ function ScheduleScreen({
       dueSoonCount={dueSoon.length}
       overdueCount={overdue.length}
       needsActionCount={actionInbox.items.length}
+      openTaskCount={openTaskCount}
+      completedTaskCount={completedTaskCount}
+      activeView={taskView}
       activeFilter={taskFilter}
+      onViewChange={view => {
+        setTaskView(view);
+        setSelectedTaskId(null);
+      }}
       onFilterChange={setTaskFilter}
       onAddTask={() => setShowAdd(true)}
     />
@@ -19454,13 +19490,12 @@ function ScheduleScreen({
       <>
         <ScheduleWideWorkspace
           items={filteredItems}
-          groupByProject={!projectFilter && taskFilter === 'All'}
           selectedTaskId={selectedTask?.id || null}
           onSelectTask={setSelectedTaskId}
           masterHeader={(
             <>
               {taskControls}
-              <Text style={styles.sectionLabel}>{taskFilter} Tasks</Text>
+              <Text style={styles.sectionLabel}>{taskViewLabel}</Text>
               <Text style={styles.rowSub}>
                 {filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.
               </Text>
@@ -19478,7 +19513,7 @@ function ScheduleScreen({
               onAddFieldUpdate={() => onNewFieldUpdateForTask(selectedTask)}
             />
           ) : emptyState}
-          inspectorFooter={scheduleTools}
+          inspectorFooter={taskView === 'Open Tasks' ? scheduleTools : null}
           emptyState={emptyState}
         />
         {taskEditor}
@@ -19488,12 +19523,12 @@ function ScheduleScreen({
 
   return (
     <>
-      <FlatList
+      <SectionList
         style={styles.appFrame}
         contentContainerStyle={contentStyle}
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
-        data={filteredItems}
+        sections={groupedTaskSections}
         keyExtractor={item => item.id}
         renderItem={({ item }) => (
           <ScheduleItemRow
@@ -19506,17 +19541,21 @@ function ScheduleScreen({
             onAddFieldUpdate={() => onNewFieldUpdateForTask(item)}
           />
         )}
+        renderSectionHeader={({ section }) => (
+          <ScheduleTaskGroupHeader section={section} />
+        )}
         ListHeaderComponent={(
           <>
             {taskControls}
-            {scheduleTools}
-            <Text style={styles.sectionLabel}>{taskFilter} Tasks</Text>
+            {taskView === 'Open Tasks' ? scheduleTools : null}
+            <Text style={styles.sectionLabel}>{taskViewLabel}</Text>
             <Text style={styles.rowSub}>
               {filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.
             </Text>
           </>
         )}
         ListEmptyComponent={emptyState}
+        stickySectionHeadersEnabled={false}
       />
       {taskEditor}
     </>

@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, spacing } from '../theme';
 
 export type ScheduleTaskFilter = 'Attention' | 'Today' | '7 Days' | 'All';
+export type ScheduleTaskView = 'Open Tasks' | 'Completed Tasks';
 
 export function ScheduleTaskListControls({
   scopeLabel,
@@ -11,7 +12,11 @@ export function ScheduleTaskListControls({
   dueSoonCount,
   overdueCount,
   needsActionCount,
+  openTaskCount,
+  completedTaskCount,
+  activeView,
   activeFilter,
+  onViewChange,
   onFilterChange,
   onAddTask,
 }: {
@@ -20,7 +25,11 @@ export function ScheduleTaskListControls({
   dueSoonCount: number;
   overdueCount: number;
   needsActionCount: number;
+  openTaskCount: number;
+  completedTaskCount: number;
+  activeView: ScheduleTaskView;
   activeFilter: ScheduleTaskFilter;
+  onViewChange: (view: ScheduleTaskView) => void;
   onFilterChange: (filter: ScheduleTaskFilter) => void;
   onAddTask: () => void;
 }) {
@@ -60,35 +69,68 @@ export function ScheduleTaskListControls({
         <TaskMetric label="Needs Action" value={needsActionCount} icon="checkbox-outline" />
       </View>
 
-      <View style={styles.filterPanel}>
-        <Text style={styles.filterTitle}>Work requiring attention</Text>
-        <Text style={styles.filterSubtitle}>
-          Verification, blockers, overdue work, and owner follow-ups appear first.
-        </Text>
-        <View style={styles.filterRow}>
-          {(['Attention', 'Today', '7 Days', 'All'] as const).map(filter => (
+      <View style={styles.viewTabs} accessibilityRole="tablist">
+        {(['Open Tasks', 'Completed Tasks'] as const).map(view => {
+          const count = view === 'Open Tasks' ? openTaskCount : completedTaskCount;
+          return (
             <Pressable
-              key={filter}
+              key={view}
               style={({ pressed }) => [
-                styles.filterButton,
-                activeFilter === filter && styles.filterButtonActive,
+                styles.viewTab,
+                activeView === view && styles.viewTabActive,
                 pressed && styles.pressed,
               ]}
-              onPress={() => onFilterChange(filter)}
-              accessibilityRole="button"
-              accessibilityState={{ selected: activeFilter === filter }}
-              accessibilityLabel={`Show ${filter.toLowerCase()} tasks`}
+              onPress={() => onViewChange(view)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: activeView === view }}
+              accessibilityLabel={`${view}, ${count} ${count === 1 ? 'task' : 'tasks'}`}
             >
               <Text style={[
-                styles.filterButtonText,
-                activeFilter === filter && styles.filterButtonTextActive,
+                styles.viewTabText,
+                activeView === view && styles.viewTabTextActive,
               ]}>
-                {filter}
+                {view}
               </Text>
+              <Text style={[
+                styles.viewTabCount,
+                activeView === view && styles.viewTabTextActive,
+              ]}>{count}</Text>
             </Pressable>
-          ))}
-        </View>
+          );
+        })}
       </View>
+
+      {activeView === 'Open Tasks' ? (
+        <View style={styles.filterPanel}>
+          <Text style={styles.filterTitle}>Work requiring attention</Text>
+          <Text style={styles.filterSubtitle}>
+            Verification, blockers, overdue work, and owner follow-ups appear first.
+          </Text>
+          <View style={styles.filterRow}>
+            {(['Attention', 'Today', '7 Days', 'All'] as const).map(filter => (
+              <Pressable
+                key={filter}
+                style={({ pressed }) => [
+                  styles.filterButton,
+                  activeFilter === filter && styles.filterButtonActive,
+                  pressed && styles.pressed,
+                ]}
+                onPress={() => onFilterChange(filter)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: activeFilter === filter }}
+                accessibilityLabel={`Show ${filter.toLowerCase()} open tasks`}
+              >
+                <Text style={[
+                  styles.filterButtonText,
+                  activeFilter === filter && styles.filterButtonTextActive,
+                ]}>
+                  {filter}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -188,6 +230,44 @@ const styles = StyleSheet.create({
     color: colors.mutedText,
     fontSize: 12,
     fontWeight: '800',
+  },
+  viewTabs: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: 14,
+  },
+  viewTab: {
+    flex: 1,
+    minHeight: 52,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+  },
+  viewTabActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
+  },
+  viewTabText: {
+    flexShrink: 1,
+    color: colors.mutedText,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+  viewTabTextActive: {
+    color: colors.primary,
+  },
+  viewTabCount: {
+    color: colors.mutedText,
+    fontSize: 14,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   filterPanel: {
     borderWidth: 1,

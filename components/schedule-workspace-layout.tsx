@@ -3,7 +3,10 @@ import { Pressable, ScrollView, SectionList, StyleSheet, Text, View } from 'reac
 
 import { colors, radius, spacing } from '../theme';
 import type { ScheduleItem } from '../types';
-import { groupScheduleWorkspaceItemsByProject } from '../services/DAVEScheduleWorkspace';
+import {
+  groupScheduleWorkspaceItemsByProjectAndArea,
+  type ScheduleWorkspaceProjectAreaGroup,
+} from '../services/DAVEScheduleWorkspace';
 
 export function ScheduleWideWorkspace({
   items,
@@ -13,7 +16,6 @@ export function ScheduleWideWorkspace({
   inspector,
   inspectorFooter,
   emptyState,
-  groupByProject = false,
 }: {
   items: ScheduleItem[];
   selectedTaskId: string | null;
@@ -22,11 +24,8 @@ export function ScheduleWideWorkspace({
   inspector: ReactNode;
   inspectorFooter: ReactNode;
   emptyState: ReactElement;
-  groupByProject?: boolean;
 }) {
-  const sections = groupByProject
-    ? groupScheduleWorkspaceItemsByProject(items)
-    : [{ projectName: '', data: items }];
+  const sections = groupScheduleWorkspaceItemsByProjectAndArea(items);
 
   return (
     <View style={styles.workspace} testID="schedule-wide-workspace">
@@ -41,14 +40,9 @@ export function ScheduleWideWorkspace({
               onPress={() => onSelectTask(item.id)}
             />
           )}
-          renderSectionHeader={({ section }) => groupByProject ? (
-            <View style={styles.projectGroupHeader}>
-              <Text accessibilityRole="header" style={styles.projectGroupTitle}>{section.projectName}</Text>
-              <Text style={styles.projectGroupCount}>
-                {section.data.length} {section.data.length === 1 ? 'task' : 'tasks'}
-              </Text>
-            </View>
-          ) : null}
+          renderSectionHeader={({ section }) => (
+            <ScheduleTaskGroupHeader section={section} backgroundColor={colors.surface} />
+          )}
           ListHeaderComponent={masterHeader}
           ListEmptyComponent={emptyState}
           contentContainerStyle={styles.masterContent}
@@ -56,6 +50,7 @@ export function ScheduleWideWorkspace({
           contentInsetAdjustmentBehavior="automatic"
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          stickySectionHeadersEnabled={false}
         />
       </View>
 
@@ -70,6 +65,35 @@ export function ScheduleWideWorkspace({
         {inspector}
         {inspectorFooter}
       </ScrollView>
+    </View>
+  );
+}
+
+export function ScheduleTaskGroupHeader({
+  section,
+  backgroundColor = colors.background,
+}: {
+  section: ScheduleWorkspaceProjectAreaGroup;
+  backgroundColor?: string;
+}) {
+  return (
+    <View style={[styles.groupHeader, { backgroundColor }]}>
+      {section.isFirstAreaInProject ? (
+        <View style={styles.projectGroupHeader}>
+          <Text accessibilityRole="header" style={styles.projectGroupTitle}>
+            {section.projectName}
+          </Text>
+          <Text style={styles.projectGroupCount}>
+            {section.projectTaskCount} {section.projectTaskCount === 1 ? 'task' : 'tasks'}
+          </Text>
+        </View>
+      ) : null}
+      <View style={styles.areaGroupHeader}>
+        <Text accessibilityRole="header" style={styles.areaGroupTitle}>{section.areaName}</Text>
+        <Text style={styles.areaGroupCount}>
+          {section.data.length} {section.data.length === 1 ? 'task' : 'tasks'}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -190,7 +214,6 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingTop: spacing.md,
     paddingBottom: spacing.sm,
-    backgroundColor: colors.surface,
   },
   projectGroupTitle: {
     flex: 1,
@@ -204,6 +227,37 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  groupHeader: {
+    paddingTop: spacing.sm,
+  },
+  areaGroupHeader: {
+    minHeight: 46,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primarySoft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  areaGroupTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '900',
+  },
+  areaGroupCount: {
+    color: colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '800',
     fontVariant: ['tabular-nums'],
   },
   progressTrack: {

@@ -43,6 +43,14 @@ export type ScheduleWorkspaceProjectGroup = Readonly<{
   data: ScheduleItem[];
 }>;
 
+export type ScheduleWorkspaceProjectAreaGroup = Readonly<{
+  projectName: string;
+  areaName: string;
+  projectTaskCount: number;
+  isFirstAreaInProject: boolean;
+  data: ScheduleItem[];
+}>;
+
 export function groupScheduleWorkspaceItemsByProject(
   items: ScheduleItem[],
 ): ScheduleWorkspaceProjectGroup[] {
@@ -56,6 +64,37 @@ export function groupScheduleWorkspaceItemsByProject(
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([projectName, data]) => Object.freeze({ projectName, data }));
+}
+
+function scheduleItemAreaName(item: ScheduleItem) {
+  return item.locationName?.trim() || 'No Area Assigned';
+}
+
+export function groupScheduleWorkspaceItemsByProjectAndArea(
+  items: ScheduleItem[],
+): ScheduleWorkspaceProjectAreaGroup[] {
+  return groupScheduleWorkspaceItemsByProject(items).flatMap(projectGroup => {
+    const areas = new Map<string, ScheduleItem[]>();
+
+    projectGroup.data.forEach(item => {
+      const areaName = scheduleItemAreaName(item);
+      areas.set(areaName, [...(areas.get(areaName) || []), item]);
+    });
+
+    return [...areas.entries()]
+      .sort(([left], [right]) => {
+        if (left === 'No Area Assigned') return 1;
+        if (right === 'No Area Assigned') return -1;
+        return left.localeCompare(right);
+      })
+      .map(([areaName, data], index) => Object.freeze({
+        projectName: projectGroup.projectName,
+        areaName,
+        projectTaskCount: projectGroup.data.length,
+        isFirstAreaInProject: index === 0,
+        data,
+      }));
+  });
 }
 
 export function resolveScheduleWorkspaceTask(

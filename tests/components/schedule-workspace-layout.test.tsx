@@ -41,11 +41,11 @@ describe('ScheduleWideWorkspace', () => {
     ).toEqual({ selected: true });
   });
 
-  it('shows project headings when All Projects tasks are grouped', async () => {
+  it('shows project and area headings for the task list', async () => {
     const screen = await render(
       <ScheduleWideWorkspace
         items={[
-          { ...taskA, id: 'task-b', projectName: 'Project B' },
+          { ...taskA, id: 'task-b', projectName: 'Project B', locationName: 'North Lot' },
           taskA,
         ]}
         selectedTaskId="task-a"
@@ -54,13 +54,14 @@ describe('ScheduleWideWorkspace', () => {
         inspector={<Text>Inspector</Text>}
         inspectorFooter={null}
         emptyState={<Text>No tasks</Text>}
-        groupByProject
       />,
     );
 
     expect(screen.getByRole('header', { name: 'Project A' })).toBeTruthy();
     expect(screen.getByRole('header', { name: 'Project B' })).toBeTruthy();
-    expect(screen.getAllByText('1 task')).toHaveLength(2);
+    expect(screen.getByRole('header', { name: 'Canopy A' })).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'North Lot' })).toBeTruthy();
+    expect(screen.getAllByText('1 task')).toHaveLength(4);
   });
 });
 
