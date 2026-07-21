@@ -127,6 +127,30 @@ describe('DAVESyncTombstones durability (audit P1-28)', () => {
     expect(result.tombstones).toHaveLength(2);
   });
 
+  it('rebuilds a corrupt local journal only after an authoritative cloud read', async () => {
+    const cloudTombstone = {
+      entityType: 'schedule_item' as const,
+      recordId: 'task-stays-deleted',
+      deletedAt: '2026-07-20T12:00:00.000Z',
+    };
+    mockStorage.set(
+      DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
+      JSON.stringify([{
+        ...cloudTombstone,
+        deletedAt: 'Cloud sync could not finish. Your changes remain saved on this phone and will be retried.',
+      }]),
+    );
+    mockListTombstones.mockResolvedValue(cloudOk([cloudTombstone]));
+
+    const result = await synchronizeDAVESyncTombstones();
+
+    expect(result.cloudAuthoritative).toBe(true);
+    expect(result.tombstones).toEqual([cloudTombstone]);
+    expect(await loadDAVESyncTombstones()).toEqual([cloudTombstone]);
+    expect((await loadQuarantinedDAVESyncTombstones())?.raw)
+      .toContain('Cloud sync could not finish');
+  });
+
   it('reports zero upload failures when the cloud acknowledges everything', async () => {
     await recordDAVESyncTombstone('reference_document', 'doc-1');
 

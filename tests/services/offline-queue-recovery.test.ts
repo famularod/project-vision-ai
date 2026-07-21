@@ -352,6 +352,56 @@ describe('offline queue corruption recovery', () => {
     expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);
   });
 
+  it('preserves deletion journals, identifiers, payloads, and valid sync timestamps during cleanup', async () => {
+    const tombstoneRaw = JSON.stringify([{
+      entityType: 'schedule_item',
+      recordId: 'task-keep-deleted',
+      deletedAt: '2026-07-20T12:00:00.000Z',
+    }]);
+    const quarantineRaw = JSON.stringify({
+      quarantinedAt: '2026-07-20T12:01:00.000Z',
+      raw: tombstoneRaw,
+    });
+    const lastSyncRaw = JSON.stringify('2026-07-20T12:02:00.000Z');
+    const conflict = {
+      id: 'conflict-1',
+      entity: 'project_update',
+      localId: 'update-1',
+      localChangedAt: '2026-07-20T12:03:00.000Z',
+      remoteChangedAt: '2026-07-20T12:04:00.000Z',
+      reason: 'readAsStringAsync failed for /var/mobile/private-photo.heic',
+      detectedAt: '2026-07-20T12:05:00.000Z',
+      localPayload: { id: 'update-1', notes: 'Preserve this field record.' },
+    };
+
+    mockStorageValues.set('@dave/sync-tombstones/v1', tombstoneRaw);
+    mockStorageValues.set('@dave/sync-tombstones/quarantine/v1', quarantineRaw);
+    mockStorageValues.set('projectVisionAI.lastSyncAt.v1', lastSyncRaw);
+    mockStorageValues.set('projectVisionAI.syncConflicts.v1', JSON.stringify([conflict]));
+
+    await cleanupStoredSyncStatusMessages();
+
+    expect(mockStorageValues.get('@dave/sync-tombstones/v1')).toBe(tombstoneRaw);
+    expect(mockStorageValues.get('@dave/sync-tombstones/quarantine/v1')).toBe(quarantineRaw);
+    expect(mockStorageValues.get('projectVisionAI.lastSyncAt.v1')).toBe(lastSyncRaw);
+    expect(JSON.parse(mockStorageValues.get('projectVisionAI.syncConflicts.v1') || '[]'))
+      .toEqual([{
+        ...conflict,
+        reason: 'Some photos could not be synced because the original files are no longer available. The remaining items will continue syncing.',
+      }]);
+  });
+
+  it('clears a corrupted last-sync display message without rewriting durable records', async () => {
+    mockStorageValues.set(
+      'projectVisionAI.lastSyncAt.v1',
+      JSON.stringify('Cloud sync could not finish. Your changes remain saved on this phone and will be retried.'),
+    );
+
+    await cleanupStoredSyncStatusMessages();
+
+    expect(mockStorageValues.get('projectVisionAI.lastSyncAt.v1')).toBe('null');
+  });
+
   it('serializes overlapping conflict decisions without restoring either conflict', async () => {
     const conflict = (id: string) => ({
       id,

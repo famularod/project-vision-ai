@@ -371,8 +371,8 @@ export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageClea
     const value = await AsyncStorage.getItem(key);
     if (value === null) continue;
 
-    if (key === SYNC_CONFLICTS_STORAGE_KEY) {
-      const nextValue = cleanupSyncConflictsValue(value);
+    if (key === SYNC_LAST_RUN_STORAGE_KEY) {
+      const nextValue = cleanupLastSyncValue(value);
 
       if (nextValue !== value) {
         await AsyncStorage.setItem(key, nextValue);
@@ -382,11 +382,15 @@ export async function cleanupStoredSyncStatusMessages(): Promise<SyncStorageClea
       continue;
     }
 
-    const nextValue = sanitizeStoredSyncValue(value);
+    if (key === SYNC_CONFLICTS_STORAGE_KEY) {
+      const nextValue = cleanupSyncConflictsValue(value);
 
-    if (nextValue !== value) {
-      await AsyncStorage.setItem(key, nextValue);
-      cleaned = true;
+      if (nextValue !== value) {
+        await AsyncStorage.setItem(key, nextValue);
+        cleaned = true;
+      }
+
+      continue;
     }
   }
 
@@ -2974,11 +2978,33 @@ function cleanupSyncConflictsValue(value: string) {
 
     if (!Array.isArray(parsed)) return '[]';
 
-    return JSON.stringify(sanitizeStoredSyncJson(parsed));
+    return JSON.stringify(parsed.map(conflict => {
+      if (!conflict || typeof conflict !== 'object' || Array.isArray(conflict)) {
+        return conflict;
+      }
+      const record = conflict as Record<string, unknown>;
+      return {
+        ...record,
+        reason: typeof record.reason === 'string'
+          ? sanitizeUserFacingSyncMessage(record.reason)
+          : record.reason,
+      };
+    }));
   } catch {
     // A non-JSON value cannot represent a recoverable conflict. Reset only this
     // derived status list; project data and the durable upload queue are separate.
     return '[]';
+  }
+}
+
+function cleanupLastSyncValue(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed === null) return 'null';
+    if (typeof parsed !== 'string') return 'null';
+    return Number.isFinite(new Date(parsed).getTime()) ? value : 'null';
+  } catch {
+    return 'null';
   }
 }
 

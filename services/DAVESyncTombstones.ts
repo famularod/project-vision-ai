@@ -186,7 +186,16 @@ async function performTombstoneSynchronization(): Promise<DAVESyncTombstoneSyncR
   }
 
   const merged = await serializeTombstoneMutation(async () => {
-    const local = await readLocalTombstones();
+    let local: DAVESyncTombstone[] = [];
+    try {
+      local = await readLocalTombstones();
+    } catch (error) {
+      // A successful owner-scoped cloud read is authoritative enough to
+      // rebuild a damaged local journal. The exact damaged bytes remain in
+      // quarantine for support/export; never recover from an empty or failed
+      // cloud response because that could forget a device-only deletion.
+      if (!cloudAuthoritative) throw error;
+    }
     const next = mergeDAVESyncTombstones(local, cloudTombstones);
     await persistLocalTombstones(next);
     return next;
