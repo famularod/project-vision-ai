@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 const fs = require('node:fs');
+if (typeof globalThis.WebSocket === 'undefined') {
+  globalThis.WebSocket = require('ws');
+}
 const { createClient } = require('@supabase/supabase-js');
 
 const HOUR_MS = 60 * 60 * 1000;
