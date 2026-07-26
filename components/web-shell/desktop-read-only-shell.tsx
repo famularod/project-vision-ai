@@ -4954,7 +4954,7 @@ const styles = StyleSheet.create({
   photoInspectorPane: { flexGrow: 1, flexBasis: 400, minWidth: 300, maxWidth: 500, alignSelf: 'flex-start', position: 'sticky' as any, top: spacing.lg },
   photoVisual: { minHeight: 140, backgroundColor: desktopSurfaces.sectionStrong, justifyContent: 'flex-end', padding: spacing.lg },
   photoVisualUnavailable: { backgroundColor: desktopSurfaces.sectionStrong },
-  photoImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  photoImage: { ...StyleSheet.absoluteFill, width: '100%', height: '100%' },
   photoAreaOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: spacing.lg, backgroundColor: 'rgba(12,25,48,0.58)' },
   photoUnavailable: { flex: 1, minHeight: 82, alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
   photoUnavailableText: { color: '#5E6875', fontSize: 13, lineHeight: 18, fontWeight: '800' },

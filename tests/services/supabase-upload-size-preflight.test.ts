@@ -25,12 +25,21 @@ jest.mock('expo-file-system/legacy', () => ({
   EncodingType: { Base64: 'base64' },
 }));
 
-jest.mock('react-native', () => ({
-  AppState: {
-    currentState: 'active',
-    addEventListener: jest.fn(),
-  },
-}));
+jest.mock('react-native', () => {
+  return {
+    AppState: {
+      currentState: 'active',
+      addEventListener: jest.fn(),
+    },
+    NativeModules: {},
+    Platform: {
+      OS: 'ios',
+      select: (values: Record<string, unknown>) =>
+        values.ios ?? values.native ?? values.default,
+    },
+    TurboModuleRegistry: { get: jest.fn(() => null) },
+  };
+});
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,

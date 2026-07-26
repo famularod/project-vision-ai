@@ -89,7 +89,7 @@ export function MoreOptionRow({
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end' },
-  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15, 23, 42, 0.34)' },
+  scrim: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(15, 23, 42, 0.34)' },
   sheet: {
     backgroundColor: '#FFFFFF', borderTopLeftRadius: 16, borderTopRightRadius: 16,
     paddingHorizontal: 16, paddingTop: 6, paddingBottom: 28, borderColor: '#E5E5EA',

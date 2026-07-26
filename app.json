@@ -65,7 +65,11 @@
           "enableBackgroundRecording": false
         }
       ],
+      "expo-font",
+      "expo-mail-composer",
       "expo-secure-store",
+      "expo-sharing",
+      "expo-status-bar",
       "./plugins/withVitruviusAndroidSecurityPolicy",
       "expo-router"
     ],
