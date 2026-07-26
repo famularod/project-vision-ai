@@ -23,8 +23,8 @@ assert.equal(
   'Run sync:product-metadata before synchronizing native files.',
 );
 
-const infoPlistPath = path.join(root, 'ios', 'ProjectPhotoUpdateTool', 'Info.plist');
-const projectPath = path.join(root, 'ios', 'ProjectPhotoUpdateTool.xcodeproj', 'project.pbxproj');
+const infoPlistPath = path.join(root, 'ios', 'Vitruvius', 'Info.plist');
+const projectPath = path.join(root, 'ios', 'Vitruvius.xcodeproj', 'project.pbxproj');
 const androidGradlePath = path.join(root, 'android', 'app', 'build.gradle');
 const infoPlistExists = fs.existsSync(infoPlistPath);
 const projectExists = fs.existsSync(projectPath);
