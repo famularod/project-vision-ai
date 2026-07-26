@@ -1,57 +1,8 @@
--- Atomic owner-scoped deletion for projects and field updates. Tombstones and
--- active-record removal commit together so another device cannot resurrect a
--- record after a partially completed client-side cascade.
-
 begin;
 
-alter table public.dave_sync_tombstones
-  drop constraint if exists dave_sync_tombstones_entity_type_check;
-
-alter table public.dave_sync_tombstones
-  add constraint dave_sync_tombstones_entity_type_check
-  check (
-    entity_type in (
-      'project',
-      'project_update',
-      'project_area',
-      'schedule_item',
-      'reference_document'
-    )
-  );
-
-create table if not exists public.dave_deletion_audit (
-  id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid()
-    references auth.users(id) on delete restrict,
-  entity_type text not null check (
-    entity_type in ('project', 'project_update')
-  ),
-  record_id text not null,
-  record_name text,
-  deleted_at timestamptz not null default now(),
-  child_counts jsonb not null default '{}'::jsonb,
-  purge_after timestamptz not null default now() + interval '1 year'
-);
-
-create index if not exists dave_deletion_audit_owner_recent_idx
-  on public.dave_deletion_audit (owner_id, deleted_at desc);
-
-alter table public.dave_deletion_audit enable row level security;
-alter table public.dave_deletion_audit force row level security;
-revoke all on table public.dave_deletion_audit
-  from public, anon, authenticated;
-
-drop policy if exists dave_deletion_audit_owner_select
-  on public.dave_deletion_audit;
-create policy dave_deletion_audit_owner_select
-  on public.dave_deletion_audit
-  for select to authenticated
-  using (
-    (select public.dave_is_app_owner())
-    and owner_id = (select auth.uid())
-  );
-grant select on table public.dave_deletion_audit to authenticated;
-
+-- Replace the already-deployed project-deletion function with explicitly typed
+-- empty arrays. PostgreSQL otherwise treats '{}' as text in this context and
+-- reports a function-body warning during linked database linting.
 create or replace function public.dave_delete_project_atomically(
   p_project_name text
 )
@@ -321,111 +272,12 @@ begin
 end
 $function$;
 
-create or replace function public.dave_delete_project_update_atomically(
-  p_update_id text
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $function$
-declare
-  auth_user uuid := auth.uid();
-  update_id text := btrim(coalesce(p_update_id, ''));
-  deleted_at timestamptz := now();
-  deleted_count integer := 0;
-begin
-  if auth_user is null or not public.dave_is_app_owner() then
-    raise insufficient_privilege using message = 'owner authorization required';
-  end if;
-  if update_id = '' or char_length(update_id) > 240 then
-    raise invalid_parameter_value using message = 'valid field update id required';
-  end if;
-
-  perform pg_advisory_xact_lock(
-    hashtextextended(auth_user::text || ':delete-update:' || update_id, 0)
-  );
-
-  insert into public.dave_sync_tombstones (
-    owner_id,
-    entity_type,
-    record_id,
-    deleted_at
-  )
-  values (auth_user, 'project_update', update_id, deleted_at)
-  on conflict (owner_id, entity_type, record_id)
-  do update set deleted_at = greatest(
-    public.dave_sync_tombstones.deleted_at,
-    excluded.deleted_at
-  );
-
-  delete from public.project_updates
-  where owner_id = auth_user
-    and id::text = update_id;
-  get diagnostics deleted_count = row_count;
-
-  insert into public.dave_deletion_audit (
-    owner_id,
-    entity_type,
-    record_id,
-    deleted_at,
-    child_counts
-  )
-  values (
-    auth_user,
-    'project_update',
-    update_id,
-    deleted_at,
-    jsonb_build_object('deleted_rows', deleted_count)
-  );
-
-  return jsonb_build_object(
-    'ok', true,
-    'already_absent', deleted_count = 0,
-    'record_id', update_id,
-    'deleted_at', deleted_at
-  );
-end
-$function$;
-
-create or replace function public.dave_purge_expired_deletion_audit()
-returns integer
-language plpgsql
-security definer
-set search_path = ''
-as $function$
-declare
-  auth_user uuid := auth.uid();
-  deleted_count integer;
-begin
-  if auth_user is null or not public.dave_is_app_owner() then
-    raise insufficient_privilege using message = 'owner authorization required';
-  end if;
-  delete from public.dave_deletion_audit
-  where owner_id = auth_user
-    and purge_after <= now();
-  get diagnostics deleted_count = row_count;
-  return deleted_count;
-end
-$function$;
-
 revoke all on function public.dave_delete_project_atomically(text)
   from public, anon;
-revoke all on function public.dave_delete_project_update_atomically(text)
-  from public, anon;
-revoke all on function public.dave_purge_expired_deletion_audit()
-  from public, anon;
-
 grant execute on function public.dave_delete_project_atomically(text)
   to authenticated;
-grant execute on function public.dave_delete_project_update_atomically(text)
-  to authenticated;
-grant execute on function public.dave_purge_expired_deletion_audit()
-  to authenticated;
 
-comment on table public.dave_sync_tombstones is
-  'Permanent owner-scoped deletion markers. Retained to prevent stale devices from resurrecting records.';
-comment on table public.dave_deletion_audit is
-  'Deletion receipts contain metadata only and are eligible for owner-authorized purge after one year.';
+comment on function public.dave_delete_project_atomically(text) is
+  'Owner-scoped atomic project deletion with permanent tombstones and explicitly typed document-id arrays.';
 
 commit;

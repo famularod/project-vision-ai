@@ -24,6 +24,9 @@ const aiMigration = read(
 const deletionMigration = read(
   'supabase/migrations/20260726020000_vitruvius_atomic_deletion.sql',
 );
+const deletionArrayTypeFixMigration = read(
+  'supabase/migrations/20260726030000_fix_atomic_deletion_array_types.sql',
+);
 
 assert.equal(packageJson.dependencies['@noble/ciphers'], '1.3.0');
 assert.equal(packageJson.dependencies['@noble/hashes'], '1.8.0');
@@ -97,6 +100,25 @@ for (const marker of [
     `Atomic deletion migration must preserve ${marker}.`,
   );
 }
+for (const marker of [
+  'create or replace function public.dave_delete_project_atomically',
+  'array[]::text[]',
+  'revoke all on function public.dave_delete_project_atomically',
+  'grant execute on function public.dave_delete_project_atomically',
+]) {
+  assert(
+    deletionArrayTypeFixMigration.toLowerCase().includes(marker.toLowerCase()),
+    `Atomic deletion type-correction migration must preserve ${marker}.`,
+  );
+}
+assert(
+  !deletionArrayTypeFixMigration.includes("text[] := '{}'"),
+  'Atomic deletion correction must not initialize a text array from an untyped string.',
+);
+assert(
+  !deletionArrayTypeFixMigration.includes("array_agg(document_record.id::text), '{}'"),
+  'Atomic deletion correction must not coalesce an array with an untyped string.',
+);
 assert(
   syncService.includes("'project_update'") && syncService.includes("'project'"),
   'Sync must honor project and project-update deletion markers.',
@@ -154,6 +176,14 @@ assert(
 assert(
   voiceFunction.includes('ALLOWED_ORIGINS'),
   'Voice capture must enforce configured browser origins.',
+);
+assert(
+  !photoFunction.includes("'Access-Control-Allow-Origin': '*'"),
+  'Photo analysis must not use wildcard browser access.',
+);
+assert(
+  photoFunction.includes('ALLOWED_ORIGINS'),
+  'Photo analysis must enforce configured browser origins.',
 );
 
 console.log(
