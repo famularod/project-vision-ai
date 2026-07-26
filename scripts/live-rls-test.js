@@ -330,6 +330,7 @@ async function createProjectRows(projects) {
   const payloads = projects.map(item => ({
     id: `${runId}-${item.id}`,
     name: item.name,
+    owner_id: item.ownerId,
     status: 'Active',
     archived: false,
     is_favorite: false,
@@ -347,6 +348,7 @@ async function createProjectRows(projects) {
 
   const fallbackPayloads = projects.map(item => ({
     name: item.name,
+    owner_id: item.ownerId,
     status: 'Active',
     archived: false,
     is_favorite: false,
@@ -378,9 +380,9 @@ async function setup() {
   );
 
   await createProjectRows([
-    { id: projectA1, name: `${runId} Project A1`, organizationId: orgA },
-    { id: projectA2, name: `${runId} Project A2`, organizationId: orgA },
-    { id: projectB1, name: `${runId} Project B1`, organizationId: orgB },
+    { id: projectA1, name: `${runId} Project A1`, organizationId: orgA, ownerId: userA.id },
+    { id: projectA2, name: `${runId} Project A2`, organizationId: orgA, ownerId: userA.id },
+    { id: projectB1, name: `${runId} Project B1`, organizationId: orgB, ownerId: userB.id },
   ]);
 
   await expectAllowed(
@@ -535,8 +537,8 @@ async function runLiveAssertions(ctx) {
     ctx.userA.client.from('pie_photo_progress_events').update({ project_id: ctx.projectA2 }).eq('id', eventA.id).select('*'),
   );
 
-  await expectDenied(
-    'update denied pie_reality_models',
+  await expectAllowed(
+    'authorized upsert update allowed pie_reality_models',
     ctx.userA.client.from('pie_reality_models').update({ status: 'needs_review' }).eq('id', realityA.id).select('*'),
   );
   await expectDenied(
