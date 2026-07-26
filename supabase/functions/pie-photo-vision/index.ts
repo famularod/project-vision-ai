@@ -74,19 +74,29 @@ const SIGNED_URL_EXPIRES_SECONDS = 600;
 const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_FIELD_NOTES_LENGTH = 4_000;
+const BASE_CORS_HEADERS = {
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Max-Age': '600',
+  Vary: 'Origin',
+};
 
 function defaultPromptVersion(mode: VisionMode): string {
   return photoAnalysisContractEnvelope(mode).promptVersion;
 }
 
 Deno.serve(async req => {
-  if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+  const corsHeaders = corsHeadersFor(req);
+  if (!corsHeaders) return json({ error: 'origin_not_allowed' }, 403);
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  const respond = (body: unknown, status = 200) => json(body, status, corsHeaders);
+  if (req.method !== 'POST') return respond({ error: 'method_not_allowed' }, 405);
   const declaredRequestBytes = Number(req.headers.get('content-length') || '0');
   if (
     Number.isFinite(declaredRequestBytes) &&
     declaredRequestBytes > MAX_REQUEST_BYTES
   ) {
-    return json({ error: 'request_too_large' }, 413);
+    return respond({ error: 'request_too_large' }, 413);
   }
 
   const supabaseUrl = requiredEnv('SUPABASE_URL');
@@ -102,7 +112,7 @@ Deno.serve(async req => {
   });
 
   const { data: userData, error: userError } = await userClient.auth.getUser();
-  if (userError || !userData.user) return json({ error: 'unauthorized' }, 401);
+  if (userError || !userData.user) return respond({ error: 'unauthorized' }, 401);
 
   // The service client bypasses RLS and can invoke a paid provider. Require
   // the server-maintained singleton owner before parsing any analysis input;
@@ -110,33 +120,33 @@ Deno.serve(async req => {
   const { data: isAppOwner, error: ownerError } = await userClient
     .rpc('dave_is_app_owner');
   if (ownerError) {
-    return json({ error: 'owner_verification_unavailable' }, 503);
+    return respond({ error: 'owner_verification_unavailable' }, 503);
   }
-  if (isAppOwner !== true) return json({ error: 'forbidden' }, 403);
+  if (isAppOwner !== true) return respond({ error: 'forbidden' }, 403);
 
   const bodyRead = await readBoundedUtf8Json<VisionRequest>(
     req,
     MAX_REQUEST_BYTES,
   );
   if (!bodyRead.ok) {
-    return json(
+    return respond(
       { error: bodyRead.error },
       bodyRead.error === 'request_too_large' ? 413 : 400,
     );
   }
   const body = bodyRead.value;
   if (body?.operation === 'config_check') {
-    return json(buildRedactedConfigCheck());
+    return respond(buildRedactedConfigCheck());
   }
 
   const validationError = validateRequestShape(body);
-  if (validationError) return json({ error: validationError }, 400);
+  if (validationError) return respond({ error: validationError }, 400);
 
   const request = body as Required<Pick<VisionRequest, 'organizationId' | 'projectId'>> & VisionRequest;
   const mode: VisionMode = request.mode ?? (request.baselineEvidenceId && request.currentEvidenceId ? 'photo_pair' : 'single_photo');
   const contractValidation = validatePhotoAnalysisContractEnvelope(mode, request);
   if (!contractValidation.valid) {
-    return json({
+    return respond({
       error: 'photo_analysis_contract_mismatch',
       categories: contractValidation.categories,
       expectedContractVersion: PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion,
@@ -151,7 +161,7 @@ Deno.serve(async req => {
     organizationId: request.organizationId,
     projectId: request.projectId,
   });
-  if (!hasAccess) return json({ error: 'forbidden' }, 403);
+  if (!hasAccess) return respond({ error: 'forbidden' }, 403);
 
   // Safe provisional ID for failure diagnostics. The primary key is always
   // derived by this server and never copied from request.requestId.
@@ -187,9 +197,9 @@ Deno.serve(async req => {
         imageDiagnostics,
       );
       if (!persisted.ok) {
-        return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+        return persistenceFailureResponse(requestId, mode, persisted.failedWrite, corsHeaders);
       }
-      return json({ requestId, mode, status: preflightResult?.status ?? 'failed', error: image.error }, image.status);
+      return respond({ requestId, mode, status: preflightResult?.status ?? 'failed', error: image.error }, image.status);
     }
     imageDiagnostics.push(image.diagnostics);
     images.push(image);
@@ -208,7 +218,7 @@ Deno.serve(async req => {
     versions: requestIdentityVersions,
   });
   if (!callerPhotoVisionRequestIdMatches(request.requestId, requestId)) {
-    return json({
+    return respond({
       error: 'request_identity_mismatch',
       requestId,
       mode,
@@ -230,7 +240,7 @@ Deno.serve(async req => {
         imageDiagnostics,
       );
       if (!persisted.ok) {
-        return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+        return persistenceFailureResponse(requestId, mode, persisted.failedWrite, corsHeaders);
       }
       console.log(JSON.stringify(buildSafeImageDiagnosticLog({
         event: 'pie_vision_image_pair_rejected',
@@ -240,7 +250,7 @@ Deno.serve(async req => {
         providerInvocationId: requestId,
         providerResponseStatus: pairError,
       })));
-      return json({ requestId, mode, status: 'failed', error: pairError }, 422);
+      return respond({ requestId, mode, status: 'failed', error: pairError }, 422);
     }
   }
 
@@ -263,7 +273,7 @@ Deno.serve(async req => {
     p_payload_bytes: new TextEncoder().encode(JSON.stringify(body)).byteLength,
   });
   if (operationBegin.error || !operationBegin.data) {
-    return json({ error: 'ai_operation_control_unavailable' }, 503);
+    return respond({ error: 'ai_operation_control_unavailable' }, 503);
   }
   const operationControl = operationBegin.data as {
     action?: string;
@@ -272,28 +282,28 @@ Deno.serve(async req => {
     retry_after_seconds?: number;
   };
   if (operationControl.action === 'replay') {
-    return json(operationControl.response_payload);
+    return respond(operationControl.response_payload);
   }
   if (operationControl.action === 'in_progress') {
-    return json({
+    return respond({
       error: 'analysis_in_progress',
       retryAfterSeconds: operationControl.retry_after_seconds ?? 15,
     }, 409);
   }
   if (operationControl.action === 'rate_limited') {
-    return json({
+    return respond({
       error: 'analysis_rate_limited',
       retryAfterSeconds: operationControl.retry_after_seconds ?? 60,
     }, 429);
   }
   if (operationControl.action === 'idempotency_conflict') {
-    return json({ error: 'analysis_idempotency_conflict' }, 409);
+    return respond({ error: 'analysis_idempotency_conflict' }, 409);
   }
   if (
     operationControl.action !== 'start' ||
     typeof operationControl.request_id !== 'string'
   ) {
-    return json({ error: 'ai_operation_control_invalid' }, 503);
+    return respond({ error: 'ai_operation_control_invalid' }, 503);
   }
   const operationRequestId = operationControl.request_id;
 
@@ -394,7 +404,7 @@ Deno.serve(async req => {
       null,
       'analysis_persistence_failed',
     );
-    return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+    return persistenceFailureResponse(requestId, mode, persisted.failedWrite, corsHeaders);
   }
 
   const responsePayload = {
@@ -422,9 +432,9 @@ Deno.serve(async req => {
     null,
   );
   if (!operationFinished) {
-    return json({ error: 'ai_operation_finalize_failed' }, 503);
+    return respond({ error: 'ai_operation_finalize_failed' }, 503);
   }
-  return json(responsePayload);
+  return respond(responsePayload);
 });
 
 async function loadAuthorizedImage(
@@ -1207,6 +1217,7 @@ function persistenceFailureResponse(
   requestId: string,
   mode: VisionMode,
   failedWrite: string,
+  corsHeaders: Record<string, string>,
 ): Response {
   console.error(JSON.stringify({
     event: 'pie_vision_persistence_failed',
@@ -1219,7 +1230,7 @@ function persistenceFailureResponse(
     mode,
     status: 'failed',
     error: 'analysis_persistence_failed',
-  }, 502);
+  }, 502, corsHeaders);
 }
 
 function buildSafeImageDiagnosticLog(input: {
@@ -1414,11 +1425,29 @@ function buildRedactedConfigCheck() {
   };
 }
 
-function json(body: unknown, status = 200): Response {
+function json(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = BASE_CORS_HEADERS,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...headers, 'Content-Type': 'application/json' },
   });
+}
+
+function corsHeadersFor(request: Request): Record<string, string> | null {
+  const origin = request.headers.get('origin');
+  if (!origin) return { ...BASE_CORS_HEADERS };
+  const allowed = (Deno.env.get('ALLOWED_ORIGINS') || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+  if (!allowed.includes(origin)) return null;
+  return {
+    ...BASE_CORS_HEADERS,
+    'Access-Control-Allow-Origin': origin,
+  };
 }
 
 async function finishAIOperation(

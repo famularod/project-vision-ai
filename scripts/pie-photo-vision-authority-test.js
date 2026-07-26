@@ -106,6 +106,17 @@ assert(edge.includes('isCanonicalPhotoEvidenceStoragePath'));
 assert(edge.includes('duplicate_photo_root_mismatch'));
 assert(edge.includes('evidenceId: storagePathEvidenceId'));
 assert(edge.includes('analysis_persistence_failed'));
+assert(
+  edge.includes("Deno.env.get('ALLOWED_ORIGINS')") &&
+    edge.includes("return json({ error: 'origin_not_allowed' }, 403)") &&
+    edge.includes("if (req.method === 'OPTIONS')"),
+  'The photo edge must allow native requests while rejecting unapproved browser origins and handling CORS preflight.',
+);
+assert(
+  edge.includes("'Access-Control-Allow-Origin': origin") &&
+    !edge.includes("'Access-Control-Allow-Origin': '*'"),
+  'The photo edge must echo only an explicitly approved browser origin and must never use wildcard CORS.',
+);
 
 const provider = fs.readFileSync(
   path.join(root, 'supabase/functions/_shared/pie-vision-provider.ts'),
