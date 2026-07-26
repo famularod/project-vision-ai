@@ -1,4 +1,4 @@
-const { withAndroidManifest } = require('@expo/config-plugins');
+const { withAndroidManifest } = require('expo/config-plugins');
 
 const BLOCKED_ANDROID_PERMISSIONS = Object.freeze([
   'android.permission.READ_EXTERNAL_STORAGE',

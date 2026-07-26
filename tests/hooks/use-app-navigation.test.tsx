@@ -99,7 +99,11 @@ describe('app navigation controller', () => {
   });
 
   it('consumes Back while a capture/modal guard is active and removes its listener', async () => {
-    const listeners: Array<() => boolean | null | undefined> = [];
+    const listeners: Array<Parameters<typeof BackHandler.addEventListener>[1]> = [];
+    const hardwareBackEvent = {
+      type: 'hardwareBackPress',
+      timeStamp: 0,
+    };
     const remove = jest.fn();
     const addListener = jest.spyOn(BackHandler, 'addEventListener').mockImplementation(
       (_event, handler) => {
@@ -118,12 +122,12 @@ describe('app navigation controller', () => {
     );
 
     expect(listeners).toHaveLength(1);
-    expect(listeners[0]()).toBe(true);
+    expect(listeners[0](hardwareBackEvent)).toBe(true);
     expect(onBack).not.toHaveBeenCalled();
     rerender({ blocked: false });
     expect(remove).toHaveBeenCalledTimes(1);
     expect(listeners).toHaveLength(2);
-    expect(listeners[1]()).toBe(false);
+    expect(listeners[1](hardwareBackEvent)).toBe(false);
     expect(onBack).toHaveBeenCalledTimes(1);
     unmount();
     expect(remove).toHaveBeenCalledTimes(2);

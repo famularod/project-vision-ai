@@ -11,9 +11,18 @@ jest.mock('expo-crypto', () => ({
   digest: jest.fn(async () => new Uint8Array(32).buffer),
 }));
 
-jest.mock('react-native', () => ({
-  Image: { getSize: jest.fn() },
-}));
+jest.mock('react-native', () => {
+  return {
+    Image: { getSize: jest.fn() },
+    NativeModules: {},
+    Platform: {
+      OS: 'ios',
+      select: (values: Record<string, unknown>) =>
+        values.ios ?? values.native ?? values.default,
+    },
+    TurboModuleRegistry: { get: jest.fn(() => null) },
+  };
+});
 
 jest.mock('../../services/SupabaseService', () => ({
   getSupabaseClient: jest.fn(),
