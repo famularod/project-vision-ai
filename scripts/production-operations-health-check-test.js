@@ -16,6 +16,11 @@ assert.match(
   /from\('dave_sync_tombstones'\)\s*\.select\('record_id',\s*\{\s*count:\s*'exact',\s*head:\s*true\s*\}\)/,
   'Production tombstone monitoring must count the existing record_id column.',
 );
+assert.match(
+  productionCheckSource,
+  /typeof globalThis\.WebSocket === 'undefined'[\s\S]*require\('ws'\)/,
+  'Production monitoring must supply the installed WebSocket transport on Node.js 20.',
+);
 
 const NOW = new Date('2026-07-26T12:00:00.000Z');
 
