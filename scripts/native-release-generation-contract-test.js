@@ -12,9 +12,32 @@ const eas = JSON.parse(read('eas.json'));
 const workflow = read('.github/workflows/mobile-ci.yml');
 const gitignore = read('.gitignore');
 const productMetadata = JSON.parse(read('product-metadata.json'));
+const linuxValidationJob = workflow.match(
+  /  validate:\n([\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\n|\s*$)/,
+)?.[1];
+const nativeGenerationJob = workflow.match(
+  /  native-release-generation:\n([\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\n|\s*$)/,
+)?.[1];
 
+assert(linuxValidationJob, 'CI must preserve the Linux validation job.');
 assert.match(
-  workflow,
+  linuxValidationJob,
+  /runs-on: ubuntu-latest/,
+  'Routine validation must stay on the lower-cost Linux runner.',
+);
+assert(
+  !linuxValidationJob.includes('npx expo prebuild --platform all'),
+  'Linux validation must not invoke Apple-only native generation tools.',
+);
+
+assert(nativeGenerationJob, 'CI must define a dedicated native generation job.');
+assert.match(
+  nativeGenerationJob,
+  /runs-on: macos-latest/,
+  'Native project generation must run on macOS where Apple asset tools are available.',
+);
+assert.match(
+  nativeGenerationJob,
   /npx expo prebuild --platform all --no-install --clean/,
   'CI must regenerate both native projects from clean source configuration.',
 );
@@ -27,8 +50,8 @@ for (const command of [
   'npx expo export --platform android',
 ]) {
   assert(
-    workflow.includes(command),
-    `Native CI must execute ${command}.`,
+    nativeGenerationJob.includes(command),
+    `The macOS native generation job must execute ${command}.`,
   );
 }
 

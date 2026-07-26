@@ -40,9 +40,12 @@ production credential change has been performed by this work.
 - The unused `@expo/ngrok` development dependency was removed. Safe transitive
   overrides pin `brace-expansion` 5.0.8 and `uuid` 11.1.1 under `xcode`.
   `npm audit` reports zero known vulnerabilities for the exact lock.
-- CI regenerates both native projects from reviewed Expo configuration and
-  exports iOS and Android. A clean temporary checkout completed dependency
-  installation, native generation, metadata checks, and both exports.
+- CI keeps routine release validation on Linux and runs clean native project
+  generation on macOS, where the required Apple asset tools are available.
+  The macOS job regenerates both native projects from reviewed Expo
+  configuration and exports iOS and Android. A clean temporary checkout
+  completed dependency installation, native generation, metadata checks, and
+  both exports.
 - EAS uses local version metadata and does not auto-increment production
   builds. `product-metadata.json`, `app.json`, native metadata, and the reviewed
   artifact therefore remain one auditable Build 113 identity.
