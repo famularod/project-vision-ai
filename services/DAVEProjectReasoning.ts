@@ -302,9 +302,10 @@ function recommendationFor(
     ? 'Now'
     : timingFor(item, now, projectTimeZone);
   const smallest = challenges[0]?.smallestUsefulEvidence || 'Record the next accountable status update.';
+  const pmNextAction = clean(item.nextAction);
   if (correlation.conclusion === 'verified_complete') return { action: 'Preserve the verification and monitor downstream work.', owner, timing: 'No immediate action', consequenceOfInaction: 'No immediate consequence is identified from this task.', smallestNextAction: 'Confirm the next dependent activity is ready.' };
   if (correlation.needsVerification || challenges.length) return { action: correlation.requestedAction || 'Verify the current task condition.', owner: 'Project manager', timing, consequenceOfInaction: isOverdue(item, new Date(now), projectTimeZone) ? 'The project may continue relying on an overdue or incorrect task status.' : 'Downstream decisions may rely on an unsupported task status.', smallestNextAction: smallest };
-  return { action: 'Continue the planned work and capture the next material change.', owner, timing, consequenceOfInaction: 'DAVE may lose visibility into progress and emerging delay.', smallestNextAction: smallest };
+  return { action: pmNextAction || 'Continue the planned work and capture the next material change.', owner, timing, consequenceOfInaction: 'DAVE may lose visibility into progress and emerging delay.', smallestNextAction: pmNextAction || smallest };
 }
 
 function outcomeLearningCues(item: ScheduleItem) {

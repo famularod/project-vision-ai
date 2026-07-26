@@ -7,6 +7,7 @@ import {
 } from '../../services/DAVEWebTaskEditing';
 
 const BASE_DRAFT: DAVEWebTaskDraft = {
+  itemType: 'Task',
   taskName: 'Install handrails',
   projectName: '2375 Compliance Project',
   locationName: 'Canopy C',
@@ -19,6 +20,8 @@ const BASE_DRAFT: DAVEWebTaskDraft = {
   priority: 'High',
   status: 'In Progress',
   notes: 'Waiting for final anchors.',
+  nextAction: 'Confirm anchor delivery.',
+  activityMessage: '',
 };
 
 describe('DAVE desktop task editing model', () => {
@@ -134,6 +137,141 @@ describe('DAVE desktop task editing model', () => {
     });
 
     expect(scheduleItemForCloud({ ...task, cloudUpdatedAt: 'cloud-revision' })).not.toHaveProperty('cloudUpdatedAt');
+  });
+
+  test('persists project item type, next action, and append-only activity', () => {
+    const created = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        activityMessage: 'Called the steel contractor.',
+      },
+      id: 'issue-1',
+      now: '2026-07-22T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(created.itemType).toBe('Issue');
+    expect(created.nextAction).toBe('Confirm anchor delivery.');
+    expect(created.activity).toEqual([
+      expect.objectContaining({
+        message: 'Called the steel contractor.',
+        author: 'pm@example.com',
+        createdAt: '2026-07-22T18:00:00.000Z',
+      }),
+    ]);
+
+    const updated = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        activityMessage: 'Delivery confirmed for tomorrow.',
+      },
+      current: created,
+      id: created.id,
+      now: '2026-07-22T19:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(updated.activity).toHaveLength(2);
+    expect(updated.activity?.[0].message).toBe('Called the steel contractor.');
+    expect(updated.activity?.[1].message).toBe('Delivery confirmed for tomorrow.');
+  });
+
+  test('preserves planning hierarchy, baselines, and dependencies during ordinary edits', () => {
+    const created = buildDAVEWebScheduleItem({
+      draft: BASE_DRAFT,
+      id: 'planned-task',
+      now: '2026-07-22T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+    const current: DAVEWebScheduleItem = {
+      ...created,
+      wbsCode: '1.2.3',
+      parentItemId: 'phase-1',
+      sortOrder: 20,
+      dependencies: [{
+        predecessorItemId: 'predecessor',
+        type: 'FS',
+        lagDays: 2,
+      }],
+      isMilestone: false,
+      baselineStartDate: '2026-07-20',
+      baselineFinishDate: '2026-07-24',
+      isSummary: false,
+    };
+
+    const updated = buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, notes: 'Edited without changing schedule logic.' },
+      current,
+      id: current.id,
+      now: '2026-07-23T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(updated).toMatchObject({
+      wbsCode: '1.2.3',
+      parentItemId: 'phase-1',
+      sortOrder: 20,
+      dependencies: [{
+        predecessorItemId: 'predecessor',
+        type: 'FS',
+        lagDays: 2,
+      }],
+      isMilestone: false,
+      baselineStartDate: '2026-07-20',
+      baselineFinishDate: '2026-07-24',
+      isSummary: false,
+    });
+  });
+
+  test('accepts schedule-builder planning changes without affecting PM progress authority', () => {
+    const current = buildDAVEWebScheduleItem({
+      draft: BASE_DRAFT,
+      id: 'schedule-builder-task',
+      now: '2026-07-22T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    const updated = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        wbsCode: '3.1',
+        parentItemId: 'phase-3',
+        sortOrder: '30',
+        durationDays: '4',
+        dependencies: [{
+          predecessorItemId: 'predecessor',
+          type: 'FS',
+          lagDays: 1,
+        }],
+        isSummary: false,
+        isMilestone: false,
+        baselineStartDate: '2026-07-20',
+        baselineFinishDate: '2026-07-23',
+      },
+      current,
+      id: current.id,
+      now: '2026-07-23T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(updated).toMatchObject({
+      wbsCode: '3.1',
+      parentItemId: 'phase-3',
+      sortOrder: 30,
+      durationDays: 4,
+      dependencies: [{
+        predecessorItemId: 'predecessor',
+        type: 'FS',
+        lagDays: 1,
+      }],
+      isSummary: false,
+      isMilestone: false,
+      baselineStartDate: '2026-07-20',
+      baselineFinishDate: '2026-07-23',
+      progressSource: 'project_manager',
+    });
   });
 
   test('rejects missing task and project identity', () => {

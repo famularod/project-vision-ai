@@ -19,30 +19,34 @@ export function ReportsWideWorkspace({
       edges={['top', 'left', 'right']}
       testID="reports-wide-workspace"
     >
-      <View style={styles.workspace}>
-        <ScrollView
-          style={styles.reportColumn}
-          contentContainerStyle={styles.reportContent}
-          contentInsetAdjustmentBehavior="automatic"
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
+      <ScrollView
+        style={styles.workspace}
+        contentContainerStyle={styles.workspaceContent}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        testID="reports-wide-scroll"
+      >
+        <View style={styles.page}>
           {header}
-          <Text accessibilityRole="header" style={styles.eyebrow}>REPORT PREVIEW</Text>
-          {report}
-        </ScrollView>
 
-        <ScrollView
-          style={styles.reviewColumn}
-          contentContainerStyle={styles.reviewContent}
-          contentInsetAdjustmentBehavior="automatic"
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          <Text accessibilityRole="header" style={styles.eyebrow}>REPORT CHECK</Text>
-          {review}
-        </ScrollView>
-      </View>
+          <View
+            style={[styles.section, styles.reviewSection]}
+            testID="reports-wide-review-section"
+          >
+            <Text accessibilityRole="header" style={styles.eyebrow}>REPORT CHECK</Text>
+            {review}
+          </View>
+
+          <View
+            style={styles.section}
+            testID="reports-wide-preview-section"
+          >
+            <Text accessibilityRole="header" style={styles.eyebrow}>REPORT PREVIEW</Text>
+            {report}
+          </View>
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -55,30 +59,23 @@ const styles = StyleSheet.create({
   workspace: {
     flex: 1,
     minHeight: 0,
-    flexDirection: 'row',
   },
-  reportColumn: {
-    flex: 1.25,
-    minWidth: 0,
-    borderRightWidth: 1,
-    borderRightColor: colors.border,
-  },
-  reviewColumn: {
-    flex: 0.9,
-    minWidth: 360,
-    backgroundColor: colors.surface,
-  },
-  reportContent: {
+  workspaceContent: {
     flexGrow: 1,
-    gap: spacing.md,
     padding: spacing.xl,
     paddingBottom: spacing.xxxl,
   },
-  reviewContent: {
-    flexGrow: 1,
+  page: {
+    width: '100%',
+    maxWidth: 1180,
+    alignSelf: 'center',
+    gap: spacing.lg,
+  },
+  section: {
     gap: spacing.md,
-    padding: spacing.xl,
-    paddingBottom: spacing.xxxl,
+  },
+  reviewSection: {
+    width: '100%',
   },
   eyebrow: {
     color: colors.tertiaryText,

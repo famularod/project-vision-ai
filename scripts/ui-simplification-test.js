@@ -87,7 +87,7 @@ assert(
 );
 assert(
   review.includes('<View style={styles.reportProgressHeading}>') &&
-    review.includes('Average task completion by area'),
+    review.includes('Progress based on scheduled task duration'),
   'The work-area progress explanation should sit below its heading instead of competing for horizontal space.',
 );
 assert(
@@ -122,8 +122,8 @@ const settingsMain = settings.slice(
   'title="Advanced / Diagnostics"',
   'title="Display name"',
   'title="Connection status"',
-  'title="Back Up Data"',
-  'title="Restore Backup"',
+  'title="Export Complete Backup"',
+  'title="Restore Complete Backup"',
   'title="Send Feedback"',
   'title="Help"',
   'title="About"',

@@ -1,10 +1,14 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.108.2';
+import {
+  createClient,
+  type SupabaseClient,
+} from 'https://esm.sh/@supabase/supabase-js@2.108.2';
 
 const SCHEMA_VERSION = 'dave-voice-understanding/1.0';
 const TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 const UNDERSTANDING_MODEL = 'gpt-4o-mini';
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_PROJECT_NAME_LENGTH = 200;
+const MAX_PROJECT_ID_LENGTH = 200;
 const MAX_LOCATION_COUNT = 100;
 const MAX_LOCATION_LENGTH = 200;
 const MEMORY_FIELD_NAMES = [
@@ -28,46 +32,100 @@ const ALLOWED_AUDIO_TYPES = new Set([
   'audio/wav',
   'audio/webm',
 ]);
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
+const BASE_CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+type EdgeSupabaseClient = SupabaseClient<any, 'public', 'public', any, any>;
 
 Deno.serve(async request => {
-  if (request.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
-  if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+  const corsHeaders = corsHeadersFor(request);
+  if (!corsHeaders) return json({ error: 'origin_not_allowed' }, 403);
+  if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405, corsHeaders);
 
   try {
     const authHeader = request.headers.get('Authorization') ?? '';
-    if (!authHeader.startsWith('Bearer ')) return json({ error: 'unauthorized' }, 401);
+    if (!authHeader.startsWith('Bearer ')) return json({ error: 'unauthorized' }, 401, corsHeaders);
 
     const supabase = createClient(requiredEnv('SUPABASE_URL'), requiredEnv('SUPABASE_ANON_KEY'), {
       global: { headers: { Authorization: authHeader } },
       auth: { persistSession: false },
     });
     const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError || !userData.user) return json({ error: 'unauthorized' }, 401);
+    if (userError || !userData.user) return json({ error: 'unauthorized' }, 401, corsHeaders);
     const { data: isOwner, error: ownerError } = await supabase.rpc('dave_is_app_owner');
     if (ownerError) {
       console.error(JSON.stringify({
         event: 'dave_voice_owner_check_failed',
         authenticatedUserIdPresent: true,
       }));
-      return json({ error: 'authorization_unavailable' }, 503);
+      return json({ error: 'authorization_unavailable' }, 503, corsHeaders);
     }
-    if (isOwner !== true) return json({ error: 'forbidden' }, 403);
+    if (isOwner !== true) return json({ error: 'forbidden' }, 403, corsHeaders);
 
     const form = await request.formData().catch(() => null);
     const audio = form?.get('audio');
-    if (!(audio instanceof File)) return json({ error: 'audio_file_required' }, 400);
-    if (audio.size <= 0) return json({ error: 'audio_file_empty' }, 400);
-    if (audio.size > MAX_AUDIO_BYTES) return json({ error: 'audio_file_too_large' }, 413);
+    if (!(audio instanceof File)) return json({ error: 'audio_file_required' }, 400, corsHeaders);
+    if (audio.size <= 0) return json({ error: 'audio_file_empty' }, 400, corsHeaders);
+    if (audio.size > MAX_AUDIO_BYTES) return json({ error: 'audio_file_too_large' }, 413, corsHeaders);
     if (audio.type && !ALLOWED_AUDIO_TYPES.has(audio.type.toLowerCase())) {
-      return json({ error: 'audio_type_not_supported' }, 415);
+      return json({ error: 'audio_type_not_supported' }, 415, corsHeaders);
     }
     const projectName = cleanContextValue(form?.get('projectName'), MAX_PROJECT_NAME_LENGTH);
-    if (!projectName) return json({ error: 'project_name_required' }, 400);
+    if (!projectName) return json({ error: 'project_name_required' }, 400, corsHeaders);
+    const projectId = cleanContextValue(form?.get('projectId'), MAX_PROJECT_ID_LENGTH);
+    if (!projectId || !/^[a-z0-9][a-z0-9-]{2,199}$/.test(projectId)) {
+      return json({ error: 'project_id_required' }, 400, corsHeaders);
+    }
     const candidateLocations = parseCandidateLocations(form?.get('candidateLocations'));
+    const audioBytes = new Uint8Array(await audio.arrayBuffer());
+    const payloadFingerprint = await sha256Hex(concatBytes(
+      audioBytes,
+      new TextEncoder().encode(JSON.stringify({
+        projectId,
+        projectName,
+        candidateLocations,
+        schemaVersion: SCHEMA_VERSION,
+      })),
+    ));
+    const operationBegin = await supabase.rpc('dave_begin_ai_operation', {
+      p_operation_type: 'voice_capture',
+      p_idempotency_key: `voice:${payloadFingerprint}`,
+      p_project_ids: [projectId],
+      p_payload_fingerprint: payloadFingerprint,
+      p_payload_bytes: audio.size,
+    });
+    if (operationBegin.error || !operationBegin.data) {
+      return json({ error: 'ai_operation_control_unavailable' }, 503, corsHeaders);
+    }
+    const operation = operationBegin.data as {
+      action?: string;
+      request_id?: string;
+      response_payload?: unknown;
+      retry_after_seconds?: number;
+    };
+    if (operation.action === 'replay') {
+      return json(operation.response_payload, 200, corsHeaders);
+    }
+    if (operation.action === 'in_progress') {
+      return json({
+        error: 'transcription_in_progress',
+        retryAfterSeconds: operation.retry_after_seconds ?? 15,
+      }, 409, corsHeaders);
+    }
+    if (operation.action === 'rate_limited') {
+      return json({
+        error: 'transcription_rate_limited',
+        retryAfterSeconds: operation.retry_after_seconds ?? 60,
+      }, 429, corsHeaders);
+    }
+    if (
+      operation.action !== 'start' ||
+      typeof operation.request_id !== 'string'
+    ) {
+      return json({ error: 'ai_operation_control_invalid' }, 503, corsHeaders);
+    }
+    const operationRequestId = operation.request_id;
 
     const providerForm = new FormData();
     providerForm.append('file', audio, safeAudioFileName(audio));
@@ -92,12 +150,18 @@ Deno.serve(async request => {
         audioBytes: audio.size,
         audioType: audio.type || null,
       }));
-      return json({ error: 'transcription_provider_failed' }, 502);
+      await finishAIOperation(supabase, operationRequestId, 'failed', null,
+        'transcription_provider_failed');
+      return json({ error: 'transcription_provider_failed' }, 502, corsHeaders);
     }
 
     const providerBody = await providerResponse.json().catch(() => null) as { text?: unknown } | null;
     const transcript = typeof providerBody?.text === 'string' ? providerBody.text.trim() : '';
-    if (!transcript) return json({ error: 'transcription_empty' }, 502);
+    if (!transcript) {
+      await finishAIOperation(supabase, operationRequestId, 'failed', null,
+        'transcription_empty');
+      return json({ error: 'transcription_empty' }, 502, corsHeaders);
+    }
 
     const understanding = await understandMemory({
       transcript,
@@ -113,18 +177,29 @@ Deno.serve(async request => {
       audioType: audio.type || null,
     }));
 
-    return json({
+    const responsePayload = {
       schemaVersion: SCHEMA_VERSION,
       transcript,
       transcriptionModel: TRANSCRIPTION_MODEL,
       understanding,
-    });
+    };
+    const finalized = await finishAIOperation(
+      supabase,
+      operationRequestId,
+      'completed',
+      responsePayload,
+      null,
+    );
+    if (!finalized) {
+      return json({ error: 'ai_operation_finalize_failed' }, 503, corsHeaders);
+    }
+    return json(responsePayload, 200, corsHeaders);
   } catch (error) {
     console.error(JSON.stringify({
       event: 'dave_voice_transcription_error',
       reason: error instanceof Error ? error.name : 'unknown_error',
     }));
-    return json({ error: 'transcription_unavailable' }, 500);
+    return json({ error: 'transcription_unavailable' }, 500, corsHeaders);
   }
 });
 
@@ -324,9 +399,60 @@ function requiredEnv(name: string) {
   return value;
 }
 
-function json(body: unknown, status = 200) {
+function json(
+  body: unknown,
+  status = 200,
+  corsHeaders: Record<string, string> = BASE_CORS_HEADERS,
+) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+}
+
+function corsHeadersFor(request: Request): Record<string, string> | null {
+  const origin = request.headers.get('origin');
+  if (!origin) return { ...BASE_CORS_HEADERS };
+  const allowed = (Deno.env.get('ALLOWED_ORIGINS') || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+  if (!allowed.includes(origin)) return null;
+  return {
+    ...BASE_CORS_HEADERS,
+    'Access-Control-Allow-Origin': origin,
+    Vary: 'Origin',
+  };
+}
+
+async function finishAIOperation(
+  client: EdgeSupabaseClient,
+  requestId: string,
+  status: 'completed' | 'failed',
+  responsePayload: unknown,
+  errorCode: string | null,
+) {
+  const result = await client.rpc('dave_finish_ai_operation', {
+    p_request_id: requestId,
+    p_status: status,
+    p_response_payload: responsePayload,
+    p_error_code: errorCode,
+  });
+  return !result.error;
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array) {
+  const output = new Uint8Array(left.byteLength + right.byteLength);
+  output.set(left, 0);
+  output.set(right, left.byteLength);
+  return output;
+}
+
+async function sha256Hex(value: Uint8Array) {
+  const copied = new Uint8Array(value.byteLength);
+  copied.set(value);
+  const digest = await crypto.subtle.digest('SHA-256', copied.buffer);
+  return Array.from(new Uint8Array(digest))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
 }

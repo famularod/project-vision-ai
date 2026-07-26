@@ -10,6 +10,10 @@ export const DAVE_ASK_SUGGESTED_QUESTIONS = [
   'What should I do next?',
 ] as const;
 
+export const DAVE_ASK_HISTORY_LIMIT = 100;
+export const DAVE_ASK_HISTORY_PAGE_SIZE = 20;
+const DAVE_ASK_HISTORY_JOURNAL_VERSION = 1 as const;
+
 export type DAVEAskConversationEntry = {
   id: string;
   projectId: string;
@@ -41,16 +45,42 @@ export type DAVEAskHistoryParseResult = Readonly<{
   history: DAVEAskConversationEntry[];
 }>;
 
+export type DAVEAskHistoryPage = Readonly<{
+  entries: DAVEAskConversationEntry[];
+  nextBeforeId: string | null;
+  totalCount: number;
+}>;
+
+type DAVEAskHistoryJournal = Readonly<{
+  version: typeof DAVE_ASK_HISTORY_JOURNAL_VERSION;
+  projectId: string;
+  historyStorageKey: string;
+  entryId: string;
+  beforeValue: string;
+  nextValue: string;
+}>;
+
 export class DAVEAskHistoryPersistenceError extends Error {
-  readonly code: 'read_failed' | 'corrupt_history' | 'write_failed';
+  readonly code:
+    | 'read_failed'
+    | 'corrupt_history'
+    | 'write_failed'
+    | 'corrupt_journal'
+    | 'journal_conflict';
   readonly cause: unknown;
 
   constructor(code: DAVEAskHistoryPersistenceError['code'], cause?: unknown) {
-    super(code === 'corrupt_history'
-      ? 'Saved DAVE Ask history is corrupt.'
-      : code === 'read_failed'
-        ? 'Saved DAVE Ask history could not be read.'
-        : 'DAVE Ask history could not be saved.');
+    super(
+      code === 'corrupt_history'
+        ? 'Saved DAVE Ask history is corrupt.'
+        : code === 'corrupt_journal'
+          ? 'The pending DAVE Ask history journal is corrupt.'
+          : code === 'journal_conflict'
+            ? 'The pending DAVE Ask history journal conflicts with saved history.'
+            : code === 'read_failed'
+              ? 'Saved DAVE Ask history could not be read.'
+              : 'DAVE Ask history could not be saved.',
+    );
     this.name = 'DAVEAskHistoryPersistenceError';
     this.code = code;
     this.cause = cause;
@@ -68,6 +98,7 @@ const daveAskHistoryMutationTails = new Map<string, Promise<void>>();
 export function createDAVEAskHistoryPersistence(dependencies: Readonly<{
   readItem: (storageKey: string) => Promise<string | null>;
   persistItem: (storageKey: string, value: string) => Promise<void>;
+  removeItem?: (storageKey: string) => Promise<void>;
 }>) {
   function enqueue<T>(storageKey: string, operation: () => Promise<T>): Promise<T> {
     const previous = daveAskHistoryMutationTails.get(storageKey) || Promise.resolve();
@@ -82,7 +113,7 @@ export function createDAVEAskHistoryPersistence(dependencies: Readonly<{
     return current;
   }
 
-  async function readParsed(storageKey: string, projectId: string) {
+  async function readRawParsed(storageKey: string, projectId: string) {
     let raw: string | null;
     try {
       raw = await dependencies.readItem(storageKey);
@@ -93,24 +124,116 @@ export function createDAVEAskHistoryPersistence(dependencies: Readonly<{
     if (parsed.status === 'corrupt') {
       throw new DAVEAskHistoryPersistenceError('corrupt_history');
     }
-    return parsed.history;
+    return {
+      raw,
+      history: parsed.history,
+      canonicalValue: JSON.stringify(parsed.history),
+    };
+  }
+
+  async function removeJournal(journalStorageKey: string) {
+    try {
+      await dependencies.removeItem?.(journalStorageKey);
+    } catch (error) {
+      throw new DAVEAskHistoryPersistenceError('write_failed', error);
+    }
+  }
+
+  async function recoverJournal(storageKey: string, projectId: string) {
+    if (!dependencies.removeItem) return;
+    const journalStorageKey = daveAskHistoryJournalStorageKey(projectId);
+    let raw: string | null;
+    try {
+      raw = await dependencies.readItem(journalStorageKey);
+    } catch (error) {
+      throw new DAVEAskHistoryPersistenceError('read_failed', error);
+    }
+    if (raw === null) return;
+    const journal = parseDAVEAskHistoryJournal(raw, projectId, storageKey);
+    if (!journal) {
+      throw new DAVEAskHistoryPersistenceError('corrupt_journal');
+    }
+
+    const current = await readRawParsed(storageKey, projectId);
+    if (
+      current.canonicalValue === journal.nextValue ||
+      current.history.some(entry => entry.id === journal.entryId)
+    ) {
+      await removeJournal(journalStorageKey);
+      return;
+    }
+    if (current.canonicalValue !== journal.beforeValue) {
+      throw new DAVEAskHistoryPersistenceError('journal_conflict');
+    }
+
+    try {
+      await dependencies.persistItem(storageKey, journal.nextValue);
+    } catch (error) {
+      throw new DAVEAskHistoryPersistenceError('write_failed', error);
+    }
+    const verified = await readRawParsed(storageKey, projectId);
+    if (verified.canonicalValue !== journal.nextValue) {
+      throw new DAVEAskHistoryPersistenceError('write_failed');
+    }
+    await removeJournal(journalStorageKey);
   }
 
   return Object.freeze({
     read(projectId: string) {
       const storageKey = daveAskHistoryStorageKey(projectId);
-      return enqueue(storageKey, () => readParsed(storageKey, projectId));
+      return enqueue(storageKey, async () => {
+        await recoverJournal(storageKey, projectId);
+        return (await readRawParsed(storageKey, projectId)).history;
+      });
+    },
+    readPage(
+      projectId: string,
+      options?: Readonly<{ beforeId?: string | null; limit?: number }>,
+    ) {
+      const storageKey = daveAskHistoryStorageKey(projectId);
+      return enqueue(storageKey, async () => {
+        await recoverJournal(storageKey, projectId);
+        const history = (await readRawParsed(storageKey, projectId)).history;
+        return pageDAVEAskHistory(history, options);
+      });
     },
     append(projectId: string, entry: DAVEAskConversationEntry) {
       const storageKey = daveAskHistoryStorageKey(projectId);
       return enqueue(storageKey, async () => {
-        const history = await readParsed(storageKey, projectId);
-        const next = appendDAVEAskHistory(history, entry);
+        await recoverJournal(storageKey, projectId);
+        const current = await readRawParsed(storageKey, projectId);
+        const next = appendDAVEAskHistory(current.history, entry);
+        const nextValue = JSON.stringify(next);
+        const journalStorageKey = daveAskHistoryJournalStorageKey(projectId);
+        if (dependencies.removeItem) {
+          const journal: DAVEAskHistoryJournal = {
+            version: DAVE_ASK_HISTORY_JOURNAL_VERSION,
+            projectId,
+            historyStorageKey: storageKey,
+            entryId: entry.id,
+            beforeValue: current.canonicalValue,
+            nextValue,
+          };
+          const serializedJournal = JSON.stringify(journal);
+          try {
+            await dependencies.persistItem(journalStorageKey, serializedJournal);
+            if (await dependencies.readItem(journalStorageKey) !== serializedJournal) {
+              throw new Error('Ask history journal read-back mismatch.');
+            }
+          } catch (error) {
+            throw new DAVEAskHistoryPersistenceError('write_failed', error);
+          }
+        }
         try {
-          await dependencies.persistItem(storageKey, JSON.stringify(next));
+          await dependencies.persistItem(storageKey, nextValue);
         } catch (error) {
           throw new DAVEAskHistoryPersistenceError('write_failed', error);
         }
+        const verified = await readRawParsed(storageKey, projectId);
+        if (verified.canonicalValue !== nextValue) {
+          throw new DAVEAskHistoryPersistenceError('write_failed');
+        }
+        if (dependencies.removeItem) await removeJournal(journalStorageKey);
         return next;
       });
     },
@@ -121,11 +244,9 @@ export function daveAskHistoryStorageKey(projectId: string): string {
   return `dave-ask-history:${encodeURIComponent(projectId)}`;
 }
 
-/**
- * Audit P1-50: Ask history is bounded. Older entries roll off so storage
- * cannot grow without limit or exceed the platform quota.
- */
-export const DAVE_ASK_HISTORY_LIMIT = 100;
+export function daveAskHistoryJournalStorageKey(projectId: string): string {
+  return `dave-ask-history-journal:${encodeURIComponent(projectId)}`;
+}
 
 export function appendDAVEAskHistory(
   history: DAVEAskConversationEntry[],
@@ -135,6 +256,31 @@ export function appendDAVEAskHistory(
   return next.length > DAVE_ASK_HISTORY_LIMIT
     ? next.slice(next.length - DAVE_ASK_HISTORY_LIMIT)
     : next;
+}
+
+export function pageDAVEAskHistory(
+  history: DAVEAskConversationEntry[],
+  options: Readonly<{ beforeId?: string | null; limit?: number }> = {},
+): DAVEAskHistoryPage {
+  const bounded = history.slice(-DAVE_ASK_HISTORY_LIMIT);
+  const requestedLimit = options.limit ?? DAVE_ASK_HISTORY_PAGE_SIZE;
+  const limit = Number.isSafeInteger(requestedLimit)
+    ? Math.max(1, Math.min(DAVE_ASK_HISTORY_LIMIT, requestedLimit))
+    : DAVE_ASK_HISTORY_PAGE_SIZE;
+  let end = bounded.length;
+  if (options.beforeId) {
+    end = bounded.findIndex(entry => entry.id === options.beforeId);
+    if (end < 0) {
+      throw new DAVEAskHistoryPersistenceError('corrupt_history');
+    }
+  }
+  const start = Math.max(0, end - limit);
+  const entries = bounded.slice(start, end);
+  return {
+    entries,
+    nextBeforeId: start > 0 ? entries[0]?.id || null : null,
+    totalCount: bounded.length,
+  };
 }
 
 export function historyForDAVEProject(
@@ -171,9 +317,48 @@ export function parseDAVEAskHistoryResult(
     if (history.length !== parsed.length) {
       return { status: 'corrupt', history: [] };
     }
-    return { status: 'valid', history };
+    return {
+      status: 'valid',
+      history: history.slice(-DAVE_ASK_HISTORY_LIMIT),
+    };
   } catch {
     return { status: 'corrupt', history: [] };
+  }
+}
+
+function parseDAVEAskHistoryJournal(
+  value: string,
+  projectId: string,
+  historyStorageKey: string,
+): DAVEAskHistoryJournal | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<DAVEAskHistoryJournal>;
+    if (
+      !parsed ||
+      parsed.version !== DAVE_ASK_HISTORY_JOURNAL_VERSION ||
+      parsed.projectId !== projectId ||
+      parsed.historyStorageKey !== historyStorageKey ||
+      typeof parsed.entryId !== 'string' ||
+      !parsed.entryId ||
+      typeof parsed.beforeValue !== 'string' ||
+      typeof parsed.nextValue !== 'string'
+    ) {
+      return null;
+    }
+    const before = parseDAVEAskHistoryResult(parsed.beforeValue, projectId);
+    const next = parseDAVEAskHistoryResult(parsed.nextValue, projectId);
+    if (
+      before.status === 'corrupt' ||
+      next.status !== 'valid' ||
+      JSON.stringify(before.history) !== parsed.beforeValue ||
+      JSON.stringify(next.history) !== parsed.nextValue ||
+      !next.history.some(entry => entry.id === parsed.entryId)
+    ) {
+      return null;
+    }
+    return parsed as DAVEAskHistoryJournal;
+  } catch {
+    return null;
   }
 }
 

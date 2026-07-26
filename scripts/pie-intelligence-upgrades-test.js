@@ -34,6 +34,13 @@ assert(edge.includes('normalizedSpatialFindings'), 'Edge Function must expose no
 assert(workflow.includes('visualGroundingRegions') && app.includes('Visual grounding'), 'UI may show text grounding only when server-normalized regions exist.');
 assert(!app.includes('boundingBox') && !app.includes('highlight overlay'), 'Client must not fabricate bounding boxes or highlight overlays.');
 
-assert(harness.includes('PIE_VISION_EVAL_EXTERNAL_DATA_REQUIRED') && harness.includes('fixture file must include a cases array') && harness.includes('expected') && harness.includes('divergence'), 'Evaluation harness must consume human-provided labeled cases and report divergence.');
+assert(
+  harness.includes('PIE_VISION_EVAL_EXTERNAL_DATA_REQUIRED') &&
+    harness.includes('fixture file must include a cases or scenarios array') &&
+    harness.includes('savedResults') &&
+    harness.includes('executeLiveCases') &&
+    harness.includes('divergence'),
+  'Evaluation harness must consume labeled cases plus saved or live results and report divergence.',
+);
 
 console.log('PIE intelligence upgrade tests passed.');

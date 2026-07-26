@@ -211,11 +211,19 @@ function buildSupportingEvidenceScope(
   });
 
   const referenceDocuments = (input.referenceDocuments || []).filter(document => {
+    // Generated reports are outputs of project truth, never inputs to it. If a
+    // saved report were admitted here, approving it would change its own
+    // source fingerprint and immediately make the approval appear stale.
+    if (normalizeKey(document.category) === 'report') return false;
     const explicitProjectId = cleanText(document.projectId);
     const explicitProjectName = cleanText(document.projectName);
+    const explicitProjectNames = (document.projectNames ?? [])
+      .map(cleanText)
+      .filter((name): name is string => Boolean(name));
     if (explicitProjectId && !selectedIdentityKeys.has(normalizeKey(explicitProjectId))) return false;
     if (explicitProjectName && !selectedNameKeys.has(normalizeKey(explicitProjectName))) return false;
-    if (explicitProjectId || explicitProjectName) return true;
+    if (explicitProjectNames.length > 0 && !explicitProjectNames.some(name => selectedNameKeys.has(normalizeKey(name)))) return false;
+    if (explicitProjectId || explicitProjectName || explicitProjectNames.length > 0) return true;
     const documentId = cleanText(document.id);
     const importBatchId = cleanText(document.importBatchId);
     return Boolean(

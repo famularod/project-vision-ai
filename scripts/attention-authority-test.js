@@ -22,9 +22,11 @@ assert(
   'Home must use the provider-backed Project Truth next action without exposing internal coverage diagnostics.',
 );
 assert(
-  reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft') &&
+  reports.includes('selectStableReportDraft({') &&
+    reports.includes('liveDraft: liveAuthority.reportDraft') &&
+    reports.includes('fallbackDraft: runtime.response.reportDraft') &&
     !reports.includes('buildPIEAttentionState'),
-  'Reports must use the provider-backed report draft without rebuilding an internal attention explanation.',
+  'Reports must retain the provider-backed report draft without rebuilding an internal attention explanation.',
 );
 assert(capture.includes('usePIELiveAuthority'), 'Capture must consume provider authority state.');
 assert(

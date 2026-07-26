@@ -79,6 +79,7 @@ function checkRequiredFile(relativePath, workflow, expectedText) {
 }
 
 const app = readFile('App.tsx');
+const appShellTheme = readFile('components/app-shell-theme.ts');
 function liveAppSlice(startMarker, endMarker) {
   const start = app.indexOf(startMarker);
   const end = app.indexOf(endMarker, Math.max(0, start + startMarker.length));
@@ -1008,7 +1009,10 @@ if (
   hasAll(reportsScreen, [
     'usePIELiveAuthority',
     'const runtime = liveAuthority.runtime;',
-    'liveAuthority.reportDraft || runtime.response.reportDraft',
+    'selectStableReportDraft({',
+    'liveDraft: liveAuthority.reportDraft',
+    'fallbackDraft: runtime.response.reportDraft',
+    'const baseReportDraft = stableReportDraft.draft',
   ]) &&
   hasAll(daveProjectTruth, [
     'evidence: DAVEEvidenceAccounting',
@@ -8216,7 +8220,8 @@ if (
 
 if (
   hasAll(homeDashboard, ['numberOfLines', 'overviewPriorityRecommendation', 'overviewPrioritySupport']) &&
-  hasAll(app, ['adjustsFontSizeToFit', 'minimumFontScale', 'flexWrap']) &&
+  hasAll(app, ['adjustsFontSizeToFit', 'minimumFontScale']) &&
+  hasAll(appShellTheme, ['flexWrap']) &&
   hasAll(photoCapture, ['Capture Evidence', 'Photo saved.', 'Next Suggested Action']) &&
   hasAll(reportsScreen, ['numberOfLines', 'flexWrap', 'BeforeYouSharePanel'])
 ) {
@@ -8508,18 +8513,21 @@ const categoryScores = buildCategoryScores();
 const overallScore = Math.round(
   categoryScores.reduce((total, item) => total + item.score, 0) / categoryScores.length,
 );
-const buildStatus =
+const contractStatus =
   counts.FAIL > 0 ? 'FAIL' : counts.WARN > 0 ? 'PASS WITH WARNINGS' : 'PASS';
 const topProblems = buildTopProblems();
 const appleReviewNotes = buildAppleReviewNotes(categoryScores, counts);
 
-console.log('JARVIS Experience QA 2.0');
+console.log('V.I.C. Static Contract Audit');
 console.log(`Generated: ${new Date().toISOString()}`);
-console.log(`Build Status: ${buildStatus}`);
+console.log(`Contract Status: ${contractStatus}`);
 console.log(
-  `Summary: ${counts.PASS} PASS / ${counts.WARN} WARN / ${counts.FAIL} FAIL`,
+  `Contract Summary: ${counts.PASS} PASS / ${counts.WARN} WARN / ${counts.FAIL} FAIL`,
 );
-console.log(`Overall Score: ${overallScore}/100`);
+console.log(`Contract Score: ${overallScore}/100`);
+console.log('Runtime behavior: NOT EVALUATED');
+console.log('Physical-device behavior: NOT EVALUATED');
+console.log('Run npm run jarvis:qa for the complete automated release gate.');
 console.log('');
 
 console.log('Category Scores');
@@ -8531,9 +8539,9 @@ categoryScores.forEach(score => {
 console.log(`Overall: ${overallScore}/100`);
 console.log('');
 
-console.log('Rejection Report - Top 10 Problems');
+console.log('Static Contract Problems - Top 10');
 if (topProblems.length === 0) {
-  console.log('No blocking problems or warnings found. JARVIS still recommends the Apple Review Notes below before TestFlight.');
+  console.log('No static contract problems or warnings found. Runtime and device validation are still required.');
 } else {
   topProblems.forEach((problem, index) => {
     console.log(`${index + 1}. ${problem.workflow} [${problem.status}]`);

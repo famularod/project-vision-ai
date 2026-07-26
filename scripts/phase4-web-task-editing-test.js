@@ -17,6 +17,9 @@ for (const action of [
   'updateAuthorizedScheduleItem',
   'deleteAuthorizedScheduleItem',
   'deleteAuthorizedReferenceDocument',
+  'uploadAuthorizedReferenceDocument',
+  'setAuthorizedCurrentSchedule',
+  'saveAuthorizedReportArtifact',
 ]) {
   assert(gateway.includes(action), `The desktop task gateway must implement ${action}.`);
 }
@@ -34,7 +37,10 @@ assert(editing.includes("progressSource: 'project_manager'"), 'Desktop edits mus
 assert(editing.includes('cloudUpdatedAt'), 'Desktop task models must retain the exact cloud revision for conflict checks.');
 assert(provider.includes('12_000'), 'The open desktop workspace must refresh cloud truth every 12 seconds.');
 assert(provider.includes('scheduleItemForCloud'), 'Browser-only revision metadata must not be persisted in task payloads.');
-assert(shell.includes('+ Add Task'), 'Task creation must be directly accessible on the Tasks page.');
+assert(
+  shell.includes('onPress={openCreate}') && shell.includes('>Add Task</Text>'),
+  'Task creation must be directly accessible from the Tasks page action.',
+);
 assert(shell.includes('Choose an existing value when available, or type the correct value manually.'), 'Task fields must support choices plus manual entry.');
 assert(shell.includes('Save Task Changes') && shell.includes('Delete Task'), 'Desktop tasks must expose explicit edit and protected delete actions.');
 assert(shell.includes('permanent deletion marker'), 'The delete confirmation must explain resurrection protection.');
@@ -49,6 +55,14 @@ assert(shell.includes('Delete Document Only') && shell.includes('Delete Document
 assert(shell.includes('This is the current schedule and is protected'), 'The current schedule must be protected from accidental deletion.');
 assert(shell.includes('Prior schedule versions ('), 'Schedule history must be separated from the authoritative current schedule.');
 assert(shell.includes('groupDAVEWebDocuments'), 'Document management must use the tested schedule-version grouping contract.');
+assert(
+  shell.includes('setUploadOpen(current => !current)') &&
+    shell.includes("'Upload Document'"),
+  'Document upload must be directly accessible from the web document workspace.',
+);
+assert(shell.includes('Make Current Schedule'), 'Reviewed schedule versions must expose an explicit current-schedule action.');
+assert(shell.includes('Approve Report'), 'Authoritative reports must require an explicit approval action.');
+assert(provider.includes('BroadcastChannel'), 'Open Vitruvius tabs must notify one another after a cloud mutation.');
 assert(shell.includes('permanent cloud deletion marker'), 'Document deletion must explain cross-device resurrection protection.');
 const currentScheduleStart = shell.indexOf('title="Current schedule"');
 const nextDocumentGroup = shell.indexOf('<DocumentGroup', currentScheduleStart + 1);

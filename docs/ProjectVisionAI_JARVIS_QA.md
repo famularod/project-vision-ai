@@ -1,12 +1,12 @@
-# Project Vision AI JARVIS QA
+# Vitruvius Intelligence Center (V.I.C.) QA
 
 ## Purpose
 
-JARVIS QA is the internal quality system for Project Vision AI.
+V.I.C. is the internal quality system for Vitruvius Project Intelligence.
 
-Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, PIE intelligence, and release readiness. JARVIS QA should make it harder for broken text, clipped buttons, confusing navigation, or weak PIE output to reach TestFlight.
+Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. V.I.C. should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
 
-JARVIS QA does not replace human review. It gives the team a repeatable checklist and a future automation path so humans can review the product faster and with better confidence.
+V.I.C. does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence. Legacy source files and npm commands retain the JARVIS name until they can be migrated without breaking release automation.
 
 ## JARVIS Experience QA 2.0
 
@@ -705,15 +705,27 @@ Use this checklist before release handoff:
 - [ ] Empty states are helpful when project data is missing.
 - [ ] `npm run check` passes.
 
-## Active QA Runner
+## Active V.I.C. Runners
 
-JARVIS includes a lightweight local static contract runner:
+V.I.C. keeps its lightweight static contract audit available through a compatibility command:
+
+```bash
+npm run jarvis:contracts
+```
+
+`jarvis:contracts` verifies required architecture, documentation, exports, safety boundaries, and source markers. Its score is a static contract score only. It does not prove runtime behavior or visual correctness.
+
+The complete automated runner is:
 
 ```bash
 npm run jarvis:qa
 ```
 
-`jarvis:qa` is an alias for `jarvis:contracts`. It verifies required architecture, documentation, exports, safety boundaries, and source markers. It does not prove runtime behavior or visual correctness. Executable behavior, end-to-end workflows, and physical-device validation are separate quality layers defined in `docs/ProjectVisionAI_TestingStrategy.md`.
+It runs release configuration, architecture, strict Jest behavior and coverage, established domain scenarios, UI and reporting checks, core-flow simulation, photo intelligence, authority and safety checks, the escaped-defect coverage audit, a production web export, and the static contract audit. It continues through all layers to provide one complete failure report.
+
+Release configuration now verifies both the Expo source configuration and any checked-in generated Android manifest. The gate fails if Android OS backup is enabled or if the generated app actively requests broad external-storage, contact-write, or overlay permissions. Release contracts also exercise the production-secret guard against an untracked runtime dependency and require mobile/web data-export copy to state that the JSON is unencrypted and does not contain photo or document files.
+
+`validation/jarvis/escaped-defects.json` keeps previously escaped defect families visible. Every entry identifies severity, affected platforms, executable regression evidence, required manual validation, and the limitation of the automated evidence. V.I.C. fails when a registered evidence file disappears or is disabled.
 
 The active runner checks the highest-risk pre-field-test pathways:
 
@@ -790,7 +802,7 @@ The active runner checks the highest-risk pre-field-test pathways:
 - Reporter can use beliefs to improve narrative without presenting beliefs as final truth.
 - Documentation explains Belief Formation, Belief Revision, Evidence vs Belief, Belief Readiness, and Belief Explainability.
 
-Runner statuses:
+Static contract statuses:
 
 - `PASS`: expected pathway marker is present.
 - `WARN`: pathway exists partially or placement needs human review before release.
@@ -804,7 +816,9 @@ Before TestFlight or field testing, run the combined local release gate:
 npm run qa:release
 ```
 
-Then run Maestro and physical-device validation for the coherent build milestone. A release is blocked by any executable failure or JARVIS `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk.
+`qa:release` invokes the same full automated runner as `jarvis:qa`. Its summary deliberately separates `Automated Gate` from `Release Certification`. An automated PASS still reports `DEVICE VALIDATION REQUIRED`.
+
+Then run Maestro and physical-device validation for the coherent build milestone. A release is blocked by any executable failure or V.I.C. `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk. Live iPhone/iPad/web propagation, native device capabilities, touch latency, external providers, and visual review are not certified by a local automated run.
 
 ## QA Foundation
 

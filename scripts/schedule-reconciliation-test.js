@@ -408,6 +408,86 @@ assert(
   'Field evidence recorded after PM completion must reopen the conflict.',
 );
 
+const importedCompletionOverridesOlderFieldUpdate = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({
+    id: 'import-complete-after-field-update',
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'schedule_import',
+    importedAt: '2026-07-16T17:00:00.000Z',
+  })],
+  updates: [update({
+    id: 'older-field-update-before-import',
+    date: '2026-07-16T12:00:00.000Z',
+    notes: 'Electrical rough-in is still in progress and not complete.',
+    scheduleItemId: 'import-complete-after-field-update',
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  !importedCompletionOverridesOlderFieldUpdate.warnings.some(item => item.type === 'schedule_status_conflict'),
+  'A newer imported schedule completion must override older in-progress field evidence.',
+);
+
+const newerFieldUpdateReopensImportedCompletion = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({
+    id: 'import-complete-before-field-update',
+    status: 'Complete',
+    percentComplete: 100,
+    progressSource: 'schedule_import',
+    importedAt: '2026-07-16T12:00:00.000Z',
+  })],
+  updates: [update({
+    id: 'newer-field-update-after-import',
+    date: '2026-07-16T17:00:00.000Z',
+    notes: 'Electrical rough-in is still in progress and not complete.',
+    scheduleItemId: 'import-complete-before-field-update',
+  })],
+  projectName: 'Building 2375',
+  now,
+});
+assert(
+  newerFieldUpdateReopensImportedCompletion.warnings.some(item => item.type === 'schedule_status_conflict'),
+  'Field evidence recorded after imported completion must reopen the conflict.',
+);
+
+const newestReliableStoredTaskMatch = buildPIEScheduleReconciliation({
+  scheduleItems: [schedule({
+    id: 'newest-stored-task-match',
+    status: 'Complete',
+    percentComplete: 100,
+  })],
+  updates: [
+    update({
+      id: 'older-detailed-stored-task-update',
+      date: '2026-07-16T12:00:00.000Z',
+      notes: 'Electrical rough-in in Canopy B is still in progress and not complete.',
+      scheduleTaskName: 'Electrical rough-in',
+      scheduleItemId: null,
+    }),
+    update({
+      id: 'newer-current-stored-task-update',
+      date: '2026-07-16T17:00:00.000Z',
+      notes: 'Work is complete.',
+      scheduleTaskName: 'Electrical rough-in',
+      scheduleItemId: null,
+      photo: { caption: 'Work is complete.' },
+    }),
+  ],
+  projectName: 'Building 2375',
+  now,
+});
+assert.strictEqual(
+  newestReliableStoredTaskMatch.matches[0]?.updateId,
+  'newer-current-stored-task-update',
+  'The newest equally reliable stored-task match must outrank a stronger stale match.',
+);
+assert(
+  !newestReliableStoredTaskMatch.warnings.some(item => item.type === 'schedule_status_conflict'),
+  'A stale same-quality update must not create a conflict after a newer complete update.',
+);
+
 const threatened = buildPIEScheduleReconciliation({
   scheduleItems: [schedule()],
   updates: [update({
@@ -552,6 +632,71 @@ assert.deepStrictEqual(
   sameFilenameByBatch.map(item => item.id),
   ['batch-current-task'],
   'Immutable document and batch identity must outrank a reused schedule filename.',
+);
+
+const deletedDuplicateUpload = selectAuthoritativeScheduleItems({
+  scheduleItems: [
+    schedule({
+      id: 'current-upload-task',
+      importedFrom: 'same-upload.pdf',
+      importBatchId: 'current-upload-batch',
+      sourceDocumentId: 'current-upload-document',
+    }),
+    schedule({
+      id: 'orphaned-duplicate-task',
+      importedFrom: 'same-upload.pdf',
+      importBatchId: 'deleted-upload-batch',
+      sourceDocumentId: 'deleted-upload-document',
+    }),
+    schedule({
+      id: 'orphaned-unique-task',
+      taskName: 'Unique task retained after deleting PDF only',
+      importedFrom: 'same-upload.pdf',
+      importBatchId: 'deleted-upload-batch',
+      sourceDocumentId: 'deleted-upload-document',
+    }),
+  ],
+  scheduleDocuments: [{
+    id: 'current-upload-document', name: 'Schedule', originalFileName: 'same-upload.pdf',
+    uri: 'file:///current-upload.pdf', category: 'Schedules', notes: '', isCurrent: true,
+    importedAt: '2026-07-20T22:55:37.883Z', importBatchId: 'current-upload-batch',
+  }],
+});
+assert.deepStrictEqual(
+  deletedDuplicateUpload.map(item => item.id),
+  ['current-upload-task', 'orphaned-unique-task'],
+  'Deleting a duplicate schedule PDF must not leave a second visible copy of tasks already supplied by the current schedule.',
+);
+
+const authoritativeOrphan = selectAuthoritativeScheduleItems({
+  scheduleItems: [
+    schedule({
+      id: 'current-import-task',
+      importedFrom: 'same-upload.pdf',
+      importBatchId: 'current-upload-batch',
+      sourceDocumentId: 'current-upload-document',
+    }),
+    schedule({
+      id: 'orphaned-pm-task',
+      importedFrom: 'same-upload.pdf',
+      importBatchId: 'deleted-upload-batch',
+      sourceDocumentId: 'deleted-upload-document',
+      status: 'In Progress',
+      percentComplete: 45,
+      progressSource: 'project_manager',
+      progressConfirmedAt: '2026-07-20T23:56:29.181Z',
+    }),
+  ],
+  scheduleDocuments: [{
+    id: 'current-upload-document', name: 'Schedule', originalFileName: 'same-upload.pdf',
+    uri: 'file:///current-upload.pdf', category: 'Schedules', notes: '', isCurrent: true,
+    importedAt: '2026-07-20T22:55:37.883Z', importBatchId: 'current-upload-batch',
+  }],
+});
+assert.deepStrictEqual(
+  authoritativeOrphan.map(item => item.id),
+  ['orphaned-pm-task'],
+  'A project-manager correction must outrank an otherwise identical current-schedule import.',
 );
 
 const noCurrentItems = selectAuthoritativeScheduleItems({

@@ -19,6 +19,11 @@ export function mergeDAVEProjectAreaRecord(
   return {
     ...metadataWinner,
     id: current.id,
+    projectName:
+      normalizeOptionalName(metadataWinner.projectName) ||
+      normalizeOptionalName(current.projectName) ||
+      normalizeOptionalName(candidate.projectName) ||
+      null,
     latitude: gpsWinner.latitude,
     longitude: gpsWinner.longitude,
     locationCapturedAt: gpsWinner.locationCapturedAt || null,
@@ -84,4 +89,8 @@ function timestamp(value: string | null | undefined) {
 
 function normalizedId(value: string) {
   return String(value || '').trim().toLowerCase();
+}
+
+function normalizeOptionalName(value: string | null | undefined) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }

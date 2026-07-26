@@ -18,6 +18,12 @@ function isOptionalFiniteNumber(value: unknown): boolean {
   );
 }
 
+function isStartupScheduleDependency(value: unknown): boolean {
+  if (!isRecord(value) || !isNonEmptyString(value.predecessorItemId)) return false;
+  if (value.type !== undefined && value.type !== null && value.type !== 'FS') return false;
+  return isOptionalFiniteNumber(value.lagDays);
+}
+
 function isOptionalStringArray(value: unknown): boolean {
   return value === undefined || value === null || (
     Array.isArray(value) && value.every(item => typeof item === 'string')
@@ -210,6 +216,7 @@ export function isStartupProjectAreaRecord(value: unknown): boolean {
     typeof value.latitude === 'number' && Number.isFinite(value.latitude) &&
     typeof value.longitude === 'number' && Number.isFinite(value.longitude) &&
     isOptionalString(value.id) &&
+    isOptionalString(value.projectName) &&
     isOptionalString(value.building) &&
     isOptionalString(value.locationCapturedAt) &&
     isOptionalFiniteNumber(value.radiusFeet) &&
@@ -220,8 +227,14 @@ export function isStartupProjectAreaRecord(value: unknown): boolean {
 
 /** Legacy reference documents may lack an id and use originalFileName as name. */
 export function isStartupReferenceDocumentRecord(value: unknown): boolean {
-  if (!isRecord(value) || !isNonEmptyString(value.uri)) return false;
+  if (!isRecord(value)) return false;
   if (!isNonEmptyString(value.name) && !isNonEmptyString(value.originalFileName)) return false;
+  const hasStableIdentityOrFile = [
+    value.id,
+    value.uri,
+    value.storagePath,
+  ].some(isNonEmptyString) || isRecord(value.webReport);
+  if (!hasStableIdentityOrFile) return false;
   return hasValidOptionalStringFields(value, [
     'id',
     'name',
@@ -234,7 +247,14 @@ export function isStartupReferenceDocumentRecord(value: unknown): boolean {
     'projectId',
     'projectName',
     'importBatchId',
-  ]);
+    'storagePath',
+    'contentSha256',
+    'updatedAt',
+    'cloudUpdatedAt',
+    'webFileFingerprint',
+    'webVersionGroupId',
+    'webContentReview',
+  ]) && isOptionalFiniteNumber(value.sizeBytes);
 }
 
 export function isStartupStandaloneProjectDocumentRecord(value: unknown): boolean {
@@ -256,6 +276,10 @@ export function isStartupScheduleItemRecord(value: unknown): boolean {
     'milestone',
     'owner',
     'contractor',
+    'wbsCode',
+    'parentItemId',
+    'baselineStartDate',
+    'baselineFinishDate',
     'priority',
     'status',
     'notes',
@@ -265,9 +289,20 @@ export function isStartupScheduleItemRecord(value: unknown): boolean {
     'sourceDocumentId',
     'createdAt',
   ])) return false;
-  return ['durationDays', 'percentComplete'].every(field =>
-    isOptionalFiniteNumber(value[field]),
-  );
+  if (!['durationDays', 'sortOrder', 'percentComplete'].every(field =>
+    isOptionalFiniteNumber(value[field])
+  )) return false;
+  if (!['isSummary', 'isMilestone'].every(field =>
+    value[field] === undefined ||
+    value[field] === null ||
+    typeof value[field] === 'boolean'
+  )) return false;
+  return value.dependencies === undefined ||
+    value.dependencies === null ||
+    (
+      Array.isArray(value.dependencies) &&
+      value.dependencies.every(isStartupScheduleDependency)
+    );
 }
 
 function isStartupContactRecord(value: unknown): boolean {

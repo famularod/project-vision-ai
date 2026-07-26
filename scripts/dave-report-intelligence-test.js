@@ -57,8 +57,8 @@ function truth(projectName, overrides = {}) {
       requestedAction: 'Inspect the terminations and confirm or reject completion.',
     }],
     schedule: [
-      { taskId: 'pump-complete', taskName: 'Set pump', areaName: 'Pump House', status: 'Complete', percentComplete: 100, urgency: 'not_urgent' },
-      { taskId: 'pump-active', taskName: 'Terminate pump', areaName: 'Pump House', status: 'In Progress', percentComplete: 60, urgency: 'overdue' },
+      { taskId: 'pump-complete', taskName: 'Set pump', areaName: 'Pump House', status: 'Complete', percentComplete: 100, durationWeight: 1, urgency: 'not_urgent' },
+      { taskId: 'pump-active', taskName: 'Terminate pump', areaName: 'Pump House', status: 'In Progress', percentComplete: 60, durationWeight: 3, urgency: 'overdue' },
       { taskId: 'driveway', taskName: 'Place concrete', areaName: 'East Driveway', status: 'Not Started', percentComplete: 0, urgency: 'due_soon' },
       { taskId: 'trash', taskName: 'Install gates', areaName: 'Trash Enclosure', status: 'Waiting', percentComplete: 20, urgency: 'upcoming' },
       { taskId: 'electrical', taskName: 'Final trim', areaName: 'Electrical Room', status: 'Complete', percentComplete: 100, urgency: 'not_urgent' },
@@ -106,12 +106,12 @@ assert(!Object.prototype.hasOwnProperty.call(briefing, 'uncertainties'));
 assert(!Object.prototype.hasOwnProperty.call(briefing, 'evidenceStatement'));
 assert.match(briefing.executiveSnapshot, /1 overdue/i);
 assert.deepStrictEqual(briefing.dashboard.taskStatus, {
-  total: 5, complete: 2, inProgress: 1, notStarted: 1, waiting: 1,
+  total: 5, complete: 2, open: 3, inProgress: 1, notStarted: 1, waiting: 1,
 });
-assert.deepStrictEqual(briefing.dashboard.scheduleHealth, { onTrack: 1, dueSoon: 1, overdue: 1 });
+assert.deepStrictEqual(briefing.dashboard.scheduleHealth, { onTrack: 0, blocked: 1, dueSoon: 1, overdue: 1 });
 const pumpArea = briefing.dashboard.workAreas.find(item => item.areaName === 'Pump House');
-assert.strictEqual(pumpArea.averagePercent, 80);
-assert.strictEqual(pumpArea.calculation, 'unweighted_task_average');
+assert.strictEqual(pumpArea.averagePercent, 70);
+assert.strictEqual(pumpArea.calculation, 'schedule_duration_weighted_average');
 assert.strictEqual(briefing.dashboard.workAreas.find(item => item.areaName === 'Electrical Room').completed, true);
 
 const baseDraft = {
@@ -157,12 +157,15 @@ const reporter = fs.readFileSync(path.join(root, 'services/PIEReporter.ts'), 'ut
 assert(screen.includes('CURRENT PROJECT STATUS'));
 assert(screen.includes('Task Status'));
 assert(screen.includes('Schedule Health'));
+assert(screen.includes("flexBasis: '47%'"));
+assert(screen.includes('numberOfLines={1}'));
+assert(screen.includes('minimumFontScale={0.85}'));
 assert(screen.includes('Current Work'));
 assert(screen.includes('Recent Changes'));
 assert(screen.includes('Needs Attention'));
 assert(screen.includes('Next Steps'));
 assert(screen.includes('Progress by Work Area'));
-assert(screen.includes('Average task completion by area'));
+assert(screen.includes('Progress based on scheduled task duration'));
 assert(screen.includes('Completed Areas'));
 assert(screen.includes('Full Written Report'));
 assert(screen.includes('Project Status Details'));

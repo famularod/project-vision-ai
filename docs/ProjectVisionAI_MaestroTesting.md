@@ -1,148 +1,59 @@
-# Project Vision AI Maestro Testing
+# Vitruvius Maestro Testing
 
 ## Purpose
 
-This document explains the first automated Maestro smoke-test sprint for Project Vision AI.
+Maestro exercises the current Vitruvius mobile interface on a running native app.
+The flows protect these field journeys:
 
-The goal is to protect the highest-risk mobile workflows without changing app behavior:
+- launch and primary navigation;
+- active-project discovery;
+- project detail and Tasks and Schedule;
+- New Field Update through the camera handoff;
+- prepared reports and approval controls;
+- Settings, Sync Now, and Back Up Data.
 
-- App launches
-- Bottom navigation works
-- Seed projects appear on Overview
-- Project Brief opens from an active project
-- New Field Update opens from a project
-- Reports opens
-- Settings opens
+Visible selectors deliberately match the words a project manager sees. The
+repository contract check rejects stale product labels before a device run.
 
-These tests are intentionally simple. They use visible text selectors so they reflect the same interface a project manager sees in the field.
+## Commands
 
-## Current Status
-
-The repository contains current Overview, Tasks, Talk, and Reports flows. A
-Maestro CLI plus a booted iOS simulator or Android emulator/device is still
-required to execute them; native execution is not replaced by source checks.
-
-The repository now includes Maestro flow files in:
-
-```text
-e2e/maestro
-```
-
-## macOS Install Instructions
-
-Maestro CLI requires Java 17 or higher.
-
-1. Confirm Java 17+ is available:
-
-   ```bash
-   java -version
-   ```
-
-2. Install Maestro CLI with one of the official macOS options.
-
-   Curl installer:
-
-   ```bash
-   curl -fsSL "https://get.maestro.mobile.dev" | bash
-   ```
-
-   Homebrew:
-
-   ```bash
-   brew tap mobile-dev-inc/tap
-   brew trust --formula mobile-dev-inc/tap/maestro
-   brew install mobile-dev-inc/tap/maestro
-   ```
-
-3. Verify the CLI:
-
-   ```bash
-   maestro --help
-   ```
-
-4. For iOS simulator testing, make sure Xcode and Xcode Command Line Tools are installed. If simulators do not appear, run:
-
-   ```bash
-   xcodebuild -runFirstLaunch
-   ```
-
-   If prompted for the Xcode license:
-
-   ```bash
-   sudo xcodebuild -license accept
-   ```
-
-Official docs:
-
-- Maestro CLI install: https://docs.maestro.dev/maestro-cli/how-to-install-maestro-cli.md
-- Maestro quickstart: https://docs.maestro.dev/get-started/quickstart.md
-
-## App ID
-
-The flows use a dynamic app id:
-
-```yaml
-appId: ${APP_ID}
-```
-
-The npm script passes `APP_ID` from `MAESTRO_APP_ID`.
-
-Default:
+Install Maestro using its official installer and confirm Java 17 or newer:
 
 ```bash
-host.exp.Exponent
+curl -Ls https://get.maestro.mobile.dev | bash
+java -version
+maestro --help
 ```
 
-This default is useful for Expo Go.
-
-For a development build, pass the native bundle id:
-
-```bash
-MAESTRO_APP_ID=com.yourcompany.projectvisionai npm run test:e2e:maestro
-```
-
-If your local test project is not the default seed project, pass the project name:
-
-```bash
-MAESTRO_PROJECT_NAME="My Project" npm run test:e2e:maestro
-```
-
-## How To Run
-
-Start the app on an iOS simulator, Android emulator, or connected device first.
-
-For Expo Go:
-
-```bash
-npm start
-```
-
-Open the app on the device, then run:
+Start or install the app on a simulator, emulator, or connected device, then run:
 
 ```bash
 npm run test:e2e:maestro
 ```
 
-For a dev-client/native build:
+The npm command injects:
+
+- `MAESTRO_APP_ID`, defaulting to `host.exp.Exponent` for Expo Go;
+- `MAESTRO_PROJECT_NAME`, defaulting to `2375 Compliance Project`.
+
+A native release or development build uses the Vitruvius bundle identifier:
 
 ```bash
-npm run ios
-MAESTRO_APP_ID=com.yourcompany.projectvisionai npm run test:e2e:maestro
+MAESTRO_APP_ID=com.davidfamularo.projectphotoupdate \
+MAESTRO_PROJECT_NAME="2375 Compliance Project" \
+npm run test:e2e:maestro
 ```
 
 Run one flow directly:
 
 ```bash
-maestro test -e APP_ID=host.exp.Exponent e2e/maestro/01-app-launches.yaml
+maestro test \
+  -e APP_ID=host.exp.Exponent \
+  -e PROJECT_NAME="2375 Compliance Project" \
+  e2e/maestro/05-capture-starts.yaml
 ```
 
-Run all flows directly:
-
-```bash
-maestro test -e APP_ID=host.exp.Exponent e2e/maestro
-```
-
-## Test Files
+## Current flows
 
 - `01-app-launches.yaml`
 - `02-bottom-navigation.yaml`
@@ -152,53 +63,37 @@ maestro test -e APP_ID=host.exp.Exponent e2e/maestro
 - `06-reports-opens.yaml`
 - `07-more-admin-opens.yaml`
 
-## Selector Strategy
+`npm run test:maestro:contracts` verifies that every flow exists, launches the
+injected app id, uses current Vitruvius labels, and is wired into both native CI
+jobs. It does not replace native execution.
 
-The first flows use visible text selectors:
+## Continuous integration
 
-- `Home`
-- `Projects`
-- `Capture`
-- `Reports`
-- `More`
-- `Project Finder`
-- `Project Overview`
-- `Project Summary`
-- `Recommended Next Action`
-- `Add Photos`
-- `Take Photo`
-- `Change Project`
-- `Admin`
-- `Cloud Status`
+`.github/workflows/mobile-e2e.yml` runs the same flows against locally built
+release apps on an iOS simulator and Android emulator. The workflow runs on a
+weekday schedule and can be started manually. It does not publish an EAS update,
+submit an app, deploy Supabase, or change external state.
 
-This matches the Design Standard requirement that screens use clear, literal titles and readable buttons.
+`.github/workflows/mobile-ci.yml` runs the fast flow-contract validation on
+pull requests and configured branches. This catches stale selectors and missing
+CI wiring without pretending it drove a device.
 
-## Fragile Selectors
+## Determinism and known limits
 
-Some selectors may need future hardening:
+- The selected account must contain the named active project. Set
+  `MAESTRO_PROJECT_NAME` when the fixture differs.
+- The capture flow reaches the native Take Photo handoff. Camera quality,
+  permission prompts, photo-library behavior, and real uploads still require
+  physical-device evidence.
+- Reports and Settings selectors depend on the current PM-facing labels.
+- Seeded test data and stable `testID` values would make flows less dependent on
+  account content and visible copy.
+- Schedule upload needs a deterministic fixture and safe test account before it
+  can be automated without risking production records.
 
-- `PROJECT_NAME` defaults to `Building 2375 Compliance`. If seed/default projects change, pass a known project name with `-e PROJECT_NAME="Project Name"` or set `MAESTRO_PROJECT_NAME="Project Name"`.
-- `Add Photos`, `Take Photo`, and `Change Project` depend on the capture flow opening directly into the inferred active project. If there are no active projects, this flow may need a separate no-project branch.
-- Bottom navigation labels are visible text today; accessibility IDs would be more stable later.
-- `Admin Actions` and `Cloud Status` are visible section titles; renaming those sections will require test updates.
+## Release boundary
 
-## Future Hardening
-
-Recommended next improvements:
-
-- Add stable `testID` values to bottom navigation, project rows, and primary screen actions.
-- Add a small seeded test-data mode for deterministic project names.
-- Add screenshots for Home, Projects, Project Overview, Capture, Reports, and More/Admin.
-- Add flows for schedule upload once a stable fixture file path is available.
-- Add timed 60-second workflow checks for Capture Update and Generate Report.
-
-## Product Standards Covered
-
-These flows begin checking:
-
-- Bottom navigation remains Home | Projects | Capture | Reports | More.
-- Projects opens from bottom navigation.
-- Project Overview is the default project landing experience.
-- Capture starts quickly from bottom navigation.
-- Reports opens a true Reports Hub.
-- More opens Admin tools instead of placing admin clutter on Home.
+A passing Maestro run proves only the exercised simulator/emulator paths. V.I.C.
+still requires physical iPhone/iPad review for touch latency, keyboard behavior,
+camera and location, background/foreground refresh, offline recovery, and live
+three-device synchronization.

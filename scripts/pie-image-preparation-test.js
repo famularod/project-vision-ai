@@ -137,6 +137,11 @@ assertIncludes(
 );
 assertIncludes(
   workflow,
+  'timeout: PIE_PHOTO_VISION_CLIENT_TIMEOUT_MS',
+  'pie-photo-vision must use a bounded client timeout that allows deployed provider retries to finish',
+);
+assertIncludes(
+  workflow,
   'createPhotoAnalysisRunIdentity({',
   'photo analyzer requests must use the immutable analyzer-run identity',
 );

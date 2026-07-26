@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
+const productMetadata = JSON.parse(fs.readFileSync(path.join(root, 'product-metadata.json'), 'utf8'));
 const appConfig = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
 const packageConfig = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
@@ -10,11 +11,15 @@ const appSource = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const adminSource = fs.readFileSync(path.join(root, 'screens', 'AdminScreen.tsx'), 'utf8');
 const iosInfoPlistPath = path.join(root, 'ios', 'ProjectPhotoUpdateTool', 'Info.plist');
 const iosProjectPath = path.join(root, 'ios', 'ProjectPhotoUpdateTool.xcodeproj', 'project.pbxproj');
+const androidGradlePath = path.join(root, 'android', 'app', 'build.gradle');
+const androidManifestPath = path.join(root, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
 const iosInfoPlistExists = fs.existsSync(iosInfoPlistPath);
 const iosProjectExists = fs.existsSync(iosProjectPath);
 const expo = appConfig.expo;
 
 assert(expo && typeof expo === 'object', 'app.json must define an Expo configuration.');
+assert.equal(expo.name, productMetadata.name, 'Expo product name must match product-metadata.json.');
+assert.equal(expo.version, productMetadata.version, 'Expo version must match product-metadata.json.');
 assert.match(expo.version, /^\d+\.\d+\.\d+$/, 'Expo version must be a numeric semantic version.');
 assert.equal(packageConfig.version, expo.version, 'package.json version must match app.json.');
 assert.equal(packageLock.version, expo.version, 'package-lock.json version must match app.json.');
@@ -22,6 +27,7 @@ assert.equal(packageLock.packages?.['']?.version, expo.version, 'package-lock ro
 
 const build = Number(expo.version.split('.')[2]);
 assert(Number.isSafeInteger(build) && build > 0, 'The app version patch must contain a positive build number.');
+assert.equal(build, productMetadata.build, 'Release build must match product-metadata.json.');
 assert.equal(expo.ios?.buildNumber, String(build), 'iOS buildNumber must match the app version patch.');
 assert.equal(expo.android?.versionCode, build, 'Android versionCode must match the app version patch.');
 assert.equal(expo.extra?.buildLabel, `Build ${build}`, 'The visible build label must match native build metadata.');
@@ -59,6 +65,33 @@ if (iosInfoPlistExists && iosProjectExists) {
     'Every native iOS build configuration must match the build number.',
   );
 }
+if (fs.existsSync(androidGradlePath)) {
+  const androidGradle = fs.readFileSync(androidGradlePath, 'utf8');
+  const versionCodes = [...androidGradle.matchAll(/^\s*versionCode\s+(\d+)\s*$/gm)]
+    .map(match => Number(match[1]));
+  const versionNames = [...androidGradle.matchAll(/^\s*versionName\s+["']([^"']+)["']\s*$/gm)]
+    .map(match => match[1]);
+  assert.equal(
+    versionCodes.length,
+    1,
+    'Generated Android build.gradle must define exactly one versionCode.',
+  );
+  assert.equal(
+    versionNames.length,
+    1,
+    'Generated Android build.gradle must define exactly one versionName.',
+  );
+  assert.equal(
+    versionCodes[0],
+    build,
+    'Generated Android versionCode must match product-metadata.json.',
+  );
+  assert.equal(
+    versionNames[0],
+    expo.version,
+    'Generated Android versionName must match product-metadata.json.',
+  );
+}
 assert.equal(
   expo.orientation,
   'portrait',
@@ -75,6 +108,13 @@ assert.equal(
   false,
   'Android backup must remain disabled for the local workspace and auth boundary.',
 );
+const configuredPlugins = (expo.plugins || []).map(plugin =>
+  Array.isArray(plugin) ? plugin[0] : plugin,
+);
+assert(
+  configuredPlugins.includes('./plugins/withVitruviusAndroidSecurityPolicy'),
+  'Expo must reapply the Android least-privilege policy whenever native files are generated.',
+);
 
 const blockedAndroidPermissions = new Set(expo.android?.blockedPermissions || []);
 for (const permission of [
@@ -87,6 +127,35 @@ for (const permission of [
     blockedAndroidPermissions.has(permission),
     `Android must block unnecessary permission ${permission}.`,
   );
+}
+
+if (fs.existsSync(androidManifestPath)) {
+  const androidManifest = fs.readFileSync(androidManifestPath, 'utf8');
+  assert.match(
+    androidManifest,
+    /<application\b[^>]*\bandroid:allowBackup="false"/,
+    'The generated Android manifest must disable OS backup.',
+  );
+  assert.match(
+    androidManifest,
+    /<application\b[^>]*\bandroid:fullBackupContent="false"/,
+    'The generated Android manifest must disable full-backup content.',
+  );
+
+  for (const permission of [
+    'android.permission.READ_EXTERNAL_STORAGE',
+    'android.permission.WRITE_EXTERNAL_STORAGE',
+    'android.permission.WRITE_CONTACTS',
+    'android.permission.SYSTEM_ALERT_WINDOW',
+  ]) {
+    const permissionTags = [...androidManifest.matchAll(/<uses-permission\b[^>]*>/g)]
+      .map(match => match[0])
+      .filter(tag => tag.includes(`android:name="${permission}"`));
+    assert(
+      permissionTags.every(tag => /\btools:node="remove"/.test(tag)),
+      `Generated Android manifest must not request unnecessary permission ${permission}.`,
+    );
+  }
 }
 
 for (const [label, source] of [['App', appSource], ['Admin', adminSource]]) {

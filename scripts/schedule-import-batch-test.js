@@ -201,7 +201,7 @@ assert.deepStrictEqual(
 );
 
 assert(
-  appSource.includes('notes: normalizeImportedScheduleNote(value.notes, value.importedFrom)') &&
+  appSource.includes('notes: normalizeImportedScheduleNote(value.notes, value.importedFrom, {') &&
     appSource.includes('value={item.notes}'),
   'Imported-note cleanup must run during local/cloud hydration before the live task Notes field renders.',
 );
@@ -236,7 +236,7 @@ assert(
   'The review must offer one bulk save while blocking items that lack a real task or date.',
 );
 assert(
-  appSource.includes('if (!file) return null;\n      onProcessingStart();') &&
+  appSource.includes('if (!file) return null;\n      await preflightExpoFileRead({ uri: file.uri, reportedSizeBytes: file.size });\n      onProcessingStart();') &&
     appSource.includes('onProcessingStart();\n\n      const directory = await ensureReferenceDocumentsDirectory();'),
   'File and screenshot imports should start loading only after native selection completes.',
 );
@@ -286,6 +286,14 @@ assert(
   'Tasks should expose one clear Add Schedule or Task entry point with three source choices.',
 );
 assert(
+  appSource.includes("category === 'Schedule' && !attachToDraft") &&
+    appSource.includes('prepareScheduleImportFromAsset(asset, selectedProjectNames)') &&
+    appSource.includes('setIncomingScheduleImportBatch(batch)') &&
+    flowSource.includes('incomingBatch?: PIEScheduleImportBatch | null') &&
+    flowSource.includes('setPendingBatch(incomingBatch)'),
+  'A document classified as Schedule must run extraction once and open the existing PM review gate.',
+);
+assert(
   appSource.includes("Platform.OS === 'ios' && isDaveTextRecognitionAvailable()") &&
     appSource.includes('screenshotImportAvailable={scheduleScreenshotOcrAvailable}') &&
     flowSource.includes('screenshotImportAvailable: boolean') &&
@@ -310,8 +318,8 @@ assert(
   'Schedule import should remain behind Manage Schedule after daily task metrics.',
 );
 assert(
-  scheduleScreenSource.includes('data={filteredItems}') &&
-    scheduleScreenSource.includes("(['Attention', 'Today', '7 Days', 'All'] as const)") &&
+  scheduleScreenSource.includes('sections={groupedTaskSections}') &&
+    scheduleScreenSource.includes("const [taskView, setTaskView] = useState<ScheduleTaskView>('Open Tasks')") &&
     scheduleScreenSource.includes('if (aComplete !== bComplete)') &&
     scheduleScreenSource.includes('Schedule Sources') &&
     scheduleScreenSource.includes('sourcesOpen'),

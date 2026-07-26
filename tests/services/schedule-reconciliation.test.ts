@@ -104,6 +104,97 @@ describe('schedule reconciliation authority', () => {
     ]));
   });
 
+  it('lets a newer imported schedule completion override an older in-progress field update', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({
+        status: 'Complete',
+        percentComplete: 100,
+        progressSource: 'schedule_import',
+        importedAt: '2026-07-16T17:00:00.000Z',
+      })],
+      updates: [{
+        id: 'update-before-schedule-import',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T12:00:00.000Z',
+        notes: 'Place concrete paving is still in progress.',
+        scheduleItemId: 'task-1',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'schedule_status_conflict' }),
+    ]));
+  });
+
+  it('surfaces unfinished field evidence recorded after imported schedule completion', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({
+        status: 'Complete',
+        percentComplete: 100,
+        progressSource: 'schedule_import',
+        importedAt: '2026-07-16T12:00:00.000Z',
+      })],
+      updates: [{
+        id: 'update-after-schedule-import',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes: 'Place concrete paving is still in progress.',
+        scheduleItemId: 'task-1',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'schedule_status_conflict' }),
+    ]));
+  });
+
+  it('prefers the newest equally reliable task match over a higher-scoring stale match', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({
+        status: 'Complete',
+        percentComplete: 100,
+      })],
+      updates: [
+        {
+          id: 'older-detailed-update',
+          projectName: '2321 Compliance Project',
+          date: '2026-07-16T12:00:00.000Z',
+          notes: 'Place concrete paving in the North Lot is still in progress.',
+          scheduleTaskName: 'Place concrete paving',
+          selectedAreaName: 'North Lot',
+          photos: [],
+          recipients: { contactIds: [] },
+        },
+        {
+          id: 'newer-current-update',
+          projectName: '2321 Compliance Project',
+          date: '2026-07-16T17:00:00.000Z',
+          notes: 'Work is complete.',
+          scheduleTaskName: 'Place concrete paving',
+          selectedAreaName: 'North Lot',
+          photos: [],
+          recipients: { contactIds: [] },
+        },
+      ],
+      now,
+    });
+
+    expect(result.matches[0]).toEqual(expect.objectContaining({
+      updateId: 'newer-current-update',
+      signal: 'complete',
+      matchBasis: 'stored_task_name',
+    }));
+    expect(result.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'schedule_status_conflict' }),
+    ]));
+  });
+
   it('clears a conflict when its mistaken source update is deleted without deleting the task', () => {
     const task = scheduleItem({
       status: 'Complete',

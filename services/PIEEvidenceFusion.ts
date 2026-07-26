@@ -27,6 +27,12 @@ import {
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  classifyDAVEBlocker,
+  classifyDAVEIssue,
+  classifyDAVESafety,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIEEvidenceSourceType =
   | 'schedule'
@@ -45,13 +51,56 @@ export type PIEEvidenceSourceType =
   | 'pdf-text'
   | 'unknown';
 
+/**
+ * Immutable facts that identify the exact evidence record used by PIE.
+ *
+ * Unknown values stay null. In particular, a source type or a recent
+ * timestamp must never be treated as proof that a person confirmed a claim.
+ */
+export type PIEEvidenceProvenance = {
+  sourceType: PIEEvidenceSourceType;
+  sourceRecordId: string | null;
+  capturedAt: string | null;
+  actorId: string | null;
+  confirmationEventId: string | null;
+  recordVersion: string | null;
+};
+
 export type PIEEvidenceSource = {
   type: PIEEvidenceSourceType;
   label: string;
   recordId?: string | null;
   confidence: ProjectConfidenceLevel;
   capturedAt?: string | null;
+  provenance: PIEEvidenceProvenance;
 };
+
+type PIEEvidenceSourceInput = Omit<PIEEvidenceSource, 'provenance'> & {
+  actorId?: string | null;
+  confirmationEventId?: string | null;
+  recordVersion?: string | null;
+};
+
+function evidenceSource(input: PIEEvidenceSourceInput): PIEEvidenceSource {
+  const recordId = input.recordId ?? null;
+  const capturedAt = input.capturedAt ?? null;
+
+  return {
+    type: input.type,
+    label: input.label,
+    recordId,
+    confidence: input.confidence,
+    capturedAt,
+    provenance: {
+      sourceType: input.type,
+      sourceRecordId: recordId,
+      capturedAt,
+      actorId: input.actorId ?? null,
+      confirmationEventId: input.confirmationEventId ?? null,
+      recordVersion: input.recordVersion ?? null,
+    },
+  };
+}
 
 export type PIEScheduleEvidence = {
   id: string;
@@ -475,20 +524,26 @@ export function extractScheduleEvidence({
         isComplete,
         needsReview,
         sources: [
-          ...(pmProgressJudgment ? [{
+          ...(pmProgressJudgment ? [evidenceSource({
             type: 'typed-update' as const,
             label: `${item.progressConfirmedBy || 'Project manager'} progress judgment`,
             recordId: item.id,
             confidence: 'high' as const,
             capturedAt: item.progressConfirmedAt || item.createdAt,
-          }] : []),
-          {
+            actorId: item.progressConfirmedBy || null,
+            confirmationEventId: item.progressConfirmedAt
+              ? `schedule-progress-confirmation:${item.id}:${item.progressConfirmedAt}`
+              : null,
+            recordVersion: item.updatedAt || item.progressConfirmedAt || item.createdAt,
+          })] : []),
+          evidenceSource({
             type: scheduleSourceType(importedFrom),
             label: importedFrom || 'Schedule item',
             recordId: item.id,
             confidence: scheduleConfidence(item, needsReview),
             capturedAt: importedAt || item.createdAt,
-          },
+            recordVersion: item.updatedAt || importedAt || item.createdAt,
+          }),
         ],
         confidence: scheduleConfidence(item, needsReview),
       };
@@ -516,25 +571,17 @@ export function extractPhotoEvidence({
         const actionRequired = trimOrNull(photo.actionRequired);
         const areaName = trimOrNull(photo.selectedAreaName ?? '') ||
           trimOrNull(update.selectedAreaName ?? '');
+        const photoAssertionText = `${caption || ''} ${actionRequired || ''}`;
         const hasGps =
           typeof photo.gpsLatitude === 'number' &&
           typeof photo.gpsLongitude === 'number';
         const isIssue =
           photo.category === 'Open Issue' ||
-          includesAny(`${caption || ''} ${actionRequired || ''}`, [
-            'issue',
-            'blocked',
-            'blocker',
-            'delay',
-            'problem',
-          ]);
+          classifyDAVEIssue(photoAssertionText) === 'issue_present' ||
+          classifyDAVEBlocker(photoAssertionText) === 'blocked';
         const isSafety =
           photo.category === 'Safety Concern' ||
-          includesAny(`${caption || ''} ${actionRequired || ''}`, [
-            'safety',
-            'hazard',
-            'unsafe',
-          ]);
+          classifyDAVESafety(photoAssertionText) === 'issue_present';
         const needsAction =
           Boolean(actionRequired) ||
           photo.actionStatus === 'Open' ||
@@ -567,13 +614,18 @@ export function extractPhotoEvidence({
           isSafety,
           needsAction,
           sources: [
-            {
+            evidenceSource({
               type: 'photo',
               label: caption || photo.category,
               recordId: photo.id,
               confidence,
               capturedAt: photo.locationCapturedAt || update.date || null,
-            },
+              recordVersion:
+                photo.photoIntelligence?.updatedAt ||
+                photo.locationCapturedAt ||
+                update.date ||
+                null,
+            }),
           ],
           confidence,
         };
@@ -694,13 +746,14 @@ export function extractGPSEvidence({
     ]),
     sources: latest
       ? [
-          {
+          evidenceSource({
             type: latest.sourceType === 'photo' ? 'photo' : 'typed-update',
             label: latest.areaName || 'GPS evidence',
             recordId: latest.sourceId,
             confidence,
             capturedAt: latest.capturedAt,
-          },
+            recordVersion: latest.capturedAt,
+          }),
         ]
       : [],
   };
@@ -717,30 +770,23 @@ export function extractUserUpdateEvidence({
     .filter(update => matchesProject(projectName, update.projectName))
     .map(update => {
       const notes = trimOrNull(update.notes);
-      const mentionedIssues = extractMatchingLines(notes, [
-        'issue',
-        'blocked',
-        'blocker',
-        'delay',
-        'problem',
-      ]);
-      const mentionedSafety = extractMatchingLines(notes, [
-        'safety',
-        'hazard',
-        'unsafe',
-      ]);
-      const mentionedDecisions = extractMatchingLines(notes, [
-        'decision',
-        'decided',
-        'approved',
-        'approval',
-      ]);
-      const blockers = extractMatchingLines(notes, [
-        'blocked',
-        'blocker',
-        'waiting',
-        'hold',
-      ]);
+      const mentionedIssues = extractAssertionLines(notes, line =>
+        classifyDAVEIssue(line) === 'issue_present' ||
+        classifyDAVEBlocker(line) === 'blocked'
+      );
+      const mentionedSafety = extractAssertionLines(
+        notes,
+        line => classifyDAVESafety(line) === 'issue_present',
+      );
+      const mentionedDecisions = extractAssertionLines(notes, line =>
+        parseDAVEAssertions(line).assertions.some(assertion =>
+          assertion.predicate === 'approved'
+        )
+      );
+      const blockers = extractAssertionLines(
+        notes,
+        line => classifyDAVEBlocker(line) === 'blocked',
+      );
       const nextSteps = extractMatchingLines(notes, [
         'next',
         'tomorrow',
@@ -772,13 +818,14 @@ export function extractUserUpdateEvidence({
         communicationReady,
         recipientCount,
         sources: [
-          {
+          evidenceSource({
             type: 'typed-update',
             label: notes ? 'Typed update notes' : 'Saved update',
             recordId: update.id,
             confidence,
             capturedAt: update.date || null,
-          },
+            recordVersion: update.date || null,
+          }),
         ],
         confidence,
       };
@@ -1197,12 +1244,13 @@ function extractDocumentEvidence(
     .filter(document =>
       matchesDocumentProject(projectName, document),
     )
-    .map(document => ({
+    .map(document => evidenceSource({
       type: 'document-metadata',
       label: document.name || document.originalFileName || 'Reference document',
       recordId: document.id,
       confidence: document.isCurrent ? 'high' : 'medium',
       capturedAt: document.importedAt,
+      recordVersion: document.updatedAt || document.importedAt,
     }));
 }
 
@@ -1212,12 +1260,13 @@ function extractReportEvidence(
 ): PIEEvidenceSource[] {
   return reportHistory
     .filter(report => matchesProject(projectName, report.projectName || projectName))
-    .map(report => ({
+    .map(report => evidenceSource({
       type: 'report-history',
       label: report.title || report.reportType || 'Project report',
       recordId: report.id,
       confidence: report.generatedAt ? 'high' : 'medium',
       capturedAt: report.generatedAt || null,
+      recordVersion: report.generatedAt || null,
     }));
 }
 
@@ -1228,7 +1277,7 @@ function extractSyncEvidence(
   if (!syncMetadata) return [];
 
   return [
-    {
+    evidenceSource({
       type: 'sync-cloud',
       label: syncMetadata.message || 'Sync metadata',
       recordId: null,
@@ -1239,7 +1288,8 @@ function extractSyncEvidence(
             ? 'high'
             : 'medium',
       capturedAt: syncMetadata.checkedAt || syncMetadata.lastSyncAt || now.toISOString(),
-    },
+      recordVersion: syncMetadata.checkedAt || syncMetadata.lastSyncAt || null,
+    }),
   ];
 }
 
@@ -1651,6 +1701,20 @@ function extractMatchingLines(
     .map(line => line.trim())
     .filter(Boolean)
     .filter(line => includesAny(line, patterns))
+    .slice(0, 5);
+}
+
+function extractAssertionLines(
+  value: string | null,
+  matches: (line: string) => boolean,
+): string[] {
+  if (!value) return [];
+
+  return value
+    .split(/\n|\.|;/g)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(matches)
     .slice(0, 5);
 }
 

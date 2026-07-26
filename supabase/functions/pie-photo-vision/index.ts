@@ -244,6 +244,59 @@ Deno.serve(async req => {
     }
   }
 
+  const operationFingerprint = await sha256Hex(JSON.stringify({
+    requestId,
+    projectId: request.projectId,
+    mode,
+    evidence: imageDiagnostics.map(image => ({
+      evidenceId: image.evidenceId,
+      sha256: image.sha256,
+      sizeBytes: image.sizeBytes,
+    })),
+    versions: requestIdentityVersions,
+  }));
+  const operationBegin = await userClient.rpc('dave_begin_ai_operation', {
+    p_operation_type: 'photo_analysis',
+    p_idempotency_key: `photo:${await sha256Hex(requestId)}`,
+    p_project_ids: [request.projectId],
+    p_payload_fingerprint: operationFingerprint,
+    p_payload_bytes: new TextEncoder().encode(JSON.stringify(body)).byteLength,
+  });
+  if (operationBegin.error || !operationBegin.data) {
+    return json({ error: 'ai_operation_control_unavailable' }, 503);
+  }
+  const operationControl = operationBegin.data as {
+    action?: string;
+    request_id?: string;
+    response_payload?: unknown;
+    retry_after_seconds?: number;
+  };
+  if (operationControl.action === 'replay') {
+    return json(operationControl.response_payload);
+  }
+  if (operationControl.action === 'in_progress') {
+    return json({
+      error: 'analysis_in_progress',
+      retryAfterSeconds: operationControl.retry_after_seconds ?? 15,
+    }, 409);
+  }
+  if (operationControl.action === 'rate_limited') {
+    return json({
+      error: 'analysis_rate_limited',
+      retryAfterSeconds: operationControl.retry_after_seconds ?? 60,
+    }, 429);
+  }
+  if (operationControl.action === 'idempotency_conflict') {
+    return json({ error: 'analysis_idempotency_conflict' }, 409);
+  }
+  if (
+    operationControl.action !== 'start' ||
+    typeof operationControl.request_id !== 'string'
+  ) {
+    return json({ error: 'ai_operation_control_invalid' }, 503);
+  }
+  const operationRequestId = operationControl.request_id;
+
   const context: ProviderRunContext = {
     mode,
     organizationId: request.organizationId,
@@ -252,7 +305,7 @@ Deno.serve(async req => {
     promptVersion: contractEnvelope.promptVersion,
     policyVersion: POLICY_VERSION,
     timeoutMs: Number(Deno.env.get('PIE_VISION_TIMEOUT_MS') ?? '45000'),
-    maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '2'),
+    maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '1'),
     projectName: request.projectName ?? null,
     areaName: request.areaName ?? null,
     fieldNotes: request.fieldNotes ?? null,
@@ -334,10 +387,17 @@ Deno.serve(async req => {
     imageDiagnostics,
   );
   if (!persisted.ok) {
+    await finishAIOperation(
+      userClient,
+      operationRequestId,
+      'failed',
+      null,
+      'analysis_persistence_failed',
+    );
     return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
   }
 
-  return json({
+  const responsePayload = {
     requestId,
     mode,
     contractVersion: contractEnvelope.contractVersion,
@@ -353,7 +413,18 @@ Deno.serve(async req => {
     attempts: finalResult.attempts,
     failureReason: normalizePhotoVisionProviderFailureReason(finalResult.error),
     jarvis,
-  });
+  };
+  const operationFinished = await finishAIOperation(
+    userClient,
+    operationRequestId,
+    'completed',
+    responsePayload,
+    null,
+  );
+  if (!operationFinished) {
+    return json({ error: 'ai_operation_finalize_failed' }, 503);
+  }
+  return json(responsePayload);
 });
 
 async function loadAuthorizedImage(
@@ -998,7 +1069,7 @@ async function persistRequestAndResult(
       corroboration_required: true,
       visual_findings: providerResult?.normalized ?? {},
       unsafe_claims_rejected: rejectedClaims,
-      raw_response: providerResult?.rawResponse ?? { failureReason },
+      raw_response: null,
       usage: providerResult?.usage ?? {},
     });
     if (analysisWrite.error) {
@@ -1081,7 +1152,7 @@ async function persistRequestAndResult(
         providerInvocationId: requestId,
         providerResponseStatus: providerResult.status,
       },
-      provider_response: providerResult.rawResponse,
+      provider_response: null,
       jarvis_result: {
         accepted: jarvis.observationAccepted && providerResult.status === 'succeeded',
         rejectedClaims,
@@ -1348,4 +1419,30 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+async function finishAIOperation(
+  client: EdgeSupabaseClient,
+  requestId: string,
+  status: 'completed' | 'failed',
+  responsePayload: unknown,
+  errorCode: string | null,
+): Promise<boolean> {
+  const result = await client.rpc('dave_finish_ai_operation', {
+    p_request_id: requestId,
+    p_status: status,
+    p_response_payload: responsePayload,
+    p_error_code: errorCode,
+  });
+  return !result.error;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
 }

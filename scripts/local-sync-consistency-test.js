@@ -14,6 +14,10 @@ const automaticSync = fs.readFileSync(
 const lifecycle = fs.readFileSync(path.join(root, 'services/FieldUpdateLifecycle.ts'), 'utf8');
 const admin = fs.readFileSync(path.join(root, 'screens/AdminScreen.tsx'), 'utf8');
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
+const operationalRefresh = fs.readFileSync(
+  path.join(root, 'services/DAVEOperationalRefresh.ts'),
+  'utf8',
+);
 const fileSizePreflight = fs.readFileSync(
   path.join(root, 'services/FileSizePreflight.ts'),
   'utf8',
@@ -113,6 +117,45 @@ includes(automaticSync, "key: 'field-update-automatic-sync'", 'automatic sync wo
 includes(automaticSync, 'reportBackgroundTaskFailure({', 'per-item automatic sync failures must be handled diagnostically');
 assert(!app.includes('void hydrateQueuedUpdates();'), 'automatic sync must not create a floating rejecting promise');
 includes(app, "AppState.addEventListener('change'", 'sync worker must run on app foreground');
+includes(app, 'subscribeToDAVEOperationalChanges', 'open devices must subscribe to shared operational changes');
+includes(operationalRefresh, 'DAVE_OPERATIONAL_POLL_INTERVAL_MS = 4_000', 'open-device fallback refresh must remain fast');
+includes(app, 'runDAVEOperationalCollectionRefreshes', 'task, area, and document pulls must refresh independently');
+includes(app, 'loadDAVEOperationalTombstones()', 'open-device refresh must use bounded receive-side deletion history');
+includes(
+  operationalRefresh,
+  'createDAVEOperationalRefreshCommitGuard',
+  'operational refreshes must expose a request-generation commit guard',
+);
+const operationalRefreshStart = app.indexOf('async function refreshOperationalCollections()');
+const operationalRefreshEnd = app.indexOf('const refreshController =', operationalRefreshStart);
+const operationalRefreshBlock = app.slice(operationalRefreshStart, operationalRefreshEnd);
+assert(
+  !operationalRefreshBlock.includes('synchronizeDAVESyncTombstones()'),
+  'open-device refresh must not upload the full deletion journal before pulling tasks',
+);
+includes(operationalRefreshBlock, 'safeCloudItems', 'fallback refresh must update only tasks already known to the device');
+includes(
+  operationalRefreshBlock,
+  'operationalRefreshCommitGuard.begin()',
+  'each operational refresh must start a new commit generation',
+);
+includes(
+  operationalRefreshBlock,
+  'refreshCommit.commit(() =>',
+  'operational collection state and refs must commit only from the latest refresh',
+);
+includes(
+  app,
+  'operationalRefreshCommitGuard.invalidate()',
+  'late refresh work must be invalidated when the live refresh owner stops',
+);
+includes(app, "AppState.currentState !== 'background'", 'visible iPad multitasking sessions must continue to refresh');
+assert(
+  !app.includes("if (!startupHydrationReady || !projectAreasLoaded || !referenceDocumentsLoaded || !scheduleItemsLoaded) return;"),
+  'task refresh must not wait for unrelated area and document startup readiness',
+);
+includes(operationalRefresh, "table: 'schedule_items'", 'task changes must trigger open-device refresh');
+includes(operationalRefresh, "table: 'project_areas'", 'area changes must trigger open-device refresh');
 includes(app, 'runFieldUpdateCloudSync', 'send/retry must call the shared structured cloud sync work');
 includes(app, 'onRetryUpdateSync={update => retryQueuedUpdate', 'Settings must retry through the live Field Update sync path');
 includes(admin, 'onRetryUpdateSync(update)', 'Settings must await the live update retry result');
@@ -129,6 +172,10 @@ const settingsRetryHandler = admin.slice(
 assert(!settingsRetryHandler.includes('synchronizeLocalData('), 'Settings Retry Sync must not re-upload every local record');
 includes(admin, 'async function handleFullSyncNow', 'Settings must retain explicit full project-data sync');
 includes(admin, 'synchronizeLocalData(', 'Full project-data sync must continue to include schedules, areas, and documents');
+assert(!admin.includes('(${progress.completed} of ${progress.total})'),
+  'Device-local preparation totals must not be presented as shared cloud counts.');
+includes(admin, 'Shared record refreshed:',
+  'Completed sync must report the shared collection counts returned by cloud recovery.');
 const settingsFullSyncHandler = admin.slice(
   admin.indexOf('async function handleFullSyncNow'),
   admin.indexOf('function confirmConflictResolution'),

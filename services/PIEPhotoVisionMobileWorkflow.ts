@@ -58,6 +58,11 @@ import {
 } from './PIEPhotoVisionResponse';
 import type { PhotoAnalysisTarget } from './PhotoAnalysisTarget';
 
+// The deployed provider may make two 45-second attempts. Keep the device
+// request open long enough for those attempts plus image preflight and result
+// persistence, while still bounding a genuinely stalled request.
+export const PIE_PHOTO_VISION_CLIENT_TIMEOUT_MS = 120_000;
+
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
   | 'analysis_complete'
@@ -617,6 +622,7 @@ export async function analyzeProjectPhotoWithVision({
     const requestId = analysisRunIdentity.requestId;
 
     const { data: functionData, error } = await client.functions.invoke('pie-photo-vision', {
+      timeout: PIE_PHOTO_VISION_CLIENT_TIMEOUT_MS,
       headers: {
         Authorization: `Bearer ${tokenLookup.accessToken}`,
       },

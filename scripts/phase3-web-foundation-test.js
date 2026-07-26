@@ -11,6 +11,9 @@ const nativeEntry = read('entry.ts');
 const webEntry = read('entry.web.ts');
 const shell = read('components/web-shell/desktop-read-only-shell.tsx');
 const provider = read('components/web-shell/desktop-auth-provider.tsx');
+const connectionStatus = read('components/web-shell/desktop-connection-status.tsx');
+const overviewPage = read('components/web-shell/desktop-overview-page.tsx');
+const taskPagination = read('services/DAVEWebTaskPagination.ts');
 const browserAuthStorage = read('services/SupabaseAuthStorage.web.ts');
 const readOnlyRepository = read('services/DAVEWebReadOnlyRepository.ts');
 const webSupabaseClient = read('services/DAVEWebSupabaseClient.ts');
@@ -22,7 +25,9 @@ function assert(condition, message) {
 
 assert(index.includes("import './entry'"), 'The root entry must resolve through a platform-specific entry module.');
 assert(nativeEntry.includes("import App from './App'"), 'Native must keep the established reachable App.tsx entry.');
-assert(nativeEntry.includes('registerRootComponent(App)'), 'Native must keep Expo root registration.');
+assert(nativeEntry.includes('PendingChangesRetryBoundary'), 'Native must install the pending-change recovery boundary at the reachable root.');
+assert(nativeEntry.includes('createElement(App)'), 'The native recovery root must still render the established reachable App.tsx.');
+assert(nativeEntry.includes('registerRootComponent(NativeRoot)'), 'Native must register the recovery-aware Expo root.');
 assert(webEntry.includes("import 'expo-router/entry'"), 'Web must use the URL-addressable Expo Router entry.');
 assert(appConfig.platforms.includes('web'), 'Web must be an explicit application platform.');
 assert(appConfig.name === 'Vitruvius', 'The installed application name must use the approved Vitruvius brand.');
@@ -39,13 +44,32 @@ for (const dependency of ['expo-router', 'react-dom', 'react-native-web', '@expo
 for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'app/tasks.tsx', 'app/evidence.tsx', 'app/photos.tsx', 'app/documents.tsx', 'app/reports.tsx', 'app/settings.tsx', 'app/+not-found.tsx']) {
   assert(exists(route), `${route} must exist.`);
 }
-assert(shell.includes('Connected to the shared project record'), 'The web workspace must visibly identify its shared-record connection.');
+assert(
+  shell.includes('<DesktopConnectionStatus freshness={auth.freshness} />') &&
+    connectionStatus.includes("'Connected'") &&
+    connectionStatus.includes("'Reconnecting'") &&
+    connectionStatus.includes("'Stale'") &&
+    connectionStatus.includes('Last cloud update'),
+  'The web workspace must visibly distinguish current, reconnecting, and stale shared-record data.',
+);
 assert(shell.includes('PRODUCT_BRAND.name'), 'The desktop shell must use the shared Vitruvius product brand.');
-assert(shell.includes('Project deletion, document uploads, report approval, and report sending remain available only in the mobile app'), 'The web workspace must visibly preserve non-task mutation boundaries.');
-assert(shell.includes('Task progress'), 'The overview must expose a clear task total breakdown.');
+assert(!provider.includes('deleteProject'), 'The web provider must preserve the destructive project-deletion boundary.');
+assert(
+  overviewPage.includes('label="Total Tasks"') &&
+    overviewPage.includes('label="Completed"') &&
+    overviewPage.includes('label="Open"'),
+  'The overview must expose a clear task total breakdown.',
+);
 assert(shell.includes('Completed Tasks'), 'The task workspace must provide a separate completed-task view.');
-assert(shell.includes('groupScheduleWorkspaceItemsByProjectAndArea'), 'The task workspace must group tasks by project and area.');
-assert(shell.includes('Sync from Cloud Now'), 'The browser must expose its cloud refresh action in Settings.');
+assert(
+  shell.includes('buildDAVEWebTaskRenderPage') &&
+    taskPagination.includes('groupScheduleWorkspaceItemsByProjectAndArea'),
+  'The task workspace must group and safely paginate tasks by project and area.',
+);
+assert(
+  shell.includes('>Sync Now</Text>') && shell.includes('auth.refreshSnapshot()'),
+  'The browser must expose its cloud refresh action in Settings.',
+);
 assert(!provider.includes('SupabaseService'), 'The web provider must not import the native sync service.');
 assert(provider.includes('loadDAVEWebReadOnlySnapshot'), 'The provider must load only through the reviewed read-only repository.');
 assert(webSupabaseClient.includes("client.rpc('dave_is_app_owner')"), 'Every snapshot load must pass the server owner check first.');
@@ -59,7 +83,9 @@ for (const forbiddenMutation of ['createProject(', 'updateProject(', 'deleteProj
 }
 assert(!webSupabaseClient.includes(".from('projects').update("), 'The browser gateway must not expose project editing.');
 assert(!webSupabaseClient.includes(".from('projects').delete("), 'The browser gateway must not expose project deletion.');
-assert(!webSupabaseClient.includes('.storage.'), 'The browser gateway must not expose file storage mutations.');
+assert(webSupabaseClient.includes("client.storage.from('project-documents')"), 'The reviewed browser workflow must upload only to protected project document storage.');
+assert(webSupabaseClient.includes('bytes.byteLength > 25 * 1024 * 1024'), 'Browser uploads must enforce the 25 MB boundary before storage writes.');
+assert(webSupabaseClient.includes('webFileFingerprint'), 'Browser uploads must check the content fingerprint before creating a duplicate document.');
 assert(!webSupabaseClient.includes('expo-file-system'), 'The browser Supabase gateway must not import native file support.');
 assert(!webSupabaseClient.includes('expo-secure-store'), 'The browser Supabase gateway must not import native SecureStore.');
 assert(!readOnlyRepository.includes("from '@react-native-async-storage/async-storage'"), 'The browser read repository must not import native AsyncStorage.');

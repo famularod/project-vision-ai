@@ -37,6 +37,7 @@ const keys: ProjectDeletionStorageKeys = {
   updateDeletionJournal: 'update-deletion-journal',
   projectDocuments: 'project-documents',
   referenceDocuments: 'reference-documents',
+  projectAreas: 'project-areas',
   scheduleItems: 'schedule-items',
   daveSyncTombstones: 'dave-tombstones',
   activeDraft: 'draft',
@@ -57,6 +58,13 @@ function fullCascade() {
     archivedProjects: ['Target Project', 'Other Project'],
     updates: [
       { id: 'update-target', projectName: 'Target Project', marker: 'remove' },
+      {
+        id: 'update-target-task',
+        projectName: 'Container',
+        scheduleProjectName: 'Target Project',
+        scheduleItemId: 'schedule-target-parent',
+        marker: 'remove',
+      },
       { id: 'update-other', projectName: 'Other Project', marker: 'keep' },
     ],
     updateTombstones: [{
@@ -79,6 +87,11 @@ function fullCascade() {
       { id: 'reference-by-id', projectId: 'project-target-project' },
       { id: 'reference-unscoped' },
       { id: 'reference-other', projectName: 'Other Project' },
+    ],
+    projectAreas: [
+      { id: 'area-target', projectName: 'Target Project' },
+      { id: 'area-other', projectName: 'Other Project' },
+      { id: 'area-legacy' },
     ],
     scheduleItems: [
       { id: 'schedule-target', projectName: 'Target Project' },
@@ -139,13 +152,18 @@ describe('project deletion cascade', () => {
     ]);
     expect(cascade.remainingArchivedProjects).toEqual(['Other Project']);
     expect(cascade.remainingUpdates.map(item => item.id)).toEqual(['update-other']);
-    expect(cascade.removedUpdates.map(item => item.id)).toEqual(['update-target']);
+    expect(cascade.removedUpdates.map(item => item.id)).toEqual([
+      'update-target',
+      'update-target-task',
+    ]);
     expect(cascade.nextUpdateTombstones.map(item => item.updateId)).toEqual([
       'update-target',
+      'update-target-task',
       'already-deleted',
     ]);
     expect(cascade.nextUpdateDeletionIntents.map(item => item.updateId)).toEqual([
       'update-target',
+      'update-target-task',
       'already-deleted',
     ]);
     expect(cascade.remainingProjectDocuments.map(item => item.id)).toEqual([
@@ -155,12 +173,23 @@ describe('project deletion cascade', () => {
       'reference-unscoped',
       'reference-other',
     ]);
+    expect(cascade.remainingProjectAreas.map(item => item.id)).toEqual([
+      'area-other',
+      'area-legacy',
+    ]);
+    expect(cascade.removedProjectAreas.map(item => item.id)).toEqual([
+      'area-target',
+    ]);
     expect(cascade.remainingScheduleItems.map(item => item.id)).toEqual([
       'schedule-other',
     ]);
     expect(cascade.nextDAVESyncTombstones).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: 'project', recordId: 'Target Project' }),
+      expect.objectContaining({ entityType: 'project_update', recordId: 'update-target' }),
+      expect.objectContaining({ entityType: 'project_update', recordId: 'update-target-task' }),
       expect.objectContaining({ entityType: 'schedule_item', recordId: 'schedule-target' }),
       expect.objectContaining({ entityType: 'schedule_item', recordId: 'schedule-target-parent' }),
+      expect.objectContaining({ entityType: 'project_area', recordId: 'area-target' }),
       expect.objectContaining({ entityType: 'reference_document', recordId: 'reference-by-name' }),
       expect.objectContaining({ entityType: 'reference_document', recordId: 'reference-by-id' }),
       expect.objectContaining({ entityType: 'schedule_item', recordId: 'previous-schedule-delete' }),
@@ -192,6 +221,7 @@ describe('project deletion cascade', () => {
       keys.updateDeletionJournal,
       keys.projectDocuments,
       keys.referenceDocuments,
+      keys.projectAreas,
       keys.scheduleItems,
       keys.daveSyncTombstones,
       keys.cloudIntents,

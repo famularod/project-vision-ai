@@ -57,6 +57,8 @@ import {
   type PIERecommendationTrace,
 } from '../services/PIETraceability';
 import { savePhotoProgressIntelligence } from '../services/PIEPhotoProgressIntelligenceStorage';
+import type { PIEVerifiedLearningEvent } from '../services/PIELearningEngine';
+import { PRODUCT_BRAND } from '../product-brand';
 
 export type { PIELiveAuthorityStateName } from '../services/PIELiveAuthorityStateMachine';
 
@@ -106,6 +108,7 @@ export type PIELiveAuthorityInput = {
   referenceDocuments?: ReferenceDocument[];
   projectDocuments?: DAVEDailyBriefDocument[];
   captureMemories?: readonly DAVEConfirmedCaptureMemory[];
+  verifiedLearningEvents?: readonly PIEVerifiedLearningEvent[];
   syncMetadata?: ProjectSyncFreshnessMetadata | null;
   surface?: PIERuntimeContext['surface'];
   identityTrusted?: boolean;
@@ -141,7 +144,15 @@ export type PIELiveAuthorityContextValue = {
   error: string | null;
   retryPending: boolean;
   lastSuccessfulRefreshAt: string | null;
+  cloudExpected: boolean;
+  /**
+   * True when the current authority is intentionally computed in memory, such
+   * as a combined portfolio report that is not a standalone cloud project.
+   */
+  localAuthorityExpected: boolean;
+  degradedLocalAcknowledged: boolean;
   refreshAuthority: (reason: PIELiveAuthorityRefreshReason) => Promise<void>;
+  acknowledgeDegradedLocal: () => void;
   invalidateEvidence: (evidenceId: string) => void;
   notifyEvidenceChanged: (evidenceId: string) => void;
   notifyProjectChanged: (projectId: string) => void;
@@ -152,7 +163,7 @@ const DEFAULT_POLICY: PIELiveAuthorityPolicy = {
   highImpactAutomationAllowed: false,
   reportGenerationAllowed: false,
   layer4DecisionCreationAllowed: false,
-  userMessage: 'DAVE is preparing the current project view.',
+  userMessage: `${PRODUCT_BRAND.name} is preparing the current project view.`,
 };
 
 const PIELiveAuthorityContext = createContext<PIELiveAuthorityContextValue | null>(null);
@@ -173,6 +184,8 @@ export function PIELiveAuthorityProvider({
   const [error, setError] = useState<string | null>(null);
   const [retryPending, setRetryPending] = useState(false);
   const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState<string | null>(null);
+  const [acknowledgedDegradedGeneration, setAcknowledgedDegradedGeneration] =
+    useState<string | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const coreCacheRef = useRef(new Map<string, PIECoreOutput>());
   const sequenceRef = useRef(0);
@@ -215,6 +228,7 @@ export function PIELiveAuthorityProvider({
     [cachedGenerationCore, input, scopeIsCurrent],
   );
   const pendingReasonRef = useRef<PIELiveAuthorityRefreshReason | null>(null);
+  const latestRawInputRef = useRef(input);
   const latestInputRef = useRef(authorityInput);
   const latestSignatureRef = useRef(signature);
   const latestScopeSignatureRef = useRef(authoritySnapshot.priorityKey);
@@ -223,6 +237,7 @@ export function PIELiveAuthorityProvider({
   const latestAuthorityGenerationRef = useRef(authorityGeneration);
   const authorityReadyRef = useRef(readyForAuthority);
   const authorityWasReadyRef = useRef(readyForAuthority);
+  latestRawInputRef.current = input;
   latestInputRef.current = authorityInput;
   latestSignatureRef.current = signature;
   latestScopeSignatureRef.current = authoritySnapshot.priorityKey;
@@ -250,10 +265,12 @@ export function PIELiveAuthorityProvider({
 
     if (!authorityReadyRef.current) return;
 
-    if (
+    const debouncedInputIsCurrent = (
       latestSignatureRef.current !== latestRawSignatureRef.current ||
       latestScopeSignatureRef.current !== latestRawScopeSignatureRef.current
-    ) {
+    ) === false;
+    const useRawSnapshot = reason === 'manual_retry' && !debouncedInputIsCurrent;
+    if (!debouncedInputIsCurrent && !useRawSnapshot) {
       return;
     }
 
@@ -261,9 +278,15 @@ export function PIELiveAuthorityProvider({
       return inFlightRef.current;
     }
 
-    const refreshInput = latestInputRef.current;
-    const refreshSignature = latestSignatureRef.current;
-    const refreshScopeSignature = latestScopeSignatureRef.current;
+    const refreshInput = useRawSnapshot
+      ? latestRawInputRef.current
+      : latestInputRef.current;
+    const refreshSignature = useRawSnapshot
+      ? latestRawSignatureRef.current
+      : latestSignatureRef.current;
+    const refreshScopeSignature = useRawSnapshot
+      ? latestRawScopeSignatureRef.current
+      : latestScopeSignatureRef.current;
     const refreshGeneration = latestAuthorityGenerationRef.current;
     pendingReasonRef.current = null;
     const cachedCore = coreCacheRef.current.get(refreshGeneration);
@@ -276,7 +299,10 @@ export function PIELiveAuthorityProvider({
       setCore(cachedCore);
       setCoreSignature(refreshSignature);
       setCoreGeneration(refreshGeneration);
-      setState(stateFromPersistence(cachedCore.realityAuthority.persistenceStatus));
+      setState(stateFromPersistence(
+        cachedCore.realityAuthority.persistenceStatus,
+        Boolean(refreshInput.cloudAvailable),
+      ));
       setError(null);
       setLastSuccessfulRefreshAt(new Date().toISOString());
       return;
@@ -284,20 +310,30 @@ export function PIELiveAuthorityProvider({
     const refreshSequence = sequenceRef.current + 1;
     sequenceRef.current = refreshSequence;
     setState('loading');
-    setRetryPending(false);
+    setRetryPending(reason === 'manual_retry');
 
     let run!: Promise<void>;
     run = (async () => {
-      const refreshIsCurrent = () => Boolean(
-        mountedRef.current &&
-        authorityReadyRef.current &&
-        refreshSequence === sequenceRef.current &&
-        refreshSignature === latestSignatureRef.current &&
-        refreshScopeSignature === latestScopeSignatureRef.current &&
-        refreshSignature === latestRawSignatureRef.current &&
-        refreshScopeSignature === latestRawScopeSignatureRef.current &&
-        refreshGeneration === latestAuthorityGenerationRef.current
-      );
+      const refreshIsCurrent = () => {
+        const inputSnapshotIsCurrent = useRawSnapshot
+          ? (
+              refreshSignature === latestRawSignatureRef.current &&
+              refreshScopeSignature === latestRawScopeSignatureRef.current
+            )
+          : (
+              refreshSignature === latestSignatureRef.current &&
+              refreshScopeSignature === latestScopeSignatureRef.current &&
+              refreshSignature === latestRawSignatureRef.current &&
+              refreshScopeSignature === latestRawScopeSignatureRef.current
+            );
+        return Boolean(
+          mountedRef.current &&
+          authorityReadyRef.current &&
+          refreshSequence === sequenceRef.current &&
+          inputSnapshotIsCurrent &&
+          refreshGeneration === latestAuthorityGenerationRef.current
+        );
+      };
 
       try {
         await waitForLiveAuthorityInteractionIdle();
@@ -311,6 +347,7 @@ export function PIELiveAuthorityProvider({
           reportProjectNames: refreshInput.projectNames,
           organizationId: refreshInput.organizationId || 'local-unverified-anonymous',
           projectId: refreshInput.projectId || safeProjectId(refreshInput.projectName),
+          verifiedLearningEvents: refreshInput.verifiedLearningEvents,
           identityTrusted: Boolean(refreshInput.identityTrusted),
           cloudAvailable: Boolean(refreshInput.cloudAvailable),
         };
@@ -356,18 +393,22 @@ export function PIELiveAuthorityProvider({
         setCore(result);
         setCoreSignature(refreshSignature);
         setCoreGeneration(refreshGeneration);
-        setState(stateFromPersistence(result.realityAuthority.persistenceStatus));
+        const refreshedState = stateFromPersistence(
+          result.realityAuthority.persistenceStatus,
+          Boolean(refreshInput.cloudAvailable),
+        );
+        setState(refreshedState);
         setError(null);
         setLastSuccessfulRefreshAt(new Date().toISOString());
         logStartupDiagnostic('shared_provider_ready', 'DAVE live authority provider is ready.', {
-          state: stateFromPersistence(result.realityAuthority.persistenceStatus),
+          state: refreshedState,
         });
       } catch (error) {
         if (!refreshIsCurrent()) return;
         logStartupDiagnostic('degraded_mode_entered', 'DAVE live authority failed; fallback Runtime remains available.', {
           error: startupErrorMessage(error),
         });
-        setError('DAVE could not refresh the current project understanding.');
+        setError(`${PRODUCT_BRAND.name} could not refresh the current project understanding.`);
         setState('unavailable');
         const nextAttempt = retryAttemptRef.current + 1;
         if (nextAttempt <= LIVE_AUTHORITY_MAX_AUTO_RETRY_ATTEMPTS) {
@@ -431,7 +472,10 @@ export function PIELiveAuthorityProvider({
     cancelScheduledRetry(true);
     const cachedCore = coreCacheRef.current.get(authorityGeneration);
     setState(cachedCore
-      ? stateFromPersistence(cachedCore.realityAuthority.persistenceStatus)
+      ? stateFromPersistence(
+          cachedCore.realityAuthority.persistenceStatus,
+          Boolean(input.cloudAvailable),
+        )
       : 'loading');
     setError(null);
     if (previous.scopeSignature !== rawScopeSignature && !cachedCore) {
@@ -489,6 +533,11 @@ export function PIELiveAuthorityProvider({
     void runRefresh('project_changed');
   }, [runRefresh]);
 
+  const acknowledgeDegradedLocal = useCallback(() => {
+    if (state !== 'degraded_local_only' && state !== 'queued_for_cloud') return;
+    setAcknowledgedDegradedGeneration(authorityGeneration);
+  }, [authorityGeneration, state]);
+
   const authorityResolution = resolvePIELiveAuthorityState({
     hydrated: readyForAuthority,
     refreshState: state,
@@ -507,9 +556,26 @@ export function PIELiveAuthorityProvider({
     const currentRuntime = currentCore?.runtime || immediateInputRuntime || fallbackRuntime;
     const persistenceStatus = currentCore?.realityAuthority.persistenceStatus || null;
     const nextState = cachedGenerationCore
-      ? stateFromPersistence(cachedGenerationCore.realityAuthority.persistenceStatus)
+      ? stateFromPersistence(
+          cachedGenerationCore.realityAuthority.persistenceStatus,
+          Boolean(displayInput.cloudAvailable),
+        )
       : authorityResolution.state;
-    const policy = policyForCore(nextState, currentCore);
+    const localAuthorityExpected =
+      displayInput.projectTruthPersistencePolicy === 'ephemeral_portfolio';
+    // A combined portfolio is intentionally computed in memory because it is
+    // not a synthetic project that should be written back to cloud storage.
+    // Treat that expected local authority as accepted for report generation.
+    // Tying it to a one-time acknowledgement made every project-selection
+    // change create a new generation and restart the acknowledgement loop.
+    const degradedLocalAcknowledged =
+      localAuthorityExpected ||
+      acknowledgedDegradedGeneration === authorityGeneration;
+    const policy = policyForCore(
+      nextState,
+      currentCore,
+      degradedLocalAcknowledged,
+    );
     const projectTruth = buildDAVEProjectTruth({
       projectId: displayInput.projectId || safeProjectId(displayInput.projectName),
       projectName: displayInput.projectName,
@@ -557,7 +623,11 @@ export function PIELiveAuthorityProvider({
       error,
       retryPending,
       lastSuccessfulRefreshAt,
+      cloudExpected: Boolean(displayInput.cloudAvailable),
+      localAuthorityExpected,
+      degradedLocalAcknowledged,
       refreshAuthority: runRefresh,
+      acknowledgeDegradedLocal,
       invalidateEvidence,
       notifyEvidenceChanged,
       notifyProjectChanged,
@@ -565,6 +635,9 @@ export function PIELiveAuthorityProvider({
   }, [
     authorityResolution.coreIsCurrent,
     authorityResolution.state,
+    acknowledgeDegradedLocal,
+    acknowledgedDegradedGeneration,
+    authorityGeneration,
     cachedGenerationCore,
     core,
     displayInput,
@@ -639,28 +712,45 @@ export function useOptionalPIELiveAuthority() {
 
 export function stateFromPersistence(
   status: PIERealityPersistenceStatus,
+  cloudExpected = false,
 ): PIELiveAuthorityStateName {
-  if (status === 'authoritative_local' || status === 'authoritative_cloud') return 'ready';
+  if (status === 'authoritative_cloud') return 'ready';
+  if (status === 'authoritative_local') {
+    return cloudExpected ? 'degraded_local_only' : 'ready';
+  }
   return status;
 }
 
-export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthorityPolicy {
+export function policyForState(
+  state: PIELiveAuthorityStateName,
+  degradedLocalAcknowledged = false,
+): PIELiveAuthorityPolicy {
   if (state === 'ready') {
     return {
       mayShowRecommendations: true,
       highImpactAutomationAllowed: true,
       reportGenerationAllowed: true,
       layer4DecisionCreationAllowed: true,
-      userMessage: 'DAVE is ready.',
+      userMessage: `${PRODUCT_BRAND.name} is ready.`,
     };
   }
   if (state === 'queued_for_cloud' || state === 'degraded_local_only') {
+    if (!degradedLocalAcknowledged) {
+      return {
+        mayShowRecommendations: false,
+        highImpactAutomationAllowed: false,
+        reportGenerationAllowed: false,
+        layer4DecisionCreationAllowed: false,
+        userMessage:
+          `${PRODUCT_BRAND.name} is using saved device data. Acknowledge this limited view before continuing.`,
+      };
+    }
     return {
       mayShowRecommendations: true,
       highImpactAutomationAllowed: false,
       reportGenerationAllowed: true,
       layer4DecisionCreationAllowed: false,
-      userMessage: 'DAVE is using the latest information saved on this device.',
+      userMessage: `${PRODUCT_BRAND.name} is using the latest information saved on this device.`,
     };
   }
   if (state === 'conflict_blocked') {
@@ -669,7 +759,7 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
       highImpactAutomationAllowed: false,
       reportGenerationAllowed: false,
       layer4DecisionCreationAllowed: false,
-      userMessage: 'DAVE found a conflict that needs review before final recommendations.',
+      userMessage: `${PRODUCT_BRAND.name} found a conflict that needs review before final recommendations.`,
     };
   }
   if (state === 'stale_model') {
@@ -678,7 +768,7 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
       highImpactAutomationAllowed: false,
       reportGenerationAllowed: false,
       layer4DecisionCreationAllowed: false,
-      userMessage: 'DAVE needs to refresh this project before recommending action.',
+      userMessage: `${PRODUCT_BRAND.name} needs to refresh this project before recommending action.`,
     };
   }
 
@@ -686,9 +776,9 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
     ...DEFAULT_POLICY,
     userMessage:
       state === 'blocked_identity' || state === 'blocked_organization'
-        ? 'DAVE needs a trusted project connection before final recommendations.'
+        ? `${PRODUCT_BRAND.name} needs a trusted project connection before final recommendations.`
         : state === 'persistence_failed'
-          ? 'DAVE saved the evidence, but could not update project understanding yet.'
+          ? `${PRODUCT_BRAND.name} saved the project information, but could not update project understanding yet.`
           : DEFAULT_POLICY.userMessage,
   };
 }
@@ -696,8 +786,9 @@ export function policyForState(state: PIELiveAuthorityStateName): PIELiveAuthori
 export function policyForCore(
   state: PIELiveAuthorityStateName,
   core: PIECoreOutput | null,
+  degradedLocalAcknowledged = false,
 ): PIELiveAuthorityPolicy {
-  const base = policyForState(state);
+  const base = policyForState(state, degradedLocalAcknowledged);
   if (!core) {
     return {
       ...base,
@@ -714,7 +805,7 @@ export function policyForCore(
     return {
       ...base,
       highImpactAutomationAllowed: false,
-      userMessage: 'DAVE has a recommendation, but important uncertainty remains.',
+      userMessage: `${PRODUCT_BRAND.name} has a recommendation, but important uncertainty remains.`,
     };
   }
 
@@ -726,7 +817,7 @@ export function policyForCore(
       layer4DecisionCreationAllowed: false,
       userMessage:
         core?.evidenceValuePrioritization.oneRequestForUser ||
-        'DAVE needs one more piece of evidence before final recommendation.',
+        `${PRODUCT_BRAND.name} needs one more project detail before making a final recommendation.`,
     };
   }
 
@@ -738,8 +829,8 @@ export function policyForCore(
     layer4DecisionCreationAllowed: false,
     userMessage:
       jarvisStatus === 'human_review_required'
-        ? 'DAVE needs human review before this recommendation can be final.'
-        : 'DAVE blocked this recommendation because reasoning validation failed.',
+        ? `${PRODUCT_BRAND.name} needs human review before this recommendation can be final.`
+        : `${PRODUCT_BRAND.name} blocked this recommendation because its validation check failed.`,
   };
 }
 

@@ -26,9 +26,39 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 const mockCreateProject = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
+const mockArchiveProjectUpdate = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({
+    ok: true,
+    configured: true,
+    stubbed: false,
+    error: undefined as string | undefined,
+  }),
+);
+const mockListReferenceDocuments = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false, data: [] }),
+);
+const mockUpsertReferenceDocument = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+);
+const mockListDAVESyncTombstones = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({
+    ok: true,
+    configured: true,
+    stubbed: false,
+    data: [],
+  }),
+);
+const mockUpsertDAVESyncTombstone = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+);
 
 jest.mock('../../services/SupabaseService', () => ({
   createProject: (...args: unknown[]) => mockCreateProject(...args),
+  archiveProjectUpdate: (...args: unknown[]) => mockArchiveProjectUpdate(...args),
+  listReferenceDocuments: (...args: unknown[]) => mockListReferenceDocuments(...args),
+  upsertReferenceDocument: (...args: unknown[]) => mockUpsertReferenceDocument(...args),
+  listDAVESyncTombstones: (...args: unknown[]) => mockListDAVESyncTombstones(...args),
+  upsertDAVESyncTombstone: (...args: unknown[]) => mockUpsertDAVESyncTombstone(...args),
   getSupabaseConfigurationStatus: () => ({
     configured: true,
     message: 'Configured.',
@@ -66,12 +96,241 @@ function queueItem(id: string): SyncQueueItem {
   };
 }
 
+function archiveQueueItem(
+  updateId: string,
+  changedAt = '2026-07-18T12:10:00.000Z',
+): SyncQueueItem {
+  return {
+    id: `project-update-${updateId}`,
+    entity: 'project_update',
+    operation: 'update',
+    payload: {
+      id: updateId,
+      archiveOnly: true,
+      archivedAt: changedAt,
+    },
+    createdAt: changedAt,
+    changedAt,
+    retryCount: 0,
+    lastError: null,
+  };
+}
+
+function addLegacyArchiveQuarantine(
+  suffix: string,
+  items: SyncQueueItem[],
+  salvagedItemIds: string[] = [],
+): string {
+  const quarantineKey = `${SYNC_QUEUE_QUARANTINE_KEY_PREFIX}${suffix}`;
+  const metadataKey = `${ACTIVE_QUEUE_KEY}.quarantine-metadata.${suffix}`;
+  mockStorageValues.set(quarantineKey, JSON.stringify(items));
+  mockStorageValues.set(metadataKey, JSON.stringify({
+    version: 1,
+    quarantineKey,
+    salvagedItemIds,
+    restoredItemIds: [],
+    invalidItemCount: items.length,
+    resolvedAt: null,
+  }));
+  return quarantineKey;
+}
+
 describe('offline queue corruption recovery', () => {
   beforeEach(() => {
     mockStorageValues.clear();
     mockCorruptQuarantineWrites = false;
     mockCorruptActiveQueueWrites = false;
     mockCreateProject.mockClear();
+    mockArchiveProjectUpdate.mockClear();
+    mockListReferenceDocuments.mockClear();
+    mockUpsertReferenceDocument.mockClear();
+    mockListDAVESyncTombstones.mockClear();
+    mockUpsertDAVESyncTombstone.mockClear();
+    mockArchiveProjectUpdate.mockImplementation((..._args: unknown[]) =>
+      Promise.resolve({
+        ok: true,
+        configured: true,
+        stubbed: false,
+        error: undefined as string | undefined,
+      }),
+    );
+  });
+
+  it('queues and uploads a cloud-only reference document', async () => {
+    await enqueuePendingChange({
+      id: 'reference-document-schedule-cloud-1',
+      entity: 'reference_document',
+      operation: 'update',
+      payload: {
+        id: 'schedule-cloud-1',
+        documentData: {
+          id: 'schedule-cloud-1',
+          name: 'Current schedule',
+          originalFileName: 'schedule.pdf',
+          uri: '',
+          storagePath: 'owner/schedules/schedule.pdf',
+          category: 'Schedules',
+          notes: '',
+          isCurrent: true,
+          importedAt: '2026-07-20T12:00:00.000Z',
+          updatedAt: '2026-07-20T13:00:00.000Z',
+        },
+      },
+      changedAt: '2026-07-20T13:00:00.000Z',
+      autoUpload: false,
+    });
+
+    await expect(getOfflineQueue()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'reference-document-schedule-cloud-1',
+        entity: 'reference_document',
+        changedAt: '2026-07-20T13:00:00.000Z',
+      }),
+    ]);
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+      uploadedByEntity: { reference_document: 1 },
+    });
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'schedule-cloud-1', isCurrent: true }),
+    );
+  });
+
+  it('accepts and uploads an archive-only project update without quarantining it', async () => {
+    const archive = archiveQueueItem('archive-valid');
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([archive]));
+
+    await expect(getOfflineQueue()).resolves.toEqual([archive]);
+    await expect(listOfflineQueueQuarantines()).resolves.toEqual([]);
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+    });
+    expect(mockArchiveProjectUpdate).toHaveBeenCalledTimes(1);
+    expect(mockArchiveProjectUpdate).toHaveBeenCalledWith({
+      id: 'archive-valid',
+      archivedAt: '2026-07-18T12:10:00.000Z',
+    });
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('keeps an archive-only row quarantined when its archive time is missing', async () => {
+    const archive = archiveQueueItem('archive-missing-time');
+    const invalidArchive = {
+      ...archive,
+      payload: {
+        id: 'archive-missing-time',
+        archiveOnly: true,
+      },
+    };
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([invalidArchive]));
+
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      activeItems: 0,
+      recoveryAvailable: true,
+      unresolvedQuarantineKeys: [expect.stringContaining(
+        SYNC_QUEUE_QUARANTINE_KEY_PREFIX,
+      )],
+    });
+    expect(mockArchiveProjectUpdate).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates legacy archive quarantines and resolves them only after cloud success', async () => {
+    const archive = archiveQueueItem('archive-recovered');
+    const firstKey = addLegacyArchiveQuarantine(
+      '2026-07-20T12:00:00.000Z',
+      [archive],
+    );
+    const secondKey = addLegacyArchiveQuarantine(
+      '2026-07-20T12:01:00.000Z',
+      [archive],
+    );
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, '[]');
+
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      recoveryAvailable: true,
+      unresolvedQuarantineKeys: [secondKey, firstKey],
+    });
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+      errors: [],
+    });
+    expect(mockArchiveProjectUpdate).toHaveBeenCalledTimes(1);
+    expect(mockStorageValues.get(firstKey)).toBe(JSON.stringify([archive]));
+    expect(mockStorageValues.get(secondKey)).toBe(JSON.stringify([archive]));
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      recoveryAvailable: false,
+      unresolvedQuarantineKeys: [],
+      quarantineKeys: [secondKey, firstKey],
+    });
+  });
+
+  it('recovers an archive row from a mixed snapshot without replaying salvaged project work', async () => {
+    const salvagedProject = {
+      ...queueItem('already-salvaged-project'),
+      operation: 'update' as const,
+      payload: {
+        previousName: 'Old Project',
+        archived: true,
+      },
+    };
+    const archive = archiveQueueItem('archive-from-mixed-snapshot');
+    const quarantineKey = addLegacyArchiveQuarantine(
+      '2026-07-20T12:01:30.000Z',
+      [salvagedProject, archive],
+      [salvagedProject.id],
+    );
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, '[]');
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+      errors: [],
+    });
+    expect(mockArchiveProjectUpdate).toHaveBeenCalledTimes(1);
+    expect(mockCreateProject).not.toHaveBeenCalled();
+    expect(mockStorageValues.get(quarantineKey)).toBe(
+      JSON.stringify([salvagedProject, archive]),
+    );
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      recoveryAvailable: false,
+      unresolvedQuarantineKeys: [],
+    });
+  });
+
+  it('preserves legacy archive quarantines and the staged item when cloud archive fails', async () => {
+    const archive = archiveQueueItem('archive-retry');
+    const quarantineKey = addLegacyArchiveQuarantine(
+      '2026-07-20T12:02:00.000Z',
+      [archive],
+    );
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, '[]');
+    mockArchiveProjectUpdate.mockResolvedValueOnce({
+      ok: false,
+      configured: true,
+      stubbed: false,
+      error: 'temporary archive failure',
+    });
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 0,
+      queued: 1,
+      errors: [expect.stringMatching(/could not sync/i)],
+    });
+    expect(mockStorageValues.get(quarantineKey)).toBe(JSON.stringify([archive]));
+    await expect(getOfflineQueue()).resolves.toEqual([
+      expect.objectContaining({
+        id: archive.id,
+        retryCount: 1,
+      }),
+    ]);
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      recoveryAvailable: true,
+      unresolvedQuarantineKeys: [quarantineKey],
+    });
   });
 
   it('quarantines malformed bytes unchanged before initializing an empty queue', async () => {
@@ -136,7 +395,7 @@ describe('offline queue corruption recovery', () => {
       queuedChanges: 2,
       recoveryAvailable: true,
       recoveryCopies: 1,
-      message: expect.stringMatching(/needs recovery review/i),
+      message: expect.stringMatching(/protected recovery copy.*needs review/i),
     });
   });
 
@@ -170,7 +429,7 @@ describe('offline queue corruption recovery', () => {
       queuedChanges: 0,
       recoveryAvailable: true,
       recoveryCopies: 1,
-      message: expect.stringMatching(/active offline queue has no pending items/i),
+      message: expect.stringMatching(/current changes are synced.*protected copy/i),
     });
     const [quarantineKey] = await listOfflineQueueQuarantines();
     expect(mockStorageValues.get(quarantineKey)).toBe(rawValue);

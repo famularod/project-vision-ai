@@ -64,4 +64,18 @@ describe('DAVE project area recovery', () => {
 
     expect(merged.map(item => item.id)).toEqual(['cloud-only']);
   });
+
+  it('preserves explicit project ownership across legacy area recovery', () => {
+    const newerLegacyCopy = area({
+      updatedAt: '2026-07-20T10:00:00.000Z',
+      projectName: null,
+    });
+    const ownedCloudCopy = area({
+      updatedAt: '2026-07-19T10:00:00.000Z',
+      projectName: 'Project A',
+    });
+
+    expect(mergeDAVEProjectAreaRecord(newerLegacyCopy, ownedCloudCopy).projectName)
+      .toBe('Project A');
+  });
 });

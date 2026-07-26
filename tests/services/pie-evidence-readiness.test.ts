@@ -5,6 +5,7 @@
 
 import {
   detectEvidenceConflicts,
+  evaluateEvidenceQuality,
   evidenceReadinessFromItems,
   scoreEvidenceFreshness,
   type PIEEvidenceConflict,
@@ -61,6 +62,50 @@ describe('evidenceReadinessFromItems (audit P1-03)', () => {
   it('empty evidence is insufficient and all-stale evidence is stale', () => {
     expect(evidenceReadinessFromItems([], [])).toBe('insufficient');
     expect(evidenceReadinessFromItems([item(25, 'stale'), item(25, 'stale')], [])).toBe('stale');
+  });
+
+  it('blocks overall readiness when a separate current claim lacks good evidence', () => {
+    const result = evaluateEvidenceQuality(
+      [
+        {
+          id: 'strong-completion',
+          source: 'verified field update',
+          summary: 'Electrical rough-in is complete.',
+          projectName: '2375 Compliance Project',
+          areaName: 'Canopy C',
+          capturedAt: '2026-07-22T12:00:00.000Z',
+          gpsConfirmed: true,
+          photoSupported: true,
+          scheduleSupported: true,
+          userConfirmed: true,
+          matchesPriorEvidence: true,
+          confidence: 'high',
+        },
+        {
+          id: 'weak-approval',
+          source: 'unreviewed import',
+          summary: 'Electrical rough-in is approved.',
+          confidence: 'low',
+          unreviewedOCR: true,
+        },
+      ],
+      '2026-07-22T12:00:00.000Z',
+    );
+
+    expect(result.evidenceReadiness).toBe('insufficient');
+    expect(result.claimReadiness).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        predicate: 'approved',
+        readiness: 'insufficient',
+      }),
+      expect.objectContaining({
+        predicate: 'complete',
+        readiness: 'strong',
+      }),
+    ]));
+    expect(result.blockingClaims).toEqual([
+      expect.objectContaining({ predicate: 'approved' }),
+    ]);
   });
 });
 

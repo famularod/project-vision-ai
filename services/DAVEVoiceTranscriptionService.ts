@@ -42,6 +42,10 @@ export async function transcribeDAVECaptureMemoryAudio({
     candidateLocations.map(item => item.trim()).filter(Boolean),
   )).slice(0, DAVE_VOICE_CONTEXT_MAX_LOCATIONS);
   formData.append('projectName', projectName.trim());
+  formData.append(
+    'projectId',
+    `project-${projectName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'unassigned'}`,
+  );
   formData.append('candidateLocations', JSON.stringify(submittedLocations));
 
   const { data, error } = await client.functions.invoke('dave-transcribe-memory', {

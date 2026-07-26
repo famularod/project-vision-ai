@@ -30,9 +30,11 @@ jest.mock('../../services/SupabaseService', () => ({
 import {
   DAVE_SYNC_TOMBSTONES_QUARANTINE_KEY,
   DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
+  loadDAVEOperationalTombstones,
   loadDAVESyncTombstones,
   loadQuarantinedDAVESyncTombstones,
   recordDAVESyncTombstone,
+  refreshDAVESyncTombstonesFromCloud,
   synchronizeDAVESyncTombstones,
 } from '../../services/DAVESyncTombstones';
 
@@ -45,6 +47,7 @@ function upsertOk() {
 }
 
 beforeEach(() => {
+  jest.useRealTimers();
   jest.clearAllMocks();
   mockStorage.clear();
   mockListTombstones.mockResolvedValue(cloudOk());
@@ -157,5 +160,41 @@ describe('DAVESyncTombstones durability (audit P1-28)', () => {
     const result = await synchronizeDAVESyncTombstones();
 
     expect(result.uploadFailures).toBe(0);
+  });
+
+  it('refreshes deletion history for live reads without re-uploading the journal', async () => {
+    await recordDAVESyncTombstone('schedule_item', 'local-delete');
+    mockUpsertTombstone.mockClear();
+    mockListTombstones.mockResolvedValue(cloudOk([{
+      entityType: 'project_area',
+      recordId: 'cloud-delete',
+      deletedAt: '2026-07-22T00:00:00.000Z',
+    }]));
+
+    const result = await refreshDAVESyncTombstonesFromCloud();
+
+    expect(result.cloudAuthoritative).toBe(true);
+    expect(result.tombstones.map(item => item.recordId).sort())
+      .toEqual(['cloud-delete', 'local-delete']);
+    expect(mockUpsertTombstone).not.toHaveBeenCalled();
+  });
+
+  it('falls back to durable deletion history when the live cloud read stalls', async () => {
+    mockStorage.set(DAVE_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify([{
+      entityType: 'schedule_item',
+      recordId: 'known-delete',
+      deletedAt: '2026-07-22T00:00:00.000Z',
+    }]));
+    mockListTombstones.mockImplementation(() => new Promise(() => undefined));
+    jest.useFakeTimers();
+
+    const resultPromise = loadDAVEOperationalTombstones();
+    jest.advanceTimersByTime(1_500);
+    await Promise.resolve();
+    const result = await resultPromise;
+
+    expect(result.cloudAuthoritative).toBe(false);
+    expect(result.tombstones.map(item => item.recordId)).toEqual(['known-delete']);
+    expect(mockUpsertTombstone).not.toHaveBeenCalled();
   });
 });

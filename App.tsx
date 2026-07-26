@@ -17,11 +17,14 @@ import {
 import {
   cleanupStoredSyncStatusMessages,
   getOfflineQueue,
+  hydrateRecoveredProjectUpdatePhotos,
   markMissingPhotosUnavailable,
+  requestPendingChangesUpload,
   removeMissingPhotosFromSyncQueue,
   removeProjectUpdateFromSyncQueue,
   runFieldUpdateCloudSync,
   queueProjectAreaRecord,
+  queueReferenceDocumentRecord,
   queueScheduleItemRecord,
   removeOperationalRecordFromSyncQueue,
   synchronizeLocalData,
@@ -38,15 +41,24 @@ import {
   listArchivedProjects,
   listProjectAreas,
   listProjects,
+  listProjectUpdates,
   listReferenceDocuments,
   listScheduleItems,
   signIn,
   signUp,
   subscribeToAuthStateChange,
+  subscribeToDAVEOperationalChanges,
   updateCurrentUserDisplayName,
-  upsertReferenceDocument,
   uploadPhoto,
 } from './services/SupabaseService';
+import {
+  createDAVEOperationalRefreshCommitGuard,
+  createDAVEOperationalRefreshController,
+  DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE,
+  runDAVEOperationalCollectionRefreshes,
+  type DAVEOperationalCollectionRefresh,
+} from './services/DAVEOperationalRefresh';
+import { reconcileDAVEOperationalProjects } from './services/DAVEOperationalProjectRecovery';
 import {
   isLegacyNonProjectShellName,
   legacyNonProjectShellNamesPresent,
@@ -60,23 +72,44 @@ import {
   type ReportCommunicationOutcome,
 } from './services/ReportCommunication';
 import { AppShellFrame } from './components/app-shell-frame';
-import { useAppShellLayout } from './components/app-shell-layout';
+import { colors, styles } from './components/app-shell-theme';
+import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
+import {
+  appShellContentTopPadding,
+  appShellLayoutForWidth,
+  useAppShellLayout,
+} from './components/app-shell-layout';
 import {
   OverviewResponsiveColumn,
   OverviewResponsiveFrame,
   OverviewResponsiveWorkspace,
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
+import { extractSchedulePdfWithServer } from './services/PIEScheduleRemoteExtraction';
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
 import { ScheduleTaskListControls, type ScheduleTaskFilter,
-  type ScheduleTaskView } from './components/schedule-task-list-controls';
+  type ScheduleTaskView, type ScheduleWorkspaceView } from './components/schedule-task-list-controls';
 import { ScheduleTaskGroupHeader, ScheduleWideWorkspace } from './components/schedule-workspace-layout';
+import { MobileSchedulePlanning } from './components/mobile-schedule-planning';
 import { NativeDateField } from './components/native-date-field';
+import {
+  ProjectItemDetailsEditor,
+  ProjectItemNextAction,
+  ProjectItemTypeBadge,
+} from './components/project-item-details';
 import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
+import {
+  explicitProjectAreaOwner,
+  projectAreasForProject,
+} from './services/DAVEProjectAreaScope';
+import {
+  projectUpdateBelongsToParentProject,
+  projectUpdatesForParentProject,
+} from './services/DAVEProjectUpdateScope';
 import { groupScheduleWorkspaceItemsByProjectAndArea, resolveScheduleWorkspaceTask,
   scheduleItemsForWorkspaceProject, scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
 import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
@@ -127,6 +160,7 @@ import type {
   ActionStatus,
   AreaSuggestion,
   ContactBook,
+  DAVESyncTombstone,
   PhotoCategory,
   ProjectArea,
   ProjectContact,
@@ -136,7 +170,20 @@ import type {
   ScheduleStatus,
   StoredDraft,
   UpdatePhoto,
+  ReferenceDocument,
 } from './types';
+import { normalizeProjectItemActivity, normalizeProjectItemType } from './services/ProjectItemWorkflow';
+import {
+  deleteStoredReferenceDocument,
+  ensureReferenceDocumentsDirectory,
+  isStoredReferenceDocument,
+  normalizeReferenceDocument,
+  normalizeReferenceDocuments,
+  prepareReferenceDocumentForCloud,
+  resolveReferenceDocumentUri,
+} from './services/ReferenceDocumentRepository';
+import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
+import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
 import {
   normalizeStartupArray,
@@ -156,6 +203,7 @@ import {
   isStartupStandaloneProjectDocumentRecord,
   salvageStartupContactBook,
 } from './services/StartupRecordValidation';
+import { normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
 import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
@@ -187,6 +235,7 @@ import {
 import {
   isLegacyOwnedLocalFileReadDeleteAuthorized,
   isOwnedLocalFileManifestMember,
+  parseOwnedLocalFileManifest,
   resolveLegacyOwnedLocalFilePath,
 } from './services/OwnedLocalFileRepository';
 import {
@@ -208,6 +257,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Contacts from 'expo-contacts';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -216,11 +266,25 @@ import * as MailComposer from 'expo-mail-composer';
 import * as Sharing from 'expo-sharing';
 import * as SMS from 'expo-sms';
 import {
+  fromByteArray,
+  toByteArray,
+} from 'base64-js';
+import {
+  createCompleteBackupArchive,
+  decryptCompleteBackupArchive,
+  COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH,
+  type CompleteBackupPlainAsset,
+} from './services/CompleteBackupArchive';
+import {
   analyzeProjectPhotoWithVision,
   buildAnalyzingPhotoIntelligenceState,
   type PIEPhotoIntelligenceDisplayState,
 } from './services/PIEPhotoVisionMobileWorkflow';
 import { createPhotoAnalysisCoordinator } from './services/PhotoAnalysisCoordinator';
+import {
+  createDraftLocationCaptureTarget,
+  isDraftLocationCaptureTargetCurrent,
+} from './services/draft-location-capture-target';
 import {
   type PhotoAnalysisTarget,
 } from './services/PhotoAnalysisTarget';
@@ -235,9 +299,11 @@ import {
   dedupeAttentionItemsById,
 } from './services/PIEAttentionIdentity';
 import { buildDAVEProjectTruth } from './services/DAVEProjectTruth';
+import { parseDAVEAssertions } from './services/DAVEAssertionParser';
 import {
   mergeDAVECloudRecoveredProjectUpdate,
   mergeDAVECloudRecoveryRecords,
+  mergeDAVEReferenceDocumentRecoveryRecords,
 } from './services/DAVECloudRecovery';
 import {
   isDAVESafeCloudScheduleRecord,
@@ -249,8 +315,13 @@ import {
   deletedDAVERecordIds,
   recordDAVESyncTombstone,
   recordDAVESyncTombstones,
+  loadDAVEOperationalTombstones,
   synchronizeDAVESyncTombstones,
 } from './services/DAVESyncTombstones';
+import {
+  DELETED_TASK_EVIDENCE_LABEL,
+  partitionProjectUpdatesByDeletedTask,
+} from './services/DAVEDeletedTaskEvidence';
 import { createDAVEPhotoContinuityAnchor } from './services/PIEVisualContinuity';
 import {
   buildDAVEActionInbox,
@@ -347,6 +418,8 @@ import {
   savePIEDecisionLedgerForOrganization,
   type PIEDecisionLedgerMigrationStatus,
 } from './services/PIEDecisionLedgerStorage';
+import { createLocalPIEDecisionHistoryActions } from './services/LocalPIEDecisionHistoryActions';
+import { buildVerifiedLearningEventsFromDecisionLedger } from './services/PIEDecisionOutcomeLearning';
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
 import {
@@ -408,6 +481,7 @@ import {
 } from './services/DAVEProjectOperationalStatus';
 import {
   daveConfirmedBlockerReason,
+  findCurrentDAVEConfirmedBlocker,
   findCurrentDAVEConfirmedBlockerForScopes,
   updateHasOpenDAVEBlocker,
   updateHasOpenDAVESafetyConcern,
@@ -447,6 +521,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from 'react-native';
@@ -631,20 +706,6 @@ type LocationSnapshot = {
   accuracy: number | null;
   capturedAt: string;
 };
-type ReferenceDocument = {
-  id: string;
-  name: string;
-  originalFileName: string;
-  uri: string;
-  mimeType?: string | null;
-  category: string;
-  notes: string;
-  isCurrent: boolean;
-  importedAt: string;
-  projectId?: string | null;
-  projectName?: string | null;
-  importBatchId?: string | null;
-};
 type OverviewProjectSelection = string | null | undefined;
 type OverviewDetectionStatus =
   | 'checking'
@@ -714,23 +775,20 @@ const PROJECT_DELETION_STORAGE_KEYS: ProjectDeletionStorageKeys = {
   archivedProjects: ARCHIVED_PROJECTS_STORAGE_KEY, updates: UPDATES_STORAGE_KEY,
   deletedUpdates: DELETED_UPDATES_STORAGE_KEY, updateDeletionJournal: PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
   projectDocuments: PROJECT_DOCUMENTS_STORAGE_KEY, referenceDocuments: REFERENCE_DOCUMENTS_STORAGE_KEY,
+  projectAreas: PROJECT_AREAS_STORAGE_KEY,
   scheduleItems: SCHEDULE_ITEMS_STORAGE_KEY, daveSyncTombstones: DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
   activeDraft: DRAFT_STORAGE_KEY, cloudIntents: PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY,
   fileCleanupIntents: PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
 };
-const ANALYSIS_TIMEOUT_SECONDS = 60;
+const ANALYSIS_TIMEOUT_SECONDS = 135;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
 const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
-const MAX_BACKUP_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_BACKUP_FILE_BYTES = 128 * 1024 * 1024;
 const PHOTO_STORAGE_FOLDER = 'project-photos';
 const PHOTO_STORAGE_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${PHOTO_STORAGE_FOLDER}/`
   : null;
 const RECOVERED_PHOTO_CACHE_FOLDER = 'dave-recovered-project-photos';
-const REFERENCE_DOCUMENTS_FOLDER = 'project-documents';
-const REFERENCE_DOCUMENTS_DIR = FileSystem.documentDirectory
-  ? `${FileSystem.documentDirectory}${REFERENCE_DOCUMENTS_FOLDER}/`
-  : null;
 // Manifest-owned project attachments must not share the legacy reference
 // directory: legacy reference deletion authorizes direct children by path.
 const OWNED_PROJECT_DOCUMENTS_DIR = FileSystem.documentDirectory
@@ -780,6 +838,7 @@ const backupRestoreRuntime = createBackupRestoreRuntime({
       typeof (item.payload as Record<string, unknown>).name === 'string'
       ? [(item.payload as Record<string, string>).name] : []),
 });
+const localPIEDecisionHistoryActions = createLocalPIEDecisionHistoryActions();
 const DEFAULT_PROJECTS = [
   '2321 Compliance Project',
   '2375 Compliance Project',
@@ -870,6 +929,7 @@ const REFERENCE_DOCUMENT_CATEGORIES = [
   'Electrical',
   'Mechanical',
   'Schedules',
+  'Report',
   'Other',
 ];
 const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
@@ -2158,6 +2218,7 @@ function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
       typeof value.name === 'string' && value.name.trim()
         ? value.name.trim()
         : 'New Area',
+    projectName: optionalString(value.projectName)?.trim() || null,
     building:
       typeof value.building === 'string' && value.building.trim()
         ? value.building.trim()
@@ -2208,102 +2269,12 @@ function normalizeProjectAreas(value: unknown) {
 }
 
 
-function resolveReferenceDocumentUri(uri: string) {
-  if (!REFERENCE_DOCUMENTS_DIR || !uri) return '';
-  return resolveLegacyOwnedLocalFilePath({
-    ownedRoot: REFERENCE_DOCUMENTS_DIR,
-    legacyFolderName: REFERENCE_DOCUMENTS_FOLDER,
-    candidatePath: uri,
-  }) || '';
-}
-
-function normalizeReferenceDocument(value: Partial<ReferenceDocument>): ReferenceDocument {
-  const category =
-    typeof value.category === 'string' && value.category.trim()
-      ? value.category.trim()
-      : 'Other';
-
-  return {
-    id: typeof value.id === 'string' ? value.id : uid(),
-    name:
-      typeof value.name === 'string' && value.name.trim()
-        ? value.name.trim()
-        : typeof value.originalFileName === 'string' && value.originalFileName.trim()
-          ? value.originalFileName.trim()
-          : 'Reference Document',
-    originalFileName:
-      typeof value.originalFileName === 'string' && value.originalFileName.trim()
-        ? value.originalFileName.trim()
-        : 'reference-document',
-    uri: typeof value.uri === 'string' ? resolveReferenceDocumentUri(value.uri) : '',
-    mimeType: optionalString(value.mimeType),
-    category: REFERENCE_DOCUMENT_CATEGORIES.includes(category)
-      ? category
-      : 'Other',
-    notes: typeof value.notes === 'string' ? value.notes : '',
-    isCurrent: Boolean(value.isCurrent),
-    importedAt:
-      typeof value.importedAt === 'string'
-        ? value.importedAt
-        : new Date().toISOString(),
-    projectId: optionalString(value.projectId),
-    projectName: optionalString(value.projectName),
-    importBatchId: optionalString(value.importBatchId),
-  };
-}
-
-function normalizeReferenceDocuments(value: unknown) {
-  if (!Array.isArray(value)) return [];
-
-  return reconcileCurrentScheduleDocuments(value
-    .map(item => normalizeReferenceDocument(item as Partial<ReferenceDocument>))
-    .filter(document => document.uri));
-}
-
-function isStartupDeviceReferenceDocumentRecord(value: unknown) {
-  if (!isStartupReferenceDocumentRecord(value) || !isRecord(value)) return false;
-  return typeof value.uri === 'string' && Boolean(resolveReferenceDocumentUri(value.uri));
-}
-
 function isStartupDeviceDraftEnvelope(value: unknown) {
   if (!isStartupDraftEnvelope(value) || !isRecord(value)) return false;
   if (!('draft' in value)) return true;
   return isStartupDeviceSavedUpdateRecord(value.draft);
 }
 
-async function ensureReferenceDocumentsDirectory() {
-  if (!REFERENCE_DOCUMENTS_DIR) {
-    throw new Error('Reference document storage is unavailable.');
-  }
-
-  const info = await FileSystem.getInfoAsync(REFERENCE_DOCUMENTS_DIR);
-
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(REFERENCE_DOCUMENTS_DIR, {
-      intermediates: true,
-    });
-  }
-
-  return REFERENCE_DOCUMENTS_DIR;
-}
-
-function isStoredReferenceDocument(uri: string) {
-  if (!REFERENCE_DOCUMENTS_DIR) return false;
-  const resolved = resolveReferenceDocumentUri(uri);
-  return Boolean(resolved && isLegacyOwnedLocalFileReadDeleteAuthorized({
-    ownedRoot: REFERENCE_DOCUMENTS_DIR,
-    legacyFolderName: REFERENCE_DOCUMENTS_FOLDER,
-    candidatePath: resolved,
-  }));
-}
-
-function deleteStoredReferenceDocument(uri: string) {
-  const resolved = resolveReferenceDocumentUri(uri);
-  if (!isStoredReferenceDocument(resolved)) return Promise.resolve();
-  return FileSystem.deleteAsync(resolved, {
-    idempotent: true,
-  });
-}
 
 function filenameFromDocumentAsset(asset: DocumentPicker.DocumentPickerAsset) {
   const fallbackExtension = asset.mimeType?.includes('pdf')
@@ -2389,6 +2360,7 @@ function likelyProjectCandidatesFromGps(
   projectAreas: ProjectArea[],
   savedUpdates: ProjectUpdate[],
   activeProjects: string[],
+  scheduleItems: ScheduleItem[],
 ) {
   const suggestions = findProjectAreaSuggestions(currentLocation, projectAreas)
     .filter(suggestion => suggestion.withinRadius);
@@ -2400,6 +2372,7 @@ function likelyProjectCandidatesFromGps(
       suggestion.area,
       savedUpdates,
       activeProjects,
+      scheduleItems,
     );
     if (!projectName || seen.has(projectName)) return;
     seen.add(projectName);
@@ -2590,6 +2563,7 @@ function normalizeScheduleItem(
   const progress = reconcileScheduleProgress(value.status, value.percentComplete);
   return {
     id: typeof value.id === 'string' ? value.id : uid(),
+    itemType: normalizeProjectItemType(value.itemType),
     scheduleProjectName: optionalString(value.scheduleProjectName),
     projectTimeZone: projectTimeZoneOrDefault(value.projectTimeZone),
     projectName: typeof value.projectName === 'string' ? value.projectName : '',
@@ -2607,6 +2581,17 @@ function normalizeScheduleItem(
       typeof value.durationDays === 'number' && Number.isFinite(value.durationDays)
         ? Math.max(0, value.durationDays)
         : null,
+    wbsCode: optionalString(value.wbsCode),
+    parentItemId: optionalString(value.parentItemId),
+    sortOrder:
+      typeof value.sortOrder === 'number' && Number.isFinite(value.sortOrder)
+        ? Math.max(0, Math.trunc(value.sortOrder))
+        : null,
+    dependencies: normalizeScheduleDependencies(value.dependencies),
+    isSummary: value.isSummary === true,
+    isMilestone: value.isMilestone === true,
+    baselineStartDate: optionalString(value.baselineStartDate),
+    baselineFinishDate: optionalString(value.baselineFinishDate),
     percentComplete: progress.percentComplete,
     progressSource:
       value.progressSource === 'project_manager' || value.progressSource === 'schedule_import'
@@ -2621,6 +2606,8 @@ function normalizeScheduleItem(
     notes: normalizeImportedScheduleNote(value.notes, value.importedFrom, {
       preserveEditingWhitespace: options?.preserveEditedNotes,
     }),
+    nextAction: optionalString(value.nextAction) || '',
+    activity: normalizeProjectItemActivity(value.activity, uid),
     importedFrom: optionalString(value.importedFrom),
     importedAt: optionalString(value.importedAt),
     importBatchId: optionalString(value.importBatchId),
@@ -2726,7 +2713,7 @@ function normalizeBackupData(value: unknown) {
   const preflight = preflightAppBackup(value, {
     savedUpdate: isStartupDeviceSavedUpdateRecord, projectName: isStartupProjectName,
     contactBook: isStartupContactBook, projectArea: isStartupProjectAreaRecord,
-    referenceDocument: isStartupDeviceReferenceDocumentRecord,
+    referenceDocument: isStartupReferenceDocumentRecord,
     projectDocument: isStartupStandaloneProjectDocumentRecord, scheduleItem: isStartupScheduleItemRecord,
     draftEnvelope: isStartupDeviceDraftEnvelope,
   });
@@ -3151,7 +3138,16 @@ function projectMatchesScope(update: ProjectUpdate, projectName: string | null) 
 function projectUpdatesForScopes(
   savedUpdates: ProjectUpdate[],
   projectNames: string[],
+  scheduleItems: ScheduleItem[] = [],
 ) {
+  const parentProjectName = projectNames[0]?.trim();
+  if (parentProjectName && scheduleItems.length > 0) {
+    return projectUpdatesForParentProject(
+      savedUpdates,
+      parentProjectName,
+      scheduleItems,
+    );
+  }
   return savedUpdates.filter(update =>
     projectNames.some(projectName => projectMatchesScope(update, projectName)),
   );
@@ -3185,6 +3181,11 @@ function documentCountForProject(
     const searchable = `${document.name} ${document.originalFileName} ${document.notes}`.toLowerCase();
     return searchable.includes(normalizedProject);
   }).length;
+}
+
+function canonicalReferenceDocumentSha256(value: unknown) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 
 function projectDocumentMatchesProject(
@@ -3810,6 +3811,25 @@ function buildUpdateTombstone(
   };
 }
 
+function buildCloudUpdateDeletionBarrier(
+  updateId: string,
+  deletedAt: string,
+): DeletedUpdateTombstone {
+  return {
+    updateId,
+    localId: updateId,
+    cloudIdPresent: true,
+    lifecycleStatus: 'sent',
+    pendingSync: false,
+    tombstoned: true,
+    deletedAt,
+    sourceAfterReload: 'cloud',
+    mergeDecision: 'tombstoned',
+    orphanedPhotoCountIgnored: 0,
+    action: 'delete_update_everywhere',
+  };
+}
+
 function upsertDeletedUpdateTombstone(
   tombstones: DeletedUpdateTombstone[],
   tombstone: DeletedUpdateTombstone,
@@ -4189,11 +4209,12 @@ type PIEProjectBriefModel = {
 };
 
 function buildPIEProjectBriefModel(
-  projectName: string,
+  projectName: string | null,
   savedUpdates: ProjectUpdate[],
 ): PIEProjectBriefModel {
-  const scopedUpdates = savedUpdates
-    .filter(update => projectMatchesScope(update, projectName))
+  const scopedUpdates = (projectName
+    ? savedUpdates.filter(update => projectMatchesScope(update, projectName))
+    : [...savedUpdates])
     .sort((a, b) => updateSortTime(b) - updateSortTime(a));
   const failedCount = scopedUpdates.reduce(
     (sum, update) =>
@@ -4296,7 +4317,7 @@ function isSafeObservedBriefFinding(finding: string) {
   const normalized = finding.trim().toLowerCase();
   if (!normalized) return false;
   if (isBaselineInfoFinding(finding)) return false;
-  if (/work completed|progress increased|finished|quality issue|schedule.*risk|at risk|completed/.test(normalized)) {
+  if (parseDAVEAssertions(normalized).assertions.length > 0) {
     return false;
   }
   return true;
@@ -4333,10 +4354,13 @@ function buildProjectCardPIEStatus(
   projectNames: string[],
   savedUpdates: ProjectUpdate[],
 ) {
-  const scopedUpdates = savedUpdates
-    .filter(update => projectNames.some(projectName => projectMatchesScope(update, projectName)))
+  const scopedUpdates = (projectNames.length > 0
+    ? savedUpdates.filter(update =>
+        projectNames.some(projectName => projectMatchesScope(update, projectName)),
+      )
+    : [...savedUpdates])
     .sort((a, b) => b.date.localeCompare(a.date));
-  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlockerForScopes(projectNames, savedUpdates, projectMatchesScope);
+  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlocker(scopedUpdates);
   if (currentConfirmedBlocker && updateHasSafetyConcern(currentConfirmedBlocker)) {
     return 'Safety item needs review';
   }
@@ -4413,7 +4437,11 @@ function resolveProjectForDetectedArea(
   area: ProjectArea,
   savedUpdates: ProjectUpdate[],
   activeProjects: string[],
+  scheduleItems: ScheduleItem[],
 ) {
+  const explicitOwner = explicitProjectAreaOwner(area, activeProjects);
+  if (explicitOwner) return explicitOwner;
+
   const areaMatches = savedUpdates.filter(update => {
     const updateAreaName = update.selectedAreaName || '';
 
@@ -4429,15 +4457,18 @@ function resolveProjectForDetectedArea(
     );
   });
 
-  const latestMatch = areaMatches.sort((a, b) =>
+  const orderedMatches = areaMatches.sort((a, b) =>
     b.date.localeCompare(a.date),
-  )[0];
-
-  if (
-    latestMatch &&
-    activeProjects.some(project => project === latestMatch.projectName)
-  ) {
-    return latestMatch.projectName;
+  );
+  for (const update of orderedMatches) {
+    const parent = activeProjects.find(project =>
+      projectUpdateBelongsToParentProject({
+        update,
+        projectName: project,
+        scheduleItems,
+      }),
+    );
+    if (parent) return parent;
   }
 
   if (activeProjects.length === 1) return activeProjects[0];
@@ -4457,22 +4488,13 @@ function resolveProjectForDetectedArea(
 
 function projectDueTodayLabel(
   projectName: string,
-  projectScopeNames: string[],
   savedUpdates: ProjectUpdate[],
   scheduleItems: ScheduleItem[],
 ): string | null {
-  const normalizedProject = projectName.trim().toLowerCase();
-  const normalizedScopes = new Set(
-    projectScopeNames.map(name => name.trim().toLowerCase()),
-  );
-  const dueScheduleItem = scheduleItems.find(
-    item =>
-      (
-        item.scheduleProjectName?.trim().toLowerCase() === normalizedProject ||
-        normalizedScopes.has(item.projectName.trim().toLowerCase())
-      ) &&
-      isScheduleItemDueToday(item),
-  );
+  const dueScheduleItem = scheduleTasksForParentProject(
+    projectName,
+    scheduleItems as unknown as import('./types').ScheduleItem[],
+  ).find(item => isScheduleItemDueToday(item as unknown as ScheduleItem));
 
   if (dueScheduleItem) {
     return dueScheduleItem.taskName.trim() || 'Schedule item due today';
@@ -4480,8 +4502,11 @@ function projectDueTodayLabel(
 
   const hasDueTodayAction = savedUpdates.some(
     update =>
-      projectScopeNames.some(scope => projectMatchesScope(update, scope)) &&
-      update.photos.some(isDueTodayAction),
+      projectUpdateBelongsToParentProject({
+        update,
+        projectName,
+        scheduleItems,
+      }) && update.photos.some(isDueTodayAction),
   );
 
   return hasDueTodayAction ? 'Open action item due today' : null;
@@ -4512,14 +4537,14 @@ function buildOverviewProjectRows(
       project,
       scheduleItems as unknown as import('./types').ScheduleItem[],
     );
-    const attentionItems = Array.from(new Map(
-      scopeProjects
-        .flatMap(scope => buildPhase2AttentionItems(savedUpdates, scope))
-        .map(item => [item.id, item]),
-    ).values());
+    const scopedFieldUpdates = projectUpdatesForParentProject(
+      savedUpdates,
+      project,
+      scheduleItems,
+    );
+    const attentionItems = buildPhase2AttentionItems(scopedFieldUpdates, null);
     const dueTodayLabel = projectDueTodayLabel(
       project,
-      scopeProjects,
       savedUpdates,
       scheduleItems,
     );
@@ -4527,22 +4552,15 @@ function buildOverviewProjectRows(
       project,
       scheduleItems,
     );
-    const scopedFieldUpdates = savedUpdates.filter(update =>
-      scopeProjects.some(scope => projectMatchesScope(update, scope)),
-    );
     const scheduleRollup = buildDAVEProjectScheduleRollup({
       projectName: project,
       items: scheduleItems as unknown as import('./types').ScheduleItem[],
     });
     const scheduleReconciliation = buildPIEScheduleReconciliation({
       scheduleItems: projectScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
-      updates: savedUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
+      updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     });
-    const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlockerForScopes(
-      scopeProjects,
-      savedUpdates,
-      projectMatchesScope,
-    );
+    const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlocker(scopedFieldUpdates);
     const operationalStatus = deriveDAVEProjectOperationalStatus({
       scheduleHealth: scheduleRollup.health,
       scheduleReason: scheduleRollup.healthReason,
@@ -4557,13 +4575,12 @@ function buildOverviewProjectRows(
       hasFieldData: scopedFieldUpdates.length > 0,
     });
     const needsAttention = operationalStatus.status !== 'Healthy';
-    const briefs = scopeProjects.map(scope => buildPIEProjectBriefModel(scope, savedUpdates));
-    const observations = briefs
-      .flatMap(brief => brief.observations)
+    const brief = buildPIEProjectBriefModel(null, scopedFieldUpdates);
+    const observations = brief.observations
       .sort((left, right) => updateSortTime(right.update) - updateSortTime(left.update));
     const subtitle = needsAttention
-      ? operationalStatus.reason || operationalStatus.primaryWarning?.summary || observations[0]?.text || briefs[0]?.summary.split('\n')[0]
-      : buildProjectCardPIEStatus(scopeProjects, savedUpdates);
+      ? operationalStatus.reason || operationalStatus.primaryWarning?.summary || observations[0]?.text || brief.summary.split('\n')[0]
+      : buildProjectCardPIEStatus([], scopedFieldUpdates);
 
     return {
       project,
@@ -4587,15 +4604,10 @@ function buildOverviewProjectRows(
 }
 
 function mostRecentHeroPhotoUri(
-  scopedProjects: string[],
-  savedUpdates: ProjectUpdate[],
+  scopedUpdates: ProjectUpdate[],
 ): string | null {
-  const candidateUpdates = savedUpdates
-    .filter(
-      update =>
-        update.photos.length > 0 &&
-        scopedProjects.some(project => projectMatchesScope(update, project)),
-    )
+  const candidateUpdates = scopedUpdates
+    .filter(update => update.photos.length > 0)
     .sort((a, b) => updateSortTime(b) - updateSortTime(a));
 
   return candidateUpdates[0]?.photos[0]?.uri || null;
@@ -4624,13 +4636,15 @@ function buildPhase2ActivityItems(
 
 function buildPhase2AttentionItems(
   savedUpdates: ProjectUpdate[],
-  projectName: string,
+  projectName: string | null,
 ) {
-  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlockerForScopes([projectName], savedUpdates, projectMatchesScope);
-  const items = savedUpdates
-    .filter(update => projectMatchesScope(update, projectName))
+  const scopedUpdates = projectName
+    ? savedUpdates.filter(update => projectMatchesScope(update, projectName))
+    : savedUpdates;
+  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlocker(scopedUpdates);
+  const items = scopedUpdates
     .flatMap(update => {
-      const recurringContext = recurringOpenItemContext(update, savedUpdates);
+      const recurringContext = recurringOpenItemContext(update, scopedUpdates);
       const safetyDraftItem = currentConfirmedBlocker?.id === update.id && (update.safetyFlag || update.quickContext === 'Safety')
         ? [
             {
@@ -4986,6 +5000,8 @@ export default function App() {
 
 function AppShell() {
   const insets = useSafeAreaInsets();
+  const { width: appShellWidth } = useWindowDimensions();
+  const appShellLayout = appShellLayoutForWidth(appShellWidth);
   const scheduleScreenshotOcrAvailable =
     Platform.OS === 'ios' && isDaveTextRecognitionAvailable();
 
@@ -4997,7 +5013,7 @@ function AppShell() {
     withinDays: number | null;
     project?: string | null;
   } | null>(null);
-  const [scheduleEntryFilter, setScheduleEntryFilter] = useState<'Attention' | 'Today' | '7 Days' | 'All'>('Attention');
+  const [scheduleEntryFilter, setScheduleEntryFilter] = useState<ScheduleTaskFilter>('Attention');
   const [scheduleAddProjectName, setScheduleAddProjectName] = useState<string | null>(null);
   const [scheduleProjectFilter, setScheduleProjectFilter] = useState<string | null>(null);
   const [updatesProjectFilter, setUpdatesProjectFilter] = useState<string | null>(null);
@@ -5061,6 +5077,8 @@ function AppShell() {
     useState<DAVEProjectWalkSession | null>(null);
   const [deletedUpdateTombstones, setDeletedUpdateTombstones] =
     useState<DeletedUpdateTombstone[]>([]);
+  const [operationalSyncTombstones, setOperationalSyncTombstones] =
+    useState<DAVESyncTombstone[]>([]);
   const [deletedProjectNames, setDeletedProjectNames] =
     useState<string[]>([]);
 
@@ -5089,15 +5107,40 @@ function AppShell() {
   const [scheduleItems, setScheduleItems] =
     useState<ScheduleItem[]>([]);
   const projectAreasCurrentRef = useRef(projectAreas);
+  const referenceDocumentsCurrentRef = useRef(referenceDocuments);
   const scheduleItemsCurrentRef = useRef(scheduleItems);
+  const projectsCurrentRef = useRef(projects);
+  const projectRecordsCurrentRef = useRef(projectRecords);
+  const archivedProjectsCurrentRef = useRef(archivedProjects);
+  const operationalSyncTombstonesRef = useRef(operationalSyncTombstones);
 
   useEffect(() => {
     projectAreasCurrentRef.current = projectAreas;
   }, [projectAreas]);
 
   useEffect(() => {
+    referenceDocumentsCurrentRef.current = referenceDocuments;
+  }, [referenceDocuments]);
+
+  useEffect(() => {
     scheduleItemsCurrentRef.current = scheduleItems;
   }, [scheduleItems]);
+
+  useEffect(() => {
+    projectsCurrentRef.current = projects;
+  }, [projects]);
+
+  useEffect(() => {
+    projectRecordsCurrentRef.current = projectRecords;
+  }, [projectRecords]);
+
+  useEffect(() => {
+    archivedProjectsCurrentRef.current = archivedProjects;
+  }, [archivedProjects]);
+
+  useEffect(() => {
+    operationalSyncTombstonesRef.current = operationalSyncTombstones;
+  }, [operationalSyncTombstones]);
 
   const [displayName, setDisplayName] =
     useState('');
@@ -5125,6 +5168,7 @@ function AppShell() {
     areaId: string | null;
     updateId: string | null;
   } | null>(null);
+  const [incomingScheduleImportBatch, setIncomingScheduleImportBatch] = useState<PIEScheduleImportBatch | null>(null);
 
   const [selectedDetailUpdate, setSelectedDetailUpdate] =
     useState<ProjectUpdate | null>(null);
@@ -5227,6 +5271,7 @@ function AppShell() {
   const talkHistoryPersistence = useRef(createDAVEAskHistoryPersistence({
     readItem: storageKey => AsyncStorage.getItem(storageKey),
     persistItem: persistStorageItem,
+    removeItem: removePersistedStorageItem,
   })).current;
   const legacyProjectStructureMigrationInFlight = useRef(false);
   const scheduleParentProjectsQueuedRef = useRef(new Set<string>());
@@ -5238,6 +5283,7 @@ function AppShell() {
   savedUpdatesRef.current = savedUpdates;
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const draftLocationCaptureGenerationRef = useRef(0);
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
@@ -5767,14 +5813,14 @@ useEffect(() => {
     retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
     localLoaded: referenceDocumentsLocalLoaded, localAuthorityReady: referenceDocumentsLoaded, localAuthorityRef: referenceDocumentsAuthorityRef, resetLocalLoaded: () => { setReferenceDocumentsLocalLoaded(false); markReferenceDocumentsAuthorityReady(false); },
     readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
-      readStartupJsonArray(REFERENCE_DOCUMENTS_STORAGE_KEY, [], 'reference documents', isStartupDeviceReferenceDocumentRecord)),
+      readStartupJsonArray(REFERENCE_DOCUMENTS_STORAGE_KEY, [], 'reference documents', isStartupReferenceDocumentRecord)),
     acceptLocal: result => startupHydration.accept([result]),
     normalizeLocal: normalizeReferenceDocuments,
     applyLocal: (documents, found) => { setReferenceDocuments(documents); setReferenceDocumentsLocalLoaded(true); markReferenceDocumentsAuthorityReady(found); },
     onLocalError: error => startupHydration.fail(REFERENCE_DOCUMENTS_STORAGE_KEY, 'reference documents', error),
     loadCloud: listReferenceDocuments, synchronizeTombstones: synchronizeDAVESyncTombstones,
     normalizeCloud: documents => normalizeReferenceDocuments(documents.filter(isStartupReferenceDocumentRecord)),
-    applyCloud: (documents, tombstones) => setReferenceDocuments(current => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
+    applyCloud: (documents, tombstones) => setReferenceDocuments(current => reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({
       local: current, cloud: documents, deletedIds: deletedDAVERecordIds(tombstones, 'reference_document'),
     }))),
     onCloudApplied: () => markReferenceDocumentsAuthorityReady(true),
@@ -6123,94 +6169,318 @@ useEffect(() => {
     });
 
     return () => subscription.remove();
-  }, [updatesLoaded, savedUpdates, startupHydrationReady]);
+  }, [updatesLoaded, startupHydrationReady]);
 
   useEffect(() => {
-    if (!startupHydrationReady || !projectAreasLoaded || !scheduleItemsLoaded) return;
+    if (
+      !startupHydrationReady ||
+      !(
+        projectsLoaded ||
+        updatesLoaded ||
+        projectAreasLoaded ||
+        referenceDocumentsLoaded ||
+        scheduleItemsLoaded
+      )
+    ) return;
     let active = true;
-    let inFlight = false;
+    const operationalRefreshCommitGuard =
+      createDAVEOperationalRefreshCommitGuard();
 
     async function refreshOperationalCollections() {
-      if (!active || inFlight || AppState.currentState !== 'active') return;
-      inFlight = true;
-      try {
-        // The durable queue writes this device's latest edits first. Reads then
-        // pull in cloud-only or newer authoritative work from other devices.
-        await uploadPendingChanges();
-        const [tombstones, areasResult, schedulesResult] = await Promise.all([
-          synchronizeDAVESyncTombstones(),
-          listProjectAreas(),
-          listScheduleItems(),
+      if (!active) return;
+      const refreshCommit = operationalRefreshCommitGuard.begin();
+      const tombstones = await loadDAVEOperationalTombstones();
+      if (!active || !refreshCommit.isCurrent()) return;
+      const latestOperationalTombstones = tombstones.tombstones;
+      const currentOperationalTombstones = operationalSyncTombstonesRef.current;
+      refreshCommit.commit(() => {
+        operationalSyncTombstonesRef.current = latestOperationalTombstones;
+        setOperationalSyncTombstones(
+          JSON.stringify(latestOperationalTombstones) === JSON.stringify(currentOperationalTombstones)
+            ? currentOperationalTombstones
+            : latestOperationalTombstones,
+        );
+        const nextDeletedProjectNames = mergeProjectNames(
+          deletedProjectNamesRef.current,
+          deletedDAVERecordIds(latestOperationalTombstones, 'project'),
+        );
+        if (
+          JSON.stringify(nextDeletedProjectNames) !==
+          JSON.stringify(deletedProjectNamesRef.current)
+        ) {
+          deletedProjectNamesRef.current = nextDeletedProjectNames;
+          setDeletedProjectNames(nextDeletedProjectNames);
+        }
+        const nextDeletedUpdateTombstones = latestOperationalTombstones
+          .filter(tombstone => tombstone.entityType === 'project_update')
+          .reduce(
+            (current, tombstone) => upsertDeletedUpdateTombstone(
+              current,
+              buildCloudUpdateDeletionBarrier(
+                tombstone.recordId,
+                tombstone.deletedAt,
+              ),
+            ),
+            deletedUpdateTombstonesRef.current,
+          );
+        if (
+          JSON.stringify(nextDeletedUpdateTombstones) !==
+          JSON.stringify(deletedUpdateTombstonesRef.current)
+        ) {
+          deletedUpdateTombstonesRef.current = nextDeletedUpdateTombstones;
+          setDeletedUpdateTombstones(nextDeletedUpdateTombstones);
+        }
+      });
+      const collectionRefreshes: DAVEOperationalCollectionRefresh[] = [];
+
+      if (projectsLoaded) collectionRefreshes.push({ name: 'projects', run: async () => {
+        const [activeProjectsResult, archivedProjectsResult, offlineQueue] = await Promise.all([
+          listProjects(),
+          listArchivedProjects(),
+          getOfflineQueue(),
         ]);
-        if (!active || !tombstones.cloudAuthoritative) return;
+        if (
+          !activeProjectsResult.ok ||
+          activeProjectsResult.stubbed ||
+          !Array.isArray(activeProjectsResult.data) ||
+          !archivedProjectsResult.ok ||
+          archivedProjectsResult.stubbed ||
+          !Array.isArray(archivedProjectsResult.data)
+        ) {
+          throw new Error('project_refresh_incomplete');
+        }
+        if (!active || !refreshCommit.isCurrent()) return;
 
-        if (areasResult.ok && !areasResult.stubbed && Array.isArray(areasResult.data)) {
-          const cloudAreas = normalizeProjectAreas(
-            areasResult.data.filter(isStartupProjectAreaRecord),
+        const cloudActiveRecords = activeProjectsResult.data
+          .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
+          .map(projectRecordFromCloud);
+        const cloudArchivedRecords = archivedProjectsResult.data
+          .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
+          .map(projectRecordFromCloud);
+        const reconciled = reconcileDAVEOperationalProjects({
+          localRecords: projectRecordsCurrentRef.current,
+          localArchivedProjectNames: archivedProjectsCurrentRef.current,
+          cloudActiveRecords,
+          cloudArchivedRecords,
+          deletedProjectNames: deletedProjectNamesRef.current,
+          queuedChanges: offlineQueue
+            .filter(item => item.entity === 'project')
+            .map(item => ({ operation: item.operation, payload: item.payload })),
+        });
+        const currentRecords = projectRecordsCurrentRef.current;
+        const currentNames = projectsCurrentRef.current;
+        const currentArchivedNames = archivedProjectsCurrentRef.current;
+        refreshCommit.commit(() => {
+          projectRecordsCurrentRef.current = reconciled.projectRecords;
+          projectsCurrentRef.current = reconciled.projectNames;
+          archivedProjectsCurrentRef.current = reconciled.archivedProjectNames;
+          setProjectRecords(
+            JSON.stringify(reconciled.projectRecords) === JSON.stringify(currentRecords)
+              ? currentRecords
+              : reconciled.projectRecords,
           );
-          const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'project_area');
-          const currentAreas = projectAreasCurrentRef.current;
-          const mergedAreas = mergeDAVEProjectAreaRecoveryRecords({
-            local: currentAreas,
-            cloud: cloudAreas,
-            deletedIds,
-          });
+          setProjects(
+            JSON.stringify(reconciled.projectNames) === JSON.stringify(currentNames)
+              ? currentNames
+              : reconciled.projectNames,
+          );
+          setArchivedProjects(
+            JSON.stringify(reconciled.archivedProjectNames) === JSON.stringify(currentArchivedNames)
+              ? currentArchivedNames
+              : reconciled.archivedProjectNames,
+          );
+        });
+      }});
+
+      if (updatesLoaded) collectionRefreshes.push({ name: 'project_updates', run: async () => {
+        const updatesResult = await listProjectUpdates<ProjectUpdate>();
+        if (!updatesResult.ok || updatesResult.stubbed || !Array.isArray(updatesResult.data)) {
+          throw new Error('field_update_refresh_incomplete');
+        }
+        if (!active || !refreshCommit.isCurrent()) return;
+
+        const normalizedCloudUpdates = normalizeStartupArray(
+          updatesResult.data.map(row => row.updateData),
+          normalizeStoredUpdateRecord,
+          'cloud saved updates',
+        ).value;
+        const updatesForPhotoCache = savedUpdatesRef.current;
+        const currentById = new Map(updatesForPhotoCache.map(update => [update.id, update]));
+        const hydratedCloudUpdates = await Promise.all(
+          normalizedCloudUpdates.map(async cloudUpdate => {
+            if (cloudUpdate.isArchived) return cloudUpdate;
+            const localUpdate = currentById.get(cloudUpdate.id);
+            const photos = cloudUpdate.photos.map(cloudPhoto => {
+              const localPhoto = localUpdate?.photos.find(photo => photo.id === cloudPhoto.id);
+              const localUri = localPhoto ? resolveProjectPhotoUri(localPhoto) : '';
+              return localUri
+                ? {
+                    ...cloudPhoto,
+                    uri: localUri,
+                    cloudRecoveredAt: localPhoto?.cloudRecoveredAt || cloudPhoto.cloudRecoveredAt,
+                    cloudRecoveryStatus: localPhoto?.cloudRecoveryStatus || cloudPhoto.cloudRecoveryStatus,
+                    cloudSignedUrlExpiresAt:
+                      localPhoto?.cloudSignedUrlExpiresAt || cloudPhoto.cloudSignedUrlExpiresAt,
+                  }
+                : cloudPhoto;
+            });
+            const cloudUpdateWithLocalPhotoCache = { ...cloudUpdate, photos };
+            return photos.some(photo => !resolveProjectPhotoUri(photo))
+              ? hydrateRecoveredProjectUpdatePhotos(cloudUpdateWithLocalPhotoCache)
+              : cloudUpdateWithLocalPhotoCache;
+          }),
+        );
+        if (!active || !refreshCommit.isCurrent()) return;
+
+        const currentUpdates = savedUpdatesRef.current;
+        const currentUpdateTombstones = deletedUpdateTombstonesRef.current;
+        const refreshedUpdateTombstones = hydratedCloudUpdates
+          .filter(update => update.isArchived)
+          .map(update => buildUpdateTombstone(
+            update,
+            'hide_cloud_update',
+            update.archivedAt || update.date,
+          ))
+          .reduce(
+            (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
+            currentUpdateTombstones,
+          );
+        const effectiveTombstones =
+          JSON.stringify(refreshedUpdateTombstones) === JSON.stringify(currentUpdateTombstones)
+            ? currentUpdateTombstones
+            : refreshedUpdateTombstones;
+        const cloudUpdateById = new Map(
+          hydratedCloudUpdates.map(update => [update.id, update]),
+        );
+        const localUpdatesForMerge = currentUpdates.map(localUpdate => {
+          const cloudUpdate = cloudUpdateById.get(localUpdate.id);
+          return cloudUpdate && !updateNeedsAutomaticSyncRetry(localUpdate)
+            ? cloudUpdate
+            : localUpdate;
+        });
+        const mergedUpdates = mergeSavedUpdatesWithTombstones({
+          localUpdates: localUpdatesForMerge,
+          cloudUpdates: hydratedCloudUpdates,
+          tombstones: effectiveTombstones,
+        });
+        refreshCommit.commit(() => {
+          deletedUpdateTombstonesRef.current = effectiveTombstones;
+          if (effectiveTombstones !== currentUpdateTombstones) {
+            setDeletedUpdateTombstones(effectiveTombstones);
+          }
+          savedUpdatesRef.current = mergedUpdates;
+          setSavedUpdates(
+            JSON.stringify(mergedUpdates) === JSON.stringify(currentUpdates)
+              ? currentUpdates
+              : mergedUpdates,
+          );
+        });
+      }});
+
+      if (projectAreasLoaded) collectionRefreshes.push({ name: 'project_areas', run: async () => {
+        const areasResult = await listProjectAreas();
+        if (!areasResult.ok || areasResult.stubbed || !Array.isArray(areasResult.data)) throw new Error('area_refresh_incomplete');
+        if (!active || !refreshCommit.isCurrent()) return;
+        const cloudAreas = normalizeProjectAreas(areasResult.data.filter(isStartupProjectAreaRecord));
+        const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'project_area');
+        const currentAreas = projectAreasCurrentRef.current;
+        const safeCloudAreas = tombstones.cloudAuthoritative ? cloudAreas : cloudAreas.filter(area => currentAreas.some(current => current.id === area.id));
+        const mergedAreas = mergeDAVEProjectAreaRecoveryRecords({ local: currentAreas, cloud: safeCloudAreas, deletedIds });
+        refreshCommit.commit(() => {
           projectAreasCurrentRef.current = mergedAreas;
-          setProjectAreas(
-            JSON.stringify(mergedAreas) === JSON.stringify(currentAreas)
-              ? currentAreas
-              : mergedAreas,
-          );
-          const cloudAreaById = new Map(cloudAreas.map(area => [area.id, area]));
-          await Promise.all(mergedAreas
-            .filter(area => JSON.stringify(area) !== JSON.stringify(cloudAreaById.get(area.id)))
-            .map(area => queueProjectAreaRecord(area)));
-        }
+          setProjectAreas(JSON.stringify(mergedAreas) === JSON.stringify(currentAreas)
+            ? currentAreas : mergedAreas);
+        });
+      }});
 
-        if (schedulesResult.ok && !schedulesResult.stubbed && Array.isArray(schedulesResult.data)) {
-          const cloudItems = normalizeScheduleItems(
-            schedulesResult.data.filter(isDAVESafeCloudScheduleRecord),
-          ).map(migrateLegacyScheduleItem);
-          const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'schedule_item');
-          const currentItems = scheduleItemsCurrentRef.current;
-          const mergedItems = recoverDAVEScheduleRecords({
-            local: currentItems,
-            cloud: cloudItems,
-            deletedIds,
-            allowCloudOnly: true,
-          });
+      if (scheduleItemsLoaded) collectionRefreshes.push({ name: 'schedule_items', run: async () => {
+        const schedulesResult = await listScheduleItems();
+        if (!schedulesResult.ok || schedulesResult.stubbed || !Array.isArray(schedulesResult.data)) throw new Error('task_refresh_incomplete');
+        if (!active || !refreshCommit.isCurrent()) return;
+        const cloudItems = normalizeScheduleItems(schedulesResult.data
+          .filter(isDAVESafeCloudScheduleRecord)).map(migrateLegacyScheduleItem);
+        const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'schedule_item');
+        const currentItems = scheduleItemsCurrentRef.current;
+        const safeCloudItems = tombstones.cloudAuthoritative ? cloudItems : cloudItems.filter(item => currentItems.some(current => current.id === item.id));
+        const mergedItems = recoverDAVEScheduleRecords({ local: currentItems, cloud: safeCloudItems,
+          deletedIds, allowCloudOnly: true });
+        refreshCommit.commit(() => {
           scheduleItemsCurrentRef.current = mergedItems;
-          setScheduleItems(
-            JSON.stringify(mergedItems) === JSON.stringify(currentItems)
-              ? currentItems
-              : mergedItems,
-          );
-          const cloudItemById = new Map(cloudItems.map(item => [item.id, item]));
-          await Promise.all(mergedItems
-            .filter(item => JSON.stringify(item) !== JSON.stringify(cloudItemById.get(item.id)))
-            .map(item => queueScheduleItemRecord(item)));
-        }
-      } catch {
-        // Local state and the durable queue remain authoritative. The next
-        // bounded interval or foreground transition retries automatically.
-      } finally {
-        inFlight = false;
-      }
+          setScheduleItems(JSON.stringify(mergedItems) === JSON.stringify(currentItems)
+            ? currentItems : mergedItems);
+        });
+      }});
+
+      if (referenceDocumentsLoaded) collectionRefreshes.push({ name: 'reference_documents', run: async () => {
+        const documentsResult = await listReferenceDocuments();
+        if (!documentsResult.ok || documentsResult.stubbed || !Array.isArray(documentsResult.data)) throw new Error('document_refresh_incomplete');
+        if (!active || !refreshCommit.isCurrent()) return;
+        const cloudDocuments = normalizeReferenceDocuments(documentsResult.data);
+        const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'reference_document');
+        const currentDocuments = referenceDocumentsCurrentRef.current;
+        const safeCloudDocuments = tombstones.cloudAuthoritative ? cloudDocuments : cloudDocuments.filter(document => currentDocuments.some(current => current.id === document.id));
+        const mergedDocuments = reconcileCurrentScheduleDocuments(
+          mergeDAVEReferenceDocumentRecoveryRecords({ local: currentDocuments, cloud: safeCloudDocuments, deletedIds }));
+        refreshCommit.commit(() => {
+          referenceDocumentsCurrentRef.current = mergedDocuments;
+          setReferenceDocuments(JSON.stringify(mergedDocuments) === JSON.stringify(currentDocuments)
+            ? currentDocuments : mergedDocuments);
+        });
+      }});
+
+      const failures = await runDAVEOperationalCollectionRefreshes(collectionRefreshes);
+      if (failures.length > 0) throw new Error(`operational_collection_refresh_incomplete:${failures.join(',')}`);
     }
 
-    const initialTimer = setTimeout(() => { void refreshOperationalCollections(); }, 750);
-    const interval = setInterval(() => { void refreshOperationalCollections(); }, 12_000);
+    const refreshController = createDAVEOperationalRefreshController({
+      refresh: refreshOperationalCollections,
+      canRefresh: () => active && AppState.currentState !== 'background',
+      onStateChange: state => {
+        if (!active) return;
+        if (state.status === 'retrying') setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
+        else if (state.status === 'ready') {
+          setSyncCleanupNotice(current =>
+            current === DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE ? null : current);
+        }
+      },
+    });
+    refreshController.start();
+
+    let realtimeUnsubscribe: () => void = () => undefined;
+    void subscribeToDAVEOperationalChanges({
+      onChange: () => { void refreshController.request('realtime'); },
+      onStatus: status => {
+        if (status === 'subscribed') {
+          requestPendingChangesUpload('realtime_reconnected');
+        }
+        if (active && (status === 'error' || status === 'closed')) {
+          setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
+        }
+      },
+    }).then(unsubscribe => {
+      if (!active) unsubscribe();
+      else realtimeUnsubscribe = unsubscribe;
+    }).catch(() => { if (active) setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE); });
+
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active') void refreshOperationalCollections();
+      if (state === 'active') void refreshController.request('foreground');
     });
 
     return () => {
       active = false;
-      clearTimeout(initialTimer);
-      clearInterval(interval);
+      operationalRefreshCommitGuard.invalidate();
+      refreshController.stop();
+      realtimeUnsubscribe();
       subscription.remove();
     };
-  }, [projectAreasLoaded, scheduleItemsLoaded, startupHydrationReady]);
+  }, [
+    projectAreasLoaded,
+    projectsLoaded,
+    referenceDocumentsLoaded,
+    scheduleItemsLoaded,
+    startupHydrationReady,
+    updatesLoaded,
+  ]);
 
   const activeProjects = useMemo(
     () =>
@@ -6225,9 +6495,23 @@ useEffect(() => {
     [projects, archivedProjects],
   );
 
+  const savedUpdateTaskEvidence = useMemo(
+    () => partitionProjectUpdatesByDeletedTask(
+      savedUpdates,
+      operationalSyncTombstones,
+      update => update,
+    ),
+    [operationalSyncTombstones, savedUpdates],
+  );
+  const activeSavedUpdates = savedUpdateTaskEvidence.active;
+  const deletedTaskEvidenceIds = useMemo(
+    () => new Set(savedUpdateTaskEvidence.historical.map(update => update.id)),
+    [savedUpdateTaskEvidence.historical],
+  );
+
   const projectStatsByName = useMemo(
-    () => buildProjectStatsByName(savedUpdates),
-    [savedUpdates],
+    () => buildProjectStatsByName(activeSavedUpdates),
+    [activeSavedUpdates],
   );
 
   const overviewProjectName =
@@ -6266,6 +6550,7 @@ useEffect(() => {
           projectAreas,
           savedUpdates,
           activeProjects,
+          scheduleItems,
         );
 
         if (!suggestion?.withinRadius || gpsCandidates.topCandidates.length === 0) {
@@ -6329,11 +6614,41 @@ useEffect(() => {
     .map(contact => selectedContactPhone(contact).trim())
     .filter(Boolean);
 
+  const draftProjectAreas = useMemo(
+    () => projectAreasForProject({
+      projectAreas,
+      projectName: draft.projectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    }),
+    [activeSavedUpdates, draft.projectName, projectAreas, scheduleItems],
+  );
+
+  const selectedWorkspaceProjectAreas = useMemo(
+    () => projectAreasForProject({
+      projectAreas,
+      projectName: selectedWorkspaceProject,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    }),
+    [activeSavedUpdates, projectAreas, scheduleItems, selectedWorkspaceProject],
+  );
+
+  const talkProjectAreas = useMemo(
+    () => projectAreasForProject({
+      projectAreas,
+      projectName: talkProjectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    }),
+    [activeSavedUpdates, projectAreas, scheduleItems, talkProjectName],
+  );
+
   const currentDraftArea = useMemo(
     () =>
-      projectAreas.find(area => area.id === draft.selectedAreaId) ||
+      draftProjectAreas.find(area => area.id === draft.selectedAreaId) ||
       null,
-    [projectAreas, draft.selectedAreaId],
+    [draft.selectedAreaId, draftProjectAreas],
   );
 
   const draftPIEStatus = useMemo(
@@ -6451,10 +6766,19 @@ useEffect(() => {
   }
 
   async function captureDraftLocation() {
+    const generation = draftLocationCaptureGenerationRef.current + 1;
+    draftLocationCaptureGenerationRef.current = generation;
+    const target = createDraftLocationCaptureTarget(draftRef.current, generation);
+    const targetIsCurrent = () => isDraftLocationCaptureTargetCurrent(
+      target,
+      draftRef.current,
+      draftLocationCaptureGenerationRef.current,
+    );
     setLocationStatus('Capturing GPS...');
 
     try {
       const snapshot = await getCurrentLocationSnapshot();
+      if (!targetIsCurrent()) return null;
 
       if (!snapshot) {
         setDraftAreaSuggestion(null);
@@ -6466,15 +6790,22 @@ useEffect(() => {
 
       const suggestion = findClosestProjectArea(
         snapshot,
-        projectAreas,
+        draftProjectAreas,
       );
 
       setDraftAreaSuggestion(suggestion);
       setLocationStatus('Area auto-detected');
 
       setDraft(prev => {
+        if (!isDraftLocationCaptureTargetCurrent(
+          target,
+          prev,
+          draftLocationCaptureGenerationRef.current,
+        )) {
+          return prev;
+        }
         const selectedArea =
-          projectAreas.find(area => area.id === prev.selectedAreaId) ||
+          draftProjectAreas.find(area => area.id === prev.selectedAreaId) ||
           null;
         const locationFields = locationFieldsFromSnapshot(
           snapshot,
@@ -6498,6 +6829,7 @@ useEffect(() => {
         suggestion,
       };
     } catch {
+      if (!targetIsCurrent()) return null;
       setDraftAreaSuggestion(null);
       setLocationStatus(
         'GPS could not be captured. Choose Project Area manually.',
@@ -6546,7 +6878,7 @@ useEffect(() => {
 
   function changeDraftArea(areaId: string) {
     const area =
-      projectAreas.find(item => item.id === areaId) || null;
+      draftProjectAreas.find(item => item.id === areaId) || null;
 
     applyAreaAndLocationToDraft(area);
     setLocationStatus(
@@ -6892,12 +7224,11 @@ useEffect(() => {
       updateId,
     } = documentUploadRequest;
 
-    setDocumentUploadRequest(null);
-
     // Same picked file, one ProjectDocument record per selected project -
     // each project keeps its own independent upload/retry/status lifecycle,
     // matching how documents already work everywhere else in this screen.
     try {
+      const selectedProjectNames = Array.from(selected);
       for (const projectName of selected) {
         const document = await createProjectDocumentFromAsset(asset, {
           projectName,
@@ -6912,8 +7243,23 @@ useEffect(() => {
         );
         confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
       }
-    } catch {
-      Alert.alert('Document unavailable', 'The selected document could not be copied into secure app storage.');
+      if (category === 'Schedule' && !attachToDraft) {
+        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
+        if (batch) {
+          setIncomingScheduleImportBatch(batch);
+          setScheduleProjectFilter(null);
+          setScreen('Schedule');
+        }
+      }
+    } catch (error) {
+      Alert.alert(
+        category === 'Schedule' ? 'Schedule review unavailable' : 'Document unavailable',
+        error instanceof Error
+          ? error.message
+          : 'The selected document could not be copied into secure app storage.',
+      );
+    } finally {
+      setDocumentUploadRequest(null);
     }
   }
 
@@ -7605,7 +7951,13 @@ useEffect(() => {
     scheduleItem: ScheduleItem,
   ) {
     const taskProjectName = scheduleItem.projectName.trim() || parentProjectName;
-    const area = projectAreas.find(item =>
+    const taskProjectAreas = projectAreasForProject({
+      projectAreas,
+      projectName: parentProjectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    });
+    const area = taskProjectAreas.find(item =>
       item.name.trim().toLowerCase() === scheduleItem.locationName.trim().toLowerCase(),
     ) || null;
 
@@ -7666,8 +8018,14 @@ useEffect(() => {
       return;
     }
 
+    const walkProjectAreas = projectAreasForProject({
+      projectAreas,
+      projectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    });
     const area = prepared.recommendedAreaName
-      ? projectAreas.find(item =>
+      ? walkProjectAreas.find(item =>
           item.name.trim().toLowerCase() === prepared.recommendedAreaName?.trim().toLowerCase()
         ) || null
       : null;
@@ -8193,14 +8551,22 @@ function addProject(projectName: string) {
             ),
           );
           const removedUpdates = savedUpdatesRef.current.filter(update =>
-            projectMatchesScope(update, projectName),
+            projectUpdateBelongsToParentProject({
+              update,
+              projectName,
+              scheduleItems,
+            }),
           );
           const ownedProjectDocumentCandidates = [
             ...projectDocuments.filter(document =>
               projectDocumentMatchesProject(document, projectName),
             ),
             ...removedUpdates.flatMap(update => update.documents || []),
-            ...(projectMatchesScope(draftRef.current, projectName)
+            ...(projectUpdateBelongsToParentProject({
+              update: draftRef.current,
+              projectName,
+              scheduleItems,
+            })
               ? draftRef.current.documents || []
               : []),
           ];
@@ -8222,10 +8588,15 @@ function addProject(projectName: string) {
             updateDeletionIntents: support.updateDeletionIntents,
             projectDocuments,
             referenceDocuments,
+            projectAreas: projectAreasCurrentRef.current,
             scheduleItems,
             daveSyncTombstones: support.daveSyncTombstones,
             draft: currentDraftEnvelope,
-            draftBelongsToProject: projectMatchesScope(draftRef.current, projectName),
+            draftBelongsToProject: projectUpdateBelongsToParentProject({
+              update: draftRef.current,
+              projectName,
+              scheduleItems,
+            }),
             replacementDraft: replacementDraftEnvelope,
             cloudIntents: support.cloudIntents,
             fileCleanupIntents: support.fileCleanupIntents,
@@ -8258,6 +8629,9 @@ function addProject(projectName: string) {
       setArchivedProjects(cascade.remainingArchivedProjects);
       setSavedUpdates(cascade.remainingUpdates);
       setProjectDocuments(cascade.remainingProjectDocuments);
+      projectAreasCurrentRef.current = cascade.remainingProjectAreas;
+      setProjectAreas(cascade.remainingProjectAreas);
+      markProjectAreasAuthorityReady(true);
       markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
       setReferenceDocuments(cascade.remainingReferenceDocuments);
       setScheduleItems(cascade.remainingScheduleItems);
@@ -8278,6 +8652,17 @@ function addProject(projectName: string) {
 
       setSelectedWorkspaceProject(fallbackProject);
       setScreen('Home');
+      await Promise.allSettled([
+        ...cascade.removedProjectAreas.map(area =>
+          removeOperationalRecordFromSyncQueue('project_area', area.id),
+        ),
+        ...cascade.removedScheduleItems.map(item =>
+          removeOperationalRecordFromSyncQueue('schedule_item', item.id),
+        ),
+        ...cascade.removedReferenceDocuments.map(document =>
+          removeOperationalRecordFromSyncQueue('reference_document', document.id),
+        ),
+      ]);
       void reconcileProjectUpdateDeletionJournal(cascade.nextUpdateTombstones).catch(() => undefined);
       void synchronizeDAVESyncTombstones().catch(() => undefined);
       const [cloudQueueResult, fileCleanupResult] = await Promise.allSettled([
@@ -8304,7 +8689,10 @@ function addProject(projectName: string) {
     }
   }
 
-  function addProjectArea(name: string) {
+  function addProjectArea(
+    name: string,
+    projectName = selectedWorkspaceProject,
+  ) {
     const trimmed = name.trim();
 
     if (!trimmed) {
@@ -8320,6 +8708,7 @@ function addProject(projectName: string) {
     const nextArea = normalizeProjectArea({
       id: uid(),
       name: trimmed,
+      projectName,
       latitude: DEFAULT_PROJECT_AREAS[0].latitude,
       longitude: DEFAULT_PROJECT_AREAS[0].longitude,
       radiusFeet: 250,
@@ -8887,6 +9276,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       return {
         ...nextUpdate,
+        pieStartedAt: result.status === 'analyzing' ? result.updatedAt : update.pieStartedAt || null,
         pieStatus: summary.status,
         pieSummary: summary.summary,
         observedFindings,
@@ -9369,74 +9759,202 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
   }
 
-  async function exportBackup() {
+  async function readCompleteBackupAsset(
+    id: string,
+    kind: CompleteBackupPlainAsset['kind'],
+    relativePath: string,
+    uri: string,
+  ): Promise<CompleteBackupPlainAsset> {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) {
+      throw new Error(`The required ${kind.replace('_', ' ')} file is unavailable.`);
+    }
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return {
+      id,
+      kind,
+      relativePath: sanitizeFilename(relativePath),
+      bytes: toByteArray(base64),
+    };
+  }
+
+  async function prepareUpdateForCompleteBackup(
+    update: ProjectUpdate,
+    assetPrefix: string,
+    assets: CompleteBackupPlainAsset[],
+  ): Promise<ProjectUpdate> {
+    const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
+    const photos = [];
+    for (const photo of hydrated.photos) {
+      const assetId = `photo:${assetPrefix}:${photo.id}`;
+      assets.push(await readCompleteBackupAsset(
+        assetId,
+        'photo',
+        photo.fileName || filenameFromUri(
+          photo.uri,
+          assets.length,
+          photo.mimeType || 'image/jpeg',
+        ),
+        photo.uri,
+      ));
+      photos.push({
+        ...photo,
+        uri: '',
+        _backupAssetId: assetId,
+      });
+    }
+    return {
+      ...hydrated,
+      photos,
+    } as ProjectUpdate;
+  }
+
+  async function exportBackup(passphrase: string) {
+    if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
+      Alert.alert(
+        'Passphrase required',
+        `Use a backup passphrase with at least ${COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH} characters.`,
+      );
+      return;
+    }
     const targetDirectory = FileSystem.cacheDirectory;
     if (!targetDirectory) {
       Alert.alert(
-        'Backup unavailable',
-        'A secure temporary folder for the backup file could not be found. No plaintext backup was left on this phone.',
+        'Complete backup unavailable',
+        'A temporary app folder for the encrypted backup could not be found.',
       );
       return;
     }
 
-    const backup = {
-      version: APP_BACKUP_VERSION,
-      exportedAt: new Date().toISOString(),
-      savedUpdates,
-      projects,
-      archivedProjects,
-      contacts: contactBook,
-      projectAreas,
-      referenceDocuments,
-      projectDocuments,
-      scheduleItems,
-      activeDraft: hasMeaningfulDraft(draft)
-        ? {
-            draft,
-            savedAt: draftSavedAt || new Date().toISOString(),
-          }
-        : null,
-    };
-
-    const fileUri = `${targetDirectory}project-photo-update-backup-${isoToday()}.json`;
+    const fileUri =
+      `${targetDirectory}vitruvius-complete-backup-${isoToday()}.vitruvius-backup`;
 
     try {
+      const assets: CompleteBackupPlainAsset[] = [];
+      const backupUpdates = [];
+      for (const update of savedUpdates) {
+        backupUpdates.push(await prepareUpdateForCompleteBackup(
+          update,
+          `update:${update.id}`,
+          assets,
+        ));
+      }
+      const backupReferenceDocuments = [];
+      for (const document of referenceDocuments) {
+        const readable = await ensureVerifiedReferenceDocumentBytes(document);
+        const assetId = `reference_document:${document.id}`;
+        assets.push(await readCompleteBackupAsset(
+          assetId,
+          'reference_document',
+          document.originalFileName,
+          readable.uri,
+        ));
+        backupReferenceDocuments.push({
+          ...readable,
+          uri: '',
+          _backupAssetId: assetId,
+        });
+      }
+      const backupProjectDocuments = [];
+      for (const document of projectDocuments) {
+        const readable = await ensureVerifiedProjectDocumentBytes(document);
+        if (!readable.localUri) {
+          throw new Error(`The document "${document.name}" is unavailable.`);
+        }
+        const assetId = `project_document:${document.id}`;
+        assets.push(await readCompleteBackupAsset(
+          assetId,
+          'project_document',
+          document.name,
+          readable.localUri,
+        ));
+        backupProjectDocuments.push({
+          ...readable,
+          localUri: null,
+          ownedFileId: null,
+          ownedFileManifest: null,
+          _backupAssetId: assetId,
+        });
+      }
+      const backupDraft = hasMeaningfulDraft(draft)
+        ? await prepareUpdateForCompleteBackup(
+            draft,
+            `draft:${draft.id}`,
+            assets,
+          )
+        : null;
+      const backup = {
+        version: APP_BACKUP_VERSION,
+        exportedAt: new Date().toISOString(),
+        savedUpdates: backupUpdates,
+        projects,
+        archivedProjects,
+        contacts: contactBook,
+        projectAreas,
+        referenceDocuments: backupReferenceDocuments,
+        projectDocuments: backupProjectDocuments,
+        scheduleItems,
+        activeDraft: backupDraft
+          ? {
+              draft: backupDraft,
+              savedAt: draftSavedAt || new Date().toISOString(),
+            }
+          : null,
+      };
+      const archive = await createCompleteBackupArchive({
+        state: backup,
+        assets,
+        passphrase,
+        createdAt: new Date().toISOString(),
+      }, {
+        randomBytes: length => Crypto.getRandomBytesAsync(length),
+      });
+      const serialized = JSON.stringify(archive);
+      if (isOversizedBackup(serialized.length)) {
+        throw new Error(
+          'The encrypted backup is larger than the supported 128 MB limit.',
+        );
+      }
       await FileSystem.writeAsStringAsync(
         fileUri,
-        JSON.stringify(backup, null, 2),
+        serialized,
       );
       const canShare = await Sharing.isAvailableAsync();
 
       if (!canShare) {
         Alert.alert(
-          'Backup sharing unavailable',
-          'No backup was retained on this phone. A backup JSON contains project data plus photo and document metadata, but it does not contain the photo or document files themselves.',
+          'Complete backup sharing unavailable',
+          'The encrypted backup was removed from this phone because the Share Sheet is unavailable.',
         );
 
         return;
       }
 
       await Sharing.shareAsync(fileUri, {
-        dialogTitle: 'Backup Vitruvius',
-        mimeType: 'application/json',
-        UTI: 'public.json',
+        dialogTitle: 'Export Complete Vitruvius Backup',
+        mimeType: 'application/vnd.vitruvius.backup+json',
+        UTI: 'public.data',
       });
       Alert.alert(
-        'Backup shared',
-        'The JSON contains project data plus photo and document metadata. It does not contain photo or document files, so missing media cannot be recreated from this backup.',
+        'Complete backup shared',
+        'The project records, photos, and documents are encrypted. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.',
       );
-    } catch {
+    } catch (error) {
       Alert.alert(
-        'Backup failed',
-        'The backup file could not be created.',
+        'Complete backup failed',
+        error instanceof Error
+          ? error.message
+          : 'The encrypted backup could not be created.',
       );
     } finally {
       await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
     }
   }
 
-  async function applyRestoredData(data: RestoredAppData) {
-    if (backupRestoreInFlightRef.current) return;
+  async function applyRestoredData(data: RestoredAppData): Promise<boolean> {
+    if (backupRestoreInFlightRef.current) return false;
     backupRestoreInFlightRef.current = true;
     if (savedUpdatesSaveTimer.current) {
       clearTimeout(savedUpdatesSaveTimer.current); savedUpdatesSaveTimer.current = null;
@@ -9470,9 +9988,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setOverviewProjectSelection(undefined); setOverviewProjectManuallySelected(false);
 
       Alert.alert(
-        'Backup restored',
-        'Project data and usable media metadata were restored and verified. Existing deletion records and queued deletions were preserved. Photo and document files are not contained in the JSON, so missing files were not recreated.',
+        'Complete backup restored',
+        'Project data, photos, and documents were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.',
       );
+      return true;
     } catch (error) {
       const recoveryBlocked = error instanceof BackupRestoreRecoveryRequiredError;
       if (recoveryBlocked) {
@@ -9484,15 +10003,169 @@ Note: This update was opened through Outlook because PLZ email security may reje
           ? 'The restore was partially written and editing is locked until Retry Recovery succeeds or the app restarts.'
           : 'The backup could not be safely restored. Existing app data and deletion records were not intentionally replaced.',
       );
+      return false;
     } finally {
       backupRestoreInFlightRef.current = false;
     }
   }
 
-  async function restoreBackup() {
+  async function writeRestoredBackupFile(
+    directory: string,
+    fileName: string,
+    bytes: Uint8Array,
+    createdUris: string[],
+  ) {
+    const uri = `${directory}${uid()}-${sanitizeFilename(fileName)}`;
+    await FileSystem.writeAsStringAsync(uri, fromByteArray(bytes), {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    createdUris.push(uri);
+    return uri;
+  }
+
+  async function materializeCompleteBackupState(
+    stateInput: unknown,
+    decryptedAssets: ReadonlyMap<string, Uint8Array>,
+    manifestAssets: readonly Readonly<{
+      id: string;
+      relativePath: string;
+    }>[],
+  ) {
+    const state = JSON.parse(JSON.stringify(stateInput)) as Record<string, unknown>;
+    const createdUris: string[] = [];
+    const usedAssetIds = new Set<string>();
+    const assetNames = new Map(
+      manifestAssets.map(asset => [asset.id, asset.relativePath]),
+    );
+    const requireAsset = (assetId: unknown) => {
+      if (typeof assetId !== 'string' || !assetId.trim()) {
+        throw new Error('A restored media record is missing its encrypted media id.');
+      }
+      const bytes = decryptedAssets.get(assetId);
+      if (!bytes) {
+        throw new Error(`Encrypted media "${assetId}" is missing.`);
+      }
+      if (usedAssetIds.has(assetId)) {
+        throw new Error(`Encrypted media "${assetId}" is referenced more than once.`);
+      }
+      usedAssetIds.add(assetId);
+      return {
+        bytes,
+        fileName: assetNames.get(assetId) || 'restored-file.bin',
+      };
+    };
+    const materializeUpdatePhotos = async (update: unknown) => {
+      if (!isRecord(update) || !Array.isArray(update.photos)) return;
+      const directory = await ensurePhotoStorageDirectory();
+      for (const photo of update.photos) {
+        if (!isRecord(photo)) {
+          throw new Error('A restored photo record is invalid.');
+        }
+        const asset = requireAsset(photo._backupAssetId);
+        photo.uri = await writeRestoredBackupFile(
+          directory,
+          asset.fileName,
+          asset.bytes,
+          createdUris,
+        );
+        delete photo._backupAssetId;
+      }
+    };
+
+    try {
+      if (!Array.isArray(state.savedUpdates) ||
+          !Array.isArray(state.referenceDocuments) ||
+          !Array.isArray(state.projectDocuments)) {
+        throw new Error('The encrypted application state is incomplete.');
+      }
+      for (const update of state.savedUpdates) {
+        await materializeUpdatePhotos(update);
+      }
+      if (isRecord(state.activeDraft)) {
+        await materializeUpdatePhotos(state.activeDraft.draft);
+      }
+      const referenceDirectory = await ensureReferenceDocumentsDirectory();
+      for (const document of state.referenceDocuments) {
+        if (!isRecord(document)) {
+          throw new Error('A restored reference document record is invalid.');
+        }
+        const asset = requireAsset(document._backupAssetId);
+        document.uri = await writeRestoredBackupFile(
+          referenceDirectory,
+          asset.fileName,
+          asset.bytes,
+          createdUris,
+        );
+        document.sizeBytes = asset.bytes.byteLength;
+        delete document._backupAssetId;
+      }
+      if (!OWNED_PROJECT_DOCUMENTS_DIR || !FileSystem.cacheDirectory) {
+        throw new Error('Verified project document storage is unavailable.');
+      }
+      for (const document of state.projectDocuments) {
+        if (!isRecord(document)) {
+          throw new Error('A restored project document record is invalid.');
+        }
+        const asset = requireAsset(document._backupAssetId);
+        const temporaryUri = await writeRestoredBackupFile(
+          FileSystem.cacheDirectory,
+          asset.fileName,
+          asset.bytes,
+          createdUris,
+        );
+        const mimeType = typeof document.mimeType === 'string'
+          ? document.mimeType
+          : 'application/octet-stream';
+        const owned = await importProjectDocumentIntoOwnedStorage({
+          sourceUri: temporaryUri,
+          ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+          fileName: typeof document.name === 'string'
+            ? document.name
+            : asset.fileName,
+          mimeType,
+          reportedSizeBytes: asset.bytes.byteLength,
+        });
+        createdUris.push(owned.localUri);
+        await FileSystem.deleteAsync(temporaryUri, { idempotent: true });
+        createdUris.splice(createdUris.indexOf(temporaryUri), 1);
+        document.localUri = owned.localUri;
+        document.ownedFileId = owned.fileId;
+        document.ownedFileManifest = owned.manifest;
+        document.sizeBytes = owned.record.sizeBytes;
+        delete document._backupAssetId;
+      }
+      if (usedAssetIds.size !== decryptedAssets.size) {
+        throw new Error('The backup contains unreferenced encrypted media.');
+      }
+      return {
+        state,
+        cleanup: async () => {
+          await Promise.all(createdUris.map(uri =>
+            FileSystem.deleteAsync(uri, { idempotent: true })
+              .catch(() => undefined),
+          ));
+        },
+      };
+    } catch (error) {
+      await Promise.all(createdUris.map(uri =>
+        FileSystem.deleteAsync(uri, { idempotent: true })
+          .catch(() => undefined),
+      ));
+      throw error;
+    }
+  }
+
+  async function restoreBackup(passphrase: string) {
+    if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
+      Alert.alert(
+        'Passphrase required',
+        `Use the backup passphrase with at least ${COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH} characters.`,
+      );
+      return;
+    }
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/json',
+        type: ['application/vnd.vitruvius.backup+json', 'application/json', '*/*'],
         copyToCacheDirectory: true,
       });
 
@@ -9503,7 +10176,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       if (!file) {
         Alert.alert(
           'Restore failed',
-          'No backup file was selected.',
+          'No complete Vitruvius backup was selected.',
         );
 
         return;
@@ -9511,8 +10184,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       if (isOversizedBackup(file.size)) {
         Alert.alert(
-          'Backup too large',
-          'Choose a smaller Vitruvius backup file.',
+          'Complete backup too large',
+          'Choose a complete Vitruvius backup smaller than 128 MB.',
         );
 
         return;
@@ -9526,8 +10199,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         isOversizedBackup(fileInfo.size)
       ) {
         Alert.alert(
-          'Backup too large',
-          'Choose a smaller Vitruvius backup file.',
+          'Complete backup too large',
+          'Choose a complete Vitruvius backup smaller than 128 MB.',
         );
 
         return;
@@ -9535,20 +10208,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       const contents = await FileSystem.readAsStringAsync(file.uri);
       const parsed: unknown = JSON.parse(contents);
-      const normalized = normalizeBackupData(parsed);
+      const decrypted = await decryptCompleteBackupArchive(parsed, passphrase);
+      const preflight = normalizeBackupData(decrypted.state);
 
-      if (!normalized.ok) {
+      if (!preflight.ok) {
         Alert.alert(
-          normalized.reason === 'incompatible_version' ? 'Incompatible backup' : 'Invalid backup',
-          normalized.message,
+          preflight.reason === 'incompatible_version'
+            ? 'Incompatible backup'
+            : 'Invalid backup',
+          preflight.message,
         );
-
         return;
       }
 
       Alert.alert(
-        'Restore backup?',
-        'This replaces saved projects, updates, schedules, contacts, and the active draft on this phone. Existing deletion records and queued deletions stay enforced. The JSON contains media metadata, not photo or document files, so missing files cannot be recreated.',
+        'Restore this complete backup?',
+        'This replaces saved projects, updates, schedules, contacts, photos, documents, and the active draft on this device. Existing deletion records and queued deletions remain enforced.',
         [
           {
             text: 'Cancel',
@@ -9557,14 +10232,39 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {
             text: 'Restore',
             style: 'destructive',
-            onPress: () => { void applyRestoredData(normalized.data); },
+            onPress: () => {
+              void (async () => {
+                const materialized = await materializeCompleteBackupState(
+                  decrypted.state,
+                  decrypted.assets,
+                  decrypted.manifest.assets,
+                );
+                const normalized = normalizeBackupData(materialized.state);
+                if (!normalized.ok) {
+                  await materialized.cleanup();
+                  Alert.alert('Restore failed', normalized.message);
+                  return;
+                }
+                const committed = await applyRestoredData(normalized.data);
+                if (!committed) await materialized.cleanup();
+              })().catch(error => {
+                Alert.alert(
+                  'Restore failed',
+                  error instanceof Error
+                    ? error.message
+                    : 'The complete backup could not be safely restored.',
+                );
+              });
+            },
           },
         ],
       );
-    } catch {
+    } catch (error) {
       Alert.alert(
         'Restore failed',
-        'The selected file could not be read as a backup.',
+        error instanceof Error
+          ? error.message
+          : 'The selected file could not be verified as a complete Vitruvius backup.',
       );
     }
   }
@@ -9623,45 +10323,94 @@ Note: This update was opened through Outlook because PLZ email security may reje
     documentId: string,
     next: Partial<ReferenceDocument>,
   ) {
-    markReferenceDocumentsAuthorityReady(true);
-    setReferenceDocuments(prev =>
-      prev.map(document =>
-        document.id === documentId
-          ? normalizeReferenceDocument({
-              ...document,
-              ...next,
-            })
-          : document,
-      ),
+    const updatedAt = new Date().toISOString();
+    const updated = referenceDocumentsCurrentRef.current.map(document =>
+      document.id === documentId
+        ? normalizeReferenceDocument({ ...document, ...next, updatedAt })
+        : document,
     );
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    const changed = updated.find(document => document.id === documentId);
+    if (changed) void queueReferenceDocumentRecord(changed);
   }
 
   function markReferenceDocumentCurrent(documentId: string) {
-    const target = referenceDocuments.find(document => document.id === documentId);
+    const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    const updatedAt = new Date().toISOString();
+    const updated = referenceDocumentsCurrentRef.current.map(document => ({
+      ...document,
+      isCurrent:
+        document.id === documentId
+          ? true
+          : target && document.category === target.category
+            ? false
+            : document.isCurrent,
+      updatedAt: target && document.category === target.category
+        ? updatedAt
+        : document.updatedAt,
+    }));
 
     markReferenceDocumentsAuthorityReady(true);
-    setReferenceDocuments(prev =>
-      prev.map(document => ({
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    void Promise.all(updated
+      .filter(document => target && document.category === target.category)
+      .map(queueReferenceDocumentRecord));
+  }
+
+  async function ensureVerifiedReferenceDocumentBytes(
+    document: ReferenceDocument,
+  ): Promise<ReferenceDocument> {
+    let resolvedUri = resolveReferenceDocumentUri(document.uri);
+    let info = resolvedUri
+      ? await FileSystem.getInfoAsync(resolvedUri)
+      : null;
+
+    if ((!info?.exists || !resolvedUri) && document.storagePath) {
+      const expectedSha256 =
+        canonicalReferenceDocumentSha256(document.contentSha256) ||
+        canonicalReferenceDocumentSha256(document.webFileFingerprint);
+      if (!document.sizeBytes || !expectedSha256) {
+        throw new Error(
+          'This older cloud document does not include the checksum needed for safe recovery.',
+        );
+      }
+      const restored = await restoreReferenceDocumentBytesFromCloud({
+        documentId: document.id,
+        storagePath: document.storagePath,
+        originalFileName: document.originalFileName,
+        expectedSizeBytes: document.sizeBytes,
+        expectedSha256,
+      });
+      resolvedUri = restored.uri;
+      info = await FileSystem.getInfoAsync(resolvedUri);
+      const readableDocument = {
         ...document,
-        isCurrent:
-          document.id === documentId
-            ? true
-            : target && document.category === target.category
-              ? false
-              : document.isCurrent,
-      })),
-    );
+        uri: restored.uri,
+        sizeBytes: restored.sizeBytes,
+        contentSha256: restored.sha256,
+      };
+      updateReferenceDocument(document.id, readableDocument);
+      return readableDocument;
+    }
+
+    if (!resolvedUri || !info?.exists) {
+      throw new Error(
+        'This document is listed in the shared project record, but no accessible verified file is attached.',
+      );
+    }
+    return {
+      ...document,
+      uri: resolvedUri,
+    };
   }
 
   async function openReferenceDocument(document: ReferenceDocument) {
     try {
-      const resolvedUri = resolveReferenceDocumentUri(document.uri);
-      const info = await FileSystem.getInfoAsync(resolvedUri);
-
-      if (!info.exists) {
-        Alert.alert('File missing', 'This reference document record exists, but the local file could not be found.');
-        return;
-      }
+      const readableDocument =
+        await ensureVerifiedReferenceDocumentBytes(document);
 
       const canShare = await Sharing.isAvailableAsync();
 
@@ -9670,7 +10419,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         return;
       }
 
-      await Sharing.shareAsync(resolvedUri, {
+      await Sharing.shareAsync(readableDocument.uri, {
         dialogTitle: document.name,
         mimeType: document.mimeType || undefined,
       });
@@ -9679,23 +10428,51 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function openProjectDocument(document: ProjectDocument) {
-    if (!document.localUri) {
-      Alert.alert(
-        'Document unavailable',
-        'This attachment has no verified local file. Delete this record and add the original file again.',
-      );
-      return;
-    }
-
+  async function ensureVerifiedProjectDocumentBytes(
+    document: ProjectDocument,
+  ): Promise<ProjectDocument> {
     try {
       await verifyOwnedProjectDocument(document);
-      const info = await FileSystem.getInfoAsync(document.localUri);
+      return document;
+    } catch (verificationError) {
+      if (
+        !OWNED_PROJECT_DOCUMENTS_DIR ||
+        !document.storagePath ||
+        !document.ownedFileId ||
+        !document.ownedFileManifest
+      ) {
+        throw verificationError;
+      }
+      const manifest = parseOwnedLocalFileManifest(document.ownedFileManifest);
+      const record = manifest.files[document.ownedFileId];
+      if (!record || record.kind !== 'project_document') throw verificationError;
+      const restored = await restoreProjectDocumentBytesFromCloud({
+        storagePath: document.storagePath,
+        ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+        record,
+      });
+      const readableDocument = {
+        ...document,
+        localUri: restored.uri,
+        sizeBytes: restored.sizeBytes,
+        updatedAt: new Date().toISOString(),
+      };
+      await verifyOwnedProjectDocument(readableDocument);
+      updateDocumentEverywhere(document.id, () => readableDocument);
+      return readableDocument;
+    }
+  }
+
+  async function openProjectDocument(document: ProjectDocument) {
+    try {
+      const readableDocument = await ensureVerifiedProjectDocumentBytes(document);
+      if (!readableDocument.localUri) throw new Error('Verified document path is missing.');
+      const info = await FileSystem.getInfoAsync(readableDocument.localUri);
 
       if (!info.exists) {
         Alert.alert(
           'Document file missing',
-          'The document record is still saved, but the local file could not be found.',
+          'The document record is still saved, but the verified file could not be recovered.',
         );
         return;
       }
@@ -9703,18 +10480,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const canShare = await Sharing.isAvailableAsync();
 
       if (!canShare) {
-        Alert.alert('Document saved', document.name);
+        Alert.alert('Document saved', readableDocument.name);
         return;
       }
 
-      await Sharing.shareAsync(document.localUri, {
-        dialogTitle: document.name,
-        mimeType: document.mimeType || undefined,
+      await Sharing.shareAsync(readableDocument.localUri, {
+        dialogTitle: readableDocument.name,
+        mimeType: readableDocument.mimeType || undefined,
       });
     } catch {
       Alert.alert(
         'Open failed',
-        'This document could not be verified. Delete this attachment and add the original file again before opening it.',
+        'This document could not be recovered and verified. Check the connection, then add the original file again if the problem continues.',
       );
     }
   }
@@ -9735,6 +10512,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   async function makeProjectScheduleDocumentCurrent(documentId: string) {
     const document = projectDocuments.find(item => item.id === documentId);
     if (!document || document.category !== 'Schedule') return;
+    const referenceUpdatedAt = new Date().toISOString();
 
     let referenceDocument = document.referenceDocumentId
       ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
@@ -9742,19 +10520,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     try {
       if (!referenceDocument) {
-        if (!document.localUri) {
-          Alert.alert(
-            'Schedule file unavailable',
-            'Add the original schedule file again before making it current.',
-          );
-          return;
-        }
-
-        await verifyOwnedProjectDocument(document);
+        const readableDocument = await ensureVerifiedProjectDocumentBytes(document);
+        if (!readableDocument.localUri) throw new Error('Verified schedule path is missing.');
         const directory = await ensureReferenceDocumentsDirectory();
         const originalFileName = document.name;
         const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
-        await FileSystem.copyAsync({ from: document.localUri, to: targetUri });
+        await FileSystem.copyAsync({ from: readableDocument.localUri, to: targetUri });
 
         const matchingProjectDocuments = projectDocuments.filter(item =>
           item.category === 'Schedule' &&
@@ -9769,6 +10540,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
         const projectName = matchingProjectIds.size === 1
           ? projects.find(name => authorityProjectId(name) === document.projectId) || null
           : null;
+        const ownedRecord = document.ownedFileId
+          ? parseOwnedLocalFileManifest(document.ownedFileManifest).files[document.ownedFileId]
+          : null;
 
         referenceDocument = normalizeReferenceDocument({
           id: uid(),
@@ -9782,6 +10556,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
           importedAt: document.importedAt,
           projectId: projectName ? document.projectId : null,
           projectName,
+          storagePath: document.storagePath,
+          sizeBytes: document.sizeBytes,
+          contentSha256: ownedRecord?.sha256 || null,
+          updatedAt: referenceUpdatedAt,
         });
 
         const linkedReferenceDocumentId = referenceDocument.id;
@@ -9808,7 +10586,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     const selectedReferenceDocument = referenceDocument;
-    const referenceUpdatedAt = new Date().toISOString();
     const nextReferenceDocuments = [
       ...(referenceDocuments.some(item => item.id === selectedReferenceDocument.id)
         ? []
@@ -9819,6 +10596,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       isCurrent: item.category === 'Schedules'
         ? item.id === selectedReferenceDocument.id
         : item.isCurrent,
+      updatedAt: item.category === 'Schedules'
+        ? referenceUpdatedAt
+        : item.updatedAt,
     }));
 
     markReferenceDocumentsAuthorityReady(true);
@@ -9845,12 +10625,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
       })),
     );
 
-    const cloudResults = await Promise.all(
+    referenceDocumentsCurrentRef.current = nextReferenceDocuments;
+    const queueResults = await Promise.allSettled(
       nextReferenceDocuments
         .filter(item => item.category === 'Schedules')
-        .map(item => upsertReferenceDocument(item)),
+        .map(queueReferenceDocumentRecord),
     );
-    if (cloudResults.some(result => !result.ok || result.stubbed)) {
+    if (queueResults.some(result => result.status === 'rejected')) {
       Alert.alert(
         'Current schedule saved on this device',
         'The shared cloud record could not be updated yet. Use Sync Now when connected.',
@@ -9954,9 +10735,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
             void recordDAVESyncTombstone('reference_document', documentId)
               .then(() => {
                 markReferenceDocumentsAuthorityReady(true);
-                setReferenceDocuments(prev =>
-                  prev.filter(item => item.id !== documentId),
-                );
+                const updated = referenceDocumentsCurrentRef.current
+                  .filter(item => item.id !== documentId);
+                referenceDocumentsCurrentRef.current = updated;
+                setReferenceDocuments(updated);
+                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {
@@ -9972,14 +10755,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function setActiveScheduleDocument(documentId: string) {
-    markReferenceDocumentsAuthorityReady(true);
-    setReferenceDocuments(prev =>
-      prev.map(document =>
-        document.category === 'Schedules'
-          ? { ...document, isCurrent: document.id === documentId }
-          : document,
-      ),
+    const updatedAt = new Date().toISOString();
+    const updated = referenceDocumentsCurrentRef.current.map(document =>
+      document.category === 'Schedules'
+        ? { ...document, isCurrent: document.id === documentId, updatedAt }
+        : document,
     );
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    void Promise.all(updated
+      .filter(document => document.category === 'Schedules')
+      .map(queueReferenceDocumentRecord));
   }
 
   function deleteScheduleDocument(documentId: string) {
@@ -10002,7 +10789,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
             void recordDAVESyncTombstone('reference_document', documentId)
               .then(() => {
                 markReferenceDocumentsAuthorityReady(true);
-                setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
+                const updated = referenceDocumentsCurrentRef.current
+                  .filter(item => item.id !== documentId);
+                referenceDocumentsCurrentRef.current = updated;
+                setReferenceDocuments(updated);
+                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {
@@ -10027,10 +10818,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
               .then(() => {
                 const deletedItemIds = new Set(relatedScheduleItems.map(item => item.id));
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
-                setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
+                const updated = referenceDocumentsCurrentRef.current
+                  .filter(item => item.id !== documentId);
+                referenceDocumentsCurrentRef.current = updated;
+                setReferenceDocuments(updated);
                 setScheduleItems(prev =>
                   prev.filter(item => !deletedItemIds.has(item.id)),
                 );
+                void Promise.all([
+                  removeOperationalRecordFromSyncQueue('reference_document', documentId),
+                  ...relatedScheduleItems.map(item =>
+                    removeOperationalRecordFromSyncQueue('schedule_item', item.id)),
+                ]);
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {
@@ -10059,7 +10858,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev => [next, ...prev]);
-    void queueScheduleItemRecord(next).catch(() => {
+    void queueScheduleItemRecord(next).then(() => uploadPendingChanges()).catch(() => {
       Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
     });
   }
@@ -10101,7 +10900,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
     markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev => prev.map(item => item.id === itemId ? updated : item));
-    void queueScheduleItemRecord(updated).catch(() => {
+    void queueScheduleItemRecord(updated).then(() => uploadPendingChanges()).catch(() => {
       Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
     });
   }
@@ -10136,168 +10935,148 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ],
     );
   }
+  async function prepareScheduleImportFromAsset(
+    file: { uri: string; name?: string | null; mimeType?: string | null },
+    selectedProjectNames: readonly string[] = activeProjects.length ? activeProjects : projects,
+  ): Promise<PIEScheduleImportBatch | null> {
+    const fileName = file.name?.trim() || 'Imported schedule';
+    const mimeType = file.mimeType || '';
+    const scopeProjects = Array.from(new Set(selectedProjectNames.map(name => name.trim()).filter(Boolean)));
+    const isPdf = mimeType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      const contents = await FileSystem.readAsStringAsync(file.uri);
+      const normalizedImport = normalizeScheduleImport({
+        contents, sourceName: fileName, mimeType,
+        projects: scopeProjects,
+        projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+      });
+      const imported = normalizedImport.items as unknown as ScheduleItem[];
+      if (!imported.length) {
+        Alert.alert(
+          'No schedule items found',
+          'Use a CSV or text file with at least a task name and date. Recommended columns: Task, Project, Location, Start, Finish, Owner, and Status.',
+        );
+        return null;
+      }
+      const items = dedupeScheduleImportItems(imported as unknown as import('./types').ScheduleItem[]);
+      return {
+        id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: fileName,
+        message: `${items.length} schedule ${items.length === 1 ? 'item' : 'items'} prepared. Import confidence: ${normalizedImport.extractionConfidencePercent}%.`,
+        items, documents: [],
+      };
+    }
+
+    const directory = await ensureReferenceDocumentsDirectory();
+    const originalFileName = fileName.toLowerCase().endsWith('.pdf') ? fileName : `${fileName}.pdf`;
+    const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
+    await FileSystem.copyAsync({ from: file.uri, to: targetUri });
+    const onlyProject = scopeProjects.length === 1 ? scopeProjects[0] : null;
+    const scheduleDocument = normalizeReferenceDocument({
+      id: uid(), name: originalFileName.replace(/\.[^/.]+$/, ''), originalFileName,
+      uri: targetUri, mimeType: file.mimeType || 'application/pdf', category: 'Schedules',
+      notes: 'Schedule uploaded for task extraction and project manager review.',
+      isCurrent: true, importedAt: new Date().toISOString(),
+      projectId: onlyProject ? authorityProjectId(onlyProject) : null,
+      projectName: onlyProject, projectNames: scopeProjects,
+    });
+    let extractedItems: ScheduleItem[] = [];
+    let extractionMethod = '';
+    let extractionIssue = '';
+    if (isDavePdfTextExtractionAvailable()) {
+      try {
+        const extractedPdf = await withScheduleImportTimeout(
+          extractTextFromPdf(targetUri), 20_000,
+          `PDF text extraction timed out for ${originalFileName}.`,
+        );
+        if (extractedPdf.format === 'microsoft_project_tsv') {
+          extractedItems = normalizeMicrosoftProjectPdfRows({
+            contents: extractedPdf.text, sourceName: originalFileName,
+            projects: scopeProjects,
+            projectAreas: projectAreas as unknown as Parameters<typeof normalizeMicrosoftProjectPdfRows>[0]['projectAreas'],
+          }) as unknown as ScheduleItem[];
+          extractionMethod = 'structured Microsoft Project rows';
+        } else {
+          const normalizedImport = normalizeScheduleImport({
+            contents: extractedPdf.text, sourceName: originalFileName,
+            mimeType: file.mimeType || 'application/pdf', projects: scopeProjects,
+            projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+          });
+          extractedItems = (normalizedImport.items as unknown as ScheduleItem[])
+            .filter(item => Boolean(item.startDate || item.finishDate || item.milestone))
+            .map(item => ({ ...item, importedFrom: originalFileName }));
+          extractionMethod = 'local PDF text';
+        }
+      } catch {
+        extractedItems = [];
+      }
+    }
+    if (!extractedItems.length) {
+      try {
+        const extracted = await extractSchedulePdfWithServer({
+          uri: targetUri, fileName: originalFileName,
+          mimeType: file.mimeType || 'application/pdf',
+          projects: scopeProjects,
+          projectRecords: scopeProjects.map(projectName => {
+            const record = projectRecords.find(candidate =>
+              candidate.name.trim().toLowerCase() === projectName.toLowerCase(),
+            );
+            return { id: record?.id || null, name: projectName };
+          }),
+          projectAreas,
+          idempotencyKey: scheduleDocument.id,
+        });
+        extractedItems = extracted.items.map(item => ({
+          ...item,
+          sourceDocumentId: scheduleDocument.id,
+        }));
+        extractionMethod = 'schedule service';
+      } catch (error) {
+        extractionIssue = error instanceof Error ? error.message : 'Automatic schedule extraction could not finish.';
+      }
+    }
+    if (extractedItems.length > 0) {
+      const items = dedupeScheduleImportItems(extractedItems as unknown as import('./types').ScheduleItem[]);
+      return {
+        id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: originalFileName,
+        message: `${items.length} possible schedule ${items.length === 1 ? 'item' : 'items'} extracted using ${extractionMethod || 'schedule extraction'}. Confirm the highlighted fields before adding them.`,
+        items, documents: [scheduleDocument],
+      };
+    }
+    const reviewItem = {
+      ...normalizeScheduleItem({
+        taskName: 'New Schedule Item', projectName: onlyProject || '', locationName: '',
+        startDate: '', finishDate: '', milestone: 'Imported PDF Schedule', owner: '',
+        status: 'Not Started', notes: '', importedFrom: originalFileName,
+        importedAt: new Date().toISOString(),
+      }),
+      taskName: '',
+    };
+    return {
+      id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: originalFileName,
+      message: `The PDF was saved, but no dated activities were extracted. ${extractionIssue || 'Enter the actual task name and complete every highlighted field below.'}`,
+      items: [reviewItem] as unknown as import('./types').ScheduleItem[],
+      documents: [scheduleDocument],
+    };
+  }
 
   async function importScheduleFile(
     onProcessingStart: () => void = () => undefined,
   ): Promise<PIEScheduleImportBatch | null> {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: [
-          'application/pdf',
-          'text/csv',
-          'text/plain',
-          'application/vnd.ms-excel',
-          'application/json',
-        ],
+        type: ['application/pdf', 'text/csv', 'text/plain', 'application/vnd.ms-excel', 'application/json'],
         copyToCacheDirectory: true,
       });
-
       if (result.canceled) return null;
-
       const file = result.assets[0];
-
       if (!file) return null;
       await preflightExpoFileRead({ uri: file.uri, reportedSizeBytes: file.size });
       onProcessingStart();
-
-      const fileName = file.name || 'Imported schedule';
-      const mimeType = file.mimeType || '';
-      const isPdf =
-        mimeType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
-
-      if (isPdf) {
-        const directory = await ensureReferenceDocumentsDirectory();
-        const originalFileName = filenameFromDocumentAsset(file);
-        const storedFileName = `${uid()}-${sanitizeFilename(originalFileName)}`;
-        const targetUri = `${directory}${storedFileName}`;
-
-        await FileSystem.copyAsync({
-          from: file.uri,
-          to: targetUri,
-        });
-
-        const scheduleDocument = normalizeReferenceDocument({
-          id: uid(),
-          name: originalFileName.replace(/\.[^/.]+$/, ''),
-          originalFileName,
-          uri: targetUri,
-          mimeType: file.mimeType || 'application/pdf',
-          category: 'Schedules',
-          notes:
-            'Imported from the Schedule screen. Review this PDF and add extracted schedule tasks or milestones manually as needed.',
-          isCurrent: true,
-          importedAt: new Date().toISOString(),
-        });
-
-        let extractedItems: ScheduleItem[] = [];
-        let extractionMethod = '';
-
-        if (isDavePdfTextExtractionAvailable()) {
-          try {
-            const extractedPdf = await withScheduleImportTimeout(
-              extractTextFromPdf(targetUri),
-              20_000,
-              `PDF text extraction timed out for ${originalFileName}.`,
-            );
-            if (extractedPdf.format === 'microsoft_project_tsv') {
-              extractedItems = normalizeMicrosoftProjectPdfRows({
-                contents: extractedPdf.text,
-                sourceName: originalFileName,
-                projects,
-                projectAreas: projectAreas as unknown as Parameters<typeof normalizeMicrosoftProjectPdfRows>[0]['projectAreas'],
-              }) as unknown as ScheduleItem[];
-              extractionMethod = 'structured Microsoft Project rows';
-            } else {
-              const normalizedImport = normalizeScheduleImport({
-                contents: extractedPdf.text,
-                sourceName: originalFileName,
-                mimeType: file.mimeType || 'application/pdf',
-                projects,
-                projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
-              });
-              extractedItems = (normalizedImport.items as unknown as ScheduleItem[])
-                .filter(item => Boolean(item.startDate || item.finishDate || item.milestone))
-                .map(item => ({ ...item, importedFrom: originalFileName }));
-              extractionMethod = 'local PDF text';
-            }
-          } catch {
-            extractedItems = [];
-          }
-        }
-
-        if (extractedItems.length > 0) {
-          const items = dedupeScheduleImportItems(extractedItems as unknown as import('./types').ScheduleItem[]);
-          return {
-            id: uid(),
-            kind: 'schedule_file',
-            sourceCount: 1,
-            sourceLabel: originalFileName,
-            message: `${items.length} possible schedule ${items.length === 1 ? 'item' : 'items'} extracted using ${extractionMethod || 'schedule extraction'}. Confirm the highlighted fields before adding them.`,
-            items,
-            documents: [scheduleDocument],
-          };
-        }
-
-        const reviewItem = {
-          ...normalizeScheduleItem({
-            taskName: 'New Schedule Item',
-            projectName: activeProjects[0] || projects[0] || '',
-            locationName: '',
-            startDate: '',
-            finishDate: '',
-            milestone: 'Imported PDF Schedule',
-            owner: '',
-            status: 'Not Started',
-            notes: '',
-            importedFrom: originalFileName,
-            importedAt: new Date().toISOString(),
-          }),
-          taskName: '',
-        };
-
-        return {
-          id: uid(),
-          kind: 'schedule_file',
-          sourceCount: 1,
-          sourceLabel: originalFileName,
-          message: 'The PDF was saved, but no dated activities were extracted. Enter the actual task name and complete every highlighted field below.',
-          items: [reviewItem] as unknown as import('./types').ScheduleItem[],
-          documents: [scheduleDocument],
-        };
-      }
-
-      const contents = await FileSystem.readAsStringAsync(file.uri);
-      const normalizedImport = normalizeScheduleImport({
-        contents,
-        sourceName: fileName,
-        mimeType,
-        projects,
-        projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
-      });
-      const imported = normalizedImport.items as unknown as ScheduleItem[];
-
-      if (!imported.length) {
-        Alert.alert(
-          'No schedule items found',
-          'Use a CSV or text file with at least a task name. Recommended columns: Task, Project, Location, Start, Finish, Milestone, Owner, Status, Notes. PDF schedules can also be imported and stored for manual review.',
-        );
-        return null;
-      }
-
-      const items = dedupeScheduleImportItems(imported as unknown as import('./types').ScheduleItem[]);
-      return {
-        id: uid(),
-        kind: 'schedule_file',
-        sourceCount: 1,
-        sourceLabel: fileName,
-        message: `${items.length} schedule ${items.length === 1 ? 'item' : 'items'} prepared. Import confidence: ${normalizedImport.extractionConfidencePercent}%.`,
-        items,
-        documents: [],
-      };
-    } catch {
+      return await prepareScheduleImportFromAsset(file);
+    } catch (error) {
       Alert.alert(
         'Import failed',
-        'The schedule file could not be imported. Try a PDF, CSV, or plain text schedule file.',
+        error instanceof Error ? error.message : 'The schedule file could not be imported. Try a PDF, CSV, or plain text schedule file.',
       );
       return null;
     }
@@ -10421,7 +11200,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return null;
     }
   }
-
   function approveScheduleImport(batch: PIEScheduleImportBatch) {
     const approvedBatch = bindPIEScheduleImportBatchProvenance(batch);
     const approvedItems = canonicalizeScheduleIdentityItems(
@@ -10431,7 +11209,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
       projectAreas,
       identityCorrections,
     );
-
     if (approvedItems.length) {
       markScheduleItemsAuthorityReady(true);
       // Explicit user approval of an import into these projects is the user
@@ -10440,65 +11217,87 @@ Note: This update was opened through Outlook because PLZ email security may reje
         allowDeletedProjects: true,
         reopenArchivedParents: true,
       });
-      setScheduleItems(previous => {
-        let next = [...previous];
-        const additions: ScheduleItem[] = [];
-
-        approvedItems.forEach(importedItem => {
-          const match = findExactScheduleTaskForCompletionClaim(
-            importedItem as unknown as import('./types').ScheduleItem,
-            next as unknown as import('./types').ScheduleItem[],
-          ) as unknown as ScheduleItem | null;
-
-          if (match) {
-            next = next.map(item => item.id === match.id
-              ? normalizeScheduleItem(mergeReportedCompletionClaim(
-                  item as unknown as import('./types').ScheduleItem,
-                  importedItem as unknown as import('./types').ScheduleItem,
-                ) as unknown as Partial<ScheduleItem>)
-              : item);
-            return;
-          }
-
-          const identity = scheduleImportItemIdentity(
-            importedItem as unknown as import('./types').ScheduleItem,
-          );
-          const duplicate = [...next, ...additions].some(item =>
-            scheduleImportItemIdentity(item as unknown as import('./types').ScheduleItem) === identity,
-          );
-          if (!duplicate) additions.push(importedItem);
-        });
-
-        return reconcileDAVEScheduleRecords([...additions, ...next]);
+      let next = [...scheduleItems];
+      const additions: ScheduleItem[] = [];
+      approvedItems.forEach(importedItem => {
+        const match = findExactScheduleTaskForCompletionClaim(
+          importedItem as unknown as import('./types').ScheduleItem,
+          next as unknown as import('./types').ScheduleItem[],
+        ) as unknown as ScheduleItem | null;
+        if (match) {
+          next = next.map(item => item.id === match.id
+            ? normalizeScheduleItem(mergeReportedCompletionClaim(
+                item as unknown as import('./types').ScheduleItem,
+                importedItem as unknown as import('./types').ScheduleItem,
+              ) as unknown as Partial<ScheduleItem>)
+            : item);
+          return;
+        }
+        const identity = scheduleImportItemIdentity(
+          importedItem as unknown as import('./types').ScheduleItem,
+        );
+        const duplicate = [...next, ...additions].some(item =>
+          scheduleImportItemIdentity(item as unknown as import('./types').ScheduleItem) === identity,
+        );
+        if (!duplicate) additions.push(importedItem);
       });
+      const synchronizedItems = reconcileDAVEScheduleRecords([...additions, ...next]);
+      setScheduleItems(synchronizedItems);
+      const previousById = new Map(scheduleItems.map(item => [item.id, item]));
+      void Promise.all(synchronizedItems
+        .filter(item => JSON.stringify(item) !== JSON.stringify(previousById.get(item.id)))
+        .map(queueScheduleItemRecord)).then(() => uploadPendingChanges()).catch(() => undefined);
     }
-
     if (approvedBatch.documents.length) {
       markReferenceDocumentsAuthorityReady(true);
+      const referenceUpdatedAt = new Date().toISOString();
       const importedProjectNames = scheduleParentProjectNames(
         approvedItems as unknown as import('./types').ScheduleItem[],
       );
-      const importedProjectName = importedProjectNames.length === 1
-        ? importedProjectNames[0]
-        : null;
-      const scopedDocuments = approvedBatch.documents.map(document =>
-        normalizeReferenceDocument({
-          ...document,
+      const scopedDocuments = approvedBatch.documents.map(document => {
+        const documentProjectNames = document.projectNames?.length
+          ? document.projectNames
+          : importedProjectNames;
+        const importedProjectName = documentProjectNames.length === 1
+          ? documentProjectNames[0]
+          : null;
+        return normalizeReferenceDocument({
+          ...document, projectNames: documentProjectNames,
           projectId: importedProjectName ? authorityProjectId(importedProjectName) : null,
           projectName: importedProjectName,
-        }),
-      );
+          updatedAt: referenceUpdatedAt,
+        });
+      });
       const hasCurrentSchedule = scopedDocuments.some(document =>
         document.category === 'Schedules' && document.isCurrent,
       );
-      setReferenceDocuments(prev => [
+      const synchronizedDocuments = [
         ...scopedDocuments,
-        ...prev.map(document =>
+        ...referenceDocuments.map(document =>
           hasCurrentSchedule && document.category === 'Schedules'
-            ? { ...document, isCurrent: false }
+            ? { ...document, isCurrent: false, updatedAt: referenceUpdatedAt }
             : document,
         ),
-      ]);
+      ];
+      referenceDocumentsCurrentRef.current = synchronizedDocuments;
+      setReferenceDocuments(synchronizedDocuments);
+      void Promise.all(scopedDocuments.map(prepareReferenceDocumentForCloud))
+        .then(preparedDocuments => {
+          const preparedById = new Map(preparedDocuments.map(document => [document.id, document]));
+          const cloudReadyDocuments = referenceDocumentsCurrentRef.current.map(document =>
+            preparedById.get(document.id) || document,
+          );
+          referenceDocumentsCurrentRef.current = cloudReadyDocuments;
+          setReferenceDocuments(cloudReadyDocuments);
+          return Promise.all(cloudReadyDocuments
+            .filter(document => document.category === 'Schedules')
+            .map(queueReferenceDocumentRecord));
+        })
+        .catch(() => {
+          void Promise.all(synchronizedDocuments
+            .filter(document => document.category === 'Schedules')
+            .map(queueReferenceDocumentRecord));
+        });
     }
   }
 
@@ -10770,17 +11569,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
   const unfinishedDraft =
     hasDraftContent(draft) ? draft : null;
 
+  const contentTopPadding = appShellContentTopPadding({
+    layout: appShellLayout,
+    safeAreaTop: insets.top,
+    platform: Platform.OS,
+  });
   const contentStyle = useMemo(
     () => [
       styles.content,
       {
-        paddingTop: Math.max(
-          insets.top + 24,
-          Platform.OS === 'ios' ? 72 : 48,
-        ),
+        paddingTop: contentTopPadding,
       },
     ],
-    [insets.top],
+    [contentTopPadding],
   );
 
   const authoritativeScheduleItems = useMemo(
@@ -10794,8 +11595,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
   const layer4EvidenceCatalog = useMemo<PIEEvidenceReference[]>(() => {
     const projectId = authorityProjectId(selectedWorkspaceProject);
     const organizationId = layer4Identity?.organizationId || 'unverified';
-    const updateEvidence = savedUpdates
-      .filter(update => update.projectName.trim().toLowerCase() === selectedWorkspaceProject.trim().toLowerCase())
+    const updateEvidence = projectUpdatesForParentProject(
+      activeSavedUpdates,
+      selectedWorkspaceProject,
+      authoritativeScheduleItems,
+    )
       .flatMap(update => {
         const updateReference: PIEEvidenceReference = {
           id: `update-${update.id}`,
@@ -10837,7 +11641,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }));
 
     return [...updateEvidence, ...scheduleEvidence];
-  }, [authoritativeScheduleItems, layer4Identity?.organizationId, savedUpdates, selectedWorkspaceProject]);
+  }, [activeSavedUpdates, authoritativeScheduleItems, layer4Identity?.organizationId, selectedWorkspaceProject]);
 
   useEffect(() => {
     if (!startupHydrationReady) return;
@@ -10912,8 +11716,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         evidence: layer4EvidenceCatalog,
       });
       if (!result.created || !result.decision) return;
+      const proposalCommit =
+        await localPIEDecisionHistoryActions.persistProposal(result.decision);
       const automated = automateLayer4DecisionLifecycle({
-        decision: result.decision,
+        decision: proposalCommit.decision,
         actor: layer4Identity.actor,
         evidence: layer4EvidenceCatalog,
       });
@@ -10921,10 +11727,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const automatedDecision = automated.decision;
       const next = [
         automatedDecision,
-        ...decisionLedger.filter(item => item.id !== automatedDecision.id),
+        ...proposalCommit.decisions.filter(item => item.id !== automatedDecision.id),
       ];
       setDecisionLedger(next);
-      await savePIEDecisionLedgerForOrganization(layer4Identity.organizationId, next);
+      // A newly proposed decision normally remains unchanged by the lifecycle
+      // review. If a future low-risk automatic transition does modify it, keep
+      // that later version in the same organization ledger. The proposal was
+      // already saved and queued first, preserving its immutable baseline.
+      if (automatedDecision !== proposalCommit.decision) {
+        await savePIEDecisionLedgerForOrganization(
+          layer4Identity.organizationId,
+          next,
+        );
+      }
     } catch {
       if (!silent) {
         Alert.alert('Decision review unavailable', 'This decision could not be prepared for review yet.');
@@ -10976,7 +11791,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
       projectName,
       authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
     );
-    const updates = projectUpdatesForScopes(savedUpdates, scopeNames)
+    const updates = projectUpdatesForScopes(
+      activeSavedUpdates,
+      scopeNames,
+      authoritativeScheduleItems,
+    )
       .map(update => ({ ...update, projectName }));
     const documents = projectDocumentsForScopes(scopeNames, projectDocuments)
       .map(document => ({ ...document, projectId: authorityProjectId(projectName) }));
@@ -11324,17 +12143,29 @@ Note: This update was opened through Outlook because PLZ email security may reje
         })
       : null;
     const reportEvidenceScope = combinedReportScope || dailyReportScope;
+    const scopedProjectId =
+      combinedReportScope?.projectId || authorityProjectId(projectName);
+    const verifiedLearningEvents =
+      layer4Identity?.cloudTrusted &&
+      layer4Identity.organizationStatus === 'verified' &&
+      !combinedReportScope
+        ? buildVerifiedLearningEventsFromDecisionLedger({
+            decisions: decisionLedger,
+            organizationId: layer4Identity.organizationId,
+            projectId: scopedProjectId,
+          })
+        : [];
 
     return {
       organizationId: layer4Identity?.cloudTrusted
         ? layer4Identity.organizationId
         : null,
-      projectId: combinedReportScope?.projectId || authorityProjectId(projectName),
+      projectId: scopedProjectId,
       projectName: reportEvidenceScope?.projectName || projectName,
       projectNames: reportEvidenceScope?.projectNames || [projectName],
       reportType: authorityReportType,
       updates: (
-        reportEvidenceScope ? reportEvidenceScope.updates : savedUpdates
+        reportEvidenceScope ? reportEvidenceScope.updates : activeSavedUpdates
       ) as unknown as PIELiveAuthorityInput['updates'],
       scheduleItems: (
         reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems
@@ -11347,6 +12178,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       referenceDocuments: (reportEvidenceScope ? reportEvidenceScope.referenceDocuments : referenceDocuments) as unknown as PIELiveAuthorityInput['referenceDocuments'],
       projectDocuments: (reportEvidenceScope ? reportEvidenceScope.projectDocuments : projectDocuments) as unknown as PIELiveAuthorityInput['projectDocuments'],
       captureMemories: reportEvidenceScope ? reportEvidenceScope.captureMemories : captureMemories,
+      verifiedLearningEvents,
       // Do not begin live authority work under the anonymous fallback while
       // the signed-in organization is still resolving. Large legacy Reality
       // Models otherwise make startup perform the same expensive pass twice.
@@ -11367,6 +12199,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     activeProjects,
     authorityMode,
     contactBook,
+    decisionLedger,
     draft,
     captureMemories,
     layer4Identity,
@@ -11380,7 +12213,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     reportType,
     reportFormat,
     selectedReportProjectNames,
-    savedUpdates,
+    activeSavedUpdates,
     authoritativeScheduleItems,
     selectedWorkspaceProject,
   ]);
@@ -11423,12 +12256,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
             if (projectName) setSelectedWorkspaceProject(projectName);
           }}
         >
+          <LiveAuthorityStatusBanner />
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}
               projects={activeProjects}
               archivedProjects={archivedProjects}
-              savedUpdates={savedUpdates}
+              savedUpdates={activeSavedUpdates}
               scheduleItems={authoritativeScheduleItems}
               displayName={displayName}
               unfinishedDraft={unfinishedDraft}
@@ -11474,7 +12308,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <AddPhotosScreen
               contentStyle={contentStyle}
               update={draft}
-              projectAreas={projectAreas}
+              projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
               recipientCount={
@@ -11548,7 +12382,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ProjectWorkspaceScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
-              savedUpdates={savedUpdates}
+              savedUpdates={activeSavedUpdates}
               captureMemories={captureMemories}
               projectWalkSession={
                 activeProjectWalkSession?.projectName.trim().toLowerCase() ===
@@ -11557,10 +12391,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   : null
               }
               usedCaptureMemoryIds={[
-                ...savedUpdates.flatMap(update => update.sourceCaptureMemoryIds || []),
+                ...activeSavedUpdates.flatMap(update => update.sourceCaptureMemoryIds || []),
                 ...(draft.sourceCaptureMemoryIds || []),
               ]}
-              projectAreas={projectAreas}
+              projectAreas={selectedWorkspaceProjectAreas}
               projectDocuments={projectDocuments}
               scheduleItems={authoritativeScheduleItems}
               contactBook={contactBook}
@@ -11572,8 +12406,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 projectRecords,
                 selectedWorkspaceProject,
                 mostRecentHeroPhotoUri(
-                  workspaceScopeNames(selectedWorkspaceProject),
-                  savedUpdates,
+                  projectUpdatesForParentProject(
+                    activeSavedUpdates,
+                    selectedWorkspaceProject,
+                    authoritativeScheduleItems,
+                  ),
                 ),
               )}
               onTakeNewCoverPhoto={() => {
@@ -11605,7 +12442,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }
               onSaveCaptureMemory={saveCaptureMemory}
               onDeleteCaptureMemory={deleteCaptureMemory}
-              onAddArea={addProjectArea}
+              onAddArea={name => addProjectArea(name, selectedWorkspaceProject)}
               onUpdateArea={updateProjectArea}
               onDeleteArea={deleteProjectArea}
               onUseCurrentLocationForArea={areaId => {
@@ -11671,10 +12508,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 workspaceScopeNames(selectedWorkspaceProject),
                 projectDocuments,
               )}
-              projectAreas={projectAreas}
+              projectAreas={selectedWorkspaceProjectAreas}
               updates={projectUpdatesForScopes(
-                savedUpdates,
+                activeSavedUpdates,
                 workspaceScopeNames(selectedWorkspaceProject),
+                authoritativeScheduleItems,
               )}
               onBack={() => setScreen('ProjectWorkspace')}
               onUpload={() => {
@@ -11698,7 +12536,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               contentStyle={contentStyle}
               screenshotImportAvailable={scheduleScreenshotOcrAvailable}
               scheduleItems={authoritativeScheduleItems}
-              savedUpdates={savedUpdates}
+              savedUpdates={activeSavedUpdates}
               projectAreas={projectAreas}
               projects={projects}
               scheduleDocuments={referenceDocuments.filter(document =>
@@ -11719,6 +12557,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onImportScreenshot={importScheduleCommunicationScreenshot}
               onApproveImport={approveScheduleImport}
               onCancelImport={cancelScheduleImport}
+              incomingImportBatch={incomingScheduleImportBatch}
+              onIncomingImportConsumed={() => setIncomingScheduleImportBatch(null)}
               onNewFieldUpdateForTask={item =>
                 createNewUpdateForScheduleTask(
                   item.scheduleProjectName?.trim() || item.projectName.trim() || selectedWorkspaceProject,
@@ -11756,11 +12596,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onDisplayNameChange={setDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
-              onBackup={() => {
-                void exportBackup();
+              onBackup={passphrase => {
+                void exportBackup(passphrase);
               }}
-              onRestore={() => {
-                void restoreBackup();
+              onRestore={passphrase => {
+                void restoreBackup(passphrase);
               }}
               onAddArea={addProjectArea}
               onUpdateArea={updateProjectArea}
@@ -11879,6 +12719,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <SavedUpdatesScreen
               contentStyle={contentStyle}
               updates={savedUpdates}
+              deletedTaskEvidenceIds={deletedTaskEvidenceIds}
               projectAreas={projectAreas}
               contactBook={contactBook}
               onOpen={openSavedUpdate}
@@ -12031,7 +12872,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             candidateProjects={reportAvailableProjectNames}
             candidateTasks={talkCandidateTasks}
             selectedTaskId={talkTaskId}
-            candidateLocations={projectAreas.map(area => area.name)}
+            candidateLocations={talkProjectAreas.map(area => area.name)}
             title="Talk"
             prompt="What do you need?"
             guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
@@ -12069,7 +12910,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               transcript={talkCaptureDraft.transcript}
               draft={talkCaptureDraft}
               projects={reportAvailableProjectNames}
-              locations={projectAreas.map(area => area.name)}
+              locations={talkProjectAreas.map(area => area.name)}
               sourceLabel={talkCaptureDraft.evidence.some(
                 evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
               ) ? 'Source transcript' : 'Source note'}
@@ -12353,16 +13194,17 @@ function HomeScreen({
     topPriority.project.trim().toLowerCase() === liveAuthority.projectTruth.projectName.trim().toLowerCase()
       ? liveAuthority.projectTruth.briefing.nextActions[0] || null
       : null;
-  const overviewScopeProjects = mergeProjectNames(
-    [],
-    overviewRows.flatMap(row => row.scopeProjects),
-  );
+  const overviewScopedUpdates = Array.from(new Map(
+    overviewRows
+      .flatMap(row =>
+        projectUpdatesForParentProject(savedUpdates, row.project, scheduleItems),
+      )
+      .map(update => [update.id, update]),
+  ).values());
 
-  const projectStatsByName = buildProjectStatsByName(savedUpdates);
   const dueTodayCount = overviewRows.filter(row => row.dueTodayLabel !== null).length;
-  const sentThisWeekCount = savedUpdates.filter(update => {
+  const sentThisWeekCount = overviewScopedUpdates.filter(update => {
     if (lifecycleStatusForUpdate(update) !== 'sent') return false;
-    if (!overviewScopeProjects.some(project => projectMatchesScope(update, project))) return false;
 
     const daysSinceSent = daysUntilDate(update.date);
 
@@ -12370,10 +13212,11 @@ function HomeScreen({
   }).length;
   const todayObservations = overviewRows
     .flatMap(row =>
-      row.scopeProjects.flatMap(project =>
-        buildPIEProjectBriefModel(project, savedUpdates).observations.map(
-          observation => ({ ...observation, projectName: row.project }),
-        ),
+      buildPIEProjectBriefModel(
+        null,
+        projectUpdatesForParentProject(savedUpdates, row.project, scheduleItems),
+      ).observations.map(
+        observation => ({ ...observation, projectName: row.project }),
       ),
     )
     .filter(observation => updateTimelineGroup(observation.update.date) === 'Today')
@@ -12384,22 +13227,21 @@ function HomeScreen({
         observation.text.trim() !== topPriority.subtitle.trim(),
       ) || null
     : null;
-  const recentActivity = [...savedUpdates]
-    .filter(update => overviewScopeProjects.some(project => projectMatchesScope(update, project)))
+  const recentActivity = [...overviewScopedUpdates]
     .sort((left, right) => updateSortTime(right) - updateSortTime(left))
     .slice(0, 5);
 
-  function overviewPhotoForProject(projectName: string, scopeProjects: string[]) {
-    for (const candidate of mergeProjectNames([projectName], scopeProjects)) {
-      const photo = resolveProjectCoverPhotoUri(
-        projectRecords,
-        candidate,
-        projectThumbnailUri(candidate, savedUpdates),
-      );
-      if (photo) return photo;
-    }
-
-    return null;
+  function overviewPhotoForProject(projectName: string) {
+    const scopedUpdates = projectUpdatesForParentProject(
+      savedUpdates,
+      projectName,
+      scheduleItems,
+    );
+    return resolveProjectCoverPhotoUri(
+      projectRecords,
+      projectName,
+      mostRecentHeroPhotoUri(scopedUpdates) || undefined,
+    );
   }
 
   return (
@@ -12531,11 +13373,22 @@ function HomeScreen({
         <Text style={styles.overviewDashboardHeading}>Today's Priority</Text>
       </View>
       <View style={styles.overviewPriorityCard}>
-        {topPriority && overviewPhotoForProject(topPriority.project, topPriority.scopeProjects) ? (
+        {topPriority && overviewPhotoForProject(topPriority.project) ? (
           <Image
-            source={{ uri: overviewPhotoForProject(topPriority.project, topPriority.scopeProjects)! }}
+            source={{ uri: overviewPhotoForProject(topPriority.project)! }}
             style={styles.overviewPriorityImage}
           />
+        ) : topPriority ? (
+          <View style={styles.overviewPriorityClearPanel}>
+            <View style={styles.overviewPriorityClearIcon}>
+              <Ionicons name="image-outline" size={32} color={colors.primary} />
+            </View>
+            <View style={styles.overviewPriorityClearCopy}>
+              <Text style={styles.overviewPriorityClearTitle}>Priority needs review</Text>
+              <Text style={styles.overviewPriorityClearText}>{topPriority.project}</Text>
+              <Text style={styles.overviewPriorityClearText}>No project cover photo is available.</Text>
+            </View>
+          </View>
         ) : (
           <View style={styles.overviewPriorityClearPanel}>
             <View style={styles.overviewPriorityClearIcon}>
@@ -12549,7 +13402,7 @@ function HomeScreen({
               <Text style={styles.overviewPriorityClearText}>
                 {dueTodayCount === 0
                   ? 'Nothing due today'
-                  : `${dueTodayCount} item${dueTodayCount === 1 ? '' : 's'} due today`}
+                  : `${dueTodayCount} project${dueTodayCount === 1 ? '' : 's'} with work due today`}
               </Text>
             </View>
           </View>
@@ -12656,9 +13509,13 @@ function HomeScreen({
                 : health === 'Needs Setup'
                   ? colors.muted
                   : colors.success;
-            const photo = overviewPhotoForProject(row.project, row.scopeProjects);
-            const lastUpdate = row.scopeProjects
-              .map(scope => projectStatsForName(projectStatsByName, scope).lastUpdate)
+            const photo = overviewPhotoForProject(row.project);
+            const lastUpdate = projectUpdatesForParentProject(
+              savedUpdates,
+              row.project,
+              scheduleItems,
+            )
+              .map(update => update.date)
               .filter((update): update is string => Boolean(update))
               .sort((left, right) => right.localeCompare(left))[0] || null;
 
@@ -12820,7 +13677,7 @@ function OverviewHeroCard({
           <View style={styles.overviewHeroPill}>
             <Ionicons name="time-outline" size={13} color="#FFC670" />
             <Text style={styles.overviewHeroPillText}>
-              {dueTodayCount} due today
+              {dueTodayCount} project{dueTodayCount === 1 ? '' : 's'} with work due today
             </Text>
           </View>
         ) : null}
@@ -13647,13 +14504,12 @@ function AreaRow({
   onChange,
 }: {
   areaName: string;
-  status: ProjectUpdate['areaStatus'];
+  status?: ProjectUpdate['areaStatus'];
   onChange: () => void;
 }) {
-  const statusLabel =
-    status === 'confirmed'
-      ? 'Area auto-detected'
-      : 'Area suggested';
+  const statusLabel = status === 'confirmed'
+    ? 'Area auto-detected'
+    : status === 'suggested' ? 'Area suggested' : 'Selected area';
 
   return (
     <View style={styles.phase3CompactRow}>
@@ -13669,7 +14525,6 @@ function AreaRow({
     </View>
   );
 }
-
 function RecipientSummaryRow({
   recipientCount,
   contacts,
@@ -14571,12 +15426,22 @@ function PIEFindingRow({
         {onConfirm || onDismiss ? (
           <View style={styles.pieInterpretationActionRow}>
             {onConfirm ? (
-              <TouchableOpacity style={styles.compactInlineAction} onPress={onConfirm}>
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={onConfirm}
+                accessibilityRole="button"
+                accessibilityLabel={`Confirm ${title}`}
+              >
                 <Text style={styles.compactInlineActionText}>Confirm</Text>
               </TouchableOpacity>
             ) : null}
             {onDismiss ? (
-              <TouchableOpacity style={styles.compactInlineAction} onPress={onDismiss}>
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={onDismiss}
+                accessibilityRole="button"
+                accessibilityLabel={`Dismiss ${title}`}
+              >
                 <Text style={styles.compactInlineActionText}>Dismiss</Text>
               </TouchableOpacity>
             ) : null}
@@ -15684,22 +16549,17 @@ function ProjectTaskControlPanel({
   const [filter, setFilter] = useState<ProjectTaskFilter>('All');
   const [expanded, setExpanded] = useState(false);
   const [completedGroupOpen, setCompletedGroupOpen] = useState(false);
-  const projectScopeNames = useMemo(
-    () => scheduleProjectScopeNames(
-      projectName,
-      scheduleItems as unknown as import('./types').ScheduleItem[],
-    ),
-    [projectName, scheduleItems],
-  );
   const operationalScheduleItems = useMemo(
     () => operationalScheduleItemsForProject(projectName, scheduleItems),
     [projectName, scheduleItems],
   );
   const scopedFieldUpdates = useMemo(
-    () => savedUpdates.filter(update =>
-      projectScopeNames.some(scope => projectMatchesScope(update, scope)),
+    () => projectUpdatesForParentProject(
+      savedUpdates,
+      projectName,
+      scheduleItems,
     ),
-    [projectScopeNames, savedUpdates],
+    [projectName, savedUpdates, scheduleItems],
   );
   const rollup = useMemo(
     () => buildDAVEProjectScheduleRollup({
@@ -15711,23 +16571,15 @@ function ProjectTaskControlPanel({
   const reconciliation = useMemo(
     () => buildPIEScheduleReconciliation({
       scheduleItems: operationalScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
-      updates: savedUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
+      updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
     }),
-    [operationalScheduleItems, savedUpdates],
+    [operationalScheduleItems, scopedFieldUpdates],
   );
   const attentionItems = useMemo(
-    () => Array.from(new Map(
-      projectScopeNames
-        .flatMap(scope => buildPhase2AttentionItems(savedUpdates, scope))
-        .map(item => [item.id, item]),
-    ).values()),
-    [projectScopeNames, savedUpdates],
+    () => buildPhase2AttentionItems(scopedFieldUpdates, null),
+    [scopedFieldUpdates],
   );
-  const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlockerForScopes(
-    projectScopeNames,
-    savedUpdates,
-    projectMatchesScope,
-  );
+  const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlocker(scopedFieldUpdates);
   const operationalStatus = deriveDAVEProjectOperationalStatus({
     scheduleHealth: rollup.health,
     scheduleReason: rollup.healthReason,
@@ -16010,8 +16862,12 @@ function ProjectWorkspaceScreen({
     [projectName, scheduleItems],
   );
   const projectUpdates = useMemo(
-    () => projectUpdatesForScopes(savedUpdates, projectScopeNames),
-    [savedUpdates, projectScopeNames],
+    () => projectUpdatesForParentProject(
+      savedUpdates,
+      projectName,
+      scheduleItems,
+    ),
+    [projectName, savedUpdates, scheduleItems],
   );
   const workspaceProjectStats = useMemo(
     () => projectStatsForUpdates(projectUpdates),
@@ -17015,7 +17871,7 @@ function ReferenceDocumentsScreen({
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>Local Storage</Text>
             <Text style={styles.bodyText}>
-              Reference documents are copied into this app on this phone. Backup exports include document metadata only; large PDF and image files remain stored locally on the device.
+              Reference documents are copied into this app on this phone. JSON data exports include document metadata only; large PDF and image files remain stored locally on the device.
             </Text>
           </View>
 
@@ -17860,6 +18716,7 @@ function RecipientRow({
 function SavedUpdatesScreen({
   contentStyle,
   updates,
+  deletedTaskEvidenceIds,
   projectAreas,
   contactBook,
   onOpen,
@@ -17876,6 +18733,7 @@ function SavedUpdatesScreen({
 }: {
   contentStyle: StyleProp<ViewStyle>;
   updates: ProjectUpdate[];
+  deletedTaskEvidenceIds: ReadonlySet<string>;
   projectAreas: ProjectArea[];
   contactBook: ContactBook;
   onOpen: (update: ProjectUpdate) => void;
@@ -17998,6 +18856,7 @@ function SavedUpdatesScreen({
         {group !== previousGroup ? <Text style={styles.updateGroupHeader}>{group}</Text> : null}
         <UpdateHistoryCard
           update={update}
+          historicalDeletedTask={deletedTaskEvidenceIds.has(update.id)}
           lifecycle={lifecycleStatusForUpdate(update)}
           pieStatus={updatePIEAnalysisStatus(update)}
           onOpen={onSelect}
@@ -18230,6 +19089,7 @@ function FilterOption({
 
 function UpdateHistoryCard({
   update,
+  historicalDeletedTask = false,
   lifecycle,
   pieStatus,
   onOpen,
@@ -18239,6 +19099,7 @@ function UpdateHistoryCard({
   selected = false,
 }: {
   update: ProjectUpdate;
+  historicalDeletedTask?: boolean;
   lifecycle: FieldUpdateStatus;
   pieStatus: string | null;
   onOpen: () => void;
@@ -18277,7 +19138,7 @@ function UpdateHistoryCard({
       onPress={onOpen}
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${relativeUpdateTimestamp(update.date)}`}
+      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
     >
       <View style={styles.updateCardMedia}>
         {thumbnail ? (
@@ -18293,6 +19154,11 @@ function UpdateHistoryCard({
       <View style={styles.rowMain}>
         <Text style={styles.updateCardProject} numberOfLines={1}>{update.projectName}</Text>
         <Text style={styles.updateCardSummary} numberOfLines={2}>{summary}</Text>
+        {historicalDeletedTask ? (
+          <Text style={styles.updateHistoricalEvidenceLabel}>
+            {DELETED_TASK_EVIDENCE_LABEL}
+          </Text>
+        ) : null}
         <View style={styles.updateCardMetaRow}>
           <Text style={styles.updateCardType}>{updateType}</Text>
           <Text style={styles.updateCardMetaDot}>•</Text>
@@ -18966,6 +19832,8 @@ function ScheduleScreen({
   onImportScreenshot,
   onApproveImport,
   onCancelImport,
+  incomingImportBatch,
+  onIncomingImportConsumed,
   onNewFieldUpdateForTask,
   onOpenUpdate,
   initialFilter,
@@ -18991,18 +19859,23 @@ function ScheduleScreen({
   onImportScreenshot: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onApproveImport: (batch: PIEScheduleImportBatch) => void;
   onCancelImport: (batch: PIEScheduleImportBatch) => void;
+  incomingImportBatch: PIEScheduleImportBatch | null;
+  onIncomingImportConsumed: () => void;
   onNewFieldUpdateForTask: (item: ScheduleItem) => void;
   onOpenUpdate: (update: ProjectUpdate) => void;
-  initialFilter?: 'Attention' | 'Today' | '7 Days' | 'All';
+  initialFilter?: ScheduleTaskFilter;
   initialAddProjectName?: string | null;
   projectFilter?: string | null;
   defaultOwner?: string;
 }) {
   const { sizeClass } = useAppShellLayout();
+  const scheduleScreenInsets = useSafeAreaInsets();
   const isWideWorkspace = sizeClass === 'wide';
+  const [workspaceView, setWorkspaceView] = useState<ScheduleWorkspaceView>('Tasks');
   const [taskView, setTaskView] = useState<ScheduleTaskView>('Open Tasks');
   const [taskFilter, setTaskFilter] = useState<ScheduleTaskFilter>(initialFilter || 'Attention');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [planningTaskId, setPlanningTaskId] = useState<string | null>(null);
   const [scheduleManagementOpen, setScheduleManagementOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(Boolean(initialAddProjectName));
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -19011,8 +19884,11 @@ function ScheduleScreen({
 
   useEffect(() => {
     if (!initialAddProjectName) return;
+    setWorkspaceView('Tasks');
     setShowAdd(true);
   }, [initialAddProjectName]);
+
+  useEffect(() => { if (incomingImportBatch) setScheduleManagementOpen(true); }, [incomingImportBatch]);
 
   const workspaceScheduleItems = useMemo(
     () => scheduleItemsForWorkspaceProject(
@@ -19023,9 +19899,13 @@ function ScheduleScreen({
   );
   const workspaceSavedUpdates = useMemo(
     () => isWideWorkspace && projectFilter
-      ? savedUpdates.filter(update => projectMatchesScope(update, projectFilter))
+      ? projectUpdatesForParentProject(
+          savedUpdates,
+          projectFilter,
+          scheduleItems,
+        )
       : savedUpdates,
-    [isWideWorkspace, projectFilter, savedUpdates],
+    [isWideWorkspace, projectFilter, savedUpdates, scheduleItems],
   );
 
   useEffect(() => {
@@ -19189,6 +20069,29 @@ function ScheduleScreen({
     [sortedItems],
   );
   const completedTaskCount = sortedItems.length - openTaskCount;
+  const attentionTaskIds = useMemo(() => new Set(sortedItems
+    .filter(item => {
+      if (scheduleTaskIsComplete(item)) return false;
+      const days = daysUntilScheduleItem(item);
+      const dependency = dependencyNodeByItemId.get(item.id);
+      return (
+        (days !== null && days <= 7) ||
+        item.status === 'Waiting' ||
+        (item.priority === 'High' && days === null) ||
+        scheduleItemNeedsCompletionVerification(
+          item as unknown as import('./types').ScheduleItem,
+        ) ||
+        Boolean(scheduleFieldResults.warnings.get(item.id)?.length) ||
+        Boolean(dependency?.blocked || dependency?.unresolvedPredecessors.length) ||
+        attentionScheduleItemIds.has(item.id)
+      );
+    })
+    .map(item => item.id)), [
+    attentionScheduleItemIds,
+    dependencyNodeByItemId,
+    scheduleFieldResults.warnings,
+    sortedItems,
+  ]);
   const filteredItems = useMemo(() => sortedItems.filter(item => {
     const complete = scheduleTaskIsComplete(item);
     if (taskView === 'Completed Tasks') return complete;
@@ -19197,22 +20100,10 @@ function ScheduleScreen({
     const days = daysUntilScheduleItem(item);
     if (taskFilter === 'Today') return days === 0;
     if (taskFilter === '7 Days') return days !== null && days >= 0 && days <= 7;
-    const dependency = dependencyNodeByItemId.get(item.id);
-    return (
-      (days !== null && days <= 7) ||
-      item.status === 'Waiting' ||
-      (item.priority === 'High' && days === null) ||
-      scheduleItemNeedsCompletionVerification(
-        item as unknown as import('./types').ScheduleItem,
-      ) ||
-      Boolean(scheduleFieldResults.warnings.get(item.id)?.length) ||
-      Boolean(dependency?.blocked || dependency?.unresolvedPredecessors.length) ||
-      attentionScheduleItemIds.has(item.id)
-    );
+    if (taskFilter === 'Overdue') return days !== null && days < 0;
+    return attentionTaskIds.has(item.id);
   }), [
-    attentionScheduleItemIds,
-    dependencyNodeByItemId,
-    scheduleFieldResults.warnings,
+    attentionTaskIds,
     sortedItems,
     taskFilter,
     taskView,
@@ -19229,13 +20120,14 @@ function ScheduleScreen({
       : `${taskFilter} Tasks`;
 
   const selectedTask = resolveScheduleWorkspaceTask(filteredItems, selectedTaskId);
+  const planningTask = workspaceScheduleItems.find(item => item.id === planningTaskId) || null;
   const taskControls = (
     <ScheduleTaskListControls
       scopeLabel={isWideWorkspace ? projectFilter || 'All Projects' : undefined}
       taskCount={workspaceScheduleItems.length}
       dueSoonCount={dueSoon.length}
       overdueCount={overdue.length}
-      needsActionCount={actionInbox.items.length}
+      needsActionCount={attentionTaskIds.size}
       openTaskCount={openTaskCount}
       completedTaskCount={completedTaskCount}
       activeView={taskView}
@@ -19245,12 +20137,24 @@ function ScheduleScreen({
         setSelectedTaskId(null);
       }}
       onFilterChange={setTaskFilter}
+      onNeedsAttentionPress={() => {
+        setWorkspaceView('Tasks');
+        setTaskView('Open Tasks');
+        setTaskFilter('Attention');
+        setSelectedTaskId(null);
+      }}
       onAddTask={() => setShowAdd(true)}
+      workspaceView={workspaceView}
+      onWorkspaceViewChange={view => {
+        setWorkspaceView(view);
+        setSelectedTaskId(null);
+        setPlanningTaskId(null);
+      }}
     />
   );
   const scheduleTools = (
     <>
-          {actionInbox.items.length > 0 ? (
+          {isWideWorkspace && actionInbox.items.length > 0 ? (
             <View style={styles.panel}>
               <View style={styles.areaStatusLine}>
                 <Ionicons
@@ -19287,12 +20191,12 @@ function ScheduleScreen({
                 />
               ))}
             </View>
-          ) : (
+          ) : isWideWorkspace ? (
             <View style={styles.panel}>
               <Text style={styles.panelTitle}>Action Inbox</Text>
               <Text style={styles.bodyText}>No current verification, blocker, deadline, or field follow-up needs attention.</Text>
             </View>
-          )}
+          ) : null}
 
           {actionableScheduleWarnings.length > 0 ||
           dependencyNetwork.blockedItemCount > 0 ||
@@ -19376,6 +20280,8 @@ function ScheduleScreen({
               onAddManually={() => setShowAdd(true)}
               onApprove={onApproveImport}
               onCancel={onCancelImport}
+              incomingBatch={incomingImportBatch}
+              onIncomingBatchConsumed={onIncomingImportConsumed}
             />
           ) : null}
 
@@ -19390,7 +20296,11 @@ function ScheduleScreen({
                 <View style={styles.rowMain}>
                   <Text style={styles.panelTitle}>Schedule Sources</Text>
                   <Text style={styles.rowSub}>
-                    {scheduleDocuments.length} {pluralWord(scheduleDocuments.length, 'source')}
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && document.isCurrent).length} current ·{' '}
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && !document.isCurrent).length} prior
+                    {scheduleDocuments.some(document => document.notes.includes('[Schedule communication screenshot]'))
+                      ? ` · ${scheduleDocuments.filter(document => document.notes.includes('[Schedule communication screenshot]')).length} supporting`
+                      : ''}
                   </Text>
                 </View>
                 <Ionicons
@@ -19433,6 +20343,8 @@ function ScheduleScreen({
                     <TouchableOpacity
                       style={styles.compactInlineAction}
                       onPress={() => onOpenDocument(document)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${document.name}`}
                     >
                       <Text style={styles.compactInlineActionText}>Open</Text>
                     </TouchableOpacity>
@@ -19440,6 +20352,8 @@ function ScheduleScreen({
                       <TouchableOpacity
                         style={styles.compactInlineAction}
                         onPress={() => onSetActiveDocument(document.id)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Set ${document.name} as the active schedule`}
                       >
                         <Text style={styles.compactInlineActionText}>Set Active</Text>
                       </TouchableOpacity>
@@ -19447,6 +20361,8 @@ function ScheduleScreen({
                     <TouchableOpacity
                       style={styles.compactInlineAction}
                       onPress={() => onDeleteDocument(document.id)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete ${document.name}`}
                     >
                       <Text style={[styles.compactInlineActionText, { color: colors.danger }]}>Delete</Text>
                     </TouchableOpacity>
@@ -19476,6 +20392,94 @@ function ScheduleScreen({
       onSubmit={onAdd}
     />
   );
+  const planningTaskEditor = (
+    <Modal
+      visible={Boolean(planningTask)}
+      animationType="slide"
+      transparent
+      onRequestClose={() => setPlanningTaskId(null)}
+    >
+      <View style={styles.sheetModalBackdrop}>
+        <View
+          style={[
+            styles.sheetModalSafeArea,
+            {
+              paddingTop: scheduleScreenInsets.top,
+              paddingBottom: scheduleScreenInsets.bottom,
+            },
+          ]}
+        >
+          <View style={styles.sheetModalHeader}>
+            <View style={styles.sheetModalTitleWrap}>
+              <Text style={styles.sheetModalTitle}>Schedule Task</Text>
+              <Text style={styles.sheetModalCaption}>
+                {planningTask
+                  ? `${planningTask.projectName}${planningTask.locationName ? ` • ${planningTask.locationName}` : ''}`
+                  : ''}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.sheetModalCloseButton}
+              onPress={() => setPlanningTaskId(null)}
+              accessibilityRole="button"
+              accessibilityLabel="Close schedule task"
+            >
+              <Ionicons name="close" size={26} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={styles.appFrame}
+            contentContainerStyle={[styles.content, { paddingTop: 8, paddingBottom: 24 }]}
+            contentInsetAdjustmentBehavior="automatic"
+            keyboardShouldPersistTaps="handled"
+          >
+            {planningTask ? (
+              <ScheduleItemRow
+                item={planningTask}
+                scheduleItems={scheduleItems}
+                projectAreas={projectAreas}
+                dependencyNode={dependencyNodeByItemId.get(planningTask.id) || null}
+                fieldWarnings={scheduleFieldResults.warnings.get(planningTask.id) || []}
+                expanded
+                activityAuthor={defaultOwner}
+                onUpdate={next => onUpdate(planningTask.id, next)}
+                onDelete={() => {
+                  onDelete(planningTask.id);
+                  setPlanningTaskId(null);
+                }}
+                onAddFieldUpdate={() => {
+                  setPlanningTaskId(null);
+                  onNewFieldUpdateForTask(planningTask);
+                }}
+              />
+            ) : null}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  if (workspaceView !== 'Tasks') {
+    return (
+      <>
+        <ScrollView
+          style={styles.appFrame}
+          contentContainerStyle={contentStyle}
+          contentInsetAdjustmentBehavior="automatic"
+        >
+          {taskControls}
+          <MobileSchedulePlanning
+            items={workspaceScheduleItems}
+            view={workspaceView}
+            onOpenTask={item => setPlanningTaskId(item.id)}
+          />
+        </ScrollView>
+        {taskEditor}
+        {planningTaskEditor}
+      </>
+    );
+  }
 
   if (isWideWorkspace) {
     return (
@@ -19497,9 +20501,11 @@ function ScheduleScreen({
             <ScheduleItemRow
               item={selectedTask}
               scheduleItems={scheduleItems}
+              projectAreas={projectAreas}
               dependencyNode={dependencyNodeByItemId.get(selectedTask.id) || null}
               fieldWarnings={scheduleFieldResults.warnings.get(selectedTask.id) || []}
               expanded
+              activityAuthor={defaultOwner}
               onUpdate={next => onUpdate(selectedTask.id, next)}
               onDelete={() => onDelete(selectedTask.id)}
               onAddFieldUpdate={() => onNewFieldUpdateForTask(selectedTask)}
@@ -19526,8 +20532,10 @@ function ScheduleScreen({
           <ScheduleItemRow
             item={item}
             scheduleItems={scheduleItems}
+            projectAreas={projectAreas}
             dependencyNode={dependencyNodeByItemId.get(item.id) || null}
             fieldWarnings={scheduleFieldResults.warnings.get(item.id) || []}
+            activityAuthor={defaultOwner}
             onUpdate={next => onUpdate(item.id, next)}
             onDelete={() => onDelete(item.id)}
             onAddFieldUpdate={() => onNewFieldUpdateForTask(item)}
@@ -19625,27 +20633,31 @@ function DAVEActionInboxRow({
     </View>
   );
 }
-
 function ScheduleItemRow({
   item,
   scheduleItems = [],
+  projectAreas = [],
   dependencyNode,
   fieldWarnings,
   expanded: expandedOverride,
+  activityAuthor,
   onUpdate,
   onDelete,
   onAddFieldUpdate,
 }: {
   item: ScheduleItem;
   scheduleItems?: ScheduleItem[];
+  projectAreas?: ProjectArea[];
   dependencyNode?: PIEScheduleDependencyNode | null;
   fieldWarnings?: PIEScheduleReconciliationWarning[];
   expanded?: boolean;
+  activityAuthor?: string;
   onUpdate: (next: Partial<ScheduleItem>) => void;
   onDelete: () => void;
   onAddFieldUpdate?: () => void;
 }) {
   const [internalExpanded, setInternalExpanded] = useState(false);
+  const [areaSheetOpen, setAreaSheetOpen] = useState(false);
   const expanded = expandedOverride ?? internalExpanded;
   const toggleExpanded = () => {
     if (expandedOverride === undefined) {
@@ -19663,13 +20675,25 @@ function ScheduleItemRow({
   const itemComplete = scheduleTaskIsComplete(item);
   const isOverdue = days !== null && days < 0 && !itemComplete;
   const isDueSoon = days !== null && days >= 0 && days <= 7 && !itemComplete;
+  const timingStatus = itemComplete
+    ? item.finishDate
+      ? `Completed · Finish date ${formatAppDate(item.finishDate)}`
+      : 'Completed'
+    : item.finishDate
+      ? dueStatusText(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)
+      : 'No finish date';
   const priorityColor = item.priority === 'High' ? colors.danger : item.priority === 'Low' ? colors.success : colors.warning;
   const statusColor = itemComplete ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
   const blockerNames = (dependencyNode?.blockingPredecessorIds || []).map(blockerId =>
     scheduleItems.find(candidate => candidate.id === blockerId)?.taskName || blockerId,
   );
   const fieldWarning = fieldWarnings?.find(scheduleWarningIsUserActionable) || null;
-
+  const itemProjectAreas = projectAreasForProject({
+    projectAreas,
+    projectName: item.scheduleProjectName?.trim() || item.projectName,
+    scheduleItems,
+  });
+  const selectedArea = itemProjectAreas.find(area => area.name.trim().toLowerCase() === item.locationName.trim().toLowerCase()) || null;
   return (
     <View style={[styles.savedRow, styles.scheduleItemCard]}>
       <View style={styles.scheduleItemHeader}>
@@ -19685,7 +20709,6 @@ function ScheduleItemRow({
             color={isOverdue ? colors.danger : isDueSoon ? colors.warning : colors.primary}
           />
         </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.rowMain, styles.scheduleItemHeaderText]}
           onPress={toggleExpanded}
@@ -19695,10 +20718,9 @@ function ScheduleItemRow({
             {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
           </Text>
           <Text style={[styles.rowSub, styles.scheduleItemContext]}>
-            {item.finishDate ? dueStatusText(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE) : 'No finish date'}{item.contractor ? ` • ${item.contractor}` : ''}
+            {timingStatus}{item.contractor ? ` • ${item.contractor}` : ''}
           </Text>
         </TouchableOpacity>
-
         <TouchableOpacity
           style={styles.iconOnlyDangerButton}
           onPress={onDelete}
@@ -19708,13 +20730,12 @@ function ScheduleItemRow({
           <Ionicons name="trash-outline" size={19} color={colors.danger} />
         </TouchableOpacity>
       </View>
-
       <TouchableOpacity
         style={styles.scheduleItemBody}
         onPress={toggleExpanded}
       >
-
         <View style={styles.scheduleMetaRow}>
+          <ProjectItemTypeBadge item={item} />
           <View style={[styles.statusPill, { backgroundColor: `${statusColor}1A` }]}>
             <Text style={[styles.statusPillText, { color: statusColor }]}>{item.status}</Text>
           </View>
@@ -19723,11 +20744,10 @@ function ScheduleItemRow({
           </View>
           <Text style={styles.percentText}>{item.percentComplete}%</Text>
         </View>
-
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${item.percentComplete}%` }]} />
         </View>
-
+        <ProjectItemNextAction item={item} />
         {completionVerificationLabel ? (
           <View style={styles.scheduleVerificationCard}>
             <View style={styles.areaStatusLine}>
@@ -19745,7 +20765,6 @@ function ScheduleItemRow({
             </Text>
           </View>
         ) : null}
-
         {dependencyNode && (
           dependencyNode.blocked ||
           dependencyNode.unresolvedPredecessors.length > 0
@@ -19774,7 +20793,6 @@ function ScheduleItemRow({
             ) : null}
           </View>
         ) : null}
-
         {fieldWarning ? (
           <View style={styles.scheduleFieldEvidenceCard}>
             <Text style={styles.scheduleFieldEvidenceTitle}>Schedule Alert</Text>
@@ -19783,9 +20801,9 @@ function ScheduleItemRow({
             </Text>
           </View>
         ) : null}
-
         {expanded ? (
           <View style={styles.areaManagerCard}>
+            <AreaRow areaName={selectedArea?.name || item.locationName || 'Unassigned / Unknown Area'} onChange={() => setAreaSheetOpen(true)} />
             {needsCompletionVerification ? (
               <View style={styles.scheduleVerificationActions}>
                 <Text style={styles.panelTitle}>Verify completion</Text>
@@ -19848,14 +20866,12 @@ function ScheduleItemRow({
                 onPress={onAddFieldUpdate}
               />
             ) : null}
-
             <NativeDateField
               label="Finish / Due Date"
               value={item.finishDate}
               onChange={finishDate => onUpdate({ finishDate })}
               testID={`schedule-finish-date-${item.id}`}
             />
-
             <Text style={styles.label}>Owner</Text>
             <TextInput
               style={styles.input}
@@ -19931,15 +20947,14 @@ function ScheduleItemRow({
               ))}
             </View>
 
-            <Text style={styles.label}>Notes</Text>
-            <TextInput
-              style={[styles.input, styles.notesInput]}
-              value={item.notes}
-              onChangeText={notes => onUpdate({ notes })}
-              placeholder="Notes"
-              placeholderTextColor={colors.muted}
-              multiline
-            />
+            <ProjectItemDetailsEditor item={item} activityAuthor={activityAuthor} onUpdate={onUpdate} />
+            <AreaSelectionSheet visible={areaSheetOpen} projectAreas={itemProjectAreas}
+              suggestedArea={selectedArea} selectedAreaId={selectedArea?.id || null}
+              onSelect={areaId => {
+                const area = itemProjectAreas.find(candidate => candidate.id === areaId) || null;
+                onUpdate({ locationName: area?.name || '' });
+                setAreaSheetOpen(false);
+              }} onClose={() => setAreaSheetOpen(false)} />
           </View>
         ) : null}
       </TouchableOpacity>
@@ -20312,26 +21327,6 @@ function EmptyState({
   );
 }
 
-const colors = {
-  bg: '#F5F5F7',
-  card: '#FFFFFF',
-  fill: '#F2F2F7',
-  text: '#1D1D1F',
-  muted: '#6E6E73',
-  tertiaryText: '#9A9AA0',
-  line: '#E5E5EA',
-  primary: '#007AFF',
-  primarySoft: '#EAF4FF',
-  success: '#34C759',
-  successSoft: '#EAF8EE',
-  warning: '#FF9500',
-  warningSoft: '#FFF4E5',
-  insight: '#6B5DD3',
-  insightSoft: '#F0EEFF',
-  dangerSoft: '#FFECEC',
-  danger: '#FF3B30',
-};
-
 function statusStyleForRole(role: StatusStyleRole) {
   const config = STATUS_ICON_COLOR_MAP[role];
   const color =
@@ -20349,3163 +21344,3 @@ function statusStyleForRole(role: StatusStyleRole) {
     backgroundColor,
   };
 }
-
-const styles = StyleSheet.create({
-  appFrame: {
-    flex: 1,
-  },
-
-  content: {
-    padding: 18,
-    paddingBottom: 110,
-  },
-
-  header: {
-    paddingTop: 10,
-    paddingBottom: 22,
-  },
-
-  kicker: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-
-  title: {
-    color: colors.text,
-    fontSize: 28,
-    fontWeight: '800',
-    lineHeight: 34,
-  },
-
-  subtitle: {
-    color: colors.muted,
-    fontSize: 15,
-    lineHeight: 21,
-    marginTop: 7,
-    fontWeight: '500',
-  },
-
-  screenTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-
-  screenTitle: {
-    flex: 1,
-    marginBottom: 16,
-  },
-
-  screenTitleActionButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  sectionLabel: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-    marginTop: 10,
-    marginBottom: 10,
-    textTransform: 'uppercase',
-  },
-
-
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    marginBottom: 10,
-  },
-
-  countPill: {
-    minWidth: 34,
-    minHeight: 28,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  countPillDanger: {
-    backgroundColor: colors.dangerSoft,
-  },
-
-  countPillText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  countPillTextDanger: {
-    color: colors.danger,
-  },
-
-  mutedNote: {
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '600',
-    marginBottom: 16,
-  },
-
-  primaryButton: {
-    backgroundColor: colors.primary,
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    marginBottom: 10,
-    minHeight: 54,
-    justifyContent: 'center',
-  },
-
-  secondaryButton: {
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    marginBottom: 10,
-    minHeight: 54,
-    justifyContent: 'center',
-  },
-
-  compactButton: {
-    flex: 1,
-    minHeight: 64,
-    marginBottom: 0,
-  },
-
-  disabledButton: {
-    opacity: 0.45,
-  },
-
-  buttonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    maxWidth: '100%',
-  },
-
-  primaryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-    textAlign: 'center',
-    flexShrink: 1,
-  },
-
-  secondaryButtonText: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
-    textAlign: 'center',
-    flexShrink: 1,
-  },
-
-  panel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  panelTitle: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 10,
-  },
-
-  bodyText: {
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-
-  locationPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  locationPanelHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 10,
-  },
-
-  locationDetailText: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
-    marginTop: 7,
-  },
-
-  locationActionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-  },
-
-  areaChipWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  areaChip: {
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-  },
-
-  areaChipSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  areaChipText: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  areaChipTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  areaManagerCard: {
-    backgroundColor: colors.fill,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 12,
-    marginTop: 12,
-  },
-
-  areaNameInput: {
-    marginTop: 14,
-  },
-
-  draftRecoveryCard: {
-    backgroundColor: colors.warningSoft,
-    borderWidth: 1,
-    borderColor: '#FFD8A3',
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 14,
-  },
-
-  draftRecoveryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 11,
-  },
-
-  draftIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  draftRecoveryTitle: {
-    color: colors.text,
-    fontSize: 17,
-    fontWeight: '800',
-  },
-
-  draftRecoveryProject: {
-    color: colors.muted,
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 3,
-  },
-
-  draftStatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    marginBottom: 13,
-  },
-
-  draftStatText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-
-  draftStatDot: {
-    color: colors.muted,
-    fontSize: 13,
-    paddingHorizontal: 7,
-  },
-
-  draftActionRow: {
-    flexDirection: 'row',
-    gap: 9,
-  },
-
-  resumeDraftButton: {
-    flex: 1,
-    backgroundColor: colors.warning,
-    borderRadius: 9,
-    minHeight: 46,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 7,
-  },
-
-  resumeDraftText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-
-  discardDraftButton: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 9,
-    minHeight: 46,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 7,
-  },
-
-  discardDraftText: {
-    color: colors.danger,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-
-  draftSavedIndicator: {
-    backgroundColor: colors.successSoft,
-    borderRadius: 8,
-    paddingVertical: 9,
-    paddingHorizontal: 11,
-    marginBottom: 13,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-
-  draftSavedText: {
-    color: '#248A3D',
-    fontSize: 12,
-    fontWeight: '700',
-    flex: 1,
-  },
-
-  dashboardCard: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  dashboardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  statsGrid: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-
-  miniStat: {
-    flex: 1,
-    backgroundColor: colors.fill,
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-
-  miniStatDanger: {
-    backgroundColor: colors.dangerSoft,
-  },
-
-  miniStatValue: {
-    color: colors.primary,
-    fontSize: 20,
-    fontWeight: '800',
-  },
-
-  miniStatValueDanger: {
-    color: colors.danger,
-  },
-
-  miniStatLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-
-  cardActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
-  },
-
-  smallAction: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 8,
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-  },
-
-  smallActionText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  smallActionDanger: {
-    backgroundColor: colors.dangerSoft,
-  },
-
-  smallActionDangerText: {
-    color: colors.danger,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  addProjectCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  projectRow: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  savedRow: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  scheduleItemCard: {
-    alignItems: 'stretch',
-    flexDirection: 'column',
-    gap: 12,
-    padding: 16,
-  },
-
-  scheduleItemHeader: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: 10,
-    width: '100%',
-  },
-
-  scheduleItemHeaderText: {
-    minWidth: 0,
-  },
-
-  scheduleItemTitle: {
-    flexShrink: 1,
-    fontSize: 18,
-    lineHeight: 24,
-  },
-
-  scheduleItemContext: {
-    flexShrink: 1,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-
-  scheduleItemBody: {
-    alignSelf: 'stretch',
-    width: '100%',
-  },
-
-  contactRow: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-
-  contactRowHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    width: '100%',
-  },
-
-  deliveryChoiceBlock: {
-    marginTop: 12,
-    width: '100%',
-  },
-
-  choiceChipWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-
-  deliveryChoiceChip: {
-    maxWidth: '100%',
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    flexShrink: 1,
-  },
-
-  deliveryChoiceChipActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  deliveryChoiceText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-    maxWidth: 230,
-  },
-
-  deliveryChoiceTextActive: {
-    color: '#FFFFFF',
-  },
-
-  rowMain: {
-    flex: 1,
-  },
-
-  rowIconBubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  projectName: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-
-  rowSub: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '500',
-    marginTop: 4,
-  },
-
-  contactSummary: {
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-
-  contactSummaryText: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    flex: 1,
-  },
-
-  contactSummaryAction: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-
-  contactSelectText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  contactSelectTextSelected: {
-    color: colors.danger,
-  },
-
-  inlineLink: {
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingVertical: 6,
-    marginBottom: 12,
-  },
-
-  inlineLinkText: {
-    color: colors.primary,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-
-  progressPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  progressStat: {
-    flex: 1,
-    alignItems: 'center',
-  },
-
-  progressDivider: {
-    width: 1,
-    height: 34,
-    backgroundColor: colors.line,
-  },
-
-  progressNumber: {
-    color: colors.primary,
-    fontSize: 28,
-    fontWeight: '800',
-  },
-
-  progressText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-
-  emptyState: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  emptyTitle: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-
-  photoCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  photoHeader: {
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-
-  photoThumb: {
-    width: 72,
-    height: 72,
-    borderRadius: 8,
-    backgroundColor: colors.line,
-  },
-
-  photoMeta: {
-    flex: 1,
-  },
-
-  photoTitle: {
-    color: colors.text,
-    fontSize: 17,
-    fontWeight: '700',
-  },
-
-  categoryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  categoryChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.primarySoft,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-  },
-
-  categoryChipActive: {
-    backgroundColor: colors.primary,
-  },
-
-  categoryText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  categoryTextActive: {
-    color: '#FFFFFF',
-  },
-
-  photoPreviewBadge: {
-    position: 'absolute',
-    right: 4,
-    bottom: 4,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  actionPanel: {
-    backgroundColor: colors.primarySoft,
-    borderWidth: 1,
-    borderColor: '#CFE6FF',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
-
-  actionPanelHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    marginBottom: 12,
-  },
-
-  actionPanelTitle: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-
-  statusGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-
-  statusButton: {
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 11,
-  },
-
-  statusButtonActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  statusButtonText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  statusButtonTextActive: {
-    color: '#FFFFFF',
-  },
-
-  dateHelpError: {
-    color: colors.danger,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: -7,
-    marginBottom: 10,
-  },
-
-  photoControlRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
-  },
-
-  photoControlButton: {
-    flex: 1,
-    minHeight: 42,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.card,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-  },
-
-  photoControlButtonDisabled: {
-    backgroundColor: colors.fill,
-  },
-
-  photoControlText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  photoControlTextDisabled: {
-    color: colors.tertiaryText,
-  },
-
-  documentCurrentBadge: {
-    alignSelf: 'flex-start',
-    marginTop: 6,
-    backgroundColor: colors.successSoft,
-  },
-
-  documentCurrentControl: {
-    flex: 0,
-    marginBottom: 10,
-  },
-
-  photoModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.96)',
-  },
-
-  photoModalSafeArea: {
-    flex: 1,
-  },
-
-  photoModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 12,
-  },
-
-  photoModalTitleWrap: {
-    flex: 1,
-  },
-
-  photoModalTitle: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-
-  photoModalCaption: {
-    color: '#D1D1D6',
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 3,
-  },
-
-  photoModalCloseButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  sheetModalBackdrop: {
-    flex: 1,
-    backgroundColor: colors.bg,
-  },
-
-  sheetModalSafeArea: {
-    flex: 1,
-  },
-
-  sheetModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    gap: 12,
-  },
-
-  sheetModalTitleWrap: {
-    flex: 1,
-  },
-
-  sheetModalTitle: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '800',
-  },
-
-  sheetModalCaption: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 3,
-  },
-
-  sheetModalCloseButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.fill,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  photoModalImage: {
-    flex: 1,
-    width: '100%',
-  },
-
-  photoModalBottomBar: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 12 : 16,
-  },
-
-  photoModalBottomCloseButton: {
-    minHeight: 54,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-
-  photoModalBottomCloseText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-
-  iconOnlyDangerButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    backgroundColor: colors.dangerSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  iconOnlyButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  label: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-
-  input: {
-    minHeight: 46,
-    backgroundColor: colors.fill,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    color: colors.text,
-    fontSize: 15,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
-  },
-
-  notesInput: {
-    minHeight: 90,
-    textAlignVertical: 'top',
-  },
-
-  previewCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  previewLabel: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 7,
-  },
-
-  subjectText: {
-    color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '700',
-  },
-
-  divider: {
-    height: 1,
-    backgroundColor: colors.line,
-    marginVertical: 14,
-  },
-
-  previewBody: {
-    color: colors.text,
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: '500',
-  },
-
-  sendRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 10,
-  },
-
-  dataActionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 14,
-    alignItems: 'stretch',
-  },
-
-  sectionLabelNoMargin: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-
-  addLocationInlineRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 12,
-  },
-
-  addLocationInlineInput: {
-    flex: 1,
-    marginBottom: 0,
-  },
-
-  addLocationInlineButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 12,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  areaListCard: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    overflow: 'hidden',
-    marginTop: 8,
-  },
-
-  areaListHeaderRow: {
-    minHeight: 44,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-
-  areaListRow: {
-    minHeight: 68,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  areaStatusLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 3,
-  },
-
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-
-  statusDotSaved: {
-    backgroundColor: colors.success,
-  },
-
-  statusDotMissing: {
-    backgroundColor: colors.tertiaryText,
-  },
-
-  areaListRadius: {
-    color: colors.muted,
-    fontSize: 14,
-    fontWeight: '700',
-    minWidth: 58,
-    textAlign: 'right',
-  },
-
-  detailModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'flex-end',
-  },
-
-  detailModalCardFrame: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  detailModalCardContent: {
-    padding: 18,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 18,
-  },
-
-  detailModalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  detailCloseButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  radiusEditRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  radiusEditInput: {
-    flex: 1,
-  },
-
-  radiusEditUnit: {
-    color: colors.muted,
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 12,
-  },
-
-  locationSummaryCard: {
-    backgroundColor: colors.fill,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 12,
-    marginBottom: 12,
-  },
-
-  setupProgressCard: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#CFE6FF',
-  },
-
-  checklistRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 9,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-
-  checklistText: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    flex: 1,
-  },
-
-  headerCompact: {
-    paddingTop: 10,
-    paddingBottom: 14,
-  },
-
-  dashboardSummaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  dashboardSummaryHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  dashboardManageButton: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-
-  dashboardManageText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  dashboardMetricGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-
-  dashboardMetricCard: {
-    width: '48%',
-    backgroundColor: colors.fill,
-    borderRadius: 11,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    minHeight: 86,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  dashboardMetricDanger: {
-    backgroundColor: colors.dangerSoft,
-    borderColor: '#FFD1D1',
-  },
-
-  dashboardMetricIconRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-
-  dashboardMetricValue: {
-    color: colors.primary,
-    fontSize: 24,
-    fontWeight: '900',
-  },
-
-  dashboardMetricValueDanger: {
-    color: colors.danger,
-  },
-
-  dashboardMetricLabel: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  quickActionGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  quickActionButton: {
-    width: '48%',
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-    minHeight: 76,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingHorizontal: 10,
-  },
-
-  quickActionButtonPrimary: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  quickActionText: {
-    color: colors.text,
-    fontSize: 14,
-    lineHeight: 17,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-
-  quickActionTextPrimary: {
-    color: '#FFFFFF',
-  },
-
-  attentionCard: {
-    backgroundColor: colors.card,
-    borderRadius: 11,
-    padding: 13,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  attentionCardUrgent: {
-    borderColor: '#FFD1D1',
-    backgroundColor: '#FFF8F8',
-  },
-
-  activityRow: {
-    backgroundColor: colors.card,
-    borderRadius: 11,
-    padding: 13,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  projectFinderPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 15,
-    marginBottom: 18,
-    borderColor: colors.line,
-    borderWidth: 1,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  phase2SelectorButton: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 12,
-    borderColor: 'rgba(0,0,0,0.18)',
-    borderWidth: 1,
-    minHeight: 64,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  phase2SelectorLabel: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-  },
-
-  phase2SelectorValue: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-
-  phase2BriefCard: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 12,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  phase2BriefIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  phase2BriefIconAttention: {
-    backgroundColor: colors.warningSoft,
-  },
-
-  phase2BriefIconHealthy: {
-    backgroundColor: colors.successSoft,
-  },
-
-  phase2BriefIconProblem: {
-    backgroundColor: colors.dangerSoft,
-  },
-
-  projectWorkspaceHero: {
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 14,
-    overflow: 'hidden',
-    marginBottom: 12,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  projectWorkspaceHeroImage: {
-    width: '100%',
-    height: 180,
-    resizeMode: 'cover',
-  },
-
-  projectWorkspaceHeroPlaceholder: {
-    height: 130,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: colors.fill,
-  },
-
-  projectWorkspaceCoverActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    padding: 10,
-  },
-
-  projectWorkspaceCoverButton: {
-    flexBasis: '46%',
-    minHeight: 44,
-    paddingHorizontal: 8,
-  },
-
-  projectWorkspaceCoverTitle: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    paddingHorizontal: 12,
-    paddingTop: 12,
-  },
-
-  overviewPageWrap: {
-    flex: 1,
-  },
-
-  overviewPageGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 280,
-  },
-
-  overviewGreetingHeader: {
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-
-  overviewGreetingCopy: {
-    flex: 1,
-  },
-
-  overviewGreetingText: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: colors.text,
-  },
-
-  overviewGreetingDate: {
-    fontSize: 13,
-    color: colors.muted,
-    marginTop: 2,
-  },
-
-  overviewAskDaveButton: {
-    minHeight: 44,
-    borderRadius: 22,
-    paddingHorizontal: 13,
-    backgroundColor: 'rgba(255,255,255,0.72)',
-    borderColor: 'rgba(32,83,158,0.18)',
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 1,
-  },
-
-  overviewAskDaveText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  overviewHealthCard: {
-    marginTop: 10,
-    marginBottom: 20,
-    borderRadius: 20,
-    padding: 20,
-    backgroundColor: colors.primary,
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    elevation: 5,
-  },
-
-  overviewDashboardSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 18,
-  },
-
-  overviewHealthEyebrow: {
-    color: 'rgba(255,255,255,0.68)',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 1.2,
-    marginBottom: 3,
-  },
-
-  overviewHealthTitle: {
-    color: '#FFFFFF',
-    fontSize: 22,
-    fontWeight: '800',
-  },
-
-  overviewHealthMetrics: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-
-  overviewHealthMetric: {
-    flex: 1,
-  },
-
-  overviewHealthMetricValue: {
-    color: '#FFFFFF',
-    fontSize: 25,
-    fontWeight: '800',
-    marginBottom: 3,
-  },
-
-  overviewHealthMetricLabel: {
-    color: 'rgba(255,255,255,0.72)',
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '700',
-  },
-
-  overviewDashboardHeadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 4,
-    marginBottom: 10,
-  },
-
-  overviewDashboardHeading: {
-    color: colors.text,
-    fontSize: 19,
-    fontWeight: '800',
-  },
-
-  overviewDashboardLink: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-    paddingVertical: 8,
-  },
-
-  overviewPriorityCard: {
-    backgroundColor: colors.card,
-    borderRadius: 20,
-    borderColor: colors.line,
-    borderWidth: 1,
-    overflow: 'hidden',
-    marginBottom: 22,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
-    elevation: 4,
-  },
-
-  overviewPriorityImage: {
-    width: '100%',
-    height: 176,
-    resizeMode: 'cover',
-  },
-
-  overviewPriorityClearPanel: {
-    height: 130,
-    backgroundColor: colors.primarySoft,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 14,
-    paddingHorizontal: 24,
-  },
-
-  overviewPriorityClearIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: colors.card,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  overviewPriorityClearCopy: {
-    gap: 2,
-  },
-
-  overviewPriorityClearTitle: {
-    color: colors.text,
-    fontSize: 18,
-    lineHeight: 23,
-    fontWeight: '900',
-  },
-
-  overviewPriorityClearText: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
-  },
-
-  overviewPriorityContent: {
-    padding: 18,
-  },
-
-  overviewPriorityBadge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.warningSoft,
-    borderRadius: 999,
-    paddingVertical: 5,
-    paddingHorizontal: 9,
-    marginBottom: 10,
-  },
-
-  overviewPriorityBadgeText: {
-    color: colors.warning,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 0.7,
-  },
-
-  overviewPriorityClearBadgeText: {
-    color: colors.success,
-  },
-
-  overviewPriorityProject: {
-    color: colors.text,
-    fontSize: 21,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-
-  overviewPriorityRecommendation: {
-    color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '700',
-    marginBottom: 7,
-  },
-
-  overviewPrioritySupport: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    marginBottom: 15,
-  },
-
-  overviewPriorityObservation: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 7,
-    backgroundColor: colors.primarySoft,
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 14,
-  },
-
-  overviewPriorityObservationText: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-  },
-
-  overviewPriorityButton: {
-    minHeight: 46,
-    borderRadius: 12,
-    paddingHorizontal: 15,
-    backgroundColor: colors.primary,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-
-  overviewPriorityButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-
-  overviewDailyBriefCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    borderColor: colors.line,
-    borderWidth: 1,
-    paddingHorizontal: 15,
-    paddingVertical: 4,
-    marginBottom: 22,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  overviewBriefRow: {
-    minHeight: 66,
-    paddingVertical: 11,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 11,
-    borderBottomColor: colors.line,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-
-  overviewBriefIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  overviewBriefProject: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
-    marginBottom: 2,
-  },
-
-  overviewBriefText: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-
-  overviewBriefEmpty: {
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    paddingVertical: 18,
-  },
-
-  overviewProjectCard: {
-    minHeight: 116,
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 11,
-    marginBottom: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  overviewProjectImage: {
-    width: 92,
-    height: 92,
-    borderRadius: 12,
-    resizeMode: 'cover',
-  },
-
-  overviewProjectImagePlaceholder: {
-    width: 92,
-    height: 92,
-    borderRadius: 12,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  overviewProjectContent: {
-    flex: 1,
-  },
-
-  overviewProjectTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 5,
-  },
-
-  overviewProjectTitle: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-
-  overviewProjectHealth: {
-    fontSize: 11,
-    fontWeight: '900',
-  },
-
-  overviewProjectSummary: {
-    color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    marginBottom: 7,
-  },
-
-  overviewProjectActivity: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-
-  overviewActivityCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    borderColor: colors.line,
-    borderWidth: 1,
-    paddingHorizontal: 15,
-    paddingVertical: 6,
-    marginBottom: 12,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  overviewActivityGroup: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-    letterSpacing: 0.7,
-    paddingTop: 12,
-    paddingBottom: 3,
-  },
-
-  overviewActivityRow: {
-    minHeight: 62,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderBottomColor: colors.line,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-
-  overviewActivityIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  overviewActivityProject: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
-    marginBottom: 2,
-  },
-
-  overviewActivityText: {
-    color: colors.muted,
-    fontSize: 12,
-  },
-
-  overviewActivityTime: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-
-  overviewHeroCard: {
-    marginTop: 8,
-    borderRadius: 20,
-    overflow: 'hidden',
-    height: 190,
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.18)',
-  },
-
-  overviewHeroPhoto: {
-    opacity: 0.55,
-  },
-
-  overviewHeroContent: {
-    flex: 1,
-    padding: 18,
-    justifyContent: 'space-between',
-  },
-
-  overviewHeroLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    color: 'rgba(255,255,255,0.75)',
-  },
-
-  overviewHeroNumber: {
-    fontSize: 52,
-    fontWeight: '800',
-    lineHeight: 56,
-  },
-
-  overviewHeroCaption: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.88)',
-    marginTop: 2,
-  },
-
-  overviewHeroPill: {
-    flexDirection: 'row',
-    alignSelf: 'flex-start',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(255,255,255,0.16)',
-    borderRadius: 20,
-    paddingVertical: 5,
-    paddingHorizontal: 11,
-  },
-
-  overviewHeroPillText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-
-  overviewBentoRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginTop: 12,
-  },
-
-  overviewBentoCardTouchable: {
-    flexBasis: '47%',
-    flexGrow: 1,
-  },
-
-  overviewBentoCard: {
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.18)',
-  },
-
-  overviewBentoIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.75)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-
-  overviewBentoNumber: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: colors.text,
-  },
-
-  overviewBentoLabel: {
-    fontSize: 12,
-    color: colors.muted,
-  },
-
-  overviewSectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 20,
-    marginBottom: 6,
-  },
-
-  overviewSectionLabel: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-
-  overviewGroupedList: {
-    gap: 8,
-  },
-
-  overviewGroupedCell: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.18)',
-    overflow: 'hidden',
-  },
-
-  overviewGroupedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-  },
-
-  overviewRowIconBubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  overviewRowSubtitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 1,
-  },
-
-  overviewRowSubtitle: {
-    fontSize: 13,
-    color: colors.muted,
-  },
-
-  overviewDueTodayPillWrap: {
-    paddingLeft: 58,
-    paddingRight: 14,
-    paddingBottom: 12,
-    marginTop: -2,
-  },
-
-  overviewDueTodayPill: {
-    flexDirection: 'row',
-    alignSelf: 'flex-start',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.card,
-    borderRadius: 20,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-  },
-
-  overviewDueTodayText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.warning,
-  },
-
-  projectSelectorBackdrop: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-
-  projectSelectorScrim: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15, 23, 42, 0.34)',
-  },
-
-  projectSelectorRow: {
-    minHeight: 60,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 12,
-    marginBottom: 9,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  projectSelectorRowSelected: {
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.primary,
-  },
-
-  phase2ProjectCard: {
-    minHeight: 116,
-    borderRadius: 16,
-    padding: 11,
-    marginBottom: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-    backgroundColor: colors.card,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  phase2ProjectThumb: {
-    width: 92,
-    height: 92,
-    borderRadius: 12,
-    backgroundColor: colors.fill,
-    resizeMode: 'cover',
-  },
-
-  phase2ProjectThumbPlaceholder: {
-    width: 92,
-    height: 92,
-    borderRadius: 12,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  phase2ProjectTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 6,
-  },
-
-  phase2ProjectTitle: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-
-  phase2ProjectStatusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-
-  phase2ProjectStatusText: {
-    fontSize: 10,
-    fontWeight: '900',
-  },
-
-  phase2ProjectSummary: {
-    color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    marginBottom: 7,
-  },
-
-  phase2ProjectActivity: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-
-  phase2BackButton: {
-    alignSelf: 'flex-start',
-    minHeight: 44,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.card,
-  },
-
-  phase2ToolsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  phase2ToolCard: {
-    width: '48%',
-    minHeight: 112,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    backgroundColor: colors.card,
-    padding: 12,
-    justifyContent: 'space-between',
-  },
-
-  phase2ToolLabel: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '800',
-    marginTop: 8,
-  },
-
-  phase3StepRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-
-  phase3StepPill: {
-    flex: 1,
-    minHeight: 38,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.card,
-    paddingHorizontal: 6,
-  },
-
-  phase3StepPillActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  phase3StepPillComplete: {
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.primary,
-  },
-
-  phase3StepText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-
-  phase3StepTextActive: {
-    color: colors.text,
-  },
-
-  phase3MainTitle: {
-    color: colors.text,
-    fontSize: 24,
-    fontWeight: '900',
-    marginBottom: 12,
-  },
-
-  phase3AutoCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-    gap: 10,
-  },
-
-  repeatPhotoReferenceImage: {
-    width: '100%',
-    aspectRatio: 4 / 3,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-  },
-
-  phase3CompactRow: {
-    minHeight: 60,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingBottom: 10,
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
-  },
-
-  phase3ChangeButton: {
-    minHeight: 44,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  phase3SummaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 14,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-  },
-
-  phase3ThumbRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  phase3Thumb: {
-    width: 76,
-    height: 76,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-  },
-
-  phase3ChipWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 9,
-    marginBottom: 16,
-  },
-
-  phase3ContextChip: {
-    minHeight: 44,
-    borderRadius: 999,
-    borderColor: colors.line,
-    borderWidth: 1,
-    backgroundColor: colors.card,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  phase3ContextChipSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  phase3ContextText: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-
-  phase3ContextTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  phase4PieCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  phase4SafetyFinding: {
-    backgroundColor: colors.dangerSoft,
-    borderColor: '#FFD1D1',
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    flexDirection: 'row',
-    gap: 10,
-  },
-
-  phase4SafetyTitle: {
-    color: colors.danger,
-    fontSize: 16,
-    fontWeight: '900',
-    marginBottom: 4,
-  },
-
-  phase4DetailBlock: {
-    borderTopColor: colors.line,
-    borderTopWidth: 1,
-    marginTop: 10,
-    paddingTop: 10,
-  },
-
-  pieFindingRow: {
-    borderRadius: 8,
-    padding: 11,
-    marginBottom: 9,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-
-  pieInterpretationActionRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 8,
-  },
-
-  updateTopControlRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  updateSearchPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  updateSearchBox: {
-    flex: 1,
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 12,
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    gap: 8,
-  },
-
-  updateFilterButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  updateFilterSummary: {
-    minHeight: 54,
-    borderRadius: 8,
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 12,
-    marginBottom: 12,
-  },
-
-  updateSegmentRow: {
-    flexDirection: 'row',
-    backgroundColor: colors.fill,
-    borderRadius: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 4,
-    marginBottom: 16,
-  },
-
-  updateSegment: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 4,
-  },
-
-  updateSegmentSelected: {
-    backgroundColor: colors.primary,
-  },
-
-  updateSegmentText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-
-  updateSegmentTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  updateCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 12,
-    marginBottom: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minHeight: 118,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  updateGroupHeader: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '800',
-    marginTop: 2,
-    marginBottom: 9,
-  },
-
-  updateCardMedia: {
-    width: 104,
-    height: 92,
-    position: 'relative',
-  },
-
-  updateCardThumb: {
-    width: 104,
-    height: 92,
-    borderRadius: 10,
-    backgroundColor: colors.fill,
-    resizeMode: 'cover',
-  },
-
-  updateCardThumbPlaceholder: {
-    width: 104,
-    height: 92,
-    borderRadius: 10,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  updatePhotoStatusPill: {
-    position: 'absolute',
-    left: 7,
-    bottom: 7,
-    color: '#FFFFFF',
-    backgroundColor: 'rgba(10, 34, 61, 0.86)',
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 9,
-    fontSize: 11,
-    fontWeight: '800',
-    overflow: 'hidden',
-  },
-
-  updateCardProject: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-
-  updateCardSummary: {
-    color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    marginBottom: 8,
-  },
-
-  updateCardMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 5,
-  },
-
-  updateCardType: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  updateCardMetaDot: {
-    color: colors.muted,
-    fontSize: 12,
-  },
-
-  updateCardTime: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-
-  updateCardActions: {
-    alignSelf: 'stretch',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-
-  updateEmptyState: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#17213A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  updateEmptyTitle: {
-    color: colors.text,
-    fontSize: 19,
-    fontWeight: '800',
-    marginBottom: 7,
-  },
-
-  updateEmptyText: {
-    color: colors.muted,
-    fontSize: 15,
-    lineHeight: 21,
-    marginBottom: 14,
-  },
-
-  updateEmptyPrompt: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-
-  updateFooterAction: {
-    paddingTop: 4,
-    paddingBottom: 6,
-  },
-
-  updateOverflowSheet: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 16,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  projectSearchBox: {
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 10,
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  projectSearchInput: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-    paddingVertical: 8,
-  },
-
-  projectSearchClearButton: {
-    width: 44,
-    height: 44,
-    marginRight: -10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  projectFilterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  projectFilterChip: {
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 11,
-  },
-
-  projectFilterChipSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  projectFilterText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  projectFilterTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  projectFinderStatsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-
-  projectFinderRow: {
-    backgroundColor: colors.card,
-    borderRadius: 11,
-    padding: 12,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  favoriteButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  compactStatsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 7,
-    marginTop: 8,
-  },
-
-  compactStatText: {
-    color: colors.muted,
-    backgroundColor: colors.fill,
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 7,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  compactStatDanger: {
-    color: colors.danger,
-    backgroundColor: colors.dangerSoft,
-  },
-
-  projectFinderActions: {
-    alignItems: 'flex-end',
-    gap: 7,
-  },
-
-  dashboardGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  compactLocationRow: {
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  compactActionColumn: {
-    alignItems: 'flex-end',
-    gap: 6,
-    maxWidth: 96,
-  },
-
-  compactInlineAction: {
-    borderRadius: 999,
-    paddingVertical: 5,
-    paddingHorizontal: 9,
-    backgroundColor: colors.primarySoft,
-  },
-
-  compactInlineActionText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  scheduleProjectCard: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-  scheduleProjectHeader: {
-    minHeight: 112,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  scheduleProjectIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  scheduleProjectTitle: {
-    color: colors.text,
-    fontSize: 19,
-    lineHeight: 24,
-    fontWeight: '900',
-  },
-  scheduleProjectTasks: {
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-    backgroundColor: colors.fill,
-    padding: 10,
-    paddingBottom: 0,
-  },
-
-  scheduleMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 8,
-    flexWrap: 'wrap',
-  },
-  statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  statusPillText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  percentText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  progressTrack: {
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: colors.line,
-    overflow: 'hidden',
-    marginTop: 8,
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 999,
-    backgroundColor: colors.primary,
-  },
-
-  projectTaskPanel: {
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderRadius: 22,
-    borderWidth: 1,
-    gap: 12,
-    padding: 18,
-  },
-  taskUpdateContextCard: {
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.primary,
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 4,
-    marginBottom: 14,
-    padding: 14,
-  },
-  projectTaskEyebrow: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 1.1,
-  },
-  projectTaskMetrics: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  projectTaskMetric: {
-    backgroundColor: colors.fill,
-    borderRadius: 12,
-    flex: 1,
-    gap: 2,
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-  },
-  projectTaskMetricValue: {
-    color: colors.text,
-    fontSize: 18,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '900',
-  },
-  projectTaskMetricLabel: {
-    color: colors.muted,
-    fontSize: 10,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-  },
-  projectTaskForecast: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  projectTaskFilters: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  projectTaskFilterButton: {
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 13,
-    paddingVertical: 9,
-  },
-  projectTaskFilterButtonActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  projectTaskFilterText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  projectTaskFilterTextActive: {
-    color: '#FFFFFF',
-  },
-  projectTaskGroup: {
-    gap: 10,
-  },
-  projectTaskGroupHeader: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.primary,
-    borderLeftWidth: 5,
-    borderRadius: 14,
-    flexDirection: 'row',
-    gap: 12,
-    minHeight: 62,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-  },
-  projectTaskGroupHeaderComplete: {
-    backgroundColor: colors.successSoft,
-    borderColor: colors.success,
-  },
-  projectTaskGroupTitle: {
-    color: colors.text,
-    fontSize: 17,
-    fontWeight: '900',
-    letterSpacing: 0.2,
-  },
-  projectTaskGroupDetail: {
-    color: colors.muted,
-    fontSize: 12,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  projectTaskEmpty: {
-    color: colors.muted,
-    fontSize: 14,
-    paddingVertical: 18,
-    textAlign: 'center',
-  },
-
-  scheduleFieldEvidenceCard: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 10,
-    marginTop: 10,
-    padding: 10,
-  },
-  scheduleFieldEvidenceTitle: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-  },
-  scheduleFieldEvidenceText: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-    marginTop: 4,
-  },
-  scheduleFieldEvidenceAction: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 17,
-    marginTop: 5,
-  },
-  scheduleVerificationCard: {
-    backgroundColor: colors.warningSoft,
-    borderColor: colors.warning,
-    borderRadius: 12,
-    borderWidth: 1,
-    gap: 6,
-    marginTop: 10,
-    padding: 12,
-  },
-  scheduleVerificationTitle: {
-    color: colors.warning,
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  scheduleVerificationText: {
-    color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  scheduleVerificationActions: {
-    gap: 10,
-    paddingBottom: 12,
-  },
-
-});

@@ -37,12 +37,15 @@ function sameName(left: string | null | undefined, right: string) {
   return left?.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
-function taskDurationWeight(item: ScheduleItem) {
+export function scheduleTaskDurationWeight(
+  item: Readonly<{ durationDays?: unknown; notes?: unknown }>,
+) {
   if (typeof item.durationDays === 'number' && item.durationDays > 0) {
     return item.durationDays;
   }
 
-  const legacyDuration = item.notes.match(/\bDuration:\s*(\d+(?:\.\d+)?)\s+days?\b/i);
+  const notes = typeof item.notes === 'string' ? item.notes : '';
+  const legacyDuration = notes.match(/\bDuration:\s*(\d+(?:\.\d+)?)\s+days?\b/i);
   const parsed = legacyDuration ? Number(legacyDuration[1]) : 0;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
@@ -126,9 +129,9 @@ export function buildDAVEProjectScheduleRollup({
     daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined) === null,
   ).length;
   const waitingCount = accounting.waiting;
-  const totalWeight = tasks.reduce((total, item) => total + taskDurationWeight(item), 0);
+  const totalWeight = tasks.reduce((total, item) => total + scheduleTaskDurationWeight(item), 0);
   const weightedProgress = tasks.reduce(
-    (total, item) => total + taskDurationWeight(item) * item.percentComplete,
+    (total, item) => total + scheduleTaskDurationWeight(item) * item.percentComplete,
     0,
   );
   const percentComplete = totalWeight > 0

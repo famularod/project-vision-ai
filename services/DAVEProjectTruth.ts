@@ -33,6 +33,7 @@ import {
   projectDateRelativeDays,
   type ProjectTimeZone,
 } from './ProjectDateTime';
+import { scheduleTaskDurationWeight } from './dave-project-schedule-rollup';
 
 export const DAVE_PROJECT_TRUTH_VERSION = 'dave-project-truth/1.0' as const;
 
@@ -105,10 +106,13 @@ export type DAVEPhotoComparisonTruth = {
 export type DAVEScheduleTruth = {
   taskId: string;
   taskName: string;
+  itemType: ScheduleItem['itemType'];
   areaName: string | null;
   owner: string | null;
+  nextAction: string | null;
   status: ScheduleItem['status'];
   percentComplete: number;
+  durationWeight: number;
   finishDate: string | null;
   urgency: 'overdue' | 'due_soon' | 'upcoming' | 'not_urgent';
   completionState:
@@ -206,11 +210,17 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     scheduleItems.map(item => normalizedKey(item.importedFrom || '')).filter(Boolean),
   );
   const referenceDocuments = (input.referenceDocuments ?? []).filter(document => {
+    // Report artifacts are derived outputs. They must not participate in the
+    // current-truth fingerprint that governs their own freshness.
+    if (normalizedKey(document.category) === 'report') return false;
     if (!document.isCurrent) return false;
     const explicitProjectId = clean(document.projectId);
     const explicitProjectName = clean(document.projectName);
-    if (explicitProjectId || explicitProjectName) {
-      return explicitProjectId === input.projectId || projectMatches(projectKey, explicitProjectName);
+    const explicitProjectNames = (document.projectNames ?? []).map(clean).filter(Boolean);
+    if (explicitProjectId || explicitProjectName || explicitProjectNames.length > 0) {
+      return explicitProjectId === input.projectId ||
+        projectMatches(projectKey, explicitProjectName) ||
+        explicitProjectNames.some(name => projectMatches(projectKey, name));
     }
     return [document.originalFileName, document.name]
       .map(value => normalizedKey(value || ''))
@@ -656,10 +666,13 @@ function buildScheduleTruth(
     return {
       taskId: item.id,
       taskName: item.taskName,
+      itemType: item.itemType || 'Task',
       areaName: clean(item.locationName),
       owner: clean(item.owner) || clean(item.contractor),
+      nextAction: clean(item.nextAction),
       status: item.status,
       percentComplete: item.percentComplete,
+      durationWeight: scheduleTaskDurationWeight(item),
       finishDate: clean(item.finishDate),
       urgency: taskUrgency(item, today, projectTimeZone),
       completionState: conflicting ? 'conflicting_evidence' : completionState,
@@ -758,6 +771,9 @@ function buildPMBriefing(input: {
   const confidence = input.core?.confidence || input.runtime?.overallConfidence || input.intelligence.projectReality.confidence;
   const nextActions = uniqueText([
     ...input.reasoning.criticalDecisions.slice(0, 2).map(item => `${item.recommendation.action} Owner: ${item.recommendation.owner}. ${item.recommendation.timing}.`),
+    ...input.schedule
+      .filter(item => item.urgency === 'overdue' || item.urgency === 'due_soon' || item.status === 'Waiting')
+      .flatMap(item => item.nextAction ? [`${item.taskName}: ${item.nextAction}`] : []),
     ...overdue.slice(0, 2).map(item => `Resolve overdue work: ${item.taskName}${item.owner ? ` with ${item.owner}` : ''}.`),
     ...conflicts.slice(0, 2).map(item => `Resolve the recorded status conflict for ${item.taskName}.`),
     input.core?.bestNextStep,

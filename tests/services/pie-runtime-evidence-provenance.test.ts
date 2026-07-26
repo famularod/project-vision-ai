@@ -56,7 +56,13 @@ function runtime(overrides: {
         ? [{
             importedAt: overrides.scheduleImportedAt ?? IMPORT_TIME,
             sources: overrides.schedulePmConfirmed
-              ? [{ type: 'typed-update', capturedAt: overrides.scheduleImportedAt ?? IMPORT_TIME }]
+              ? [{
+                  type: 'typed-update',
+                  capturedAt: overrides.scheduleImportedAt ?? IMPORT_TIME,
+                  provenance: {
+                    confirmationEventId: 'schedule-progress-confirmation:task-1:2026-07-05T08:00:00.000Z',
+                  },
+                }]
               : [],
           }]
         : [],

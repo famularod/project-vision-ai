@@ -49,4 +49,38 @@ describe('ScheduleImportFlow screenshot OCR capability', () => {
     });
     expect(onImportScreenshots).toHaveBeenCalledTimes(1);
   });
+
+  it('opens an uploaded schedule directly in review without a second file pick', async () => {
+    const onIncomingBatchConsumed = jest.fn();
+    const view = render(
+      <ScheduleImportFlow
+        screenshotImportAvailable={false}
+        onImportFile={jest.fn(() => Promise.resolve(null))}
+        onImportScreenshots={jest.fn(() => Promise.resolve(null))}
+        onAddManually={jest.fn()}
+        onApprove={jest.fn()}
+        onCancel={jest.fn()}
+        incomingBatch={{
+          id: 'uploaded-schedule-1',
+          kind: 'schedule_file',
+          sourceCount: 1,
+          sourceLabel: 'lookahead.pdf',
+          message: 'One activity extracted.',
+          documents: [],
+          items: [{
+            id: 'task-1', taskName: 'Install panels', projectName: 'Project A',
+            locationName: 'Canopy A', startDate: '07/21/2026', finishDate: '07/22/2026',
+            milestone: '', owner: 'David', contractor: '', durationDays: 1,
+            percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '',
+            createdAt: '2026-07-21T12:00:00.000Z',
+          }],
+        }}
+        onIncomingBatchConsumed={onIncomingBatchConsumed}
+      />,
+    );
+
+    expect(await view.findByText('Review Imported Schedule')).toBeTruthy();
+    expect(view.getByText('Install panels')).toBeTruthy();
+    expect(onIncomingBatchConsumed).toHaveBeenCalledTimes(1);
+  });
 });

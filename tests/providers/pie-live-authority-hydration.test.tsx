@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react-native';
+import { act, cleanup, render } from '@testing-library/react-native';
 import { InteractionManager, Text } from 'react-native';
 
 import {
@@ -72,6 +72,7 @@ const createProjectTruthRepositoryMock = createDAVEProjectTruthRepository as jes
   typeof createDAVEProjectTruthRepository
 >;
 type CoreResult = Awaited<ReturnType<typeof buildLivePIECoreIntelligence>>;
+let pendingInteractionCallbacks: Array<() => void> = [];
 
 function coreResult(
   projectId = 'project-1',
@@ -113,6 +114,18 @@ function authorityInput(hydrated: boolean): PIELiveAuthorityInput {
   };
 }
 
+async function flushProviderEffects() {
+  await act(async () => {
+    while (pendingInteractionCallbacks.length > 0) {
+      const callbacks = pendingInteractionCallbacks.splice(0);
+      callbacks.forEach(callback => callback());
+    }
+    for (let index = 0; index < 12; index += 1) {
+      await Promise.resolve();
+    }
+  });
+}
+
 describe('PIELiveAuthorityProvider hydration boundary', () => {
   let currentAuthority: PIELiveAuthorityContextValue | null;
   const saveProjectTruthMock = jest.fn();
@@ -123,8 +136,9 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
   }
 
   beforeEach(() => {
+    pendingInteractionCallbacks = [];
     jest.spyOn(InteractionManager, 'runAfterInteractions').mockImplementation(callback => {
-      if (typeof callback === 'function') callback();
+      if (typeof callback === 'function') pendingInteractionCallbacks.push(callback);
       return { cancel: jest.fn() } as never;
     });
     currentAuthority = null;
@@ -144,12 +158,21 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
     } as unknown as ReturnType<typeof createDAVEProjectTruthRepository>);
   });
 
+  afterEach(async () => {
+    await act(async () => {
+      cleanup();
+      await Promise.resolve();
+    });
+    jest.restoreAllMocks();
+  });
+
   it('does not refresh or persist before hydration, then refreshes once ready', async () => {
     const screen = await render(
       <PIELiveAuthorityProvider input={authorityInput(false)}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
+    await flushProviderEffects();
 
     expect(currentAuthority?.state).toBe('loading');
     expect(buildCoreMock).not.toHaveBeenCalled();
@@ -171,9 +194,11 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
+    await flushProviderEffects();
     await act(async () => {
       resolveReadyCore(coreResult());
     });
+    await flushProviderEffects();
 
     expect(buildCoreMock).toHaveBeenCalledTimes(1);
     expect(buildInMemoryCoreMock).not.toHaveBeenCalled();
@@ -182,7 +207,7 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
   });
 
   it('computes combined portfolio authority fully in memory without persistence', async () => {
-    buildInMemoryCoreMock.mockReturnValueOnce(
+    buildInMemoryCoreMock.mockReturnValue(
       coreResult('portfolio:project-record-a', 'degraded_local_only'),
     );
     const combinedInput = {
@@ -194,14 +219,12 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
       projectTruthPersistencePolicy: 'ephemeral_portfolio' as const,
     };
 
-    await render(
+    const screen = render(
       <PIELiveAuthorityProvider input={combinedInput}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await flushProviderEffects();
 
     expect(buildInMemoryCoreMock).toHaveBeenCalledTimes(1);
     expect(buildInMemoryCoreMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -217,9 +240,59 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
     expect(createProjectTruthRepositoryMock).not.toHaveBeenCalled();
     expect(saveProjectTruthMock).not.toHaveBeenCalled();
     expect(currentAuthority?.state).toBe('degraded_local_only');
+    expect(currentAuthority?.localAuthorityExpected).toBe(true);
     expect(currentAuthority?.policy.highImpactAutomationAllowed).toBe(false);
     expect(currentAuthority?.policy.layer4DecisionCreationAllowed).toBe(false);
+    expect(currentAuthority?.degradedLocalAcknowledged).toBe(true);
     expect(currentAuthority?.policy.reportGenerationAllowed).toBe(true);
+
+    await screen.rerender(
+      <PIELiveAuthorityProvider
+        input={{
+          ...combinedInput,
+          projectNames: ['Project One', 'Project Two', 'Project Three'],
+        }}
+      >
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flushProviderEffects();
+
+    expect(buildInMemoryCoreMock).toHaveBeenCalledTimes(2);
+    expect(currentAuthority?.localAuthorityExpected).toBe(true);
+    expect(currentAuthority?.degradedLocalAcknowledged).toBe(true);
+    expect(currentAuthority?.policy.reportGenerationAllowed).toBe(true);
+  });
+
+  it('passes verified decision outcomes into Core learning', async () => {
+    const verifiedLearningEvents = [{
+      id: 'decision-outcome-learning:decision-1:outcome-1',
+      source: 'decision_outcome' as const,
+      event: 'The verified recovery plan restored the milestone.',
+      outcome: 'worked' as const,
+      evidence: ['The current schedule confirms the recovered milestone.'],
+      confidence: 'high' as const,
+      organizationId: 'organization-1',
+      projectId: 'project-1',
+      verifiedAt: '2026-07-17T12:30:00.000Z',
+      verifiedBy: 'validator-1',
+      verificationStatus: 'human_validated' as const,
+      provenanceRecordIds: ['schedule-1'],
+    }];
+    buildCoreMock.mockResolvedValueOnce(coreResult());
+
+    await render(
+      <PIELiveAuthorityProvider
+        input={{ ...authorityInput(true), verifiedLearningEvents }}
+      >
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flushProviderEffects();
+
+    expect(buildCoreMock).toHaveBeenCalledWith(expect.objectContaining({
+      verifiedLearningEvents,
+    }));
   });
 
   it('discards a Core result that finishes after readiness returns to pending', async () => {
@@ -233,6 +306,7 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
+    await flushProviderEffects();
     expect(buildCoreMock).toHaveBeenCalledTimes(1);
 
     await screen.rerender(
@@ -240,10 +314,12 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
+    await flushProviderEffects();
 
     await act(async () => {
       resolveCore(coreResult());
     });
+    await flushProviderEffects();
 
     expect(currentAuthority?.state).toBe('loading');
     expect(currentAuthority?.core).toBeNull();
@@ -259,9 +335,11 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
+    await flushProviderEffects();
     await act(async () => {
       resolveCore(coreResult());
     });
+    await flushProviderEffects();
     expect(buildCoreMock).toHaveBeenCalledTimes(1);
 
     await screen.rerender(
@@ -269,9 +347,7 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await flushProviderEffects();
 
     expect(buildCoreMock).toHaveBeenCalledTimes(1);
     expect(currentAuthority?.core).not.toBeNull();
@@ -286,9 +362,7 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await flushProviderEffects();
 
     const projectTwoInput = {
       ...authorityInput(true),
@@ -301,18 +375,14 @@ describe('PIELiveAuthorityProvider hydration boundary', () => {
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await flushProviderEffects();
 
     await screen.rerender(
       <PIELiveAuthorityProvider input={authorityInput(true)}>
         <AuthorityProbe />
       </PIELiveAuthorityProvider>,
     );
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await flushProviderEffects();
 
     expect(buildCoreMock).toHaveBeenCalledTimes(2);
     expect(currentAuthority?.core?.realityModel.projectId).toBe('project-1');

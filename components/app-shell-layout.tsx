@@ -1,4 +1,5 @@
 import { createContext, type ReactNode, useContext } from 'react';
+import type { Edge } from 'react-native-safe-area-context';
 
 export const APP_SHELL_BREAKPOINTS = {
   medium: 600,
@@ -44,6 +45,51 @@ export function appShellLayoutForWidth(width: number): AppShellLayout {
     navigationPlacement: 'rail',
     expandedRail: true,
   };
+}
+
+export function appShellContentTopPadding({
+  layout,
+  safeAreaTop,
+  platform,
+}: {
+  layout: AppShellLayout;
+  safeAreaTop: number;
+  platform: 'android' | 'ios' | 'macos' | 'web' | 'windows';
+}) {
+  if (layout.navigationPlacement === 'bottom') {
+    // The compact branded header already owns the top safe area. Adding it
+    // again to each screen creates a large blank band below the brand.
+    return 0;
+  }
+
+  const normalizedSafeAreaTop =
+    Number.isFinite(safeAreaTop) && safeAreaTop > 0 ? safeAreaTop : 0;
+
+  return Math.max(
+    normalizedSafeAreaTop + 24,
+    platform === 'ios' ? 72 : 48,
+  );
+}
+
+export function appShellHidesSystemStatusBar({
+  layout,
+  platform,
+}: {
+  layout: AppShellLayout;
+  platform: string | undefined;
+}) {
+  return platform === 'ios' && layout.navigationPlacement === 'rail';
+}
+
+export function appShellContentSafeAreaEdges(
+  layout: AppShellLayout,
+): Edge[] {
+  // The compact branded header already owns the top safe area. A second top
+  // inset inside each screen creates a blank band and clips scrolling content
+  // before it reaches the visible header boundary.
+  return layout.navigationPlacement === 'bottom'
+    ? ['left', 'right']
+    : ['top', 'left', 'right'];
 }
 
 export function AppShellLayoutProvider({

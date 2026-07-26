@@ -265,4 +265,27 @@ describe('combined report authority scope', () => {
     expect(scope.captureMemories.map(item => item.id)).toEqual(['memory-a']);
     expect(scope.contacts.contacts.map(contact => contact.id)).toEqual(['contact-a']);
   });
+
+  it('never admits generated report artifacts as inputs to current project truth', () => {
+    const scope = buildDailyReportAuthorityScope({
+      selectedProjectName: PROJECT_A,
+      selectedProjectNames: [PROJECT_A],
+      projectRecords,
+      updates: [],
+      scheduleItems: [],
+      referenceDocuments: [{
+        id: 'approved-report',
+        name: 'Approved project report',
+        originalFileName: 'approved-report.md',
+        uri: '',
+        category: 'Report',
+        notes: '',
+        isCurrent: true,
+        importedAt: '2026-07-22T12:00:00.000Z',
+        projectName: PROJECT_A,
+      }],
+    });
+
+    expect(scope.referenceDocuments).toEqual([]);
+  });
 });

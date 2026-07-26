@@ -18,15 +18,24 @@ const reportScope = read('services/ReportAuthorityScope.ts');
 
 assert(core.includes('buildPIEReportDraftFromExecutiveJudgment'), 'Live Core must build reports from persisted Executive Judgment.');
 assert(core.includes('executiveJudgmentRecord'), 'Live Core must persist and expose Executive Judgment records.');
-assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must prefer provider report drafts with Runtime recovery only.');
+assert(
+  reports.includes('selectStableReportDraft({') &&
+    reports.includes('liveDraft: liveAuthority.reportDraft') &&
+    reports.includes('fallbackDraft: runtime.response.reportDraft'),
+  'Review must prefer provider report drafts and retain them through same-scope Runtime recovery.',
+);
 assert(!reports.includes('buildPIEReportDraft({'), 'Review must not rebuild report drafts from raw arrays.');
-assert(reports.includes('const baseReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft'), 'Reports must select the authoritative draft before review or sharing.');
+assert(
+  reports.includes('const baseReportDraft = stableReportDraft.draft'),
+  'Reports must select the retained authoritative draft before review or sharing.',
+);
 assert(reports.includes('completeCommunication(onEmailReport)'), 'Email action must pass through the reviewed communication boundary.');
 assert(reports.includes('completeCommunication(onCopyReport)'), 'Copy action must pass through the reviewed communication boundary.');
 assert(reports.includes('completeCommunication(onTextReport)'), 'Text action must pass through the reviewed communication boundary.');
 assert(
   reports.includes('evaluateReportApprovalPolicy({') &&
-    reports.includes('if (!reportApproved || !reportApprovalPolicy.allowed)') &&
+    reports.includes('if (!reportApproved || !reportApprovalAllowed)') &&
+    reports.includes('reportEdits.sourceFingerprint === reportSourceFingerprint') &&
     reports.includes('shouldApplyCommunicationOutcome({'),
   'Approval and every communication path must revalidate report review authority.',
 );
@@ -42,9 +51,11 @@ assert(
   'Report authority refresh signatures must include single/combined project scope.',
 );
 assert(
-  provider.includes('const refreshInput = latestInputRef.current') &&
+  provider.includes('const refreshInput = useRawSnapshot') &&
+    provider.includes('? latestRawInputRef.current') &&
+    provider.includes(': latestInputRef.current') &&
     provider.includes("void runRefresh(pendingReason || 'project_changed')"),
-  'Authority refreshes must replay the latest input when scope changes during in-flight work.',
+  'Authority refreshes must replay the latest debounced input and allow manual recovery from the newest raw snapshot.',
 );
 assert(
   provider.includes('const inputSnapshotIsCurrent = scopeIsCurrent && rawSignature === signature') &&

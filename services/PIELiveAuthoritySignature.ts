@@ -1,6 +1,16 @@
 import type { PIELiveAuthorityInput } from '../providers/PIELiveAuthorityProvider';
 
-export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.2';
+export const PIE_LIVE_AUTHORITY_SIGNATURE_VERSION = 'pie-live-authority-input/2.4';
+
+/**
+ * Large evidence collections are immutable React state values. Cache their
+ * canonical form by object identity so editing a small draft does not walk
+ * every historical update, task, document, and memory on each keystroke.
+ *
+ * A new collection reference is still serialized in full, so any immutable
+ * state change immediately produces a new authority signature.
+ */
+const authorityCollectionSignatureCache = new WeakMap<object, string>();
 
 export function authorityInputSignature(input: PIELiveAuthorityInput) {
   return stableStringify({
@@ -14,14 +24,15 @@ export function authorityInputSignature(input: PIELiveAuthorityInput) {
     cloudAvailable: input.cloudAvailable !== false,
     projectTruthPersistencePolicy:
       input.projectTruthPersistencePolicy || 'persist_project',
-    updates: input.updates,
-    scheduleItems: input.scheduleItems,
+    updates: cachedStableStringify(input.updates),
+    scheduleItems: cachedStableStringify(input.scheduleItems),
     currentUpdate: input.currentUpdate || null,
-    projectAreas: input.projectAreas || [],
-    contacts: input.contacts || { contacts: [] },
-    referenceDocuments: input.referenceDocuments || [],
-    projectDocuments: input.projectDocuments || [],
-    captureMemories: input.captureMemories || [],
+    projectAreas: cachedStableStringify(input.projectAreas || []),
+    contacts: cachedStableStringify(input.contacts || EMPTY_CONTACTS),
+    referenceDocuments: cachedStableStringify(input.referenceDocuments || []),
+    projectDocuments: cachedStableStringify(input.projectDocuments || []),
+    captureMemories: cachedStableStringify(input.captureMemories || []),
+    verifiedLearningEvents: cachedStableStringify(input.verifiedLearningEvents || []),
     syncMetadata: input.syncMetadata || null,
   });
 }
@@ -52,6 +63,17 @@ function stableStringify(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value) ?? 'null';
+}
+
+const EMPTY_CONTACTS = Object.freeze({ contacts: [] as never[] });
+
+function cachedStableStringify(value: unknown): string {
+  if (!value || typeof value !== 'object') return stableStringify(value);
+  const cached = authorityCollectionSignatureCache.get(value);
+  if (cached !== undefined) return cached;
+  const signature = stableStringify(value);
+  authorityCollectionSignatureCache.set(value, signature);
+  return signature;
 }
 
 function safeProjectId(value: string) {

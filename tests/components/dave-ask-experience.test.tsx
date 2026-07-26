@@ -25,7 +25,7 @@ describe('DAVE Ask history hydration', () => {
   it('fails closed after a read error and retries without overwriting history', async () => {
     mockGetItem
       .mockRejectedValueOnce(new Error('storage unavailable'))
-      .mockResolvedValueOnce(null);
+      .mockResolvedValue(null);
 
     render(
       <DAVEAskExperience
@@ -43,7 +43,7 @@ describe('DAVE Ask history hydration', () => {
     expect(mockSetItem).not.toHaveBeenCalled();
 
     fireEvent.press(screen.getByRole('button', { name: 'Retry loading saved questions' }));
-    await waitFor(() => expect(mockGetItem).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockGetItem).toHaveBeenCalledTimes(3));
     expect(await screen.findByText('Ask me about this project.')).toBeTruthy();
   });
 

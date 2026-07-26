@@ -107,7 +107,19 @@ export type PIEEvidenceQualityResult = {
   conflictingEvidence: PIEEvidenceConflict[];
   staleEvidence: PIEEvidenceQualityItem[];
   evidenceReadiness: PIEEvidenceQualityLevel;
+  claimReadiness: PIEEvidenceClaimReadiness[];
+  blockingClaims: PIEEvidenceClaimReadiness[];
   averageScore: number;
+};
+
+export type PIEEvidenceClaimReadiness = {
+  claimId: string;
+  subject: string;
+  predicate: DAVENormalizedAssertion['predicate'];
+  evidenceIds: string[];
+  readiness: PIEEvidenceQualityLevel;
+  averageScore: number;
+  blockingReasons: string[];
 };
 
 export function evaluateEvidenceQuality(
@@ -150,6 +162,12 @@ export function evaluateEvidenceQuality(
   const averageScore = ranked.length > 0
     ? Math.round(ranked.reduce((total, item) => total + item.score.value, 0) / ranked.length)
     : 0;
+  const claimReadiness = evaluateClaimReadiness(ranked, conflicts);
+  const aggregateReadiness = evidenceReadinessFromItems(ranked, conflicts);
+  const evidenceReadiness = readinessWithClaimThresholds(
+    aggregateReadiness,
+    claimReadiness,
+  );
 
   return {
     generatedAt,
@@ -162,9 +180,118 @@ export function evaluateEvidenceQuality(
     ),
     conflictingEvidence: conflicts,
     staleEvidence: ranked.filter(item => item.score.level === 'stale'),
-    evidenceReadiness: evidenceReadinessFromItems(ranked, conflicts),
+    evidenceReadiness,
+    claimReadiness,
+    blockingClaims: claimReadiness.filter(
+      claim =>
+        claim.readiness === 'conflicting' ||
+        claim.readiness === 'insufficient',
+    ),
     averageScore,
   };
+}
+
+export function evaluateClaimReadiness(
+  items: PIEEvidenceQualityItem[],
+  conflicts: PIEEvidenceConflict[],
+): PIEEvidenceClaimReadiness[] {
+  const claims = new Map<
+    string,
+    {
+      subject: string;
+      predicate: DAVENormalizedAssertion['predicate'];
+      items: PIEEvidenceQualityItem[];
+    }
+  >();
+
+  items.forEach(item => {
+    parseDAVEAssertions(item.evidence.summary).assertions
+      .filter(isDAVECurrentCertainAssertion)
+      .forEach(assertion => {
+        const subject = assertion.subject?.trim() || 'project';
+        const claimId = `${normalizeClaimKey(subject)}:${assertion.predicate}`;
+        const existing = claims.get(claimId);
+        if (existing) {
+          if (!existing.items.some(candidate => candidate.evidence.id === item.evidence.id)) {
+            existing.items.push(item);
+          }
+          return;
+        }
+        claims.set(claimId, {
+          subject,
+          predicate: assertion.predicate,
+          items: [item],
+        });
+      });
+  });
+
+  return [...claims.entries()]
+    .map(([claimId, claim]) => {
+      const evidenceIds = claim.items.map(item => item.evidence.id);
+      const averageScore = Math.round(
+        claim.items.reduce((total, item) => total + item.score.value, 0) /
+          claim.items.length,
+      );
+      const bestScore = Math.max(...claim.items.map(item => item.score.value));
+      const hasConflict = conflicts.some(conflict =>
+        conflict.evidenceIds.some(evidenceId => evidenceIds.includes(evidenceId)),
+      );
+      const blockingReasons: string[] = [];
+      let readiness: PIEEvidenceQualityLevel;
+
+      if (hasConflict) {
+        readiness = 'conflicting';
+        blockingReasons.push('Conflicting evidence addresses this claim.');
+      } else if (claim.items.every(item => item.score.level === 'stale')) {
+        readiness = 'stale';
+        blockingReasons.push('All evidence for this claim is stale.');
+      } else if (bestScore < 70 || averageScore < 45) {
+        readiness = 'insufficient';
+        blockingReasons.push(
+          bestScore < 70
+            ? 'No good or strong evidence supports this claim.'
+            : 'The combined evidence for this claim is insufficient.',
+        );
+      } else if (averageScore >= 85) {
+        readiness = 'strong';
+      } else if (averageScore >= 70) {
+        readiness = 'good';
+      } else {
+        readiness = 'weak';
+      }
+
+      return {
+        claimId,
+        subject: claim.subject,
+        predicate: claim.predicate,
+        evidenceIds,
+        readiness,
+        averageScore,
+        blockingReasons,
+      };
+    })
+    .sort((left, right) => left.claimId.localeCompare(right.claimId));
+}
+
+function readinessWithClaimThresholds(
+  aggregate: PIEEvidenceQualityLevel,
+  claims: PIEEvidenceClaimReadiness[],
+): PIEEvidenceQualityLevel {
+  if (claims.some(claim => claim.readiness === 'conflicting')) return 'conflicting';
+  if (claims.some(claim => claim.readiness === 'insufficient')) return 'insufficient';
+  if (aggregate === 'conflicting' || aggregate === 'insufficient') return aggregate;
+  if (claims.some(claim => claim.readiness === 'stale') && aggregate !== 'weak') {
+    return 'stale';
+  }
+  return aggregate;
+}
+
+function normalizeClaimKey(value: string): string {
+  return value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'project';
 }
 
 export function scoreEvidenceFreshness(

@@ -173,7 +173,7 @@ export class BackupRestoreRecoveryRequiredError extends Error {
   readonly recoveryCause: unknown;
 
   constructor(commitCause: unknown, recoveryCause: unknown) {
-    super('Backup restore was partially written and automatic recovery could not finish.');
+    super('Data import was partially written and automatic recovery could not finish.');
     this.name = 'BackupRestoreRecoveryRequiredError';
     this.commitCause = commitCause;
     this.recoveryCause = recoveryCause;
@@ -215,24 +215,24 @@ export type BackupPreflightResult =
     }>;
 
 /**
- * Backup restore is intentionally stricter than ordinary legacy hydration.
+ * Data-export import is intentionally stricter than ordinary legacy hydration.
  * A malformed row aborts the whole preflight instead of being normalized away.
  */
 export function preflightAppBackup(
   value: unknown,
   validators: BackupPreflightValidators,
 ): BackupPreflightResult {
-  if (!isRecord(value)) return invalid('root', 'The backup root must be an object.');
+  if (!isRecord(value)) return invalid('root', 'The data export must be a JSON object.');
   if (value.version !== APP_BACKUP_VERSION) {
     return {
       ok: false,
       reason: 'incompatible_version',
       field: 'version',
-      message: `This backup uses version ${String(value.version)}; this app requires version ${APP_BACKUP_VERSION}.`,
+      message: `This data export uses version ${String(value.version)}; this app requires version ${APP_BACKUP_VERSION}.`,
     };
   }
   if (!validTimestamp(value.exportedAt)) {
-    return invalid('exportedAt', 'The backup export timestamp is missing or invalid.');
+    return invalid('exportedAt', 'The data export timestamp is missing or invalid.');
   }
 
   const collectionChecks: readonly [string, unknown, (item: unknown) => boolean][] = [
@@ -269,7 +269,7 @@ export function preflightAppBackup(
     }
   }
   if (!validators.contactBook(value.contacts)) {
-    return invalid('contacts', 'The backup contacts are malformed.');
+    return invalid('contacts', 'The data-export contacts are malformed.');
   }
   if (value.activeDraft !== null && !validators.draftEnvelope(value.activeDraft)) {
     return invalid('activeDraft', 'The active draft is malformed.');
@@ -379,7 +379,7 @@ export function createBackupRestoreRuntime({
       await verifyRestore(storage, targetKeys, prepared.values);
       for (const [key, before] of barrierRaw) {
         if (await storage.getItem(key) !== before) {
-          throw new Error(`Backup restore changed protected deletion state at ${key}.`);
+          throw new Error(`Data import changed protected deletion state at ${key}.`);
         }
       }
       return prepared.result;
@@ -394,10 +394,10 @@ async function assertNoForeignPendingJournal(
   keys: BackupRestoreBarrierKeys,
 ) {
   if (await storage.getItem(keys.projectDeletionTransactionJournal) !== null) {
-    throw new Error('Project deletion recovery must finish before backup restore.');
+    throw new Error('Project deletion recovery must finish before data import.');
   }
   if (await storage.getItem(keys.fieldUpdateTransactionJournal) !== null) {
-    throw new Error('Field update recovery must finish before backup restore.');
+    throw new Error('Field update recovery must finish before data import.');
   }
 }
 
@@ -444,7 +444,7 @@ async function verifyRestore(
       ? null
       : requireJson(values[keyName], keyName);
     if (await storage.getItem(keys[keyName]) !== expected) {
-      throw new Error(`Backup restore verification failed for ${keys[keyName]}.`);
+      throw new Error(`Data import verification failed for ${keys[keyName]}.`);
     }
   }
 }

@@ -25,7 +25,10 @@ import {
   answerDAVEConversationContext,
   resolveDAVEConversationContext,
 } from '../services/DAVEConversationContext';
-import { persistStorageItem } from '../hooks/use-async-storage-persistence';
+import {
+  persistStorageItem,
+  removePersistedStorageItem,
+} from '../hooks/use-async-storage-persistence';
 
 type Props = {
   intelligence: DAVEProjectIntelligence;
@@ -48,6 +51,7 @@ export function DAVEAskExperience({ intelligence, onOpenSupportingRecord }: Prop
   const historyPersistence = useRef(createDAVEAskHistoryPersistence({
     readItem: key => AsyncStorage.getItem(key),
     persistItem: persistStorageItem,
+    removeItem: removePersistedStorageItem,
   })).current;
 
   useEffect(() => {

@@ -117,6 +117,8 @@ export async function runPIERealityModelOrchestration(
     projectId,
   );
   const previousModel = await repository.loadCurrent(organizationId, projectId);
+  const hasFreshCloudAuthority = () =>
+    repository.hasFreshCloudAuthority?.() === true;
   const deltas = await classifyEvidenceDeltas(
     organizationId,
     projectId,
@@ -158,11 +160,15 @@ export async function runPIERealityModelOrchestration(
     if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
       persistenceStatus = 'degraded_local_only';
       diagnostics.push('Identity is local or untrusted; Reality Model is authoritative locally only.');
-    } else if (input.cloudAvailable) {
+    } else if (input.cloudAvailable && hasFreshCloudAuthority()) {
       persistenceStatus = 'authoritative_cloud';
     } else {
       persistenceStatus = 'degraded_local_only';
-      diagnostics.push('Cloud synchronization is unavailable; queued local authority only.');
+      diagnostics.push(
+        input.cloudAvailable
+          ? 'Cloud refresh did not establish fresh authority; saved device data requires acknowledgement.'
+          : 'Cloud synchronization is unavailable; queued local authority only.',
+      );
     }
     diagnostics.push('Evidence is unchanged; the prior Reality Model was reused without rebuilding or rewriting it.');
   } else try {
@@ -179,11 +185,15 @@ export async function runPIERealityModelOrchestration(
     if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
       persistenceStatus = 'degraded_local_only';
       diagnostics.push('Identity is local or untrusted; Reality Model is authoritative locally only.');
-    } else if (input.cloudAvailable) {
+    } else if (input.cloudAvailable && hasFreshCloudAuthority()) {
       persistenceStatus = 'authoritative_cloud';
     } else {
       persistenceStatus = 'degraded_local_only';
-      diagnostics.push('Cloud synchronization is unavailable; queued local authority only.');
+      diagnostics.push(
+        input.cloudAvailable
+          ? 'Cloud persistence did not establish fresh authority; saved device data requires acknowledgement.'
+          : 'Cloud synchronization is unavailable; queued local authority only.',
+      );
     }
     await saveEvidenceDeltas(organizationId, projectId, deltas.map(delta => ({
       ...delta,

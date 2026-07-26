@@ -1,4 +1,7 @@
-import { buildDAVEReportBriefing } from '../../services/DAVEReportIntelligence';
+import {
+  buildDAVEReportBriefing,
+  buildDAVEReportSourceFingerprint,
+} from '../../services/DAVEReportIntelligence';
 import type { DAVEProjectTruth } from '../../services/DAVEProjectTruth';
 
 function projectTruth(): DAVEProjectTruth {
@@ -58,6 +61,55 @@ describe('DAVE report intelligence', () => {
       confidence: 'high',
     });
     expect(briefing.schedulePosition).toEqual(['1 due within 7 days.']);
+    expect(briefing.dashboard.taskStatus).toMatchObject({
+      total: 1,
+      complete: 0,
+      open: 1,
+      inProgress: 1,
+    });
     expect(JSON.stringify(briefing)).not.toMatch(/not verified|verification needed|missing evidence/i);
+  });
+
+  it('changes the report source only when semantic project facts change', () => {
+    const first = projectTruth();
+    const refreshOnly = {
+      ...first,
+      generatedAt: '2026-07-16T18:05:00.000Z',
+      schedule: [...first.schedule].reverse(),
+    } as DAVEProjectTruth;
+    const changed = {
+      ...first,
+      generatedAt: '2026-07-16T18:05:00.000Z',
+      schedule: first.schedule.map(task => ({
+        ...task,
+        status: 'Complete',
+        percentComplete: 100,
+      })),
+    } as DAVEProjectTruth;
+
+    expect(buildDAVEReportSourceFingerprint([refreshOnly])).toBe(
+      buildDAVEReportSourceFingerprint([first]),
+    );
+    expect(buildDAVEReportSourceFingerprint([changed])).not.toBe(
+      buildDAVEReportSourceFingerprint([first]),
+    );
+  });
+
+  it('uses the PM-authored next action instead of generating generic coordination work', () => {
+    const truth = projectTruth();
+    const briefing = buildDAVEReportBriefing({
+      truths: [{
+        ...truth,
+        schedule: truth.schedule.map(task => ({
+          ...task,
+          nextAction: 'Confirm the paving crew start time with the superintendent.',
+        })),
+      } as DAVEProjectTruth],
+    });
+
+    expect(briefing.nextActions[0]).toMatchObject({
+      action: 'Confirm the paving crew start time with the superintendent.',
+      smallestNextAction: 'Confirm the paving crew start time with the superintendent.',
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -33,6 +33,8 @@ export function ScheduleImportFlow({
   onAddManually,
   onApprove,
   onCancel,
+  incomingBatch = null,
+  onIncomingBatchConsumed,
 }: {
   screenshotImportAvailable: boolean;
   onImportFile: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
@@ -40,6 +42,8 @@ export function ScheduleImportFlow({
   onAddManually: () => void;
   onApprove: (batch: PIEScheduleImportBatch) => void;
   onCancel: (batch: PIEScheduleImportBatch) => void;
+  incomingBatch?: PIEScheduleImportBatch | null;
+  onIncomingBatchConsumed?: () => void;
 }) {
   const [choiceOpen, setChoiceOpen] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -51,6 +55,13 @@ export function ScheduleImportFlow({
     () => scheduleImportBatchCounts(pendingBatch?.items || []),
     [pendingBatch?.items],
   );
+
+  useEffect(() => {
+    if (!incomingBatch || pendingBatch || busyLabel) return;
+    setExpandedItemIds([]);
+    setPendingBatch(incomingBatch);
+    onIncomingBatchConsumed?.();
+  }, [busyLabel, incomingBatch, onIncomingBatchConsumed, pendingBatch]);
 
   async function beginImport(
     label: string,

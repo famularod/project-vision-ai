@@ -24,6 +24,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 import {
   PROJECT_UPDATE_DELETION_JOURNAL_QUARANTINE_PREFIX,
   PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
+  confirmProjectUpdateCloudDeletion,
   hasProjectUpdateDeletionIntent,
   recordProjectUpdateDeletionIntent,
 } from '../../services/ProjectUpdateDeletionJournal';
@@ -87,6 +88,12 @@ describe('ProjectUpdateDeletionJournal corruption safety', () => {
 
     await expect(recordProjectUpdateDeletionIntent({ id: 'must-be-durable' }))
       .rejects.toThrow(/could not be verified/i);
+    expect(mockStorage.has(PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY)).toBe(false);
+  });
+
+  it('does not acknowledge cloud deletion without a durable local intent', async () => {
+    await expect(confirmProjectUpdateCloudDeletion('missing-intent'))
+      .rejects.toThrow(/deletion intent is missing/i);
     expect(mockStorage.has(PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY)).toBe(false);
   });
 });

@@ -182,6 +182,11 @@ export type ContactBook = {
 export type ProjectArea = {
   id: string;
   name: string;
+  /**
+   * Project ownership for new area records. Legacy records may omit this and
+   * are scoped conservatively from their existing task/update links.
+   */
+  projectName?: string | null;
   building?: string;
   latitude: number;
   longitude: number;
@@ -192,6 +197,8 @@ export type ProjectArea = {
 };
 
 export type DAVESyncTombstoneEntity =
+  | 'project'
+  | 'project_update'
   | 'project_area'
   | 'schedule_item'
   | 'reference_document';
@@ -225,8 +232,24 @@ export type ReferenceDocument = {
   importedAt: string;
   projectId?: string | null;
   projectName?: string | null;
+  /** Projects explicitly covered when one shared document applies to more than one project. */
+  projectNames?: string[];
   /** Immutable identity of the import review that created this document. */
   importBatchId?: string | null;
+  /** Protected cloud object path. Cloud-only documents may not have a local uri. */
+  storagePath?: string | null;
+  sizeBytes?: number | null;
+  /** SHA-256 of the exact uploaded bytes, used to verify cloud recovery. */
+  contentSha256?: string | null;
+  /** Local business-data revision used to order cross-device changes. */
+  updatedAt?: string | null;
+  /** Cloud row revision. Transport metadata only; never persisted inside document_data. */
+  cloudUpdatedAt?: string | null;
+  /** Browser upload/version metadata retained when mobile refreshes the shared record. */
+  webFileFingerprint?: string | null;
+  webVersionGroupId?: string | null;
+  webContentReview?: string | null;
+  webReport?: unknown;
 };
 
 export type ProjectStats = {
@@ -245,6 +268,36 @@ export type ScheduleStatus =
   | 'Complete';
 
 export type SchedulePriority = 'Low' | 'Medium' | 'High';
+
+/**
+ * The first Vitruvius-authored schedule release intentionally supports the
+ * most common construction relationship only. Additional relationship types
+ * can be added without changing the stored task shape.
+ */
+export type ScheduleDependencyType = 'FS';
+
+export type ScheduleDependency = {
+  predecessorItemId: string;
+  type: ScheduleDependencyType;
+  /** Working-day lag after the predecessor finishes. */
+  lagDays?: number | null;
+};
+
+export type ProjectItemType =
+  | 'Task'
+  | 'Issue'
+  | 'RFI'
+  | 'Submittal'
+  | 'Punch List'
+  | 'Decision'
+  | 'Inspection';
+
+export type ProjectItemActivity = {
+  id: string;
+  message: string;
+  author: string;
+  createdAt: string;
+};
 
 export type DAVECompletionVerificationStatus =
   | 'reported_complete'
@@ -283,6 +336,8 @@ export type DAVECompletionVerification = {
 
 export type ScheduleItem = {
   id: string;
+  /** PM-facing work type. Legacy schedule rows default to Task. */
+  itemType?: ProjectItemType;
   scheduleProjectName?: string | null;
   projectTimeZone?: string | null;
   projectName: string;
@@ -294,6 +349,15 @@ export type ScheduleItem = {
   owner: string;
   contractor: string;
   durationDays?: number | null;
+  /** Optional planning hierarchy retained in the shared JSON task record. */
+  wbsCode?: string | null;
+  parentItemId?: string | null;
+  sortOrder?: number | null;
+  dependencies?: ScheduleDependency[];
+  isSummary?: boolean;
+  isMilestone?: boolean;
+  baselineStartDate?: string | null;
+  baselineFinishDate?: string | null;
   percentComplete: number;
   progressSource?: 'project_manager' | 'schedule_import' | null;
   progressConfirmedAt?: string | null;
@@ -301,6 +365,10 @@ export type ScheduleItem = {
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
+  /** Smallest accountable step expected next. */
+  nextAction?: string;
+  /** Append-only PM activity retained with the shared task record. */
+  activity?: ProjectItemActivity[];
   importedFrom?: string | null;
   importedAt?: string | null;
   /** Immutable import identity; filenames are display data only. */
@@ -345,5 +413,15 @@ export const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Low',
   'Medium',
   'High',
+];
+
+export const PROJECT_ITEM_TYPES: ProjectItemType[] = [
+  'Task',
+  'Issue',
+  'RFI',
+  'Submittal',
+  'Punch List',
+  'Decision',
+  'Inspection',
 ];
 import type { PIEPhotoIntelligenceDisplayState } from '../services/PIEPhotoVisionMobileWorkflow';

@@ -27,7 +27,14 @@ assert(!normalization.includes('...DEFAULT_PROJECT_AREAS') && !normalization.inc
 const deletion = sliceBetween('function deleteProjectArea', 'async function useCurrentLocationForArea');
 assert(deletion.includes('prev.filter(item => item.id !== areaId)'),
   'Area deletion must remove the selected record.');
-assert(deletion.includes('AsyncStorage.setItem') && deletion.includes('PROJECT_AREAS_STORAGE_KEY'),
-  'Area deletion must immediately persist the new list.');
+assert(deletion.includes("recordDAVESyncTombstone('project_area', areaId)")
+  && deletion.includes("removeOperationalRecordFromSyncQueue('project_area', areaId)"),
+  'Area deletion must persist a tombstone and remove stale queued writes.');
+
+const taskAreaEditing = sliceBetween('function ScheduleItemRow', 'function scheduleWarningIsUserActionable');
+assert(taskAreaEditing.includes('<AreaRow') && taskAreaEditing.includes('projectAreas={projectAreas}'),
+  'Expanded task cards must provide the shared Area selector.');
+assert(taskAreaEditing.includes("onUpdate({ locationName: area?.name || '' })"),
+  'Choosing an Area must save the task location through the normal task update path.');
 
 console.log('Project area deletion persistence checks passed.');

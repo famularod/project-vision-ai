@@ -1,9 +1,13 @@
 import type { DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
-import { buildScheduleTaskAccounting } from './dave-project-schedule-rollup';
+import {
+  buildScheduleTaskAccounting,
+  scheduleTaskDurationWeight,
+} from './dave-project-schedule-rollup';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
-export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/1.1' as const;
+export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/1.2' as const;
+export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
 
 export type DAVEReportAction = Readonly<{
   id: string;
@@ -32,19 +36,21 @@ export type DAVEReportWorkAreaProgress = Readonly<{
   completeTaskCount: number;
   averagePercent: number;
   completed: boolean;
-  calculation: 'unweighted_task_average';
+  calculation: 'schedule_duration_weighted_average';
 }>;
 
 export type DAVEReportDashboardMetrics = Readonly<{
   taskStatus: Readonly<{
     total: number;
     complete: number;
+    open: number;
     inProgress: number;
     notStarted: number;
     waiting: number;
   }>;
   scheduleHealth: Readonly<{
     onTrack: number;
+    blocked: number;
     dueSoon: number;
     overdue: number;
   }>;
@@ -72,6 +78,26 @@ export type DAVEReportBriefing = Readonly<{
   decisionsRequired: readonly string[];
   nextActions: readonly DAVEReportAction[];
 }>;
+
+/**
+ * Identifies the semantic project facts used to prepare a report. Volatile
+ * refresh times and collection ordering are ignored so a routine sync does
+ * not make a report stale, while a meaningful fact change does.
+ */
+export function buildDAVEReportSourceFingerprint(
+  truths: readonly DAVEProjectTruth[],
+): string {
+  const truthFingerprints = truths
+    .map(truth => ({
+      projectName: normalized(truth.projectName),
+      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
+        withoutVolatileReportSourceFields(truth),
+      ))),
+    }))
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+
+  return `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+}
 
 export function buildDAVEReportBriefing({
   truths,
@@ -281,8 +307,12 @@ function buildDashboardMetrics({
   const accounting = buildScheduleTaskAccounting(tasks);
   const overdue = tasks.filter(task => !scheduleProgressIsComplete(task) && task.urgency === 'overdue').length;
   const dueSoon = tasks.filter(task => !scheduleProgressIsComplete(task) && task.urgency === 'due_soon').length;
+  const blocked = tasks.filter(task => !scheduleProgressIsComplete(task) && task.status === 'Waiting').length;
   const onTrack = tasks.filter(task =>
-    !scheduleProgressIsComplete(task) && task.urgency !== 'overdue' && task.urgency !== 'due_soon',
+    !scheduleProgressIsComplete(task) &&
+    task.status !== 'Waiting' &&
+    task.urgency !== 'overdue' &&
+    task.urgency !== 'due_soon',
   ).length;
   const areaMap = new Map<string, typeof tasks>();
   for (const task of tasks) {
@@ -291,8 +321,17 @@ function buildDashboardMetrics({
     areaMap.set(key, [...(areaMap.get(key) || []), { ...task, areaName }]);
   }
   const workAreas = Array.from(areaMap.entries()).map(([key, areaTasks]) => {
-    const averagePercent = areaTasks.length
-      ? Math.round(areaTasks.reduce((total, task) => total + boundedPercent(task.percentComplete), 0) / areaTasks.length)
+    const totalWeight = areaTasks.reduce(
+      (total, task) => total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }),
+      0,
+    );
+    const weightedProgress = areaTasks.reduce(
+      (total, task) => total +
+        scheduleTaskDurationWeight({ durationDays: task.durationWeight }) * boundedPercent(task.percentComplete),
+      0,
+    );
+    const averagePercent = totalWeight > 0
+      ? Math.round(weightedProgress / totalWeight)
       : 0;
     const completeTaskCount = areaTasks.filter(scheduleProgressIsComplete).length;
     return {
@@ -303,7 +342,7 @@ function buildDashboardMetrics({
       completeTaskCount,
       averagePercent,
       completed: completeTaskCount === areaTasks.length && areaTasks.length > 0,
-      calculation: 'unweighted_task_average' as const,
+      calculation: 'schedule_duration_weighted_average' as const,
     };
   }).sort((left, right) =>
     Number(left.completed) - Number(right.completed) ||
@@ -315,11 +354,12 @@ function buildDashboardMetrics({
     taskStatus: Object.freeze({
       total: accounting.total,
       complete: accounting.complete,
+      open: accounting.open,
       inProgress: accounting.inProgress,
       notStarted: accounting.notStarted,
       waiting: accounting.waiting,
     }),
-    scheduleHealth: Object.freeze({ onTrack, dueSoon, overdue }),
+    scheduleHealth: Object.freeze({ onTrack, blocked, dueSoon, overdue }),
     attention: Object.freeze({ risks, decisions, verification }),
     workAreas: Object.freeze(workAreas.map(item => Object.freeze(item))),
   });
@@ -338,8 +378,9 @@ function executiveSnapshotFor({
   const schedule = dashboard.scheduleHealth;
   const facts = [
     status.total ? `${status.complete} of ${status.total} tasks complete` : '',
+    status.open ? `${status.open} open` : '',
     status.inProgress ? `${status.inProgress} in progress` : '',
-    status.waiting ? `${status.waiting} waiting` : '',
+    schedule.blocked ? `${schedule.blocked} blocked` : '',
     schedule.overdue ? `${schedule.overdue} overdue` : '',
     schedule.dueSoon ? `${schedule.dueSoon} due soon` : '',
   ].filter(Boolean);
@@ -444,17 +485,18 @@ function scheduleBackedReportAction(
   task: DAVEProjectTruth['schedule'][number],
 ): DAVEReportAction {
   const owner = clean(task.owner) || 'Project manager';
+  const pmNextAction = clean(task.nextAction);
   if (task.urgency === 'overdue') {
     return Object.freeze({
       id: `report-schedule-action:${task.taskId}`,
       projectName,
       taskName: task.taskName,
       areaName: task.areaName,
-      action: `Set a recovery date and accountable next step for ${task.taskName}.`,
+      action: pmNextAction || `Set a recovery date and accountable next step for ${task.taskName}.`,
       owner,
       timing: 'Today',
       consequence: `${task.taskName} remains overdue without a recovery plan.`,
-      smallestNextAction: 'Assign the recovery owner and date.',
+      smallestNextAction: pmNextAction || 'Assign the recovery owner and date.',
       confidence: 'high',
     });
   }
@@ -464,11 +506,11 @@ function scheduleBackedReportAction(
       projectName,
       taskName: task.taskName,
       areaName: task.areaName,
-      action: `Resolve the blocker holding ${task.taskName}.`,
+      action: pmNextAction || `Resolve the blocker holding ${task.taskName}.`,
       owner,
       timing: 'Today',
       consequence: `${task.taskName} cannot advance while the blocker remains open.`,
-      smallestNextAction: 'Name the blocker and responsible party.',
+      smallestNextAction: pmNextAction || 'Name the blocker and responsible party.',
       confidence: 'high',
     });
   }
@@ -477,11 +519,11 @@ function scheduleBackedReportAction(
     projectName,
     taskName: task.taskName,
     areaName: task.areaName,
-    action: `Prepare the crew, materials, and access for ${task.taskName}.`,
+    action: pmNextAction || `Prepare the crew, materials, and access for ${task.taskName}.`,
     owner,
     timing: task.finishDate ? `Before ${task.finishDate}` : 'Within 7 days',
     consequence: `${task.taskName} may miss its scheduled finish without advance coordination.`,
-    smallestNextAction: 'Confirm crew, materials, and access.',
+    smallestNextAction: pmNextAction || 'Confirm crew, materials, and access.',
     confidence: 'high',
   });
 }
@@ -584,4 +626,52 @@ function uniqueBy<T>(values: readonly T[], keyFor: (value: T) => string) {
     seen.add(key);
     return true;
   });
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map(key => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function stableHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function withoutVolatileReportSourceFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => key !== 'generatedAt')
+        .map(([key, child]) => [key, withoutVolatileReportSourceFields(child)]),
+    );
+  }
+  return value;
+}
+
+function canonicalizeReportSourceValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map(canonicalizeReportSourceValue)
+      .sort((left, right) => stableStringify(left).localeCompare(stableStringify(right)));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, child]) => [key, canonicalizeReportSourceValue(child)]),
+    );
+  }
+  return value;
 }

@@ -63,7 +63,12 @@ assert(
   'Provider must invalidate in-flight authority and skip Project Truth persistence when hydration becomes pending.',
 );
 assert(app.includes('const liveAuthorityInput = useMemo') && app.includes('updates: (') && app.includes('currentUpdate: (') && app.includes('captureMemories,'), 'App must include live evidence in provider input.');
-assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must prefer provider report draft with Runtime recovery only.');
+assert(
+  reports.includes('selectStableReportDraft({') &&
+    reports.includes('liveDraft: liveAuthority.reportDraft') &&
+    reports.includes('fallbackDraft: runtime.response.reportDraft'),
+  'Review must prefer the provider report draft and retain it through same-scope Runtime recovery.',
+);
 assert(app.includes('liveAuthority.projectTruth.briefing.nextActions'), 'Home must prefer provider-backed Project Truth actions.');
 assert(
   app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence;'),

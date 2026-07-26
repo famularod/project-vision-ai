@@ -207,7 +207,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     priority: 55,
   },
   {
-    pattern: /\b(?:started|began|underway|currently\s+working|working\s+on|work\s+ongoing)\b/gi,
+    pattern: /\b(?:started|began|underway|currently\s+working|working\s+on|work\s+ongoing|work\s+progressed|progress\s+(?:increased|continued|advanced)|installing|poured|framing|removed)\b/gi,
     predicate: 'started',
     status: 'in_progress',
     polarity: 'affirmed',
@@ -276,7 +276,7 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     fixedSubject: 'blocker',
   },
   {
-    pattern: /\bdelayed\b/gi,
+    pattern: /\b(?:delayed|overdue)\b/gi,
     predicate: 'blocker_present',
     status: 'delayed',
     polarity: 'affirmed',
@@ -320,6 +320,14 @@ const ASSERTION_RULES: readonly AssertionRule[] = [
     polarity: 'negated',
     priority: 105,
     fixedSubject: 'issue',
+  },
+  {
+    pattern: /\b(?:at[ -]risk|schedule\s+risk)\b/gi,
+    predicate: 'issue_present',
+    status: 'issue_present',
+    polarity: 'affirmed',
+    priority: 50,
+    fixedSubject: 'risk',
   },
   {
     pattern: /\b(?:issues?|problems?|defects?|conflicts?|disputes?|deviations?|missing)\b/gi,
@@ -426,6 +434,29 @@ export function classifyDAVECompletion(
   }
 
   return 'no_assertion';
+}
+
+/**
+ * Returns true when a communication contains a definite completion report
+ * that should be routed to PM verification. Unlike classifyDAVECompletion,
+ * this intentionally accepts past-tense reports ("was completed") because
+ * they are evidence to review, not a claim about current project truth.
+ */
+export function hasDAVEExplicitCompletionReport(
+  input: string | DAVEAssertionParseResult,
+) {
+  const parsed = parsedInput(input);
+  if (parsed.conflicts.some(conflict => conflict.domain === 'completion')) {
+    return false;
+  }
+
+  const assertions = parsed.assertions
+    .filter(isCompletionAssertion)
+    .filter(assertion => assertion.temporality !== 'future')
+    .filter(isCertainAssertion);
+
+  if (assertions.some(isNegativeCompletionAssertion)) return false;
+  return assertions.some(isAffirmedCompletionAssertion);
 }
 
 export function classifyDAVESafety(

@@ -7,4 +7,4 @@ appId: ${APP_ID}
 - tapOn: "Open Settings"
 - assertVisible: "Settings"
 - assertVisible: "Sync Now"
-- assertVisible: "Back Up Data"
+- assertVisible: "Export Complete Backup"

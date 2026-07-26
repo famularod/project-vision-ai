@@ -116,4 +116,54 @@ describe('judgment supporting-object trace (audit P1-51)', () => {
     expect(trace.evidenceIds).not.toContain('ev-parking');
     expect(trace.realityObjectIds).toEqual(['obj-electrical']);
   });
+
+  it.each([
+    ['unknown object', {
+      supportingRealityObjectIds: ['obj-missing'],
+    }],
+    ['unrelated assertion', {
+      supportingAssertionIds: ['assert-parking-1'],
+    }],
+  ])('fails closed when the persisted trace references an %s', (_label, recordOverride) => {
+    const record = {
+      ...buildExecutiveJudgmentRecord({
+        result: judgmentResult(),
+        realityModel: realityModel(),
+        situationSummary: 'Field walk summary',
+      }),
+      ...recordOverride,
+    };
+
+    expect(() => buildPIERecommendationTrace({
+      core: {
+        bestNextStep: 'Complete the electrical rough-in inspection',
+        executiveJudgmentRecord: record,
+        realityModel: realityModel(),
+      } as never,
+    })).toThrow(/traceability is incomplete/i);
+  });
+
+  it('fails closed when supporting objects have no source evidence', () => {
+    const model = realityModel() as unknown as {
+      objects: Array<{
+        identity: { id: string };
+        assertions: Array<{ id: string }>;
+        sourceEvidenceReferences: Array<{ evidenceId: string }>;
+      }>;
+    };
+    model.objects[0].sourceEvidenceReferences = [];
+    const record = buildExecutiveJudgmentRecord({
+      result: judgmentResult(),
+      realityModel: realityModel(),
+      situationSummary: 'Field walk summary',
+    });
+
+    expect(() => buildPIERecommendationTrace({
+      core: {
+        bestNextStep: 'Complete the electrical rough-in inspection',
+        executiveJudgmentRecord: record,
+        realityModel: model,
+      } as never,
+    })).toThrow(/no source evidence/i);
+  });
 });

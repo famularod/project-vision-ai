@@ -3,6 +3,11 @@ import {
   type PIEAttentionState,
 } from './PIEAttentionEngine';
 import {
+  classifyDAVEBlocker,
+  classifyDAVECompletion,
+  classifyDAVEIssue,
+} from './DAVEAssertionParser';
+import {
   evaluateEvidenceQuality,
   type PIEEvidenceQualityInput,
   type PIEEvidenceQualityItem,
@@ -1559,7 +1564,10 @@ export function buildRuntimeEvidenceQualityInputs(
       // A clean import is not a human confirmation. Only an explicit PM
       // progress source carries that authority.
       userConfirmed: fused.scheduleEvidence.some(item =>
-        item.sources.some(source => source.type === 'typed-update'),
+        item.sources.some(source =>
+          source.type === 'typed-update' &&
+          Boolean(source.provenance?.confirmationEventId),
+        ),
       ),
       matchesPriorEvidence: memoryRecall.patterns.length > 0,
       unreviewedOCR: runtime.scheduleSummary.needsReviewCount > 0,
@@ -1840,7 +1848,7 @@ function buildRuntimeEvidenceTimelineEvents(
 
   const issueEvents = fused.issueEvidence.map(issue => ({
     id: `timeline-issue-${issue.id}`,
-    type: /resolved|closed|complete/i.test(issue.status)
+    type: issueStatusIsResolved(issue.status)
       ? 'issue_resolved' as const
       : 'issue_opened' as const,
     occurredAt: issue.dueDate || generatedAt,
@@ -2037,7 +2045,7 @@ function buildRuntimeRealitySourceObjects(
       projectName: issue.projectName,
       areaName: issue.areaName,
       summary: issue.evidenceText[0] || issue.title,
-      status: /resolved|closed|complete/i.test(issue.status) ? 'complete' : issue.isOverdue ? 'blocked' : 'at_risk',
+      status: issueStatusIsResolved(issue.status) ? 'complete' : issue.isOverdue ? 'blocked' : 'at_risk',
       confidence: issue.confidence,
       evidenceType: 'issue',
       evidenceId: issue.id,
@@ -2131,6 +2139,15 @@ function buildRuntimeRealitySourceObjects(
   }
 
   return objects;
+}
+
+function issueStatusIsResolved(status: string) {
+  const assertionText = `Issue ${status}`;
+  return (
+    classifyDAVEIssue(assertionText) === 'no_issue_observed' ||
+    classifyDAVEBlocker(assertionText) === 'resolved' ||
+    classifyDAVECompletion(assertionText) === 'complete'
+  );
 }
 
 function stableCoreProjectId(projectName: string) {

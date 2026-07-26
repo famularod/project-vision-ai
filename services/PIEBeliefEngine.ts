@@ -19,6 +19,7 @@ import type {
 } from './PIEScientificMethod';
 import type { PIERuntimeState } from './PIERuntime';
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import { parseDAVEAssertions } from './DAVEAssertionParser';
 
 export type PIEBeliefType =
   | 'progress'
@@ -824,7 +825,9 @@ function inferBeliefType(statement: string): PIEBeliefType {
   if (/missing|unknown|evidence|verify/.test(value)) return 'evidence_gap';
   if (/location|area|gps|project/.test(value)) return 'location';
   if (/issue|block|risk/.test(value)) return 'risk';
-  if (/complete|done|finished/.test(value)) return 'completion';
+  if (parseDAVEAssertions(value).assertions.some(assertion =>
+    assertion.predicate === 'complete'
+  )) return 'completion';
   if (/ready|readiness/.test(value)) return 'readiness';
   return 'progress';
 }

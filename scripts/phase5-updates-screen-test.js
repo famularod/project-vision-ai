@@ -6,6 +6,10 @@ const assert = require('assert');
 
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const appShellTheme = fs.readFileSync(
+  path.join(root, 'components/app-shell-theme.ts'),
+  'utf8',
+);
 const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8');
 const supabase = fs.readFileSync(path.join(root, 'services/SupabaseService.ts'), 'utf8');
 const updateService = fs.readFileSync(path.join(root, 'services/updateService.ts'), 'utf8');
@@ -57,7 +61,10 @@ const updateDetail = app.slice(
   'ReadOnlyUpdateDetailScreen',
   'screenForUpdateResume(update)',
   'ANALYSIS_TIMEOUT_SECONDS',
+  'ANALYSIS_TIMEOUT_SECONDS = 135',
   'PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000',
+  "result.status === 'analyzing'",
+  '? result.updatedAt',
 ].forEach(marker => {
   assert(app.includes(marker), `Phase 5 Updates screen should include ${marker}`);
 });
@@ -91,11 +98,11 @@ assert(
   'Field Activity must remain a focused searchable record, with capture launched from Overview or a project.',
 );
 assert(
-  updatesScreen.includes('accessibilityRole="tab"') &&
+    updatesScreen.includes('accessibilityRole="tab"') &&
     updatesScreen.includes('accessibilityState={{ selected }}') &&
     updatesScreen.includes('accessibilityRole="button"') &&
-    app.includes('updateSegment: {') &&
-    app.includes('minHeight: 44'),
+    appShellTheme.includes('updateSegment: {') &&
+    appShellTheme.includes('minHeight: 44'),
   'Updates tabs and cards must expose large accessible touch targets.',
 );
 assert(
@@ -165,10 +172,11 @@ assert(
 assert(
   sync.includes("if (item.operation === 'delete')") &&
     sync.includes('deleteProjectUpdate({') &&
-    supabase.includes(".from(PROJECT_UPDATES_TABLE)\n    .delete()") &&
-    supabase.includes(".eq('owner_id', owner.data)") &&
-    supabase.includes(".eq('id', updateId)"),
-  'Permanent field-update deletion must be queued and owner-scoped in the cloud.',
+    supabase.includes("'dave_delete_project_update_atomically'") &&
+    supabase.includes('{ p_update_id: updateId }') &&
+    supabase.includes('requireAuthenticatedOwnerId(client)') &&
+    !supabase.includes(".from(PROJECT_UPDATES_TABLE)\n    .delete()"),
+  'Permanent field-update deletion must be queued and committed atomically through the owner-scoped cloud RPC.',
 );
 assert(
   updateWorkspace.includes('recipientNames') && app.includes('contactNamesById'),

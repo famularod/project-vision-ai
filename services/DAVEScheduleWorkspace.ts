@@ -58,7 +58,9 @@ export function groupScheduleWorkspaceItemsByProject(
 
   items.forEach(item => {
     const projectName = scheduleItemProjectName(item) || 'No project';
-    groups.set(projectName, [...(groups.get(projectName) || []), item]);
+    const existing = groups.get(projectName);
+    if (existing) existing.push(item);
+    else groups.set(projectName, [item]);
   });
 
   return [...groups.entries()]
@@ -78,7 +80,9 @@ export function groupScheduleWorkspaceItemsByProjectAndArea(
 
     projectGroup.data.forEach(item => {
       const areaName = scheduleItemAreaName(item);
-      areas.set(areaName, [...(areas.get(areaName) || []), item]);
+      const existing = areas.get(areaName);
+      if (existing) existing.push(item);
+      else areas.set(areaName, [item]);
     });
 
     return [...areas.entries()]

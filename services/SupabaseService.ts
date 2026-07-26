@@ -45,6 +45,11 @@ import {
   FileSizePreflightError,
   prepareExpoFileUploadPayload,
 } from './FileSizePreflight';
+import {
+  attachDAVEOperationalRealtime,
+  type DAVEOperationalRealtimeEntity,
+  type DAVEOperationalRealtimeStatus,
+} from './DAVEOperationalRefresh';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
@@ -579,6 +584,27 @@ export function subscribeToAuthStateChange(
   return () => data.subscription.unsubscribe();
 }
 
+export async function subscribeToDAVEOperationalChanges({
+  onChange,
+  onStatus,
+}: {
+  onChange: (entity: DAVEOperationalRealtimeEntity) => void;
+  onStatus?: (status: DAVEOperationalRealtimeStatus) => void;
+}): Promise<() => void> {
+  const client = getSupabaseClient();
+  if (!client) return () => undefined;
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) return () => undefined;
+
+  return attachDAVEOperationalRealtime({
+    client,
+    ownerId: owner.data,
+    onChange,
+    onStatus,
+  });
+}
+
 export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceResult<SupabaseSessionTokenLookupResult>> {
   const client = getSupabaseClient();
   const storageAvailable = await probeAuthStorage();
@@ -881,79 +907,28 @@ export async function deleteProject({
 
   if (!projectName) return errorResult('Project delete requires a name.');
 
-  const errors: string[] = [];
-
-  const updatesResult = await client
-    .from(PROJECT_UPDATES_TABLE)
-    .delete()
-    .eq('owner_id', owner.data)
-    .eq('project_name', projectName);
-  appendRelatedDeleteError(errors, 'project updates', updatesResult.error?.message);
-
-  const scheduleResult = await client
-    .from(SCHEDULE_ITEMS_TABLE)
-    .delete()
-    .eq('owner_id', owner.data)
-    .eq('project_name', projectName);
-  appendRelatedDeleteError(errors, 'schedule items', scheduleResult.error?.message);
-
-  const relatedDocuments = await paginateSupabaseCollection(async ({
-    from,
-    to,
-    includeExactCount,
-  }) => client
-    .from(REFERENCE_DOCUMENTS_TABLE)
-    .select('id, document_data', { count: includeExactCount ? 'exact' : undefined })
-    .eq('owner_id', owner.data)
-    .order('id', { ascending: true })
-    .range(from, to));
-  appendRelatedDeleteError(
-    errors,
-    'reference documents',
-    relatedDocuments.ok ? undefined : relatedDocuments.error,
+  const { error, status } = await client.rpc(
+    'dave_delete_project_atomically',
+    { p_project_name: projectName },
   );
-
-  if (relatedDocuments.ok) {
-    const relatedDocumentIds = relatedDocuments.rows
-      .filter(row => recordMatchesProject(toRecord(row).document_data, projectName))
-      .map(row => toRecord(row).id)
-      .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
-
-    if (relatedDocumentIds.length > 0) {
-      const documentDeleteResult = await client
-        .from(REFERENCE_DOCUMENTS_TABLE)
-        .delete()
-        .eq('owner_id', owner.data)
-        .in('id', relatedDocumentIds);
-      appendRelatedDeleteError(
-        errors,
-        'reference documents',
-        documentDeleteResult.error?.message,
+  if (error) {
+    if (
+      error.code === 'PGRST202' ||
+      error.message.toLowerCase().includes('dave_delete_project_atomically')
+    ) {
+      return errorResult(
+        'Protected project deletion is not available yet. Apply the approved Vitruvius database migration, then retry.',
+        status,
+        error.code,
       );
     }
-  }
-
-  const projectResult = await client
-    .from(PROJECTS_TABLE)
-    .delete()
-    .eq('owner_id', owner.data)
-    .eq('name', projectName);
-
-  if (projectResult.error) {
-    return tableAwareErrorResult<null>(
-      projectResult.error.message,
-      projectResult.status,
-    );
-  }
-
-  if (errors.length > 0) {
     return errorResult(
-      `Project deleted, but related cloud cleanup had issues: ${errors.join(' | ')}`,
-      projectResult.status,
+      'The project and its deletion markers could not be committed together. No partial cloud deletion was accepted.',
+      status,
+      error.code,
     );
   }
-
-  return okResult(null, projectResult.status);
+  return okResult(null, status);
 }
 
 export async function listProjects(): Promise<SupabaseServiceResult<CloudProject[]>> {
@@ -1081,20 +1056,28 @@ export async function deleteProjectUpdate({
   const updateId = id.trim();
   if (!updateId) return errorResult('Field update delete requires an id.');
 
-  const deleteResult = await client
-    .from(PROJECT_UPDATES_TABLE)
-    .delete()
-    .eq('owner_id', owner.data)
-    .eq('id', updateId);
-
-  if (deleteResult.error) {
-    return tableAwareErrorResult<null>(
-      deleteResult.error.message,
-      deleteResult.status,
+  const { error, status } = await client.rpc(
+    'dave_delete_project_update_atomically',
+    { p_update_id: updateId },
+  );
+  if (error) {
+    if (
+      error.code === 'PGRST202' ||
+      error.message.toLowerCase().includes('dave_delete_project_update_atomically')
+    ) {
+      return errorResult(
+        'Protected field-update deletion is not available yet. Apply the approved Vitruvius database migration, then retry.',
+        status,
+        error.code,
+      );
+    }
+    return errorResult(
+      'The field update and its deletion marker could not be committed together. No partial cloud deletion was accepted.',
+      status,
+      error.code,
     );
   }
-
-  return okResult(null, deleteResult.status);
+  return okResult(null, status);
 }
 
 export async function archiveProjectUpdate({
@@ -1242,6 +1225,7 @@ export async function upsertScheduleItem(
 export async function upsertReferenceDocument(
   document: ReferenceDocument,
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
+  const { cloudUpdatedAt: _cloudUpdatedAt, ...documentData } = document;
   return upsertJsonRecord<ReferenceDocument>({
     table: REFERENCE_DOCUMENTS_TABLE,
     ownerScoped: true,
@@ -1249,7 +1233,7 @@ export async function upsertReferenceDocument(
       id: document.id,
       name: document.name,
       category: document.category,
-      document_data: toJsonValue(document),
+      document_data: toJsonValue(documentData),
       updated_at: new Date().toISOString(),
     },
     data: document,
@@ -1274,6 +1258,7 @@ export async function listReferenceDocuments(): Promise<SupabaseServiceResult<Re
   return listOwnedJsonRecords<ReferenceDocument>({
     table: REFERENCE_DOCUMENTS_TABLE,
     jsonColumn: 'document_data',
+    includeCloudUpdatedAt: true,
   });
 }
 
@@ -1340,6 +1325,8 @@ export async function listDAVESyncTombstones(): Promise<
             !recordId ||
             !deletedAt ||
             ![
+              'project',
+              'project_update',
               'project_area',
               'schedule_item',
               'reference_document',
@@ -2602,9 +2589,11 @@ async function upsertJsonRecord<T>({
 async function listOwnedJsonRecords<T>({
   table,
   jsonColumn,
+  includeCloudUpdatedAt = false,
 }: {
   table: string;
   jsonColumn: string;
+  includeCloudUpdatedAt?: boolean;
 }): Promise<SupabaseServiceResult<T[]>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<T[]>();
@@ -2634,7 +2623,16 @@ async function listOwnedJsonRecords<T>({
       // The database row is the durable identity. Legacy JSON may omit its id
       // or contain an old conflicting id; using the row id prevents a later
       // upload from manufacturing a second cloud record.
-      return bindDAVECloudDatabaseIdentity(jsonRecord, databaseRow.id) as T;
+      const record = bindDAVECloudDatabaseIdentity(jsonRecord, databaseRow.id);
+      return (includeCloudUpdatedAt
+        ? {
+            ...record,
+            cloudUpdatedAt:
+              typeof databaseRow.updated_at === 'string'
+                ? databaseRow.updated_at
+                : null,
+          }
+        : record) as T;
     })
     .filter((value): value is T => Boolean(value));
 

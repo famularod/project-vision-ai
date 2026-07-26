@@ -29,6 +29,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     mockStorage.delete(key);
     return Promise.resolve();
   }),
+  getAllKeys: jest.fn(() => Promise.resolve([...mockStorage.keys()])),
 }));
 
 jest.mock('../../services/SupabaseService', () => {
@@ -198,8 +199,10 @@ describe('downloadCloudChanges collection failure propagation', () => {
     expect(result.collectionErrors.projectAreas).toContain('tombstone table unreachable');
     expect(result.collectionErrors.scheduleItems).toContain('tombstone table unreachable');
     expect(result.collectionErrors.referenceDocuments).toContain('tombstone table unreachable');
-    // Projects/updates are not tombstone-gated and stay independent.
-    expect(result.collectionErrors.projects).toBeNull();
+    // Every remotely deletable collection is tombstone-gated. If deletion
+    // history cannot be verified, projects and updates must fail closed too.
+    expect(result.collectionErrors.projects).toContain('tombstone table unreachable');
+    expect(result.collectionErrors.updates).toContain('tombstone table unreachable');
   });
 
   it('leaves unconfigured stubs silent rather than inventing failures', async () => {

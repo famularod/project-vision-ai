@@ -92,18 +92,22 @@ export function scheduleCompletionOverridesFieldMatch(
   const verification = item.completionVerification;
   const pmVerified = verification?.status === 'pm_verified';
   const pmRecorded = item.progressSource === 'project_manager';
-  if (!pmVerified && !pmRecorded) return false;
+  const scheduleImported = item.progressSource === 'schedule_import';
+  if (!pmVerified && !pmRecorded && !scheduleImported) return false;
 
   const completionAt = timestamp(
     pmVerified
       ? verification?.verifiedAt || verification?.reportedAt || null
-      : item.progressConfirmedAt || item.importedAt || item.createdAt || null,
+      : pmRecorded
+        ? item.progressConfirmedAt || item.importedAt || item.createdAt || null
+        : item.importedAt || item.createdAt || null,
   );
   const fieldAt = timestamp(match?.capturedAt || null);
 
   // A PM's completion decision is authoritative when chronology is unavailable.
-  // When both timestamps exist, only genuinely newer field evidence can reopen it.
-  if (completionAt === 0 || fieldAt === 0) return true;
+  // Imported schedule completion is trusted only when its source time proves it
+  // is at least as new as the contradictory field evidence.
+  if (completionAt === 0 || fieldAt === 0) return pmVerified || pmRecorded;
   return completionAt >= fieldAt;
 }
 
@@ -114,6 +118,11 @@ const MATCH_BASIS_RANK: Record<PIEScheduleFieldMatch['matchBasis'], number> = {
   explicit_task_id: 0,
   stored_task_name: 1,
   semantic_fallback: 2,
+};
+const MATCH_CONFIDENCE_RANK: Record<PIEScheduleFieldMatch['confidence'], number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
 };
 const TASK_STOP_WORDS = new Set([
   'and', 'the', 'for', 'from', 'into', 'with', 'work', 'area', 'project',
@@ -150,6 +159,32 @@ export function selectAuthoritativeScheduleItems({
   const activeDocumentIds = new Set(activeSchedules.map(document => normalize(document.id)).filter(Boolean));
   const knownDocumentIds = new Set(scheduleSources.map(document => normalize(document.id)).filter(Boolean));
 
+  const itemHasActiveProvenance = (item: ScheduleItem) => {
+    const sourceDocumentId = normalize(item.sourceDocumentId || '');
+    if (sourceDocumentId && activeDocumentIds.has(sourceDocumentId)) return true;
+    const importBatchId = normalize(item.importBatchId || '');
+    return Boolean(importBatchId && activeBatchIds.has(importBatchId));
+  };
+  const itemHasOrphanedProvenance = (item: ScheduleItem) => {
+    const sourceDocumentId = normalize(item.sourceDocumentId || '');
+    if (sourceDocumentId && !knownDocumentIds.has(sourceDocumentId)) return true;
+    const importBatchId = normalize(item.importBatchId || '');
+    return Boolean(importBatchId && !knownBatchIds.has(importBatchId));
+  };
+  const activeOccurrenceKeys = new Set(
+    scheduleItems
+      .filter(itemHasActiveProvenance)
+      .map(scheduleOccurrenceKey),
+  );
+  const authoritativeOrphanOccurrenceKeys = new Set(
+    scheduleItems
+      .filter(item => (
+        itemHasOrphanedProvenance(item) &&
+        scheduleHasAuthoritativeProgressJudgment(item)
+      ))
+      .map(scheduleOccurrenceKey),
+  );
+
   const selectedItems = scheduleSources.length === 0
     ? selectLatestImportedScheduleBatches(scheduleItems)
     : activeSchedules.length === 0
@@ -158,6 +193,16 @@ export function selectAuthoritativeScheduleItems({
           !normalize(item.importBatchId || '') &&
           !normalize(item.sourceDocumentId || ''))
     : scheduleItems.filter(item => {
+    const occurrenceKey = scheduleOccurrenceKey(item);
+    if (
+      itemHasActiveProvenance(item) &&
+      authoritativeOrphanOccurrenceKeys.has(occurrenceKey)
+    ) return false;
+    if (
+      itemHasOrphanedProvenance(item) &&
+      activeOccurrenceKeys.has(occurrenceKey)
+    ) return scheduleHasAuthoritativeProgressJudgment(item);
+
     const sourceDocumentId = normalize(item.sourceDocumentId || '');
     if (sourceDocumentId && knownDocumentIds.has(sourceDocumentId)) {
       return activeDocumentIds.has(sourceDocumentId);
@@ -173,6 +218,17 @@ export function selectAuthoritativeScheduleItems({
   });
 
   return dedupeScheduleItems(selectedItems);
+}
+
+function scheduleOccurrenceKey(item: ScheduleItem) {
+  return [
+    normalize(item.scheduleProjectName || item.projectName || ''),
+    normalize(item.locationName || ''),
+    normalize(item.taskName || ''),
+    normalize(item.startDate || ''),
+    normalize(item.finishDate || ''),
+    normalize(item.milestone || ''),
+  ].join('|');
 }
 
 function selectLatestImportedScheduleBatches(
@@ -267,8 +323,9 @@ export function buildPIEScheduleReconciliation({
       .filter((match): match is PIEScheduleFieldMatch => Boolean(match))
       .sort((left, right) =>
         MATCH_BASIS_RANK[left.matchBasis] - MATCH_BASIS_RANK[right.matchBasis] ||
-        right.score - left.score ||
-        timestamp(right.capturedAt) - timestamp(left.capturedAt),
+        MATCH_CONFIDENCE_RANK[left.confidence] - MATCH_CONFIDENCE_RANK[right.confidence] ||
+        timestamp(right.capturedAt) - timestamp(left.capturedAt) ||
+        right.score - left.score,
       );
     const bestMatch = itemMatches[0] || null;
     const daysUntilFinish = relativeDays(item.finishDate, now, item.projectTimeZone);
@@ -302,7 +359,7 @@ export function buildPIEScheduleReconciliation({
           match: bestMatch,
           type: 'schedule_status_conflict',
           title: 'Field evidence conflicts with schedule status',
-          summary: `${scheduleLabel(item)} is marked Complete, but the best task-specific field update indicates ${signalLabel(bestMatch.signal)}.`,
+          summary: `${scheduleLabel(item)} is marked Complete, but a later or more reliable task-specific field update indicates ${signalLabel(bestMatch.signal)}.`,
           severity: bestMatch.signal === 'blocked' || bestMatch.signal === 'issue' ? 'critical' : 'high',
           suggestedAction: 'Verify the field condition before relying on the Complete schedule status.',
         }));

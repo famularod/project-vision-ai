@@ -6,6 +6,11 @@ import type {
 } from '../types';
 import { daysUntilDate, parseFlexibleDate } from '../utils/date';
 import { createReportedCompletionVerification } from './DAVECompletionVerification';
+import {
+  classifyDAVEBlocker,
+  classifyDAVEImplementation,
+  hasDAVEExplicitCompletionReport,
+} from './DAVEAssertionParser';
 
 export type PIEScheduleCommunicationImportResult = {
   items: ScheduleItem[];
@@ -232,14 +237,16 @@ function normalizedDate(value: string, now: Date) {
 }
 
 function communicationStatus(value: string): ScheduleStatus {
-  if (/\b(waiting|blocked|on hold|delayed)\b/i.test(value)) return 'Waiting';
-  if (/\b(started|working|in progress|underway|installing)\b/i.test(value)) return 'In Progress';
+  if (classifyDAVEBlocker(value) === 'blocked') return 'Waiting';
+  const implementation = classifyDAVEImplementation(value);
+  if (implementation === 'in_progress' || implementation === 'implemented') {
+    return 'In Progress';
+  }
   return 'Not Started';
 }
 
 function completionWasReported(value: string) {
-  return /\b(done|complete|completed|finished)\b/i.test(value) &&
-    !/\b(?:not|isn['’]?t|wasn['’]?t|never)\s+(?:done|complete|completed|finished)\b/i.test(value);
+  return hasDAVEExplicitCompletionReport(value);
 }
 
 function communicationOwner(value: string) {

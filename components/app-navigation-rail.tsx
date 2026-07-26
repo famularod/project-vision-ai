@@ -7,6 +7,7 @@ import type { AppScreen } from '../types/app-navigation';
 import { PRODUCT_BRAND } from '../product-brand';
 import { isOverviewPrimaryNavigationActive } from './app-primary-navigation';
 import { AppProjectSwitcher } from './app-project-switcher';
+import { VitruviusBrandLockup } from './vitruvius-brand-lockup';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -47,15 +48,11 @@ export function AppNavigationRail({
       accessibilityLabel={`${PRODUCT_BRAND.name} navigation rail`}
     >
       <View style={[styles.brand, expanded && styles.brandExpanded]}>
-        <View style={styles.brandMark}>
-          <Text style={styles.brandMarkText}>{PRODUCT_BRAND.monogram}</Text>
-        </View>
-        {expanded ? (
-          <View>
-            <Text style={styles.brandName}>{PRODUCT_BRAND.name}</Text>
-            <Text style={styles.brandCaption}>{PRODUCT_BRAND.subtitle}</Text>
-          </View>
-        ) : null}
+        <VitruviusBrandLockup
+          compact={!expanded}
+          showText={expanded}
+          testID="app-rail-brand"
+        />
       </View>
 
       <View style={styles.navigationItems}>
@@ -91,10 +88,19 @@ export function AppNavigationRail({
           accessibilityRole="button"
           accessibilityLabel="Talk to project assistant"
         >
-          <View style={styles.talkIcon}>
-            <Ionicons name="mic" size={21} color={colors.surface} />
+          <View
+            testID="app-nav-talk-icon-slot"
+            style={[styles.talkIcon, expanded && styles.talkIconExpanded]}
+          >
+            <Ionicons
+              name="mic"
+              size={expanded ? 27 : 25}
+              color={colors.surface}
+            />
           </View>
-          <Text style={styles.talkText}>Talk</Text>
+          <Text style={[styles.talkText, expanded && styles.talkTextExpanded]}>
+            Talk
+          </Text>
         </Pressable>
         <RailButton
           label="Reports"
@@ -163,12 +169,26 @@ function RailButton({
       accessibilityState={{ selected: active }}
       accessibilityLabel={label}
     >
-      <Ionicons
-        name={icon}
-        size={23}
-        color={active ? colors.primary : colors.mutedText}
-      />
-      <Text style={[styles.railLabel, active && styles.railLabelActive]}>
+      <View
+        testID={`app-nav-${label.toLowerCase()}-icon-slot`}
+        style={[
+          styles.railIconSlot,
+          expanded && styles.railIconSlotExpanded,
+        ]}
+      >
+        <Ionicons
+          name={icon}
+          size={expanded ? 29 : 27}
+          color={active ? colors.primary : colors.mutedText}
+        />
+      </View>
+      <Text
+        style={[
+          styles.railLabel,
+          expanded && styles.railLabelExpanded,
+          active && styles.railLabelActive,
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -185,51 +205,27 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
   },
   railMedium: {
-    width: 92,
+    width: 104,
   },
   railExpanded: {
-    width: 220,
+    width: 248,
   },
   brand: {
-    minHeight: 68,
+    minHeight: 84,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingTop: spacing.sm,
     marginBottom: spacing.sm,
   },
   brandExpanded: {
-    flexDirection: 'row',
     justifyContent: 'flex-start',
-    gap: spacing.sm,
     paddingHorizontal: spacing.xs,
-  },
-  brandMark: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.primary,
-  },
-  brandMarkText: {
-    color: colors.surface,
-    fontSize: 20,
-    fontWeight: '900',
-  },
-  brandName: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  brandCaption: {
-    color: colors.mutedText,
-    fontSize: 10,
-    fontWeight: '700',
   },
   navigationItems: {
     gap: spacing.xs,
   },
   railButton: {
-    minHeight: 64,
+    minHeight: 72,
     borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
@@ -237,18 +233,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xs,
   },
   railButtonExpanded: {
+    minHeight: 76,
     flexDirection: 'row',
     justifyContent: 'flex-start',
-    gap: spacing.sm,
+    gap: spacing.md,
     paddingHorizontal: spacing.md,
   },
   railButtonActive: {
     backgroundColor: colors.primarySoft,
   },
+  railIconSlot: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  railIconSlotExpanded: {
+    width: 44,
+    height: 44,
+  },
   railLabel: {
     color: colors.mutedText,
-    fontSize: 11,
+    fontSize: 13,
+    lineHeight: 17,
     fontWeight: '800',
+  },
+  railLabelExpanded: {
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '900',
   },
   railLabelActive: {
     color: colors.primary,
@@ -257,17 +270,27 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   talkIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  talkIconExpanded: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
   talkText: {
     color: colors.primary,
-    fontSize: 11,
+    fontSize: 13,
+    lineHeight: 17,
     fontWeight: '900',
+  },
+  talkTextExpanded: {
+    fontSize: 16,
+    lineHeight: 21,
   },
   buttonPressed: {
     opacity: 0.72,

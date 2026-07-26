@@ -5,6 +5,7 @@ import {
   classifyDAVEIssue,
   classifyDAVEOutcome,
   classifyDAVESafety,
+  hasDAVEExplicitCompletionReport,
   parseDAVEAssertions,
 } from '../../services/DAVEAssertionParser';
 
@@ -68,6 +69,16 @@ describe('DAVE assertion parser', () => {
       modality: 'planned',
     });
     expect(classifyDAVECompletion(parsed)).toBe('no_assertion');
+  });
+
+  it('routes a definite past completion report to verification without promoting it to current truth', () => {
+    const parsed = parseDAVEAssertions('Task A was completed in Canopy B.');
+
+    expect(classifyDAVECompletion(parsed)).toBe('no_assertion');
+    expect(hasDAVEExplicitCompletionReport(parsed)).toBe(true);
+    expect(hasDAVEExplicitCompletionReport('Task A was not completed.')).toBe(false);
+    expect(hasDAVEExplicitCompletionReport('Task A will be completed tomorrow.')).toBe(false);
+    expect(hasDAVEExplicitCompletionReport('Task A might be completed.')).toBe(false);
   });
 
   it('treats no safety issues observed as an observed negative safety assertion', () => {
@@ -170,6 +181,15 @@ describe('DAVE assertion parser', () => {
     expect(classifyDAVEIssue('No issues were observed.')).toBe('no_issue_observed');
     expect(classifyDAVEBlocker('The work is not blocked.')).toBe('resolved');
     expect(classifyDAVESafety('The area is not unsafe.')).toBe('no_issue_observed');
+  });
+
+  it.each([
+    ['The task is overdue.', classifyDAVEBlocker, 'blocked'],
+    ['The schedule is at risk.', classifyDAVEIssue, 'issue_present'],
+    ['Work progressed today.', classifyDAVEImplementation, 'in_progress'],
+    ['The crew is installing conduit.', classifyDAVEImplementation, 'in_progress'],
+  ] as const)('normalizes construction status phrase %s', (source, classify, expected) => {
+    expect(classify(source)).toBe(expected);
   });
 
   it.each([

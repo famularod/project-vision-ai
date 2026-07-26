@@ -16,7 +16,7 @@ const timing = read('services/SixtySecondFlowInstrumentation.ts');
 const phase6 = read('scripts/phase6-documents-foundation-test.js');
 
 [
-  'ANALYSIS_TIMEOUT_SECONDS = 60',
+  'ANALYSIS_TIMEOUT_SECONDS = 135',
   'PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000',
   'PIE_STATUS_COPY',
   'PIE_STATUS_COPY.checking',

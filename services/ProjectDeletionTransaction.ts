@@ -9,6 +9,7 @@ import {
   type DurableLocalTransactionStorage,
 } from './DurableLocalTransaction';
 import { mergeDAVESyncTombstones } from './DAVESyncTombstones';
+import { projectUpdateBelongsToParentProject } from './DAVEProjectUpdateScope';
 import type { ProjectUpdateDeletionIntent } from './ProjectUpdateDeletionJournal';
 
 export const PROJECT_DELETION_TRANSACTION_JOURNAL_KEY =
@@ -48,6 +49,7 @@ export type ProjectDeletionStorageKeys = Readonly<{
   updateDeletionJournal: string;
   projectDocuments: string;
   referenceDocuments: string;
+  projectAreas: string;
   scheduleItems: string;
   daveSyncTombstones: string;
   activeDraft: string;
@@ -56,7 +58,12 @@ export type ProjectDeletionStorageKeys = Readonly<{
 }>;
 
 type ProjectRecordLike = Readonly<{ name: string }>;
-type ProjectUpdateLike = Readonly<{ id: string; projectName: string }>;
+type ProjectUpdateLike = Readonly<{
+  id: string;
+  projectName: string;
+  scheduleItemId?: string | null;
+  scheduleProjectName?: string | null;
+}>;
 type UpdateTombstoneLike = Readonly<{ updateId: string }>;
 type ProjectDocumentLike = Readonly<{ projectId: string }>;
 type ReferenceDocumentLike = Readonly<{
@@ -68,6 +75,11 @@ type ScheduleItemLike = Readonly<{
   id: string;
   projectName: string;
   scheduleProjectName?: string | null;
+  locationName?: string | null;
+}>;
+type ProjectAreaLike = Readonly<{
+  id: string;
+  projectName?: string | null;
 }>;
 
 export type ProjectDeletionCascade<
@@ -76,6 +88,7 @@ export type ProjectDeletionCascade<
   TUpdateTombstone,
   TProjectDocument,
   TReferenceDocument,
+  TProjectArea,
   TScheduleItem,
   TDraft,
 > = Readonly<{
@@ -92,6 +105,8 @@ export type ProjectDeletionCascade<
   removedProjectDocuments: TProjectDocument[];
   remainingReferenceDocuments: TReferenceDocument[];
   removedReferenceDocuments: TReferenceDocument[];
+  remainingProjectAreas: TProjectArea[];
+  removedProjectAreas: TProjectArea[];
   remainingScheduleItems: TScheduleItem[];
   removedScheduleItems: TScheduleItem[];
   nextDAVESyncTombstones: DAVESyncTombstone[];
@@ -129,6 +144,7 @@ export function buildProjectDeletionCascade<
   TUpdateTombstone extends UpdateTombstoneLike,
   TProjectDocument extends ProjectDocumentLike,
   TReferenceDocument extends ReferenceDocumentLike,
+  TProjectArea extends ProjectAreaLike,
   TScheduleItem extends ScheduleItemLike,
   TDraft,
 >({
@@ -143,6 +159,7 @@ export function buildProjectDeletionCascade<
   updateDeletionIntents,
   projectDocuments,
   referenceDocuments,
+  projectAreas,
   scheduleItems,
   daveSyncTombstones,
   draft,
@@ -164,6 +181,7 @@ export function buildProjectDeletionCascade<
   updateDeletionIntents: readonly ProjectUpdateDeletionIntent[];
   projectDocuments: readonly TProjectDocument[];
   referenceDocuments: readonly TReferenceDocument[];
+  projectAreas: readonly TProjectArea[];
   scheduleItems: readonly TScheduleItem[];
   daveSyncTombstones: readonly DAVESyncTombstone[];
   draft: TDraft;
@@ -182,6 +200,7 @@ export function buildProjectDeletionCascade<
   TUpdateTombstone,
   TProjectDocument,
   TReferenceDocument,
+  TProjectArea,
   TScheduleItem,
   TDraft
 > {
@@ -195,8 +214,14 @@ export function buildProjectDeletionCascade<
 
   const projectMatches = (value: string | null | undefined) =>
     normalizedScope(value) === normalizedProjectName;
-  const remainingUpdates = updates.filter(update => !projectMatches(update.projectName));
-  const removedUpdates = updates.filter(update => projectMatches(update.projectName));
+  const updateMatchesProject = (update: TUpdate) =>
+    projectUpdateBelongsToParentProject({
+      update,
+      projectName,
+      scheduleItems,
+    });
+  const remainingUpdates = updates.filter(update => !updateMatchesProject(update));
+  const removedUpdates = updates.filter(update => updateMatchesProject(update));
   const remainingProjectDocuments = projectDocuments.filter(document =>
     !projectDocumentMatchesProject(document, projectName, authorityProjectId),
   );
@@ -208,6 +233,12 @@ export function buildProjectDeletionCascade<
   );
   const removedReferenceDocuments = referenceDocuments.filter(document =>
     referenceDocumentMatchesProject(document, projectName, authorityProjectId),
+  );
+  const remainingProjectAreas = projectAreas.filter(area =>
+    !projectMatches(area.projectName),
+  );
+  const removedProjectAreas = projectAreas.filter(area =>
+    projectMatches(area.projectName),
   );
   const remainingScheduleItems = scheduleItems.filter(item =>
     !scheduleItemMatchesProject(item, projectName),
@@ -235,6 +266,21 @@ export function buildProjectDeletionCascade<
   );
 
   const deletionTombstones: DAVESyncTombstone[] = [
+    {
+      entityType: 'project' as const,
+      recordId: projectName,
+      deletedAt: normalizedDeletedAt,
+    },
+    ...removedUpdates.map(update => ({
+      entityType: 'project_update' as const,
+      recordId: update.id,
+      deletedAt: normalizedDeletedAt,
+    })),
+    ...removedProjectAreas.map(area => ({
+      entityType: 'project_area' as const,
+      recordId: area.id,
+      deletedAt: normalizedDeletedAt,
+    })),
     ...removedScheduleItems.map(item => ({
       entityType: 'schedule_item' as const,
       recordId: item.id,
@@ -261,6 +307,8 @@ export function buildProjectDeletionCascade<
     removedProjectDocuments,
     remainingReferenceDocuments,
     removedReferenceDocuments,
+    remainingProjectAreas,
+    removedProjectAreas,
     remainingScheduleItems,
     removedScheduleItems,
     nextDAVESyncTombstones: mergeDAVESyncTombstones(
@@ -286,6 +334,7 @@ export function buildProjectDeletionOperations<
   TUpdateTombstone,
   TProjectDocument,
   TReferenceDocument,
+  TProjectArea,
   TScheduleItem,
   TDraft,
 >(
@@ -295,6 +344,7 @@ export function buildProjectDeletionOperations<
     TUpdateTombstone,
     TProjectDocument,
     TReferenceDocument,
+    TProjectArea,
     TScheduleItem,
     TDraft
   >,
@@ -309,6 +359,7 @@ export function buildProjectDeletionOperations<
     setJson(keys.updateDeletionJournal, cascade.nextUpdateDeletionIntents),
     setJson(keys.projectDocuments, cascade.remainingProjectDocuments),
     setJson(keys.referenceDocuments, cascade.remainingReferenceDocuments),
+    setJson(keys.projectAreas, cascade.remainingProjectAreas),
     setJson(keys.scheduleItems, cascade.remainingScheduleItems),
     setJson(keys.daveSyncTombstones, cascade.nextDAVESyncTombstones),
     setJson(keys.cloudIntents, cascade.nextCloudIntents),
@@ -585,6 +636,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Keep the entity union checked here so adding a new deletion target cannot
 // silently bypass the DAVE tombstone contract.
 const _supportedDeletionTombstoneEntities: readonly DAVESyncTombstoneEntity[] = [
+  'project',
+  'project_update',
+  'project_area',
   'schedule_item',
   'reference_document',
 ];

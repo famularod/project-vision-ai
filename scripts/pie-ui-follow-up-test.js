@@ -129,8 +129,8 @@ assert(
 
 const projectCard = sliceBetween(app, 'function Phase2ProjectCard', 'function ProjectWorkspaceScreen');
 assert(
-  app.includes('buildProjectCardPIEStatus(scopeProjects, savedUpdates)'),
-  'Overview project cards must use parent-and-child scoped DAVE status copy.',
+  app.includes('buildProjectCardPIEStatus([], scopedFieldUpdates)'),
+  'Overview project cards must use the exact parent-scoped DAVE status copy.',
 );
 assert(
   !projectCard.includes('All projects on track — nothing needs your attention.'),

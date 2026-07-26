@@ -25,6 +25,7 @@ export const DAVE_SYNC_TOMBSTONES_QUARANTINE_PREFIX =
 
 let mutationTail: Promise<void> = Promise.resolve();
 let synchronizationInFlight: Promise<DAVESyncTombstoneSyncResult> | null = null;
+let operationalRefreshInFlight: Promise<DAVESyncTombstoneSyncResult> | null = null;
 
 export type DAVESyncTombstoneSyncResult = {
   tombstones: DAVESyncTombstone[];
@@ -37,6 +38,8 @@ export type DAVESyncTombstoneSyncResult = {
    */
   uploadFailures?: number;
 };
+
+const DAVE_OPERATIONAL_TOMBSTONE_REFRESH_TIMEOUT_MS = 1_500;
 
 export function parseDAVESyncTombstones(value: unknown): DAVESyncTombstone[] {
   if (!Array.isArray(value)) return [];
@@ -167,6 +170,26 @@ export async function synchronizeDAVESyncTombstones(): Promise<DAVESyncTombstone
 }
 
 async function performTombstoneSynchronization(): Promise<DAVESyncTombstoneSyncResult> {
+  const refreshed = await refreshDAVESyncTombstonesFromCloud();
+  // Audit P1-28: count unacknowledged uploads instead of discarding results.
+  // Failed tombstones remain in the durable local journal and are re-sent on
+  // every explicit/full synchronization pass.
+  const uploadResults = await Promise.allSettled(
+    refreshed.tombstones.map(tombstone => upsertDAVESyncTombstone(tombstone)),
+  );
+  const uploadFailures = uploadResults.filter(result =>
+    result.status === 'rejected' ||
+    (result.value.configured && !result.value.stubbed && !result.value.ok),
+  ).length;
+  return { ...refreshed, uploadFailures };
+}
+
+/**
+ * Pulls deletion history without re-uploading the full durable journal.
+ * Open-device polling uses this path so hundreds of historical tombstones do
+ * not starve current task, area, or document refreshes.
+ */
+export async function refreshDAVESyncTombstonesFromCloud(): Promise<DAVESyncTombstoneSyncResult> {
   let cloudTombstones: DAVESyncTombstone[] = [];
   let cloudAuthoritative = false;
   let cloudError: string | null = null;
@@ -201,22 +224,51 @@ async function performTombstoneSynchronization(): Promise<DAVESyncTombstoneSyncR
     return next;
   });
 
-  // Audit P1-28: count unacknowledged uploads instead of discarding results.
-  // Failed tombstones remain in the durable local journal and are re-sent on
-  // every synchronization pass.
-  const uploadResults = await Promise.allSettled(
-    merged.map(tombstone => upsertDAVESyncTombstone(tombstone)),
-  );
-  const uploadFailures = uploadResults.filter(result =>
-    result.status === 'rejected' ||
-    (result.value.configured && !result.value.stubbed && !result.value.ok),
-  ).length;
   return {
     tombstones: merged,
     cloudAuthoritative,
     cloudError,
-    uploadFailures,
   };
+}
+
+/**
+ * Bounded receive-side deletion protection. If the cloud inventory is slow,
+ * the durable local journal still protects known deletions and callers may
+ * safely merge updates only for records already present on this device.
+ */
+export async function loadDAVEOperationalTombstones(): Promise<DAVESyncTombstoneSyncResult> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const refresh = operationalRefreshInFlight || refreshDAVESyncTombstonesFromCloud();
+  if (!operationalRefreshInFlight) {
+    operationalRefreshInFlight = refresh;
+    void refresh.then(
+      () => {
+        if (operationalRefreshInFlight === refresh) operationalRefreshInFlight = null;
+      },
+      () => {
+        if (operationalRefreshInFlight === refresh) operationalRefreshInFlight = null;
+      },
+    );
+  }
+  try {
+    return await Promise.race([
+      refresh,
+      new Promise<DAVESyncTombstoneSyncResult>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error('operational_tombstone_refresh_timeout')),
+          DAVE_OPERATIONAL_TOMBSTONE_REFRESH_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } catch {
+    return {
+      tombstones: await loadDAVESyncTombstones(),
+      cloudAuthoritative: false,
+      cloudError: 'Cloud deletion history refresh is still in progress.',
+    };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function serializeTombstoneMutation<T>(mutation: () => Promise<T>): Promise<T> {
@@ -337,7 +389,9 @@ function normalizeDAVESyncTombstone(value: unknown): DAVESyncTombstone | null {
 function isDAVESyncTombstoneEntity(
   value: unknown,
 ): value is DAVESyncTombstoneEntity {
-  return value === 'project_area' ||
+  return value === 'project' ||
+    value === 'project_update' ||
+    value === 'project_area' ||
     value === 'schedule_item' ||
     value === 'reference_document';
 }

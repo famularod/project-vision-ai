@@ -1,3 +1,5 @@
+import { parseDAVEAssertions } from './DAVEAssertionParser';
+
 export type ECOSReadiness =
   | 'ready'
   | 'needs_verification'
@@ -661,11 +663,11 @@ function buildNextBestActions(
 }
 
 function findConflicts(evidence: ECOSEvidenceInput[]): string[] {
-  const summaries = evidence.map(item => item.summary.toLowerCase());
-  const hasPositive = summaries.some(item => /complete|resolved|accepted|approved|stable/.test(item));
-  const hasNegative = summaries.some(item => /blocked|rejected|failed|risk|issue|uncertain/.test(item));
+  const parsed = parseDAVEAssertions(
+    evidence.map(item => item.summary).join('. '),
+  );
 
-  return hasPositive && hasNegative
+  return parsed.conflicts.length > 0
     ? ['Evidence contains both positive and negative signals.']
     : [];
 }

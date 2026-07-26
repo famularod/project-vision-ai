@@ -17,15 +17,26 @@ const jwtPattern = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
 
 const clientRoots = [
   'App.tsx',
+  'entry.ts',
   'app.json',
+  'app.config.js',
   'eas.json',
+  'package.json',
+  'product-brand.ts',
+  'product-metadata.json',
   '.env',
   '.env.local',
   '.env.production',
   '.env.example',
   'components',
   'config',
+  'features',
+  'hooks',
   'lib',
+  'navigation',
+  'plugins',
+  'providers',
+  'repositories',
   'screens',
   'services',
   'types',
@@ -34,8 +45,33 @@ const clientRoots = [
 
 const skipFiles = new Set([
   path.join(rootDir, 'scripts', 'production-secret-guard.js'),
-  path.join(rootDir, 'app.config.js'),
 ]);
+const runtimeEntryFiles = [
+  'entry.ts',
+  'App.tsx',
+  'app.config.js',
+  'app.json',
+  'eas.json',
+  'product-brand.ts',
+  'product-metadata.json',
+];
+const runtimeExtensions = [
+  '.native.ts',
+  '.native.tsx',
+  '.ios.ts',
+  '.ios.tsx',
+  '.android.ts',
+  '.android.tsx',
+  '.web.ts',
+  '.web.tsx',
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.json',
+];
 
 function shouldRead(filePath) {
   if (skipFiles.has(filePath)) return false;
@@ -60,6 +96,62 @@ function walk(entry) {
   });
 }
 
+function referencedModules(source) {
+  const modules = new Set();
+  const patterns = [
+    /\bimport\s*['"]([^'"]+)['"]/g,
+    /\b(?:import|export)\s+[^;\n]*?\sfrom\s*['"]([^'"]+)['"]/g,
+    /\b(?:import|export)\s+[\s\S]{0,4000}?\bfrom\s*['"]([^'"]+)['"]/g,
+    /\b(?:require|import)\(\s*['"]([^'"]+)['"]\s*\)/g,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      if (match[1]?.startsWith('.')) modules.add(match[1]);
+    }
+  }
+
+  return [...modules];
+}
+
+function resolveRuntimeModule(importer, specifier) {
+  const base = path.resolve(path.dirname(importer), specifier);
+  const candidates = path.extname(base)
+    ? [base]
+    : [
+        base,
+        ...runtimeExtensions.map(extension => `${base}${extension}`),
+        ...runtimeExtensions.map(extension => path.join(base, `index${extension}`)),
+      ];
+
+  return candidates.filter(candidate =>
+    candidate.startsWith(`${rootDir}${path.sep}`) &&
+    shouldRead(candidate),
+  );
+}
+
+function reachableRuntimeFiles() {
+  const queue = runtimeEntryFiles
+    .map(entry => path.join(rootDir, entry))
+    .filter(shouldRead);
+  const reachable = new Set();
+
+  while (queue.length > 0) {
+    const filePath = queue.shift();
+    if (!filePath || reachable.has(filePath)) continue;
+    reachable.add(filePath);
+
+    const source = fs.readFileSync(filePath, 'utf8');
+    for (const specifier of referencedModules(source)) {
+      for (const dependency of resolveRuntimeModule(filePath, specifier)) {
+        if (!reachable.has(dependency)) queue.push(dependency);
+      }
+    }
+  }
+
+  return [...reachable];
+}
+
 function decodeJwtPayload(token) {
   const payload = token.split('.')[1];
   if (!payload) return null;
@@ -74,13 +166,6 @@ function decodeJwtPayload(token) {
 
 function relative(filePath) {
   return path.relative(rootDir, filePath) || filePath;
-}
-
-function isClientRuntimeFile(filePath) {
-  const file = relative(filePath);
-  return clientRoots.some(entry =>
-    file === entry || file.startsWith(`${entry}${path.sep}`),
-  );
 }
 
 const failures = [];
@@ -109,23 +194,32 @@ function trackedFiles() {
   }
 }
 
-// Scan the complete tracked source tree. Limiting this guard to known client
-// folders allowed secrets in workflows, migrations, scripts, or documents to
-// bypass the release gate.
-const files = Array.from(new Set(trackedFiles()));
+// Scan both the complete tracked tree and the live runtime tree on disk.
+// The latter is intentionally resolved from the app entry points so a newly
+// created, not-yet-tracked source/config file cannot bypass the release gate.
+const reachableFiles = reachableRuntimeFiles();
+const clientRuntimeFiles = new Set([
+  ...clientRoots.flatMap(walk),
+  ...reachableFiles,
+]);
+const files = Array.from(new Set([
+  ...trackedFiles(),
+  ...clientRuntimeFiles,
+]));
 
 for (const filePath of files) {
   const source = fs.readFileSync(filePath, 'utf8');
   const file = relative(filePath);
+  const isClientRuntimeFile = clientRuntimeFiles.has(filePath);
 
   for (const name of forbiddenPublicOpenAI) {
-    if (isClientRuntimeFile(filePath) && source.includes(name)) {
+    if (isClientRuntimeFile && source.includes(name)) {
       failures.push(`${file} references forbidden public OpenAI variable ${name}`);
     }
   }
 
   const publicServiceRoleMatch = source.match(/EXPO_PUBLIC_[A-Z0-9_]*SERVICE_ROLE[A-Z0-9_]*/i);
-  if (isClientRuntimeFile(filePath) && publicServiceRoleMatch) {
+  if (isClientRuntimeFile && publicServiceRoleMatch) {
     failures.push(`${file} references forbidden public service-role variable ${publicServiceRoleMatch[0]}`);
   }
 

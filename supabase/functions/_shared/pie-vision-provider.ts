@@ -232,7 +232,7 @@ async function callOpenAI(
       modelName: model,
       modelVersion: payload.model ?? model,
       normalized: parsed,
-      rawResponse: payload,
+      rawResponse: null,
       usage: payload.usage ?? {},
       latencyMs,
       error: parsed ? null : 'provider_response_not_json',

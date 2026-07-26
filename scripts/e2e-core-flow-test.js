@@ -41,7 +41,12 @@ assert(provider.includes('highImpactAutomationAllowed'), 'Provider must gate hig
 
 assert(!app.includes('buildPIEReportDraft({'), 'App must not rebuild report drafts from raw arrays.');
 assert(!reports.includes('buildPIEReportDraft({'), 'Review must not rebuild report drafts from raw arrays.');
-assert(reports.includes('liveAuthority.reportDraft || runtime.response.reportDraft'), 'Review must use provider report draft with Runtime recovery only.');
+assert(
+  reports.includes('selectStableReportDraft({') &&
+    reports.includes('liveDraft: liveAuthority.reportDraft') &&
+    reports.includes('fallbackDraft: runtime.response.reportDraft'),
+  'Review must use the provider report draft with stable same-scope Runtime recovery.',
+);
 assert(
   reports.includes('reportDraft={effectiveReportDraft}') &&
     reports.includes('const startedReport = effectiveReportDraft;') &&

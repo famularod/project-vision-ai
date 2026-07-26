@@ -112,11 +112,11 @@ export function buildDAVEActionInbox({
       summary: dueDays === null
         ? `${item.status === 'Waiting' ? 'Waiting work' : 'High-priority work'} has no reliable finish date.`
         : dueLabel(dueDays),
-      requestedAction: item.status === 'Waiting'
+      requestedAction: clean(item.nextAction) || (item.status === 'Waiting'
         ? 'Confirm the blocker, responsible owner, and recovery date.'
         : scheduleHasAuthoritativeProgressJudgment(item)
           ? 'Set the recovery date and next accountable step while preserving the project manager progress judgment.'
-        : 'Confirm current field status and the next accountable step.',
+          : 'Confirm current field status and the next accountable step.'),
       owner: clean(item.owner) || clean(item.contractor),
       dueDate: clean(item.finishDate),
       dueDays,
@@ -161,11 +161,11 @@ export function buildDAVEActionInbox({
       areaName: clean(item.locationName),
       title: node.cycle ? `Correct circular dependency: ${label(item)}` : `Resolve dependency: ${label(item)}`,
       summary: node.blockedReason || `${node.unresolvedPredecessors.length} predecessor reference needs mapping.`,
-      requestedAction: node.cycle
+      requestedAction: clean(item.nextAction) || (node.cycle
         ? 'Correct the predecessor logic before using downstream dates.'
         : node.blocked
           ? 'Confirm the predecessor owner and recovery date.'
-          : `Map ${node.unresolvedPredecessors.join(', ')} to the correct schedule activity.`,
+          : `Map ${node.unresolvedPredecessors.join(', ')} to the correct schedule activity.`),
       owner: clean(item.owner) || clean(item.contractor),
       dueDate: clean(item.finishDate),
       dueDays: daysUntilDate(item.finishDate, now, item.projectTimeZone || undefined),

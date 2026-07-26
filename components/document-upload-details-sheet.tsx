@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { ProjectDocumentCategory } from '../services/ProjectDocumentClassification';
@@ -23,9 +24,21 @@ export function DocumentUploadDetailsSheet({
   selectedCategory: ProjectDocumentCategory;
   onCategoryChange: (category: ProjectDocumentCategory) => void;
   onToggleProject: (projectName: string) => void;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   onClose: () => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
+
+  async function confirmUpload() {
+    if (confirming || selectedProjects.size === 0) return;
+    setConfirming(true);
+    try {
+      await onConfirm();
+    } finally {
+      setConfirming(false);
+    }
+  }
+
   return (
     <ProjectActionSheet visible={visible} title="Document Details" onClose={onClose}>
       <Text style={styles.help}>
@@ -45,6 +58,7 @@ export function DocumentUploadDetailsSheet({
                 pressed && styles.pressed,
               ]}
               onPress={() => onCategoryChange(category)}
+              disabled={confirming}
               accessibilityRole="radio"
               accessibilityState={{ selected }}
               accessibilityLabel={`Classify document as ${category}`}
@@ -75,6 +89,7 @@ export function DocumentUploadDetailsSheet({
               pressed && styles.pressed,
             ]}
             onPress={() => onToggleProject(projectName)}
+            disabled={confirming}
             accessibilityRole="checkbox"
             accessibilityState={{ checked: selected }}
             accessibilityLabel={`Add document to ${projectName}`}
@@ -92,17 +107,19 @@ export function DocumentUploadDetailsSheet({
       <Pressable
         style={({ pressed }) => [
           styles.confirmButton,
-          selectedProjects.size === 0 && styles.confirmButtonDisabled,
-          pressed && selectedProjects.size > 0 && styles.pressed,
+          (selectedProjects.size === 0 || confirming) && styles.confirmButtonDisabled,
+          pressed && selectedProjects.size > 0 && !confirming && styles.pressed,
         ]}
-        onPress={onConfirm}
-        disabled={selectedProjects.size === 0}
+        onPress={() => void confirmUpload()}
+        disabled={selectedProjects.size === 0 || confirming}
         accessibilityRole="button"
-        accessibilityState={{ disabled: selectedProjects.size === 0 }}
+        accessibilityState={{ disabled: selectedProjects.size === 0 || confirming, busy: confirming }}
       >
         <Ionicons name="checkmark-done-outline" size={20} color={colors.surface} />
         <Text style={styles.confirmText}>
-          {selectedProjects.size > 0
+          {confirming
+            ? selectedCategory === 'Schedule' ? 'Reading Schedule…' : 'Adding Document…'
+            : selectedProjects.size > 0
             ? `Add ${selectedCategory} to ${selectedProjects.size} Project${selectedProjects.size === 1 ? '' : 's'}`
             : 'Select at least one project'}
         </Text>

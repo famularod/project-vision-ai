@@ -148,8 +148,8 @@ export function AdminScreen({
   onDisplayNameChange: (value: string) => void;
   onBack: () => void;
   onDiagnostics: () => void;
-  onBackup: () => void;
-  onRestore: () => void;
+  onBackup: (passphrase: string) => void;
+  onRestore: (passphrase: string) => void;
   onAddArea: (name: string) => boolean;
   onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
   onDeleteArea: (areaId: string) => void;
@@ -171,6 +171,7 @@ export function AdminScreen({
     useState('Cloud sync tools are available.');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [dataRecoveryOpen, setDataRecoveryOpen] = useState(false);
+  const [backupPassphrase, setBackupPassphrase] = useState('');
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncAttemptMessage, setSyncAttemptMessage] = useState<string | null>(null);
@@ -203,7 +204,7 @@ export function AdminScreen({
   useEffect(() => {
     if (!syncCleanupNotice) return;
 
-    setAdminActionSummary('Sync status cleaned up.');
+    setAdminActionSummary(syncCleanupNotice);
   }, [syncCleanupNotice]);
 
   useEffect(() => {
@@ -249,12 +250,15 @@ export function AdminScreen({
     updateSyncAttentionCount,
     syncStatus?.queuedChanges || 0,
   );
+  const recoveryCopyCount = syncStatus?.recoveryCopies || 0;
+  const recoveryCopyLabel = `${recoveryCopyCount} protected sync ${recoveryCopyCount === 1 ? 'copy' : 'copies'}`;
+  const recoveryCopyVerb = recoveryCopyCount === 1 ? 'needs' : 'need';
   const syncDetail = isSyncing
     ? 'Sync in progress'
     : syncStatus?.recoveryAvailable
       ? pendingSyncCount > 0
-        ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting; saved sync data also needs recovery`
-        : 'Saved sync data needs recovery'
+        ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting; ${recoveryCopyLabel} also ${recoveryCopyVerb} review`
+        : `${recoveryCopyLabel} ${recoveryCopyVerb} review`
     : pendingSyncCount > 0
     ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting to sync`
     : syncStatus?.conflicts
@@ -421,8 +425,8 @@ export function AdminScreen({
               <Text style={styles.settingsRowTitle}>Data Recovery</Text>
               <Text style={styles.settingsRowDetail}>
                 {syncStatus?.recoveryAvailable
-                  ? 'A protected copy of saved sync data is available for recovery'
-                  : "Back up or restore this phone's local data"}
+                  ? `${recoveryCopyLabel} ${recoveryCopyVerb} review; current sync data remains protected`
+                  : "Export or import this phone's local project data"}
               </Text>
             </View>
             <Ionicons name={dataRecoveryOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.mutedText} />
@@ -431,11 +435,37 @@ export function AdminScreen({
             <>
               {syncStatus?.recoveryAvailable ? (
                 <Text style={styles.actionSummary} selectable>
-                  Valid saved changes were kept in the active queue. A protected copy of the damaged data remains available for recovery review; do not clear the app's local data.
+                  Current saved changes remain protected. Older recovery copies are kept separately until their contents can be verified; do not clear the app's local data.
                 </Text>
               ) : null}
-              <SettingsActionRow icon="download-outline" title="Back Up Data" detail="Export a local backup file" onPress={onBackup} />
-              <SettingsActionRow icon="cloud-upload-outline" title="Restore Backup" detail="Import a previously exported backup" onPress={onRestore} last />
+              <Text style={styles.actionSummary}>
+                Complete backups include project records, photos, and documents. They are encrypted with a passphrase of at least 12 characters. Vitruvius cannot recover a forgotten passphrase.
+              </Text>
+              <TextInput
+                style={styles.modalInput}
+                value={backupPassphrase}
+                onChangeText={setBackupPassphrase}
+                placeholder="Backup passphrase"
+                placeholderTextColor={colors.mutedText}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                textContentType="newPassword"
+                accessibilityLabel="Backup passphrase"
+              />
+              <SettingsActionRow
+                icon="download-outline"
+                title="Export Complete Backup"
+                detail="Create an encrypted backup containing project data, photos, and documents"
+                onPress={() => onBackup(backupPassphrase)}
+              />
+              <SettingsActionRow
+                icon="cloud-upload-outline"
+                title="Restore Complete Backup"
+                detail="Verify and restore a complete encrypted Vitruvius backup"
+                onPress={() => onRestore(backupPassphrase)}
+                last
+              />
             </>
           ) : null}
           <Text style={styles.actionSummary} selectable>{adminActionSummary}</Text>
@@ -607,7 +637,7 @@ export function AdminScreen({
         remainingConflicts === 0 &&
         !recoveryAvailable;
       const message = recoveryAvailable
-        ? `Cloud sync finished, but saved sync data still needs recovery review.${remainingConflicts > 0 ? ` ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+        ? `Cloud sync finished. Current changes are protected, but ${nextSyncStatus.recoveryCopies} older recovery ${nextSyncStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${remainingConflicts > 0 ? ` ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
         : remainingConflicts > 0
         ? `The sync queue is clear, but ${remainingConflicts} saved ${remainingConflicts === 1 ? 'conflict needs' : 'conflicts need'} review.`
         : syncSucceeded
@@ -644,7 +674,10 @@ export function AdminScreen({
           referenceDocuments,
         },
         progress => {
-          const message = `${progress.message} (${progress.completed} of ${progress.total})`;
+          // The progress total is this device's pre-reconciliation workload,
+          // not a shared-cloud record count. Showing it made healthy devices
+          // look out of sync when one had extra local recovery work.
+          const message = progress.message;
           setSyncAttemptMessage(message);
           setAdminActionSummary(message);
         },
@@ -661,11 +694,11 @@ export function AdminScreen({
         nextStatus.recoveryAvailable ? 1 : 0,
       ));
       const message = nextStatus.recoveryAvailable
-        ? `Cloud sync finished, but saved sync data still needs recovery review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
+        ? `Cloud sync finished. Current changes are protected, but ${nextStatus.recoveryCopies} older recovery ${nextStatus.recoveryCopies === 1 ? 'copy still needs' : 'copies still need'} review.${nextConflicts.length > 0 ? ` ${nextConflicts.length} saved ${nextConflicts.length === 1 ? 'conflict also needs' : 'conflicts also need'} review.` : ''}`
         : nextConflicts.length > 0
         ? `Cloud sync finished, but ${nextConflicts.length} ${nextConflicts.length === 1 ? 'saved conflict needs' : 'saved conflicts need'} review.`
         : result.errors.length === 0
-        ? `Cloud sync completed: ${result.uploaded} uploaded and ${result.downloaded} downloaded.`
+        ? `Cloud sync completed. Shared record refreshed: ${result.details.cloudProjectsDownloaded} projects, ${result.details.cloudSchedulesDownloaded} tasks, ${result.details.cloudUpdatesDownloaded} field updates, ${result.details.cloudAreasDownloaded} areas, and ${result.details.cloudDocumentsDownloaded} documents.${result.uploaded > 0 ? ` ${result.uploaded} device change${result.uploaded === 1 ? '' : 's'} uploaded.` : ''}`
         : [
             `Cloud sync finished with ${result.errors.length} ${result.errors.length === 1 ? 'item' : 'items'} still needing attention:`,
             ...result.errors.slice(0, 3).map(error => `• ${error}`),

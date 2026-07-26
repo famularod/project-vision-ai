@@ -51,6 +51,7 @@ import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync'
 import { buildDAVEProjectTruth } from '../services/DAVEProjectTruth';
 import {
   buildDAVEReportBriefing,
+  buildDAVEReportSourceFingerprint,
   buildPMReportReviewWarnings,
   enhanceDAVEReportDraft,
   toPMReportLanguage,
@@ -75,6 +76,10 @@ import {
 } from '../services/ReportCommunication';
 import { evaluateReportApprovalPolicy } from '../services/ReportApprovalPolicy';
 import { buildDailyReportAuthorityScope } from '../services/ReportAuthorityScope';
+import {
+  selectStableReportDraft,
+  type StableReportDraftCache,
+} from '../services/ReportDraftRefresh';
 
 export function ReportsScreen({
   contentStyle,
@@ -185,6 +190,7 @@ export function ReportsScreen({
   const [reportEdits, setReportEdits] = useState<{
     title: string;
     body: string;
+    sourceFingerprint: string;
   } | null>(null);
   const [communicationPending, setCommunicationPending] = useState(false);
   const [communicationError, setCommunicationError] = useState('');
@@ -192,7 +198,26 @@ export function ReportsScreen({
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
   const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
-  const baseReportDraft = liveAuthority.reportDraft || runtime.response.reportDraft;
+  const reportDraftScopeKey = useMemo(
+    () => [
+      reportType,
+      reportFormat,
+      ...selectedProjectNames
+        .map(name => reportProjectKey(name))
+        .filter(Boolean)
+        .sort(),
+    ].join('|'),
+    [reportFormat, reportType, selectedProjectNames],
+  );
+  const stableReportDraftRef = useRef<StableReportDraftCache | null>(null);
+  const stableReportDraft = selectStableReportDraft({
+    scopeKey: reportDraftScopeKey,
+    liveDraft: liveAuthority.reportDraft,
+    fallbackDraft: runtime.response.reportDraft,
+    cachedDraft: stableReportDraftRef.current,
+  });
+  stableReportDraftRef.current = stableReportDraft.cache;
+  const baseReportDraft = stableReportDraft.draft;
   const reportTruths = useMemo(() => selectedProjectNames.map(selectedName => {
     const reportProjectId = `report:${reportProjectKey(selectedName) || 'project'}`;
     const scopedTruthInput = buildDailyReportAuthorityScope({
@@ -227,6 +252,10 @@ export function ReportsScreen({
     truths: reportTruths,
     selectedProjectNames,
   }), [reportTruths, selectedProjectNames]);
+  const reportSourceFingerprint = useMemo(
+    () => buildDAVEReportSourceFingerprint(reportTruths),
+    [reportTruths],
+  );
   const pieReportDraft = useMemo(
     () => enhanceDAVEReportDraft(baseReportDraft, reportBriefing, reportFormat),
     [baseReportDraft, reportBriefing, reportFormat],
@@ -260,16 +289,21 @@ export function ReportsScreen({
     }),
     [effectiveReportDraft, reportGenerationAllowed],
   );
-  const reportApprovalMessage = reportGenerationAllowed
-    ? reportApprovalPolicy.message
-    : 'Current project data is still loading. Refresh before approving.';
+  const reportFactsAreCurrent = !reportEdits ||
+    reportEdits.sourceFingerprint === reportSourceFingerprint;
+  const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent;
+  const reportApprovalMessage = !reportGenerationAllowed
+    ? 'Current project data is still loading. Refresh before approving.'
+    : !reportFactsAreCurrent
+      ? 'Project facts changed after you edited this report. Refresh the report before approval.'
+      : reportApprovalPolicy.message;
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
-  const reportApprovalAllowedRef = useRef(reportApprovalPolicy.allowed);
+  const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
   const reportApprovedRef = useRef(reportApproved);
   const pendingCommunicationTokenRef = useRef<symbol | null>(null);
   const mountedRef = useRef(true);
   reportIdentityRef.current = reportCommunicationIdentityKey;
-  reportApprovalAllowedRef.current = reportApprovalPolicy.allowed;
+  reportApprovalAllowedRef.current = reportApprovalAllowed;
   reportApprovedRef.current = reportApproved;
   const decisionCandidateKey = [
     reportType,
@@ -295,9 +329,9 @@ export function ReportsScreen({
   }, [pieReportDraft.id]);
 
   useEffect(() => {
-    if (reportApprovalPolicy.allowed) return;
+    if (reportApprovalAllowed) return;
     setReportApproved(false);
-  }, [reportApprovalPolicy.allowed]);
+  }, [reportApprovalAllowed]);
 
   useEffect(() => {
     if (
@@ -328,7 +362,7 @@ export function ReportsScreen({
   const completeCommunication = (
     communicate: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>,
   ) => {
-    if (!reportApproved || !reportApprovalPolicy.allowed) {
+    if (!reportApproved || !reportApprovalAllowed) {
       setCommunicationError(reportApprovalMessage);
       return;
     }
@@ -374,7 +408,7 @@ export function ReportsScreen({
   };
 
   const markReportApproved = () => {
-    if (!reportApprovalPolicy.allowed) {
+    if (!reportApprovalAllowed) {
       setCommunicationError(reportApprovalMessage);
       return;
     }
@@ -431,7 +465,7 @@ export function ReportsScreen({
               setReportEdits(null);
             }}
             reportApproved={reportApproved}
-            reportApprovalAllowed={reportApprovalPolicy.allowed}
+            reportApprovalAllowed={reportApprovalAllowed}
             approvalMessage={reportApprovalMessage}
             communicationPending={communicationPending}
             communicationError={communicationError}
@@ -448,12 +482,14 @@ export function ReportsScreen({
               setReportEdits(current => ({
                 title,
                 body: current?.body ?? pieReportDraft.body,
+                sourceFingerprint: current?.sourceFingerprint ?? reportSourceFingerprint,
               }));
             }}
             onBodyChange={body => {
               setReportEdits(current => ({
                 title: current?.title ?? pieReportDraft.title,
                 body,
+                sourceFingerprint: current?.sourceFingerprint ?? reportSourceFingerprint,
               }));
             }}
             onCopyReport={() => {
@@ -472,7 +508,7 @@ export function ReportsScreen({
     <BeforeYouSharePanel
       reportDraft={effectiveReportDraft}
       reportApproved={reportApproved}
-      reportApprovalAllowed={reportApprovalPolicy.allowed}
+      reportApprovalAllowed={reportApprovalAllowed}
     />
   );
 
@@ -1006,7 +1042,7 @@ function DAVEReportOverview({
           <View style={styles.reportProgressSection}>
             <View style={styles.reportProgressHeading}>
               <Text style={styles.reportDocumentSectionTitle}>Progress by Work Area</Text>
-              <Text style={styles.reportProgressHelper}>Average task completion by area</Text>
+              <Text style={styles.reportProgressHelper}>Progress based on scheduled task duration</Text>
             </View>
             <View style={styles.reportAreaProgressList}>
               {activeAreas.map(area => <ReportAreaProgressRow key={area.id} area={area} />)}
@@ -1106,6 +1142,7 @@ function ReportScheduleHealth({ briefing }: { briefing: DAVEReportBriefing }) {
       <Text style={styles.reportDocumentSectionTitle}>Schedule Health</Text>
       <View style={styles.reportMetricRow}>
         <ReportMetric label="On Track" value={health.onTrack} tone="stable" />
+        <ReportMetric label="Blocked" value={health.blocked} tone="critical" />
         <ReportMetric label="Due Soon" value={health.dueSoon} tone="attention" />
         <ReportMetric label="Overdue" value={health.overdue} tone="critical" />
       </View>
@@ -1128,7 +1165,14 @@ function ReportMetric({
       tone === 'stable' ? styles.reportMetricStable : tone === 'attention' ? styles.reportMetricAttention : styles.reportMetricCritical,
     ]}>
       <Text style={styles.reportMetricValue}>{value}</Text>
-      <Text style={styles.reportMetricLabel}>{label}</Text>
+      <Text
+        style={styles.reportMetricLabel}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.85}
+      >
+        {label}
+      </Text>
     </View>
   );
 }
@@ -2336,11 +2380,13 @@ const styles = StyleSheet.create({
 
   reportMetricRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.xs,
   },
 
   reportMetric: {
-    flex: 1,
+    flexBasis: '47%',
+    flexGrow: 1,
     minWidth: 0,
     borderRadius: 10,
     paddingHorizontal: spacing.xs,

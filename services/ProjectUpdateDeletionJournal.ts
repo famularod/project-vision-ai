@@ -71,7 +71,12 @@ export async function confirmProjectUpdateCloudDeletion(
   await serializeDeletionJournalMutation(async () => {
     const current = await readDeletionJournal();
     const existing = current.find(intent => intent.updateId === normalizedId);
-    if (!existing || existing.cloudDeleteConfirmedAt) return;
+    if (!existing) {
+      throw new Error(
+        'The durable field-update deletion intent is missing, so cloud confirmation cannot be recorded.',
+      );
+    }
+    if (existing.cloudDeleteConfirmedAt) return;
     await persistDeletionJournal([
       {
         ...existing,

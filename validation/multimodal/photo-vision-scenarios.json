@@ -168,6 +168,23 @@
       }
     },
     {
+      "id": "canopy_c_cross_angle_concrete_ramp",
+      "caseName": "Canopy C cross-angle ramp comparison",
+      "evidenceType": "photo_comparison",
+      "description": "Two field photos show the same Canopy C ramp area from different angles. Stable canopy columns, slab edges, and building geometry establish scene continuity. The newer photo shows concrete ramp work that is absent from the earlier photo.",
+      "requiredLiveFixture": true,
+      "expected": {
+        "comparability": "probable",
+        "sameGeneralScene": true,
+        "materialVisibleChange": true,
+        "changeType": "object_added",
+        "addedObject": "concrete ramp",
+        "progressConclusion": "partial_progress_visible",
+        "confidence": "medium_or_higher",
+        "maximumLatencyMs": 60000
+      }
+    },
+    {
       "id": "mouse_added_to_table",
       "caseName": "mouse_added_to_table",
       "evidenceType": "photo_comparison",

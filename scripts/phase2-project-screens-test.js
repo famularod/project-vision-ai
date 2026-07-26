@@ -123,7 +123,10 @@ assert(
   'Canonical project health must reserve Blocked for actual blocking input and keep conflicts reviewable.',
 );
 assert(
-  app.includes('findCurrentDAVEConfirmedBlockerForScopes(') &&
+  (
+    app.includes('findCurrentDAVEConfirmedBlockerForScopes(') ||
+    app.includes('findCurrentDAVEConfirmedBlocker(scopedFieldUpdates)')
+  ) &&
     app.includes('updateHasOpenDAVESafetyConcern(update)') &&
     app.includes('updateHasOpenDAVEBlocker(update)') &&
     app.includes('currentConfirmedBlocker?.id === update.id'),

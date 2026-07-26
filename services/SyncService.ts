@@ -36,6 +36,7 @@ import {
 } from './DAVESyncTombstones';
 import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
 import { recoverDAVEScheduleRecords } from './DAVEScheduleRecovery';
+import { mergeDAVEReferenceDocumentRecoveryRecords } from './DAVECloudRecovery';
 import {
   confirmProjectUpdateCloudDeletion,
   hasProjectUpdateDeletionIntent,
@@ -43,6 +44,7 @@ import {
 } from './ProjectUpdateDeletionJournal';
 import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
 import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
+import { createPendingChangesRetryController } from './PendingChangesRetryController';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -56,7 +58,8 @@ export type SyncEntity =
   | 'project'
   | 'project_update'
   | 'project_area'
-  | 'schedule_item';
+  | 'schedule_item'
+  | 'reference_document';
 export type SyncOperation = 'create' | 'update' | 'delete';
 
 export type SyncQueueItem<TPayload = Record<string, unknown>> = {
@@ -102,7 +105,12 @@ export type SyncUploadResult = {
   errors: string[];
 };
 
-export type SyncItemOutcome = 'uploaded' | 'conflict' | 'blocked' | 'failed';
+export type SyncItemOutcome =
+  | 'uploaded'
+  | 'superseded'
+  | 'conflict'
+  | 'blocked'
+  | 'failed';
 
 /**
  * Audit P1-27: a failed cloud read must never be silently converted into an
@@ -428,7 +436,7 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   id: string;
   projectName?: string;
   selectedAreaName?: string | null;
-  updateData: TUpdate;
+  updateData?: TUpdate;
   pendingPhotoAssetIds?: string[];
   archiveOnly?: boolean;
   archivedAt?: string;
@@ -437,6 +445,12 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
 type ProjectUpdateDeletePayload = {
   id: string;
   projectName?: string;
+  /**
+   * Durable second phase for project-update deletion. Once the owner-scoped
+   * cloud delete succeeds, retries finish the local confirmation journal
+   * without issuing the destructive request again.
+   */
+  cloudDeleteSucceededAt?: string;
 };
 
 type ProjectAreaRecordPayload = {
@@ -449,6 +463,11 @@ type ScheduleItemRecordPayload = {
   itemData: ScheduleItem;
 };
 
+type ReferenceDocumentRecordPayload = {
+  id: string;
+  documentData: ReferenceDocument;
+};
+
 const SYNC_QUEUE_STORAGE_KEY = 'projectVisionAI.syncQueue.v1';
 export const SYNC_QUEUE_QUARANTINE_KEY_PREFIX =
   `${SYNC_QUEUE_STORAGE_KEY}.quarantine.`;
@@ -456,6 +475,8 @@ const SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX =
   `${SYNC_QUEUE_STORAGE_KEY}.quarantine-metadata.`;
 const SYNC_QUEUE_RECOVERY_TRANSACTION_KEY =
   `${SYNC_QUEUE_STORAGE_KEY}.recovery-transaction.v1`;
+const SYNC_QUEUE_ARCHIVE_RECOVERY_INDEX_KEY =
+  `${SYNC_QUEUE_STORAGE_KEY}.archive-recovery-index.v1`;
 const SYNC_CONFLICTS_STORAGE_KEY = 'projectVisionAI.syncConflicts.v1';
 const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
 const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
@@ -499,6 +520,25 @@ type OfflineQueueQuarantineMetadata = {
 type OfflineQueueValueAnalysis = {
   queue: SyncQueueItem[];
   invalidItemCount: number;
+};
+
+type ArchiveOnlyRecoveryIndex = {
+  version: 1;
+  resolvedQuarantineKeys: string[];
+  resolvedArchiveItemIds: string[];
+  updatedAt: string;
+};
+
+type ArchiveOnlyQuarantineCandidate = {
+  quarantineKey: string;
+  items: SyncQueueItem<ProjectUpdateRecordPayload>[];
+};
+
+type StagedArchiveOnlyRecovery = {
+  eligibleQuarantines: Array<{
+    quarantineKey: string;
+    itemIds: string[];
+  }>;
 };
 
 function isOfflineQueueQuarantineKey(key: string): boolean {
@@ -554,7 +594,8 @@ function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
     value.entity !== 'project' &&
     value.entity !== 'project_update' &&
     value.entity !== 'project_area' &&
-    value.entity !== 'schedule_item'
+    value.entity !== 'schedule_item' &&
+    value.entity !== 'reference_document'
   ) return false;
   if (
     value.operation !== 'create' &&
@@ -581,15 +622,28 @@ function isValidSyncQueueItem(value: unknown): value is SyncQueueItem {
       typeof value.payload.id !== 'string' ||
       value.payload.id.trim().length === 0
     ) return false;
-    return value.operation === 'delete' || isRecord(value.payload.updateData);
+    if (value.operation === 'delete') {
+      return (
+        value.payload.cloudDeleteSucceededAt === undefined ||
+        isFiniteSyncTimestamp(value.payload.cloudDeleteSucceededAt)
+      );
+    }
+    if (value.payload.archiveOnly === true) {
+      return isFiniteSyncTimestamp(value.payload.archivedAt);
+    }
+    return isRecord(value.payload.updateData);
   }
 
-  if (value.entity === 'project_area' || value.entity === 'schedule_item') {
+  if (
+    value.entity === 'project_area' ||
+    value.entity === 'schedule_item' ||
+    value.entity === 'reference_document'
+  ) {
     if (value.operation !== 'update') return false;
     if (typeof value.payload.id !== 'string' || !value.payload.id.trim()) return false;
-    return value.entity === 'project_area'
-      ? isRecord(value.payload.areaData)
-      : isRecord(value.payload.itemData);
+    if (value.entity === 'project_area') return isRecord(value.payload.areaData);
+    if (value.entity === 'schedule_item') return isRecord(value.payload.itemData);
+    return isRecord(value.payload.documentData);
   }
 
   if (value.operation === 'create' || value.operation === 'delete') {
@@ -660,6 +714,106 @@ async function readOfflineQueueQuarantineMetadata(
     );
   }
   return null;
+}
+
+function emptyArchiveOnlyRecoveryIndex(): ArchiveOnlyRecoveryIndex {
+  return {
+    version: 1,
+    resolvedQuarantineKeys: [],
+    resolvedArchiveItemIds: [],
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
+function isArchiveOnlyRecoveryIndex(value: unknown): value is ArchiveOnlyRecoveryIndex {
+  if (!isRecord(value) || value.version !== 1) return false;
+  if (
+    !Array.isArray(value.resolvedQuarantineKeys) ||
+    !value.resolvedQuarantineKeys.every(key => (
+      typeof key === 'string' && isOfflineQueueQuarantineKey(key)
+    )) ||
+    !Array.isArray(value.resolvedArchiveItemIds) ||
+    !value.resolvedArchiveItemIds.every(id => typeof id === 'string' && id.trim().length > 0)
+  ) return false;
+  return isFiniteSyncTimestamp(value.updatedAt);
+}
+
+async function readArchiveOnlyRecoveryIndex(): Promise<ArchiveOnlyRecoveryIndex> {
+  const rawValue = await AsyncStorage.getItem(SYNC_QUEUE_ARCHIVE_RECOVERY_INDEX_KEY);
+  if (rawValue === null) return emptyArchiveOnlyRecoveryIndex();
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    return isArchiveOnlyRecoveryIndex(parsed)
+      ? parsed
+      : emptyArchiveOnlyRecoveryIndex();
+  } catch {
+    // A damaged resolution index suppresses nothing. At worst, an idempotent
+    // archive request is replayed while the exact quarantine copy stays intact.
+    return emptyArchiveOnlyRecoveryIndex();
+  }
+}
+
+function isArchiveOnlyProjectUpdateQueueItem(
+  value: unknown,
+): value is SyncQueueItem<ProjectUpdateRecordPayload> {
+  if (!isValidSyncQueueItem(value)) return false;
+  if (value.entity !== 'project_update' || value.operation !== 'update') return false;
+  const payload = value.payload as ProjectUpdateRecordPayload;
+  return (
+    payload.archiveOnly === true &&
+    typeof payload.id === 'string' &&
+    payload.id.trim().length > 0 &&
+    isFiniteSyncTimestamp(payload.archivedAt)
+  );
+}
+
+async function readArchiveOnlyQuarantineCandidate(
+  quarantineKey: string,
+): Promise<ArchiveOnlyQuarantineCandidate | null> {
+  const [metadata, rawValue] = await Promise.all([
+    readOfflineQueueQuarantineMetadata(quarantineKey),
+    AsyncStorage.getItem(quarantineKey),
+  ]);
+  if (!metadata || metadata.resolvedAt || rawValue === null) return null;
+
+  try {
+    const analysis = analyzeOfflineQueueValue(rawValue);
+    const archiveItems = analysis.queue.filter(isArchiveOnlyProjectUpdateQueueItem);
+    const previouslySalvagedItemIds = new Set(metadata.salvagedItemIds);
+    if (
+      analysis.invalidItemCount !== 0 ||
+      archiveItems.length === 0 ||
+      !analysis.queue.every(item => (
+        isArchiveOnlyProjectUpdateQueueItem(item) ||
+        previouslySalvagedItemIds.has(item.id)
+      ))
+    ) return null;
+    return {
+      quarantineKey,
+      // Rows named in salvagedItemIds were already retained when the exact
+      // snapshot was quarantined. Only replay the archive rows that the older
+      // validator incorrectly rejected; otherwise already-synced project work
+      // could be applied a second time.
+      items: archiveItems,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readArchiveOnlyQuarantineCandidates(
+  quarantineKeys: readonly string[],
+): Promise<ArchiveOnlyQuarantineCandidate[]> {
+  const candidates: ArchiveOnlyQuarantineCandidate[] = [];
+  const batchSize = 40;
+  for (let index = 0; index < quarantineKeys.length; index += batchSize) {
+    const batch = quarantineKeys.slice(index, index + batchSize);
+    const results = await Promise.all(batch.map(readArchiveOnlyQuarantineCandidate));
+    candidates.push(...results.filter(
+      (candidate): candidate is ArchiveOnlyQuarantineCandidate => candidate !== null,
+    ));
+  }
+  return candidates;
 }
 
 async function quarantineCorruptOfflineQueue(
@@ -772,11 +926,16 @@ export async function exportOfflineQueueQuarantine(
 
 export async function getOfflineQueueRecoveryState(): Promise<OfflineQueueRecoveryState> {
   const activeItems = (await getOfflineQueue()).length;
-  const quarantineKeys = await listOfflineQueueQuarantines();
+  const [quarantineKeys, archiveRecoveryIndex] = await Promise.all([
+    listOfflineQueueQuarantines(),
+    readArchiveOnlyRecoveryIndex(),
+  ]);
+  const archiveResolvedKeys = new Set(archiveRecoveryIndex.resolvedQuarantineKeys);
+  const keysNeedingMetadata = quarantineKeys.filter(key => !archiveResolvedKeys.has(key));
   const metadata = await Promise.all(
-    quarantineKeys.map(key => readOfflineQueueQuarantineMetadata(key)),
+    keysNeedingMetadata.map(key => readOfflineQueueQuarantineMetadata(key)),
   );
-  const unresolvedQuarantineKeys = quarantineKeys.filter(
+  const unresolvedQuarantineKeys = keysNeedingMetadata.filter(
     (_key, index) => metadata[index]?.resolvedAt == null,
   );
   return {
@@ -794,6 +953,16 @@ export async function retryOfflineQueueRecovery(
   if (!isOfflineQueueQuarantineKey(quarantineKey)) {
     return {
       status: 'not_found',
+      quarantineKey,
+      restoredItems: 0,
+      activeItems: (await getOfflineQueue()).length,
+    };
+  }
+
+  const archiveRecoveryIndex = await readArchiveOnlyRecoveryIndex();
+  if (archiveRecoveryIndex.resolvedQuarantineKeys.includes(quarantineKey)) {
+    return {
+      status: 'already_recovered',
       quarantineKey,
       restoredItems: 0,
       activeItems: (await getOfflineQueue()).length,
@@ -891,6 +1060,118 @@ export async function retryOfflineQueueRecovery(
       activeItems: restoredQueue.length,
     };
   });
+}
+
+async function stageMisclassifiedArchiveOnlyQuarantines(): Promise<StagedArchiveOnlyRecovery> {
+  return serializeOfflineQueueMutation(async () => {
+    const [{ queue }, quarantineKeys, archiveRecoveryIndex] = await Promise.all([
+      readOfflineQueueUnsafe(),
+      listOfflineQueueQuarantines(),
+      readArchiveOnlyRecoveryIndex(),
+    ]);
+    const previouslyResolved = new Set(archiveRecoveryIndex.resolvedQuarantineKeys);
+    const candidates = await readArchiveOnlyQuarantineCandidates(
+      quarantineKeys.filter(key => !previouslyResolved.has(key)),
+    );
+    if (candidates.length === 0) return { eligibleQuarantines: [] };
+
+    const newestCandidateById = new Map<
+      string,
+      SyncQueueItem<ProjectUpdateRecordPayload>
+    >();
+    candidates.forEach(candidate => {
+      candidate.items.forEach(item => {
+        const current = newestCandidateById.get(item.id);
+        if (
+          !current ||
+          new Date(item.changedAt).getTime() > new Date(current.changedAt).getTime()
+        ) newestCandidateById.set(item.id, item);
+      });
+    });
+
+    const nextQueue = [...queue];
+    const currentById = new Map(queue.map(item => [item.id, item]));
+    const trackableItemIds = new Set<string>();
+
+    newestCandidateById.forEach((candidate, itemId) => {
+      const current = currentById.get(itemId);
+      if (!current) {
+        nextQueue.push(candidate);
+        currentById.set(itemId, candidate);
+        trackableItemIds.add(itemId);
+        return;
+      }
+
+      if (current.entity === 'project_update' && current.operation === 'delete') {
+        trackableItemIds.add(itemId);
+        return;
+      }
+
+      const candidateIsNewer = (
+        new Date(candidate.changedAt).getTime() > new Date(current.changedAt).getTime()
+      );
+      if (candidateIsNewer) {
+        const currentIndex = nextQueue.findIndex(item => item.id === itemId);
+        if (currentIndex >= 0) nextQueue[currentIndex] = candidate;
+        currentById.set(itemId, candidate);
+        trackableItemIds.add(itemId);
+        return;
+      }
+
+      if (isArchiveOnlyProjectUpdateQueueItem(current)) {
+        trackableItemIds.add(itemId);
+      }
+    });
+
+    if (JSON.stringify(nextQueue) !== JSON.stringify(queue)) {
+      await persistVerifiedOfflineQueue(nextQueue);
+    }
+
+    return {
+      eligibleQuarantines: candidates
+        .map(candidate => ({
+          quarantineKey: candidate.quarantineKey,
+          itemIds: [...new Set(candidate.items.map(item => item.id))],
+        }))
+        .filter(candidate => candidate.itemIds.every(id => trackableItemIds.has(id))),
+    };
+  });
+}
+
+async function resolveUploadedArchiveOnlyQuarantines(
+  stagedRecovery: StagedArchiveOnlyRecovery,
+  itemOutcomes: Readonly<Record<string, SyncItemOutcome>>,
+): Promise<number> {
+  if (stagedRecovery.eligibleQuarantines.length === 0) return 0;
+  const uploadedItemIds = new Set(
+    Object.entries(itemOutcomes)
+      .filter(([, outcome]) => outcome === 'uploaded')
+      .map(([itemId]) => itemId),
+  );
+  const resolvedQuarantines = stagedRecovery.eligibleQuarantines.filter(candidate =>
+    candidate.itemIds.every(itemId => uploadedItemIds.has(itemId)),
+  );
+  if (resolvedQuarantines.length === 0) return 0;
+
+  const currentIndex = await readArchiveOnlyRecoveryIndex();
+  const nextIndex: ArchiveOnlyRecoveryIndex = {
+    version: 1,
+    resolvedQuarantineKeys: [...new Set([
+      ...currentIndex.resolvedQuarantineKeys,
+      ...resolvedQuarantines.map(candidate => candidate.quarantineKey),
+    ])],
+    resolvedArchiveItemIds: [...new Set([
+      ...currentIndex.resolvedArchiveItemIds,
+      ...resolvedQuarantines.flatMap(candidate => candidate.itemIds),
+    ])],
+    updatedAt: new Date().toISOString(),
+  };
+  await offlineQueueRecoveryTransaction.commit([{
+    kind: 'set',
+    key: SYNC_QUEUE_ARCHIVE_RECOVERY_INDEX_KEY,
+    value: JSON.stringify(nextIndex),
+  }]);
+  return resolvedQuarantines.length;
 }
 
 export async function getSyncConflicts(): Promise<SyncConflict[]> {
@@ -991,6 +1272,11 @@ export async function enqueuePendingChange<TPayload>(
  * unhandled promise rejections.
  */
 export function requestPendingChangesUpload(trigger: string): void {
+  if (pendingChangesRetryController.isRunning()) {
+    void pendingChangesRetryController.request(trigger);
+    return;
+  }
+
   startGuardedBackgroundTask({
     key: 'offline-queue-upload',
     label: 'Pending cloud sync',
@@ -1085,13 +1371,28 @@ export async function queueScheduleItemRecord(item: ScheduleItem): Promise<void>
   });
 }
 
+export async function queueReferenceDocumentRecord(
+  document: ReferenceDocument,
+): Promise<void> {
+  const changedAt = document.updatedAt || document.importedAt || new Date().toISOString();
+  await enqueuePendingChange<ReferenceDocumentRecordPayload>({
+    id: `reference-document-${encodeURIComponent(document.id)}`,
+    entity: 'reference_document',
+    operation: 'update',
+    payload: { id: document.id, documentData: document },
+    changedAt,
+  });
+}
+
 export async function removeOperationalRecordFromSyncQueue(
-  entity: 'project_area' | 'schedule_item',
+  entity: 'project_area' | 'schedule_item' | 'reference_document',
   recordId: string,
 ): Promise<number> {
   const queueId = entity === 'project_area'
     ? `project-area-${encodeURIComponent(recordId)}`
-    : `schedule-item-${encodeURIComponent(recordId)}`;
+    : entity === 'schedule_item'
+      ? `schedule-item-${encodeURIComponent(recordId)}`
+      : `reference-document-${encodeURIComponent(recordId)}`;
   return mutateOfflineQueue(queue => {
     const nextQueue = queue.filter(item => item.id !== queueId);
     return {
@@ -1316,6 +1617,18 @@ export async function runFieldUpdateCloudSync(
 
 let uploadPendingChangesInFlight: Promise<SyncUploadResult> | null = null;
 let anotherUploadPassRequested = false;
+const pendingChangesRetryController = createPendingChangesRetryController({
+  upload: uploadPendingChanges,
+  getPendingChangeCount: async () => (await getOfflineQueue()).length,
+});
+
+export function startPendingChangesRetryController(): void {
+  pendingChangesRetryController.start();
+}
+
+export function stopPendingChangesRetryController(): void {
+  pendingChangesRetryController.stop();
+}
 
 // enqueuePendingChange() fires this off fire-and-forget every time something
 // is queued, so overlapping calls are the common case (e.g. saving an update
@@ -1348,6 +1661,7 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
 async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
+  const archiveRecovery = await stageMisclassifiedArchiveOnlyQuarantines();
   const queue = await getOfflineQueue();
 
   if (!configuration.configured) {
@@ -1358,6 +1672,24 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       conflicts: (await getSyncConflicts()).length,
       errors: [configuration.message],
     };
+  }
+
+  const operationalQueueItems = queue.filter(item =>
+    queueEntityUsesDAVESyncTombstones(item.entity),
+  );
+  let operationalTombstoneGate: DAVESyncTombstoneSyncResult | null = null;
+  if (operationalQueueItems.length > 0) {
+    try {
+      operationalTombstoneGate = await synchronizeDAVESyncTombstones();
+    } catch (error) {
+      operationalTombstoneGate = {
+        tombstones: [],
+        cloudAuthoritative: false,
+        cloudError: error instanceof Error
+          ? error.message
+          : 'Deletion history could not be verified.',
+      };
+    }
   }
 
   const resolvedIds = new Set<string>();
@@ -1371,9 +1703,43 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     project_update: 0,
     project_area: 0,
     schedule_item: 0,
+    reference_document: 0,
   };
 
   for (const item of queue) {
+    if (
+      operationalTombstoneGate &&
+      queueItemMatchesDAVESyncTombstone(
+        item,
+        operationalTombstoneGate.tombstones,
+      )
+    ) {
+      // A durable local or cloud deletion marker always outranks stale queued
+      // data. Resolve only the obsolete queue row; the tombstone itself stays
+      // in its independent durable journal.
+      itemOutcomes[item.id] = 'superseded';
+      resolvedIds.add(item.id);
+      continue;
+    }
+
+    if (
+      operationalTombstoneGate &&
+      queueEntityUsesDAVESyncTombstones(item.entity) &&
+      !operationalTombstoneGate.cloudAuthoritative
+    ) {
+      const reason = operationalTombstoneGate.cloudError ||
+        'Cross-device deletion history could not be verified.';
+      const sanitizedResult = sanitizeUserFacingSyncMessage(reason);
+      itemOutcomes[item.id] = 'failed';
+      retriedItemsById.set(item.id, {
+        ...item,
+        retryCount: item.retryCount + 1,
+        lastError: sanitizedResult,
+      });
+      errors.push(formatQueueItemFailure(item, sanitizedResult));
+      continue;
+    }
+
     const result = await uploadQueueItem(item);
 
     if (result === 'uploaded') {
@@ -1419,6 +1785,8 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     return { nextQueue, result: nextQueue };
   });
 
+  await resolveUploadedArchiveOnlyQuarantines(archiveRecovery, itemOutcomes);
+
   if (uploaded > 0) {
     await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, new Date().toISOString());
   }
@@ -1432,6 +1800,37 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     conflicts: (await getSyncConflicts()).length,
     errors,
   };
+}
+
+function queueEntityUsesDAVESyncTombstones(
+  entity: SyncEntity,
+): entity is DAVESyncTombstone['entityType'] {
+  return (
+    entity === 'project' ||
+    entity === 'project_update' ||
+    entity === 'project_area' ||
+    entity === 'schedule_item' ||
+    entity === 'reference_document'
+  );
+}
+
+function queueItemMatchesDAVESyncTombstone(
+  item: SyncQueueItem,
+  tombstones: readonly DAVESyncTombstone[],
+): boolean {
+  if (!queueEntityUsesDAVESyncTombstones(item.entity)) return false;
+  if (item.operation === 'delete') return false;
+  const payload = item.payload as { id?: unknown; name?: unknown };
+  const recordId = String(
+    item.entity === 'project' ? payload.name : payload.id,
+  )
+    .trim()
+    .toLowerCase();
+  if (!recordId) return false;
+  return tombstones.some(tombstone => (
+    tombstone.entityType === item.entity &&
+    tombstone.recordId.trim().toLowerCase() === recordId
+  ));
 }
 
 export async function downloadCloudChanges<TUpdate>(
@@ -1475,15 +1874,29 @@ export async function downloadCloudChanges<TUpdate>(
     ? null
     : tombstoneSync.cloudError || 'Deletion history could not be verified.';
   const collectionErrors: CloudCollectionErrors = {
-    projects: readError(projectsResult, 'Projects'),
-    updates: readError(updatesResult, 'Updates'),
+    projects: tombstoneGateError ?? readError(projectsResult, 'Projects'),
+    updates: tombstoneGateError ?? readError(updatesResult, 'Updates'),
     projectAreas: tombstoneGateError ?? readError(areasResult, 'Areas'),
     scheduleItems: tombstoneGateError ?? readError(schedulesResult, 'Schedule items'),
     referenceDocuments: tombstoneGateError ?? readError(documentsResult, 'Reference documents'),
   };
 
-  const projects = projectsResult.ok && projectsResult.data ? projectsResult.data : [];
-  const updates = updatesResult.ok && updatesResult.data ? updatesResult.data : [];
+  const deletedProjectKeys = new Set(
+    deletedDAVERecordIds(tombstoneSync.tombstones, 'project')
+      .map(recordId => recordId.trim().toLowerCase()),
+  );
+  const deletedUpdateIds = new Set(
+    deletedDAVERecordIds(tombstoneSync.tombstones, 'project_update')
+      .map(recordId => recordId.trim().toLowerCase()),
+  );
+  const projects = collectionErrors.projects === null && projectsResult.data
+    ? projectsResult.data.filter(project =>
+        !deletedProjectKeys.has(project.name.trim().toLowerCase()))
+    : [];
+  const updates = collectionErrors.updates === null && updatesResult.data
+    ? updatesResult.data.filter(update =>
+        !deletedUpdateIds.has(update.id.trim().toLowerCase()))
+    : [];
   const projectAreas = collectionErrors.projectAreas === null && areasResult.data
     ? removeDAVETombstonedRecords(
         areasResult.data,
@@ -1568,6 +1981,8 @@ export async function synchronizeLocalData(
     // Nothing was downloaded, so nothing here may be applied as cloud truth.
     collectionErrors: allCollectionsFailed('Cloud download did not run.'),
   };
+  let syncableProjects = payload.projects;
+  let syncableUpdates = payload.savedUpdates;
   let syncableProjectAreas = payload.projectAreas;
   let syncableScheduleItems = payload.scheduleItems;
   let syncableReferenceDocuments = payload.referenceDocuments;
@@ -1667,22 +2082,36 @@ export async function synchronizeLocalData(
     tombstoneSync.tombstones,
     'reference_document',
   );
+  const deletedProjectKeys = new Set(
+    deletedDAVERecordIds(tombstoneSync.tombstones, 'project')
+      .map(recordId => recordId.trim().toLowerCase()),
+  );
+  const deletedUpdateIds = new Set(
+    deletedDAVERecordIds(tombstoneSync.tombstones, 'project_update')
+      .map(recordId => recordId.trim().toLowerCase()),
+  );
+  syncableProjects = payload.projects.filter(projectName =>
+    !deletedProjectKeys.has(projectName.trim().toLowerCase()));
+  syncableUpdates = payload.savedUpdates.filter(update =>
+    !deletedUpdateIds.has(update.id.trim().toLowerCase()));
   total =
     5 +
-    payload.projects.length +
-    payload.savedUpdates.length +
-    countPhotos(payload.savedUpdates) +
+    syncableProjects.length +
+    syncableUpdates.length +
+    countPhotos(syncableUpdates) +
     syncableProjectAreas.length +
     syncableScheduleItems.length +
     syncableReferenceDocuments.length;
 
-  progress('Reconciling current task and GPS records');
-  const [cloudAreasBeforeUpload, cloudSchedulesBeforeUpload] = await Promise.all([
+  progress('Reconciling current tasks, GPS, and documents');
+  const [cloudAreasBeforeUpload, cloudSchedulesBeforeUpload, cloudDocumentsBeforeUpload] = await Promise.all([
     listProjectAreas(),
     listScheduleItems(),
+    listReferenceDocuments(),
   ]);
   const deletedAreaIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'project_area');
   const deletedScheduleIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'schedule_item');
+  const deletedDocumentIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'reference_document');
 
   if (
     cloudAreasBeforeUpload.ok &&
@@ -1719,11 +2148,27 @@ export async function synchronizeLocalData(
     errors.push('Cloud tasks could not be checked before upload. Local tasks were preserved and will retry.');
   }
 
+  if (
+    cloudDocumentsBeforeUpload.ok &&
+    !cloudDocumentsBeforeUpload.stubbed &&
+    Array.isArray(cloudDocumentsBeforeUpload.data)
+  ) {
+    syncableReferenceDocuments = mergeDAVEReferenceDocumentRecoveryRecords({
+      local: syncableReferenceDocuments,
+      cloud: cloudDocumentsBeforeUpload.data,
+      deletedIds: deletedDocumentIds,
+    });
+  } else {
+    // A stale device must not overwrite a newer current/prior schedule choice.
+    syncableReferenceDocuments = [];
+    errors.push('Cloud documents could not be checked before upload. Local documents were preserved and will retry.');
+  }
+
   total =
     5 +
-    payload.projects.length +
-    payload.savedUpdates.length +
-    countPhotos(payload.savedUpdates) +
+    syncableProjects.length +
+    syncableUpdates.length +
+    countPhotos(syncableUpdates) +
     syncableProjectAreas.length +
     syncableScheduleItems.length +
     syncableReferenceDocuments.length;
@@ -1738,7 +2183,7 @@ export async function synchronizeLocalData(
     cloudProjects.data?.map(project => project.name.toLowerCase()) ?? [],
   );
 
-  for (const projectName of payload.projects) {
+  for (const projectName of syncableProjects) {
     const normalizedName = projectName.trim();
 
     if (!normalizedName) {
@@ -1763,7 +2208,7 @@ export async function synchronizeLocalData(
     progress(`Project synced: ${normalizedName}`);
   }
 
-  for (const update of payload.savedUpdates) {
+  for (const update of syncableUpdates) {
     const staged = await stageProjectUpdateForSync(update);
     details.photosUploaded += staged.uploadedPhotoCount;
     missingPhotos.push(...staged.missingPhotos);
@@ -2068,6 +2513,10 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     return conflict.remotePayload as TUpdate;
   }
 
+  const localUpdateData = localPayload.updateData;
+  if (localUpdateData === undefined) {
+    throw new Error('sync_conflict_local_copy_missing');
+  }
   await enqueuePendingChange<ProjectUpdateRecordPayload<TUpdate>>({
     id: `project-update-${localPayload.id}`,
     entity: 'project_update',
@@ -2083,7 +2532,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   }
 
   await clearResolvedConflict(conflict.id);
-  return localPayload.updateData;
+  return localUpdateData;
 }
 
 async function uploadQueueItem(
@@ -2139,6 +2588,28 @@ async function uploadQueueItem(
       : result.error || result.message || 'Task sync is waiting for Supabase.';
   }
 
+  if (item.entity === 'reference_document') {
+    const payload = item.payload as ReferenceDocumentRecordPayload;
+    const cloud = await listReferenceDocuments();
+    if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
+      return cloud.error || cloud.message || 'Document authority could not be checked.';
+    }
+    const remote = cloud.data.find(candidate => candidate.id === payload.id);
+    const authoritative = remote
+      ? mergeDAVEReferenceDocumentRecoveryRecords({
+          local: [payload.documentData],
+          cloud: [remote],
+        }).find(candidate => candidate.id === payload.id) || payload.documentData
+      : payload.documentData;
+    if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
+      return 'uploaded';
+    }
+    const result = await upsertReferenceDocument(authoritative);
+    return result.ok && !result.stubbed
+      ? 'uploaded'
+      : result.error || result.message || 'Document sync is waiting for Supabase.';
+  }
+
   return `Unsupported sync entity: ${item.entity}`;
 }
 
@@ -2177,19 +2648,42 @@ async function uploadProjectUpdateQueueItem(
 ): Promise<'uploaded' | 'conflict' | string> {
   if (item.operation === 'delete') {
     const deletePayload = item.payload as ProjectUpdateDeletePayload;
-    const result = await deleteProjectUpdate({
-      id: deletePayload.id,
-    });
+    let cloudDeleteSucceededAt = deletePayload.cloudDeleteSucceededAt;
 
-    if (result.ok && !result.stubbed) {
-      await confirmProjectUpdateCloudDeletion(deletePayload.id).catch(() => undefined);
-      await clearConflictsForLocalRecord('project_update', deletePayload.id);
-      return 'uploaded';
+    if (!cloudDeleteSucceededAt) {
+      const result = await deleteProjectUpdate({
+        id: deletePayload.id,
+      });
+
+      if (!result.ok || result.stubbed) {
+        return result.error
+          ? `Field update delete failed: ${result.error}`
+          : result.message || 'Field update deletion is waiting for cloud sync.';
+      }
+
+      cloudDeleteSucceededAt = new Date().toISOString();
+      try {
+        await markProjectUpdateCloudDeletionSucceeded(
+          item,
+          cloudDeleteSucceededAt,
+        );
+      } catch (error) {
+        return `Field update deletion confirmation is waiting for local storage. ${
+          error instanceof Error ? error.message : 'The deletion receipt could not be saved.'
+        }`;
+      }
     }
 
-    return result.error
-      ? `Field update delete failed: ${result.error}`
-      : result.message || 'Field update deletion is waiting for cloud sync.';
+    try {
+      await confirmProjectUpdateCloudDeletion(deletePayload.id);
+      await clearConflictsForLocalRecord('project_update', deletePayload.id);
+      await removeConfirmedProjectUpdateDeleteFromQueue(deletePayload.id);
+      return 'uploaded';
+    } catch (error) {
+      return `Field update deletion confirmation is saved for retry. ${
+        error instanceof Error ? error.message : 'The local deletion journal could not be confirmed.'
+      }`;
+    }
   }
 
   const payload = item.payload as ProjectUpdateRecordPayload;
@@ -2255,6 +2749,57 @@ async function uploadProjectUpdateQueueItem(
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+async function markProjectUpdateCloudDeletionSucceeded(
+  attempted: SyncQueueItem,
+  cloudDeleteSucceededAt: string,
+): Promise<void> {
+  const persisted = await mutateOfflineQueue(queue => {
+    const currentIndex = queue.findIndex(current =>
+      sameQueueRevision(current, attempted),
+    );
+    if (currentIndex < 0) {
+      return { nextQueue: queue, result: false, persist: false };
+    }
+    const current = queue[currentIndex];
+    const payload = current.payload as ProjectUpdateDeletePayload;
+    const nextQueue = [...queue];
+    nextQueue[currentIndex] = {
+      ...current,
+      payload: {
+        ...payload,
+        cloudDeleteSucceededAt,
+      },
+      lastError: null,
+    };
+    return { nextQueue, result: true };
+  });
+  if (!persisted) {
+    throw new Error('The pending deletion changed before its receipt could be saved.');
+  }
+}
+
+async function removeConfirmedProjectUpdateDeleteFromQueue(
+  updateId: string,
+): Promise<void> {
+  await mutateOfflineQueue(queue => {
+    const nextQueue = queue.filter(item => {
+      if (item.entity !== 'project_update' || item.operation !== 'delete') {
+        return true;
+      }
+      const payload = item.payload as ProjectUpdateDeletePayload;
+      return (
+        payload.id !== updateId ||
+        !payload.cloudDeleteSucceededAt
+      );
+    });
+    return {
+      nextQueue,
+      result: undefined,
+      persist: nextQueue.length !== queue.length,
+    };
+  });
 }
 
 async function recordConflict(conflict: SyncConflict): Promise<void> {
@@ -2382,8 +2927,8 @@ function buildSyncStatusMessage(
 ): string {
   if (recoveryAvailable) {
     return queuedChanges > 0
-      ? 'Some local changes are waiting to sync, and saved sync data needs recovery review.'
-      : 'Saved sync data needs recovery review. The active offline queue has no pending items.';
+      ? 'Some current changes are waiting to sync, and a protected recovery copy also needs review.'
+      : 'Current changes are synced. A protected copy of older sync data still needs review.';
   }
 
   if (!configuration.configured) {
@@ -2426,6 +2971,10 @@ function formatQueueItemFailure(item: SyncQueueItem, reason: string): string {
   if (item.entity === 'schedule_item') {
     const payload = item.payload as Partial<ScheduleItemRecordPayload>;
     return `Task “${payload.itemData?.taskName || 'Unnamed Task'}” could not sync. ${reason}`;
+  }
+  if (item.entity === 'reference_document') {
+    const payload = item.payload as Partial<ReferenceDocumentRecordPayload>;
+    return `Document “${payload.documentData?.name || 'Unnamed Document'}” could not sync. ${reason}`;
   }
 
   const payload = item.payload as Partial<ProjectCreatePayload & ProjectUpdatePayload & ProjectDeletePayload>;
@@ -2951,7 +3500,8 @@ function isOfflineQueueRecoveryInternalKey(key: string) {
   return (
     isOfflineQueueQuarantineKey(key) ||
     key.startsWith(SYNC_QUEUE_QUARANTINE_METADATA_KEY_PREFIX) ||
-    key === SYNC_QUEUE_RECOVERY_TRANSACTION_KEY
+    key === SYNC_QUEUE_RECOVERY_TRANSACTION_KEY ||
+    key === SYNC_QUEUE_ARCHIVE_RECOVERY_INDEX_KEY
   );
 }
 

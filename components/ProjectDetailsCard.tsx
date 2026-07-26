@@ -131,6 +131,7 @@ export type ProjectContact = {
 export type ProjectArea = {
   id: string;
   name: string;
+  projectName?: string | null;
   building?: string;
   latitude: number;
   longitude: number;

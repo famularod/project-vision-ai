@@ -7,6 +7,13 @@ import type {
   UpdatePhoto,
 } from '../types';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  classifyDAVEBlocker,
+  classifyDAVECompletion,
+  classifyDAVEImplementation,
+  classifyDAVEIssue,
+  classifyDAVESafety,
+} from './DAVEAssertionParser';
 import type { PIEDeliberationResult } from './PIEDeliberationEngine';
 import type {
   PIEDecisionQualityScore,
@@ -698,7 +705,7 @@ export function buildConstructionUnderstanding(
       .filter(item => item.source === 'issue' || item.source === 'safety' || isRiskText(item.summary))
       .map(item => ({
         summary: cleanReportBulletText(item.summary),
-        severity: item.source === 'safety' || /overdue|blocked/i.test(item.summary)
+        severity: item.source === 'safety' || classifyDAVEBlocker(item.summary) === 'blocked'
           ? 'high' as const
           : 'medium' as const,
         sourceEvidenceIds: [item.id],
@@ -736,7 +743,10 @@ export function buildConstructionUnderstanding(
       affectsSchedule: items.some(
         item => item.source === 'schedule' || /schedule|due|overdue|critical|milestone/i.test(item.summary),
       ),
-      hasSafetyConcern: items.some(item => item.source === 'safety' || /safety|hot work|hazard/i.test(item.summary)),
+      hasSafetyConcern: items.some(item =>
+        item.source === 'safety' ||
+        classifyDAVESafety(item.summary) === 'issue_present'
+      ),
       hasInspectionDependency: items.some(item => /inspection|inspect|permit/i.test(item.summary)),
       readerTakeaway: buildReaderTakeaway(areaName, status, progress, issues, nextSteps),
       imageReferences: imageRefs,
@@ -1066,7 +1076,11 @@ export function buildReportRisks(
       projectName: item.projectName,
       areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.summary),
       summary: cleanReportBulletText(item.summary),
-      severity: item.source === 'safety' || /overdue|blocked/i.test(item.summary) ? 'high' : 'medium',
+      severity:
+        item.source === 'safety' ||
+        classifyDAVEBlocker(item.summary) === 'blocked'
+          ? 'high'
+          : 'medium',
       sourceEvidenceIds: [item.id],
     }));
 }
@@ -1309,7 +1323,7 @@ function isActionEvidence(item: PIEReportSourceEvidence) {
     return STRONG_ACTION_LANGUAGE.test(item.summary) || isRiskText(item.summary);
   }
   if (item.source === 'schedule') {
-    return /waiting|blocked|overdue|high/i.test(`${item.status || ''} ${item.summary}`);
+    return classifyDAVEBlocker(`${item.status || ''} ${item.summary}`) === 'blocked';
   }
 
   return STRONG_ACTION_LANGUAGE.test(item.summary);
@@ -2150,10 +2164,21 @@ function resolveWorkAreaStatus(
   nextSteps: PIEWorkAreaNextStep[],
 ): PIEWorkAreaStatus {
   if (issues.some(issue => issue.severity === 'high')) return 'Blocked';
-  if (issues.length > 0 || evidence.some(item => /overdue|risk/i.test(item.summary))) return 'At Risk';
+  if (
+    issues.length > 0 ||
+    evidence.some(item =>
+      classifyDAVEIssue(item.summary) === 'issue_present' ||
+      classifyDAVEBlocker(item.summary) === 'blocked',
+    )
+  ) return 'At Risk';
   if (nextSteps.some(step => !step.owner)) return 'Needs Review';
-  if (evidence.some(item => /complete|completed|done|finished/i.test(item.summary))) return 'Complete';
-  if (evidence.some(item => /started|underway|progress|installed|poured|framing|removed/i.test(item.summary))) return 'In Progress';
+  if (evidence.some(item => classifyDAVECompletion(item.summary) === 'complete')) {
+    return 'Complete';
+  }
+  if (evidence.some(item => {
+    const status = classifyDAVEImplementation(item.summary);
+    return status === 'in_progress' || status === 'implemented';
+  })) return 'In Progress';
 
   return 'On Track';
 }
@@ -2204,7 +2229,11 @@ function shouldSuppressReportBullet(value: string) {
 }
 
 function isRiskText(value: string) {
-  return /risk|blocked|overdue|waiting|safety|hazard|concern/i.test(value);
+  return (
+    classifyDAVEIssue(value) === 'issue_present' ||
+    classifyDAVEBlocker(value) === 'blocked' ||
+    classifyDAVESafety(value) === 'issue_present'
+  );
 }
 
 function isUnclearText(value: string) {

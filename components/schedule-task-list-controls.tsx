@@ -3,8 +3,9 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, radius, spacing } from '../theme';
 
-export type ScheduleTaskFilter = 'Attention' | 'Today' | '7 Days' | 'All';
+export type ScheduleTaskFilter = 'Attention' | 'Today' | '7 Days' | 'Overdue' | 'All';
 export type ScheduleTaskView = 'Open Tasks' | 'Completed Tasks';
+export type ScheduleWorkspaceView = 'Tasks' | 'Timeline' | 'Lookahead';
 
 export function ScheduleTaskListControls({
   scopeLabel,
@@ -18,7 +19,10 @@ export function ScheduleTaskListControls({
   activeFilter,
   onViewChange,
   onFilterChange,
+  onNeedsAttentionPress,
   onAddTask,
+  workspaceView = 'Tasks',
+  onWorkspaceViewChange,
 }: {
   scopeLabel?: string;
   taskCount: number;
@@ -31,14 +35,17 @@ export function ScheduleTaskListControls({
   activeFilter: ScheduleTaskFilter;
   onViewChange: (view: ScheduleTaskView) => void;
   onFilterChange: (filter: ScheduleTaskFilter) => void;
+  onNeedsAttentionPress: () => void;
   onAddTask: () => void;
+  workspaceView?: ScheduleWorkspaceView;
+  onWorkspaceViewChange?: (view: ScheduleWorkspaceView) => void;
 }) {
   return (
     <View style={styles.container}>
       <View>
-        <Text style={styles.title}>Tasks</Text>
+        <Text style={styles.title}>Tasks &amp; Schedule</Text>
         <Text style={styles.subtitle}>
-          Manage project work, deadlines, ownership, and field follow-up.
+          Update project work or review the current timeline and lookahead.
         </Text>
         {scopeLabel ? (
           <Text style={styles.scope} accessibilityLabel={`Current project view: ${scopeLabel}`}>
@@ -57,80 +64,119 @@ export function ScheduleTaskListControls({
         <Text style={styles.addButtonText}>Add Task</Text>
       </Pressable>
 
-      <View style={styles.metricGrid}>
-        <TaskMetric label="Tasks" value={taskCount} icon="calendar-outline" />
-        <TaskMetric label="Due 7 Days" value={dueSoonCount} icon="time-outline" />
-        <TaskMetric
-          label="Overdue"
-          value={overdueCount}
-          icon="alert-circle-outline"
-          danger={overdueCount > 0}
-        />
-        <TaskMetric label="Needs Action" value={needsActionCount} icon="checkbox-outline" />
+      <View style={styles.workspaceTabs} accessibilityRole="tablist">
+        {(['Tasks', 'Timeline', 'Lookahead'] as const).map(view => (
+          <Pressable
+            key={view}
+            style={({ pressed }) => [
+              styles.workspaceTab,
+              workspaceView === view && styles.workspaceTabActive,
+              pressed && styles.pressed,
+            ]}
+            onPress={() => onWorkspaceViewChange?.(view)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: workspaceView === view }}
+            accessibilityLabel={`${view} schedule view`}
+          >
+            <Ionicons
+              name={view === 'Tasks'
+                ? 'list-outline'
+                : view === 'Timeline'
+                  ? 'calendar-outline'
+                  : 'today-outline'}
+              size={18}
+              color={workspaceView === view ? colors.surface : colors.primary}
+            />
+            <Text style={[
+              styles.workspaceTabText,
+              workspaceView === view && styles.workspaceTabTextActive,
+            ]}>
+              {view}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
-      <View style={styles.viewTabs} accessibilityRole="tablist">
-        {(['Open Tasks', 'Completed Tasks'] as const).map(view => {
-          const count = view === 'Open Tasks' ? openTaskCount : completedTaskCount;
-          return (
-            <Pressable
-              key={view}
-              style={({ pressed }) => [
-                styles.viewTab,
-                activeView === view && styles.viewTabActive,
-                pressed && styles.pressed,
-              ]}
-              onPress={() => onViewChange(view)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: activeView === view }}
-              accessibilityLabel={`${view}, ${count} ${count === 1 ? 'task' : 'tasks'}`}
-            >
-              <Text style={[
-                styles.viewTabText,
-                activeView === view && styles.viewTabTextActive,
-              ]}>
-                {view}
-              </Text>
-              <Text style={[
-                styles.viewTabCount,
-                activeView === view && styles.viewTabTextActive,
-              ]}>{count}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      {activeView === 'Open Tasks' ? (
-        <View style={styles.filterPanel}>
-          <Text style={styles.filterTitle}>Work requiring attention</Text>
-          <Text style={styles.filterSubtitle}>
-            Verification, blockers, overdue work, and owner follow-ups appear first.
-          </Text>
-          <View style={styles.filterRow}>
-            {(['Attention', 'Today', '7 Days', 'All'] as const).map(filter => (
-              <Pressable
-                key={filter}
-                style={({ pressed }) => [
-                  styles.filterButton,
-                  activeFilter === filter && styles.filterButtonActive,
-                  pressed && styles.pressed,
-                ]}
-                onPress={() => onFilterChange(filter)}
-                accessibilityRole="button"
-                accessibilityState={{ selected: activeFilter === filter }}
-                accessibilityLabel={`Show ${filter.toLowerCase()} open tasks`}
-              >
-                <Text style={[
-                  styles.filterButtonText,
-                  activeFilter === filter && styles.filterButtonTextActive,
-                ]}>
-                  {filter}
-                </Text>
-              </Pressable>
-            ))}
+      {workspaceView === 'Tasks' ? (
+        <>
+          <View style={styles.metricGrid}>
+            <TaskMetric
+              label="Tasks"
+              value={taskCount}
+              icon="calendar-outline"
+              selected={activeView === 'Open Tasks' && activeFilter === 'All'}
+              actionLabel="Show all open tasks"
+              onPress={() => {
+                onViewChange('Open Tasks');
+                onFilterChange('All');
+              }}
+            />
+            <TaskMetric
+              label="Due 7 Days"
+              value={dueSoonCount}
+              icon="time-outline"
+              selected={activeView === 'Open Tasks' && activeFilter === '7 Days'}
+              actionLabel="Show tasks due within 7 days"
+              onPress={() => {
+                onViewChange('Open Tasks');
+                onFilterChange('7 Days');
+              }}
+            />
+            <TaskMetric
+              label="Overdue"
+              value={overdueCount}
+              icon="alert-circle-outline"
+              danger={overdueCount > 0}
+              selected={activeView === 'Open Tasks' && activeFilter === 'Overdue'}
+              actionLabel="Show overdue tasks"
+              onPress={() => {
+                onViewChange('Open Tasks');
+                onFilterChange('Overdue');
+              }}
+            />
+            <TaskMetric
+              label="Needs Attention"
+              value={needsActionCount}
+              icon="checkbox-outline"
+              selected={activeView === 'Open Tasks' && activeFilter === 'Attention'}
+              actionLabel="Show tasks that need attention"
+              onPress={onNeedsAttentionPress}
+            />
           </View>
-        </View>
+
+          <View style={styles.viewTabs} accessibilityRole="tablist">
+            {(['Open Tasks', 'Completed Tasks'] as const).map(view => {
+              const count = view === 'Open Tasks' ? openTaskCount : completedTaskCount;
+              return (
+                <Pressable
+                  key={view}
+                  style={({ pressed }) => [
+                    styles.viewTab,
+                    activeView === view && styles.viewTabActive,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={() => onViewChange(view)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: activeView === view }}
+                  accessibilityLabel={`${view}, ${count} ${count === 1 ? 'task' : 'tasks'}`}
+                >
+                  <Text style={[
+                    styles.viewTabText,
+                    activeView === view && styles.viewTabTextActive,
+                  ]}>
+                    {view}
+                  </Text>
+                  <Text style={[
+                    styles.viewTabCount,
+                    activeView === view && styles.viewTabTextActive,
+                  ]}>{count}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
       ) : null}
+
     </View>
   );
 }
@@ -140,22 +186,52 @@ function TaskMetric({
   value,
   icon,
   danger = false,
+  selected = false,
+  actionLabel,
+  onPress,
 }: {
   label: string;
   value: number;
   icon: keyof typeof Ionicons.glyphMap;
   danger?: boolean;
+  selected?: boolean;
+  actionLabel?: string;
+  onPress?: () => void;
 }) {
   const color = danger ? colors.danger : colors.primary;
+  const content = (
+    <>
+      <Ionicons name={icon} size={19} color={color} />
+      <Text style={[styles.metricValue, { color }]}>{value}</Text>
+      <Text style={styles.metricLabel}>{label}</Text>
+    </>
+  );
+
+  if (onPress) {
+    return (
+      <Pressable
+        style={({ pressed }) => [
+          styles.metric,
+          danger && styles.metricDanger,
+          selected && styles.metricSelected,
+          pressed && styles.pressed,
+        ]}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityState={{ selected }}
+        accessibilityLabel={`${label}: ${value}. ${actionLabel || `Show ${label.toLowerCase()}`}`}
+      >
+        {content}
+      </Pressable>
+    );
+  }
 
   return (
     <View
       style={[styles.metric, danger && styles.metricDanger]}
       accessibilityLabel={`${label}: ${value}`}
     >
-      <Ionicons name={icon} size={19} color={color} />
-      <Text style={[styles.metricValue, { color }]}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
+      {content}
     </View>
   );
 }
@@ -200,6 +276,36 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '900',
   },
+  workspaceTabs: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  workspaceTab: {
+    minHeight: 46,
+    flex: 1,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xxs,
+    paddingHorizontal: spacing.xs,
+  },
+  workspaceTabActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  workspaceTabText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  workspaceTabTextActive: {
+    color: colors.surface,
+  },
   metricGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -220,6 +326,10 @@ const styles = StyleSheet.create({
   metricDanger: {
     borderColor: '#FFC9C5',
     backgroundColor: colors.dangerSoft,
+  },
+  metricSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
   },
   metricValue: {
     fontSize: 24,
@@ -268,52 +378,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
     fontVariant: ['tabular-nums'],
-  },
-  filterPanel: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surface,
-    gap: spacing.xs,
-    padding: spacing.md,
-    marginBottom: 14,
-  },
-  filterTitle: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  filterSubtitle: {
-    color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  filterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.xs,
-    paddingTop: spacing.xs,
-  },
-  filterButton: {
-    minHeight: 44,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.md,
-  },
-  filterButtonActive: {
-    borderColor: colors.primary,
-    backgroundColor: colors.primary,
-  },
-  filterButtonText: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  filterButtonTextActive: {
-    color: colors.surface,
   },
   pressed: {
     opacity: 0.72,

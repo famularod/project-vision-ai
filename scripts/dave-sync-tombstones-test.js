@@ -97,6 +97,7 @@ const {
   loadDAVESyncTombstones,
   mergeDAVESyncTombstones,
   recordDAVESyncTombstones,
+  refreshDAVESyncTombstonesFromCloud,
   removeDAVETombstonedRecords,
   synchronizeDAVESyncTombstones,
 } = moduleUnderTest.exports;
@@ -155,6 +156,15 @@ async function run() {
     'a deletion from another device must filter stale local state',
   );
 
+  const uploadsBeforeLiveRefresh = uploaded.length;
+  const liveRefresh = await refreshDAVESyncTombstonesFromCloud();
+  assert.strictEqual(liveRefresh.cloudAuthoritative, true, 'live deletion refresh must retain cloud authority');
+  assert.strictEqual(
+    uploaded.length,
+    uploadsBeforeLiveRefresh,
+    'live deletion refresh must not re-upload the complete historical journal',
+  );
+
   cloudListResult = {
     ok: true,
     configured: true,
@@ -183,6 +193,17 @@ async function run() {
     assert(app.includes(`'${entity}'`), `${entity} deletions must be wired into the live app`);
     assert(migration.includes(`'${entity}'`), `${entity} must be allowed by the database constraint`);
   }
+  const operationalRefreshStart = app.indexOf('async function refreshOperationalCollections()');
+  const operationalRefreshEnd = app.indexOf('const refreshController =', operationalRefreshStart);
+  const operationalRefreshBlock = app.slice(operationalRefreshStart, operationalRefreshEnd);
+  assert(
+    operationalRefreshBlock.includes('loadDAVEOperationalTombstones()'),
+    'open-device refresh must use the bounded receive-side deletion-history path',
+  );
+  assert(
+    !operationalRefreshBlock.includes('synchronizeDAVESyncTombstones()'),
+    'open-device refresh must not upload the complete deletion journal before pulling tasks',
+  );
   assert(
     syncService.indexOf("progress('Checking cross-device deletion history')") <
       syncService.indexOf("progress('Uploading queued changes')"),

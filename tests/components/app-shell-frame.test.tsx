@@ -41,6 +41,10 @@ describe('AppShellFrame', () => {
 
     expect(screen.getByText('Current project overview')).toBeTruthy();
     expect(screen.getByTestId('app-bottom-tabs')).toBeTruthy();
+    expect(screen.getByTestId('app-brand-header')).toBeTruthy();
+    expect(screen.getByTestId('app-brand-lockup')).toBeTruthy();
+    expect(screen.getByText('Vitruvius')).toBeTruthy();
+    expect(screen.getByText('Project Intelligence')).toBeTruthy();
     expect(screen.queryByTestId('app-navigation-rail')).toBeNull();
 
     await fireEvent.press(screen.getByRole('tab', { name: 'Tasks' }));
@@ -66,8 +70,22 @@ describe('AppShellFrame', () => {
 
     expect(screen.getByText('Portrait iPad workspace')).toBeTruthy();
     expect(screen.getByTestId('app-navigation-rail')).toBeTruthy();
+    expect(screen.getByTestId('app-rail-brand')).toBeTruthy();
     expect(screen.queryByText('Project Vision AI')).toBeNull();
     expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId('app-navigation-rail').props.style,
+      ).width,
+    ).toBe(104);
+    expect(
+      StyleSheet.flatten(screen.getByText('Overview').props.style).fontSize,
+    ).toBe(13);
+    expect(
+      StyleSheet.flatten(
+        screen.getByRole('tab', { name: 'Overview' }).props.style,
+      ).minHeight,
+    ).toBe(72);
   });
 
   it('returns to the phone shell in a narrow iPad Split View window', async () => {
@@ -139,15 +157,35 @@ describe('AppShellFrame', () => {
 
     expect(screen.getByText('Wide project workspace')).toBeTruthy();
     expect(screen.getByTestId('app-navigation-rail')).toBeTruthy();
+    expect(screen.getByTestId('app-rail-brand')).toBeTruthy();
     expect(screen.getByText('Vitruvius')).toBeTruthy();
     expect(screen.getByText('Project Intelligence')).toBeTruthy();
     expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId('app-navigation-rail').props.style,
+      ).width,
+    ).toBe(248);
+    expect(
+      StyleSheet.flatten(screen.getByText('Overview').props.style).fontSize,
+    ).toBe(16);
+    expect(
+      StyleSheet.flatten(
+        screen.getByRole('tab', { name: 'Overview' }).props.style,
+      ).minHeight,
+    ).toBe(76);
     expect(
       screen.getByRole('tab', { name: 'Tasks' }).props.accessibilityState,
     ).toEqual({ selected: true });
     expect(StyleSheet.flatten(
       screen.getByRole('button', { name: 'Talk to project assistant' }).props.style,
     ).backgroundColor).toBe('transparent');
+    expect(
+      StyleSheet.flatten(screen.getByTestId('app-nav-overview-icon-slot').props.style).width,
+    ).toBe(44);
+    expect(
+      StyleSheet.flatten(screen.getByTestId('app-nav-talk-icon-slot').props.style).width,
+    ).toBe(44);
 
     await fireEvent.press(screen.getByRole('tab', { name: 'Reports' }));
     await fireEvent.press(

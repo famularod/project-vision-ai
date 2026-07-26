@@ -22,7 +22,7 @@ const {
   authorityInputSignature,
 } = moduleUnderTest.exports;
 
-assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.2');
+assert.strictEqual(PIE_LIVE_AUTHORITY_SIGNATURE_VERSION, 'pie-live-authority-input/2.4');
 
 function input() {
   return {
@@ -148,6 +148,27 @@ const syncDegraded = JSON.parse(JSON.stringify(syncChanged));
 syncDegraded.syncMetadata.status = 'degraded';
 assert.notStrictEqual(authorityInputSignature(syncDegraded), authorityInputSignature(syncChanged));
 
+const verifiedOutcomeAdded = input();
+verifiedOutcomeAdded.verifiedLearningEvents = [{
+  id: 'learning-1',
+  source: 'decision_outcome',
+  event: 'Recovery plan restored the milestone.',
+  outcome: 'worked',
+  evidence: ['Verified schedule recovery.'],
+  confidence: 'high',
+  organizationId: 'org-1',
+  projectId: 'project-1',
+  verifiedAt: '2026-07-16T13:00:00.000Z',
+  verifiedBy: 'validator-1',
+  verificationStatus: 'human_validated',
+  provenanceRecordIds: ['schedule-1'],
+}];
+assert.notStrictEqual(
+  authorityInputSignature(verifiedOutcomeAdded),
+  baseSignature,
+  'a newly verified decision outcome must refresh Core learning',
+);
+
 const canonicalKeyOrder = input();
 canonicalKeyOrder.currentUpdate = { id: 'draft-1', projectName: 'Hospital', notes: 'Note', photos: [] };
 const reorderedKeys = JSON.parse(JSON.stringify(canonicalKeyOrder));
@@ -176,6 +197,47 @@ assert.strictEqual(
   authorityInputScopeSignature(editedDraftAgain),
   authorityInputScopeSignature(editedDraft),
   'draft typing should refresh within the same debounced authority scope',
+);
+
+let cachedEvidenceReads = 0;
+const stableUpdate = {
+  id: 'cached-update',
+  projectName: 'Hospital',
+  date: '2026-07-16T12:00:00.000Z',
+  photos: [],
+};
+Object.defineProperty(stableUpdate, 'notes', {
+  enumerable: true,
+  get() {
+    cachedEvidenceReads += 1;
+    return 'Stable historical evidence.';
+  },
+});
+const stableUpdates = [stableUpdate];
+const cachedDraftInput = {
+  ...input(),
+  updates: stableUpdates,
+  currentUpdate: {
+    id: 'draft-cache-test',
+    projectName: 'Hospital',
+    notes: 'First character',
+    photos: [],
+  },
+};
+const cachedDraftSignature = authorityInputSignature(cachedDraftInput);
+const readsAfterFirstSignature = cachedEvidenceReads;
+const editedCachedDraftSignature = authorityInputSignature({
+  ...cachedDraftInput,
+  currentUpdate: {
+    ...cachedDraftInput.currentUpdate,
+    notes: 'Second character',
+  },
+});
+assert.notStrictEqual(editedCachedDraftSignature, cachedDraftSignature);
+assert.strictEqual(
+  cachedEvidenceReads,
+  readsAfterFirstSignature,
+  'editing a draft must not traverse unchanged historical evidence collections again',
 );
 
 const changedProject = JSON.parse(JSON.stringify(editedDraft));

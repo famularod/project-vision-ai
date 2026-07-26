@@ -5,6 +5,7 @@ import type {
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
+import { normalizeProjectItemActivity, normalizeProjectItemType } from './ProjectItemWorkflow';
 import type { CloudProject, CloudProjectUpdate, JsonValue } from './SupabaseService';
 import {
   isDAVESafeCloudScheduleRecord,
@@ -21,6 +22,12 @@ import {
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
 import type { DAVEWebScheduleItem } from './DAVEWebTaskEditing';
+import type {
+  DAVEWebDocumentExtension,
+  DAVEWebReportRecord,
+} from './DAVEWebOperations';
+import { partitionProjectUpdatesByDeletedTask } from './DAVEDeletedTaskEvidence';
+import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
@@ -30,7 +37,7 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
   refreshedAt: string;
 }>;
 
-export type DAVEWebReferenceDocument = ReferenceDocument & Readonly<{
+export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtension & Readonly<{
   cloudUpdatedAt: string | null;
   linkedScheduleItems: readonly Readonly<{
     id: string;
@@ -70,10 +77,11 @@ export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnap
     scheduleDocuments: referenceDocuments,
   }) as DAVEWebScheduleItem[];
   const projects = portfolioProjects(rawProjects, scheduleItems);
-  const projectUpdates = removeUpdatesLinkedToDeletedTasks(
+  const projectUpdates = partitionProjectUpdatesByDeletedTask(
     rows.projectUpdates.map(normalizeProjectUpdate).filter(isPresent),
     tombstones,
-  );
+    update => update.updateData,
+  ).active;
 
   return Object.freeze({
     projects: Object.freeze(projects),
@@ -134,6 +142,7 @@ function normalizeScheduleItem(value: unknown): DAVEWebScheduleItem | null {
   return {
     ...(data as Partial<ScheduleItem>),
     id: data.id.trim(),
+    itemType: normalizeProjectItemType(data.itemType),
     scheduleProjectName: readString(data.scheduleProjectName),
     projectTimeZone: readString(data.projectTimeZone),
     projectName,
@@ -147,6 +156,16 @@ function normalizeScheduleItem(value: unknown): DAVEWebScheduleItem | null {
     durationDays: typeof data.durationDays === 'number' && Number.isFinite(data.durationDays)
       ? Math.max(0, data.durationDays)
       : null,
+    wbsCode: readString(data.wbsCode),
+    parentItemId: readString(data.parentItemId),
+    sortOrder: typeof data.sortOrder === 'number' && Number.isFinite(data.sortOrder)
+      ? Math.max(0, Math.trunc(data.sortOrder))
+      : null,
+    dependencies: normalizeScheduleDependencies(data.dependencies),
+    isSummary: data.isSummary === true,
+    isMilestone: data.isMilestone === true,
+    baselineStartDate: readString(data.baselineStartDate),
+    baselineFinishDate: readString(data.baselineFinishDate),
     percentComplete: progress.percentComplete,
     progressSource: data.progressSource === 'project_manager' || data.progressSource === 'schedule_import'
       ? data.progressSource
@@ -156,6 +175,8 @@ function normalizeScheduleItem(value: unknown): DAVEWebScheduleItem | null {
     priority: data.priority === 'Low' || data.priority === 'High' ? data.priority : 'Medium',
     status: progress.status,
     notes: readString(data.notes) ?? '',
+    nextAction: readString(data.nextAction) ?? '',
+    activity: normalizeProjectItemActivity(data.activity),
     importedFrom: readString(data.importedFrom),
     importedAt: readString(data.importedAt),
     importBatchId: readString(data.importBatchId),
@@ -192,21 +213,6 @@ function removeTombstonedRecords<T extends { id: string }>(
   return records.filter(record => !deletedIds.has(normalized(record.id)));
 }
 
-function removeUpdatesLinkedToDeletedTasks(
-  updates: readonly CloudProjectUpdate<ProjectUpdate>[],
-  tombstones: readonly DAVESyncTombstone[],
-): CloudProjectUpdate<ProjectUpdate>[] {
-  const deletedTaskIds = new Set(
-    tombstones
-      .filter(tombstone => tombstone.entityType === 'schedule_item')
-      .map(tombstone => normalized(tombstone.recordId)),
-  );
-  return updates.filter(update => {
-    const linkedTaskId = normalized(update.updateData.scheduleItemId ?? '');
-    return !linkedTaskId || !deletedTaskIds.has(linkedTaskId);
-  });
-}
-
 function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdate> | null {
   const row = toRecord(value);
   const data = toRecord(row.update_data);
@@ -216,7 +222,7 @@ function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdat
   if (data.isArchived === true) return null;
 
   const photos = Array.isArray(data.photos)
-    ? data.photos.map(normalizePhoto).filter(isPresent)
+    ? data.photos.map(normalizeWebPhoto).filter(isPresent)
     : [];
 
   return {
@@ -237,6 +243,13 @@ function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdat
       scheduleItemId: readString(data.scheduleItemId),
       scheduleTaskName: readString(data.scheduleTaskName),
       scheduleProjectName: readString(data.scheduleProjectName),
+      selectedAreaId: readString(data.selectedAreaId),
+      selectedAreaName: readString(data.selectedAreaName) ?? readString(row.area_name),
+      gpsLatitude: readFiniteNumber(data.gpsLatitude),
+      gpsLongitude: readFiniteNumber(data.gpsLongitude),
+      gpsAccuracy: readFiniteNumber(data.gpsAccuracy),
+      distanceFromSelectedAreaFeet: readFiniteNumber(data.distanceFromSelectedAreaFeet),
+      locationCapturedAt: readString(data.locationCapturedAt),
       recipients: isRecord(data.recipients) && Array.isArray(data.recipients.contactIds)
         ? { contactIds: data.recipients.contactIds.filter((item): item is string => typeof item === 'string') }
         : { contactIds: [] },
@@ -244,10 +257,13 @@ function normalizeProjectUpdate(value: unknown): CloudProjectUpdate<ProjectUpdat
   };
 }
 
-function normalizePhoto(value: unknown): UpdatePhoto | null {
+export function normalizeWebPhoto(value: unknown): UpdatePhoto | null {
   const photo = toRecord(value);
   const id = readString(photo.id);
   if (!id) return null;
+  const photoIntelligence = isRecord(photo.photoIntelligence)
+    ? photo.photoIntelligence as UpdatePhoto['photoIntelligence']
+    : null;
   return {
     id,
     uri: '',
@@ -261,9 +277,17 @@ function normalizePhoto(value: unknown): UpdatePhoto | null {
     actionStatus: photo.actionStatus === 'In Progress' || photo.actionStatus === 'Waiting' || photo.actionStatus === 'Closed'
       ? photo.actionStatus
       : 'Open',
+    fileName: readString(photo.fileName),
+    mimeType: readString(photo.mimeType),
+    cloudStoragePath: readString(photo.cloudStoragePath),
     selectedAreaId: readString(photo.selectedAreaId),
     selectedAreaName: readString(photo.selectedAreaName),
+    gpsLatitude: readFiniteNumber(photo.gpsLatitude),
+    gpsLongitude: readFiniteNumber(photo.gpsLongitude),
+    gpsAccuracy: readFiniteNumber(photo.gpsAccuracy),
+    distanceFromSelectedAreaFeet: readFiniteNumber(photo.distanceFromSelectedAreaFeet),
     locationCapturedAt: readString(photo.locationCapturedAt),
+    photoIntelligence,
   };
 }
 
@@ -287,9 +311,59 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
     importedAt: readString(data.importedAt) ?? readString(row.updated_at) ?? '',
     projectId: readString(data.projectId),
     projectName: readString(data.projectName),
+    projectNames: readStringArray(data.projectNames),
     importBatchId: readString(data.importBatchId),
+    storagePath: readString(data.storagePath),
+    sizeBytes: typeof data.sizeBytes === 'number' && Number.isFinite(data.sizeBytes)
+      ? Math.max(0, data.sizeBytes)
+      : null,
+    contentSha256: readString(data.contentSha256),
+    webFileFingerprint: readString(data.webFileFingerprint),
+    webVersionGroupId: readString(data.webVersionGroupId),
+    webContentReview: readString(data.webContentReview),
+    webReport: normalizeWebReport(data.webReport),
     cloudUpdatedAt: readString(row.updated_at),
     linkedScheduleItems: Object.freeze([]),
+  };
+}
+
+export function normalizeWebReport(value: unknown): DAVEWebReportRecord | null {
+  const report = toRecord(value);
+  const title = readString(report.title);
+  const body = readString(report.body);
+  const generatedAt = readString(report.generatedAt);
+  const sourceRefreshedAt = readString(report.sourceRefreshedAt);
+  if (!title || !body || !generatedAt || !sourceRefreshedAt) return null;
+  const audit = Array.isArray(report.audit)
+    ? report.audit.map(event => {
+        const row = toRecord(event);
+        const action = row.action === 'created' || row.action === 'edited' || row.action === 'approved'
+          ? row.action
+          : null;
+        const id = readString(row.id);
+        const actor = readString(row.actor);
+        const at = readString(row.at);
+        return action && id && actor && at ? { id, action, actor, at } : null;
+      }).filter(isPresent)
+    : [];
+  return {
+    status: report.status === 'approved' ? 'approved' : 'draft',
+    title,
+    body,
+    generatedAt,
+    sourceRefreshedAt,
+    sourceFingerprint: readString(report.sourceFingerprint),
+    sourceScopeKey: readString(report.sourceScopeKey),
+    sourceTaskIds: Array.isArray(report.sourceTaskIds)
+      ? report.sourceTaskIds.filter((item): item is string => typeof item === 'string')
+      : [],
+    sourceUpdateIds: Array.isArray(report.sourceUpdateIds)
+      ? report.sourceUpdateIds.filter((item): item is string => typeof item === 'string')
+      : [],
+    sourceDocumentIds: Array.isArray(report.sourceDocumentIds)
+      ? report.sourceDocumentIds.filter((item): item is string => typeof item === 'string')
+      : [],
+    audit,
   };
 }
 
@@ -303,6 +377,22 @@ function isRecord(value: unknown): value is Record<string, any> {
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function readFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const values = new Map<string, string>();
+  value.forEach(item => {
+    const display = readString(item)?.trim();
+    if (!display) return;
+    const key = normalized(display);
+    if (!values.has(key)) values.set(key, display);
+  });
+  return [...values.values()];
 }
 
 function isPresent<T>(value: T | null): value is T {

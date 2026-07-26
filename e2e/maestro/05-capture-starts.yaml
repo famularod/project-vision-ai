@@ -1,6 +1,4 @@
 appId: ${APP_ID}
-env:
-  PROJECT_NAME: ${PROJECT_NAME || "2375 Compliance Project"}
 ---
 - launchApp
 - extendedWaitUntil:

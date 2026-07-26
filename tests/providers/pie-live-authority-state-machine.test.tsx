@@ -59,6 +59,7 @@ type CoreResult = Awaited<ReturnType<typeof buildLivePIECoreIntelligence>>;
 function authorityInput(
   projectId = 'project-1',
   evidenceRevision?: string,
+  cloudAvailable = false,
 ): PIELiveAuthorityInput {
   const projectName = projectId === 'project-1' ? 'Project One' : 'Project Two';
   return {
@@ -82,11 +83,15 @@ function authorityInput(
     projectDocuments: [],
     captureMemories: [],
     identityTrusted: true,
-    cloudAvailable: false,
+    cloudAvailable,
   };
 }
 
-function coreResult(projectId = 'project-1'): CoreResult {
+function coreResult(
+  projectId = 'project-1',
+  persistenceStatus: CoreResult['realityAuthority']['persistenceStatus'] =
+    'authoritative_local',
+): CoreResult {
   return {
     runtime: {
       generatedAt: '2026-07-18T12:00:00.000Z',
@@ -94,7 +99,7 @@ function coreResult(projectId = 'project-1'): CoreResult {
     },
     realityAuthority: {
       modelId: projectId,
-      persistenceStatus: 'authoritative_local',
+      persistenceStatus,
     },
     realityModel: {
       organizationId: 'organization-1',
@@ -288,6 +293,36 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     expect(currentAuthority?.state).toBe('ready');
   });
 
+  it('manual retry rebuilds the newest raw evidence without waiting for debounce', async () => {
+    buildCoreMock
+      .mockResolvedValueOnce(coreResult())
+      .mockResolvedValueOnce(coreResult());
+
+    const screen = render(
+      <PIELiveAuthorityProvider input={authorityInput('project-1', 'revision one')}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flushAsyncWork();
+    expect(currentAuthority?.state).toBe('ready');
+
+    await screen.rerender(
+      <PIELiveAuthorityProvider input={authorityInput('project-1', 'revision two')}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    expect(currentAuthority?.state).toBe('stale_model');
+    expect(buildCoreMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await currentAuthority?.refreshAuthority('manual_retry');
+    });
+
+    expect(buildCoreMock).toHaveBeenCalledTimes(2);
+    expect(currentAuthority?.state).toBe('ready');
+    expect(currentAuthority?.retryPending).toBe(false);
+  });
+
   it('never grants ready permissions without a current Core result', () => {
     const resolution = resolvePIELiveAuthorityState({
       hydrated: true,
@@ -371,6 +406,44 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     );
     expect(currentAuthority?.state).toBe('ready');
     expect(currentAuthority?.retryPending).toBe(false);
+  });
+
+  it('requires acknowledgement for local-only data and restores high-impact authority only after cloud refresh', async () => {
+    buildCoreMock
+      .mockResolvedValueOnce(coreResult('project-1', 'authoritative_local'))
+      .mockResolvedValueOnce(coreResult('project-1', 'authoritative_cloud'));
+
+    render(
+      <PIELiveAuthorityProvider input={authorityInput('project-1', undefined, true)}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flushAsyncWork();
+
+    expect(currentAuthority?.state).toBe('degraded_local_only');
+    expect(currentAuthority?.degradedLocalAcknowledged).toBe(false);
+    expect(currentAuthority?.policy.mayShowRecommendations).toBe(false);
+    expect(currentAuthority?.policy.reportGenerationAllowed).toBe(false);
+    expect(currentAuthority?.policy.highImpactAutomationAllowed).toBe(false);
+    expect(currentAuthority?.policy.layer4DecisionCreationAllowed).toBe(false);
+
+    act(() => {
+      currentAuthority?.acknowledgeDegradedLocal();
+    });
+
+    expect(currentAuthority?.degradedLocalAcknowledged).toBe(true);
+    expect(currentAuthority?.policy.mayShowRecommendations).toBe(true);
+    expect(currentAuthority?.policy.reportGenerationAllowed).toBe(true);
+    expect(currentAuthority?.policy.highImpactAutomationAllowed).toBe(false);
+    expect(currentAuthority?.policy.layer4DecisionCreationAllowed).toBe(false);
+
+    await act(async () => {
+      await currentAuthority?.refreshAuthority('manual_retry');
+    });
+
+    expect(currentAuthority?.state).toBe('ready');
+    expect(currentAuthority?.policy.highImpactAutomationAllowed).toBe(true);
+    expect(currentAuthority?.policy.layer4DecisionCreationAllowed).toBe(true);
   });
 
   it('cancels an owned retry timer when the provider unmounts', async () => {

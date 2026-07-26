@@ -13,9 +13,11 @@ import type { AppScreen } from '../types/app-navigation';
 import { AppBottomTabs } from './app-bottom-tabs';
 import { AppNavigationRail } from './app-navigation-rail';
 import {
+  appShellHidesSystemStatusBar,
   appShellLayoutForWidth,
   AppShellLayoutProvider,
 } from './app-shell-layout';
+import { VitruviusBrandLockup } from './vitruvius-brand-lockup';
 
 export function AppShellFrame({
   children,
@@ -48,6 +50,10 @@ export function AppShellFrame({
 }) {
   const { width } = useWindowDimensions();
   const layout = appShellLayoutForWidth(width);
+  const hideSystemStatusBar = appShellHidesSystemStatusBar({
+    layout,
+    platform: process.env.EXPO_OS,
+  });
 
   return (
     <AppShellLayoutProvider layout={layout}>
@@ -55,7 +61,7 @@ export function AppShellFrame({
         style={styles.shell}
         edges={['left', 'right', 'bottom']}
       >
-        <StatusBar style="dark" />
+        <StatusBar hidden={hideSystemStatusBar} style="dark" />
         <KeyboardAvoidingView
           behavior={process.env.EXPO_OS === 'ios' ? 'padding' : undefined}
           style={styles.keyboard}
@@ -66,6 +72,16 @@ export function AppShellFrame({
               layout.navigationPlacement === 'rail' && styles.appFrameWithRail,
             ]}
           >
+            {layout.navigationPlacement === 'bottom' ? (
+              <SafeAreaView
+                edges={['top']}
+                style={styles.compactBrandHeader}
+                testID="app-brand-header"
+              >
+                <VitruviusBrandLockup compact testID="app-brand-lockup" />
+              </SafeAreaView>
+            ) : null}
+
             {layout.navigationPlacement === 'rail' ? (
               <AppNavigationRail
                 key="primary-navigation"
@@ -117,6 +133,14 @@ const styles = StyleSheet.create({
   },
   appFrameWithRail: {
     flexDirection: 'row',
+  },
+  compactBrandHeader: {
+    backgroundColor: '#FFFFFF',
+    borderBottomColor: '#D5E2F0',
+    borderBottomWidth: 1,
+    paddingHorizontal: 18,
+    paddingTop: 8,
+    paddingBottom: 10,
   },
   contentFrame: {
     flex: 1,

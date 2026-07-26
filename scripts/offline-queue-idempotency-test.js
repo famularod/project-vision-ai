@@ -15,6 +15,16 @@ const supabase = read('services/SupabaseService.ts');
 const deletionJournal = read('services/ProjectUpdateDeletionJournal.ts');
 const migration = read('supabase/migrations/20260706010000_project_update_idempotency_key.sql');
 
+async function waitForCondition(predicate, message, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      assert.fail(message);
+    }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
 assert(
   /const idempotencyKey = draftSnapshot\.idempotencyKey\s*\|\|\s*\n?\s*draftSnapshot\.stableSendId\s*\|\|\s*`send-\$\{draftSnapshot\.id\}`/.test(app) &&
     app.includes('stableSendId: idempotencyKey') &&
@@ -56,9 +66,10 @@ assert(
     sync.includes('confirmProjectUpdateCloudDeletion') &&
     sync.includes("if (item.operation === 'delete') return true") &&
     supabase.includes('export async function deleteProjectUpdate') &&
-    supabase.includes(".eq('owner_id', owner.data)") &&
-    supabase.includes(".eq('id', updateId)"),
-  'A field-update delete must replace same-id pending work, survive cleanup, and execute as an owner-scoped cloud delete.',
+    supabase.includes('requireAuthenticatedOwnerId(client)') &&
+    supabase.includes("'dave_delete_project_update_atomically'") &&
+    supabase.includes('{ p_update_id: updateId }'),
+  'A field-update delete must replace same-id pending work, survive cleanup, and execute through the owner-scoped atomic cloud deletion RPC.',
 );
 
 assert(
@@ -181,6 +192,22 @@ async function testConcurrentEnqueuePreservesBothItems() {
     async deleteProjectUpdate() {
       supabaseCalls.updateDeletes += 1;
       return projectUpdateDeleteResult;
+    },
+    async listDAVESyncTombstones() {
+      return {
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: [],
+      };
+    },
+    async upsertDAVESyncTombstone(tombstone) {
+      return {
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: tombstone,
+      };
     },
     async createPhotoSignedUrl() {
       return signedUrlResult;
@@ -520,12 +547,14 @@ async function testConcurrentEnqueuePreservesBothItems() {
     error: 'Network request failed',
   };
   await service.queueProjectUpdateDelete(updateToDelete);
-  await new Promise(resolve => setTimeout(resolve, 50));
+  await waitForCondition(
+    () => supabaseCalls.updateDeletes > 0,
+    'delete queue work must call the cloud delete operation',
+  );
   const queuedDelete = JSON.parse(data.get('projectVisionAI.syncQueue.v1'));
   assert.strictEqual(queuedDelete.length, 1, 'delete must replace the same-id pending upsert');
   assert.strictEqual(queuedDelete[0].operation, 'delete', 'the replacement queue operation must remain a delete');
   assert.strictEqual(supabaseCalls.updateWrites, updateWritesBeforeDelete, 'delete must never fall through to project-update upsert');
-  assert(supabaseCalls.updateDeletes > 0, 'delete queue work must call the cloud delete operation');
 
   await service.queueProjectUpdateRecord(
     { ...updateToDelete, notes: 'Late in-flight update completion' },

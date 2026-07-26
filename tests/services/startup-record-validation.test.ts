@@ -22,6 +22,7 @@ describe('startup record validation', () => {
 
     expect(isStartupProjectAreaRecord({
       name: 'Legacy area without id or radius',
+      projectName: 'Project A',
       latitude: 34.1,
       longitude: -118.2,
     })).toBe(true);
@@ -29,6 +30,44 @@ describe('startup record validation', () => {
 
     expect(isStartupScheduleItemRecord({ taskName: 'Legacy task without id' })).toBe(true);
     expect(isStartupScheduleItemRecord({})).toBe(false);
+  });
+
+  it('validates optional structured schedule planning data', () => {
+    expect(isStartupScheduleItemRecord({
+      taskName: 'Install structure',
+      wbsCode: '1.2',
+      parentItemId: 'phase-1',
+      sortOrder: 2,
+      dependencies: [{
+        predecessorItemId: 'foundations',
+        type: 'FS',
+        lagDays: 1,
+      }],
+      isMilestone: false,
+      isSummary: true,
+      baselineStartDate: '2026-07-20',
+      baselineFinishDate: '2026-07-24',
+    })).toBe(true);
+    expect(isStartupScheduleItemRecord({
+      taskName: 'Invalid predecessor',
+      dependencies: [{ type: 'FS' }],
+    })).toBe(false);
+    expect(isStartupScheduleItemRecord({
+      taskName: 'Invalid relationship',
+      dependencies: [{ predecessorItemId: 'a', type: 'SS' }],
+    })).toBe(false);
+    expect(isStartupScheduleItemRecord({
+      taskName: 'Invalid lag',
+      dependencies: [{ predecessorItemId: 'a', type: 'FS', lagDays: 'two' }],
+    })).toBe(false);
+    expect(isStartupScheduleItemRecord({
+      taskName: 'Invalid milestone',
+      isMilestone: 'yes',
+    })).toBe(false);
+    expect(isStartupScheduleItemRecord({
+      taskName: 'Invalid phase',
+      isSummary: 'yes',
+    })).toBe(false);
   });
 
   it('rejects nested update rows that normalization would silently erase', () => {
@@ -56,7 +95,14 @@ describe('startup record validation', () => {
       originalFileName: 'schedule.pdf',
       uri: 'file:///schedule.pdf',
     })).toBe(true);
-    expect(isStartupReferenceDocumentRecord({ name: 'missing URI' })).toBe(false);
+    expect(isStartupReferenceDocumentRecord({
+      id: 'cloud-schedule-1',
+      name: 'Cloud schedule',
+      originalFileName: 'schedule.pdf',
+      uri: '',
+      storagePath: 'owner/schedules/schedule.pdf',
+    })).toBe(true);
+    expect(isStartupReferenceDocumentRecord({ name: 'missing identity and file' })).toBe(false);
 
     expect(isStartupStandaloneProjectDocumentRecord({
       name: 'Uploaded drawing',
