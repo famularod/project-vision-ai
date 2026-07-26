@@ -59,5 +59,19 @@ assert.match(
   /^\/validation\/output\/$/m,
   'Generated release manifests must stay out of source control.',
 );
+const releaseGateSource = fs.readFileSync(
+  path.join(__dirname, 'jarvis-release-gate.js'),
+  'utf8',
+);
+for (const script of [
+  'test:dependency-security',
+  'test:production-operations-health',
+  'test:native-release-generation',
+]) {
+  assert(
+    releaseGateSource.includes(script),
+    `V.I.C. must report ${script} as a named release layer.`,
+  );
+}
 
 console.log('V.I.C. release gate timeout and manifest contracts PASS.');

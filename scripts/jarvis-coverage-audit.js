@@ -16,6 +16,10 @@ const requiredReleaseArtifacts = [
   'scripts/jarvis-coverage-audit.js',
   'scripts/jarvis-registry-bindings.js',
   'scripts/production-hardening-test.js',
+  'scripts/production-operations-health-check.js',
+  'scripts/production-operations-health-check-test.js',
+  'scripts/native-release-generation-contract-test.js',
+  'scripts/dependency-security-contract-test.js',
   'scripts/android-production-signing-gate.js',
   'scripts/pie-vision-evaluation-harness-test.js',
   'validation/jarvis/escaped-defects.json',
@@ -86,7 +90,10 @@ const requiredScripts = {
   'test:jarvis-coverage': 'node scripts/jarvis-coverage-audit.js',
   'check:android-production-signing': 'node scripts/android-production-signing-gate.js',
   'test:production-hardening': 'node scripts/production-hardening-test.js',
-  'test:release-hardening': 'node scripts/android-production-signing-gate-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:production-hardening',
+  'test:production-operations-health': 'node scripts/production-operations-health-check-test.js',
+  'test:native-release-generation': 'node scripts/native-release-generation-contract-test.js',
+  'test:dependency-security': 'node scripts/dependency-security-contract-test.js',
+  'test:release-hardening': 'node scripts/android-production-signing-gate-test.js && node scripts/native-release-generation-contract-test.js && node scripts/dependency-security-contract-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:production-hardening && npm run test:production-operations-health',
   'qa:release': 'npm run jarvis:qa',
 };
 for (const [name, expected] of Object.entries(requiredScripts)) {

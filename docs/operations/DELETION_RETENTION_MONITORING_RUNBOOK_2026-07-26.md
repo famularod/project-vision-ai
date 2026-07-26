@@ -8,6 +8,7 @@ Relevant migrations:
 
 - `20260726020000_vitruvius_atomic_deletion.sql`
 - `20260726030000_fix_atomic_deletion_array_types.sql`
+- `20260726040000_vitruvius_storage_cleanup_lifecycle.sql`
 
 ## Retention policy
 
@@ -18,8 +19,10 @@ Do not purge or time-limit these rows.
 
 Deletion receipts in `public.dave_deletion_audit` contain metadata only. Each
 receipt becomes eligible for owner-authorized purge one year after deletion.
-Eligibility does not trigger automatic deletion. The owner must deliberately
-invoke `public.dave_purge_expired_deletion_audit()`.
+The signed-in iPhone, iPad, and desktop sync paths invoke
+`public.dave_purge_expired_deletion_audit()` as maintenance. The function
+remains owner-scoped and removes only receipts whose one-year retention window
+has elapsed. It never removes permanent tombstones or business records.
 
 ## Shared-document boundary
 
@@ -30,6 +33,12 @@ removed.
 
 Object-storage files require the same ownership and sharing decision. Never
 delete a stored file merely because one project association was removed.
+
+Migration `20260726040000` records protected photo and document cleanup in
+`public.dave_storage_cleanup_intents` inside the business-record deletion
+transaction. Signed-in clients remove the object and acknowledge the intent.
+Failed removals remain owner-scoped and retryable. A shared object is not
+queued while another current record still references its path.
 
 ## Monitoring checks
 
@@ -78,6 +87,29 @@ where status = 'processing'
 order by started_at;
 ```
 
+### Protected storage cleanup
+
+```sql
+select
+  status,
+  count(*) as intent_count,
+  max(attempt_count) as maximum_attempts,
+  min(updated_at) as oldest_update
+from public.dave_storage_cleanup_intents
+where status in ('pending', 'failed')
+group by status
+order by status;
+```
+
+Any failed intent with three or more attempts, or any pending/failed intent
+older than 24 hours, requires investigation. Do not expose object paths or
+owner identifiers in routine alerts.
+
+The scheduled GitHub workflow
+`.github/workflows/production-operations-health.yml` runs the same read-only
+health boundary when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are
+configured as repository secrets. It reports aggregate counts only.
+
 ### Device pending-change failures
 
 Vitruvius keeps its pending-change queue on the originating device. Review the
@@ -96,6 +128,8 @@ failure.
 
 - Any reduction in permanent tombstone count: critical.
 - Any owner reading or changing another owner's record: critical.
+- Any protected cleanup intent older than 24 hours: investigate.
+- Any protected cleanup intent with three or more failed attempts: investigate.
 - A processing AI operation older than 15 minutes: investigate.
 - Repeated AI failures for one operation type in 24 hours: investigate.
 - A device queue that remains pending after two successful connectivity checks:
@@ -124,8 +158,20 @@ the function with the same owner checks, transaction boundaries, document
 sharing behavior, audit receipt, and tombstone behavior while explicitly using
 `array[]::text[]`.
 
-The correction is validated locally and selected by a linked dry run. It has
-not been applied to production and requires explicit approval.
+The correction is validated locally and its migration version is present in
+the linked production inventory. The July 26 dry run does not select it.
+
+## Protected-file lifecycle migration
+
+Migration `20260726040000` adds the owner-scoped cleanup outbox, deletion
+triggers, tombstone-to-active-row cleanup, and authenticated owner-only storage
+policies for `project-photos` and `project-documents`. It also reconciles
+legacy task, area, and reference-document tombstones.
+
+The migration is validated locally and is the only migration selected by the
+July 26 linked dry run. It has not been applied by this work. Because it
+changes tables, triggers, RLS policies, and storage policies, review the exact
+SQL and obtain explicit approval before deployment.
 
 ## Release boundary
 

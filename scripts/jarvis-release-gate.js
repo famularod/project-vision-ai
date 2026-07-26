@@ -17,6 +17,9 @@ const MAX_LAYER_TIMEOUT_MS = 30 * 60_000;
 
 const layers = [
   layer('Release configuration', 'check', 5),
+  layer('Dependency security contract', 'test:dependency-security', 2),
+  layer('Protected cleanup and operations monitoring', 'test:production-operations-health', 2),
+  layer('Reproducible native release generation', 'test:native-release-generation', 2),
   layer('Release, migration, UI, and device-flow contracts', 'test:release-contracts', 5),
   layer('Android production signing readiness', 'check:android-production-signing', 2),
   layer('App-shell architecture', 'test:architecture', 5),

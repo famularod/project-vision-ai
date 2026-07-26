@@ -87,8 +87,8 @@ From the proposed HTTPS origin:
 - If the desktop smoke test fails, reassign production to the prior deployment.
 - Revert the backend and edge-function deployment only if the new functions
   break native clients; retaining a strict allowlist is preferred.
-- Keep Build 111 installed or archived as the native rollback artifact while
-  Build 112 is being certified.
+- Keep the last verified native build installed or archived as the rollback
+  artifact while Build 113 is being certified.
 
 ## Current certification boundary
 

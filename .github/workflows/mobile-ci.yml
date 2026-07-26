@@ -25,12 +25,15 @@ jobs:
       - name: Install exact dependencies
         run: npm ci
 
+      - name: Audit exact dependency lock
+        run: npm audit --audit-level=low
+
       - name: Validate release, migration, UI, and device-flow contracts
         run: npm run test:release-contracts
 
-      - name: Generate and verify Android native release metadata
+      - name: Generate native release projects from source configuration
         run: |
-          npx expo prebuild --platform android --no-install
+          npx expo prebuild --platform all --no-install --clean
           npm run sync:native-release-metadata
           npm run check:release-metadata
           npm run check:android-production-signing

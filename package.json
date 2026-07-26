@@ -1,6 +1,6 @@
 {
   "name": "project-photo-update-tool",
-  "version": "1.0.112",
+  "version": "1.0.113",
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.7",
@@ -41,7 +41,6 @@
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {
-    "@expo/ngrok": "^4.1.3",
     "@testing-library/react-native": "13.3.3",
     "@types/jest": "29.5.14",
     "@types/node": "^24.13.3",
@@ -50,6 +49,12 @@
     "jest-expo": "~57.0.2",
     "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8",
+    "xcode": {
+      "uuid": "11.1.1"
+    }
   },
   "scripts": {
     "start": "expo start",
@@ -71,10 +76,14 @@
     "test:ui-policy": "node scripts/ui-policy-test.js",
     "test:product-metadata": "node scripts/product-metadata-test.js",
     "test:production-hardening": "node scripts/production-hardening-test.js",
-    "test:release-hardening": "node scripts/android-production-signing-gate-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:production-hardening",
+    "test:production-operations-health": "node scripts/production-operations-health-check-test.js",
+    "test:native-release-generation": "node scripts/native-release-generation-contract-test.js",
+    "test:dependency-security": "node scripts/dependency-security-contract-test.js",
+    "test:release-hardening": "node scripts/android-production-signing-gate-test.js && node scripts/native-release-generation-contract-test.js && node scripts/dependency-security-contract-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:production-hardening && npm run test:production-operations-health",
     "test:release-contracts": "npm run test:production-secrets && npm run test:android-security-policy && npm run test:data-export-language && npm run test:migrations:static && npm run test:maestro:contracts && npm run test:ui-policy && npm run test:product-metadata && npm run test:release-hardening",
     "jarvis:qa": "node scripts/jarvis-release-gate.js",
     "jarvis:contracts": "node scripts/jarvis-qa.js",
+    "ops:health": "node scripts/production-operations-health-check.js",
     "test": "npm run check && npm run test:unit",
     "test:check": "npm run check",
     "test:unit": "jest --runInBand --watchman=false",

@@ -14,7 +14,11 @@ The following local authorization and production-hardening contracts pass:
 - semantic signature isolation;
 - photo row-level-security policy regression;
 - production hardening for AI controls, atomic deletion, owner isolation, and
-  encrypted backup.
+  encrypted backup;
+- owner-scoped protected-file cleanup, retry receipts, permanent deletion
+  markers, and authenticated storage policies;
+- aggregate production-health checks for stale cleanup, expired deletion
+  receipts, stuck AI work, and recent AI failures.
 
 The remote migration inventory confirms that the single-owner ownership/RLS
 migration is present in production.
@@ -62,4 +66,5 @@ npm run test:rls-live
 ## Current certification boundary
 
 The source and static authorization contracts are verified. Production account
-isolation is not certified until this controlled two-user live matrix passes.
+isolation and protected-file deletion are not certified until the reviewed
+migrations are applied and this controlled two-user live matrix passes.
