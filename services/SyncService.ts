@@ -12,6 +12,7 @@ import {
   listProjects,
   listReferenceDocuments,
   listScheduleItems,
+  purgeExpiredDAVEDeletionAudit,
   saveProjectUpdate,
   testSupabaseConnection,
   updateProject,
@@ -45,6 +46,7 @@ import {
 import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
 import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import { createPendingChangesRetryController } from './PendingChangesRetryController';
+import { processDAVEStorageCleanup } from './DAVEStorageCleanup';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -1787,7 +1789,31 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 
   await resolveUploadedArchiveOnlyQuarantines(archiveRecovery, itemOutcomes);
 
-  if (uploaded > 0) {
+  let storageCleanupRemaining = 0;
+  let storageCleanupCompleted = 0;
+  try {
+    const storageCleanup = await processDAVEStorageCleanup();
+    storageCleanupRemaining = storageCleanup.remaining;
+    storageCleanupCompleted = storageCleanup.completed;
+    errors.push(
+      ...storageCleanup.errors.map(error => sanitizeUserFacingSyncMessage(error)),
+    );
+  } catch {
+    storageCleanupRemaining = 1;
+    errors.push('Protected file cleanup is temporarily unavailable.');
+  }
+
+  // Deletion markers remain permanent. Only metadata-only deletion receipts
+  // whose one-year retention window has elapsed are purged, and the existing
+  // RPC still enforces the signed-in owner's authorization boundary.
+  try {
+    await purgeExpiredDAVEDeletionAudit();
+  } catch {
+    // Retention maintenance must never make otherwise-safe project sync look
+    // unsuccessful. The production health check reports overdue receipts.
+  }
+
+  if (uploaded > 0 || storageCleanupCompleted > 0) {
     await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, new Date().toISOString());
   }
 
@@ -1796,7 +1822,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     uploaded,
     uploadedByEntity,
     itemOutcomes,
-    queued: remaining.length,
+    queued: remaining.length + storageCleanupRemaining,
     conflicts: (await getSyncConflicts()).length,
     errors,
   };

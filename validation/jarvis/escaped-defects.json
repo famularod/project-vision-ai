@@ -316,6 +316,29 @@
       ],
       "manualValidation": "Create a complete backup containing task data, photos, schedules, and project documents; restore it on a clean test device with the correct passphrase, then verify wrong-passphrase and modified-file restores fail without partial data.",
       "limitations": "Cryptographic tests prove authenticated encryption, manifest integrity, wrong-passphrase rejection, and exact byte recovery; device disk pressure, share-sheet destinations, and very large real archives still require physical-device testing."
+    },
+    {
+      "id": "JRV-REG-025",
+      "title": "Deleting a record leaves its protected cloud file behind indefinitely",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/dave-storage-cleanup.test.ts"
+      ],
+      "namedTests": [
+        {
+          "path": "tests/services/dave-storage-cleanup.test.ts",
+          "name": "keeps a failed removal retryable and records only generic user-safe detail"
+        }
+      ],
+      "productionSymbols": [
+        {
+          "path": "services/DAVEStorageCleanup.ts",
+          "symbol": "processDAVEStorageCleanup"
+        }
+      ],
+      "manualValidation": "Delete disposable photos, documents, updates, and projects from each client, confirm their protected files disappear, and verify a forced storage failure stays retryable until the next successful sync.",
+      "limitations": "Runtime tests prove retry and receipt behavior, while live storage RLS, service availability, and deletion timing still require the approved migration and connected validation."
     }
   ]
 }

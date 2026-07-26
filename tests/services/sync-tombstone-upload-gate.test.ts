@@ -51,6 +51,20 @@ const mockDeleteProjectUpdate = jest.fn((..._args: unknown[]): Promise<{
 const mockConfirmProjectUpdateCloudDeletion = jest.fn((..._args: unknown[]) =>
   Promise.resolve(),
 );
+const mockListDAVEStorageCleanupIntents = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({
+    ok: true,
+    configured: true,
+    stubbed: false,
+    data: [],
+  }),
+);
+const mockRemoveProtectedStorageObject = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+);
+const mockRecordDAVEStorageCleanupAttempt = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+);
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -83,6 +97,12 @@ jest.mock('../../services/SupabaseService', () => ({
     mockUpsertReferenceDocument(...args),
   deleteProjectUpdate: (...args: unknown[]) =>
     mockDeleteProjectUpdate(...args),
+  listDAVEStorageCleanupIntents: (...args: unknown[]) =>
+    mockListDAVEStorageCleanupIntents(...args),
+  removeProtectedStorageObject: (...args: unknown[]) =>
+    mockRemoveProtectedStorageObject(...args),
+  recordDAVEStorageCleanupAttempt: (...args: unknown[]) =>
+    mockRecordDAVEStorageCleanupAttempt(...args),
 }));
 
 jest.mock('../../services/ProjectUpdateDeletionJournal', () => ({

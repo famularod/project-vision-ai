@@ -51,6 +51,20 @@ const mockListDAVESyncTombstones = jest.fn((..._args: unknown[]) =>
 const mockUpsertDAVESyncTombstone = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
+const mockListDAVEStorageCleanupIntents = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({
+    ok: true,
+    configured: true,
+    stubbed: false,
+    data: [],
+  }),
+);
+const mockRemoveProtectedStorageObject = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+);
+const mockRecordDAVEStorageCleanupAttempt = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+);
 
 jest.mock('../../services/SupabaseService', () => ({
   createProject: (...args: unknown[]) => mockCreateProject(...args),
@@ -59,6 +73,12 @@ jest.mock('../../services/SupabaseService', () => ({
   upsertReferenceDocument: (...args: unknown[]) => mockUpsertReferenceDocument(...args),
   listDAVESyncTombstones: (...args: unknown[]) => mockListDAVESyncTombstones(...args),
   upsertDAVESyncTombstone: (...args: unknown[]) => mockUpsertDAVESyncTombstone(...args),
+  listDAVEStorageCleanupIntents: (...args: unknown[]) =>
+    mockListDAVEStorageCleanupIntents(...args),
+  removeProtectedStorageObject: (...args: unknown[]) =>
+    mockRemoveProtectedStorageObject(...args),
+  recordDAVEStorageCleanupAttempt: (...args: unknown[]) =>
+    mockRecordDAVEStorageCleanupAttempt(...args),
   getSupabaseConfigurationStatus: () => ({
     configured: true,
     message: 'Configured.',

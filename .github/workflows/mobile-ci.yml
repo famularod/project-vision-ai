@@ -25,21 +25,40 @@ jobs:
       - name: Install exact dependencies
         run: npm ci
 
+      - name: Audit exact dependency lock
+        run: npm audit --audit-level=low
+
       - name: Validate release, migration, UI, and device-flow contracts
         run: npm run test:release-contracts
-
-      - name: Generate and verify Android native release metadata
-        run: |
-          npx expo prebuild --platform android --no-install
-          npm run sync:native-release-metadata
-          npm run check:release-metadata
-          npm run check:android-production-signing
 
       - name: Run default executable test gate
         run: npm test
 
       - name: Run complete local release gate
         run: npm run qa:release
+
+  native-release-generation:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Generate native release projects from source configuration
+        run: |
+          npx expo prebuild --platform all --no-install --clean
+          npm run sync:native-release-metadata
+          npm run check:release-metadata
+          npm run check:android-production-signing
 
       - name: Export iOS JavaScript bundle
         run: npx expo export --platform ios --output-dir build/export-ios

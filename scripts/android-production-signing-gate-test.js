@@ -45,7 +45,10 @@ const workflow = fs.readFileSync(
   path.join(repoRoot, '.github', 'workflows', 'mobile-ci.yml'),
   'utf8',
 );
-assert.match(workflow, /npx expo prebuild --platform android --no-install/);
+assert.match(
+  workflow,
+  /npx expo prebuild --platform all --no-install --clean/,
+);
 assert.match(workflow, /npm run sync:native-release-metadata/);
 assert.match(workflow, /npm run check:release-metadata/);
 assert.match(workflow, /npm run check:android-production-signing/);

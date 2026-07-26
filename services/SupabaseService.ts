@@ -262,6 +262,22 @@ export type CreatePhotoSignedUrlParams = {
   expiresIn?: number;
 };
 
+export type DAVEStorageCleanupBucket =
+  | 'project-photos'
+  | 'project-documents';
+
+export type DAVEStorageCleanupIntent = Readonly<{
+  id: string;
+  bucket: DAVEStorageCleanupBucket;
+  objectPath: string;
+  sourceEntityType: 'project' | 'project_update' | 'reference_document';
+  sourceRecordId: string;
+  status: 'pending' | 'completed' | 'failed';
+  attemptCount: number;
+  lastError: string | null;
+  updatedAt: string | null;
+}>;
+
 const RAW_SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_URL = RAW_SUPABASE_URL.trim();
 const SUPABASE_ANON_KEY =
@@ -272,6 +288,7 @@ const PROJECT_AREAS_TABLE = 'project_areas';
 const SCHEDULE_ITEMS_TABLE = 'schedule_items';
 const REFERENCE_DOCUMENTS_TABLE = 'reference_documents';
 const DAVE_SYNC_TOMBSTONES_TABLE = 'dave_sync_tombstones';
+const DAVE_STORAGE_CLEANUP_INTENTS_TABLE = 'dave_storage_cleanup_intents';
 const DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE = 'dave_project_truth_snapshots';
 const PIE_DECISION_RECORDS_TABLE = 'pie_decision_records';
 const PIE_DECISION_VERSIONS_TABLE = 'pie_decision_versions';
@@ -757,6 +774,124 @@ export async function downloadPhoto({
   if (error) return errorResult(error.message);
 
   return okResult(data);
+}
+
+export async function removeProtectedStorageObject({
+  bucket,
+  path,
+}: {
+  bucket: DAVEStorageCleanupBucket;
+  path: string;
+}): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  if (bucket !== 'project-photos' && bucket !== 'project-documents') {
+    return errorResult('Protected file cleanup requires an approved project storage bucket.');
+  }
+  const objectPath = path.trim();
+  if (!objectPath) return errorResult('Protected file cleanup requires an object path.');
+
+  const { error } = await client.storage.from(bucket).remove([objectPath]);
+  if (error) return errorResult(error.message);
+  return okResult(null);
+}
+
+export async function listDAVEStorageCleanupIntents(
+  limit = 25,
+): Promise<SupabaseServiceResult<DAVEStorageCleanupIntent[]>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVEStorageCleanupIntent[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const { data, error, status } = await client
+    .from(DAVE_STORAGE_CLEANUP_INTENTS_TABLE)
+    .select(
+      'id,bucket_id,object_path,source_entity_type,source_record_id,status,attempt_count,last_error,updated_at',
+    )
+    .eq('owner_id', owner.data)
+    .in('status', ['pending', 'failed'])
+    .order('updated_at', { ascending: true })
+    .limit(safeLimit);
+
+  if (error) {
+    return tableAwareErrorResult<DAVEStorageCleanupIntent[]>(
+      error.message,
+      status,
+    );
+  }
+
+  const intents = (data ?? [])
+    .map(normalizeStorageCleanupIntent)
+    .filter((intent): intent is DAVEStorageCleanupIntent => Boolean(intent));
+  return okResult(intents, status);
+}
+
+export async function recordDAVEStorageCleanupAttempt({
+  intent,
+  completed,
+  errorMessage = null,
+}: {
+  intent: DAVEStorageCleanupIntent;
+  completed: boolean;
+  errorMessage?: string | null;
+}): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const updatedAt = new Date().toISOString();
+  const { error, status } = await client
+    .from(DAVE_STORAGE_CLEANUP_INTENTS_TABLE)
+    .update({
+      status: completed ? 'completed' : 'failed',
+      attempt_count: intent.attemptCount + 1,
+      last_error: completed ? null : (errorMessage || 'Protected file cleanup failed.'),
+      updated_at: updatedAt,
+      completed_at: completed ? updatedAt : null,
+    })
+    .eq('owner_id', owner.data)
+    .eq('id', intent.id)
+    .in('status', ['pending', 'failed']);
+
+  if (error) return tableAwareErrorResult<null>(error.message, status);
+  return okResult(null, status);
+}
+
+export async function purgeExpiredDAVEDeletionAudit(): Promise<
+  SupabaseServiceResult<number>
+> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<number>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(
+      owner.error || 'Sign in is required.',
+      owner.status,
+      owner.code,
+    );
+  }
+
+  const { data, error, status } = await client.rpc(
+    'dave_purge_expired_deletion_audit',
+  );
+  if (error) return errorResult(error.message, status, error.code);
+  return okResult(
+    typeof data === 'number' && Number.isFinite(data)
+      ? Math.max(0, Math.floor(data))
+      : 0,
+    status,
+  );
 }
 
 export async function createPhotoSignedUrl(
@@ -2793,6 +2928,50 @@ function normalizeProjectUpdate<TUpdate>(
     createdAt: typeof row.created_at === 'string' ? row.created_at : null,
     updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
     ownerId: typeof row.owner_id === 'string' ? row.owner_id : null,
+  };
+}
+
+function normalizeStorageCleanupIntent(
+  value: unknown,
+): DAVEStorageCleanupIntent | null {
+  const row = toRecord(value);
+  const bucket = row.bucket_id;
+  const sourceEntityType = row.source_entity_type;
+  const status = row.status;
+  if (
+    typeof row.id !== 'string' ||
+    (bucket !== 'project-photos' && bucket !== 'project-documents') ||
+    typeof row.object_path !== 'string' ||
+    !row.object_path.trim() ||
+    (
+      sourceEntityType !== 'project' &&
+      sourceEntityType !== 'project_update' &&
+      sourceEntityType !== 'reference_document'
+    ) ||
+    typeof row.source_record_id !== 'string' ||
+    (
+      status !== 'pending' &&
+      status !== 'completed' &&
+      status !== 'failed'
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    bucket,
+    objectPath: row.object_path.trim(),
+    sourceEntityType,
+    sourceRecordId: row.source_record_id,
+    status,
+    attemptCount:
+      typeof row.attempt_count === 'number' &&
+      Number.isFinite(row.attempt_count)
+        ? Math.max(0, Math.floor(row.attempt_count))
+        : 0,
+    lastError: typeof row.last_error === 'string' ? row.last_error : null,
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
   };
 }
 

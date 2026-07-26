@@ -71,6 +71,7 @@ describe('DAVE browser Supabase gateway', () => {
       'project_updates',
       'reference_documents',
       'dave_sync_tombstones',
+      'dave_storage_cleanup_intents',
     ]);
     for (const query of fixture.queries.values()) {
       expect(query.eq).toHaveBeenCalledWith('owner_id', 'owner-1');

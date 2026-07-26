@@ -169,6 +169,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       artifactPathOwnerId = userId;
       authorizedPhotoPaths = collectOwnerPhotoStoragePaths(projectUpdates);
       authorizedDocumentPaths = collectOwnerDocumentStoragePaths(referenceDocuments);
+      void processAuthorizedStorageCleanup(client, userId).catch(() => undefined);
+      void purgeAuthorizedDeletionAudit(client).catch(() => undefined);
 
       return Object.freeze({ projects, scheduleItems, projectUpdates, referenceDocuments, syncTombstones });
     },
@@ -616,12 +618,71 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           'The document deletion marker could not be saved. Nothing was deleted.',
         );
       }
+      void processAuthorizedStorageCleanup(client, ownerId).catch(() => undefined);
       return deletedAt;
     },
   });
 }
 
 export const daveWebSupabaseGateway = createDAVEWebSupabaseGateway(browserClient);
+
+async function processAuthorizedStorageCleanup(
+  client: SupabaseClient,
+  ownerId: string,
+  limit = 100,
+): Promise<void> {
+  const { data, error } = await client
+    .from('dave_storage_cleanup_intents')
+    .select('id,bucket_id,object_path,status,attempt_count')
+    .eq('owner_id', ownerId)
+    .in('status', ['pending', 'failed'])
+    .order('updated_at', { ascending: true })
+    .limit(Math.max(1, Math.min(100, Math.floor(limit))));
+  if (error) return;
+
+  for (const value of data ?? []) {
+    const row: Record<string, unknown> = isRecord(value) ? value : {};
+    const id = typeof row.id === 'string' ? row.id : '';
+    const bucket =
+      row.bucket_id === 'project-photos' ||
+      row.bucket_id === 'project-documents'
+        ? row.bucket_id
+        : null;
+    const objectPath =
+      typeof row.object_path === 'string' ? row.object_path.trim() : '';
+    const attemptCount =
+      typeof row.attempt_count === 'number' &&
+      Number.isFinite(row.attempt_count)
+        ? Math.max(0, Math.floor(row.attempt_count))
+        : 0;
+    if (!id || !bucket || !objectPath) continue;
+
+    const removed = await client.storage.from(bucket).remove([objectPath]);
+    const completed = !removed.error;
+    const updatedAt = new Date().toISOString();
+    await client
+      .from('dave_storage_cleanup_intents')
+      .update({
+        status: completed ? 'completed' : 'failed',
+        attempt_count: attemptCount + 1,
+        last_error: completed
+          ? null
+          : 'A deleted project file is waiting for protected cloud cleanup.',
+        updated_at: updatedAt,
+        completed_at: completed ? updatedAt : null,
+      })
+      .eq('owner_id', ownerId)
+      .eq('id', id)
+      .in('status', ['pending', 'failed']);
+  }
+}
+
+async function purgeAuthorizedDeletionAudit(
+  client: SupabaseClient,
+): Promise<void> {
+  const { error } = await client.rpc('dave_purge_expired_deletion_audit');
+  if (error) throw new Error('Deletion receipt retention is temporarily unavailable.');
+}
 
 async function compensateFailedDocumentImport({
   client,

@@ -20,10 +20,11 @@ revision.
 
 ## Verified current state
 
-- The linked production migration inventory shows this migration and the
-  atomic-deletion array-type correction as the only local migrations not
-  present in production.
-- A linked dry run selects exactly those two reviewed migrations.
+- The July 26 linked production dry run no longer selects this migration or the
+  atomic-deletion array-type correction. Their migration versions are recorded
+  in the linked database.
+- The same dry run selects only
+  `20260726040000_vitruvius_storage_cleanup_lifecycle.sql`.
 - The Project Truth repository behavior test passes, including current-head
   deduplication, bounded conflict retries, and A-to-B-to-A history.
 - Static validation passes all 24 ordered migrations.
@@ -37,8 +38,8 @@ revision.
 
 1. Create a current database backup or confirm the provider's point-in-time
    recovery window.
-2. Confirm that the migration inventory still shows only
-   `20260718044000` and `20260726030000` as pending.
+2. Confirm that this migration remains present in both local and remote
+   inventories and is not selected by a linked dry run.
 3. Confirm that no unexpected unique index, rather than the expected unique
    constraint, independently enforces the same three columns.
 4. Record current duplicate counts:
@@ -58,18 +59,9 @@ The expected result before deployment is zero rows.
 
 ## Deployment
 
-This is a production schema change and requires explicit user approval before
-running:
-
-```sh
-npx supabase db push --linked
-```
-
-The command must report only:
-
-`20260718044000_dave_project_truth_history_fingerprints.sql`
-
-`20260726030000_fix_atomic_deletion_array_types.sql`
+No Project Truth history deployment is currently pending. Do not repair,
+revert, or replay this migration merely because this runbook exists. Any
+future inventory mismatch requires a fresh diagnosis and explicit approval.
 
 ## Post-deployment validation
 

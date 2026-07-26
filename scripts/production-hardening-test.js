@@ -13,6 +13,7 @@ const app = read('App.tsx');
 const entry = read('entry.ts');
 const supabaseService = read('services/SupabaseService.ts');
 const syncService = read('services/SyncService.ts');
+const storageCleanup = read('services/DAVEStorageCleanup.ts');
 const backupArchive = read('services/CompleteBackupArchive.ts');
 const ownerSandbox = read('services/OwnerStorageSandbox.ts');
 const photoFunction = read('supabase/functions/pie-photo-vision/index.ts');
@@ -27,6 +28,13 @@ const deletionMigration = read(
 const deletionArrayTypeFixMigration = read(
   'supabase/migrations/20260726030000_fix_atomic_deletion_array_types.sql',
 );
+const storageCleanupMigration = read(
+  'supabase/migrations/20260726040000_vitruvius_storage_cleanup_lifecycle.sql',
+);
+const operationsHealthWorkflow = read(
+  '.github/workflows/production-operations-health.yml',
+);
+const mobileWorkflow = read('.github/workflows/mobile-ci.yml');
 
 assert.equal(packageJson.dependencies['@noble/ciphers'], '1.3.0');
 assert.equal(packageJson.dependencies['@noble/hashes'], '1.8.0');
@@ -123,6 +131,62 @@ assert(
   syncService.includes("'project_update'") && syncService.includes("'project'"),
   'Sync must honor project and project-update deletion markers.',
 );
+for (const marker of [
+  'dave_storage_cleanup_intents',
+  'force row level security',
+  'dave_project_update_storage_cleanup_trigger',
+  'dave_reference_document_storage_cleanup_trigger',
+  'dave_project_cover_storage_cleanup_trigger',
+  'dave_remove_tombstoned_operational_row_trigger',
+  'project_photos_authenticated_delete',
+  'project_documents_authenticated_delete',
+]) {
+  assert(
+    storageCleanupMigration.toLowerCase().includes(marker.toLowerCase()),
+    `Protected storage cleanup migration must preserve ${marker}.`,
+  );
+}
+for (const marker of [
+  'processDAVEStorageCleanup',
+  'STORAGE_REMOVAL_ERROR',
+  'CLEANUP_RECEIPT_ERROR',
+  'remaining',
+]) {
+  assert(
+    storageCleanup.includes(marker),
+    `Protected storage cleanup runtime must preserve ${marker}.`,
+  );
+}
+for (const marker of [
+  'processDAVEStorageCleanup',
+  'purgeExpiredDAVEDeletionAudit',
+  'storageCleanupRemaining',
+]) {
+  assert(
+    syncService.includes(marker),
+    `Mobile synchronization must preserve ${marker}.`,
+  );
+}
+for (const marker of [
+  'schedule:',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'npm run ops:health',
+]) {
+  assert(
+    operationsHealthWorkflow.includes(marker),
+    `Production operations monitoring must preserve ${marker}.`,
+  );
+}
+for (const marker of [
+  'npm audit --audit-level=low',
+  'npx expo prebuild --platform all --no-install --clean',
+  'npm run check:release-metadata',
+]) {
+  assert(
+    mobileWorkflow.includes(marker),
+    `Mobile CI must preserve ${marker}.`,
+  );
+}
 
 for (const operationType of [
   'schedule_extraction',

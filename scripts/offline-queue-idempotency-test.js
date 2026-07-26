@@ -209,6 +209,20 @@ async function testConcurrentEnqueuePreservesBothItems() {
         data: tombstone,
       };
     },
+    async listDAVEStorageCleanupIntents() {
+      return {
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: [],
+      };
+    },
+    async removeProtectedStorageObject() {
+      return { ok: true, configured: true, stubbed: false };
+    },
+    async recordDAVEStorageCleanupAttempt() {
+      return { ok: true, configured: true, stubbed: false };
+    },
     async createPhotoSignedUrl() {
       return signedUrlResult;
     },
