@@ -32,7 +32,7 @@ assert(
   'Failure, unavailable, analyzing, and no-prior states must not feed possible interpretations.',
 );
 
-const preview = sliceBetween(app, 'function BuildUpdateScreen', 'function MoreOptionsSheet');
+const preview = sliceBetween(app, 'function BuildUpdateScreen', 'function ReadOnlyUpdateDetailScreen');
 assert(
   preview.includes('updateSupportsPIEInterpretations(update, pieStatus)') &&
     preview.includes("update.possibleInterpretations || []") &&
@@ -54,7 +54,7 @@ assert(
 );
 
 const unavailable = sliceBetween(workflow, 'function unavailableState', 'function failedRetryState');
-const failed = sliceBetween(workflow, 'function failedRetryState', 'function assertComparableEvidencePair');
+const failed = sliceBetween(workflow, 'function failedRetryState', 'function describeVisibleChange');
 assert(
   unavailable.includes('possibleConcerns: []') &&
     failed.includes('possibleConcerns: []') &&
@@ -66,7 +66,9 @@ assert(
 assert(
   unavailable.includes('safeUnavailableReason(summary)') &&
     failed.includes('safeUnavailableReason(summary)') &&
-    workflow.includes('providerResponseStatus: safeUnavailableReason(summary)'),
+    workflow.includes('providerResponseStatus: safeUnavailableReason(summary)') &&
+    workflow.includes('providerFailureReason: providerResponse.failureReason') &&
+    workflow.includes('readPIEPhotoVisionProviderResponse(functionData)'),
   'Failure reasons must remain available through limitations and diagnostics.',
 );
 

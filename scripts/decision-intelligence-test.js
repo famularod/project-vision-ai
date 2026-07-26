@@ -452,7 +452,8 @@ function testChallenge() {
 }
 
 function testJarvis() {
-  const { validation } = buildBundle();
+  const baseline = buildBundle();
+  const { validation } = baseline;
   assert(['pass', 'pass_with_warnings', 'needs_more_evidence', 'human_review_required', 'blocked'].includes(validation.status));
   [
     'reality-authority',
@@ -484,6 +485,129 @@ function testJarvis() {
   const challenged = challenge.challengePIERecommendation({ realityModel: unsupported, executiveJudgment: judgment, simulation: sim });
   const blocked = jarvis.validatePIEReasoningWithJARVIS({ realityModel: unsupported, executiveJudgment: judgment, simulation: sim, challenge: challenged });
   assert(blocked.status === 'blocked');
+  assert(blocked.checks.find(check => check.id === 'fact-support')?.status === 'blocked');
+
+  const recoveredFactSupport = jarvis.validatePIEReasoningWithJARVIS({
+    realityModel: baseline.model,
+    executiveJudgment: baseline.judgment,
+    simulation: baseline.sim,
+    challenge: baseline.challenged,
+  });
+  assert(
+    recoveredFactSupport.checks.find(check => check.id === 'fact-support')?.status === 'pass',
+    'supported facts must recover after the unsafe mutation is removed',
+  );
+
+  const staleJudgment = {
+    ...baseline.judgment,
+    authority: {
+      ...baseline.judgment.authority,
+      realityModelVersion: baseline.model.version + 1,
+    },
+  };
+  const staleAuthority = jarvis.validatePIEReasoningWithJARVIS({
+    realityModel: baseline.model,
+    executiveJudgment: staleJudgment,
+    simulation: baseline.sim,
+    challenge: baseline.challenged,
+  });
+  assert(
+    staleAuthority.checks.find(check => check.id === 'reality-authority')?.status === 'blocked',
+    'a stale or mismatched Reality Model version must block the recommendation',
+  );
+
+  const incompleteSimulation = {
+    ...baseline.sim,
+    options: baseline.sim.options.filter(option => option.optionType !== 'no_action'),
+  };
+  const missingNoAction = jarvis.validatePIEReasoningWithJARVIS({
+    realityModel: baseline.model,
+    executiveJudgment: {
+      ...baseline.judgment,
+      noActionReasoning: {
+        ...baseline.judgment.noActionReasoning,
+        reason: '',
+      },
+    },
+    simulation: incompleteSimulation,
+    challenge: baseline.challenged,
+  });
+  assert(
+    missingNoAction.checks.find(check => check.id === 'option-completeness')?.status === 'blocked',
+    'missing no-action option must fail option completeness',
+  );
+  assert(
+    missingNoAction.checks.find(check => check.id === 'no-action-considered')?.status === 'blocked',
+    'missing no-action reasoning must block validation',
+  );
+
+  const openConflictModel = sampleRealityModel({
+    evidenceConflicts: [{
+      id: 'conflict-executable-adversarial',
+      organizationId: 'org-decision',
+      projectId: 'project-2375',
+      affectedObjectIds: [],
+      affectedAssertionIds: [],
+      supportingEvidenceSideA: ['schedule-rough-in'],
+      supportingEvidenceSideB: ['photo-canopy-b'],
+      conflictType: 'status_contradiction',
+      severity: 'high',
+      confidence: 'medium',
+      status: 'open',
+      recommendedNextEvidence: ['Confirm the current field condition.'],
+      createdAt: '2026-07-02T12:00:00.000Z',
+    }],
+  });
+  const openConflictJudgment = sampleJudgment(openConflictModel);
+  const openConflictSimulation = simulation.buildPIEDecisionSimulation({
+    realityModel: openConflictModel,
+    executiveJudgment: openConflictJudgment,
+    missingEvidence: missingEvidence(true),
+  });
+  const openConflictChallenge = challenge.challengePIERecommendation({
+    realityModel: openConflictModel,
+    executiveJudgment: openConflictJudgment,
+    simulation: openConflictSimulation,
+  });
+  const openConflictValidation = jarvis.validatePIEReasoningWithJARVIS({
+    realityModel: openConflictModel,
+    executiveJudgment: openConflictJudgment,
+    simulation: openConflictSimulation,
+    challenge: openConflictChallenge,
+  });
+  assert(
+    openConflictValidation.checks.find(check => check.id === 'unresolved-conflicts')?.status === 'needs_more_evidence',
+    'open conflicts must remain visible and request evidence',
+  );
+
+  const resolvedConflictModel = {
+    ...openConflictModel,
+    evidenceConflicts: openConflictModel.evidenceConflicts.map(conflict => ({
+      ...conflict,
+      status: 'resolved',
+    })),
+  };
+  const resolvedConflictJudgment = sampleJudgment(resolvedConflictModel);
+  const resolvedConflictSimulation = simulation.buildPIEDecisionSimulation({
+    realityModel: resolvedConflictModel,
+    executiveJudgment: resolvedConflictJudgment,
+    missingEvidence: missingEvidence(false),
+  });
+  const resolvedConflictChallenge = challenge.challengePIERecommendation({
+    realityModel: resolvedConflictModel,
+    executiveJudgment: resolvedConflictJudgment,
+    simulation: resolvedConflictSimulation,
+  });
+  const resolvedConflictValidation = jarvis.validatePIEReasoningWithJARVIS({
+    realityModel: resolvedConflictModel,
+    executiveJudgment: resolvedConflictJudgment,
+    simulation: resolvedConflictSimulation,
+    challenge: resolvedConflictChallenge,
+  });
+  assert(
+    resolvedConflictValidation.checks.find(check => check.id === 'unresolved-conflicts')?.status === 'pass',
+    'resolved conflicts must recover to a passing conflict check',
+  );
 }
 
 function testConfidence() {
@@ -555,6 +679,32 @@ function testDecisionQuality() {
   assert(sim.sensitivityAnalysis.factors.length >= 12);
   assert(sim.sensitivityAnalysis.factors.some(factor => factor.factor === 'photo_progress_interpretation'));
   assert(sim.sensitivityAnalysis.factors.some(factor => factor.factor === 'deadline'));
+  sim.sensitivityAnalysis.factors.forEach(factor => {
+    assert(
+      factor.rescoredOptions.length === sim.options.length,
+      `${factor.factor} must rescore every option`,
+    );
+    assert(
+      factor.eligibleOptionIds.length === factor.rescoredOptions.filter(score => !score.disqualified).length,
+      `${factor.factor} must report the exact eligible option set`,
+    );
+    assert(Number.isFinite(factor.baselineMargin), `${factor.factor} must report a baseline score margin`);
+    assert(Number.isFinite(factor.perturbedMargin), `${factor.factor} must report a perturbed score margin`);
+    const preferredScore = factor.rescoredOptions.find(
+      score => score.optionId === factor.preferredOptionAfterChange,
+    );
+    assert(
+      factor.preferredOptionAfterChange === 'none' || (preferredScore && !preferredScore.disqualified),
+      `${factor.factor} must never select a disqualified option`,
+    );
+  });
+  const regulatory = sim.sensitivityAnalysis.factors.find(
+    factor => factor.factor === 'regulatory_interpretation',
+  );
+  assert(
+    regulatory.rescoredOptions.some(score => score.disqualified),
+    'stricter regulatory interpretation must exercise the compliance gate',
+  );
   assert(sim.sensitivityAnalysis.robustness);
   assert(sim.provenance.realityModelVersion === model.version);
   assert(sim.provenance.conditionsThatWouldChangeRecommendation.length > 0);
@@ -585,8 +735,8 @@ function testEvidenceValue() {
 
 function testMinimalUi() {
   const app = fs.readFileSync(path.join(rootDir, 'App.tsx'), 'utf8');
-  const home = fs.readFileSync(path.join(rootDir, 'components/HomeDashboard.tsx'), 'utf8');
-  const capture = fs.readFileSync(path.join(rootDir, 'components/PhotoCapturePanel.tsx'), 'utf8');
+  const home = app;
+  const capture = app;
   const reports = fs.readFileSync(path.join(rootDir, 'screens/ReportsScreen.tsx'), 'utf8');
   const provider = fs.readFileSync(path.join(rootDir, 'providers/PIELiveAuthorityProvider.tsx'), 'utf8');
   const visibleUi = [app, home, capture, reports].join('\n');

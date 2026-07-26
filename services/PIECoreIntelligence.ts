@@ -3,6 +3,11 @@ import {
   type PIEAttentionState,
 } from './PIEAttentionEngine';
 import {
+  classifyDAVEBlocker,
+  classifyDAVECompletion,
+  classifyDAVEIssue,
+} from './DAVEAssertionParser';
+import {
   evaluateEvidenceQuality,
   type PIEEvidenceQualityInput,
   type PIEEvidenceQualityItem,
@@ -70,6 +75,7 @@ import {
   buildPIEReportDraft,
   buildPIEReportDraftFromExecutiveJudgment,
   type PIEReportDraft,
+  type PIEReportType,
 } from './PIEReporter';
 import {
   buildPIEMemoryRecall,
@@ -86,6 +92,7 @@ import {
   type PIELearningMemoryConsolidation,
   type PIELearningResult,
   type PIELearningSignal as PIELearningEngineSignal,
+  type PIEVerifiedLearningEvent,
 } from './PIELearningEngine';
 import {
   buildPIEDeliberation,
@@ -195,10 +202,12 @@ import {
   type PIEExecutiveJudgmentRecord,
 } from './PIEExecutiveJudgmentRepository';
 import {
+  resolvePIERealityAuthorityScope,
   runPIERealityModelOrchestration,
   type PIERealityModelOrchestrationResult,
   type PIERealityPersistenceStatus,
 } from './PIERealityModelOrchestrator';
+import { runExclusivePIEAuthorityMutation } from './PIEAuthorityMutationCoordinator';
 import {
   buildPIEAdaptiveIntelligence,
   type PIEAdaptiveIntelligence,
@@ -254,6 +263,9 @@ export type PIECoreInput = {
   expectedMinimumRealityModelVersion?: number;
   organizationId?: string;
   projectId?: string;
+  verifiedLearningEvents?: readonly PIEVerifiedLearningEvent[];
+  reportType?: PIEReportType;
+  reportProjectNames?: string[];
   memoryRecallInput?: Omit<
     PIEMemoryRecallInput,
     'projectName' | 'areaName' | 'pastRecommendations' | 'pastLessons' | 'pastBeliefs' | 'pastOpinions' | 'coreIntelligence'
@@ -561,15 +573,48 @@ const CORE_ENGINE_CHAIN = [
   'Runtime',
 ] as const;
 
+function coreReportScope(
+  input: PIECoreInput,
+  runtime: PIERuntimeState,
+): {
+  reportType: PIEReportType;
+  projectNames: string[];
+} {
+  const explicitlySelectedProjects = (input.reportProjectNames || [])
+    .map(name => name.trim())
+    .filter(Boolean);
+  const contextProjects = (input.runtimeContext?.projectNames || [])
+    .map(name => name.trim())
+    .filter(Boolean);
+  const projectNames = explicitlySelectedProjects.length > 0
+    ? explicitlySelectedProjects
+    : contextProjects.length > 0
+      ? contextProjects
+      : runtime.projectNames;
+
+  return {
+    reportType:
+      input.reportType ||
+      (projectNames.length > 1
+        ? 'combined_project_update'
+        : 'daily_project_update'),
+    projectNames,
+  };
+}
+
 export function buildPIECoreIntelligence(
   input: PIECoreInput = {},
 ): PIECoreOutput {
   if (input.enforceLiveReality && !input.liveRealityAuthority) {
-    throw new Error('PIE Core requires live authoritative Reality Model orchestration in production mode.');
+    throw new Error('DAVE Core requires live authoritative Reality Model orchestration in production mode.');
   }
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const reportScope = coreReportScope(input, runtime);
   const baselineLearning = buildPIELearning({
     runtime,
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    verifiedLearningEvents: input.verifiedLearningEvents,
     reportDraft: runtime.response.reportDraft,
   });
   const memoryRecall = buildPIEMemoryRecall({
@@ -835,6 +880,9 @@ export function buildPIECoreIntelligence(
   });
   const learningResult = buildPIELearning({
     runtime,
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    verifiedLearningEvents: input.verifiedLearningEvents,
     beliefSystem,
     patternIntelligence,
     predictionResult,
@@ -904,12 +952,14 @@ export function buildPIECoreIntelligence(
     memory.source === 'project_event' || memory.source === 'update',
   );
   const reportDraft = buildPIEReportDraft({
-    reportType:
-      runtime.projectNames.length > 1
-        ? 'combined_project_update'
-        : 'daily_project_update',
+    reportType: reportScope.reportType,
     audience: 'internal_team',
-    selectedProjectNames: runtime.projectNames,
+    selectedProjectNames: reportScope.projectNames,
+    currentUpdate: input.runtimeContext?.currentUpdate,
+    savedUpdates: input.runtimeContext?.updates,
+    scheduleItems: input.runtimeContext?.scheduleItems,
+    projectAreas: input.runtimeContext?.projectAreas,
+    contacts: input.runtimeContext?.contacts,
     runtime: {
       ...runtime,
       memoryRecallSummary: memoryRecall.summaryForPIE,
@@ -1262,6 +1312,23 @@ export async function buildLivePIECoreIntelligence(
   input: PIECoreInput = {},
 ): Promise<PIECoreOutput> {
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const scope = resolvePIERealityAuthorityScope(
+    input.organizationId,
+    input.projectId,
+    runtime,
+  );
+  return runExclusivePIEAuthorityMutation(
+    scope.organizationId,
+    scope.projectId,
+    () => buildLivePIECoreIntelligenceForScope({ ...input, runtime }),
+  );
+}
+
+async function buildLivePIECoreIntelligenceForScope(
+  input: PIECoreInput,
+): Promise<PIECoreOutput> {
+  const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const reportScope = coreReportScope(input, runtime);
   const liveRealityAuthority = await runPIERealityModelOrchestration({
     runtime,
     organizationId: input.organizationId,
@@ -1286,59 +1353,30 @@ export async function buildLivePIECoreIntelligence(
     cloudEnabled: input.cloudAvailable,
     identityTrusted: input.identityTrusted,
   });
-  const decisionSimulation = buildPIEDecisionSimulation({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    executiveJudgmentRecord,
-    predictiveReality: core.predictiveReality,
-    missingEvidence: core.missingEvidence,
-    longitudinalPhotoIntelligence: core.longitudinalPhotoIntelligence,
-    projectGoals: core.realityModel.goals.map(goal => goal.goal),
-    activeRisks: core.realityModel.activeRisks,
-    activeConstraints: core.executiveConstraints.map(constraint => constraint.constraint),
-    dependencies: core.realityModel.dependencies.map(dependency => dependency.summary),
-    scheduleState: core.runtime.scheduleSummary ? [scheduleSummaryText(core.runtime.scheduleSummary)] : [],
-    resourceAvailability: core.executiveJudgmentResult.executiveResourceNeeds.map(need => need.resource),
-    authorityBoundaries: [core.executiveJudgmentResult.escalationAnalysis.target.role],
-    generatedAt: core.generatedAt,
-  });
-  const recommendationChallenge = challengePIERecommendation({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    simulation: decisionSimulation,
-    generatedAt: core.generatedAt,
-  });
-  const jarvisReasoningValidation = validatePIEReasoningWithJARVIS({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    simulation: decisionSimulation,
-    challenge: recommendationChallenge,
-    generatedAt: core.generatedAt,
-  });
-  const confidenceDecomposition = decomposePIERecommendationConfidence({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    evidenceQuality: core.evidenceQuality,
-    predictiveReality: core.predictiveReality,
-    simulation: decisionSimulation,
-    challenge: recommendationChallenge,
-    jarvisValidation: jarvisReasoningValidation,
-    generatedAt: core.generatedAt,
-  });
-  const evidenceValuePrioritization = prioritizeEvidenceByDecisionValue({
-    realityModel: core.realityModel,
-    executiveJudgment: core.executiveJudgmentResult,
-    missingEvidence: core.missingEvidence,
-    simulation: decisionSimulation,
-    generatedAt: core.generatedAt,
-  });
+  // Core already computed and validated these deterministic products. The
+  // live wrapper persists the judgment record, then attaches its immutable ID
+  // to simulation provenance instead of rerunning the full option/sensitivity
+  // pipeline on the React Native JS thread.
+  const decisionSimulation = {
+    ...core.decisionSimulation,
+    provenance: {
+      ...core.decisionSimulation.provenance,
+      executiveJudgmentId: executiveJudgmentRecord.id,
+    },
+  };
+  const recommendationChallenge = core.recommendationChallenge;
+  const jarvisReasoningValidation = core.jarvisReasoningValidation;
+  const confidenceDecomposition = core.confidenceDecomposition;
+  const evidenceValuePrioritization = core.evidenceValuePrioritization;
   const reportDraft = buildPIEReportDraftFromExecutiveJudgment({
-    reportType:
-      core.runtime.projectNames.length > 1
-        ? 'combined_project_update'
-        : 'daily_project_update',
+    reportType: reportScope.reportType,
     audience: 'internal_team',
-    selectedProjectNames: core.runtime.projectNames,
+    selectedProjectNames: reportScope.projectNames,
+    currentUpdate: input.runtimeContext?.currentUpdate,
+    savedUpdates: input.runtimeContext?.updates,
+    scheduleItems: input.runtimeContext?.scheduleItems,
+    projectAreas: input.runtimeContext?.projectAreas,
+    contacts: input.runtimeContext?.contacts,
     runtime: {
       ...core.runtime,
       executiveJudgmentRecord,
@@ -1428,14 +1466,75 @@ function scheduleSummaryText(value: unknown): string {
   return '';
 }
 
-function buildRuntimeEvidenceQualityInputs(
+/**
+ * Audit P1-02: evidence freshness comes from real captured timestamps on the
+ * underlying evidence, never from the analysis run time. Missing timestamps
+ * stay null so quality scoring treats them honestly as unknown-age.
+ */
+function latestRealCapturedAt(
+  candidates: readonly (string | null | undefined)[],
+): string | null {
+  let best: string | null = null;
+  let bestMs = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const ms = Date.parse(candidate);
+    if (!Number.isFinite(ms)) continue;
+    if (ms > bestMs) {
+      bestMs = ms;
+      best = new Date(ms).toISOString();
+    }
+  }
+  return best;
+}
+
+function conservativeEvidenceConfidence(
+  values: readonly ProjectConfidenceLevel[],
+): ProjectConfidenceLevel {
+  if (values.length === 0 || values.some(value => value === 'low')) return 'low';
+  if (values.some(value => value === 'medium')) return 'medium';
+  return 'high';
+}
+
+export function buildRuntimeEvidenceQualityInputs(
   runtime: PIERuntimeState,
   memoryRecall: PIEMemoryRecallResult,
 ): PIEEvidenceQualityInput[] {
   const projectName = runtime.projectName || runtime.projectNames[0] || null;
   const areaName = runtime.recommendedWalkAreas[0] || null;
-  const generatedAt = runtime.generatedAt;
   const fused = runtime.fusedEvidence;
+  const scheduleCapturedAt = latestRealCapturedAt(
+    fused.scheduleEvidence.flatMap(item => [
+      item.importedAt,
+      ...item.sources.map(source => source.capturedAt),
+    ]),
+  );
+  const photoCapturedAt = latestRealCapturedAt(
+    fused.photoEvidence.map(item => item.timestamp),
+  );
+  const gpsCapturedAt = latestRealCapturedAt(
+    fused.gpsEvidence.sources.map(source => source.capturedAt),
+  );
+  const notesCapturedAt = latestRealCapturedAt(
+    fused.userUpdateEvidence.flatMap(item => [
+      item.date,
+      ...item.sources.map(source => source.capturedAt),
+    ]),
+  );
+  const issuesCapturedAt = latestRealCapturedAt(
+    fused.issueEvidence.flatMap(item => item.sources.map(source => source.capturedAt)),
+  );
+  const safetyCapturedAt = latestRealCapturedAt(
+    fused.safetyEvidence.flatMap(item => item.sources.map(source => source.capturedAt)),
+  );
+  const overallCapturedAt = latestRealCapturedAt([
+    scheduleCapturedAt,
+    photoCapturedAt,
+    gpsCapturedAt,
+    notesCapturedAt,
+    issuesCapturedAt,
+    safetyCapturedAt,
+  ]);
 
   const inputs: PIEEvidenceQualityInput[] = [
     {
@@ -1444,7 +1543,7 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.whatChanged || runtime.evidenceFusionSummary.summary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: overallCapturedAt,
       gpsConfirmed: fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.confidenceScore >= 70,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: fused.scheduleEvidence.length > 0,
@@ -1458,14 +1557,23 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.scheduleStatus,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: scheduleCapturedAt,
       gpsConfirmed: false,
       photoSupported: false,
       scheduleSupported: fused.scheduleEvidence.length > 0,
-      userConfirmed: runtime.scheduleSummary.needsReviewCount === 0,
+      // A clean import is not a human confirmation. Only an explicit PM
+      // progress source carries that authority.
+      userConfirmed: fused.scheduleEvidence.some(item =>
+        item.sources.some(source =>
+          source.type === 'typed-update' &&
+          Boolean(source.provenance?.confirmationEventId),
+        ),
+      ),
       matchesPriorEvidence: memoryRecall.patterns.length > 0,
       unreviewedOCR: runtime.scheduleSummary.needsReviewCount > 0,
-      confidence: runtime.scheduleConfidence,
+      confidence: fused.scheduleEvidence.length > 0
+        ? runtime.scheduleConfidence
+        : 'low',
     },
     {
       id: 'quality-photo',
@@ -1473,13 +1581,16 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.photoEvidenceSummary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: photoCapturedAt,
       gpsConfirmed: fused.gpsEvidence.gpsAvailable,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
-      userConfirmed: runtime.comparisonNeedsReview === false,
+      // Provider/JARVIS review state is not a human confirmation event.
+      userConfirmed: false,
       matchesPriorEvidence: runtime.lastComparison !== null,
-      confidence: runtime.comparisonConfidence === 'high' ? 'high' : runtime.overallConfidence,
+      confidence: fused.photoEvidence.length > 0
+        ? runtime.comparisonConfidence
+        : 'low',
     },
     {
       id: 'quality-gps',
@@ -1487,7 +1598,7 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.gpsLocationConfidence,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: gpsCapturedAt,
       gpsConfirmed: fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.confidenceScore >= 70,
       photoSupported: false,
       scheduleSupported: false,
@@ -1505,13 +1616,18 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.userUpdateSummary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: notesCapturedAt,
       gpsConfirmed: false,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
-      userConfirmed: true,
+      // Audit P1-02: confirmed only when an actual user note exists.
+      userConfirmed: fused.userUpdateEvidence.some(item => Boolean(item.notes?.trim())),
       matchesPriorEvidence: memoryRecall.memories.length > 0,
-      confidence: runtime.overallConfidence,
+      confidence: fused.userUpdateEvidence.length > 0
+        ? conservativeEvidenceConfidence(
+            fused.userUpdateEvidence.map(item => item.confidence),
+          )
+        : 'low',
     },
     {
       id: 'quality-issues',
@@ -1519,13 +1635,16 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.risksAndIssues,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: issuesCapturedAt,
       gpsConfirmed: false,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: fused.scheduleEvidence.length > 0,
-      userConfirmed: true,
+      // Audit P1-02: derived issue summaries carry no confirmation event.
+      userConfirmed: false,
       matchesPriorEvidence: memoryRecall.comparisons.length > 0,
-      confidence: runtime.overallConfidence,
+      confidence: conservativeEvidenceConfidence(
+        fused.issueEvidence.map(item => item.confidence),
+      ),
     },
     {
       id: 'quality-safety',
@@ -1533,13 +1652,16 @@ function buildRuntimeEvidenceQualityInputs(
       summary: runtime.intelligentSummary.safetySummary,
       projectName,
       areaName,
-      capturedAt: generatedAt,
+      capturedAt: safetyCapturedAt,
       gpsConfirmed: false,
       photoSupported: fused.photoEvidence.length > 0,
       scheduleSupported: false,
-      userConfirmed: true,
+      // Audit P1-02: derived safety summaries carry no confirmation event.
+      userConfirmed: false,
       matchesPriorEvidence: memoryRecall.patterns.length > 0,
-      confidence: fused.safetyEvidence.length > 0 ? 'high' : runtime.overallConfidence,
+      confidence: conservativeEvidenceConfidence(
+        fused.safetyEvidence.map(item => item.confidence),
+      ),
     },
     {
       id: 'quality-report-history',
@@ -1726,7 +1848,7 @@ function buildRuntimeEvidenceTimelineEvents(
 
   const issueEvents = fused.issueEvidence.map(issue => ({
     id: `timeline-issue-${issue.id}`,
-    type: /resolved|closed|complete/i.test(issue.status)
+    type: issueStatusIsResolved(issue.status)
       ? 'issue_resolved' as const
       : 'issue_opened' as const,
     occurredAt: issue.dueDate || generatedAt,
@@ -1923,7 +2045,7 @@ function buildRuntimeRealitySourceObjects(
       projectName: issue.projectName,
       areaName: issue.areaName,
       summary: issue.evidenceText[0] || issue.title,
-      status: /resolved|closed|complete/i.test(issue.status) ? 'complete' : issue.isOverdue ? 'blocked' : 'at_risk',
+      status: issueStatusIsResolved(issue.status) ? 'complete' : issue.isOverdue ? 'blocked' : 'at_risk',
       confidence: issue.confidence,
       evidenceType: 'issue',
       evidenceId: issue.id,
@@ -2017,6 +2139,15 @@ function buildRuntimeRealitySourceObjects(
   }
 
   return objects;
+}
+
+function issueStatusIsResolved(status: string) {
+  const assertionText = `Issue ${status}`;
+  return (
+    classifyDAVEIssue(assertionText) === 'no_issue_observed' ||
+    classifyDAVEBlocker(assertionText) === 'resolved' ||
+    classifyDAVECompletion(assertionText) === 'complete'
+  );
 }
 
 function stableCoreProjectId(projectName: string) {

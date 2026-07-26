@@ -1,7 +1,11 @@
 import 'react-native-url-polyfill/auto';
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system/legacy';
+import {
+  isAuthStorageSecure,
+  SUPABASE_AUTH_STORAGE_LABEL,
+  supabaseSecureAuthStorage,
+} from './SupabaseAuthStorage';
+import { accountDisplayNameForMetadata } from './AccountProfile';
 import { AppState } from 'react-native';
 import {
   createClient,
@@ -10,6 +14,7 @@ import {
   type User,
 } from '@supabase/supabase-js';
 import type {
+  DAVESyncTombstone,
   ProjectArea,
   ReferenceDocument,
   ScheduleItem,
@@ -26,6 +31,25 @@ import type {
   PIERealityObject,
 } from './PIERealityModel';
 import type { PIEExecutiveJudgmentRecord } from './PIEExecutiveJudgmentRepository';
+import type { DAVEProjectTruthSnapshot } from './DAVEProjectTruthRepository';
+import { bindDAVECloudDatabaseIdentity } from './DAVECloudRecovery';
+import {
+  chunkSupabaseFilterValues,
+  paginateSupabaseCollection,
+} from './SupabaseCollectionPagination';
+import {
+  verifyPIERealityHistoryRows,
+  type PIERealityHistoryCloudRow,
+} from './PIERealityHistoryIntegrity';
+import {
+  FileSizePreflightError,
+  prepareExpoFileUploadPayload,
+} from './FileSizePreflight';
+import {
+  attachDAVEOperationalRealtime,
+  type DAVEOperationalRealtimeEntity,
+  type DAVEOperationalRealtimeStatus,
+} from './DAVEOperationalRefresh';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
@@ -40,7 +64,7 @@ export type SupabaseConfigurationStatus = {
   rawProjectUrl: string | null;
   projectUrl: string | null;
   createClientUrl: string | null;
-  authStorage: 'AsyncStorage';
+  authStorage: typeof SUPABASE_AUTH_STORAGE_LABEL;
   message: string;
 };
 
@@ -163,7 +187,6 @@ export type CreateProjectParams = {
   status?: string;
   archived?: boolean;
   isFavorite?: boolean;
-  ownerId?: string | null;
   data?: JsonValue | null;
 };
 
@@ -174,7 +197,6 @@ export type UpdateProjectParams = {
   status?: string;
   archived?: boolean;
   isFavorite?: boolean;
-  ownerId?: string | null;
   data?: JsonValue | null;
 };
 
@@ -200,12 +222,17 @@ export type SaveProjectUpdateParams<TUpdate> = {
   idempotencyKey?: string | null;
   updateData: TUpdate;
   updatedAt?: string;
-  ownerId?: string | null;
+};
+
+export type DeleteProjectUpdateParams = {
+  id: string;
 };
 
 export type ProjectUpdateSyncMetadata<TUpdate = JsonValue> = {
   id: string;
   updatedAt: string | null;
+  projectName: string | null;
+  areaName: string | null;
   updateData: TUpdate | null;
 };
 
@@ -229,6 +256,12 @@ export type DownloadPhotoParams = {
   path: string;
 };
 
+export type CreatePhotoSignedUrlParams = {
+  bucket?: string;
+  path: string;
+  expiresIn?: number;
+};
+
 const RAW_SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_URL = RAW_SUPABASE_URL.trim();
 const SUPABASE_ANON_KEY =
@@ -238,6 +271,8 @@ const PROJECT_UPDATES_TABLE = 'project_updates';
 const PROJECT_AREAS_TABLE = 'project_areas';
 const SCHEDULE_ITEMS_TABLE = 'schedule_items';
 const REFERENCE_DOCUMENTS_TABLE = 'reference_documents';
+const DAVE_SYNC_TOMBSTONES_TABLE = 'dave_sync_tombstones';
+const DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE = 'dave_project_truth_snapshots';
 const PIE_DECISION_RECORDS_TABLE = 'pie_decision_records';
 const PIE_DECISION_VERSIONS_TABLE = 'pie_decision_versions';
 const PIE_DECISION_OUTCOMES_TABLE = 'pie_decision_outcomes';
@@ -262,16 +297,12 @@ let lastSignInClientSource = SUPABASE_CLIENT_SOURCE;
 let lastAuthEvent = 'UNKNOWN';
 let authAutoRefreshSubscriptionStarted = false;
 
-const supabaseAuthStorage = {
-  getItem: (key: string) => AsyncStorage.getItem(key),
-  setItem: (key: string, value: string) => AsyncStorage.setItem(key, value),
-  removeItem: (key: string) => AsyncStorage.removeItem(key),
-};
+// Audit P0-14/P1-30: tokens live in SecureStore (Keychain/Keystore), never
+// plain AsyncStorage. See services/SupabaseAuthStorage.ts.
+const supabaseAuthStorage = supabaseSecureAuthStorage;
 
 function createSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-
-  logSupabaseUrlBeforeNetworkRequest('createClient');
 
   return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
@@ -288,7 +319,6 @@ export const supabase = createSupabaseClient();
 startSupabaseAuthLifecycle(supabase);
 
 export function getSupabaseClient(): SupabaseClient | null {
-  logSupabaseUrlBeforeNetworkRequest('getSupabaseClient');
   return supabase;
 }
 
@@ -308,7 +338,7 @@ export function getSupabaseConfigurationStatus(): SupabaseConfigurationStatus {
     rawProjectUrl: urlConfigured ? RAW_SUPABASE_URL : null,
     projectUrl: urlConfigured ? SUPABASE_URL : null,
     createClientUrl: supabase ? SUPABASE_URL : null,
-    authStorage: 'AsyncStorage',
+    authStorage: SUPABASE_AUTH_STORAGE_LABEL,
     message: configured
       ? 'Supabase is configured from Expo public environment variables.'
       : 'Supabase is not configured. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to enable cloud sync.',
@@ -329,6 +359,7 @@ export async function getSupabaseConnectionStatus(): Promise<SupabaseConnectionS
     };
   }
 
+  await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
   const { data } = await client.auth.getSession();
 
   return {
@@ -358,11 +389,23 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
     };
   }
 
-  logSupabaseUrlBeforeNetworkRequest('testSupabaseConnection');
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return {
+      configured: true,
+      connected: false,
+      projectCount: null,
+      checkedAt,
+      status: owner.status,
+      error: owner.error,
+    };
+  }
 
   const { count, error, status } = await client
     .from(PROJECTS_TABLE)
     .select('name', { count: 'exact' })
+    .eq('owner_id', owner.data)
+    .eq('archived', false)
     .limit(1);
 
   if (error) {
@@ -387,6 +430,10 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionTestRe
 
 export async function runSupabaseConnectionDiagnostics(): Promise<SupabaseConnectionDiagnostics> {
   const supabaseUrl = SUPABASE_URL || null;
+  const client = getSupabaseClient();
+  if (client) await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
+  const sessionResult = client ? await client.auth.getSession() : null;
+  const accessToken = sessionResult?.data.session?.access_token ?? null;
   const rootUrl = supabaseUrl || 'Missing EXPO_PUBLIC_SUPABASE_URL';
   const restUrl = supabaseUrl
     ? `${withoutTrailingSlash(supabaseUrl)}/rest/v1/${PROJECTS_TABLE}?select=name&limit=1`
@@ -396,19 +443,21 @@ export async function runSupabaseConnectionDiagnostics(): Promise<SupabaseConnec
     supabaseUrl
       ? fetchDiagnosticStep('Supabase URL root', rootUrl)
       : Promise.resolve(missingUrlStep('Supabase URL root', rootUrl)),
-    supabaseUrl && SUPABASE_ANON_KEY
+    supabaseUrl && SUPABASE_ANON_KEY && accessToken
       ? fetchDiagnosticStep('Supabase REST projects endpoint', restUrl, {
           headers: {
             apikey: SUPABASE_ANON_KEY,
-            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            Authorization: `Bearer ${accessToken}`,
           },
         })
       : Promise.resolve(
           missingUrlStep(
             'Supabase REST projects endpoint',
             restUrl,
-            supabaseUrl
-              ? 'Missing EXPO_PUBLIC_SUPABASE_ANON_KEY.'
+            supabaseUrl && SUPABASE_ANON_KEY
+              ? 'Sign in is required to test authenticated project access.'
+              : supabaseUrl
+                ? 'Missing EXPO_PUBLIC_SUPABASE_ANON_KEY.'
               : 'Missing EXPO_PUBLIC_SUPABASE_URL.',
           ),
         ),
@@ -505,6 +554,22 @@ export async function getCurrentUser(): Promise<SupabaseServiceResult<User | nul
   return okResult(data.user ?? null);
 }
 
+export function accountDisplayNameForUser(user: User | null | undefined): string {
+  return accountDisplayNameForMetadata(user?.user_metadata);
+}
+
+export async function updateCurrentUserDisplayName(
+  displayName: string,
+): Promise<SupabaseServiceResult<User | null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<User | null>();
+  const { data, error } = await client.auth.updateUser({
+    data: { project_vision_display_name: displayName.trim() },
+  });
+  if (error) return errorResult(error.message);
+  return okResult(data.user ?? null);
+}
+
 export function subscribeToAuthStateChange(
   callback: (event: string, session: Session | null) => void,
 ): () => void {
@@ -517,6 +582,27 @@ export function subscribeToAuthStateChange(
   });
 
   return () => data.subscription.unsubscribe();
+}
+
+export async function subscribeToDAVEOperationalChanges({
+  onChange,
+  onStatus,
+}: {
+  onChange: (entity: DAVEOperationalRealtimeEntity) => void;
+  onStatus?: (status: DAVEOperationalRealtimeStatus) => void;
+}): Promise<() => void> {
+  const client = getSupabaseClient();
+  if (!client) return () => undefined;
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) return () => undefined;
+
+  return attachDAVEOperationalRealtime({
+    client,
+    ownerId: owner.data,
+    onChange,
+    onStatus,
+  });
 }
 
 export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceResult<SupabaseSessionTokenLookupResult>> {
@@ -535,6 +621,14 @@ export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceRes
       error:
         'Supabase client is not available to read the current auth session.',
     };
+  }
+
+  if (!storageAvailable) {
+    return okResult(buildSessionTokenLookup({
+      storageAvailable: false,
+      authState: 'unknown',
+      missingReason: 'storage_unavailable',
+    }));
   }
 
   await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
@@ -599,10 +693,23 @@ export async function uploadPhoto({
 
   if (!client) return notConfiguredResult<UploadedPhoto>();
 
-  const base64 = await FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-  const fileData = base64ToArrayBuffer(base64);
+  let fileData: ArrayBuffer;
+  try {
+    fileData = (await prepareExpoFileUploadPayload({ uri })).data;
+  } catch (cause) {
+    if (cause instanceof FileSizePreflightError) {
+      return errorResult(
+        cause.message,
+        cause.code === 'file_too_large' ? 413 : 422,
+        cause.code,
+      );
+    }
+    return errorResult(
+      'DAVE could not safely inspect this file. Choose it again and retry.',
+      422,
+      'file_size_unavailable',
+    );
+  }
 
   const { data, error } = await client.storage
     .from(bucket)
@@ -652,18 +759,63 @@ export async function downloadPhoto({
   return okResult(data);
 }
 
+export async function createPhotoSignedUrl(
+  path: string,
+  expiresIn = 300,
+  bucket = PROJECT_PHOTOS_BUCKET,
+): Promise<SupabaseServiceResult<string>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<string>();
+  const { data, error } = await client.storage
+    .from(bucket)
+    .createSignedUrl(path, expiresIn);
+  if (error) {
+    const errorRecord = error as unknown as Record<string, unknown>;
+    const rawStatus = errorRecord.statusCode ?? errorRecord.status;
+    const parsedStatus = typeof rawStatus === 'string'
+      ? Number(rawStatus)
+      : rawStatus;
+    const status = typeof parsedStatus === 'number' && Number.isFinite(parsedStatus)
+      ? parsedStatus
+      : undefined;
+    const code = typeof errorRecord.error === 'string'
+      ? errorRecord.error
+      : typeof errorRecord.code === 'string'
+        ? errorRecord.code
+        : undefined;
+
+    return errorResult(error.message, status, code);
+  }
+  return okResult(data.signedUrl);
+}
+
+export async function verifyDAVEAppOwner(): Promise<SupabaseServiceResult<boolean>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<boolean>();
+
+  const { data, error, status } = await client.rpc('dave_is_app_owner');
+  if (error) return errorResult(error.message, status);
+  return okResult(data === true, status);
+}
+
 export async function createProject(
   project: CreateProjectParams,
 ): Promise<SupabaseServiceResult<CloudProject>> {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProject>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const payload = {
     name: project.name,
     status: project.status ?? 'Active',
     archived: project.archived ?? false,
     is_favorite: project.isFavorite ?? false,
+    ...(project.data !== undefined ? { project_data: project.data } : {}),
+    owner_id: owner.data,
   };
 
   const { data, error, status } = await client
@@ -683,6 +835,10 @@ export async function updateProject(
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProject>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const payload: Record<string, unknown> = {};
 
@@ -690,6 +846,7 @@ export async function updateProject(
   if (project.status !== undefined) payload.status = project.status;
   if (project.archived !== undefined) payload.archived = project.archived;
   if (project.isFavorite !== undefined) payload.is_favorite = project.isFavorite;
+  if (project.data !== undefined) payload.project_data = project.data;
 
   if (Object.keys(payload).length === 0) {
     return okResult<CloudProject>(
@@ -699,7 +856,11 @@ export async function updateProject(
     );
   }
 
-  let query = client.from(PROJECTS_TABLE).update(payload).select('*');
+  let query = client
+    .from(PROJECTS_TABLE)
+    .update(payload)
+    .eq('owner_id', owner.data)
+    .select('*');
 
   if (project.id) {
     query = query.eq('id', project.id);
@@ -709,9 +870,24 @@ export async function updateProject(
     return errorResult('Project update requires an id, previousName, or name.');
   }
 
-  const { data, error, status } = await query.limit(1).single();
+  const { data, error, status } = await query.limit(1).maybeSingle();
 
+  if (error && project.archived === true && error.code === 'PGRST116') {
+    return okResult<CloudProject>(
+      null,
+      status,
+      'Project was already absent from the cloud project list.',
+    );
+  }
   if (error) return tableAwareErrorResult<CloudProject>(error.message, status);
+  if (!data && project.archived === true) {
+    return okResult<CloudProject>(
+      null,
+      status,
+      'Project was already absent from the cloud project list.',
+    );
+  }
+  if (!data) return errorResult('Project could not be found.', status);
 
   return okResult(normalizeProject(data), status);
 }
@@ -722,89 +898,85 @@ export async function deleteProject({
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const projectName = name.trim();
 
   if (!projectName) return errorResult('Project delete requires a name.');
 
-  const errors: string[] = [];
-
-  const updatesResult = await client
-    .from(PROJECT_UPDATES_TABLE)
-    .delete()
-    .eq('project_name', projectName);
-  appendRelatedDeleteError(errors, 'project updates', updatesResult.error?.message);
-
-  const scheduleResult = await client
-    .from(SCHEDULE_ITEMS_TABLE)
-    .delete()
-    .eq('project_name', projectName);
-  appendRelatedDeleteError(errors, 'schedule items', scheduleResult.error?.message);
-
-  const relatedDocuments = await client
-    .from(REFERENCE_DOCUMENTS_TABLE)
-    .select('id, document_data');
-  appendRelatedDeleteError(
-    errors,
-    'reference documents',
-    relatedDocuments.error?.message,
+  const { error, status } = await client.rpc(
+    'dave_delete_project_atomically',
+    { p_project_name: projectName },
   );
-
-  if (!relatedDocuments.error && Array.isArray(relatedDocuments.data)) {
-    const relatedDocumentIds = relatedDocuments.data
-      .filter(row => recordMatchesProject(toRecord(row).document_data, projectName))
-      .map(row => toRecord(row).id)
-      .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
-
-    if (relatedDocumentIds.length > 0) {
-      const documentDeleteResult = await client
-        .from(REFERENCE_DOCUMENTS_TABLE)
-        .delete()
-        .in('id', relatedDocumentIds);
-      appendRelatedDeleteError(
-        errors,
-        'reference documents',
-        documentDeleteResult.error?.message,
+  if (error) {
+    if (
+      error.code === 'PGRST202' ||
+      error.message.toLowerCase().includes('dave_delete_project_atomically')
+    ) {
+      return errorResult(
+        'Protected project deletion is not available yet. Apply the approved Vitruvius database migration, then retry.',
+        status,
+        error.code,
       );
     }
-  }
-
-  const projectResult = await client
-    .from(PROJECTS_TABLE)
-    .delete()
-    .eq('name', projectName);
-
-  if (projectResult.error) {
-    return tableAwareErrorResult<null>(
-      projectResult.error.message,
-      projectResult.status,
-    );
-  }
-
-  if (errors.length > 0) {
     return errorResult(
-      `Project deleted, but related cloud cleanup had issues: ${errors.join(' | ')}`,
-      projectResult.status,
+      'The project and its deletion markers could not be committed together. No partial cloud deletion was accepted.',
+      status,
+      error.code,
     );
   }
-
-  return okResult(null, projectResult.status);
+  return okResult(null, status);
 }
 
 export async function listProjects(): Promise<SupabaseServiceResult<CloudProject[]>> {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProject[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
-  const { data, error, status } = await client
-    .from(PROJECTS_TABLE)
-    .select('*')
-    .eq('archived', false)
-    .order('created_at', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PROJECTS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .eq('archived', false)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) return tableAwareListResult<CloudProject>(error.message, status);
+  if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
+  return okResult(result.rows.map(normalizeProject), result.status);
+}
 
-  return okResult(Array.isArray(data) ? data.map(normalizeProject) : [], status);
+export async function listArchivedProjects(): Promise<SupabaseServiceResult<CloudProject[]>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<CloudProject[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PROJECTS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .eq('archived', true)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
+
+  if (!result.ok) return tableAwareListResult<CloudProject>(result.error, result.status);
+  return okResult(result.rows.map(normalizeProject), result.status);
 }
 
 export async function countCloudProjects(): Promise<SupabaseServiceResult<number>> {
@@ -835,6 +1007,10 @@ export async function saveProjectUpdate<TUpdate>({
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProjectUpdate<TUpdate>>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const stableIdempotencyKey =
     sanitizeIdempotencyKey(idempotencyKey) ||
@@ -847,6 +1023,7 @@ export async function saveProjectUpdate<TUpdate>({
     idempotency_key: stableIdempotencyKey,
     update_data: updateData,
     updated_at: updatedAt,
+    owner_id: owner.data,
   };
 
   const { data, error, status } = await client
@@ -865,28 +1042,107 @@ export async function saveProjectUpdate<TUpdate>({
   return okResult(normalizeProjectUpdate<TUpdate>(data), status);
 }
 
+export async function deleteProjectUpdate({
+  id,
+}: DeleteProjectUpdateParams): Promise<SupabaseServiceResult<null>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const updateId = id.trim();
+  if (!updateId) return errorResult('Field update delete requires an id.');
+
+  const { error, status } = await client.rpc(
+    'dave_delete_project_update_atomically',
+    { p_update_id: updateId },
+  );
+  if (error) {
+    if (
+      error.code === 'PGRST202' ||
+      error.message.toLowerCase().includes('dave_delete_project_update_atomically')
+    ) {
+      return errorResult(
+        'Protected field-update deletion is not available yet. Apply the approved Vitruvius database migration, then retry.',
+        status,
+        error.code,
+      );
+    }
+    return errorResult(
+      'The field update and its deletion marker could not be committed together. No partial cloud deletion was accepted.',
+      status,
+      error.code,
+    );
+  }
+  return okResult(null, status);
+}
+
+export async function archiveProjectUpdate({
+  id,
+  archivedAt,
+}: {
+  id: string;
+  archivedAt: string;
+}): Promise<SupabaseServiceResult<null>> {
+  const metadata = await getProjectUpdateSyncMetadata<Record<string, unknown>>(id);
+  if (!metadata.ok || metadata.stubbed) {
+    return errorResult(metadata.error || metadata.message || 'Field update archive could not be read.');
+  }
+  if (!metadata.data?.updateData) return okResult(null, metadata.status);
+  const updateData = metadata.data.updateData;
+  const projectName = typeof updateData.projectName === 'string'
+    ? updateData.projectName
+    : metadata.data.projectName || '';
+  if (!projectName.trim()) return errorResult('Field update archive requires a project name.');
+  const result = await saveProjectUpdate({
+    id,
+    projectName,
+    areaName: typeof updateData.selectedAreaName === 'string'
+      ? updateData.selectedAreaName
+      : metadata.data.areaName || '',
+    updateData: { ...updateData, isArchived: true, archivedAt },
+    updatedAt: archivedAt,
+  });
+  if (!result.ok || result.stubbed) {
+    return errorResult(result.error || result.message || 'Field update archive could not be saved.');
+  }
+  return okResult(null, result.status);
+}
+
 export async function listProjectUpdates<TUpdate>(): Promise<
   SupabaseServiceResult<CloudProjectUpdate<TUpdate>[]>
 > {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<CloudProjectUpdate<TUpdate>[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
-  const { data, error, status } = await client
-    .from(PROJECT_UPDATES_TABLE)
-    .select('*')
-    .order('created_at', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PROJECT_UPDATES_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) {
+  if (!result.ok) {
     return tableAwareListResult<CloudProjectUpdate<TUpdate>>(
-      error.message,
-      status,
+      result.error,
+      result.status,
     );
   }
 
   return okResult(
-    Array.isArray(data) ? data.map(row => normalizeProjectUpdate<TUpdate>(row)) : [],
-    status,
+    result.rows.map(row => normalizeProjectUpdate<TUpdate>(row)),
+    result.status,
   );
 }
 
@@ -898,10 +1154,15 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
   if (!client) {
     return notConfiguredResult<ProjectUpdateSyncMetadata<TUpdate> | null>();
   }
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   const { data, error, status } = await client
     .from(PROJECT_UPDATES_TABLE)
-    .select('id, updated_at, update_data')
+    .select('id, updated_at, project_name, area_name, update_data')
+    .eq('owner_id', owner.data)
     .eq('id', id)
     .maybeSingle();
 
@@ -920,6 +1181,8 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
     {
       id: String(row.id || id),
       updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+      projectName: typeof row.project_name === 'string' ? row.project_name : null,
+      areaName: typeof row.area_name === 'string' ? row.area_name : null,
       updateData: (row.update_data as TUpdate | null) ?? null,
     },
     status,
@@ -931,6 +1194,7 @@ export async function upsertProjectArea(
 ): Promise<SupabaseServiceResult<ProjectArea>> {
   return upsertJsonRecord<ProjectArea>({
     table: PROJECT_AREAS_TABLE,
+    ownerScoped: true,
     payload: {
       id: area.id,
       name: area.name,
@@ -946,6 +1210,7 @@ export async function upsertScheduleItem(
 ): Promise<SupabaseServiceResult<ScheduleItem>> {
   return upsertJsonRecord<ScheduleItem>({
     table: SCHEDULE_ITEMS_TABLE,
+    ownerScoped: true,
     payload: {
       id: item.id,
       project_name: item.projectName,
@@ -960,17 +1225,206 @@ export async function upsertScheduleItem(
 export async function upsertReferenceDocument(
   document: ReferenceDocument,
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
+  const { cloudUpdatedAt: _cloudUpdatedAt, ...documentData } = document;
   return upsertJsonRecord<ReferenceDocument>({
     table: REFERENCE_DOCUMENTS_TABLE,
+    ownerScoped: true,
     payload: {
       id: document.id,
       name: document.name,
       category: document.category,
-      document_data: toJsonValue(document),
+      document_data: toJsonValue(documentData),
       updated_at: new Date().toISOString(),
     },
     data: document,
   });
+}
+
+export async function listProjectAreas(): Promise<SupabaseServiceResult<ProjectArea[]>> {
+  return listOwnedJsonRecords<ProjectArea>({
+    table: PROJECT_AREAS_TABLE,
+    jsonColumn: 'area_data',
+  });
+}
+
+export async function listScheduleItems(): Promise<SupabaseServiceResult<ScheduleItem[]>> {
+  return listOwnedJsonRecords<ScheduleItem>({
+    table: SCHEDULE_ITEMS_TABLE,
+    jsonColumn: 'item_data',
+  });
+}
+
+export async function listReferenceDocuments(): Promise<SupabaseServiceResult<ReferenceDocument[]>> {
+  return listOwnedJsonRecords<ReferenceDocument>({
+    table: REFERENCE_DOCUMENTS_TABLE,
+    jsonColumn: 'document_data',
+    includeCloudUpdatedAt: true,
+  });
+}
+
+export async function upsertDAVESyncTombstone(
+  tombstone: DAVESyncTombstone,
+): Promise<SupabaseServiceResult<DAVESyncTombstone>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVESyncTombstone>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { error, status } = await client
+    .from(DAVE_SYNC_TOMBSTONES_TABLE)
+    .upsert(
+      {
+        owner_id: owner.data,
+        entity_type: tombstone.entityType,
+        record_id: tombstone.recordId,
+        deleted_at: tombstone.deletedAt,
+      },
+      { onConflict: 'owner_id,entity_type,record_id' },
+    );
+
+  if (error) return tableAwareErrorResult<DAVESyncTombstone>(error.message, status);
+  return okResult(tombstone, status);
+}
+
+export async function listDAVESyncTombstones(): Promise<
+  SupabaseServiceResult<DAVESyncTombstone[]>
+> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVESyncTombstone[]>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(DAVE_SYNC_TOMBSTONES_TABLE)
+      .select('entity_type, record_id, deleted_at', {
+        count: includeExactCount ? 'exact' : undefined,
+      })
+      .eq('owner_id', owner.data)
+      .order('deleted_at', { ascending: false })
+      .order('entity_type', { ascending: true })
+      .order('record_id', { ascending: true })
+      .range(from, to),
+  );
+
+  if (!result.ok) return tableAwareListResult<DAVESyncTombstone>(result.error, result.status);
+
+  const tombstones = result.rows
+        .map(row => {
+          const record = toRecord(row);
+          const entityType = String(record.entity_type || '');
+          const recordId = String(record.record_id || '').trim();
+          const deletedAt = String(record.deleted_at || '');
+          if (
+            !recordId ||
+            !deletedAt ||
+            ![
+              'project',
+              'project_update',
+              'project_area',
+              'schedule_item',
+              'reference_document',
+            ].includes(entityType)
+          ) return null;
+          return {
+            entityType: entityType as DAVESyncTombstone['entityType'],
+            recordId,
+            deletedAt,
+          };
+        })
+        .filter((value): value is DAVESyncTombstone => Boolean(value));
+
+  return okResult(tombstones, result.status);
+}
+
+export async function loadLatestDAVEProjectTruthSnapshotCloud(
+  organizationId: string,
+  projectId: string,
+): Promise<SupabaseServiceResult<DAVEProjectTruthSnapshot | null>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVEProjectTruthSnapshot | null>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  if (organizationId !== owner.data) {
+    return errorResult('Project Truth organization does not match the authenticated owner.', 403);
+  }
+
+  const { data, error, status } = await client
+    .from(DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE)
+    .select('snapshot')
+    .eq('owner_id', owner.data)
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .order('revision', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    return tableAwareErrorResult<DAVEProjectTruthSnapshot | null>(error.message, status);
+  }
+  if (!data) return okResult(null, status);
+  return okResult(
+    (toRecord(data).snapshot as unknown as DAVEProjectTruthSnapshot) || null,
+    status,
+  );
+}
+
+export async function saveDAVEProjectTruthSnapshotCloud(
+  snapshot: DAVEProjectTruthSnapshot,
+): Promise<SupabaseServiceResult<DAVEProjectTruthSnapshot>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVEProjectTruthSnapshot>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+  if (snapshot.organizationId !== owner.data) {
+    return errorResult('Project Truth organization does not match the authenticated owner.', 403);
+  }
+
+  const payload = {
+    id: snapshot.id,
+    owner_id: owner.data,
+    organization_id: snapshot.organizationId,
+    project_id: snapshot.projectId,
+    project_name: snapshot.projectName,
+    revision: snapshot.revision,
+    source_fingerprint: snapshot.sourceFingerprint,
+    truth_schema_version: snapshot.truthSchemaVersion,
+    generated_at: snapshot.generatedAt,
+    saved_at: snapshot.savedAt,
+    snapshot: toJsonValue(snapshot),
+  };
+  const { error, status } = await client
+    .from(DAVE_PROJECT_TRUTH_SNAPSHOTS_TABLE)
+    .insert(payload);
+
+  if (error) {
+    if (!isDuplicateKeyError(error.message)) {
+      return tableAwareErrorResult<DAVEProjectTruthSnapshot>(error.message, status);
+    }
+    const latest = await loadLatestDAVEProjectTruthSnapshotCloud(
+      snapshot.organizationId,
+      snapshot.projectId,
+    );
+    if (
+      latest.ok &&
+      latest.data &&
+      latest.data.sourceFingerprint === snapshot.sourceFingerprint
+    ) {
+      return okResult(latest.data, status);
+    }
+    return errorResult('A newer Project Truth revision already exists.', 409, 'truth_revision_conflict');
+  }
+  return okResult(snapshot, status);
 }
 
 export async function loadPIERealityModelCloud(
@@ -997,7 +1451,7 @@ export async function loadPIERealityModelCloud(
 
 export async function savePIERealityModelCloud(
   model: PIERealityModel,
-  reason = 'Reality Model synchronized from live PIE authority.',
+  reason = 'Reality Model synchronized from live DAVE authority.',
 ): Promise<SupabaseServiceResult<PIERealityModel>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIERealityModel>();
@@ -1052,17 +1506,23 @@ export async function listPIEExecutiveJudgmentsCloud(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIEExecutiveJudgmentRecord[]>();
 
-  const { data, error, status } = await client
-    .from(PIE_EXECUTIVE_JUDGMENTS_TABLE)
-    .select('*')
-    .eq('organization_id', organizationId)
-    .eq('project_id', projectId)
-    .order('judgment_time', { ascending: false });
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(PIE_EXECUTIVE_JUDGMENTS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('organization_id', organizationId)
+      .eq('project_id', projectId)
+      .order('judgment_time', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 
-  if (error) return tableAwareListResult<PIEExecutiveJudgmentRecord>(error.message, status);
+  if (!result.ok) {
+    return tableAwareListResult<PIEExecutiveJudgmentRecord>(result.error, result.status);
+  }
   return okResult(
-    Array.isArray(data) ? data.map(normalizePIEExecutiveJudgmentRow) : [],
-    status,
+    result.rows.map(normalizePIEExecutiveJudgmentRow),
+    result.status,
   );
 }
 
@@ -1259,7 +1719,7 @@ async function savePIERealityHistoryCloud(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<null>();
 
-  const payload = events.map(({ event, objectId }) => ({
+  const payload: PIERealityHistoryCloudRow[] = events.map(({ event, objectId }) => ({
     id: event.id,
     organization_id: model.organizationId,
     project_id: model.projectId,
@@ -1271,11 +1731,56 @@ async function savePIERealityHistoryCloud(
     next_status: event.nextStatus,
   }));
 
+  const inputIntegrity = verifyPIERealityHistoryRows(payload, payload);
+  if (!inputIntegrity.ok) {
+    return errorResult(
+      inputIntegrity.error || 'Reality history contains conflicting duplicate IDs.',
+      409,
+      'reality_history_immutable_conflict',
+    );
+  }
+
   const { error, status } = await client
     .from(PIE_REALITY_OBJECT_HISTORY_TABLE)
-    .upsert(payload, { onConflict: 'id' });
+    .upsert(payload, { onConflict: 'id', ignoreDuplicates: true });
 
   if (error) return tableAwareErrorResult<null>(error.message, status);
+
+  const cloudRows: unknown[] = [];
+  for (const idChunk of chunkSupabaseFilterValues(payload.map(row => row.id))) {
+    const pageResult = await paginateSupabaseCollection(async ({
+      from,
+      to,
+      includeExactCount,
+    }) => {
+      const response = await client
+        .from(PIE_REALITY_OBJECT_HISTORY_TABLE)
+        .select(
+          'id, organization_id, project_id, object_id, occurred_at, event_type, summary, previous_status, next_status',
+          { count: includeExactCount ? 'exact' : undefined },
+        )
+        .eq('organization_id', model.organizationId)
+        .eq('project_id', model.projectId)
+        .in('id', [...idChunk])
+        .order('id', { ascending: true })
+        .range(from, to);
+      return response;
+    });
+    if (!pageResult.ok) {
+      return tableAwareErrorResult<null>(pageResult.error, pageResult.status);
+    }
+    cloudRows.push(...pageResult.rows);
+  }
+
+  const verification = verifyPIERealityHistoryRows(payload, cloudRows);
+  if (!verification.ok) {
+    return errorResult(
+      verification.error || 'Reality history immutable verification failed.',
+      409,
+      'reality_history_immutable_conflict',
+    );
+  }
+
   return okResult(null, status);
 }
 
@@ -1461,20 +1966,87 @@ export async function listPIEDecisionRecords(
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIEDecisionRecord[]>();
 
-  let query = client
-    .from(PIE_DECISION_RECORDS_TABLE)
-    .select('*, pie_decision_versions(*), pie_decision_outcomes(*), pie_decision_audit_events(*)')
-    .eq('organization_id', organizationId)
-    .order('created_at', { ascending: false });
+  const recordsResult = await paginateSupabaseCollection(async ({
+    from,
+    to,
+    includeExactCount,
+  }) => {
+    let query = client
+      .from(PIE_DECISION_RECORDS_TABLE)
+      .select('*', { count: includeExactCount ? 'exact' : undefined })
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true });
+    if (projectId) query = query.eq('project_id', projectId);
+    return query.range(from, to);
+  });
+  if (!recordsResult.ok) {
+    return tableAwareListResult<PIEDecisionRecord>(recordsResult.error, recordsResult.status);
+  }
+  if (recordsResult.rows.length === 0) return okResult([], recordsResult.status);
 
-  if (projectId) query = query.eq('project_id', projectId);
+  const [versionsResult, outcomesResult, auditResult] = await Promise.all([
+    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
+      let query = client
+        .from(PIE_DECISION_VERSIONS_TABLE)
+        .select('*', { count: includeExactCount ? 'exact' : undefined })
+        .eq('organization_id', organizationId)
+        .order('decision_id', { ascending: true })
+        .order('version', { ascending: true })
+        .order('id', { ascending: true });
+      if (projectId) query = query.eq('project_id', projectId);
+      return query.range(from, to);
+    }),
+    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
+      let query = client
+        .from(PIE_DECISION_OUTCOMES_TABLE)
+        .select('*', { count: includeExactCount ? 'exact' : undefined })
+        .eq('organization_id', organizationId)
+        .order('decision_id', { ascending: true })
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+      if (projectId) query = query.eq('project_id', projectId);
+      return query.range(from, to);
+    }),
+    paginateSupabaseCollection(async ({ from, to, includeExactCount }) => {
+      let query = client
+        .from(PIE_DECISION_AUDIT_EVENTS_TABLE)
+        .select('*', { count: includeExactCount ? 'exact' : undefined })
+        .eq('organization_id', organizationId)
+        .order('decision_id', { ascending: true })
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+      if (projectId) query = query.eq('project_id', projectId);
+      return query.range(from, to);
+    }),
+  ]);
 
-  const { data, error, status } = await query;
-  if (error) return tableAwareListResult<PIEDecisionRecord>(error.message, status);
+  const failedChildren = [versionsResult, outcomesResult, auditResult]
+    .find(result => !result.ok);
+  if (failedChildren && !failedChildren.ok) {
+    return tableAwareListResult<PIEDecisionRecord>(
+      failedChildren.error,
+      failedChildren.status,
+    );
+  }
+
+  const versionsByDecision = groupRowsByDecisionId(versionsResult.rows);
+  const outcomesByDecision = groupRowsByDecisionId(outcomesResult.rows);
+  const auditByDecision = groupRowsByDecisionId(auditResult.rows);
+  const rowsWithChildren = recordsResult.rows.map(row => {
+    const record = toRecord(row);
+    const decisionId = String(record.id || '');
+    return {
+      ...record,
+      pie_decision_versions: versionsByDecision.get(decisionId) || [],
+      pie_decision_outcomes: outcomesByDecision.get(decisionId) || [],
+      pie_decision_audit_events: auditByDecision.get(decisionId) || [],
+    };
+  });
 
   return okResult(
-    Array.isArray(data) ? data.map(row => normalizePIEDecisionRow(row)) : [],
-    status,
+    rowsWithChildren.map(row => normalizePIEDecisionRow(row)),
+    recordsResult.status,
   );
 }
 
@@ -1608,6 +2180,16 @@ function normalizePIEDecisionRow(row: unknown): PIEDecisionRecord {
       ? record.close_blockers.map(String)
       : [],
   };
+}
+
+function groupRowsByDecisionId(rows: readonly unknown[]) {
+  const grouped = new Map<string, unknown[]>();
+  for (const row of rows) {
+    const decisionId = String(toRecord(row).decision_id || '');
+    if (!decisionId) continue;
+    grouped.set(decisionId, [...(grouped.get(decisionId) || []), row]);
+  }
+  return grouped;
 }
 
 function normalizePIEDecisionVersion(row: unknown): PIEDecisionVersion {
@@ -1787,11 +2369,50 @@ async function waitForAuthHydration(timeoutMs: number) {
   return authHydrationCompleted;
 }
 
+async function requireAuthenticatedOwnerId(
+  client: SupabaseClient,
+): Promise<SupabaseServiceResult<string>> {
+  const hydrated = await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
+  if (!hydrated) {
+    return errorResult(
+      'Authentication is still loading. Try cloud sync again in a moment.',
+      503,
+      'auth_loading',
+    );
+  }
+
+  const { data, error } = await client.auth.getSession();
+  if (error) return errorResult(error.message, 401, 'auth_required');
+  const session = data.session;
+  if (!session?.access_token || !session.user?.id) {
+    return errorResult(
+      'Sign in is required before cloud data can be accessed.',
+      401,
+      'auth_required',
+    );
+  }
+  if (
+    typeof session.expires_at === 'number' &&
+    session.expires_at * 1000 <= Date.now()
+  ) {
+    return errorResult(
+      'The sign-in session expired. Sign in again before cloud sync.',
+      401,
+      'session_expired',
+    );
+  }
+
+  return okResult(session.user.id);
+}
+
 async function probeAuthStorage(): Promise<boolean> {
+  // Probes the real auth storage adapter (SecureStore-backed), not
+  // AsyncStorage, so storageAvailable reflects where tokens actually live.
   try {
-    await AsyncStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
-    const stored = await AsyncStorage.getItem(AUTH_STORAGE_PROBE_KEY);
-    await AsyncStorage.removeItem(AUTH_STORAGE_PROBE_KEY);
+    if (!(await isAuthStorageSecure())) return false;
+    await supabaseAuthStorage.setItem(AUTH_STORAGE_PROBE_KEY, 'ok');
+    const stored = await supabaseAuthStorage.getItem(AUTH_STORAGE_PROBE_KEY);
+    await supabaseAuthStorage.removeItem(AUTH_STORAGE_PROBE_KEY);
     return stored === 'ok';
   } catch {
     return false;
@@ -1936,20 +2557,86 @@ async function upsertJsonRecord<T>({
   table,
   payload,
   data,
+  ownerScoped = false,
 }: {
   table: string;
   payload: Record<string, unknown>;
   data: T;
+  ownerScoped?: boolean;
 }): Promise<SupabaseServiceResult<T>> {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<T>();
+  let writePayload = payload;
+  if (ownerScoped) {
+    const owner = await requireAuthenticatedOwnerId(client);
+    if (!owner.ok || !owner.data) {
+      return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+    }
+    writePayload = {
+      ...payload,
+      owner_id: owner.data,
+    };
+  }
 
-  const { error, status } = await client.from(table).upsert(payload);
+  const { error, status } = await client.from(table).upsert(writePayload);
 
   if (error) return tableAwareErrorResult<T>(error.message, status);
 
   return okResult(data, status);
+}
+
+async function listOwnedJsonRecords<T>({
+  table,
+  jsonColumn,
+  includeCloudUpdatedAt = false,
+}: {
+  table: string;
+  jsonColumn: string;
+  includeCloudUpdatedAt?: boolean;
+}): Promise<SupabaseServiceResult<T[]>> {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<T[]>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
+    client
+      .from(table)
+      .select(`id, updated_at, ${jsonColumn}`, { count: includeExactCount ? 'exact' : undefined })
+      .eq('owner_id', owner.data)
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
+
+  if (!result.ok) return tableAwareListResult<T>(result.error, result.status);
+
+  const records = result.rows
+    .map(row => {
+      const databaseRow = toRecord(row);
+      const jsonRecord = toRecord(databaseRow[jsonColumn]);
+      if (Object.keys(jsonRecord).length === 0) return null;
+      // The database row is the durable identity. Legacy JSON may omit its id
+      // or contain an old conflicting id; using the row id prevents a later
+      // upload from manufacturing a second cloud record.
+      const record = bindDAVECloudDatabaseIdentity(jsonRecord, databaseRow.id);
+      return (includeCloudUpdatedAt
+        ? {
+            ...record,
+            cloudUpdatedAt:
+              typeof databaseRow.updated_at === 'string'
+                ? databaseRow.updated_at
+                : null,
+          }
+        : record) as T;
+    })
+    .filter((value): value is T => Boolean(value));
+
+  return okResult(records, result.status);
 }
 
 function isMissingTableError(message: string): boolean {
@@ -2010,7 +2697,6 @@ async function fetchDiagnosticStep(
   init?: RequestInit,
 ): Promise<SupabaseDiagnosticStep> {
   try {
-    logSupabaseUrlBeforeNetworkRequest(label);
     const response = await fetch(url, init);
     const responsePreview = await safeResponsePreview(response);
     const statusText = response.statusText || '';
@@ -2070,12 +2756,6 @@ async function safeResponsePreview(response: Response): Promise<string> {
 
 function withoutTrailingSlash(value: string) {
   return value.replace(/\/+$/g, '');
-}
-
-function logSupabaseUrlBeforeNetworkRequest(context: string) {
-  console.log(
-    `[Supabase] ${context} using EXPO_PUBLIC_SUPABASE_URL=${SUPABASE_URL || 'Missing'}`,
-  );
 }
 
 function normalizeProject(value: unknown): CloudProject {
@@ -2155,29 +2835,4 @@ function isJsonValue(value: unknown): value is JsonValue {
   }
 
   return false;
-}
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const chars =
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  const sanitized = base64.replace(/[^A-Za-z0-9+/=]/g, '');
-  const output: number[] = [];
-  let buffer = 0;
-  let bits = 0;
-
-  for (let index = 0; index < sanitized.length; index += 1) {
-    const value = chars.indexOf(sanitized.charAt(index));
-
-    if (value < 0 || value === 64) continue;
-
-    buffer = (buffer << 6) | value;
-    bits += 6;
-
-    if (bits >= 8) {
-      bits -= 8;
-      output.push((buffer >> bits) & 0xff);
-    }
-  }
-
-  return new Uint8Array(output).buffer;
 }

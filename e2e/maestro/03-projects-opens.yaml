@@ -1,8 +1,9 @@
 appId: ${APP_ID}
 ---
 - launchApp
-- tapOn: "Projects"
-- assertVisible: "Projects"
-- assertVisible: "Search projects"
-- assertVisible: "Project Finder"
-
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- assertVisible: "2321 Compliance Project"
+- assertVisible: "2375 Compliance Project"
+- assertVisible: "Add project"

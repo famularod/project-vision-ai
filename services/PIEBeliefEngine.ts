@@ -19,6 +19,7 @@ import type {
 } from './PIEScientificMethod';
 import type { PIERuntimeState } from './PIERuntime';
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import { parseDAVEAssertions } from './DAVEAssertionParser';
 
 export type PIEBeliefType =
   | 'progress'
@@ -164,18 +165,29 @@ export type PIEBeliefEngineResult = {
 export function buildPIEBeliefs(input: PIEBeliefEngineInput): PIEBeliefEngineResult {
   const generatedAt = input.generatedAt || input.runtime.generatedAt || new Date().toISOString();
   const formed = formBeliefsFromEvidence({ ...input, generatedAt });
-  const revised = reviseBeliefs(formed, { ...input, generatedAt });
+  const revisedCurrent = reviseBeliefs(formed, { ...input, generatedAt });
+  // Audit P1-13: prior belief state drives lifecycle — history carries
+  // forward, and beliefs that vanished from current evidence are retired
+  // explicitly rather than silently forgotten.
+  const revised = applyPreviousBeliefLifecycle(
+    revisedCurrent,
+    input.previousBeliefs || [],
+    generatedAt,
+  );
   const beliefChanges = summarizeBeliefChanges(formed, revised);
-  const strongestBeliefs = revised.filter(belief =>
+  // Retired beliefs stay visible for lifecycle history but must not drive
+  // readiness, verification demands, or confidence (audit P1-13).
+  const active = revised.filter(belief => belief.status !== 'retired');
+  const strongestBeliefs = active.filter(belief =>
     belief.status === 'supported' ||
     belief.status === 'strengthened',
   );
-  const challengedBeliefs = revised.filter(belief =>
+  const challengedBeliefs = active.filter(belief =>
     belief.status === 'challenged' ||
     belief.status === 'contradicted' ||
     belief.status === 'weakened',
   );
-  const beliefsNeedingVerification = revised.filter(belief =>
+  const beliefsNeedingVerification = active.filter(belief =>
     belief.readiness !== 'Ready' ||
     belief.status === 'needs_verification',
   );
@@ -187,10 +199,10 @@ export function buildPIEBeliefs(input: PIEBeliefEngineInput): PIEBeliefEngineRes
     strongestBeliefs,
     challengedBeliefs,
     beliefsNeedingVerification,
-    beliefReadiness: calculateOverallBeliefReadiness(revised),
+    beliefReadiness: calculateOverallBeliefReadiness(active),
     beliefExplanations: revised.map(explainBelief),
-    summary: summarizeBeliefs(revised, beliefsNeedingVerification),
-    confidence: confidenceFromBeliefs(revised),
+    summary: summarizeBeliefs(active, beliefsNeedingVerification),
+    confidence: confidenceFromBeliefs(active),
   };
 }
 
@@ -210,7 +222,7 @@ export function formBeliefsFromEvidence(
       assumptions: [{
         id: `assumption-runtime-${index}`,
         assumption: 'Runtime belief reflects the current project state.',
-        whyItMatters: 'PIE should not treat old evidence as final truth.',
+        whyItMatters: 'DAVE should not treat old evidence as final truth.',
         confidence: belief.confidence,
       }],
       uncertainty: belief.remainingUncertainty.map((uncertainty, uncertaintyIndex) => ({
@@ -229,7 +241,7 @@ export function formBeliefsFromEvidence(
   const selectedDecisionBelief = input.scientificResult?.selectedDecision
     ? buildBelief({
         id: 'belief-selected-decision',
-        statement: `PIE selected decision: ${input.scientificResult.selectedDecision.selectedAction}`,
+        statement: `DAVE selected decision: ${input.scientificResult.selectedDecision.selectedAction}`,
         type: 'decision',
         supportingEvidence: [{
           id: 'belief-support-selected-decision',
@@ -241,7 +253,7 @@ export function formBeliefsFromEvidence(
         assumptions: [{
           id: 'belief-assumption-selected-decision',
           assumption: 'The selectedDecision is based on the best current evidence.',
-          whyItMatters: 'If the selected decision is based on weak evidence, PIE should ask for verification.',
+          whyItMatters: 'If the selected decision is based on weak evidence, DAVE should ask for verification.',
           confidence: input.scientificResult.selectedDecision.confidence,
         }],
         uncertainty: input.scientificResult.uncertainty.slice(0, 2).map((item, index) => ({
@@ -258,6 +270,55 @@ export function formBeliefsFromEvidence(
   return [...runtimeBeliefs, ...hypothesisBeliefs, selectedDecisionBelief]
     .filter((belief): belief is PIEBelief => Boolean(belief))
     .slice(0, 12);
+}
+
+/**
+ * Audit P1-13: connects the current belief set to the previous session's
+ * beliefs. Matching beliefs keep their original createdAt and accumulated
+ * revision history; previous beliefs with no current counterpart are
+ * retired explicitly and kept (bounded) so the lifecycle is visible.
+ */
+export function applyPreviousBeliefLifecycle(
+  current: PIEBelief[],
+  previousBeliefs: PIEBelief[],
+  generatedAt: string,
+): PIEBelief[] {
+  if (previousBeliefs.length === 0) return current;
+
+  const withHistory = current.map(belief => {
+    const previous = previousBeliefs.find(item =>
+      item.id === belief.id || item.statement === belief.statement,
+    );
+    if (!previous) return belief;
+    return {
+      ...belief,
+      history: {
+        createdAt: previous.history.createdAt,
+        lastRevisedAt: belief.history.lastRevisedAt,
+        revisions: [
+          ...previous.history.revisions,
+          ...belief.history.revisions,
+        ].slice(-10),
+      },
+    };
+  });
+
+  const currentIds = new Set(withHistory.map(belief => belief.id));
+  const currentStatements = new Set(withHistory.map(belief => belief.statement));
+  const retired = previousBeliefs
+    .filter(previous =>
+      previous.status !== 'retired' &&
+      !currentIds.has(previous.id) &&
+      !currentStatements.has(previous.statement),
+    )
+    .slice(0, 4)
+    .map(previous => retireBelief(
+      previous,
+      'No current evidence re-forms this belief.',
+      generatedAt,
+    ));
+
+  return [...withHistory, ...retired];
 }
 
 export function reviseBeliefs(
@@ -355,8 +416,12 @@ export function identifySupportingEvidence(
   input: PIEBeliefEngineInput,
   statement: string,
 ): PIEBeliefEvidence[] {
+  // Audit P1-13: evidence may support a belief only when it is about the
+  // belief's subject. Generic runtime signals no longer attach to every
+  // belief (a parking-lot photo must not strengthen an electrical belief).
   return [
-    input.runtime.intelligentSummary.whatChanged
+    input.runtime.intelligentSummary.whatChanged &&
+    textsOverlap(input.runtime.intelligentSummary.whatChanged, statement)
       ? {
           id: 'belief-support-runtime-change',
           source: 'Runtime',
@@ -364,7 +429,8 @@ export function identifySupportingEvidence(
           confidence: input.runtime.intelligentSummary.confidence,
         }
       : null,
-    input.runtime.evidenceFusionSummary.summary
+    input.runtime.evidenceFusionSummary.summary &&
+    textsOverlap(input.runtime.evidenceFusionSummary.summary, statement)
       ? {
           id: 'belief-support-evidence-fusion',
           source: 'Evidence Fusion',
@@ -372,7 +438,8 @@ export function identifySupportingEvidence(
           confidence: input.runtime.evidenceFusionSummary.confidence,
         }
       : null,
-    input.evidenceQuality?.strongEvidence[0]
+    input.evidenceQuality?.strongEvidence[0] &&
+    textsOverlap(input.evidenceQuality.strongEvidence[0].evidence.summary, statement)
       ? {
           id: 'belief-support-evidence-quality',
           source: 'Evidence Quality',
@@ -380,7 +447,8 @@ export function identifySupportingEvidence(
           confidence: input.evidenceQuality.strongEvidence[0].score.confidence,
         }
       : null,
-    input.evidenceTimeline?.recentChanges[0]
+    input.evidenceTimeline?.recentChanges[0] &&
+    textsOverlap(input.evidenceTimeline.recentChanges[0].summary, statement)
       ? {
           id: 'belief-support-evidence-timeline',
           source: 'Evidence Timeline',
@@ -388,15 +456,20 @@ export function identifySupportingEvidence(
           confidence: input.evidenceTimeline.recentChanges[0].confidence,
         }
       : null,
-    input.realityModel?.objects.find(object => object.currentStatus === 'ready' || object.currentStatus === 'complete')
+    input.realityModel?.objects.find(object =>
+      (object.currentStatus === 'ready' || object.currentStatus === 'complete') &&
+      textsOverlap(object.name, statement))
       ? {
           id: 'belief-support-reality-model',
           source: 'Reality Model',
-          summary: `Reality object supports current understanding: ${input.realityModel.objects.find(object => object.currentStatus === 'ready' || object.currentStatus === 'complete')?.name}`,
+          summary: `Reality object supports current understanding: ${input.realityModel.objects.find(object =>
+            (object.currentStatus === 'ready' || object.currentStatus === 'complete') &&
+            textsOverlap(object.name, statement))?.name}`,
           confidence: input.realityModel.summary.confidence,
         }
       : null,
-    input.objectIntelligence?.objectsReady[0]
+    input.objectIntelligence?.objectsReady[0] &&
+    textsOverlap(input.objectIntelligence.objectsReady[0].name, statement)
       ? {
           id: 'belief-support-object-intelligence',
           source: 'Object Intelligence',
@@ -415,7 +488,7 @@ export function identifySupportingEvidence(
         })),
       )),
     ...((input.patternIntelligence?.patternMatches || [])
-      .filter(match => textsOverlap(match.pattern.summary, statement) || match.confidence !== 'low')
+      .filter(match => textsOverlap(match.pattern.summary, statement))
       .slice(0, 2)
       .map((match, index) => ({
         id: `belief-support-pattern-${index}`,
@@ -439,14 +512,18 @@ export function identifyContradictingEvidence(
   input: PIEBeliefEngineInput,
   statement: string,
 ): PIEBeliefContradiction[] {
+  // Audit P1-13: a contradiction must be about this belief's subject.
   return [
-    ...input.runtime.evidenceConflicts.map((conflict, index) => ({
+    ...input.runtime.evidenceConflicts
+      .filter(conflict => textsOverlap(conflict.summary, statement))
+      .map((conflict, index) => ({
       id: `belief-contradiction-conflict-${index}`,
       source: 'Evidence Fusion',
       summary: conflict.summary,
       confidence: conflict.confidence,
     })),
     ...((input.evidenceTimeline?.staleAreas || [])
+      .filter(gap => textsOverlap(gap.summary, statement))
       .slice(0, 2)
       .map((gap, index) => ({
         id: `belief-contradiction-timeline-stale-${index}`,
@@ -458,9 +535,10 @@ export function identifyContradictingEvidence(
       }))),
     ...((input.realityModel?.objects || [])
       .filter(object =>
-        object.currentStatus === 'blocked' ||
-        object.currentStatus === 'at_risk' ||
-        object.currentStatus === 'needs_verification',
+        (object.currentStatus === 'blocked' ||
+          object.currentStatus === 'at_risk' ||
+          object.currentStatus === 'needs_verification') &&
+        textsOverlap(object.name, statement),
       )
       .slice(0, 3)
       .map((object, index) => ({
@@ -470,6 +548,7 @@ export function identifyContradictingEvidence(
         confidence: object.currentState.confidence,
       }))),
     ...((input.objectIntelligence?.objectsWithHighRisk || [])
+      .filter(object => textsOverlap(object.name, statement))
       .slice(0, 2)
       .map((object, index) => ({
         id: `belief-contradiction-object-intelligence-${index}`,
@@ -478,10 +557,7 @@ export function identifyContradictingEvidence(
         confidence: object.intelligence.confidence.level,
       }))),
     ...((input.scientificResult?.challenges || [])
-      .filter(challenge =>
-        textsOverlap(challenge.whatCouldMakePIEWrong, statement) ||
-        challenge.whatCouldMakePIEWrong !== 'No direct contradiction surfaced yet.',
-      )
+      .filter(challenge => textsOverlap(challenge.whatCouldMakePIEWrong, statement))
       .slice(0, 3)
       .map((challenge, index) => ({
         id: `belief-contradiction-challenge-${index}`,
@@ -506,7 +582,7 @@ export function identifyWeakestAssumption(belief: PIEBelief): PIEBeliefAssumptio
   )[0] || {
     id: 'assumption-default',
     assumption: 'Current evidence is complete enough to rely on.',
-    whyItMatters: 'If evidence is incomplete, PIE should verify before recommending action.',
+    whyItMatters: 'If evidence is incomplete, DAVE should verify before recommending action.',
     confidence: 'low',
   };
 }
@@ -528,8 +604,8 @@ export function explainBelief(belief: PIEBelief): PIEBeliefExplanation {
     contradictingEvidence: belief.contradictingEvidence.map(item => item.summary),
     weakestAssumption: weakestAssumption.assumption,
     readinessReason: belief.readiness === 'Ready'
-      ? 'Enough evidence supports the belief for PIE to use it carefully.'
-      : belief.uncertainty[0]?.recommendedEvidence || 'More evidence is needed before PIE relies on this belief.',
+      ? 'Enough evidence supports the belief for DAVE to use it carefully.'
+      : belief.uncertainty[0]?.recommendedEvidence || 'More evidence is needed before DAVE relies on this belief.',
   };
 }
 
@@ -569,7 +645,7 @@ export function summarizeBeliefChanges(
         id: `belief-change-${next.id}`,
         beliefId: next.id,
         change: 'formed',
-        reason: 'PIE formed this belief from current evidence.',
+        reason: 'DAVE formed this belief from current evidence.',
         previousStatus: null,
         nextStatus: next.status,
         confidence: next.confidence,
@@ -749,7 +825,9 @@ function inferBeliefType(statement: string): PIEBeliefType {
   if (/missing|unknown|evidence|verify/.test(value)) return 'evidence_gap';
   if (/location|area|gps|project/.test(value)) return 'location';
   if (/issue|block|risk/.test(value)) return 'risk';
-  if (/complete|done|finished/.test(value)) return 'completion';
+  if (parseDAVEAssertions(value).assertions.some(assertion =>
+    assertion.predicate === 'complete'
+  )) return 'completion';
   if (/ready|readiness/.test(value)) return 'readiness';
   return 'progress';
 }
@@ -771,12 +849,34 @@ function textsOverlap(left: string, right: string) {
   return leftTerms.some(term => rightTerms.includes(term));
 }
 
+const NON_SUBJECT_TERMS = new Set([
+  'blocked',
+  'complete',
+  'completed',
+  'current',
+  'evidence',
+  'finished',
+  'issue',
+  'pending',
+  'progress',
+  'project',
+  'ready',
+  'reported',
+  'schedule',
+  'status',
+  'support',
+  'supported',
+  'update',
+  'verified',
+  'work',
+]);
+
 function terms(value: string) {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, ' ')
     .split(/\s+/)
-    .filter(term => term.length > 4);
+    .filter(term => term.length > 4 && !NON_SUBJECT_TERMS.has(term));
 }
 
 function calculateOverallBeliefReadiness(beliefs: PIEBelief[]): PIEBeliefReadiness {
@@ -796,9 +896,9 @@ function summarizeBeliefs(
   beliefs: PIEBelief[],
   beliefsNeedingVerification: PIEBelief[],
 ) {
-  if (beliefs.length === 0) return 'PIE has not formed enough beliefs yet.';
+  if (beliefs.length === 0) return 'DAVE has not formed enough beliefs yet.';
   if (beliefsNeedingVerification.length > 0) {
-    return `${beliefs.length} beliefs formed. ${beliefsNeedingVerification.length} need verification before PIE should rely on them.`;
+    return `${beliefs.length} beliefs formed. ${beliefsNeedingVerification.length} need verification before DAVE should rely on them.`;
   }
   return `${beliefs.length} beliefs formed and ready to support recommendations.`;
 }

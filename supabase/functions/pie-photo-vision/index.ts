@@ -1,4 +1,7 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.108.2';
+import {
+  createClient,
+  type SupabaseClient,
+} from 'https://esm.sh/@supabase/supabase-js@2.108.2';
 import {
   buildVisionProvider,
   type ProviderResult,
@@ -11,6 +14,22 @@ import {
   normalizePhotoFindings,
   validateStrictPhotoPairResponse,
 } from '../_shared/pie-photo-comparison-schema.ts';
+import {
+  PIE_PHOTO_ANALYSIS_CONTRACT,
+  normalizePhotoVisionProviderFailureReason,
+  photoAnalysisContractEnvelope,
+  validatePhotoAnalysisContractEnvelope,
+} from '../_shared/pie-photo-analysis-contract.ts';
+import { validateVisionAuthority } from '../_shared/pie-vision-authority.ts';
+import {
+  buildServerPhotoVisionPreflightId,
+  buildServerPhotoVisionRequestId,
+  callerPhotoVisionRequestIdMatches,
+  isCanonicalPhotoEvidenceStoragePath,
+  photoVisionCallerScopeIsAuthorized,
+  readBoundedUtf8Json,
+  type PhotoVisionRequestIdentityVersions,
+} from '../_shared/pie-photo-vision-request-security.ts';
 
 type VisionRequest = {
   operation?: 'config_check';
@@ -21,7 +40,11 @@ type VisionRequest = {
   evidenceId?: string;
   baselineEvidenceId?: string;
   currentEvidenceId?: string;
+  contractVersion?: string;
+  analyzerVersion?: string;
   promptVersion?: string;
+  schemaVersion?: string;
+  policyVersion?: string;
   forceReanalysis?: boolean;
   projectName?: string;
   areaName?: string | null;
@@ -37,15 +60,34 @@ type ImageDiagnostics = {
   signedUrlGenerated: boolean;
 };
 
-const POLICY_VERSION = '2026.07.02-production-vision-policy';
-const ANALYZER_ID = 'pie-production-photo-vision';
-const ANALYZER_VERSION = '2026.07.02-production';
+type VisionPersistenceResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; failedWrite: string }>;
+
+type EdgeSupabaseClient = SupabaseClient<any, 'public', 'public', any, any>;
+
+const POLICY_VERSION = PIE_PHOTO_ANALYSIS_CONTRACT.policyVersion;
+const ANALYZER_ID = PIE_PHOTO_ANALYSIS_CONTRACT.analyzerId;
+const ANALYZER_VERSION = PIE_PHOTO_ANALYSIS_CONTRACT.analyzerVersion;
 const BUCKET = 'pie-project-evidence';
 const SIGNED_URL_EXPIRES_SECONDS = 600;
 const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 64 * 1024;
+const MAX_FIELD_NOTES_LENGTH = 4_000;
+
+function defaultPromptVersion(mode: VisionMode): string {
+  return photoAnalysisContractEnvelope(mode).promptVersion;
+}
 
 Deno.serve(async req => {
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+  const declaredRequestBytes = Number(req.headers.get('content-length') || '0');
+  if (
+    Number.isFinite(declaredRequestBytes) &&
+    declaredRequestBytes > MAX_REQUEST_BYTES
+  ) {
+    return json({ error: 'request_too_large' }, 413);
+  }
 
   const supabaseUrl = requiredEnv('SUPABASE_URL');
   const anonKey = requiredEnv('SUPABASE_ANON_KEY');
@@ -62,7 +104,27 @@ Deno.serve(async req => {
   const { data: userData, error: userError } = await userClient.auth.getUser();
   if (userError || !userData.user) return json({ error: 'unauthorized' }, 401);
 
-  const body = await req.json().catch(() => null) as VisionRequest | null;
+  // The service client bypasses RLS and can invoke a paid provider. Require
+  // the server-maintained singleton owner before parsing any analysis input;
+  // organizationId=userId alone is not sufficient authorization.
+  const { data: isAppOwner, error: ownerError } = await userClient
+    .rpc('dave_is_app_owner');
+  if (ownerError) {
+    return json({ error: 'owner_verification_unavailable' }, 503);
+  }
+  if (isAppOwner !== true) return json({ error: 'forbidden' }, 403);
+
+  const bodyRead = await readBoundedUtf8Json<VisionRequest>(
+    req,
+    MAX_REQUEST_BYTES,
+  );
+  if (!bodyRead.ok) {
+    return json(
+      { error: bodyRead.error },
+      bodyRead.error === 'request_too_large' ? 413 : 400,
+    );
+  }
+  const body = bodyRead.value;
   if (body?.operation === 'config_check') {
     return json(buildRedactedConfigCheck());
   }
@@ -72,10 +134,36 @@ Deno.serve(async req => {
 
   const request = body as Required<Pick<VisionRequest, 'organizationId' | 'projectId'>> & VisionRequest;
   const mode: VisionMode = request.mode ?? (request.baselineEvidenceId && request.currentEvidenceId ? 'photo_pair' : 'single_photo');
-  const requestId = request.requestId ?? buildRequestId(request, mode);
+  const contractValidation = validatePhotoAnalysisContractEnvelope(mode, request);
+  if (!contractValidation.valid) {
+    return json({
+      error: 'photo_analysis_contract_mismatch',
+      categories: contractValidation.categories,
+      expectedContractVersion: PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion,
+    }, 409);
+  }
+  const contractEnvelope = photoAnalysisContractEnvelope(mode);
+  const requestIdentityVersions = photoVisionRequestIdentityVersions(mode);
 
-  const hasAccess = await verifyProjectAccess(userData.user.id, request.organizationId, request.projectId);
+  const hasAccess = photoVisionCallerScopeIsAuthorized({
+    isAppOwner,
+    authenticatedUserId: userData.user.id,
+    organizationId: request.organizationId,
+    projectId: request.projectId,
+  });
   if (!hasAccess) return json({ error: 'forbidden' }, 403);
+
+  // Safe provisional ID for failure diagnostics. The primary key is always
+  // derived by this server and never copied from request.requestId.
+  let requestId = buildServerPhotoVisionPreflightId({
+    mode,
+    organizationId: request.organizationId,
+    projectId: request.projectId,
+    evidenceId: request.evidenceId,
+    baselineEvidenceId: request.baselineEvidenceId,
+    currentEvidenceId: request.currentEvidenceId,
+    versions: requestIdentityVersions,
+  });
 
   const evidenceIds = mode === 'single_photo'
     ? [request.evidenceId as string]
@@ -88,36 +176,62 @@ Deno.serve(async req => {
       const preflightResult = image.degraded
         ? buildPreflightDegradedResult(requestId, image.error)
         : null;
-      await persistRequestAndResult(
+      const persisted = await persistRequestAndResult(
         serviceClient,
         request,
         requestId,
         mode,
         preflightResult,
         preflightResult ? null : image.error,
-        validateNormalizedOutput(mode, preflightResult?.normalized ?? null),
+        validateVisionAuthority(mode, preflightResult?.normalized ?? null),
         imageDiagnostics,
       );
+      if (!persisted.ok) {
+        return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+      }
       return json({ requestId, mode, status: preflightResult?.status ?? 'failed', error: image.error }, image.status);
     }
     imageDiagnostics.push(image.diagnostics);
     images.push(image);
   }
 
+  requestId = buildServerPhotoVisionRequestId({
+    mode,
+    organizationId: request.organizationId,
+    projectId: request.projectId,
+    evidenceId: request.evidenceId,
+    baselineEvidenceId: request.baselineEvidenceId,
+    currentEvidenceId: request.currentEvidenceId,
+    evidenceContentSha256: imageDiagnostics[0]?.sha256,
+    baselineContentSha256: imageDiagnostics[0]?.sha256,
+    currentContentSha256: imageDiagnostics[1]?.sha256,
+    versions: requestIdentityVersions,
+  });
+  if (!callerPhotoVisionRequestIdMatches(request.requestId, requestId)) {
+    return json({
+      error: 'request_identity_mismatch',
+      requestId,
+      mode,
+    }, 409);
+  }
+
   if (mode === 'photo_pair') {
     const pairError = validateDistinctImagePair(images);
     if (pairError) {
       const preflightResult = buildPreflightDegradedResult(requestId, pairError);
-      await persistRequestAndResult(
+      const persisted = await persistRequestAndResult(
         serviceClient,
         request,
         requestId,
         mode,
         preflightResult,
         pairError,
-        validateNormalizedOutput(mode, preflightResult.normalized ?? null),
+        validateVisionAuthority(mode, preflightResult.normalized ?? null),
         imageDiagnostics,
       );
+      if (!persisted.ok) {
+        return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+      }
       console.log(JSON.stringify(buildSafeImageDiagnosticLog({
         event: 'pie_vision_image_pair_rejected',
         requestId,
@@ -130,15 +244,68 @@ Deno.serve(async req => {
     }
   }
 
+  const operationFingerprint = await sha256Hex(JSON.stringify({
+    requestId,
+    projectId: request.projectId,
+    mode,
+    evidence: imageDiagnostics.map(image => ({
+      evidenceId: image.evidenceId,
+      sha256: image.sha256,
+      sizeBytes: image.sizeBytes,
+    })),
+    versions: requestIdentityVersions,
+  }));
+  const operationBegin = await userClient.rpc('dave_begin_ai_operation', {
+    p_operation_type: 'photo_analysis',
+    p_idempotency_key: `photo:${await sha256Hex(requestId)}`,
+    p_project_ids: [request.projectId],
+    p_payload_fingerprint: operationFingerprint,
+    p_payload_bytes: new TextEncoder().encode(JSON.stringify(body)).byteLength,
+  });
+  if (operationBegin.error || !operationBegin.data) {
+    return json({ error: 'ai_operation_control_unavailable' }, 503);
+  }
+  const operationControl = operationBegin.data as {
+    action?: string;
+    request_id?: string;
+    response_payload?: unknown;
+    retry_after_seconds?: number;
+  };
+  if (operationControl.action === 'replay') {
+    return json(operationControl.response_payload);
+  }
+  if (operationControl.action === 'in_progress') {
+    return json({
+      error: 'analysis_in_progress',
+      retryAfterSeconds: operationControl.retry_after_seconds ?? 15,
+    }, 409);
+  }
+  if (operationControl.action === 'rate_limited') {
+    return json({
+      error: 'analysis_rate_limited',
+      retryAfterSeconds: operationControl.retry_after_seconds ?? 60,
+    }, 429);
+  }
+  if (operationControl.action === 'idempotency_conflict') {
+    return json({ error: 'analysis_idempotency_conflict' }, 409);
+  }
+  if (
+    operationControl.action !== 'start' ||
+    typeof operationControl.request_id !== 'string'
+  ) {
+    return json({ error: 'ai_operation_control_invalid' }, 503);
+  }
+  const operationRequestId = operationControl.request_id;
+
   const context: ProviderRunContext = {
     mode,
     organizationId: request.organizationId,
     projectId: request.projectId,
     requestId,
-    promptVersion: request.promptVersion ?? '2026.07.02-production-photo-vision',
+    promptVersion: contractEnvelope.promptVersion,
     policyVersion: POLICY_VERSION,
     timeoutMs: Number(Deno.env.get('PIE_VISION_TIMEOUT_MS') ?? '45000'),
-    maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '2'),
+    maxRetries: Number(Deno.env.get('PIE_VISION_MAX_RETRIES') ?? '1'),
     projectName: request.projectName ?? null,
     areaName: request.areaName ?? null,
     fieldNotes: request.fieldNotes ?? null,
@@ -188,7 +355,7 @@ Deno.serve(async req => {
   const normalized = malformedPairResponse
     ? null
     : normalizeProviderOutput(mode, providerResult.normalized);
-  const jarvis = validateNormalizedOutput(mode, normalized);
+  const jarvis = validateVisionAuthority(mode, normalized);
   const finalResult: ProviderResult = {
     ...providerResult,
     status: malformedPairResponse
@@ -209,37 +376,66 @@ Deno.serve(async req => {
     providerResponseStatus: finalResult.status,
   })));
 
-  await persistRequestAndResult(serviceClient, request, requestId, mode, finalResult, null, jarvis, imageDiagnostics);
-
-  return json({
+  const persisted = await persistRequestAndResult(
+    serviceClient,
+    request,
     requestId,
     mode,
+    finalResult,
+    null,
+    jarvis,
+    imageDiagnostics,
+  );
+  if (!persisted.ok) {
+    await finishAIOperation(
+      userClient,
+      operationRequestId,
+      'failed',
+      null,
+      'analysis_persistence_failed',
+    );
+    return persistenceFailureResponse(requestId, mode, persisted.failedWrite);
+  }
+
+  const responsePayload = {
+    requestId,
+    mode,
+    contractVersion: contractEnvelope.contractVersion,
+    analyzerVersion: contractEnvelope.analyzerVersion,
+    promptVersion: contractEnvelope.promptVersion,
+    schemaVersion: contractEnvelope.schemaVersion,
+    policyVersion: contractEnvelope.policyVersion,
     status: finalResult.status,
     providerName: finalResult.providerName,
     modelName: finalResult.modelName,
     modelVersion: finalResult.modelVersion,
     latencyMs: finalResult.latencyMs,
     attempts: finalResult.attempts,
+    failureReason: normalizePhotoVisionProviderFailureReason(finalResult.error),
     jarvis,
-  });
+  };
+  const operationFinished = await finishAIOperation(
+    userClient,
+    operationRequestId,
+    'completed',
+    responsePayload,
+    null,
+  );
+  if (!operationFinished) {
+    return json({ error: 'ai_operation_finalize_failed' }, 503);
+  }
+  return json(responsePayload);
 });
 
-async function verifyProjectAccess(userId: string, organizationId: string, projectId: string): Promise<boolean> {
-  // Single-user app, no team/org sharing: the caller may only act on their own
-  // organizationId (which the client always sets to its own auth uid), mirroring
-  // the "organization_id = auth.uid()::text" ownership check used by the
-  // pie-project-evidence storage/table RLS policies. This intentionally no
-  // longer routes through pie_layer4_has_permission/organization_memberships,
-  // which has no membership rows for this account.
-  return Boolean(organizationId) && organizationId === userId && Boolean(projectId);
-}
-
 async function loadAuthorizedImage(
-  serviceClient: ReturnType<typeof createClient>,
+  serviceClient: EdgeSupabaseClient,
   organizationId: string,
   projectId: string,
   evidenceId: string,
 ): Promise<(VisionImageInput & { diagnostics: ImageDiagnostics }) | { error: string; status: number; degraded?: boolean }> {
+  if (!safeRequestScopeSegment(evidenceId)) {
+    return { error: 'unsafe_evidence_identity', status: 400 };
+  }
   const { data: evidence, error } = await serviceClient
     .from('pie_evidence_records')
     .select('id, organization_id, project_id, evidence_type, storage_refs, content_hash, mime_type')
@@ -248,20 +444,76 @@ async function loadAuthorizedImage(
     .eq('project_id', projectId)
     .maybeSingle();
 
-  if (error || !evidence || evidence.evidence_type !== 'photo') {
+  if (error) {
+    return { error: 'photo_evidence_lookup_failed', status: 502 };
+  }
+  if (!evidence || evidence.evidence_type !== 'photo') {
     return { error: 'photo_evidence_not_found_or_cross_boundary', status: 404 };
   }
   const storagePath = selectOriginalPath(evidence.storage_refs);
   if (!storagePath) return { error: 'missing_original_storage_ref', status: 422 };
   const evidenceSha = sha256FromContentHash(evidence.content_hash);
+  if (!evidenceSha) return { error: 'invalid_evidence_content_hash', status: 422 };
 
-  const { data: asset } = await serviceClient
+  const { data: asset, error: assetError } = await serviceClient
     .from('pie_photo_assets')
-    .select('evidence_id, size_bytes, content_hash')
+    .select('evidence_id, duplicate_of_evidence_id, size_bytes, content_hash, original_storage_path')
     .eq('evidence_id', evidenceId)
     .eq('organization_id', organizationId)
     .eq('project_id', projectId)
     .maybeSingle();
+  if (assetError) return { error: 'photo_asset_lookup_failed', status: 502 };
+  if (!asset) return { error: 'photo_asset_not_found_or_cross_boundary', status: 404 };
+  if (asset.original_storage_path !== storagePath) {
+    return { error: 'photo_asset_storage_ref_mismatch', status: 409 };
+  }
+  const assetSha = sha256FromContentHash(asset.content_hash);
+  if (!assetSha || assetSha !== evidenceSha) {
+    return { error: 'photo_asset_content_hash_mismatch', status: 409 };
+  }
+
+  // Mobile deduplication deliberately lets a byte-identical lineage record
+  // reuse its canonical root object's path. Accept that one exception only
+  // after verifying the root record is in the same owner/project boundary,
+  // carries the same bytes, and names this exact storage object.
+  let storagePathEvidenceId = evidenceId;
+  const duplicateOfEvidenceId = typeof asset.duplicate_of_evidence_id === 'string'
+    ? asset.duplicate_of_evidence_id.trim()
+    : '';
+  if (duplicateOfEvidenceId) {
+    if (!safeRequestScopeSegment(duplicateOfEvidenceId)) {
+      return { error: 'unsafe_duplicate_photo_root_identity', status: 409 };
+    }
+    const { data: duplicateRoot, error: duplicateRootError } = await serviceClient
+      .from('pie_evidence_records')
+      .select('id, evidence_type, storage_refs, content_hash')
+      .eq('id', duplicateOfEvidenceId)
+      .eq('organization_id', organizationId)
+      .eq('project_id', projectId)
+      .maybeSingle();
+    if (duplicateRootError) {
+      return { error: 'duplicate_photo_root_lookup_failed', status: 502 };
+    }
+    const duplicateRootSha = sha256FromContentHash(duplicateRoot?.content_hash);
+    if (
+      !duplicateRoot ||
+      duplicateRoot.evidence_type !== 'photo' ||
+      duplicateRootSha !== evidenceSha ||
+      selectOriginalPath(duplicateRoot.storage_refs) !== storagePath
+    ) {
+      return { error: 'duplicate_photo_root_mismatch', status: 409 };
+    }
+    storagePathEvidenceId = duplicateOfEvidenceId;
+  }
+  if (!isCanonicalPhotoEvidenceStoragePath({
+    path: storagePath,
+    organizationId,
+    projectId,
+    evidenceId: storagePathEvidenceId,
+  })) {
+    return { error: 'noncanonical_or_cross_boundary_storage_ref', status: 403 };
+  }
+
   const parsedSizeBytes = Number(asset?.size_bytes);
   const sizeBytes = Number.isFinite(parsedSizeBytes) ? parsedSizeBytes : null;
   const diagnosticsBase = {
@@ -269,9 +521,12 @@ async function loadAuthorizedImage(
     photoAssetId: typeof asset?.evidence_id === 'string' ? asset.evidence_id : null,
     storagePathHash: stableHash(storagePath),
     sizeBytes,
-    sha256: sha256FromContentHash(asset?.content_hash) ?? evidenceSha,
+    sha256: assetSha,
   };
   if (sizeBytes === null || sizeBytes <= 0) return { error: 'image_missing_or_zero_bytes', status: 422 };
+  if (!isSupportedImageMimeType(evidence.mime_type)) {
+    return { error: 'unsupported_image_mime_type', status: 422 };
+  }
   const maxImageBytes = Number(Deno.env.get('PIE_VISION_MAX_IMAGE_BYTES') ?? DEFAULT_MAX_IMAGE_BYTES);
   if (sizeBytes !== null && sizeBytes > maxImageBytes) {
     console.log(JSON.stringify({
@@ -353,7 +608,9 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
   const distanceChange = stringValue(value.distanceChange);
   const framingChange = stringValue(value.framingChange);
   const lightingChange = stringValue(value.lightingChange);
+  const lightingComparabilityImpact = comparabilityImpactValue(value.lightingComparabilityImpact);
   const obstructionChange = stringValue(value.obstructionChange);
+  const obstructionComparabilityImpact = comparabilityImpactValue(value.obstructionComparabilityImpact);
   const alignmentConfidence = confidenceValue(value.alignmentConfidence);
   const changeDetectionConfidence = confidenceValue(value.changeDetectionConfidence);
   const comparabilityReasons = stringArray(value.comparabilityReasons);
@@ -397,6 +654,8 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     comparabilityReasons,
     lightingDifferences,
     obstructionDifferences,
+    lightingComparabilityImpact,
+    obstructionComparabilityImpact,
     limitations,
   });
   return {
@@ -412,8 +671,10 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
     framingChange,
     lightingDifferences,
     lightingChange,
+    lightingComparabilityImpact,
     obstructionDifferences,
     obstructionChange,
+    obstructionComparabilityImpact,
     alignmentConfidence,
     changeDetectionConfidence,
     objectAdditions: additions.findings,
@@ -460,115 +721,6 @@ function normalizeProviderOutput(mode: VisionMode, value: Record<string, unknown
   };
 }
 
-function validateNormalizedOutput(mode: VisionMode, normalized: Record<string, unknown> | null) {
-  const observationReasons: string[] = [];
-  const progressReasons: string[] = [];
-  const authorityBoundaryReasons: string[] = [];
-  const rejectedClaims: string[] = [];
-  const warnings: string[] = [];
-  if (!normalized) observationReasons.push('provider output missing or malformed');
-  if (normalized && stringArray(normalized.limitations).length === 0) warnings.push('limitations not supplied by provider');
-  for (const reason of stringArray(normalized?.comparabilityNormalizationReasons)) {
-    warnings.push(reason);
-  }
-  const claims = JSON.stringify(normalized ?? {}).toLowerCase();
-  for (const unsafe of ['fully compliant', 'passed inspection', 'caused by', 'responsible for', '100% complete', 'percent complete', 'hidden work', 'cost impact', 'schedule impact', 'milestone complete']) {
-    if (claims.includes(unsafe)) observationReasons.push(`unsafe visual claim: ${unsafe}`);
-  }
-  let progressDisposition = 'unable_to_determine';
-  let progressAccepted = false;
-  let realityDisposition = 'not_eligible';
-  let realityEligible = false;
-  if (mode === 'photo_pair' && normalized) {
-    const comparable = normalized.comparabilityClassification;
-    const conclusion = normalized.conclusion;
-    if ((comparable === 'weak' || comparable === 'not_comparable') && ['progress_visible', 'partial_progress_visible', 'possible_regression'].includes(String(conclusion))) {
-      progressReasons.push('weak or not-comparable images cannot support progress conclusion');
-    }
-    for (const finding of spatialFindings(normalized.normalizedSpatialFindings)) {
-      const objectName = stringValue(finding.normalizedObjectName || finding.rawObjectDescription || finding.findingType);
-      if (objectName) observationReasons.push(`${objectName} visibly observed`);
-      if (finding.locationConfidence === 'high' || finding.locationConfidence === 'medium') {
-        const locationParts = [
-          finding.imageHorizontalRegion !== 'unknown' ? finding.imageHorizontalRegion : '',
-          finding.surfaceOrArea !== 'unknown' ? finding.surfaceOrArea : '',
-        ].filter(Boolean).join(' ');
-        observationReasons.push(locationParts ? `location supported as ${locationParts}` : 'location reasonably supported');
-      }
-      for (const reason of stringArray(finding.normalizationReasons)) {
-        if (reason.includes('spatial location normalized from provider text')) warnings.push(reason);
-      }
-      if (finding.locationConfidence === 'low' && stringValue(finding.rawLocationText)) {
-        warnings.push(`low confidence spatial location for ${stringValue(finding.normalizedObjectName || finding.findingType)}`);
-      }
-    }
-    if (stringValue(normalized.viewpointAssessment)) {
-      observationReasons.push(`viewpoint/framing limitation disclosed: ${stringValue(normalized.viewpointAssessment)}`);
-    }
-    if (['progress_visible', 'partial_progress_visible', 'possible_regression'].includes(String(conclusion))) {
-      progressAccepted = progressReasons.length === 0 && observationReasons.length === 0;
-      progressDisposition = progressAccepted ? 'supported' : 'blocked';
-    } else if (conclusion === 'unable_to_determine') {
-      progressDisposition = 'unable_to_determine';
-      progressReasons.push('visual observation does not establish project progress');
-    } else {
-      progressDisposition = 'unsupported';
-      progressReasons.push('no material visible project progress conclusion');
-    }
-  } else if (mode === 'single_photo' && normalized) {
-    progressDisposition = 'unable_to_determine';
-    progressReasons.push('single-photo analysis is visual observation only');
-  }
-  const blockingObservationReasons = observationReasons.filter(reason =>
-    reason.includes('provider output missing or malformed') ||
-    reason.includes('unsafe visual claim') ||
-    reason.includes('location confidence insufficient') ||
-    reason.includes('unsupported') ||
-    reason.includes('conflict')
-  );
-  const observationAccepted = blockingObservationReasons.length === 0 && Boolean(normalized);
-  const observationDisposition = observationAccepted
-    ? warnings.length > 0 || stringArray(normalized?.limitations).length > 0
-      ? 'accepted_with_limitations'
-      : 'accepted'
-    : normalized
-      ? 'rejected'
-      : 'quarantined';
-  if (observationAccepted) {
-    realityEligible = true;
-    realityDisposition = progressAccepted ? 'eligible_as_observation' : 'eligible_as_observation';
-    authorityBoundaryReasons.push(
-      progressAccepted
-        ? 'progress-supporting visual evidence still requires normal downstream authority checks'
-        : 'accepted as limited visual observation only; no authoritative project-progress assertion',
-    );
-  } else if (normalized) {
-    realityDisposition = 'evidence_request_only';
-    authorityBoundaryReasons.push('observation rejected or unsafe; request corroborating evidence');
-  } else {
-    realityDisposition = 'not_eligible';
-    authorityBoundaryReasons.push('provider output unavailable or malformed');
-  }
-  rejectedClaims.push(...blockingObservationReasons, ...progressReasons.filter(reason => reason.includes('cannot support')));
-  return {
-    accepted: observationAccepted,
-    outcome: observationAccepted ? 'supported_with_limitations' : 'blocked',
-    observationDisposition,
-    observationAccepted,
-    observationReasons,
-    progressDisposition,
-    progressAccepted,
-    progressReasons,
-    realityDisposition,
-    realityEligible,
-    authorityBoundaryReasons,
-    authoritativeProgressAssertionCount: progressAccepted ? 1 : 0,
-    rejectedClaims,
-    warnings,
-    limitations: normalized ? stringArray(normalized.limitations) : ['Provider output unavailable.'],
-  };
-}
-
 type ComparabilityNormalizationInput = {
   providerComparability: string;
   sameSceneProbability: number;
@@ -581,6 +733,8 @@ type ComparabilityNormalizationInput = {
   comparabilityReasons: string[];
   lightingDifferences: string[];
   obstructionDifferences: string[];
+  lightingComparabilityImpact: string;
+  obstructionComparabilityImpact: string;
   limitations: string[];
 };
 
@@ -619,8 +773,11 @@ function collectStrongComparabilityDowngradeTriggers(input: ComparabilityNormali
   if (hasAlignmentOrOverlapInconsistencyText(input)) {
     triggers.push('alignment/overlap limitation language present in provider free text');
   }
-  if (hasLimitingLightingOrObstruction(input)) {
-    triggers.push('limiting lighting/obstruction language present in provider free text');
+  if (input.lightingComparabilityImpact === 'limiting') {
+    triggers.push('lightingComparabilityImpact reported limiting');
+  }
+  if (input.obstructionComparabilityImpact === 'limiting') {
+    triggers.push('obstructionComparabilityImpact reported limiting');
   }
   return triggers;
 }
@@ -645,27 +802,6 @@ function hasAlignmentOrOverlapInconsistencyText(input: ComparabilityNormalizatio
     'not reliably aligned',
     'poor alignment',
     'significantly reduces confidence',
-  ]);
-}
-
-function hasLimitingLightingOrObstruction(input: ComparabilityNormalizationInput): boolean {
-  const text = [
-    ...input.lightingDifferences,
-    ...input.obstructionDifferences,
-    ...input.limitations,
-  ].join(' ').toLowerCase();
-  return includesAny(text, [
-    'limits comparison',
-    'limited comparison',
-    'limits comparability',
-    'obstruct',
-    'occluded',
-    'blocked',
-    'poor lighting',
-    'lighting changed materially',
-    'shadow',
-    'glare',
-    'blur',
   ]);
 }
 
@@ -852,18 +988,18 @@ function buildPreflightDegradedResult(requestId: string, error: string): Provide
 }
 
 async function persistRequestAndResult(
-  client: ReturnType<typeof createClient>,
+  client: EdgeSupabaseClient,
   request: VisionRequest,
   requestId: string,
   mode: VisionMode,
   providerResult: ProviderResult | null,
   failureReason: string | null,
-  jarvis: ReturnType<typeof validateNormalizedOutput>,
+  jarvis: ReturnType<typeof validateVisionAuthority>,
   imageDiagnostics: ImageDiagnostics[] = [],
-): Promise<void> {
+): Promise<VisionPersistenceResult> {
   const rejectedClaims = jarvis.rejectedClaims;
   const warnings = jarvis.warnings;
-  await client.from('pie_vision_analysis_requests').upsert({
+  const requestWrite = await client.from('pie_vision_analysis_requests').upsert({
     id: requestId,
     organization_id: request.organizationId,
     project_id: request.projectId,
@@ -874,7 +1010,7 @@ async function persistRequestAndResult(
     analyzer_id: ANALYZER_ID,
     analyzer_version: ANALYZER_VERSION,
     policy_version: POLICY_VERSION,
-    prompt_version: request.promptVersion ?? '2026.07.02-production-photo-vision',
+    prompt_version: defaultPromptVersion(mode),
     force_reanalysis: Boolean(request.forceReanalysis),
     status: providerResult?.status ?? 'failed',
     failure_reason: failureReason ?? providerResult?.error ?? null,
@@ -889,12 +1025,17 @@ async function persistRequestAndResult(
       signedUrlsGenerated: imageDiagnostics.every(image => image.signedUrlGenerated),
       providerInvocationId: requestId,
       providerResponseStatus: providerResult?.status ?? failureReason ?? 'failed',
+      contractVersion: PIE_PHOTO_ANALYSIS_CONTRACT.contractVersion,
+      schemaVersion: photoAnalysisContractEnvelope(mode).schemaVersion,
     },
   });
+  if (requestWrite.error) {
+    return { ok: false, failedWrite: 'analysis_request' };
+  }
 
   const evidenceId = mode === 'single_photo' ? request.evidenceId : request.currentEvidenceId;
   if (evidenceId) {
-    await client.from('pie_evidence_analyses').upsert({
+    const analysisWrite = await client.from('pie_evidence_analyses').upsert({
       id: `${requestId}:analysis`,
       evidence_id: evidenceId,
       organization_id: request.organizationId,
@@ -905,7 +1046,7 @@ async function persistRequestAndResult(
       provider_name: providerResult?.providerName ?? null,
       model_name: providerResult?.modelName ?? null,
       model_version: providerResult?.modelVersion ?? null,
-      prompt_version: request.promptVersion ?? '2026.07.02-production-photo-vision',
+      prompt_version: defaultPromptVersion(mode),
       policy_version: POLICY_VERSION,
       status: providerResult?.status ?? 'failed',
       observations: mode === 'single_photo'
@@ -928,11 +1069,14 @@ async function persistRequestAndResult(
       corroboration_required: true,
       visual_findings: providerResult?.normalized ?? {},
       unsafe_claims_rejected: rejectedClaims,
-      raw_response: providerResult?.rawResponse ?? { failureReason },
+      raw_response: null,
       usage: providerResult?.usage ?? {},
     });
+    if (analysisWrite.error) {
+      return markVisionPersistenceIncomplete(client, requestId, 'evidence_analysis');
+    }
 
-    await client.from('pie_visual_jarvis_results').upsert({
+    const jarvisWrite = await client.from('pie_visual_jarvis_results').upsert({
       id: `${requestId}:jarvis`,
       analysis_id: `${requestId}:analysis`,
       evidence_id: evidenceId,
@@ -945,10 +1089,13 @@ async function persistRequestAndResult(
       limitations: stringArray(providerResult?.normalized?.limitations),
       policy_version: POLICY_VERSION,
     });
+    if (jarvisWrite.error) {
+      return markVisionPersistenceIncomplete(client, requestId, 'jarvis_result');
+    }
   }
 
   if (mode === 'photo_pair' && request.baselineEvidenceId && request.currentEvidenceId && providerResult?.normalized) {
-    await client.from('pie_photo_semantic_comparison_results').upsert({
+    const comparisonWrite = await client.from('pie_photo_semantic_comparison_results').upsert({
       id: `${requestId}:comparison`,
       request_id: requestId,
       organization_id: request.organizationId,
@@ -985,7 +1132,9 @@ async function persistRequestAndResult(
         distanceChange: stringValue(providerResult.normalized.distanceChange),
         framingChange: stringValue(providerResult.normalized.framingChange),
         lightingChange: stringValue(providerResult.normalized.lightingChange),
+        lightingComparabilityImpact: comparabilityImpactValue(providerResult.normalized.lightingComparabilityImpact),
         obstructionChange: stringValue(providerResult.normalized.obstructionChange),
+        obstructionComparabilityImpact: comparabilityImpactValue(providerResult.normalized.obstructionComparabilityImpact),
         alignmentConfidence: confidenceValue(providerResult.normalized.alignmentConfidence),
         changeDetectionConfidence: confidenceValue(providerResult.normalized.changeDetectionConfidence),
         differenceClassifications: arrayValue(providerResult.normalized.differenceClassifications),
@@ -1003,7 +1152,7 @@ async function persistRequestAndResult(
         providerInvocationId: requestId,
         providerResponseStatus: providerResult.status,
       },
-      provider_response: providerResult.rawResponse,
+      provider_response: null,
       jarvis_result: {
         accepted: jarvis.observationAccepted && providerResult.status === 'succeeded',
         rejectedClaims,
@@ -1023,7 +1172,54 @@ async function persistRequestAndResult(
         policyVersion: POLICY_VERSION,
       },
     });
+    if (comparisonWrite.error) {
+      return markVisionPersistenceIncomplete(client, requestId, 'semantic_comparison');
+    }
   }
+
+  return { ok: true };
+}
+
+async function markVisionPersistenceIncomplete(
+  client: EdgeSupabaseClient,
+  requestId: string,
+  failedWrite: string,
+): Promise<VisionPersistenceResult> {
+  const marker = await client
+    .from('pie_vision_analysis_requests')
+    .update({
+      status: 'failed',
+      failure_reason: `persistence_incomplete:${failedWrite}`,
+    })
+    .eq('id', requestId);
+
+  if (marker.error) {
+    console.error(JSON.stringify({
+      event: 'pie_vision_persistence_failure_marker_failed',
+      requestId,
+      failedWrite,
+    }));
+  }
+  return { ok: false, failedWrite };
+}
+
+function persistenceFailureResponse(
+  requestId: string,
+  mode: VisionMode,
+  failedWrite: string,
+): Response {
+  console.error(JSON.stringify({
+    event: 'pie_vision_persistence_failed',
+    requestId,
+    mode,
+    failedWrite,
+  }));
+  return json({
+    requestId,
+    mode,
+    status: 'failed',
+    error: 'analysis_persistence_failed',
+  }, 502);
 }
 
 function buildSafeImageDiagnosticLog(input: {
@@ -1074,18 +1270,67 @@ function stableHash(value: string) {
 function validateRequestShape(body: VisionRequest | null): string | null {
   if (!body?.organizationId || !body.projectId) return 'organizationId and projectId are required';
   const mode = body.mode ?? (body.baselineEvidenceId && body.currentEvidenceId ? 'photo_pair' : 'single_photo');
+  if (mode !== 'single_photo' && mode !== 'photo_pair') return 'unsupported photo analysis mode';
+  if (!safeRequestScopeSegment(body.organizationId) || !safeRequestScopeSegment(body.projectId)) {
+    return 'organizationId and projectId must be safe identity values';
+  }
+  if (body.requestId !== undefined && (
+    typeof body.requestId !== 'string' || body.requestId.length > 4_096
+  )) {
+    return 'requestId is invalid';
+  }
   if (mode === 'single_photo' && !body.evidenceId) return 'evidenceId is required for single_photo';
   if (mode === 'photo_pair' && (!body.baselineEvidenceId || !body.currentEvidenceId)) {
     return 'baselineEvidenceId and currentEvidenceId are required for photo_pair';
   }
+  const evidenceIds = mode === 'single_photo'
+    ? [body.evidenceId]
+    : [body.baselineEvidenceId, body.currentEvidenceId];
+  if (evidenceIds.some(value => !safeRequestScopeSegment(value))) {
+    return 'evidence IDs must be safe identity values';
+  }
+  if (!boundedOptionalText(body.projectName, 256) ||
+    !boundedOptionalText(body.areaName, 256) ||
+    !boundedOptionalText(body.fieldNotes, MAX_FIELD_NOTES_LENGTH)) {
+    return 'photo analysis context is too large';
+  }
   return null;
 }
 
-function buildRequestId(request: VisionRequest, mode: VisionMode): string {
-  const ids = mode === 'single_photo'
-    ? request.evidenceId
-    : `${request.baselineEvidenceId}:${request.currentEvidenceId}`;
-  return `${mode}:${request.organizationId}:${request.projectId}:${ids}:${ANALYZER_VERSION}:${request.promptVersion ?? 'default'}`;
+function photoVisionRequestIdentityVersions(
+  mode: VisionMode,
+): PhotoVisionRequestIdentityVersions {
+  const contract = photoAnalysisContractEnvelope(mode);
+  return {
+    contractVersion: contract.contractVersion,
+    analyzerId: ANALYZER_ID,
+    analyzerVersion: contract.analyzerVersion,
+    promptVersion: contract.promptVersion,
+    schemaVersion: contract.schemaVersion,
+    policyVersion: contract.policyVersion,
+  };
+}
+
+function safeRequestScopeSegment(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    value !== '.' &&
+    value !== '..' &&
+    !value.includes('/') &&
+    !value.includes('\\') &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function boundedOptionalText(value: unknown, maxLength: number): boolean {
+  return value === undefined ||
+    value === null ||
+    (typeof value === 'string' && value.length <= maxLength);
+}
+
+function isSupportedImageMimeType(value: unknown): boolean {
+  return typeof value === 'string' &&
+    /^image\/(jpeg|jpg|png|heic|heif|webp)$/i.test(value);
 }
 
 function selectOriginalPath(storageRefs: unknown): string | null {
@@ -1128,6 +1373,12 @@ function comparabilityValue(value: unknown): string {
   return ['strong', 'probable', 'weak', 'not_comparable'].includes(String(value)) ? String(value) : 'not_comparable';
 }
 
+function comparabilityImpactValue(value: unknown): string {
+  return value === 'none' || value === 'minor' || value === 'limiting'
+    ? value
+    : 'none';
+}
+
 function conclusionValue(value: unknown): string {
   return ['progress_visible', 'partial_progress_visible', 'no_material_visible_change', 'possible_regression', 'unable_to_determine'].includes(String(value))
     ? String(value)
@@ -1158,6 +1409,8 @@ function buildRedactedConfigCheck() {
     modelName: model ?? null,
     timeoutMs: timeout ? Number(timeout) : null,
     maxRetries: retries ? Number(retries) : null,
+    photoPairContract: photoAnalysisContractEnvelope('photo_pair'),
+    singlePhotoContract: photoAnalysisContractEnvelope('single_photo'),
   };
 }
 
@@ -1166,4 +1419,30 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+async function finishAIOperation(
+  client: EdgeSupabaseClient,
+  requestId: string,
+  status: 'completed' | 'failed',
+  responsePayload: unknown,
+  errorCode: string | null,
+): Promise<boolean> {
+  const result = await client.rpc('dave_finish_ai_operation', {
+    p_request_id: requestId,
+    p_status: status,
+    p_response_payload: responsePayload,
+    p_error_code: errorCode,
+  });
+  return !result.error;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
 }

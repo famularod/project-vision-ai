@@ -1,0 +1,321 @@
+{
+  "schemaVersion": 1,
+  "defects": [
+    {
+      "id": "JRV-REG-001",
+      "title": "Cross-device changes are not visible until restart",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/dave-operational-refresh.test.ts",
+        "tests/services/dave-web-operations.test.ts",
+        "tests/services/dave-web-supabase-client.test.ts"
+      ],
+      "manualValidation": "Edit the same task from iPhone, iPad, and web and verify both already-open peers update without restart.",
+      "limitations": "Automated tests use mocked realtime and repository boundaries; they do not prove a live three-device Supabase session."
+    },
+    {
+      "id": "JRV-REG-002",
+      "title": "Deleted records return after sync or restart",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/dave-sync-tombstones.test.ts",
+        "tests/services/project-deletion-transaction.test.ts",
+        "tests/services/project-update-deletion-journal.test.ts",
+        "tests/services/offline-queue-recovery.test.ts"
+      ],
+      "manualValidation": "Delete test records, restart each client, sync in different orders, and confirm no record reappears.",
+      "limitations": "Automated evidence validates merge and tombstone rules but cannot reproduce every historical cloud row."
+    },
+    {
+      "id": "JRV-REG-003",
+      "title": "Task totals, completion, and attention states disagree",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/schedule-progress-invariant.test.ts",
+        "tests/services/schedule-reconciliation.test.ts",
+        "tests/services/dave-report-intelligence.test.ts",
+        "tests/services/project-operational-status.test.ts",
+        "tests/services/report-authority-scope.test.ts"
+      ],
+      "manualValidation": "Compare project and portfolio totals plus attention/report states across all clients after reopening and completing tasks.",
+      "limitations": "Fixtures cover known authority rules, not every combination of legacy schedule imports and live field evidence."
+    },
+    {
+      "id": "JRV-REG-004",
+      "title": "Schedule documents duplicate, lose current status, or fail extraction",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/project-document-lifecycle.test.ts",
+        "tests/services/schedule-import-provenance.test.ts",
+        "tests/components/schedule-import-flow.test.tsx",
+        "tests/services/pie-schedule-remote-extraction.test.ts",
+        "tests/services/dave-reference-document-recovery.test.ts"
+      ],
+      "manualValidation": "Upload one multi-project schedule, verify extraction, current-version selection, and identical document history everywhere.",
+      "limitations": "Local tests cannot certify the live storage bucket, extraction provider, or every PDF layout."
+    },
+    {
+      "id": "JRV-REG-005",
+      "title": "Storage or hydration failure corrupts the visible project state",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/cloud-loader-failure.test.ts",
+        "tests/services/dave-project-area-recovery.test.ts",
+        "tests/services/backup-restore-runtime.test.ts",
+        "tests/services/reality-model-cache-recovery.test.ts",
+        "tests/services/startup-record-validation.test.ts"
+      ],
+      "manualValidation": "Exercise launch, background/foreground, network loss, retry, and restart against a representative cloud account.",
+      "limitations": "Failure injection validates containment paths but not device storage pressure or operating-system termination behavior."
+    },
+    {
+      "id": "JRV-REG-006",
+      "title": "Navigation and touch response becomes unacceptably slow",
+      "severity": "high",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/background-task-guard.test.ts",
+        "tests/hooks/use-debounced-snapshot.test.tsx",
+        "tests/services/core-pipeline-scale.test.ts",
+        "tests/services/pie-live-authority-signature-cache.test.ts",
+        "tests/services/dave-web-task-pagination.test.ts"
+      ],
+      "manualValidation": "Measure cold launch and repeated page-to-page touch response on supported physical devices with realistic data.",
+      "limitations": "Unit timing checks detect algorithmic regression but do not measure rendered frames, touch latency, or device memory pressure."
+    },
+    {
+      "id": "JRV-REG-007",
+      "title": "Reports or alerts misrepresent current project truth",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/dave-report-intelligence.test.ts",
+        "tests/services/project-operational-status.test.ts",
+        "tests/services/project-blocker-state.test.ts",
+        "tests/services/report-authority-scope.test.ts"
+      ],
+      "manualValidation": "Review generated reports against the current task list, completed areas, schedule version, and latest PM-authorized changes.",
+      "limitations": "Deterministic fixtures enforce known rules but PM review remains necessary for the accuracy and usefulness of real project narratives."
+    },
+    {
+      "id": "JRV-REG-008",
+      "title": "Photo intelligence cannot compare valid progress photos",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/services/photo-analysis-contract.test.ts",
+        "tests/services/photo-analysis-coordinator.test.ts",
+        "tests/services/photo-pair-preparation.test.ts",
+        "tests/services/photo-assessment.test.ts"
+      ],
+      "manualValidation": "Run known same-area/different-angle photo pairs and verify provider errors, comparisons, and PM-facing conclusions.",
+      "limitations": "Mocked responses cannot certify current external AI behavior, edge-function deployment, network availability, or a specific jobsite image pair."
+    },
+    {
+      "id": "JRV-REG-009",
+      "title": "Task dates and edited notes do not preserve user input",
+      "severity": "high",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/components/native-date-field.test.tsx",
+        "tests/components/schedule-task-editor-modal.test.tsx"
+      ],
+      "manualValidation": "Create and edit task dates and multi-word notes with the native keyboard on iPhone and iPad, then confirm the saved cloud value on web.",
+      "limitations": "Component tests verify control wiring; they cannot reproduce every third-party keyboard or operating-system text-input behavior."
+    },
+    {
+      "id": "JRV-REG-010",
+      "title": "Queued task, area, or document changes never retry after connectivity returns",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/services/pending-changes-retry-controller.test.ts",
+        "tests/components/pending-changes-retry-boundary.test.tsx",
+        "tests/services/offline-queue-recovery.test.ts"
+      ],
+      "manualValidation": "Edit a task, area, and document offline, restore connectivity without making another edit, and confirm the queue clears and the already-open peer device updates.",
+      "limitations": "Deterministic retry tests validate triggers, backoff, and result inspection but do not certify operating-system connectivity events or the live cloud."
+    },
+    {
+      "id": "JRV-REG-011",
+      "title": "Evidence from a deleted task changes active totals or reports",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/dave-deleted-task-evidence.test.ts",
+        "tests/services/dave-web-read-only-repository.test.ts"
+      ],
+      "manualValidation": "Delete a task that has field evidence, then confirm the evidence remains labeled in history but is excluded from active totals, attention, and reports on all clients.",
+      "limitations": "Fixtures prove the shared selector and native/web wiring; the historical cloud rows on the test account still require live reconciliation."
+    },
+    {
+      "id": "JRV-REG-012",
+      "title": "Web displays Connected while its project data is stale",
+      "severity": "high",
+      "platforms": ["web"],
+      "automatedEvidence": [
+        "tests/services/dave-web-freshness.test.ts",
+        "tests/components/desktop-connection-status.test.tsx"
+      ],
+      "manualValidation": "Interrupt the web connection after a successful load and verify Connected changes to Reconnecting and then Stale with the last successful refresh time.",
+      "limitations": "Component and state tests do not reproduce every browser, proxy, captive portal, or background-throttling condition."
+    },
+    {
+      "id": "JRV-REG-013",
+      "title": "Important schedule and intelligence actions are hard to tap or identify",
+      "severity": "high",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/components/native-touch-target-contract.test.ts"
+      ],
+      "manualValidation": "Use VoiceOver and one-handed touch on iPhone and iPad to verify schedule Open, Set Active, Delete, Confirm, and Dismiss controls.",
+      "limitations": "Static contracts enforce minimum dimensions and names but cannot measure physical reachability, Dynamic Type clipping, or spoken order."
+    },
+    {
+      "id": "JRV-REG-014",
+      "title": "A cloud document record exists but its verified file cannot be opened",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/services/reference-document-byte-restore.test.ts",
+        "tests/services/dave-reference-document-recovery.test.ts"
+      ],
+      "manualValidation": "Remove one app-owned local schedule and project document, keep the trusted cloud record, reopen each file, and confirm exact byte recovery or a clear re-add-original message for legacy records.",
+      "limitations": "Core tests prove size/hash verification and fail-closed cleanup, while live storage permissions, large files, and device disk pressure still require device testing."
+    },
+    {
+      "id": "JRV-REG-015",
+      "title": "A temporary web refresh failure replaces the last verified workspace",
+      "severity": "high",
+      "platforms": ["web"],
+      "automatedEvidence": [
+        "tests/components/desktop-auth-provider.test.tsx",
+        "tests/services/dave-web-freshness.test.ts"
+      ],
+      "manualValidation": "Load the web workspace, interrupt its cloud connection, select Refresh, and confirm the last verified project data remains visible with an honest reconnecting or stale status.",
+      "limitations": "Provider tests verify state continuity and freshness presentation but cannot reproduce every browser background policy, proxy, or live Supabase outage."
+    },
+    {
+      "id": "JRV-REG-016",
+      "title": "Live refresh erases an in-progress task form",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/components/schedule-task-editor-modal.test.tsx"
+      ],
+      "manualValidation": "Begin entering a new task on one device, change project data from another client, and confirm the open form keeps every unsaved field until the user saves or cancels.",
+      "limitations": "Component tests replay prop refreshes but do not certify every realtime event sequence or operating-system keyboard behavior."
+    },
+    {
+      "id": "JRV-REG-017",
+      "title": "Areas from one project appear in another project's workflows",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/dave-project-area-scope.test.ts",
+        "tests/services/dave-project-area-recovery.test.ts"
+      ],
+      "manualValidation": "Create same-named and different-named areas in both active projects, then verify task, update, document, walk, and Talk selectors show only the selected project's areas.",
+      "limitations": "Local inference tests fail closed for ambiguous legacy areas; durable database ownership and live RLS enforcement still require the approved cloud migration."
+    },
+    {
+      "id": "JRV-REG-018",
+      "title": "A saved report appears current after its source facts changed",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/report-authority-scope.test.ts",
+        "tests/services/dave-web-read-only-repository.test.ts",
+        "tests/services/dave-report-intelligence.test.ts"
+      ],
+      "manualValidation": "Approve a report, change a scoped task, field update, photo analysis, GPS fact, or current schedule, and confirm the report requires refresh without invalidating itself merely because the report record was saved.",
+      "limitations": "Fixtures verify source selection and provenance fields; a PM must still compare the generated narrative with the live project before communication."
+    },
+    {
+      "id": "JRV-REG-019",
+      "title": "Web shows project evidence metadata but cannot open the protected source",
+      "severity": "high",
+      "platforms": ["web"],
+      "automatedEvidence": [
+        "tests/services/dave-web-supabase-client.test.ts",
+        "tests/services/dave-web-read-only-repository.test.ts"
+      ],
+      "manualValidation": "Open current and legacy mobile-uploaded photos and documents from the web app, confirm short-lived access works for the signed-in owner, and verify another owner's or an invented path is rejected.",
+      "limitations": "Gateway tests prove owner checks, path allowlisting, and signed-URL handling with mocks; live storage RLS, object existence, and browser download behavior require connected testing."
+    },
+    {
+      "id": "JRV-REG-020",
+      "title": "A shared area name assigns field updates and photos to the wrong parent project",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/dave-project-update-scope.test.ts"
+      ],
+      "manualValidation": "Create the same area name in both projects, save a task-linked update in each, and confirm Overview, Projects, Field Activity, Photos, Talk, documents, and reports show each update only under its authoritative parent project.",
+      "limitations": "Deterministic scope tests prove task-id and explicit-parent precedence and fail closed for ambiguous legacy labels; existing ambiguous cloud rows still require a signed-in reconciliation review."
+    },
+    {
+      "id": "JRV-REG-021",
+      "title": "Deleting a project leaves parent-linked updates or owned areas able to return",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad", "web"],
+      "automatedEvidence": [
+        "tests/services/project-deletion-transaction.test.ts"
+      ],
+      "manualValidation": "Delete a disposable project containing task-linked field updates, areas, schedule items, and documents, restart both mobile apps, refresh web, and confirm none of those active records return.",
+      "limitations": "The atomic local transaction and resurrection barriers are tested; final cloud purge and regulated retention behavior remain subject to the approved server-side policy and live RLS validation."
+    },
+    {
+      "id": "JRV-REG-022",
+      "title": "A stale offline queue recreates deleted work or loses deletion confirmation",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/services/sync-tombstone-upload-gate.test.ts",
+        "tests/services/project-update-deletion-journal.test.ts"
+      ],
+      "namedTests": [
+        {
+          "path": "tests/services/sync-tombstone-upload-gate.test.ts",
+          "name": "drops a stale queued task that matches a durable local tombstone without deleting the tombstone"
+        }
+      ],
+      "productionSymbols": [
+        {
+          "path": "services/SyncService.ts",
+          "symbol": "uploadPendingChanges"
+        }
+      ],
+      "manualValidation": "Delete a task, area, document, and field update while another device has stale queued edits; reconnect in both orders and confirm no deleted record returns and each queue clears without repeating the field-update delete.",
+      "limitations": "Deterministic storage and gateway tests prove local/cloud tombstone precedence and two-phase confirmation; live multi-device timing, operating-system termination, and Supabase availability still require connected device testing."
+    },
+    {
+      "id": "JRV-REG-023",
+      "title": "Signing out or switching accounts exposes another owner's local project data",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/services/owner-storage-sandbox.test.ts"
+      ],
+      "manualValidation": "Sign in as one test owner, save local-only changes, sign out, sign in as a different owner, and confirm each account sees only its own local workspace after restarts and interrupted account changes.",
+      "limitations": "The storage sandbox tests prove key classification, owner switching, interrupted-transition recovery, and fail-closed corruption behavior; device keychain behavior and real authentication events still require physical-device validation."
+    },
+    {
+      "id": "JRV-REG-024",
+      "title": "A backup omits media, exposes plaintext, or restores modified data",
+      "severity": "critical",
+      "platforms": ["iphone", "ipad"],
+      "automatedEvidence": [
+        "tests/services/complete-backup-archive.test.ts",
+        "tests/services/app-backup-manifest.test.ts"
+      ],
+      "manualValidation": "Create a complete backup containing task data, photos, schedules, and project documents; restore it on a clean test device with the correct passphrase, then verify wrong-passphrase and modified-file restores fail without partial data.",
+      "limitations": "Cryptographic tests prove authenticated encryption, manifest integrity, wrong-passphrase rejection, and exact byte recovery; device disk pressure, share-sheet destinations, and very large real archives still require physical-device testing."
+    }
+  ]
+}

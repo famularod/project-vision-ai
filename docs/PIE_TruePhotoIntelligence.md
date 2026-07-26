@@ -112,7 +112,7 @@ The backend must:
 - persist request, normalized findings, provider metadata, usage, latency, failure reason, and JARVIS result
 - return degraded or failed state instead of fake success
 
-The mobile app consumes `services/PIEPhotoVisionPipeline.ts` for pending, complete, degraded, review, retry, correction, hydration, and qualified Reality handoff states.
+The mobile app consumes `services/PIEPhotoVisionMobileWorkflow.ts` for pending, complete, degraded, review, retry, correction, hydration, and qualified Reality handoff states. Longitudinal comparisons are owned by `services/PIEPhotoProgressIntelligence.ts`.
 
 ## Required Live Services
 

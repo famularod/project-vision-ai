@@ -1,8 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { PIEDecisionRecord } from './PIEDecisionLedger';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 
 export const DECISION_LEDGER_LEGACY_STORAGE_KEY = 'projectVisionAI.pieDecisionLedger.v1';
 export const DECISION_LEDGER_STORAGE_VERSION = 'v2';
+export const DECISION_LEDGER_LEGACY_QUARANTINE_KEY_PREFIX =
+  `${DECISION_LEDGER_LEGACY_STORAGE_KEY}.quarantine.`;
 
 export type PIEDecisionLedgerMigrationStatus = {
   checkedAt: string;
@@ -23,7 +29,7 @@ export async function loadPIEDecisionLedgerForOrganization(
   const migrationStatus = await quarantineLegacyDecisionLedger();
   const value = await AsyncStorage.getItem(storageKeyForOrganization(organizationId));
 
-  if (!value) {
+  if (value === null) {
     return {
       organizationId,
       decisions: [],
@@ -31,16 +37,14 @@ export async function loadPIEDecisionLedgerForOrganization(
     };
   }
 
-  const parsed = JSON.parse(value);
-  const decisions = Array.isArray(parsed?.decisions)
-    ? parsed.decisions as PIEDecisionRecord[]
-    : Array.isArray(parsed)
-      ? parsed as PIEDecisionRecord[]
-      : [];
+  const decisions = await parseOrganizationLedgerOrQuarantine(
+    organizationId,
+    value,
+  );
 
   return {
     organizationId,
-    decisions: decisions.filter(item => item.organizationId === organizationId),
+    decisions,
     migrationStatus,
   };
 }
@@ -49,14 +53,16 @@ export async function savePIEDecisionLedgerForOrganization(
   organizationId: string,
   decisions: PIEDecisionRecord[],
 ): Promise<void> {
-  const scoped = decisions.filter(item => item.organizationId === organizationId);
+  if (!decisions.every(item => isDecisionRecordForOrganization(item, organizationId))) {
+    throw new Error('Cannot store decision records outside the active organization or with an invalid identity.');
+  }
 
   await AsyncStorage.setItem(
     storageKeyForOrganization(organizationId),
     JSON.stringify({
       version: DECISION_LEDGER_STORAGE_VERSION,
       organizationId,
-      decisions: scoped,
+      decisions,
       savedAt: new Date().toISOString(),
     }),
   );
@@ -83,7 +89,7 @@ export async function quarantineLegacyDecisionLedger(): Promise<PIEDecisionLedge
   const checkedAt = new Date().toISOString();
   const legacyValue = await AsyncStorage.getItem(DECISION_LEDGER_LEGACY_STORAGE_KEY);
 
-  if (!legacyValue) {
+  if (legacyValue === null) {
     return {
       checkedAt,
       legacyRecordsFound: 0,
@@ -92,24 +98,45 @@ export async function quarantineLegacyDecisionLedger(): Promise<PIEDecisionLedge
     };
   }
 
-  let legacyRecords: PIEDecisionRecord[] = [];
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(legacyValue);
-    legacyRecords = Array.isArray(parsed) ? parsed as PIEDecisionRecord[] : [];
+    parsed = JSON.parse(legacyValue) as unknown;
   } catch {
-    legacyRecords = [];
+    const recovery = await quarantineCorruptLocalValue({
+      storage: AsyncStorage,
+      storageKey: DECISION_LEDGER_LEGACY_STORAGE_KEY,
+      quarantineKeyPrefix: DECISION_LEDGER_LEGACY_QUARANTINE_KEY_PREFIX,
+      raw: legacyValue,
+      replacementRaw: null,
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Legacy decision ledger',
+      recovery,
+    });
   }
 
-  const quarantineKey = `${DECISION_LEDGER_LEGACY_STORAGE_KEY}.quarantine.${Date.now()}`;
-  await AsyncStorage.setItem(
-    quarantineKey,
-    JSON.stringify({
-      quarantinedAt: checkedAt,
-      reason: 'Legacy Layer 4 decision records were stored before trusted organization scoping existed.',
-      records: legacyRecords,
-    }),
-  );
-  await AsyncStorage.removeItem(DECISION_LEDGER_LEGACY_STORAGE_KEY);
+  if (!Array.isArray(parsed) || !parsed.every(isDecisionRecordWithIdentity)) {
+    const recovery = await quarantineCorruptLocalValue({
+      storage: AsyncStorage,
+      storageKey: DECISION_LEDGER_LEGACY_STORAGE_KEY,
+      quarantineKeyPrefix: DECISION_LEDGER_LEGACY_QUARANTINE_KEY_PREFIX,
+      raw: legacyValue,
+      replacementRaw: null,
+    });
+    throw localCorruptionRecoveryError({
+      label: 'Legacy decision ledger',
+      recovery,
+    });
+  }
+
+  const legacyRecords = parsed as PIEDecisionRecord[];
+  await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey: DECISION_LEDGER_LEGACY_STORAGE_KEY,
+    quarantineKeyPrefix: DECISION_LEDGER_LEGACY_QUARANTINE_KEY_PREFIX,
+    raw: legacyValue,
+    replacementRaw: null,
+  });
 
   return {
     checkedAt,
@@ -143,4 +170,70 @@ export function storageKeyForOrganization(organizationId: string): string {
   const safeOrganizationId =
     organizationId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-') || 'unverified';
   return `projectVisionAI.pieDecisionLedger.${DECISION_LEDGER_STORAGE_VERSION}.${safeOrganizationId}`;
+}
+
+async function parseOrganizationLedgerOrQuarantine(
+  organizationId: string,
+  raw: string,
+): Promise<PIEDecisionRecord[]> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return quarantineInvalidOrganizationLedger(organizationId, raw);
+  }
+
+  if (
+    !isRecord(parsed) ||
+    parsed.version !== DECISION_LEDGER_STORAGE_VERSION ||
+    parsed.organizationId !== organizationId ||
+    typeof parsed.savedAt !== 'string' ||
+    !Array.isArray(parsed.decisions) ||
+    !parsed.decisions.every(item => isDecisionRecordForOrganization(item, organizationId))
+  ) {
+    return quarantineInvalidOrganizationLedger(organizationId, raw);
+  }
+
+  return parsed.decisions as PIEDecisionRecord[];
+}
+
+async function quarantineInvalidOrganizationLedger(
+  organizationId: string,
+  raw: string,
+): Promise<never> {
+  const storageKey = storageKeyForOrganization(organizationId);
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey,
+    quarantineKeyPrefix: `${storageKey}.corrupt.`,
+    raw,
+    replacementRaw: null,
+  });
+  throw localCorruptionRecoveryError({
+    label: 'Organization decision ledger',
+    recovery,
+  });
+}
+
+function isDecisionRecordForOrganization(
+  value: unknown,
+  organizationId: string,
+): value is PIEDecisionRecord {
+  return isDecisionRecordWithIdentity(value) && value.organizationId === organizationId;
+}
+
+function isDecisionRecordWithIdentity(value: unknown): value is PIEDecisionRecord {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    typeof value.organizationId === 'string' &&
+    value.organizationId.length > 0 &&
+    typeof value.projectId === 'string' &&
+    value.projectId.length > 0
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

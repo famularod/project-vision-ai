@@ -23,7 +23,14 @@ export async function getStoredJson<T>(key: string, fallback: T): Promise<T> {
 }
 
 export async function setStoredJson<T>(key: string, value: T): Promise<void> {
-  await AsyncStorage.setItem(key, JSON.stringify(value));
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== 'string') {
+    throw new TypeError(`Stored value for ${key} is not JSON serializable.`);
+  }
+  await AsyncStorage.setItem(key, serialized);
+  if (await AsyncStorage.getItem(key) !== serialized) {
+    throw new Error(`Stored JSON write verification failed for ${key}.`);
+  }
 }
 
 export async function loadLocalFirst<T>({

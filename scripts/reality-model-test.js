@@ -9,9 +9,15 @@ const assert = require('assert');
 const rootDir = path.resolve(__dirname, '..');
 const moduleCache = new Map();
 const memoryStore = new Map();
+const storageReads = [];
+let failedSetKey = null;
 const AsyncStorage = {
-  getItem: async key => memoryStore.has(key) ? memoryStore.get(key) : null,
+  getItem: async key => {
+    storageReads.push(key);
+    return memoryStore.has(key) ? memoryStore.get(key) : null;
+  },
   setItem: async (key, value) => {
+    if (key === failedSetKey) throw new Error(`Injected write failure for ${key}`);
     memoryStore.set(key, value);
   },
   removeItem: async key => {
@@ -164,6 +170,236 @@ function source(overrides = {}) {
   snapshots[0].model.objects[0].name = 'Mutated snapshot';
   const snapshotsAgain = await storage.getRealityModelSnapshots('org-1', 'project-2375');
   assert.strictEqual(snapshotsAgain[0].model.objects[0].name, 'Canopy B', 'snapshot reload should remain immutable from caller mutation');
+
+  const currentKey = storage.realityModelStorageKey('org-1', 'project-2375');
+  const snapshotKey = storage.realitySnapshotStorageKey('org-1', 'project-2375');
+  const persistedEnvelope = JSON.parse(memoryStore.get(currentKey));
+  assert.deepStrictEqual(
+    persistedEnvelope.currentModel.objectRegistry,
+    {},
+    'the stored current model must not duplicate every object in a registry copy',
+  );
+  assert.deepStrictEqual(
+    persistedEnvelope.currentModel.intelligence.objectsUncertain,
+    [],
+    'the stored current model must not duplicate full objects in intelligence indexes',
+  );
+  assert.strictEqual(
+    Object.keys(loaded.objectRegistry).length,
+    loaded.objects.length,
+    'loading a compact current model must rebuild its object registry',
+  );
+  assert.strictEqual(
+    loaded.intelligence.objectsUncertain.length,
+    first.intelligence.objectsUncertain.length,
+    'loading a compact current model must rebuild its intelligence indexes',
+  );
+  assert.deepStrictEqual(
+    persistedEnvelope.snapshots,
+    [],
+    'the current-state envelope must not duplicate the snapshot archive',
+  );
+  storageReads.length = 0;
+  await storage.loadCurrentRealityModel('org-1', 'project-2375');
+  assert(!storageReads.includes(snapshotKey), 'current-only reads must not load the snapshot archive');
+
+  const modelVersions = [second];
+  for (let index = 0; index < 4; index += 1) {
+    modelVersions.push(reality.buildPIERealityModel({
+      organizationId: 'org-1',
+      projectId: 'project-2375',
+      previousModel: modelVersions[modelVersions.length - 1],
+      objects: [source({
+        summary: `Bounded snapshot revision ${index}`,
+        status: index % 2 === 0 ? 'in_progress' : 'ready',
+        updatedAt: `2026-07-0${index + 3}T12:00:00.000Z`,
+      })],
+      generatedAt: `2026-07-0${index + 3}T12:00:00.000Z`,
+    }));
+  }
+  for (const model of modelVersions) {
+    await storage.saveSynchronizedRealityModel(model, 'Bounded history test.');
+  }
+  const boundedSnapshots = await storage.getRealityModelSnapshots('org-1', 'project-2375');
+  assert(
+    boundedSnapshots.length <= storage.PIE_REALITY_SNAPSHOT_MAX_COUNT + storage.PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT,
+    'a full immutable archive may be paired with only a bounded recent head',
+  );
+  assert.strictEqual(new Set(boundedSnapshots.map(snapshot => snapshot.id)).size, boundedSnapshots.length);
+  assert(
+    JSON.parse(memoryStore.get(snapshotKey)).length <= storage.PIE_REALITY_SNAPSHOT_MAX_COUNT,
+    'the separate archive must stop growing once its safe limit is reached',
+  );
+  assert(
+    JSON.parse(memoryStore.get(currentKey)).snapshots.length <= storage.PIE_REALITY_RECENT_SNAPSHOT_MAX_COUNT,
+    'new history after a full archive must remain bounded in the current envelope',
+  );
+  assert.strictEqual(JSON.parse(memoryStore.get(currentKey)).snapshotArchiveFrozen, true);
+
+  const legacyOrg = 'org-legacy';
+  const legacyProject = 'project-legacy';
+  const legacyModel = reality.buildPIERealityModel({
+    organizationId: legacyOrg,
+    projectId: legacyProject,
+    objects: [source({ organizationId: legacyOrg, projectId: legacyProject })],
+    generatedAt: '2026-07-01T12:00:00.000Z',
+  });
+  const oversizedLegacySnapshots = Array.from({ length: 4 }, (_, index) => ({
+    id: index === 1 ? 'legacy-snapshot-0' : `legacy-snapshot-${index}`,
+    organizationId: legacyOrg,
+    projectId: legacyProject,
+    modelVersion: index === 1 ? 1 : index + 1,
+    createdAt: `2026-07-0${index + 1}T12:00:00.000Z`,
+    sourceEvidenceCutoffAt: legacyModel.sourceEvidenceCutoffAt,
+    reason: 'Preserved legacy history.',
+    model: {
+      ...legacyModel,
+      version: index === 1 ? 1 : index + 1,
+      generatedAt: index === 1 ? '2026-07-02T12:00:00.000Z' : legacyModel.generatedAt,
+    },
+  }));
+  const legacySnapshotKey = storage.realitySnapshotStorageKey(legacyOrg, legacyProject);
+  const legacyRaw = JSON.stringify(oversizedLegacySnapshots);
+  memoryStore.set(legacySnapshotKey, legacyRaw);
+  const legacyRevision = { ...legacyModel, version: 5, generatedAt: '2026-07-18T12:00:00.000Z' };
+  await storage.saveSynchronizedRealityModel(legacyRevision, 'Do not prune legacy history.');
+  assert.strictEqual(
+    memoryStore.get(legacySnapshotKey),
+    legacyRaw,
+    'an already oversized legacy archive must remain byte-for-byte unchanged',
+  );
+  assert.strictEqual(
+    JSON.parse(memoryStore.get(storage.realityModelStorageKey(legacyOrg, legacyProject))).snapshots.length,
+    0,
+    'a frozen legacy archive must not force a duplicate full model into the current envelope',
+  );
+  assert.strictEqual(
+    (await storage.loadCurrentRealityModel(legacyOrg, legacyProject)).version,
+    5,
+    'current authority must remain available when no duplicate recent snapshot is stored',
+  );
+  storageReads.length = 0;
+  await storage.saveSynchronizedRealityModel(
+    { ...legacyRevision, version: 6, generatedAt: '2026-07-18T13:00:00.000Z' },
+    'Continue without reopening the frozen archive.',
+  );
+  assert(!storageReads.includes(legacySnapshotKey), 'future saves must not reread a frozen legacy archive');
+  assert.strictEqual(memoryStore.get(legacySnapshotKey), legacyRaw);
+  storageReads.length = 0;
+  const legacyCurrent = await storage.loadCurrentRealityModel(legacyOrg, legacyProject);
+  assert.strictEqual(legacyCurrent.version, 6, 'current-state reads must remain available');
+  assert(!storageReads.includes(legacySnapshotKey), 'current-state reads must not inspect ambiguous history');
+  await assert.rejects(
+    () => storage.getRealityModelSnapshots(legacyOrg, legacyProject),
+    /ambiguous snapshot identity/,
+  );
+  await assert.rejects(
+    () => storage.loadRealityModelState(legacyOrg, legacyProject),
+    /ambiguous snapshot identity/,
+  );
+  assert.strictEqual(
+    memoryStore.get(legacySnapshotKey),
+    legacyRaw,
+    'ambiguous legacy history must fail closed without rewriting its bytes',
+  );
+
+  const embeddedOrg = 'org-embedded';
+  const embeddedProject = 'project-embedded';
+  const embeddedModel = reality.buildPIERealityModel({
+    organizationId: embeddedOrg,
+    projectId: embeddedProject,
+    objects: [source({ organizationId: embeddedOrg, projectId: embeddedProject })],
+    generatedAt: '2026-07-01T12:00:00.000Z',
+  });
+  const embeddedSnapshot = {
+    id: 'embedded-only-snapshot', organizationId: embeddedOrg, projectId: embeddedProject,
+    modelVersion: embeddedModel.version, createdAt: '2026-07-01T12:00:00.000Z',
+    sourceEvidenceCutoffAt: embeddedModel.sourceEvidenceCutoffAt,
+    reason: 'Legacy embedded-only history.', model: embeddedModel,
+  };
+  const embeddedCurrentKey = storage.realityModelStorageKey(embeddedOrg, embeddedProject);
+  const embeddedSnapshotKey = storage.realitySnapshotStorageKey(embeddedOrg, embeddedProject);
+  memoryStore.set(embeddedCurrentKey, JSON.stringify({
+    version: storage.PIE_REALITY_MODEL_STORAGE_VERSION,
+    organizationId: embeddedOrg, projectId: embeddedProject, currentModel: embeddedModel,
+    snapshots: [embeddedSnapshot], savedAt: '2026-07-01T12:00:00.000Z',
+  }));
+  await storage.saveSynchronizedRealityModel(embeddedModel, 'Migrate embedded history.');
+  assert.strictEqual(JSON.parse(memoryStore.get(embeddedSnapshotKey)).length, 1);
+  assert.deepStrictEqual(JSON.parse(memoryStore.get(embeddedCurrentKey)).snapshots, []);
+
+  const concurrentOrg = 'org-concurrent';
+  const concurrentProject = 'project-concurrent';
+  const concurrentBase = reality.buildPIERealityModel({
+    organizationId: concurrentOrg,
+    projectId: concurrentProject,
+    objects: [source({ organizationId: concurrentOrg, projectId: concurrentProject })],
+    generatedAt: '2026-07-01T12:00:00.000Z',
+  });
+  await storage.saveSynchronizedRealityModel(concurrentBase, 'Concurrent base.');
+  const writerA = reality.buildPIERealityModel({
+    organizationId: concurrentOrg, projectId: concurrentProject, previousModel: concurrentBase,
+    objects: [source({ organizationId: concurrentOrg, projectId: concurrentProject, summary: 'Writer A', status: 'ready', updatedAt: '2026-07-02T12:00:00.000Z' })],
+    generatedAt: '2026-07-02T12:00:00.000Z',
+  });
+  const writerB = reality.buildPIERealityModel({
+    organizationId: concurrentOrg, projectId: concurrentProject, previousModel: concurrentBase,
+    objects: [source({ organizationId: concurrentOrg, projectId: concurrentProject, summary: 'Writer B', status: 'blocked', updatedAt: '2026-07-02T13:00:00.000Z' })],
+    generatedAt: '2026-07-02T13:00:00.000Z',
+  });
+  await storage.saveSynchronizedRealityModel(writerA, 'Writer A.');
+  await assert.rejects(
+    () => storage.saveSynchronizedRealityModel(writerB, 'Writer B.'),
+    /same version changed concurrently/,
+  );
+  const objectId = writerA.objects[0].identity.id;
+  await Promise.all([
+    storage.appendRealityObjectHistory(concurrentOrg, concurrentProject, objectId, {
+      id: 'concurrent-event-a', occurredAt: '2026-07-03T12:00:00.000Z', eventType: 'updated',
+      summary: 'Concurrent event A.', previousStatus: writerA.objects[0].currentStatus, nextStatus: writerA.objects[0].currentStatus,
+    }),
+    storage.appendRealityObjectHistory(concurrentOrg, concurrentProject, objectId, {
+      id: 'concurrent-event-b', occurredAt: '2026-07-03T12:01:00.000Z', eventType: 'updated',
+      summary: 'Concurrent event B.', previousStatus: writerA.objects[0].currentStatus, nextStatus: writerA.objects[0].currentStatus,
+    }),
+  ]);
+  const concurrentAfter = await storage.loadCurrentRealityModel(concurrentOrg, concurrentProject);
+  assert(concurrentAfter.objectRegistry[objectId].history.some(event => event.id === 'concurrent-event-a'));
+  assert(concurrentAfter.objectRegistry[objectId].history.some(event => event.id === 'concurrent-event-b'));
+
+  const failureOrg = 'org-failure';
+  const failureProject = 'project-failure';
+  const failureModel = reality.buildPIERealityModel({
+    organizationId: failureOrg,
+    projectId: failureProject,
+    objects: [source({ organizationId: failureOrg, projectId: failureProject })],
+    generatedAt: '2026-07-01T12:00:00.000Z',
+  });
+  const failureCurrentKey = storage.realityModelStorageKey(failureOrg, failureProject);
+  const failureSnapshotKey = storage.realitySnapshotStorageKey(failureOrg, failureProject);
+  const priorCurrentRaw = JSON.stringify({
+    version: storage.PIE_REALITY_MODEL_STORAGE_VERSION,
+    organizationId: failureOrg,
+    projectId: failureProject,
+    currentModel: null,
+    snapshots: [],
+    savedAt: '2026-07-01T00:00:00.000Z',
+  });
+  memoryStore.set(failureCurrentKey, priorCurrentRaw);
+  failedSetKey = failureSnapshotKey;
+  const degradedSave = await storage.saveSynchronizedRealityModel(failureModel, 'Injected failure.');
+  failedSetKey = null;
+  const degradedCurrent = JSON.parse(memoryStore.get(failureCurrentKey));
+  assert.strictEqual(degradedCurrent.currentModel.version, failureModel.version);
+  assert.strictEqual(degradedCurrent.snapshots.length, 1);
+  assert.strictEqual(degradedCurrent.snapshotArchiveFrozen, true);
+  assert.strictEqual(degradedSave.currentModel.version, failureModel.version);
+  assert.strictEqual(memoryStore.has(failureSnapshotKey), false);
+
+  const storageSource = fs.readFileSync(path.join(rootDir, 'services/PIERealityModelStorage.ts'), 'utf8');
+  assert(storageSource.includes('runExclusiveLocalStorageMutation([currentKey, snapshotKey]'));
+  assert(storageSource.includes(').slice(0, 20)'));
+  assert(storageSource.includes(').slice(0, 200)'));
 
   const result = await sync.synchronizeAuthoritativeRealityModel({
     organizationId: 'org-1',

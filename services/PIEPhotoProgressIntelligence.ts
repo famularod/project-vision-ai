@@ -12,6 +12,7 @@ import type {
   PIERealityModel,
   PIERealityObject,
 } from './PIERealityModel';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type PIEPhotoComparability =
   | 'strong_match'
@@ -749,7 +750,7 @@ export function detectPhotoProgressEvent({
     imageRegions: regionHintsFor(later),
     limitations: [
       ...comparability.limitations,
-      'PIE separates visible observation from completion approval.',
+      'DAVE separates visible observation from completion approval.',
       confidence === 'low' ? 'Low confidence prevents a firm project conclusion.' : null,
     ].filter((item): item is string => Boolean(item)),
     corroboratingEvidenceIds,
@@ -852,7 +853,11 @@ function findCorroboratingEvidenceIds(
     if (
       normalized(item.projectName) === normalized(photo.projectName) &&
       (normalized(item.locationName) === area || normalized(item.taskName).includes(subject)) &&
-      (item.status === 'Complete' || item.status === 'In Progress' || item.percentComplete > 0)
+      (
+        scheduleProgressIsComplete(item) ||
+        item.status === 'In Progress' ||
+        (item.percentComplete > 0 && item.percentComplete < 100)
+      )
     ) {
       ids.push(`schedule:${item.id}`);
     }
@@ -893,7 +898,7 @@ function findContradictingEvidenceIds(
       normalized(item.projectName) === normalized(photo.projectName) &&
       (normalized(item.locationName) === area || normalized(item.taskName).includes(subject)) &&
       category === 'completed_construction' &&
-      item.status !== 'Complete'
+      !scheduleProgressIsComplete(item)
     ) {
       ids.push(`schedule:${item.id}`);
     }
@@ -901,7 +906,7 @@ function findContradictingEvidenceIds(
       normalized(item.projectName) === normalized(photo.projectName) &&
       (normalized(item.locationName) === area || normalized(item.taskName).includes(subject)) &&
       (category === 'partial_construction' || category === 'work_started_not_completed') &&
-      item.status === 'Complete'
+      scheduleProgressIsComplete(item)
     ) {
       ids.push(`schedule:${item.id}`);
     }
@@ -1042,7 +1047,7 @@ function buildRepeatPhotoGuidance(
       referencePhotoId: photo.photoId,
       referencePhotoUri: photo.uri,
       instruction: `Take one unobstructed photo of ${photo.subject}.`,
-      reason: 'The current photo is blocked, so PIE cannot compare progress confidently.',
+      reason: 'The current photo is blocked, so progress cannot be compared confidently.',
       alignmentGuide: photo.cameraDirection
         ? `Match the prior view facing ${photo.cameraDirection}.`
         : 'Keep the full subject visible from the same standing position.',
@@ -1085,7 +1090,7 @@ function buildProgressEstimate(
       confidenceRange: null,
       scopeIncluded: sequences.map(sequence => sequence.subject),
       scopeExcluded: ['Areas without comparable photos', 'Work not visible in photographs'],
-      assumptions: ['PIE does not create completion percentages from photos alone.'],
+      assumptions: ['Completion percentages are not created from photos alone.'],
       evidenceGaps: ['Capture repeat photos from comparable viewpoints.'],
       summary: 'No reliable longitudinal photo progress event is available yet.',
     };
@@ -1284,7 +1289,7 @@ function buildConciseProgressCard(
   return {
     visible: false,
     title: 'No visual progress signal yet',
-    summary: 'PIE will analyze comparable project photos automatically after capture.',
+    summary: 'Comparable project photos will be analyzed automatically after capture.',
     primaryAction: 'View Progress' as const,
   };
 }

@@ -1,4 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
 import type {
   PIEExecutiveAction,
   PIEExecutiveConstraint,
@@ -12,7 +16,6 @@ import type {
 import type { PIERealityModel } from './PIERealityModel';
 import type { PIERealityPersistenceStatus } from './PIERealityModelOrchestrator';
 import {
-  getActivePIEExecutiveJudgmentCloud,
   listPIEExecutiveJudgmentsCloud,
   savePIEExecutiveJudgmentCloud,
 } from './SupabaseService';
@@ -59,18 +62,56 @@ export type PIEExecutiveJudgmentRepository = {
 
 const EXECUTIVE_JUDGMENT_PREFIX = 'projectVisionAI.pieExecutiveJudgments.v1';
 
+/**
+ * Audit P1-38: the cloud judgment table is append-only, so old rows can never
+ * be rewritten as superseded. Supersession is therefore DERIVED from the
+ * append-only history: a judgment is superseded by the first later judgment
+ * with a different primary recommendation. Stored supersededBy values (from
+ * legacy local rewrites) are respected when present.
+ */
+export function resolveJudgmentSupersession(
+  records: readonly PIEExecutiveJudgmentRecord[],
+): PIEExecutiveJudgmentRecord[] {
+  const chronological = [...records].sort((left, right) =>
+    left.judgmentTime.localeCompare(right.judgmentTime),
+  );
+  return records.map(record => {
+    if (record.supersededBy) return record;
+    const successor = chronological.find(candidate =>
+      candidate.id !== record.id &&
+      candidate.judgmentTime > record.judgmentTime &&
+      candidate.primaryRecommendation !== record.primaryRecommendation,
+    );
+    if (!successor) return record;
+    return {
+      ...record,
+      supersededBy: successor.id,
+      supersededAt: successor.judgmentTime,
+    };
+  });
+}
+
 export const localPIEExecutiveJudgmentRepository: PIEExecutiveJudgmentRepository = {
   async saveIssuedJudgment(record) {
+    if (!isExecutiveJudgmentRecordForScope(record, record.organizationId, record.projectId)) {
+      throw new Error('Cannot store an invalid or cross-scope Executive Judgment.');
+    }
     const records = await listExecutiveJudgmentRecords(record.organizationId, record.projectId);
     const existing = records.find(item => item.id === record.id);
     if (existing) return existing;
     const next = [record, ...supersedeChangedRecommendations(records, record)].slice(0, 100);
-    await AsyncStorage.setItem(judgmentKey(record.organizationId, record.projectId), JSON.stringify(next));
+    await AsyncStorage.setItem(executiveJudgmentStorageKey(record.organizationId, record.projectId), JSON.stringify(next));
     return record;
   },
-  listJudgments: listExecutiveJudgmentRecords,
+  async listJudgments(organizationId, projectId) {
+    return resolveJudgmentSupersession(
+      await listExecutiveJudgmentRecords(organizationId, projectId),
+    );
+  },
   async getActiveJudgment(organizationId, projectId) {
-    const records = await listExecutiveJudgmentRecords(organizationId, projectId);
+    const records = resolveJudgmentSupersession(
+      await listExecutiveJudgmentRecords(organizationId, projectId),
+    );
     return records.find(record => !record.supersededBy) || null;
   },
 };
@@ -94,12 +135,18 @@ export function createPIEExecutiveJudgmentRepository(input: {
     },
     async listJudgments(organizationId, projectId) {
       const cloudResult = await listPIEExecutiveJudgmentsCloud(organizationId, projectId);
-      if (cloudResult.ok && cloudResult.data && cloudResult.data.length > 0) return cloudResult.data;
+      if (cloudResult.ok && cloudResult.data && cloudResult.data.length > 0) {
+        // Audit P1-38: append-only cloud rows carry no supersession; derive it.
+        return resolveJudgmentSupersession(cloudResult.data);
+      }
       return localPIEExecutiveJudgmentRepository.listJudgments(organizationId, projectId);
     },
     async getActiveJudgment(organizationId, projectId) {
-      const cloudResult = await getActivePIEExecutiveJudgmentCloud(organizationId, projectId);
-      if (cloudResult.ok && cloudResult.data) return cloudResult.data;
+      const cloudResult = await listPIEExecutiveJudgmentsCloud(organizationId, projectId);
+      if (cloudResult.ok && cloudResult.data && cloudResult.data.length > 0) {
+        const resolved = resolveJudgmentSupersession(cloudResult.data);
+        return resolved.find(record => !record.supersededBy) || null;
+      }
       return localPIEExecutiveJudgmentRepository.getActiveJudgment(organizationId, projectId);
     },
   };
@@ -161,7 +208,11 @@ export function buildExecutiveJudgmentRecord(input: {
       .filter(object => referencesObject(action, decision, object.name))
       .map(object => object.identity.id)
       .slice(0, 12),
+    // Audit P1-51: assertions are selected ONLY through the chosen
+    // supporting objects — never from every Reality object, which attached
+    // unrelated or contradictory assertions to the judgment's trace.
     supportingAssertionIds: input.realityModel.objects
+      .filter(object => referencesObject(action, decision, object.name))
       .flatMap(object => object.assertions)
       .map(assertion => assertion.id)
       .slice(0, 24),
@@ -193,14 +244,22 @@ async function listExecutiveJudgmentRecords(
   organizationId: string,
   projectId: string,
 ): Promise<PIEExecutiveJudgmentRecord[]> {
-  const value = await AsyncStorage.getItem(judgmentKey(organizationId, projectId));
-  if (!value) return [];
+  const storageKey = executiveJudgmentStorageKey(organizationId, projectId);
+  const value = await AsyncStorage.getItem(storageKey);
+  if (value === null) return [];
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed as PIEExecutiveJudgmentRecord[] : [];
+    parsed = JSON.parse(value) as unknown;
   } catch {
-    return [];
+    return quarantineInvalidExecutiveJudgments(storageKey, value);
   }
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every(record => isExecutiveJudgmentRecordForScope(record, organizationId, projectId))
+  ) {
+    return quarantineInvalidExecutiveJudgments(storageKey, value);
+  }
+  return parsed as PIEExecutiveJudgmentRecord[];
 }
 
 function supersedeChangedRecommendations(
@@ -232,8 +291,46 @@ function executiveJudgmentRecordId(
   ].join('-');
 }
 
-function judgmentKey(organizationId: string, projectId: string) {
+export function executiveJudgmentStorageKey(organizationId: string, projectId: string): string {
   return `${EXECUTIVE_JUDGMENT_PREFIX}.${safeKey(organizationId)}.${safeKey(projectId)}`;
+}
+
+async function quarantineInvalidExecutiveJudgments(
+  storageKey: string,
+  raw: string,
+): Promise<never> {
+  const recovery = await quarantineCorruptLocalValue({
+    storage: AsyncStorage,
+    storageKey,
+    quarantineKeyPrefix: `${storageKey}.corrupt.`,
+    raw,
+    replacementRaw: null,
+  });
+  throw localCorruptionRecoveryError({
+    label: 'Stored Executive Judgments',
+    recovery,
+  });
+}
+
+function isExecutiveJudgmentRecordForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIEExecutiveJudgmentRecord {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    value.organizationId === organizationId &&
+    value.projectId === projectId &&
+    typeof value.judgmentTime === 'string' &&
+    typeof value.primaryRecommendation === 'string' &&
+    value.immutable === true
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function referencesObject(

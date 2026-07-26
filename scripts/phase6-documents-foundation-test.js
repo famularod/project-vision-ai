@@ -6,6 +6,23 @@ const assert = require('assert');
 
 const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
+const projectDocumentsHeader = fs.readFileSync(
+  path.join(root, 'components/project-documents-header.tsx'),
+  'utf8',
+);
+const documentClassification = fs.readFileSync(
+  path.join(root, 'services/ProjectDocumentClassification.ts'),
+  'utf8',
+);
+const documentUploadDetails = fs.readFileSync(
+  path.join(root, 'components/document-upload-details-sheet.tsx'),
+  'utf8',
+);
+const documentRuntimeSource = `${app}\n${projectDocumentsHeader}\n${documentClassification}\n${documentUploadDetails}`;
+const fileSizePreflight = fs.readFileSync(
+  path.join(root, 'services/FileSizePreflight.ts'),
+  'utf8',
+);
 const projectDocumentsScreen = app.slice(
   app.indexOf('function ProjectDocumentsScreen'),
   app.indexOf('function ReferenceDocumentsScreen'),
@@ -32,7 +49,6 @@ const projectDocumentsScreen = app.slice(
   "No documents yet — upload your first document.",
   "Possible duplicate document",
   "Upload Anyway",
-  "Large document",
   "projectDocumentStatusDetail",
   "duplicateProjectDocumentForAsset",
   "retryProjectDocumentUpload",
@@ -43,9 +59,20 @@ const projectDocumentsScreen = app.slice(
   "Attach to Area",
   "Attach to Update",
   "Add note",
+  "Document Type",
+  "suggestProjectDocumentCategory(asset)",
+  "selectedCategory",
 ].forEach(marker => {
-  assert(app.includes(marker), `Phase 6 documents foundation should include ${marker}`);
+  assert(documentRuntimeSource.includes(marker), `Phase 6 documents foundation should include ${marker}`);
 });
+
+assert(
+  app.includes('await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size })') &&
+    app.includes('error instanceof FileSizePreflightError') &&
+    fileSizePreflight.includes("code: 'file_too_large'") &&
+    fileSizePreflight.includes('Choose a smaller file and retry.'),
+  'Project documents must reject oversized files before copying or uploading them.',
+);
 
 [
   "Schedule",
@@ -60,7 +87,7 @@ const projectDocumentsScreen = app.slice(
   "Vendor Document",
   "Other",
 ].forEach(category => {
-  assert(app.includes(`'${category}'`), `Project documents should support ${category}`);
+  assert(documentRuntimeSource.includes(`'${category}'`), `Project documents should support ${category}`);
 });
 
 assert(
@@ -87,9 +114,10 @@ assert(
 );
 
 assert(
-  app.includes('projectDocumentsForProject(selectedWorkspaceProject, projectDocuments)') &&
+  app.includes('projectDocumentsForScopes(') &&
+    app.includes('workspaceScopeNames(selectedWorkspaceProject)') &&
     app.includes("onOpenDocuments={() => setScreen('ProjectDocuments')}"),
-  'Project Workspace Documents tool should open the project documents screen.',
+  'Project Workspace Documents tool should open documents across the parent project scope.',
 );
 
 assert(

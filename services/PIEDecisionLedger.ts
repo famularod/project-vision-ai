@@ -349,6 +349,21 @@ export function createDecisionRecord(input: PIEDecisionRecordInput): PIEDecision
   return freezeDecision(record);
 }
 
+/**
+ * Audit P1-37: the operative snapshot is the CURRENT corrected version.
+ * `immutableSnapshot` remains only as the original audit baseline; every
+ * transition, automation, validation, and UI consumer must resolve through
+ * this function so corrections actually take effect.
+ */
+export function currentDecisionSnapshot(
+  decision: PIEDecisionRecord,
+): PIEDecisionSnapshot {
+  const current = decision.versions.find(
+    version => version.version === decision.currentVersion,
+  );
+  return current?.snapshot ?? decision.immutableSnapshot;
+}
+
 export function appendDecisionSnapshotVersion(
   decision: PIEDecisionRecord,
   snapshot: PIEDecisionSnapshot,
@@ -543,7 +558,7 @@ export function updateLatestOutcomeValidation(
     nextOutcome,
   ];
   const nextStatus: PIEDecisionStatus =
-    validationStatus === 'human_validated' || validationStatus === 'system_supported'
+    validationStatus === 'human_validated'
       ? 'outcome_validated'
       : decision.currentStatus;
   if (nextStatus !== decision.currentStatus) {
@@ -594,7 +609,8 @@ export function validateDecisionTransition(input: PIEDecisionTransitionInput): P
     reasons.push('Implemented decisions require an outcome plan.');
   }
 
-  if (nextStatus === 'implemented' && decision.immutableSnapshot.predictedOutcomes.length === 0) {
+  // Audit P1-37: validate against the operative (current) snapshot.
+  if (nextStatus === 'implemented' && currentDecisionSnapshot(decision).predictedOutcomes.length === 0) {
     reasons.push('Implemented decisions require at least one predicted outcome.');
   }
 
@@ -602,6 +618,8 @@ export function validateDecisionTransition(input: PIEDecisionTransitionInput): P
     const outcome = input.actualOutcome || decision.actualOutcomes[decision.actualOutcomes.length - 1];
     if (!outcome) {
       reasons.push('Outcome validation requires an actual outcome record.');
+    } else if (outcome.validationStatus !== 'human_validated') {
+      reasons.push('Outcome validation requires explicit human validation.');
     } else if (!canValidateOutcome(outcome, input.actor)) {
       reasons.push('Outcome validation requires an authorized validator.');
     }
@@ -743,7 +761,7 @@ export function compareActualOutcomeToPredictions(
         ? 'Actual result supports the predicted outcome.'
         : matched === false
           ? 'Actual result does not meet the predicted target.'
-          : 'Actual result needs human review before PIE can judge the prediction.',
+          : 'Actual result needs human review before DAVE can judge the prediction.',
     };
   });
 }
@@ -762,10 +780,7 @@ export function getDecisionCloseBlockers(decision: Pick<PIEDecisionRecord, 'curr
   }
   if (latestOutcome.classification === 'cancelled' || latestOutcome.classification === 'not_implemented') return [];
   if (latestOutcome.classification === 'inconclusive' && latestOutcome.summary.trim().length > 0) return [];
-  if (
-    latestOutcome.validationStatus === 'human_validated' ||
-    latestOutcome.validationStatus === 'system_supported'
-  ) {
+  if (latestOutcome.validationStatus === 'human_validated') {
     return [];
   }
   return ['Decision cannot close because the outcome is not validated or justified.'];
@@ -827,7 +842,8 @@ function validateActualOutcome(
     throw new Error('Actual outcome boundary does not match the decision.');
   }
   validateEvidenceBoundaries(decision.organizationId, decision.projectId, outcome.evidenceReferences);
-  const predictedIds = new Set(decision.immutableSnapshot.predictedOutcomes.map(item => item.id));
+  // Audit P1-37: predicted outcomes come from the operative snapshot.
+  const predictedIds = new Set(currentDecisionSnapshot(decision).predictedOutcomes.map(item => item.id));
   outcome.predictionComparisons.forEach(comparison => {
     if (!predictedIds.has(comparison.predictedOutcomeId)) {
       throw new Error('Actual outcome comparison is disconnected from predicted outcomes.');

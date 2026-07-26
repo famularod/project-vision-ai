@@ -46,15 +46,23 @@ It includes:
 Local commands:
 
 ```sh
-npm run test:multimodal-evidence
-npm run test:raw-photo-analysis
-npm run test:photo-comparison-intelligence
-npm run test:photo-baseline-failure-001
-npm run test:production-vision-pipeline
-npm run test:photo-corrections
+npm run test:photo-vision-authority
+npm run test:photo-comparison
+npm run test:visual-jarvis
+npm run test:photo-evaluation-harness
 ```
 
 These tests validate architecture markers, storage and policy markers, the secure backend boundary, unsafe-claim rejection, deterministic checks, comparison limitations, user correction history, and idempotent cache behavior.
+
+The evaluation harness accepts the labeled `cases` or `scenarios` dataset plus either saved provider results or live evidence IDs. It reports accuracy and latency divergences instead of treating a configured pipeline as proof of visual accuracy:
+
+```sh
+node scripts/pie-vision-evaluation-harness.js \
+  validation/multimodal/photo-vision-scenarios.json \
+  path/to/saved-provider-results.json
+```
+
+Without saved results or authenticated live evidence IDs, the harness reports `external_execution_required`. The Canopy C cross-angle ramp case has a 60-second end-to-end performance target and remains pending until its original photo pair or cloud evidence IDs are supplied.
 
 ## Live Validation Still Required
 

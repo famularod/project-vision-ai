@@ -345,7 +345,7 @@ export function determineSituationReadiness(
     return { readiness: 'Blocked', reason: `${blockers.length} blocker${blockers.length === 1 ? '' : 's'} must be resolved.`, confidence: 'high' };
   }
   if (risks.some(risk => risk.severity === 'critical' || risk.severity === 'high')) {
-    return { readiness: 'Needs Verification', reason: 'High-risk reality objects need verification before PIE recommends action.', confidence: 'medium' };
+    return { readiness: 'Needs Verification', reason: 'High-risk reality objects need verification before action is recommended.', confidence: 'medium' };
   }
   if (unknowns.length > 0) {
     return { readiness: 'Uncertain', reason: `${unknowns.length} unknown${unknowns.length === 1 ? '' : 's'} still affect the situation.`, confidence: 'medium' };

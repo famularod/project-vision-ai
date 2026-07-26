@@ -345,7 +345,7 @@ function buildProjectStoryFromParts(
     .slice(0, 4)
     .map(question => question.question);
   const patternSummary = patterns.length > 0
-    ? ` PIE sees ${patterns.length} recurring pattern${patterns.length === 1 ? '' : 's'}, led by ${patterns[0].title.toLowerCase()}.`
+    ? ` DAVE sees ${patterns.length} recurring pattern${patterns.length === 1 ? '' : 's'}, led by ${patterns[0].title.toLowerCase()}.`
     : '';
   const gapSummary = gaps.length > 0
     ? ` Memory still has ${gaps.length} gap${gaps.length === 1 ? '' : 's'} that limit certainty.`
@@ -374,7 +374,7 @@ function buildTimelineSegmentsFromParts(
         id: stableId(parts.projectName, 'timeline-empty'),
         projectName: parts.projectName,
         title: 'No timeline history yet',
-        summary: 'PIE does not have project events, updates, schedule dates, documents, or reports to build a timeline.',
+        summary: 'DAVE does not have project events, updates, schedule dates, documents, or reports to build a timeline.',
         startAt: null,
         endAt: null,
         eventCount: 0,
@@ -624,7 +624,7 @@ function buildMemoryGapsFromParts(parts: MemoryParts): PIEMemoryGap[] {
         parts.intelligence.lastUpdate
           ? `Latest saved update is ${parts.intelligence.metrics.daysSinceLastUpdate ?? 'unknown'} days old.`
           : 'No saved update is available for this project.',
-      impact: 'PIE may not know what changed most recently in the field.',
+      impact: 'DAVE may not know what changed most recently in the field.',
       suggestedAction: 'Capture a fresh field update.',
       source: 'typed-update',
       confidence: 'high',
@@ -641,7 +641,7 @@ function buildMemoryGapsFromParts(parts: MemoryParts): PIEMemoryGap[] {
       id: 'no-schedule-imported',
       projectName: parts.projectName,
       title: 'No imported schedule memory',
-      summary: 'PIE does not see an imported schedule source for this project.',
+      summary: 'DAVE does not see an imported schedule source for this project.',
       impact: 'Schedule comparisons, phase recognition, and future prediction are weaker.',
       suggestedAction: 'Import or classify a project schedule.',
       source: 'schedule',
@@ -658,7 +658,7 @@ function buildMemoryGapsFromParts(parts: MemoryParts): PIEMemoryGap[] {
       id: 'no-photos',
       projectName: parts.projectName,
       title: 'No photo memory',
-      summary: 'PIE does not see photos for this project.',
+      summary: 'DAVE does not see photos for this project.',
       impact: 'Project memory lacks visual evidence for field progress, issues, and safety conditions.',
       suggestedAction: 'Add photos to the next project update.',
       source: 'photo',
@@ -675,8 +675,8 @@ function buildMemoryGapsFromParts(parts: MemoryParts): PIEMemoryGap[] {
       id: 'missing-inspection-status',
       projectName: parts.projectName,
       title: 'Inspection status missing',
-      summary: 'PIE does not see inspection events for this project.',
-      impact: 'PIE cannot tell whether inspections are blocking, passed, failed, or pending.',
+      summary: 'DAVE does not see inspection events for this project.',
+      impact: 'DAVE cannot tell whether inspections are blocking, passed, failed, or pending.',
       suggestedAction: 'Record inspection status when it becomes available.',
       source: 'project-event',
       confidence: 'medium',
@@ -692,8 +692,8 @@ function buildMemoryGapsFromParts(parts: MemoryParts): PIEMemoryGap[] {
       title: 'Document context incomplete',
       summary:
         parts.documents.length === 0
-          ? 'PIE does not see related document metadata.'
-          : 'PIE sees documents, but no current reference document is marked.',
+          ? 'DAVE does not see related document metadata.'
+          : 'DAVE sees documents, but no current reference document is marked.',
       impact: 'Project memory may not know which drawings, specs, or schedules support the current status.',
       suggestedAction:
         parts.documents.length === 0
@@ -714,8 +714,8 @@ function buildMemoryGapsFromParts(parts: MemoryParts): PIEMemoryGap[] {
       id: 'no-report-history',
       projectName: parts.projectName,
       title: 'No report history',
-      summary: 'PIE does not see generated report history for this project.',
-      impact: 'PIE cannot compare current communication needs against prior reporting cadence or commitments.',
+      summary: 'DAVE does not see generated report history for this project.',
+      impact: 'DAVE cannot compare current communication needs against prior reporting cadence or commitments.',
       suggestedAction: 'Generate and save a project report when stakeholder communication is needed.',
       source: 'report-history',
       confidence: 'medium',
@@ -752,7 +752,7 @@ function buildMemoryInsightsFromParts(
       summary:
         concern?.summary ||
         pattern?.summary ||
-        'PIE memory sees project conditions that should be reviewed.',
+        'DAVE memory sees project conditions that should be reviewed.',
       whyItMatters: 'Repeated or high-priority risk signals are more important than isolated raw data.',
       suggestedNextAction:
         concern?.suggestedNextAction ||
@@ -775,7 +775,7 @@ function buildMemoryInsightsFromParts(
       projectName: parts.projectName,
       title: 'Memory gaps are limiting confidence',
       summary: `${gaps.length} memory gap${gaps.length === 1 ? '' : 's'} should be filled to improve project understanding.`,
-      whyItMatters: 'PIE can reason better when updates, schedule, photos, inspections, documents, and report history are present.',
+      whyItMatters: 'DAVE can reason better when updates, schedule, photos, inspections, documents, and report history are present.',
       suggestedNextAction: highPriorityGaps[0]?.suggestedAction || gaps[0]?.suggestedAction || 'Add missing project history.',
       supportingPatternIds: [],
       supportingGapIds: gaps.slice(0, 4).map(gap => gap.id),
@@ -794,7 +794,7 @@ function buildMemoryInsightsFromParts(
       id: 'communication-memory-ready',
       projectName: parts.projectName,
       title: 'Memory can support communication',
-      summary: 'PIE sees enough current context to support stakeholder communication.',
+      summary: 'DAVE sees enough current context to support stakeholder communication.',
       whyItMatters: 'Reports and Project Assistant answers can reuse memory instead of asking the user to restate project status.',
       suggestedNextAction: 'Prepare the next project report or stakeholder update.',
       supportingPatternIds: patterns
@@ -838,7 +838,7 @@ function buildMemoryInsightsFromParts(
       id: 'timeline-pattern-memory',
       projectName: parts.projectName,
       title: 'Timeline and patterns are forming project memory',
-      summary: `PIE sees ${parts.timelinePoints.length} timeline point${parts.timelinePoints.length === 1 ? '' : 's'} and ${patterns.length} pattern${patterns.length === 1 ? '' : 's'}.`,
+      summary: `DAVE sees ${parts.timelinePoints.length} timeline point${parts.timelinePoints.length === 1 ? '' : 's'} and ${patterns.length} pattern${patterns.length === 1 ? '' : 's'}.`,
       whyItMatters: 'This gives Project Assistant and reports a durable project story instead of isolated current-state readings.',
       suggestedNextAction: patterns[0].priority === 'high'
         ? patterns[0].summary

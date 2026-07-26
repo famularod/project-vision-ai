@@ -110,6 +110,7 @@ import {
   buildPIEReportDraft,
   type PIEReportActionItem,
   type PIEReportDraft,
+  type PIEReportType,
 } from './PIEReporter';
 import {
   buildPIEReflection,
@@ -132,6 +133,7 @@ export type PIERuntimeSurface =
 
 export type PIERuntimeContext = PIEConversationContext & {
   surface?: PIERuntimeSurface;
+  reportType?: PIEReportType;
 };
 
 export type PIERuntimeSource =
@@ -970,10 +972,10 @@ export function buildRuntime(
       currentUnderstanding.whatPIENeedsFromYou,
   });
   const reportDraft = buildPIEReportDraft({
-    reportType:
-      context.projectNames && context.projectNames.length > 1
+    reportType: context.reportType ||
+      (context.projectNames && context.projectNames.length > 1
         ? 'combined_project_update'
-        : 'daily_project_update',
+        : 'daily_project_update'),
     audience: 'internal_team',
     currentUpdate: context.currentUpdate,
     savedUpdates: context.updates,
@@ -1256,20 +1258,11 @@ function buildScheduleOutputsFromState(
   context: PIERuntimeContext,
   state: PIEConversationState,
 ): PIERuntimeScheduleOutputs {
-  const projectScheduleIntelligence = buildScheduleIntelligence({
+  const scheduleIntelligence = buildScheduleIntelligence({
     scheduleItems: context.scheduleItems,
-    projectName: state.projectName,
+    projectName: state.projectNames.length > 1 ? null : state.projectName,
     now: new Date(state.generatedAt),
   });
-  const scheduleIntelligence =
-    projectScheduleIntelligence.scheduleSummary.totalItems === 0 &&
-    (context.scheduleItems?.length ?? 0) > 0
-      ? buildScheduleIntelligence({
-          scheduleItems: context.scheduleItems,
-          projectName: null,
-          now: new Date(state.generatedAt),
-        })
-      : projectScheduleIntelligence;
 
   return {
     scheduleIntelligence,
@@ -1398,7 +1391,7 @@ function buildExecutiveOutputsFromState(
           projectName: state.projectName,
           question: 'Does this summary look correct?',
           reason:
-            'PIE needs user verification before using photo comparison as project evidence.',
+            'User verification is needed before using photo comparison as project evidence.',
           priority: 'medium',
           confidence: photoProgressOutputs.comparisonConfidence,
           evidence: [photoProgressOutputs.photoProgressSummary],
@@ -1743,7 +1736,7 @@ function buildRelationshipConfidence({
     improvementSuggestions: uniqueText([
       relationshipCount > 3
         ? null
-        : 'Add updates, photos, schedule items, documents, or events so PIE can connect project relationships.',
+        : 'Add updates, photos, schedule items, documents, or events to connect project relationships.',
       connectedEvidenceCount > 0
         ? null
         : 'Add evidence that connects recommendations to project records.',
@@ -1819,7 +1812,7 @@ function buildEvidenceFusionRecommendations(
     impact:
       firstConflict?.summary ||
       firstHighGap?.summary ||
-      'Fused evidence improves PIE reliability across schedule, field photos, GPS, and updates.',
+      'Fused evidence improves DAVE reliability across schedule, field photos, GPS, and updates.',
     suggestedNextAction:
       firstConflict?.suggestedAction ||
       firstHighGap?.suggestedAction ||
@@ -1895,7 +1888,7 @@ function buildInsightsFromState(
     projectName: state.projectName,
     title: 'Project Story Highlight',
     summary: highlight,
-    whyItMatters: 'This helps PIE explain what changed and what matters now.',
+    whyItMatters: 'This helps DAVE explain what changed and what matters now.',
     source: 'event-engine' as const,
     confidence: eventConfidence(state.projectEvents),
     priority: 'medium' as const,
@@ -1908,7 +1901,7 @@ function buildInsightsFromState(
     title: response.title,
     summary: response.summary,
     whyItMatters:
-      'The Conversation Engine synthesized current PIE state into user-facing project-manager language.',
+      'The Conversation Engine synthesized current DAVE state into user-facing project-manager language.',
     source: 'conversation-engine' as const,
     confidence: response.confidence,
     priority: response.confidence === 'low' ? 'medium' as const : 'low' as const,
@@ -1951,7 +1944,7 @@ function buildUnknownsFromState(
           title: 'Photo Progress Needs Review',
           summary: photoProgressOutputs.photoProgressSummary,
           impact:
-            'PIE should not treat photo comparison output as project evidence until the user accepts or edits it.',
+            'Photo comparison output should not be treated as project evidence until the user accepts or edits it.',
           suggestedAction: 'Does this summary look correct? Accept, edit, or reject.',
           source: 'photo-progress' as const,
           confidence: photoProgressOutputs.comparisonConfidence,
@@ -1967,7 +1960,7 @@ function buildUnknownsFromState(
         title: 'Communication Context Missing',
         summary: item,
         impact:
-          'PIE may not have enough context to prepare a complete stakeholder update.',
+          'DAVE may not have enough context to prepare a complete stakeholder update.',
         suggestedAction: item,
         source: 'intelligence-engine' as const,
         confidence: state.intelligence.communicationReadiness.confidence,
@@ -1983,7 +1976,7 @@ function buildUnknownsFromState(
           title: 'Location Needs Confirmation',
           summary: location.confirmationPrompt,
           impact:
-            'PIE should not assume the exact project area until the user confirms it.',
+            'The exact project area should not be assumed until the user confirms it.',
           suggestedAction: location.confirmationPrompt,
           source: 'intelligence-engine' as const,
           confidence: location.confidence,
@@ -1995,9 +1988,9 @@ function buildUnknownsFromState(
       ? [{
           id: 'runtime-no-evidence',
           projectName: state.projectName,
-          title: 'No PIE Evidence Yet',
+          title: 'No DAVE Evidence Yet',
           summary:
-            'PIE does not have field evidence for this project in the current local data.',
+            'The current local data has no field evidence for this project.',
           impact:
             'Recommendations will stay broad until updates, photos, schedule items, or documents are available.',
           suggestedAction: 'Capture current project progress.',
@@ -2013,7 +2006,7 @@ function buildUnknownsFromState(
       title: 'Mission Evidence Needed',
       summary: item,
       impact:
-        'PIE needs this information to complete the current mission with stronger confidence.',
+        'This information is needed to complete the current mission with stronger confidence.',
       suggestedAction: item,
       source: 'mission-engine' as const,
       confidence: missionOutputs.currentMission.confidence,
@@ -2025,7 +2018,7 @@ function buildUnknownsFromState(
       title: blocker.title,
       summary: blocker.summary,
       impact:
-        'This blocker limits PIE progress on the current mission.',
+        'This blocker limits DAVE progress on the current mission.',
       suggestedAction: blocker.suggestedAction,
       source: 'mission-engine' as const,
       confidence: blocker.confidence,
@@ -2071,7 +2064,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-evidence-fusion',
       projectName: state.projectName,
-      statement: `PIE fused schedule, photo, GPS, and update evidence into a ${intelligentSummary.projectStatus.toLowerCase()} summary.`,
+      statement: `DAVE fused schedule, photo, GPS, and update evidence into a ${intelligentSummary.projectStatus.toLowerCase()} summary.`,
       confidence: fusedSummary.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2118,7 +2111,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-current-mission',
       projectName: state.projectName,
-      statement: `PIE's current mission is ${currentMission.title}.`,
+      statement: `DAVE's current mission is ${currentMission.title}.`,
       confidence: currentMission.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2151,8 +2144,8 @@ function buildBeliefsFromState(
       projectName: state.projectName,
       statement:
         relationshipConfidence.relationshipCount > 0
-          ? `PIE has connected ${relationshipConfidence.relationshipCount} project relationship${relationshipConfidence.relationshipCount === 1 ? '' : 's'} in the Knowledge Graph.`
-          : 'PIE has not connected enough project relationships yet.',
+          ? `${relationshipConfidence.relationshipCount} project relationship${relationshipConfidence.relationshipCount === 1 ? '' : 's'} connected in the Knowledge Graph.`
+          : 'Not enough project relationships have been connected yet.',
       confidence: relationshipConfidence.level,
       supportingEvidence: graphOutputs.graphInsights.slice(0, 3).map(insight =>
         runtimeBeliefEvidence({
@@ -2186,7 +2179,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-project-health',
       projectName: state.projectName,
-      statement: `PIE currently believes project health is ${state.intelligence.healthStatus}.`,
+      statement: `DAVE currently believes project health is ${state.intelligence.healthStatus}.`,
       confidence: healthSignal.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2215,8 +2208,8 @@ function buildBeliefsFromState(
       projectName: state.projectName,
       statement:
         state.intelligence.metrics.scheduleItemCount > 0
-          ? `PIE currently believes schedule status is ${state.intelligence.scheduleStatus}.`
-          : 'PIE does not have enough schedule evidence to confirm schedule status.',
+          ? `DAVE currently believes schedule status is ${state.intelligence.scheduleStatus}.`
+          : 'There is not enough schedule evidence to confirm schedule status.',
       confidence:
         state.intelligence.metrics.scheduleItemCount > 0
           ? state.intelligence.confidence.level
@@ -2240,8 +2233,8 @@ function buildBeliefsFromState(
       id: 'belief-current-area',
       projectName: state.projectName,
       statement: location.currentArea
-        ? `PIE currently believes the active area is ${location.currentArea}.`
-        : 'PIE has not confirmed the current project area.',
+        ? `DAVE currently believes the active area is ${location.currentArea}.`
+        : 'The current project area has not been confirmed.',
       confidence: location.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2266,8 +2259,8 @@ function buildBeliefsFromState(
       id: 'belief-latest-activity',
       projectName: state.projectName,
       statement: latestEvent
-        ? `PIE believes the latest notable activity is ${latestEvent.title}.`
-        : 'PIE does not have recent activity history for this project.',
+        ? `DAVE believes the latest notable activity is ${latestEvent.title}.`
+        : 'There is no recent activity history for this project.',
       confidence: latestEvent?.confidence ?? 'low',
       supportingEvidence: latestEvent
         ? [projectEventBeliefEvidence(latestEvent)]
@@ -2290,7 +2283,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-next-best-action',
       projectName: state.projectName,
-      statement: `PIE believes the next best action is ${nextRecommendation?.title || nextBestAction.title}.`,
+      statement: `DAVE believes the next best action is ${nextRecommendation?.title || nextBestAction.title}.`,
       confidence: nextRecommendation?.confidence || nextBestAction.confidence,
       supportingEvidence:
         nextRecommendation
@@ -2310,7 +2303,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-communication-readiness',
       projectName: state.projectName,
-      statement: `PIE believes communication readiness is ${state.intelligence.communicationReadiness.level}.`,
+      statement: `DAVE believes communication readiness is ${state.intelligence.communicationReadiness.level}.`,
       confidence: state.intelligence.communicationReadiness.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2341,7 +2334,7 @@ function buildBeliefsFromState(
       ? makeBelief({
           id: 'belief-current-concern',
           projectName: state.projectName,
-          statement: `PIE believes ${currentConcern.title} is a current concern.`,
+          statement: `DAVE believes ${currentConcern.title} is a current concern.`,
           confidence: currentConcern.confidence,
           supportingEvidence: [
             runtimeBeliefEvidence({
@@ -2370,7 +2363,7 @@ function buildBeliefsFromState(
       makeBelief({
         id: `belief-risk-${risk.id}`,
         projectName: state.projectName,
-        statement: `PIE believes ${risk.label} is a current risk signal.`,
+        statement: `DAVE believes ${risk.label} is a current risk signal.`,
         confidence: risk.confidence,
         supportingEvidence: [
           runtimeBeliefEvidence({
@@ -2829,7 +2822,7 @@ function decisionPreparednessFactor(
     reason: `${decisionCount} decision${decisionCount === 1 ? '' : 's'} queued, ${approvalCount} requiring approval, with ${state.decisionQueue.confidence} decision confidence.`,
     missingItems,
     improvementSuggestions: uniqueText([
-      decisionCount > 0 ? null : 'Capture more project evidence so PIE can build a decision queue.',
+      decisionCount > 0 ? null : 'Capture more project evidence to build a decision queue.',
       approvalCount > 0 ? 'Review approval-required decisions.' : null,
       ...trustScore.improvementSuggestions.slice(0, 1),
     ]),
@@ -2980,7 +2973,7 @@ function makeCurrentUnderstanding(
       graphConcern ||
       firstConcern?.summary ||
       response.whatConcernsPIE ||
-      'PIE does not see an urgent concern from current local evidence.',
+      'No urgent concern is visible in current local evidence.',
     whatPIERecommends,
     whatPIENeedsFromYou:
       executiveNeed ||
@@ -2989,7 +2982,7 @@ function makeCurrentUnderstanding(
       graphNeed ||
       firstNeed?.suggestedAction ||
       response.whatPIENeedsFromYou ||
-      'Review PIE output before taking action.',
+      'Review DAVE output before taking action.',
     overallConfidence: parts.overallConfidence,
     trustScore: parts.trustScore,
     understandingScore: parts.understandingScore,
@@ -3528,10 +3521,10 @@ function executiveBriefToInsight(
     id: `runtime-executive-${runtimeSlug(brief.id)}`,
     projectName: topPriority?.projectName || projectName,
     title: topPriority
-      ? 'PIE Executive Recommendation'
-      : 'PIE Executive Monitoring',
+      ? 'Executive Recommendation'
+      : 'Executive Monitoring',
     summary: topPriority
-      ? `PIE Executive recommends: ${topPriority.recommendedAction}`
+      ? `Executive recommendation: ${topPriority.recommendedAction}`
       : brief.executiveSummary,
     whyItMatters: topPriority?.summary || brief.trustExplanation,
     source: 'pie-executive',
@@ -3570,7 +3563,7 @@ function graphInsightToInsight(insight: PIEGraphInsight): PIEInsight {
     title: insight.title,
     summary: insight.summary,
     whyItMatters:
-      'The Knowledge Graph found relationships between project records that improve PIE explainability.',
+      'The Knowledge Graph found relationships between project records that improve DAVE explainability.',
     source: 'knowledge-graph',
     confidence: insight.confidence,
     priority: insight.priority,
@@ -3594,7 +3587,7 @@ function evidenceFusionToInsight(
     projectName: summary.projectName,
     title: 'Evidence Fusion Summary',
     summary:
-      'PIE combined schedule, photos, GPS, and updates into this summary.',
+      'DAVE combined schedule, photos, GPS, and updates into this summary.',
     whyItMatters: intelligentSummary.pieRecommendation,
     source: 'evidence-fusion',
     confidence: summary.confidence,
@@ -3629,7 +3622,7 @@ function photoProgressToInsight(
     title: 'Photo Progress Comparison',
     summary: photoProgressOutputs.photoProgressSummary,
     whyItMatters: photoProgressOutputs.comparisonNeedsReview
-      ? 'PIE needs user verification before treating this comparison as project evidence.'
+      ? 'User verification is needed before treating this comparison as project evidence.'
       : 'Accepted photo progress can support Review, Executive, Mission, Knowledge Graph, and Combined Update context.',
     source: 'photo-progress',
     confidence: photoProgressOutputs.comparisonConfidence,
@@ -3683,7 +3676,7 @@ function graphGapToUnknown(gap: PIEGraphGap): PIEUnknown {
     title: gap.title,
     summary: gap.summary,
     impact:
-      'PIE has weaker relationship confidence until this missing project context is filled.',
+      'Relationship confidence remains weaker until this missing project context is filled.',
     suggestedAction: gap.suggestedAction,
     source: 'knowledge-graph',
     confidence: gap.confidence,
@@ -3698,7 +3691,7 @@ function evidenceGapToUnknown(gap: PIEvidenceGap): PIEUnknown {
     title: gap.title,
     summary: gap.summary,
     impact:
-      'PIE has weaker fused evidence until this missing input is resolved.',
+      'Fused evidence remains weaker until this missing input is resolved.',
     suggestedAction: gap.suggestedAction,
     source: 'evidence-fusion',
     confidence: gap.confidence,
@@ -3713,7 +3706,7 @@ function evidenceConflictToUnknown(conflict: PIEvidenceConflict): PIEUnknown {
     title: conflict.title,
     summary: conflict.summary,
     impact:
-      'PIE should not overstate the recommendation until this evidence conflict is resolved.',
+      'The recommendation should not be overstated until this evidence conflict is resolved.',
     suggestedAction: conflict.suggestedAction,
     source: 'evidence-fusion',
     confidence: conflict.confidence,
@@ -3725,7 +3718,7 @@ function questionToUnknown(question: PIEQuestion): PIEUnknown {
   return {
     id: `runtime-question-${question.id}`,
     projectName: question.projectName,
-    title: 'Question PIE Needs Answered',
+    title: 'Question DAVE Needs Answered',
     summary: question.question,
     impact: question.reason,
     suggestedAction: question.question,
@@ -3747,7 +3740,7 @@ function briefSummary(
   const mission = `Current Mission: ${parts.missionOutputs.currentMission.title}.`;
 
   if (type === 'walk') {
-    return `${mission} PIE is ready to guide a project walk for ${state.projectName}. Current priority: ${priority}.`;
+    return `${mission} A guided project walk is ready for ${state.projectName}. Current priority: ${priority}.`;
   }
 
   if (type === 'executive') {
@@ -3759,10 +3752,10 @@ function briefSummary(
   }
 
   if (type === 'project') {
-    return `${mission} ${state.projectName}: PIE understands ${state.evidence.length} evidence signal${state.evidence.length === 1 ? '' : 's'} and recommends ${priority}.`;
+    return `${mission} ${state.projectName}: DAVE understands ${state.evidence.length} evidence signal${state.evidence.length === 1 ? '' : 's'} and recommends ${priority}.`;
   }
 
-  return `${mission} ${state.projectName}: today's highest priority is ${priority}; PIE is at ${confidence}.`;
+  return `${mission} ${state.projectName}: today's highest priority is ${priority}; confidence is ${confidence}.`;
 }
 
 function projectWalkNeed(parts: RuntimeBuildParts) {
@@ -3833,7 +3826,7 @@ function evidenceFusionKnowledgeLine(
 
   if (summary.sourceCount === 0) return null;
 
-  return `PIE combined schedule, photos, GPS, and updates into this summary with ${summary.trustScore}% fusion trust.`;
+  return `DAVE combined schedule, photos, GPS, and updates into this summary with ${summary.trustScore}% fusion trust.`;
 }
 
 function evidenceFusionConcernLine(
@@ -3922,7 +3915,7 @@ function evidenceFreshnessFactor(
       score: 25,
       weight: 1.2,
       status: 'missing',
-      reason: 'PIE does not have a dated recent activity signal.',
+      reason: 'There is no dated recent activity signal.',
       improvementSuggestion: 'Capture a current update or import recent activity.',
     });
   }
@@ -4012,7 +4005,7 @@ function photoCoverageFactor(
       score: 25,
       weight: 0.9,
       status: 'missing',
-      reason: 'PIE does not have photos for this project.',
+      reason: 'There are no photos for this project.',
       improvementSuggestion: 'Capture field photos with captions and action status.',
     });
   }
@@ -4049,7 +4042,7 @@ function scheduleCompletenessFactor(
       score: 25,
       weight: 1,
       status: 'missing',
-      reason: 'PIE does not have schedule items for this project.',
+      reason: 'There are no schedule items for this project.',
       improvementSuggestion: 'Import or enter schedule items for the project.',
     });
   }
@@ -4127,7 +4120,7 @@ function recentUpdatesFactor(
       weight: 1.1,
       status: 'weak',
       reason: `Last update is ${daysSinceActivityLabel(daysSinceLastUpdate)} old.`,
-      improvementSuggestion: 'Capture a fresh update to improve PIE confidence.',
+      improvementSuggestion: 'Capture a fresh update to improve confidence.',
     });
   }
 
@@ -4155,8 +4148,8 @@ function openQuestionsFactor(
       score: 100,
       weight: 1,
       status: 'strong',
-      reason: 'PIE does not have unresolved questions in the current runtime state.',
-      improvementSuggestion: 'Keep reviewing PIE questions when new gaps appear.',
+      reason: 'There are no unresolved questions in the current runtime state.',
+      improvementSuggestion: 'Keep reviewing DAVE questions when new gaps appear.',
     });
   }
 
@@ -4170,7 +4163,7 @@ function openQuestionsFactor(
     weight: 1,
     status: statusFromScore(score),
     reason: `${openQuestionCount} open question${openQuestionCount === 1 ? '' : 's'} or unknown${openQuestionCount === 1 ? '' : 's'} need review.`,
-    improvementSuggestion: 'Answer PIE questions and fill missing project context.',
+    improvementSuggestion: 'Answer DAVE questions and fill missing project context.',
   });
 }
 
@@ -4194,7 +4187,7 @@ function conflictingEvidenceFactor(
       score: 100,
       weight: 1,
       status: 'strong',
-      reason: 'PIE does not see sync conflicts or explicit conflicting evidence.',
+      reason: 'There are no sync conflicts or explicit conflicting evidence.',
       improvementSuggestion: 'Review conflicts if sync or field evidence changes.',
     });
   }
@@ -4447,7 +4440,7 @@ function understandingEvidenceCoverageFactor(
     },
     {
       present: counts.reasoningThoughts > 0,
-      missing: 'PIE reasoning thoughts',
+      missing: 'DAVE reasoning thoughts',
     },
   ];
   const presentCount = sourceChecks.filter(check => check.present).length;
@@ -4515,7 +4508,7 @@ function understandingRecentUpdatesFactor(
       score: 20,
       weight: 1.1,
       present: false,
-      reason: 'PIE does not have a saved update for this project.',
+      reason: 'There is no saved update for this project.',
       missingInformation: 'No recent project update.',
       improvementSuggestion: 'Capture the first project update.',
     });
@@ -4538,7 +4531,7 @@ function understandingRecentUpdatesFactor(
     present: score >= 70,
     reason: `Last update is ${daysSinceActivityLabel(daysSinceLastUpdate)} old.`,
     missingInformation: score >= 70 ? null : 'Recent field update is stale or missing.',
-    improvementSuggestion: 'Capture current progress so PIE can understand today.',
+    improvementSuggestion: 'Capture current progress to establish today’s status.',
   });
 }
 
@@ -4554,7 +4547,7 @@ function understandingPhotoCoverageFactor(
       score: 20,
       weight: 1,
       present: false,
-      reason: 'PIE does not have field photos for this project.',
+      reason: 'There are no field photos for this project.',
       missingInformation: 'No field photos.',
       improvementSuggestion: 'Capture photos with captions and action status.',
     });
@@ -4593,7 +4586,7 @@ function understandingScheduleCompletenessFactor(
       score: 20,
       weight: 1,
       present: false,
-      reason: 'PIE does not have schedule items for this project.',
+      reason: 'There are no schedule items for this project.',
       missingInformation: 'No project schedule.',
       improvementSuggestion: 'Import or enter schedule items.',
     });
@@ -4645,11 +4638,11 @@ function understandingOpenQuestionsFactor(
     present: openQuestionCount === 0,
     reason:
       openQuestionCount === 0
-        ? 'PIE does not have unresolved reasoning questions.'
-        : `${openQuestionCount} PIE question${openQuestionCount === 1 ? '' : 's'} need review.`,
+        ? 'There are no unresolved reasoning questions.'
+        : `${openQuestionCount} DAVE question${openQuestionCount === 1 ? '' : 's'} need review.`,
     missingInformation:
-      openQuestionCount === 0 ? null : 'PIE has unanswered project questions.',
-    improvementSuggestion: 'Answer PIE questions or confirm missing context.',
+      openQuestionCount === 0 ? null : 'There are unanswered project questions.',
+    improvementSuggestion: 'Answer DAVE questions or confirm missing context.',
   });
 }
 
@@ -4674,8 +4667,8 @@ function understandingUnknownsFactor(
     present: unknownCount === 0,
     reason:
       unknownCount === 0
-        ? 'PIE does not see major unknowns in the current runtime state.'
-        : `${unknownCount} unknown${unknownCount === 1 ? '' : 's'} limit PIE's understanding.`,
+        ? 'There are no major unknowns in the current runtime state.'
+        : `${unknownCount} unknown${unknownCount === 1 ? '' : 's'} limit DAVE's understanding.`,
     missingInformation:
       unknownCount === 0 ? null : unknowns[0]?.summary || 'Project context is incomplete.',
     improvementSuggestion:
@@ -4704,7 +4697,7 @@ function understandingConflictingEvidenceFactor(
     present: conflictCount === 0,
     reason:
       conflictCount === 0
-        ? 'PIE does not see conflicting local or cloud evidence.'
+        ? 'There is no conflicting local or cloud evidence.'
         : `${conflictCount} conflict signal${conflictCount === 1 ? '' : 's'} detected.`,
     missingInformation:
       conflictCount === 0 ? null : 'Conflicting project evidence needs resolution.',
@@ -4728,7 +4721,7 @@ function understandingEvidenceFusionFactor(
     score: summary.trustScore,
     weight: 1,
     present: summary.trustScore >= 70 && summary.conflictCount === 0,
-    reason: `PIE fused schedule (${summary.scheduleItemCount}), photos (${summary.photoCount}), GPS (${summary.gpsAvailable ? 'available' : 'missing'}), and updates (${summary.userUpdateCount}).`,
+    reason: `DAVE fused schedule (${summary.scheduleItemCount}), photos (${summary.photoCount}), GPS (${summary.gpsAvailable ? 'available' : 'missing'}), and updates (${summary.userUpdateCount}).`,
     missingInformation:
       firstConflict?.summary ||
       firstGap?.summary ||

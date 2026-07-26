@@ -1,27 +1,263 @@
-import { deleteCloudProject, loadCloudProjects, saveCloudProject } from './services/projectService';
-import { loadCloudUpdates, saveCloudUpdate } from './services/updateService';
 import {
-  uploadLocalPhoto,
-  uploadLocalPhotoWithDiagnostics,
-  uploadPendingChanges,
+  deleteCloudProject,
+  loadCloudArchivedProjectNames,
+  loadCloudProjectRecords,
+  queueCloudProjectArchives,
+  saveCloudProject,
+  saveCloudProjectCoverPhoto,
+  setCloudProjectArchived,
+} from './services/projectService';
+import {
+  loadCloudUpdates,
+  persistAndQueueProjectUpdateDeletion,
+  reconcileProjectUpdateDeletionJournal,
+  type DeletedUpdateTombstone,
+  type FieldUpdateDeleteDiagnostics,
+} from './services/updateService';
+import {
+  cleanupStoredSyncStatusMessages,
+  getOfflineQueue,
+  hydrateRecoveredProjectUpdatePhotos,
+  markMissingPhotosUnavailable,
+  requestPendingChangesUpload,
+  removeMissingPhotosFromSyncQueue,
   removeProjectUpdateFromSyncQueue,
+  runFieldUpdateCloudSync,
+  queueProjectAreaRecord,
+  queueReferenceDocumentRecord,
+  queueScheduleItemRecord,
+  removeOperationalRecordFromSyncQueue,
+  synchronizeLocalData,
+  uploadPendingChanges,
+  type FieldUpdateSyncWorkAttempt,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
   type SyncUploadResult,
 } from './services/SyncService';
 import {
+  accountDisplayNameForUser,
+  getCurrentUser,
   getCurrentSessionAccessToken,
+  listArchivedProjects,
+  listProjectAreas,
+  listProjects,
+  listProjectUpdates,
+  listReferenceDocuments,
+  listScheduleItems,
   signIn,
   signUp,
+  subscribeToAuthStateChange,
+  subscribeToDAVEOperationalChanges,
+  updateCurrentUserDisplayName,
   uploadPhoto,
 } from './services/SupabaseService';
-import { AdminScreen } from './screens/AdminScreen';
+import {
+  createDAVEOperationalRefreshCommitGuard,
+  createDAVEOperationalRefreshController,
+  DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE,
+  runDAVEOperationalCollectionRefreshes,
+  type DAVEOperationalCollectionRefresh,
+} from './services/DAVEOperationalRefresh';
+import { reconcileDAVEOperationalProjects } from './services/DAVEOperationalProjectRecovery';
+import {
+  isLegacyNonProjectShellName,
+  legacyNonProjectShellNamesPresent,
+  LEGACY_NON_PROJECT_SHELL_NAMES,
+} from './services/CrossDeviceVisibility';
+import { AdminScreen, SignInModal } from './screens/AdminScreen';
+import { ReportsScreen } from './screens/ReportsScreen';
+import {
+  mailComposerOutcome,
+  smsComposerOutcome,
+  type ReportCommunicationOutcome,
+} from './services/ReportCommunication';
+import { AppShellFrame } from './components/app-shell-frame';
+import { colors, styles } from './components/app-shell-theme';
+import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
+import {
+  appShellContentTopPadding,
+  appShellLayoutForWidth,
+  useAppShellLayout,
+} from './components/app-shell-layout';
+import {
+  OverviewResponsiveColumn,
+  OverviewResponsiveFrame,
+  OverviewResponsiveWorkspace,
+} from './components/overview-responsive-layout';
+import { ScheduleImportFlow } from './components/ScheduleImportFlow';
+import { extractSchedulePdfWithServer } from './services/PIEScheduleRemoteExtraction';
+import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
+import { ScheduleTaskListControls, type ScheduleTaskFilter,
+  type ScheduleTaskView, type ScheduleWorkspaceView } from './components/schedule-task-list-controls';
+import { ScheduleTaskGroupHeader, ScheduleWideWorkspace } from './components/schedule-workspace-layout';
+import { MobileSchedulePlanning } from './components/mobile-schedule-planning';
+import { NativeDateField } from './components/native-date-field';
+import {
+  ProjectItemDetailsEditor,
+  ProjectItemNextAction,
+  ProjectItemTypeBadge,
+} from './components/project-item-details';
+import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
+import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
+import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
+import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
+import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
+import {
+  explicitProjectAreaOwner,
+  projectAreasForProject,
+} from './services/DAVEProjectAreaScope';
+import {
+  projectUpdateBelongsToParentProject,
+  projectUpdatesForParentProject,
+} from './services/DAVEProjectUpdateScope';
+import { groupScheduleWorkspaceItemsByProjectAndArea, resolveScheduleWorkspaceTask,
+  scheduleItemsForWorkspaceProject, scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
+import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
+  resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
+import { filterDAVEDocumentWorkspace, markCurrentProjectScheduleDocument,
+  resolveDAVEDocumentWorkspaceDocument } from './services/DAVEDocumentWorkspace';
+import {
+  PROJECT_DOCUMENT_CATEGORIES,
+  suggestProjectDocumentCategory,
+  type ProjectDocumentCategory,
+} from './services/ProjectDocumentClassification';
 import { KeyboardAvoidingModalCard } from './components/KeyboardAvoidingModalCard';
+import { UpdateDeleteControl } from './components/update-delete-control';
+import { HoldToDeleteButton } from './components/hold-to-delete-button';
+import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
+import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
+import {
+  DAVETaskActionConfirmationSheet,
+  type DAVETaskActionCandidate,
+} from './components/dave-task-action-confirmation-sheet';
+import { DAVECaptureConfirmationSheet } from './components/DAVECaptureConfirmationSheet';
+import { DAVECaptureMemoryDetailSheet } from './components/DAVECaptureMemoryDetailSheet';
+import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
+import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
+import {
+  DailyBriefSection,
+  DAVEProjectNeedsVerificationLabel,
+  DAVEProjectStatusLoadingScreen,
+  DAVEProjectTaskOperationalSummary,
+  WorkspaceCardSkeleton,
+} from './components/DAVEProjectStatusViews';
+import { StartupErrorBoundary } from './components/StartupErrorBoundary';
+import { StartupHydrationBoundary } from './components/StartupHydrationBoundary';
+import {
+  persistStorageItem,
+  removePersistedStorageItem,
+  reportStoragePersistenceFailure,
+  useJsonStoragePersistence,
+  useStringStoragePersistence,
+} from './hooks/use-async-storage-persistence';
+import {
+  isStartupHydrationReady,
+  useStartupHydration,
+} from './hooks/use-startup-hydration';
+import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-recovery';
+import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
+import type {
+  ActionStatus,
+  AreaSuggestion,
+  ContactBook,
+  DAVESyncTombstone,
+  PhotoCategory,
+  ProjectArea,
+  ProjectContact,
+  RecipientSelection,
+  ScheduleItem,
+  SchedulePriority,
+  ScheduleStatus,
+  StoredDraft,
+  UpdatePhoto,
+  ReferenceDocument,
+} from './types';
+import { normalizeProjectItemActivity, normalizeProjectItemType } from './services/ProjectItemWorkflow';
+import {
+  deleteStoredReferenceDocument,
+  ensureReferenceDocumentsDirectory,
+  isStoredReferenceDocument,
+  normalizeReferenceDocument,
+  normalizeReferenceDocuments,
+  prepareReferenceDocumentForCloud,
+  resolveReferenceDocumentUri,
+} from './services/ReferenceDocumentRepository';
+import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
+import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
+import { logStartupDiagnostic } from './services/StartupDiagnostics';
+import {
+  normalizeStartupArray,
+  readStartupJson,
+  readStartupJsonArray,
+} from './services/StartupRecovery';
+import {
+  isStartupContactBook,
+  isStartupDeletedUpdateRecord,
+  isStartupDraftEnvelope,
+  isStartupProjectAreaRecord,
+  isStartupProjectName,
+  isStartupProjectRecord,
+  isStartupReferenceDocumentRecord,
+  isStartupSavedUpdateRecord,
+  isStartupScheduleItemRecord,
+  isStartupStandaloneProjectDocumentRecord,
+  salvageStartupContactBook,
+} from './services/StartupRecordValidation';
+import { normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
+import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
+import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
+import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
+import {
+  runAutomaticSyncQueue,
+  shouldPersistAutomaticSyncOutcome,
+  startAutomaticSyncBackgroundTask,
+} from './services/AutomaticSyncState';
+import { createProjectId, restoreProjectRecords } from './services/ProjectIdentity';
+import { buildProjectDeletionCascade, buildProjectDeletionOperations,
+  referenceDocumentMatchesProject as referenceDocumentMatchesDeletedProject,
+  scheduleItemMatchesProject as scheduleItemMatchesDeletedProject, selectProjectDeletionFallback,
+  PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
+  PROJECT_DELETION_TRANSACTION_JOURNAL_KEY, type ProjectDeletionStorageKeys } from './services/ProjectDeletionTransaction';
+import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileCleaner, createProjectDeletionRuntime, ProjectDeletionIntentRecoveryRequiredError, ProjectDeletionRecoveryRequiredError } from './services/ProjectDeletionRuntime';
+import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
+import { FileSizePreflightError, preflightExpoFileRead } from './services/FileSizePreflight';
+import {
+  APP_BACKUP_VERSION,
+  BackupRestoreRecoveryRequiredError,
+  buildDeletionSafeRestoreState,
+  createBackupRestoreRuntime,
+  preflightAppBackup,
+} from './services/BackupRestoreRuntime';
+import {
+  buildCombinedReportAuthorityScope,
+  buildDailyReportAuthorityScope,
+} from './services/ReportAuthorityScope';
+import {
+  isLegacyOwnedLocalFileReadDeleteAuthorized,
+  isOwnedLocalFileManifestMember,
+  parseOwnedLocalFileManifest,
+  resolveLegacyOwnedLocalFilePath,
+} from './services/OwnedLocalFileRepository';
+import {
+  cleanupProjectDocumentOwnedFileForRecordRemoval,
+  createProjectDocumentOwnedFileStore,
+  importProjectDocumentIntoOwnedStorage,
+  OWNED_PROJECT_DOCUMENTS_FOLDER,
+  PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE,
+  recoverStaleUploadingDocuments,
+  requireOwnedProjectDocumentAccess,
+} from './services/ProjectDocumentLifecycle';
+import {
+  fieldUpdateLifecycleLabel,
+  persistedStatusForSyncResult,
+  type PersistedFieldUpdateStatus,
+} from './services/FieldUpdateLifecycle';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Contacts from 'expo-contacts';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -29,17 +265,132 @@ import * as Location from 'expo-location';
 import * as MailComposer from 'expo-mail-composer';
 import * as Sharing from 'expo-sharing';
 import * as SMS from 'expo-sms';
-import { StatusBar } from 'expo-status-bar';
+import {
+  fromByteArray,
+  toByteArray,
+} from 'base64-js';
+import {
+  createCompleteBackupArchive,
+  decryptCompleteBackupArchive,
+  COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH,
+  type CompleteBackupPlainAsset,
+} from './services/CompleteBackupArchive';
 import {
   analyzeProjectPhotoWithVision,
   buildAnalyzingPhotoIntelligenceState,
   type PIEPhotoIntelligenceDisplayState,
 } from './services/PIEPhotoVisionMobileWorkflow';
+import { createPhotoAnalysisCoordinator } from './services/PhotoAnalysisCoordinator';
+import {
+  createDraftLocationCaptureTarget,
+  isDraftLocationCaptureTargetCurrent,
+} from './services/draft-location-capture-target';
+import {
+  type PhotoAnalysisTarget,
+} from './services/PhotoAnalysisTarget';
+import {
+  aggregatePhotoDisplayResults,
+  photoAssessmentReviewCopy,
+  photoDisplayResultHasExplicitFinding,
+} from './services/PhotoAssessment';
 import {
   attentionCategoryForPhotoCategory,
   buildStableAttentionItemId,
   dedupeAttentionItemsById,
 } from './services/PIEAttentionIdentity';
+import { buildDAVEProjectTruth } from './services/DAVEProjectTruth';
+import { parseDAVEAssertions } from './services/DAVEAssertionParser';
+import {
+  mergeDAVECloudRecoveredProjectUpdate,
+  mergeDAVECloudRecoveryRecords,
+  mergeDAVEReferenceDocumentRecoveryRecords,
+} from './services/DAVECloudRecovery';
+import {
+  isDAVESafeCloudScheduleRecord,
+  reconcileDAVEScheduleRecords,
+  recoverDAVEScheduleRecords,
+} from './services/DAVEScheduleRecovery';
+import {
+  DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
+  deletedDAVERecordIds,
+  recordDAVESyncTombstone,
+  recordDAVESyncTombstones,
+  loadDAVEOperationalTombstones,
+  synchronizeDAVESyncTombstones,
+} from './services/DAVESyncTombstones';
+import {
+  DELETED_TASK_EVIDENCE_LABEL,
+  partitionProjectUpdatesByDeletedTask,
+} from './services/DAVEDeletedTaskEvidence';
+import { createDAVEPhotoContinuityAnchor } from './services/PIEVisualContinuity';
+import {
+  buildDAVEActionInbox,
+  type DAVEActionInboxItem,
+} from './services/DAVEActionInbox';
+import {
+  parseDAVEFollowThroughReviewStatesResult,
+  planDAVEFollowThrough,
+  reviewedDAVEFollowThroughStates,
+  type DAVEFollowThroughReminder,
+  type DAVEFollowThroughReviewState,
+} from './services/DAVEFollowThroughPlanner';
+import {
+  mentionedDAVEProject,
+  routeDAVEConversation,
+  type DAVEConversationNavigationTarget,
+} from './services/DAVEConversationRouter';
+import {
+  answerDAVEConversationContext,
+  resolveDAVEConversationContext,
+} from './services/DAVEConversationContext';
+import {
+  findDAVETaskCandidates,
+  type DAVETaskUpdateCommand,
+} from './services/DAVETaskConversation';
+import {
+  createDAVEAskHistoryPersistence,
+  daveAskHistoryStorageKey,
+  resolveDAVEAskEvidenceNavigation,
+  type DAVEAskConversationEntry,
+} from './services/DAVEAskConversation';
+import type { DAVEAskAnswer, DAVEAskEvidence } from './services/DAVEAsk';
+import type { DAVEVoiceUnderstandingResponse } from './services/DAVEVoiceUnderstanding';
+import {
+  buildDAVEProjectWalkContext,
+  type DAVEProjectWalkContext,
+  type DAVEProjectWalkLocationInput,
+} from './services/DAVEProjectWalk';
+import {
+  buildDAVEProjectWalkFieldUpdateDraft,
+  unusedConfirmedProjectWalkMemories,
+} from './services/DAVEProjectWalkFieldUpdate';
+import {
+  createCaptureMemory,
+  type DAVECaptureMemory,
+  type DAVEConfirmedCaptureMemory,
+} from './services/DAVECaptureMemory';
+import { localDAVECaptureMemoryRepository } from './services/DAVECaptureMemoryRepository';
+import {
+  localDAVEIdentityRepository,
+} from './services/DAVEIdentityRepository';
+import type { DAVEIdentityCorrection } from './services/DAVEIdentity';
+import {
+  startDAVEProjectWalkSession,
+  type DAVEProjectWalkSession,
+} from './services/DAVEProjectWalkSession';
+import { localDAVEProjectWalkSessionRepository } from './services/DAVEProjectWalkSessionRepository';
+import {
+  cacheSelectedProjectCoverPhoto,
+  coverPhotoForProject,
+  hydrateProjectCoverPhotoCache,
+  mergeProjectRecords,
+  normalizeProjectRecords,
+  projectRecordFromCloud,
+  removeCachedProjectCoverPhoto,
+  resolveProjectCoverPhotoUri,
+  type ProjectCoverPhoto,
+  type ProjectRecord,
+} from './services/ProjectCoverPhotoService';
 import {
   buildSixtySecondFlowTimingResult,
   type SixtySecondFlowTimingResult,
@@ -47,8 +398,10 @@ import {
 import {
   PIELiveAuthorityProvider,
   type PIELiveAuthorityInput,
+  usePIELiveAuthority,
 } from './providers/PIELiveAuthorityProvider';
 import {
+  automateLayer4DecisionLifecycle,
   buildLayer4DecisionCandidateFromExecutiveJudgment,
 } from './services/PIELayer4Automation';
 import type {
@@ -56,7 +409,99 @@ import type {
   PIEDecisionRecord,
   PIEEvidenceReference,
 } from './services/PIEDecisionLedger';
+import {
+  resolvePIELayer4ActorContext,
+  type PIELayer4ActorContext,
+} from './services/PIELayer4Identity';
+import {
+  loadPIEDecisionLedgerForOrganization,
+  savePIEDecisionLedgerForOrganization,
+  type PIEDecisionLedgerMigrationStatus,
+} from './services/PIEDecisionLedgerStorage';
+import { createLocalPIEDecisionHistoryActions } from './services/LocalPIEDecisionHistoryActions';
+import { buildVerifiedLearningEventsFromDecisionLedger } from './services/PIEDecisionOutcomeLearning';
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
+import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
+import {
+  buildPIEScheduleReconciliation,
+  reconcileCurrentScheduleDocuments,
+  selectAuthoritativeScheduleItems,
+  type PIEScheduleFieldMatch,
+  type PIEScheduleReconciliationWarning,
+} from './services/PIEScheduleReconciliation';
+import {
+  buildPIEScheduleDependencyNetwork,
+  type PIEScheduleDependencyNode,
+} from './services/PIEScheduleDependencyNetwork';
+import {
+  explicitScheduleNote,
+  normalizeImportedScheduleNote,
+  normalizeMicrosoftProjectPdfRows,
+  normalizeScheduleImport,
+} from './services/PIEScheduleIntelligence';
+import { extractScheduleItemsFromCommunicationText } from './services/PIEScheduleCommunicationImport';
+import {
+  findExactScheduleTaskForCompletionClaim,
+  mergeReportedCompletionClaim,
+  normalizeDAVECompletionVerification,
+  rejectScheduleItemCompletion,
+  scheduleCompletionVerificationLabel,
+  scheduleItemNeedsCompletionVerification,
+  verifyScheduleItemCompletion,
+} from './services/DAVECompletionVerification';
+import {
+  bindPIEScheduleImportBatchProvenance,
+  dedupeScheduleImportItems,
+  scheduleImportItemIdentity,
+  scheduleItemsForExactImportBatch,
+  scheduleOverviewProjectNames,
+  resolveScheduleParentActions,
+  scheduleParentProjectNames,
+  scheduleProjectScopeNames,
+  type PIEScheduleImportBatch,
+} from './services/PIEScheduleImportBatch';
+import {
+  buildDAVEProjectScheduleRollup,
+  scheduleTaskIsComplete,
+  scheduleTasksForParentProject,
+} from './services/dave-project-schedule-rollup';
+import {
+  normalizeScheduleStatus,
+  reconcileScheduleProgress,
+  reconcileScheduleProgressEdit,
+} from './services/ScheduleProgressInvariant';
+import {
+  DEFAULT_PROJECT_TIME_ZONE,
+  projectDateRelativeDays,
+  projectTimeZoneOrDefault,
+} from './services/ProjectDateTime';
+import {
+  deriveDAVEProjectOperationalStatus,
+  operationalScheduleItemsForProject,
+} from './services/DAVEProjectOperationalStatus';
+import {
+  daveConfirmedBlockerReason,
+  findCurrentDAVEConfirmedBlocker,
+  findCurrentDAVEConfirmedBlockerForScopes,
+  updateHasOpenDAVEBlocker,
+  updateHasOpenDAVESafetyConcern,
+} from './services/DAVEProjectBlockerState';
+import {
+  canonicalizeDAVEScheduleItems,
+  scheduleTaskGroupName,
+} from './services/DAVEIdentity';
+import { constructionRelevantObservations } from './services/dave-construction-relevance';
+import {
+  extractTextFromPdf,
+  isDavePdfTextExtractionAvailable,
+  isDaveTextRecognitionAvailable,
+  recognizeTextFromImage,
+} from './modules/dave-text-recognition';
+import type { AppScreen } from './types/app-navigation';
+import { useAndroidHardwareBack, useAppNavigation } from './hooks/use-app-navigation';
+import { useProgressiveListCount } from './hooks/use-progressive-list-count';
+import { useReportSelection } from './hooks/use-report-selection';
+import { countLabel, pluralWord } from './utils/pluralization';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -65,17 +510,18 @@ import {
   AppState,
   FlatList,
   Image,
-  KeyboardAvoidingView,
   Linking,
   Modal,
   PanResponder,
   Platform,
   ScrollView,
+  SectionList,
   StyleProp,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from 'react-native';
@@ -84,59 +530,9 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-
-type Screen =
-  | 'Home'
-  | 'SelectProject'
-  | 'AddPhotos'
-  | 'PIEAnalysis'
-  | 'BuildUpdate'
-  | 'Projects'
-  | 'ProjectWorkspace'
-  | 'SavedUpdates'
-  | 'UpdateDetail'
-  | 'Contacts'
-  | 'Diagnostics'
-  | 'ReferenceDocuments'
-  | 'ProjectDocuments'
-  | 'Schedule'
-  | 'Upcoming'
-  | 'Admin';
-
+type Screen = AppScreen;
 type IconName = keyof typeof Ionicons.glyphMap;
-
-type PhotoCategory =
-  | 'Open Issue'
-  | 'Safety Concern'
-  | 'Update';
-
-type ActionStatus =
-  | 'Open'
-  | 'In Progress'
-  | 'Waiting'
-  | 'Closed';
-
-type UpdatePhoto = {
-  id: string;
-  uri: string;
-  caption: string;
-  category: PhotoCategory;
-  actionRequired: string;
-  actionOwner: string;
-  actionDueDate: string;
-  actionStatus: ActionStatus;
-  fileName?: string | null;
-  mimeType?: string | null;
-  selectedAreaId?: string | null;
-  selectedAreaName?: string | null;
-  gpsLatitude?: number | null;
-  gpsLongitude?: number | null;
-  gpsAccuracy?: number | null;
-  distanceFromSelectedAreaFeet?: number | null;
-  locationCapturedAt?: string | null;
-  photoIntelligence?: PIEPhotoIntelligenceDisplayState | null;
-};
-
+type PhotoContinuityAnchor = import('./types').PhotoContinuityAnchor;
 type ProjectUpdate = {
   id: string;
   projectName: string;
@@ -144,6 +540,11 @@ type ProjectUpdate = {
   photos: UpdatePhoto[];
   documents?: FieldUpdateDocument[];
   notes: string;
+  sourceCaptureMemoryIds?: string[];
+  sourceWalkSessionId?: string | null;
+  scheduleItemId?: string | null;
+  scheduleTaskName?: string | null;
+  scheduleProjectName?: string | null;
   recipients: RecipientSelection;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
@@ -180,7 +581,6 @@ type ProjectUpdate = {
   isArchived?: boolean;
   workflowTimestamps?: FieldUpdateWorkflowTimestamps;
 };
-
 type QuickContext =
   | 'Progress'
   | 'Safety'
@@ -189,14 +589,7 @@ type QuickContext =
   | 'Material / Delivery'
   | 'Inspection'
   | 'Other';
-
-type FieldUpdateStatus =
-  | 'draft'
-  | 'ready_to_send'
-  | 'queued'
-  | 'sent'
-  | 'failed';
-
+type FieldUpdateStatus = PersistedFieldUpdateStatus;
 type FieldUpdateSyncFailureCategory =
   | 'offline'
   | 'signed_out'
@@ -206,9 +599,7 @@ type FieldUpdateSyncFailureCategory =
   | 'database_insert_failed'
   | 'malformed_payload'
   | 'unknown';
-
 type FieldUpdateSyncStepResult = 'success' | 'failed' | 'skipped';
-
 type FieldUpdateSyncDiagnostics = {
   networkState: 'online' | 'offline' | 'unknown';
   connectionType: 'wifi' | 'cellular' | 'none' | 'unknown';
@@ -251,28 +642,6 @@ type FieldUpdateSyncDiagnostics = {
   projectRollupsIncludeQueuedUpdates: boolean;
   projectCardWorkspaceSameSource: boolean;
 };
-
-type FieldUpdateDeleteDiagnostics = {
-  updateId: string;
-  localId: string;
-  cloudIdPresent: boolean;
-  lifecycleStatus: FieldUpdateStatus;
-  pendingSync: boolean;
-  tombstoned: boolean;
-  deletedAt: string | null;
-  sourceAfterReload: 'local' | 'cloud' | 'pending' | 'orphaned-photo' | 'unknown';
-  mergeDecision: 'included' | 'excluded' | 'tombstoned';
-  orphanedPhotoCountIgnored: number;
-};
-
-type DeletedUpdateTombstone = FieldUpdateDeleteDiagnostics & {
-  action:
-    | 'delete_failed_update'
-    | 'remove_from_device'
-    | 'archive_sent_update'
-    | 'hide_cloud_update';
-};
-
 type FieldUpdatePIEStatus =
   | 'not_started'
   | 'analyzing'
@@ -281,26 +650,11 @@ type FieldUpdatePIEStatus =
   | 'no_visual_comparison'
   | 'failed'
   | 'taking_longer';
-
-type ProjectDocumentCategory =
-  | 'Schedule'
-  | 'Permit Card'
-  | 'Drawing'
-  | 'Scope'
-  | 'Contract'
-  | 'Inspection'
-  | 'Safety'
-  | 'Compliance'
-  | 'RFI / Field Decision'
-  | 'Vendor Document'
-  | 'Other';
-
 type ProjectDocumentStatus =
   | 'local'
   | 'uploading'
   | 'uploaded'
   | 'failed';
-
 type ProjectDocument = {
   id: string;
   projectId: string;
@@ -311,6 +665,9 @@ type ProjectDocument = {
   mimeType?: string | null;
   sizeBytes?: number | null;
   localUri?: string | null;
+  ownedFileId?: string | null;
+  ownedFileManifest?: unknown;
+  referenceDocumentId?: string | null;
   storagePath?: string | null;
   uploadedAt?: string | null;
   createdAt: string;
@@ -319,14 +676,13 @@ type ProjectDocument = {
   status: ProjectDocumentStatus;
   archivedAt?: string | null;
   isArchived?: boolean;
+  isCurrent?: boolean;
   duplicateOf?: string | null;
   uploadAttemptCount?: number;
   lastUploadAttemptAt?: string | null;
   importedAt: string;
 };
-
 type FieldUpdateDocument = ProjectDocument;
-
 type FieldUpdateWorkflowTimestamps = {
   startedAt?: string;
   cameraActionStartedAt?: string;
@@ -335,7 +691,6 @@ type FieldUpdateWorkflowTimestamps = {
   sendTappedAt?: string;
   sendResolvedAt?: string;
 };
-
 type PIEInterpretationDecisionLogEntry = {
   id: string;
   interpretation: string;
@@ -345,68 +700,13 @@ type PIEInterpretationDecisionLogEntry = {
   areaName: string | null;
   decidedAt: string;
 };
-
-type ProjectContact = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  emails?: string[];
-  phones?: string[];
-  selectedEmail?: string | null;
-  selectedPhone?: string | null;
-};
-
-type ContactBook = {
-  contacts: ProjectContact[];
-};
-
-type RecipientSelection = {
-  contactIds: string[];
-};
-
-type ProjectArea = {
-  id: string;
-  name: string;
-  building?: string;
-  latitude: number;
-  longitude: number;
-  radiusFeet: number;
-  locationCapturedAt?: string | null;
-};
-
 type LocationSnapshot = {
   latitude: number;
   longitude: number;
   accuracy: number | null;
   capturedAt: string;
 };
-
-type AreaSuggestion = {
-  area: ProjectArea;
-  distanceFeet: number;
-  withinRadius: boolean;
-};
-
-type StoredDraft = {
-  draft: ProjectUpdate;
-  savedAt: string;
-};
-
-type ReferenceDocument = {
-  id: string;
-  name: string;
-  originalFileName: string;
-  uri: string;
-  mimeType?: string | null;
-  category: string;
-  notes: string;
-  isCurrent: boolean;
-  importedAt: string;
-};
-
 type OverviewProjectSelection = string | null | undefined;
-
 type OverviewDetectionStatus =
   | 'checking'
   | 'detected'
@@ -416,7 +716,6 @@ type OverviewDetectionStatus =
   | 'unmatched'
   | 'none'
   | 'unavailable';
-
 type Phase2ActivityItem = {
   update: ProjectUpdate;
   projectName: string;
@@ -426,7 +725,6 @@ type Phase2ActivityItem = {
   documentCount: number;
   pieStatus: string;
 };
-
 type Phase2AttentionItem = {
   id: string;
   updateId: string;
@@ -442,33 +740,13 @@ type Phase2AttentionItem = {
   retryable: boolean;
   statusRole: StatusStyleRole;
 };
-
-type AppBackup = {
-  version: number;
-  exportedAt: string;
-  savedUpdates: ProjectUpdate[];
-  projects: string[];
-  archivedProjects: string[];
-  contacts: ContactBook;
-  projectAreas: ProjectArea[];
-  referenceDocuments: ReferenceDocument[];
-  projectDocuments: ProjectDocument[];
-  scheduleItems: ScheduleItem[];
-  activeDraft: StoredDraft | null;
-};
-
 type RestoredAppData = {
-  savedUpdates: ProjectUpdate[];
-  projects: string[];
-  archivedProjects: string[];
-  contactBook: ContactBook;
-  projectAreas: ProjectArea[];
-  referenceDocuments: ReferenceDocument[];
-  projectDocuments: ProjectDocument[];
+  savedUpdates: ProjectUpdate[]; projects: string[]; archivedProjects: string[];
+  contactBook: ContactBook; projectAreas: ProjectArea[];
+  referenceDocuments: ReferenceDocument[]; projectDocuments: ProjectDocument[];
   scheduleItems: ScheduleItem[];
   storedDraft: StoredDraft | null;
 };
-
 type ProjectStats = {
   updates: number;
   photos: number;
@@ -477,10 +755,10 @@ type ProjectStats = {
   dueThisWeek: number;
   lastUpdate?: string;
 };
-
 const UPDATES_STORAGE_KEY = 'projectPhotoUpdates.v2';
 const DELETED_UPDATES_STORAGE_KEY = 'projectPhotoUpdate.deletedUpdates.v1';
 const PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.projects.v2';
+const DELETED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.deletedProjects.v1';
 const ARCHIVED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.archivedProjects.v2';
 const CONTACTS_STORAGE_KEY = 'projectPhotoUpdate.contacts.v2';
 const DRAFT_STORAGE_KEY = 'projectPhotoUpdate.activeDraft.v2';
@@ -488,35 +766,159 @@ const PROJECT_AREAS_STORAGE_KEY = 'projectPhotoUpdate.projectAreas.v1';
 const REFERENCE_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.referenceDocuments.v1';
 const PROJECT_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.projectDocuments.v1';
 const SCHEDULE_ITEMS_STORAGE_KEY = 'projectPhotoUpdate.scheduleItems.v1';
-const SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY = 'projectPhotoUpdate.scheduleAiExtractorUrl.v1';
 const DISPLAY_NAME_STORAGE_KEY = 'projectPhotoUpdate.displayName.v1';
-const ANALYSIS_TIMEOUT_SECONDS = 60;
+const FIELD_UPDATE_TRANSACTION_JOURNAL_KEY =
+  'projectPhotoUpdate.fieldUpdateTransaction.v1';
+const FIELD_UPDATE_PERSISTENCE_KEYS = { journal: FIELD_UPDATE_TRANSACTION_JOURNAL_KEY, updates: UPDATES_STORAGE_KEY, tombstones: DELETED_UPDATES_STORAGE_KEY, draft: DRAFT_STORAGE_KEY };
+const PROJECT_DELETION_STORAGE_KEYS: ProjectDeletionStorageKeys = {
+  projects: PROJECTS_STORAGE_KEY, deletedProjects: DELETED_PROJECTS_STORAGE_KEY,
+  archivedProjects: ARCHIVED_PROJECTS_STORAGE_KEY, updates: UPDATES_STORAGE_KEY,
+  deletedUpdates: DELETED_UPDATES_STORAGE_KEY, updateDeletionJournal: PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
+  projectDocuments: PROJECT_DOCUMENTS_STORAGE_KEY, referenceDocuments: REFERENCE_DOCUMENTS_STORAGE_KEY,
+  projectAreas: PROJECT_AREAS_STORAGE_KEY,
+  scheduleItems: SCHEDULE_ITEMS_STORAGE_KEY, daveSyncTombstones: DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
+  activeDraft: DRAFT_STORAGE_KEY, cloudIntents: PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY,
+  fileCleanupIntents: PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
+};
+const ANALYSIS_TIMEOUT_SECONDS = 135;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
 const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
-const BACKUP_VERSION = 1;
-const MAX_BACKUP_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_BACKUP_FILE_BYTES = 128 * 1024 * 1024;
 const PHOTO_STORAGE_FOLDER = 'project-photos';
 const PHOTO_STORAGE_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${PHOTO_STORAGE_FOLDER}/`
   : null;
-const REFERENCE_DOCUMENTS_FOLDER = 'project-documents';
-const REFERENCE_DOCUMENTS_DIR = FileSystem.documentDirectory
-  ? `${FileSystem.documentDirectory}${REFERENCE_DOCUMENTS_FOLDER}/`
+const RECOVERED_PHOTO_CACHE_FOLDER = 'dave-recovered-project-photos';
+// Manifest-owned project attachments must not share the legacy reference
+// directory: legacy reference deletion authorizes direct children by path.
+const OWNED_PROJECT_DOCUMENTS_DIR = FileSystem.documentDirectory
+  ? `${FileSystem.documentDirectory}${OWNED_PROJECT_DOCUMENTS_FOLDER}/`
   : null;
 const PROJECT_DOCUMENT_UPLOAD_FOLDER = 'project-documents';
 const EMPTY_SELECTED_PROJECTS: Set<string> = new Set();
-const LARGE_PROJECT_DOCUMENT_BYTES = 15 * 1024 * 1024;
 const GPS_CAPTURE_ENABLED = true;
-
+const fieldUpdateLocalPersistence = createFieldUpdateLocalPersistence<ProjectUpdate, DeletedUpdateTombstone>({
+  storage: AsyncStorage,
+  keys: FIELD_UPDATE_PERSISTENCE_KEYS,
+  createTransactionId: createProjectId,
+  now: () => new Date().toISOString(),
+  parseUpdate: normalizeStoredUpdateRecord,
+  parseTombstone: parseStoredDeletedUpdateTombstone,
+});
+const projectDeletionRuntime = createProjectDeletionRuntime({
+  storage: AsyncStorage, storageKeys: PROJECT_DELETION_STORAGE_KEYS,
+  createTransactionId: createProjectId, now: () => new Date().toISOString(),
+  getOfflineQueue, queueCloudProjectDelete: deleteCloudProject,
+  cleanupLocalFile: createProjectDeletionLocalFileCleaner({
+    ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR, deleteOwnedReferenceDocument: deleteStoredReferenceDocument,
+  }),
+});
+const backupRestoreRuntime = createBackupRestoreRuntime({
+  storage: AsyncStorage,
+  targetKeys: {
+    updates: UPDATES_STORAGE_KEY, projects: PROJECTS_STORAGE_KEY, archivedProjects: ARCHIVED_PROJECTS_STORAGE_KEY,
+    contacts: CONTACTS_STORAGE_KEY,
+    projectAreas: PROJECT_AREAS_STORAGE_KEY, referenceDocuments: REFERENCE_DOCUMENTS_STORAGE_KEY,
+    projectDocuments: PROJECT_DOCUMENTS_STORAGE_KEY, scheduleItems: SCHEDULE_ITEMS_STORAGE_KEY,
+    activeDraft: DRAFT_STORAGE_KEY,
+  },
+  barrierKeys: {
+    deletedProjects: DELETED_PROJECTS_STORAGE_KEY, deletedUpdates: DELETED_UPDATES_STORAGE_KEY,
+    updateDeletionJournal: PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY,
+    projectDeletionCloudIntents: PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY,
+    projectDeletionFileCleanupIntents: PROJECT_DELETION_FILE_CLEANUP_INTENTS_STORAGE_KEY,
+    daveSyncTombstones: DAVE_SYNC_TOMBSTONES_STORAGE_KEY, fieldUpdateTransactionJournal: FIELD_UPDATE_TRANSACTION_JOURNAL_KEY,
+    projectDeletionTransactionJournal: PROJECT_DELETION_TRANSACTION_JOURNAL_KEY,
+  },
+  createTransactionId: createProjectId, now: () => new Date().toISOString(),
+  recoverProjectDeletion: projectDeletionRuntime.recoverBeforeStartupReads,
+  recoverFieldUpdate: fieldUpdateLocalPersistence.recoverBeforeStartupReads,
+  loadQueuedProjectDeletionNames: async () => (await getOfflineQueue())
+    .flatMap(item => item.entity === 'project' && item.operation === 'delete' &&
+      typeof (item.payload as Record<string, unknown>).name === 'string'
+      ? [(item.payload as Record<string, string>).name] : []),
+});
+const localPIEDecisionHistoryActions = createLocalPIEDecisionHistoryActions();
 const DEFAULT_PROJECTS = [
-  'Building 2375 Compliance',
-  'Building 2321 Driveway',
-  'H-2 Room',
-  'Fire Pump House',
-  'Tank Farm',
-  'Racking Project',
+  '2321 Compliance Project',
+  '2375 Compliance Project',
 ];
+const LEGACY_PROJECT_STRUCTURE_CLOUD_MIGRATION_KEY =
+  'projectPhotoUpdate.projectStructureCloudMigration.v1';
+const LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY =
+  'projectPhotoUpdate.nonProjectShellCloudMigration.v1';
+const LEGACY_WORK_CONTAINER_MIGRATIONS = [
+  { legacyName: '2321 North Side Lot', parentProject: '2321 Compliance Project', workArea: 'North Side Lot' },
+  { legacyName: '3 Hour Fire wall', parentProject: '2321 Compliance Project', workArea: '3 Hour Fire wall' },
+  { legacyName: 'Building 2321  East Driveway', parentProject: '2321 Compliance Project', workArea: 'East Driveway' },
+  { legacyName: 'Building 2375 Compliance', parentProject: '2375 Compliance Project', workArea: 'Building 2375' },
+  { legacyName: 'Canopy A', parentProject: '2375 Compliance Project', workArea: 'Canopy A' },
+  { legacyName: 'Canopy B', parentProject: '2375 Compliance Project', workArea: 'Canopy B' },
+  { legacyName: 'Canopy C', parentProject: '2375 Compliance Project', workArea: 'Canopy C' },
+] as const;
+function legacyWorkContainerMigration(projectName: string | null | undefined) {
+  const key = (projectName || '').trim().toLowerCase();
+  return LEGACY_WORK_CONTAINER_MIGRATIONS.find(
+    migration => migration.legacyName.toLowerCase() === key,
+  ) || null;
+}
+function migrateLegacyProjectName(projectName: string | null | undefined) {
+  const migration = legacyWorkContainerMigration(projectName);
+  return migration?.parentProject || projectName || '';
+}
+function migratedWorkAreaName(
+  currentArea: string | null | undefined,
+  fallbackArea: string,
+) {
+  const current = (currentArea || '').trim();
+  return current && current.toLowerCase() !== 'other' ? current : fallbackArea;
+}
 
+function migrateLegacyProjectUpdate(update: ProjectUpdate): ProjectUpdate {
+  const migration = legacyWorkContainerMigration(update.projectName);
+  if (!migration) return update;
+  const selectedAreaName = migratedWorkAreaName(
+    update.selectedAreaName,
+    migration.workArea,
+  );
+  return {
+    ...update,
+    projectName: migration.parentProject,
+    selectedAreaName,
+    scheduleProjectName: update.scheduleProjectName
+      ? migrateLegacyProjectName(update.scheduleProjectName)
+      : update.scheduleProjectName,
+    photos: update.photos.map(photo => ({
+      ...photo,
+      selectedAreaName: migratedWorkAreaName(
+        photo.selectedAreaName,
+        selectedAreaName,
+      ),
+    })),
+    documents: update.documents?.map(document => ({
+      ...document,
+      projectId: authorityProjectId(migration.parentProject),
+    })),
+  };
+}
+function migrateLegacyScheduleItem(item: ScheduleItem): ScheduleItem {
+  return {
+    ...item,
+    projectName: migrateLegacyProjectName(item.projectName),
+    scheduleProjectName: item.scheduleProjectName
+      ? migrateLegacyProjectName(item.scheduleProjectName)
+      : item.scheduleProjectName,
+  };
+}
+function migrateLegacyProjectDocument(document: ProjectDocument): ProjectDocument {
+  const migration = LEGACY_WORK_CONTAINER_MIGRATIONS.find(item =>
+    document.projectId === authorityProjectId(item.legacyName) ||
+    document.projectId.toLowerCase() === item.legacyName.toLowerCase(),
+  );
+  return migration
+    ? { ...document, projectId: authorityProjectId(migration.parentProject) }
+    : document;
+}
 const REFERENCE_DOCUMENT_CATEGORIES = [
   'Site Plans',
   'Building 2321',
@@ -527,23 +929,9 @@ const REFERENCE_DOCUMENT_CATEGORIES = [
   'Electrical',
   'Mechanical',
   'Schedules',
+  'Report',
   'Other',
 ];
-
-const PROJECT_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
-  'Schedule',
-  'Permit Card',
-  'Drawing',
-  'Scope',
-  'Contract',
-  'Inspection',
-  'Safety',
-  'Compliance',
-  'RFI / Field Decision',
-  'Vendor Document',
-  'Other',
-];
-
 const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
   'Permit Card',
   'Compliance',
@@ -551,25 +939,22 @@ const COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES: ProjectDocumentCategory[] = [
   'Inspection',
   'Safety',
 ];
-
 const PIE_STATUS_COPY = {
-  checking: 'DAVE checking photos…',
+  checking: 'Checking photos…',
   preparingSecureAnalysis: 'Preparing secure photo analysis…',
   signInRequired: 'Sign in required for photo intelligence',
   sessionExpired: 'Session expired · Sign in again',
   possibleChanges: 'Possible visual changes found',
   noReliableChange: 'No reliable visual change',
-  noPriorPhoto: 'No prior photo to compare',
+  noPriorPhoto: 'Baseline saved',
   unavailableRetry: 'Analysis unavailable · Retry',
   timeoutRetry: 'Analysis taking longer than expected · Retry',
 } as const;
-
 const PIE_AUTH_HYDRATION_RETRY_COUNT = 3;
 const PIE_AUTH_HYDRATION_RETRY_DELAY_MS = 750;
 const DRAFT_LOCATION_CAPTURE_WAIT_MS = 1500;
 const ENABLE_DEV_AUTH_SIGNUP =
-  process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
-
+  __DEV__ && process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
 const ATTENTION_PRIORITY = {
   safety: 0,
   sendIssue: 1,
@@ -579,7 +964,6 @@ const ATTENTION_PRIORITY = {
   documentIssue: 5,
   otherOpenItem: 6,
 } as const;
-
 type StatusStyleRole =
   | 'safety'
   | 'possibleFinding'
@@ -587,7 +971,6 @@ type StatusStyleRole =
   | 'informational'
   | 'needsRetry'
   | 'confirmedClear';
-
 const STATUS_ICON_COLOR_MAP: Record<
   StatusStyleRole,
   {
@@ -627,7 +1010,6 @@ const STATUS_ICON_COLOR_MAP: Record<
     backgroundRole: 'successSoft',
   },
 };
-
 // Placeholder coordinates: stand in each area and use "Use Current Location"
 // in Manage Areas to replace these with real worksite GPS points.
 const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
@@ -719,13 +1101,11 @@ const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
     radiusFeet: 100,
   },
 ];
-
 const CATEGORIES: PhotoCategory[] = [
   'Open Issue',
   'Safety Concern',
   'Update',
 ];
-
 const QUICK_CONTEXTS: QuickContext[] = [
   'Progress',
   'Safety',
@@ -735,38 +1115,31 @@ const QUICK_CONTEXTS: QuickContext[] = [
   'Inspection',
   'Other',
 ];
-
 const CATEGORY_ICONS: Record<PhotoCategory, IconName> = {
   'Open Issue': 'alert-circle-outline',
   'Safety Concern': 'warning-outline',
   Update: 'information-circle-outline',
 };
-
 const ACTION_STATUSES: ActionStatus[] = [
   'Open',
   'In Progress',
   'Waiting',
   'Closed',
 ];
-
 const SCHEDULE_STATUSES: ScheduleStatus[] = [
   'Not Started',
   'In Progress',
   'Waiting',
   'Complete',
 ];
-
 const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Low',
   'Medium',
   'High',
 ];
-
 const uid = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-
 const zeroPad = (value: number) => value.toString().padStart(2, '0');
-
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -793,6 +1166,11 @@ function createDraft(projectName: string): ProjectUpdate {
     photos: [],
     documents: [],
     notes: '',
+    sourceCaptureMemoryIds: [],
+    sourceWalkSessionId: null,
+    scheduleItemId: null,
+    scheduleTaskName: null,
+    scheduleProjectName: null,
     recipients: emptyRecipients(),
     selectedAreaId: null,
     selectedAreaName: 'Unassigned / Unknown Area',
@@ -855,6 +1233,42 @@ function formatDisplayDate(date: string) {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+type UpdateTimelineGroup = 'Today' | 'Yesterday' | 'Earlier';
+
+function updateDateValue(value: string) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function updateTimelineGroup(value: string, now = new Date()): UpdateTimelineGroup {
+  const date = updateDateValue(value);
+  if (!date) return 'Earlier';
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfUpdate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayDifference = Math.round(
+    (startOfToday.getTime() - startOfUpdate.getTime()) / (24 * 60 * 60 * 1000),
+  );
+
+  if (dayDifference <= 0) return 'Today';
+  if (dayDifference === 1) return 'Yesterday';
+  return 'Earlier';
+}
+
+function relativeUpdateTimestamp(value: string, now = new Date()) {
+  const date = updateDateValue(value);
+  if (!date) return formatDisplayDate(value);
+
+  const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 60000));
+  if (elapsedMinutes < 1) return 'Just now';
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  if (elapsedHours < 48) return 'Yesterday';
+  return formatDisplayDate(value);
 }
 
 function formatSavedTime(value: string | null) {
@@ -946,44 +1360,19 @@ function isOpenAction(photo: UpdatePhoto) {
 
 function isOverdueAction(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return dueDate < today;
+  const days = daysUntilDate(photo.actionDueDate);
+  return days !== null && days < 0;
 }
 
 function isDueThisWeek(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const sevenDaysFromNow = new Date(today);
-  sevenDaysFromNow.setDate(today.getDate() + 7);
-
-  return dueDate >= today && dueDate <= sevenDaysFromNow;
+  const days = daysUntilDate(photo.actionDueDate);
+  return days !== null && days >= 0 && days <= 7;
 }
 
 function isDueTodayAction(photo: UpdatePhoto) {
   if (!isOpenAction(photo)) return false;
-
-  const dueDate = parseDueDate(photo.actionDueDate);
-
-  if (!dueDate) return false;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return dueDate.getTime() === today.getTime();
+  return daysUntilDate(photo.actionDueDate) === 0;
 }
 
 function mergeProjectNames(base: string[], ...sources: string[][]) {
@@ -1049,7 +1438,7 @@ function uniqueStrings(values: string[]) {
 function normalizePhoto(photo: Partial<UpdatePhoto>): UpdatePhoto {
   return {
     id: typeof photo.id === 'string' ? photo.id : uid(),
-    uri: typeof photo.uri === 'string' ? photo.uri : '',
+    uri: typeof photo.uri === 'string' ? resolveProjectPhotoUri(photo) : '',
     caption: typeof photo.caption === 'string' ? photo.caption : '',
     category: CATEGORIES.includes(photo.category as PhotoCategory)
       ? (photo.category as PhotoCategory)
@@ -1073,6 +1462,16 @@ function normalizePhoto(photo: Partial<UpdatePhoto>): UpdatePhoto {
       : 'Open',
     fileName: photo.fileName,
     mimeType: photo.mimeType || 'image/jpeg',
+    cloudStoragePath: optionalString(photo.cloudStoragePath),
+    cloudRecoveredAt: optionalString(photo.cloudRecoveredAt),
+    cloudRecoveryStatus:
+      photo.cloudRecoveryStatus === 'cached' ||
+      photo.cloudRecoveryStatus === 'signed_url' ||
+      photo.cloudRecoveryStatus === 'unavailable'
+        ? photo.cloudRecoveryStatus
+        : null,
+    cloudSignedUrlExpiresAt: optionalString(photo.cloudSignedUrlExpiresAt),
+    continuityAnchor: photo.continuityAnchor || null,
     selectedAreaId: optionalString(photo.selectedAreaId),
     selectedAreaName: optionalString(photo.selectedAreaName),
     gpsLatitude: optionalNumber(photo.gpsLatitude),
@@ -1135,6 +1534,12 @@ function normalizeProjectDocument(
   const storagePath = optionalString(value.storagePath);
   const uploadedAt = optionalString(value.uploadedAt);
   const status = normalizeProjectDocumentStatus(value.status);
+  const category = normalizeProjectDocumentCategory(value.category);
+  const ownedFileId = optionalString(value.ownedFileId);
+  const ownedFileManifest = ownedFileId && ownsProjectDocumentFile(
+    value.ownedFileManifest,
+    ownedFileId,
+  ) ? value.ownedFileManifest : null;
 
   return {
     id: optionalString(value.id) || uid(),
@@ -1142,13 +1547,16 @@ function normalizeProjectDocument(
     areaId: optionalString(value.areaId) || fallback?.areaId || null,
     updateId: optionalString(value.updateId) || fallback?.updateId || null,
     name,
-    category: normalizeProjectDocumentCategory(value.category),
+    category,
     mimeType: optionalString(value.mimeType),
     sizeBytes: optionalFiniteNumber(value.sizeBytes),
     localUri:
       optionalString(value.localUri) ||
       optionalString(value.uri) ||
       null,
+    ownedFileId: ownedFileManifest ? ownedFileId : null,
+    ownedFileManifest,
+    referenceDocumentId: optionalString(value.referenceDocumentId),
     storagePath,
     uploadedAt,
     createdAt,
@@ -1157,11 +1565,20 @@ function normalizeProjectDocument(
     status: uploadedAt ? 'uploaded' : status,
     archivedAt: optionalString(value.archivedAt),
     isArchived: optionalBoolean(value.isArchived),
+    isCurrent: category === 'Schedule' && optionalBoolean(value.isCurrent),
     duplicateOf: optionalString(value.duplicateOf),
     uploadAttemptCount: optionalFiniteNumber(value.uploadAttemptCount) || 0,
     lastUploadAttemptAt: optionalString(value.lastUploadAttemptAt),
     importedAt: optionalString(value.importedAt) || createdAt,
   };
+}
+
+function ownsProjectDocumentFile(manifest: unknown, fileId: string) {
+  try {
+    return isOwnedLocalFileManifestMember(manifest, fileId, 'project_document');
+  } catch {
+    return false;
+  }
 }
 
 function normalizeFieldUpdateDocuments(
@@ -1429,6 +1846,7 @@ function normalizeDeletedUpdateTombstones(value: unknown): DeletedUpdateTombston
       const record = isRecord(item) ? item : {};
       const action =
         record.action === 'delete_failed_update' ||
+        record.action === 'delete_update_everywhere' ||
         record.action === 'remove_from_device' ||
         record.action === 'archive_sent_update' ||
         record.action === 'hide_cloud_update'
@@ -1445,6 +1863,13 @@ function normalizeDeletedUpdateTombstones(value: unknown): DeletedUpdateTombston
       };
     })
     .filter((item): item is DeletedUpdateTombstone => Boolean(item));
+}
+
+function parseStoredDeletedUpdateTombstone(value: unknown): DeletedUpdateTombstone {
+  if (!isStartupDeletedUpdateRecord(value)) throw new Error('Saved update deletion record is invalid.');
+  const tombstone = normalizeDeletedUpdateTombstones([value])[0];
+  if (!tombstone) throw new Error('Saved update deletion record could not be normalized.');
+  return tombstone;
 }
 
 function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
@@ -1467,6 +1892,13 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
       updateId,
     }),
     notes: typeof update.notes === 'string' ? update.notes : '',
+    sourceCaptureMemoryIds: Array.isArray(update.sourceCaptureMemoryIds)
+      ? uniqueStrings(update.sourceCaptureMemoryIds.filter(item => typeof item === 'string'))
+      : [],
+    sourceWalkSessionId: optionalString(update.sourceWalkSessionId),
+    scheduleItemId: optionalString(update.scheduleItemId),
+    scheduleTaskName: optionalString(update.scheduleTaskName),
+    scheduleProjectName: optionalString(update.scheduleProjectName),
     recipients: normalizeRecipientSelection(update.recipients),
     selectedAreaId: optionalString(update.selectedAreaId),
     selectedAreaName: optionalString(update.selectedAreaName),
@@ -1543,6 +1975,21 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
     isArchived: Boolean(update.isArchived),
     workflowTimestamps: normalizeWorkflowTimestamps(update.workflowTimestamps),
   };
+}
+
+function normalizeStoredUpdateRecord(value: unknown): ProjectUpdate {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim()) {
+    throw new Error('Saved update record is missing a stable ID.');
+  }
+  return migrateLegacyProjectUpdate(normalizeUpdate(value as Partial<ProjectUpdate>));
+}
+
+function isStartupDeviceSavedUpdateRecord(value: unknown) {
+  if (!isStartupSavedUpdateRecord(value) || !isRecord(value)) return false;
+  if (!Array.isArray(value.photos)) return true;
+  return value.photos.every(photo =>
+    Boolean(resolveProjectPhotoUri(photo as Partial<UpdatePhoto>)),
+  );
 }
 
 function normalizeRecipientSelection(value: unknown): RecipientSelection {
@@ -1771,6 +2218,7 @@ function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
       typeof value.name === 'string' && value.name.trim()
         ? value.name.trim()
         : 'New Area',
+    projectName: optionalString(value.projectName)?.trim() || null,
     building:
       typeof value.building === 'string' && value.building.trim()
         ? value.building.trim()
@@ -1792,6 +2240,7 @@ function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
         ? value.radiusFeet
         : 250,
     locationCapturedAt: optionalString(value.locationCapturedAt),
+    updatedAt: optionalString(value.updatedAt),
   };
 }
 
@@ -1813,89 +2262,19 @@ function projectAreaSetupStats(projectAreas: ProjectArea[]) {
   };
 }
 
-function mergeProjectAreas(saved: ProjectArea[]) {
-  const areas: ProjectArea[] = [];
-
-  [...saved, ...DEFAULT_PROJECT_AREAS].forEach(area => {
-    const normalized = normalizeProjectArea(area);
-    const exists = areas.some(
-      existing => existing.id === normalized.id,
-    );
-
-    if (!exists) areas.push(normalized);
-  });
-
-  return areas;
-}
-
 function normalizeProjectAreas(value: unknown) {
   if (!Array.isArray(value)) return DEFAULT_PROJECT_AREAS;
 
-  return mergeProjectAreas(
-    value.map(item => normalizeProjectArea(item as Partial<ProjectArea>)),
-  );
+  return value.map(item => normalizeProjectArea(item as Partial<ProjectArea>));
 }
 
 
-function normalizeReferenceDocument(value: Partial<ReferenceDocument>): ReferenceDocument {
-  const category =
-    typeof value.category === 'string' && value.category.trim()
-      ? value.category.trim()
-      : 'Other';
-
-  return {
-    id: typeof value.id === 'string' ? value.id : uid(),
-    name:
-      typeof value.name === 'string' && value.name.trim()
-        ? value.name.trim()
-        : typeof value.originalFileName === 'string' && value.originalFileName.trim()
-          ? value.originalFileName.trim()
-          : 'Reference Document',
-    originalFileName:
-      typeof value.originalFileName === 'string' && value.originalFileName.trim()
-        ? value.originalFileName.trim()
-        : 'reference-document',
-    uri: typeof value.uri === 'string' ? value.uri : '',
-    mimeType: optionalString(value.mimeType),
-    category: REFERENCE_DOCUMENT_CATEGORIES.includes(category)
-      ? category
-      : 'Other',
-    notes: typeof value.notes === 'string' ? value.notes : '',
-    isCurrent: Boolean(value.isCurrent),
-    importedAt:
-      typeof value.importedAt === 'string'
-        ? value.importedAt
-        : new Date().toISOString(),
-  };
+function isStartupDeviceDraftEnvelope(value: unknown) {
+  if (!isStartupDraftEnvelope(value) || !isRecord(value)) return false;
+  if (!('draft' in value)) return true;
+  return isStartupDeviceSavedUpdateRecord(value.draft);
 }
 
-function normalizeReferenceDocuments(value: unknown) {
-  if (!Array.isArray(value)) return [];
-
-  return value
-    .map(item => normalizeReferenceDocument(item as Partial<ReferenceDocument>))
-    .filter(document => document.uri);
-}
-
-async function ensureReferenceDocumentsDirectory() {
-  if (!REFERENCE_DOCUMENTS_DIR) {
-    throw new Error('Reference document storage is unavailable.');
-  }
-
-  const info = await FileSystem.getInfoAsync(REFERENCE_DOCUMENTS_DIR);
-
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(REFERENCE_DOCUMENTS_DIR, {
-      intermediates: true,
-    });
-  }
-
-  return REFERENCE_DOCUMENTS_DIR;
-}
-
-function isStoredReferenceDocument(uri: string) {
-  return Boolean(REFERENCE_DOCUMENTS_DIR && uri.startsWith(REFERENCE_DOCUMENTS_DIR));
-}
 
 function filenameFromDocumentAsset(asset: DocumentPicker.DocumentPickerAsset) {
   const fallbackExtension = asset.mimeType?.includes('pdf')
@@ -1981,6 +2360,7 @@ function likelyProjectCandidatesFromGps(
   projectAreas: ProjectArea[],
   savedUpdates: ProjectUpdate[],
   activeProjects: string[],
+  scheduleItems: ScheduleItem[],
 ) {
   const suggestions = findProjectAreaSuggestions(currentLocation, projectAreas)
     .filter(suggestion => suggestion.withinRadius);
@@ -1992,6 +2372,7 @@ function likelyProjectCandidatesFromGps(
       suggestion.area,
       savedUpdates,
       activeProjects,
+      scheduleItems,
     );
     if (!projectName || seen.has(projectName)) return;
     seen.add(projectName);
@@ -2125,21 +2506,18 @@ function formatAppDate(value: string) {
   return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear()}`;
 }
 
-function daysUntilDate(value: string) {
-  const target = parseFlexibleDate(value);
+function daysUntilDate(value: string, projectTimeZone: string = DEFAULT_PROJECT_TIME_ZONE) {
+  return projectDateRelativeDays(value, new Date(), projectTimeZone);
+}
 
-  if (!target) return null;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  return Math.round((target.getTime() - today.getTime()) / 86400000);
+function daysUntilScheduleItem(item: ScheduleItem) {
+  return daysUntilDate(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE);
 }
 
 function isScheduleItemDueToday(item: ScheduleItem) {
-  if (item.status === 'Complete') return false;
+  if (scheduleTaskIsComplete(item)) return false;
 
-  return daysUntilDate(item.finishDate) === 0;
+  return daysUntilScheduleItem(item) === 0;
 }
 
 function timeOfDayGreeting(name?: string) {
@@ -2159,8 +2537,8 @@ function todayLongDateLabel() {
   });
 }
 
-function dueStatusText(value: string) {
-  const days = daysUntilDate(value);
+function dueStatusText(value: string, projectTimeZone: string = DEFAULT_PROJECT_TIME_ZONE) {
+  const days = daysUntilDate(value, projectTimeZone);
 
   if (days === null) return 'No valid finish date';
   if (days < 0) return `Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'}`;
@@ -2172,23 +2550,22 @@ function dueStatusText(value: string) {
 }
 
 
-function pluralWord(count: number, singular: string, plural = `${singular}s`) {
-  return count === 1 ? singular : plural;
-}
-
-function countLabel(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${pluralWord(count, singular, plural)}`;
-}
-
 function photoAttachmentLabel(count: number) {
   if (count === 0) return 'No photos attached';
   if (count === 1) return 'Photo Attached';
   return `${count} Photos Attached`;
 }
 
-function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
+function normalizeScheduleItem(
+  value: Partial<ScheduleItem>,
+  options?: { preserveEditedNotes?: boolean },
+): ScheduleItem {
+  const progress = reconcileScheduleProgress(value.status, value.percentComplete);
   return {
     id: typeof value.id === 'string' ? value.id : uid(),
+    itemType: normalizeProjectItemType(value.itemType),
+    scheduleProjectName: optionalString(value.scheduleProjectName),
+    projectTimeZone: projectTimeZoneOrDefault(value.projectTimeZone),
     projectName: typeof value.projectName === 'string' ? value.projectName : '',
     locationName: typeof value.locationName === 'string' ? value.locationName : '',
     taskName:
@@ -2200,451 +2577,97 @@ function normalizeScheduleItem(value: Partial<ScheduleItem>): ScheduleItem {
     milestone: typeof value.milestone === 'string' ? value.milestone : '',
     owner: typeof value.owner === 'string' ? value.owner : '',
     contractor: typeof value.contractor === 'string' ? value.contractor : '',
-    percentComplete:
-      typeof value.percentComplete === 'number' && Number.isFinite(value.percentComplete)
-        ? Math.max(0, Math.min(100, Math.round(value.percentComplete)))
-        : 0,
+    durationDays:
+      typeof value.durationDays === 'number' && Number.isFinite(value.durationDays)
+        ? Math.max(0, value.durationDays)
+        : null,
+    wbsCode: optionalString(value.wbsCode),
+    parentItemId: optionalString(value.parentItemId),
+    sortOrder:
+      typeof value.sortOrder === 'number' && Number.isFinite(value.sortOrder)
+        ? Math.max(0, Math.trunc(value.sortOrder))
+        : null,
+    dependencies: normalizeScheduleDependencies(value.dependencies),
+    isSummary: value.isSummary === true,
+    isMilestone: value.isMilestone === true,
+    baselineStartDate: optionalString(value.baselineStartDate),
+    baselineFinishDate: optionalString(value.baselineFinishDate),
+    percentComplete: progress.percentComplete,
+    progressSource:
+      value.progressSource === 'project_manager' || value.progressSource === 'schedule_import'
+        ? value.progressSource
+        : null,
+    progressConfirmedAt: optionalString(value.progressConfirmedAt),
+    progressConfirmedBy: optionalString(value.progressConfirmedBy),
     priority: SCHEDULE_PRIORITIES.includes(value.priority as SchedulePriority)
       ? (value.priority as SchedulePriority)
       : 'Medium',
-    status: SCHEDULE_STATUSES.includes(value.status as ScheduleStatus)
-      ? (value.status as ScheduleStatus)
-      : 'Not Started',
-    notes: typeof value.notes === 'string' ? value.notes : '',
+    status: progress.status,
+    notes: normalizeImportedScheduleNote(value.notes, value.importedFrom, {
+      preserveEditingWhitespace: options?.preserveEditedNotes,
+    }),
+    nextAction: optionalString(value.nextAction) || '',
+    activity: normalizeProjectItemActivity(value.activity, uid),
     importedFrom: optionalString(value.importedFrom),
     importedAt: optionalString(value.importedAt),
+    importBatchId: optionalString(value.importBatchId),
+    sourceDocumentId: optionalString(value.sourceDocumentId),
+    completionVerification: normalizeDAVECompletionVerification(value.completionVerification),
     createdAt:
       typeof value.createdAt === 'string'
         ? value.createdAt
         : new Date().toISOString(),
+    updatedAt: optionalString(value.updatedAt),
   };
 }
 
 function normalizeScheduleItems(value: unknown) {
   if (!Array.isArray(value)) return [];
 
-  return value
+  const items = value
     .map(item => normalizeScheduleItem(item as Partial<ScheduleItem>))
     .filter(item => item.taskName.trim());
+
+  return reconcileDAVEScheduleRecords(canonicalizeScheduleIdentityItems(items));
 }
 
-function csvCells(line: string) {
-  const cells: string[] = [];
-  let current = '';
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-
-    if (char === '"') {
-      quoted = !quoted;
-      continue;
-    }
-
-    if (char === ',' && !quoted) {
-      cells.push(current.trim());
-      current = '';
-      continue;
-    }
-
-    current += char;
-  }
-
-  cells.push(current.trim());
-  return cells;
-}
-
-function parseScheduleText(contents: string, sourceName: string) {
-  const importedAt = new Date().toISOString();
-  const lines = contents
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
-
-  if (!lines.length) return [];
-
-  const firstCells = csvCells(lines[0]).map(cell => cell.toLowerCase());
-  const hasHeader = firstCells.some(cell =>
-    ['task', 'task name', 'milestone', 'project', 'location', 'start', 'finish', 'due', 'owner', 'status'].includes(cell),
-  );
-  const headers = hasHeader ? firstCells : [];
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-
-  function cell(cells: string[], names: string[], fallbackIndex: number) {
-    const headerIndex = headers.findIndex(header => names.includes(header));
-
-    if (headerIndex >= 0) return cells[headerIndex] || '';
-
-    return cells[fallbackIndex] || '';
-  }
-
-  return dataLines
-    .map(line => {
-      const cells = csvCells(line);
-      const taskName = cell(cells, ['task', 'task name', 'activity', 'item'], 0);
-
-      if (!taskName) return null;
-
-      return normalizeScheduleItem({
-        taskName,
-        projectName: cell(cells, ['project', 'project name'], 1),
-        locationName: cell(cells, ['location', 'area', 'work area'], 2),
-        startDate: cell(cells, ['start', 'start date'], 3),
-        finishDate: cell(cells, ['finish', 'finish date', 'due', 'due date'], 4),
-        milestone: cell(cells, ['milestone'], 5),
-        owner: cell(cells, ['owner', 'responsible'], 6),
-        status: (cell(cells, ['status'], 7) as ScheduleStatus) || 'Not Started',
-        notes: cell(cells, ['notes', 'comments'], 8),
-        importedFrom: sourceName,
-        importedAt,
-      });
-    })
-    .filter(Boolean) as ScheduleItem[];
-}
-
-
-function cleanPdfExtractedText(value: string) {
-  const parentheticalText = Array.from(
-    value.matchAll(/\((?:\\.|[^\\)])*\)/g),
-  )
-    .map(match =>
-      match[0]
-        .slice(1, -1)
-        .replace(/\\\(/g, '(')
-        .replace(/\\\)/g, ')')
-        .replace(/\\n/g, ' ')
-        .replace(/\\r/g, ' ')
-        .replace(/\\t/g, ' ')
-        .replace(/\\/g, ''),
-    )
-    .join('\n');
-
-  return `${value}\n${parentheticalText}`
-    .replace(/\r/g, '\n')
-    .replace(/[\u0000-\u001F]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizeExtractedScheduleDate(value: string) {
-  const match = value.trim().match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2}|\d{4})$/);
-
-  if (!match) return '';
-
-  const month = match[1].padStart(2, '0');
-  const day = match[2].padStart(2, '0');
-  const year = match[3].length === 2 ? `20${match[3]}` : match[3];
-
-  return formatAppDate(`${month}/${day}/${year}`);
-}
-
-function wordsNearDate(text: string, dateIndex: number) {
-  const start = Math.max(0, dateIndex - 120);
-  const end = Math.min(text.length, dateIndex + 80);
-
-  return text
-    .slice(start, end)
-    .replace(/\b\d{1,2}[\/-]\d{1,2}[\/-](\d{2}|\d{4})\b/g, ' ')
-    .replace(/\b(Start|Finish|Due|Duration|Predecessors|Successors|Calendar|Task Name|Milestone|Owner|Status)\b/gi, ' ')
-    .replace(/[^a-zA-Z0-9 #&/.,'-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function bestScheduleLabelFromContext(context: string) {
-  const parts = context
-    .split(/\s{2,}|[|•]+/)
-    .map(part => part.trim())
-    .filter(part => part.length >= 4 && /[a-zA-Z]/.test(part));
-
-  const candidate = parts[parts.length - 1] || context;
-
-  return candidate
-    .replace(/^[-–—:.,\s]+/, '')
-    .replace(/[-–—:.,\s]+$/, '')
-    .slice(0, 90)
-    .trim();
-}
-
-function findNameMatch(value: string, names: string[]) {
-  const lower = value.toLowerCase();
-
-  return names.find(name => name && lower.includes(name.toLowerCase())) || '';
-}
-
-function extractScheduleItemsFromPdfText(
-  rawPdfText: string,
-  sourceName: string,
-  projects: string[],
-  projectAreas: ProjectArea[],
+function canonicalizeScheduleIdentityItems(
+  items: ScheduleItem[],
+  projectAreas: ProjectArea[] = [],
+  corrections: readonly DAVEIdentityCorrection[] = [],
 ) {
-  const importedAt = new Date().toISOString();
-  const cleaned = cleanPdfExtractedText(rawPdfText);
-  const datePattern = /\b\d{1,2}[\/-]\d{1,2}[\/-](?:\d{2}|\d{4})\b/g;
-  const matches = Array.from(cleaned.matchAll(datePattern));
-  const items: ScheduleItem[] = [];
-  const seen = new Set<string>();
+  const projectNames = Array.from(new Set([
+    ...DEFAULT_PROJECTS,
+    ...items.flatMap(item => [item.scheduleProjectName || '', item.projectName]),
+  ].map(name => name.trim()).filter(Boolean)));
 
-  matches.forEach((match, index) => {
-    const finishDate = normalizeExtractedScheduleDate(match[0]);
+  return canonicalizeDAVEScheduleItems(
+    items as unknown as import('./types').ScheduleItem[],
+    {
+      projectNames,
+      projectAreas: projectAreas as unknown as import('./types').ProjectArea[],
+      corrections,
+    },
+  ).items as unknown as ScheduleItem[];
+}
 
-    if (!finishDate) return;
+async function withScheduleImportTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
 
-    const context = wordsNearDate(cleaned, match.index || 0);
-    const taskName = bestScheduleLabelFromContext(context);
-
-    if (!taskName || taskName.length < 4) return;
-
-    const previousMatch = matches[index - 1];
-    const startDate =
-      previousMatch &&
-      typeof previousMatch.index === 'number' &&
-      typeof match.index === 'number' &&
-      match.index - previousMatch.index < 80
-        ? normalizeExtractedScheduleDate(previousMatch[0])
-        : '';
-
-    const locationName = findNameMatch(
-      `${context} ${taskName}`,
-      projectAreas.map(area => area.name),
-    );
-    const projectName = findNameMatch(
-      `${context} ${taskName}`,
-      projects,
-    );
-    const key = `${taskName.toLowerCase()}|${finishDate}|${locationName}`;
-
-    if (seen.has(key)) return;
-
-    seen.add(key);
-    items.push(
-      normalizeScheduleItem({
-        taskName,
-        projectName,
-        locationName,
-        startDate,
-        finishDate,
-        milestone: '',
-        owner: '',
-        status: 'Not Started',
-        notes:
-          'Best-effort extraction from imported Gantt PDF. Review task name, location, and dates before relying on this item.',
-        importedFrom: sourceName,
-        importedAt,
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
       }),
-    );
-  });
-
-  return items.slice(0, 75);
-}
-
-type AiScheduleExtractedItem = {
-  taskName?: string;
-  projectName?: string | null;
-  locationName?: string | null;
-  startDate?: string | null;
-  finishDate?: string | null;
-  dueDate?: string | null;
-  milestone?: string | null;
-  owner?: string | null;
-  contractor?: string | null;
-  percentComplete?: number | string | null;
-  priority?: string | null;
-  status?: string | null;
-  notes?: string | null;
-  confidence?: string | null;
-  sourcePage?: number | null;
-};
-
-function normalizeAiScheduleStatus(value: unknown): ScheduleStatus {
-  if (typeof value !== 'string') return 'Not Started';
-
-  const lower = value.trim().toLowerCase();
-
-  if (lower.includes('complete') || lower.includes('done')) return 'Complete';
-  if (lower.includes('progress') || lower.includes('active')) return 'In Progress';
-  if (lower.includes('wait') || lower.includes('hold')) return 'Waiting';
-  if (lower.includes('schedule') || lower.includes('planned') || lower.includes('not started')) return 'Not Started';
-
-  return 'Not Started';
-}
-
-function normalizeAiSchedulePriority(value: unknown, finishDate: string): SchedulePriority {
-  if (typeof value === 'string') {
-    const lower = value.trim().toLowerCase();
-
-    if (lower.includes('high')) return 'High';
-    if (lower.includes('low')) return 'Low';
-    if (lower.includes('medium') || lower.includes('normal')) return 'Medium';
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-
-  const days = daysUntilDate(finishDate);
-
-  if (days !== null && days < 0) return 'High';
-  if (days !== null && days <= 7) return 'High';
-
-  return 'Medium';
-}
-
-function percentFromAiItem(item: AiScheduleExtractedItem) {
-  const direct = item.percentComplete;
-
-  if (typeof direct === 'number' && Number.isFinite(direct)) {
-    return Math.max(0, Math.min(100, Math.round(direct)));
-  }
-
-  const text = [direct, item.notes, item.status]
-    .filter(value => typeof value === 'string')
-    .join(' ');
-  const match = text.match(/(\d{1,3})\s*%/);
-
-  if (!match) return 0;
-
-  return Math.max(0, Math.min(100, Number(match[1])));
-}
-
-function contractorFromAiItem(item: AiScheduleExtractedItem) {
-  if (typeof item.contractor === 'string' && item.contractor.trim()) {
-    return item.contractor.trim();
-  }
-
-  if (typeof item.owner === 'string' && item.owner.trim()) {
-    return item.owner.trim();
-  }
-
-  return '';
-}
-
-function normalizeAiScheduleDate(value: unknown) {
-  if (typeof value !== 'string') return '';
-
-  const trimmed = value.trim();
-
-  if (!trimmed) return '';
-
-  const parsed = parseFlexibleDate(trimmed);
-
-  if (!parsed) return '';
-
-  return `${zeroPad(parsed.getMonth() + 1)}/${zeroPad(parsed.getDate())}/${parsed.getFullYear()}`;
-}
-
-function firstValidAiDate(...values: unknown[]) {
-  for (const value of values) {
-    const normalized = normalizeAiScheduleDate(value);
-
-    if (normalized) return normalized;
-  }
-
-  return '';
-}
-
-function scheduleItemsFromAiPayload(payload: unknown, sourceName: string) {
-  const importedAt = new Date().toISOString();
-  const rawItems =
-    payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown }).items)
-      ? ((payload as { items: unknown[] }).items)
-      : Array.isArray(payload)
-        ? payload
-        : [];
-
-  return rawItems
-    .map(raw => {
-      if (!raw || typeof raw !== 'object') return null;
-
-      const item = raw as AiScheduleExtractedItem;
-      const taskName = typeof item.taskName === 'string' ? item.taskName.trim() : '';
-
-      if (!taskName) return null;
-
-      const startDate = firstValidAiDate(item.startDate);
-      const finishDate = firstValidAiDate(item.finishDate, item.dueDate, item.startDate);
-      const contractor = contractorFromAiItem(item);
-      const percentComplete = percentFromAiItem(item);
-      const confidenceNote =
-        typeof item.confidence === 'string' && item.confidence.trim()
-          ? ` Review strength: ${item.confidence.trim()}.`
-          : '';
-      const sourcePageNote =
-        typeof item.sourcePage === 'number' && Number.isFinite(item.sourcePage)
-          ? ` Source page: ${item.sourcePage}.`
-          : '';
-
-      return normalizeScheduleItem({
-        taskName,
-        projectName: typeof item.projectName === 'string' ? item.projectName.trim() : '',
-        locationName: typeof item.locationName === 'string' ? item.locationName.trim() : '',
-        startDate,
-        finishDate,
-        milestone: typeof item.milestone === 'string' ? item.milestone.trim() : '',
-        owner: typeof item.owner === 'string' ? item.owner.trim() : '',
-        contractor,
-        percentComplete,
-        priority: normalizeAiSchedulePriority(item.priority, finishDate),
-        status: normalizeAiScheduleStatus(item.status),
-        notes:
-          typeof item.notes === 'string' && item.notes.trim()
-            ? `${item.notes.trim()}${confidenceNote}${sourcePageNote} Review this AI-extracted item before relying on it.`
-            : `AI/OCR extraction from imported Gantt PDF.${confidenceNote}${sourcePageNote} Review task name, location, and dates before relying on this item.`,
-        importedFrom: sourceName,
-        importedAt,
-      });
-    })
-    .filter(Boolean) as ScheduleItem[];
-}
-
-async function extractScheduleItemsWithAiEndpoint({
-  endpointUrl,
-  pdfUri,
-  fileName,
-  projects,
-  projectAreas,
-}: {
-  endpointUrl: string;
-  pdfUri: string;
-  fileName: string;
-  projects: string[];
-  projectAreas: ProjectArea[];
-}) {
-  const trimmedEndpoint = endpointUrl.trim();
-
-  if (!trimmedEndpoint) return [];
-
-  const formData = new FormData();
-
-  formData.append('file', {
-    uri: pdfUri,
-    name: fileName || 'schedule.pdf',
-    type: 'application/pdf',
-  } as any);
-
-  formData.append('projectName', projects[0] || '');
-  formData.append('timezone', 'America/Los_Angeles');
-  formData.append(
-    'locations',
-    JSON.stringify(projectAreas.map(area => area.name).filter(Boolean)),
-  );
-
-  const response = await fetch(trimmedEndpoint, {
-    method: 'POST',
-    body: formData,
-  });
-
-  const payload = await response.json();
-
-  if (!response.ok) {
-    const message =
-      payload &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      typeof (payload as { error?: unknown }).error === 'string'
-        ? (payload as { error: string }).error
-        : `AI extractor failed with HTTP ${response.status}`;
-
-    throw new Error(message);
-  }
-
-  return scheduleItemsFromAiPayload(payload, fileName);
 }
 
 function actionItemsFromUpdates(savedUpdates: ProjectUpdate[]) {
@@ -2686,31 +2709,26 @@ function normalizeStoredDraft(value: unknown): StoredDraft | null {
   };
 }
 
-function normalizeBackupData(value: unknown): RestoredAppData | null {
-  if (!isRecord(value) || typeof value.version !== 'number') {
-    return null;
-  }
-
-  if (
-    !Array.isArray(value.savedUpdates) ||
-    !Array.isArray(value.projects) ||
-    !Array.isArray(value.archivedProjects)
-  ) {
-    return null;
-  }
-
+function normalizeBackupData(value: unknown) {
+  const preflight = preflightAppBackup(value, {
+    savedUpdate: isStartupDeviceSavedUpdateRecord, projectName: isStartupProjectName,
+    contactBook: isStartupContactBook, projectArea: isStartupProjectAreaRecord,
+    referenceDocument: isStartupReferenceDocumentRecord,
+    projectDocument: isStartupStandaloneProjectDocumentRecord, scheduleItem: isStartupScheduleItemRecord,
+    draftEnvelope: isStartupDeviceDraftEnvelope,
+  });
+  if (!preflight.ok) return preflight;
+  const data = preflight.data;
   return {
-    savedUpdates: value.savedUpdates.map(item =>
-      normalizeUpdate(item as Partial<ProjectUpdate>),
-    ),
-    projects: normalizeStringList(value.projects),
-    archivedProjects: normalizeStringList(value.archivedProjects),
-    contactBook: normalizeContacts(value.contacts),
-    projectAreas: normalizeProjectAreas(value.projectAreas),
-    referenceDocuments: normalizeReferenceDocuments(value.referenceDocuments),
-    projectDocuments: normalizeProjectDocuments(value.projectDocuments),
-    scheduleItems: normalizeScheduleItems(value.scheduleItems),
-    storedDraft: normalizeStoredDraft(value.activeDraft),
+    ok: true as const,
+    data: {
+      savedUpdates: data.savedUpdates.map(item => normalizeUpdate(item as Partial<ProjectUpdate>)),
+      projects: normalizeStringList(data.projects), archivedProjects: normalizeStringList(data.archivedProjects),
+      contactBook: normalizeContacts(data.contacts), projectAreas: normalizeProjectAreas(data.projectAreas),
+      referenceDocuments: normalizeReferenceDocuments(data.referenceDocuments),
+      projectDocuments: normalizeProjectDocuments(data.projectDocuments), scheduleItems: normalizeScheduleItems(data.scheduleItems),
+      storedDraft: normalizeStoredDraft(data.activeDraft),
+    } satisfies RestoredAppData,
   };
 }
 
@@ -2761,7 +2779,28 @@ async function ensurePhotoStorageDirectory() {
 }
 
 function isStoredProjectPhoto(uri: string) {
-  return Boolean(PHOTO_STORAGE_DIR && uri.startsWith(PHOTO_STORAGE_DIR));
+  if (!PHOTO_STORAGE_DIR) return false;
+  return isLegacyOwnedLocalFileReadDeleteAuthorized({
+    ownedRoot: PHOTO_STORAGE_DIR,
+    legacyFolderName: PHOTO_STORAGE_FOLDER,
+    candidatePath: uri,
+  });
+}
+
+function resolveProjectPhotoUri(photo: Partial<UpdatePhoto>) {
+  const uri = typeof photo.uri === 'string' ? photo.uri : '';
+  if (/^https:\/\//i.test(uri)) return uri;
+  if (!uri) return '';
+  const ownedPhoto = PHOTO_STORAGE_DIR && resolveLegacyOwnedLocalFilePath({
+    ownedRoot: PHOTO_STORAGE_DIR, legacyFolderName: PHOTO_STORAGE_FOLDER, candidatePath: uri,
+  });
+  if (ownedPhoto) return ownedPhoto;
+  const cacheRoot = FileSystem.cacheDirectory
+    ? `${FileSystem.cacheDirectory}${RECOVERED_PHOTO_CACHE_FOLDER}/`
+    : null;
+  return photo.cloudRecoveryStatus === 'cached' && cacheRoot
+    ? resolveLegacyOwnedLocalFilePath({ ownedRoot: cacheRoot, legacyFolderName: RECOVERED_PHOTO_CACHE_FOLDER, candidatePath: uri }) || ''
+    : '';
 }
 
 async function deleteStoredPhotoIfUnused(
@@ -3096,6 +3135,40 @@ function projectMatchesScope(update: ProjectUpdate, projectName: string | null) 
   return !projectName || projectRollupKey(update.projectName) === projectRollupKey(projectName);
 }
 
+function projectUpdatesForScopes(
+  savedUpdates: ProjectUpdate[],
+  projectNames: string[],
+  scheduleItems: ScheduleItem[] = [],
+) {
+  const parentProjectName = projectNames[0]?.trim();
+  if (parentProjectName && scheduleItems.length > 0) {
+    return projectUpdatesForParentProject(
+      savedUpdates,
+      parentProjectName,
+      scheduleItems,
+    );
+  }
+  return savedUpdates.filter(update =>
+    projectNames.some(projectName => projectMatchesScope(update, projectName)),
+  );
+}
+
+function projectStatsForUpdates(savedUpdates: ProjectUpdate[]): ProjectStats {
+  return savedUpdates.reduce<ProjectStats>((stats, update) => {
+    stats.updates += 1;
+    stats.photos += update.photos.length;
+    update.photos.forEach(photo => {
+      if (isOpenAction(photo)) stats.openActions += 1;
+      if (isOverdueAction(photo)) stats.overdueActions += 1;
+      if (isDueThisWeek(photo)) stats.dueThisWeek += 1;
+    });
+    if (!stats.lastUpdate || update.date > stats.lastUpdate) {
+      stats.lastUpdate = update.date;
+    }
+    return stats;
+  }, createEmptyProjectStats());
+}
+
 function documentCountForProject(
   projectName: string | null,
   documents: ReferenceDocument[],
@@ -3108,6 +3181,11 @@ function documentCountForProject(
     const searchable = `${document.name} ${document.originalFileName} ${document.notes}`.toLowerCase();
     return searchable.includes(normalizedProject);
   }).length;
+}
+
+function canonicalReferenceDocumentSha256(value: unknown) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 
 function projectDocumentMatchesProject(
@@ -3135,6 +3213,16 @@ function projectDocumentsForProject(
   );
 }
 
+function projectDocumentsForScopes(
+  projectNames: string[],
+  documents: ProjectDocument[],
+) {
+  return documents.filter(document =>
+    !document.isArchived &&
+    projectNames.some(projectName => projectDocumentMatchesProject(document, projectName)),
+  );
+}
+
 function projectDocumentCountForProject(
   projectName: string | null,
   documents: ProjectDocument[],
@@ -3152,153 +3240,25 @@ function buildProjectDocumentStoragePath(
   )}/${documentId}/${sanitizeFilename(fileName)}`;
 }
 
-// Backs up each photo's actual image file to the project-photos bucket.
-// saveCloudUpdate() only writes the update's metadata (caption, category,
-// the photo's local-device file path) to the database - without this, a
-// photo's image never leaves the phone it was taken on. Fire-and-forget per
-// photo: a slow or failed upload shouldn't block the update save/send flow.
-function syncUpdatePhotosToCloud(update: ProjectUpdate) {
-  update.photos.forEach(photo => {
-    void uploadLocalPhoto(update, photo);
+function ownedProjectDocumentAccess(document: ProjectDocument) {
+  if (!OWNED_PROJECT_DOCUMENTS_DIR) throw new Error('Project document storage is unavailable.');
+  return {
+    store: createProjectDocumentOwnedFileStore({ ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR }),
+    input: requireOwnedProjectDocumentAccess(document),
+  };
+}
+
+async function verifyOwnedProjectDocument(document: ProjectDocument) {
+  const access = ownedProjectDocumentAccess(document);
+  await access.store.readAuthorizedFile(access.input);
+}
+
+async function deleteOwnedProjectDocument(document: ProjectDocument) {
+  if (!OWNED_PROJECT_DOCUMENTS_DIR) return { status: 'unavailable' as const };
+  return cleanupProjectDocumentOwnedFileForRecordRemoval({
+    document,
+    ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
   });
-}
-
-async function uploadUpdatePhotosForSync(
-  update: ProjectUpdate,
-): Promise<Pick<
-  FieldUpdateSyncWorkAttempt,
-  | 'photoStorageUploadAttempted'
-  | 'storageUploadResult'
-  | 'storageBucketName'
-  | 'storageBucketExists'
-  | 'storageFailureCategory'
-  | 'storageHttpStatus'
-  | 'storageErrorCode'
-  | 'localFileExists'
-  | 'localFileReadable'
-  | 'fileByteSizeCategory'
-  | 'uploadPayloadType'
-  | 'storageContentType'
-  | 'objectPathCategory'
-  | 'databaseSyncRanAfterUpload'
-  | 'errors'
->> {
-  if (update.photos.length === 0) {
-    return {
-      photoStorageUploadAttempted: false,
-      storageUploadResult: 'skipped',
-      storageBucketName: null,
-      storageBucketExists: 'unknown',
-      storageFailureCategory: null,
-      storageHttpStatus: null,
-      storageErrorCode: null,
-      localFileExists: null,
-      localFileReadable: null,
-      fileByteSizeCategory: 'unknown',
-      uploadPayloadType: 'unknown',
-      storageContentType: null,
-      objectPathCategory: null,
-      databaseSyncRanAfterUpload: false,
-      errors: [],
-    };
-  }
-
-  const results = await Promise.all(
-    update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo)),
-  );
-  const failures = results.filter(
-    result => result.result !== 'uploaded' && result.result !== 'skipped',
-  );
-  const representativeDiagnostic =
-    failures[0]?.diagnostic || results[0]?.diagnostic || null;
-
-  if (failures.length > 0) {
-    return {
-      photoStorageUploadAttempted: true,
-      storageUploadResult: 'failed',
-      storageBucketName: representativeDiagnostic?.bucketName || null,
-      storageBucketExists: representativeDiagnostic?.bucketExists || 'unknown',
-      storageFailureCategory:
-        representativeDiagnostic?.failureCategory || 'unknown_storage_error',
-      storageHttpStatus: representativeDiagnostic?.httpStatus ?? null,
-      storageErrorCode: representativeDiagnostic?.errorCode ?? null,
-      localFileExists: representativeDiagnostic?.localFileExists ?? null,
-      localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
-      fileByteSizeCategory:
-        representativeDiagnostic?.fileByteSizeCategory || 'unknown',
-      uploadPayloadType: representativeDiagnostic?.uploadPayloadType || 'unknown',
-      storageContentType: representativeDiagnostic?.contentType || null,
-      objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
-      databaseSyncRanAfterUpload: false,
-      errors: failures.map(result =>
-        result.result === 'missing'
-          ? 'Photo storage upload failed: photo file unavailable.'
-          : `Photo storage upload failed: ${result.message || 'unknown storage error'}`,
-      ),
-    };
-  }
-
-  return {
-    photoStorageUploadAttempted: true,
-    storageUploadResult: 'success',
-    storageBucketName: representativeDiagnostic?.bucketName || null,
-    storageBucketExists: representativeDiagnostic?.bucketExists || 'yes',
-    storageFailureCategory: null,
-    storageHttpStatus: null,
-    storageErrorCode: null,
-    localFileExists: representativeDiagnostic?.localFileExists ?? null,
-    localFileReadable: representativeDiagnostic?.localFileReadable ?? null,
-    fileByteSizeCategory:
-      representativeDiagnostic?.fileByteSizeCategory || 'unknown',
-    uploadPayloadType: representativeDiagnostic?.uploadPayloadType || 'unknown',
-    storageContentType: representativeDiagnostic?.contentType || null,
-    objectPathCategory: representativeDiagnostic?.objectPathCategory || null,
-    databaseSyncRanAfterUpload: false,
-    errors: [],
-  };
-}
-
-async function runFieldUpdateCloudSync(
-  update: ProjectUpdate,
-): Promise<{
-  syncResult: SyncUploadResult;
-  workAttempt: FieldUpdateSyncWorkAttempt;
-}> {
-  const photoAttempt = await uploadUpdatePhotosForSync(update);
-  const workAttempt: FieldUpdateSyncWorkAttempt = {
-    cloudUpdateInsertAttempted: false,
-    photoStorageUploadAttempted: photoAttempt.photoStorageUploadAttempted,
-    storageUploadResult: photoAttempt.storageUploadResult,
-    databaseUpsertResult: 'skipped',
-    storageBucketName: photoAttempt.storageBucketName,
-    storageBucketExists: photoAttempt.storageBucketExists,
-    storageFailureCategory: photoAttempt.storageFailureCategory,
-    storageHttpStatus: photoAttempt.storageHttpStatus,
-    storageErrorCode: photoAttempt.storageErrorCode,
-    localFileExists: photoAttempt.localFileExists,
-    localFileReadable: photoAttempt.localFileReadable,
-    fileByteSizeCategory: photoAttempt.fileByteSizeCategory,
-    uploadPayloadType: photoAttempt.uploadPayloadType,
-    storageContentType: photoAttempt.storageContentType,
-    objectPathCategory: photoAttempt.objectPathCategory,
-    databaseSyncRanAfterUpload: false,
-    errors: [...photoAttempt.errors],
-  };
-
-  await saveCloudUpdate(update);
-  workAttempt.cloudUpdateInsertAttempted = true;
-
-  const syncResult = await uploadPendingChanges();
-  workAttempt.databaseSyncRanAfterUpload = workAttempt.storageUploadResult === 'success';
-  workAttempt.databaseUpsertResult =
-    syncResult.configured && syncResult.errors.length === 0 && syncResult.queued === 0
-      ? 'success'
-      : 'failed';
-
-  return {
-    syncResult,
-    workAttempt,
-  };
 }
 
 function projectDocumentStatusDetail(document: ProjectDocument) {
@@ -3370,12 +3330,12 @@ function photoHasVisualChange(photo: UpdatePhoto) {
 
   if (!result) return false;
   if (!pieResultHasCompletedVisualComparison(result)) return false;
+  return photoDisplayResultHasExplicitFinding(result);
+}
 
-  return Boolean(
-    result.visibleChange ||
-      (result.additions?.length || 0) > 0 ||
-      (result.removals?.length || 0) > 0 ||
-      observedFindingsForPIEResult(result).length > 0,
+function photoAssessmentForUpdate(update: ProjectUpdate) {
+  return aggregatePhotoDisplayResults(
+    update.photos.map(photo => photo.photoIntelligence),
   );
 }
 
@@ -3474,44 +3434,7 @@ function waitForPIEAuthHydrationRetry() {
 function pieStatusForUpdate(update: ProjectUpdate) {
   if (update.status === 'queued') return queuedStatusCopyForUpdate(update);
   if (update.status === 'failed') return queuedStatusCopyForUpdate(update);
-
-  const intelligence = update.photos
-    .map(photo => photo.photoIntelligence)
-    .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
-
-  const authCopy = authStatusCopyForPIEResults(intelligence);
-  if (authCopy) return authCopy;
-
-  if (intelligence.some(result => result.status === 'analyzing')) {
-    return PIE_STATUS_COPY.checking;
-  }
-
-  if (
-    intelligence.length > 0 &&
-    intelligence.every(result => result.status === 'no_suitable_prior_photo')
-  ) {
-    return PIE_STATUS_COPY.noPriorPhoto;
-  }
-
-  if (
-    intelligence.some(
-      result =>
-        result.status === 'analysis_failed_retry' ||
-        result.status === 'comparison_unavailable',
-    )
-  ) {
-    return PIE_STATUS_COPY.unavailableRetry;
-  }
-
-  if (update.photos.some(photoHasVisualChange)) {
-    return PIE_STATUS_COPY.possibleChanges;
-  }
-
-  if (intelligence.length > 0) {
-    return PIE_STATUS_COPY.noReliableChange;
-  }
-
-  return PIE_STATUS_COPY.checking;
+  return summarizePIEStatusForUpdate(update).summary;
 }
 
 function summarizePIEStatusForUpdate(update: ProjectUpdate): {
@@ -3530,46 +3453,38 @@ function summarizePIEStatusForUpdate(update: ProjectUpdate): {
     .filter(Boolean) as PIEPhotoIntelligenceDisplayState[];
 
   const authCopy = authStatusCopyForPIEResults(results);
+  const assessment = photoAssessmentForUpdate(update);
 
-  if (results.length === 0 || results.some(isPreparingSecurePhotoAnalysisResult)) {
+  if (
+    assessment.state === 'not_assessed' ||
+    assessment.state === 'assessing' ||
+    results.some(isPreparingSecurePhotoAnalysisResult)
+  ) {
     return {
       status: 'analyzing',
-      summary: authCopy || PIE_STATUS_COPY.preparingSecureAnalysis,
+      summary: authCopy || (results.length === 0
+        ? PIE_STATUS_COPY.preparingSecureAnalysis
+        : PIE_STATUS_COPY.checking),
     };
   }
 
-  if (results.some(result => result.status === 'analyzing')) {
-    return {
-      status: 'analyzing',
-      summary: PIE_STATUS_COPY.checking,
-    };
-  }
-
-  if (results.every(result => result.status === 'no_suitable_prior_photo')) {
+  if (assessment.state === 'baseline_only') {
     return {
       status: 'no_prior_photo',
       summary: PIE_STATUS_COPY.noPriorPhoto,
     };
   }
 
-  if (
-    results.some(
-      result =>
-        result.status === 'analysis_failed_retry' ||
-        result.status === 'comparison_unavailable',
-    )
-  ) {
+  if (assessment.state === 'failed' || assessment.state === 'incomparable') {
     return {
       status: 'failed',
       summary: authCopy || PIE_STATUS_COPY.unavailableRetry,
     };
   }
 
-  const changed = update.photos.some(photoHasVisualChange);
-
   return {
     status: 'complete',
-    summary: changed
+    summary: assessment.state === 'assessed_finding'
       ? PIE_STATUS_COPY.possibleChanges
       : PIE_STATUS_COPY.noReliableChange,
   };
@@ -3628,7 +3543,7 @@ function updateSupportsPIEInterpretations(
 }
 
 function buildSuggestedObservedNote(observedFindings: string[]) {
-  const observedOnly = uniqueStrings(observedFindings)
+  const observedOnly = constructionRelevantObservations(uniqueStrings(observedFindings))
     .filter(item => item.trim())
     .filter(item => !/possible|progress|blocker|quality|concern|ahead|behind|delay|risk/i.test(item))
     .slice(0, 3);
@@ -3694,19 +3609,6 @@ function appendInterpretationDecisionLog(
   };
 }
 
-function buildPreviewLine(
-  update: ProjectUpdate,
-  contacts: ProjectContact[],
-) {
-  const areaName = update.selectedAreaName || 'Unassigned area';
-  const recipientText =
-    contacts.length > 0
-      ? `Site Team · ${contacts.length} people`
-      : 'recipients';
-
-  return `${areaName} update to ${recipientText}`;
-}
-
 function buildGeneratedUpdateMessage(
   update: ProjectUpdate,
   pieStatus: { status: FieldUpdatePIEStatus; summary: string },
@@ -3719,7 +3621,7 @@ function buildGeneratedUpdateMessage(
           pieStatus.status === 'no_prior_photo' ||
           pieStatus.status === 'no_visual_comparison' ||
           pieStatus.status === 'failed'
-        ? `\n\nDAVE Summary: ${pieStatus.summary}`
+        ? `\n\nPhoto Analysis: ${pieStatus.summary}`
         : '';
   const confirmedInterpretationLine =
     pieStatus.status === 'complete' &&
@@ -3733,17 +3635,11 @@ function buildGeneratedUpdateMessage(
 }
 
 function updateHasSafetyConcern(update: ProjectUpdate) {
-  if (update.safetyFlag || update.quickContext === 'Safety') return true;
-
-  return update.photos.some(photo => photo.category === 'Safety Concern');
+  return updateHasOpenDAVESafetyConcern(update);
 }
 
 function updateHasBlocker(update: ProjectUpdate) {
-  return (
-    Boolean(update.blockerFlag) ||
-    update.quickContext === 'Blocker' ||
-    update.photos.some(photo => photo.category === 'Open Issue')
-  );
+  return updateHasOpenDAVEBlocker(update);
 }
 
 function lifecycleStatusForUpdate(update: ProjectUpdate): FieldUpdateStatus {
@@ -3821,9 +3717,14 @@ function updateCanInlineRetry(update: ProjectUpdate) {
 function updateNeedsAutomaticSyncRetry(update: ProjectUpdate) {
   const lifecycle = lifecycleStatusForUpdate(update);
   const category = update.syncDiagnostics?.lastSyncFailureCategory;
+  const repairedMissingPhotoNeedsFinalization =
+    lifecycle === 'failed' &&
+    category === 'storage_upload_failed' &&
+    update.photos.some(photo => photo.cloudRecoveryStatus === 'unavailable');
 
   return (
     lifecycle === 'queued' ||
+    repairedMissingPhotoNeedsFinalization ||
     (lifecycle === 'failed' &&
       (category === 'signed_out' || category === 'auth' || category === 'offline'))
   );
@@ -3839,6 +3740,7 @@ function mergeSavedUpdatesWithTombstones({
   tombstones: DeletedUpdateTombstone[];
 }) {
   const tombstoneById = new Map(tombstones.map(item => [item.updateId, item]));
+  const cloudUpdateById = new Map(cloudUpdates.map(update => [update.id, update]));
   const seen = new Set<string>();
   const merged: ProjectUpdate[] = [];
 
@@ -3846,6 +3748,12 @@ function mergeSavedUpdatesWithTombstones({
     update: ProjectUpdate,
     sourceAfterReload: FieldUpdateDeleteDiagnostics['sourceAfterReload'],
   ) => {
+    const effectiveUpdate = sourceAfterReload === 'local'
+      ? mergeDAVECloudRecoveredProjectUpdate(
+          update,
+          cloudUpdateById.get(update.id) || update,
+        )
+      : update;
     const tombstone = tombstoneById.get(update.id);
     const localArchiveCanStayHidden =
       tombstone?.action === 'archive_sent_update' && sourceAfterReload === 'local';
@@ -3855,17 +3763,17 @@ function mergeSavedUpdatesWithTombstones({
 
     seen.add(update.id);
 
-    const lifecycleStatus = lifecycleStatusForUpdate(update);
+    const lifecycleStatus = lifecycleStatusForUpdate(effectiveUpdate);
     merged.push({
-      ...update,
-      isArchived: update.isArchived || tombstone?.action === 'archive_sent_update',
-      archivedAt: update.archivedAt || tombstone?.deletedAt || null,
+      ...effectiveUpdate,
+      isArchived: effectiveUpdate.isArchived || tombstone?.action === 'archive_sent_update',
+      archivedAt: effectiveUpdate.archivedAt || tombstone?.deletedAt || null,
       deleteDiagnostics: {
-        updateId: update.id,
-        localId: update.stableSendId || update.id,
+        updateId: effectiveUpdate.id,
+        localId: effectiveUpdate.stableSendId || effectiveUpdate.id,
         cloudIdPresent: sourceAfterReload === 'cloud' || lifecycleStatus === 'sent',
         lifecycleStatus,
-        pendingSync: updateNeedsAutomaticSyncRetry(update),
+        pendingSync: updateNeedsAutomaticSyncRetry(effectiveUpdate),
         tombstoned: Boolean(tombstone),
         deletedAt: tombstone?.deletedAt || null,
         sourceAfterReload,
@@ -3900,6 +3808,25 @@ function buildUpdateTombstone(
     mergeDecision: 'tombstoned',
     orphanedPhotoCountIgnored: update.photos.length,
     action,
+  };
+}
+
+function buildCloudUpdateDeletionBarrier(
+  updateId: string,
+  deletedAt: string,
+): DeletedUpdateTombstone {
+  return {
+    updateId,
+    localId: updateId,
+    cloudIdPresent: true,
+    lifecycleStatus: 'sent',
+    pendingSync: false,
+    tombstoned: true,
+    deletedAt,
+    sourceAfterReload: 'cloud',
+    mergeDecision: 'tombstoned',
+    orphanedPhotoCountIgnored: 0,
+    action: 'delete_update_everywhere',
   };
 }
 
@@ -4076,26 +4003,6 @@ function buildSkippedSyncDiagnostics(
   };
 }
 
-type FieldUpdateSyncWorkAttempt = {
-  cloudUpdateInsertAttempted: boolean;
-  photoStorageUploadAttempted: boolean;
-  storageUploadResult: FieldUpdateSyncStepResult;
-  databaseUpsertResult: FieldUpdateSyncStepResult;
-  storageBucketName: string | null;
-  storageBucketExists: 'yes' | 'no' | 'unknown';
-  storageFailureCategory: PhotoStorageUploadFailureCategory | null;
-  storageHttpStatus: number | null;
-  storageErrorCode: string | null;
-  localFileExists: boolean | null;
-  localFileReadable: boolean | null;
-  fileByteSizeCategory: 'zero' | 'nonzero' | 'unknown';
-  uploadPayloadType: 'ArrayBuffer' | 'Blob' | 'base64' | 'unknown';
-  storageContentType: string | null;
-  objectPathCategory: string | null;
-  databaseSyncRanAfterUpload: boolean | null;
-  errors: string[];
-};
-
 const SKIPPED_SYNC_WORK_ATTEMPT: FieldUpdateSyncWorkAttempt = {
   cloudUpdateInsertAttempted: false,
   photoStorageUploadAttempted: false,
@@ -4192,14 +4099,15 @@ function buildSyncDiagnosticsFromUpload(
 function statusForSyncDiagnostics(
   diagnostics: FieldUpdateSyncDiagnostics,
 ): FieldUpdateStatus {
-  if (diagnostics.lastSyncResult === 'success') return 'sent';
-  if (diagnostics.lastSyncFailureCategory === 'offline') return 'queued';
-  return 'failed';
+  return persistedStatusForSyncResult({
+    result: diagnostics.lastSyncResult,
+    failureCategory: diagnostics.lastSyncFailureCategory,
+  });
 }
 
 function queuedStatusCopyForUpdate(update: ProjectUpdate) {
   const category = update.syncDiagnostics?.lastSyncFailureCategory;
-  if (category === 'signed_out') return 'Sign in required to send';
+  if (category === 'signed_out') return 'Sign in required to sync';
   if (category === 'auth') return 'Session expired · Sign in again';
   if (
     category === 'rls_denied' &&
@@ -4219,7 +4127,7 @@ function queuedStatusCopyForUpdate(update: ProjectUpdate) {
   if (category === 'database_insert_failed') return 'Sync failed · Update save issue';
   if (category === 'malformed_payload') return 'Sync failed · App data issue';
   if (category && category !== 'offline') return 'Sync failed · Retry';
-  return "Queued — will send when you're back online";
+  return "Queued — will sync when you're back online";
 }
 
 function flowTimingForUpdate(update: ProjectUpdate): SixtySecondFlowTimingResult {
@@ -4238,7 +4146,7 @@ function screenForUpdateResume(update: ProjectUpdate): Screen {
   }
 
   if (pieStatus === 'analyzing' && !isPIEPendingTooLong(update)) {
-    return 'PIEAnalysis';
+    return 'BuildUpdate';
   }
 
   return 'BuildUpdate';
@@ -4301,11 +4209,12 @@ type PIEProjectBriefModel = {
 };
 
 function buildPIEProjectBriefModel(
-  projectName: string,
+  projectName: string | null,
   savedUpdates: ProjectUpdate[],
 ): PIEProjectBriefModel {
-  const scopedUpdates = savedUpdates
-    .filter(update => projectMatchesScope(update, projectName))
+  const scopedUpdates = (projectName
+    ? savedUpdates.filter(update => projectMatchesScope(update, projectName))
+    : [...savedUpdates])
     .sort((a, b) => updateSortTime(b) - updateSortTime(a));
   const failedCount = scopedUpdates.reduce(
     (sum, update) =>
@@ -4408,7 +4317,7 @@ function isSafeObservedBriefFinding(finding: string) {
   const normalized = finding.trim().toLowerCase();
   if (!normalized) return false;
   if (isBaselineInfoFinding(finding)) return false;
-  if (/work completed|progress increased|finished|quality issue|schedule.*risk|at risk|completed/.test(normalized)) {
+  if (parseDAVEAssertions(normalized).assertions.length > 0) {
     return false;
   }
   return true;
@@ -4442,17 +4351,19 @@ function updateSortTime(update: ProjectUpdate) {
 }
 
 function buildProjectCardPIEStatus(
-  projectName: string,
+  projectNames: string[],
   savedUpdates: ProjectUpdate[],
 ) {
-  const scopedUpdates = savedUpdates
-    .filter(update => projectMatchesScope(update, projectName))
+  const scopedUpdates = (projectNames.length > 0
+    ? savedUpdates.filter(update =>
+        projectNames.some(projectName => projectMatchesScope(update, projectName)),
+      )
+    : [...savedUpdates])
     .sort((a, b) => b.date.localeCompare(a.date));
-
-  if (scopedUpdates.some(update => updateHasSafetyConcern(update))) {
+  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlocker(scopedUpdates);
+  if (currentConfirmedBlocker && updateHasSafetyConcern(currentConfirmedBlocker)) {
     return 'Safety item needs review';
   }
-
   const failedSync = scopedUpdates.find(update => lifecycleStatusForUpdate(update) === 'failed');
   if (failedSync) return queuedStatusCopyForUpdate(failedSync);
 
@@ -4490,7 +4401,7 @@ function buildProjectCardPIEStatus(
   if (!latest) return 'No recent updates';
 
   if (lifecycleStatusForUpdate(latest) === 'sent') {
-    return `Last update sent ${relativeUpdateDateLabel(latest.date)}`;
+    return `Last update cloud synced ${relativeUpdateDateLabel(latest.date)}`;
   }
 
   if (lifecycleStatusForUpdate(latest) === 'queued') {
@@ -4502,7 +4413,7 @@ function buildProjectCardPIEStatus(
   }
 
   if (lifecycleStatusForUpdate(latest) === 'ready_to_send') {
-    return 'Draft ready to send';
+    return 'Draft ready to sync';
   }
 
   return `Last local update ${relativeUpdateDateLabel(latest.date)}`;
@@ -4526,7 +4437,11 @@ function resolveProjectForDetectedArea(
   area: ProjectArea,
   savedUpdates: ProjectUpdate[],
   activeProjects: string[],
+  scheduleItems: ScheduleItem[],
 ) {
+  const explicitOwner = explicitProjectAreaOwner(area, activeProjects);
+  if (explicitOwner) return explicitOwner;
+
   const areaMatches = savedUpdates.filter(update => {
     const updateAreaName = update.selectedAreaName || '';
 
@@ -4542,15 +4457,18 @@ function resolveProjectForDetectedArea(
     );
   });
 
-  const latestMatch = areaMatches.sort((a, b) =>
+  const orderedMatches = areaMatches.sort((a, b) =>
     b.date.localeCompare(a.date),
-  )[0];
-
-  if (
-    latestMatch &&
-    activeProjects.some(project => project === latestMatch.projectName)
-  ) {
-    return latestMatch.projectName;
+  );
+  for (const update of orderedMatches) {
+    const parent = activeProjects.find(project =>
+      projectUpdateBelongsToParentProject({
+        update,
+        projectName: project,
+        scheduleItems,
+      }),
+    );
+    if (parent) return parent;
   }
 
   if (activeProjects.length === 1) return activeProjects[0];
@@ -4573,11 +4491,10 @@ function projectDueTodayLabel(
   savedUpdates: ProjectUpdate[],
   scheduleItems: ScheduleItem[],
 ): string | null {
-  const dueScheduleItem = scheduleItems.find(
-    item =>
-      item.projectName.toLowerCase() === projectName.toLowerCase() &&
-      isScheduleItemDueToday(item),
-  );
+  const dueScheduleItem = scheduleTasksForParentProject(
+    projectName,
+    scheduleItems as unknown as import('./types').ScheduleItem[],
+  ).find(item => isScheduleItemDueToday(item as unknown as ScheduleItem));
 
   if (dueScheduleItem) {
     return dueScheduleItem.taskName.trim() || 'Schedule item due today';
@@ -4585,8 +4502,11 @@ function projectDueTodayLabel(
 
   const hasDueTodayAction = savedUpdates.some(
     update =>
-      projectMatchesScope(update, projectName) &&
-      update.photos.some(isDueTodayAction),
+      projectUpdateBelongsToParentProject({
+        update,
+        projectName,
+        scheduleItems,
+      }) && update.photos.some(isDueTodayAction),
   );
 
   return hasDueTodayAction ? 'Open action item due today' : null;
@@ -4594,11 +4514,17 @@ function projectDueTodayLabel(
 
 type OverviewProjectRow = {
   project: string;
+  scopeProjects: string[];
   needsAttention: boolean;
-  severity: 'high' | 'medium';
+  priorityRank: number;
+  health: 'Healthy' | 'Needs Setup' | 'At Risk' | 'Blocked';
+  needsVerification: boolean;
   subtitle: string;
   dueTodayLabel: string | null;
   observationCount: number;
+  taskCount: number;
+  percentComplete: number;
+  scheduleHealth: 'On Track' | 'At Risk' | 'Blocked';
 };
 
 function buildOverviewProjectRows(
@@ -4607,35 +4533,81 @@ function buildOverviewProjectRows(
   scheduleItems: ScheduleItem[],
 ): OverviewProjectRow[] {
   return projects.map(project => {
-    const attentionItems = buildPhase2AttentionItems(savedUpdates, project);
-    const dueTodayLabel = projectDueTodayLabel(project, savedUpdates, scheduleItems);
-    const needsAttention = attentionItems.length > 0 || dueTodayLabel !== null;
-    const brief = buildPIEProjectBriefModel(project, savedUpdates);
+    const scopeProjects = scheduleProjectScopeNames(
+      project,
+      scheduleItems as unknown as import('./types').ScheduleItem[],
+    );
+    const scopedFieldUpdates = projectUpdatesForParentProject(
+      savedUpdates,
+      project,
+      scheduleItems,
+    );
+    const attentionItems = buildPhase2AttentionItems(scopedFieldUpdates, null);
+    const dueTodayLabel = projectDueTodayLabel(
+      project,
+      savedUpdates,
+      scheduleItems,
+    );
+    const projectScheduleItems = operationalScheduleItemsForProject(
+      project,
+      scheduleItems,
+    );
+    const scheduleRollup = buildDAVEProjectScheduleRollup({
+      projectName: project,
+      items: scheduleItems as unknown as import('./types').ScheduleItem[],
+    });
+    const scheduleReconciliation = buildPIEScheduleReconciliation({
+      scheduleItems: projectScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
+      updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
+    });
+    const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlocker(scopedFieldUpdates);
+    const operationalStatus = deriveDAVEProjectOperationalStatus({
+      scheduleHealth: scheduleRollup.health,
+      scheduleReason: scheduleRollup.healthReason,
+      reconciliationWarnings: scheduleReconciliation.warnings,
+      hasConfirmedBlocker: Boolean(confirmedBlockingUpdate),
+      confirmedBlockerReason: confirmedBlockingUpdate
+        ? daveConfirmedBlockerReason(confirmedBlockingUpdate)
+        : null,
+      hasAttention: attentionItems.length > 0,
+      attentionReason: attentionItems[0]?.detail || attentionItems[0]?.title || null,
+      hasScheduleData: scheduleRollup.taskCount > 0,
+      hasFieldData: scopedFieldUpdates.length > 0,
+    });
+    const needsAttention = operationalStatus.status !== 'Healthy';
+    const brief = buildPIEProjectBriefModel(null, scopedFieldUpdates);
+    const observations = brief.observations
+      .sort((left, right) => updateSortTime(right.update) - updateSortTime(left.update));
     const subtitle = needsAttention
-      ? brief.observations[0]?.text || brief.summary.split('\n')[0]
-      : buildProjectCardPIEStatus(project, savedUpdates);
+      ? operationalStatus.reason || operationalStatus.primaryWarning?.summary || observations[0]?.text || brief.summary.split('\n')[0]
+      : buildProjectCardPIEStatus([], scopedFieldUpdates);
 
     return {
       project,
+      scopeProjects,
       needsAttention,
-      severity: attentionItems.length > 0 ? 'high' : 'medium',
+      priorityRank: operationalStatus.priorityRank,
+      health: operationalStatus.status,
+      needsVerification: operationalStatus.needsVerification,
       subtitle,
       dueTodayLabel,
-      observationCount: brief.observations.length,
+      observationCount: observations.length,
+      taskCount: scheduleRollup.taskCount,
+      percentComplete: scheduleRollup.percentComplete,
+      scheduleHealth: scheduleRollup.health,
     };
-  });
+  }).sort((left, right) =>
+    Number(right.needsAttention) - Number(left.needsAttention) ||
+    right.priorityRank - left.priorityRank ||
+    left.project.localeCompare(right.project),
+  );
 }
 
 function mostRecentHeroPhotoUri(
-  scopedProjects: string[],
-  savedUpdates: ProjectUpdate[],
+  scopedUpdates: ProjectUpdate[],
 ): string | null {
-  const candidateUpdates = savedUpdates
-    .filter(
-      update =>
-        update.photos.length > 0 &&
-        scopedProjects.some(project => projectMatchesScope(update, project)),
-    )
+  const candidateUpdates = scopedUpdates
+    .filter(update => update.photos.length > 0)
     .sort((a, b) => updateSortTime(b) - updateSortTime(a));
 
   return candidateUpdates[0]?.photos[0]?.uri || null;
@@ -4666,11 +4638,14 @@ function buildPhase2AttentionItems(
   savedUpdates: ProjectUpdate[],
   projectName: string | null,
 ) {
-  const items = savedUpdates
-    .filter(update => projectMatchesScope(update, projectName))
+  const scopedUpdates = projectName
+    ? savedUpdates.filter(update => projectMatchesScope(update, projectName))
+    : savedUpdates;
+  const currentConfirmedBlocker = findCurrentDAVEConfirmedBlocker(scopedUpdates);
+  const items = scopedUpdates
     .flatMap(update => {
-      const recurringContext = recurringOpenItemContext(update, savedUpdates);
-      const safetyDraftItem = update.safetyFlag
+      const recurringContext = recurringOpenItemContext(update, scopedUpdates);
+      const safetyDraftItem = currentConfirmedBlocker?.id === update.id && (update.safetyFlag || update.quickContext === 'Safety')
         ? [
             {
               id: `${update.id}-safety-quick-context`,
@@ -4694,7 +4669,7 @@ function buildPhase2AttentionItems(
             },
           ]
         : [];
-      const blockerItem = updateHasBlocker(update)
+      const blockerItem = currentConfirmedBlocker?.id === update.id && (update.blockerFlag || update.quickContext === 'Blocker')
         ? [
             {
               id: `${update.id}-blocker`,
@@ -4725,7 +4700,7 @@ function buildPhase2AttentionItems(
               updateId: update.id,
               actionTarget: 'retry_send' as const,
               projectName: update.projectName,
-              title: 'Queued update waiting to send',
+              title: 'Queued update waiting to sync',
               detail: queuedStatusCopyForUpdate(update),
               areaLabel: update.selectedAreaName || 'No area selected',
               dateLabel: formatDisplayDate(update.date),
@@ -4744,7 +4719,7 @@ function buildPhase2AttentionItems(
               title: queuedStatusCopyForUpdate(update),
               detail:
                 update.syncDiagnostics?.lastSyncFailureCategory === 'signed_out'
-                  ? 'Sign in required to send. The update is saved locally and can be retried.'
+                  ? 'Sign in required to sync. The update is saved locally and can be retried.'
                   : 'Sync failed · Retry. The update is saved locally and can be retried.',
               areaLabel: update.selectedAreaName || 'No area selected',
               dateLabel: formatDisplayDate(update.date),
@@ -4776,7 +4751,7 @@ function buildPhase2AttentionItems(
               updateId: update.id,
               actionTarget: 'update' as const,
               projectName: update.projectName,
-              title: 'Update ready to send',
+              title: 'Update ready to sync',
               detail: 'Open the update to review recipients and send.',
               areaLabel: update.selectedAreaName || 'No area selected',
               dateLabel: formatDisplayDate(update.date),
@@ -4860,8 +4835,8 @@ function buildPhase2AttentionItems(
             updateId: update.id,
             actionTarget: 'update' as const,
             projectName: update.projectName,
-            title: 'DAVE result changed after send',
-            detail: `Original message was sent while analysis was unresolved. Current result: ${summarizePIEStatusForUpdate(update).summary}`,
+            title: 'Analysis result changed after cloud sync',
+            detail: `The field update synced while analysis was unresolved. Current result: ${summarizePIEStatusForUpdate(update).summary}`,
             areaLabel: update.selectedAreaName || 'No area selected',
             dateLabel: formatDisplayDate(update.date),
             priority: updateHasSafetyConcern(update)
@@ -4890,10 +4865,7 @@ function buildPhase2AttentionItems(
         )
         .map((photo): Phase2AttentionItem => {
           const safety = photo.category === 'Safety Concern';
-          const overdue =
-            photo.actionDueDate &&
-            photo.actionDueDate < new Date().toISOString().slice(0, 10) &&
-            photo.actionStatus !== 'Closed';
+          const overdue = isOverdueAction(photo);
 
           return {
             id: stableOpenItemAttentionId(update, photo),
@@ -5018,35 +4990,47 @@ function projectThumbnailUri(
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <AppShell />
-    </SafeAreaProvider>
+    <StartupErrorBoundary>
+      <SafeAreaProvider>
+        <AppShell />
+      </SafeAreaProvider>
+    </StartupErrorBoundary>
   );
 }
 
 function AppShell() {
   const insets = useSafeAreaInsets();
+  const { width: appShellWidth } = useWindowDimensions();
+  const appShellLayout = appShellLayoutForWidth(appShellWidth);
+  const scheduleScreenshotOcrAvailable =
+    Platform.OS === 'ios' && isDaveTextRecognitionAvailable();
 
-  const [screen, setScreen] = useState<Screen>('Home');
+  const { screen, setScreen, goBack, returnScreen: contactsReturnScreen,
+    setReturnScreen: setContactsReturnScreen } = useAppNavigation('Home');
 
   const [savedUpdatesEntryFilter, setSavedUpdatesEntryFilter] = useState<{
     tab: 'Sent';
-    withinDays: number;
+    withinDays: number | null;
+    project?: string | null;
   } | null>(null);
-
-  const [projectsEntryStatusFilter, setProjectsEntryStatusFilter] =
-    useState<'onTrack' | null>(null);
+  const [scheduleEntryFilter, setScheduleEntryFilter] = useState<ScheduleTaskFilter>('Attention');
+  const [scheduleAddProjectName, setScheduleAddProjectName] = useState<string | null>(null);
+  const [scheduleProjectFilter, setScheduleProjectFilter] = useState<string | null>(null);
+  const [updatesProjectFilter, setUpdatesProjectFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (screen === 'SavedUpdates' && savedUpdatesEntryFilter) {
       setSavedUpdatesEntryFilter(null);
     }
 
-    if (screen === 'Projects' && projectsEntryStatusFilter) {
-      setProjectsEntryStatusFilter(null);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen]);
+
+  useEffect(() => {
+    if (screen !== 'Schedule' && scheduleAddProjectName !== null) {
+      setScheduleAddProjectName(null);
+    }
+  }, [scheduleAddProjectName, screen]);
 
   const [selectedWorkspaceProject, setSelectedWorkspaceProject] =
     useState(DEFAULT_PROJECTS[0]);
@@ -5065,11 +5049,45 @@ function AppShell() {
     useState<OverviewDetectionStatus>('checking');
 
   const [savedUpdates, setSavedUpdates] = useState<ProjectUpdate[]>([]);
+  const [decisionLedger, setDecisionLedger] = useState<PIEDecisionRecord[]>([]);
+  const [layer4Identity, setLayer4Identity] = useState<PIELayer4ActorContext | null>(null);
+  const [layer4IdentityReady, setLayer4IdentityReady] = useState(false);
+  const [decisionLedgerMigrationStatus, setDecisionLedgerMigrationStatus] =
+    useState<PIEDecisionLedgerMigrationStatus | null>(null);
+  const [captureMemories, setCaptureMemories] = useState<DAVEConfirmedCaptureMemory[]>([]);
+  const [identityCorrections, setIdentityCorrections] = useState<DAVEIdentityCorrection[]>([]);
+  const [syncCleanupNotice, setSyncCleanupNotice] = useState<string | null>(null);
+  const [talkProjectName, setTalkProjectName] = useState(DEFAULT_PROJECTS[0]);
+  const [talkTaskId, setTalkTaskId] = useState<string | null>(null);
+  const [talkVoiceOpen, setTalkVoiceOpen] = useState(false);
+  const [talkTypedOpen, setTalkTypedOpen] = useState(false);
+  const [talkCaptureDraft, setTalkCaptureDraft] = useState<DAVECaptureMemory | null>(null);
+  const [talkAnswer, setTalkAnswer] = useState<{
+    projectName: string;
+    question: string;
+    answer: DAVEAskAnswer;
+  } | null>(null);
+  const [talkTaskAction, setTalkTaskAction] = useState<{
+    projectName: string;
+    command: DAVETaskUpdateCommand;
+    candidates: DAVETaskActionCandidate[];
+    selectedTaskId: string | null;
+  } | null>(null);
+  const [activeProjectWalkSession, setActiveProjectWalkSession] =
+    useState<DAVEProjectWalkSession | null>(null);
   const [deletedUpdateTombstones, setDeletedUpdateTombstones] =
     useState<DeletedUpdateTombstone[]>([]);
+  const [operationalSyncTombstones, setOperationalSyncTombstones] =
+    useState<DAVESyncTombstone[]>([]);
+  const [deletedProjectNames, setDeletedProjectNames] =
+    useState<string[]>([]);
 
   const [projects, setProjects] =
     useState<string[]>(DEFAULT_PROJECTS);
+
+  const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>(
+    DEFAULT_PROJECTS.map(name => ({ name })),
+  );
 
   const [archivedProjects, setArchivedProjects] =
     useState<string[]>([]);
@@ -5088,18 +5106,47 @@ function AppShell() {
 
   const [scheduleItems, setScheduleItems] =
     useState<ScheduleItem[]>([]);
+  const projectAreasCurrentRef = useRef(projectAreas);
+  const referenceDocumentsCurrentRef = useRef(referenceDocuments);
+  const scheduleItemsCurrentRef = useRef(scheduleItems);
+  const projectsCurrentRef = useRef(projects);
+  const projectRecordsCurrentRef = useRef(projectRecords);
+  const archivedProjectsCurrentRef = useRef(archivedProjects);
+  const operationalSyncTombstonesRef = useRef(operationalSyncTombstones);
 
-  const [scheduleAiExtractorUrl, setScheduleAiExtractorUrl] =
-    useState('');
+  useEffect(() => {
+    projectAreasCurrentRef.current = projectAreas;
+  }, [projectAreas]);
+
+  useEffect(() => {
+    referenceDocumentsCurrentRef.current = referenceDocuments;
+  }, [referenceDocuments]);
+
+  useEffect(() => {
+    scheduleItemsCurrentRef.current = scheduleItems;
+  }, [scheduleItems]);
+
+  useEffect(() => {
+    projectsCurrentRef.current = projects;
+  }, [projects]);
+
+  useEffect(() => {
+    projectRecordsCurrentRef.current = projectRecords;
+  }, [projectRecords]);
+
+  useEffect(() => {
+    archivedProjectsCurrentRef.current = archivedProjects;
+  }, [archivedProjects]);
+
+  useEffect(() => {
+    operationalSyncTombstonesRef.current = operationalSyncTombstones;
+  }, [operationalSyncTombstones]);
 
   const [displayName, setDisplayName] =
     useState('');
 
   const [contactBook, setContactBook] =
     useState<ContactBook>({ contacts: [] });
-
-  const [contactsReturnScreen, setContactsReturnScreen] =
-    useState<Screen>('Home');
 
   const [draft, setDraft] = useState<ProjectUpdate>(() =>
     createDraft(DEFAULT_PROJECTS[0]),
@@ -5116,40 +5163,67 @@ function AppShell() {
       size?: number | null;
     };
     selected: Set<string>;
+    category: ProjectDocumentCategory;
+    attachToDraft: boolean;
+    areaId: string | null;
+    updateId: string | null;
   } | null>(null);
+  const [incomingScheduleImportBatch, setIncomingScheduleImportBatch] = useState<PIEScheduleImportBatch | null>(null);
 
   const [selectedDetailUpdate, setSelectedDetailUpdate] =
     useState<ProjectUpdate | null>(null);
 
   const [draftSavedAt, setDraftSavedAt] =
     useState<string | null>(null);
+  const [fieldUpdateSaving, setFieldUpdateSaving] = useState(false);
 
   const [updatesLoaded, setUpdatesLoaded] =
+    useState(false);
+  const [updatesLocalLoaded, setUpdatesLocalLoaded] =
     useState(false);
   const [deletedUpdateTombstonesLoaded, setDeletedUpdateTombstonesLoaded] =
     useState(false);
 
   const [projectsLoaded, setProjectsLoaded] =
     useState(false);
+  const [projectsLocalLoaded, setProjectsLocalLoaded] =
+    useState(false);
+  const [deletedProjectNamesLoaded, setDeletedProjectNamesLoaded] =
+    useState(false);
+  const [deletedProjectNamesLocalLoaded, setDeletedProjectNamesLocalLoaded] =
+    useState(false);
 
   const [archivedProjectsLoaded, setArchivedProjectsLoaded] =
     useState(false);
 
-  const [projectAreasLoaded, setProjectAreasLoaded] =
+  const [projectAreasLoaded, setProjectAreasLoadedState] =
+    useState(false);
+  const [projectAreasLocalLoaded, setProjectAreasLocalLoaded] =
     useState(false);
 
-  const [referenceDocumentsLoaded, setReferenceDocumentsLoaded] =
+  const [referenceDocumentsLoaded, setReferenceDocumentsLoadedState] =
+    useState(false);
+  const [referenceDocumentsLocalLoaded, setReferenceDocumentsLocalLoaded] =
     useState(false);
 
   const [projectDocumentsLoaded, setProjectDocumentsLoaded] =
     useState(false);
 
-  const [scheduleItemsLoaded, setScheduleItemsLoaded] =
+  const [scheduleItemsLoaded, setScheduleItemsLoadedState] =
     useState(false);
-
-  const [scheduleAiExtractorUrlLoaded, setScheduleAiExtractorUrlLoaded] =
+  const [scheduleItemsLocalLoaded, setScheduleItemsLocalLoaded] =
     useState(false);
-
+  const projectAreasAuthorityRef = useRef(false);
+  const referenceDocumentsAuthorityRef = useRef(false);
+  const scheduleItemsAuthorityRef = useRef(false);
+  const markProjectAreasAuthorityReady = (ready: boolean) => { projectAreasAuthorityRef.current = ready; setProjectAreasLoadedState(ready); };
+  const markReferenceDocumentsAuthorityReady = (ready: boolean) => { referenceDocumentsAuthorityRef.current = ready; setReferenceDocumentsLoadedState(ready); };
+  const markScheduleItemsAuthorityReady = (ready: boolean) => { scheduleItemsAuthorityRef.current = ready; setScheduleItemsLoadedState(ready); };
+  const [captureMemoriesLoaded, setCaptureMemoriesLoaded] =
+    useState(false);
+  const [identityCorrectionsLoaded, setIdentityCorrectionsLoaded] =
+    useState(false);
+  const [scheduleIdentityReady, setScheduleIdentityReady] = useState(false);
   const [displayNameLoaded, setDisplayNameLoaded] =
     useState(false);
 
@@ -5158,6 +5232,19 @@ function AppShell() {
 
   const [draftLoaded, setDraftLoaded] =
     useState(false);
+
+  const startupHydration = useStartupHydration();
+  const realityModelCacheRecoveryFinished = useRealityModelCacheRecovery();
+  const requiredLocalHydrationDomains = [
+    realityModelCacheRecoveryFinished, updatesLocalLoaded, deletedUpdateTombstonesLoaded, projectsLocalLoaded, deletedProjectNamesLocalLoaded,
+    archivedProjectsLoaded, projectAreasLocalLoaded, referenceDocumentsLocalLoaded, projectDocumentsLoaded,
+    scheduleItemsLocalLoaded, captureMemoriesLoaded, identityCorrectionsLoaded, scheduleIdentityReady,
+    displayNameLoaded, contactsLoaded, draftLoaded,
+  ];
+  const startupHydrationReady = isStartupHydrationReady(
+    requiredLocalHydrationDomains,
+    startupHydration.failures,
+  );
 
   const [draftAreaSuggestion, setDraftAreaSuggestion] =
     useState<AreaSuggestion | null>(null);
@@ -5172,11 +5259,31 @@ function AppShell() {
   const savedUpdatesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const updateDetailReturnScreenRef = useRef<AppScreen>('SavedUpdates');
 
+  const startupCompletionLogged = useRef(false);
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
+  const fieldUpdateSaveInFlightRef = useRef(false);
+  const updateDeletionInFlightRef = useRef(false);
+  const backupRestoreInFlightRef = useRef(false);
+  const photoAnalysisCoordinator = useRef(createPhotoAnalysisCoordinator()).current;
+  const talkHistoryPersistence = useRef(createDAVEAskHistoryPersistence({
+    readItem: storageKey => AsyncStorage.getItem(storageKey),
+    persistItem: persistStorageItem,
+    removeItem: removePersistedStorageItem,
+  })).current;
+  const legacyProjectStructureMigrationInFlight = useRef(false);
+  const scheduleParentProjectsQueuedRef = useRef(new Set<string>());
+  const deletedProjectNamesRef = useRef(deletedProjectNames);
+  deletedProjectNamesRef.current = deletedProjectNames;
+  const deletedUpdateTombstonesRef = useRef(deletedUpdateTombstones);
+  deletedUpdateTombstonesRef.current = deletedUpdateTombstones;
   const savedUpdatesRef = useRef(savedUpdates);
   savedUpdatesRef.current = savedUpdates;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const draftLocationCaptureGenerationRef = useRef(0);
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
@@ -5187,214 +5294,638 @@ function AppShell() {
   const [photoAuthMessage, setPhotoAuthMessage] = useState<string | null>(null);
   const [photoAuthSubmitting, setPhotoAuthSubmitting] = useState(false);
 
+  useAndroidHardwareBack({
+    onBack: goBack,
+    blocked:
+      screen === 'SelectProject' ||
+      screen === 'AddPhotos' ||
+      screen === 'BuildUpdate' ||
+      Boolean(
+        photoAuthRequest ||
+        previewPhoto ||
+        documentUploadRequest ||
+        talkVoiceOpen ||
+        talkTypedOpen ||
+        talkCaptureDraft ||
+        talkAnswer ||
+        talkTaskAction,
+      ),
+  });
+
+  useEffect(() => {
+    logStartupDiagnostic('app_shell_mounted', 'App shell mounted.');
+  }, []);
+
+  useEffect(() => {
+    void backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => projectDeletionRuntime.recoverPendingIntentStores())
+      .then(() => startupHydration.loaded(PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, 'pending project deletion cleanup'))
+      .then(() => Promise.allSettled([
+        projectDeletionRuntime.processPendingCloudIntents(),
+        projectDeletionRuntime.processPendingFileCleanupIntents(),
+      ]))
+      .catch(error => { if (error instanceof ProjectDeletionIntentRecoveryRequiredError) startupHydration.fail(PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, 'pending project deletion cleanup', error); });
+  }, [startupHydration.retryAttempt]);
+
 useEffect(() => {
   async function loadSavedUpdates() {
     try {
-      const [localValue, tombstoneValue] = await Promise.all([
-        AsyncStorage.getItem(UPDATES_STORAGE_KEY),
-        AsyncStorage.getItem(DELETED_UPDATES_STORAGE_KEY),
+      await backupRestoreRuntime.recoverBeforeStartupReads();
+      const [localResult, tombstoneResult] = await Promise.all([
+        readStartupJsonArray<ProjectUpdate>(
+          UPDATES_STORAGE_KEY,
+          [],
+          'saved updates',
+          isStartupDeviceSavedUpdateRecord,
+        ),
+        readStartupJsonArray<DeletedUpdateTombstone>(
+          DELETED_UPDATES_STORAGE_KEY,
+          [],
+          'deleted update records',
+          isStartupDeletedUpdateRecord,
+        ),
       ]);
-      const localParsed = localValue ? JSON.parse(localValue) : [];
-      const localUpdates = Array.isArray(localParsed)
-        ? localParsed.map(normalizeUpdate)
-        : [];
+      if (!startupHydration.accept([localResult, tombstoneResult])) return;
+      const localUpdates = normalizeStartupArray(
+        localResult.value,
+        normalizeStoredUpdateRecord,
+        'saved updates',
+      ).value;
       const tombstones = normalizeDeletedUpdateTombstones(
-        tombstoneValue ? JSON.parse(tombstoneValue) : [],
+        tombstoneResult.value,
       );
       setDeletedUpdateTombstones(tombstones);
-      await Promise.all(
-        tombstones.map(tombstone =>
-          removeProjectUpdateFromSyncQueue(tombstone.updateId),
-        ),
-      );
-
-      const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
+      // Field fix 2026-07-18: deletion-journal reconciliation talks to the
+      // cloud; its failure is a sync concern retried later, never a local
+      // hydration failure (that mis-filing drove the startup loop).
+      await reconcileProjectUpdateDeletionJournal(tombstones).catch(() => undefined);
 
       setSavedUpdates(mergeSavedUpdatesWithTombstones({
         localUpdates,
-        cloudUpdates: cloudUpdates.map(normalizeUpdate),
+        cloudUpdates: [],
         tombstones,
       }));
-    } catch {
-      Alert.alert(
-        'Storage error',
-        'Saved updates could not be loaded.',
-      );
-    } finally {
+      setUpdatesLocalLoaded(true);
       setUpdatesLoaded(true);
       setDeletedUpdateTombstonesLoaded(true);
+
+      if (!startupHydrationReady) return;
+      try {
+        const cloudUpdates = await loadCloudUpdates<ProjectUpdate>();
+        const normalizedCloudUpdates = normalizeStartupArray(
+          cloudUpdates,
+          normalizeStoredUpdateRecord,
+          'cloud saved updates',
+        ).value;
+        const effectiveTombstones = normalizedCloudUpdates
+          .filter(update => update.isArchived)
+          .map(update => buildUpdateTombstone(
+            update,
+            'hide_cloud_update',
+            update.archivedAt || update.date,
+          ))
+          .reduce(
+            (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
+            deletedUpdateTombstonesRef.current,
+          );
+        deletedUpdateTombstonesRef.current = effectiveTombstones;
+        setDeletedUpdateTombstones(effectiveTombstones);
+
+        setSavedUpdates(current => {
+          const merged = mergeSavedUpdatesWithTombstones({
+            localUpdates: current,
+            cloudUpdates: normalizedCloudUpdates,
+            tombstones: effectiveTombstones,
+          });
+          savedUpdatesRef.current = merged;
+          return merged;
+        });
+      } catch {
+        // Cloud recovery failures are retried by sync (audit P1-27); local
+        // hydration already succeeded and must stay hydrated.
+      }
+    } catch (error) {
+      startupHydration.fail(UPDATES_STORAGE_KEY, 'saved updates', error);
     }
   }
 
   void loadSavedUpdates();
+}, [startupHydration.retryAttempt, startupHydrationReady]);
+
+useEffect(() => {
+  const ready = startupHydrationReady &&
+    projectsLoaded &&
+    deletedProjectNamesLoaded &&
+    updatesLoaded &&
+    projectAreasLoaded &&
+    referenceDocumentsLoaded &&
+    projectDocumentsLoaded &&
+    scheduleItemsLoaded;
+  if (!ready || legacyProjectStructureMigrationInFlight.current) return;
+
+  let active = true;
+  legacyProjectStructureMigrationInFlight.current = true;
+
+  void (async () => {
+    try {
+      const completed = await AsyncStorage.getItem(
+        LEGACY_PROJECT_STRUCTURE_CLOUD_MIGRATION_KEY,
+      );
+      if (completed === 'complete') return;
+
+      const tokenResult = await getCurrentSessionAccessToken();
+      if (!tokenResult.ok || tokenResult.data?.status !== 'token_present') return;
+
+      const [cloudProjects, cloudArchivedProjects] = await Promise.all([
+        listProjects(),
+        listArchivedProjects(),
+      ]);
+      // Field fix 2026-07-18 (cpu_resource kill, audit P1-21): a failed or
+      // unverifiable cloud inventory must SKIP the migration this launch —
+      // it previously fell through to a full synchronizeLocalData, which
+      // base64-encodes and uploads every photo of every update on the JS
+      // thread at every app start (84% CPU for ~107s in the crash report)
+      // because the completion marker only writes after a fully clean sync.
+      if (
+        !cloudProjects.ok || cloudProjects.stubbed || !cloudProjects.data ||
+        !cloudArchivedProjects.ok || cloudArchivedProjects.stubbed || !cloudArchivedProjects.data
+      ) return;
+      const remainingLegacyProjects = [
+        ...cloudProjects.data,
+        ...cloudArchivedProjects.data,
+      ].filter(project =>
+        Boolean(legacyWorkContainerMigration(project.name)),
+      );
+      if (remainingLegacyProjects.length === 0) {
+        await AsyncStorage.setItem(
+          LEGACY_PROJECT_STRUCTURE_CLOUD_MIGRATION_KEY,
+          'complete',
+        );
+        if (active) {
+          setSyncCleanupNotice(
+            'Project records are organized under the 2321 and 2375 parent projects. Existing updates and photos were preserved.',
+          );
+        }
+        return;
+      }
+
+      const migratedUpdates = savedUpdates.map(migrateLegacyProjectUpdate);
+      const migratedSchedules = scheduleItems.map(migrateLegacyScheduleItem);
+      const syncResult = await synchronizeLocalData({
+        projects: [...DEFAULT_PROJECTS],
+        savedUpdates: migratedUpdates,
+        projectAreas,
+        scheduleItems: migratedSchedules,
+        referenceDocuments,
+      });
+      const projectStructureErrors = syncResult.errors.filter(error =>
+        /Project “.*could not sync|Schedule task “.*could not sync/i.test(error),
+      );
+      if (
+        projectStructureErrors.length > 0 ||
+        syncResult.queued > 0 ||
+        syncResult.conflicts > 0 ||
+        // Audit P1-27/P1-21: never proceed to cloud deletions after an
+        // incomplete or failed cloud download.
+        syncResult.downloadStatus !== 'complete'
+      ) return;
+
+      for (const migration of LEGACY_WORK_CONTAINER_MIGRATIONS) {
+        await deleteCloudProject(migration.legacyName);
+      }
+      const deleteResult = await uploadPendingChanges();
+      if (deleteResult.errors.length > 0 || deleteResult.queued > 0) return;
+
+      await AsyncStorage.setItem(
+        LEGACY_PROJECT_STRUCTURE_CLOUD_MIGRATION_KEY,
+        'complete',
+      );
+      if (active) {
+        setSyncCleanupNotice(
+          'Project records reorganized under the 2321 and 2375 parent projects. Existing updates and photos were preserved.',
+        );
+      }
+    } catch {
+      // This is an opportunistic signed-in cleanup. A transient storage or
+      // network failure must never become an unhandled startup rejection;
+      // leaving the completion marker unset safely retries on a later launch.
+    } finally {
+      legacyProjectStructureMigrationInFlight.current = false;
+    }
+  })();
+
+  return () => {
+    active = false;
+  };
+}, [
+  deletedProjectNamesLoaded,
+  projectAreasLoaded,
+  projectDocumentsLoaded,
+  projectsLoaded,
+  referenceDocumentsLoaded,
+  scheduleItemsLoaded,
+  startupHydrationReady,
+  updatesLoaded,
+]);
+
+useEffect(() => {
+  let active = true;
+
+  void localDAVECaptureMemoryRepository.list()
+    .then(memories => {
+      if (active) {
+        setCaptureMemories([...memories]);
+        startupHydration.loaded('dave-capture-memories', 'confirmed project memories');
+        setCaptureMemoriesLoaded(true);
+      }
+    })
+    .catch(error => {
+      if (active) {
+        startupHydration.fail('dave-capture-memories', 'confirmed project memories', error);
+      }
+    });
+
+  return () => {
+    active = false;
+  };
+}, [startupHydration.retryAttempt]);
+
+useEffect(() => {
+  let active = true;
+
+  void localDAVEIdentityRepository.list()
+    .then(corrections => {
+      if (active) {
+        setIdentityCorrections([...corrections]);
+        startupHydration.loaded('dave-identity-corrections', 'identity corrections');
+        setIdentityCorrectionsLoaded(true);
+      }
+    })
+    .catch(error => {
+      if (active) startupHydration.fail('dave-identity-corrections', 'identity corrections', error);
+    });
+
+  return () => {
+    active = false;
+  };
+}, [startupHydration.retryAttempt]);
+
+useEffect(() => {
+  if (!identityCorrectionsLoaded || !scheduleItemsLocalLoaded || !projectAreasLocalLoaded) return;
+  if (identityCorrections.length > 0 && scheduleItems.length > 0) {
+    setScheduleItems(previous => {
+      const canonical = canonicalizeScheduleIdentityItems(
+        previous,
+        projectAreas,
+        identityCorrections,
+      );
+      return JSON.stringify(canonical) === JSON.stringify(previous)
+        ? previous
+      : canonical;
+    });
+  }
+  setScheduleIdentityReady(true);
+}, [
+  identityCorrections,
+  identityCorrectionsLoaded,
+  projectAreas,
+  projectAreasLocalLoaded,
+  scheduleItems.length,
+  scheduleItemsLocalLoaded,
+]);
+
+useEffect(() => {
+  let active = true;
+
+  void localDAVEProjectWalkSessionRepository.readActive()
+    .then(session => {
+      if (active) setActiveProjectWalkSession(session);
+    })
+    .catch(() => {
+      if (active) {
+        Alert.alert(
+          'Project Walk unavailable',
+          'The active Project Walk could not be restored from this device.',
+        );
+      }
+    });
+
+  return () => {
+    active = false;
+  };
 }, []);
 
 useEffect(() => {
   async function loadProjects() {
     try {
-      const localValue = await AsyncStorage.getItem(PROJECTS_STORAGE_KEY);
-      const localProjects = localValue ? JSON.parse(localValue) : [];
-      const cloudProjects = await loadCloudProjects();
-
-      setProjects(
-        mergeProjectNames(
-          DEFAULT_PROJECTS,
-          Array.isArray(localProjects) ? localProjects : [],
-          cloudProjects,
+      await backupRestoreRuntime.recoverBeforeStartupReads();
+      const [localResult, deletedProjectsResult, queuedChanges] = await Promise.all([
+        readStartupJsonArray<ProjectRecord>(
+          PROJECTS_STORAGE_KEY,
+          [],
+          'saved projects',
+          isStartupProjectRecord,
         ),
+        readStartupJsonArray<string>(
+          DELETED_PROJECTS_STORAGE_KEY,
+          [],
+          'deleted project records',
+          isStartupProjectName,
+        ),
+        getOfflineQueue(),
+      ]);
+      if (!startupHydration.accept([localResult, deletedProjectsResult])) return;
+      const localProjects = normalizeProjectRecords(localResult.value);
+      const queuedDeletedNames = queuedChanges
+        .filter(item => item.entity === 'project' && item.operation === 'delete')
+        .map(item => {
+          const payload = item.payload as Record<string, unknown>;
+          return typeof payload.name === 'string' ? payload.name : '';
+        });
+      const deletedNames = mergeProjectNames(
+        mergeProjectNames(
+          mergeProjectNames(
+            normalizeStringList(
+              deletedProjectsResult.value,
+            ),
+            queuedDeletedNames,
+          ),
+          LEGACY_WORK_CONTAINER_MIGRATIONS.map(item => item.legacyName),
+        ),
+        [...LEGACY_NON_PROJECT_SHELL_NAMES],
       );
-    } catch {
-      Alert.alert(
-        'Storage error',
-        'Saved projects could not be loaded.',
+      deletedProjectNamesRef.current = deletedNames;
+      setDeletedProjectNames(deletedNames);
+      const starterProjects = localResult.found ? [] : DEFAULT_PROJECTS;
+      const localRecords = mergeProjectRecords(
+        starterProjects,
+        localProjects,
+        [],
+        deletedNames,
       );
-    } finally {
+      setProjectRecords(localRecords);
+      setProjects(localRecords.map(project => project.name));
+      setProjectsLocalLoaded(true);
+      setDeletedProjectNamesLocalLoaded(true);
       setProjectsLoaded(true);
+      setDeletedProjectNamesLoaded(true);
+
+      if (!startupHydrationReady) return;
+      try {
+        const [cloudProjects, cloudArchivedProjects] = await Promise.all([
+          loadCloudProjectRecords(),
+          loadCloudArchivedProjectNames(),
+        ]);
+        const nonProjectShellNames = legacyNonProjectShellNamesPresent(cloudProjects);
+        const visibleCloudProjects = cloudProjects.filter(
+          project => !isLegacyNonProjectShellName(project.name),
+        );
+        const shellMigrationComplete = await AsyncStorage.getItem(
+          LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+        );
+        if (nonProjectShellNames.length > 0 && shellMigrationComplete !== 'complete') {
+          await queueCloudProjectArchives(nonProjectShellNames);
+          await persistStorageItem(
+            LEGACY_NON_PROJECT_SHELL_CLOUD_MIGRATION_KEY,
+            'complete',
+          );
+        }
+        const currentDeletedNames = deletedProjectNamesRef.current;
+        const deletedKeys = new Set(
+          currentDeletedNames.map(name => name.toLowerCase()),
+        );
+        setProjectRecords(current => {
+          return mergeProjectRecords(
+            [],
+            current,
+            visibleCloudProjects,
+            currentDeletedNames,
+          );
+        });
+        setProjects(current => mergeProjectNames(
+          current,
+          visibleCloudProjects.map(project => project.name),
+        ).filter(project => !deletedKeys.has(project.toLowerCase())));
+        setArchivedProjects(previous =>
+          mergeProjectNames(previous, cloudArchivedProjects).filter(
+            project => !deletedKeys.has(project.toLowerCase()),
+          ),
+        );
+
+      } catch {
+        // Field fix 2026-07-18: cloud recovery failures are sync concerns
+        // (audit P1-27) and must never mis-file as a LOCAL hydration failure
+        // — that oscillated startupHydrationReady in an infinite loop.
+      }
+    } catch (error) {
+      startupHydration.fail(PROJECTS_STORAGE_KEY, 'saved projects', error);
     }
   }
 
   void loadProjects();
-}, []);
+}, [startupHydration.retryAttempt, startupHydrationReady]);
+
+useEffect(() => {
+  if (!startupHydrationReady) return;
+  void Promise.all(projectRecords.map(async project => {
+    if (!project.coverPhoto?.remotePath) return;
+    const hydrationTarget = project.coverPhoto;
+    const hydrationVersion =
+      project.coverPhotoUpdatedAt || hydrationTarget.updatedAt || null;
+    const hydrated = await hydrateProjectCoverPhotoCache(
+      authorityProjectId(project.name),
+      hydrationTarget,
+    );
+    if (hydrated.localUri === hydrationTarget.localUri) return;
+    // Audit P1-58: compare-and-swap — apply hydrated bytes only if the record
+    // still references the exact cover version downloaded by this attempt.
+    setProjectRecords(previous => previous.map(item => {
+      if (item.name.toLowerCase() !== project.name.toLowerCase()) return item;
+      if (!item.coverPhoto) return item;
+      if (item.coverPhoto.remotePath !== hydrationTarget.remotePath) return item;
+      const currentVersion =
+        item.coverPhotoUpdatedAt || item.coverPhoto.updatedAt || null;
+      if (currentVersion !== hydrationVersion) return item;
+      return { ...item, coverPhoto: hydrated };
+    }));
+  })).catch(() => undefined);
+}, [projectRecords, startupHydrationReady]);
 
   useEffect(() => {
-    AsyncStorage.getItem(ARCHIVED_PROJECTS_STORAGE_KEY)
-      .then(value => {
-        if (!value) return;
-
-        const parsed = JSON.parse(value);
-
-        if (Array.isArray(parsed)) {
-          setArchivedProjects(
-            mergeProjectNames([], parsed),
-          );
+    if (!startupHydrationReady) return;
+    void cleanupStoredSyncStatusMessages()
+      .then(result => {
+        if (result.cleaned || result.missingPhotosRemoved > 0) {
+          setSyncCleanupNotice('Sync status cleaned up. Unavailable photo references were removed safely.');
         }
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Archived projects could not be loaded.',
-        ),
-      )
-      .finally(() => setArchivedProjectsLoaded(true));
-  }, []);
+      .catch(() => undefined);
+  }, [startupHydrationReady]);
 
   useEffect(() => {
-    AsyncStorage.getItem(PROJECT_AREAS_STORAGE_KEY)
-      .then(value => {
-        if (!value) return;
+    if (!deletedProjectNamesLocalLoaded) return;
 
-        setProjectAreas(
-          normalizeProjectAreas(JSON.parse(value)),
-        );
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJsonArray<string>(
+        ARCHIVED_PROJECTS_STORAGE_KEY,
+        [],
+        'archived projects',
+        isStartupProjectName,
+      ))
+      .then(result => {
+        if (!startupHydration.accept([result])) return;
+        const parsed = result.value;
+
+        if (Array.isArray(parsed)) {
+          const deletedKeys = new Set(
+            deletedProjectNamesRef.current.map(name => name.toLowerCase()),
+          );
+          setArchivedProjects(previous =>
+            mergeProjectNames(previous, parsed).filter(
+              project => !deletedKeys.has(project.toLowerCase()),
+            ),
+          );
+        }
+        setArchivedProjectsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Project areas could not be loaded.',
-        ),
-      )
-      .finally(() => setProjectAreasLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(ARCHIVED_PROJECTS_STORAGE_KEY, 'archived projects', error));
+  }, [deletedProjectNamesLocalLoaded, startupHydration.retryAttempt]);
 
+  useStartupLocalFirstRecovery<ProjectArea, ProjectArea, ProjectArea>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: projectAreasLocalLoaded, localAuthorityReady: projectAreasLoaded, localAuthorityRef: projectAreasAuthorityRef, resetLocalLoaded: () => { setProjectAreasLocalLoaded(false); markProjectAreasAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(PROJECT_AREAS_STORAGE_KEY, DEFAULT_PROJECT_AREAS, 'project areas', isStartupProjectAreaRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: normalizeProjectAreas,
+    applyLocal: (areas, found) => { setProjectAreas(areas); setProjectAreasLocalLoaded(true); markProjectAreasAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(PROJECT_AREAS_STORAGE_KEY, 'project areas', error),
+    loadCloud: listProjectAreas, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: areas => normalizeProjectAreas(areas.filter(isStartupProjectAreaRecord)),
+    applyCloud: (areas, tombstones) => setProjectAreas(current => mergeDAVEProjectAreaRecoveryRecords({
+      local: current, cloud: areas, deletedIds: deletedDAVERecordIds(tombstones, 'project_area'),
+    })),
+    onCloudApplied: () => markProjectAreasAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud area recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
+
+  useStartupLocalFirstRecovery<ReferenceDocument, ReferenceDocument, ReferenceDocument>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: referenceDocumentsLocalLoaded, localAuthorityReady: referenceDocumentsLoaded, localAuthorityRef: referenceDocumentsAuthorityRef, resetLocalLoaded: () => { setReferenceDocumentsLocalLoaded(false); markReferenceDocumentsAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(REFERENCE_DOCUMENTS_STORAGE_KEY, [], 'reference documents', isStartupReferenceDocumentRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: normalizeReferenceDocuments,
+    applyLocal: (documents, found) => { setReferenceDocuments(documents); setReferenceDocumentsLocalLoaded(true); markReferenceDocumentsAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(REFERENCE_DOCUMENTS_STORAGE_KEY, 'reference documents', error),
+    loadCloud: listReferenceDocuments, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: documents => normalizeReferenceDocuments(documents.filter(isStartupReferenceDocumentRecord)),
+    applyCloud: (documents, tombstones) => setReferenceDocuments(current => reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({
+      local: current, cloud: documents, deletedIds: deletedDAVERecordIds(tombstones, 'reference_document'),
+    }))),
+    onCloudApplied: () => markReferenceDocumentsAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud document recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
 
   useEffect(() => {
-    AsyncStorage.getItem(REFERENCE_DOCUMENTS_STORAGE_KEY)
-      .then(value => {
-        if (!value) return;
-
-        setReferenceDocuments(
-          normalizeReferenceDocuments(JSON.parse(value)),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Reference documents could not be loaded.',
-        ),
-      )
-      .finally(() => setReferenceDocumentsLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    AsyncStorage.getItem(PROJECT_DOCUMENTS_STORAGE_KEY)
-      .then(value => {
-        if (!value) return;
-
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJsonArray<ProjectDocument>(
+        PROJECT_DOCUMENTS_STORAGE_KEY,
+        [],
+        'project documents',
+        isStartupStandaloneProjectDocumentRecord,
+      ))
+      .then(result => {
+        if (!startupHydration.accept([result])) return;
+        // Audit P1-23: uploads cannot survive relaunch; stale 'uploading'
+        // documents become retryable 'failed' instead of pending forever.
         setProjectDocuments(
-          normalizeProjectDocuments(JSON.parse(value)),
+          recoverStaleUploadingDocuments(
+            normalizeProjectDocuments(result.value).map(migrateLegacyProjectDocument),
+          ),
         );
+        setProjectDocumentsLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Project documents could not be loaded.',
-        ),
-      )
-      .finally(() => setProjectDocumentsLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(PROJECT_DOCUMENTS_STORAGE_KEY, 'project documents', error));
+  }, [startupHydration.retryAttempt]);
+
+  useStartupLocalFirstRecovery<ScheduleItem, ScheduleItem, ScheduleItem>({
+    retryAttempt: startupHydration.retryAttempt, startupReady: startupHydrationReady,
+    localLoaded: scheduleItemsLocalLoaded, localAuthorityReady: scheduleItemsLoaded, localAuthorityRef: scheduleItemsAuthorityRef, resetLocalLoaded: () => { setScheduleItemsLocalLoaded(false); markScheduleItemsAuthorityReady(false); },
+    readLocal: () => backupRestoreRuntime.recoverBeforeStartupReads().then(() =>
+      readStartupJsonArray(SCHEDULE_ITEMS_STORAGE_KEY, [], 'schedule items', isStartupScheduleItemRecord)),
+    acceptLocal: result => startupHydration.accept([result]),
+    normalizeLocal: items => reconcileDAVEScheduleRecords(
+      normalizeScheduleItems(items).map(migrateLegacyScheduleItem),
+    ),
+    applyLocal: (items, found) => { setScheduleItems(items); setScheduleItemsLocalLoaded(true); markScheduleItemsAuthorityReady(found); },
+    onLocalError: error => startupHydration.fail(SCHEDULE_ITEMS_STORAGE_KEY, 'schedule items', error),
+    loadCloud: listScheduleItems, synchronizeTombstones: synchronizeDAVESyncTombstones,
+    normalizeCloud: items => normalizeScheduleItems(
+      items.filter(isDAVESafeCloudScheduleRecord),
+    ).map(migrateLegacyScheduleItem),
+    applyCloud: (items, tombstones) => setScheduleItems(current => recoverDAVEScheduleRecords({
+      local: current, cloud: items, deletedIds: deletedDAVERecordIds(tombstones, 'schedule_item'),
+      allowCloudOnly: true,
+    })),
+    onCloudApplied: () => markScheduleItemsAuthorityReady(true),
+    onCloudDeferred: () => setSyncCleanupNotice('Cloud schedule recovery was deferred. Phone data stayed unchanged; use Sync Now when connected.'),
+  });
 
   useEffect(() => {
-    AsyncStorage.getItem(SCHEDULE_ITEMS_STORAGE_KEY)
-      .then(value => {
-        if (!value) return;
-
-        setScheduleItems(
-          normalizeScheduleItems(JSON.parse(value)),
-        );
+    Promise.all([
+      AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY),
+      getCurrentUser(),
+    ])
+      .then(([value, userResult]) => {
+        setDisplayName(accountDisplayNameForUser(userResult.data) || value || '');
+        startupHydration.loaded(DISPLAY_NAME_STORAGE_KEY, 'profile settings');
+        setDisplayNameLoaded(true);
       })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Schedule items could not be loaded.',
-        ),
-      )
-      .finally(() => setScheduleItemsLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(DISPLAY_NAME_STORAGE_KEY, 'profile settings', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
-    AsyncStorage.getItem(SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY)
-      .then(value => {
-        setScheduleAiExtractorUrl(value || '');
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJson(
+        CONTACTS_STORAGE_KEY,
+        { contacts: [] },
+        'contacts',
+        isStartupContactBook,
+        value => {
+          const salvaged = salvageStartupContactBook(value);
+          return salvaged
+            ? {
+                value: salvaged.value as ContactBook,
+                isolatedRecordCount: salvaged.isolatedRecordCount,
+              }
+            : null;
+        },
+      ))
+      .then(result => {
+        if (!startupHydration.accept([result])) return;
+        setContactBook(normalizeContacts(result.value));
+        setContactsLoaded(true);
       })
-      .finally(() => setScheduleAiExtractorUrlLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(CONTACTS_STORAGE_KEY, 'contacts', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
-    AsyncStorage.getItem(DISPLAY_NAME_STORAGE_KEY)
-      .then(value => {
-        setDisplayName(value || '');
-      })
-      .finally(() => setDisplayNameLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    AsyncStorage.getItem(CONTACTS_STORAGE_KEY)
-      .then(value => {
-        if (!value) return;
-
-        setContactBook(
-          normalizeContacts(JSON.parse(value)),
-        );
-      })
-      .catch(() =>
-        Alert.alert(
-          'Storage error',
-          'Contacts could not be loaded.',
-        ),
-      )
-      .finally(() => setContactsLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    AsyncStorage.getItem(DRAFT_STORAGE_KEY)
-      .then(value => {
-        if (!value) return;
-
-        const parsed = JSON.parse(value) as Partial<StoredDraft>;
+    backupRestoreRuntime.recoverBeforeStartupReads()
+      .then(() => readStartupJson<Partial<StoredDraft>>(
+        DRAFT_STORAGE_KEY,
+        {},
+        'unfinished field update',
+        isStartupDeviceDraftEnvelope,
+      ))
+      .then(result => {
+        if (!startupHydration.accept([result])) return;
+        const parsed = result.value;
+        setDraftLoaded(true);
 
         if (!parsed.draft) return;
 
-        const recoveredDraft = normalizeUpdate(parsed.draft);
+        const recoveredDraft = migrateLegacyProjectUpdate(normalizeUpdate(parsed.draft));
 
         if (hasMeaningfulDraft(recoveredDraft)) {
           setDraft(recoveredDraft);
@@ -5406,17 +5937,52 @@ useEffect(() => {
           );
         }
       })
-      .catch(() =>
-        Alert.alert(
-          'Draft recovery error',
-          'The unfinished update could not be restored.',
-        ),
-      )
-      .finally(() => setDraftLoaded(true));
-  }, []);
+      .catch(error => startupHydration.fail(DRAFT_STORAGE_KEY, 'unfinished field update', error));
+  }, [startupHydration.retryAttempt]);
 
   useEffect(() => {
-    if (!updatesLoaded) return;
+    const startupReady = startupHydrationReady &&
+      updatesLoaded &&
+      deletedUpdateTombstonesLoaded &&
+      projectsLoaded &&
+      deletedProjectNamesLoaded &&
+      archivedProjectsLoaded &&
+      projectAreasLoaded &&
+      referenceDocumentsLoaded &&
+      projectDocumentsLoaded &&
+      scheduleItemsLoaded &&
+      displayNameLoaded &&
+      contactsLoaded &&
+      draftLoaded;
+    if (!startupReady || startupCompletionLogged.current) return;
+
+    startupCompletionLogged.current = true;
+    logStartupDiagnostic('startup_completed', 'Local startup completed.', {
+      projectCount: projects.length,
+      savedUpdateCount: savedUpdates.length,
+      scheduleItemCount: scheduleItems.length,
+    });
+  }, [
+    archivedProjectsLoaded,
+    contactsLoaded,
+    deletedProjectNamesLoaded,
+    deletedUpdateTombstonesLoaded,
+    displayNameLoaded,
+    draftLoaded,
+    projectAreasLoaded,
+    projectDocumentsLoaded,
+    projects.length,
+    projectsLoaded,
+    referenceDocumentsLoaded,
+    savedUpdates.length,
+    scheduleItems.length,
+    scheduleItemsLoaded,
+    startupHydrationReady,
+    updatesLoaded,
+  ]);
+
+  useEffect(() => {
+    if (!startupHydrationReady || !updatesLoaded) return;
 
     if (savedUpdatesSaveTimer.current) {
       clearTimeout(savedUpdatesSaveTimer.current);
@@ -5425,10 +5991,9 @@ useEffect(() => {
     savedUpdatesSaveTimer.current = setTimeout(() => {
       savedUpdatesSaveTimer.current = null;
 
-      AsyncStorage.setItem(
-        UPDATES_STORAGE_KEY,
-        JSON.stringify(savedUpdates),
-      ).catch(() => undefined);
+      persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdates)).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
+      );
     }, 750);
 
     return () => {
@@ -5436,7 +6001,7 @@ useEffect(() => {
         clearTimeout(savedUpdatesSaveTimer.current);
       }
     };
-  }, [savedUpdates, updatesLoaded]);
+  }, [savedUpdates, startupHydrationReady, updatesLoaded]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
@@ -5446,107 +6011,90 @@ useEffect(() => {
       clearTimeout(savedUpdatesSaveTimer.current);
       savedUpdatesSaveTimer.current = null;
 
-      AsyncStorage.setItem(
-        UPDATES_STORAGE_KEY,
-        JSON.stringify(savedUpdatesRef.current),
-      ).catch(() => undefined);
+      persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
+      );
     });
 
     return () => subscription.remove();
   }, []);
 
-  useEffect(() => {
-    if (!deletedUpdateTombstonesLoaded) return;
-
-    AsyncStorage.setItem(
-      DELETED_UPDATES_STORAGE_KEY,
-      JSON.stringify(deletedUpdateTombstones),
-    ).catch(() => undefined);
-  }, [deletedUpdateTombstones, deletedUpdateTombstonesLoaded]);
-
-  useEffect(() => {
-    if (!projectsLoaded) return;
-
-    AsyncStorage.setItem(
-      PROJECTS_STORAGE_KEY,
-      JSON.stringify(projects),
-    ).catch(() => undefined);
-  }, [projects, projectsLoaded]);
-
-  useEffect(() => {
-    if (!archivedProjectsLoaded) return;
-
-    AsyncStorage.setItem(
-      ARCHIVED_PROJECTS_STORAGE_KEY,
-      JSON.stringify(archivedProjects),
-    ).catch(() => undefined);
-  }, [archivedProjects, archivedProjectsLoaded]);
-
-  useEffect(() => {
-    if (!projectAreasLoaded) return;
-
-    AsyncStorage.setItem(
-      PROJECT_AREAS_STORAGE_KEY,
-      JSON.stringify(projectAreas),
-    ).catch(() => undefined);
-  }, [projectAreas, projectAreasLoaded]);
-
-
-  useEffect(() => {
-    if (!referenceDocumentsLoaded) return;
-
-    AsyncStorage.setItem(
-      REFERENCE_DOCUMENTS_STORAGE_KEY,
-      JSON.stringify(referenceDocuments),
-    ).catch(() => undefined);
-  }, [referenceDocuments, referenceDocumentsLoaded]);
-
-  useEffect(() => {
-    if (!projectDocumentsLoaded) return;
-
-    AsyncStorage.setItem(
-      PROJECT_DOCUMENTS_STORAGE_KEY,
-      JSON.stringify(projectDocuments),
-    ).catch(() => undefined);
-  }, [projectDocuments, projectDocumentsLoaded]);
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && deletedUpdateTombstonesLoaded,
+    storageKey: DELETED_UPDATES_STORAGE_KEY,
+    value: deletedUpdateTombstones,
+    label: 'deleted update records',
+  });
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && projectsLoaded,
+    storageKey: PROJECTS_STORAGE_KEY,
+    value: projectRecords,
+    label: 'projects',
+  });
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && deletedProjectNamesLoaded,
+    storageKey: DELETED_PROJECTS_STORAGE_KEY,
+    value: deletedProjectNames,
+    label: 'deleted project records',
+  });
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && archivedProjectsLoaded,
+    storageKey: ARCHIVED_PROJECTS_STORAGE_KEY,
+    value: archivedProjects,
+    label: 'archived projects',
+  });
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && projectAreasLoaded,
+    storageKey: PROJECT_AREAS_STORAGE_KEY,
+    value: projectAreas,
+    label: 'project areas',
+  });
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && referenceDocumentsLoaded,
+    storageKey: REFERENCE_DOCUMENTS_STORAGE_KEY,
+    value: referenceDocuments,
+    label: 'reference documents',
+  });
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && projectDocumentsLoaded,
+    storageKey: PROJECT_DOCUMENTS_STORAGE_KEY,
+    value: projectDocuments,
+    label: 'project documents',
+  });
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && scheduleItemsLoaded,
+    storageKey: SCHEDULE_ITEMS_STORAGE_KEY,
+    value: scheduleItems,
+    label: 'schedule',
+  });
 
   useEffect(() => {
-    if (!scheduleItemsLoaded) return;
+    if (!startupHydrationReady || !scheduleItemsLoaded || !projectsLoaded) return;
+    ensureScheduleParentProjects(scheduleItems);
+  }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
 
-    AsyncStorage.setItem(
-      SCHEDULE_ITEMS_STORAGE_KEY,
-      JSON.stringify(scheduleItems),
-    ).catch(() => undefined);
-  }, [scheduleItems, scheduleItemsLoaded]);
+  useStringStoragePersistence({
+    enabled: startupHydrationReady && displayNameLoaded,
+    storageKey: DISPLAY_NAME_STORAGE_KEY,
+    value: displayName,
+    label: 'profile setting',
+  });
+  useEffect(() => {
+    if (!startupHydrationReady || !displayNameLoaded || !displayName.trim()) return;
+    const timer = setTimeout(() => {
+      void updateCurrentUserDisplayName(displayName).catch(() => undefined);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [displayName, displayNameLoaded, startupHydrationReady]);
+  useJsonStoragePersistence({
+    enabled: startupHydrationReady && contactsLoaded,
+    storageKey: CONTACTS_STORAGE_KEY,
+    value: contactBook,
+    label: 'contacts',
+  });
 
   useEffect(() => {
-    if (!scheduleAiExtractorUrlLoaded) return;
-
-    AsyncStorage.setItem(
-      SCHEDULE_AI_EXTRACTOR_URL_STORAGE_KEY,
-      scheduleAiExtractorUrl,
-    ).catch(() => undefined);
-  }, [scheduleAiExtractorUrl, scheduleAiExtractorUrlLoaded]);
-
-  useEffect(() => {
-    if (!displayNameLoaded) return;
-
-    AsyncStorage.setItem(DISPLAY_NAME_STORAGE_KEY, displayName).catch(
-      () => undefined,
-    );
-  }, [displayName, displayNameLoaded]);
-
-  useEffect(() => {
-    if (!contactsLoaded) return;
-
-    AsyncStorage.setItem(
-      CONTACTS_STORAGE_KEY,
-      JSON.stringify(contactBook),
-    ).catch(() => undefined);
-  }, [contactBook, contactsLoaded]);
-
-  useEffect(() => {
-    if (!draftLoaded) return;
+    if (!startupHydrationReady || !draftLoaded) return;
 
     if (draftSaveTimer.current) {
       clearTimeout(draftSaveTimer.current);
@@ -5556,8 +6104,8 @@ useEffect(() => {
       if (!hasMeaningfulDraft(draft)) {
         setDraftSavedAt(null);
 
-        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
-          () => undefined,
+        removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+          reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
         );
 
         return;
@@ -5572,10 +6120,9 @@ useEffect(() => {
 
       setDraftSavedAt(savedAt);
 
-      AsyncStorage.setItem(
-        DRAFT_STORAGE_KEY,
-        JSON.stringify(storedDraft),
-      ).catch(() => undefined);
+      persistStorageItem(DRAFT_STORAGE_KEY, JSON.stringify(storedDraft)).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+      );
     }, 750);
 
     return () => {
@@ -5583,17 +6130,17 @@ useEffect(() => {
         clearTimeout(draftSaveTimer.current);
       }
     };
-  }, [draft, draftLoaded]);
+  }, [draft, draftLoaded, startupHydrationReady]);
 
   useEffect(() => {
-    if (!updatesLoaded || !draftLoaded || photoCleanupRan.current) {
+    if (!startupHydrationReady || !updatesLoaded || !draftLoaded || photoCleanupRan.current) {
       return;
     }
 
     photoCleanupRan.current = true;
 
     void cleanupStoredPhotoDirectory([draft, ...savedUpdates]);
-  }, [updatesLoaded, draftLoaded, draft, savedUpdates]);
+  }, [updatesLoaded, draftLoaded, draft, savedUpdates, startupHydrationReady]);
 
   const hasQueuedSyncRetries = useMemo(
     () => savedUpdates.some(update => updateNeedsAutomaticSyncRetry(update)),
@@ -5601,28 +6148,339 @@ useEffect(() => {
   );
 
   useEffect(() => {
-    if (!updatesLoaded || !hasQueuedSyncRetries) return;
+    if (!startupHydrationReady || !updatesLoaded || !hasQueuedSyncRetries) return;
 
     const timer = setInterval(() => {
-      void hydrateQueuedUpdates();
+      startAutomaticSyncBackgroundTask('interval', hydrateQueuedUpdates);
     }, 30000);
 
-    void hydrateQueuedUpdates();
+    startAutomaticSyncBackgroundTask('queued_updates_detected', hydrateQueuedUpdates);
 
     return () => clearInterval(timer);
-  }, [updatesLoaded, hasQueuedSyncRetries]);
+  }, [updatesLoaded, hasQueuedSyncRetries, startupHydrationReady]);
 
   useEffect(() => {
-    if (!updatesLoaded) return;
+    if (!startupHydrationReady || !updatesLoaded) return;
 
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') {
-        void hydrateQueuedUpdates();
+        startAutomaticSyncBackgroundTask('app_foreground', hydrateQueuedUpdates);
       }
     });
 
     return () => subscription.remove();
-  }, [updatesLoaded, savedUpdates]);
+  }, [updatesLoaded, startupHydrationReady]);
+
+  useEffect(() => {
+    if (
+      !startupHydrationReady ||
+      !(
+        projectsLoaded ||
+        updatesLoaded ||
+        projectAreasLoaded ||
+        referenceDocumentsLoaded ||
+        scheduleItemsLoaded
+      )
+    ) return;
+    let active = true;
+    const operationalRefreshCommitGuard =
+      createDAVEOperationalRefreshCommitGuard();
+
+    async function refreshOperationalCollections() {
+      if (!active) return;
+      const refreshCommit = operationalRefreshCommitGuard.begin();
+      const tombstones = await loadDAVEOperationalTombstones();
+      if (!active || !refreshCommit.isCurrent()) return;
+      const latestOperationalTombstones = tombstones.tombstones;
+      const currentOperationalTombstones = operationalSyncTombstonesRef.current;
+      refreshCommit.commit(() => {
+        operationalSyncTombstonesRef.current = latestOperationalTombstones;
+        setOperationalSyncTombstones(
+          JSON.stringify(latestOperationalTombstones) === JSON.stringify(currentOperationalTombstones)
+            ? currentOperationalTombstones
+            : latestOperationalTombstones,
+        );
+        const nextDeletedProjectNames = mergeProjectNames(
+          deletedProjectNamesRef.current,
+          deletedDAVERecordIds(latestOperationalTombstones, 'project'),
+        );
+        if (
+          JSON.stringify(nextDeletedProjectNames) !==
+          JSON.stringify(deletedProjectNamesRef.current)
+        ) {
+          deletedProjectNamesRef.current = nextDeletedProjectNames;
+          setDeletedProjectNames(nextDeletedProjectNames);
+        }
+        const nextDeletedUpdateTombstones = latestOperationalTombstones
+          .filter(tombstone => tombstone.entityType === 'project_update')
+          .reduce(
+            (current, tombstone) => upsertDeletedUpdateTombstone(
+              current,
+              buildCloudUpdateDeletionBarrier(
+                tombstone.recordId,
+                tombstone.deletedAt,
+              ),
+            ),
+            deletedUpdateTombstonesRef.current,
+          );
+        if (
+          JSON.stringify(nextDeletedUpdateTombstones) !==
+          JSON.stringify(deletedUpdateTombstonesRef.current)
+        ) {
+          deletedUpdateTombstonesRef.current = nextDeletedUpdateTombstones;
+          setDeletedUpdateTombstones(nextDeletedUpdateTombstones);
+        }
+      });
+      const collectionRefreshes: DAVEOperationalCollectionRefresh[] = [];
+
+      if (projectsLoaded) collectionRefreshes.push({ name: 'projects', run: async () => {
+        const [activeProjectsResult, archivedProjectsResult, offlineQueue] = await Promise.all([
+          listProjects(),
+          listArchivedProjects(),
+          getOfflineQueue(),
+        ]);
+        if (
+          !activeProjectsResult.ok ||
+          activeProjectsResult.stubbed ||
+          !Array.isArray(activeProjectsResult.data) ||
+          !archivedProjectsResult.ok ||
+          archivedProjectsResult.stubbed ||
+          !Array.isArray(archivedProjectsResult.data)
+        ) {
+          throw new Error('project_refresh_incomplete');
+        }
+        if (!active || !refreshCommit.isCurrent()) return;
+
+        const cloudActiveRecords = activeProjectsResult.data
+          .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
+          .map(projectRecordFromCloud);
+        const cloudArchivedRecords = archivedProjectsResult.data
+          .filter(project => project.name.trim() && !isLegacyNonProjectShellName(project.name))
+          .map(projectRecordFromCloud);
+        const reconciled = reconcileDAVEOperationalProjects({
+          localRecords: projectRecordsCurrentRef.current,
+          localArchivedProjectNames: archivedProjectsCurrentRef.current,
+          cloudActiveRecords,
+          cloudArchivedRecords,
+          deletedProjectNames: deletedProjectNamesRef.current,
+          queuedChanges: offlineQueue
+            .filter(item => item.entity === 'project')
+            .map(item => ({ operation: item.operation, payload: item.payload })),
+        });
+        const currentRecords = projectRecordsCurrentRef.current;
+        const currentNames = projectsCurrentRef.current;
+        const currentArchivedNames = archivedProjectsCurrentRef.current;
+        refreshCommit.commit(() => {
+          projectRecordsCurrentRef.current = reconciled.projectRecords;
+          projectsCurrentRef.current = reconciled.projectNames;
+          archivedProjectsCurrentRef.current = reconciled.archivedProjectNames;
+          setProjectRecords(
+            JSON.stringify(reconciled.projectRecords) === JSON.stringify(currentRecords)
+              ? currentRecords
+              : reconciled.projectRecords,
+          );
+          setProjects(
+            JSON.stringify(reconciled.projectNames) === JSON.stringify(currentNames)
+              ? currentNames
+              : reconciled.projectNames,
+          );
+          setArchivedProjects(
+            JSON.stringify(reconciled.archivedProjectNames) === JSON.stringify(currentArchivedNames)
+              ? currentArchivedNames
+              : reconciled.archivedProjectNames,
+          );
+        });
+      }});
+
+      if (updatesLoaded) collectionRefreshes.push({ name: 'project_updates', run: async () => {
+        const updatesResult = await listProjectUpdates<ProjectUpdate>();
+        if (!updatesResult.ok || updatesResult.stubbed || !Array.isArray(updatesResult.data)) {
+          throw new Error('field_update_refresh_incomplete');
+        }
+        if (!active || !refreshCommit.isCurrent()) return;
+
+        const normalizedCloudUpdates = normalizeStartupArray(
+          updatesResult.data.map(row => row.updateData),
+          normalizeStoredUpdateRecord,
+          'cloud saved updates',
+        ).value;
+        const updatesForPhotoCache = savedUpdatesRef.current;
+        const currentById = new Map(updatesForPhotoCache.map(update => [update.id, update]));
+        const hydratedCloudUpdates = await Promise.all(
+          normalizedCloudUpdates.map(async cloudUpdate => {
+            if (cloudUpdate.isArchived) return cloudUpdate;
+            const localUpdate = currentById.get(cloudUpdate.id);
+            const photos = cloudUpdate.photos.map(cloudPhoto => {
+              const localPhoto = localUpdate?.photos.find(photo => photo.id === cloudPhoto.id);
+              const localUri = localPhoto ? resolveProjectPhotoUri(localPhoto) : '';
+              return localUri
+                ? {
+                    ...cloudPhoto,
+                    uri: localUri,
+                    cloudRecoveredAt: localPhoto?.cloudRecoveredAt || cloudPhoto.cloudRecoveredAt,
+                    cloudRecoveryStatus: localPhoto?.cloudRecoveryStatus || cloudPhoto.cloudRecoveryStatus,
+                    cloudSignedUrlExpiresAt:
+                      localPhoto?.cloudSignedUrlExpiresAt || cloudPhoto.cloudSignedUrlExpiresAt,
+                  }
+                : cloudPhoto;
+            });
+            const cloudUpdateWithLocalPhotoCache = { ...cloudUpdate, photos };
+            return photos.some(photo => !resolveProjectPhotoUri(photo))
+              ? hydrateRecoveredProjectUpdatePhotos(cloudUpdateWithLocalPhotoCache)
+              : cloudUpdateWithLocalPhotoCache;
+          }),
+        );
+        if (!active || !refreshCommit.isCurrent()) return;
+
+        const currentUpdates = savedUpdatesRef.current;
+        const currentUpdateTombstones = deletedUpdateTombstonesRef.current;
+        const refreshedUpdateTombstones = hydratedCloudUpdates
+          .filter(update => update.isArchived)
+          .map(update => buildUpdateTombstone(
+            update,
+            'hide_cloud_update',
+            update.archivedAt || update.date,
+          ))
+          .reduce(
+            (current, tombstone) => upsertDeletedUpdateTombstone(current, tombstone),
+            currentUpdateTombstones,
+          );
+        const effectiveTombstones =
+          JSON.stringify(refreshedUpdateTombstones) === JSON.stringify(currentUpdateTombstones)
+            ? currentUpdateTombstones
+            : refreshedUpdateTombstones;
+        const cloudUpdateById = new Map(
+          hydratedCloudUpdates.map(update => [update.id, update]),
+        );
+        const localUpdatesForMerge = currentUpdates.map(localUpdate => {
+          const cloudUpdate = cloudUpdateById.get(localUpdate.id);
+          return cloudUpdate && !updateNeedsAutomaticSyncRetry(localUpdate)
+            ? cloudUpdate
+            : localUpdate;
+        });
+        const mergedUpdates = mergeSavedUpdatesWithTombstones({
+          localUpdates: localUpdatesForMerge,
+          cloudUpdates: hydratedCloudUpdates,
+          tombstones: effectiveTombstones,
+        });
+        refreshCommit.commit(() => {
+          deletedUpdateTombstonesRef.current = effectiveTombstones;
+          if (effectiveTombstones !== currentUpdateTombstones) {
+            setDeletedUpdateTombstones(effectiveTombstones);
+          }
+          savedUpdatesRef.current = mergedUpdates;
+          setSavedUpdates(
+            JSON.stringify(mergedUpdates) === JSON.stringify(currentUpdates)
+              ? currentUpdates
+              : mergedUpdates,
+          );
+        });
+      }});
+
+      if (projectAreasLoaded) collectionRefreshes.push({ name: 'project_areas', run: async () => {
+        const areasResult = await listProjectAreas();
+        if (!areasResult.ok || areasResult.stubbed || !Array.isArray(areasResult.data)) throw new Error('area_refresh_incomplete');
+        if (!active || !refreshCommit.isCurrent()) return;
+        const cloudAreas = normalizeProjectAreas(areasResult.data.filter(isStartupProjectAreaRecord));
+        const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'project_area');
+        const currentAreas = projectAreasCurrentRef.current;
+        const safeCloudAreas = tombstones.cloudAuthoritative ? cloudAreas : cloudAreas.filter(area => currentAreas.some(current => current.id === area.id));
+        const mergedAreas = mergeDAVEProjectAreaRecoveryRecords({ local: currentAreas, cloud: safeCloudAreas, deletedIds });
+        refreshCommit.commit(() => {
+          projectAreasCurrentRef.current = mergedAreas;
+          setProjectAreas(JSON.stringify(mergedAreas) === JSON.stringify(currentAreas)
+            ? currentAreas : mergedAreas);
+        });
+      }});
+
+      if (scheduleItemsLoaded) collectionRefreshes.push({ name: 'schedule_items', run: async () => {
+        const schedulesResult = await listScheduleItems();
+        if (!schedulesResult.ok || schedulesResult.stubbed || !Array.isArray(schedulesResult.data)) throw new Error('task_refresh_incomplete');
+        if (!active || !refreshCommit.isCurrent()) return;
+        const cloudItems = normalizeScheduleItems(schedulesResult.data
+          .filter(isDAVESafeCloudScheduleRecord)).map(migrateLegacyScheduleItem);
+        const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'schedule_item');
+        const currentItems = scheduleItemsCurrentRef.current;
+        const safeCloudItems = tombstones.cloudAuthoritative ? cloudItems : cloudItems.filter(item => currentItems.some(current => current.id === item.id));
+        const mergedItems = recoverDAVEScheduleRecords({ local: currentItems, cloud: safeCloudItems,
+          deletedIds, allowCloudOnly: true });
+        refreshCommit.commit(() => {
+          scheduleItemsCurrentRef.current = mergedItems;
+          setScheduleItems(JSON.stringify(mergedItems) === JSON.stringify(currentItems)
+            ? currentItems : mergedItems);
+        });
+      }});
+
+      if (referenceDocumentsLoaded) collectionRefreshes.push({ name: 'reference_documents', run: async () => {
+        const documentsResult = await listReferenceDocuments();
+        if (!documentsResult.ok || documentsResult.stubbed || !Array.isArray(documentsResult.data)) throw new Error('document_refresh_incomplete');
+        if (!active || !refreshCommit.isCurrent()) return;
+        const cloudDocuments = normalizeReferenceDocuments(documentsResult.data);
+        const deletedIds = deletedDAVERecordIds(tombstones.tombstones, 'reference_document');
+        const currentDocuments = referenceDocumentsCurrentRef.current;
+        const safeCloudDocuments = tombstones.cloudAuthoritative ? cloudDocuments : cloudDocuments.filter(document => currentDocuments.some(current => current.id === document.id));
+        const mergedDocuments = reconcileCurrentScheduleDocuments(
+          mergeDAVEReferenceDocumentRecoveryRecords({ local: currentDocuments, cloud: safeCloudDocuments, deletedIds }));
+        refreshCommit.commit(() => {
+          referenceDocumentsCurrentRef.current = mergedDocuments;
+          setReferenceDocuments(JSON.stringify(mergedDocuments) === JSON.stringify(currentDocuments)
+            ? currentDocuments : mergedDocuments);
+        });
+      }});
+
+      const failures = await runDAVEOperationalCollectionRefreshes(collectionRefreshes);
+      if (failures.length > 0) throw new Error(`operational_collection_refresh_incomplete:${failures.join(',')}`);
+    }
+
+    const refreshController = createDAVEOperationalRefreshController({
+      refresh: refreshOperationalCollections,
+      canRefresh: () => active && AppState.currentState !== 'background',
+      onStateChange: state => {
+        if (!active) return;
+        if (state.status === 'retrying') setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
+        else if (state.status === 'ready') {
+          setSyncCleanupNotice(current =>
+            current === DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE ? null : current);
+        }
+      },
+    });
+    refreshController.start();
+
+    let realtimeUnsubscribe: () => void = () => undefined;
+    void subscribeToDAVEOperationalChanges({
+      onChange: () => { void refreshController.request('realtime'); },
+      onStatus: status => {
+        if (status === 'subscribed') {
+          requestPendingChangesUpload('realtime_reconnected');
+        }
+        if (active && (status === 'error' || status === 'closed')) {
+          setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
+        }
+      },
+    }).then(unsubscribe => {
+      if (!active) unsubscribe();
+      else realtimeUnsubscribe = unsubscribe;
+    }).catch(() => { if (active) setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE); });
+
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') void refreshController.request('foreground');
+    });
+
+    return () => {
+      active = false;
+      operationalRefreshCommitGuard.invalidate();
+      refreshController.stop();
+      realtimeUnsubscribe();
+      subscription.remove();
+    };
+  }, [
+    projectAreasLoaded,
+    projectsLoaded,
+    referenceDocumentsLoaded,
+    scheduleItemsLoaded,
+    startupHydrationReady,
+    updatesLoaded,
+  ]);
 
   const activeProjects = useMemo(
     () =>
@@ -5637,9 +6495,23 @@ useEffect(() => {
     [projects, archivedProjects],
   );
 
+  const savedUpdateTaskEvidence = useMemo(
+    () => partitionProjectUpdatesByDeletedTask(
+      savedUpdates,
+      operationalSyncTombstones,
+      update => update,
+    ),
+    [operationalSyncTombstones, savedUpdates],
+  );
+  const activeSavedUpdates = savedUpdateTaskEvidence.active;
+  const deletedTaskEvidenceIds = useMemo(
+    () => new Set(savedUpdateTaskEvidence.historical.map(update => update.id)),
+    [savedUpdateTaskEvidence.historical],
+  );
+
   const projectStatsByName = useMemo(
-    () => buildProjectStatsByName(savedUpdates),
-    [savedUpdates],
+    () => buildProjectStatsByName(activeSavedUpdates),
+    [activeSavedUpdates],
   );
 
   const overviewProjectName =
@@ -5678,6 +6550,7 @@ useEffect(() => {
           projectAreas,
           savedUpdates,
           activeProjects,
+          scheduleItems,
         );
 
         if (!suggestion?.withinRadius || gpsCandidates.topCandidates.length === 0) {
@@ -5741,11 +6614,41 @@ useEffect(() => {
     .map(contact => selectedContactPhone(contact).trim())
     .filter(Boolean);
 
+  const draftProjectAreas = useMemo(
+    () => projectAreasForProject({
+      projectAreas,
+      projectName: draft.projectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    }),
+    [activeSavedUpdates, draft.projectName, projectAreas, scheduleItems],
+  );
+
+  const selectedWorkspaceProjectAreas = useMemo(
+    () => projectAreasForProject({
+      projectAreas,
+      projectName: selectedWorkspaceProject,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    }),
+    [activeSavedUpdates, projectAreas, scheduleItems, selectedWorkspaceProject],
+  );
+
+  const talkProjectAreas = useMemo(
+    () => projectAreasForProject({
+      projectAreas,
+      projectName: talkProjectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    }),
+    [activeSavedUpdates, projectAreas, scheduleItems, talkProjectName],
+  );
+
   const currentDraftArea = useMemo(
     () =>
-      projectAreas.find(area => area.id === draft.selectedAreaId) ||
+      draftProjectAreas.find(area => area.id === draft.selectedAreaId) ||
       null,
-    [projectAreas, draft.selectedAreaId],
+    [draft.selectedAreaId, draftProjectAreas],
   );
 
   const draftPIEStatus = useMemo(
@@ -5863,10 +6766,19 @@ useEffect(() => {
   }
 
   async function captureDraftLocation() {
+    const generation = draftLocationCaptureGenerationRef.current + 1;
+    draftLocationCaptureGenerationRef.current = generation;
+    const target = createDraftLocationCaptureTarget(draftRef.current, generation);
+    const targetIsCurrent = () => isDraftLocationCaptureTargetCurrent(
+      target,
+      draftRef.current,
+      draftLocationCaptureGenerationRef.current,
+    );
     setLocationStatus('Capturing GPS...');
 
     try {
       const snapshot = await getCurrentLocationSnapshot();
+      if (!targetIsCurrent()) return null;
 
       if (!snapshot) {
         setDraftAreaSuggestion(null);
@@ -5878,15 +6790,22 @@ useEffect(() => {
 
       const suggestion = findClosestProjectArea(
         snapshot,
-        projectAreas,
+        draftProjectAreas,
       );
 
       setDraftAreaSuggestion(suggestion);
       setLocationStatus('Area auto-detected');
 
       setDraft(prev => {
+        if (!isDraftLocationCaptureTargetCurrent(
+          target,
+          prev,
+          draftLocationCaptureGenerationRef.current,
+        )) {
+          return prev;
+        }
         const selectedArea =
-          projectAreas.find(area => area.id === prev.selectedAreaId) ||
+          draftProjectAreas.find(area => area.id === prev.selectedAreaId) ||
           null;
         const locationFields = locationFieldsFromSnapshot(
           snapshot,
@@ -5910,6 +6829,7 @@ useEffect(() => {
         suggestion,
       };
     } catch {
+      if (!targetIsCurrent()) return null;
       setDraftAreaSuggestion(null);
       setLocationStatus(
         'GPS could not be captured. Choose Project Area manually.',
@@ -5958,7 +6878,7 @@ useEffect(() => {
 
   function changeDraftArea(areaId: string) {
     const area =
-      projectAreas.find(item => item.id === areaId) || null;
+      draftProjectAreas.find(item => item.id === areaId) || null;
 
     applyAreaAndLocationToDraft(area);
     setLocationStatus(
@@ -6004,11 +6924,15 @@ useEffect(() => {
       pieStatus: 'no_visual_comparison',
       pieSummary: 'No visual comparison available',
       status: 'ready_to_send',
+      workflowTimestamps: {
+        ...(prev.workflowTimestamps || {}),
+        reviewOpenedAt: new Date().toISOString(),
+      },
     }));
-    setScreen('PIEAnalysis');
+    setScreen('BuildUpdate');
   }
 
-  function continueToPIEAnalysis() {
+  function continueToReview() {
     const summary = summarizePIEStatusForUpdate(draft);
 
     setDraft(prev => ({
@@ -6020,18 +6944,6 @@ useEffect(() => {
           : prev.pieStartedAt || null,
       pieStatus: summary.status,
       pieSummary: summary.summary,
-    }));
-    setScreen('PIEAnalysis');
-  }
-
-  function openReviewFromPIEAnalysis() {
-    const summary = summarizePIEStatusForUpdate(draft);
-
-    setDraft(prev => ({
-      ...prev,
-      pieStatus: summary.status,
-      pieSummary: summary.summary,
-      status: 'ready_to_send',
       workflowTimestamps: {
         ...(prev.workflowTimestamps || {}),
         reviewOpenedAt: new Date().toISOString(),
@@ -6106,6 +7018,7 @@ useEffect(() => {
     }));
 
     try {
+      await verifyOwnedProjectDocument(target);
       const result = await uploadPhoto({
         bucket: PROJECT_DOCUMENT_UPLOAD_FOLDER,
         path: storagePath,
@@ -6123,7 +7036,11 @@ useEffect(() => {
         uploadedAt: result.ok ? completedAt : document.uploadedAt,
         updatedAt: completedAt,
       }));
-    } catch {
+    } catch (error) {
+      if (!providedDocument && error instanceof Error &&
+          error.message === PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE) {
+        Alert.alert('Add document again', 'Delete this attachment record, then add the original file again before uploading it.');
+      }
       updateDocumentEverywhere(documentId, document => ({
         ...document,
         status: 'failed',
@@ -6142,7 +7059,7 @@ useEffect(() => {
     void retryProjectDocumentUpload(document.id, document);
   }
 
-  function createProjectDocumentFromAsset(asset: {
+  async function createProjectDocumentFromAsset(asset: {
     uri: string;
     name?: string | null;
     mimeType?: string | null;
@@ -6151,6 +7068,7 @@ useEffect(() => {
     projectName?: string;
     areaId?: string | null;
     updateId?: string | null;
+    category?: ProjectDocumentCategory;
   }) {
     const now = new Date().toISOString();
     const id = uid();
@@ -6163,6 +7081,16 @@ useEffect(() => {
       );
     const projectName = context?.projectName || draft.projectName;
     const projectId = authorityProjectId(projectName);
+    if (!OWNED_PROJECT_DOCUMENTS_DIR) {
+      throw new Error('Project document storage is unavailable.');
+    }
+    const owned = await importProjectDocumentIntoOwnedStorage({
+      sourceUri: asset.uri,
+      ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+      fileName: name,
+      mimeType: asset.mimeType || 'application/octet-stream',
+      reportedSizeBytes: asset.size,
+    });
 
     return normalizeProjectDocument({
       id,
@@ -6176,10 +7104,12 @@ useEffect(() => {
           ? context.updateId
           : draft.id,
       name,
-      category: 'Other',
+      category: context?.category || 'Other',
       mimeType: asset.mimeType || null,
-      sizeBytes: typeof asset.size === 'number' ? asset.size : null,
-      localUri: asset.uri,
+      sizeBytes: owned.record.sizeBytes,
+      localUri: owned.localUri,
+      ownedFileId: owned.fileId,
+      ownedFileManifest: owned.manifest,
       storagePath: buildProjectDocumentStoragePath(id, projectId, name),
       createdAt: now,
       updatedAt: now,
@@ -6199,10 +7129,9 @@ useEffect(() => {
         'Possible duplicate document',
         `${document.name} looks like it already exists for this project.`,
         [
-          {
-            text: 'Cancel',
-            style: 'cancel',
-          },
+          { text: 'Cancel', style: 'cancel', onPress: () => {
+            void deleteOwnedProjectDocument(document).catch(() => undefined);
+          } },
           {
             text: 'Upload Anyway',
             onPress: () =>
@@ -6217,6 +7146,7 @@ useEffect(() => {
                   }),
           },
         ],
+        { cancelable: false },
       );
       return;
     }
@@ -6242,11 +7172,24 @@ useEffect(() => {
       size?: number | null;
     },
     defaultProjectName: string,
+    options?: {
+      attachToDraft?: boolean;
+      areaId?: string | null;
+      updateId?: string | null;
+    },
   ) {
     setDocumentUploadRequest({
       asset,
       selected: new Set([defaultProjectName]),
+      category: suggestProjectDocumentCategory(asset),
+      attachToDraft: Boolean(options?.attachToDraft),
+      areaId: options?.areaId || null,
+      updateId: options?.updateId || null,
     });
+  }
+
+  function setDocumentUploadCategory(category: ProjectDocumentCategory) {
+    setDocumentUploadRequest(current => current ? { ...current, category } : current);
   }
 
   function toggleDocumentUploadProject(projectName: string) {
@@ -6269,34 +7212,55 @@ useEffect(() => {
     setDocumentUploadRequest(null);
   }
 
-  function confirmDocumentProjectSelection() {
+  async function confirmDocumentProjectSelection() {
     if (!documentUploadRequest) return;
 
-    const { asset, selected } = documentUploadRequest;
-
-    setDocumentUploadRequest(null);
+    const {
+      asset,
+      selected,
+      category,
+      attachToDraft,
+      areaId,
+      updateId,
+    } = documentUploadRequest;
 
     // Same picked file, one ProjectDocument record per selected project -
     // each project keeps its own independent upload/retry/status lifecycle,
     // matching how documents already work everywhere else in this screen.
-    selected.forEach(projectName => {
-      const document = createProjectDocumentFromAsset(asset, {
-        projectName,
-        areaId: null,
-        updateId: null,
-      });
-      const duplicate = duplicateProjectDocumentForAsset(
-        projectDocuments,
-        document.projectId,
-        {
-          name: document.name,
-          mimeType: document.mimeType,
-          size: document.sizeBytes,
-        },
+    try {
+      const selectedProjectNames = Array.from(selected);
+      for (const projectName of selected) {
+        const document = await createProjectDocumentFromAsset(asset, {
+          projectName,
+          areaId: attachToDraft ? areaId : null,
+          updateId: attachToDraft ? updateId : null,
+          category,
+        });
+        const duplicate = duplicateProjectDocumentForAsset(
+          projectDocuments, document.projectId, {
+            name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
+          },
+        );
+        confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+      }
+      if (category === 'Schedule' && !attachToDraft) {
+        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
+        if (batch) {
+          setIncomingScheduleImportBatch(batch);
+          setScheduleProjectFilter(null);
+          setScreen('Schedule');
+        }
+      }
+    } catch (error) {
+      Alert.alert(
+        category === 'Schedule' ? 'Schedule review unavailable' : 'Document unavailable',
+        error instanceof Error
+          ? error.message
+          : 'The selected document could not be copied into secure app storage.',
       );
-
-      confirmAndAttachProjectDocument(document, duplicate, false);
-    });
+    } finally {
+      setDocumentUploadRequest(null);
+    }
   }
 
   async function importFieldUpdateDocument() {
@@ -6321,34 +7285,27 @@ useEffect(() => {
 
       if (!asset) return;
 
-      if (asset.size && asset.size > LARGE_PROJECT_DOCUMENT_BYTES) {
-        Alert.alert(
-          'Large document',
-          'This file may take longer to upload. You can continue the field update while upload runs in the background.',
-        );
-      }
-
-      const document = createProjectDocumentFromAsset({
-        uri: asset.uri,
-        name: asset.name,
-        mimeType: asset.mimeType,
-        size: asset.size,
-      });
-      const duplicate = duplicateProjectDocumentForAsset(
-        projectDocuments,
-        document.projectId,
+      await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size });
+      promptDocumentProjectSelection(
         {
-          name: document.name,
-          mimeType: document.mimeType,
-          size: document.sizeBytes,
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType,
+          size: asset.size,
+        },
+        draft.projectName,
+        {
+          attachToDraft: true,
+          areaId: draft.selectedAreaId || null,
+          updateId: draft.id,
         },
       );
-
-      confirmAndAttachProjectDocument(document, duplicate);
-    } catch {
+    } catch (error) {
       Alert.alert(
         'Document unavailable',
-        'The selected document could not be attached to this update.',
+        error instanceof FileSizePreflightError
+          ? error.message
+          : 'The selected document could not be attached to this update.',
       );
     }
   }
@@ -6375,12 +7332,7 @@ useEffect(() => {
 
       if (!asset) return;
 
-      if (asset.size && asset.size > LARGE_PROJECT_DOCUMENT_BYTES) {
-        Alert.alert(
-          'Large document',
-          'This file may take longer to upload. You can continue using the project workspace while upload runs in the background.',
-        );
-      }
+      await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size });
 
       promptDocumentProjectSelection(
         {
@@ -6391,10 +7343,12 @@ useEffect(() => {
         },
         projectName,
       );
-    } catch {
+    } catch (error) {
       Alert.alert(
         'Document unavailable',
-        'The selected document could not be added to this project.',
+        error instanceof FileSizePreflightError
+          ? error.message
+          : 'The selected document could not be added to this project.',
       );
     }
   }
@@ -6432,18 +7386,17 @@ useEffect(() => {
         size: asset.fileSize || null,
       };
 
-      if (!attachToDraft) {
-        promptDocumentProjectSelection(photoAsset, projectName);
-        return;
-      }
-
-      const document = createProjectDocumentFromAsset(photoAsset, {
+      promptDocumentProjectSelection(
+        photoAsset,
         projectName,
-        areaId: draft.selectedAreaId || null,
-        updateId: draft.id,
-      });
-
-      confirmAndAttachProjectDocument(document, null, true);
+        attachToDraft
+          ? {
+              attachToDraft: true,
+              areaId: draft.selectedAreaId || null,
+              updateId: draft.id,
+            }
+          : undefined,
+      );
     } catch {
       Alert.alert(
         'Document photo unavailable',
@@ -6475,61 +7428,78 @@ useEffect(() => {
     return null;
   }
 
-  function saveDraftFromReview() {
-    const idempotencyKey = draft.idempotencyKey || draft.stableSendId || `send-${draft.id}`;
-    const saved: ProjectUpdate = {
-      ...draft,
-      status: 'draft',
-      pieStatus: draftPIEStatus.status,
-      pieSummary: draftPIEStatus.summary,
-      stableSendId: idempotencyKey,
-      idempotencyKey,
-      generatedMessage: buildGeneratedUpdateMessage(draft, draftPIEStatus),
-    };
-
-    setSavedUpdates(prev => [
-      saved,
-      ...prev.filter(item => item.id !== saved.id),
-    ]);
-    saveCloudUpdate(saved);
-    syncUpdatePhotosToCloud(saved);
-    setSelectedWorkspaceProject(saved.projectName);
-    Alert.alert('Draft saved', 'This field update was saved as a draft.');
-    setScreen('ProjectWorkspace');
+  function upsertSavedUpdateUnlessDeleted(update: ProjectUpdate) {
+    const nextUpdates = mergeSavedUpdatesWithTombstones({
+      localUpdates: [
+        update,
+        ...savedUpdatesRef.current.filter(item => item.id !== update.id),
+      ],
+      cloudUpdates: [],
+      tombstones: deletedUpdateTombstonesRef.current,
+    });
+    savedUpdatesRef.current = nextUpdates;
+    setSavedUpdates(nextUpdates);
   }
 
-  async function sendFieldUpdate() {
-    const issue = minimumSendDataIssue(draft);
+  function applyFieldUpdateSyncResultIfCurrent(
+    attemptedUpdate: ProjectUpdate,
+    syncResult: ProjectUpdate,
+  ) {
+    const reconciliation = reconcileFieldUpdateSyncResult(
+      savedUpdatesRef.current,
+      attemptedUpdate,
+      syncResult,
+    );
+    if (!reconciliation.applied) return reconciliation;
 
-    if (issue) {
-      Alert.alert('Cannot send yet', issue, [
-        ...(draft.recipients.contactIds.length === 0
-          ? [
-              {
-                text: 'Change Recipients',
-                onPress: openContacts,
-              },
-            ]
-          : []),
-        {
-          text: 'Save Draft',
-          onPress: saveDraftFromReview,
-        },
-        {
-          text: 'Edit',
-          style: 'cancel',
-        },
-      ]);
+    const nextUpdates = mergeSavedUpdatesWithTombstones({
+      localUpdates: reconciliation.updates,
+      cloudUpdates: [],
+      tombstones: deletedUpdateTombstonesRef.current,
+    });
+    const applied = nextUpdates.some(item => item.id === syncResult.id);
+    savedUpdatesRef.current = nextUpdates;
+    setSavedUpdates(nextUpdates);
+    return {
+      updates: nextUpdates,
+      applied,
+      current: applied ? syncResult : null,
+    };
+  }
 
+  async function saveFieldUpdateFromReview() {
+    if (fieldUpdateSaveInFlightRef.current) {
+      Alert.alert('Save in progress', 'Wait for the current field update to finish saving.');
       return;
     }
 
+    const draftSnapshot = draftRef.current;
+    if (!hasSavableUpdate(draftSnapshot)) {
+      Alert.alert(
+        'Update is blank',
+        'Add a photo, update notes, field note, or action information before saving.',
+      );
+      return;
+    }
+
+    const invalidDueDateIndex = findInvalidDueDatePhoto(draftSnapshot);
+    if (invalidDueDateIndex >= 0) {
+      Alert.alert(
+        'Invalid due date',
+        `Photo ${invalidDueDateIndex + 1} has a due date that is not in YYYY-MM-DD format.`,
+      );
+      return;
+    }
+
+    fieldUpdateSaveInFlightRef.current = true;
+    setFieldUpdateSaving(true);
     const now = new Date().toISOString();
-    const pieSummary = summarizePIEStatusForUpdate(draft);
-    const idempotencyKey = draft.idempotencyKey || draft.stableSendId || `send-${draft.id}`;
-    const sendAttempts = (draft.sendAttempts || 0) + 1;
+    const pieSummary = summarizePIEStatusForUpdate(draftSnapshot);
+    const idempotencyKey = draftSnapshot.idempotencyKey ||
+      draftSnapshot.stableSendId || `send-${draftSnapshot.id}`;
+    const sendAttempts = (draftSnapshot.sendAttempts || 0) + 1;
     const baseUpdate: ProjectUpdate = {
-      ...draft,
+      ...draftSnapshot,
       status: 'ready_to_send',
       stableSendId: idempotencyKey,
       idempotencyKey,
@@ -6537,9 +7507,9 @@ useEffect(() => {
       lastSendAttemptAt: now,
       pieStatus: pieSummary.status,
       pieSummary: pieSummary.summary,
-      generatedMessage: buildGeneratedUpdateMessage(draft, pieSummary),
+      generatedMessage: buildGeneratedUpdateMessage(draftSnapshot, pieSummary),
       workflowTimestamps: {
-        ...(draft.workflowTimestamps || {}),
+        ...(draftSnapshot.workflowTimestamps || {}),
         sendTappedAt: now,
       },
     };
@@ -6549,107 +7519,162 @@ useEffect(() => {
       status: 'queued',
     };
 
-    setSavedUpdates(prev => [
-      queuedUpdate,
-      ...prev.filter(item => item.id !== queuedUpdate.id),
-    ]);
-    setSelectedWorkspaceProject(queuedUpdate.projectName);
+    try {
+      if (savedUpdatesSaveTimer.current) {
+        clearTimeout(savedUpdatesSaveTimer.current);
+        savedUpdatesSaveTimer.current = null;
+      }
+      if (draftSaveTimer.current) {
+        clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+      }
+      const persisted = await fieldUpdateLocalPersistence.commit(snapshot =>
+        prepareQueuedFieldUpdateSave({ snapshot, queuedUpdate,
+          currentUpdates: savedUpdatesRef.current, currentTombstones: deletedUpdateTombstonesRef.current,
+          keys: FIELD_UPDATE_PERSISTENCE_KEYS, mergeVisibleUpdates: mergeSavedUpdatesWithTombstones }),
+      );
+      savedUpdatesRef.current = persisted.nextUpdates;
+      deletedUpdateTombstonesRef.current = persisted.nextTombstones;
+      setSavedUpdates(persisted.nextUpdates);
+      setDeletedUpdateTombstones(persisted.nextTombstones);
+      setSelectedWorkspaceProject(queuedUpdate.projectName);
+    } catch (error) {
+      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      Alert.alert(
+        'Update not saved',
+        'The device could not verify the saved update. Your draft is still here; try again.',
+      );
+      fieldUpdateSaveInFlightRef.current = false;
+      setFieldUpdateSaving(false);
+      return;
+    }
 
+    const draftUnchanged = draftRef.current === draftSnapshot;
+    if (draftUnchanged) {
+      setDraft(createDraft(queuedUpdate.projectName));
+      setDraftSavedAt(null);
+      setScreen('ProjectWorkspace');
+    }
+
+    let finalUpdate: ProjectUpdate;
     try {
       const tokenResult = await getCurrentSessionAccessToken();
       const tokenLookup = tokenResult.data;
       const sessionTokenPresent = tokenLookup?.status === 'token_present';
       if (!sessionTokenPresent) {
-        const resolvedAt = new Date().toISOString();
-        const skippedDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+        const syncDiagnostics = buildSkippedSyncDiagnostics(
+          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth',
           now,
           1,
           false,
         );
-        const finalUpdate: ProjectUpdate = {
+        finalUpdate = {
           ...queuedUpdate,
           status: 'failed',
-          syncDiagnostics: skippedDiagnostics,
+          syncDiagnostics,
           workflowTimestamps: {
             ...(queuedUpdate.workflowTimestamps || {}),
-            sendResolvedAt: resolvedAt,
+            sendResolvedAt: new Date().toISOString(),
           },
         };
-        setSavedUpdates(prev => [
-          finalUpdate,
-          ...prev.filter(item => item.id !== finalUpdate.id),
-        ]);
-        Alert.alert(queuedStatusCopyForUpdate(finalUpdate));
-        setDraft(createDraft(queuedUpdate.projectName));
-        setDraftSavedAt(null);
-        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
-        setScreen('ProjectWorkspace');
-        return;
-      }
-
-      const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
-      const syncDiagnostics = buildSyncDiagnosticsFromUpload(
-        syncResult,
-        now,
-        sessionTokenPresent,
-        workAttempt,
-        queuedUpdate.sendAttempts || 1,
-      );
-      const resolvedAt = new Date().toISOString();
-      const finalUpdate: ProjectUpdate = {
-        ...queuedUpdate,
-        status: statusForSyncDiagnostics(syncDiagnostics),
-        syncDiagnostics,
-        workflowTimestamps: {
-          ...(queuedUpdate.workflowTimestamps || {}),
-          sendResolvedAt: resolvedAt,
-        },
-      };
-
-      setSavedUpdates(prev => [
-        finalUpdate,
-        ...prev.filter(item => item.id !== finalUpdate.id),
-      ]);
-
-      if (finalUpdate.status === 'sent') {
-        Alert.alert('Update sent', 'The field update was saved and added to the project workspace.');
       } else {
-        Alert.alert(queuedStatusCopyForUpdate(finalUpdate));
+        const { syncResult, workAttempt } = await runFieldUpdateCloudSync(queuedUpdate);
+        const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+          syncResult,
+          now,
+          true,
+          workAttempt,
+          queuedUpdate.sendAttempts || 1,
+        );
+        finalUpdate = {
+          ...queuedUpdate,
+          status: statusForSyncDiagnostics(syncDiagnostics),
+          syncDiagnostics,
+          workflowTimestamps: {
+            ...(queuedUpdate.workflowTimestamps || {}),
+            sendResolvedAt: new Date().toISOString(),
+          },
+        };
       }
     } catch (error) {
-      const resolvedAt = new Date().toISOString();
-      const failureCategory = classifySyncFailureCategory([
-        error instanceof Error ? error.message : 'unknown sync error',
-      ]);
       const syncDiagnostics = buildSkippedSyncDiagnostics(
-        failureCategory,
+        classifySyncFailureCategory([
+          error instanceof Error ? error.message : 'unknown sync error',
+        ]),
         now,
         1,
         null,
       );
-      const failedOrQueuedUpdate: ProjectUpdate = {
+      finalUpdate = {
         ...queuedUpdate,
         status: statusForSyncDiagnostics(syncDiagnostics),
         syncDiagnostics,
         workflowTimestamps: {
           ...(queuedUpdate.workflowTimestamps || {}),
-          sendResolvedAt: resolvedAt,
+          sendResolvedAt: new Date().toISOString(),
         },
       };
-      setSavedUpdates(prev => [
-        failedOrQueuedUpdate,
-        ...prev.filter(item => item.id !== failedOrQueuedUpdate.id),
-      ]);
-      Alert.alert(queuedStatusCopyForUpdate(failedOrQueuedUpdate));
     }
 
-    setDraft(createDraft(queuedUpdate.projectName));
-    setDraftSavedAt(null);
-    AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
-    setScreen('ProjectWorkspace');
+    try {
+      await persistSavedUpdateImmediately(finalUpdate, queuedUpdate);
+    } catch {
+      // The verified queued update remains durable and will be retried on startup.
+    } finally {
+      fieldUpdateSaveInFlightRef.current = false;
+      setFieldUpdateSaving(false);
+    }
+    Alert.alert(
+      finalUpdate.status === 'sent' ? 'Field update saved' : 'Field update saved locally',
+      draftUnchanged
+        ? finalUpdate.status === 'sent'
+          ? 'The update was added to the project workspace.'
+          : 'The cloud sync is pending. You can retry from Field Activity.'
+        : 'The saved version is safe, and your newer draft changes were kept.',
+    );
+  }
+
+  async function persistSavedUpdateImmediately(
+    update: ProjectUpdate,
+    expectedUpdate: ProjectUpdate = update,
+  ) {
+    try {
+      const persisted = await fieldUpdateLocalPersistence.commit(snapshot =>
+        prepareFieldUpdateStatusSave({ snapshot, update, expectedUpdate,
+          currentUpdates: savedUpdatesRef.current, currentTombstones: deletedUpdateTombstonesRef.current,
+          keys: FIELD_UPDATE_PERSISTENCE_KEYS, mergeVisibleUpdates: mergeSavedUpdatesWithTombstones,
+          reconcile: reconcileFieldUpdateSyncResult }),
+      );
+      savedUpdatesRef.current = persisted.nextUpdates;
+      deletedUpdateTombstonesRef.current = persisted.nextTombstones;
+      setSavedUpdates(persisted.nextUpdates);
+      setDeletedUpdateTombstones(persisted.nextTombstones);
+      return persisted.applied;
+    } catch (error) {
+      if (error instanceof FieldUpdatePersistenceBlockedError) startupHydration.fail(UPDATES_STORAGE_KEY, 'field update save recovery', error);
+      throw error;
+    }
+  }
+
+  async function syncFieldUpdateWithMissingPhotoRepair(
+    update: ProjectUpdate,
+    onRepair?: (repairedUpdate: ProjectUpdate) => void,
+  ) {
+    const firstAttempt = await runFieldUpdateCloudSync(update);
+    if (firstAttempt.missingPhotos.length === 0) {
+      return { ...firstAttempt, update };
+    }
+
+    const repairedUpdate = markMissingPhotosUnavailable(
+      update,
+      firstAttempt.missingPhotos,
+    );
+    await removeMissingPhotosFromSyncQueue(firstAttempt.missingPhotos);
+    const repairPersisted = await persistSavedUpdateImmediately(repairedUpdate, update);
+    if (!repairPersisted) return { ...firstAttempt, update };
+    onRepair?.(repairedUpdate);
+    const repairedAttempt = await runFieldUpdateCloudSync(repairedUpdate);
+    return { ...repairedAttempt, update: repairedUpdate };
   }
 
   async function retryQueuedUpdate(update: ProjectUpdate) {
@@ -6662,11 +7687,9 @@ useEffect(() => {
       lastSendAttemptAt: now,
       status: 'queued',
     };
+    let activeRetryUpdate = retryUpdate;
 
-    setSavedUpdates(prev => [
-      retryUpdate,
-      ...prev.filter(item => item.id !== retryUpdate.id),
-    ]);
+    upsertSavedUpdateUnlessDeleted(retryUpdate);
 
     try {
       const tokenResult = await getCurrentSessionAccessToken();
@@ -6690,14 +7713,24 @@ useEffect(() => {
             sendResolvedAt: new Date().toISOString(),
           },
         };
-        setSavedUpdates(prev => [
+        const reconciliation = applyFieldUpdateSyncResultIfCurrent(
+          retryUpdate,
           finalUpdate,
-          ...prev.filter(item => item.id !== finalUpdate.id),
-        ]);
-        return;
+        );
+        return reconciliation.current || finalUpdate;
       }
 
-      const { syncResult, workAttempt } = await runFieldUpdateCloudSync(retryUpdate);
+      const {
+        syncResult,
+        workAttempt,
+        update: syncReadyUpdate,
+      } = await syncFieldUpdateWithMissingPhotoRepair(
+        retryUpdate,
+        repairedUpdate => {
+          activeRetryUpdate = repairedUpdate;
+        },
+      );
+      activeRetryUpdate = syncReadyUpdate;
       const syncDiagnostics = buildSyncDiagnosticsFromUpload(
         syncResult,
         now,
@@ -6706,19 +7739,20 @@ useEffect(() => {
         retryUpdate.sendAttempts || 1,
       );
       const finalUpdate: ProjectUpdate = {
-        ...retryUpdate,
+        ...syncReadyUpdate,
         status: statusForSyncDiagnostics(syncDiagnostics),
         syncDiagnostics,
         workflowTimestamps: {
-          ...(retryUpdate.workflowTimestamps || {}),
+          ...(syncReadyUpdate.workflowTimestamps || {}),
           sendResolvedAt: new Date().toISOString(),
         },
       };
 
-      setSavedUpdates(prev => [
+      const reconciliation = applyFieldUpdateSyncResultIfCurrent(
+        syncReadyUpdate,
         finalUpdate,
-        ...prev.filter(item => item.id !== finalUpdate.id),
-      ]);
+      );
+      return reconciliation.current || finalUpdate;
     } catch (error) {
       const syncDiagnostics = buildSkippedSyncDiagnostics(
         classifySyncFailureCategory([
@@ -6729,14 +7763,15 @@ useEffect(() => {
         null,
       );
       const failedOrQueuedUpdate: ProjectUpdate = {
-        ...retryUpdate,
+        ...activeRetryUpdate,
         status: statusForSyncDiagnostics(syncDiagnostics),
         syncDiagnostics,
       };
-      setSavedUpdates(prev => [
+      const reconciliation = applyFieldUpdateSyncResultIfCurrent(
+        activeRetryUpdate,
         failedOrQueuedUpdate,
-        ...prev.filter(item => item.id !== failedOrQueuedUpdate.id),
-      ]);
+      );
+      return reconciliation.current || failedOrQueuedUpdate;
     }
   }
 
@@ -6757,88 +7792,93 @@ useEffect(() => {
       const resolvedAt = new Date().toISOString();
 
       if (!sessionTokenPresent) {
+        const failureCategory =
+          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth';
+        // Field fix 2026-07-18 (cpu_resource / diskwrites_resource kills):
+        // stamping is idempotent. Updates already marked failed for this
+        // same auth condition are NOT re-stamped — re-stamping every 30s
+        // rewrote the full saved-updates store to disk and changed the
+        // authority input each pass, driving a continuous core recompute
+        // until iOS terminated the app for CPU/disk-write exhaustion.
+        const needsStamp = queuedUpdates.filter(update =>
+          lifecycleStatusForUpdate(update) !== 'failed' ||
+          update.syncDiagnostics?.lastSyncFailureCategory !== failureCategory,
+        );
+        if (needsStamp.length === 0) return;
+
         const syncDiagnostics = buildSkippedSyncDiagnostics(
-          tokenLookup?.missingReason === 'signed_out'
-            ? 'signed_out'
-            : 'auth',
+          failureCategory,
           resolvedAt,
-          queuedUpdates.length,
+          needsStamp.length,
           false,
         );
-        const queuedIds = new Set(queuedUpdates.map(update => update.id));
-
-        setSavedUpdates(prev =>
-          prev.map(update =>
-            queuedIds.has(update.id)
-              ? {
-                  ...update,
-                  status: 'failed',
-                  syncDiagnostics,
-                  workflowTimestamps: {
-                    ...(update.workflowTimestamps || {}),
-                    sendResolvedAt:
-                      update.workflowTimestamps?.sendResolvedAt || resolvedAt,
-                  },
-                }
-              : update,
-          ),
-        );
+        needsStamp.forEach(update => {
+          applyFieldUpdateSyncResultIfCurrent(update, {
+            ...update,
+            status: 'failed',
+            syncDiagnostics,
+            workflowTimestamps: {
+              ...(update.workflowTimestamps || {}),
+              sendResolvedAt:
+                update.workflowTimestamps?.sendResolvedAt || resolvedAt,
+            },
+          });
+        });
         return;
       }
 
-      for (const update of queuedUpdates) {
-        const attemptStartedAt = new Date().toISOString();
-        const { syncResult, workAttempt } = await runFieldUpdateCloudSync(update);
-        const syncDiagnostics = buildSyncDiagnosticsFromUpload(
-          syncResult,
-          attemptStartedAt,
-          sessionTokenPresent,
-          workAttempt,
-          update.sendAttempts || null,
-        );
-
-        setSavedUpdates(prev =>
-          prev.map(item =>
-            item.id === update.id
-              ? {
-                  ...item,
-                  status: statusForSyncDiagnostics(syncDiagnostics),
-                  syncDiagnostics,
-                  workflowTimestamps: {
-                    ...(item.workflowTimestamps || {}),
-                    sendResolvedAt:
-                      item.workflowTimestamps?.sendResolvedAt || resolvedAt,
-                  },
-                }
-              : item,
-          ),
-        );
-      }
+      await runAutomaticSyncQueue(queuedUpdates, async update => {
+          const attemptStartedAt = new Date().toISOString();
+          const {
+            syncResult,
+            workAttempt,
+            update: syncReadyUpdate,
+          } = await syncFieldUpdateWithMissingPhotoRepair(update);
+          const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+            syncResult,
+            attemptStartedAt,
+            sessionTokenPresent,
+            workAttempt,
+            update.sendAttempts || null,
+          );
+          const nextUpdate: ProjectUpdate = {
+            ...syncReadyUpdate,
+            status: statusForSyncDiagnostics(syncDiagnostics),
+            syncDiagnostics,
+            workflowTimestamps: {
+              ...(syncReadyUpdate.workflowTimestamps || {}),
+              sendResolvedAt:
+                syncReadyUpdate.workflowTimestamps?.sendResolvedAt || resolvedAt,
+            },
+          };
+          const current = savedUpdatesRef.current.find(item => item.id === update.id);
+          if (current && !shouldPersistAutomaticSyncOutcome(current, nextUpdate)) {
+            return;
+          }
+          applyFieldUpdateSyncResultIfCurrent(syncReadyUpdate, nextUpdate);
+      });
     } finally {
       queuedHydrationInFlight.current = false;
     }
   }
 
   async function removeMissingSyncPhotos(missingPhotos: MissingSyncPhoto[]) {
-    const missingByUpdateId = new Map<string, Set<string>>();
-
-    for (const missingPhoto of missingPhotos) {
-      const photoIds = missingByUpdateId.get(missingPhoto.updateId) || new Set<string>();
-      photoIds.add(missingPhoto.photoId);
-      missingByUpdateId.set(missingPhoto.updateId, photoIds);
-    }
-
-    setSavedUpdates(prev =>
-      prev.map(update => {
-        const missingPhotoIds = missingByUpdateId.get(update.id);
-        if (!missingPhotoIds) return update;
-
-        return {
-          ...update,
-          photos: update.photos.filter(photo => !missingPhotoIds.has(photo.id)),
-        };
-      }),
+    const affectedUpdateIds = new Set(missingPhotos.map(photo => photo.updateId));
+    await removeMissingPhotosFromSyncQueue(missingPhotos);
+    let repairedUpdates = savedUpdatesRef.current.map(update =>
+      affectedUpdateIds.has(update.id)
+        ? markMissingPhotosUnavailable(update, missingPhotos)
+        : update,
     );
+    savedUpdatesRef.current = repairedUpdates;
+    setSavedUpdates(repairedUpdates);
+    await persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(repairedUpdates));
+
+    for (const updateId of affectedUpdateIds) {
+      const update = savedUpdatesRef.current.find(item => item.id === updateId);
+      if (!update) continue;
+      await retryQueuedUpdate(update);
+    }
   }
 
   function beginDraftForProject(projectName: string) {
@@ -6855,7 +7895,7 @@ useEffect(() => {
         'Add a new project or reopen an archived project first.',
       );
 
-      setScreen('Projects');
+      setScreen('Home');
 
       return;
     }
@@ -6906,9 +7946,418 @@ useEffect(() => {
     proceed();
   }
 
+  function createNewUpdateForScheduleTask(
+    parentProjectName: string,
+    scheduleItem: ScheduleItem,
+  ) {
+    const taskProjectName = scheduleItem.projectName.trim() || parentProjectName;
+    const taskProjectAreas = projectAreasForProject({
+      projectAreas,
+      projectName: parentProjectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    });
+    const area = taskProjectAreas.find(item =>
+      item.name.trim().toLowerCase() === scheduleItem.locationName.trim().toLowerCase(),
+    ) || null;
+
+    function proceed() {
+      setDraft({
+        ...createDraft(taskProjectName),
+        scheduleItemId: scheduleItem.id,
+        scheduleTaskName: scheduleItem.taskName,
+        scheduleProjectName: parentProjectName,
+        selectedAreaId: area?.id || null,
+        selectedAreaName: area?.name || scheduleItem.locationName || 'Unassigned / Unknown Area',
+        areaStatus: area || scheduleItem.locationName ? 'confirmed' : 'unknown',
+      });
+      setSelectedWorkspaceProject(parentProjectName);
+      setScreen('AddPhotos');
+      draftLocationCaptureRef.current = captureDraftLocation();
+    }
+
+    if (!hasDraftContent(draft)) {
+      proceed();
+      return;
+    }
+
+    Alert.alert(
+      'Unfinished update found',
+      'Starting this task update will replace the current unfinished draft.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start Task Update',
+          style: 'destructive',
+          onPress: () => {
+            const discardedDraft = draft;
+            proceed();
+            void deleteUnreferencedPhotosFromUpdate(discardedDraft, savedUpdates);
+          },
+        },
+      ],
+    );
+  }
+
+  function prepareProjectWalkFieldUpdate(
+    projectName: string,
+    memories: readonly DAVEConfirmedCaptureMemory[],
+    sourceWalkSessionId: string | null = null,
+    onPrepared?: () => void,
+  ) {
+    let prepared: ReturnType<typeof buildDAVEProjectWalkFieldUpdateDraft>;
+    try {
+      prepared = buildDAVEProjectWalkFieldUpdateDraft({ projectName, memories });
+    } catch (error) {
+      Alert.alert(
+        'Nothing to prepare',
+        error instanceof Error
+          ? error.message
+          : 'Capture and confirm a Project Walk memory first.',
+      );
+      return;
+    }
+
+    const walkProjectAreas = projectAreasForProject({
+      projectAreas,
+      projectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    });
+    const area = prepared.recommendedAreaName
+      ? walkProjectAreas.find(item =>
+          item.name.trim().toLowerCase() === prepared.recommendedAreaName?.trim().toLowerCase()
+        ) || null
+      : null;
+
+    function proceed() {
+      const nextDraft: ProjectUpdate = {
+        ...createDraft(projectName),
+        notes: prepared.notes,
+        sourceCaptureMemoryIds: [...prepared.sourceMemoryIds],
+        sourceWalkSessionId,
+        selectedAreaId: area?.id || null,
+        selectedAreaName:
+          area?.name || prepared.recommendedAreaName || 'Unassigned / Unknown Area',
+        areaStatus: area ? 'confirmed' : 'unknown',
+        continueWithoutPhotosAcknowledged: true,
+        pieStatus: 'no_visual_comparison',
+        pieSummary: 'No visual comparison available',
+        status: 'ready_to_send',
+        workflowTimestamps: {
+          startedAt: new Date().toISOString(),
+          reviewOpenedAt: new Date().toISOString(),
+        },
+      };
+      setDraft(nextDraft);
+      setSelectedWorkspaceProject(projectName);
+      setDraftSavedAt(null);
+      setScreen('BuildUpdate');
+      onPrepared?.();
+    }
+
+    if (hasDraftContent(draft)) {
+      Alert.alert(
+        'Unfinished update found',
+        'Preparing this Project Walk update will replace the current unfinished draft.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Prepare Update',
+            style: 'destructive',
+            onPress: proceed,
+          },
+        ],
+      );
+      return;
+    }
+
+    proceed();
+  }
+
   function openProjectWorkspace(projectName: string) {
     setSelectedWorkspaceProject(projectName);
     setScreen('ProjectWorkspace');
+  }
+
+  function workspaceScopeNames(projectName: string) {
+    return scheduleProjectScopeNames(
+      projectName,
+      authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
+    );
+  }
+
+  async function startProjectWalk(projectName: string) {
+    const existing = await localDAVEProjectWalkSessionRepository.readActive();
+    if (existing) {
+      setActiveProjectWalkSession(existing);
+      if (existing.projectName.trim().toLowerCase() === projectName.trim().toLowerCase()) {
+        return true;
+      }
+      Alert.alert(
+        'Project Walk already in progress',
+        `Finish or end the walk for ${existing.projectName} before starting another one.`,
+        [
+          { text: 'Not Now', style: 'cancel' },
+          {
+            text: 'Resume Walk',
+            onPress: () => openProjectWorkspace(existing.projectName),
+          },
+        ],
+      );
+      return false;
+    }
+
+    const startedAt = new Date().toISOString();
+    const session = await localDAVEProjectWalkSessionRepository.start(
+      startDAVEProjectWalkSession({
+        id: `walk-session-${uid()}`,
+        projectName,
+        startedAt,
+      }),
+    );
+    setActiveProjectWalkSession(session);
+    return true;
+  }
+
+  async function saveCaptureMemory(
+    memory: DAVEConfirmedCaptureMemory,
+    walkSessionId?: string,
+  ) {
+    await localDAVECaptureMemoryRepository.save(memory);
+    const identityLearning = memory.corrections
+      .filter(correction =>
+        (correction.field === 'project' || correction.field === 'location') &&
+        correction.previousValue?.trim() &&
+        correction.correctedValue?.trim(),
+      )
+      .map(correction => ({
+        id: `identity:${memory.id}:${correction.field}:${correction.correctedAt}`,
+        kind: correction.field === 'project' ? 'project' as const : 'area' as const,
+        rawName: correction.previousValue || '',
+        canonicalName: correction.correctedValue || '',
+        parentProjectName: correction.field === 'location'
+          ? memory.recommendedProject.value
+          : null,
+        sourceRecordId: memory.id,
+        confirmedAt: memory.confirmedAt,
+        confirmedBy: 'Project manager',
+      }));
+    if (identityLearning.length > 0) {
+      try {
+        await Promise.all(identityLearning.map(correction =>
+          localDAVEIdentityRepository.save(correction),
+        ));
+        setIdentityCorrections([...await localDAVEIdentityRepository.list()]);
+      } catch {
+        // The confirmed capture remains saved even if optional identity learning cannot persist.
+      }
+    }
+    const refreshedMemories = await localDAVECaptureMemoryRepository.list();
+    setCaptureMemories([...refreshedMemories]);
+    if (walkSessionId) {
+      const session = await localDAVEProjectWalkSessionRepository.addMemory(
+        walkSessionId,
+        memory.id,
+        new Date().toISOString(),
+      );
+      setActiveProjectWalkSession(session);
+    }
+  }
+
+  async function finishProjectWalk(sessionId: string) {
+    try {
+      const session = await localDAVEProjectWalkSessionRepository.readActive();
+      if (!session || session.id !== sessionId) {
+        throw new Error('The active Project Walk was not found.');
+      }
+      const allMemories = await localDAVECaptureMemoryRepository.list();
+      const memoriesById = new Map(allMemories.map(memory => [memory.id, memory]));
+      const sessionMemories = session.memoryIds
+        .map(memoryId => memoriesById.get(memoryId))
+        .filter((memory): memory is DAVEConfirmedCaptureMemory => Boolean(memory));
+      if (sessionMemories.length === 0) {
+        throw new Error('Capture at least one observation before finishing the walk.');
+      }
+      prepareProjectWalkFieldUpdate(
+        session.projectName,
+        sessionMemories,
+        session.id,
+        () => {
+          void localDAVEProjectWalkSessionRepository
+            .complete(session.id, new Date().toISOString())
+            .then(() => setActiveProjectWalkSession(current =>
+              current?.id === session.id ? null : current
+            ))
+            .catch(() => {
+              Alert.alert(
+                'Walk status not cleared',
+                'The update is ready to review, but the active walk could not be cleared. Try Finish Walk again after returning to the project.',
+              );
+            });
+        },
+      );
+    } catch (error) {
+      Alert.alert(
+        'Unable to finish walk',
+        error instanceof Error ? error.message : 'The Project Walk could not be prepared.',
+      );
+    }
+  }
+
+  function cancelProjectWalk(sessionId: string) {
+    const session = activeProjectWalkSession;
+    const count = session?.id === sessionId ? session.memoryIds.length : 0;
+    Alert.alert(
+      'End Project Walk?',
+      count > 0
+        ? `${count} confirmed ${count === 1 ? 'observation remains' : 'observations remain'} in project history and can still be prepared later.`
+        : 'No observations have been saved in this walk.',
+      [
+        { text: 'Keep Walking', style: 'cancel' },
+        {
+          text: 'End Walk',
+          style: 'destructive',
+          onPress: () => {
+            void localDAVEProjectWalkSessionRepository
+              .cancel(sessionId, new Date().toISOString())
+              .then(() => setActiveProjectWalkSession(current =>
+                current?.id === sessionId ? null : current
+              ))
+              .catch(() => {
+                Alert.alert('Unable to end walk', 'The active Project Walk could not be ended.');
+              });
+          },
+        },
+      ],
+    );
+  }
+
+  async function deleteCaptureMemory(memoryId: string) {
+    const deleted = await localDAVECaptureMemoryRepository.delete(memoryId);
+    if (!deleted) throw new Error('The saved memory was already removed.');
+    setCaptureMemories(current => current.filter(memory => memory.id !== memoryId));
+    if (activeProjectWalkSession?.memoryIds.includes(memoryId)) {
+      const session = await localDAVEProjectWalkSessionRepository.removeMemory(
+        activeProjectWalkSession.id,
+        memoryId,
+        new Date().toISOString(),
+      );
+      setActiveProjectWalkSession(session);
+    }
+  }
+
+  async function persistSelectedProjectCoverPhoto(
+    projectName: string,
+    asset: ImagePicker.ImagePickerAsset,
+  ) {
+    try {
+      const coverPhoto = await cacheSelectedProjectCoverPhoto(
+        asset.uri,
+        authorityProjectId(projectName),
+        asset.mimeType || 'image/jpeg',
+      );
+      setProjectRecords(previous => previous.map(project =>
+        project.name.toLowerCase() === projectName.toLowerCase()
+          ? {
+              ...project,
+              coverPhoto,
+              coverPhotoMode: 'manual',
+              coverPhotoUpdatedAt: coverPhoto.updatedAt,
+            }
+          : project,
+      ));
+      const record = projectRecords.find(project =>
+        project.name.toLowerCase() === projectName.toLowerCase(),
+      );
+      saveCloudProjectCoverPhoto(projectName, coverPhoto, 'manual', record?.data);
+    } catch {
+      Alert.alert('Cover photo unavailable', 'The selected cover photo could not be saved.');
+    }
+  }
+
+  async function chooseProjectCoverFromLibrary(projectName: string) {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Photo access needed', 'Allow photo access to select a project cover photo.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [16, 9],
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    await persistSelectedProjectCoverPhoto(projectName, result.assets[0]);
+  }
+
+  async function takeNewProjectCoverPhoto(projectName: string) {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Camera access needed', 'Allow camera access to take a project cover photo.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [16, 9],
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    await persistSelectedProjectCoverPhoto(projectName, result.assets[0]);
+  }
+
+  function useBestProjectPhoto(projectName: string) {
+    const changedAt = new Date().toISOString();
+    const record = projectRecords.find(project =>
+      project.name.toLowerCase() === projectName.toLowerCase(),
+    );
+    setProjectRecords(previous => previous.map(project =>
+      project.name.toLowerCase() === projectName.toLowerCase()
+        ? { ...project, coverPhotoMode: 'automatic', coverPhotoUpdatedAt: changedAt }
+        : project,
+    ));
+    saveCloudProjectCoverPhoto(
+      projectName,
+      record?.coverPhoto || null,
+      'automatic',
+      record?.data,
+      changedAt,
+    );
+  }
+
+  function removeProjectCoverPhoto(projectName: string) {
+    const current = coverPhotoForProject(projectRecords, projectName);
+    Alert.alert(
+      'Remove cover photo?',
+      'The project will return to automatic photo selection.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            const removedAt = new Date().toISOString();
+            setProjectRecords(previous => previous.map(project =>
+              project.name.toLowerCase() === projectName.toLowerCase()
+                ? {
+                    ...project,
+                    coverPhoto: null,
+                    coverPhotoMode: 'automatic',
+                    coverPhotoUpdatedAt: removedAt,
+                  }
+                : project,
+            ));
+            const record = projectRecords.find(project =>
+              project.name.toLowerCase() === projectName.toLowerCase(),
+            );
+            saveCloudProjectCoverPhoto(projectName, null, 'automatic', record?.data, removedAt);
+            void removeCachedProjectCoverPhoto(current);
+          },
+        },
+      ],
+    );
   }
 
   function resumeDraft() {
@@ -6931,14 +8380,14 @@ useEffect(() => {
           onPress: () => {
             const discardedDraft = draft;
             const projectName =
-              activeProjects[0] || DEFAULT_PROJECTS[0];
+              activeProjects[0] || '';
 
             setDraft(createDraft(projectName));
             setDraftSavedAt(null);
 
-            AsyncStorage.removeItem(
-              DRAFT_STORAGE_KEY,
-            ).catch(() => undefined);
+            removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+              reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+            );
 
             void deleteUnreferencedPhotosFromUpdate(
               discardedDraft,
@@ -6955,6 +8404,28 @@ useEffect(() => {
   function changeDraftProject(projectName: string) {
     beginDraftForProject(projectName);
   }
+
+  function persistDeletedProjectNames(nextNames: string[]) {
+    deletedProjectNamesRef.current = nextNames;
+    setDeletedProjectNames(nextNames);
+    persistStorageItem(DELETED_PROJECTS_STORAGE_KEY, JSON.stringify(nextNames)).catch(error =>
+      reportStoragePersistenceFailure({ storageKey: DELETED_PROJECTS_STORAGE_KEY, label: 'deleted project records', error }),
+    );
+  }
+
+  function markProjectDeleted(projectName: string) {
+    persistDeletedProjectNames(
+      mergeProjectNames(deletedProjectNamesRef.current, [projectName]),
+    );
+  }
+
+  function clearProjectDeletion(projectName: string) {
+    const key = projectName.trim().toLowerCase();
+    persistDeletedProjectNames(
+      deletedProjectNamesRef.current.filter(name => name.toLowerCase() !== key),
+    );
+  }
+
 function addProject(projectName: string) {
   const trimmed = projectName.trim();
 
@@ -6982,6 +8453,8 @@ function addProject(projectName: string) {
   }
 
   setProjects(prev => [trimmed, ...prev]);
+  setProjectRecords(prev => [{ name: trimmed }, ...prev]);
+  clearProjectDeletion(trimmed);
 
   saveCloudProject(trimmed);
 
@@ -7009,16 +8482,25 @@ function addProject(projectName: string) {
         {
           text: 'Close Project',
           style: 'destructive',
-          onPress: () =>
+          onPress: () => {
             setArchivedProjects(prev =>
               mergeProjectNames(prev, [projectName]),
-            ),
+            );
+            setCloudProjectArchived(projectName, true);
+            setScreen('Home');
+          },
         },
       ],
     );
   }
 
   function reopenProject(projectName: string) {
+    setProjects(prev => mergeProjectNames(prev, [projectName]));
+    setProjectRecords(prev =>
+      prev.some(project => project.name.toLowerCase() === projectName.toLowerCase())
+        ? prev
+        : [{ name: projectName }, ...prev],
+    );
     setArchivedProjects(prev =>
       prev.filter(
         project =>
@@ -7026,50 +8508,138 @@ function addProject(projectName: string) {
           projectName.toLowerCase(),
       ),
     );
+    setCloudProjectArchived(projectName, false);
   }
 
   async function deleteProjectPermanently(projectName: string) {
     setDeletingProjectName(projectName);
 
     try {
-      await deleteCloudProject(projectName);
+      if (savedUpdatesSaveTimer.current) {
+        clearTimeout(savedUpdatesSaveTimer.current);
+        savedUpdatesSaveTimer.current = null;
+      }
+      if (draftSaveTimer.current) {
+        clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+      }
 
-      const remainingProjects = projects.filter(
-        project => project.toLowerCase() !== projectName.toLowerCase(),
+      const deletionResult = await projectDeletionRuntime.commit(
+        support => {
+          const deletedAt = new Date().toISOString();
+          const remainingProjectNames = projectRecords
+            .filter(project => project.name.toLowerCase() !== projectName.toLowerCase())
+            .map(project => project.name);
+          const fallbackProject = selectProjectDeletionFallback({
+            remainingProjectNames, archivedProjectNames: archivedProjects,
+            deletedProjectNames: [...deletedProjectNamesRef.current, projectName],
+          });
+          const replacementDraft = createDraft(fallbackProject);
+          const currentDraftEnvelope: StoredDraft = {
+            draft: draftRef.current,
+            savedAt: draftSavedAt || deletedAt,
+          };
+          const replacementDraftEnvelope: StoredDraft = {
+            draft: replacementDraft,
+            savedAt: deletedAt,
+          };
+          const explicitlyOwnedReferenceDocuments = referenceDocuments.filter(document =>
+            referenceDocumentMatchesDeletedProject(
+              document,
+              projectName,
+              authorityProjectId(projectName),
+            ),
+          );
+          const removedUpdates = savedUpdatesRef.current.filter(update =>
+            projectUpdateBelongsToParentProject({
+              update,
+              projectName,
+              scheduleItems,
+            }),
+          );
+          const ownedProjectDocumentCandidates = [
+            ...projectDocuments.filter(document =>
+              projectDocumentMatchesProject(document, projectName),
+            ),
+            ...removedUpdates.flatMap(update => update.documents || []),
+            ...(projectUpdateBelongsToParentProject({
+              update: draftRef.current,
+              projectName,
+              scheduleItems,
+            })
+              ? draftRef.current.documents || []
+              : []),
+          ];
+          const newFileCleanupIntents = buildProjectDeletionFileCleanupIntents({
+            projectName,
+            projectDocuments: ownedProjectDocumentCandidates,
+            referenceDocuments: explicitlyOwnedReferenceDocuments,
+            isOwnedReferenceDocument: document => isStoredReferenceDocument(document.uri),
+          });
+          const cascade = buildProjectDeletionCascade({
+            projectName,
+            authorityProjectId: authorityProjectId(projectName),
+            deletedAt,
+            projectRecords,
+            deletedProjectNames: deletedProjectNamesRef.current,
+            archivedProjects,
+            updates: savedUpdatesRef.current,
+            updateTombstones: deletedUpdateTombstonesRef.current,
+            updateDeletionIntents: support.updateDeletionIntents,
+            projectDocuments,
+            referenceDocuments,
+            projectAreas: projectAreasCurrentRef.current,
+            scheduleItems,
+            daveSyncTombstones: support.daveSyncTombstones,
+            draft: currentDraftEnvelope,
+            draftBelongsToProject: projectUpdateBelongsToParentProject({
+              update: draftRef.current,
+              projectName,
+              scheduleItems,
+            }),
+            replacementDraft: replacementDraftEnvelope,
+            cloudIntents: support.cloudIntents,
+            fileCleanupIntents: support.fileCleanupIntents,
+            newFileCleanupIntents,
+            buildUpdateTombstone: (update, deletionTimestamp) =>
+              buildUpdateTombstone(
+                update,
+                'delete_update_everywhere',
+                deletionTimestamp,
+              ),
+          });
+          return {
+            operations: buildProjectDeletionOperations(
+              cascade,
+              PROJECT_DELETION_STORAGE_KEYS,
+            ),
+            result: { cascade, fallbackProject, replacementDraft },
+          };
+        },
       );
-      const remainingActiveProjects = remainingProjects.filter(
-        project =>
-          !archivedProjects.some(
-            archived => archived.toLowerCase() === project.toLowerCase(),
-          ),
-      );
-      const fallbackProject =
-        remainingActiveProjects[0] || DEFAULT_PROJECTS[0];
+      const { cascade, fallbackProject, replacementDraft } = deletionResult;
 
-      setProjects(remainingProjects);
-      setArchivedProjects(prev =>
-        prev.filter(
-          project => project.toLowerCase() !== projectName.toLowerCase(),
-        ),
-      );
-      setSavedUpdates(prev =>
-        prev.filter(update => !projectMatchesScope(update, projectName)),
-      );
-      setProjectDocuments(prev =>
-        prev.filter(
-          document => !projectDocumentMatchesProject(document, projectName),
-        ),
-      );
-      setScheduleItems(prev =>
-        prev.filter(
-          item => item.projectName.toLowerCase() !== projectName.toLowerCase(),
-        ),
-      );
+      deletedProjectNamesRef.current = cascade.nextDeletedProjectNames;
+      deletedUpdateTombstonesRef.current = cascade.nextUpdateTombstones;
+      savedUpdatesRef.current = cascade.remainingUpdates;
+      setDeletedProjectNames(cascade.nextDeletedProjectNames);
+      setDeletedUpdateTombstones(cascade.nextUpdateTombstones);
+      setProjects(cascade.remainingProjectRecords.map(project => project.name));
+      setProjectRecords(cascade.remainingProjectRecords);
+      setArchivedProjects(cascade.remainingArchivedProjects);
+      setSavedUpdates(cascade.remainingUpdates);
+      setProjectDocuments(cascade.remainingProjectDocuments);
+      projectAreasCurrentRef.current = cascade.remainingProjectAreas;
+      setProjectAreas(cascade.remainingProjectAreas);
+      markProjectAreasAuthorityReady(true);
+      markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
+      setReferenceDocuments(cascade.remainingReferenceDocuments);
+      setScheduleItems(cascade.remainingScheduleItems);
 
-      if (draft.projectName.toLowerCase() === projectName.toLowerCase()) {
-        setDraft(createDraft(fallbackProject));
+      if (cascade.draftReplaced) {
+        draftRef.current = replacementDraft;
+        setDraft(replacementDraft);
         setDraftSavedAt(null);
-        AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(() => undefined);
       }
 
       if (
@@ -7081,18 +8651,48 @@ function addProject(projectName: string) {
       }
 
       setSelectedWorkspaceProject(fallbackProject);
-      setScreen('Projects');
-    } catch {
-      Alert.alert(
-        'Delete failed',
-        `${projectName} could not be deleted. Check your connection and try again.`,
-      );
+      setScreen('Home');
+      await Promise.allSettled([
+        ...cascade.removedProjectAreas.map(area =>
+          removeOperationalRecordFromSyncQueue('project_area', area.id),
+        ),
+        ...cascade.removedScheduleItems.map(item =>
+          removeOperationalRecordFromSyncQueue('schedule_item', item.id),
+        ),
+        ...cascade.removedReferenceDocuments.map(document =>
+          removeOperationalRecordFromSyncQueue('reference_document', document.id),
+        ),
+      ]);
+      void reconcileProjectUpdateDeletionJournal(cascade.nextUpdateTombstones).catch(() => undefined);
+      void synchronizeDAVESyncTombstones().catch(() => undefined);
+      const [cloudQueueResult, fileCleanupResult] = await Promise.allSettled([
+        projectDeletionRuntime.processPendingCloudIntents(),
+        projectDeletionRuntime.processPendingFileCleanupIntents(),
+      ]);
+      if (
+        cloudQueueResult.status === 'rejected' ||
+        fileCleanupResult.status === 'rejected' ||
+        (fileCleanupResult.status === 'fulfilled' && fileCleanupResult.value > 0)
+      ) {
+        Alert.alert(
+          'Project removed',
+          'The project is safely removed from this app. Pending active-cloud or device-file cleanup will retry automatically. Secure cloud audit evidence may remain until separately authorized.',
+        );
+      }
+    } catch (error) {
+      const recoveryBlocked = error instanceof ProjectDeletionRecoveryRequiredError; if (recoveryBlocked) startupHydration.fail(PROJECTS_STORAGE_KEY, 'project deletion recovery', error);
+      Alert.alert(recoveryBlocked ? 'Recovery required' : 'Delete failed', recoveryBlocked
+        ? 'Project deletion was partially saved. Editing is locked until Retry Recovery succeeds or the app restarts.'
+        : `${projectName} could not be safely saved as deleted. No cloud deletion was queued; try again.`);
     } finally {
       setDeletingProjectName(null);
     }
   }
 
-  function addProjectArea(name: string) {
+  function addProjectArea(
+    name: string,
+    projectName = selectedWorkspaceProject,
+  ) {
     const trimmed = name.trim();
 
     if (!trimmed) {
@@ -7104,19 +8704,22 @@ function addProject(projectName: string) {
       return false;
     }
 
-    setProjectAreas(prev => [
-      {
-        id: uid(),
-        name: trimmed,
-        latitude:
-          DEFAULT_PROJECT_AREAS[0].latitude,
-        longitude:
-          DEFAULT_PROJECT_AREAS[0].longitude,
-        radiusFeet: 250,
-        locationCapturedAt: null,
-      },
-      ...prev,
-    ]);
+    const now = new Date().toISOString();
+    const nextArea = normalizeProjectArea({
+      id: uid(),
+      name: trimmed,
+      projectName,
+      latitude: DEFAULT_PROJECT_AREAS[0].latitude,
+      longitude: DEFAULT_PROJECT_AREAS[0].longitude,
+      radiusFeet: 250,
+      locationCapturedAt: null,
+      updatedAt: now,
+    });
+    markProjectAreasAuthorityReady(true);
+    setProjectAreas(prev => [nextArea, ...prev]);
+    void queueProjectAreaRecord(nextArea).catch(() => {
+      Alert.alert('Area saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
 
     return true;
   }
@@ -7125,16 +8728,18 @@ function addProject(projectName: string) {
     areaId: string,
     next: Partial<ProjectArea>,
   ) {
-    setProjectAreas(prev =>
-      prev.map(area =>
-        area.id === areaId
-          ? normalizeProjectArea({
-              ...area,
-              ...next,
-            })
-          : area,
-      ),
-    );
+    const current = projectAreas.find(area => area.id === areaId);
+    if (!current) return;
+    const updated = normalizeProjectArea({
+      ...current,
+      ...next,
+      updatedAt: new Date().toISOString(),
+    });
+    markProjectAreasAuthorityReady(true);
+    setProjectAreas(prev => prev.map(area => area.id === areaId ? updated : area));
+    void queueProjectAreaRecord(updated).catch(() => {
+      Alert.alert('Area saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
   }
 
   function deleteProjectArea(areaId: string) {
@@ -7154,13 +8759,22 @@ function addProject(projectName: string) {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            setProjectAreas(prev =>
-              prev.filter(item => item.id !== areaId),
-            );
+            void recordDAVESyncTombstone('project_area', areaId)
+              .then(() => removeOperationalRecordFromSyncQueue('project_area', areaId))
+              .then(() => {
+                markProjectAreasAuthorityReady(true);
+                setProjectAreas(prev => prev.filter(item => item.id !== areaId));
 
-            if (draft.selectedAreaId === areaId) {
-              changeDraftArea('');
-            }
+                if (draft.selectedAreaId === areaId) {
+                  changeDraftArea('');
+                }
+              })
+              .catch(() => {
+                Alert.alert(
+                  'Delete failed',
+                  `${area.name} could not be saved as deleted. Try again.`,
+                );
+              });
           },
         },
       ],
@@ -7455,7 +9069,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function takePhoto() {
+  async function takePhoto(continuityAnchor?: PhotoContinuityAnchor | null) {
     const cameraActionStartedAt = new Date().toISOString();
 
     setDraft(prev => ({
@@ -7491,7 +9105,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       try {
         for (const asset of result.assets) {
-          photos.push(withDraftPhotoContext(await photoFromAsset(asset), draft));
+          photos.push({
+            ...withDraftPhotoContext(await photoFromAsset(asset), draft),
+            continuityAnchor: continuityAnchor || null,
+          });
         }
 
         const nextDraft = {
@@ -7591,14 +9208,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
     retryAttempt?: boolean;
   }) {
     for (let attempt = 0; attempt <= PIE_AUTH_HYDRATION_RETRY_COUNT; attempt += 1) {
+      const entityAttempt = photoAnalysisCoordinator.beginAttempt({
+        projectId: authorityProjectId(update.projectName),
+        updateId: update.id,
+        photoId: photo.id,
+      });
+      let submittedTarget: PhotoAnalysisTarget | null = null;
       const result = await analyzeProjectPhotoWithVision({
         update,
         photo,
         priorUpdates,
         retryAttempt,
+        onTargetPrepared: target => {
+          submittedTarget = photoAnalysisCoordinator.bindTargetIfCurrent(entityAttempt, target);
+        },
       });
 
-      applyPhotoIntelligenceResult(photo.id, result);
+      const commit = () => applyPhotoIntelligenceResult(
+        authorityProjectId(update.projectName), update.id, photo.id, result,
+      );
+      if (submittedTarget) {
+        photoAnalysisCoordinator.commitIfCurrent(submittedTarget, commit);
+      } else {
+        photoAnalysisCoordinator.commitAttemptIfCurrent(entityAttempt, commit);
+      }
 
       if (!photoIntelligenceNeedsAuthHydrationRetry(result)) return;
       if (attempt === PIE_AUTH_HYDRATION_RETRY_COUNT) return;
@@ -7608,10 +9241,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function applyPhotoIntelligenceResult(
+    projectId: string,
+    updateId: string,
     photoId: string,
     result: PIEPhotoIntelligenceDisplayState,
   ) {
     const applyToUpdate = (update: ProjectUpdate): ProjectUpdate => {
+      if (
+        update.id !== updateId ||
+        authorityProjectId(update.projectName) !== projectId ||
+        !update.photos.some(photo => photo.id === photoId)
+      ) return update;
       const nextUpdate = {
         ...update,
         photos: update.photos.map(photo =>
@@ -7636,6 +9276,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       return {
         ...nextUpdate,
+        pieStartedAt: result.status === 'analyzing' ? result.updatedAt : update.pieStartedAt || null,
         pieStatus: summary.status,
         pieSummary: summary.summary,
         observedFindings,
@@ -7730,7 +9371,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setPhotoAuthRequest(null);
       setPhotoAuthPassword('');
       setPhotoAuthMessage(null);
-      void hydrateQueuedUpdates();
+      startAutomaticSyncBackgroundTask('photo_analysis_sign_in', hydrateQueuedUpdates);
       await runPhotoAnalysisRetry(pending.update, pending.photo);
     } finally {
       setPhotoAuthSubmitting(false);
@@ -7778,7 +9419,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setPhotoAuthRequest(null);
       setPhotoAuthPassword('');
       setPhotoAuthMessage(null);
-      void hydrateQueuedUpdates();
+      startAutomaticSyncBackgroundTask('photo_analysis_development_sign_up', hydrateQueuedUpdates);
       await runPhotoAnalysisRetry(pending.update, pending.photo);
     } finally {
       setPhotoAuthSubmitting(false);
@@ -7786,7 +9427,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   async function runPhotoAnalysisRetry(update: ProjectUpdate, photo: UpdatePhoto) {
-    applyPhotoIntelligenceResult(photo.id, buildAnalyzingPhotoIntelligenceState());
+    applyPhotoIntelligenceResult(
+      authorityProjectId(update.projectName),
+      update.id,
+      photo.id,
+      buildAnalyzingPhotoIntelligenceState(),
+    );
 
     await analyzePhotoWithAuthHydrationRetry({
       update,
@@ -7824,6 +9470,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ...draft,
       photos: draft.photos.filter(photo => photo.id !== photoId),
     };
+    photoAnalysisCoordinator.invalidate({
+      projectId: authorityProjectId(draft.projectName),
+      updateId: draft.id,
+      photoId,
+    });
 
     setDraft(prev => ({
       ...prev,
@@ -8027,6 +9678,56 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
 
+  // Audit P1-40: every report communication returns its real outcome so the
+  // UI marks communication complete only when it actually happened. A canceled
+  // or undetermined composer result must never read as "sent".
+  async function copyReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
+    await Clipboard.setStringAsync(
+      `${report.title}\n\n${report.body}`,
+    );
+
+    Alert.alert(
+      'Report copied',
+      'The approved report is ready to paste.',
+    );
+    return 'completed';
+  }
+
+  async function emailReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
+    const available = await MailComposer.isAvailableAsync();
+
+    if (!available) {
+      await Clipboard.setStringAsync(`${report.title}\n\n${report.body}`);
+      Alert.alert(
+        'Email unavailable',
+        'The report was copied instead. Open your email app and paste it into a new message.',
+      );
+      return 'unknown';
+    }
+
+    const result = await MailComposer.composeAsync({
+      subject: report.subject || report.title,
+      body: report.body,
+    });
+    return mailComposerOutcome(result.status);
+  }
+
+  async function textReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
+    const available = await SMS.isAvailableAsync();
+
+    if (!available) {
+      await Clipboard.setStringAsync(`${report.title}\n\n${report.body}`);
+      Alert.alert(
+        'Text unavailable',
+        'The report was copied instead. Open Messages and paste it into a new text.',
+      );
+      return 'unknown';
+    }
+
+    const { result } = await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}`);
+    return smsComposerOutcome(result);
+  }
+
   async function openSystemShareSheet() {
     const available = await Sharing.isAvailableAsync();
 
@@ -8058,110 +9759,413 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
   }
 
-  async function exportBackup() {
-    const targetDirectory =
-      FileSystem.cacheDirectory || FileSystem.documentDirectory;
+  async function readCompleteBackupAsset(
+    id: string,
+    kind: CompleteBackupPlainAsset['kind'],
+    relativePath: string,
+    uri: string,
+  ): Promise<CompleteBackupPlainAsset> {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) {
+      throw new Error(`The required ${kind.replace('_', ' ')} file is unavailable.`);
+    }
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return {
+      id,
+      kind,
+      relativePath: sanitizeFilename(relativePath),
+      bytes: toByteArray(base64),
+    };
+  }
 
+  async function prepareUpdateForCompleteBackup(
+    update: ProjectUpdate,
+    assetPrefix: string,
+    assets: CompleteBackupPlainAsset[],
+  ): Promise<ProjectUpdate> {
+    const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
+    const photos = [];
+    for (const photo of hydrated.photos) {
+      const assetId = `photo:${assetPrefix}:${photo.id}`;
+      assets.push(await readCompleteBackupAsset(
+        assetId,
+        'photo',
+        photo.fileName || filenameFromUri(
+          photo.uri,
+          assets.length,
+          photo.mimeType || 'image/jpeg',
+        ),
+        photo.uri,
+      ));
+      photos.push({
+        ...photo,
+        uri: '',
+        _backupAssetId: assetId,
+      });
+    }
+    return {
+      ...hydrated,
+      photos,
+    } as ProjectUpdate;
+  }
+
+  async function exportBackup(passphrase: string) {
+    if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
+      Alert.alert(
+        'Passphrase required',
+        `Use a backup passphrase with at least ${COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH} characters.`,
+      );
+      return;
+    }
+    const targetDirectory = FileSystem.cacheDirectory;
     if (!targetDirectory) {
       Alert.alert(
-        'Backup unavailable',
-        'A local folder for the backup file could not be found.',
+        'Complete backup unavailable',
+        'A temporary app folder for the encrypted backup could not be found.',
       );
-
       return;
     }
 
-    const backup: AppBackup = {
-      version: BACKUP_VERSION,
-      exportedAt: new Date().toISOString(),
-      savedUpdates,
-      projects,
-      archivedProjects,
-      contacts: contactBook,
-      projectAreas,
-      referenceDocuments,
-      projectDocuments,
-      scheduleItems,
-      activeDraft: hasMeaningfulDraft(draft)
-        ? {
-            draft,
-            savedAt: draftSavedAt || new Date().toISOString(),
-          }
-        : null,
-    };
-
-    const fileUri = `${targetDirectory}project-photo-update-backup-${isoToday()}.json`;
+    const fileUri =
+      `${targetDirectory}vitruvius-complete-backup-${isoToday()}.vitruvius-backup`;
 
     try {
+      const assets: CompleteBackupPlainAsset[] = [];
+      const backupUpdates = [];
+      for (const update of savedUpdates) {
+        backupUpdates.push(await prepareUpdateForCompleteBackup(
+          update,
+          `update:${update.id}`,
+          assets,
+        ));
+      }
+      const backupReferenceDocuments = [];
+      for (const document of referenceDocuments) {
+        const readable = await ensureVerifiedReferenceDocumentBytes(document);
+        const assetId = `reference_document:${document.id}`;
+        assets.push(await readCompleteBackupAsset(
+          assetId,
+          'reference_document',
+          document.originalFileName,
+          readable.uri,
+        ));
+        backupReferenceDocuments.push({
+          ...readable,
+          uri: '',
+          _backupAssetId: assetId,
+        });
+      }
+      const backupProjectDocuments = [];
+      for (const document of projectDocuments) {
+        const readable = await ensureVerifiedProjectDocumentBytes(document);
+        if (!readable.localUri) {
+          throw new Error(`The document "${document.name}" is unavailable.`);
+        }
+        const assetId = `project_document:${document.id}`;
+        assets.push(await readCompleteBackupAsset(
+          assetId,
+          'project_document',
+          document.name,
+          readable.localUri,
+        ));
+        backupProjectDocuments.push({
+          ...readable,
+          localUri: null,
+          ownedFileId: null,
+          ownedFileManifest: null,
+          _backupAssetId: assetId,
+        });
+      }
+      const backupDraft = hasMeaningfulDraft(draft)
+        ? await prepareUpdateForCompleteBackup(
+            draft,
+            `draft:${draft.id}`,
+            assets,
+          )
+        : null;
+      const backup = {
+        version: APP_BACKUP_VERSION,
+        exportedAt: new Date().toISOString(),
+        savedUpdates: backupUpdates,
+        projects,
+        archivedProjects,
+        contacts: contactBook,
+        projectAreas,
+        referenceDocuments: backupReferenceDocuments,
+        projectDocuments: backupProjectDocuments,
+        scheduleItems,
+        activeDraft: backupDraft
+          ? {
+              draft: backupDraft,
+              savedAt: draftSavedAt || new Date().toISOString(),
+            }
+          : null,
+      };
+      const archive = await createCompleteBackupArchive({
+        state: backup,
+        assets,
+        passphrase,
+        createdAt: new Date().toISOString(),
+      }, {
+        randomBytes: length => Crypto.getRandomBytesAsync(length),
+      });
+      const serialized = JSON.stringify(archive);
+      if (isOversizedBackup(serialized.length)) {
+        throw new Error(
+          'The encrypted backup is larger than the supported 128 MB limit.',
+        );
+      }
       await FileSystem.writeAsStringAsync(
         fileUri,
-        JSON.stringify(backup, null, 2),
+        serialized,
       );
-
       const canShare = await Sharing.isAvailableAsync();
 
       if (!canShare) {
         Alert.alert(
-          'Backup created',
-          'The backup file was created, but sharing is not available on this device. Reference document metadata is included; document files remain stored locally on this phone.',
+          'Complete backup sharing unavailable',
+          'The encrypted backup was removed from this phone because the Share Sheet is unavailable.',
         );
 
         return;
       }
 
       await Sharing.shareAsync(fileUri, {
-        dialogTitle: 'Backup Project Photo Update Tool',
-        mimeType: 'application/json',
-        UTI: 'public.json',
+        dialogTitle: 'Export Complete Vitruvius Backup',
+        mimeType: 'application/vnd.vitruvius.backup+json',
+        UTI: 'public.data',
       });
-    } catch {
       Alert.alert(
-        'Backup failed',
-        'The backup file could not be created.',
+        'Complete backup shared',
+        'The project records, photos, and documents are encrypted. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.',
       );
+    } catch (error) {
+      Alert.alert(
+        'Complete backup failed',
+        error instanceof Error
+          ? error.message
+          : 'The encrypted backup could not be created.',
+      );
+    } finally {
+      await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
     }
   }
 
-  function applyRestoredData(data: RestoredAppData) {
-    const restoredProjects = mergeProjectNames(
-      DEFAULT_PROJECTS,
-      data.projects,
-    );
-
-    setSavedUpdates(data.savedUpdates);
-    setProjects(restoredProjects);
-    setArchivedProjects(
-      mergeProjectNames([], data.archivedProjects),
-    );
-    setContactBook(data.contactBook);
-    setProjectAreas(data.projectAreas);
-    setReferenceDocuments(data.referenceDocuments);
-    setProjectDocuments(data.projectDocuments);
-    setScheduleItems(data.scheduleItems);
-
-    if (data.storedDraft) {
-      setDraft(data.storedDraft.draft);
-      setDraftSavedAt(data.storedDraft.savedAt);
-    } else {
-      setDraft(
-        createDraft(restoredProjects[0] || DEFAULT_PROJECTS[0]),
-      );
-      setDraftSavedAt(null);
-      AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
-        () => undefined,
-      );
+  async function applyRestoredData(data: RestoredAppData): Promise<boolean> {
+    if (backupRestoreInFlightRef.current) return false;
+    backupRestoreInFlightRef.current = true;
+    if (savedUpdatesSaveTimer.current) {
+      clearTimeout(savedUpdatesSaveTimer.current); savedUpdatesSaveTimer.current = null;
+    }
+    if (draftSaveTimer.current) {
+      clearTimeout(draftSaveTimer.current); draftSaveTimer.current = null;
     }
 
-    Alert.alert(
-      'Backup restored',
-      'Project data was restored successfully.',
-    );
+    try {
+      const restored = await backupRestoreRuntime.commit(barriers => {
+        const result = buildDeletionSafeRestoreState({
+          data, barriers, currentProjectRecords: projectRecords,
+          rebuildProjectRecords: restoreProjectRecords,
+          referenceDocumentBelongsToProject: (document, name) =>
+            referenceDocumentMatchesDeletedProject(document, name, authorityProjectId(name)),
+          projectDocumentBelongsToProject: projectDocumentMatchesProject,
+          scheduleItemBelongsToProject: scheduleItemMatchesDeletedProject,
+          createEmptyDraft: createDraft,
+        });
+        return { values: result.values, result };
+      });
+
+      savedUpdatesRef.current = restored.savedUpdates; draftRef.current = restored.draft;
+      setSavedUpdates(restored.savedUpdates); setProjectRecords(restored.projectRecords);
+      setProjects(restored.projects); setArchivedProjects(restored.archivedProjects);
+      setContactBook(restored.contactBook); setProjectAreas(restored.projectAreas);
+      setReferenceDocuments(restored.referenceDocuments); setProjectDocuments(restored.projectDocuments);
+      setScheduleItems(restored.scheduleItems); setDraft(restored.draft);
+      markProjectAreasAuthorityReady(true); markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
+      setDraftSavedAt(restored.storedDraft?.savedAt || null); setSelectedWorkspaceProject(restored.activeProject);
+      setOverviewProjectSelection(undefined); setOverviewProjectManuallySelected(false);
+
+      Alert.alert(
+        'Complete backup restored',
+        'Project data, photos, and documents were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.',
+      );
+      return true;
+    } catch (error) {
+      const recoveryBlocked = error instanceof BackupRestoreRecoveryRequiredError;
+      if (recoveryBlocked) {
+        startupHydration.fail(PROJECTS_STORAGE_KEY, 'backup restore recovery', error);
+      }
+      Alert.alert(
+        recoveryBlocked ? 'Restore recovery required' : 'Restore failed',
+        recoveryBlocked
+          ? 'The restore was partially written and editing is locked until Retry Recovery succeeds or the app restarts.'
+          : 'The backup could not be safely restored. Existing app data and deletion records were not intentionally replaced.',
+      );
+      return false;
+    } finally {
+      backupRestoreInFlightRef.current = false;
+    }
   }
 
-  async function restoreBackup() {
+  async function writeRestoredBackupFile(
+    directory: string,
+    fileName: string,
+    bytes: Uint8Array,
+    createdUris: string[],
+  ) {
+    const uri = `${directory}${uid()}-${sanitizeFilename(fileName)}`;
+    await FileSystem.writeAsStringAsync(uri, fromByteArray(bytes), {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    createdUris.push(uri);
+    return uri;
+  }
+
+  async function materializeCompleteBackupState(
+    stateInput: unknown,
+    decryptedAssets: ReadonlyMap<string, Uint8Array>,
+    manifestAssets: readonly Readonly<{
+      id: string;
+      relativePath: string;
+    }>[],
+  ) {
+    const state = JSON.parse(JSON.stringify(stateInput)) as Record<string, unknown>;
+    const createdUris: string[] = [];
+    const usedAssetIds = new Set<string>();
+    const assetNames = new Map(
+      manifestAssets.map(asset => [asset.id, asset.relativePath]),
+    );
+    const requireAsset = (assetId: unknown) => {
+      if (typeof assetId !== 'string' || !assetId.trim()) {
+        throw new Error('A restored media record is missing its encrypted media id.');
+      }
+      const bytes = decryptedAssets.get(assetId);
+      if (!bytes) {
+        throw new Error(`Encrypted media "${assetId}" is missing.`);
+      }
+      if (usedAssetIds.has(assetId)) {
+        throw new Error(`Encrypted media "${assetId}" is referenced more than once.`);
+      }
+      usedAssetIds.add(assetId);
+      return {
+        bytes,
+        fileName: assetNames.get(assetId) || 'restored-file.bin',
+      };
+    };
+    const materializeUpdatePhotos = async (update: unknown) => {
+      if (!isRecord(update) || !Array.isArray(update.photos)) return;
+      const directory = await ensurePhotoStorageDirectory();
+      for (const photo of update.photos) {
+        if (!isRecord(photo)) {
+          throw new Error('A restored photo record is invalid.');
+        }
+        const asset = requireAsset(photo._backupAssetId);
+        photo.uri = await writeRestoredBackupFile(
+          directory,
+          asset.fileName,
+          asset.bytes,
+          createdUris,
+        );
+        delete photo._backupAssetId;
+      }
+    };
+
+    try {
+      if (!Array.isArray(state.savedUpdates) ||
+          !Array.isArray(state.referenceDocuments) ||
+          !Array.isArray(state.projectDocuments)) {
+        throw new Error('The encrypted application state is incomplete.');
+      }
+      for (const update of state.savedUpdates) {
+        await materializeUpdatePhotos(update);
+      }
+      if (isRecord(state.activeDraft)) {
+        await materializeUpdatePhotos(state.activeDraft.draft);
+      }
+      const referenceDirectory = await ensureReferenceDocumentsDirectory();
+      for (const document of state.referenceDocuments) {
+        if (!isRecord(document)) {
+          throw new Error('A restored reference document record is invalid.');
+        }
+        const asset = requireAsset(document._backupAssetId);
+        document.uri = await writeRestoredBackupFile(
+          referenceDirectory,
+          asset.fileName,
+          asset.bytes,
+          createdUris,
+        );
+        document.sizeBytes = asset.bytes.byteLength;
+        delete document._backupAssetId;
+      }
+      if (!OWNED_PROJECT_DOCUMENTS_DIR || !FileSystem.cacheDirectory) {
+        throw new Error('Verified project document storage is unavailable.');
+      }
+      for (const document of state.projectDocuments) {
+        if (!isRecord(document)) {
+          throw new Error('A restored project document record is invalid.');
+        }
+        const asset = requireAsset(document._backupAssetId);
+        const temporaryUri = await writeRestoredBackupFile(
+          FileSystem.cacheDirectory,
+          asset.fileName,
+          asset.bytes,
+          createdUris,
+        );
+        const mimeType = typeof document.mimeType === 'string'
+          ? document.mimeType
+          : 'application/octet-stream';
+        const owned = await importProjectDocumentIntoOwnedStorage({
+          sourceUri: temporaryUri,
+          ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+          fileName: typeof document.name === 'string'
+            ? document.name
+            : asset.fileName,
+          mimeType,
+          reportedSizeBytes: asset.bytes.byteLength,
+        });
+        createdUris.push(owned.localUri);
+        await FileSystem.deleteAsync(temporaryUri, { idempotent: true });
+        createdUris.splice(createdUris.indexOf(temporaryUri), 1);
+        document.localUri = owned.localUri;
+        document.ownedFileId = owned.fileId;
+        document.ownedFileManifest = owned.manifest;
+        document.sizeBytes = owned.record.sizeBytes;
+        delete document._backupAssetId;
+      }
+      if (usedAssetIds.size !== decryptedAssets.size) {
+        throw new Error('The backup contains unreferenced encrypted media.');
+      }
+      return {
+        state,
+        cleanup: async () => {
+          await Promise.all(createdUris.map(uri =>
+            FileSystem.deleteAsync(uri, { idempotent: true })
+              .catch(() => undefined),
+          ));
+        },
+      };
+    } catch (error) {
+      await Promise.all(createdUris.map(uri =>
+        FileSystem.deleteAsync(uri, { idempotent: true })
+          .catch(() => undefined),
+      ));
+      throw error;
+    }
+  }
+
+  async function restoreBackup(passphrase: string) {
+    if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
+      Alert.alert(
+        'Passphrase required',
+        `Use the backup passphrase with at least ${COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH} characters.`,
+      );
+      return;
+    }
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/json',
+        type: ['application/vnd.vitruvius.backup+json', 'application/json', '*/*'],
         copyToCacheDirectory: true,
       });
 
@@ -8172,7 +10176,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       if (!file) {
         Alert.alert(
           'Restore failed',
-          'No backup file was selected.',
+          'No complete Vitruvius backup was selected.',
         );
 
         return;
@@ -8180,8 +10184,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       if (isOversizedBackup(file.size)) {
         Alert.alert(
-          'Backup too large',
-          'Choose a smaller Project Photo Update Tool backup file.',
+          'Complete backup too large',
+          'Choose a complete Vitruvius backup smaller than 128 MB.',
         );
 
         return;
@@ -8195,8 +10199,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         isOversizedBackup(fileInfo.size)
       ) {
         Alert.alert(
-          'Backup too large',
-          'Choose a smaller Project Photo Update Tool backup file.',
+          'Complete backup too large',
+          'Choose a complete Vitruvius backup smaller than 128 MB.',
         );
 
         return;
@@ -8204,20 +10208,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       const contents = await FileSystem.readAsStringAsync(file.uri);
       const parsed: unknown = JSON.parse(contents);
-      const data = normalizeBackupData(parsed);
+      const decrypted = await decryptCompleteBackupArchive(parsed, passphrase);
+      const preflight = normalizeBackupData(decrypted.state);
 
-      if (!data) {
+      if (!preflight.ok) {
         Alert.alert(
-          'Invalid backup',
-          'Choose a valid Project Photo Update Tool backup JSON file.',
+          preflight.reason === 'incompatible_version'
+            ? 'Incompatible backup'
+            : 'Invalid backup',
+          preflight.message,
         );
-
         return;
       }
 
       Alert.alert(
-        'Restore backup?',
-        'This will replace saved updates, projects, contacts, and the active draft on this phone.',
+        'Restore this complete backup?',
+        'This replaces saved projects, updates, schedules, contacts, photos, documents, and the active draft on this device. Existing deletion records and queued deletions remain enforced.',
         [
           {
             text: 'Cancel',
@@ -8226,14 +10232,39 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {
             text: 'Restore',
             style: 'destructive',
-            onPress: () => applyRestoredData(data),
+            onPress: () => {
+              void (async () => {
+                const materialized = await materializeCompleteBackupState(
+                  decrypted.state,
+                  decrypted.assets,
+                  decrypted.manifest.assets,
+                );
+                const normalized = normalizeBackupData(materialized.state);
+                if (!normalized.ok) {
+                  await materialized.cleanup();
+                  Alert.alert('Restore failed', normalized.message);
+                  return;
+                }
+                const committed = await applyRestoredData(normalized.data);
+                if (!committed) await materialized.cleanup();
+              })().catch(error => {
+                Alert.alert(
+                  'Restore failed',
+                  error instanceof Error
+                    ? error.message
+                    : 'The complete backup could not be safely restored.',
+                );
+              });
+            },
           },
         ],
       );
-    } catch {
+    } catch (error) {
       Alert.alert(
         'Restore failed',
-        'The selected file could not be read as a backup.',
+        error instanceof Error
+          ? error.message
+          : 'The selected file could not be verified as a complete Vitruvius backup.',
       );
     }
   }
@@ -8254,6 +10285,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         Alert.alert('Import failed', 'No document was selected.');
         return;
       }
+      await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size });
 
       const directory = await ensureReferenceDocumentsDirectory();
       const originalFileName = filenameFromDocumentAsset(asset);
@@ -8277,11 +10309,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
         importedAt: new Date().toISOString(),
       });
 
+      markReferenceDocumentsAuthorityReady(true);
       setReferenceDocuments(prev => [nextDocument, ...prev]);
 
       Alert.alert('Document imported', `${nextDocument.name} was saved to Reference Documents.`);
-    } catch {
-      Alert.alert('Import failed', 'The selected reference document could not be imported.');
+    } catch (error) {
+      Alert.alert('Import failed', error instanceof FileSizePreflightError
+        ? error.message : 'The selected reference document could not be imported.');
     }
   }
 
@@ -8289,42 +10323,94 @@ Note: This update was opened through Outlook because PLZ email security may reje
     documentId: string,
     next: Partial<ReferenceDocument>,
   ) {
-    setReferenceDocuments(prev =>
-      prev.map(document =>
-        document.id === documentId
-          ? normalizeReferenceDocument({
-              ...document,
-              ...next,
-            })
-          : document,
-      ),
+    const updatedAt = new Date().toISOString();
+    const updated = referenceDocumentsCurrentRef.current.map(document =>
+      document.id === documentId
+        ? normalizeReferenceDocument({ ...document, ...next, updatedAt })
+        : document,
     );
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    const changed = updated.find(document => document.id === documentId);
+    if (changed) void queueReferenceDocumentRecord(changed);
   }
 
   function markReferenceDocumentCurrent(documentId: string) {
-    const target = referenceDocuments.find(document => document.id === documentId);
+    const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    const updatedAt = new Date().toISOString();
+    const updated = referenceDocumentsCurrentRef.current.map(document => ({
+      ...document,
+      isCurrent:
+        document.id === documentId
+          ? true
+          : target && document.category === target.category
+            ? false
+            : document.isCurrent,
+      updatedAt: target && document.category === target.category
+        ? updatedAt
+        : document.updatedAt,
+    }));
 
-    setReferenceDocuments(prev =>
-      prev.map(document => ({
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    void Promise.all(updated
+      .filter(document => target && document.category === target.category)
+      .map(queueReferenceDocumentRecord));
+  }
+
+  async function ensureVerifiedReferenceDocumentBytes(
+    document: ReferenceDocument,
+  ): Promise<ReferenceDocument> {
+    let resolvedUri = resolveReferenceDocumentUri(document.uri);
+    let info = resolvedUri
+      ? await FileSystem.getInfoAsync(resolvedUri)
+      : null;
+
+    if ((!info?.exists || !resolvedUri) && document.storagePath) {
+      const expectedSha256 =
+        canonicalReferenceDocumentSha256(document.contentSha256) ||
+        canonicalReferenceDocumentSha256(document.webFileFingerprint);
+      if (!document.sizeBytes || !expectedSha256) {
+        throw new Error(
+          'This older cloud document does not include the checksum needed for safe recovery.',
+        );
+      }
+      const restored = await restoreReferenceDocumentBytesFromCloud({
+        documentId: document.id,
+        storagePath: document.storagePath,
+        originalFileName: document.originalFileName,
+        expectedSizeBytes: document.sizeBytes,
+        expectedSha256,
+      });
+      resolvedUri = restored.uri;
+      info = await FileSystem.getInfoAsync(resolvedUri);
+      const readableDocument = {
         ...document,
-        isCurrent:
-          document.id === documentId
-            ? !document.isCurrent
-            : target && document.category === target.category
-              ? false
-              : document.isCurrent,
-      })),
-    );
+        uri: restored.uri,
+        sizeBytes: restored.sizeBytes,
+        contentSha256: restored.sha256,
+      };
+      updateReferenceDocument(document.id, readableDocument);
+      return readableDocument;
+    }
+
+    if (!resolvedUri || !info?.exists) {
+      throw new Error(
+        'This document is listed in the shared project record, but no accessible verified file is attached.',
+      );
+    }
+    return {
+      ...document,
+      uri: resolvedUri,
+    };
   }
 
   async function openReferenceDocument(document: ReferenceDocument) {
     try {
-      const info = await FileSystem.getInfoAsync(document.uri);
-
-      if (!info.exists) {
-        Alert.alert('File missing', 'This reference document record exists, but the local file could not be found.');
-        return;
-      }
+      const readableDocument =
+        await ensureVerifiedReferenceDocumentBytes(document);
 
       const canShare = await Sharing.isAvailableAsync();
 
@@ -8333,7 +10419,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         return;
       }
 
-      await Sharing.shareAsync(document.uri, {
+      await Sharing.shareAsync(readableDocument.uri, {
         dialogTitle: document.name,
         mimeType: document.mimeType || undefined,
       });
@@ -8342,22 +10428,51 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function openProjectDocument(document: ProjectDocument) {
-    if (!document.localUri) {
-      Alert.alert(
-        'Document unavailable',
-        'This document is saved as metadata only on this device.',
-      );
-      return;
-    }
-
+  async function ensureVerifiedProjectDocumentBytes(
+    document: ProjectDocument,
+  ): Promise<ProjectDocument> {
     try {
-      const info = await FileSystem.getInfoAsync(document.localUri);
+      await verifyOwnedProjectDocument(document);
+      return document;
+    } catch (verificationError) {
+      if (
+        !OWNED_PROJECT_DOCUMENTS_DIR ||
+        !document.storagePath ||
+        !document.ownedFileId ||
+        !document.ownedFileManifest
+      ) {
+        throw verificationError;
+      }
+      const manifest = parseOwnedLocalFileManifest(document.ownedFileManifest);
+      const record = manifest.files[document.ownedFileId];
+      if (!record || record.kind !== 'project_document') throw verificationError;
+      const restored = await restoreProjectDocumentBytesFromCloud({
+        storagePath: document.storagePath,
+        ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+        record,
+      });
+      const readableDocument = {
+        ...document,
+        localUri: restored.uri,
+        sizeBytes: restored.sizeBytes,
+        updatedAt: new Date().toISOString(),
+      };
+      await verifyOwnedProjectDocument(readableDocument);
+      updateDocumentEverywhere(document.id, () => readableDocument);
+      return readableDocument;
+    }
+  }
+
+  async function openProjectDocument(document: ProjectDocument) {
+    try {
+      const readableDocument = await ensureVerifiedProjectDocumentBytes(document);
+      if (!readableDocument.localUri) throw new Error('Verified document path is missing.');
+      const info = await FileSystem.getInfoAsync(readableDocument.localUri);
 
       if (!info.exists) {
         Alert.alert(
           'Document file missing',
-          'The document record is still saved, but the local file could not be found.',
+          'The document record is still saved, but the verified file could not be recovered.',
         );
         return;
       }
@@ -8365,18 +10480,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const canShare = await Sharing.isAvailableAsync();
 
       if (!canShare) {
-        Alert.alert('Document saved', document.name);
+        Alert.alert('Document saved', readableDocument.name);
         return;
       }
 
-      await Sharing.shareAsync(document.localUri, {
-        dialogTitle: document.name,
-        mimeType: document.mimeType || undefined,
+      await Sharing.shareAsync(readableDocument.localUri, {
+        dialogTitle: readableDocument.name,
+        mimeType: readableDocument.mimeType || undefined,
       });
     } catch {
       Alert.alert(
         'Open failed',
-        'This document could not be opened right now.',
+        'This document could not be recovered and verified. Check the connection, then add the original file again if the problem continues.',
       );
     }
   }
@@ -8392,6 +10507,136 @@ Note: This update was opened through Outlook because PLZ email security may reje
         updatedAt: new Date().toISOString(),
       }) as ProjectDocument,
     );
+  }
+
+  async function makeProjectScheduleDocumentCurrent(documentId: string) {
+    const document = projectDocuments.find(item => item.id === documentId);
+    if (!document || document.category !== 'Schedule') return;
+    const referenceUpdatedAt = new Date().toISOString();
+
+    let referenceDocument = document.referenceDocumentId
+      ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
+      : null;
+
+    try {
+      if (!referenceDocument) {
+        const readableDocument = await ensureVerifiedProjectDocumentBytes(document);
+        if (!readableDocument.localUri) throw new Error('Verified schedule path is missing.');
+        const directory = await ensureReferenceDocumentsDirectory();
+        const originalFileName = document.name;
+        const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
+        await FileSystem.copyAsync({ from: readableDocument.localUri, to: targetUri });
+
+        const matchingProjectDocuments = projectDocuments.filter(item =>
+          item.category === 'Schedule' &&
+          item.name === document.name &&
+          item.mimeType === document.mimeType &&
+          item.sizeBytes === document.sizeBytes &&
+          Math.abs(Date.parse(item.importedAt) - Date.parse(document.importedAt)) < 5 * 60 * 1000,
+        );
+        const matchingProjectIds = new Set(
+          matchingProjectDocuments.map(item => item.projectId),
+        );
+        const projectName = matchingProjectIds.size === 1
+          ? projects.find(name => authorityProjectId(name) === document.projectId) || null
+          : null;
+        const ownedRecord = document.ownedFileId
+          ? parseOwnedLocalFileManifest(document.ownedFileManifest).files[document.ownedFileId]
+          : null;
+
+        referenceDocument = normalizeReferenceDocument({
+          id: uid(),
+          name: originalFileName.replace(/\.[^/.]+$/, ''),
+          originalFileName,
+          uri: targetUri,
+          mimeType: document.mimeType,
+          category: 'Schedules',
+          notes: document.note || '',
+          isCurrent: true,
+          importedAt: document.importedAt,
+          projectId: projectName ? document.projectId : null,
+          projectName,
+          storagePath: document.storagePath,
+          sizeBytes: document.sizeBytes,
+          contentSha256: ownedRecord?.sha256 || null,
+          updatedAt: referenceUpdatedAt,
+        });
+
+        const linkedReferenceDocumentId = referenceDocument.id;
+        const linkMatchingUploads = (documents: ProjectDocument[]) =>
+          documents.map(item => matchingProjectDocuments.some(match => match.id === item.id)
+            ? { ...item, referenceDocumentId: linkedReferenceDocumentId }
+            : item);
+        setProjectDocuments(linkMatchingUploads);
+        setDraft(prev => ({
+          ...prev,
+          documents: linkMatchingUploads(prev.documents || []),
+        }));
+        setSavedUpdates(prev => prev.map(update => ({
+          ...update,
+          documents: linkMatchingUploads(update.documents || []),
+        })));
+      }
+    } catch {
+      Alert.alert(
+        'Current schedule not changed',
+        'The schedule file could not be verified and copied into the shared schedule record.',
+      );
+      return;
+    }
+
+    const selectedReferenceDocument = referenceDocument;
+    const nextReferenceDocuments = [
+      ...(referenceDocuments.some(item => item.id === selectedReferenceDocument.id)
+        ? []
+        : [selectedReferenceDocument]),
+      ...referenceDocuments,
+    ].map(item => ({
+      ...item,
+      isCurrent: item.category === 'Schedules'
+        ? item.id === selectedReferenceDocument.id
+        : item.isCurrent,
+      updatedAt: item.category === 'Schedules'
+        ? referenceUpdatedAt
+        : item.updatedAt,
+    }));
+
+    markReferenceDocumentsAuthorityReady(true);
+    setReferenceDocuments(nextReferenceDocuments);
+
+    const updatedAt = referenceUpdatedAt;
+    const markCurrent = (documents: ProjectDocument[]) =>
+      markCurrentProjectScheduleDocument({
+        documents,
+        documentId,
+        referenceDocumentId: selectedReferenceDocument.id,
+        updatedAt,
+      });
+
+    setProjectDocuments(markCurrent);
+    setDraft(prev => ({
+      ...prev,
+      documents: markCurrent(prev.documents || []),
+    }));
+    setSavedUpdates(prev =>
+      prev.map(update => ({
+        ...update,
+        documents: markCurrent(update.documents || []),
+      })),
+    );
+
+    referenceDocumentsCurrentRef.current = nextReferenceDocuments;
+    const queueResults = await Promise.allSettled(
+      nextReferenceDocuments
+        .filter(item => item.category === 'Schedules')
+        .map(queueReferenceDocumentRecord),
+    );
+    if (queueResults.some(result => result.status === 'rejected')) {
+      Alert.alert(
+        'Current schedule saved on this device',
+        'The shared cloud record could not be updated yet. Use Sync Now when connected.',
+      );
+    }
   }
 
   function deleteProjectDocument(documentId: string) {
@@ -8418,7 +10663,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
         {
           text: sensitive ? `Archive ${document.category}` : 'Delete',
           style: 'destructive',
-          onPress: () => {
+          onPress: async () => {
+            let localFileCleanupStatus: 'deleted' | 'not_recorded' | 'unavailable' =
+              'not_recorded';
+            if (!sensitive) {
+              const cleanup = await deleteOwnedProjectDocument(document);
+              localFileCleanupStatus = cleanup.status;
+            }
             const archivedAt = new Date().toISOString();
 
             setProjectDocuments(prev =>
@@ -8451,6 +10702,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 ),
               })),
             );
+
+            if (!sensitive && localFileCleanupStatus === 'unavailable') {
+              Alert.alert(
+                'Document removed',
+                'The document record was removed. Its older local file was already unavailable and was left untouched.',
+              );
+            }
           },
         },
       ],
@@ -8474,15 +10732,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            setReferenceDocuments(prev =>
-              prev.filter(item => item.id !== documentId),
-            );
-
-            if (isStoredReferenceDocument(document.uri)) {
-              FileSystem.deleteAsync(document.uri, {
-                idempotent: true,
-              }).catch(() => undefined);
-            }
+            void recordDAVESyncTombstone('reference_document', documentId)
+              .then(() => {
+                markReferenceDocumentsAuthorityReady(true);
+                const updated = referenceDocumentsCurrentRef.current
+                  .filter(item => item.id !== documentId);
+                referenceDocumentsCurrentRef.current = updated;
+                setReferenceDocuments(updated);
+                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
+                deleteStoredReferenceDocument(document.uri).catch(() => undefined);
+              })
+              .catch(() => {
+                Alert.alert(
+                  'Delete failed',
+                  `${document.name} could not be saved as deleted. Try again.`,
+                );
+              });
           },
         },
       ],
@@ -8490,19 +10755,28 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function setActiveScheduleDocument(documentId: string) {
-    setReferenceDocuments(prev =>
-      prev.map(document =>
-        document.category === 'Schedules'
-          ? { ...document, isCurrent: document.id === documentId }
-          : document,
-      ),
+    const updatedAt = new Date().toISOString();
+    const updated = referenceDocumentsCurrentRef.current.map(document =>
+      document.category === 'Schedules'
+        ? { ...document, isCurrent: document.id === documentId, updatedAt }
+        : document,
     );
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updated;
+    setReferenceDocuments(updated);
+    void Promise.all(updated
+      .filter(document => document.category === 'Schedules')
+      .map(queueReferenceDocumentRecord));
   }
 
   function deleteScheduleDocument(documentId: string) {
     const document = referenceDocuments.find(item => item.id === documentId);
 
     if (!document) return;
+    const relatedScheduleItems = document.importBatchId
+      ? scheduleItemsForExactImportBatch(scheduleItems, document)
+      : scheduleItems.filter(item =>
+          item.importedFrom === document.originalFileName || item.importedFrom === document.name);
 
     Alert.alert(
       'Delete uploaded schedule?',
@@ -8512,29 +10786,58 @@ Note: This update was opened through Outlook because PLZ email security may reje
         {
           text: 'Delete PDF Only',
           onPress: () => {
-            setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
-
-            if (isStoredReferenceDocument(document.uri)) {
-              FileSystem.deleteAsync(document.uri, { idempotent: true }).catch(() => undefined);
-            }
+            void recordDAVESyncTombstone('reference_document', documentId)
+              .then(() => {
+                markReferenceDocumentsAuthorityReady(true);
+                const updated = referenceDocumentsCurrentRef.current
+                  .filter(item => item.id !== documentId);
+                referenceDocumentsCurrentRef.current = updated;
+                setReferenceDocuments(updated);
+                void removeOperationalRecordFromSyncQueue('reference_document', documentId);
+                deleteStoredReferenceDocument(document.uri).catch(() => undefined);
+              })
+              .catch(() => {
+                Alert.alert(
+                  'Delete failed',
+                  `${document.name} could not be saved as deleted. Try again.`,
+                );
+              });
           },
         },
         {
           text: 'Delete PDF + Items',
           style: 'destructive',
           onPress: () => {
-            setReferenceDocuments(prev => prev.filter(item => item.id !== documentId));
-            setScheduleItems(prev =>
-              prev.filter(
-                item =>
-                  item.importedFrom !== document.originalFileName &&
-                  item.importedFrom !== document.name,
-              ),
-            );
-
-            if (isStoredReferenceDocument(document.uri)) {
-              FileSystem.deleteAsync(document.uri, { idempotent: true }).catch(() => undefined);
-            }
+            void recordDAVESyncTombstones([
+              { entityType: 'reference_document', recordId: documentId },
+              ...relatedScheduleItems.map(item => ({
+                entityType: 'schedule_item' as const,
+                recordId: item.id,
+              })),
+            ])
+              .then(() => {
+                const deletedItemIds = new Set(relatedScheduleItems.map(item => item.id));
+                markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
+                const updated = referenceDocumentsCurrentRef.current
+                  .filter(item => item.id !== documentId);
+                referenceDocumentsCurrentRef.current = updated;
+                setReferenceDocuments(updated);
+                setScheduleItems(prev =>
+                  prev.filter(item => !deletedItemIds.has(item.id)),
+                );
+                void Promise.all([
+                  removeOperationalRecordFromSyncQueue('reference_document', documentId),
+                  ...relatedScheduleItems.map(item =>
+                    removeOperationalRecordFromSyncQueue('schedule_item', item.id)),
+                ]);
+                deleteStoredReferenceDocument(document.uri).catch(() => undefined);
+              })
+              .catch(() => {
+                Alert.alert(
+                  'Delete failed',
+                  `${document.name} and its schedule items could not be saved as deleted. Try again.`,
+                );
+              });
           },
         },
       ],
@@ -8542,242 +10845,534 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function addScheduleItem(item: Partial<ScheduleItem>) {
+    const now = new Date().toISOString();
     const next = normalizeScheduleItem({
       ...item,
       id: uid(),
-      createdAt: new Date().toISOString(),
+      progressSource: 'project_manager',
+      progressConfirmedAt: now,
+      progressConfirmedBy: displayName.trim() || 'Project manager',
+      createdAt: now,
+      updatedAt: now,
     });
 
+    markScheduleItemsAuthorityReady(true);
     setScheduleItems(prev => [next, ...prev]);
+    void queueScheduleItemRecord(next).then(() => uploadPendingChanges()).catch(() => {
+      Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
   }
 
   function updateScheduleItem(itemId: string, next: Partial<ScheduleItem>) {
-    setScheduleItems(prev =>
-      prev.map(item =>
-        item.id === itemId ? normalizeScheduleItem({ ...item, ...next }) : item,
-      ),
+    const current = scheduleItems.find(item => item.id === itemId);
+    if (!current) return;
+    const now = new Date().toISOString();
+    const progressChanged = (
+      typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete
+    ) || (
+      typeof next.status === 'string' && next.status !== current.status
     );
+    const progress = progressChanged
+      ? reconcileScheduleProgressEdit(current, {
+          ...(typeof next.status === 'string' && next.status !== current.status
+            ? { status: next.status }
+            : {}),
+          ...(typeof next.percentComplete === 'number' &&
+          next.percentComplete !== current.percentComplete
+            ? { percentComplete: next.percentComplete }
+            : {}),
+        })
+      : null;
+    const updated = normalizeScheduleItem(
+      {
+        ...current,
+        ...next,
+        ...(progress || {}),
+        updatedAt: now,
+        ...(progressChanged ? {
+          progressSource: 'project_manager' as const,
+          progressConfirmedAt: now,
+          progressConfirmedBy: displayName.trim() || 'Project manager',
+          completionVerification: next.completionVerification ?? null,
+        } : {}),
+      },
+      { preserveEditedNotes: typeof next.notes === 'string' },
+    );
+    markScheduleItemsAuthorityReady(true);
+    setScheduleItems(prev => prev.map(item => item.id === itemId ? updated : item));
+    void queueScheduleItemRecord(updated).then(() => uploadPendingChanges()).catch(() => {
+      Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    });
   }
 
   function deleteScheduleItem(itemId: string) {
+    const item = scheduleItems.find(scheduleItem => scheduleItem.id === itemId);
+    if (!item) return;
+
     Alert.alert(
       'Delete schedule item?',
-      'This removes the schedule item from this phone.',
+      'This removes the schedule item from every signed-in device.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: () =>
-            setScheduleItems(prev => prev.filter(item => item.id !== itemId)),
+          onPress: () => {
+            void recordDAVESyncTombstone('schedule_item', itemId)
+              .then(() => removeOperationalRecordFromSyncQueue('schedule_item', itemId))
+              .then(() => {
+                markScheduleItemsAuthorityReady(true);
+                setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
+              })
+              .catch(() => {
+                Alert.alert(
+                  'Delete failed',
+                  `${item.taskName} could not be saved as deleted. Try again.`,
+                );
+              });
+          },
         },
       ],
     );
   }
-
-  async function importScheduleFile() {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: [
-          'application/pdf',
-          'text/csv',
-          'text/plain',
-          'application/vnd.ms-excel',
-          'application/json',
-        ],
-        copyToCacheDirectory: true,
-      });
-
-      if (result.canceled) return;
-
-      const file = result.assets[0];
-
-      if (!file) return;
-
-      const fileName = file.name || 'Imported schedule';
-      const mimeType = file.mimeType || '';
-      const isPdf =
-        mimeType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
-
-      if (isPdf) {
-        const directory = await ensureReferenceDocumentsDirectory();
-        const originalFileName = filenameFromDocumentAsset(file);
-        const storedFileName = `${uid()}-${sanitizeFilename(originalFileName)}`;
-        const targetUri = `${directory}${storedFileName}`;
-
-        await FileSystem.copyAsync({
-          from: file.uri,
-          to: targetUri,
-        });
-
-        const scheduleDocument = normalizeReferenceDocument({
-          id: uid(),
-          name: originalFileName.replace(/\.[^/.]+$/, ''),
-          originalFileName,
-          uri: targetUri,
-          mimeType: file.mimeType || 'application/pdf',
-          category: 'Schedules',
-          notes:
-            'Imported from the Schedule screen. Review this PDF and add extracted schedule tasks or milestones manually as needed.',
-          isCurrent: true,
-          importedAt: new Date().toISOString(),
-        });
-
-        setReferenceDocuments(prev => [scheduleDocument, ...prev.map(document => document.category === 'Schedules' ? { ...document, isCurrent: false } : document)]);
-
-        let extractedItems: ScheduleItem[] = [];
-        let extractionMethod = '';
-        let aiExtractionFailed = false;
-
-        if (scheduleAiExtractorUrl.trim()) {
-          try {
-            extractedItems = await extractScheduleItemsWithAiEndpoint({
-              endpointUrl: scheduleAiExtractorUrl,
-              pdfUri: targetUri,
-              fileName: originalFileName,
-              projects,
-              projectAreas,
-            });
-            extractionMethod = 'AI/OCR';
-          } catch {
-            aiExtractionFailed = true;
-            extractedItems = [];
-          }
-        }
-
-        if (extractedItems.length === 0) {
-          try {
-            const rawPdfText = await FileSystem.readAsStringAsync(targetUri);
-            extractedItems = extractScheduleItemsFromPdfText(
-              rawPdfText,
-              originalFileName,
-              projects,
-              projectAreas,
-            );
-            extractionMethod = 'PDF text';
-          } catch {
-            extractedItems = [];
-          }
-        }
-
-        if (extractedItems.length > 0) {
-          setScheduleItems(prev => [...extractedItems, ...prev]);
-          Alert.alert(
-            'PDF schedule imported',
-            `${extractedItems.length} possible schedule item${extractedItems.length === 1 ? '' : 's'} extracted using ${extractionMethod || 'schedule extraction'}. Review the extracted items, then correct any task names, locations, or dates that do not match the Gantt chart.`,
-          );
-          return;
-        }
-
-        const reviewItem = normalizeScheduleItem({
-          taskName: `Review imported PDF schedule: ${scheduleDocument.name}`,
-          projectName: activeProjects[0] || projects[0] || '',
-          locationName: '',
-          startDate: '',
-          finishDate: '',
-          milestone: 'Imported PDF Schedule',
-          owner: '',
-          status: 'Not Started',
-          notes:
-            'The PDF was saved, but readable task/date text could not be extracted automatically. This often happens when a Gantt chart is scanned or flattened. Open the PDF and tap Add Item to enter the key milestones and due dates.',
-          importedFrom: originalFileName,
-          importedAt: new Date().toISOString(),
-        });
-
-        setScheduleItems(prev => [reviewItem, ...prev]);
-
-        Alert.alert(
-          'PDF schedule imported',
-          scheduleAiExtractorUrl.trim()
-            ? 'The PDF was saved, but no tasks were extracted. The AI/OCR endpoint did not return usable schedule items. Open the PDF from Schedule or check the extractor endpoint.'
-            : 'The PDF was saved, but no readable dates/tasks were extracted. Add an AI/OCR extractor endpoint in Schedule Import for scanned or flattened Gantt charts, or open the PDF and tap Add Item to enter milestones manually.',
-        );
-        return;
-      }
-
+  async function prepareScheduleImportFromAsset(
+    file: { uri: string; name?: string | null; mimeType?: string | null },
+    selectedProjectNames: readonly string[] = activeProjects.length ? activeProjects : projects,
+  ): Promise<PIEScheduleImportBatch | null> {
+    const fileName = file.name?.trim() || 'Imported schedule';
+    const mimeType = file.mimeType || '';
+    const scopeProjects = Array.from(new Set(selectedProjectNames.map(name => name.trim()).filter(Boolean)));
+    const isPdf = mimeType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
       const contents = await FileSystem.readAsStringAsync(file.uri);
-      const imported = parseScheduleText(contents, fileName);
-
+      const normalizedImport = normalizeScheduleImport({
+        contents, sourceName: fileName, mimeType,
+        projects: scopeProjects,
+        projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+      });
+      const imported = normalizedImport.items as unknown as ScheduleItem[];
       if (!imported.length) {
         Alert.alert(
           'No schedule items found',
-          'Use a CSV or text file with at least a task name. Recommended columns: Task, Project, Location, Start, Finish, Milestone, Owner, Status, Notes. PDF schedules can also be imported and stored for manual review.',
+          'Use a CSV or text file with at least a task name and date. Recommended columns: Task, Project, Location, Start, Finish, Owner, and Status.',
         );
-        return;
+        return null;
       }
+      const items = dedupeScheduleImportItems(imported as unknown as import('./types').ScheduleItem[]);
+      return {
+        id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: fileName,
+        message: `${items.length} schedule ${items.length === 1 ? 'item' : 'items'} prepared. Import confidence: ${normalizedImport.extractionConfidencePercent}%.`,
+        items, documents: [],
+      };
+    }
 
-      setScheduleItems(prev => [...imported, ...prev]);
+    const directory = await ensureReferenceDocumentsDirectory();
+    const originalFileName = fileName.toLowerCase().endsWith('.pdf') ? fileName : `${fileName}.pdf`;
+    const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
+    await FileSystem.copyAsync({ from: file.uri, to: targetUri });
+    const onlyProject = scopeProjects.length === 1 ? scopeProjects[0] : null;
+    const scheduleDocument = normalizeReferenceDocument({
+      id: uid(), name: originalFileName.replace(/\.[^/.]+$/, ''), originalFileName,
+      uri: targetUri, mimeType: file.mimeType || 'application/pdf', category: 'Schedules',
+      notes: 'Schedule uploaded for task extraction and project manager review.',
+      isCurrent: true, importedAt: new Date().toISOString(),
+      projectId: onlyProject ? authorityProjectId(onlyProject) : null,
+      projectName: onlyProject, projectNames: scopeProjects,
+    });
+    let extractedItems: ScheduleItem[] = [];
+    let extractionMethod = '';
+    let extractionIssue = '';
+    if (isDavePdfTextExtractionAvailable()) {
+      try {
+        const extractedPdf = await withScheduleImportTimeout(
+          extractTextFromPdf(targetUri), 20_000,
+          `PDF text extraction timed out for ${originalFileName}.`,
+        );
+        if (extractedPdf.format === 'microsoft_project_tsv') {
+          extractedItems = normalizeMicrosoftProjectPdfRows({
+            contents: extractedPdf.text, sourceName: originalFileName,
+            projects: scopeProjects,
+            projectAreas: projectAreas as unknown as Parameters<typeof normalizeMicrosoftProjectPdfRows>[0]['projectAreas'],
+          }) as unknown as ScheduleItem[];
+          extractionMethod = 'structured Microsoft Project rows';
+        } else {
+          const normalizedImport = normalizeScheduleImport({
+            contents: extractedPdf.text, sourceName: originalFileName,
+            mimeType: file.mimeType || 'application/pdf', projects: scopeProjects,
+            projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+          });
+          extractedItems = (normalizedImport.items as unknown as ScheduleItem[])
+            .filter(item => Boolean(item.startDate || item.finishDate || item.milestone))
+            .map(item => ({ ...item, importedFrom: originalFileName }));
+          extractionMethod = 'local PDF text';
+        }
+      } catch {
+        extractedItems = [];
+      }
+    }
+    if (!extractedItems.length) {
+      try {
+        const extracted = await extractSchedulePdfWithServer({
+          uri: targetUri, fileName: originalFileName,
+          mimeType: file.mimeType || 'application/pdf',
+          projects: scopeProjects,
+          projectRecords: scopeProjects.map(projectName => {
+            const record = projectRecords.find(candidate =>
+              candidate.name.trim().toLowerCase() === projectName.toLowerCase(),
+            );
+            return { id: record?.id || null, name: projectName };
+          }),
+          projectAreas,
+          idempotencyKey: scheduleDocument.id,
+        });
+        extractedItems = extracted.items.map(item => ({
+          ...item,
+          sourceDocumentId: scheduleDocument.id,
+        }));
+        extractionMethod = 'schedule service';
+      } catch (error) {
+        extractionIssue = error instanceof Error ? error.message : 'Automatic schedule extraction could not finish.';
+      }
+    }
+    if (extractedItems.length > 0) {
+      const items = dedupeScheduleImportItems(extractedItems as unknown as import('./types').ScheduleItem[]);
+      return {
+        id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: originalFileName,
+        message: `${items.length} possible schedule ${items.length === 1 ? 'item' : 'items'} extracted using ${extractionMethod || 'schedule extraction'}. Confirm the highlighted fields before adding them.`,
+        items, documents: [scheduleDocument],
+      };
+    }
+    const reviewItem = {
+      ...normalizeScheduleItem({
+        taskName: 'New Schedule Item', projectName: onlyProject || '', locationName: '',
+        startDate: '', finishDate: '', milestone: 'Imported PDF Schedule', owner: '',
+        status: 'Not Started', notes: '', importedFrom: originalFileName,
+        importedAt: new Date().toISOString(),
+      }),
+      taskName: '',
+    };
+    return {
+      id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: originalFileName,
+      message: `The PDF was saved, but no dated activities were extracted. ${extractionIssue || 'Enter the actual task name and complete every highlighted field below.'}`,
+      items: [reviewItem] as unknown as import('./types').ScheduleItem[],
+      documents: [scheduleDocument],
+    };
+  }
 
-      Alert.alert(
-        'Schedule imported',
-        `${imported.length} schedule item${imported.length === 1 ? '' : 's'} imported.`,
-      );
-    } catch {
+  async function importScheduleFile(
+    onProcessingStart: () => void = () => undefined,
+  ): Promise<PIEScheduleImportBatch | null> {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'text/csv', 'text/plain', 'application/vnd.ms-excel', 'application/json'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return null;
+      const file = result.assets[0];
+      if (!file) return null;
+      await preflightExpoFileRead({ uri: file.uri, reportedSizeBytes: file.size });
+      onProcessingStart();
+      return await prepareScheduleImportFromAsset(file);
+    } catch (error) {
       Alert.alert(
         'Import failed',
-        'The schedule file could not be imported. Try a PDF, CSV, or plain text schedule file.',
+        error instanceof Error ? error.message : 'The schedule file could not be imported. Try a PDF, CSV, or plain text schedule file.',
       );
+      return null;
     }
   }
 
-  function saveUpdate() {
-  if (!hasSavableUpdate(draft)) {
-    Alert.alert(
-      'Update is blank',
-      'Add a photo, update notes, field note, or action information before saving.',
-    );
+  async function importScheduleCommunicationScreenshot(
+    onProcessingStart: () => void = () => undefined,
+  ): Promise<PIEScheduleImportBatch | null> {
+    if (!scheduleScreenshotOcrAvailable) {
+      Alert.alert(
+        'Screenshot recognition unavailable',
+        Platform.OS === 'ios'
+          ? 'This installed app does not yet include local screenshot recognition. Install the updated app build, then import the screenshots again.'
+          : 'Message and email screenshot recognition is currently available only on iPhone and iPad. Use a schedule file or add the task manually on this device.',
+      );
+      return null;
+    }
 
-    return;
+    const stagedDocuments: ReferenceDocument[] = [];
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          'Photo access needed',
+          'Allow photo access to select a screenshot of a text message or email.',
+        );
+        return null;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: true,
+        selectionLimit: 20,
+        orderedSelection: true,
+        quality: 1,
+      });
+      if (result.canceled || !result.assets.length) return null;
+
+      onProcessingStart();
+
+      const directory = await ensureReferenceDocumentsDirectory();
+      const importedAt = new Date().toISOString();
+      const extractedItems: ScheduleItem[] = [];
+
+      for (const [index, asset] of result.assets.entries()) {
+        await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.fileSize });
+        const mimeType = asset.mimeType || 'image/jpeg';
+        const originalFileName = asset.fileName || filenameFromUri(asset.uri, index, mimeType);
+        const storedFileName = `${uid()}-${sanitizeFilename(originalFileName)}`;
+        const targetUri = `${directory}${storedFileName}`;
+        await FileSystem.copyAsync({ from: asset.uri, to: targetUri });
+
+        stagedDocuments.push(normalizeReferenceDocument({
+          id: uid(),
+          name: `Schedule message - ${originalFileName.replace(/\.[^/.]+$/, '')}`,
+          originalFileName,
+          uri: targetUri,
+          mimeType,
+          category: 'Other',
+          notes: '[Schedule communication screenshot] Imported for local text recognition and schedule review.',
+          isCurrent: false,
+          importedAt,
+        }));
+
+        let sourceItems: ScheduleItem[] = [];
+        if (isDaveTextRecognitionAvailable()) {
+          try {
+            const recognized = await withScheduleImportTimeout(
+              recognizeTextFromImage(targetUri),
+              20_000,
+              `Text recognition timed out for ${originalFileName}.`,
+            );
+            const communicationImport = extractScheduleItemsFromCommunicationText({
+              text: recognized.text,
+              sourceName: originalFileName,
+              projects,
+              projectAreas: projectAreas as unknown as Parameters<typeof extractScheduleItemsFromCommunicationText>[0]['projectAreas'],
+              recognitionConfidence: recognized.averageConfidence,
+            });
+            sourceItems = communicationImport.items as unknown as ScheduleItem[];
+          } catch {
+            sourceItems = [];
+          }
+        }
+
+        extractedItems.push(...sourceItems);
+      }
+
+      const items = dedupeScheduleImportItems(extractedItems as unknown as import('./types').ScheduleItem[]);
+      if (!items.length) {
+        await Promise.all(stagedDocuments.map(document =>
+          deleteStoredReferenceDocument(document.uri).catch(() => undefined),
+        ));
+        Alert.alert(
+          'No schedule activities found',
+          'The selected images did not contain a clear task or schedule commitment. Try screenshots with the complete message and date visible.',
+        );
+        return null;
+      }
+
+      return {
+        id: uid(),
+        kind: 'message_screenshots',
+        sourceCount: result.assets.length,
+        sourceLabel: `${result.assets.length} message ${result.assets.length === 1 ? 'screenshot' : 'screenshots'}`,
+        message: `${items.length} possible schedule ${items.length === 1 ? 'activity' : 'activities'} prepared from ${result.assets.length} ${result.assets.length === 1 ? 'image' : 'images'}. Duplicates were removed.`,
+        items,
+        documents: stagedDocuments,
+      };
+    } catch (error) {
+      await Promise.all(stagedDocuments.map(document =>
+        deleteStoredReferenceDocument(document.uri).catch(() => undefined),
+      ));
+      Alert.alert(
+        'Screenshot review failed',
+        error instanceof Error
+          ? error.message
+          : 'The screenshot could not be read. Try a clear screenshot with the complete message visible.',
+      );
+      return null;
+    }
+  }
+  function approveScheduleImport(batch: PIEScheduleImportBatch) {
+    const approvedBatch = bindPIEScheduleImportBatchProvenance(batch);
+    const approvedItems = canonicalizeScheduleIdentityItems(
+      approvedBatch.items.map(item =>
+        normalizeScheduleItem(item as unknown as Partial<ScheduleItem>),
+      ),
+      projectAreas,
+      identityCorrections,
+    );
+    if (approvedItems.length) {
+      markScheduleItemsAuthorityReady(true);
+      // Explicit user approval of an import into these projects is the user
+      // transition that permits reopening an archived parent (audit P1-57).
+      ensureScheduleParentProjects(approvedItems, {
+        allowDeletedProjects: true,
+        reopenArchivedParents: true,
+      });
+      let next = [...scheduleItems];
+      const additions: ScheduleItem[] = [];
+      approvedItems.forEach(importedItem => {
+        const match = findExactScheduleTaskForCompletionClaim(
+          importedItem as unknown as import('./types').ScheduleItem,
+          next as unknown as import('./types').ScheduleItem[],
+        ) as unknown as ScheduleItem | null;
+        if (match) {
+          next = next.map(item => item.id === match.id
+            ? normalizeScheduleItem(mergeReportedCompletionClaim(
+                item as unknown as import('./types').ScheduleItem,
+                importedItem as unknown as import('./types').ScheduleItem,
+              ) as unknown as Partial<ScheduleItem>)
+            : item);
+          return;
+        }
+        const identity = scheduleImportItemIdentity(
+          importedItem as unknown as import('./types').ScheduleItem,
+        );
+        const duplicate = [...next, ...additions].some(item =>
+          scheduleImportItemIdentity(item as unknown as import('./types').ScheduleItem) === identity,
+        );
+        if (!duplicate) additions.push(importedItem);
+      });
+      const synchronizedItems = reconcileDAVEScheduleRecords([...additions, ...next]);
+      setScheduleItems(synchronizedItems);
+      const previousById = new Map(scheduleItems.map(item => [item.id, item]));
+      void Promise.all(synchronizedItems
+        .filter(item => JSON.stringify(item) !== JSON.stringify(previousById.get(item.id)))
+        .map(queueScheduleItemRecord)).then(() => uploadPendingChanges()).catch(() => undefined);
+    }
+    if (approvedBatch.documents.length) {
+      markReferenceDocumentsAuthorityReady(true);
+      const referenceUpdatedAt = new Date().toISOString();
+      const importedProjectNames = scheduleParentProjectNames(
+        approvedItems as unknown as import('./types').ScheduleItem[],
+      );
+      const scopedDocuments = approvedBatch.documents.map(document => {
+        const documentProjectNames = document.projectNames?.length
+          ? document.projectNames
+          : importedProjectNames;
+        const importedProjectName = documentProjectNames.length === 1
+          ? documentProjectNames[0]
+          : null;
+        return normalizeReferenceDocument({
+          ...document, projectNames: documentProjectNames,
+          projectId: importedProjectName ? authorityProjectId(importedProjectName) : null,
+          projectName: importedProjectName,
+          updatedAt: referenceUpdatedAt,
+        });
+      });
+      const hasCurrentSchedule = scopedDocuments.some(document =>
+        document.category === 'Schedules' && document.isCurrent,
+      );
+      const synchronizedDocuments = [
+        ...scopedDocuments,
+        ...referenceDocuments.map(document =>
+          hasCurrentSchedule && document.category === 'Schedules'
+            ? { ...document, isCurrent: false, updatedAt: referenceUpdatedAt }
+            : document,
+        ),
+      ];
+      referenceDocumentsCurrentRef.current = synchronizedDocuments;
+      setReferenceDocuments(synchronizedDocuments);
+      void Promise.all(scopedDocuments.map(prepareReferenceDocumentForCloud))
+        .then(preparedDocuments => {
+          const preparedById = new Map(preparedDocuments.map(document => [document.id, document]));
+          const cloudReadyDocuments = referenceDocumentsCurrentRef.current.map(document =>
+            preparedById.get(document.id) || document,
+          );
+          referenceDocumentsCurrentRef.current = cloudReadyDocuments;
+          setReferenceDocuments(cloudReadyDocuments);
+          return Promise.all(cloudReadyDocuments
+            .filter(document => document.category === 'Schedules')
+            .map(queueReferenceDocumentRecord));
+        })
+        .catch(() => {
+          void Promise.all(synchronizedDocuments
+            .filter(document => document.category === 'Schedules')
+            .map(queueReferenceDocumentRecord));
+        });
+    }
   }
 
-  const invalidDueDateIndex = findInvalidDueDatePhoto(draft);
-
-  if (invalidDueDateIndex >= 0) {
-    Alert.alert(
-      'Invalid due date',
-      `Photo ${invalidDueDateIndex + 1} has a due date that is not in YYYY-MM-DD format.`,
+  function ensureScheduleParentProjects(
+    items: ScheduleItem[],
+    options: { allowDeletedProjects?: boolean; reopenArchivedParents?: boolean } = {},
+  ) {
+    // Audit P1-57: creating a missing parent project is separate from archive
+    // state. Only an explicit user transition (e.g. approving an import into
+    // that project) may reopen an archived project; background schedule
+    // mutations never do.
+    const { allowDeletedProjects = false, reopenArchivedParents = false } = options;
+    const discoveredParentNames = scheduleParentProjectNames(
+      items as unknown as import('./types').ScheduleItem[],
     );
+    if (allowDeletedProjects) {
+      discoveredParentNames.forEach(clearProjectDeletion);
+    }
+    const deletedKeys = new Set(
+      deletedProjectNamesRef.current.map(name => name.toLowerCase()),
+    );
+    const parentNames = discoveredParentNames.filter(
+      name => allowDeletedProjects || !deletedKeys.has(name.toLowerCase()),
+    );
+    if (!parentNames.length) return;
 
-    return;
+    const { missingNames, reopeningNames } = resolveScheduleParentActions({
+      parentNames,
+      existingProjects: projects,
+      archivedProjects,
+      reopenArchivedParents,
+    });
+
+    if (missingNames.length) {
+      setProjects(previous => mergeProjectNames(previous, missingNames));
+      setProjectRecords(previous => [
+        ...missingNames
+          .filter(name => !previous.some(project => project.name.toLowerCase() === name.toLowerCase()))
+          .map(name => ({ name })),
+        ...previous,
+      ]);
+    }
+
+    if (reopeningNames.length) {
+      const reopeningKeys = new Set(reopeningNames.map(name => name.toLowerCase()));
+      setArchivedProjects(previous => previous.filter(
+        project => !reopeningKeys.has(project.toLowerCase()),
+      ));
+      reopeningNames.forEach(name => setCloudProjectArchived(name, false));
+    }
+
+    missingNames.forEach(name => {
+      const key = name.toLowerCase();
+      if (scheduleParentProjectsQueuedRef.current.has(key)) return;
+      scheduleParentProjectsQueuedRef.current.add(key);
+      saveCloudProject(name);
+    });
   }
 
-  const saved = {
-    ...draft,
-    id: draft.id || uid(),
-  };
+  function cancelScheduleImport(batch: PIEScheduleImportBatch) {
+    batch.documents.forEach(document => {
+      deleteStoredReferenceDocument(document.uri).catch(() => undefined);
+    });
+  }
 
-  setSavedUpdates(prev => [
-    saved,
-    ...prev.filter(item => item.id !== saved.id),
-  ]);
-
-  saveCloudUpdate(saved);
-  syncUpdatePhotosToCloud(saved);
-
-  const nextProject =
-    activeProjects[0] || DEFAULT_PROJECTS[0];
-
-  setDraft(createDraft(nextProject));
-  setDraftSavedAt(null);
-
-  AsyncStorage.removeItem(DRAFT_STORAGE_KEY).catch(
-    () => undefined,
-  );
-
-  Alert.alert(
-    'Saved',
-    'This project update was saved.',
-  );
-
-  setScreen('SavedUpdates');
-}
-
-  function openSavedUpdate(update: ProjectUpdate) {
+  function openSavedUpdate(update: ProjectUpdate, returnScreen: AppScreen = 'SavedUpdates') {
     const lifecycle = lifecycleStatusForUpdate(update);
+    updateDetailReturnScreenRef.current = returnScreen;
 
     if (lifecycle === 'sent' || lifecycle === 'queued') {
+      // Audit P1-56: opening any update binds the workspace to that update's
+      // project, so Back, Talk, and reports target the right project.
+      setSelectedWorkspaceProject(update.projectName);
       setSelectedDetailUpdate(update);
-      setScreen('UpdateDetail');
+      setScreen('UpdateDetail', { backTarget: returnScreen });
       return;
     }
 
@@ -8817,84 +11412,77 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setScreen(screenForUpdateResume(update));
   }
 
-  function openLatestProjectPhotoDifference(projectName: string) {
-    const brief = buildPIEProjectBriefModel(projectName, savedUpdates);
-    const targetUpdate = brief.latestUpdate;
-
-    if (!targetUpdate) {
-      setScreen('SavedUpdates');
-      return;
-    }
-
-    setSelectedWorkspaceProject(projectName);
-    setSelectedDetailUpdate(targetUpdate);
-    setScreen('UpdateDetail');
-  }
-
   function deleteSavedUpdate(updateId: string, onConfirmed?: () => void) {
-    const update = savedUpdates.find(item => item.id === updateId);
-    const lifecycle = update ? lifecycleStatusForUpdate(update) : 'draft';
-    const deleteTitle =
-      lifecycle === 'sent'
-        ? 'Delete sent update from this device?'
-        : lifecycle === 'failed'
-          ? 'Delete failed update?'
-          : 'Remove update from device?';
-    const deleteCopy =
-      lifecycle === 'sent'
-        ? "This removes the update and its local photos from this device only. It doesn't delete anything already sent, or the record stored in the cloud — this can't be undone on this device. If you just want it out of your default view but still available later, use Archive instead."
-        : lifecycle === 'failed'
-          ? 'This removes the failed local update from this device and stops retrying it.'
-          : 'This removes the local saved copy from this device.';
-    const deleteAction =
-      lifecycle === 'sent'
-        ? 'Delete from Device'
-        : lifecycle === 'failed'
-          ? 'Delete failed update'
-          : 'Remove from device';
+    const update = savedUpdatesRef.current.find(item => item.id === updateId);
+    if (!update) return;
+    const updateLocation = [
+      update.projectName,
+      update.selectedAreaName,
+      update.scheduleTaskName,
+      formatDisplayDate(update.date),
+    ].filter(Boolean).join(' · ');
 
     Alert.alert(
-      deleteTitle,
-      deleteCopy,
+      'Permanently delete this update?',
+      `This removes the saved field update for ${updateLocation || 'this project'} from this phone and stops it affecting project status. Its cloud record will be deleted automatically when sync is available. Warnings caused only by this update will clear. Original evidence files may remain in secure audit storage. This cannot be undone.`,
       [
         {
           text: 'Cancel',
           style: 'cancel',
         },
         {
-          text: deleteAction,
+          text: 'Delete Update',
           style: 'destructive',
-          onPress: () => {
-            const deletedUpdate = savedUpdates.find(
+          onPress: async () => {
+            if (updateDeletionInFlightRef.current) return;
+            const currentUpdates = savedUpdatesRef.current;
+            const deletedUpdate = currentUpdates.find(
               update => update.id === updateId,
             );
-            const remainingUpdates = savedUpdates.filter(
-              update => update.id !== updateId,
+            if (!deletedUpdate) return;
+            updateDeletionInFlightRef.current = true;
+
+            const tombstone = buildUpdateTombstone(
+              deletedUpdate,
+              'delete_update_everywhere',
             );
 
-            if (deletedUpdate) {
-              const tombstone = buildUpdateTombstone(
-                deletedUpdate,
-                lifecycleStatusForUpdate(deletedUpdate) === 'failed'
-                  ? 'delete_failed_update'
-                  : 'remove_from_device',
-              );
-              setDeletedUpdateTombstones(prev =>
-                upsertDeletedUpdateTombstone(prev, tombstone),
-              );
-              void removeProjectUpdateFromSyncQueue(deletedUpdate.id);
-            }
+            try {
+              const deletion = await persistAndQueueProjectUpdateDeletion({
+                update: deletedUpdate,
+                tombstone,
+                getCurrentUpdates: () => savedUpdatesRef.current,
+                getCurrentTombstones: () => deletedUpdateTombstonesRef.current,
+                updatesStorageKey: UPDATES_STORAGE_KEY,
+                tombstonesStorageKey: DELETED_UPDATES_STORAGE_KEY,
+              });
+              const { remainingUpdates, nextTombstones } = deletion;
 
-            setSavedUpdates(remainingUpdates);
+              savedUpdatesRef.current = remainingUpdates;
+              deletedUpdateTombstonesRef.current = nextTombstones;
+              setDeletedUpdateTombstones(nextTombstones);
+              setSavedUpdates(remainingUpdates);
 
-            if (deletedUpdate) {
               void deleteUnreferencedPhotosFromUpdate(
                 deletedUpdate,
-                [draft, ...remainingUpdates],
+                [
+                  ...(draft.id === updateId ? [] : [draft]),
+                  ...remainingUpdates,
+                ],
               );
+              if (deletion.phase === 'barrier_committed') {
+                void reconcileProjectUpdateDeletionJournal(nextTombstones).catch(() => undefined);
+                Alert.alert('Update removed', 'The deletion barrier is saved and the update no longer affects project status. Remaining device or cloud cleanup will retry automatically.');
+              }
+              onConfirmed?.();
+            } catch {
+              Alert.alert(
+                'Update not deleted',
+                'No deletion barrier could be saved, so nothing was removed. Please try again.',
+              );
+            } finally {
+              updateDeletionInFlightRef.current = false;
             }
-
-            onConfirmed?.();
           },
         },
       ],
@@ -8903,8 +11491,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function archiveSavedUpdate(updateId: string, onConfirmed?: () => void) {
     Alert.alert(
-      'Archive sent update?',
-      'Sent updates are communication records. This will hide the update from default views without deleting the record.',
+      'Archive cloud-synced update?',
+      'This hides the update from default views without deleting its cloud record.',
       [
         {
           text: 'Cancel',
@@ -8920,7 +11508,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               setDeletedUpdateTombstones(prev =>
                 upsertDeletedUpdateTombstone(prev, tombstone),
               );
-              void removeProjectUpdateFromSyncQueue(update.id);
+              void reconcileProjectUpdateDeletionJournal([tombstone]);
             }
             setSavedUpdates(prev =>
               prev.map(update =>
@@ -8954,56 +11542,680 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function requestBuildUpdate() {
-    continueToPIEAnalysis();
+    continueToReview();
+  }
+
+  const resumedSavedDraft = savedUpdates.some(
+    update =>
+      update.id === draft.id &&
+      lifecycleStatusForUpdate(update) !== 'sent' &&
+      lifecycleStatusForUpdate(update) !== 'queued',
+  );
+
+  function deleteResumedSavedDraft() {
+    const projectName = draft.projectName;
+
+    deleteSavedUpdate(draft.id, () => {
+      setDraft(createDraft(projectName));
+      setDraftSavedAt(null);
+      removePersistedStorageItem(DRAFT_STORAGE_KEY).catch(error =>
+        reportStoragePersistenceFailure({ storageKey: DRAFT_STORAGE_KEY, label: 'field update draft', error }),
+      );
+      setSelectedWorkspaceProject(projectName);
+      setScreen(updateDetailReturnScreenRef.current);
+    });
   }
 
   const unfinishedDraft =
     hasDraftContent(draft) ? draft : null;
 
+  const contentTopPadding = appShellContentTopPadding({
+    layout: appShellLayout,
+    safeAreaTop: insets.top,
+    platform: Platform.OS,
+  });
   const contentStyle = useMemo(
     () => [
       styles.content,
       {
-        paddingTop: Math.max(
-          insets.top + 24,
-          Platform.OS === 'ios' ? 72 : 48,
-        ),
+        paddingTop: contentTopPadding,
       },
     ],
-    [insets.top],
+    [contentTopPadding],
   );
 
+  const authoritativeScheduleItems = useMemo(
+    () => selectAuthoritativeScheduleItems({
+      scheduleItems: scheduleItems as unknown as Parameters<typeof selectAuthoritativeScheduleItems>[0]['scheduleItems'],
+      scheduleDocuments: referenceDocuments as unknown as Parameters<typeof selectAuthoritativeScheduleItems>[0]['scheduleDocuments'],
+    }) as unknown as ScheduleItem[],
+    [referenceDocuments, scheduleItems],
+  );
+
+  const layer4EvidenceCatalog = useMemo<PIEEvidenceReference[]>(() => {
+    const projectId = authorityProjectId(selectedWorkspaceProject);
+    const organizationId = layer4Identity?.organizationId || 'unverified';
+    const updateEvidence = projectUpdatesForParentProject(
+      activeSavedUpdates,
+      selectedWorkspaceProject,
+      authoritativeScheduleItems,
+    )
+      .flatMap(update => {
+        const updateReference: PIEEvidenceReference = {
+          id: `update-${update.id}`,
+          sourceType: 'project_update',
+          organizationId,
+          projectId,
+          summary: update.notes || `${update.projectName} field update`,
+          capturedAt: update.date,
+          versionId: update.date,
+          contentHash: `${update.id}:${update.date}:${update.photos.length}`,
+        };
+        const photoReferences = update.photos.map(photo => ({
+          id: `photo-${photo.id}`,
+          sourceType: 'photo' as const,
+          organizationId,
+          projectId,
+          summary: photo.caption || `Photo from ${update.selectedAreaName || update.projectName}`,
+          capturedAt: photo.locationCapturedAt || update.date,
+          uri: photo.uri,
+          versionId: photo.locationCapturedAt || update.date,
+          contentHash: `${photo.id}:${photo.uri}:${photo.caption}`,
+        }));
+        return [updateReference, ...photoReferences];
+      });
+    const scheduleEvidence = authoritativeScheduleItems
+      .filter(item =>
+        [item.projectName, item.scheduleProjectName, item.locationName]
+          .some(value => value?.trim().toLowerCase() === selectedWorkspaceProject.trim().toLowerCase()),
+      )
+      .map(item => ({
+        id: `schedule-${item.id}`,
+        sourceType: 'schedule_item' as const,
+        organizationId,
+        projectId,
+        summary: `${item.taskName}: ${item.status} (${item.percentComplete}% complete)`,
+        capturedAt: item.importedAt || item.createdAt || item.finishDate || item.startDate,
+        versionId: item.importedAt || item.createdAt || item.finishDate || item.startDate || null,
+        contentHash: `${item.id}:${item.status}:${item.percentComplete}:${item.finishDate}`,
+      }));
+
+    return [...updateEvidence, ...scheduleEvidence];
+  }, [activeSavedUpdates, authoritativeScheduleItems, layer4Identity?.organizationId, selectedWorkspaceProject]);
+
+  useEffect(() => {
+    if (!startupHydrationReady) return;
+    let active = true;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let refreshGeneration = 0;
+    let lastRefreshStartedAt = 0;
+    // Field fix 2026-07-18: auth events can arrive in bursts (each identity
+    // resolve touches the Supabase client, which can itself emit events).
+    // A minimum interval and an in-flight guard make this cycle-proof.
+    const MIN_REFRESH_INTERVAL_MS = 2000;
+
+    async function refreshLayer4Identity(generation: number) {
+      lastRefreshStartedAt = Date.now();
+      const resolution = await resolvePIELayer4ActorContext();
+      if (!active || generation !== refreshGeneration) return;
+      const state = await loadPIEDecisionLedgerForOrganization(resolution.context.organizationId);
+      if (!active || generation !== refreshGeneration) return;
+      // Commit identity and its organization-scoped ledger together only after
+      // both reads succeed. A failed/account-switched read therefore leaves no
+      // prior account decisions visible in the new session.
+      setDecisionLedger(state.decisions);
+      setDecisionLedgerMigrationStatus(state.migrationStatus);
+      setLayer4Identity(resolution.context);
+      setLayer4IdentityReady(true);
+    }
+
+    function scheduleIdentityRefresh() {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshGeneration += 1;
+      const generation = refreshGeneration;
+      setLayer4Identity(null);
+      setLayer4IdentityReady(false);
+      setDecisionLedger([]);
+      setDecisionLedgerMigrationStatus(null);
+      const elapsed = Date.now() - lastRefreshStartedAt;
+      const delay = Math.max(0, MIN_REFRESH_INTERVAL_MS - elapsed);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        void refreshLayer4Identity(generation).catch(() => undefined);
+      }, delay);
+    }
+
+    scheduleIdentityRefresh();
+    const unsubscribe = subscribeToAuthStateChange((_event, session) => {
+      // Defer client work until after Supabase's auth callback has returned.
+      photoAnalysisCoordinator.clear();
+      const accountName = accountDisplayNameForUser(session?.user);
+      if (accountName) setDisplayName(accountName);
+      scheduleIdentityRefresh();
+    });
+
+    return () => {
+      active = false;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      photoAnalysisCoordinator.clear();
+      unsubscribe();
+    };
+  }, [photoAnalysisCoordinator, startupHydrationReady]);
+
+  async function createAutomatedDecisionSnapshot(
+    judgment: PIEExecutiveJudgmentRecord | null | undefined,
+    silent = false,
+  ) {
+    if (!judgment || !layer4Identity?.permissions.includes('create_decision_candidate')) return;
+
+    try {
+      const result = createDecisionSnapshotFromJudgment({
+        judgment,
+        existingDecisions: decisionLedger,
+        actor: layer4Identity.actor,
+        evidence: layer4EvidenceCatalog,
+      });
+      if (!result.created || !result.decision) return;
+      const proposalCommit =
+        await localPIEDecisionHistoryActions.persistProposal(result.decision);
+      const automated = automateLayer4DecisionLifecycle({
+        decision: proposalCommit.decision,
+        actor: layer4Identity.actor,
+        evidence: layer4EvidenceCatalog,
+      });
+      if (!automated.decision) return;
+      const automatedDecision = automated.decision;
+      const next = [
+        automatedDecision,
+        ...proposalCommit.decisions.filter(item => item.id !== automatedDecision.id),
+      ];
+      setDecisionLedger(next);
+      // A newly proposed decision normally remains unchanged by the lifecycle
+      // review. If a future low-risk automatic transition does modify it, keep
+      // that later version in the same organization ledger. The proposal was
+      // already saved and queued first, preserving its immutable baseline.
+      if (automatedDecision !== proposalCommit.decision) {
+        await savePIEDecisionLedgerForOrganization(
+          layer4Identity.organizationId,
+          next,
+        );
+      }
+    } catch {
+      if (!silent) {
+        Alert.alert('Decision review unavailable', 'This decision could not be prepared for review yet.');
+      }
+    }
+  }
+
+  const reportAvailableProjectNames = useMemo(
+    () => scheduleOverviewProjectNames(
+      activeProjects,
+      authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
+    ),
+    [activeProjects, authoritativeScheduleItems],
+  );
+  const {
+    reportType,
+    reportFormat,
+    selectedProjectNames: selectedReportProjectNames,
+    setReportFormat,
+    changeReportType,
+    toggleReportProject,
+  } = useReportSelection({
+    availableProjectNames: reportAvailableProjectNames,
+    selectedWorkspaceProject,
+    initialProjectName: DEFAULT_PROJECTS[0],
+  });
+
+  const talkCandidateTasks = useMemo(() => {
+    if (!talkProjectName) return [];
+
+    return [...scheduleTasksForParentProject(
+      talkProjectName,
+      authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
+    )]
+      .sort((left, right) => {
+        const completionOrder = Number(scheduleTaskIsComplete(left)) - Number(scheduleTaskIsComplete(right));
+        return completionOrder || left.taskName.localeCompare(right.taskName);
+      })
+      .map(item => ({
+        id: item.id,
+        taskName: item.taskName,
+        detail: `${item.locationName || 'No area'} · ${item.status} · ${item.percentComplete}%`,
+        isComplete: scheduleTaskIsComplete(item),
+      }));
+  }, [authoritativeScheduleItems, talkProjectName]);
+
+  function projectIntelligenceForTalk(projectName: string, taskId: string | null = null) {
+    const scopeNames = scheduleProjectScopeNames(
+      projectName,
+      authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
+    );
+    const updates = projectUpdatesForScopes(
+      activeSavedUpdates,
+      scopeNames,
+      authoritativeScheduleItems,
+    )
+      .map(update => ({ ...update, projectName }));
+    const documents = projectDocumentsForScopes(scopeNames, projectDocuments)
+      .map(document => ({ ...document, projectId: authorityProjectId(projectName) }));
+    const projectScheduleItems = scheduleTasksForParentProject(
+      projectName,
+      authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
+    ).map(item => ({ ...item, projectName }));
+    const scopedScheduleItems = taskId
+      ? projectScheduleItems.filter(item => item.id === taskId)
+      : projectScheduleItems;
+
+    return buildDAVEProjectTruth({
+      projectId: authorityProjectId(projectName),
+      projectName,
+      updates,
+      scheduleItems: scopedScheduleItems,
+      projectDocuments: documents,
+      referenceDocuments,
+      captureMemories,
+    }).intelligence;
+  }
+
+  function openTalk() {
+    const contextualProject = talkContextProjectForScreen(
+      screen,
+      selectedWorkspaceProject,
+      selectedReportProjectNames[0] || null,
+    );
+    setTalkProjectName(contextualProject || '');
+    setTalkTaskId(null);
+    setTalkAnswer(null);
+    setTalkTypedOpen(false);
+    setTalkVoiceOpen(true);
+  }
+
+  function navigateFromTalk(
+    target: DAVEConversationNavigationTarget,
+    projectName: string,
+  ) {
+    if (target === 'overview') {
+      setScreen('Home');
+      return;
+    }
+    if (target === 'tasks') {
+      setScheduleProjectFilter(projectName || null);
+      setScreen('Schedule');
+      return;
+    }
+    if (target === 'reports') {
+      setScreen('Reports');
+      return;
+    }
+    openProjectWorkspace(projectName);
+  }
+
+  function openTalkSupportingEvidence(
+    projectName: string,
+    citation: DAVEAskEvidence,
+  ) {
+    const intelligence = projectIntelligenceForTalk(projectName);
+    const destination = resolveDAVEAskEvidenceNavigation(intelligence, citation);
+    setTalkAnswer(null);
+    setSelectedWorkspaceProject(projectName);
+
+    if (destination.target === 'schedule') {
+      setScheduleEntryFilter('All');
+      setScheduleProjectFilter(projectName || null);
+      setScreen('Schedule');
+      return;
+    }
+    if (destination.target === 'project_documents') {
+      setScreen('ProjectDocuments');
+      return;
+    }
+    if (destination.target === 'capture') {
+      createNewUpdate(projectName);
+      return;
+    }
+    if (destination.target === 'update_detail') {
+      const sourceUpdate = savedUpdates.find(update =>
+        update.id === destination.sourceRecordId ||
+        update.photos.some(photo => photo.id === destination.sourceRecordId),
+      );
+      if (sourceUpdate) {
+        updateDetailReturnScreenRef.current = screen;
+        setSelectedDetailUpdate(sourceUpdate);
+        setScreen('UpdateDetail', { backTarget: screen });
+        return;
+      }
+    }
+    openProjectWorkspace(projectName);
+  }
+
+  async function persistTalkAnswer(
+    projectName: string,
+    question: string,
+    answer: DAVEAskAnswer,
+    context?: ReturnType<typeof resolveDAVEConversationContext>,
+  ) {
+    const projectId = authorityProjectId(projectName);
+    const createdAt = new Date().toISOString();
+    const entry: DAVEAskConversationEntry = {
+      id: `ask:${encodeURIComponent(projectId)}:${createdAt}:${uid()}`,
+      projectId,
+      question,
+      answer,
+      createdAt,
+      contextStatus: context?.status || 'standalone',
+      resolvedQuestion: context && context.status !== 'standalone'
+        ? context.effectiveQuestion
+        : null,
+      priorEntryId: context?.priorEntryId || null,
+    };
+    await talkHistoryPersistence.append(projectId, entry);
+  }
+
+  function reportTalkAnswerPersistenceFailure(projectName: string, error: unknown) {
+    reportStoragePersistenceFailure({
+      storageKey: daveAskHistoryStorageKey(authorityProjectId(projectName)),
+      label: 'Talk history',
+      error,
+    });
+  }
+
+  function talkMemoryDraft(
+    projectName: string,
+    transcript: string,
+    fields: Partial<import('./services/DAVECaptureMemory').DAVECaptureMemoryFields>,
+    voiceResult?: DAVEVoiceUnderstandingResponse,
+  ) {
+    const createdAt = new Date().toISOString();
+    const memoryId = `talk-memory-${uid()}`;
+    const location = voiceResult?.understanding.recommendedLocation;
+    return createCaptureMemory({
+      id: memoryId,
+      transcript,
+      transcriptSourceRecordId: voiceResult
+        ? `voice-transcription:${memoryId}`
+        : `typed-entry:${memoryId}`,
+      createdAt,
+      recommendedProject: {
+        value: projectName,
+        confidence: 'high',
+        confirmed: true,
+      },
+      recommendedLocation: {
+        value: location?.value || null,
+        confidence: location?.confidence || 'unknown',
+        confirmed: false,
+      },
+      fields,
+    });
+  }
+
+  async function handleTalkInput(
+    transcript: string,
+    voiceResult?: DAVEVoiceUnderstandingResponse,
+  ) {
+    const mentionedProject = mentionedDAVEProject(
+      transcript,
+      reportAvailableProjectNames,
+    );
+    const projectName = mentionedProject || talkProjectName;
+    const taskContextId = mentionedProject && mentionedProject !== talkProjectName
+      ? null
+      : talkTaskId;
+    const intelligence = projectIntelligenceForTalk(projectName, taskContextId);
+    const initialRoute = routeDAVEConversation({
+      transcript,
+      intelligence,
+      interface: voiceResult ? 'voice' : 'text',
+    });
+    const projectId = authorityProjectId(projectName);
+    let history: DAVEAskConversationEntry[];
+    try {
+      history = await talkHistoryPersistence.read(projectId);
+    } catch {
+      Alert.alert(
+        'Talk history unavailable',
+        'The saved conversation could not be opened safely. No history was changed. Try again after checking available phone storage.',
+      );
+      return;
+    }
+    const context = resolveDAVEConversationContext({
+      transcript,
+      history,
+      projectId,
+    });
+    const route = initialRoute;
+    const contextualAnswer = context.status === 'resolved_follow_up'
+      ? answerDAVEConversationContext({
+          resolution: context,
+          intelligence,
+          interface: voiceResult ? 'voice' : 'text',
+        })
+      : null;
+
+    setTalkProjectName(projectName);
+    setTalkTaskId(taskContextId);
+    setTalkVoiceOpen(false);
+    setTalkTypedOpen(false);
+
+    if (context.status === 'ambiguous_follow_up') {
+      Alert.alert('One detail needed', context.effectiveQuestion);
+      return;
+    }
+
+    if (contextualAnswer) {
+      setTalkAnswer({ projectName, question: transcript.trim(), answer: contextualAnswer });
+      void persistTalkAnswer(projectName, transcript.trim(), contextualAnswer, context)
+        .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
+      return;
+    }
+
+    if (route.intent === 'ask') {
+      setTalkAnswer({ projectName, question: transcript.trim(), answer: route.answer });
+      void persistTalkAnswer(projectName, transcript.trim(), route.answer, context)
+        .catch(error => reportTalkAnswerPersistenceFailure(projectName, error));
+      return;
+    }
+
+    if (route.intent === 'task_update') {
+      const projectTasks = scheduleTasksForParentProject(
+        projectName,
+        authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
+      ) as unknown as ScheduleItem[];
+      const selectedContextTask = taskContextId
+        ? projectTasks.find(item => item.id === taskContextId) || null
+        : null;
+      const candidates = selectedContextTask
+        ? [selectedContextTask]
+        : findDAVETaskCandidates(route.command, projectTasks);
+      if (candidates.length === 0) {
+        Alert.alert(
+          'Task not found',
+          `I couldn't find “${route.command.taskReference}” in ${projectName}. Try the task name shown on the Tasks screen.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Talk Again', onPress: () => setTalkVoiceOpen(true) },
+          ],
+        );
+        return;
+      }
+      setTalkTaskAction({
+        projectName,
+        command: route.command,
+        candidates,
+        selectedTaskId: candidates.length === 1 ? candidates[0].id : null,
+      });
+      return;
+    }
+
+    if (route.intent === 'navigate') {
+      navigateFromTalk(route.target, projectName);
+      return;
+    }
+
+    const understoodFields = voiceResult?.understanding.fields;
+    const hasUnderstoodFields = understoodFields
+      ? Object.values(understoodFields).some(Boolean)
+      : false;
+    setTalkCaptureDraft(talkMemoryDraft(
+      projectName,
+      route.transcript,
+      hasUnderstoodFields ? understoodFields! : route.suggestedFields,
+      voiceResult,
+    ));
+  }
+
+  function confirmTalkTaskAction() {
+    if (!talkTaskAction?.selectedTaskId) return;
+    const task = talkTaskAction.candidates.find(item => item.id === talkTaskAction.selectedTaskId);
+    if (!task) return;
+    const previous = {
+      status: task.status as ScheduleStatus,
+      percentComplete: task.percentComplete,
+    };
+    const changes = talkTaskAction.command.changes as Partial<ScheduleItem>;
+    updateScheduleItem(task.id, changes);
+    const successMessage = `${task.taskName}: ${talkTaskAction.command.changeSummary}.`;
+    setTalkTaskAction(null);
+    Alert.alert('Task updated', successMessage, [
+      {
+        text: 'Undo',
+        style: 'cancel',
+        onPress: () => updateScheduleItem(task.id, previous),
+      },
+      { text: 'Done' },
+    ]);
+  }
+
+  const projectStatusReady = startupHydrationReady;
+  const authorityMode = authorityModeForScreen(screen);
+
   const liveAuthorityInput = useMemo<PIELiveAuthorityInput>(() => {
-    const projectName =
-      draft.projectName ||
+    const workspaceProjectName =
+      authorityMode === 'workspace' || authorityMode === 'reports'
+        ? selectedWorkspaceProject
+        : null;
+    const primaryProjectName =
+      overviewProjectName ||
+      selectedWorkspaceProject ||
       activeProjects[0] ||
       DEFAULT_PROJECTS[0] ||
       'Current Project';
+    const projectName =
+      (authorityMode === 'reports' ? selectedReportProjectNames[0] : workspaceProjectName) ||
+      (authorityMode === 'capture' || authorityMode === 'capture-review'
+        ? draft.projectName
+        : primaryProjectName) ||
+      primaryProjectName;
+    const authorityReportType: PIEReportType | undefined =
+      authorityMode !== 'reports'
+        ? undefined
+        : reportFormat === 'executive'
+          ? 'executive_summary'
+          : reportType;
+    const combinedReportScope = authorityMode === 'reports' && reportType === 'combined_project_update'
+      ? buildCombinedReportAuthorityScope({
+          selectedProjectNames: selectedReportProjectNames,
+          projectRecords,
+          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          scheduleItems: authoritativeScheduleItems,
+          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
+          projectAreas,
+          referenceDocuments,
+          projectDocuments,
+          captureMemories,
+          contacts: contactBook,
+        })
+      : null;
+    const dailyReportScope = authorityMode === 'reports' && reportType === 'daily_project_update'
+      ? buildDailyReportAuthorityScope({
+          selectedProjectName: projectName,
+          selectedProjectNames: [projectName],
+          projectRecords,
+          updates: savedUpdates as unknown as import('./types').ProjectUpdate[],
+          scheduleItems: authoritativeScheduleItems,
+          currentUpdate: draft as unknown as import('./types').ProjectUpdate,
+          projectAreas,
+          referenceDocuments,
+          projectDocuments,
+          captureMemories,
+          contacts: contactBook,
+        })
+      : null;
+    const reportEvidenceScope = combinedReportScope || dailyReportScope;
+    const scopedProjectId =
+      combinedReportScope?.projectId || authorityProjectId(projectName);
+    const verifiedLearningEvents =
+      layer4Identity?.cloudTrusted &&
+      layer4Identity.organizationStatus === 'verified' &&
+      !combinedReportScope
+        ? buildVerifiedLearningEventsFromDecisionLedger({
+            decisions: decisionLedger,
+            organizationId: layer4Identity.organizationId,
+            projectId: scopedProjectId,
+          })
+        : [];
 
     return {
-      organizationId: null,
-      projectId: authorityProjectId(projectName),
-      projectName,
-      projectNames: activeProjects.length ? activeProjects : [projectName],
-      updates: savedUpdates as unknown as PIELiveAuthorityInput['updates'],
-      scheduleItems: scheduleItems as unknown as PIELiveAuthorityInput['scheduleItems'],
-      currentUpdate: draft as unknown as PIELiveAuthorityInput['currentUpdate'],
-      projectAreas: projectAreas as unknown as PIELiveAuthorityInput['projectAreas'],
-      contacts: contactBook as unknown as PIELiveAuthorityInput['contacts'],
-      referenceDocuments: referenceDocuments as unknown as PIELiveAuthorityInput['referenceDocuments'],
-      surface: authoritySurfaceForScreen(screen),
-      identityTrusted: false,
-      cloudAvailable: false,
+      organizationId: layer4Identity?.cloudTrusted
+        ? layer4Identity.organizationId
+        : null,
+      projectId: scopedProjectId,
+      projectName: reportEvidenceScope?.projectName || projectName,
+      projectNames: reportEvidenceScope?.projectNames || [projectName],
+      reportType: authorityReportType,
+      updates: (
+        reportEvidenceScope ? reportEvidenceScope.updates : activeSavedUpdates
+      ) as unknown as PIELiveAuthorityInput['updates'],
+      scheduleItems: (
+        reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems
+      ) as unknown as PIELiveAuthorityInput['scheduleItems'],
+      currentUpdate: (
+        reportEvidenceScope ? reportEvidenceScope.currentUpdate : draft
+      ) as unknown as PIELiveAuthorityInput['currentUpdate'],
+      projectAreas: (reportEvidenceScope ? reportEvidenceScope.projectAreas : projectAreas) as unknown as PIELiveAuthorityInput['projectAreas'],
+      contacts: (reportEvidenceScope ? reportEvidenceScope.contacts : contactBook) as unknown as PIELiveAuthorityInput['contacts'],
+      referenceDocuments: (reportEvidenceScope ? reportEvidenceScope.referenceDocuments : referenceDocuments) as unknown as PIELiveAuthorityInput['referenceDocuments'],
+      projectDocuments: (reportEvidenceScope ? reportEvidenceScope.projectDocuments : projectDocuments) as unknown as PIELiveAuthorityInput['projectDocuments'],
+      captureMemories: reportEvidenceScope ? reportEvidenceScope.captureMemories : captureMemories,
+      verifiedLearningEvents,
+      // Do not begin live authority work under the anonymous fallback while
+      // the signed-in organization is still resolving. Large legacy Reality
+      // Models otherwise make startup perform the same expensive pass twice.
+      hydrated: projectStatusReady && layer4IdentityReady,
+      surface: authoritySurfaceForMode(authorityMode),
+      identityTrusted: Boolean(
+        layer4Identity?.cloudTrusted &&
+        layer4Identity.organizationStatus === 'verified',
+      ),
+      cloudAvailable: Boolean(
+        layer4Identity?.cloudTrusted &&
+        layer4Identity.organizationStatus === 'verified',
+      ),
+      projectTruthPersistencePolicy:
+        combinedReportScope?.projectTruthPersistencePolicy || 'persist_project',
     };
   }, [
     activeProjects,
+    authorityMode,
     contactBook,
+    decisionLedger,
     draft,
+    captureMemories,
+    layer4Identity,
+    layer4IdentityReady,
+    overviewProjectName,
     projectAreas,
+    projectDocuments,
+    projectRecords,
+    projectStatusReady,
     referenceDocuments,
-    savedUpdates,
-    scheduleItems,
-    screen,
+    reportType,
+    reportFormat,
+    selectedReportProjectNames,
+    activeSavedUpdates,
+    authoritativeScheduleItems,
+    selectedWorkspaceProject,
   ]);
 
   function selectOverviewProject(projectName: OverviewProjectSelection) {
@@ -9017,27 +12229,41 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   return (
     <PIELiveAuthorityProvider input={liveAuthorityInput}>
-      <SafeAreaView
-        style={styles.shell}
-        edges={['left', 'right', 'bottom']}
+      <StartupHydrationBoundary
+        ready={startupHydrationReady}
+        failures={startupHydration.failures}
+        onRetry={startupHydration.retry}
       >
-        <StatusBar style="dark" />
-
-        <KeyboardAvoidingView
-          behavior={
-            Platform.OS === 'ios'
-              ? 'padding'
-              : undefined
-          }
-          style={styles.keyboard}
+        <AppShellFrame
+          currentScreen={screen}
+          onScreenChange={setScreen}
+          onTalk={openTalk}
+          taskProjects={scheduleWorkspaceProjectOptions(activeProjects, authoritativeScheduleItems)}
+          selectedTaskProject={scheduleProjectFilter}
+          onTaskProjectChange={projectName => {
+            setScheduleProjectFilter(projectName);
+            if (projectName) setSelectedWorkspaceProject(projectName);
+          }}
+          updateProjects={updateWorkspaceProjectOptions(activeProjects, savedUpdates)}
+          selectedUpdateProject={updatesProjectFilter}
+          onUpdateProjectChange={projectName => {
+            setUpdatesProjectFilter(projectName);
+            if (projectName) setSelectedWorkspaceProject(projectName);
+          }}
+          documentProjects={activeProjects}
+          selectedDocumentProject={selectedWorkspaceProject}
+          onDocumentProjectChange={projectName => {
+            if (projectName) setSelectedWorkspaceProject(projectName);
+          }}
         >
-          <View style={styles.appFrame}>
+          <LiveAuthorityStatusBanner />
           {screen === 'Home' && (
             <HomeScreen
               contentStyle={contentStyle}
               projects={activeProjects}
-              savedUpdates={savedUpdates}
-              scheduleItems={scheduleItems}
+              archivedProjects={archivedProjects}
+              savedUpdates={activeSavedUpdates}
+              scheduleItems={authoritativeScheduleItems}
               displayName={displayName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
@@ -9045,21 +12271,26 @@ Note: This update was opened through Outlook because PLZ email security may reje
               detectedProjectName={detectedProjectName}
               gpsCandidateProjectNames={gpsCandidateProjectNames}
               projectDetectionStatus={projectDetectionStatus}
+              projectRecords={projectRecords}
+              statusReady={projectStatusReady}
               onResumeDraft={resumeDraft}
               onDiscardDraft={discardDraft}
               onNewUpdate={createNewUpdate}
               onSelectProject={selectOverviewProject}
               onOpenProject={openProjectWorkspace}
-              onViewProjects={() => setScreen('Projects')}
-              onOpenProjectsOnTrack={() => {
-                setProjectsEntryStatusFilter('onTrack');
-                setScreen('Projects');
+              onOpenUpdate={update => openSavedUpdate(update, 'ProjectWorkspace')}
+              onAddProject={addProject}
+              onReopenProject={reopenProject}
+              onOpenDueToday={() => {
+                setScheduleEntryFilter('Today');
+                setScreen('Schedule');
               }}
-              onOpenDueToday={() => setScreen('Upcoming')}
-              onOpenSentThisWeek={() => {
-                setSavedUpdatesEntryFilter({ tab: 'Sent', withinDays: 7 });
+              onOpenAllActivity={() => {
+                setSavedUpdatesEntryFilter({ tab: 'Sent', withinDays: null });
+                setUpdatesProjectFilter(null);
                 setScreen('SavedUpdates');
               }}
+              onSettings={() => setScreen('Admin')}
             />
           )}
 
@@ -9077,7 +12308,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <AddPhotosScreen
               contentStyle={contentStyle}
               update={draft}
-              projectAreas={projectAreas}
+              projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
               recipientCount={
@@ -9102,34 +12333,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onRetryPhotoAnalysis={photo => {
                 void retryPhotoAnalysis(draft, photo);
               }}
+              scheduleRecommendation={getScheduleDrivenWalkRecommendation(
+                draft.projectName,
+                authoritativeScheduleItems,
+              )}
+              onDeleteUpdate={resumedSavedDraft ? deleteResumedSavedDraft : undefined}
             />
-          )}
-
-          {screen === 'PIEAnalysis' && (
-            <ScreenScroll contentStyle={contentStyle}>
-              <PIEAnalysisStepScreen
-                update={draft}
-                pieStatus={draftPIEStatus}
-                onAddPhoto={takePhoto}
-                onAddDocument={importFieldUpdateDocument}
-                onRetryDocumentUpload={documentId => {
-                  void retryProjectDocumentUpload(documentId);
-                }}
-                onContinue={openReviewFromPIEAnalysis}
-                onQuickContext={selectQuickContext}
-                onRetry={() => {
-                  const failedPhoto =
-                    draft.photos.find(photo =>
-                      photo.photoIntelligence?.status === 'analysis_failed_retry' ||
-                      photo.photoIntelligence?.status === 'comparison_unavailable',
-                    ) || draft.photos[0];
-
-                  if (failedPhoto) {
-                    void retryPhotoAnalysis(draft, failedPhoto);
-                  }
-                }}
-              />
-            </ScreenScroll>
           )}
 
           {screen === 'BuildUpdate' && (
@@ -9137,9 +12346,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
               <BuildUpdateScreen
                 update={draft}
                 selectedArea={currentDraftArea}
-                contacts={currentContacts}
                 draftSavedAt={draftSavedAt}
                 pieStatus={draftPIEStatus}
+                isSaving={fieldUpdateSaving}
                 onNotesChange={notes =>
                   setDraft(prev => ({
                     ...prev,
@@ -9149,67 +12358,145 @@ Note: This update was opened through Outlook because PLZ email security may reje
                       notes === prev.pieSuggestedNote,
                   }))
                 }
-                onSendUpdate={sendFieldUpdate}
-                onSaveDraft={saveDraftFromReview}
+                onSaveUpdate={() => {
+                  void saveFieldUpdateFromReview();
+                }}
                 onEditPhotos={() =>
                   setScreen('AddPhotos')
                 }
-                onContacts={openContacts}
-                onSendEmail={() => {
-                  void sendEmail();
-                }}
-                onSendText={() => {
-                  void sendText();
-                }}
-                onCopy={() => {
-                  void copyMessage();
-                }}
                 onAddDocument={importFieldUpdateDocument}
                 onRetryDocumentUpload={documentId => {
                   void retryProjectDocumentUpload(documentId);
                 }}
                 onConfirmInterpretation={confirmPIEInterpretation}
                 onDismissInterpretation={dismissPIEInterpretation}
-                onShareSheet={() => {
-                  void openSystemShareSheet();
-                }}
                 onRetryPhotoAnalysis={photo => {
                   void retryPhotoAnalysis(draft, photo);
                 }}
+                onDeleteUpdate={resumedSavedDraft ? deleteResumedSavedDraft : undefined}
               />
             </ScreenScroll>
           )}
 
-          {screen === 'Projects' && (
-            <ProjectsScreen
-              contentStyle={contentStyle}
-              activeProjects={activeProjects}
-              savedUpdates={savedUpdates}
-              projectDocuments={projectDocuments}
-              contactBook={contactBook}
-              projectStatsByName={projectStatsByName}
-              onSelect={openProjectWorkspace}
-              onAddProject={addProject}
-              initialStatusFilter={projectsEntryStatusFilter ?? undefined}
-            />
-          )}
-
-          {screen === 'ProjectWorkspace' && (
+          {screen === 'ProjectWorkspace' && projectStatusReady && (
             <ProjectWorkspaceScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
-              savedUpdates={savedUpdates}
+              savedUpdates={activeSavedUpdates}
+              captureMemories={captureMemories}
+              projectWalkSession={
+                activeProjectWalkSession?.projectName.trim().toLowerCase() ===
+                selectedWorkspaceProject.trim().toLowerCase()
+                  ? activeProjectWalkSession
+                  : null
+              }
+              usedCaptureMemoryIds={[
+                ...activeSavedUpdates.flatMap(update => update.sourceCaptureMemoryIds || []),
+                ...(draft.sourceCaptureMemoryIds || []),
+              ]}
+              projectAreas={selectedWorkspaceProjectAreas}
               projectDocuments={projectDocuments}
+              scheduleItems={authoritativeScheduleItems}
               contactBook={contactBook}
-              projectStats={projectStatsForName(projectStatsByName, selectedWorkspaceProject)}
-              onBack={() => setScreen('Projects')}
+              coverPhoto={coverPhotoForProject(projectRecords, selectedWorkspaceProject)}
+              coverPhotoMode={projectRecords.find(project =>
+                project.name.toLowerCase() === selectedWorkspaceProject.toLowerCase()
+              )?.coverPhotoMode || 'automatic'}
+              coverPhotoUri={resolveProjectCoverPhotoUri(
+                projectRecords,
+                selectedWorkspaceProject,
+                mostRecentHeroPhotoUri(
+                  projectUpdatesForParentProject(
+                    activeSavedUpdates,
+                    selectedWorkspaceProject,
+                    authoritativeScheduleItems,
+                  ),
+                ),
+              )}
+              onTakeNewCoverPhoto={() => {
+                void takeNewProjectCoverPhoto(selectedWorkspaceProject);
+              }}
+              onChooseCoverFromLibrary={() => {
+                void chooseProjectCoverFromLibrary(selectedWorkspaceProject);
+              }}
+              onUseBestProjectPhoto={() => useBestProjectPhoto(selectedWorkspaceProject)}
+              onRemoveCoverPhoto={() => removeProjectCoverPhoto(selectedWorkspaceProject)}
+              onBack={() => setScreen('Home')}
               onNewFieldUpdate={createNewUpdate}
-              onOpenUpdates={() => setScreen('SavedUpdates')}
-              onOpenPhotoDifferences={openLatestProjectPhotoDifference}
+              onNewFieldUpdateForTask={item =>
+                createNewUpdateForScheduleTask(selectedWorkspaceProject, item)
+              }
+              onAddTask={() => {
+                setScheduleEntryFilter('All');
+                setScheduleAddProjectName(selectedWorkspaceProject);
+                setScheduleProjectFilter(selectedWorkspaceProject);
+                setScreen('Schedule');
+              }}
+              onUpdateScheduleItem={updateScheduleItem}
+              onDeleteScheduleItem={deleteScheduleItem}
+              onStartProjectWalk={() => startProjectWalk(selectedWorkspaceProject)}
+              onFinishProjectWalk={finishProjectWalk}
+              onCancelProjectWalk={cancelProjectWalk}
+              onPrepareWalkUpdate={memories =>
+                prepareProjectWalkFieldUpdate(selectedWorkspaceProject, memories)
+              }
+              onSaveCaptureMemory={saveCaptureMemory}
+              onDeleteCaptureMemory={deleteCaptureMemory}
+              onAddArea={name => addProjectArea(name, selectedWorkspaceProject)}
+              onUpdateArea={updateProjectArea}
+              onDeleteArea={deleteProjectArea}
+              onUseCurrentLocationForArea={areaId => {
+                void useCurrentLocationForArea(areaId);
+              }}
+              onOpenUpdates={() => {
+                setSavedUpdatesEntryFilter({
+                  tab: 'Sent',
+                  withinDays: null,
+                  project: selectedWorkspaceProject,
+                });
+                setUpdatesProjectFilter(selectedWorkspaceProject);
+                setScreen('SavedUpdates');
+              }}
+              onOpenUpdate={openSavedUpdate}
               onOpenDocuments={() => setScreen('ProjectDocuments')}
               onRetryQueuedUpdate={retryQueuedUpdate}
               onDeleteProject={deleteProjectPermanently}
+              onCloseProject={closeProject}
               isDeletingProject={deletingProjectName === selectedWorkspaceProject}
+            />
+          )}
+
+          {screen === 'Reports' && projectStatusReady && (
+            <ReportsScreen
+              contentStyle={contentStyle}
+              projectName={selectedWorkspaceProject}
+              reportType={reportType}
+              onReportTypeChange={changeReportType}
+              availableProjectNames={reportAvailableProjectNames}
+              selectedProjectNames={selectedReportProjectNames}
+              onToggleProject={toggleReportProject}
+              reportFormat={reportFormat}
+              onReportFormatChange={setReportFormat}
+              updates={liveAuthorityInput.updates as unknown as Parameters<typeof ReportsScreen>[0]['updates']}
+              scheduleItems={liveAuthorityInput.scheduleItems as unknown as Parameters<typeof ReportsScreen>[0]['scheduleItems']}
+              currentUpdate={liveAuthorityInput.currentUpdate as unknown as Parameters<typeof ReportsScreen>[0]['currentUpdate']}
+              projectAreas={liveAuthorityInput.projectAreas as unknown as Parameters<typeof ReportsScreen>[0]['projectAreas']}
+              contacts={liveAuthorityInput.contacts as unknown as Parameters<typeof ReportsScreen>[0]['contacts']}
+              referenceDocuments={liveAuthorityInput.referenceDocuments as unknown as Parameters<typeof ReportsScreen>[0]['referenceDocuments']}
+              decisionLedger={decisionLedger}
+              layer4Identity={layer4Identity}
+              decisionLedgerMigrationStatus={decisionLedgerMigrationStatus}
+              decisionEvidenceReferences={layer4EvidenceCatalog}
+              onCreateDecisionSnapshot={(judgment, silent) => {
+                void createAutomatedDecisionSnapshot(judgment, silent);
+              }}
+              onSavedUpdates={() => {
+                setUpdatesProjectFilter(null);
+                setScreen('SavedUpdates');
+              }}
+              onCopyReport={copyReport}
+              onEmailReport={emailReport}
+              onTextReport={textReport}
             />
           )}
 
@@ -9217,9 +12504,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ProjectDocumentsScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
-              documents={projectDocumentsForProject(selectedWorkspaceProject, projectDocuments)}
-              projectAreas={projectAreas}
-              updates={savedUpdates.filter(update => update.projectName === selectedWorkspaceProject)}
+              documents={projectDocumentsForScopes(
+                workspaceScopeNames(selectedWorkspaceProject),
+                projectDocuments,
+              )}
+              projectAreas={selectedWorkspaceProjectAreas}
+              updates={projectUpdatesForScopes(
+                activeSavedUpdates,
+                workspaceScopeNames(selectedWorkspaceProject),
+                authoritativeScheduleItems,
+              )}
               onBack={() => setScreen('ProjectWorkspace')}
               onUpload={() => {
                 void importProjectDocumentForProject(selectedWorkspaceProject);
@@ -9229,6 +12523,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }}
               onOpen={openProjectDocument}
               onUpdate={updateProjectDocument}
+              onSetCurrentSchedule={makeProjectScheduleDocumentCurrent}
               onRetry={documentId => {
                 void retryProjectDocumentUpload(documentId);
               }}
@@ -9236,28 +12531,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
             />
           )}
 
-          {screen === 'ReferenceDocuments' && (
-            <ReferenceDocumentsScreen
-              contentStyle={contentStyle}
-              documents={referenceDocuments}
-              onBack={() => setScreen('Projects')}
-              onImport={importReferenceDocument}
-              onUpdate={updateReferenceDocument}
-              onToggleCurrent={markReferenceDocumentCurrent}
-              onOpen={openReferenceDocument}
-              onDelete={deleteReferenceDocument}
-            />
-          )}
-
-          {screen === 'Schedule' && (
+          {screen === 'Schedule' && projectStatusReady && (
             <ScheduleScreen
               contentStyle={contentStyle}
-              scheduleItems={scheduleItems}
-              savedUpdates={savedUpdates}
+              screenshotImportAvailable={scheduleScreenshotOcrAvailable}
+              scheduleItems={authoritativeScheduleItems}
+              savedUpdates={activeSavedUpdates}
               projectAreas={projectAreas}
               projects={projects}
-              scheduleDocuments={referenceDocuments.filter(document => document.category === 'Schedules')}
-              onBack={() => setScreen('Home')}
+              scheduleDocuments={referenceDocuments.filter(document =>
+                document.category === 'Schedules' ||
+                document.notes.includes('[Schedule communication screenshot]'),
+              )}
+              onBack={() => {
+                setScheduleAddProjectName(null);
+                setScreen('Home');
+              }}
               onOpenDocument={openReferenceDocument}
               onDeleteDocument={deleteScheduleDocument}
               onSetActiveDocument={setActiveScheduleDocument}
@@ -9265,20 +12554,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onUpdate={updateScheduleItem}
               onDelete={deleteScheduleItem}
               onImport={importScheduleFile}
-              scheduleAiExtractorUrl={scheduleAiExtractorUrl}
-              onScheduleAiExtractorUrlChange={setScheduleAiExtractorUrl}
-            />
-          )}
-
-          {screen === 'Upcoming' && (
-            <UpcomingScreen
-              contentStyle={contentStyle}
-              scheduleItems={scheduleItems}
-              savedUpdates={savedUpdates}
-              onBack={() => setScreen('Home')}
-              onSchedule={() => setScreen('Schedule')}
-              onNewUpdate={() => createNewUpdate()}
-              autoOpenDueToday
+              onImportScreenshot={importScheduleCommunicationScreenshot}
+              onApproveImport={approveScheduleImport}
+              onCancelImport={cancelScheduleImport}
+              incomingImportBatch={incomingScheduleImportBatch}
+              onIncomingImportConsumed={() => setIncomingScheduleImportBatch(null)}
+              onNewFieldUpdateForTask={item =>
+                createNewUpdateForScheduleTask(
+                  item.scheduleProjectName?.trim() || item.projectName.trim() || selectedWorkspaceProject,
+                  item,
+                )
+              }
+              onOpenUpdate={update => openSavedUpdate(update, 'Schedule')}
+              initialFilter={scheduleEntryFilter}
+              initialAddProjectName={scheduleAddProjectName}
+              projectFilter={scheduleProjectFilter}
+              defaultOwner={displayName}
             />
           )}
 
@@ -9287,7 +12578,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               <DiagnosticsScreen
                 projectAreas={projectAreas}
                 referenceDocuments={referenceDocuments}
-                onBack={() => setScreen('Projects')}
+                onBack={() => setScreen('Admin')}
               />
             </ScreenScroll>
           )}
@@ -9300,18 +12591,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={projectAreas}
               scheduleItems={scheduleItems}
               referenceDocuments={referenceDocuments}
+              syncCleanupNotice={syncCleanupNotice}
               displayName={displayName}
               onDisplayNameChange={setDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
-              onProjectManagement={() => setScreen('Projects')}
-              onReferenceDocuments={() => setScreen('ReferenceDocuments')}
-              onSchedule={() => setScreen('Schedule')}
-              onBackup={() => {
-                void exportBackup();
+              onBackup={passphrase => {
+                void exportBackup(passphrase);
               }}
-              onRestore={() => {
-                void restoreBackup();
+              onRestore={passphrase => {
+                void restoreBackup(passphrase);
               }}
               onAddArea={addProjectArea}
               onUpdateArea={updateProjectArea}
@@ -9320,6 +12609,88 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 void useCurrentLocationForArea(areaId);
               }}
               onRemoveMissingPhotos={removeMissingSyncPhotos}
+              onRetryUpdateSync={update => retryQueuedUpdate(update as unknown as ProjectUpdate)}
+              onApplyCloudConflictUpdate={update => {
+                const cloudUpdate = update as unknown as ProjectUpdate;
+                setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
+                  localUpdates: previous,
+                  cloudUpdates: [cloudUpdate],
+                  tombstones: deletedUpdateTombstonesRef.current,
+                }));
+              }}
+              onApplyCloudRecovery={recovered => {
+                // Audit P1-27: a collection whose cloud read failed arrives
+                // empty with a non-null error. Skip it entirely — an empty
+                // failed read must never be merged as cloud truth.
+                const failed = recovered.collectionErrors;
+                if (failed.updates === null) {
+                  const cloudUpdates = (recovered.updates as unknown as Partial<ProjectUpdate>[])
+                    .map(normalizeUpdate)
+                    .map(migrateLegacyProjectUpdate);
+                  setSavedUpdates(previous => mergeSavedUpdatesWithTombstones({
+                    localUpdates: previous,
+                    cloudUpdates,
+                    tombstones: deletedUpdateTombstones,
+                  }));
+                }
+                if (failed.projectAreas === null) {
+                  setProjectAreas(previous => mergeDAVEProjectAreaRecoveryRecords({
+                    local: previous,
+                    cloud: normalizeProjectAreas(
+                      recovered.projectAreas.filter(isStartupProjectAreaRecord),
+                    ),
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'project_area',
+                    ),
+                  }));
+                  markProjectAreasAuthorityReady(true);
+                }
+                if (failed.scheduleItems === null) {
+                  const safeCloudItems = normalizeScheduleItems(
+                    recovered.scheduleItems.filter(isDAVESafeCloudScheduleRecord),
+                  ).map(migrateLegacyScheduleItem);
+                  setScheduleItems(previous => recoverDAVEScheduleRecords({
+                    local: previous,
+                    cloud: safeCloudItems,
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'schedule_item',
+                    ),
+                    allowCloudOnly: true,
+                  }));
+                  markScheduleItemsAuthorityReady(true);
+                }
+                if (failed.referenceDocuments === null) {
+                  setReferenceDocuments(previous => reconcileCurrentScheduleDocuments(mergeDAVECloudRecoveryRecords({
+                    local: previous,
+                    cloud: normalizeReferenceDocuments(
+                      recovered.referenceDocuments.filter(isStartupReferenceDocumentRecord),
+                    ),
+                    deletedIds: deletedDAVERecordIds(
+                      recovered.tombstones,
+                      'reference_document',
+                    ),
+                  })));
+                  markReferenceDocumentsAuthorityReady(true);
+                }
+                if (failed.projects === null) {
+                  const cloudProjectRecords = recovered.projects
+                    .filter(project => project.name.trim())
+                    .map(projectRecordFromCloud);
+                  setProjectRecords(previous => {
+                    const merged = mergeProjectRecords(
+                      [],
+                      previous,
+                      cloudProjectRecords,
+                      deletedProjectNames,
+                    );
+                    setProjects(merged.map(project => project.name));
+                    return merged;
+                  });
+                }
+              }}
+              onSaveCaptureMemory={saveCaptureMemory}
             />
           )}
 
@@ -9330,7 +12701,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 selectedRecipients={draft.recipients}
                 doneLabel={
                   contactsReturnScreen === 'AddPhotos' ||
-                  contactsReturnScreen === 'PIEAnalysis' ||
                   contactsReturnScreen === 'BuildUpdate'
                     ? 'Back to Update'
                     : 'Done'
@@ -9349,20 +12719,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <SavedUpdatesScreen
               contentStyle={contentStyle}
               updates={savedUpdates}
+              deletedTaskEvidenceIds={deletedTaskEvidenceIds}
               projectAreas={projectAreas}
               contactBook={contactBook}
               onOpen={openSavedUpdate}
               onDelete={deleteSavedUpdate}
               onArchive={archiveSavedUpdate}
-              onNewUpdate={() =>
-                createNewUpdate()
-              }
               onRetryPhotoAnalysis={(update, photo) => {
                 void retryPhotoAnalysis(update, photo);
               }}
               onRetryQueuedUpdate={retryQueuedUpdate}
+              onBack={() => setScreen('Home')}
               initialTab={savedUpdatesEntryFilter?.tab}
               initialWithinDays={savedUpdatesEntryFilter?.withinDays}
+              initialProject={savedUpdatesEntryFilter?.project}
+              projectFilter={updatesProjectFilter}
+              onProjectFilterChange={setUpdatesProjectFilter}
             />
           )}
 
@@ -9370,7 +12742,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ScreenScroll contentStyle={contentStyle}>
               <ReadOnlyUpdateDetailScreen
                 update={liveDetailUpdate}
-                onBack={() => setScreen('SavedUpdates')}
+                backLabel={updateDetailReturnScreenRef.current === 'Schedule' ? 'Tasks' : updateDetailReturnScreenRef.current === 'ProjectWorkspace' ? 'Project' : 'Updates'}
+                onBack={() => setScreen(updateDetailReturnScreenRef.current)}
                 onRetry={
                   liveDetailUpdate.status === 'queued' ||
                   liveDetailUpdate.status === 'failed'
@@ -9384,19 +12757,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 }}
                 onDelete={() => {
                   deleteSavedUpdate(liveDetailUpdate.id, () =>
-                    setScreen('SavedUpdates'),
+                    setScreen(updateDetailReturnScreenRef.current),
                   );
                 }}
                 onArchive={() => {
                   archiveSavedUpdate(liveDetailUpdate.id, () =>
-                    setScreen('SavedUpdates'),
+                    setScreen(updateDetailReturnScreenRef.current),
                   );
                 }}
               />
             </ScreenScroll>
           )}
 
-          <PhotoIntelligenceSignInModal
+          <SignInModal
             visible={Boolean(photoAuthRequest)}
             email={photoAuthEmail}
             password={photoAuthPassword}
@@ -9481,22 +12854,107 @@ Note: This update was opened through Outlook because PLZ email security may reje
             </View>
           </Modal>
 
-          <DocumentProjectSelectionSheet
+          <DocumentUploadDetailsSheet
             visible={Boolean(documentUploadRequest)}
-            projects={activeProjects}
-            selected={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
-            onToggle={toggleDocumentUploadProject}
+            projects={documentUploadRequest?.attachToDraft ? [draft.projectName] : activeProjects}
+            selectedProjects={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
+            categories={PROJECT_DOCUMENT_CATEGORIES}
+            selectedCategory={documentUploadRequest?.category || 'Other'}
+            onCategoryChange={setDocumentUploadCategory}
+            onToggleProject={toggleDocumentUploadProject}
             onConfirm={confirmDocumentProjectSelection}
             onClose={cancelDocumentProjectSelection}
           />
 
-          <BottomTabs
-            current={screen}
-            onChange={setScreen}
+          <DAVEVoiceCaptureSheet
+            visible={talkVoiceOpen}
+            projectName={talkProjectName}
+            candidateProjects={reportAvailableProjectNames}
+            candidateTasks={talkCandidateTasks}
+            selectedTaskId={talkTaskId}
+            candidateLocations={talkProjectAreas.map(area => area.name)}
+            title="Talk"
+            prompt="What do you need?"
+            guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
+            continueLabel="Continue"
+            showWalkContext={false}
+            onMemoryReady={result => handleTalkInput(result.transcript, result)}
+            onProjectChange={projectName => {
+              setTalkProjectName(projectName);
+              setTalkTaskId(null);
+            }}
+            onTaskChange={setTalkTaskId}
+            onTypeInstead={() => {
+              setTalkVoiceOpen(false);
+              setTalkTypedOpen(true);
+            }}
+            onCancel={() => setTalkVoiceOpen(false)}
           />
-          </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
+
+          <DAVETypedCaptureSheet
+            visible={talkTypedOpen}
+            projectName={talkProjectName}
+            title="Talk"
+            prompt="What do you need?"
+            guidance="Ask a question, update a task, open a screen, or enter project information to remember."
+            placeholder="Example: Mark electrical rough-in complete. Or: What changed today?"
+            continueLabel="Continue"
+            accessibilityLabel="Talk message"
+            onContinue={text => handleTalkInput(text)}
+            onCancel={() => setTalkTypedOpen(false)}
+          />
+
+          {talkCaptureDraft ? (
+            <DAVECaptureConfirmationSheet
+              visible
+              transcript={talkCaptureDraft.transcript}
+              draft={talkCaptureDraft}
+              projects={reportAvailableProjectNames}
+              locations={talkProjectAreas.map(area => area.name)}
+              sourceLabel={talkCaptureDraft.evidence.some(
+                evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
+              ) ? 'Source transcript' : 'Source note'}
+              onSave={async memory => {
+                await saveCaptureMemory(memory);
+                setTalkCaptureDraft(null);
+                Alert.alert('Saved', 'The confirmed project information was added to memory.');
+              }}
+              onCancel={() => setTalkCaptureDraft(null)}
+            />
+          ) : null}
+
+          <DAVEConversationAnswerSheet
+            visible={Boolean(talkAnswer)}
+            projectName={talkAnswer?.projectName || talkProjectName}
+            question={talkAnswer?.question || ''}
+            answer={talkAnswer?.answer || null}
+            onOpenEvidence={citation => openTalkSupportingEvidence(
+              talkAnswer?.projectName || talkProjectName,
+              citation,
+            )}
+            onAskAnother={() => {
+              setTalkAnswer(null);
+              setTalkVoiceOpen(true);
+            }}
+            onClose={() => setTalkAnswer(null)}
+          />
+
+          <DAVETaskActionConfirmationSheet
+            visible={Boolean(talkTaskAction)}
+            projectName={talkTaskAction?.projectName || talkProjectName}
+            command={talkTaskAction?.command || null}
+            candidates={talkTaskAction?.candidates || []}
+            selectedTaskId={talkTaskAction?.selectedTaskId || null}
+            onSelectTask={taskId => setTalkTaskAction(current => current ? {
+              ...current,
+              selectedTaskId: taskId,
+            } : null)}
+            onConfirm={confirmTalkTaskAction}
+            onCancel={() => setTalkTaskAction(null)}
+          />
+
+        </AppShellFrame>
+      </StartupHydrationBoundary>
     </PIELiveAuthorityProvider>
   );
 }
@@ -9511,19 +12969,53 @@ function authorityProjectId(projectName: string) {
   return `project-${normalized || 'unassigned'}`;
 }
 
-function authoritySurfaceForScreen(screen: Screen): PIELiveAuthorityInput['surface'] {
-  if (screen === 'AddPhotos' || screen === 'PIEAnalysis' || screen === 'SelectProject') {
+function talkContextProjectForScreen(
+  screen: Screen,
+  workspaceProject: string,
+  reportProject: string | null,
+): string | null {
+  if (screen === 'Reports') return reportProject;
+
+  if (
+    screen === 'ProjectWorkspace' ||
+    screen === 'ProjectDocuments' ||
+    screen === 'UpdateDetail' ||
+    screen === 'AddPhotos' ||
+    screen === 'BuildUpdate'
+  ) {
+    return workspaceProject;
+  }
+
+  return null;
+}
+
+type PIELiveAuthorityMode =
+  | 'primary'
+  | 'capture'
+  | 'capture-review'
+  | 'workspace'
+  | 'reports';
+
+function authorityModeForScreen(screen: Screen): PIELiveAuthorityMode {
+  if (screen === 'Reports') return 'reports';
+  if (screen === 'BuildUpdate') return 'capture-review';
+  if (screen === 'ProjectWorkspace' || screen === 'ProjectDocuments') return 'workspace';
+  if (
+    screen === 'SelectProject' ||
+    screen === 'AddPhotos' ||
+    screen === 'Contacts'
+  ) {
     return 'capture';
   }
+  return 'primary';
+}
 
-  if (screen === 'BuildUpdate') {
-    return 'reports';
-  }
-
-  if (screen === 'Projects') {
-    return 'projects';
-  }
-
+function authoritySurfaceForMode(
+  mode: PIELiveAuthorityMode,
+): PIELiveAuthorityInput['surface'] {
+  if (mode === 'capture') return 'capture';
+  if (mode === 'reports' || mode === 'capture-review') return 'reports';
+  if (mode === 'workspace') return 'projects';
   return 'home';
 }
 
@@ -9620,6 +13112,7 @@ function useFadeSlideIn(durationMs: number) {
 function HomeScreen({
   contentStyle,
   projects,
+  archivedProjects,
   savedUpdates,
   scheduleItems,
   displayName,
@@ -9629,18 +13122,23 @@ function HomeScreen({
   detectedProjectName,
   gpsCandidateProjectNames,
   projectDetectionStatus,
+  projectRecords,
+  statusReady,
   onResumeDraft,
   onDiscardDraft,
   onNewUpdate,
   onSelectProject,
   onOpenProject,
-  onViewProjects,
-  onOpenProjectsOnTrack,
+  onOpenUpdate,
+  onAddProject,
+  onReopenProject,
   onOpenDueToday,
-  onOpenSentThisWeek,
+  onOpenAllActivity,
+  onSettings,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   projects: string[];
+  archivedProjects: string[];
   savedUpdates: ProjectUpdate[];
   scheduleItems: ScheduleItem[];
   displayName: string;
@@ -9650,83 +13148,101 @@ function HomeScreen({
   detectedProjectName: string | null;
   gpsCandidateProjectNames: string[];
   projectDetectionStatus: OverviewDetectionStatus;
+  projectRecords: ProjectRecord[];
+  statusReady: boolean;
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
   onNewUpdate: (projectName?: string) => void;
   onSelectProject: (projectName: OverviewProjectSelection) => void;
   onOpenProject: (projectName: string) => void;
-  onViewProjects: () => void;
-  onOpenProjectsOnTrack: () => void;
+  onOpenUpdate: (update: ProjectUpdate) => void;
+  onAddProject: (projectName: string) => boolean;
+  onReopenProject: (projectName: string) => void;
   onOpenDueToday: () => void;
-  onOpenSentThisWeek: () => void;
+  onOpenAllActivity: () => void;
+  onSettings: () => void;
 }) {
-  const [selectorOpen, setSelectorOpen] = useState(false);
-  const [selectorIntent, setSelectorIntent] =
-    useState<'filter' | 'newUpdate'>('filter');
+  const liveAuthority = usePIELiveAuthority();
+  const [showAddProject, setShowAddProject] = useState(false);
 
-  const activeLabel = selectedProjectName || 'All Projects';
-  const scopedProjects = selectedProjectName
-    ? projects.filter(
-        project => project.toLowerCase() === selectedProjectName.toLowerCase(),
-      )
-    : projects;
+  if (!statusReady) {
+    return (
+      <DAVEProjectStatusLoadingScreen
+        contentStyle={contentStyle}
+        greeting={timeOfDayGreeting(displayName)}
+        dateLabel={todayLongDateLabel()}
+        onSettings={onSettings}
+      />
+    );
+  }
+  const scopedProjects = scheduleOverviewProjectNames(
+    projects,
+    scheduleItems as unknown as import('./types').ScheduleItem[],
+  );
   const overviewRows = buildOverviewProjectRows(
     scopedProjects,
     savedUpdates,
     scheduleItems,
   );
-  const attentionRows = overviewRows.filter(row => row.needsAttention);
-  const caughtUpRows = overviewRows.filter(row => !row.needsAttention);
+  const attentionRows = overviewRows.filter(row => row.health !== 'Healthy');
+  const caughtUpRows = overviewRows.filter(row => row.health === 'Healthy');
+  const needsSetupRows = overviewRows.filter(row => row.health === 'Needs Setup');
+  const blockedRows = overviewRows.filter(row => row.health === 'Blocked');
+  const atRiskRows = overviewRows.filter(row => row.health === 'At Risk');
+  const topPriority = attentionRows[0] || null;
+  const authoritativePriority = topPriority &&
+    topPriority.project.trim().toLowerCase() === liveAuthority.projectTruth.projectName.trim().toLowerCase()
+      ? liveAuthority.projectTruth.briefing.nextActions[0] || null
+      : null;
+  const overviewScopedUpdates = Array.from(new Map(
+    overviewRows
+      .flatMap(row =>
+        projectUpdatesForParentProject(savedUpdates, row.project, scheduleItems),
+      )
+      .map(update => [update.id, update]),
+  ).values());
 
-  const projectStatsByName = buildProjectStatsByName(savedUpdates);
-  const openItemsCount = scopedProjects.reduce(
-    (sum, project) => sum + projectStatsForName(projectStatsByName, project).openActions,
-    0,
-  );
   const dueTodayCount = overviewRows.filter(row => row.dueTodayLabel !== null).length;
-  const sentThisWeekCount = savedUpdates.filter(update => {
+  const sentThisWeekCount = overviewScopedUpdates.filter(update => {
     if (lifecycleStatusForUpdate(update) !== 'sent') return false;
-    if (!scopedProjects.some(project => projectMatchesScope(update, project))) return false;
 
     const daysSinceSent = daysUntilDate(update.date);
 
     return daysSinceSent !== null && daysSinceSent <= 0 && daysSinceSent >= -7;
   }).length;
-  const daveObservationCount = overviewRows.reduce(
-    (sum, row) => sum + row.observationCount,
-    0,
-  );
-  const heroPhotoUri = mostRecentHeroPhotoUri(scopedProjects, savedUpdates);
-  const [daveObservationsModalVisible, setDaveObservationsModalVisible] =
-    useState(false);
-  const allDaveObservations = scopedProjects
-    .flatMap(project =>
-      buildPIEProjectBriefModel(project, savedUpdates).observations.map(
-        observation => ({ ...observation, projectName: project }),
+  const todayObservations = overviewRows
+    .flatMap(row =>
+      buildPIEProjectBriefModel(
+        null,
+        projectUpdatesForParentProject(savedUpdates, row.project, scheduleItems),
+      ).observations.map(
+        observation => ({ ...observation, projectName: row.project }),
       ),
     )
+    .filter(observation => updateTimelineGroup(observation.update.date) === 'Today')
     .sort((a, b) => updateSortTime(b.update) - updateSortTime(a.update));
+  const priorityObservation = topPriority
+    ? todayObservations.find(observation =>
+        observation.projectName.trim().toLowerCase() === topPriority.project.trim().toLowerCase() &&
+        observation.text.trim() !== topPriority.subtitle.trim(),
+      ) || null
+    : null;
+  const recentActivity = [...overviewScopedUpdates]
+    .sort((left, right) => updateSortTime(right) - updateSortTime(left))
+    .slice(0, 5);
 
-  function openSelector(intent: 'filter' | 'newUpdate') {
-    setSelectorIntent(intent);
-    setSelectorOpen(true);
+  function overviewPhotoForProject(projectName: string) {
+    const scopedUpdates = projectUpdatesForParentProject(
+      savedUpdates,
+      projectName,
+      scheduleItems,
+    );
+    return resolveProjectCoverPhotoUri(
+      projectRecords,
+      projectName,
+      mostRecentHeroPhotoUri(scopedUpdates) || undefined,
+    );
   }
-
-  function selectProject(projectName: string | null) {
-    onSelectProject(projectName);
-    setSelectorOpen(false);
-
-    if (selectorIntent === 'newUpdate' && projectName) {
-      onNewUpdate(projectName);
-    }
-  }
-
-  const projectPickerCandidates =
-    selectorIntent === 'newUpdate' &&
-    projectDetectionStatus === 'multiple' &&
-    gpsCandidateProjectNames.length > 0
-      ? gpsCandidateProjectNames
-      : projects;
 
   return (
     <View style={styles.overviewPageWrap}>
@@ -9741,40 +13257,22 @@ function HomeScreen({
         contentContainerStyle={contentStyle}
         keyboardShouldPersistTaps="handled"
       >
+      <OverviewResponsiveFrame>
       <View style={styles.overviewGreetingHeader}>
-        <Text style={styles.overviewGreetingText}>{timeOfDayGreeting(displayName)}</Text>
-        <Text style={styles.overviewGreetingDate}>{todayLongDateLabel()}</Text>
-      </View>
-
-      <TouchableOpacity
-        style={styles.phase2SelectorButton}
-        onPress={() => openSelector('filter')}
-      >
-        <View style={styles.rowMain}>
-          <Text style={styles.phase2SelectorLabel}>Project</Text>
-          <Text style={styles.phase2SelectorValue}>
-            {detectedProjectName && selectedProjectName === detectedProjectName
-              ? `Project: ${detectedProjectName}`
-              : activeLabel}
-          </Text>
-          <Text style={styles.rowSub}>
-            {projectDetectionStatus === 'checking'
-              ? 'Checking nearby project...'
-              : detectedProjectName
-                ? `Detected: ${detectedProjectName}`
-                : projectDetectionStatus === 'denied'
-                  ? 'Location unavailable; showing all projects'
-                  : projectDetectionStatus === 'multiple'
-                    ? 'Multiple nearby projects found; choose one to continue'
-                    : projectDetectionStatus === 'not_applied'
-                      ? 'Nearby project found; manual selection preserved'
-                  : projectDetectionStatus === 'unmatched'
-                    ? 'No nearby project matched; showing all projects'
-                    : 'Select a project or view all projects'}
-          </Text>
+        <View style={styles.overviewGreetingCopy}>
+          <Text style={styles.overviewGreetingText}>{timeOfDayGreeting(displayName)}</Text>
+          <Text style={styles.overviewGreetingDate}>{todayLongDateLabel()}</Text>
         </View>
-        <Ionicons name="chevron-down" size={22} color={colors.primary} />
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.overviewAskDaveButton}
+          onPress={onSettings}
+          accessibilityRole="button"
+          accessibilityLabel="Open Settings"
+          accessibilityHint="Opens app settings"
+        >
+          <Ionicons name="settings-outline" size={21} color={colors.primary} />
+        </TouchableOpacity>
+      </View>
 
       {unfinishedDraft ? (
         <View style={styles.draftRecoveryCard}>
@@ -9845,170 +13343,282 @@ function HomeScreen({
         </View>
       ) : null}
 
-      <OverviewHeroCard
-        openItemsCount={openItemsCount}
-        dueTodayCount={dueTodayCount}
-        heroPhotoUri={heroPhotoUri}
-      />
-
-      <View style={styles.overviewBentoRow}>
-        <OverviewBentoCard
-          icon="checkmark-circle-outline"
-          iconColor={colors.success}
-          backgroundColor={colors.successSoft}
-          value={caughtUpRows.length}
-          label="Projects on track"
-          onPress={onOpenProjectsOnTrack}
-        />
-        <OverviewBentoCard
-          icon="time-outline"
-          iconColor={colors.warning}
-          backgroundColor={colors.warningSoft}
-          value={dueTodayCount}
-          label="Due today"
-          onPress={onOpenDueToday}
-        />
-        <OverviewBentoCard
-          icon="send-outline"
-          iconColor={colors.primary}
-          backgroundColor={colors.primarySoft}
-          value={sentThisWeekCount}
-          label="Sent this week"
-          onPress={onOpenSentThisWeek}
-        />
-        <OverviewBentoCard
-          icon="bulb-outline"
-          iconColor={colors.insight}
-          backgroundColor={colors.insightSoft}
-          value={daveObservationCount}
-          label="DAVE observations"
-          onPress={() => setDaveObservationsModalVisible(true)}
-        />
+      <View style={styles.overviewHealthCard}>
+        <View style={styles.overviewDashboardSectionHeader}>
+          <View>
+            <Text style={styles.overviewHealthEyebrow}>PORTFOLIO</Text>
+            <Text style={styles.overviewHealthTitle}>Project Health</Text>
+          </View>
+          <Ionicons name="pulse-outline" size={24} color="rgba(255,255,255,0.82)" />
+        </View>
+        <View style={styles.overviewHealthMetrics}>
+          {[
+            { label: 'Active Projects', value: scopedProjects.length },
+            { label: 'Healthy', value: caughtUpRows.length },
+            { label: 'Needs Setup', value: needsSetupRows.length },
+            { label: 'At Risk', value: atRiskRows.length },
+            { label: 'Blocked', value: blockedRows.length },
+          ].map(metric => (
+            <View key={metric.label} style={styles.overviewHealthMetric}>
+              <Text style={styles.overviewHealthMetricValue}>{metric.value}</Text>
+              <Text style={styles.overviewHealthMetricLabel}>{metric.label}</Text>
+            </View>
+          ))}
+        </View>
       </View>
 
-      <DaveObservationsModal
-        visible={daveObservationsModalVisible}
-        observations={allDaveObservations}
-        onClose={() => setDaveObservationsModalVisible(false)}
-        onOpenProject={onOpenProject}
-      />
-
-      {attentionRows.length === 0 && caughtUpRows.length === 0 ? (
-        <EmptyState
-          title="No projects yet."
-          text="Add a project to start tracking field updates and schedule attention."
-        />
-      ) : null}
-
-      {attentionRows.length > 0 ? (
-        <>
-          <View style={styles.overviewSectionHeaderRow}>
-            <Ionicons name="warning-outline" size={13} color={colors.danger} />
-            <Text style={[styles.overviewSectionLabel, { color: colors.danger }]}>
-              Needs your attention
+      <OverviewResponsiveWorkspace>
+      <OverviewResponsiveColumn priority="primary">
+      <View style={styles.overviewDashboardHeadingRow}>
+        <Text style={styles.overviewDashboardHeading}>Today's Priority</Text>
+      </View>
+      <View style={styles.overviewPriorityCard}>
+        {topPriority && overviewPhotoForProject(topPriority.project) ? (
+          <Image
+            source={{ uri: overviewPhotoForProject(topPriority.project)! }}
+            style={styles.overviewPriorityImage}
+          />
+        ) : topPriority ? (
+          <View style={styles.overviewPriorityClearPanel}>
+            <View style={styles.overviewPriorityClearIcon}>
+              <Ionicons name="image-outline" size={32} color={colors.primary} />
+            </View>
+            <View style={styles.overviewPriorityClearCopy}>
+              <Text style={styles.overviewPriorityClearTitle}>Priority needs review</Text>
+              <Text style={styles.overviewPriorityClearText}>{topPriority.project}</Text>
+              <Text style={styles.overviewPriorityClearText}>No project cover photo is available.</Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.overviewPriorityClearPanel}>
+            <View style={styles.overviewPriorityClearIcon}>
+              <Ionicons name="checkmark-circle" size={34} color={colors.success} />
+            </View>
+            <View style={styles.overviewPriorityClearCopy}>
+              <Text style={styles.overviewPriorityClearTitle}>All clear</Text>
+              <Text style={styles.overviewPriorityClearText}>
+                {scopedProjects.length} project{scopedProjects.length === 1 ? '' : 's'} reviewed
+              </Text>
+              <Text style={styles.overviewPriorityClearText}>
+                {dueTodayCount === 0
+                  ? 'Nothing due today'
+                  : `${dueTodayCount} project${dueTodayCount === 1 ? '' : 's'} with work due today`}
+              </Text>
+            </View>
+          </View>
+        )}
+        <View style={styles.overviewPriorityContent}>
+          <View style={styles.overviewPriorityBadge}>
+            <Ionicons
+              name={topPriority ? 'sparkles-outline' : 'checkmark-circle-outline'}
+              size={14}
+              color={topPriority ? colors.warning : colors.success}
+            />
+            <Text
+              style={[
+                styles.overviewPriorityBadgeText,
+                !topPriority && styles.overviewPriorityClearBadgeText,
+              ]}
+            >
+              {topPriority ? 'PRIORITY' : 'ALL CLEAR'}
             </Text>
           </View>
+          <Text style={styles.overviewPriorityProject}>
+            {topPriority?.project || 'No immediate priority'}
+          </Text>
+          <Text style={styles.overviewPriorityRecommendation}>
+            {authoritativePriority || topPriority?.dueTodayLabel || topPriority?.subtitle || 'Your projects have no current attention items.'}
+          </Text>
+          <Text style={styles.overviewPrioritySupport}>
+            {topPriority
+              ? `${topPriority.taskCount} ${pluralWord(topPriority.taskCount, 'task')} · ${topPriority.percentComplete}% complete`
+              : 'New priorities will appear here as project conditions change.'}
+          </Text>
+          {topPriority ? (
+            <Text style={styles.overviewPrioritySupport}>
+              Schedule: {topPriority.scheduleHealth}
+            </Text>
+          ) : null}
+          {priorityObservation ? (
+            <View style={styles.overviewPriorityObservation}>
+              <Ionicons name="eye-outline" size={15} color={colors.primary} />
+              <Text style={styles.overviewPriorityObservationText} numberOfLines={2}>
+                Observed today: {priorityObservation.text}
+              </Text>
+            </View>
+          ) : null}
+          <TouchableOpacity
+            style={styles.overviewPriorityButton}
+            onPress={() => topPriority ? onOpenProject(topPriority.project) : setShowAddProject(true)}
+          >
+            <Text style={styles.overviewPriorityButtonText}>
+              {topPriority ? 'Review priority' : 'Add project'}
+            </Text>
+            <Ionicons name="arrow-forward" size={17} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+      </View>
 
-          <View style={styles.overviewGroupedList}>
-            {attentionRows.map(row => {
-              const tint = row.severity === 'high' ? colors.dangerSoft : colors.warningSoft;
-              const tintText = row.severity === 'high' ? colors.danger : colors.warning;
-              const iconName = row.severity === 'high' ? 'warning-outline' : 'time-outline';
-
-              return (
-                <View
-                  key={row.project}
-                  style={[styles.overviewGroupedCell, { backgroundColor: tint }]}
-                >
-                  <TouchableOpacity
-                    style={styles.overviewGroupedRow}
-                    onPress={() => onOpenProject(row.project)}
-                  >
-                    <View style={styles.overviewRowIconBubble}>
-                      <Ionicons name={iconName} size={18} color={tintText} />
-                    </View>
-                    <View style={styles.rowMain}>
-                      <Text style={styles.projectName}>{row.project}</Text>
-                      <View style={styles.overviewRowSubtitleRow}>
-                        {row.observationCount > 0 ? (
-                          <Ionicons name="bulb-outline" size={13} color={colors.insight} />
-                        ) : null}
-                        <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
-                          {row.subtitle}
-                        </Text>
-                      </View>
-                    </View>
-                    <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-                  </TouchableOpacity>
-
-                  {row.dueTodayLabel ? (
-                    <View style={styles.overviewDueTodayPillWrap}>
-                      <View style={styles.overviewDueTodayPill}>
-                        <Ionicons name="time-outline" size={13} color={colors.warning} />
-                        <Text style={styles.overviewDueTodayText}>
-                          Due today · {row.dueTodayLabel}
-                        </Text>
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
-              );
-            })}
-          </View>
+      {overviewRows.length === 0 ? (
+        <>
+          <EmptyState
+            title="No projects yet."
+            text="Add a project to start tracking field updates and schedule attention."
+          />
+          {showAddProject ? (
+            <AddProjectCard
+              buttonLabel="Create Project"
+              placeholder="New project name"
+              onAdd={projectName => {
+                const added = onAddProject(projectName);
+                if (added) setShowAddProject(false);
+                return added;
+              }}
+            />
+          ) : null}
         </>
       ) : null}
 
-      {caughtUpRows.length > 0 ? (
+      {overviewRows.length > 0 ? (
         <>
-          <View style={styles.overviewSectionHeaderRow}>
-            <Ionicons name="checkmark-circle-outline" size={13} color={colors.success} />
-            <Text style={[styles.overviewSectionLabel, { color: colors.success }]}>
-              All caught up
-            </Text>
+          <View style={styles.overviewDashboardHeadingRow}>
+            <Text style={styles.overviewDashboardHeading}>Active Projects</Text>
+            <TouchableOpacity onPress={() => setShowAddProject(current => !current)}>
+              <Text style={styles.overviewDashboardLink}>
+                {showAddProject ? 'Cancel' : 'Add project'}
+              </Text>
+            </TouchableOpacity>
           </View>
+          {showAddProject ? (
+            <AddProjectCard
+              buttonLabel="Create Project"
+              placeholder="New project name"
+              onAdd={projectName => {
+                const added = onAddProject(projectName);
+                if (added) setShowAddProject(false);
+                return added;
+              }}
+            />
+          ) : null}
+          {overviewRows.map(row => {
+            const health = row.health;
+            const healthColor = health === 'Blocked'
+              ? colors.danger
+              : health === 'At Risk'
+                ? colors.warning
+                : health === 'Needs Setup'
+                  ? colors.muted
+                  : colors.success;
+            const photo = overviewPhotoForProject(row.project);
+            const lastUpdate = projectUpdatesForParentProject(
+              savedUpdates,
+              row.project,
+              scheduleItems,
+            )
+              .map(update => update.date)
+              .filter((update): update is string => Boolean(update))
+              .sort((left, right) => right.localeCompare(left))[0] || null;
 
-          <View style={styles.overviewGroupedList}>
-            {caughtUpRows.map(row => (
+            return (
               <TouchableOpacity
                 key={row.project}
-                style={[
-                  styles.overviewGroupedCell,
-                  styles.overviewGroupedRow,
-                  { backgroundColor: colors.successSoft },
-                ]}
+                style={styles.overviewProjectCard}
                 onPress={() => onOpenProject(row.project)}
               >
-                <View style={styles.overviewRowIconBubble}>
-                  <Ionicons name="checkmark-circle-outline" size={18} color={colors.success} />
-                </View>
-                <View style={styles.rowMain}>
-                  <Text style={styles.projectName}>{row.project}</Text>
-                  <Text style={styles.overviewRowSubtitle} numberOfLines={1}>
-                    {row.subtitle}
+                {photo ? (
+                  <Image source={{ uri: photo }} style={styles.overviewProjectImage} />
+                ) : (
+                  <View style={styles.overviewProjectImagePlaceholder}>
+                    <Ionicons name="business-outline" size={28} color={colors.primary} />
+                  </View>
+                )}
+                <View style={styles.overviewProjectContent}>
+                  <View style={styles.overviewProjectTitleRow}>
+                    <Text style={styles.overviewProjectTitle} numberOfLines={1}>{row.project}</Text>
+                    <Text style={[styles.overviewProjectHealth, { color: healthColor }]}>{health}</Text>
+                  </View>
+                  <Text style={styles.overviewProjectSummary} numberOfLines={2}>{row.subtitle}</Text>
+                  {row.needsVerification ? <DAVEProjectNeedsVerificationLabel /> : null}
+                  <Text style={styles.overviewProjectActivity}>
+                    {row.taskCount} {pluralWord(row.taskCount, 'task')} • {row.percentComplete}% complete
+                  </Text>
+                  <Text style={styles.overviewProjectActivity}>
+                    {lastUpdate
+                      ? `Last activity ${relativeUpdateDateLabel(lastUpdate)}`
+                      : 'No activity recorded yet'}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                <Ionicons name="chevron-forward" size={20} color={colors.muted} />
               </TouchableOpacity>
-            ))}
-          </View>
+            );
+          })}
         </>
       ) : null}
 
-      <SecondaryButton
-        label="View Projects"
-        icon="business-outline"
-        onPress={onViewProjects}
-      />
+      </OverviewResponsiveColumn>
+      <OverviewResponsiveColumn priority="secondary">
 
-      <ProjectSelectorSheet
-        visible={selectorOpen}
-        projects={projectPickerCandidates}
-        narrowed={projectPickerCandidates.length !== projects.length}
-        selectedProjectName={selectedProjectName}
-        detectedProjectName={detectedProjectName}
-        onSelect={selectProject}
-        onClose={() => setSelectorOpen(false)}
-      />
+      {archivedProjects.length > 0 ? (
+        <View style={styles.phase2BriefCard}>
+          <View style={styles.rowMain}>
+            <Text style={styles.panelTitle}>Archived Projects</Text>
+            <Text style={styles.locationDetailText}>
+              Reopen a project to return it to the active portfolio.
+            </Text>
+            {archivedProjects.map(projectName => (
+              <View key={projectName} style={styles.projectSelectorRow}>
+                <View style={styles.rowMain}>
+                  <Text style={styles.photoControlText}>{projectName}</Text>
+                  <Text style={styles.rowSub}>Archived</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.compactInlineAction}
+                  onPress={() => onReopenProject(projectName)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Reopen ${projectName}`}
+                >
+                  <Text style={styles.compactInlineActionText}>Reopen</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      <View style={styles.overviewDashboardHeadingRow}>
+        <Text style={styles.overviewDashboardHeading}>Recent Activity</Text>
+        <TouchableOpacity onPress={onOpenAllActivity}>
+          <Text style={styles.overviewDashboardLink}>View all activity</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.overviewActivityCard}>
+        {recentActivity.length > 0 ? recentActivity.map((update, index) => {
+          const group = updateTimelineGroup(update.date);
+          const previousGroup = index > 0 ? updateTimelineGroup(recentActivity[index - 1].date) : null;
+          return (
+            <View key={update.id}>
+              {group !== previousGroup ? <Text style={styles.overviewActivityGroup}>{group}</Text> : null}
+              <TouchableOpacity style={styles.overviewActivityRow} onPress={() => onOpenUpdate(update)}>
+                <View style={styles.overviewActivityIcon}>
+                  <Ionicons name={update.photos.length > 0 ? 'camera-outline' : 'document-text-outline'} size={17} color={colors.primary} />
+                </View>
+                <View style={styles.rowMain}>
+                  <Text style={styles.overviewActivityProject}>{update.projectName}</Text>
+                  <Text style={styles.overviewActivityText} numberOfLines={1}>
+                    {update.observedFindings?.[0] || update.notes.trim() || 'Project update recorded.'}
+                  </Text>
+                </View>
+                <Text style={styles.overviewActivityTime}>{relativeUpdateTimestamp(update.date)}</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        }) : (
+          <Text style={styles.overviewBriefEmpty}>Recent project activity will show up here.</Text>
+        )}
+      </View>
+      </OverviewResponsiveColumn>
+      </OverviewResponsiveWorkspace>
+      </OverviewResponsiveFrame>
       </ScrollView>
     </View>
   );
@@ -10067,7 +13677,7 @@ function OverviewHeroCard({
           <View style={styles.overviewHeroPill}>
             <Ionicons name="time-outline" size={13} color="#FFC670" />
             <Text style={styles.overviewHeroPillText}>
-              {dueTodayCount} due today
+              {dueTodayCount} project{dueTodayCount === 1 ? '' : 's'} with work due today
             </Text>
           </View>
         ) : null}
@@ -10136,7 +13746,7 @@ function DaveObservationsModal({
         >
           <View style={styles.sheetModalHeader}>
             <View style={styles.sheetModalTitleWrap}>
-              <Text style={styles.sheetModalTitle}>DAVE Observations</Text>
+              <Text style={styles.sheetModalTitle}>Observations</Text>
               <Text style={styles.sheetModalCaption}>
                 {observations.length} {pluralWord(observations.length, 'observation')}
               </Text>
@@ -10144,7 +13754,7 @@ function DaveObservationsModal({
             <TouchableOpacity
               style={styles.sheetModalCloseButton}
               onPress={onClose}
-              accessibilityLabel="Close DAVE observations"
+              accessibilityLabel="Close observations"
             >
               <Ionicons name="close" size={26} color={colors.text} />
             </TouchableOpacity>
@@ -10156,7 +13766,7 @@ function DaveObservationsModal({
           >
             {observations.length === 0 ? (
               <EmptyState
-                title="No DAVE observations yet."
+                title="No observations yet."
                 text="Findings from photo analysis will appear here once available."
               />
             ) : (
@@ -10242,64 +13852,6 @@ function ProjectSelectorSheet({
   );
 }
 
-function ProjectActionSheet({
-  visible,
-  title,
-  children,
-  onClose,
-}: {
-  visible: boolean;
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-}) {
-  const dragResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gesture) =>
-          gesture.dy > 10 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2,
-        onPanResponderRelease: (_event, gesture) => {
-          if (gesture.dy > 52) {
-            onClose();
-          }
-        },
-      }),
-    [onClose],
-  );
-
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.projectSelectorBackdrop}>
-        <TouchableOpacity style={styles.projectSelectorScrim} onPress={onClose} />
-        <View style={styles.projectSelectorSheet}>
-          <View
-            style={styles.projectSelectorDragHandleArea}
-            {...dragResponder.panHandlers}
-          >
-            <View style={styles.projectSelectorHandle} />
-          </View>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.panelTitle}>{title}</Text>
-            <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
-              <Ionicons name="close-outline" size={22} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView
-            style={styles.projectSelectorScroll}
-            contentContainerStyle={styles.projectSelectorScrollContent}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-            showsVerticalScrollIndicator
-          >
-            {children}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 function PhotoIntelligenceSignInModal({
   visible,
   email,
@@ -10336,10 +13888,10 @@ function PhotoIntelligenceSignInModal({
             <View style={styles.rowMain}>
               <Text style={styles.panelTitle}>Sign in to enable photo intelligence</Text>
               <Text style={styles.rowSub}>
-                PIE photo comparison needs a signed-in cloud session before it can analyze photos.
+                Photo comparison needs a signed-in cloud session before it can analyze photos.
               </Text>
               <Text style={styles.rowSub}>
-                Use a Supabase Auth email and password. Do not use Apple Developer, Expo, or TestFlight credentials.
+                Use the email and password for your cloud sync account. Do not use Apple Developer, Expo, or TestFlight credentials.
               </Text>
             </View>
             <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
@@ -10561,6 +14113,47 @@ function ProjectDocumentInlineRow({
   );
 }
 
+type ScheduleDrivenWalkRecommendation = {
+  source: 'schedule';
+  areaName: string;
+  taskName: string;
+  reason: string;
+};
+
+function getScheduleDrivenWalkRecommendation(
+  projectName: string,
+  scheduleItems: ScheduleItem[],
+): ScheduleDrivenWalkRecommendation | null {
+  const candidates = scheduleTasksForParentProject(
+    projectName,
+    scheduleItems as unknown as import('./types').ScheduleItem[],
+  )
+    .filter(item => !scheduleTaskIsComplete(item) && item.locationName.trim())
+    .sort((left, right) => {
+      const leftDays = daysUntilScheduleItem(left) ?? 9999;
+      const rightDays = daysUntilScheduleItem(right) ?? 9999;
+      const leftPriority = left.priority === 'High' ? -20 : 0;
+      const rightPriority = right.priority === 'High' ? -20 : 0;
+      return leftDays + leftPriority - (rightDays + rightPriority);
+    });
+  const task = candidates[0];
+  if (!task) return null;
+  const days = daysUntilScheduleItem(task);
+  const timing = days === null
+    ? 'needs field verification'
+    : days < 0
+      ? `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} overdue`
+      : days === 0
+        ? 'due today'
+        : `due in ${days} day${days === 1 ? '' : 's'}`;
+  return {
+    source: 'schedule',
+    areaName: task.locationName,
+    taskName: task.taskName,
+    reason: `${task.taskName} is ${timing}. Capture recommendations prioritize urgent imported schedule work.`,
+  };
+}
+
 function AddPhotosScreen({
   contentStyle,
   update,
@@ -10583,6 +14176,8 @@ function AddPhotosScreen({
   onRetryDocumentUpload,
   onContinueWithoutPhotos,
   onRetryPhotoAnalysis,
+  scheduleRecommendation,
+  onDeleteUpdate,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   update: ProjectUpdate;
@@ -10593,7 +14188,7 @@ function AddPhotosScreen({
   contacts: ProjectContact[];
   draftSavedAt: string | null;
   onPickPhotos: () => void;
-  onTakePhoto: () => void;
+  onTakePhoto: (continuityAnchor?: PhotoContinuityAnchor | null) => void;
   onUpdatePhoto: (photoId: string, next: Partial<UpdatePhoto>) => void;
   onRemovePhoto: (photoId: string) => void;
   onMovePhoto: (photoId: string, direction: 'up' | 'down') => void;
@@ -10605,15 +14200,52 @@ function AddPhotosScreen({
   onRetryDocumentUpload: (documentId: string) => void;
   onContinueWithoutPhotos: () => void;
   onRetryPhotoAnalysis: (photo: UpdatePhoto) => void;
+  scheduleRecommendation: ScheduleDrivenWalkRecommendation | null;
+  onDeleteUpdate?: () => void;
 }) {
+  const liveAuthority = usePIELiveAuthority();
   const [areaSheetOpen, setAreaSheetOpen] = useState(false);
   const [recipientSheetOpen, setRecipientSheetOpen] = useState(false);
+  const [walkCorrectionMemory, setWalkCorrectionMemory] = useState<{
+    areaId: string;
+    correctionPenalty: number;
+  } | null>(null);
   const documents = update.documents || [];
   const areaName =
     selectedArea?.name ||
     update.selectedAreaName ||
     areaSuggestion?.area.name ||
     'Unassigned / Unknown Area';
+  const locationSource = areaSuggestion?.withinRadius
+    ? 'exact-gps-area'
+    : areaSuggestion
+      ? 'gps-radius'
+      : selectedArea
+        ? 'user-selection'
+        : scheduleRecommendation
+          ? 'schedule'
+          : 'last-active-area';
+  const confidenceScore = Math.max(
+    0,
+    (areaSuggestion?.withinRadius ? 90 : areaSuggestion ? 70 : selectedArea ? 80 : 45) -
+      (walkCorrectionMemory?.correctionPenalty || 0),
+  );
+  const repeatPhotoGuidance =
+    liveAuthority.core?.photoRepeatGuidance.find(item =>
+      item.needed &&
+      item.projectName.trim().toLowerCase() === update.projectName.trim().toLowerCase() &&
+      (!item.areaName || item.areaName.trim().toLowerCase() === areaName.trim().toLowerCase())
+    ) || null;
+  const takeContinuityPhoto = () => {
+    const continuityAnchor = repeatPhotoGuidance
+      ? createDAVEPhotoContinuityAnchor({
+          guidance: repeatPhotoGuidance,
+          projectName: update.projectName,
+          areaName,
+        })
+      : null;
+    onTakePhoto(continuityAnchor);
+  };
 
   return (
     <ScrollView
@@ -10630,12 +14262,78 @@ function AddPhotosScreen({
 
       <DraftSavedIndicator savedAt={draftSavedAt} />
 
+      {update.scheduleTaskName ? (
+        <View style={styles.taskUpdateContextCard}>
+          <Text style={styles.projectTaskEyebrow}>TASK UPDATE</Text>
+          <Text style={styles.panelTitle}>{update.scheduleTaskName}</Text>
+          <Text style={styles.locationDetailText}>
+            {update.scheduleProjectName || update.projectName}
+            {areaName ? ` · ${areaName}` : ''}
+          </Text>
+        </View>
+      ) : null}
+
       <Text style={styles.phase3MainTitle}>Capture Evidence</Text>
 
+      <View style={styles.phase3AutoCard}>
+        <Text style={styles.panelTitle}>Current Area</Text>
+        <Text style={styles.bodyText}>{areaName}</Text>
+        <Text style={styles.locationDetailText}>
+          Why: {locationSource === 'exact-gps-area'
+            ? 'GPS places you inside this saved area.'
+            : locationSource === 'gps-radius'
+              ? 'This is the nearest saved area within the GPS recommendation range.'
+              : locationSource === 'schedule'
+                ? 'The imported schedule identifies this as the most urgent area.'
+                : 'This is your current confirmed selection.'}
+        </Text>
+        {confidenceScore < 60 ? (
+          <Text style={styles.locationDetailText}>Location is uncertain. Choose the project area before relying on this recommendation.</Text>
+        ) : null}
+        {areaSuggestion && areaSuggestion.area.id !== selectedArea?.id ? (
+          <SecondaryButton
+            label="Accept Suggested Area"
+            icon="location-outline"
+            onPress={() => onChangeArea(areaSuggestion.area.id)}
+          />
+        ) : null}
+        {scheduleRecommendation ? (
+          <View style={styles.taskUpdateContextCard}>
+            <Text style={styles.projectTaskEyebrow}>Next Area to Visit</Text>
+            <Text style={styles.panelTitle}>{scheduleRecommendation.areaName}</Text>
+            <Text style={styles.locationDetailText}>{scheduleRecommendation.reason}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      {repeatPhotoGuidance ? (
+        <View style={styles.phase3AutoCard}>
+          <View style={styles.areaStatusLine}>
+            <Ionicons name="scan-outline" size={20} color={colors.primary} />
+            <Text style={styles.panelTitle}>Match the Previous View</Text>
+          </View>
+          {repeatPhotoGuidance.referencePhotoUri ? (
+            <Image
+              source={{ uri: repeatPhotoGuidance.referencePhotoUri }}
+              style={styles.repeatPhotoReferenceImage}
+              resizeMode="cover"
+              accessibilityLabel="Previous project photo to match"
+            />
+          ) : null}
+          <Text style={styles.bodyText}>{repeatPhotoGuidance.instruction}</Text>
+          <Text style={styles.locationDetailText}>
+            {repeatPhotoGuidance.alignmentGuide}
+          </Text>
+          <Text style={styles.locationDetailText}>
+            Why: {repeatPhotoGuidance.reason}
+          </Text>
+        </View>
+      ) : null}
+
       <PrimaryButton
-        label="Take Photo"
+        label={repeatPhotoGuidance ? 'Match Reference & Take Photo' : 'Take Photo'}
         icon="camera-outline"
-        onPress={onTakePhoto}
+        onPress={takeContinuityPhoto}
       />
 
       <SecondaryButton
@@ -10662,6 +14360,19 @@ function AddPhotosScreen({
         <View style={styles.progressDivider} />
         <ProgressStat number={documents.length} label="Documents" />
       </View>
+
+      {update.photos.length > 0 ? (
+        <View style={styles.phase3AutoCard}>
+          <Text style={styles.panelTitle}>Photo saved.</Text>
+          <Text style={styles.locationDetailText}>
+            Next Suggested Action: add another view if it changes the project record, add a note for context, or finish capture for review.
+          </Text>
+          <View style={styles.sendRow}>
+            <SecondaryButton label="Add Another Photo" icon="camera-outline" onPress={takeContinuityPhoto} compact />
+            <SecondaryButton label="Add Note" icon="create-outline" onPress={onNext} compact />
+          </View>
+        </View>
+      ) : null}
 
       {update.photos.map((photo, index) => (
         <PhotoCard
@@ -10711,12 +14422,21 @@ function AddPhotosScreen({
         />
       )}
 
+      {onDeleteUpdate ? (
+        <SecondaryButton
+          label="Delete Saved Update"
+          icon="trash-outline"
+          onPress={onDeleteUpdate}
+        />
+      ) : null}
+
       <AreaSelectionSheet
         visible={areaSheetOpen}
         projectAreas={projectAreas}
         suggestedArea={areaSuggestion?.area || selectedArea}
         selectedAreaId={update.selectedAreaId || null}
         onSelect={areaId => {
+          setWalkCorrectionMemory({ areaId, correctionPenalty: 10 });
           onChangeArea(areaId);
           setAreaSheetOpen(false);
         }}
@@ -10741,10 +14461,10 @@ function FieldUpdateStepIndicator({
   current,
   pieStatus,
 }: {
-  current: 'Evidence' | 'DAVE Analysis' | 'Review';
+  current: 'Evidence' | 'Photo Analysis' | 'Review';
   pieStatus: 'pending' | 'in_progress' | 'complete';
 }) {
-  const steps = ['Evidence', 'DAVE Analysis', 'Review'] as const;
+  const steps = ['Evidence', 'Photo Analysis', 'Review'] as const;
 
   return (
     <View style={styles.phase3StepRow}>
@@ -10752,7 +14472,7 @@ function FieldUpdateStepIndicator({
         const active = current === step;
         const complete =
           step === 'Evidence' && current !== 'Evidence' ||
-          step === 'DAVE Analysis' && pieStatus === 'complete';
+          step === 'Photo Analysis' && pieStatus === 'complete';
 
         return (
           <View
@@ -10784,13 +14504,12 @@ function AreaRow({
   onChange,
 }: {
   areaName: string;
-  status: ProjectUpdate['areaStatus'];
+  status?: ProjectUpdate['areaStatus'];
   onChange: () => void;
 }) {
-  const statusLabel =
-    status === 'confirmed'
-      ? 'Area auto-detected'
-      : 'Area suggested';
+  const statusLabel = status === 'confirmed'
+    ? 'Area auto-detected'
+    : status === 'suggested' ? 'Area suggested' : 'Selected area';
 
   return (
     <View style={styles.phase3CompactRow}>
@@ -10806,7 +14525,6 @@ function AreaRow({
     </View>
   );
 }
-
 function RecipientSummaryRow({
   recipientCount,
   contacts,
@@ -10941,50 +14659,6 @@ function AreaSelectionRow({
         <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
       ) : null}
     </TouchableOpacity>
-  );
-}
-
-function DocumentProjectSelectionSheet({
-  visible,
-  projects,
-  selected,
-  onToggle,
-  onConfirm,
-  onClose,
-}: {
-  visible: boolean;
-  projects: string[];
-  selected: Set<string>;
-  onToggle: (projectName: string) => void;
-  onConfirm: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <ProjectActionSheet visible={visible} title="Select Projects" onClose={onClose}>
-      <Text style={styles.bodyText}>
-        This document will be added to every project you select below.
-      </Text>
-
-      {projects.map(projectName => (
-        <AreaSelectionRow
-          key={projectName}
-          name={projectName}
-          selected={selected.has(projectName)}
-          onPress={() => onToggle(projectName)}
-        />
-      ))}
-
-      <PrimaryButton
-        label={
-          selected.size > 0
-            ? `Add to ${selected.size} Project${selected.size === 1 ? '' : 's'}`
-            : 'Select at least one project'
-        }
-        icon="checkmark-done-outline"
-        onPress={onConfirm}
-        disabled={selected.size === 0}
-      />
-    </ProjectActionSheet>
   );
 }
 
@@ -11504,6 +15178,27 @@ function RootPhotoIntelligenceCard({
   onRetry?: () => void;
   onSignInRequired?: () => void;
 }) {
+  if (result.status === 'no_suitable_prior_photo') {
+    const comparisonArea = photo?.selectedAreaName?.trim() || projectName?.trim() || 'this area';
+
+    return (
+      <View style={styles.locationPanel}>
+        <View style={styles.locationPanelHeader}>
+          <View style={styles.rowIconBubble}>
+            <Ionicons name="images-outline" size={20} color={colors.success} />
+          </View>
+          <View style={styles.rowMain}>
+            <Text style={styles.panelTitle}>Baseline saved</Text>
+            <Text style={styles.rowSub}>{comparisonArea} is ready for future photo comparisons.</Text>
+          </View>
+        </View>
+        <Text style={styles.bodyText}>
+          Take the next photo from a similar angle to compare visible construction changes.
+        </Text>
+      </View>
+    );
+  }
+
   const priorUpdateUsed = priorUpdateUsedForPIEResult(result);
   const progress =
     result.projectProgress === 'supported'
@@ -11585,11 +15280,15 @@ function RootPhotoIntelligenceCard({
       ) : null}
 
       {result.comparisonConfidence ? (
-        <PIEDetailLine label="Confidence" value={result.comparisonConfidence} />
+        <Text style={styles.locationDetailText}>
+          {pieConfidenceSentence(result.comparisonConfidence)}
+        </Text>
       ) : null}
 
       {result.comparability ? (
-        <PIEDetailLine label="Comparability" value={result.comparability} />
+        <Text style={styles.locationDetailText}>
+          {pieComparabilitySentence(result.comparability)}
+        </Text>
       ) : null}
 
       {priorUpdateUsed ? (
@@ -11606,7 +15305,7 @@ function RootPhotoIntelligenceCard({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={onRetry}
-          accessibilityLabel="Retry DAVE photo analysis"
+          accessibilityLabel="Retry photo analysis"
         >
           <Ionicons name="refresh-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Retry Analysis</Text>
@@ -11617,164 +15316,64 @@ function RootPhotoIntelligenceCard({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={onSignInRequired}
-          accessibilityLabel="Sign in to enable DAVE photo intelligence"
+          accessibilityLabel="Sign in to enable photo intelligence"
         >
           <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
         </TouchableOpacity>
       ) : null}
 
-      {__DEV__ && result.diagnostics ? (
-        <View style={styles.setupProgressCard}>
-          <Text style={styles.sectionLabel}>PIE diagnostics</Text>
-          <Text style={styles.locationDetailText}>
-            Current project ID: {projectIdForPhotoVisionLabel(projectName) || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current area ID: {photo?.selectedAreaId || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current photo reference: {photo?.id || result.diagnostics.currentPhotoAssetId || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current asset: {result.diagnostics.currentPhotoAssetId || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Prior asset: {result.diagnostics.priorPhotoAssetId || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current prep: {result.diagnostics.currentPhotoPrepStatus}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current prep reason: {result.diagnostics.currentPhotoPrepReason || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Prior prep: {result.diagnostics.priorPhotoPrepStatus}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Prior prep reason: {result.diagnostics.priorPhotoPrepReason || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current readable: {result.diagnostics.currentPhotoReadable === null ? 'unknown' : result.diagnostics.currentPhotoReadable ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Prior readable: {result.diagnostics.priorPhotoReadable === null ? 'unknown' : result.diagnostics.priorPhotoReadable ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Usable prior found: {result.diagnostics.usablePriorCandidateFound === null ? 'unknown' : result.diagnostics.usablePriorCandidateFound ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current project key: {result.diagnostics.currentProjectKey || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Current area key: {result.diagnostics.currentAreaKey || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Prior candidates total: {result.diagnostics.totalPriorCandidateCount}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            After same project: {result.diagnostics.priorCandidatesAfterSameProject}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            After same area: {result.diagnostics.priorCandidatesAfterSameArea}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            After timestamp: {result.diagnostics.priorCandidatesAfterTimestamp}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            After excluding current: {result.diagnostics.priorCandidatesAfterExcludingCurrent}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            After usable image: {result.diagnostics.priorCandidatesAfterUsableImage}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Selected prior update: {result.diagnostics.selectedPriorUpdateId ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Selected prior photo: {result.diagnostics.selectedPriorPhotoId ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Selected prior date: {result.diagnostics.selectedPriorDate || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            No prior reason: {result.diagnostics.noPriorReason || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Skipped prior candidates: {result.diagnostics.skippedPriorCandidateCount}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Image prep failure: {result.diagnostics.imagePrepareFailureReason || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Distinct hashes: {String(result.diagnostics.imageHashesDifferent)}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Edge invoked: {String(result.diagnostics.executedStages.includes('edge_function_invoked'))}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Provider: {result.diagnostics.providerResponseStatus || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Failure category: {result.diagnostics.failureCategory || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            App auth mode: {result.diagnostics.appAuthMode || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Supabase user id present: {result.diagnostics.supabaseUserIdPresent === null ? 'unknown' : result.diagnostics.supabaseUserIdPresent ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Session token present: {result.diagnostics.sessionTokenPresent === null ? 'unknown' : result.diagnostics.sessionTokenPresent ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Last auth event: {result.diagnostics.lastAuthEvent || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Reached without Supabase auth: {result.diagnostics.screenReachedWithoutSupabaseAuth === null ? 'unknown' : result.diagnostics.screenReachedWithoutSupabaseAuth ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Retry routed to sign-in: {result.diagnostics.retryRoutedToSignIn === null ? 'unknown' : result.diagnostics.retryRoutedToSignIn ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Supabase auth state: {result.diagnostics.supabaseAuthState || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Token lookup result: {result.diagnostics.tokenLookupResult || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Token missing reason: {result.diagnostics.tokenMissingReason || 'none'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Sign-in client source: {result.diagnostics.signInClientSource || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            PIE analysis client source: {result.diagnostics.pieAnalysisClientSource || 'unknown'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Auth hydration completed: {result.diagnostics.authHydrationCompleted === null ? 'unknown' : result.diagnostics.authHydrationCompleted ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Retry fetched fresh token: {result.diagnostics.retryFetchedFreshToken === null ? 'unknown' : result.diagnostics.retryFetchedFreshToken ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Edge Function invoked: {result.diagnostics.edgeFunctionInvoked ? 'yes' : 'no'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Edge Function status: {result.diagnostics.edgeFunctionStatus || 'not invoked'}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Comparison persisted: {String(Boolean(result.diagnostics.semanticComparisonResultId))}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            Hydrated pair match: {String(result.diagnostics.resultPairMatchesRequestedPair)}
-          </Text>
-          <Text style={styles.locationDetailText}>
-            UI result hydrated: {String(result.diagnostics.executedStages.includes('user_card_render_ready'))}
-          </Text>
-        </View>
-      ) : null}
     </View>
   );
+}
+
+function pieConfidenceSentence(confidence: string): string {
+  switch (confidence) {
+    case 'high':
+      return 'High confidence in this finding.';
+    case 'medium':
+      return 'Moderate confidence in this finding.';
+    case 'low':
+      return 'Low confidence in this finding — treat it cautiously.';
+    default:
+      return `Evidence support: ${confidence}`;
+  }
+}
+
+function pieComparabilitySentence(comparability: string): string {
+  switch (comparability) {
+    case 'strong':
+      return 'These photos are a strong, reliable comparison.';
+    case 'probable':
+      return 'These photos are probably comparable, with some limitations.';
+    case 'weak':
+      return 'These photos are only weakly comparable — differences may reflect camera or angle changes rather than real changes.';
+    case 'not_comparable':
+      return "These photos couldn't be reliably compared.";
+    default:
+      return `Comparability: ${comparability}`;
+  }
+}
+
+function pieInterpretationCaveat(confidence: string, comparability: string): string {
+  const cautious =
+    confidence === 'low' ||
+    comparability === 'weak' ||
+    comparability === 'not_comparable';
+
+  if (cautious) {
+    return 'This finding carries real uncertainty. Treat both the observation and this interpretation with caution, and verify directly before relying on it.';
+  }
+
+  const confident =
+    confidence === 'high' &&
+    (comparability === 'strong' || comparability === 'probable');
+
+  if (confident) {
+    return 'High confidence in this observation. The interpretation above is still a judgment call — confirm it reflects real project context before using it as a claim.';
+  }
+
+  return 'Suggestion only, moderate confidence. Confirm this interpretation before using it as a message claim.';
 }
 
 function PIEDetailLine({ label, value }: { label: string; value: string }) {
@@ -11827,12 +15426,22 @@ function PIEFindingRow({
         {onConfirm || onDismiss ? (
           <View style={styles.pieInterpretationActionRow}>
             {onConfirm ? (
-              <TouchableOpacity style={styles.compactInlineAction} onPress={onConfirm}>
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={onConfirm}
+                accessibilityRole="button"
+                accessibilityLabel={`Confirm ${title}`}
+              >
                 <Text style={styles.compactInlineActionText}>Confirm</Text>
               </TouchableOpacity>
             ) : null}
             {onDismiss ? (
-              <TouchableOpacity style={styles.compactInlineAction} onPress={onDismiss}>
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={onDismiss}
+                accessibilityRole="button"
+                accessibilityLabel={`Dismiss ${title}`}
+              >
                 <Text style={styles.compactInlineActionText}>Dismiss</Text>
               </TouchableOpacity>
             ) : null}
@@ -11858,7 +15467,7 @@ function UpdatePIEStatusSection({
 
   return (
     <View style={styles.panel}>
-      <Text style={styles.panelTitle}>PIE Photo Review</Text>
+      <Text style={styles.panelTitle}>Photo Review</Text>
       {photosWithPIE.length === 0 ? (
         <Text style={styles.bodyText}>{PIE_STATUS_COPY.checking}</Text>
       ) : (
@@ -11907,23 +15516,27 @@ function SavedUpdatePIESummary({
 
   return (
     <View style={styles.setupProgressCard}>
-      <Text style={styles.sectionLabelNoMargin}>PIE Photo Review</Text>
+      <Text style={styles.sectionLabelNoMargin}>Photo Review</Text>
       <Text style={styles.bodyText}>
         {firstResult
           ? pieUserStatus(firstResult)
           : PIE_STATUS_COPY.checking}
       </Text>
       {firstResult?.summary ? (
-        <Text style={styles.locationDetailText}>{firstResult.summary}</Text>
+        <Text style={styles.locationDetailText}>
+          {firstResult.status === 'no_suitable_prior_photo'
+            ? 'Future photos from this area can be compared against this baseline.'
+            : firstResult.summary}
+        </Text>
       ) : null}
       {firstResult?.comparisonConfidence ? (
         <Text style={styles.locationDetailText}>
-          Confidence: {firstResult.comparisonConfidence}
+          {pieConfidenceSentence(firstResult.comparisonConfidence)}
         </Text>
       ) : null}
       {firstResult?.comparability ? (
         <Text style={styles.locationDetailText}>
-          Comparability: {firstResult.comparability}
+          {pieComparabilitySentence(firstResult.comparability)}
         </Text>
       ) : null}
       {firstPriorUpdateUsed ? (
@@ -11935,7 +15548,7 @@ function SavedUpdatePIESummary({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={() => onRetryPhotoAnalysis(update, failedPhoto)}
-          accessibilityLabel="Retry PIE photo analysis"
+          accessibilityLabel="Retry photo analysis"
         >
           <Ionicons name="refresh-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Retry Analysis</Text>
@@ -11945,7 +15558,7 @@ function SavedUpdatePIESummary({
         <TouchableOpacity
           style={styles.photoControlButton}
           onPress={() => (onSignInForPhotoAnalysis || onRetryPhotoAnalysis)(update, failedPhoto)}
-          accessibilityLabel="Sign in to enable PIE photo intelligence"
+          accessibilityLabel="Sign in to enable photo intelligence"
         >
           <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
           <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
@@ -11969,11 +15582,6 @@ function pieUserStatus(result: PIEPhotoIntelligenceDisplayState) {
   }
   if (result.projectProgress === 'unsupported') return PIE_STATUS_COPY.noReliableChange;
   return PIE_STATUS_COPY.noReliableChange;
-}
-
-function projectIdForPhotoVisionLabel(projectName?: string) {
-  if (!projectName?.trim()) return null;
-  return `project-${projectName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'unassigned'}`;
 }
 
 function PIEAnalysisStepScreen({
@@ -12008,7 +15616,7 @@ function PIEAnalysisStepScreen({
       />
 
       <FieldUpdateStepIndicator
-        current="DAVE Analysis"
+        current="Photo Analysis"
         pieStatus={pieStatus.status === 'complete' ? 'complete' : 'in_progress'}
       />
 
@@ -12037,7 +15645,7 @@ function PIEAnalysisStepScreen({
               ? `Comparing to prior photo from ${firstPrior}. This usually takes 10–30 seconds.`
               : pieStatus.status === 'no_prior_photo'
                 ? 'This appears to be the first comparable photo for this project area.'
-                : 'DAVE runs in the background. You can continue to Review now.'}
+                : 'Analysis runs in the background. You can continue to Review now.'}
           </Text>
           {pieStatus.status === 'failed' || pieStatus.status === 'taking_longer' ? (
             <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
@@ -12111,47 +15719,35 @@ function PIEAnalysisStepScreen({
 function BuildUpdateScreen({
   update,
   selectedArea,
-  contacts,
   draftSavedAt,
   pieStatus,
+  isSaving,
   onNotesChange,
-  onSendUpdate,
-  onSaveDraft,
+  onSaveUpdate,
   onEditPhotos,
-  onContacts,
-  onSendEmail,
-  onSendText,
-  onCopy,
   onAddDocument,
   onRetryDocumentUpload,
   onConfirmInterpretation,
   onDismissInterpretation,
-  onShareSheet,
   onRetryPhotoAnalysis,
+  onDeleteUpdate,
 }: {
   update: ProjectUpdate;
   selectedArea: ProjectArea | null;
-  contacts: ProjectContact[];
   draftSavedAt: string | null;
   pieStatus: { status: FieldUpdatePIEStatus; summary: string };
+  isSaving: boolean;
   onNotesChange: (notes: string) => void;
-  onSendUpdate: () => void;
-  onSaveDraft: () => void;
+  onSaveUpdate: () => void;
   onEditPhotos: () => void;
-  onContacts: () => void;
-  onSendEmail: () => void;
-  onSendText: () => void;
-  onCopy: () => void;
   onAddDocument: () => void;
   onRetryDocumentUpload: (documentId: string) => void;
   onConfirmInterpretation: (interpretation: string) => void;
   onDismissInterpretation: (interpretation: string) => void;
-  onShareSheet: () => void;
   onRetryPhotoAnalysis: (photo: UpdatePhoto) => void;
+  onDeleteUpdate?: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [messageOpen, setMessageOpen] = useState(false);
-  const [moreOptionsOpen, setMoreOptionsOpen] = useState(false);
   const documents = update.documents || [];
   const areaName =
     selectedArea?.name ||
@@ -12162,8 +15758,7 @@ function BuildUpdateScreen({
   const firstPriorUpdateUsed = priorUpdateUsedForPIEResult(firstResult);
   const hasSafety = updateHasSafetyConcern(update);
   const hasBlocker = updateHasBlocker(update);
-  const previewLine = buildPreviewLine(update, contacts);
-  const fullMessage = buildGeneratedUpdateMessage(update, pieStatus);
+  const photoAssessment = photoAssessmentForUpdate(update);
   const failedPhoto = update.photos.find(
     photo =>
       photo.photoIntelligence?.status === 'analysis_failed_retry' ||
@@ -12194,7 +15789,7 @@ function BuildUpdateScreen({
       />
 
       <View style={styles.phase4PieCard}>
-        <Text style={styles.panelTitle}>PIE Summary</Text>
+        <Text style={styles.panelTitle}>Photo Analysis</Text>
         {hasSafety ? (
           <View style={styles.phase4SafetyFinding}>
             <Ionicons name="warning-outline" size={20} color={colors.warning} />
@@ -12233,7 +15828,10 @@ function BuildUpdateScreen({
                   key={interpretation}
                   role={hasSafety && interpretation.toLowerCase().includes('safety') ? 'safety' : 'interpretation'}
                   title={interpretation}
-                  detail="DAVE suggestion only. Confirm before including as a message claim."
+                  detail={pieInterpretationCaveat(
+                    firstResult?.comparisonConfidence ?? '',
+                    firstResult?.comparability ?? '',
+                  )}
                   confirmed={confirmed}
                   dismissed={dismissed}
                   onConfirm={dismissed ? undefined : () => onConfirmInterpretation(interpretation)}
@@ -12245,18 +15843,30 @@ function BuildUpdateScreen({
         ) : null}
 
         <PIEFindingRow
-          role={hasSafety ? 'safety' : 'confirmedClear'}
-          title={hasSafety ? 'Safety concern requires review' : 'No safety concerns detected'}
+          role={hasSafety ? 'safety' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}
+          title={
+            hasSafety
+              ? 'Safety concern requires review'
+              : photoAssessmentReviewCopy(photoAssessment.state, 'safety concern')
+          }
         />
         <PIEFindingRow
-          role={hasBlocker ? 'interpretation' : 'confirmedClear'}
-          title={hasBlocker ? 'Possible blocker requires review' : 'No open blockers detected'}
+          role={hasBlocker ? 'interpretation' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}
+          title={
+            hasBlocker
+              ? 'Possible blocker requires review'
+              : photoAssessmentReviewCopy(photoAssessment.state, 'blocker')
+          }
         />
         {firstResult?.comparisonConfidence ? (
-          <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieConfidenceSentence(firstResult.comparisonConfidence)}
+          </Text>
         ) : null}
         {firstResult?.comparability ? (
-          <Text style={styles.locationDetailText}>Comparability: {firstResult.comparability}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieComparabilitySentence(firstResult.comparability)}
+          </Text>
         ) : null}
         {pieStatus.status === 'analyzing' ? (
           <Text style={styles.locationDetailText}>
@@ -12300,10 +15910,14 @@ function BuildUpdateScreen({
               <PIEDetailLine label="Possible concerns" value={(firstResult?.possibleConcerns || []).join(' ')} />
             ) : null}
             {firstResult?.comparisonConfidence ? (
-              <PIEDetailLine label="Confidence" value={firstResult.comparisonConfidence} />
+              <Text style={styles.locationDetailText}>
+                {pieConfidenceSentence(firstResult.comparisonConfidence)}
+              </Text>
             ) : null}
             {firstResult?.comparability ? (
-              <PIEDetailLine label="Comparability" value={firstResult.comparability} />
+              <Text style={styles.locationDetailText}>
+                {pieComparabilitySentence(firstResult.comparability)}
+              </Text>
             ) : null}
             {firstPriorUpdateUsed ? (
               <PIEDetailLine label="Prior update used" value={firstPriorUpdateUsed} />
@@ -12366,16 +15980,6 @@ function BuildUpdateScreen({
         </>
       ) : null}
 
-      <View style={styles.contactSummary}>
-        <Ionicons name="people-outline" size={18} color={colors.primary} />
-        <Text style={styles.contactSummaryText}>
-          Recipients: {contacts.length > 0 ? `Site Team · ${contacts.length} people` : 'None selected'}
-        </Text>
-        <TouchableOpacity onPress={onContacts}>
-          <Text style={styles.contactSummaryAction}>Change</Text>
-        </TouchableOpacity>
-      </View>
-
       <View style={styles.panel}>
         <View style={styles.sectionHeaderRow}>
           <View>
@@ -12384,7 +15988,7 @@ function BuildUpdateScreen({
             </Text>
             {update.pieSuggestedNoteAccepted ? (
               <Text style={styles.locationDetailText}>
-                PIE suggested — edit or clear
+                Suggested — edit or clear
               </Text>
             ) : null}
           </View>
@@ -12411,125 +16015,60 @@ function BuildUpdateScreen({
         />
       </View>
 
-      <View style={styles.panel}>
-        <Text style={styles.panelTitle}>Message Preview</Text>
-        <Text style={styles.bodyText}>{previewLine}</Text>
-        <TouchableOpacity
-          style={styles.photoControlButton}
-          onPress={() => setMessageOpen(prev => !prev)}
-        >
-          <Ionicons name={messageOpen ? 'chevron-up-outline' : 'chevron-down-outline'} size={17} color={colors.primary} />
-          <Text style={styles.photoControlText}>View Full Message</Text>
-        </TouchableOpacity>
-        {messageOpen ? (
-          <Text style={styles.previewBody}>{fullMessage}</Text>
-        ) : null}
-      </View>
-
       <PrimaryButton
-        label="Send Update"
-        icon="send-outline"
-        onPress={onSendUpdate}
+        label={isSaving ? 'Saving…' : 'Save Field Update'}
+        icon="checkmark-circle-outline"
+        onPress={onSaveUpdate}
+        disabled={isSaving}
       />
 
-      <SecondaryButton
-        label="More Options"
-        icon="ellipsis-horizontal-outline"
-        onPress={() => setMoreOptionsOpen(true)}
-      />
+      <View style={styles.sendRow}>
+        <SecondaryButton
+          label="Edit Photos"
+          icon="images-outline"
+          onPress={onEditPhotos}
+          compact
+        />
+        <SecondaryButton
+          label="Add Document"
+          icon="document-attach-outline"
+          onPress={onAddDocument}
+          compact
+        />
+      </View>
 
-      <MoreOptionsSheet
-        visible={moreOptionsOpen}
-        onClose={() => setMoreOptionsOpen(false)}
-        onEmail={onSendEmail}
-        onText={onSendText}
-        onCopy={onCopy}
-        onSaveDraft={onSaveDraft}
-        onEditPhotos={onEditPhotos}
-        onAddDocument={onAddDocument}
-        onShareSheet={onShareSheet}
-      />
-    </View>
-  );
-}
-
-function MoreOptionsSheet({
-  visible,
-  onClose,
-  onEmail,
-  onText,
-  onCopy,
-  onSaveDraft,
-  onEditPhotos,
-  onAddDocument,
-  onShareSheet,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onEmail: () => void;
-  onText: () => void;
-  onCopy: () => void;
-  onSaveDraft: () => void;
-  onEditPhotos: () => void;
-  onAddDocument: () => void;
-  onShareSheet: () => void;
-}) {
-  function run(action: () => void) {
-    onClose();
-    action();
-  }
-
-  return (
-    <ProjectActionSheet visible={visible} title="More Options" onClose={onClose}>
-      <MoreOptionRow label="Email" icon="mail-outline" onPress={() => run(onEmail)} />
-      <MoreOptionRow label="Text" icon="chatbubble-outline" onPress={() => run(onText)} />
-      <MoreOptionRow label="Copy" icon="copy-outline" onPress={() => run(onCopy)} />
-      <MoreOptionRow label="Save Draft" icon="bookmark-outline" onPress={() => run(onSaveDraft)} />
-      <MoreOptionRow label="Edit Photos" icon="images-outline" onPress={() => run(onEditPhotos)} />
-      <MoreOptionRow label="Add Document" icon="document-attach-outline" onPress={() => run(onAddDocument)} />
-      {Platform.OS === 'ios' ? (
-        <MoreOptionRow label="iOS Share Sheet" icon="share-outline" onPress={() => run(onShareSheet)} />
+      {onDeleteUpdate ? (
+        <SecondaryButton
+          label="Delete Saved Update"
+          icon="trash-outline"
+          onPress={onDeleteUpdate}
+        />
       ) : null}
-    </ProjectActionSheet>
-  );
-}
 
-function MoreOptionRow({
-  label,
-  icon,
-  onPress,
-}: {
-  label: string;
-  icon: IconName;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity style={styles.projectSelectorRow} onPress={onPress}>
-      <View style={styles.rowIconBubble}>
-        <Ionicons name={icon} size={20} color={colors.primary} />
-      </View>
-      <View style={styles.rowMain}>
-        <Text style={styles.projectName}>{label}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-    </TouchableOpacity>
+    </View>
   );
 }
 
 function ReadOnlyUpdateDetailScreen({
   update,
+  backLabel,
   onBack,
   onRetry,
   onRetryPhotoAnalysis,
   onDelete,
   onArchive,
+  embedded = false,
+  onResume,
 }: {
   update: ProjectUpdate;
+  backLabel: string;
   onBack: () => void;
   onRetry?: () => void;
   onRetryPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onDelete: () => void;
   onArchive: () => void;
+  embedded?: boolean;
+  onResume?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const lifecycle = lifecycleStatusForUpdate(update);
@@ -12555,10 +16094,10 @@ function ReadOnlyUpdateDetailScreen({
 
   return (
     <View>
-      <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
+      {!embedded ? <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
         <Ionicons name="chevron-back" size={21} color={colors.primary} />
-        <Text style={styles.dashboardManageText}>Updates</Text>
-      </TouchableOpacity>
+        <Text style={styles.dashboardManageText}>{backLabel}</Text>
+      </TouchableOpacity> : null}
       <ScreenTitle
         title={update.projectName}
         subtitle="Update Detail"
@@ -12587,20 +16126,26 @@ function ReadOnlyUpdateDetailScreen({
         {onRetry ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
-            <Text style={styles.photoControlText}>Retry Send</Text>
+            <Text style={styles.photoControlText}>Retry Sync</Text>
           </TouchableOpacity>
         ) : null}
+        {onResume ? <PrimaryButton label="Resume Update" icon="create-outline" onPress={onResume} /> : null}
       </View>
+      <UpdateDeleteControl onDelete={onDelete} />
       <View style={styles.panel}>
-        <Text style={styles.panelTitle}>PIE Summary</Text>
+        <Text style={styles.panelTitle}>Photo Analysis</Text>
         <Text style={styles.projectName}>
           {pieSummary.summary}
         </Text>
         {firstResult?.comparisonConfidence ? (
-          <Text style={styles.locationDetailText}>Confidence: {firstResult.comparisonConfidence}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieConfidenceSentence(firstResult.comparisonConfidence)}
+          </Text>
         ) : null}
         {firstResult?.comparability ? (
-          <Text style={styles.locationDetailText}>Comparability: {firstResult.comparability}</Text>
+          <Text style={styles.locationDetailText}>
+            {pieComparabilitySentence(firstResult.comparability)}
+          </Text>
         ) : null}
         {baselineOnly ? (
           <>
@@ -12630,7 +16175,10 @@ function ReadOnlyUpdateDetailScreen({
                 key={interpretation}
                 role="interpretation"
                 title={interpretation}
-                detail="DAVE suggestion only. Confirm before using as a message claim."
+                detail={pieInterpretationCaveat(
+                  firstResult?.comparisonConfidence ?? '',
+                  firstResult?.comparability ?? '',
+                )}
               />
             ))}
           </>
@@ -12649,12 +16197,12 @@ function ReadOnlyUpdateDetailScreen({
         <Text style={styles.panelTitle}>60-Second Flow</Text>
         <Text style={styles.bodyText}>
           {timing.elapsedSeconds === null
-            ? 'Timing markers will appear after this update is sent or queued.'
-            : `${timing.elapsedSeconds}s from New Field Update to sent or queued. Target: ${timing.targetSeconds}s.`}
+            ? 'Timing markers will appear after this update is cloud synced or queued.'
+            : `${timing.elapsedSeconds}s from New Field Update to cloud synced or queued. Target: ${timing.targetSeconds}s.`}
         </Text>
         {timing.canSendWhileAnalysisPending ? (
           <Text style={styles.locationDetailText}>
-            Send was available while PIE was still checking photos.
+            Save was available while photos were still being checked.
           </Text>
         ) : null}
       </View>
@@ -12689,22 +16237,28 @@ function ReadOnlyUpdateDetailScreen({
 function ProjectsScreen({
   contentStyle,
   activeProjects,
+  archivedProjects,
   savedUpdates,
   projectDocuments,
   contactBook,
   projectStatsByName,
+  projectRecords,
   onSelect,
   onAddProject,
+  onReopenProject,
   initialStatusFilter,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   activeProjects: string[];
+  archivedProjects: string[];
   savedUpdates: ProjectUpdate[];
   projectDocuments: ProjectDocument[];
   contactBook: ContactBook;
   projectStatsByName: Record<string, ProjectStats>;
+  projectRecords: ProjectRecord[];
   onSelect: (projectName: string) => void;
   onAddProject: (projectName: string) => boolean;
+  onReopenProject: (projectName: string) => void;
   initialStatusFilter?: 'onTrack';
 }) {
   const [searchText, setSearchText] = useState('');
@@ -12718,10 +16272,13 @@ function ProjectsScreen({
     .map(project => ({
       project,
       stats: projectStatsForName(projectStatsByName, project),
-      thumbnailUri: projectThumbnailUri(project, savedUpdates),
+      thumbnailUri: resolveProjectCoverPhotoUri(
+        projectRecords,
+        project,
+        projectThumbnailUri(project, savedUpdates),
+      ),
       documentCount: projectDocumentCountForProject(project, projectDocuments),
       contactCount: contactBook.contacts.length,
-      pieBrief: buildProjectCardPIEStatus(project, savedUpdates),
       attentionCount: buildPhase2AttentionItems(savedUpdates, project).length,
     }))
     .filter(item => {
@@ -12764,19 +16321,10 @@ function ProjectsScreen({
       renderItem={renderProject}
       ListHeaderComponent={
         <>
-          <View style={styles.phase2HeaderRow}>
-            <ScreenTitle
-              title="Projects"
-              subtitle="Open a project workspace or start a field update."
-            />
-            <TouchableOpacity
-              style={styles.phase2AddProjectButton}
-              onPress={() => setShowAddProject(prev => !prev)}
-            >
-              <Ionicons name="add-outline" size={22} color={colors.primary} />
-              <Text style={styles.dashboardManageText}>Add Project</Text>
-            </TouchableOpacity>
-          </View>
+          <ScreenTitle
+            title="Project Management"
+            subtitle="Add, search, archive, or reopen project records."
+          />
 
           <View style={styles.projectFinderPanel}>
             <View style={styles.projectSearchBox}>
@@ -12796,10 +16344,15 @@ function ProjectsScreen({
               />
 
               {searchText.trim() ? (
-                <TouchableOpacity onPress={() => setSearchText('')}>
+                <TouchableOpacity
+                  style={styles.projectSearchClearButton}
+                  onPress={() => setSearchText('')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear project search"
+                >
                   <Ionicons
                     name="close-circle"
-                    size={20}
+                    size={21}
                     color={colors.muted}
                   />
                 </TouchableOpacity>
@@ -12821,9 +16374,15 @@ function ProjectsScreen({
             ) : null}
           </View>
 
+          <PrimaryButton
+            label="New Project"
+            icon="add-circle-outline"
+            onPress={() => setShowAddProject(prev => !prev)}
+          />
+
           {showAddProject ? (
             <AddProjectCard
-              buttonLabel="Add Project"
+              buttonLabel="Create Project"
               placeholder="New project name"
               onAdd={onAddProject}
             />
@@ -12836,10 +16395,33 @@ function ProjectsScreen({
       }
       ListEmptyComponent={
         <EmptyState
-          title="No matching projects"
-          text="Change the search or add a project to start a field update."
+          title={search ? 'No matching projects' : 'No projects yet'}
+          text={search
+            ? 'Try a different project name or clear the search.'
+            : 'Create your first project to begin capturing updates and building project intelligence.'}
         />
       }
+      ListFooterComponent={archivedProjects.length > 0 ? (
+        <View>
+          <Text style={styles.sectionLabel}>Archived Projects</Text>
+          {archivedProjects.map(project => (
+            <View key={`archived-${project}`} style={styles.compactLocationRow}>
+              <View style={styles.rowMain}>
+                <Text style={styles.projectName}>{project}</Text>
+                <Text style={styles.rowSub}>Archived · hidden from active project views</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.phase3ChangeButton}
+                onPress={() => onReopenProject(project)}
+                accessibilityRole="button"
+                accessibilityLabel={`Reopen ${project}`}
+              >
+                <Text style={styles.dashboardManageText}>Reopen</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      ) : null}
     />
   );
 }
@@ -12861,50 +16443,83 @@ function Phase2ProjectCard({
   item: {
     project: string;
     stats: ProjectStats;
-    thumbnailUri?: string;
+    thumbnailUri?: string | null;
     documentCount: number;
     contactCount: number;
-    pieBrief: string;
     attentionCount: number;
   };
   onPress: () => void;
 }) {
+  const hasActivity = item.stats.updates > 0;
   const status = projectRowStatus(item.attentionCount, item.stats.openActions);
-  const statusColor =
-    status === 'Attention Needed'
-      ? colors.danger
+  const tier = !hasActivity
+    ? {
+        tint: colors.fill,
+        iconColor: colors.muted,
+        icon: 'business-outline' as const,
+        label: 'No activity yet',
+      }
+    : status === 'Attention Needed'
+      ? {
+          tint: colors.warningSoft,
+          iconColor: colors.warning,
+          icon: 'warning-outline' as const,
+          label: 'At Risk',
+        }
       : status === 'Waiting'
-        ? colors.warning
-        : colors.success;
+        ? {
+            tint: colors.primarySoft,
+            iconColor: colors.primary,
+            icon: 'time-outline' as const,
+            label: 'In Progress',
+          }
+        : {
+            tint: colors.successSoft,
+            iconColor: colors.success,
+            icon: 'checkmark-circle-outline' as const,
+            label: 'Healthy',
+          };
+
+  const activitySegments = [
+    item.stats.photos > 0
+      ? `${item.stats.photos} photo${item.stats.photos === 1 ? '' : 's'}`
+      : null,
+    item.documentCount > 0
+      ? `${item.documentCount} document${item.documentCount === 1 ? '' : 's'}`
+      : null,
+    item.stats.openActions > 0
+      ? `${item.stats.openActions} open item${item.stats.openActions === 1 ? '' : 's'}`
+      : null,
+  ].filter(Boolean);
 
   return (
-    <TouchableOpacity style={styles.phase2ProjectCard} onPress={onPress}>
+    <TouchableOpacity
+      style={styles.phase2ProjectCard}
+      onPress={onPress}
+    >
       {item.thumbnailUri ? (
         <Image source={{ uri: item.thumbnailUri }} style={styles.phase2ProjectThumb} />
       ) : (
         <View style={styles.phase2ProjectThumbPlaceholder}>
-          <Ionicons name="business-outline" size={24} color={colors.primary} />
+          <Ionicons name={tier.icon} size={28} color={tier.iconColor} />
         </View>
       )}
 
       <View style={styles.rowMain}>
         <View style={styles.phase2ProjectTitleRow}>
-          <View style={[styles.phase2StatusDot, { backgroundColor: statusColor }]} />
-          <Text style={styles.projectName}>{item.project}</Text>
+          <Text style={styles.phase2ProjectTitle} numberOfLines={1}>{item.project}</Text>
+          <View style={[styles.phase2ProjectStatusPill, { backgroundColor: tier.tint }]}>
+            <Text style={[styles.phase2ProjectStatusText, { color: tier.iconColor }]}>{tier.label}</Text>
+          </View>
         </View>
-        <Text style={styles.rowSub}>
-          {status} | Last update:{' '}
-          {item.stats.lastUpdate ? formatDisplayDate(item.stats.lastUpdate) : 'None yet'}
-        </Text>
-        <Text style={styles.rowSub}>
-          {item.stats.photos} photo{item.stats.photos === 1 ? '' : 's'} | {item.documentCount} document{item.documentCount === 1 ? '' : 's'} | {item.stats.openActions} open item{item.stats.openActions === 1 ? '' : 's'}
-        </Text>
-        <Text style={styles.bodyText}>{item.pieBrief}</Text>
-        {__DEV__ ? (
-          <Text style={styles.locationDetailText}>
-            Rollup source: local-first saved updates | queued included: yes | workspace/card shared: yes
-          </Text>
+        {activitySegments.length > 0 ? (
+          <Text style={styles.phase2ProjectSummary} numberOfLines={2}>{activitySegments.join(' · ')}</Text>
         ) : null}
+        <Text style={styles.phase2ProjectActivity}>
+          {item.stats.lastUpdate
+            ? `Last activity ${relativeUpdateDateLabel(item.stats.lastUpdate)}`
+            : hasActivity ? 'Activity recorded' : 'No activity recorded yet'}
+        </Text>
       </View>
 
       <Ionicons name="chevron-forward" size={22} color={colors.muted} />
@@ -12912,50 +16527,483 @@ function Phase2ProjectCard({
   );
 }
 
+type ProjectTaskFilter = 'All' | 'At Risk' | 'Due Soon' | 'Complete';
+
+function ProjectTaskControlPanel({
+  projectName,
+  scheduleItems,
+  savedUpdates,
+  onUpdate,
+  onDelete,
+  onNewFieldUpdate,
+  onAddTask,
+}: {
+  projectName: string;
+  scheduleItems: ScheduleItem[];
+  savedUpdates: ProjectUpdate[];
+  onUpdate: (itemId: string, next: Partial<ScheduleItem>) => void;
+  onDelete: (itemId: string) => void;
+  onNewFieldUpdate: (item: ScheduleItem) => void;
+  onAddTask: () => void;
+}) {
+  const [filter, setFilter] = useState<ProjectTaskFilter>('All');
+  const [expanded, setExpanded] = useState(false);
+  const [completedGroupOpen, setCompletedGroupOpen] = useState(false);
+  const operationalScheduleItems = useMemo(
+    () => operationalScheduleItemsForProject(projectName, scheduleItems),
+    [projectName, scheduleItems],
+  );
+  const scopedFieldUpdates = useMemo(
+    () => projectUpdatesForParentProject(
+      savedUpdates,
+      projectName,
+      scheduleItems,
+    ),
+    [projectName, savedUpdates, scheduleItems],
+  );
+  const rollup = useMemo(
+    () => buildDAVEProjectScheduleRollup({
+      projectName,
+      items: scheduleItems as unknown as import('./types').ScheduleItem[],
+    }),
+    [projectName, scheduleItems],
+  );
+  const reconciliation = useMemo(
+    () => buildPIEScheduleReconciliation({
+      scheduleItems: operationalScheduleItems as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['scheduleItems'],
+      updates: scopedFieldUpdates as unknown as NonNullable<Parameters<typeof buildPIEScheduleReconciliation>[0]>['updates'],
+    }),
+    [operationalScheduleItems, scopedFieldUpdates],
+  );
+  const attentionItems = useMemo(
+    () => buildPhase2AttentionItems(scopedFieldUpdates, null),
+    [scopedFieldUpdates],
+  );
+  const confirmedBlockingUpdate = findCurrentDAVEConfirmedBlocker(scopedFieldUpdates);
+  const operationalStatus = deriveDAVEProjectOperationalStatus({
+    scheduleHealth: rollup.health,
+    scheduleReason: rollup.healthReason,
+    reconciliationWarnings: reconciliation.warnings,
+    hasConfirmedBlocker: Boolean(confirmedBlockingUpdate),
+    confirmedBlockerReason: confirmedBlockingUpdate
+      ? daveConfirmedBlockerReason(confirmedBlockingUpdate)
+      : null,
+    hasAttention: attentionItems.length > 0,
+    attentionReason: attentionItems[0]?.detail || attentionItems[0]?.title || null,
+    hasScheduleData: rollup.taskCount > 0,
+    hasFieldData: scopedFieldUpdates.length > 0,
+  });
+  const fieldMatches = new Map(
+    reconciliation.matches.map(match => [match.scheduleItemId, match]),
+  );
+  const fieldWarnings = new Map<string, PIEScheduleReconciliationWarning[]>();
+  reconciliation.warnings.forEach(warning => {
+    fieldWarnings.set(warning.scheduleItemId, [
+      ...(fieldWarnings.get(warning.scheduleItemId) || []),
+      warning,
+    ]);
+  });
+  const filteredTasks = rollup.tasks.filter(item => {
+    const days = daysUntilScheduleItem(item);
+    const isComplete = scheduleTaskIsComplete(item);
+    if (filter === 'Complete') return isComplete;
+    if (filter === 'Due Soon') {
+      return !isComplete && days !== null && days >= 0 && days <= 7;
+    }
+    if (filter === 'At Risk') {
+      return item.status === 'Waiting' || (
+        !isComplete && days !== null && days <= 7
+      );
+    }
+    return true;
+  });
+  const visibleTasks = expanded
+    ? filteredTasks
+    : rollup.tasks.filter(item => !scheduleTaskIsComplete(item)).slice(0, 5);
+  const incompleteTasks = visibleTasks.filter(item => !scheduleTaskIsComplete(item));
+  const completedTasks = visibleTasks.filter(scheduleTaskIsComplete);
+  const groupedTasks = incompleteTasks.reduce((groups, item) => {
+    const groupName = scheduleTaskGroupName(
+      item as unknown as import('./types').ScheduleItem,
+    );
+    groups.set(groupName, [...(groups.get(groupName) || []), item]);
+    return groups;
+  }, new Map<string, ScheduleItem[]>());
+  if (completedTasks.length > 0) {
+    groupedTasks.set('Completed', completedTasks);
+  }
+  return (
+    <View style={styles.projectTaskPanel}>
+      <DAVEProjectTaskOperationalSummary
+        status={operationalStatus.status}
+        scheduleStatus={rollup.health}
+        percentComplete={rollup.percentComplete}
+        operationalReason={operationalStatus.reason}
+        scheduleReason={rollup.healthReason}
+        needsVerification={operationalStatus.needsVerification}
+        verificationSummary={operationalStatus.primaryWarning?.summary || null}
+      />
+      <SecondaryButton
+        label="Add Task"
+        icon="add-circle-outline"
+        onPress={onAddTask}
+      />
+      <View style={styles.projectTaskMetrics}>
+        {[
+          ['Tasks', rollup.taskCount],
+          ['Complete', rollup.completedCount],
+          ['Open', rollup.openCount],
+        ].map(([label, value]) => (
+          <View key={String(label)} style={styles.projectTaskMetric}>
+            <Text style={styles.projectTaskMetricValue}>{value}</Text>
+            <Text style={styles.projectTaskMetricLabel}>{label}</Text>
+          </View>
+        ))}
+      </View>
+      {rollup.openCount > 0 ? (
+        <Text style={styles.projectTaskForecast}>
+          Open work: {rollup.overdueCount} overdue · {rollup.dueSoonCount} due soon · {rollup.scheduledLaterCount} scheduled later
+          {rollup.undatedCount > 0 ? ` · ${rollup.undatedCount} without a date` : ''}
+        </Text>
+      ) : null}
+      {rollup.forecastFinishDate ? (
+        <Text style={styles.projectTaskForecast}>
+          Current scheduled finish: {formatAppDate(rollup.forecastFinishDate)}
+        </Text>
+      ) : null}
+
+      {expanded ? (
+        <View style={styles.projectTaskFilters}>
+          {(['All', 'At Risk', 'Due Soon', 'Complete'] as ProjectTaskFilter[]).map(option => (
+            <TouchableOpacity
+              key={option}
+              style={[
+                styles.projectTaskFilterButton,
+                filter === option && styles.projectTaskFilterButtonActive,
+              ]}
+              onPress={() => setFilter(option)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: filter === option }}
+            >
+              <Text style={[
+                styles.projectTaskFilterText,
+                filter === option && styles.projectTaskFilterTextActive,
+              ]}>
+                {option}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.locationDetailText}>
+          Showing the most important open tasks first.
+        </Text>
+      )}
+
+      {Array.from(groupedTasks.entries()).map(([groupName, tasks]) => {
+        const groupComplete = tasks.every(scheduleTaskIsComplete);
+        const groupOpen = !groupComplete || completedGroupOpen;
+        const groupTaskLabel = `${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}`;
+
+        return (
+          <View key={groupName} style={styles.projectTaskGroup}>
+            <TouchableOpacity
+              style={[
+                styles.projectTaskGroupHeader,
+                groupComplete && styles.projectTaskGroupHeaderComplete,
+              ]}
+              onPress={groupComplete
+                ? () => setCompletedGroupOpen(open => !open)
+                : undefined}
+              disabled={!groupComplete}
+              accessibilityRole={groupComplete ? 'button' : 'header'}
+              accessibilityLabel={`${groupName}, ${groupTaskLabel}${groupComplete ? ', 100% complete' : ''}`}
+              accessibilityState={groupComplete ? { expanded: groupOpen } : undefined}
+            >
+              <View style={styles.rowMain}>
+                <Text style={styles.projectTaskGroupTitle}>{groupName}</Text>
+                <Text style={styles.projectTaskGroupDetail}>
+                  {groupComplete ? `100% complete · ${groupTaskLabel}` : groupTaskLabel}
+                </Text>
+              </View>
+              {groupComplete ? (
+                <Ionicons
+                  name={groupOpen ? 'chevron-up' : 'chevron-down'}
+                  size={21}
+                  color={colors.success}
+                />
+              ) : null}
+            </TouchableOpacity>
+
+            {groupOpen ? tasks.map(item => (
+              <ScheduleItemRow
+                key={item.id}
+                item={item}
+                fieldWarnings={fieldWarnings.get(item.id) || []}
+                onUpdate={next => onUpdate(item.id, next)}
+                onDelete={() => onDelete(item.id)}
+                onAddFieldUpdate={() => onNewFieldUpdate(item)}
+              />
+            )) : null}
+          </View>
+        );
+      })}
+
+      {visibleTasks.length === 0 ? (
+        <Text style={styles.projectTaskEmpty}>No tasks match this filter.</Text>
+      ) : null}
+
+      {rollup.taskCount > 5 || expanded ? (
+        <SecondaryButton
+          label={expanded ? 'Show Fewer Tasks' : `View All Tasks (${rollup.taskCount})`}
+          icon={expanded ? 'chevron-up-outline' : 'chevron-down-outline'}
+          onPress={() => {
+            setExpanded(current => !current);
+            setFilter('All');
+          }}
+        />
+      ) : null}
+    </View>
+  );
+}
+
 function ProjectWorkspaceScreen({
   contentStyle,
   projectName,
   savedUpdates,
+  captureMemories,
+  projectWalkSession,
+  usedCaptureMemoryIds,
+  projectAreas,
   projectDocuments,
+  scheduleItems,
   contactBook,
-  projectStats,
+  coverPhoto,
+  coverPhotoMode,
+  coverPhotoUri,
+  onTakeNewCoverPhoto,
+  onChooseCoverFromLibrary,
+  onUseBestProjectPhoto,
+  onRemoveCoverPhoto,
   onBack,
   onNewFieldUpdate,
+  onNewFieldUpdateForTask,
+  onAddTask,
+  onUpdateScheduleItem,
+  onDeleteScheduleItem,
+  onStartProjectWalk,
+  onFinishProjectWalk,
+  onCancelProjectWalk,
+  onPrepareWalkUpdate,
+  onSaveCaptureMemory,
+  onDeleteCaptureMemory,
+  onAddArea,
+  onUpdateArea,
+  onDeleteArea,
+  onUseCurrentLocationForArea,
   onOpenUpdates,
-  onOpenPhotoDifferences,
+  onOpenUpdate,
   onOpenDocuments,
   onRetryQueuedUpdate,
   onDeleteProject,
+  onCloseProject,
   isDeletingProject,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   projectName: string;
   savedUpdates: ProjectUpdate[];
+  captureMemories: readonly DAVEConfirmedCaptureMemory[];
+  projectWalkSession: DAVEProjectWalkSession | null;
+  usedCaptureMemoryIds: readonly string[];
+  projectAreas: ProjectArea[];
   projectDocuments: ProjectDocument[];
+  scheduleItems: ScheduleItem[];
   contactBook: ContactBook;
-  projectStats: ProjectStats;
+  coverPhoto: ProjectCoverPhoto | null;
+  coverPhotoMode: 'automatic' | 'manual';
+  coverPhotoUri: string | null;
+  onTakeNewCoverPhoto: () => void;
+  onChooseCoverFromLibrary: () => void;
+  onUseBestProjectPhoto: () => void;
+  onRemoveCoverPhoto: () => void;
   onBack: () => void;
   onNewFieldUpdate: (projectName?: string) => void;
+  onNewFieldUpdateForTask: (item: ScheduleItem) => void;
+  onAddTask: () => void;
+  onUpdateScheduleItem: (itemId: string, next: Partial<ScheduleItem>) => void;
+  onDeleteScheduleItem: (itemId: string) => void;
+  onStartProjectWalk: () => Promise<boolean>;
+  onFinishProjectWalk: (sessionId: string) => void;
+  onCancelProjectWalk: (sessionId: string) => void;
+  onPrepareWalkUpdate: (memories: readonly DAVEConfirmedCaptureMemory[]) => void;
+  onSaveCaptureMemory: (
+    memory: DAVEConfirmedCaptureMemory,
+    walkSessionId?: string,
+  ) => Promise<void>;
+  onDeleteCaptureMemory: (memoryId: string) => Promise<void>;
+  onAddArea: (name: string) => boolean;
+  onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
+  onDeleteArea: (areaId: string) => void;
+  onUseCurrentLocationForArea: (areaId: string) => void;
   onOpenUpdates: () => void;
-  onOpenPhotoDifferences: (projectName: string) => void;
+  onOpenUpdate: (update: ProjectUpdate) => void;
   onOpenDocuments: () => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
   onDeleteProject: (projectName: string) => void;
+  onCloseProject: (projectName: string) => void;
   isDeletingProject: boolean;
 }) {
-  const projectUpdates = savedUpdates.filter(
-    update => projectMatchesScope(update, projectName),
+  const liveAuthority = usePIELiveAuthority();
+  const projectScopeNames = useMemo(
+    () => scheduleProjectScopeNames(
+      projectName,
+      scheduleItems as unknown as import('./types').ScheduleItem[],
+    ),
+    [projectName, scheduleItems],
   );
-  const projectDocumentCount = projectDocumentCountForProject(projectName, projectDocuments);
-  const projectActivity = buildPhase2ActivityItems(
-    savedUpdates,
+  const projectUpdates = useMemo(
+    () => projectUpdatesForParentProject(
+      savedUpdates,
+      projectName,
+      scheduleItems,
+    ),
+    [projectName, savedUpdates, scheduleItems],
+  );
+  const workspaceProjectStats = useMemo(
+    () => projectStatsForUpdates(projectUpdates),
+    [projectUpdates],
+  );
+  const scopedProjectDocuments = useMemo(
+    () => projectDocumentsForScopes(projectScopeNames, projectDocuments),
+    [projectScopeNames, projectDocuments],
+  );
+  const scopedScheduleItems = useMemo(
+    () => scheduleTasksForParentProject(
+      projectName,
+      scheduleItems as unknown as import('./types').ScheduleItem[],
+    ) as unknown as ScheduleItem[],
+    [projectName, scheduleItems],
+  );
+  const intelligenceUpdates = useMemo(
+    () => projectUpdates.map(update => ({ ...update, projectName })),
+    [projectName, projectUpdates],
+  );
+  const intelligenceDocuments = useMemo(
+    () => scopedProjectDocuments.map(document => ({
+      ...document,
+      projectId: authorityProjectId(projectName),
+    })),
+    [projectName, scopedProjectDocuments],
+  );
+  const intelligenceScheduleItems = useMemo(
+    () => scopedScheduleItems.map(item => ({ ...item, projectName })),
+    [projectName, scopedScheduleItems],
+  );
+  const unusedWalkMemories = unusedConfirmedProjectWalkMemories({
     projectName,
+    memories: captureMemories,
+    usedMemoryIds: usedCaptureMemoryIds,
+  });
+  const projectWalkMemoryIds = new Set(projectWalkSession?.memoryIds || []);
+  const legacyUnusedWalkMemories = unusedWalkMemories.filter(
+    memory => !projectWalkMemoryIds.has(memory.id),
+  );
+  const projectCaptureMemories = useMemo(
+    () => captureMemories
+      .filter(memory => {
+        const memoryProject = memory.recommendedProject.value?.trim().toLowerCase();
+        return Boolean(memoryProject && projectScopeNames.some(
+          scope => scope.trim().toLowerCase() === memoryProject,
+        ));
+      })
+      .sort((left, right) => right.confirmedAt.localeCompare(left.confirmedAt)),
+    [captureMemories, projectScopeNames],
+  );
+  const projectDocumentCount = scopedProjectDocuments.length;
+  const projectActivity = buildPhase2ActivityItems(
+    projectUpdates,
+    null,
     projectDocuments,
   );
   const notesCount = projectUpdates.filter(update => update.notes.trim()).length;
-  const issuesCount = projectStats.openActions + projectStats.overdueActions;
-  const pieBrief = buildPIEProjectBriefModel(projectName, savedUpdates);
-  const documentBrief = buildProjectDocumentMetadataBrief(projectName, projectDocuments);
+  const issuesCount = workspaceProjectStats.openActions + workspaceProjectStats.overdueActions;
+  const projectIntelligence = liveAuthority.projectTruth.intelligence;
+  const [voiceCaptureOpen, setVoiceCaptureOpen] = useState(false);
+  const [typedCaptureOpen, setTypedCaptureOpen] = useState(false);
+  const [projectOptionsOpen, setProjectOptionsOpen] = useState(false);
+  const [captureDraft, setCaptureDraft] = useState<DAVECaptureMemory | null>(null);
+  const [selectedCaptureMemory, setSelectedCaptureMemory] = useState<DAVEConfirmedCaptureMemory | null>(null);
+  const [areaMappingOpen, setAreaMappingOpen] = useState(false);
+  const areaSetupStats = useMemo(
+    () => projectAreaSetupStats(projectAreas),
+    [projectAreas],
+  );
+  const [projectWalkContext, setProjectWalkContext] = useState<DAVEProjectWalkContext>(() =>
+    buildDAVEProjectWalkContext({
+      projectName,
+      projectAreas,
+      location: { status: 'checking' },
+      updates: intelligenceUpdates,
+      scheduleItems: intelligenceScheduleItems,
+      intelligence: projectIntelligence,
+    }),
+  );
+  const projectWalkLocationRequest = useRef(0);
+  const projectWalkStartInFlight = useRef(false);
+
+  function contextForProjectWalk(location: DAVEProjectWalkLocationInput) {
+    return buildDAVEProjectWalkContext({
+      projectName,
+      projectAreas,
+      location,
+      updates: intelligenceUpdates,
+      scheduleItems: intelligenceScheduleItems,
+      intelligence: projectIntelligence,
+    });
+  }
+
+  async function beginProjectWalkCapture() {
+    const request = ++projectWalkLocationRequest.current;
+    setProjectWalkContext(contextForProjectWalk({ status: 'checking' }));
+    setVoiceCaptureOpen(true);
+
+    if (!projectAreas.some(area => hasSavedAreaLocation(area))) return;
+    try {
+      const snapshot = await getCurrentLocationSnapshot();
+      if (request !== projectWalkLocationRequest.current) return;
+      setProjectWalkContext(contextForProjectWalk(snapshot ? {
+        status: 'resolved',
+        latitude: snapshot.latitude,
+        longitude: snapshot.longitude,
+        accuracyMeters: snapshot.accuracy,
+      } : { status: 'unavailable' }));
+    } catch {
+      if (request !== projectWalkLocationRequest.current) return;
+      setProjectWalkContext(contextForProjectWalk({ status: 'unavailable' }));
+    }
+  }
+
+  async function startProjectWalkCapture() {
+    if (projectWalkStartInFlight.current) return;
+    projectWalkStartInFlight.current = true;
+    try {
+      if (await onStartProjectWalk()) {
+        await beginProjectWalkCapture();
+      }
+    } catch (error) {
+      Alert.alert(
+        'Unable to start walk',
+        error instanceof Error ? error.message : 'The Project Walk could not be started.',
+      );
+    } finally {
+      projectWalkStartInFlight.current = false;
+    }
+  }
+
+  function closeProjectWalkCapture() {
+    projectWalkLocationRequest.current += 1;
+    setVoiceCaptureOpen(false);
+  }
 
   return (
     <ScrollView
@@ -12963,57 +17011,37 @@ function ProjectWorkspaceScreen({
       contentContainerStyle={contentStyle}
       keyboardShouldPersistTaps="handled"
     >
-      <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
+      <TouchableOpacity
+        style={styles.phase2BackButton}
+        onPress={onBack}
+        accessibilityRole="button"
+        accessibilityLabel="Back to Overview"
+      >
         <Ionicons name="chevron-back" size={21} color={colors.primary} />
-        <Text style={styles.dashboardManageText}>Projects</Text>
+        <Text style={styles.dashboardManageText}>Overview</Text>
       </TouchableOpacity>
 
       <ScreenTitle
         title={projectName}
-        subtitle="Project workspace"
+        subtitle="Project control and task updates"
+        actionIcon="ellipsis-horizontal"
+        onActionPress={() => setProjectOptionsOpen(true)}
+        actionAccessibilityLabel="Open project options"
       />
 
-      <View style={styles.phase2BriefCard}>
-        <View style={styles.phase2BriefIcon}>
-          <Ionicons name="sparkles-outline" size={21} color={colors.primary} />
-        </View>
-        <View style={styles.rowMain}>
-          <Text style={styles.panelTitle}>PIE Project Brief</Text>
-          <Text style={styles.bodyText}>{pieBrief.summary}</Text>
-          {pieBrief.observations.length > 0 ? (
-            <>
-              <Text style={styles.sectionLabelNoMargin}>Latest observations</Text>
-              {pieBrief.observations.map(observation => (
-                <TouchableOpacity
-                  key={observation.id}
-                  style={styles.projectSelectorRow}
-                  onPress={() => onOpenPhotoDifferences(projectName)}
-                >
-                  <View style={styles.rowMain}>
-                    <Text style={styles.locationDetailText}>
-                      Observed: {observation.context} — {observation.text}
-                    </Text>
-                  </View>
-                  <Text style={styles.dashboardManageText}>View</Text>
-                </TouchableOpacity>
-              ))}
-            </>
-          ) : pieBrief.lowDetailFallback ? (
-            <Text style={styles.locationDetailText}>
-              Possible visual changes found. Review details before using in an update.
-            </Text>
-          ) : null}
-          {(pieBrief.observations.length > 0 || pieBrief.lowDetailFallback || pieBrief.analysisUnavailable) ? (
-            <TouchableOpacity
-              style={styles.photoControlButton}
-              onPress={() => onOpenPhotoDifferences(projectName)}
-            >
-              <Ionicons name="git-compare-outline" size={17} color={colors.primary} />
-              <Text style={styles.photoControlText}>View photo differences</Text>
-            </TouchableOpacity>
-          ) : null}
-          <Text style={styles.locationDetailText}>{documentBrief}</Text>
-        </View>
+      <View style={styles.projectWorkspaceHero}>
+        {coverPhotoUri ? (
+          <Image
+            source={{ uri: coverPhotoUri }}
+            style={styles.projectWorkspaceHeroImage}
+            accessibilityLabel={`${projectName} project cover photo`}
+          />
+        ) : (
+          <View style={styles.projectWorkspaceHeroPlaceholder}>
+            <Ionicons name="image-outline" size={30} color={colors.muted} />
+            <Text style={styles.locationDetailText}>Project cover photo</Text>
+          </View>
+        )}
       </View>
 
       <PrimaryButton
@@ -13022,58 +17050,268 @@ function ProjectWorkspaceScreen({
         onPress={() => onNewFieldUpdate(projectName)}
       />
 
-      <Text style={styles.sectionLabel}>Tools</Text>
-      <View style={styles.phase2ToolsGrid}>
-        <WorkspaceTool
-          label="Photos"
-          subtitle={`${projectStats.photos} saved`}
-          icon="images-outline"
-          onPress={onOpenUpdates}
+      <SecondaryButton
+        label={areaMappingOpen
+          ? 'Hide Locations & GPS'
+          : `Locations & GPS (${areaSetupStats.saved}/${areaSetupStats.total} saved)`}
+        icon={areaMappingOpen ? 'chevron-up-outline' : 'map-outline'}
+        onPress={() => setAreaMappingOpen(open => !open)}
+      />
+
+      {areaMappingOpen ? (
+        <ManageAreasPanel
+          projectAreas={projectAreas}
+          onAddArea={onAddArea}
+          onUpdateArea={onUpdateArea}
+          onDeleteArea={onDeleteArea}
+          onUseCurrentLocationForArea={onUseCurrentLocationForArea}
         />
-        <WorkspaceTool
-          label="Updates"
-          subtitle={`${projectStats.updates} total`}
+      ) : null}
+
+      <ProjectTaskControlPanel
+        projectName={projectName}
+        scheduleItems={scheduleItems}
+        savedUpdates={savedUpdates}
+        onUpdate={onUpdateScheduleItem}
+        onDelete={onDeleteScheduleItem}
+        onNewFieldUpdate={onNewFieldUpdateForTask}
+        onAddTask={onAddTask}
+      />
+
+      {projectWalkSession ? (
+        <View style={styles.phase2BriefCard}>
+          <View style={styles.phase2BriefIcon}>
+            <Ionicons name="footsteps-outline" size={21} color={colors.primary} />
+          </View>
+          <View style={styles.rowMain}>
+            <Text style={styles.panelTitle}>Project Walk in progress</Text>
+            <Text style={styles.bodyText}>
+              {projectWalkSession.memoryIds.length}{' '}
+              {projectWalkSession.memoryIds.length === 1 ? 'observation' : 'observations'} saved
+            </Text>
+            <Text style={styles.locationDetailText}>
+              Started {formatSavedTime(projectWalkSession.startedAt)}. Your walk will resume here after restarting the app.
+            </Text>
+            <SecondaryButton
+              label="Add Observation"
+              icon="add-circle-outline"
+              onPress={() => { void beginProjectWalkCapture(); }}
+            />
+            {projectWalkSession.memoryIds.length > 0 ? (
+              <SecondaryButton
+                label="Finish Walk"
+                icon="checkmark-circle-outline"
+                onPress={() => onFinishProjectWalk(projectWalkSession.id)}
+              />
+            ) : null}
+            <TouchableOpacity
+              style={styles.photoControlButton}
+              onPress={() => onCancelProjectWalk(projectWalkSession.id)}
+              accessibilityRole="button"
+              accessibilityLabel="End Project Walk"
+            >
+              <Ionicons name="close-circle-outline" size={17} color={colors.danger} />
+              <Text style={[styles.photoControlText, { color: colors.danger }]}>End Walk</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : (
+        <SecondaryButton
+          label="Start Project Walk"
+          icon="footsteps-outline"
+          onPress={() => { void startProjectWalkCapture(); }}
+        />
+      )}
+
+      {legacyUnusedWalkMemories.length > 0 ? (
+        <SecondaryButton
+          label={`Prepare Walk Update (${legacyUnusedWalkMemories.length})`}
           icon="document-text-outline"
-          onPress={onOpenUpdates}
+          onPress={() => onPrepareWalkUpdate(legacyUnusedWalkMemories)}
         />
-        <WorkspaceTool
-          label="Documents"
-          subtitle={`${projectDocumentCount} linked`}
-          icon="documents-outline"
-          onPress={onOpenDocuments}
+      ) : null}
+
+      <DAVEVoiceCaptureSheet
+        visible={voiceCaptureOpen}
+        projectName={projectName}
+        walkContext={projectWalkContext}
+        candidateLocations={projectAreas.map(area => area.name)}
+        onMemoryReady={result => {
+          projectWalkLocationRequest.current += 1;
+          const createdAt = new Date().toISOString();
+          const memoryId = `voice-memory-${uid()}`;
+          const proposedFields = result.understanding.status === 'succeeded'
+            ? result.understanding.fields
+            : { ...result.understanding.fields, generalMemory: result.transcript };
+          const transcriptArea = result.understanding.recommendedLocation;
+          const gpsArea = projectWalkContext.recommendedArea;
+          const areasConflict = Boolean(
+            transcriptArea.value && gpsArea &&
+            transcriptArea.value.toLowerCase() !== gpsArea.name.toLowerCase(),
+          );
+          const proposedLocationValue = areasConflict
+            ? null
+            : transcriptArea.value || gpsArea?.name || null;
+          const locationEvidenceId = gpsArea ? `location:${memoryId}:${gpsArea.id}` : null;
+          const locationEvidenceIds = [
+            ...(transcriptArea.value && transcriptArea.value === proposedLocationValue
+              ? [`transcript:${memoryId}`]
+              : []),
+            ...(gpsArea && gpsArea.name === proposedLocationValue && locationEvidenceId
+              ? [locationEvidenceId]
+              : []),
+          ];
+          setCaptureDraft(createCaptureMemory({
+            id: memoryId,
+            transcript: result.transcript,
+            transcriptSourceRecordId: `voice-transcription:${memoryId}`,
+            createdAt,
+            recommendedProject: {
+              value: projectName,
+              confidence: 'high',
+              confirmed: true,
+            },
+            recommendedLocation: {
+              value: proposedLocationValue,
+              confidence: proposedLocationValue
+                ? transcriptArea.value
+                  ? transcriptArea.confidence
+                  : gpsArea?.confidence || 'unknown'
+                : 'unknown',
+              evidenceIds: locationEvidenceIds,
+              confirmed: false,
+            },
+            fields: proposedFields,
+            evidence: gpsArea && locationEvidenceId ? [{
+              id: locationEvidenceId,
+              kind: 'location_record',
+              sourceRecordId: gpsArea.id,
+              summary: 'Current device location matched this saved project area during capture.',
+            }] : [],
+          }));
+          closeProjectWalkCapture();
+        }}
+        onTypeInstead={() => {
+          closeProjectWalkCapture();
+          setTypedCaptureOpen(true);
+        }}
+        onCancel={closeProjectWalkCapture}
+      />
+
+      <DAVETypedCaptureSheet
+        visible={typedCaptureOpen}
+        projectName={projectName}
+        onContinue={text => {
+          const createdAt = new Date().toISOString();
+          const memoryId = `typed-memory-${uid()}`;
+          setCaptureDraft(createCaptureMemory({
+            id: memoryId,
+            transcript: text,
+            transcriptSourceRecordId: `typed-entry:${memoryId}`,
+            createdAt,
+            recommendedProject: {
+              value: projectName,
+              confidence: 'high',
+              confirmed: true,
+            },
+            fields: { generalMemory: text },
+          }));
+          setTypedCaptureOpen(false);
+        }}
+        onCancel={() => setTypedCaptureOpen(false)}
+      />
+
+      {captureDraft ? (
+        <DAVECaptureConfirmationSheet
+          visible
+          transcript={captureDraft.transcript}
+          draft={captureDraft}
+          projects={[projectName]}
+          locations={projectAreas.map(area => area.name)}
+          sourceLabel={captureDraft.evidence.some(
+            evidence => evidence.sourceRecordId.startsWith('voice-transcription:'),
+          ) ? 'Source transcript' : 'Source note'}
+          onSave={async memory => {
+            if (projectWalkSession) {
+              await onSaveCaptureMemory(memory, projectWalkSession.id);
+            } else {
+              await onSaveCaptureMemory(memory);
+            }
+            setCaptureDraft(null);
+            if (projectWalkSession) {
+              Alert.alert(
+                'Observation saved',
+                'Add another observation, finish the walk, or return to it later.',
+                [
+                  { text: 'Later', style: 'cancel' },
+                  {
+                    text: 'Finish Walk',
+                    onPress: () => onFinishProjectWalk(projectWalkSession.id),
+                  },
+                  {
+                    text: 'Add Another',
+                    onPress: () => { void beginProjectWalkCapture(); },
+                  },
+                ],
+              );
+            }
+          }}
+          onCancel={() => setCaptureDraft(null)}
         />
-        <WorkspaceTool
-          label="Notes"
-          subtitle={`${notesCount} with notes`}
-          icon="create-outline"
-          onPress={onOpenUpdates}
-        />
-        <WorkspaceTool
-          label="Issues & Actions"
-          subtitle={`${issuesCount} open`}
-          icon="alert-circle-outline"
-          onPress={onOpenUpdates}
-        />
-        <WorkspaceTool
-          label="Recipients"
-          subtitle={`${contactBook.contacts.length} saved`}
-          icon="people-outline"
-          onPress={onOpenUpdates}
-        />
-      </View>
+      ) : null}
+
+      <DAVECaptureMemoryDetailSheet
+        memory={selectedCaptureMemory}
+        onClose={() => setSelectedCaptureMemory(null)}
+        onDelete={async memoryId => {
+          await onDeleteCaptureMemory(memoryId);
+          setSelectedCaptureMemory(null);
+        }}
+      />
+
+      {projectCaptureMemories.length > 0 ? (
+        <>
+          <Text style={styles.sectionLabel}>Project Memory</Text>
+          {projectCaptureMemories.slice(0, 3).map(memory => (
+            <TouchableOpacity
+              key={memory.id}
+              style={styles.savedRow}
+              onPress={() => setSelectedCaptureMemory(memory)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open saved memory from ${formatSavedTime(memory.confirmedAt)}`}
+            >
+              <View style={styles.rowIconBubble}>
+                <Ionicons name="bookmark-outline" size={20} color={colors.primary} />
+              </View>
+              <View style={styles.rowMain}>
+                <Text style={styles.projectName}>Saved Memory</Text>
+                <Text style={styles.rowSub}>{formatSavedTime(memory.confirmedAt)}</Text>
+                <Text style={styles.locationDetailText} numberOfLines={2}>
+                  {memory.fields.commitment ||
+                    memory.fields.issue ||
+                    memory.fields.decision ||
+                    memory.fields.generalMemory ||
+                    memory.transcript}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+            </TouchableOpacity>
+          ))}
+        </>
+      ) : null}
 
       <Text style={styles.sectionLabel}>Recent Project Activity</Text>
       {projectActivity.length === 0 ? (
         <EmptyState
           title="Recent project activity will show up here."
-          text="Photos, notes, documents, and DAVE status will appear here."
+          text="Photos, notes, documents, and status changes will appear here."
         />
       ) : (
-        projectActivity.map(item => (
+        projectActivity.slice(0, 3).map(item => (
           <Phase2ActivityRow
             key={item.update.id}
             item={item}
-            onPress={onOpenUpdates}
+            onPress={() => onOpenUpdate(item.update)}
             onRetry={
               item.update.status === 'queued' || item.update.status === 'failed'
                 ? () => onRetryQueuedUpdate(item.update)
@@ -13083,18 +17321,93 @@ function ProjectWorkspaceScreen({
         ))
       )}
 
-      <Text style={styles.sectionLabel}>Danger Zone</Text>
-      <HoldToDeleteButton
-        label="Hold to Delete Project"
-        holdingLabel="Keep holding…"
-        deletingLabel="Deleting…"
-        isDeleting={isDeletingProject}
-        onConfirm={() => onDeleteProject(projectName)}
-      />
-      <Text style={styles.locationDetailText}>
-        Press and hold for 3 seconds to permanently delete {projectName} and its
-        cloud data. Release early to cancel.
-      </Text>
+      {projectActivity.length > 3 ? (
+        <SecondaryButton
+          label="View All Activity"
+          icon="time-outline"
+          onPress={onOpenUpdates}
+        />
+      ) : null}
+
+      <ProjectActionSheet
+        visible={projectOptionsOpen}
+        title="Project Options"
+        onClose={() => setProjectOptionsOpen(false)}
+      >
+        <MoreOptionRow
+          label="Field Activity"
+          icon="document-text-outline"
+          onPress={() => {
+            setProjectOptionsOpen(false);
+            onOpenUpdates();
+          }}
+        />
+        <MoreOptionRow
+          label="Documents"
+          icon="documents-outline"
+          onPress={() => {
+            setProjectOptionsOpen(false);
+            onOpenDocuments();
+          }}
+        />
+        <Text style={styles.sectionLabel}>Cover Photo</Text>
+        <MoreOptionRow
+          label="Take New Photo"
+          icon="camera-outline"
+          onPress={() => {
+            setProjectOptionsOpen(false);
+            onTakeNewCoverPhoto();
+          }}
+        />
+        <MoreOptionRow
+          label="Choose From Library"
+          icon="images-outline"
+          onPress={() => {
+            setProjectOptionsOpen(false);
+            onChooseCoverFromLibrary();
+          }}
+        />
+        <MoreOptionRow
+          label="Use Best Project Photo"
+          icon="sparkles-outline"
+          onPress={() => {
+            setProjectOptionsOpen(false);
+            onUseBestProjectPhoto();
+          }}
+        />
+        {coverPhoto ? (
+          <MoreOptionRow
+            label="Remove Cover Photo"
+            icon="trash-outline"
+            onPress={() => {
+              setProjectOptionsOpen(false);
+              onRemoveCoverPhoto();
+            }}
+          />
+        ) : null}
+        <Text style={styles.sectionLabel}>Project Management</Text>
+        <MoreOptionRow
+          label="Archive Project"
+          icon="archive-outline"
+          onPress={() => {
+            setProjectOptionsOpen(false);
+            onCloseProject(projectName);
+          }}
+        />
+        <Text style={styles.locationDetailText}>
+          Archive hides this project from active views. You can reopen it from Archived Projects on Overview.
+        </Text>
+        <HoldToDeleteButton
+          label="Hold to Delete Project"
+          holdingLabel="Keep holding…"
+          deletingLabel="Deleting…"
+          isDeleting={isDeletingProject}
+          onConfirm={() => onDeleteProject(projectName)}
+        />
+        <Text style={styles.locationDetailText}>
+          Hold for 3 seconds to remove {projectName}. Active cloud records are queued for deletion. Secure cloud audit evidence and uploaded files may remain until separately authorized.
+        </Text>
+      </ProjectActionSheet>
     </ScrollView>
   );
 }
@@ -13132,6 +17445,7 @@ function ProjectDocumentsScreen({
   onTakePhoto,
   onOpen,
   onUpdate,
+  onSetCurrentSchedule,
   onRetry,
   onDelete,
 }: {
@@ -13145,14 +17459,27 @@ function ProjectDocumentsScreen({
   onTakePhoto: () => void;
   onOpen: (document: ProjectDocument) => void;
   onUpdate: (documentId: string, next: Partial<ProjectDocument>) => void;
+  onSetCurrentSchedule: (documentId: string) => void;
   onRetry: (documentId: string) => void;
   onDelete: (documentId: string) => void;
 }) {
+  const { sizeClass } = useAppShellLayout();
   const [categoryFilter, setCategoryFilter] =
     useState<ProjectDocumentCategory | null>(null);
-  const visibleDocuments = categoryFilter
-    ? documents.filter(document => document.category === categoryFilter)
-    : documents;
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
+  const visibleDocuments = filterDAVEDocumentWorkspace({
+    documents,
+    category: categoryFilter,
+  });
+  const selectedDocument = resolveDAVEDocumentWorkspaceDocument(
+    visibleDocuments,
+    selectedDocumentId,
+  );
+
+  useEffect(() => {
+    const resolvedId = selectedDocument?.id || null;
+    if (resolvedId !== selectedDocumentId) setSelectedDocumentId(resolvedId);
+  }, [selectedDocument?.id, selectedDocumentId]);
 
   const renderDocument = ({ item }: { item: ProjectDocument }) => (
     <ProjectDocumentCard
@@ -13161,10 +17488,60 @@ function ProjectDocumentsScreen({
       updates={updates}
       onOpen={() => onOpen(item)}
       onUpdate={next => onUpdate(item.id, next)}
+      onSetCurrentSchedule={() => onSetCurrentSchedule(item.id)}
       onRetry={() => onRetry(item.id)}
       onDelete={() => onDelete(item.id)}
     />
   );
+
+  const listHeader = (
+    <ProjectDocumentsHeader
+      projectName={projectName}
+      categories={PROJECT_DOCUMENT_CATEGORIES}
+      selectedCategory={categoryFilter}
+      onCategoryChange={setCategoryFilter}
+      onBack={onBack}
+      onUpload={onUpload}
+      onTakePhoto={onTakePhoto}
+      showActions={sizeClass !== 'wide'}
+    />
+  );
+  const emptyState = documents.length === 0 ? (
+    <EmptyState
+      title="No documents yet — upload your first document."
+      text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, review, or saving."
+    />
+  ) : (
+    <EmptyState
+      title="No documents in this category."
+      text="Choose All or change a document category."
+    />
+  );
+
+  if (sizeClass === 'wide') {
+    return (
+      <DocumentsWideWorkspace
+        documents={visibleDocuments}
+        selectedDocumentId={selectedDocument?.id || null}
+        onSelectDocument={setSelectedDocumentId}
+        masterHeader={listHeader}
+        inspectorActions={<ProjectDocumentActions onUpload={onUpload} onTakePhoto={onTakePhoto} wide />}
+        emptyState={emptyState}
+        inspector={selectedDocument ? (
+          <ProjectDocumentCard
+            document={selectedDocument}
+            projectAreas={projectAreas}
+            updates={updates}
+            onOpen={() => onOpen(selectedDocument)}
+            onUpdate={next => onUpdate(selectedDocument.id, next)}
+            onSetCurrentSchedule={() => onSetCurrentSchedule(selectedDocument.id)}
+            onRetry={() => onRetry(selectedDocument.id)}
+            onDelete={() => onDelete(selectedDocument.id)}
+          />
+        ) : emptyState}
+      />
+    );
+  }
 
   return (
     <FlatList
@@ -13174,94 +17551,8 @@ function ProjectDocumentsScreen({
       data={visibleDocuments}
       keyExtractor={document => document.id}
       renderItem={renderDocument}
-      ListHeaderComponent={
-        <>
-          <TouchableOpacity style={styles.phase2BackButton} onPress={onBack}>
-            <Ionicons name="chevron-back" size={21} color={colors.primary} />
-            <Text style={styles.dashboardManageText}>Workspace</Text>
-          </TouchableOpacity>
-
-          <ScreenTitle
-            title="Project Documents"
-            subtitle={projectName}
-          />
-
-          <PrimaryButton
-            label="Upload Document"
-            icon="document-attach-outline"
-            onPress={onUpload}
-          />
-
-          <SecondaryButton
-            label="Take Photo of Document"
-            icon="camera-outline"
-            onPress={onTakePhoto}
-          />
-
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Document Status</Text>
-            <Text style={styles.bodyText}>
-              Local only, Document upload pending, Document upload failed · Retry, and Uploaded documents remain visible here. Failed uploads can be retried without duplicating the document record.
-            </Text>
-          </View>
-
-          <Text style={styles.sectionLabel}>Category</Text>
-          <View style={styles.areaChipWrap}>
-            <TouchableOpacity
-              style={[
-                styles.areaChip,
-                !categoryFilter && styles.areaChipSelected,
-              ]}
-              onPress={() => setCategoryFilter(null)}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  !categoryFilter && styles.areaChipTextSelected,
-                ]}
-              >
-                All
-              </Text>
-            </TouchableOpacity>
-            {PROJECT_DOCUMENT_CATEGORIES.map(category => {
-              const selected = categoryFilter === category;
-
-              return (
-                <TouchableOpacity
-                  key={category}
-                  style={[
-                    styles.areaChip,
-                    selected && styles.areaChipSelected,
-                  ]}
-                  onPress={() => setCategoryFilter(category)}
-                >
-                  <Text
-                    style={[
-                      styles.areaChipText,
-                      selected && styles.areaChipTextSelected,
-                    ]}
-                  >
-                    {category}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </>
-      }
-      ListEmptyComponent={
-        documents.length === 0 ? (
-          <EmptyState
-            title="No documents yet — upload your first document."
-            text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, DAVE review, or sending."
-          />
-        ) : (
-          <EmptyState
-            title="No documents in this category."
-            text="Choose All or change a document category."
-          />
-        )
-      }
+      ListHeaderComponent={listHeader}
+      ListEmptyComponent={emptyState}
     />
   );
 }
@@ -13272,6 +17563,7 @@ function ProjectDocumentCard({
   updates,
   onOpen,
   onUpdate,
+  onSetCurrentSchedule,
   onRetry,
   onDelete,
 }: {
@@ -13280,6 +17572,7 @@ function ProjectDocumentCard({
   updates: ProjectUpdate[];
   onOpen: () => void;
   onUpdate: (next: Partial<ProjectDocument>) => void;
+  onSetCurrentSchedule: () => void;
   onRetry: () => void;
   onDelete: () => void;
 }) {
@@ -13302,6 +17595,11 @@ function ProjectDocumentCard({
           <Text style={styles.rowSub}>
             {document.category} · {projectDocumentStatusDetail(document)}
           </Text>
+          {document.category === 'Schedule' && document.isCurrent ? (
+            <View style={[styles.statusPill, styles.documentCurrentBadge]}>
+              <Text style={[styles.statusPillText, { color: colors.success }]}>Current Schedule</Text>
+            </View>
+          ) : null}
           {selectedArea ? (
             <Text style={styles.locationDetailText}>Area: {selectedArea.name}</Text>
           ) : null}
@@ -13335,6 +17633,32 @@ function ProjectDocumentCard({
           <Text style={styles.photoControlText}>Edit</Text>
         </TouchableOpacity>
       </View>
+
+      {document.category === 'Schedule' ? (
+        <TouchableOpacity
+          style={[
+            styles.photoControlButton,
+            styles.documentCurrentControl,
+            document.isCurrent && { backgroundColor: colors.successSoft, borderColor: colors.success },
+          ]}
+          onPress={onSetCurrentSchedule}
+          disabled={document.isCurrent}
+        >
+          <Ionicons
+            name={document.isCurrent ? 'checkmark-circle' : 'calendar-outline'}
+            size={18}
+            color={document.isCurrent ? colors.success : colors.primary}
+          />
+          <Text
+            style={[
+              styles.photoControlText,
+              document.isCurrent && { color: colors.success },
+            ]}
+          >
+            {document.isCurrent ? 'Current Schedule' : 'Make Current Schedule'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
 
       {detailsOpen ? (
         <View style={styles.phase4DetailBlock}>
@@ -13533,7 +17857,7 @@ function ReferenceDocumentsScreen({
           />
 
           <SecondaryButton
-            label="Back to Projects"
+            label="Back to Settings"
             icon="arrow-back-outline"
             onPress={onBack}
           />
@@ -13547,7 +17871,7 @@ function ReferenceDocumentsScreen({
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>Local Storage</Text>
             <Text style={styles.bodyText}>
-              Reference documents are copied into this app on this phone. Backup exports include document metadata only; large PDF and image files remain stored locally on the device.
+              Reference documents are copied into this app on this phone. JSON data exports include document metadata only; large PDF and image files remain stored locally on the device.
             </Text>
           </View>
 
@@ -13743,7 +18067,7 @@ function DiagnosticsScreen({
       />
 
       <SecondaryButton
-        label="Back to Projects"
+        label="Back to Settings"
         icon="arrow-back-outline"
         onPress={onBack}
       />
@@ -14392,32 +18716,46 @@ function RecipientRow({
 function SavedUpdatesScreen({
   contentStyle,
   updates,
+  deletedTaskEvidenceIds,
   projectAreas,
   contactBook,
   onOpen,
   onDelete,
   onArchive,
-  onNewUpdate,
   onRetryPhotoAnalysis,
   onRetryQueuedUpdate,
+  onBack,
   initialTab,
   initialWithinDays,
+  initialProject,
+  projectFilter,
+  onProjectFilterChange,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   updates: ProjectUpdate[];
+  deletedTaskEvidenceIds: ReadonlySet<string>;
   projectAreas: ProjectArea[];
   contactBook: ContactBook;
   onOpen: (update: ProjectUpdate) => void;
   onDelete: (updateId: string) => void;
   onArchive: (updateId: string) => void;
-  onNewUpdate: () => void;
   onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
   onRetryQueuedUpdate: (update: ProjectUpdate) => void;
+  onBack: () => void;
   initialTab?: 'Needs Review' | 'Drafts' | 'Sent' | 'All';
-  initialWithinDays?: number;
+  initialWithinDays?: number | null;
+  initialProject?: string | null;
+  projectFilter: string | null;
+  onProjectFilterChange: (projectName: string | null) => void;
 }) {
-  const [activeTab, setActiveTab] =
-    useState<'Needs Review' | 'Drafts' | 'Sent' | 'All'>(initialTab || 'Needs Review');
+  const { sizeClass } = useAppShellLayout();
+  const [activeTab, setActiveTab] = useState<'Needs Action' | 'Drafts' | 'All Activity'>(
+    initialTab === 'Drafts'
+      ? 'Drafts'
+      : initialTab === 'Sent' || initialTab === 'All'
+        ? 'All Activity'
+        : 'Needs Action',
+  );
   const [searchText, setSearchText] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [filters, setFilters] = useState<{
@@ -14427,12 +18765,19 @@ function SavedUpdatesScreen({
     lifecycleStatus: FieldUpdateStatus | null;
     withinDays: number | null;
   }>({
-    project: null,
+    project: projectFilter ?? initialProject ?? null,
     areaId: null,
     pieStatus: null,
     lifecycleStatus: null,
     withinDays: initialWithinDays ?? null,
   });
+  const [selectedUpdateId, setSelectedUpdateId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFilters(current => current.project === projectFilter
+      ? current
+      : { ...current, project: projectFilter });
+  }, [projectFilter]);
 
   const contactNamesById = useMemo(() => {
     const map = new Map<string, string>();
@@ -14442,62 +18787,35 @@ function SavedUpdatesScreen({
     return map;
   }, [contactBook]);
 
-  const filteredUpdates = updates
-    .filter(update => activeTab === 'All' || !update.isArchived)
-    .filter(update => {
-      const lifecycle = lifecycleStatusForUpdate(update);
+  const filteredUpdates = filterDAVEUpdateWorkspace({
+    updates,
+    activeTab,
+    filters,
+    searchText,
+    contactNameForId: id => contactNamesById.get(id) || '',
+    lifecycleForUpdate: lifecycleStatusForUpdate,
+    pieStatusForUpdate: updatePIEAnalysisStatus,
+    updateNeedsAction: updateNeedsReview,
+    withinDaysMatches: (update, withinDays) => {
+      const daysSince = daysUntilDate(update.date);
+      return daysSince !== null && daysSince <= 0 && daysSince >= -withinDays;
+    },
+    updateTime: update => updateDateValue(update.date)?.getTime() || 0,
+  });
+  const selectedUpdate = resolveUpdateWorkspaceUpdate(filteredUpdates, selectedUpdateId);
+  const exactComparison = buildDAVEUpdatePhotoComparison(selectedUpdate, updates);
 
-      if (activeTab === 'Needs Review') return updateNeedsReview(update);
-      if (activeTab === 'Drafts') return lifecycle === 'draft';
-      if (activeTab === 'Sent') return lifecycle === 'sent';
-
-      return true;
-    })
-    .filter(update => {
-      if (filters.project && update.projectName !== filters.project) return false;
-      if (
-        filters.areaId &&
-        update.selectedAreaId !== filters.areaId &&
-        !update.photos.some(photo => photo.selectedAreaId === filters.areaId)
-      ) {
-        return false;
-      }
-      if (filters.lifecycleStatus && lifecycleStatusForUpdate(update) !== filters.lifecycleStatus) {
-        return false;
-      }
-      if (filters.pieStatus && updatePIEAnalysisStatus(update) !== filters.pieStatus) {
-        return false;
-      }
-      if (filters.withinDays !== null) {
-        const daysSince = daysUntilDate(update.date);
-
-        if (daysSince === null || daysSince > 0 || daysSince < -filters.withinDays) {
-          return false;
-        }
-      }
-      return true;
-    })
-    .filter(update => {
-      const search = searchText.trim().toLowerCase();
-
-      if (!search) return true;
-
-      const recipientNames = update.recipients.contactIds
-        .map(id => contactNamesById.get(id) || '')
-        .join(' ');
-      const searchable = `${update.projectName} ${update.selectedAreaName || ''} ${recipientNames}`.toLowerCase();
-
-      return searchable.includes(search);
-    });
+  useEffect(() => {
+    const resolvedId = selectedUpdate?.id || null;
+    if (resolvedId !== selectedUpdateId) setSelectedUpdateId(resolvedId);
+  }, [selectedUpdate?.id, selectedUpdateId]);
 
   const emptyTitle =
-    activeTab === 'Needs Review'
-      ? 'Nothing needs review — you’re all caught up.'
+    activeTab === 'Needs Action'
+      ? "✅ You're all caught up."
       : activeTab === 'Drafts'
         ? 'No drafts.'
-        : activeTab === 'Sent'
-          ? 'No sent updates yet.'
-          : 'No updates yet.';
+        : 'No update history yet.';
 
   function retryUpdate(update: ProjectUpdate) {
     const lifecycle = lifecycleStatusForUpdate(update);
@@ -14524,105 +18842,116 @@ function SavedUpdatesScreen({
     if (targetPhoto) onRetryPhotoAnalysis(update, targetPhoto);
   }
 
-  const renderUpdate = ({ item: update }: { item: ProjectUpdate }) => (
-    <UpdateHistoryCard
-      update={update}
-      lifecycle={lifecycleStatusForUpdate(update)}
-      pieStatus={updatePIEAnalysisStatus(update)}
-      showLifecycleTag={activeTab === 'All' || activeTab === 'Needs Review'}
-      onOpen={() => onOpen(update)}
-      onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}
-      onDelete={() => onDelete(update.id)}
-      onArchive={() => onArchive(update.id)}
-    />
+  function renderUpdateCard(
+    update: ProjectUpdate,
+    index: number,
+    onSelect: () => void,
+    selected = false,
+  ) {
+    const group = updateTimelineGroup(update.date);
+    const previousGroup = index > 0 ? updateTimelineGroup(filteredUpdates[index - 1].date) : null;
+
+    return (
+      <>
+        {group !== previousGroup ? <Text style={styles.updateGroupHeader}>{group}</Text> : null}
+        <UpdateHistoryCard
+          update={update}
+          historicalDeletedTask={deletedTaskEvidenceIds.has(update.id)}
+          lifecycle={lifecycleStatusForUpdate(update)}
+          pieStatus={updatePIEAnalysisStatus(update)}
+          onOpen={onSelect}
+          onRetry={updateCanInlineRetry(update) ? () => retryUpdate(update) : undefined}
+          onDelete={() => onDelete(update.id)}
+          onArchive={() => onArchive(update.id)}
+          selected={selected}
+        />
+      </>
+    );
+  }
+
+  const renderUpdate = ({ item, index }: { item: ProjectUpdate; index: number }) =>
+    renderUpdateCard(item, index, () => onOpen(item));
+
+  const listHeader = (
+    <>
+      <TouchableOpacity style={styles.phase2BackButton} onPress={onBack} accessibilityRole="button" accessibilityLabel="Back to Overview">
+        <Ionicons name="chevron-back" size={21} color={colors.primary} />
+        <Text style={styles.dashboardManageText}>Overview</Text>
+      </TouchableOpacity>
+      <ScreenTitle title="Field Activity" subtitle="Search field records, drafts, and items that need action." />
+      <View style={styles.updateSearchPanel}>
+        <View style={styles.updateTopControlRow}>
+          <View style={styles.updateSearchBox}>
+            <Ionicons name="search-outline" size={19} color={colors.muted} />
+            <TextInput style={styles.projectSearchInput} value={searchText} onChangeText={setSearchText} placeholder="Search updates" placeholderTextColor={colors.muted} />
+          </View>
+          <TouchableOpacity style={styles.updateFilterButton} onPress={() => setFilterOpen(true)} accessibilityRole="button" accessibilityLabel="Filter updates">
+            <Ionicons name="filter-outline" size={20} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+      </View>
+      <View style={styles.updateSegmentRow}>
+        {(['Needs Action', 'Drafts', 'All Activity'] as const).map(tab => {
+          const selected = activeTab === tab;
+          return <TouchableOpacity key={tab} style={[styles.updateSegment, selected && styles.updateSegmentSelected]} onPress={() => setActiveTab(tab)} accessibilityRole="tab" accessibilityState={{ selected }} accessibilityLabel={`${tab} updates`}><Text style={[styles.updateSegmentText, selected && styles.updateSegmentTextSelected]}>{tab}</Text></TouchableOpacity>;
+        })}
+      </View>
+      <UpdateFilterSheet visible={filterOpen} updates={updates} projectAreas={projectAreas} filters={filters} onChange={next => {
+        setFilters(next);
+        onProjectFilterChange(next.project);
+      }} onClose={() => setFilterOpen(false)} />
+    </>
   );
+  const emptyState = (
+    <View style={styles.updateEmptyState}>
+      <Text style={styles.updateEmptyTitle}>{emptyTitle}</Text>
+      <Text style={styles.updateEmptyText}>{activeTab === 'Needs Action' ? 'No field records require action today.' : activeTab === 'Drafts' ? 'Start from Overview or a project when you are ready to capture field work.' : 'Saved field activity will appear here.'}</Text>
+    </View>
+  );
+  const comparison = exactComparison ? {
+    priorUri: exactComparison.priorPhotoUri,
+    priorLabel: formatDisplayDate(exactComparison.priorUpdateDate),
+    currentUri: exactComparison.currentPhotoUri,
+    currentLabel: formatDisplayDate(exactComparison.currentUpdateDate),
+    summary: exactComparison.summary,
+    confidence: exactComparison.comparisonConfidence,
+    comparability: exactComparison.comparability,
+  } : null;
+
+  if (sizeClass === 'wide') {
+    return <UpdatesWideWorkspace
+      items={filteredUpdates}
+      selectedUpdateId={selectedUpdate?.id || null}
+      onSelectUpdate={setSelectedUpdateId}
+      renderMasterItem={({ item, index, selected, onSelect }) => renderUpdateCard(item, index, onSelect, selected)}
+      masterHeader={listHeader}
+      comparison={comparison}
+      emptyState={emptyState}
+      inspector={selectedUpdate ? <ReadOnlyUpdateDetailScreen
+        update={selectedUpdate}
+        backLabel="Updates"
+        onBack={() => undefined}
+        embedded
+        onResume={lifecycleStatusForUpdate(selectedUpdate) === 'sent' ? undefined : () => onOpen(selectedUpdate)}
+        onRetry={['queued', 'failed'].includes(lifecycleStatusForUpdate(selectedUpdate)) ? () => onRetryQueuedUpdate(selectedUpdate) : undefined}
+        onRetryPhotoAnalysis={onRetryPhotoAnalysis}
+        onDelete={() => onDelete(selectedUpdate.id)}
+        onArchive={() => onArchive(selectedUpdate.id)}
+      /> : emptyState}
+    />;
+  }
 
   return (
     <FlatList
       style={styles.appFrame}
       contentContainerStyle={contentStyle}
+      contentInsetAdjustmentBehavior="automatic"
       keyboardShouldPersistTaps="handled"
       data={filteredUpdates}
       keyExtractor={update => update.id}
       renderItem={renderUpdate}
-      ListHeaderComponent={
-        <>
-          <ScreenTitle
-            title="Updates"
-            subtitle="Review drafts, queued sends, sent updates, and DAVE analysis items."
-          />
-
-          <View style={styles.updateTopControlRow}>
-            <View style={styles.updateSearchBox}>
-              <Ionicons name="search-outline" size={19} color={colors.muted} />
-              <TextInput
-                style={styles.projectSearchInput}
-                value={searchText}
-                onChangeText={setSearchText}
-                placeholder="Search updates"
-                placeholderTextColor={colors.muted}
-              />
-            </View>
-            <TouchableOpacity style={styles.updateFilterButton} onPress={() => setFilterOpen(true)}>
-              <Ionicons name="filter-outline" size={20} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity style={styles.updateFilterSummary} onPress={() => setFilterOpen(true)}>
-            <Text style={styles.phase2SelectorLabel}>FILTER</Text>
-            <Text style={styles.projectName}>
-              {filters.project || 'All Projects'} ▾
-            </Text>
-          </TouchableOpacity>
-
-          <View style={styles.updateSegmentRow}>
-            {(['Needs Review', 'Drafts', 'Sent', 'All'] as const).map(tab => {
-              const selected = activeTab === tab;
-              return (
-                <TouchableOpacity
-                  key={tab}
-                  style={[
-                    styles.updateSegment,
-                    selected && styles.updateSegmentSelected,
-                  ]}
-                  onPress={() => setActiveTab(tab)}
-                >
-                  <Text
-                    style={[
-                      styles.updateSegmentText,
-                      selected && styles.updateSegmentTextSelected,
-                    ]}
-                  >
-                    {tab}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          <UpdateFilterSheet
-            visible={filterOpen}
-            updates={updates}
-            projectAreas={projectAreas}
-            filters={filters}
-            onChange={setFilters}
-            onClose={() => setFilterOpen(false)}
-          />
-        </>
-      }
-      ListEmptyComponent={
-        <EmptyState
-          title={emptyTitle}
-          text="Use New Update to create or resume project update work."
-        />
-      }
-      ListFooterComponent={
-        <PrimaryButton
-          label="New Update"
-          icon="add-circle-outline"
-          onPress={onNewUpdate}
-        />
-      }
+      ListHeaderComponent={listHeader}
+      ListEmptyComponent={emptyState}
     />
   );
 }
@@ -14691,17 +19020,17 @@ function UpdateFilterSheet({
         />
       ))}
 
-      <Text style={styles.sectionLabel}>Lifecycle status</Text>
+      <Text style={styles.sectionLabel}>Cloud status</Text>
       {(['draft', 'ready_to_send', 'queued', 'sent', 'failed'] as FieldUpdateStatus[]).map(status => (
         <FilterOption
           key={status}
-          label={status}
+          label={fieldUpdateLifecycleLabel(status)}
           selected={filters.lifecycleStatus === status}
           onPress={() => onChange({ ...filters, lifecycleStatus: status })}
         />
       ))}
 
-      <Text style={styles.sectionLabel}>PIE status</Text>
+      <Text style={styles.sectionLabel}>Analysis status</Text>
       {pieStatuses.map(status => (
         <FilterOption
           key={status}
@@ -14712,7 +19041,7 @@ function UpdateFilterSheet({
       ))}
 
       <Text style={styles.sectionLabel}>Photo status</Text>
-      <Text style={styles.bodyText}>Photo status, document status, date, and sent/draft status use the same saved update records and lifecycle fields.</Text>
+      <Text style={styles.bodyText}>Photo, document, date, and cloud status all come from the same saved field record.</Text>
 
       <SecondaryButton
         label="Clear Filters"
@@ -14760,22 +19089,24 @@ function FilterOption({
 
 function UpdateHistoryCard({
   update,
+  historicalDeletedTask = false,
   lifecycle,
   pieStatus,
-  showLifecycleTag,
   onOpen,
   onRetry,
   onDelete,
   onArchive,
+  selected = false,
 }: {
   update: ProjectUpdate;
+  historicalDeletedTask?: boolean;
   lifecycle: FieldUpdateStatus;
   pieStatus: string | null;
-  showLifecycleTag: boolean;
   onOpen: () => void;
   onRetry?: () => void;
   onDelete: () => void;
   onArchive: () => void;
+  selected?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
@@ -14784,65 +19115,109 @@ function UpdateHistoryCard({
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)
       : lifecycle === 'ready_to_send'
-        ? 'Ready to send'
+        ? 'Ready to sync'
         : lifecycle === 'failed'
           ? queuedStatusCopyForUpdate(update)
           : pieStatus ||
             (update.photos.length === 0
               ? update.notes.trim() || (documents.length > 0 ? countLabel(documents.length, 'document') : 'No photos attached')
               : null);
+  const updateType = update.quickContext || (update.photos.length > 0 ? 'Photo update' : 'Project update');
+  const summary =
+    update.observedFindings?.[0] ||
+    statusLine ||
+    update.notes.trim() ||
+    (documents.length > 0
+      ? `${countLabel(documents.length, 'document')} added to this update.`
+      : 'Project update recorded.');
+  const statusLabel = fieldUpdateLifecycleLabel(lifecycle);
 
   return (
-    <TouchableOpacity style={styles.updateCard} onPress={onOpen}>
-      {thumbnail ? (
-        <Image source={{ uri: thumbnail }} style={styles.updateCardThumb} />
-      ) : (
-        <View style={styles.updateCardThumbPlaceholder}>
-          <Ionicons name="document-text-outline" size={22} color={colors.primary} />
-        </View>
-      )}
+    <TouchableOpacity
+      style={[styles.updateCard, selected && { borderColor: colors.primary, borderLeftWidth: 5, backgroundColor: colors.primarySoft }]}
+      onPress={onOpen}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      accessibilityLabel={`${update.projectName}. ${summary}. ${updateType}. ${statusLabel}. ${historicalDeletedTask ? `${DELETED_TASK_EVIDENCE_LABEL}. ` : ''}${relativeUpdateTimestamp(update.date)}`}
+    >
+      <View style={styles.updateCardMedia}>
+        {thumbnail ? (
+          <Image source={{ uri: thumbnail }} style={styles.updateCardThumb} />
+        ) : (
+          <View style={styles.updateCardThumbPlaceholder}>
+            <Ionicons name="document-text-outline" size={28} color={colors.primary} />
+          </View>
+        )}
+        <Text style={styles.updatePhotoStatusPill}>{statusLabel}</Text>
+      </View>
 
       <View style={styles.rowMain}>
-        <View style={styles.phase2ProjectTitleRow}>
-          <Text style={styles.projectName}>{update.projectName}</Text>
-          {showLifecycleTag ? (
-            <Text style={styles.updateLifecycleTag}>{lifecycle}</Text>
-          ) : null}
+        <Text style={styles.updateCardProject} numberOfLines={1}>{update.projectName}</Text>
+        <Text style={styles.updateCardSummary} numberOfLines={2}>{summary}</Text>
+        {historicalDeletedTask ? (
+          <Text style={styles.updateHistoricalEvidenceLabel}>
+            {DELETED_TASK_EVIDENCE_LABEL}
+          </Text>
+        ) : null}
+        <View style={styles.updateCardMetaRow}>
+          <Text style={styles.updateCardType}>{updateType}</Text>
+          <Text style={styles.updateCardMetaDot}>•</Text>
+          <Text style={styles.updateCardTime}>{relativeUpdateTimestamp(update.date)}</Text>
         </View>
-        <Text style={styles.rowSub}>
-          {formatDisplayDate(update.date)} · {countLabel(update.photos.length, 'photo')}
-          {documents.length > 0 ? ` · ${countLabel(documents.length, 'document')}` : ''}
-          {update.selectedAreaName ? ` · ${update.selectedAreaName}` : ''}
-        </Text>
-        {statusLine ? (
-          <Text style={styles.bodyText}>{statusLine}</Text>
-        ) : null}
-        {__DEV__ && update.syncDiagnostics ? (
-          <Text style={styles.locationDetailText}>
-            Sync diagnostics: attempt {update.syncDiagnostics.lastSyncAttemptAt || 'none'} | retry attempt {update.syncDiagnostics.retryAttemptNumber ?? 'unknown'} | result {update.syncDiagnostics.lastSyncResult || 'none'} | category {update.syncDiagnostics.lastSyncFailureCategory || 'none'} | failed operation {update.syncDiagnostics.failedOperationName || 'none'} | target {update.syncDiagnostics.failedLogicalTarget || 'none'} | RLS denied {update.syncDiagnostics.rlsDenied ? 'yes' : 'no'} | user id present {update.syncDiagnostics.authenticatedUserIdPresent === null ? 'unknown' : update.syncDiagnostics.authenticatedUserIdPresent ? 'yes' : 'no'} | project id present {update.syncDiagnostics.projectIdPresent === null ? 'unknown' : update.syncDiagnostics.projectIdPresent ? 'yes' : 'no'} | organization id present {update.syncDiagnostics.organizationIdPresent === null ? 'unknown' : update.syncDiagnostics.organizationIdPresent ? 'yes' : 'no'} | membership {update.syncDiagnostics.membershipCheckResult || 'unknown'} | token {update.syncDiagnostics.sessionTokenPresent === null ? 'unknown' : update.syncDiagnostics.sessionTokenPresent ? 'yes' : 'no'} | local file exists {update.syncDiagnostics.localFileExists === null ? 'unknown' : update.syncDiagnostics.localFileExists ? 'yes' : 'no'} | local file readable {update.syncDiagnostics.localFileReadable === null ? 'unknown' : update.syncDiagnostics.localFileReadable ? 'yes' : 'no'} | byte size {update.syncDiagnostics.fileByteSizeCategory} | payload {update.syncDiagnostics.uploadPayloadType} | content type {update.syncDiagnostics.storageContentType || 'unknown'} | path category {update.syncDiagnostics.objectPathCategory || 'unknown'} | cloud insert attempted {update.syncDiagnostics.cloudUpdateInsertAttempted ? 'yes' : 'no'} | photo upload attempted {update.syncDiagnostics.photoStorageUploadAttempted ? 'yes' : 'no'} | storage {update.syncDiagnostics.storageUploadResult} | storage bucket {update.syncDiagnostics.storageBucketName || 'unknown'} | bucket exists {update.syncDiagnostics.storageBucketExists} | storage category {update.syncDiagnostics.storageFailureCategory || 'none'} | storage status {update.syncDiagnostics.storageHttpStatus ?? 'none'} | storage code {update.syncDiagnostics.storageErrorCode || 'none'} | database after upload {update.syncDiagnostics.databaseSyncRanAfterUpload === null ? 'unknown' : update.syncDiagnostics.databaseSyncRanAfterUpload ? 'yes' : 'no'} | database {update.syncDiagnostics.databaseUpsertResult} | rls/auth {update.syncDiagnostics.rlsOrAuthFailureDetected ? 'yes' : 'no'} | retry {update.syncDiagnostics.retryAvailable ? 'yes' : 'no'} | network {update.syncDiagnostics.networkState} | connection {update.syncDiagnostics.connectionType} | queued {update.syncDiagnostics.queuedUpdateCount} | local rollups {update.syncDiagnostics.projectRollupsIncludeQueuedUpdates ? 'yes' : 'no'} | shared source {update.syncDiagnostics.projectCardWorkspaceSameSource ? 'yes' : 'no'}
-          </Text>
-        ) : null}
-        {__DEV__ && update.deleteDiagnostics ? (
-          <Text style={styles.locationDetailText}>
-            Lifecycle diagnostics: update id {update.deleteDiagnostics.updateId} | local id {update.deleteDiagnostics.localId} | cloud id present {update.deleteDiagnostics.cloudIdPresent ? 'yes' : 'no'} | lifecycle {update.deleteDiagnostics.lifecycleStatus} | pending sync {update.deleteDiagnostics.pendingSync ? 'yes' : 'no'} | tombstoned {update.deleteDiagnostics.tombstoned ? 'yes' : 'no'} | {update.isArchived ? 'archived at' : 'deleted at'} {update.deleteDiagnostics.deletedAt || 'none'} | source after reload {update.deleteDiagnostics.sourceAfterReload} | merge decision {update.deleteDiagnostics.mergeDecision} | orphaned photo count ignored {update.deleteDiagnostics.orphanedPhotoCountIgnored}
-          </Text>
-        ) : null}
         {onRetry ? (
           <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
             <Ionicons name="refresh-outline" size={17} color={colors.primary} />
             <Text style={styles.photoControlText}>Retry</Text>
           </TouchableOpacity>
         ) : null}
+        {__DEV__ && update.deleteDiagnostics ? (
+          <Text style={styles.rowSub}>
+            Delete state: {update.deleteDiagnostics.sourceAfterReload} ·{' '}
+            {update.deleteDiagnostics.mergeDecision} · ignored photos{' '}
+            {update.deleteDiagnostics.orphanedPhotoCountIgnored}
+          </Text>
+        ) : null}
+        {__DEV__ && update.syncDiagnostics ? (
+          <Text style={styles.rowSub}>
+            cloud insert attempted {String(update.syncDiagnostics.cloudUpdateInsertAttempted)} · photo upload attempted{' '}
+            {String(update.syncDiagnostics.photoStorageUploadAttempted)} · storage bucket{' '}
+            {update.syncDiagnostics.storageBucketName || 'unknown'} · bucket exists{' '}
+            {update.syncDiagnostics.storageBucketExists} · storage category{' '}
+            {update.syncDiagnostics.storageFailureCategory || 'none'} · storage status{' '}
+            {update.syncDiagnostics.storageHttpStatus ?? 'none'} · storage code{' '}
+            {update.syncDiagnostics.storageErrorCode || 'none'} · retry attempt{' '}
+            {update.syncDiagnostics.retryAttemptNumber ?? 'none'} · local file exists{' '}
+            {String(update.syncDiagnostics.localFileExists)} · local file readable{' '}
+            {String(update.syncDiagnostics.localFileReadable)} · byte size{' '}
+            {update.syncDiagnostics.fileByteSizeCategory} · payload{' '}
+            {update.syncDiagnostics.uploadPayloadType} · content type{' '}
+            {update.syncDiagnostics.storageContentType || 'unknown'} · path category{' '}
+            {update.syncDiagnostics.objectPathCategory || 'unknown'} · database after upload{' '}
+            {String(update.syncDiagnostics.databaseSyncRanAfterUpload)} · failed operation{' '}
+            {update.syncDiagnostics.failedOperationName || 'none'} · target{' '}
+            {update.syncDiagnostics.failedLogicalTarget || 'none'} · RLS denied{' '}
+            {String(update.syncDiagnostics.rlsDenied)} · user id present{' '}
+            {String(update.syncDiagnostics.authenticatedUserIdPresent)} · project id present{' '}
+            {String(update.syncDiagnostics.projectIdPresent)} · organization id present{' '}
+            {String(update.syncDiagnostics.organizationIdPresent)} · membership{' '}
+            {update.syncDiagnostics.membershipCheckResult || 'unknown'} · rls/auth{' '}
+            {String(update.syncDiagnostics.rlsOrAuthFailureDetected)}
+            {' '}· Rollup source: local-first saved updates | queued included: yes | workspace/card shared: yes
+          </Text>
+        ) : null}
       </View>
 
-      <TouchableOpacity
-        style={styles.iconOnlyButton}
-        onPress={() => setMenuOpen(true)}
-      >
-        <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
-      </TouchableOpacity>
-
-      <Ionicons name="chevron-forward" size={20} color={colors.muted} />
+      <View style={styles.updateCardActions}>
+        <TouchableOpacity
+          style={styles.iconOnlyButton}
+          onPress={() => setMenuOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`More options for ${update.projectName} update`}
+        >
+          <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
+        </TouchableOpacity>
+        <Ionicons name="chevron-forward" size={22} color={colors.muted} />
+      </View>
 
       <UpdateOverflowMenu
         visible={menuOpen}
@@ -14868,12 +19243,8 @@ function UpdateOverflowMenu({
   onDelete: () => void;
   onArchive: () => void;
 }) {
-  const sent = lifecycle === 'sent';
-  const deleteLabel = lifecycle === 'sent'
-    ? 'Delete sent update'
-    : lifecycle === 'failed'
-      ? 'Delete failed update'
-      : 'Remove from device';
+  const cloudSynced = lifecycle === 'sent';
+  const deleteLabel = 'Delete This Update';
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
@@ -14886,9 +19257,9 @@ function UpdateOverflowMenu({
               <Ionicons name="close-outline" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
-          {sent ? (
+          {cloudSynced ? (
             <MoreOptionRow
-              label="Archive sent update"
+              label="Archive cloud-synced update"
               icon="archive-outline"
               onPress={() => {
                 onClose();
@@ -15187,6 +19558,7 @@ function UpcomingScreen({
       source: string;
       title: string;
       projectName: string;
+      projectTimeZone?: string | null;
       locationName: string;
       owner: string;
       contractor: string;
@@ -15205,6 +19577,7 @@ function UpcomingScreen({
     source: string;
     title: string;
     projectName: string;
+    projectTimeZone?: string | null;
     locationName: string;
     owner: string;
     contractor: string;
@@ -15217,12 +19590,13 @@ function UpcomingScreen({
 
   const combinedItems: UpcomingItem[] = [
     ...scheduleItems
-      .filter(item => item.status !== 'Complete')
+      .filter(item => !scheduleTaskIsComplete(item))
       .map(item => ({
         id: item.id,
         source: 'Schedule',
         title: item.taskName,
         projectName: item.projectName,
+        projectTimeZone: item.projectTimeZone,
         locationName: item.locationName,
         owner: item.owner,
         contractor: item.contractor,
@@ -15237,6 +19611,7 @@ function UpcomingScreen({
       source: 'Action Item',
       title: item.taskName,
       projectName: item.projectName,
+      projectTimeZone: DEFAULT_PROJECT_TIME_ZONE,
       locationName: item.locationName,
       owner: item.owner,
       contractor: '',
@@ -15249,7 +19624,7 @@ function UpcomingScreen({
   ];
 
   const withDueDates = combinedItems
-    .map(item => ({ ...item, days: daysUntilDate(item.dueDate) }))
+    .map(item => ({ ...item, days: daysUntilDate(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE) }))
     .filter(item => item.days !== null)
     .sort((a, b) => (a.days ?? 99999) - (b.days ?? 99999));
 
@@ -15277,7 +19652,7 @@ function UpcomingScreen({
           {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
         </Text>
         <Text style={styles.rowSub}>
-          {dueStatusText(item.dueDate)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
+          {dueStatusText(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
         </Text>
         <View style={styles.scheduleMetaRow}>
           <View style={[styles.statusPill, { backgroundColor: `${colors.primary}1A` }]}>
@@ -15440,6 +19815,7 @@ function UpcomingScreen({
 
 function ScheduleScreen({
   contentStyle,
+  screenshotImportAvailable,
   scheduleItems,
   savedUpdates,
   projectAreas,
@@ -15453,10 +19829,20 @@ function ScheduleScreen({
   onUpdate,
   onDelete,
   onImport,
-  scheduleAiExtractorUrl,
-  onScheduleAiExtractorUrlChange,
+  onImportScreenshot,
+  onApproveImport,
+  onCancelImport,
+  incomingImportBatch,
+  onIncomingImportConsumed,
+  onNewFieldUpdateForTask,
+  onOpenUpdate,
+  initialFilter,
+  initialAddProjectName,
+  projectFilter,
+  defaultOwner,
 }: {
   contentStyle: StyleProp<ViewStyle>;
+  screenshotImportAvailable: boolean;
   scheduleItems: ScheduleItem[];
   savedUpdates: ProjectUpdate[];
   projectAreas: ProjectArea[];
@@ -15469,223 +19855,476 @@ function ScheduleScreen({
   onAdd: (item: Partial<ScheduleItem>) => void;
   onUpdate: (itemId: string, next: Partial<ScheduleItem>) => void;
   onDelete: (itemId: string) => void;
-  onImport: () => void;
-  scheduleAiExtractorUrl: string;
-  onScheduleAiExtractorUrlChange: (value: string) => void;
+  onImport: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
+  onImportScreenshot: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
+  onApproveImport: (batch: PIEScheduleImportBatch) => void;
+  onCancelImport: (batch: PIEScheduleImportBatch) => void;
+  incomingImportBatch: PIEScheduleImportBatch | null;
+  onIncomingImportConsumed: () => void;
+  onNewFieldUpdateForTask: (item: ScheduleItem) => void;
+  onOpenUpdate: (update: ProjectUpdate) => void;
+  initialFilter?: ScheduleTaskFilter;
+  initialAddProjectName?: string | null;
+  projectFilter?: string | null;
+  defaultOwner?: string;
 }) {
-  const [showAdd, setShowAdd] = useState(false);
-  const [taskName, setTaskName] = useState('');
-  const [projectName, setProjectName] = useState(projects[0] || '');
-  const [locationName, setLocationName] = useState(projectAreas[0]?.name || '');
-  const [startDate, setStartDate] = useState('');
-  const [finishDate, setFinishDate] = useState('');
-  const [milestone, setMilestone] = useState('');
-  const [owner, setOwner] = useState('');
-  const [contractor, setContractor] = useState('');
-  const [percentComplete, setPercentComplete] = useState('0');
-  const [priority, setPriority] = useState<SchedulePriority>('Medium');
-  const [status, setStatus] = useState<ScheduleStatus>('Not Started');
-  const [notes, setNotes] = useState('');
+  const { sizeClass } = useAppShellLayout();
+  const scheduleScreenInsets = useSafeAreaInsets();
+  const isWideWorkspace = sizeClass === 'wide';
+  const [workspaceView, setWorkspaceView] = useState<ScheduleWorkspaceView>('Tasks');
+  const [taskView, setTaskView] = useState<ScheduleTaskView>('Open Tasks');
+  const [taskFilter, setTaskFilter] = useState<ScheduleTaskFilter>(initialFilter || 'Attention');
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [planningTaskId, setPlanningTaskId] = useState<string | null>(null);
+  const [scheduleManagementOpen, setScheduleManagementOpen] = useState(false);
+  const [showAdd, setShowAdd] = useState(Boolean(initialAddProjectName));
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [followThroughReviewStates, setFollowThroughReviewStates] = useState<DAVEFollowThroughReviewState[]>([]);
+  const [followThroughReviewsLoaded, setFollowThroughReviewsLoaded] = useState(false);
 
-  const actionItems = actionItemsFromUpdates(savedUpdates);
+  useEffect(() => {
+    if (!initialAddProjectName) return;
+    setWorkspaceView('Tasks');
+    setShowAdd(true);
+  }, [initialAddProjectName]);
 
-  const sortedItems = [...scheduleItems].sort((a, b) => {
-    const aDays = daysUntilDate(a.finishDate);
-    const bDays = daysUntilDate(b.finishDate);
+  useEffect(() => { if (incomingImportBatch) setScheduleManagementOpen(true); }, [incomingImportBatch]);
+
+  const workspaceScheduleItems = useMemo(
+    () => scheduleItemsForWorkspaceProject(
+      scheduleItems,
+      isWideWorkspace ? projectFilter || null : null,
+    ),
+    [isWideWorkspace, projectFilter, scheduleItems],
+  );
+  const workspaceSavedUpdates = useMemo(
+    () => isWideWorkspace && projectFilter
+      ? projectUpdatesForParentProject(
+          savedUpdates,
+          projectFilter,
+          scheduleItems,
+        )
+      : savedUpdates,
+    [isWideWorkspace, projectFilter, savedUpdates, scheduleItems],
+  );
+
+  useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem('dave-follow-through-reviews:v2')
+      .then(value => {
+        if (!active) return;
+        const parsed = parseDAVEFollowThroughReviewStatesResult(value);
+        if (parsed.status === 'corrupt') {
+          Alert.alert(
+            'Review reminders unavailable',
+            'Saved follow-through review timing could not be read safely. No reminder history was changed.',
+          );
+          return;
+        }
+        setFollowThroughReviewStates(parsed.reviewStates);
+        setFollowThroughReviewsLoaded(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        Alert.alert(
+          'Review reminders unavailable',
+          'Saved follow-through review timing could not be opened. No reminder history was changed.',
+        );
+      });
+    return () => { active = false; };
+  }, []);
+
+  const scheduleReconciliation = useMemo(
+    () => buildPIEScheduleReconciliation({
+      scheduleItems: workspaceScheduleItems,
+      updates: workspaceSavedUpdates,
+    }),
+    [workspaceSavedUpdates, workspaceScheduleItems],
+  );
+  const actionableScheduleWarnings = useMemo(
+    () => scheduleReconciliation.warnings.filter(scheduleWarningIsUserActionable),
+    [scheduleReconciliation.warnings],
+  );
+  const dependencyNetwork = useMemo(
+    () => buildPIEScheduleDependencyNetwork(
+      workspaceScheduleItems as unknown as import('./types').ScheduleItem[],
+    ),
+    [workspaceScheduleItems],
+  );
+  const dependencyNodeByItemId = useMemo(
+    () => new Map(dependencyNetwork.nodes.map(node => [node.scheduleItemId, node])),
+    [dependencyNetwork],
+  );
+  const actionInbox = useMemo(
+    () => buildDAVEActionInbox({
+      scheduleItems: workspaceScheduleItems as unknown as import('./types').ScheduleItem[],
+      updates: workspaceSavedUpdates as unknown as import('./types').ProjectUpdate[],
+      reconciliationWarnings: actionableScheduleWarnings,
+      dependencyNodes: dependencyNetwork.nodes,
+    }),
+    [actionableScheduleWarnings, dependencyNetwork.nodes, workspaceSavedUpdates, workspaceScheduleItems],
+  );
+  const actionInboxIdentity = useMemo(
+    () => actionInbox.items.map(item => item.id).join('|'),
+    [actionInbox.items],
+  );
+  const visibleActionInboxCount = useProgressiveListCount(
+    actionInbox.items.length,
+    actionInboxIdentity,
+  );
+  const attentionScheduleItemIds = useMemo(
+    () => new Set(actionInbox.items.flatMap(item => item.scheduleItemId ? [item.scheduleItemId] : [])),
+    [actionInbox.items],
+  );
+  const [followThroughClock, setFollowThroughClock] = useState(() => Date.now());
+  const followThroughPlan = useMemo(
+    () => planDAVEFollowThrough({
+      items: actionInbox.items,
+      reviewStates: followThroughReviewStates,
+      now: new Date(followThroughClock),
+    }),
+    [actionInbox.items, followThroughClock, followThroughReviewStates],
+  );
+  useEffect(() => {
+    if (!followThroughPlan.nextReviewAt) return;
+    const dueAt = new Date(followThroughPlan.nextReviewAt).getTime();
+    if (!Number.isFinite(dueAt) || dueAt <= followThroughClock) return;
+    const delay = Math.max(250, Math.min(dueAt - Date.now(), 2_147_483_647));
+    const timer = setTimeout(() => setFollowThroughClock(Date.now()), delay);
+    return () => clearTimeout(timer);
+  }, [followThroughPlan.nextReviewAt, followThroughClock]);
+  const followThroughByItemId = useMemo(
+    () => new Map(followThroughPlan.reminders.map(reminder => [reminder.item.id, reminder])),
+    [followThroughPlan.reminders],
+  );
+
+  useEffect(() => {
+    if (!followThroughReviewsLoaded) return;
+    const next = followThroughPlan.reviewStates;
+    if (JSON.stringify(next) === JSON.stringify(followThroughReviewStates)) return;
+    setFollowThroughReviewStates([...next]);
+  }, [followThroughPlan.reviewStates, followThroughReviewStates, followThroughReviewsLoaded]);
+
+  useEffect(() => {
+    if (!followThroughReviewsLoaded) return;
+    persistStorageItem('dave-follow-through-reviews:v2', JSON.stringify(followThroughReviewStates)).catch(error =>
+      reportStoragePersistenceFailure({ storageKey: 'dave-follow-through-reviews:v2', label: 'follow-through reviews', error }),
+    );
+  }, [followThroughReviewStates, followThroughReviewsLoaded]);
+
+  function markFollowThroughReviewed(fingerprint: string) {
+    setFollowThroughReviewStates(current =>
+      reviewedDAVEFollowThroughStates(current, fingerprint));
+  }
+  const scheduleFieldResults = useMemo(() => {
+    const matches = new Map<string, PIEScheduleFieldMatch>();
+    const warnings = new Map<string, PIEScheduleReconciliationWarning[]>();
+
+    scheduleReconciliation.matches.forEach(match => {
+      matches.set(match.scheduleItemId, match);
+    });
+    actionableScheduleWarnings.forEach(warning => {
+      warnings.set(warning.scheduleItemId, [
+        ...(warnings.get(warning.scheduleItemId) || []),
+        warning,
+      ]);
+    });
+
+    return { matches, warnings };
+  }, [actionableScheduleWarnings, scheduleReconciliation.matches]);
+
+  const sortedItems = useMemo(() => [...workspaceScheduleItems].sort((a, b) => {
+    const aComplete = scheduleTaskIsComplete(a);
+    const bComplete = scheduleTaskIsComplete(b);
+    if (aComplete !== bComplete) return Number(aComplete) - Number(bComplete);
+
+    const aDays = daysUntilScheduleItem(a);
+    const bDays = daysUntilScheduleItem(b);
 
     if (aDays === null && bDays === null) return 0;
     if (aDays === null) return 1;
     if (bDays === null) return -1;
 
-    return aDays - bDays;
-  });
+    if (aDays !== bDays) return aDays - bDays;
 
-  const dueSoon = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
+    const priorityRank: Record<SchedulePriority, number> = { High: 0, Medium: 1, Low: 2 };
+    return priorityRank[a.priority] - priorityRank[b.priority] ||
+      a.taskName.localeCompare(b.taskName);
+  }), [workspaceScheduleItems]);
 
-    const days = daysUntilDate(item.finishDate);
-
+  const dueSoon = useMemo(() => sortedItems.filter(item => {
+    if (scheduleTaskIsComplete(item)) return false;
+    const days = daysUntilScheduleItem(item);
     return days !== null && days >= 0 && days <= 7;
-  });
+  }), [sortedItems]);
 
-  const overdue = sortedItems.filter(item => {
-    if (item.status === 'Complete') return false;
-
-    const days = daysUntilDate(item.finishDate);
-
+  const overdue = useMemo(() => sortedItems.filter(item => {
+    if (scheduleTaskIsComplete(item)) return false;
+    const days = daysUntilScheduleItem(item);
     return days !== null && days < 0;
-  });
+  }), [sortedItems]);
 
-  function resetForm() {
-    setTaskName('');
-    setProjectName(projects[0] || '');
-    setLocationName(projectAreas[0]?.name || '');
-    setStartDate('');
-    setFinishDate('');
-    setMilestone('');
-    setOwner('');
-    setContractor('');
-    setPercentComplete('0');
-    setPriority('Medium');
-    setStatus('Not Started');
-    setNotes('');
-  }
+  const openTaskCount = useMemo(
+    () => sortedItems.filter(item => !scheduleTaskIsComplete(item)).length,
+    [sortedItems],
+  );
+  const completedTaskCount = sortedItems.length - openTaskCount;
+  const attentionTaskIds = useMemo(() => new Set(sortedItems
+    .filter(item => {
+      if (scheduleTaskIsComplete(item)) return false;
+      const days = daysUntilScheduleItem(item);
+      const dependency = dependencyNodeByItemId.get(item.id);
+      return (
+        (days !== null && days <= 7) ||
+        item.status === 'Waiting' ||
+        (item.priority === 'High' && days === null) ||
+        scheduleItemNeedsCompletionVerification(
+          item as unknown as import('./types').ScheduleItem,
+        ) ||
+        Boolean(scheduleFieldResults.warnings.get(item.id)?.length) ||
+        Boolean(dependency?.blocked || dependency?.unresolvedPredecessors.length) ||
+        attentionScheduleItemIds.has(item.id)
+      );
+    })
+    .map(item => item.id)), [
+    attentionScheduleItemIds,
+    dependencyNodeByItemId,
+    scheduleFieldResults.warnings,
+    sortedItems,
+  ]);
+  const filteredItems = useMemo(() => sortedItems.filter(item => {
+    const complete = scheduleTaskIsComplete(item);
+    if (taskView === 'Completed Tasks') return complete;
+    if (complete) return false;
+    if (taskFilter === 'All') return true;
+    const days = daysUntilScheduleItem(item);
+    if (taskFilter === 'Today') return days === 0;
+    if (taskFilter === '7 Days') return days !== null && days >= 0 && days <= 7;
+    if (taskFilter === 'Overdue') return days !== null && days < 0;
+    return attentionTaskIds.has(item.id);
+  }), [
+    attentionTaskIds,
+    sortedItems,
+    taskFilter,
+    taskView,
+  ]);
 
-  function startScheduleItemFromPdf(document: ReferenceDocument) {
-    setTaskName('');
-    setProjectName(projects[0] || '');
-    setLocationName(projectAreas[0]?.name || '');
-    setStartDate('');
-    setFinishDate('');
-    setMilestone('From PDF Schedule');
-    setOwner('');
-    setContractor('');
-    setPercentComplete('0');
-    setPriority('Medium');
-    setStatus('Not Started');
-    setNotes(`Source PDF: ${document.originalFileName}. Open the PDF, review the Gantt chart, then enter the task name, dates, owner, and location from the schedule.`);
-    setShowAdd(true);
-  }
+  const groupedTaskSections = useMemo(
+    () => groupScheduleWorkspaceItemsByProjectAndArea(filteredItems),
+    [filteredItems],
+  );
+  const taskViewLabel = taskView === 'Completed Tasks'
+    ? 'Completed Tasks'
+    : taskFilter === 'All'
+      ? 'Open Tasks'
+      : `${taskFilter} Tasks`;
 
-  function submitManualItem() {
-    if (!taskName.trim()) {
-      Alert.alert('Task needed', 'Enter the schedule task or milestone first.');
-      return;
-    }
-
-    if (finishDate.trim() && !parseFlexibleDate(finishDate)) {
-      Alert.alert('Invalid finish date', 'Use MM/DD/YYYY for the finish or due date.');
-      return;
-    }
-
-    if (startDate.trim() && !parseFlexibleDate(startDate)) {
-      Alert.alert('Invalid start date', 'Use MM/DD/YYYY for the start date.');
-      return;
-    }
-
-    onAdd({
-      taskName,
-      projectName,
-      locationName,
-      startDate,
-      finishDate,
-      milestone,
-      owner,
-      contractor,
-      percentComplete: Number(percentComplete) || 0,
-      priority,
-      status,
-      notes,
-    });
-
-    resetForm();
-    setShowAdd(false);
-  }
-
-  return (
-    <FlatList
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-      data={sortedItems}
-      keyExtractor={item => item.id}
-      renderItem={({ item }) => (
-        <ScheduleItemRow
-          item={item}
-          onUpdate={next => onUpdate(item.id, next)}
-          onDelete={() => onDelete(item.id)}
-        />
-      )}
-      ListHeaderComponent={
-        <>
-          <ScreenTitle
-            title="Schedule"
-            subtitle="Track project timelines, milestones, and due-soon work."
-          />
-
-          <SecondaryButton
-            label="Back to Home"
-            icon="arrow-back-outline"
-            onPress={onBack}
-          />
-
-          <View style={styles.dashboardGrid}>
-            <DashboardMetric
-              label="Schedule Items"
-              value={scheduleItems.length}
-              icon="calendar-outline"
-            />
-
-            <DashboardMetric
-              label="Due 7 Days"
-              value={dueSoon.length}
-              icon="time-outline"
-            />
-
-            <DashboardMetric
-              label="Overdue"
-              value={overdue.length}
-              icon="alert-circle-outline"
-              danger={overdue.length > 0}
-            />
-
-            <DashboardMetric
-              label="Open Actions"
-              value={actionItems.length}
-              icon="checkbox-outline"
-            />
-          </View>
-
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Schedule Import</Text>
-            <Text style={styles.bodyText}>
-              Import a PDF Gantt chart. The app will first use your AI/OCR extractor endpoint if one is saved, then fall back to readable PDF text extraction. Scanned or flattened Gantt charts usually require AI/OCR.
-            </Text>
-
-            <Text style={styles.label}>AI/OCR extractor endpoint</Text>
-            <TextInput
-              style={styles.input}
-              value={scheduleAiExtractorUrl}
-              onChangeText={onScheduleAiExtractorUrlChange}
-              placeholder="https://your-secure-schedule-extractor.example.com/extract"
-              placeholderTextColor={colors.muted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-            />
-
-            <Text style={styles.mutedNote}>
-              For scanned Gantt PDFs, connect a secure OCR/AI endpoint that accepts the PDF and returns JSON schedule items. Leave blank to use best-effort PDF text extraction only.
-            </Text>
-
-            <View style={styles.dataActionRow}>
-              <PrimaryButton
-                label="Import PDF / CSV"
-                icon="cloud-upload-outline"
-                onPress={onImport}
-                compact
-              />
-
-              <SecondaryButton
-                label={showAdd ? 'Hide Manual Entry' : 'Add Manually'}
-                icon="add-circle-outline"
-                onPress={() => setShowAdd(prev => !prev)}
-                compact
-              />
-            </View>
-          </View>
-
-          {scheduleDocuments.length ? (
+  const selectedTask = resolveScheduleWorkspaceTask(filteredItems, selectedTaskId);
+  const planningTask = workspaceScheduleItems.find(item => item.id === planningTaskId) || null;
+  const taskControls = (
+    <ScheduleTaskListControls
+      scopeLabel={isWideWorkspace ? projectFilter || 'All Projects' : undefined}
+      taskCount={workspaceScheduleItems.length}
+      dueSoonCount={dueSoon.length}
+      overdueCount={overdue.length}
+      needsActionCount={attentionTaskIds.size}
+      openTaskCount={openTaskCount}
+      completedTaskCount={completedTaskCount}
+      activeView={taskView}
+      activeFilter={taskFilter}
+      onViewChange={view => {
+        setTaskView(view);
+        setSelectedTaskId(null);
+      }}
+      onFilterChange={setTaskFilter}
+      onNeedsAttentionPress={() => {
+        setWorkspaceView('Tasks');
+        setTaskView('Open Tasks');
+        setTaskFilter('Attention');
+        setSelectedTaskId(null);
+      }}
+      onAddTask={() => setShowAdd(true)}
+      workspaceView={workspaceView}
+      onWorkspaceViewChange={view => {
+        setWorkspaceView(view);
+        setSelectedTaskId(null);
+        setPlanningTaskId(null);
+      }}
+    />
+  );
+  const scheduleTools = (
+    <>
+          {isWideWorkspace && actionInbox.items.length > 0 ? (
             <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Imported Schedule PDFs</Text>
-              <Text style={styles.bodyText}>
-                Keep only the current Gantt schedule active. Delete or archive outdated uploads so Upcoming is driven by the latest dates.
+              <View style={styles.areaStatusLine}>
+                <Ionicons
+                  name={actionInbox.criticalCount > 0 ? 'alert-circle-outline' : 'checkbox-outline'}
+                  size={20}
+                  color={actionInbox.criticalCount > 0 ? colors.danger : colors.primary}
+                />
+                <Text style={styles.panelTitle}>Action Inbox</Text>
+              </View>
+              <Text style={styles.rowSub}>
+                {actionInbox.items.length} open {pluralWord(actionInbox.items.length, 'responsibility', 'responsibilities')}
+                {actionInbox.verificationCount > 0 ? ` · ${actionInbox.verificationCount} need verification` : ''}
+                {actionInbox.undatedActionCount > 0 ? ` · ${actionInbox.undatedActionCount} have no due date` : ''}
               </Text>
+              <Text style={styles.rowSub}>
+                {followThroughPlan.reminders.length > 0
+                  ? `${followThroughPlan.reminders.length} need a fresh review now. Reviewed items resurface automatically if unresolved.`
+                  : 'All current reminders were reviewed for this follow-through window.'}
+              </Text>
+              {actionInbox.items.slice(0, visibleActionInboxCount).map(item => (
+                <DAVEActionInboxRow
+                  key={item.id}
+                  item={item}
+                  reminder={followThroughByItemId.get(item.id) || null}
+                  onReview={followThroughReviewsLoaded && followThroughByItemId.has(item.id)
+                    ? () => markFollowThroughReviewed(followThroughByItemId.get(item.id)!.fingerprint)
+                    : undefined}
+                  onPress={item.updateId
+                    ? () => {
+                        const update = savedUpdates.find(candidate => candidate.id === item.updateId);
+                        if (update) onOpenUpdate(update);
+                      }
+                    : undefined}
+                />
+              ))}
+            </View>
+          ) : isWideWorkspace ? (
+            <View style={styles.panel}>
+              <Text style={styles.panelTitle}>Action Inbox</Text>
+              <Text style={styles.bodyText}>No current verification, blocker, deadline, or field follow-up needs attention.</Text>
+            </View>
+          ) : null}
 
-              {scheduleDocuments.map(document => (
+          {actionableScheduleWarnings.length > 0 ||
+          dependencyNetwork.blockedItemCount > 0 ||
+          dependencyNetwork.unresolvedReferenceCount > 0 ||
+          dependencyNetwork.cycles.length > 0 ? (
+          <View style={styles.panel}>
+            <View style={styles.areaStatusLine}>
+              <Ionicons
+                name={actionableScheduleWarnings.length > 0
+                  ? 'warning-outline'
+                  : 'checkmark-circle-outline'}
+                size={20}
+                color={actionableScheduleWarnings.length > 0
+                  ? colors.warning
+                  : colors.success}
+              />
+              <Text style={styles.panelTitle}>Plan vs Field</Text>
+            </View>
+
+            {actionableScheduleWarnings.length > 0 ? (
+              <Text style={styles.bodyText}>
+                {actionableScheduleWarnings.length} current schedule-to-field {pluralWord(actionableScheduleWarnings.length, 'conflict')} need attention.
+              </Text>
+            ) : null}
+            {dependencyNetwork.blockedItemCount > 0 || dependencyNetwork.unresolvedReferenceCount > 0 ? (
+              <Text style={styles.bodyText}>
+                Dependency check: {dependencyNetwork.blockedItemCount} blocked {pluralWord(dependencyNetwork.blockedItemCount, 'task')}
+                {dependencyNetwork.unresolvedReferenceCount > 0
+                  ? `; ${dependencyNetwork.unresolvedReferenceCount} predecessor ${pluralWord(dependencyNetwork.unresolvedReferenceCount, 'reference')} still needs mapping.`
+                  : '.'}
+              </Text>
+            ) : null}
+            {dependencyNetwork.cycles.length > 0 ? (
+              <Text style={[styles.bodyText, { color: colors.danger }]}>A circular dependency was found. Correct it before relying on downstream dates.</Text>
+            ) : null}
+
+            {actionableScheduleWarnings.slice(0, 3).map(warning => (
+              <View key={warning.id} style={styles.compactLocationRow}>
+                <View style={styles.rowIconBubble}>
+                  <Ionicons
+                    name={warning.severity === 'critical' || warning.severity === 'high'
+                      ? 'alert-circle-outline'
+                      : 'information-circle-outline'}
+                    size={20}
+                    color={warning.severity === 'critical' || warning.severity === 'high'
+                      ? colors.danger
+                      : colors.warning}
+                  />
+                </View>
+                <View style={styles.rowMain}>
+                  <Text style={styles.projectName}>{warning.title}</Text>
+                  <Text style={styles.rowSub}>{warning.summary}</Text>
+                  <Text style={styles.rowSub}>{warning.suggestedAction}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+          ) : null}
+
+          <TouchableOpacity
+            style={styles.panel}
+            onPress={() => setScheduleManagementOpen(open => !open)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: scheduleManagementOpen }}
+          >
+            <View style={styles.rowIconBubble}>
+              <Ionicons name="calendar-outline" size={20} color={colors.primary} />
+            </View>
+            <View style={styles.rowMain}>
+              <Text style={styles.panelTitle}>Manage Schedule</Text>
+              <Text style={styles.rowSub}>Import and review schedule sources</Text>
+            </View>
+            <Ionicons name={scheduleManagementOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.muted} />
+          </TouchableOpacity>
+
+          {scheduleManagementOpen ? (
+            <ScheduleImportFlow
+              screenshotImportAvailable={screenshotImportAvailable}
+              onImportFile={onImport}
+              onImportScreenshots={onImportScreenshot}
+              onAddManually={() => setShowAdd(true)}
+              onApprove={onApproveImport}
+              onCancel={onCancelImport}
+              incomingBatch={incomingImportBatch}
+              onIncomingBatchConsumed={onIncomingImportConsumed}
+            />
+          ) : null}
+
+          {scheduleManagementOpen && scheduleDocuments.length ? (
+            <View style={styles.panel}>
+              <TouchableOpacity
+                style={styles.sectionHeaderRow}
+                onPress={() => setSourcesOpen(open => !open)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: sourcesOpen }}
+              >
+                <View style={styles.rowMain}>
+                  <Text style={styles.panelTitle}>Schedule Sources</Text>
+                  <Text style={styles.rowSub}>
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && document.isCurrent).length} current ·{' '}
+                    {scheduleDocuments.filter(document => document.category === 'Schedules' && !document.isCurrent).length} prior
+                    {scheduleDocuments.some(document => document.notes.includes('[Schedule communication screenshot]'))
+                      ? ` · ${scheduleDocuments.filter(document => document.notes.includes('[Schedule communication screenshot]')).length} supporting`
+                      : ''}
+                  </Text>
+                </View>
+                <Ionicons
+                  name={sourcesOpen ? 'chevron-up-outline' : 'chevron-down-outline'}
+                  size={20}
+                  color={colors.primary}
+                />
+              </TouchableOpacity>
+
+              {sourcesOpen ? <Text style={styles.bodyText}>
+                Keep only the current Gantt schedule active. Message screenshots are supporting sources and never replace the active schedule.
+              </Text> : null}
+
+              {sourcesOpen ? scheduleDocuments.map(document => {
+                const isScreenshot = document.notes.includes('[Schedule communication screenshot]');
+
+                return (
                 <View key={document.id} style={styles.compactLocationRow}>
                   <View style={styles.rowIconBubble}>
-                    <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+                    <Ionicons
+                      name={isScreenshot ? 'image-outline' : 'document-text-outline'}
+                      size={20}
+                      color={colors.primary}
+                    />
                   </View>
 
                   <View style={styles.rowMain}>
@@ -15694,7 +20333,9 @@ function ScheduleScreen({
                       {document.originalFileName}
                     </Text>
                     <Text style={styles.rowSub}>
-                      Imported {formatSavedTime(document.importedAt)} • {document.isCurrent ? 'Active schedule' : 'Inactive'}
+                      Imported {formatSavedTime(document.importedAt)} • {isScreenshot
+                        ? 'Supporting message screenshot'
+                        : document.isCurrent ? 'Active schedule' : 'Inactive'}
                     </Text>
                   </View>
 
@@ -15702,19 +20343,17 @@ function ScheduleScreen({
                     <TouchableOpacity
                       style={styles.compactInlineAction}
                       onPress={() => onOpenDocument(document)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${document.name}`}
                     >
                       <Text style={styles.compactInlineActionText}>Open</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.compactInlineAction}
-                      onPress={() => startScheduleItemFromPdf(document)}
-                    >
-                      <Text style={styles.compactInlineActionText}>Add Item</Text>
-                    </TouchableOpacity>
-                    {!document.isCurrent ? (
+                    {!isScreenshot && !document.isCurrent ? (
                       <TouchableOpacity
                         style={styles.compactInlineAction}
                         onPress={() => onSetActiveDocument(document.id)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Set ${document.name} as the active schedule`}
                       >
                         <Text style={styles.compactInlineActionText}>Set Active</Text>
                       </TouchableOpacity>
@@ -15722,273 +20361,381 @@ function ScheduleScreen({
                     <TouchableOpacity
                       style={styles.compactInlineAction}
                       onPress={() => onDeleteDocument(document.id)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete ${document.name}`}
                     >
                       <Text style={[styles.compactInlineActionText, { color: colors.danger }]}>Delete</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
-              ))}
+                );
+              }) : null}
             </View>
           ) : null}
-
-
-          {showAdd ? (
-            <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Add Schedule Item</Text>
-
-              <Text style={styles.label}>Task or milestone</Text>
-              <TextInput
-                style={styles.input}
-                value={taskName}
-                onChangeText={setTaskName}
-                placeholder="Example: East driveway striping"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Project</Text>
-              <TextInput
-                style={styles.input}
-                value={projectName}
-                onChangeText={setProjectName}
-                placeholder="Project name"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Location</Text>
-              <TextInput
-                style={styles.input}
-                value={locationName}
-                onChangeText={setLocationName}
-                placeholder="Location / work area"
-                placeholderTextColor={colors.muted}
-              />
-
-              <View style={styles.sendRow}>
-                <View style={styles.rowMain}>
-                  <Text style={styles.label}>Start</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={startDate}
-                    onChangeText={value => setStartDate(normalizeDateInput(value))}
-                    placeholder="MM/DD/YYYY"
-                    placeholderTextColor={colors.muted}
-                    keyboardType="numbers-and-punctuation"
-                    maxLength={10}
-                  />
-                </View>
-
-                <View style={styles.rowMain}>
-                  <Text style={styles.label}>Finish / Due</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={finishDate}
-                    onChangeText={value => setFinishDate(normalizeDateInput(value))}
-                    placeholder="MM/DD/YYYY"
-                    placeholderTextColor={colors.muted}
-                    keyboardType="numbers-and-punctuation"
-                    maxLength={10}
-                  />
-                </View>
-              </View>
-
-              <Text style={styles.label}>Owner</Text>
-              <TextInput
-                style={styles.input}
-                value={owner}
-                onChangeText={setOwner}
-                placeholder="PLZ owner or internal owner"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Contractor</Text>
-              <TextInput
-                style={styles.input}
-                value={contractor}
-                onChangeText={setContractor}
-                placeholder="Contractor / responsible company"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Percent Complete</Text>
-              <TextInput
-                style={styles.input}
-                value={percentComplete}
-                onChangeText={value => setPercentComplete(value.replace(/[^0-9]/g, '').slice(0, 3))}
-                placeholder="0"
-                placeholderTextColor={colors.muted}
-                keyboardType="number-pad"
-                maxLength={3}
-              />
-
-              <Text style={styles.label}>Priority</Text>
-              <View style={styles.statusGrid}>
-                {SCHEDULE_PRIORITIES.map(itemPriority => (
-                  <TouchableOpacity
-                    key={itemPriority}
-                    style={[
-                      styles.statusButton,
-                      priority === itemPriority && styles.statusButtonActive,
-                    ]}
-                    onPress={() => setPriority(itemPriority)}
-                  >
-                    <Text
-                      style={[
-                        styles.statusButtonText,
-                        priority === itemPriority && styles.statusButtonTextActive,
-                      ]}
-                    >
-                      {itemPriority}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.label}>Milestone</Text>
-              <TextInput
-                style={styles.input}
-                value={milestone}
-                onChangeText={setMilestone}
-                placeholder="Optional milestone"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Status</Text>
-              <View style={styles.statusGrid}>
-                {SCHEDULE_STATUSES.map(itemStatus => (
-                  <TouchableOpacity
-                    key={itemStatus}
-                    style={[
-                      styles.statusButton,
-                      status === itemStatus && styles.statusButtonActive,
-                    ]}
-                    onPress={() => setStatus(itemStatus)}
-                  >
-                    <Text
-                      style={[
-                        styles.statusButtonText,
-                        status === itemStatus && styles.statusButtonTextActive,
-                      ]}
-                    >
-                      {itemStatus}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.label}>Notes</Text>
-              <TextInput
-                style={[styles.input, styles.notesInput]}
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="Schedule notes, constraints, or next step."
-                placeholderTextColor={colors.muted}
-                multiline
-              />
-
-              <PrimaryButton
-                label="Save Schedule Item"
-                icon="checkmark-circle-outline"
-                onPress={submitManualItem}
-              />
-            </View>
-          ) : null}
-
-          {dueSoon.length || overdue.length ? (
-            <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Needs Attention</Text>
-              {[...overdue, ...dueSoon].slice(0, 6).map(item => (
-                <View key={item.id} style={styles.compactLocationRow}>
-                  <View style={styles.rowIconBubble}>
-                    <Ionicons
-                      name={daysUntilDate(item.finishDate)! < 0 ? 'alert-circle-outline' : 'time-outline'}
-                      size={20}
-                      color={daysUntilDate(item.finishDate)! < 0 ? colors.danger : colors.warning}
-                    />
-                  </View>
-                  <View style={styles.rowMain}>
-                    <Text style={styles.projectName}>{item.taskName}</Text>
-                    <Text style={styles.rowSub}>{dueStatusText(item.finishDate)}</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ) : null}
-
-          {actionItems.length ? (
-            <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Open Action Items with Due Dates</Text>
-              {actionItems.slice(0, 6).map(item => (
-                <View key={item.id} style={styles.compactLocationRow}>
-                  <View style={styles.rowIconBubble}>
-                    <Ionicons name="checkbox-outline" size={20} color={colors.primary} />
-                  </View>
-                  <View style={styles.rowMain}>
-                    <Text style={styles.projectName}>{item.taskName}</Text>
-                    <Text style={styles.rowSub}>
-                      {item.projectName}{item.locationName ? ` • ${item.locationName}` : ''}
-                    </Text>
-                    <Text style={styles.rowSub}>{item.dueLabel}</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ) : null}
-
-          <Text style={styles.sectionLabel}>Timeline Items</Text>
-        </>
-      }
-      ListEmptyComponent={
-        <EmptyState
-          title="No schedule items yet"
-          text="Import a CSV/text schedule or add a schedule item manually."
-        />
-      }
+    </>
+  );
+  const emptyState = (
+    <EmptyState
+      title="No schedule items yet"
+      text="Import a CSV/text schedule or add a schedule item manually."
     />
+  );
+  const taskEditor = (
+    <ScheduleTaskEditorModal
+      visible={showAdd}
+      projects={projects}
+      projectAreas={projectAreas}
+      scheduleItems={scheduleItems}
+      initialProjectName={initialAddProjectName || (isWideWorkspace ? projectFilter : null)}
+      defaultOwner={defaultOwner}
+      onClose={() => setShowAdd(false)}
+      onSubmit={onAdd}
+    />
+  );
+  const planningTaskEditor = (
+    <Modal
+      visible={Boolean(planningTask)}
+      animationType="slide"
+      transparent
+      onRequestClose={() => setPlanningTaskId(null)}
+    >
+      <View style={styles.sheetModalBackdrop}>
+        <View
+          style={[
+            styles.sheetModalSafeArea,
+            {
+              paddingTop: scheduleScreenInsets.top,
+              paddingBottom: scheduleScreenInsets.bottom,
+            },
+          ]}
+        >
+          <View style={styles.sheetModalHeader}>
+            <View style={styles.sheetModalTitleWrap}>
+              <Text style={styles.sheetModalTitle}>Schedule Task</Text>
+              <Text style={styles.sheetModalCaption}>
+                {planningTask
+                  ? `${planningTask.projectName}${planningTask.locationName ? ` • ${planningTask.locationName}` : ''}`
+                  : ''}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.sheetModalCloseButton}
+              onPress={() => setPlanningTaskId(null)}
+              accessibilityRole="button"
+              accessibilityLabel="Close schedule task"
+            >
+              <Ionicons name="close" size={26} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={styles.appFrame}
+            contentContainerStyle={[styles.content, { paddingTop: 8, paddingBottom: 24 }]}
+            contentInsetAdjustmentBehavior="automatic"
+            keyboardShouldPersistTaps="handled"
+          >
+            {planningTask ? (
+              <ScheduleItemRow
+                item={planningTask}
+                scheduleItems={scheduleItems}
+                projectAreas={projectAreas}
+                dependencyNode={dependencyNodeByItemId.get(planningTask.id) || null}
+                fieldWarnings={scheduleFieldResults.warnings.get(planningTask.id) || []}
+                expanded
+                activityAuthor={defaultOwner}
+                onUpdate={next => onUpdate(planningTask.id, next)}
+                onDelete={() => {
+                  onDelete(planningTask.id);
+                  setPlanningTaskId(null);
+                }}
+                onAddFieldUpdate={() => {
+                  setPlanningTaskId(null);
+                  onNewFieldUpdateForTask(planningTask);
+                }}
+              />
+            ) : null}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  if (workspaceView !== 'Tasks') {
+    return (
+      <>
+        <ScrollView
+          style={styles.appFrame}
+          contentContainerStyle={contentStyle}
+          contentInsetAdjustmentBehavior="automatic"
+        >
+          {taskControls}
+          <MobileSchedulePlanning
+            items={workspaceScheduleItems}
+            view={workspaceView}
+            onOpenTask={item => setPlanningTaskId(item.id)}
+          />
+        </ScrollView>
+        {taskEditor}
+        {planningTaskEditor}
+      </>
+    );
+  }
+
+  if (isWideWorkspace) {
+    return (
+      <>
+        <ScheduleWideWorkspace
+          items={filteredItems}
+          selectedTaskId={selectedTask?.id || null}
+          onSelectTask={setSelectedTaskId}
+          masterHeader={(
+            <>
+              {taskControls}
+              <Text style={styles.sectionLabel}>{taskViewLabel}</Text>
+              <Text style={styles.rowSub}>
+                {filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.
+              </Text>
+            </>
+          )}
+          inspector={selectedTask ? (
+            <ScheduleItemRow
+              item={selectedTask}
+              scheduleItems={scheduleItems}
+              projectAreas={projectAreas}
+              dependencyNode={dependencyNodeByItemId.get(selectedTask.id) || null}
+              fieldWarnings={scheduleFieldResults.warnings.get(selectedTask.id) || []}
+              expanded
+              activityAuthor={defaultOwner}
+              onUpdate={next => onUpdate(selectedTask.id, next)}
+              onDelete={() => onDelete(selectedTask.id)}
+              onAddFieldUpdate={() => onNewFieldUpdateForTask(selectedTask)}
+            />
+          ) : emptyState}
+          inspectorFooter={taskView === 'Open Tasks' ? scheduleTools : null}
+          emptyState={emptyState}
+        />
+        {taskEditor}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <SectionList
+        style={styles.appFrame}
+        contentContainerStyle={contentStyle}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled"
+        sections={groupedTaskSections}
+        keyExtractor={item => item.id}
+        renderItem={({ item }) => (
+          <ScheduleItemRow
+            item={item}
+            scheduleItems={scheduleItems}
+            projectAreas={projectAreas}
+            dependencyNode={dependencyNodeByItemId.get(item.id) || null}
+            fieldWarnings={scheduleFieldResults.warnings.get(item.id) || []}
+            activityAuthor={defaultOwner}
+            onUpdate={next => onUpdate(item.id, next)}
+            onDelete={() => onDelete(item.id)}
+            onAddFieldUpdate={() => onNewFieldUpdateForTask(item)}
+          />
+        )}
+        renderSectionHeader={({ section }) => (
+          <ScheduleTaskGroupHeader section={section} />
+        )}
+        ListHeaderComponent={(
+          <>
+            {taskControls}
+            {taskView === 'Open Tasks' ? scheduleTools : null}
+            <Text style={styles.sectionLabel}>{taskViewLabel}</Text>
+            <Text style={styles.rowSub}>
+              {filteredItems.length} {pluralWord(filteredItems.length, 'task')} in this view.
+            </Text>
+          </>
+        )}
+        ListEmptyComponent={emptyState}
+        stickySectionHeadersEnabled={false}
+      />
+      {taskEditor}
+    </>
   );
 }
 
+function DAVEActionInboxRow({
+  item,
+  reminder,
+  onPress,
+  onReview,
+}: {
+  item: DAVEActionInboxItem;
+  reminder?: DAVEFollowThroughReminder | null;
+  onPress?: () => void;
+  onReview?: () => void;
+}) {
+  const color = item.priority === 'critical'
+    ? colors.danger
+    : item.priority === 'high'
+      ? colors.warning
+      : colors.primary;
+  const icon = item.kind === 'completion_verification'
+    ? 'help-circle-outline'
+    : item.kind === 'dependency_blocker'
+      ? 'git-branch-outline'
+      : item.kind === 'schedule_conflict'
+        ? 'warning-outline'
+        : item.kind === 'schedule_deadline'
+          ? 'calendar-outline'
+          : 'checkbox-outline';
+  return (
+    <View
+      style={styles.compactLocationRow}
+    >
+      <View style={styles.rowIconBubble}>
+        <Ionicons name={icon} size={20} color={color} />
+      </View>
+      <View style={styles.rowMain}>
+        <Text style={styles.projectName}>{item.title}</Text>
+        <Text style={styles.rowSub}>
+          {item.projectName}{item.areaName ? ` • ${item.areaName}` : ''}
+        </Text>
+        <Text style={styles.rowSub}>{item.summary}</Text>
+        <Text style={[styles.rowSub, { color }]}>{item.requestedAction}</Text>
+        {item.owner ? <Text style={styles.rowSub}>Owner: {item.owner}</Text> : null}
+        {reminder ? (
+          <Text style={styles.locationDetailText}>{reminder.reason}</Text>
+        ) : null}
+        {onPress || onReview ? (
+          <View style={styles.sendRow}>
+            {onPress ? (
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={onPress}
+                accessibilityRole="button"
+                accessibilityLabel={`Open supporting update for ${item.title}`}
+              >
+                <Text style={styles.compactInlineActionText}>Open Update</Text>
+              </TouchableOpacity>
+            ) : null}
+            {onReview ? (
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={onReview}
+                accessibilityRole="button"
+                accessibilityLabel={`Mark ${item.title} reviewed for now`}
+              >
+                <Text style={styles.compactInlineActionText}>Reviewed for Now</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+}
 function ScheduleItemRow({
   item,
+  scheduleItems = [],
+  projectAreas = [],
+  dependencyNode,
+  fieldWarnings,
+  expanded: expandedOverride,
+  activityAuthor,
   onUpdate,
   onDelete,
+  onAddFieldUpdate,
 }: {
   item: ScheduleItem;
+  scheduleItems?: ScheduleItem[];
+  projectAreas?: ProjectArea[];
+  dependencyNode?: PIEScheduleDependencyNode | null;
+  fieldWarnings?: PIEScheduleReconciliationWarning[];
+  expanded?: boolean;
+  activityAuthor?: string;
   onUpdate: (next: Partial<ScheduleItem>) => void;
   onDelete: () => void;
+  onAddFieldUpdate?: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const days = daysUntilDate(item.finishDate);
-  const isOverdue = days !== null && days < 0 && item.status !== 'Complete';
-  const isDueSoon = days !== null && days >= 0 && days <= 7 && item.status !== 'Complete';
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const [areaSheetOpen, setAreaSheetOpen] = useState(false);
+  const expanded = expandedOverride ?? internalExpanded;
+  const toggleExpanded = () => {
+    if (expandedOverride === undefined) {
+      setInternalExpanded(current => !current);
+    }
+  };
+  const [verificationNote, setVerificationNote] = useState('');
+  const needsCompletionVerification = scheduleItemNeedsCompletionVerification(
+    item as unknown as import('./types').ScheduleItem,
+  );
+  const completionVerificationLabel = scheduleCompletionVerificationLabel(
+    item as unknown as import('./types').ScheduleItem,
+  );
+  const days = daysUntilScheduleItem(item);
+  const itemComplete = scheduleTaskIsComplete(item);
+  const isOverdue = days !== null && days < 0 && !itemComplete;
+  const isDueSoon = days !== null && days >= 0 && days <= 7 && !itemComplete;
+  const timingStatus = itemComplete
+    ? item.finishDate
+      ? `Completed · Finish date ${formatAppDate(item.finishDate)}`
+      : 'Completed'
+    : item.finishDate
+      ? dueStatusText(item.finishDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)
+      : 'No finish date';
   const priorityColor = item.priority === 'High' ? colors.danger : item.priority === 'Low' ? colors.success : colors.warning;
-  const statusColor = item.status === 'Complete' ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
-
+  const statusColor = itemComplete ? colors.success : item.status === 'In Progress' ? colors.warning : item.status === 'Waiting' ? colors.muted : colors.primary;
+  const blockerNames = (dependencyNode?.blockingPredecessorIds || []).map(blockerId =>
+    scheduleItems.find(candidate => candidate.id === blockerId)?.taskName || blockerId,
+  );
+  const fieldWarning = fieldWarnings?.find(scheduleWarningIsUserActionable) || null;
+  const itemProjectAreas = projectAreasForProject({
+    projectAreas,
+    projectName: item.scheduleProjectName?.trim() || item.projectName,
+    scheduleItems,
+  });
+  const selectedArea = itemProjectAreas.find(area => area.name.trim().toLowerCase() === item.locationName.trim().toLowerCase()) || null;
   return (
-    <View style={styles.savedRow}>
+    <View style={[styles.savedRow, styles.scheduleItemCard]}>
+      <View style={styles.scheduleItemHeader}>
+        <TouchableOpacity
+          style={styles.rowIconBubble}
+          onPress={toggleExpanded}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${item.taskName}`}
+        >
+          <Ionicons
+            name={isOverdue ? 'alert-circle-outline' : isDueSoon ? 'time-outline' : 'calendar-outline'}
+            size={20}
+            color={isOverdue ? colors.danger : isDueSoon ? colors.warning : colors.primary}
+          />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.rowMain, styles.scheduleItemHeaderText]}
+          onPress={toggleExpanded}
+        >
+          <Text style={[styles.projectName, styles.scheduleItemTitle]}>{item.taskName}</Text>
+          <Text style={[styles.rowSub, styles.scheduleItemContext]}>
+            {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
+          </Text>
+          <Text style={[styles.rowSub, styles.scheduleItemContext]}>
+            {timingStatus}{item.contractor ? ` • ${item.contractor}` : ''}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.iconOnlyDangerButton}
+          onPress={onDelete}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${item.taskName}`}
+        >
+          <Ionicons name="trash-outline" size={19} color={colors.danger} />
+        </TouchableOpacity>
+      </View>
       <TouchableOpacity
-        style={styles.rowIconBubble}
-        onPress={() => setExpanded(prev => !prev)}
+        style={styles.scheduleItemBody}
+        onPress={toggleExpanded}
       >
-        <Ionicons
-          name={isOverdue ? 'alert-circle-outline' : isDueSoon ? 'time-outline' : 'calendar-outline'}
-          size={20}
-          color={isOverdue ? colors.danger : isDueSoon ? colors.warning : colors.primary}
-        />
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.rowMain}
-        onPress={() => setExpanded(prev => !prev)}
-      >
-        <Text style={styles.projectName}>{item.taskName}</Text>
-        <Text style={styles.rowSub}>
-          {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
-        </Text>
-        <Text style={styles.rowSub}>
-          {item.finishDate ? dueStatusText(item.finishDate) : 'No finish date'}{item.contractor ? ` • ${item.contractor}` : ''}
-        </Text>
-
         <View style={styles.scheduleMetaRow}>
+          <ProjectItemTypeBadge item={item} />
           <View style={[styles.statusPill, { backgroundColor: `${statusColor}1A` }]}>
             <Text style={[styles.statusPillText, { color: statusColor }]}>{item.status}</Text>
           </View>
@@ -15997,24 +20744,134 @@ function ScheduleItemRow({
           </View>
           <Text style={styles.percentText}>{item.percentComplete}%</Text>
         </View>
-
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${item.percentComplete}%` }]} />
         </View>
-
+        <ProjectItemNextAction item={item} />
+        {completionVerificationLabel ? (
+          <View style={styles.scheduleVerificationCard}>
+            <View style={styles.areaStatusLine}>
+              <Ionicons
+                name={needsCompletionVerification ? 'help-circle-outline' : 'checkmark-circle-outline'}
+                size={19}
+                color={needsCompletionVerification ? colors.warning : colors.success}
+              />
+              <Text style={styles.scheduleVerificationTitle}>{completionVerificationLabel}</Text>
+            </View>
+            <Text style={styles.scheduleVerificationText}>
+              {needsCompletionVerification
+                ? 'A message or email reported this work complete. The schedule remains unchanged until you verify it.'
+                : item.completionVerification?.verificationNote || 'The project manager reviewed this completion report.'}
+            </Text>
+          </View>
+        ) : null}
+        {dependencyNode && (
+          dependencyNode.blocked ||
+          dependencyNode.unresolvedPredecessors.length > 0
+        ) ? (
+          <View style={styles.scheduleFieldEvidenceCard}>
+            <View style={styles.areaStatusLine}>
+              <Ionicons
+                name={dependencyNode.cycle ? 'warning-outline' : 'git-branch-outline'}
+                size={18}
+                color={dependencyNode.cycle ? colors.danger : colors.warning}
+              />
+              <Text style={styles.scheduleFieldEvidenceTitle}>Dependency Check</Text>
+            </View>
+            {dependencyNode.blockedReason ? (
+              <Text style={styles.scheduleFieldEvidenceText}>{dependencyNode.blockedReason}</Text>
+            ) : null}
+            {blockerNames.length > 0 ? (
+              <Text style={styles.scheduleFieldEvidenceAction}>
+                Waiting on: {blockerNames.join(', ')}
+              </Text>
+            ) : null}
+            {dependencyNode.unresolvedPredecessors.length > 0 ? (
+              <Text style={styles.scheduleFieldEvidenceAction}>
+                Map predecessor: {dependencyNode.unresolvedPredecessors.join(', ')}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+        {fieldWarning ? (
+          <View style={styles.scheduleFieldEvidenceCard}>
+            <Text style={styles.scheduleFieldEvidenceTitle}>Schedule Alert</Text>
+            <Text style={styles.scheduleFieldEvidenceText}>
+              {fieldWarning.summary}
+            </Text>
+          </View>
+        ) : null}
         {expanded ? (
           <View style={styles.areaManagerCard}>
-            <Text style={styles.label}>Finish / Due Date</Text>
-            <TextInput
-              style={styles.input}
+            <AreaRow areaName={selectedArea?.name || item.locationName || 'Unassigned / Unknown Area'} onChange={() => setAreaSheetOpen(true)} />
+            {needsCompletionVerification ? (
+              <View style={styles.scheduleVerificationActions}>
+                <Text style={styles.panelTitle}>Verify completion</Text>
+                <Text style={styles.rowSub}>
+                  Confirm only if you have seen the completed work or have reliable supporting evidence.
+                </Text>
+                <TextInput
+                  style={[styles.input, styles.notesInput]}
+                  value={verificationNote}
+                  onChangeText={setVerificationNote}
+                  placeholder="Optional verification note"
+                  placeholderTextColor={colors.muted}
+                  multiline
+                />
+                <PrimaryButton
+                  label="Confirm Completed"
+                  icon="checkmark-circle-outline"
+                  onPress={() => {
+                    const verified = verifyScheduleItemCompletion(
+                      item as unknown as import('./types').ScheduleItem,
+                      {
+                        verifiedAt: new Date().toISOString(),
+                        verifiedBy: 'Project manager',
+                        note: verificationNote,
+                      },
+                    );
+                    onUpdate(verified as unknown as Partial<ScheduleItem>);
+                    setVerificationNote('');
+                  }}
+                />
+                {onAddFieldUpdate ? (
+                  <SecondaryButton
+                    label="Capture Verification Photo"
+                    icon="camera-outline"
+                    onPress={onAddFieldUpdate}
+                  />
+                ) : null}
+                <SecondaryButton
+                  label="Not Complete"
+                  icon="close-circle-outline"
+                  onPress={() => {
+                    const rejected = rejectScheduleItemCompletion(
+                      item as unknown as import('./types').ScheduleItem,
+                      {
+                        rejectedAt: new Date().toISOString(),
+                        rejectedBy: 'Project manager',
+                        note: verificationNote,
+                      },
+                    );
+                    onUpdate(rejected as unknown as Partial<ScheduleItem>);
+                    setVerificationNote('');
+                  }}
+                />
+              </View>
+            ) : null}
+            {onAddFieldUpdate && !needsCompletionVerification ? (
+              <PrimaryButton
+                label="Add Field Update"
+                icon="camera-outline"
+                onPress={onAddFieldUpdate}
+              />
+            ) : null}
+            <NativeDateField
+              label="Finish / Due Date"
               value={item.finishDate}
-              onChangeText={finishDate => onUpdate({ finishDate: normalizeDateInput(finishDate) })}
-              placeholder="MM/DD/YYYY"
-              placeholderTextColor={colors.muted}
-              keyboardType="numbers-and-punctuation"
-              maxLength={10}
+              onChange={finishDate => onUpdate({ finishDate })}
+              testID={`schedule-finish-date-${item.id}`}
             />
-
             <Text style={styles.label}>Owner</Text>
             <TextInput
               style={styles.input}
@@ -16090,24 +20947,25 @@ function ScheduleItemRow({
               ))}
             </View>
 
-            <Text style={styles.label}>Notes</Text>
-            <TextInput
-              style={[styles.input, styles.notesInput]}
-              value={item.notes}
-              onChangeText={notes => onUpdate({ notes })}
-              placeholder="Notes"
-              placeholderTextColor={colors.muted}
-              multiline
-            />
+            <ProjectItemDetailsEditor item={item} activityAuthor={activityAuthor} onUpdate={onUpdate} />
+            <AreaSelectionSheet visible={areaSheetOpen} projectAreas={itemProjectAreas}
+              suggestedArea={selectedArea} selectedAreaId={selectedArea?.id || null}
+              onSelect={areaId => {
+                const area = itemProjectAreas.find(candidate => candidate.id === areaId) || null;
+                onUpdate({ locationName: area?.name || '' });
+                setAreaSheetOpen(false);
+              }} onClose={() => setAreaSheetOpen(false)} />
           </View>
         ) : null}
       </TouchableOpacity>
-
-      <TouchableOpacity style={styles.iconOnlyDangerButton} onPress={onDelete}>
-        <Ionicons name="trash-outline" size={19} color={colors.danger} />
-      </TouchableOpacity>
     </View>
   );
+}
+
+function scheduleWarningIsUserActionable(warning: PIEScheduleReconciliationWarning) {
+  return warning.type === 'schedule_status_conflict' ||
+    warning.type === 'field_progress_not_reflected' ||
+    warning.type === 'field_issue_threatens_schedule';
 }
 
 function ProjectDashboardCard({
@@ -16272,84 +21130,6 @@ function DraftSavedIndicator({
   );
 }
 
-function BottomTabs({
-  current,
-  onChange,
-}: {
-  current: Screen;
-  onChange: (screen: Screen) => void;
-}) {
-  return (
-    <View style={styles.bottomTabs}>
-      <TabButton
-        label="Overview"
-        icon="home-outline"
-        active={current === 'Home'}
-        onPress={() => onChange('Home')}
-      />
-
-      <TabButton
-        label="Projects"
-        icon="folder-open-outline"
-        active={current === 'Projects' || current === 'ProjectWorkspace' || current === 'ProjectDocuments'}
-        onPress={() => onChange('Projects')}
-      />
-
-      <TabButton
-        label="Updates"
-        icon="document-text-outline"
-        active={current === 'SavedUpdates' || current === 'UpdateDetail'}
-        onPress={() => onChange('SavedUpdates')}
-      />
-
-      <TabButton
-        label="Settings"
-        icon="settings-outline"
-        active={current === 'Admin'}
-        onPress={() => onChange('Admin')}
-      />
-    </View>
-  );
-}
-
-function TabButton({
-  label,
-  icon,
-  active,
-  onPress,
-}: {
-  label: string;
-  icon: IconName;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      style={styles.tabButton}
-      onPress={onPress}
-    >
-      <Ionicons
-        name={icon}
-        size={21}
-        color={
-          active
-            ? colors.primary
-            : colors.muted
-        }
-      />
-
-      <Text
-        style={[
-          styles.tabText,
-          active && styles.tabTextActive,
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
 function ScreenTitle({
   title,
   subtitle,
@@ -16430,89 +21210,6 @@ function PrimaryButton({
           {label}
         </Text>
       </View>
-    </TouchableOpacity>
-  );
-}
-
-const HOLD_TO_DELETE_DURATION_MS = 3000;
-const HOLD_TO_DELETE_TICK_MS = 50;
-
-function HoldToDeleteButton({
-  label,
-  holdingLabel,
-  deletingLabel,
-  isDeleting,
-  onConfirm,
-}: {
-  label: string;
-  holdingLabel: string;
-  deletingLabel: string;
-  isDeleting: boolean;
-  onConfirm: () => void;
-}) {
-  const [progress, setProgress] = useState(0);
-  const [holding, setHolding] = useState(false);
-  const holdTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  function clearHoldTimer() {
-    if (holdTimer.current) {
-      clearInterval(holdTimer.current);
-      holdTimer.current = null;
-    }
-  }
-
-  function startHold() {
-    if (isDeleting) return;
-
-    setHolding(true);
-    setProgress(0);
-
-    const startedAt = Date.now();
-
-    holdTimer.current = setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      const nextProgress = Math.min(
-        100,
-        (elapsed / HOLD_TO_DELETE_DURATION_MS) * 100,
-      );
-
-      setProgress(nextProgress);
-
-      if (nextProgress >= 100) {
-        clearHoldTimer();
-        setHolding(false);
-        setProgress(0);
-        onConfirm();
-      }
-    }, HOLD_TO_DELETE_TICK_MS);
-  }
-
-  function cancelHold() {
-    clearHoldTimer();
-    setHolding(false);
-    setProgress(0);
-  }
-
-  useEffect(() => clearHoldTimer, []);
-
-  return (
-    <TouchableOpacity
-      style={styles.holdToDeleteButton}
-      activeOpacity={0.85}
-      disabled={isDeleting}
-      onPressIn={startHold}
-      onPressOut={cancelHold}
-    >
-      <View
-        style={[
-          styles.holdToDeleteFill,
-          { width: `${progress}%` },
-        ]}
-      />
-      <Ionicons name="trash-outline" size={19} color={colors.danger} />
-      <Text style={styles.holdToDeleteText}>
-        {isDeleting ? deletingLabel : holding ? holdingLabel : label}
-      </Text>
     </TouchableOpacity>
   );
 }
@@ -16630,26 +21327,6 @@ function EmptyState({
   );
 }
 
-const colors = {
-  bg: '#F5F5F7',
-  card: '#FFFFFF',
-  fill: '#F2F2F7',
-  text: '#1D1D1F',
-  muted: '#6E6E73',
-  tertiaryText: '#9A9AA0',
-  line: '#E5E5EA',
-  primary: '#007AFF',
-  primarySoft: '#EAF4FF',
-  success: '#34C759',
-  successSoft: '#EAF8EE',
-  warning: '#FF9500',
-  warningSoft: '#FFF4E5',
-  insight: '#6B5DD3',
-  insightSoft: '#F0EEFF',
-  dangerSoft: '#FFECEC',
-  danger: '#FF3B30',
-};
-
 function statusStyleForRole(role: StatusStyleRole) {
   const config = STATUS_ICON_COLOR_MAP[role];
   const color =
@@ -16667,2406 +21344,3 @@ function statusStyleForRole(role: StatusStyleRole) {
     backgroundColor,
   };
 }
-
-const styles = StyleSheet.create({
-  shell: {
-    flex: 1,
-    backgroundColor: colors.bg,
-  },
-
-  keyboard: {
-    flex: 1,
-  },
-
-  appFrame: {
-    flex: 1,
-  },
-
-  content: {
-    padding: 18,
-    paddingBottom: 110,
-  },
-
-  header: {
-    paddingTop: 10,
-    paddingBottom: 22,
-  },
-
-  kicker: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-
-  title: {
-    color: colors.text,
-    fontSize: 31,
-    fontWeight: '800',
-    lineHeight: 37,
-  },
-
-  subtitle: {
-    color: colors.muted,
-    fontSize: 15,
-    lineHeight: 21,
-    marginTop: 7,
-    fontWeight: '500',
-  },
-
-  screenTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-
-  screenTitle: {
-    flex: 1,
-    marginBottom: 12,
-  },
-
-  screenTitleActionButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  sectionLabel: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-    marginTop: 10,
-    marginBottom: 10,
-    textTransform: 'uppercase',
-  },
-
-
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    marginBottom: 10,
-  },
-
-  countPill: {
-    minWidth: 34,
-    minHeight: 28,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  countPillDanger: {
-    backgroundColor: colors.dangerSoft,
-  },
-
-  countPillText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  countPillTextDanger: {
-    color: colors.danger,
-  },
-
-  mutedNote: {
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '600',
-    marginBottom: 16,
-  },
-
-  primaryButton: {
-    backgroundColor: colors.primary,
-    borderRadius: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    marginBottom: 10,
-    minHeight: 54,
-    justifyContent: 'center',
-  },
-
-  holdToDeleteButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: colors.dangerSoft,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.danger,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    minHeight: 54,
-    marginBottom: 10,
-    overflow: 'hidden',
-  },
-
-  holdToDeleteFill: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: colors.danger,
-    opacity: 0.25,
-  },
-
-  holdToDeleteText: {
-    color: colors.danger,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-
-  secondaryButton: {
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    marginBottom: 10,
-    minHeight: 54,
-    justifyContent: 'center',
-  },
-
-  compactButton: {
-    flex: 1,
-    minHeight: 64,
-    marginBottom: 0,
-  },
-
-  disabledButton: {
-    opacity: 0.45,
-  },
-
-  buttonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    maxWidth: '100%',
-  },
-
-  primaryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-    textAlign: 'center',
-    flexShrink: 1,
-  },
-
-  secondaryButtonText: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
-    textAlign: 'center',
-    flexShrink: 1,
-  },
-
-  panel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  panelTitle: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 10,
-  },
-
-  bodyText: {
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-
-  locationPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  locationPanelHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 10,
-  },
-
-  locationDetailText: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
-    marginTop: 7,
-  },
-
-  locationActionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-  },
-
-  areaChipWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  areaChip: {
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-  },
-
-  areaChipSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  areaChipText: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  areaChipTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  areaManagerCard: {
-    backgroundColor: colors.fill,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 12,
-    marginTop: 12,
-  },
-
-  areaNameInput: {
-    marginTop: 14,
-  },
-
-  draftRecoveryCard: {
-    backgroundColor: colors.warningSoft,
-    borderWidth: 1,
-    borderColor: '#FFD8A3',
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 14,
-  },
-
-  draftRecoveryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 11,
-  },
-
-  draftIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  draftRecoveryTitle: {
-    color: colors.text,
-    fontSize: 17,
-    fontWeight: '800',
-  },
-
-  draftRecoveryProject: {
-    color: colors.muted,
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 3,
-  },
-
-  draftStatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    marginBottom: 13,
-  },
-
-  draftStatText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-
-  draftStatDot: {
-    color: colors.muted,
-    fontSize: 13,
-    paddingHorizontal: 7,
-  },
-
-  draftActionRow: {
-    flexDirection: 'row',
-    gap: 9,
-  },
-
-  resumeDraftButton: {
-    flex: 1,
-    backgroundColor: colors.warning,
-    borderRadius: 9,
-    minHeight: 46,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 7,
-  },
-
-  resumeDraftText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-
-  discardDraftButton: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 9,
-    minHeight: 46,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 7,
-  },
-
-  discardDraftText: {
-    color: colors.danger,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-
-  draftSavedIndicator: {
-    backgroundColor: colors.successSoft,
-    borderRadius: 8,
-    paddingVertical: 9,
-    paddingHorizontal: 11,
-    marginBottom: 13,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-
-  draftSavedText: {
-    color: '#248A3D',
-    fontSize: 12,
-    fontWeight: '700',
-    flex: 1,
-  },
-
-  dashboardCard: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  dashboardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  statsGrid: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-
-  miniStat: {
-    flex: 1,
-    backgroundColor: colors.fill,
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-
-  miniStatDanger: {
-    backgroundColor: colors.dangerSoft,
-  },
-
-  miniStatValue: {
-    color: colors.primary,
-    fontSize: 20,
-    fontWeight: '800',
-  },
-
-  miniStatValueDanger: {
-    color: colors.danger,
-  },
-
-  miniStatLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-
-  cardActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
-  },
-
-  smallAction: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 8,
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-  },
-
-  smallActionText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  smallActionDanger: {
-    backgroundColor: colors.dangerSoft,
-  },
-
-  smallActionDangerText: {
-    color: colors.danger,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  addProjectCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  projectRow: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  savedRow: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  contactRow: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-
-  contactRowHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    width: '100%',
-  },
-
-  deliveryChoiceBlock: {
-    marginTop: 12,
-    width: '100%',
-  },
-
-  choiceChipWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-
-  deliveryChoiceChip: {
-    maxWidth: '100%',
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    flexShrink: 1,
-  },
-
-  deliveryChoiceChipActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  deliveryChoiceText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-    maxWidth: 230,
-  },
-
-  deliveryChoiceTextActive: {
-    color: '#FFFFFF',
-  },
-
-  rowMain: {
-    flex: 1,
-  },
-
-  rowIconBubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  projectName: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-
-  rowSub: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '500',
-    marginTop: 4,
-  },
-
-  contactSummary: {
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-
-  contactSummaryText: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    flex: 1,
-  },
-
-  contactSummaryAction: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-
-  contactSelectText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  contactSelectTextSelected: {
-    color: colors.danger,
-  },
-
-  inlineLink: {
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingVertical: 6,
-    marginBottom: 12,
-  },
-
-  inlineLinkText: {
-    color: colors.primary,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-
-  progressPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  progressStat: {
-    flex: 1,
-    alignItems: 'center',
-  },
-
-  progressDivider: {
-    width: 1,
-    height: 34,
-    backgroundColor: colors.line,
-  },
-
-  progressNumber: {
-    color: colors.primary,
-    fontSize: 28,
-    fontWeight: '800',
-  },
-
-  progressText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-
-  emptyState: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  emptyTitle: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-
-  photoCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  photoHeader: {
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-
-  photoThumb: {
-    width: 72,
-    height: 72,
-    borderRadius: 8,
-    backgroundColor: colors.line,
-  },
-
-  photoMeta: {
-    flex: 1,
-  },
-
-  photoTitle: {
-    color: colors.text,
-    fontSize: 17,
-    fontWeight: '700',
-  },
-
-  categoryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  categoryChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.primarySoft,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-  },
-
-  categoryChipActive: {
-    backgroundColor: colors.primary,
-  },
-
-  categoryText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  categoryTextActive: {
-    color: '#FFFFFF',
-  },
-
-  photoPreviewBadge: {
-    position: 'absolute',
-    right: 4,
-    bottom: 4,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  actionPanel: {
-    backgroundColor: colors.primarySoft,
-    borderWidth: 1,
-    borderColor: '#CFE6FF',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
-
-  actionPanelHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    marginBottom: 12,
-  },
-
-  actionPanelTitle: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-
-  statusGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-
-  statusButton: {
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 11,
-  },
-
-  statusButtonActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  statusButtonText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  statusButtonTextActive: {
-    color: '#FFFFFF',
-  },
-
-  dateHelpError: {
-    color: colors.danger,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: -7,
-    marginBottom: 10,
-  },
-
-  photoControlRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
-  },
-
-  photoControlButton: {
-    flex: 1,
-    minHeight: 42,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.card,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-  },
-
-  photoControlButtonDisabled: {
-    backgroundColor: colors.fill,
-  },
-
-  photoControlText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  photoControlTextDisabled: {
-    color: colors.tertiaryText,
-  },
-
-  photoModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.96)',
-  },
-
-  photoModalSafeArea: {
-    flex: 1,
-  },
-
-  photoModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 12,
-  },
-
-  photoModalTitleWrap: {
-    flex: 1,
-  },
-
-  photoModalTitle: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-
-  photoModalCaption: {
-    color: '#D1D1D6',
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 3,
-  },
-
-  photoModalCloseButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  sheetModalBackdrop: {
-    flex: 1,
-    backgroundColor: colors.bg,
-  },
-
-  sheetModalSafeArea: {
-    flex: 1,
-  },
-
-  sheetModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    gap: 12,
-  },
-
-  sheetModalTitleWrap: {
-    flex: 1,
-  },
-
-  sheetModalTitle: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '800',
-  },
-
-  sheetModalCaption: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 3,
-  },
-
-  sheetModalCloseButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.fill,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  photoModalImage: {
-    flex: 1,
-    width: '100%',
-  },
-
-  photoModalBottomBar: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 12 : 16,
-  },
-
-  photoModalBottomCloseButton: {
-    minHeight: 54,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-
-  photoModalBottomCloseText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-
-  iconOnlyDangerButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    backgroundColor: colors.dangerSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  iconOnlyButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  label: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-
-  input: {
-    minHeight: 46,
-    backgroundColor: colors.fill,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
-    color: colors.text,
-    fontSize: 15,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
-  },
-
-  notesInput: {
-    minHeight: 90,
-    textAlignVertical: 'top',
-  },
-
-  previewCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  previewLabel: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 7,
-  },
-
-  subjectText: {
-    color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '700',
-  },
-
-  divider: {
-    height: 1,
-    backgroundColor: colors.line,
-    marginVertical: 14,
-  },
-
-  previewBody: {
-    color: colors.text,
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: '500',
-  },
-
-  sendRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 10,
-  },
-
-  dataActionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 14,
-    alignItems: 'stretch',
-  },
-
-  sectionLabelNoMargin: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-
-  addLocationInlineRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 12,
-  },
-
-  addLocationInlineInput: {
-    flex: 1,
-    marginBottom: 0,
-  },
-
-  addLocationInlineButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 12,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  areaListCard: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    overflow: 'hidden',
-    marginTop: 8,
-  },
-
-  areaListHeaderRow: {
-    minHeight: 44,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-
-  areaListRow: {
-    minHeight: 68,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  areaStatusLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 3,
-  },
-
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-
-  statusDotSaved: {
-    backgroundColor: colors.success,
-  },
-
-  statusDotMissing: {
-    backgroundColor: colors.tertiaryText,
-  },
-
-  areaListRadius: {
-    color: colors.muted,
-    fontSize: 14,
-    fontWeight: '700',
-    minWidth: 58,
-    textAlign: 'right',
-  },
-
-  detailModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'flex-end',
-  },
-
-  detailModalCardFrame: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  detailModalCardContent: {
-    padding: 18,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 18,
-  },
-
-  detailModalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  detailCloseButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  radiusEditRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  radiusEditInput: {
-    flex: 1,
-  },
-
-  radiusEditUnit: {
-    color: colors.muted,
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 12,
-  },
-
-  locationSummaryCard: {
-    backgroundColor: colors.fill,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 12,
-    marginBottom: 12,
-  },
-
-  setupProgressCard: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#CFE6FF',
-  },
-
-  checklistRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 9,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-
-  checklistText: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-    flex: 1,
-  },
-
-  headerCompact: {
-    paddingTop: 10,
-    paddingBottom: 14,
-  },
-
-  dashboardSummaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  dashboardSummaryHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  dashboardManageButton: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-
-  dashboardManageText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  dashboardMetricGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-
-  dashboardMetricCard: {
-    width: '48%',
-    backgroundColor: colors.fill,
-    borderRadius: 11,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    minHeight: 86,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-
-  dashboardMetricDanger: {
-    backgroundColor: colors.dangerSoft,
-    borderColor: '#FFD1D1',
-  },
-
-  dashboardMetricIconRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-
-  dashboardMetricValue: {
-    color: colors.primary,
-    fontSize: 24,
-    fontWeight: '900',
-  },
-
-  dashboardMetricValueDanger: {
-    color: colors.danger,
-  },
-
-  dashboardMetricLabel: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  quickActionGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  quickActionButton: {
-    width: '48%',
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    borderColor: colors.line,
-    borderWidth: 1,
-    minHeight: 76,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingHorizontal: 10,
-  },
-
-  quickActionButtonPrimary: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  quickActionText: {
-    color: colors.text,
-    fontSize: 14,
-    lineHeight: 17,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-
-  quickActionTextPrimary: {
-    color: '#FFFFFF',
-  },
-
-  attentionCard: {
-    backgroundColor: colors.card,
-    borderRadius: 11,
-    padding: 13,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  attentionCardUrgent: {
-    borderColor: '#FFD1D1',
-    backgroundColor: '#FFF8F8',
-  },
-
-  activityRow: {
-    backgroundColor: colors.card,
-    borderRadius: 11,
-    padding: 13,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  projectFinderPanel: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  phase2SelectorButton: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 12,
-    borderColor: 'rgba(0,0,0,0.18)',
-    borderWidth: 1,
-    minHeight: 64,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-
-  phase2SelectorLabel: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-  },
-
-  phase2SelectorValue: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-
-  phase2BriefCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 14,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 12,
-  },
-
-  phase2BriefIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  overviewPageWrap: {
-    flex: 1,
-  },
-
-  overviewPageGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 280,
-  },
-
-  overviewGreetingHeader: {
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 4,
-  },
-
-  overviewGreetingText: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: colors.text,
-  },
-
-  overviewGreetingDate: {
-    fontSize: 13,
-    color: colors.muted,
-    marginTop: 2,
-  },
-
-  overviewHeroCard: {
-    marginTop: 8,
-    borderRadius: 20,
-    overflow: 'hidden',
-    height: 190,
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.18)',
-  },
-
-  overviewHeroPhoto: {
-    opacity: 0.55,
-  },
-
-  overviewHeroContent: {
-    flex: 1,
-    padding: 18,
-    justifyContent: 'space-between',
-  },
-
-  overviewHeroLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    color: 'rgba(255,255,255,0.75)',
-  },
-
-  overviewHeroNumber: {
-    fontSize: 52,
-    fontWeight: '800',
-    lineHeight: 56,
-  },
-
-  overviewHeroCaption: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.88)',
-    marginTop: 2,
-  },
-
-  overviewHeroPill: {
-    flexDirection: 'row',
-    alignSelf: 'flex-start',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(255,255,255,0.16)',
-    borderRadius: 20,
-    paddingVertical: 5,
-    paddingHorizontal: 11,
-  },
-
-  overviewHeroPillText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-
-  overviewBentoRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginTop: 12,
-  },
-
-  overviewBentoCardTouchable: {
-    flexBasis: '47%',
-    flexGrow: 1,
-  },
-
-  overviewBentoCard: {
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.18)',
-  },
-
-  overviewBentoIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.75)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-
-  overviewBentoNumber: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: colors.text,
-  },
-
-  overviewBentoLabel: {
-    fontSize: 12,
-    color: colors.muted,
-  },
-
-  overviewSectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 20,
-    marginBottom: 6,
-  },
-
-  overviewSectionLabel: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-
-  overviewGroupedList: {
-    gap: 8,
-  },
-
-  overviewGroupedCell: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.18)',
-    overflow: 'hidden',
-  },
-
-  overviewGroupedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-  },
-
-  overviewRowIconBubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  overviewRowSubtitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 1,
-  },
-
-  overviewRowSubtitle: {
-    fontSize: 13,
-    color: colors.muted,
-  },
-
-  overviewDueTodayPillWrap: {
-    paddingLeft: 58,
-    paddingRight: 14,
-    paddingBottom: 12,
-    marginTop: -2,
-  },
-
-  overviewDueTodayPill: {
-    flexDirection: 'row',
-    alignSelf: 'flex-start',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.card,
-    borderRadius: 20,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-  },
-
-  overviewDueTodayText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.warning,
-  },
-
-  projectSelectorBackdrop: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-
-  projectSelectorScrim: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15, 23, 42, 0.34)',
-  },
-
-  projectSelectorSheet: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 28,
-    borderColor: colors.line,
-    borderWidth: 1,
-    maxHeight: '82%',
-  },
-
-  projectSelectorDragHandleArea: {
-    minHeight: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  projectSelectorHandle: {
-    width: 42,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: colors.line,
-    alignSelf: 'center',
-  },
-
-  projectSelectorScroll: {
-    flexGrow: 0,
-    flexShrink: 1,
-  },
-
-  projectSelectorScrollContent: {
-    paddingTop: 2,
-    paddingBottom: 8,
-  },
-
-  projectSelectorRow: {
-    minHeight: 60,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 12,
-    marginBottom: 9,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  projectSelectorRowSelected: {
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.primary,
-  },
-
-  phase2HeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-
-  phase2AddProjectButton: {
-    minHeight: 44,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.card,
-  },
-
-  phase2ProjectCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minHeight: 104,
-  },
-
-  phase2ProjectThumb: {
-    width: 64,
-    height: 64,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-  },
-
-  phase2ProjectThumbPlaceholder: {
-    width: 64,
-    height: 64,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  phase2ProjectTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    marginBottom: 2,
-  },
-
-  phase2StatusDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 999,
-  },
-
-  phase2BackButton: {
-    alignSelf: 'flex-start',
-    minHeight: 44,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.card,
-  },
-
-  phase2ToolsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  phase2ToolCard: {
-    width: '48%',
-    minHeight: 112,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    backgroundColor: colors.card,
-    padding: 12,
-    justifyContent: 'space-between',
-  },
-
-  phase2ToolLabel: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '800',
-    marginTop: 8,
-  },
-
-  phase3StepRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-
-  phase3StepPill: {
-    flex: 1,
-    minHeight: 38,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.card,
-    paddingHorizontal: 6,
-  },
-
-  phase3StepPillActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  phase3StepPillComplete: {
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.primary,
-  },
-
-  phase3StepText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-
-  phase3StepTextActive: {
-    color: colors.text,
-  },
-
-  phase3MainTitle: {
-    color: colors.text,
-    fontSize: 24,
-    fontWeight: '900',
-    marginBottom: 12,
-  },
-
-  phase3AutoCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-    gap: 10,
-  },
-
-  phase3CompactRow: {
-    minHeight: 60,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingBottom: 10,
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
-  },
-
-  phase3ChangeButton: {
-    minHeight: 44,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  phase3SummaryCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 14,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-  },
-
-  phase3ThumbRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  phase3Thumb: {
-    width: 76,
-    height: 76,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-  },
-
-  phase3ChipWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 9,
-    marginBottom: 16,
-  },
-
-  phase3ContextChip: {
-    minHeight: 44,
-    borderRadius: 999,
-    borderColor: colors.line,
-    borderWidth: 1,
-    backgroundColor: colors.card,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  phase3ContextChipSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  phase3ContextText: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-
-  phase3ContextTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  phase4PieCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 14,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  phase4SafetyFinding: {
-    backgroundColor: colors.dangerSoft,
-    borderColor: '#FFD1D1',
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    flexDirection: 'row',
-    gap: 10,
-  },
-
-  phase4SafetyTitle: {
-    color: colors.danger,
-    fontSize: 16,
-    fontWeight: '900',
-    marginBottom: 4,
-  },
-
-  phase4DetailBlock: {
-    borderTopColor: colors.line,
-    borderTopWidth: 1,
-    marginTop: 10,
-    paddingTop: 10,
-  },
-
-  pieFindingRow: {
-    borderRadius: 8,
-    padding: 11,
-    marginBottom: 9,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-
-  pieInterpretationActionRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 8,
-  },
-
-  updateTopControlRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 10,
-  },
-
-  updateSearchBox: {
-    flex: 1,
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 8,
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    gap: 8,
-  },
-
-  updateFilterButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  updateFilterSummary: {
-    minHeight: 54,
-    borderRadius: 8,
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 12,
-    marginBottom: 12,
-  },
-
-  updateSegmentRow: {
-    flexDirection: 'row',
-    backgroundColor: colors.fill,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 4,
-    marginBottom: 14,
-  },
-
-  updateSegment: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 7,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 4,
-  },
-
-  updateSegmentSelected: {
-    backgroundColor: colors.primary,
-  },
-
-  updateSegmentText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-
-  updateSegmentTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  updateCard: {
-    backgroundColor: colors.card,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    padding: 12,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  updateCardThumb: {
-    width: 58,
-    height: 58,
-    borderRadius: 8,
-    backgroundColor: colors.fill,
-  },
-
-  updateCardThumbPlaceholder: {
-    width: 58,
-    height: 58,
-    borderRadius: 8,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  updateLifecycleTag: {
-    color: colors.primary,
-    backgroundColor: colors.primarySoft,
-    borderRadius: 999,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    fontSize: 11,
-    fontWeight: '900',
-    overflow: 'hidden',
-  },
-
-  updateOverflowSheet: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 16,
-    borderColor: colors.line,
-    borderWidth: 1,
-  },
-
-  projectSearchBox: {
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 10,
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  projectSearchInput: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-    paddingVertical: 8,
-  },
-
-  projectFilterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-
-  projectFilterChip: {
-    backgroundColor: colors.fill,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 11,
-  },
-
-  projectFilterChipSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-
-  projectFilterText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  projectFilterTextSelected: {
-    color: '#FFFFFF',
-  },
-
-  projectFinderStatsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-
-  projectFinderRow: {
-    backgroundColor: colors.card,
-    borderRadius: 11,
-    padding: 12,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  favoriteButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: colors.fill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  compactStatsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 7,
-    marginTop: 8,
-  },
-
-  compactStatText: {
-    color: colors.muted,
-    backgroundColor: colors.fill,
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 7,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  compactStatDanger: {
-    color: colors.danger,
-    backgroundColor: colors.dangerSoft,
-  },
-
-  projectFinderActions: {
-    alignItems: 'flex-end',
-    gap: 7,
-  },
-
-  bottomTabs: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: colors.card,
-    borderTopColor: colors.line,
-    borderTopWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    paddingTop: 8,
-    paddingBottom:
-      Platform.OS === 'ios' ? 24 : 10,
-  },
-
-  newTabButtonText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-
-  tabButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    gap: 3,
-  },
-
-  tabText: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-
-  tabTextActive: {
-    color: colors.primary,
-  },
-
-  newTabButton: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginHorizontal: 6,
-  },
-
-
-  dashboardGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 14,
-  },
-
-  compactLocationRow: {
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
-    borderColor: colors.line,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  compactActionColumn: {
-    alignItems: 'flex-end',
-    gap: 6,
-    maxWidth: 96,
-  },
-
-  compactInlineAction: {
-    borderRadius: 999,
-    paddingVertical: 5,
-    paddingHorizontal: 9,
-    backgroundColor: colors.primarySoft,
-  },
-
-  compactInlineActionText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  scheduleMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 8,
-    flexWrap: 'wrap',
-  },
-  statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  statusPillText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  percentText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  progressTrack: {
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: colors.line,
-    overflow: 'hidden',
-    marginTop: 8,
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 999,
-    backgroundColor: colors.primary,
-  },
-
-});
-
-type ScheduleStatus =
-  | 'Not Started'
-  | 'In Progress'
-  | 'Waiting'
-  | 'Complete';
-
-type SchedulePriority = 'Low' | 'Medium' | 'High';
-
-type ScheduleItem = {
-  id: string;
-  projectName: string;
-  locationName: string;
-  taskName: string;
-  startDate: string;
-  finishDate: string;
-  milestone: string;
-  owner: string;
-  contractor: string;
-  percentComplete: number;
-  priority: SchedulePriority;
-  status: ScheduleStatus;
-  notes: string;
-  importedFrom?: string | null;
-  importedAt?: string | null;
-  createdAt: string;
-};

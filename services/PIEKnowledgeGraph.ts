@@ -31,6 +31,10 @@ import type {
   PIEUnknown,
 } from './PIERuntime';
 import type { ProjectEvent } from './ProjectEventService';
+import {
+  classifyDAVEBlocker,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIEGraphNodeType =
   | 'project'
@@ -242,7 +246,7 @@ export function buildPIEKnowledgeGraph(
     type: 'project',
     projectName: parts.projectName,
     label: parts.projectName,
-    summary: 'Project root for PIE Knowledge Graph.',
+    summary: 'Project root for DAVE Knowledge Graph.',
     source: 'knowledge-graph',
     confidence: 'high',
     occurredAt: parts.generatedAt,
@@ -1077,7 +1081,7 @@ function addReasoningNodes(
       fromNodeId: node.id,
       toNodeId: projectNodeIdValue,
       label: 'Evidence supports project understanding',
-      summary: `${evidence.title} supports PIE's understanding of ${parts.projectName}.`,
+      summary: `${evidence.title} supports DAVE's understanding of ${parts.projectName}.`,
       source: 'pie-reasoning',
       confidence: evidence.confidence,
       evidence: [evidence.detail],
@@ -1807,7 +1811,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-updates',
       title: 'No update evidence',
-      summary: 'PIE does not see saved update nodes in the graph.',
+      summary: 'DAVE does not see saved update nodes in the graph.',
       missingNodeType: 'update',
       severity: 'high',
       suggestedAction: 'Capture or sync recent project updates.',
@@ -1818,7 +1822,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-photos',
       title: 'No photo evidence',
-      summary: 'PIE does not see photo nodes in the graph.',
+      summary: 'DAVE does not see photo nodes in the graph.',
       missingNodeType: 'photo',
       severity: 'medium',
       suggestedAction: 'Capture current field photos with captions.',
@@ -1829,7 +1833,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-schedule',
       title: 'No schedule evidence',
-      summary: 'PIE does not see schedule item nodes in the graph.',
+      summary: 'DAVE does not see schedule item nodes in the graph.',
       missingNodeType: 'schedule_item',
       severity: 'high',
       suggestedAction: 'Import or enter schedule items.',
@@ -1840,7 +1844,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-documents',
       title: 'No document context',
-      summary: 'PIE does not see document metadata linked to this project graph.',
+      summary: 'DAVE does not see document metadata linked to this project graph.',
       missingNodeType: 'document',
       severity: 'medium',
       suggestedAction: 'Add current reference documents or schedule documents.',
@@ -1851,7 +1855,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-reports',
       title: 'No report history',
-      summary: 'PIE does not see report history nodes in the graph.',
+      summary: 'DAVE does not see report history nodes in the graph.',
       missingNodeType: 'report',
       severity: 'low',
       suggestedAction: 'Generate and review a project report when communication is needed.',
@@ -1911,7 +1915,7 @@ function buildGraphInsightsFromParts(
       relationshipIds: relationships
         .filter(relationship => relationship.edgeType === 'supports')
         .map(relationship => relationship.id),
-      suggestedNextAction: 'Use connected evidence when reviewing PIE recommendations.',
+      suggestedNextAction: 'Use connected evidence when reviewing DAVE recommendations.',
     });
   }
 
@@ -1990,7 +1994,7 @@ function buildGraphInsightsFromParts(
       relationshipIds: relationships
         .filter(relationship => relationship.edgeType === 'requires_approval')
         .map(relationship => relationship.id),
-      suggestedNextAction: 'Review approval-required decisions before PIE acts.',
+      suggestedNextAction: 'Review approval-required decisions before DAVE acts.',
     });
   }
 
@@ -2172,12 +2176,9 @@ function scheduleSummary(item: ScheduleItem): string {
 
 function isScheduleBlocked(item: ScheduleItem): boolean {
   if (item.status === 'Waiting') return true;
-  if (item.priority === 'High' && item.status !== 'Complete') return true;
-
-  const finishTime = Date.parse(item.finishDate);
-  if (!Number.isFinite(finishTime)) return false;
-
-  return finishTime < Date.now() && item.status !== 'Complete';
+  return classifyDAVEBlocker(
+    parseDAVEAssertions(`${item.status}. ${item.notes || ''}`),
+  ) === 'blocked';
 }
 
 function sameProject(value: string | null | undefined, projectName: string): boolean {

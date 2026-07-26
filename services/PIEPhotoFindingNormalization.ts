@@ -1,4 +1,10 @@
-export const PIE_PHOTO_FINDING_SCHEMA_VERSION = '2026-07-p0-v1';
+import {
+  PIE_PHOTO_ANALYSIS_CONTRACT,
+  PIE_PHOTO_CONTRACT_FINDING_TYPES,
+} from '../supabase/functions/_shared/pie-photo-analysis-contract';
+
+export const PIE_PHOTO_FINDING_SCHEMA_VERSION =
+  PIE_PHOTO_ANALYSIS_CONTRACT.modes.photo_pair.schemaVersion;
 
 export type PIEPhotoFindingType =
   | 'added'
@@ -32,9 +38,7 @@ export type PIEPhotoFindingNormalizationResult = {
   rejectionCategories: string[];
 };
 
-const FINDING_TYPES: PIEPhotoFindingType[] = [
-  'added', 'removed', 'moved', 'occluding', 'revealed', 'material_change', 'visible_concern', 'uncertain',
-];
+const FINDING_TYPES: readonly PIEPhotoFindingType[] = PIE_PHOTO_CONTRACT_FINDING_TYPES;
 
 export function normalizePIEPhotoFindings(
   value: unknown,

@@ -25,6 +25,11 @@ import {
 export type PIERealityModelRepository = {
   loadCurrent(organizationId: string, projectId: string): Promise<PIERealityModel | null>;
   saveSynchronized(model: PIERealityModel, reason?: string): Promise<PIERealityModel>;
+  /**
+   * True only after this repository instance has completed a cloud read or
+   * write successfully. Missing implementations are treated as unverified.
+   */
+  hasFreshCloudAuthority?(): boolean;
   appendObjectHistory(
     organizationId: string,
     projectId: string,
@@ -67,20 +72,29 @@ export function createPIERealityModelRepository(input: {
   const useCloud = Boolean(input.cloudEnabled && input.identityTrusted);
 
   if (!useCloud) return localPIERealityModelRepository;
+  let freshCloudAuthority = false;
 
   return {
     async loadCurrent(organizationId, projectId) {
       const cloudResult = await loadPIERealityModelCloud(organizationId, projectId);
-      if (cloudResult.ok && cloudResult.data) return cloudResult.data;
+      if (cloudResult.ok && cloudResult.data) {
+        freshCloudAuthority = true;
+        return cloudResult.data;
+      }
+      freshCloudAuthority = false;
       return localPIERealityModelRepository.loadCurrent(organizationId, projectId);
     },
     async saveSynchronized(model, reason) {
       const localModel = await localPIERealityModelRepository.saveSynchronized(model, reason);
       const cloudResult = await savePIERealityModelCloud(localModel, reason);
+      freshCloudAuthority = cloudResult.ok;
       if (!cloudResult.ok && cloudResult.configured) {
         throw new Error(cloudResult.error || cloudResult.message || 'Reality Model cloud persistence failed.');
       }
       return cloudResult.data || localModel;
+    },
+    hasFreshCloudAuthority() {
+      return freshCloudAuthority;
     },
     appendObjectHistory: localPIERealityModelRepository.appendObjectHistory,
     getObjectHistory: localPIERealityModelRepository.getObjectHistory,

@@ -8,18 +8,21 @@ const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const app = read('App.tsx');
-const bottomNav = read('components/BottomNavigation.tsx');
+const appShellFrame = read('components/app-shell-frame.tsx');
+const bottomNav = read('components/app-bottom-tabs.tsx');
+const sync = read('services/SyncService.ts');
+const lifecycle = read('services/FieldUpdateLifecycle.ts');
 const timing = read('services/SixtySecondFlowInstrumentation.ts');
 const phase6 = read('scripts/phase6-documents-foundation-test.js');
 
 [
-  'ANALYSIS_TIMEOUT_SECONDS = 60',
+  'ANALYSIS_TIMEOUT_SECONDS = 135',
   'PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000',
   'PIE_STATUS_COPY',
   'PIE_STATUS_COPY.checking',
   'Possible visual changes found',
   'No reliable visual change',
-  'No prior photo to compare',
+  'Baseline saved',
   'Analysis unavailable · Retry',
   'Analysis taking longer than expected · Retry',
 ].forEach(marker => {
@@ -27,31 +30,31 @@ const phase6 = read('scripts/phase6-documents-foundation-test.js');
 });
 
 assert(
-  app.includes('label="Overview"') &&
-    app.includes('label="Projects"') &&
-    app.includes('label="Updates"') &&
-    !app.includes('label="Capture"') &&
-    !app.includes('label="Share"'),
-  'App bottom tabs must be exactly Overview / Projects / Updates.',
+  app.includes('<AppShellFrame') &&
+    appShellFrame.includes('<AppBottomTabs') &&
+    app.includes("screen === 'Reports'") &&
+    app.includes('<ReportsScreen'),
+  'App must render the extracted live bottom tabs and Reports screen.',
 );
 assert(
   bottomNav.includes('label="Overview"') &&
-    bottomNav.includes('label="Projects"') &&
-    bottomNav.includes('label="Updates"') &&
+    !bottomNav.includes('label="Projects"') &&
+    !bottomNav.includes('label="Updates"') &&
+    bottomNav.includes('label="Tasks"') &&
+    bottomNav.includes('label="Reports"') &&
+    !bottomNav.includes('label="Settings"') &&
     !bottomNav.includes('label="Capture"') &&
     !bottomNav.includes('label="Share"') &&
     (bottomNav.match(/<TabButton/g) || []).length === 3,
-  'Shared BottomNavigation must expose only the final three tabs.',
+  'Live bottom tabs must expose Overview, Tasks, and Reports while Settings remains reachable from Overview.',
 );
 
 [
-  'Nothing needs attention right now.',
-  'Your recent updates will show up here.',
   'No projects yet.',
-  'Nothing needs review — you’re all caught up.',
+  "✅ You're all caught up.",
+  'No field records require action today.',
   'No drafts.',
-  'No sent updates yet.',
-  'No updates yet.',
+  'No update history yet.',
   'No documents yet — upload your first document.',
 ].forEach(marker => {
   assert(app.includes(marker), `Phase 7 empty state should include ${marker}`);
@@ -101,11 +104,12 @@ assert(elapsedSeconds === 42, 'Mock one-photo flow timing should be deterministi
 assert(
   app.includes('hydrateQueuedUpdates') &&
     app.includes('statusForSyncDiagnostics(syncDiagnostics)') &&
-    app.includes("if (diagnostics.lastSyncResult === 'success') return 'sent';") &&
-    app.includes("if (diagnostics.lastSyncFailureCategory === 'offline') return 'queued';") &&
+    lifecycle.includes("if (input.result === 'success') return 'sent';") &&
+    lifecycle.includes("if (input.failureCategory === 'offline') return 'queued';") &&
     app.includes('queuedHydrationInFlight') &&
-    app.includes('uploadPendingChanges()'),
-  'Queued updates should hydrate through the idempotent pending-change path and preserve sent/queued/failed outcomes.',
+    sync.includes('runFieldUpdateCloudSync') &&
+    sync.includes('stageProjectUpdateForSync'),
+  'Queued updates should hydrate through the idempotent pending-change path and preserve cloud-synced/queued/failed outcomes.',
 );
 
 assert(
@@ -116,11 +120,11 @@ assert(
 );
 
 assert(
-  app.includes('Archive sent update?') &&
+  app.includes('Archive cloud-synced update?') &&
     app.includes('Archive compliance-sensitive document?') &&
     app.includes('isArchived') &&
     app.includes('archivedAt'),
-  'Sent updates and compliance-sensitive documents should use guarded archive/delete flows.',
+  'Cloud-synced updates and compliance-sensitive documents should use guarded archive/delete flows.',
 );
 
 assert(

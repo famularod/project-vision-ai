@@ -43,8 +43,10 @@ function loadTs(relativePath, mocks = {}) {
 }
 
 const ledger = loadTs('services/PIEDecisionLedger.ts');
+const assertionParser = loadTs('services/DAVEAssertionParser.ts');
 const automation = loadTs('services/PIELayer4Automation.ts', {
   './PIEDecisionLedger': ledger,
+  './DAVEAssertionParser': assertionParser,
   './PIEExecutiveJudgmentRepository': {
     requirePersistedExecutiveJudgment: record => record,
   },
@@ -99,8 +101,10 @@ const updateEvidence = {
 
 const conflictEvidence = {
   ...evidence,
-  id: 'photo-conflict',
-  summary: 'Conflicting evidence says the work is blocked and unsafe.',
+  id: 'photo-1',
+  versionId: 'v2-conflict',
+  contentHash: 'h1-conflict',
+  summary: 'Conflicting electrical rough-in evidence says inspection readiness is blocked and unsafe.',
 };
 
 const crossOrgEvidence = {
@@ -231,11 +235,16 @@ const automated = automation.automateLayer4DecisionLifecycle({
   now: '2026-07-02T12:00:00.000Z',
 });
 assert(automated.decision.outcomePlan, 'outcome plan should be generated automatically');
-assert(
-  ['awaiting_outcome', 'outcome_observed', 'outcome_validated', 'closed'].includes(automated.decision.currentStatus),
-  'routine lifecycle transitions should occur from verified evidence',
+assert.strictEqual(
+  automated.decision.currentStatus,
+  'approved',
+  'evidence may prepare an outcome plan but must not self-confirm implementation',
 );
-assert(automated.automaticActions.length >= 2, 'automatic actions should be recorded');
+assert.strictEqual(automated.automaticActions.length, 1, 'only the reversible outcome-plan action should run automatically');
+assert(
+  automated.exceptions.some(item => item.action === 'confirm_implementation'),
+  'implementation must remain an explicit human or authoritative-workflow confirmation',
+);
 assert(
   automated.decision.auditHistory.some(event => event.source === 'system' || event.automation),
   'automatic actions should create audit records',
@@ -299,6 +308,42 @@ const actual = automation.comparePredictedAndActualOutcomesAutomatically(
   actor,
 );
 assert(actual.predictionComparisons.length > 0, 'predicted and actual outcomes should be compared automatically');
+assert.strictEqual(actual.validationStatus, 'unvalidated', 'DAVE must not validate its own outcome comparison');
+
+for (const summary of [
+  'Electrical rough-in is not complete.',
+  'Electrical rough-in will be complete tomorrow.',
+  'Electrical rough-in might be complete.',
+  'Electrical rough-in will be complete if inspection passes.',
+]) {
+  const adversarialEvidence = { ...evidence, id: `adversarial-${summary}`, summary };
+  const quality = automation.proposeImplementationQualityFromEvidence(approved, [adversarialEvidence]);
+  assert.notStrictEqual(
+    quality.quality,
+    'high_fidelity',
+    `${summary} must not become high-fidelity implementation evidence`,
+  );
+}
+
+const incompleteOutcome = automation.comparePredictedAndActualOutcomesAutomatically(
+  approved,
+  [{ ...evidence, id: 'not-complete-outcome', summary: 'Electrical rough-in is not complete.' }],
+  actor,
+);
+assert.strictEqual(incompleteOutcome.classification, 'unsuccessful');
+
+for (const summary of [
+  'Electrical rough-in will be complete tomorrow.',
+  'Electrical rough-in might be complete.',
+  'Electrical rough-in will be complete if inspection passes.',
+]) {
+  const outcome = automation.comparePredictedAndActualOutcomesAutomatically(
+    approved,
+    [{ ...evidence, id: `future-outcome-${summary}`, summary }],
+    actor,
+  );
+  assert.strictEqual(outcome.classification, 'inconclusive', `${summary} must not become an observed outcome`);
+}
 
 const corrected = ledger.appendDecisionSnapshotVersion(
   automated.decision,

@@ -1,0 +1,48 @@
+name: Mobile validation
+
+on:
+  pull_request:
+  push:
+    branches: [main, v0.8-architecture-refactor]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Validate release, migration, UI, and device-flow contracts
+        run: npm run test:release-contracts
+
+      - name: Generate and verify Android native release metadata
+        run: |
+          npx expo prebuild --platform android --no-install
+          npm run sync:native-release-metadata
+          npm run check:release-metadata
+          npm run check:android-production-signing
+
+      - name: Run default executable test gate
+        run: npm test
+
+      - name: Run complete local release gate
+        run: npm run qa:release
+
+      - name: Export iOS JavaScript bundle
+        run: npx expo export --platform ios --output-dir build/export-ios
+
+      - name: Export Android JavaScript bundle
+        run: npx expo export --platform android --output-dir build/export-android

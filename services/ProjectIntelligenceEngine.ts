@@ -8,6 +8,7 @@ import type {
   UpdatePhoto,
 } from '../types';
 import {
+  daysUntilDate,
   parseDueDate,
   parseFlexibleDate,
 } from '../utils/date';
@@ -20,6 +21,7 @@ import {
   type ProjectEvent,
   type ProjectStory,
 } from './ProjectEventService';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import {
   analyzeProjectLocationIntelligence,
   type ProjectLocationIntelligence,
@@ -380,12 +382,8 @@ function daysSinceUpdate(dateValue: string, now: Date) {
   return Math.max(0, daysBetween(date, startOfDay(now)));
 }
 
-function daysUntilScheduleDate(dateValue: string, now: Date) {
-  const date = parseFlexibleDate(dateValue);
-
-  if (!date) return null;
-
-  return daysBetween(startOfDay(now), date);
+function daysUntilScheduleDate(dateValue: string, now: Date, projectTimeZone?: string | null) {
+  return daysUntilDate(dateValue, now, projectTimeZone || undefined);
 }
 
 function relatedProjectUpdates({
@@ -459,9 +457,8 @@ function narrativeStats(projectUpdates: ProjectUpdate[]) {
 function photoActionStats(photos: UpdatePhoto[], now: Date) {
   const actionPhotos = photos.filter(isOpenAction);
   const overdueActions = actionPhotos.filter(photo => {
-    const dueDate = parseDueDate(photo.actionDueDate);
-
-    return Boolean(dueDate && dueDate < startOfDay(now));
+    const days = daysUntilDate(photo.actionDueDate, now);
+    return days !== null && days < 0;
   });
   const unassignedActions = actionPhotos.filter(
     photo => !photo.actionOwner.trim(),
@@ -485,9 +482,7 @@ function photoActionStats(photos: UpdatePhoto[], now: Date) {
 }
 
 function scheduleContextStats(scheduleItems: ScheduleItem[]) {
-  const openItems = scheduleItems.filter(
-    item => item.status !== 'Complete' && boundedPercent(item.percentComplete) < 100,
-  );
+  const openItems = scheduleItems.filter(item => !scheduleProgressIsComplete(item));
 
   return {
     ownerCount: uniqueValues(scheduleItems.map(item => item.owner)).length,
@@ -703,9 +698,7 @@ function scheduleStatus({
 }): ProjectScheduleStatus {
   if (scheduleItems.length === 0) return 'not-available';
 
-  const completeCount = scheduleItems.filter(
-    item => item.status === 'Complete' || boundedPercent(item.percentComplete) >= 100,
-  ).length;
+  const completeCount = scheduleItems.filter(scheduleProgressIsComplete).length;
 
   if (completeCount === scheduleItems.length) return 'complete';
   if (overdueCount > 0) return 'overdue';
@@ -905,8 +898,8 @@ function confidenceSignal({
       weight: 5,
       message:
         locationConfidenceScore >= 45
-          ? `PIE has ${locationConfidenceScore}% location confidence.`
-          : 'PIE location confidence is low.',
+          ? `Location confidence is ${locationConfidenceScore}%.`
+          : 'Location confidence is low.',
       source: 'project-area' as const,
     },
     {
@@ -1040,7 +1033,7 @@ function healthSignal({
       score: 35,
       severity: 'neutral',
       label: 'Project status unknown',
-      message: 'PIE needs updates or schedule data before it can evaluate project health.',
+      message: 'Updates or schedule data are needed before project health can be evaluated.',
       evidence: ['No saved updates found.', 'No schedule items found.'],
       sources,
       confidence: 'low',
@@ -1141,11 +1134,11 @@ function healthSignal({
 
   if (locationConfidenceScore >= 75) {
     score += 3;
-    evidence.push(`PIE location confidence is ${locationConfidenceScore}%.`);
+    evidence.push(`Location confidence is ${locationConfidenceScore}%.`);
     sources.push('project-area');
   } else if (locationNeedsConfirmation) {
     score -= 3;
-    evidence.push(`PIE location confidence is ${locationConfidenceScore}% and needs confirmation.`);
+    evidence.push(`Location confidence is ${locationConfidenceScore}% and needs confirmation.`);
     sources.push('project-area');
   }
 
@@ -1476,7 +1469,7 @@ function riskSignals({
       severity: 'warning',
       message:
         locationConfirmationPrompt ||
-        'PIE has a location guess, but confidence is not high enough to rely on it automatically.',
+        'A location is suggested, but confidence is not high enough to rely on it automatically.',
       source: 'project-area',
       sources: ['project-area'],
       confidence: 'medium',
@@ -1490,7 +1483,7 @@ function riskSignals({
       id: 'missing-document-context',
       label: 'Document context not linked',
       severity: 'neutral',
-      message: 'Schedule work exists, but PIE does not see related reference document metadata.',
+      message: 'Schedule work exists, but related reference document metadata is missing.',
       source: 'document-metadata',
       sources: ['schedule', 'document-metadata'],
       confidence: 'medium',
@@ -2116,15 +2109,15 @@ export function analyzeProjectIntelligence({
     ? daysSinceUpdate(latestUpdate, now)
     : null;
   const incompleteScheduleItems = projectScheduleItems.filter(
-    item => item.status !== 'Complete' && boundedPercent(item.percentComplete) < 100,
+    item => !scheduleProgressIsComplete(item),
   );
   const overdueScheduleItems = incompleteScheduleItems.filter(item => {
-    const days = daysUntilScheduleDate(item.finishDate, now);
+    const days = daysUntilScheduleDate(item.finishDate, now, item.projectTimeZone);
 
     return days !== null && days < 0;
   });
   const upcomingScheduleItems = incompleteScheduleItems.filter(item => {
-    const days = daysUntilScheduleDate(item.finishDate, now);
+    const days = daysUntilScheduleDate(item.finishDate, now, item.projectTimeZone);
 
     return days !== null && days >= 0 && days <= UPCOMING_SCHEDULE_WINDOW_DAYS;
   });

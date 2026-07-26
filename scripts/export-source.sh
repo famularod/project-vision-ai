@@ -23,7 +23,6 @@ zip -r "$OUTPUT_FILE" . \
   -x "*.zip" \
   -x "exports/*" \
   -x "project-photo-update-tool_BACKUP_*/*" \
-  -x "project_photo_update_refactor_phase1/*" \
   -x "project_vision_ai_v0_*/*"
 
 echo ""

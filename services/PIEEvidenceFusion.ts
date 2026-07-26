@@ -21,6 +21,18 @@ import type {
   ProjectReportHistoryMetadata,
   ProjectSyncFreshnessMetadata,
 } from './ProjectIntelligenceEngine';
+import {
+  buildPIEScheduleReconciliation,
+  scheduleHasAuthoritativeProgressJudgment,
+  type PIEScheduleReconciliationResult,
+} from './PIEScheduleReconciliation';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  classifyDAVEBlocker,
+  classifyDAVEIssue,
+  classifyDAVESafety,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIEEvidenceSourceType =
   | 'schedule'
@@ -39,13 +51,56 @@ export type PIEEvidenceSourceType =
   | 'pdf-text'
   | 'unknown';
 
+/**
+ * Immutable facts that identify the exact evidence record used by PIE.
+ *
+ * Unknown values stay null. In particular, a source type or a recent
+ * timestamp must never be treated as proof that a person confirmed a claim.
+ */
+export type PIEEvidenceProvenance = {
+  sourceType: PIEEvidenceSourceType;
+  sourceRecordId: string | null;
+  capturedAt: string | null;
+  actorId: string | null;
+  confirmationEventId: string | null;
+  recordVersion: string | null;
+};
+
 export type PIEEvidenceSource = {
   type: PIEEvidenceSourceType;
   label: string;
   recordId?: string | null;
   confidence: ProjectConfidenceLevel;
   capturedAt?: string | null;
+  provenance: PIEEvidenceProvenance;
 };
+
+type PIEEvidenceSourceInput = Omit<PIEEvidenceSource, 'provenance'> & {
+  actorId?: string | null;
+  confirmationEventId?: string | null;
+  recordVersion?: string | null;
+};
+
+function evidenceSource(input: PIEEvidenceSourceInput): PIEEvidenceSource {
+  const recordId = input.recordId ?? null;
+  const capturedAt = input.capturedAt ?? null;
+
+  return {
+    type: input.type,
+    label: input.label,
+    recordId,
+    confidence: input.confidence,
+    capturedAt,
+    provenance: {
+      sourceType: input.type,
+      sourceRecordId: recordId,
+      capturedAt,
+      actorId: input.actorId ?? null,
+      confirmationEventId: input.confirmationEventId ?? null,
+      recordVersion: input.recordVersion ?? null,
+    },
+  };
+}
 
 export type PIEScheduleEvidence = {
   id: string;
@@ -244,6 +299,7 @@ export type PIEFusedEvidence = {
   sources: PIEEvidenceSourceType[];
   scheduleEvidence: PIEScheduleEvidence[];
   scheduleSummary: ScheduleSummary;
+  scheduleReconciliation: PIEScheduleReconciliationResult;
   photoEvidence: PIEPhotoEvidence[];
   photoProgressEvidence: PIEPhotoProgressEvidence[];
   gpsEvidence: PIEGPSEvidence;
@@ -279,6 +335,7 @@ type EvidenceSet = Pick<
   | 'generatedAt'
   | 'scheduleEvidence'
   | 'scheduleSummary'
+  | 'scheduleReconciliation'
   | 'photoEvidence'
   | 'photoProgressEvidence'
   | 'gpsEvidence'
@@ -323,6 +380,14 @@ export function buildFusedEvidence({
   const scheduleSummary = buildScheduleSummary(scheduleItems, {
     projectName: resolvedProjectName,
   });
+  const scheduleReconciliation = buildPIEScheduleReconciliation({
+    scheduleItems,
+    updates: currentUpdate && !updates.some(update => update.id === currentUpdate.id)
+      ? [currentUpdate, ...updates]
+      : updates,
+    projectName: projectNames.length > 1 ? null : resolvedProjectName,
+    now,
+  });
   const photoEvidence = extractPhotoEvidence({
     projectName: resolvedProjectName,
     updates: projectUpdates,
@@ -359,6 +424,7 @@ export function buildFusedEvidence({
     generatedAt: now.toISOString(),
     scheduleEvidence,
     scheduleSummary,
+    scheduleReconciliation,
     photoEvidence,
     photoProgressEvidence,
     gpsEvidence,
@@ -419,10 +485,11 @@ export function extractScheduleEvidence({
     .filter(item => matchesProject(projectName, item.projectName))
     .map(item => {
       const days = daysUntilDate(item.finishDate);
-      const isComplete = item.status === 'Complete';
+      const isComplete = scheduleProgressIsComplete(item);
       const notes = trimOrNull(item.notes);
       const importedFrom = trimOrNull(item.importedFrom ?? '');
       const importedAt = trimOrNull(item.importedAt ?? '');
+      const pmProgressJudgment = scheduleHasAuthoritativeProgressJudgment(item);
       const needsReview =
         !item.projectName.trim() ||
         !item.locationName.trim() ||
@@ -457,13 +524,26 @@ export function extractScheduleEvidence({
         isComplete,
         needsReview,
         sources: [
-          {
+          ...(pmProgressJudgment ? [evidenceSource({
+            type: 'typed-update' as const,
+            label: `${item.progressConfirmedBy || 'Project manager'} progress judgment`,
+            recordId: item.id,
+            confidence: 'high' as const,
+            capturedAt: item.progressConfirmedAt || item.createdAt,
+            actorId: item.progressConfirmedBy || null,
+            confirmationEventId: item.progressConfirmedAt
+              ? `schedule-progress-confirmation:${item.id}:${item.progressConfirmedAt}`
+              : null,
+            recordVersion: item.updatedAt || item.progressConfirmedAt || item.createdAt,
+          })] : []),
+          evidenceSource({
             type: scheduleSourceType(importedFrom),
             label: importedFrom || 'Schedule item',
             recordId: item.id,
             confidence: scheduleConfidence(item, needsReview),
             capturedAt: importedAt || item.createdAt,
-          },
+            recordVersion: item.updatedAt || importedAt || item.createdAt,
+          }),
         ],
         confidence: scheduleConfidence(item, needsReview),
       };
@@ -491,25 +571,17 @@ export function extractPhotoEvidence({
         const actionRequired = trimOrNull(photo.actionRequired);
         const areaName = trimOrNull(photo.selectedAreaName ?? '') ||
           trimOrNull(update.selectedAreaName ?? '');
+        const photoAssertionText = `${caption || ''} ${actionRequired || ''}`;
         const hasGps =
           typeof photo.gpsLatitude === 'number' &&
           typeof photo.gpsLongitude === 'number';
         const isIssue =
           photo.category === 'Open Issue' ||
-          includesAny(`${caption || ''} ${actionRequired || ''}`, [
-            'issue',
-            'blocked',
-            'blocker',
-            'delay',
-            'problem',
-          ]);
+          classifyDAVEIssue(photoAssertionText) === 'issue_present' ||
+          classifyDAVEBlocker(photoAssertionText) === 'blocked';
         const isSafety =
           photo.category === 'Safety Concern' ||
-          includesAny(`${caption || ''} ${actionRequired || ''}`, [
-            'safety',
-            'hazard',
-            'unsafe',
-          ]);
+          classifyDAVESafety(photoAssertionText) === 'issue_present';
         const needsAction =
           Boolean(actionRequired) ||
           photo.actionStatus === 'Open' ||
@@ -542,13 +614,18 @@ export function extractPhotoEvidence({
           isSafety,
           needsAction,
           sources: [
-            {
+            evidenceSource({
               type: 'photo',
               label: caption || photo.category,
               recordId: photo.id,
               confidence,
               capturedAt: photo.locationCapturedAt || update.date || null,
-            },
+              recordVersion:
+                photo.photoIntelligence?.updatedAt ||
+                photo.locationCapturedAt ||
+                update.date ||
+                null,
+            }),
           ],
           confidence,
         };
@@ -669,13 +746,14 @@ export function extractGPSEvidence({
     ]),
     sources: latest
       ? [
-          {
+          evidenceSource({
             type: latest.sourceType === 'photo' ? 'photo' : 'typed-update',
             label: latest.areaName || 'GPS evidence',
             recordId: latest.sourceId,
             confidence,
             capturedAt: latest.capturedAt,
-          },
+            recordVersion: latest.capturedAt,
+          }),
         ]
       : [],
   };
@@ -692,30 +770,23 @@ export function extractUserUpdateEvidence({
     .filter(update => matchesProject(projectName, update.projectName))
     .map(update => {
       const notes = trimOrNull(update.notes);
-      const mentionedIssues = extractMatchingLines(notes, [
-        'issue',
-        'blocked',
-        'blocker',
-        'delay',
-        'problem',
-      ]);
-      const mentionedSafety = extractMatchingLines(notes, [
-        'safety',
-        'hazard',
-        'unsafe',
-      ]);
-      const mentionedDecisions = extractMatchingLines(notes, [
-        'decision',
-        'decided',
-        'approved',
-        'approval',
-      ]);
-      const blockers = extractMatchingLines(notes, [
-        'blocked',
-        'blocker',
-        'waiting',
-        'hold',
-      ]);
+      const mentionedIssues = extractAssertionLines(notes, line =>
+        classifyDAVEIssue(line) === 'issue_present' ||
+        classifyDAVEBlocker(line) === 'blocked'
+      );
+      const mentionedSafety = extractAssertionLines(
+        notes,
+        line => classifyDAVESafety(line) === 'issue_present',
+      );
+      const mentionedDecisions = extractAssertionLines(notes, line =>
+        parseDAVEAssertions(line).assertions.some(assertion =>
+          assertion.predicate === 'approved'
+        )
+      );
+      const blockers = extractAssertionLines(
+        notes,
+        line => classifyDAVEBlocker(line) === 'blocked',
+      );
       const nextSteps = extractMatchingLines(notes, [
         'next',
         'tomorrow',
@@ -747,13 +818,14 @@ export function extractUserUpdateEvidence({
         communicationReady,
         recipientCount,
         sources: [
-          {
+          evidenceSource({
             type: 'typed-update',
             label: notes ? 'Typed update notes' : 'Saved update',
             recordId: update.id,
             confidence,
             capturedAt: update.date || null,
-          },
+            recordVersion: update.date || null,
+          }),
         ],
         confidence,
       };
@@ -869,7 +941,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-schedule',
       title: 'No schedule evidence',
-      summary: 'PIE does not have schedule items, so milestones, overdue work, and next work are less reliable.',
+      summary: 'There are no schedule items, so milestones, overdue work, and next work are less reliable.',
       source: 'schedule',
       severity: 'high',
       suggestedAction:
@@ -882,7 +954,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-photos',
       title: 'No photo evidence',
-      summary: 'PIE does not have field photos to verify current conditions.',
+      summary: 'There are no field photos to verify current conditions.',
       source: 'photo',
       severity: 'medium',
       suggestedAction: 'Capture field photos with captions and action status.',
@@ -894,7 +966,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-gps',
       title: 'GPS unavailable',
-      summary: 'PIE cannot strongly recommend project or area from location evidence.',
+      summary: 'Project or area cannot be strongly recommended from location evidence.',
       source: 'gps',
       severity: 'medium',
       suggestedAction: 'Capture GPS-backed field evidence or confirm the current area.',
@@ -906,7 +978,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-user-updates',
       title: 'No typed updates',
-      summary: 'PIE does not have recent user notes to explain what changed.',
+      summary: 'There are no recent user notes to explain what changed.',
       source: 'typed-update',
       severity: 'medium',
       suggestedAction: 'Add a short update note after the next walk or photo capture.',
@@ -942,7 +1014,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-documents',
       title: 'No document context',
-      summary: 'PIE does not have document metadata to connect plans, specs, or schedules to the current status.',
+      summary: 'There is no document metadata connecting plans, specs, or schedules to the current status.',
       source: 'document-metadata',
       severity: 'low',
       suggestedAction: 'Attach relevant document metadata when available.',
@@ -954,7 +1026,7 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
       evidence,
       id: 'missing-report-history',
       title: 'No report history',
-      summary: 'PIE cannot compare this summary against previous reports.',
+      summary: 'This summary cannot be compared against previous reports.',
       source: 'report-history',
       severity: 'low',
       suggestedAction: 'Generate or save a reviewed report when communication is ready.',
@@ -967,7 +1039,25 @@ export function findEvidenceGaps(evidence: EvidenceSet): PIEvidenceGap[] {
 export function findEvidenceConflicts(
   evidence: EvidenceSet,
 ): PIEvidenceConflict[] {
-  const conflicts: PIEvidenceConflict[] = [];
+  const conflicts: PIEvidenceConflict[] = evidence.scheduleReconciliation.warnings.map(
+    warning => {
+      const sources: PIEEvidenceSourceType[] = ['schedule'];
+
+      if (warning.updateId) sources.push('typed-update');
+      if (warning.evidenceIds.some(id => id.startsWith('photo:'))) sources.push('photo');
+
+      return {
+      id: warning.id,
+      projectName: warning.projectName,
+      title: warning.title,
+      summary: warning.summary,
+      sources,
+      severity: warning.severity,
+      confidence: warning.confidence,
+      suggestedAction: warning.suggestedAction,
+      };
+    },
+  );
   const completedScheduleWithOpenIssue = evidence.scheduleEvidence.find(
     schedule =>
       schedule.isComplete &&
@@ -1059,7 +1149,7 @@ export function buildIntelligentSummary(
         : `${summary.photoCount} photo${summary.photoCount === 1 ? '' : 's'} available; ${summary.captionedPhotoCount} captioned and ${summary.photoActionCount} action-linked.`,
     gpsLocationConfidence: fusedEvidence.gpsEvidence.gpsAvailable
       ? `GPS supports ${fusedEvidence.gpsEvidence.recommendedArea || 'the current area'} with ${fusedEvidence.gpsEvidence.confidenceScore}% confidence.`
-      : 'GPS is unavailable; PIE is relying on project, area, schedule, or last activity context.',
+      : 'GPS is unavailable; project, area, schedule, or last activity context is being used.',
     userUpdateSummary:
       summary.userUpdateCount === 0
         ? 'No typed update notes are available.'
@@ -1077,7 +1167,7 @@ export function buildIntelligentSummary(
     confidence: summary.confidence,
     trust: summary.trustScore,
     nextAction: nextActionForFusedEvidence(fusedEvidence),
-    evidenceSourceSummary: `PIE fused ${summary.sourceCount} evidence source${summary.sourceCount === 1 ? '' : 's'}: ${summary.sources.join(', ') || 'none'}.`,
+    evidenceSourceSummary: `${summary.sourceCount} evidence source${summary.sourceCount === 1 ? '' : 's'} combined: ${summary.sources.join(', ') || 'none'}.`,
   };
 }
 
@@ -1142,7 +1232,7 @@ function buildEvidenceFusionSummary(
     conflictCount: fusedEvidence.conflicts.length,
     confidence: confidenceFromScore(trustScore),
     trustScore,
-    summary: `PIE fused schedule, photos, GPS, and updates into a ${confidenceFromScore(trustScore)}-confidence evidence summary.`,
+    summary: `Schedule, photos, GPS, and updates were combined into a ${confidenceFromScore(trustScore)}-confidence evidence summary.`,
   };
 }
 
@@ -1154,12 +1244,13 @@ function extractDocumentEvidence(
     .filter(document =>
       matchesDocumentProject(projectName, document),
     )
-    .map(document => ({
+    .map(document => evidenceSource({
       type: 'document-metadata',
       label: document.name || document.originalFileName || 'Reference document',
       recordId: document.id,
       confidence: document.isCurrent ? 'high' : 'medium',
       capturedAt: document.importedAt,
+      recordVersion: document.updatedAt || document.importedAt,
     }));
 }
 
@@ -1169,12 +1260,13 @@ function extractReportEvidence(
 ): PIEEvidenceSource[] {
   return reportHistory
     .filter(report => matchesProject(projectName, report.projectName || projectName))
-    .map(report => ({
+    .map(report => evidenceSource({
       type: 'report-history',
       label: report.title || report.reportType || 'Project report',
       recordId: report.id,
       confidence: report.generatedAt ? 'high' : 'medium',
       capturedAt: report.generatedAt || null,
+      recordVersion: report.generatedAt || null,
     }));
 }
 
@@ -1185,7 +1277,7 @@ function extractSyncEvidence(
   if (!syncMetadata) return [];
 
   return [
-    {
+    evidenceSource({
       type: 'sync-cloud',
       label: syncMetadata.message || 'Sync metadata',
       recordId: null,
@@ -1196,7 +1288,8 @@ function extractSyncEvidence(
             ? 'high'
             : 'medium',
       capturedAt: syncMetadata.checkedAt || syncMetadata.lastSyncAt || now.toISOString(),
-    },
+      recordVersion: syncMetadata.checkedAt || syncMetadata.lastSyncAt || null,
+    }),
   ];
 }
 
@@ -1271,6 +1364,7 @@ function scheduleConfidence(
   needsReview: boolean,
 ): ProjectConfidenceLevel {
   if (needsReview) return 'low';
+  if (scheduleHasAuthoritativeProgressJudgment(item)) return 'high';
   if (
     item.projectName.trim() &&
     item.locationName.trim() &&
@@ -1457,7 +1551,7 @@ function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
     nextSchedule
       ? `Schedule focus: ${nextSchedule.taskName} (${nextSchedule.dueLabel}).`
       : null,
-  ]).join(' ') || 'PIE does not see a recent change from current evidence.';
+  ]).join(' ') || 'No recent change is visible from current evidence.';
 }
 
 function recommendationForFusedEvidence(fusedEvidence: PIEFusedEvidence) {
@@ -1474,13 +1568,13 @@ function recommendationForFusedEvidence(fusedEvidence: PIEFusedEvidence) {
     return 'Confirm project and area context before the next Project Walk.';
   }
   if (fusedEvidence.photoEvidence.length === 0) {
-    return 'Capture current field photos to strengthen PIE confidence.';
+    return 'Capture current field photos to strengthen confidence.';
   }
   if (fusedEvidence.userUpdateEvidence.length === 0) {
-    return 'Add a concise typed update so PIE can explain what changed.';
+    return 'Add a concise typed update to explain what changed.';
   }
 
-  return 'Continue monitoring and review PIE recommendations before acting.';
+  return 'Continue monitoring and review recommendations before acting.';
 }
 
 function nextActionForFusedEvidence(fusedEvidence: PIEFusedEvidence) {
@@ -1607,6 +1701,20 @@ function extractMatchingLines(
     .map(line => line.trim())
     .filter(Boolean)
     .filter(line => includesAny(line, patterns))
+    .slice(0, 5);
+}
+
+function extractAssertionLines(
+  value: string | null,
+  matches: (line: string) => boolean,
+): string[] {
+  if (!value) return [];
+
+  return value
+    .split(/\n|\.|;/g)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(matches)
     .slice(0, 5);
 }
 

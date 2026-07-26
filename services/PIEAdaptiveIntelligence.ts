@@ -197,7 +197,7 @@ export function buildPIEAdaptiveIntelligence(
     })),
   ];
   const evolutionIntelligence: PIEEvolutionIntelligence = {
-    summary: 'PIE adapts policies from outcomes while protecting constitutional principles.',
+    summary: 'DAVE adapts policies from outcomes while protecting constitutional principles.',
     policyUpdates: adaptivePolicyUpdates,
     protectedPrinciples,
     nextAdaptiveFocus: adaptiveLessons[0]?.futureUse || 'Collect more outcomes before changing strategy.',
@@ -316,9 +316,9 @@ export function calibrateConfidenceFromOutcome(
     wasConfidenceTooLow: tooLow,
     adjustment: tooHigh ? 'lower' : tooLow ? 'raise' : 'hold',
     reason: tooHigh
-      ? 'Outcome or correction contradicted PIE confidence.'
+      ? 'Outcome or correction contradicted DAVE confidence.'
       : tooLow
-        ? 'Outcome confirmed PIE while confidence was conservative.'
+        ? 'Outcome confirmed DAVE while confidence was conservative.'
         : 'No strong calibration change is justified yet.',
     confidence: confidenceChanges.length || outcome.confidence === 'medium' ? 'medium' : 'low',
   };

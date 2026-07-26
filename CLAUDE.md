@@ -7,49 +7,57 @@ convention drift.
 
 ## What this app is
 
-DAVE, running on ECOS (formerly PIE / Project Intelligence Engine) — a
+Vitruvius, with the DAVE intelligence layer running on ECOS (formerly PIE / Project Intelligence Engine) — a
 single-user React Native/Expo field documentation tool for construction
 project managers. Core goal: submit a photo-based project update in ~60
 seconds, with AI-powered visual comparison of baseline vs. update photos,
 GPS-based project auto-detection, and background intelligence processing.
 
-### Naming (as of 2026-07-09)
-The product-facing name changed from PIE to **DAVE**, running on **ECOS**.
-This rename is **docs/UI-only for now** — do not rename `pie_*` tables,
-files, functions, or other identifiers in the codebase as part of this.
-Internal naming (`pie_layer4_has_permission`, `PIEStatusCopy`,
-`services/PIEPhotoVisionMobileWorkflow.ts`, migration filenames, etc.) stays
-exactly as-is unless there's a separate, explicit decision to rename code
-too. User-facing display strings (things the user actually reads on screen,
-like "PIE Brief" or "PIE checking photos...") are being updated to say DAVE
-instead — see the app's git history for that pass.
+### Naming (as of 2026-07-19)
+The product-facing application name is **Vitruvius**. The established DAVE
+assistant/intelligence layer continues running on **ECOS**.
+This application rename is **docs/UI-only for now** — do not rename `pie_*`
+tables, files, functions, or other identifiers in the codebase as part of
+this. Internal `DAVE*` and `PIE*` identifiers remain unchanged unless there
+is a separate, explicit decision to migrate those contracts. Product-shell
+branding, installed-app names, permission copy, and product icons should say
+Vitruvius.
 
 - Repo: `https://github.com/famularod/project-vision-ai`
 - Local path: `/Users/davidfamularo/Downloads/project-photo-update-tool`
 - Backend: Supabase (Postgres, Storage, Edge Functions)
-- Testing: physical iOS device only via Expo dev client, connected to a
-  locally-running `npx expo start` — no simulator in normal use.
+- Testing: physical iOS device is the release authority. Normal field builds
+  are signed local Release builds with an embedded JavaScript bundle, so the
+  phone does not need Metro or the laptop after installation. A simulator may
+  be used for bounded diagnostics, but it does not replace the device pass.
 - David is a beginner developer / product owner. Explain terminal steps
   explicitly and in order. Don't assume familiarity with git, SQL, or
   Supabase's dashboard.
 
 ## Architecture gotchas (read this before assuming anything)
 
-- **The live app is a single ~18,000-line `App.tsx` monolith.** A parallel
+- **The live app is a 23,511-line `App.tsx` monolith (2026-07-17).** A parallel
   `screens/`, `components/`, `hooks/` directory structure exists but is
   **mostly disconnected** from the live app unless explicitly wired into
   `App.tsx`'s navigation. Before touching a file in `screens/` or
   `components/`, confirm it's actually imported and rendered from `App.tsx` —
   don't assume a file's existence means it's reachable by the user.
+- **`App.tsx` has a no-growth ratchet.** New features must ship in a module
+  with only a small wiring block in `App.tsx`. Any PR touching `App.tsx`
+  should leave it no larger than it started unless the PR explicitly records
+  why that was impossible. Prefer extracting one tested behavior at a time;
+  do not attempt a wholesale rewrite.
 - **There are duplicate type systems.** `App.tsx` has its own local
   `ProjectUpdate`/`ProjectArea`/etc. types, separate from the ones in
   `types/index.ts` that `screens/`/`components/` files import. They're
   usually structurally compatible but not always — expect occasional small
   type patches when wiring the two together.
-- **There are two independent sync engines**: the live per-update queue sync
-  in `App.tsx` (`runFieldUpdateCloudSync`/`hydrateQueuedUpdates`), and a
-  separate batch sync in `services/SyncService.ts` used by the Admin screen's
-  "Sync Now". Both work independently; they haven't been unified.
+- **Cloud update sync has one queue-owned execution path.** Field send/retry
+  and Settings reconciliation both stage update photos and metadata through
+  `services/SyncService.ts`; `App.tsx` no longer owns a second database-write
+  implementation. Area, schedule, and reference-document snapshot
+  reconciliation remains in the same service because those entities do not
+  yet have change queues.
 - **RLS policy pattern**: this app is single-user with no team/org sharing.
   Supabase tables under the PIE evidence/vision pipeline use a direct
   ownership check — `organization_id = auth.uid()::text` — not the older
@@ -103,8 +111,11 @@ still read as one considered product, not a patchwork.
    go-ahead.
 3. **Implement on a new branch off `v0.8-architecture-refactor`.** Never
    commit directly to that branch or to `main`.
-4. **Run `npm run check`** (production-secret-guard + `tsc --noEmit`) before
-   calling anything done. No Jest suite exists.
+4. **Run `npm run qa:release`** before calling release work done. The gate
+   includes the production-secret guard, Expo dependency validation,
+   TypeScript, 10 Jest suites (20 tests as of 2026-07-17), DAVE stages 1–8,
+   UI/reporter contracts, and JARVIS contracts. Use `npm run check` as the
+   faster minimum gate during implementation, not as the final release gate.
 5. **Summarize the diff** before committing — what changed, what was
    deliberately left untouched, any tech debt noticed along the way.
 6. **David live-tests on his physical device** before merge, unless the fix
@@ -176,6 +187,35 @@ GitHub for history if context is needed):
   detail screen — root cause was ReadOnlyUpdateDetailScreen rendering
   from a frozen one-time snapshot instead of live savedUpdates state.
   Fixed (PR #14).
+- Backup exports with empty photos arrays — root-caused 2026-07-13. The
+  missing-photo sync cleanup removed photo records from savedUpdates, and
+  backup export correctly serialized that already-damaged state. Cleanup now
+  removes missing files only from the retry queue while preserving historical
+  photo metadata in saved updates and backups. Existing backups that already
+  contain photos: [] cannot reconstruct those deleted records by themselves.
+- Resumed saved updates can now be deleted directly from Add Photos and
+  Build Update. Brand-new unsaved drafts do not show the action, and confirmed
+  deletion removes unreferenced local photo files correctly.
+- Archived projects and invisible sync work — addressed 2026-07-13. The live
+  project workspace now exposes Archive Project, Projects lists archived
+  projects with Reopen, cloud loading recovers archived rows, and archive/
+  reopen changes enter cloud sync. Settings now shows All caught up or the
+  number of items waiting to sync and exposes Retry Sync when attention is
+  needed.
+- Lighting/obstruction comparability downgrades no longer keyword-match model
+  prose such as "shadow", "glare", or "occluded". The strict photo-pair schema
+  now requires independent none/minor/limiting impact fields, and only a
+  structured limiting impact can trigger this downgrade. Deployed as
+  pie-photo-vision version 20 on 2026-07-13. The residual alignment/overlap
+  free-text safety check remains deliberately.
+- Reports is live in the main five-tab navigation. It uses the shared DAVE
+  authority provider, supports real single/combined project scope, editable
+  review, explicit approval, copy, and email. Unreachable advanced report
+  destinations remain hidden rather than presenting dead controls.
+- The gradual `App.tsx` refactor is underway through behavior-driven slices:
+  app navigation types and bottom tabs are extracted, and field-update sync
+  orchestration now lives in `services/SyncService.ts`. Do not turn this into
+  a wholesale rewrite; continue extracting only code touched by real work.
 
 Still open:
 - GPS auto-detection defaulting to "All Projects" — not a code bug.
@@ -185,64 +225,17 @@ Still open:
   The "Save GPS" flow works correctly and is reachable via gear icon →
   Settings → Area Mapping. This is a fieldwork task for David (visit each
   area physically, tap "Save GPS"), not a code fix.
-- The most recent real backup export (project-photo-update-backup-*.json)
-  shows every saved update with an empty photos: [] array, even sent
-  updates with full analysis data. Not yet root-caused. Could be
-  intentional or a real gap — worth a look sometime, not urgent.
-- App.tsx monolith refactor — dead screens//components//hooks/ files
-  acknowledged but out of scope unless actively wired in for a real fix.
-- Two independent sync engines — not unified, not currently causing known
-  bugs, but a source of confusion if debugging sync issues.
-- Comparability downgrade logic (pie-photo-vision/index.ts) partially
-  hardened 2026-07-10: anchor sufficiency now uses a structured check
-  (sharedVisualAnchors.length < 2) instead of keyword-matching phrases
-  like "insufficient anchor"/"few anchor", and the downgrade reason is now
-  specific about which check fired. Still open: lighting/obstruction
-  downgrading (hasLimitingLightingOrObstruction) still matches hardcoded
-  phrases ("obstruct", "glare", "shadow", etc.) against the model's free
-  text, because no structured severity field exists for this yet — fixing
-  it would require a prompt/schema change (new field like
-  lightingObstructionSeverity) plus a redeploy and live test, same shape
-  as the prompt-context work in PR #18. A residual free-text check also
-  remains for alignment/overlap self-consistency
-  (hasAlignmentOrOverlapInconsistencyText) — kept deliberately, since it
-  catches cases where the model's free text hedges on alignment without
-  also lowering the structured alignmentConfidence field; not itself
-  something to "fix" away.
-- Pending verification for the Phase 1 comparability-downgrade hardening
-  above (PR #21, deployed 2026-07-10): no live phone test was meaningful
-  for this change (it only affects the "Comparability" label in a narrow
-  edge case that can't be reliably engineered on demand). An automated
-  scheduled check (task id verify-comparability-downgrade-real-data,
-  one-time, fires 2026-07-13) will query
-  pie_photo_semantic_comparison_results.deterministic_metrics →
-  comparabilityNormalizationReasons in Supabase against real data and
-  report back whether the new specific-trigger format (e.g. "only 1
-  shared visual anchor(s) reported...") is actually showing up instead of
-  the old generic reason string. This is now automated, not a manual
-  follow-up — remove this bullet once the scheduled check reports back
-  confirming the fix.
-- No delete option in the edit/resume flow (BuildUpdate/AddPhotos/
-  PIEAnalysis screens) for a previously-saved-but-unsent update reopened
-  for continued editing — found 2026-07-11 during a delete-everywhere
-  audit (PR adding delete to the Updates list overflow menu and the
-  read-only update-detail screen, gear-icon-to-bottom-nav move, and
-  duplicate New Update button removal). Not a dead end today: the
-  Updates list overflow menu and the read-only update-detail screen can
-  already delete these updates without entering edit mode. Deferred
-  because these screens are shared with brand-new-draft creation, so
-  adding delete here needs logic to tell "nothing saved yet" apart from
-  "resuming an existing saved update" first — more than a quick/low-risk
-  change.
-- Found 2026-07-11 while diagnosing an Overview "Projects on track"
-  count question: one Supabase projects row has archived=true with no
-  reachable code path that could have set it (closeProject/reopenProject
-  and setCloudProjectArchived all exist but are never called from
-  anywhere) — likely a leftover manual edit, not something the app did.
-  Separately, there's no UI anywhere that surfaces pending/failing
-  offline-sync queue items, so a stuck sync (e.g. a failed project
-  delete) would be invisible to the user. Both worth investigating
-  another day, not urgent now.
+- App.tsx remains large. Continue the gradual behavior-driven extraction and
+  enforce the no-growth ratchet above. Verified unreachable files should be
+  removed in reviewable batches after static reachability, release-gate, and
+  device validation rather than preserved as parallel implementations.
+
+Closed tracking note 2026-07-17:
+- The expired one-time comparability scheduled-check note was removed. Its
+  historical result was not recovered. The current structured comparability
+  contract is covered by repository tests, and the live `pie-photo-vision`
+  function was verified active at version 21. Re-open only for a concrete
+  current-data failure, not because the old scheduled task no longer exists.
 
 Process note: verify PR/merge state directly against GitHub before marking
 anything "fixed" in this file — don't rely on conversation history or

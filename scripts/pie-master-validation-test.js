@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const { spawnSync } = require('child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 const scenariosPath = path.join(rootDir, 'validation/scenarios/master-validation-scenarios.json');
@@ -385,33 +386,38 @@ function validateRlsLiveReadiness() {
 }
 
 function validateJarvisAdversarial() {
-  const jarvis = readFile('services/PIEJarvisReasoningValidation.ts');
-  [
-    'checkFactSupport',
-    'checkUnresolvedConflicts',
-    'checkNoActionConsidered',
-    'checkAuthorityBoundaries',
-    'checkPhotoEvidenceInterpretation',
-    'checkNoFabricatedFacts',
-    'checkRealityAuthority',
-  ].forEach(marker => assert(jarvis.includes(marker), `JARVIS missing deterministic ${marker}`));
-  const flawedJudgments = [
-    'unsupported high confidence',
-    'hidden conflict',
-    'missing no-action option',
-    'unsafe option selected',
-    'missing provenance',
-    'fabricated fact',
-    'causal overstatement',
-    'photo overclaim',
-    'authority violation',
-    'Reporter-altered recommendation',
-    'Layer 4 record without verified outcome',
-    'stale Reality version',
-    'mismatched project ID',
-  ];
-  assert(flawedJudgments.length === 13);
-  return { falseNegatives: 0, falsePositives: 0, flawedJudgments };
+  const result = spawnSync(
+    process.execPath,
+    [path.join(rootDir, 'scripts', 'decision-intelligence-test.js'), 'jarvis-reasoning'],
+    {
+      cwd: rootDir,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+  assert.equal(
+    result.status,
+    0,
+    `Executable V.I.C. adversarial validation failed:\n${result.stdout || ''}${result.stderr || ''}`,
+  );
+  assert.match(
+    result.stdout,
+    /PASS jarvis-reasoning/,
+    'Executable V.I.C. adversarial validation did not report success.',
+  );
+  return {
+    executableBehavior: true,
+    failureFamilies: [
+      'unsupported fact',
+      'stale Reality version',
+      'missing no-action option and rationale',
+      'unresolved evidence conflict',
+    ],
+    recoveryAssertions: [
+      'supported fact recovers',
+      'resolved conflict recovers',
+    ],
+  };
 }
 
 function validateReporterFidelity() {
@@ -481,10 +487,8 @@ function validatePerformance() {
 function validateAccessibility() {
   const appUi = [
     readFile('App.tsx'),
-    readFile('components/HomeDashboard.tsx'),
-    readFile('components/PhotoCapturePanel.tsx'),
     readFile('screens/ReportsScreen.tsx'),
-    readFile('components/BottomNavigation.tsx'),
+    readFile('components/app-bottom-tabs.tsx'),
   ].join('\n');
   ['accessibilityLabel', 'accessibilityRole', 'hitSlop', 'SafeAreaView'].forEach(marker => {
     assert(appUi.includes(marker), `Accessibility/mobile marker missing ${marker}`);
@@ -496,14 +500,12 @@ function validateAccessibility() {
 function validateMinimalUiComplete() {
   const visibleUi = [
     readFile('App.tsx'),
-    readFile('components/HomeDashboard.tsx'),
-    readFile('components/PhotoCapturePanel.tsx'),
     readFile('screens/ReportsScreen.tsx'),
   ].join('\n');
   ['Run Simulation', 'Challenge Recommendation', 'Validate with JARVIS', 'Recalculate Confidence', 'Layer 4 Learning'].forEach(label => {
     assert(!visibleUi.includes(label), `${label} should not be a routine user control`);
   });
-  assert(/recommendedAction|primaryAction|whatMattersNow/i.test(visibleUi), 'Home must expose a current recommended action');
+  assert(/authoritativePriority|briefing\.nextActions/i.test(visibleUi), 'Home must expose a current recommended action');
   return { duplicateRoutineControlsRemoved: true, onePrimaryAction: true };
 }
 

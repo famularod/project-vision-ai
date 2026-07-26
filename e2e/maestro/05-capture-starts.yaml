@@ -1,7 +1,10 @@
 appId: ${APP_ID}
 ---
 - launchApp
-- tapOn: "Capture"
-- assertVisible: "Add Photos"
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- tapOn: ${PROJECT_NAME}
+- tapOn: "New Field Update"
+- assertVisible: "Capture Evidence"
 - assertVisible: "Take Photo"
-- assertVisible: "Change Project"

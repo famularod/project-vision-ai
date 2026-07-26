@@ -114,8 +114,8 @@ export type PIEDeliberationInput = {
 };
 
 export const PIE_DELIBERATION_QUESTIONS = [
-  'What does PIE know?',
-  'What is PIE assuming?',
+  'What does DAVE know?',
+  'What is DAVE assuming?',
   'What evidence supports this?',
   'What evidence contradicts this?',
   'What is missing?',
@@ -123,7 +123,7 @@ export const PIE_DELIBERATION_QUESTIONS = [
   'What are the trade-offs?',
   'What is the strongest recommendation?',
   'Why is this better than the alternatives?',
-  "What would change PIE's recommendation?",
+  "What would change DAVE's recommendation?",
 ] as const;
 
 export function buildPIEDeliberation(
@@ -202,7 +202,7 @@ export function evaluateHypotheses(
       readiness: readinessFromRuntime(input.runtime),
     },
     {
-      hypothesis: 'PIE should verify before recommending action.',
+      hypothesis: 'Evidence should be verified before recommending action.',
       supports: missingEvidence,
       contradicts: input.runtime.nextBestAction.evidence,
       testNeeded: missingEvidence[0] || 'Review the current recommendation with the user.',
@@ -218,7 +218,7 @@ export function identifyAssumptions(
     {
       id: 'assumption-runtime-current',
       assumption: 'Runtime reflects the current project state.',
-      whyItMatters: 'PIE recommendations depend on current schedule, evidence, memory, and mission state.',
+      whyItMatters: 'DAVE recommendations depend on current schedule, evidence, memory, and mission state.',
       confidence: input.runtime.overallConfidence,
     },
   ];
@@ -429,13 +429,13 @@ export function explainDeliberation({
   missingEvidence: string[];
 }): string {
   const alternativeText = alternatives[1]
-    ? `PIE considered ${alternatives[1].action}`
-    : 'PIE considered waiting for more evidence';
+    ? `DAVE considered ${alternatives[1].action}`
+    : 'DAVE considered waiting for more evidence';
   const tradeoffText = tradeoffs[0]
     ? tradeoffs[0].benefit
     : recommendation.whyBetterThanAlternatives;
   const caution = contradictions.length > 0 || missingEvidence.length > 0
-    ? ' PIE also found uncertainty that should be verified.'
+    ? ' DAVE also found uncertainty that should be verified.'
     : '';
 
   return `${recommendation.action} is ${recommendation.readiness}. ${alternativeText}, but ${tradeoffText}.${caution}`;
@@ -472,13 +472,13 @@ function buildDeliberationQuestions(input: PIEDeliberationInput & {
   return [
     {
       id: 'question-what-known',
-      question: 'What does PIE know?',
+      question: 'What does DAVE know?',
       answer: input.runtime.currentUnderstanding.whatPIEKnows,
       confidence: input.runtime.overallConfidence,
     },
     {
       id: 'question-assumptions',
-      question: 'What is PIE assuming?',
+      question: 'What is DAVE assuming?',
       answer: input.assumptions.map(item => item.assumption).join(' '),
       confidence: confidenceFromReadiness(input.recommendation.readiness),
     },
@@ -526,7 +526,7 @@ function buildDeliberationQuestions(input: PIEDeliberationInput & {
     },
     {
       id: 'question-change',
-      question: "What would change PIE's recommendation?",
+      question: "What would change DAVE's recommendation?",
       answer: input.recommendation.whatWouldChangeRecommendation.join(' '),
       confidence: 'medium',
     },

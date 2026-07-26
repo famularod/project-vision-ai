@@ -1,5 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  localCorruptionRecoveryError,
+  quarantineCorruptLocalValue,
+} from './LocalStorageCorruptionQuarantine';
+import {
   buildQualifiedRealityEvidence,
   synchronizeAuthoritativeRealityModel,
   type PIEQualifiedRealityEvidence,
@@ -73,15 +77,27 @@ export type PIERealityModelOrchestrationResult = {
   diagnostics: string[];
 };
 
-const EVIDENCE_DELTA_PREFIX = 'projectVisionAI.pieRealityModel.evidenceDeltas.v1';
+export const EVIDENCE_DELTA_PREFIX = 'projectVisionAI.pieRealityModel.evidenceDeltas.v2';
+
+export class PIEEvidenceDeltaStorageCorruptionError extends Error {
+  readonly code = 'corrupt_evidence_delta_storage';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'PIEEvidenceDeltaStorageCorruptionError';
+  }
+}
 
 export async function runPIERealityModelOrchestration(
   input: PIERealityModelOrchestrationInput = {},
 ): Promise<PIERealityModelOrchestrationResult> {
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
   const generatedAt = input.generatedAt || runtime.generatedAt || new Date().toISOString();
-  const organizationId = resolveOrganizationId(input.organizationId, runtime);
-  const projectId = resolveProjectId(input.projectId, runtime);
+  const { organizationId, projectId } = resolvePIERealityAuthorityScope(
+    input.organizationId,
+    input.projectId,
+    runtime,
+  );
   const repository = input.repository || createPIERealityModelRepository({
     cloudEnabled: input.cloudAvailable,
     identityTrusted: input.identityTrusted,
@@ -101,6 +117,8 @@ export async function runPIERealityModelOrchestration(
     projectId,
   );
   const previousModel = await repository.loadCurrent(organizationId, projectId);
+  const hasFreshCloudAuthority = () =>
+    repository.hasFreshCloudAuthority?.() === true;
   const deltas = await classifyEvidenceDeltas(
     organizationId,
     projectId,
@@ -126,12 +144,40 @@ export async function runPIERealityModelOrchestration(
     ? 'queued_for_cloud'
     : 'degraded_local_only';
 
-  try {
+  const evidenceIsUnchanged = Boolean(
+    previousModel &&
+    actionableEvidence.length === 0 &&
+    removedOrInvalidatedEvidence.length === 0,
+  );
+
+  if (evidenceIsUnchanged && previousModel) {
+    // A no-op synchronization used to rebuild intelligence for every Reality
+    // Object, stringify the full registry, and enter the persistence path even
+    // though every evidence hash was unchanged. On a real project that work
+    // can monopolize the React Native JS thread for seconds. Reuse the already
+    // authoritative model without changing timestamps or writing storage.
+    synchronization = unchangedRealitySynchronization(previousModel);
+    if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
+      persistenceStatus = 'degraded_local_only';
+      diagnostics.push('Identity is local or untrusted; Reality Model is authoritative locally only.');
+    } else if (input.cloudAvailable && hasFreshCloudAuthority()) {
+      persistenceStatus = 'authoritative_cloud';
+    } else {
+      persistenceStatus = 'degraded_local_only';
+      diagnostics.push(
+        input.cloudAvailable
+          ? 'Cloud refresh did not establish fresh authority; saved device data requires acknowledgement.'
+          : 'Cloud synchronization is unavailable; queued local authority only.',
+      );
+    }
+    diagnostics.push('Evidence is unchanged; the prior Reality Model was reused without rebuilding or rewriting it.');
+  } else try {
     synchronization = await synchronizeAuthoritativeRealityModel({
       organizationId,
       projectId,
       qualifiedEvidence: syncInputEvidence.length ? syncInputEvidence : qualifiedEvidence.slice(0, 0),
       repository,
+      previousModel,
       generatedAt,
       sourceEvidenceCutoffAt: generatedAt,
       reason: 'Live Reality Model orchestration synchronized qualified evidence.',
@@ -139,11 +185,15 @@ export async function runPIERealityModelOrchestration(
     if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
       persistenceStatus = 'degraded_local_only';
       diagnostics.push('Identity is local or untrusted; Reality Model is authoritative locally only.');
-    } else if (input.cloudAvailable) {
+    } else if (input.cloudAvailable && hasFreshCloudAuthority()) {
       persistenceStatus = 'authoritative_cloud';
     } else {
       persistenceStatus = 'degraded_local_only';
-      diagnostics.push('Cloud synchronization is unavailable; queued local authority only.');
+      diagnostics.push(
+        input.cloudAvailable
+          ? 'Cloud persistence did not establish fresh authority; saved device data requires acknowledgement.'
+          : 'Cloud synchronization is unavailable; queued local authority only.',
+      );
     }
     await saveEvidenceDeltas(organizationId, projectId, deltas.map(delta => ({
       ...delta,
@@ -151,10 +201,13 @@ export async function runPIERealityModelOrchestration(
       processedAt: generatedAt,
     })));
   } catch (error) {
+    if (error instanceof PIEEvidenceDeltaStorageCorruptionError) {
+      throw error;
+    }
     if (!previousModel) {
       throw error;
     }
-    diagnostics.push('Persistence failed; PIE reused the last loaded Reality Model and blocked authoritative success.');
+    diagnostics.push('Persistence failed; DAVE reused the last loaded Reality Model and blocked authoritative success.');
     synchronization = {
       model: previousModel,
       previousModel,
@@ -194,6 +247,22 @@ export async function runPIERealityModelOrchestration(
     synchronization,
     evidenceDeltas: deltas,
     diagnostics,
+  };
+}
+
+function unchangedRealitySynchronization(
+  model: PIERealityModel,
+): PIERealityModelSynchronizationResult {
+  return {
+    model,
+    previousModel: model,
+    changed: false,
+    createdObjectCount: 0,
+    changedObjectCount: 0,
+    conflictedObjectCount: model.evidenceConflicts.length,
+    uncertaintyCount: model.activeUncertainties.length,
+    snapshotCreated: false,
+    conflicts: model.evidenceConflicts,
   };
 }
 
@@ -355,6 +424,17 @@ function buildRuntimeRealityEvidence(
   return sources;
 }
 
+export function resolvePIERealityAuthorityScope(
+  organizationId: string | null | undefined,
+  projectId: string | null | undefined,
+  runtime: PIERuntimeState,
+) {
+  return {
+    organizationId: resolveOrganizationId(organizationId, runtime),
+    projectId: resolveProjectId(projectId, runtime),
+  };
+}
+
 function resolveOrganizationId(input: string | null | undefined, runtime: PIERuntimeState): string {
   const runtimeWithOrg = runtime as PIERuntimeState & { organizationId?: string | null };
   return input || runtimeWithOrg.organizationId || 'local-unverified-anonymous';
@@ -369,13 +449,19 @@ async function loadEvidenceDeltaState(
   organizationId: string,
   projectId: string,
 ): Promise<Record<string, PIERealityEvidenceDelta>> {
-  const value = await AsyncStorage.getItem(deltaKey(organizationId, projectId));
-  if (!value) return {};
+  const storageKey = evidenceDeltaStorageKey(organizationId, projectId);
+  const value = await AsyncStorage.getItem(storageKey);
+  if (value === null) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(value) as Record<string, PIERealityEvidenceDelta>;
+    parsed = JSON.parse(value) as unknown;
   } catch {
-    return {};
+    return quarantineInvalidEvidenceDeltaState(storageKey, value);
   }
+  if (!isEvidenceDeltaStateForScope(parsed, organizationId, projectId)) {
+    return quarantineInvalidEvidenceDeltaState(storageKey, value);
+  }
+  return parsed;
 }
 
 async function saveEvidenceDeltas(
@@ -383,16 +469,91 @@ async function saveEvidenceDeltas(
   projectId: string,
   deltas: PIERealityEvidenceDelta[],
 ) {
+  if (!deltas.every(delta => isEvidenceDeltaForScope(delta, organizationId, projectId))) {
+    throw new Error('Cannot store invalid or cross-scope Reality Model evidence deltas.');
+  }
   const previous = await loadEvidenceDeltaState(organizationId, projectId);
   const next = { ...previous };
   for (const delta of deltas) {
     next[delta.evidenceId] = delta;
   }
-  await AsyncStorage.setItem(deltaKey(organizationId, projectId), JSON.stringify(next));
+  await AsyncStorage.setItem(evidenceDeltaStorageKey(organizationId, projectId), JSON.stringify(next));
 }
 
-function deltaKey(organizationId: string, projectId: string) {
+export function evidenceDeltaStorageKey(organizationId: string, projectId: string): string {
   return `${EVIDENCE_DELTA_PREFIX}.${safeId(organizationId)}.${safeId(projectId)}`;
+}
+
+async function quarantineInvalidEvidenceDeltaState(
+  storageKey: string,
+  raw: string,
+): Promise<never> {
+  try {
+    const recovery = await quarantineCorruptLocalValue({
+      storage: AsyncStorage,
+      storageKey,
+      quarantineKeyPrefix: `${storageKey}.corrupt.`,
+      raw,
+      replacementRaw: null,
+    });
+    throw new PIEEvidenceDeltaStorageCorruptionError(
+      localCorruptionRecoveryError({
+        label: 'Stored Reality Model evidence deltas',
+        recovery,
+      }).message,
+    );
+  } catch (error) {
+    if (error instanceof PIEEvidenceDeltaStorageCorruptionError) throw error;
+    throw new PIEEvidenceDeltaStorageCorruptionError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+function isEvidenceDeltaStateForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is Record<string, PIERealityEvidenceDelta> {
+  return (
+    isRecord(value) &&
+    Object.entries(value).every(([evidenceId, delta]) =>
+      isEvidenceDeltaForScope(delta, organizationId, projectId) &&
+      delta.evidenceId === evidenceId)
+  );
+}
+
+function isEvidenceDeltaForScope(
+  value: unknown,
+  organizationId: string,
+  projectId: string,
+): value is PIERealityEvidenceDelta {
+  if (
+    !isRecord(value) ||
+    typeof value.evidenceId !== 'string' ||
+    value.evidenceId.length === 0 ||
+    value.organizationId !== organizationId ||
+    value.projectId !== projectId ||
+    typeof value.evidenceVersionOrHash !== 'string' ||
+    !['new', 'changed', 'unchanged', 'removed', 'invalidated'].includes(String(value.status)) ||
+    (value.lastProcessedModelVersion !== null &&
+      (typeof value.lastProcessedModelVersion !== 'number' ||
+        !Number.isFinite(value.lastProcessedModelVersion))) ||
+    typeof value.processedAt !== 'string' ||
+    !['active', 'removed', 'invalidated'].includes(String(value.evidenceStatus))
+  ) {
+    return false;
+  }
+  return value.sourceObject === undefined || (
+    isRecord(value.sourceObject) &&
+    value.sourceObject.organizationId === organizationId &&
+    value.sourceObject.projectId === projectId &&
+    value.sourceObject.evidenceQualified === true
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function evidenceVersionHash(evidence: PIEQualifiedRealityEvidence): string {

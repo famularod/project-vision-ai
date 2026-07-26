@@ -79,28 +79,33 @@ function checkRequiredFile(relativePath, workflow, expectedText) {
 }
 
 const app = readFile('App.tsx');
+const appShellTheme = readFile('components/app-shell-theme.ts');
+function liveAppSlice(startMarker, endMarker) {
+  const start = app.indexOf(startMarker);
+  const end = app.indexOf(endMarker, Math.max(0, start + startMarker.length));
+  if (start < 0) return '';
+  return app.slice(start, end > start ? end : app.length);
+}
 const packageJson = readFile('package.json');
 const bottomNav = checkRequiredFile(
-  'components/BottomNavigation.tsx',
+  'components/app-bottom-tabs.tsx',
   'Bottom navigation',
 );
-const homeDashboard = readFile('components/HomeDashboard.tsx');
-const pieConductorCard = readFile('components/PIEConductorCard.tsx');
-const projectCards = readFile('components/ProjectFinderRow.tsx');
-const photoCapture = readFile('components/PhotoCapturePanel.tsx');
-const buildUpdate = readFile('screens/BuildUpdateScreen.tsx');
+const homeDashboard = liveAppSlice('function HomeScreen', 'function SelectProjectScreen');
+const pieConductorCard = homeDashboard;
+const projectCards = homeDashboard;
+const photoCapture = liveAppSlice('function AddPhotosScreen', 'function PIEAnalysisStepScreen');
+const buildUpdate = liveAppSlice('function BuildUpdateScreen', 'function ReadOnlyUpdateDetailScreen');
 const reportsScreen = readFile('screens/ReportsScreen.tsx');
-const projectOverviewScreen = readFile('screens/ProjectOverviewScreen.tsx');
+const projectOverviewScreen = liveAppSlice('function ProjectWorkspaceScreen', 'function ProjectDocumentsScreen');
 const liveAuthorityProvider = readFile('providers/PIELiveAuthorityProvider.tsx');
-const projectAssistantScreen = readFile('screens/ProjectAssistantScreen.tsx');
-const criticalPathSummary = readFile('components/CriticalPathSummary.tsx');
-const scheduleScreen = checkRequiredFile(
-  'screens/ScheduleScreen.tsx',
-  'Schedule import',
-  'Schedule Import',
-);
+const daveProjectTruth = readFile('services/DAVEProjectTruth.ts');
+const daveProjectReasoning = readFile('services/DAVEProjectReasoning.ts');
+const projectAssistantScreen = projectOverviewScreen;
+const scheduleScreen = liveAppSlice('function ScheduleScreen', 'function ScheduleItemRow');
+const scheduleImportFlow = readFile('components/ScheduleImportFlow.tsx');
 const adminScreen = readFile('screens/AdminScreen.tsx');
-const diagnosticsScreen = readFile('screens/DiagnosticsScreen.tsx');
+const diagnosticsScreen = liveAppSlice('function DiagnosticsScreen', 'function ContactsScreen');
 const runtime = readFile('services/PIERuntime.ts');
 const evidenceFusion = readFile('services/PIEEvidenceFusion.ts');
 const scheduleIntelligence = readFile('services/PIEScheduleIntelligence.ts');
@@ -138,16 +143,14 @@ const layer4MembershipRlsMigration = readFile('supabase/migrations/2026070102000
 const realityModelMigration = readFile('supabase/migrations/20260701030000_pie_reality_model.sql');
 const executiveJudgmentMigration = readFile('supabase/migrations/20260701040000_pie_executive_judgments.sql');
 const photoIntelligenceMigration = readFile('supabase/migrations/20260702010000_pie_photo_intelligence.sql');
-const multimodalEvidenceService = readFile('services/PIEMultimodalEvidence.ts');
 const multimodalEvidenceMigration = readFile('supabase/migrations/20260702030000_multimodal_evidence_foundation.sql');
 const photoVisionFunction = readFile('supabase/functions/pie-photo-vision/index.ts');
 const photoVisionProvider = readFile('supabase/functions/_shared/pie-vision-provider.ts');
+const photoVisionAuthority = readFile('supabase/functions/_shared/pie-vision-authority.ts');
 const productionVisionMigration = readFile('supabase/migrations/20260702040000_production_vision_pipeline.sql');
-const photoVisionPipeline = readFile('services/PIEPhotoVisionPipeline.ts');
 const multimodalEvidenceDoc = readFile('docs/PIE_MultimodalEvidenceArchitecture.md');
 const truePhotoIntelligenceDoc = readFile('docs/PIE_TruePhotoIntelligence.md');
 const visualValidationPlan = readFile('docs/PIE_VisualValidationPlan.md');
-const multimodalEvidenceTest = readFile('scripts/multimodal-evidence-test.js');
 const multimodalValidationScenarios = readFile('validation/multimodal/photo-vision-scenarios.json');
 const masterValidationScenarios = readFile('validation/scenarios/master-validation-scenarios.json');
 const masterValidationExpected = readFile('validation/expected/master-validation-expected.json');
@@ -210,7 +213,6 @@ const majorUiSource = [
   adminScreen,
   projectOverviewScreen,
   projectAssistantScreen,
-  criticalPathSummary,
   piePanel,
 ].join('\n');
 
@@ -289,18 +291,10 @@ function extractUserFacingLiterals(source) {
 }
 
 const normalUserUiText = extractUserFacingLiterals([
-  app,
-  homeDashboard,
-  projectCards,
-  photoCapture,
-  piePanel,
-  buildUpdate,
+  app.slice(app.indexOf('function HomeScreen'), app.indexOf('function ProjectWorkspaceScreen')),
+  bottomNav,
   reportsScreen,
   scheduleScreen,
-  adminScreen,
-  projectOverviewScreen,
-  projectAssistantScreen,
-  criticalPathSummary,
 ].join('\n'));
 
 function categoryForWorkflow(workflow) {
@@ -991,6 +985,8 @@ if (
   fileExists('providers/PIELiveAuthorityProvider.tsx') &&
   hasAll(liveAuthorityProvider, [
     'buildLivePIECoreIntelligence',
+    'buildDAVEProjectTruth',
+    'projectTruth: DAVEProjectTruth',
     'refreshAuthority',
     'invalidateEvidence',
     'notifyEvidenceChanged',
@@ -1001,36 +997,27 @@ if (
   ]) &&
   hasAll(app, [
     '<PIELiveAuthorityProvider input={liveAuthorityInput}>',
-    'screenToPIESurface',
+    'authoritySurfaceForMode',
+    'const liveAuthority = usePIELiveAuthority();',
+    'const projectIntelligence = liveAuthority.projectTruth.intelligence',
   ]) &&
   hasAll(homeDashboard, [
     'usePIELiveAuthority',
-    'const runtime = liveAuthority.runtime;',
-    'liveAuthority.attention || buildPIEAttentionState',
-    'liveAuthority.experience || buildPIEExperience',
-  ]) &&
-  hasAll(photoCapture, [
-    'usePIELiveAuthority',
-    'liveAuthority.policy.userMessage',
+    'liveAuthority.projectTruth.briefing.nextActions',
+    'const authoritativePriority =',
   ]) &&
   hasAll(reportsScreen, [
     'usePIELiveAuthority',
     'const runtime = liveAuthority.runtime;',
-    'liveAuthority.reportDraft || runtime.response.reportDraft',
+    'selectStableReportDraft({',
+    'liveDraft: liveAuthority.reportDraft',
+    'fallbackDraft: runtime.response.reportDraft',
+    'const baseReportDraft = stableReportDraft.draft',
   ]) &&
-  hasAll(buildUpdate, [
-    'usePIELiveAuthority',
-    'authoritativeReportDraft',
-    'notifyEvidenceChanged',
-  ]) &&
-  hasAll(projectOverviewScreen, [
-    'usePIELiveAuthority',
-    'const runtime = liveAuthority.runtime;',
-    'liveAuthority.core.bestNextStep',
-  ]) &&
-  hasAll(projectAssistantScreen, [
-    'usePIELiveAuthority',
-    'liveAuthority.core?.bestNextStep',
+  hasAll(daveProjectTruth, [
+    'evidence: DAVEEvidenceAccounting',
+    'verificationQueue: DAVEVerificationRequest[]',
+    'briefing: DAVEPMBriefing',
   ]) &&
   hasAll(piePanel, [
     'useOptionalPIELiveAuthority',
@@ -2089,7 +2076,7 @@ if (
     'lower-level action has failed',
     'timing requires leadership action',
     'evidence is strong enough to justify escalation',
-    'Escalation should wait until PIE verifies the evidence',
+    'Escalation should wait until DAVE verifies the evidence',
   ])
 ) {
   pass(
@@ -3206,8 +3193,8 @@ if (
 
 if (
   hasAll(reportsScreen, [
-    'PIE automation',
-    'Routine lifecycle steps are automated',
+    'Automatic review',
+    'routine lifecycle steps',
     'This is not a decision',
     'Outcome not achieved',
     'Correct',
@@ -3322,7 +3309,7 @@ if (
     'evidenceReferences: PIEEvidenceReference[]',
     'mergeEvidenceReferences',
   ]) &&
-  hasAll(reportsScreen, ['Evidence linked automatically', 'Routine lifecycle steps are automated']) &&
+  hasAll(reportsScreen, ['Evidence linked automatically', 'Automatic review', 'routine lifecycle steps']) &&
   hasAll(app, ['layer4EvidenceCatalog', 'contentHash', 'versionId']) &&
   hasAll(layer4Automation, ['collectRelevantOutcomeEvidence', 'evidenceUsed', 'linkedEvidence'])
 ) {
@@ -3870,7 +3857,6 @@ if (
     'best_case',
     'most_likely',
     'worst_case',
-    'schedule predecessor/successor',
     'inspection dependency',
     'contractor dependency',
     'material dependency',
@@ -3881,14 +3867,14 @@ if (
 ) {
   pass(
     'Predictive scenarios and dependencies',
-    'Predictive Simulation includes all requested scenarios and dependency categories.',
+    'Predictive Simulation includes the supported scenarios and non-schedule dependency categories.',
     'services/PIEPredictiveEngine.ts',
   );
 } else {
   fail(
     'Predictive scenarios and dependencies',
     'Predictive Simulation does not include all requested scenarios or dependency categories.',
-    'Add schedule, inspection, contractor, missing evidence, safety, quality, decision, recovery, no-action, best/most likely/worst scenarios and dependency categories.',
+    'Add schedule, inspection, contractor, missing evidence, safety, quality, decision, recovery, no-action, best/most likely/worst scenarios and the supported non-schedule dependency categories.',
     'services/PIEPredictiveEngine.ts',
   );
 }
@@ -5253,8 +5239,8 @@ if (
 if (
   hasAll(reflectionEngine, [
     'memoryRecall',
-    'Past memory should influence PIE interpretation',
-    'User corrections indicate PIE should be careful',
+    'Past memory should influence DAVE interpretation',
+    'User corrections indicate similar future assumptions should be treated carefully',
     'Lower confidence and ask for verification',
   ]) &&
   hasAll(pieReporter, [
@@ -5940,11 +5926,11 @@ if (
     'walk_completion',
     'daily_reflection',
     'What changed',
-    'What did PIE previously believe',
-    'Was PIE wrong',
-    'Was PIE correct',
+    'What did DAVE previously believe',
+    'Was DAVE wrong',
+    'Was DAVE correct',
     'What still needs verification',
-    'What should PIE do differently next time',
+    'What should DAVE do differently next time',
   ])
 ) {
   pass(
@@ -6016,7 +6002,7 @@ if (
     'recommendedEvidence',
     'beliefChanges',
     'reflectionConfidence',
-    'Reflection weakened at least one PIE belief',
+    'Reflection weakened at least one project belief',
     'Reflection recommends more evidence',
   ])
 ) {
@@ -6069,74 +6055,49 @@ if (
 
 if (
   hasAll(homeDashboard, [
-    'buildPIEExperience',
-    'PIEMissionCard',
-    'experience.primaryMessage',
-    'experience.reason',
-    'experience.primaryAction',
-    'experience.secondaryAction',
-    'experience.nextState',
-    'missionPrimaryButton',
-    'missionSecondaryButton',
-    '<View style={styles.morningBriefCard}',
+    'usePIELiveAuthority',
+    "Today's Priority",
+    'liveAuthority.projectTruth.briefing.nextActions',
+    'topPriority.taskCount',
+    'topPriority.scheduleHealth',
+    'Review priority',
   ])
 ) {
   pass(
     'Today Experience integration',
-    'PIE screen uses Experience Engine output in the mission card with one primary action while keeping supporting content below.',
-    'components/HomeDashboard.tsx',
+    'Overview turns live DAVE authority into one current priority, supporting reason, schedule context, and one review action.',
+    'App.tsx',
   );
 } else {
   fail(
     'Today Experience integration',
-    'PIE screen does not clearly render Experience Engine output in a mission card.',
-    'Render PIEMissionCard near the top of PIE/Home from primaryMessage, reason, primaryAction, secondaryAction, and nextState.',
-    'components/HomeDashboard.tsx',
+    'Overview does not clearly render the current DAVE priority and one next action.',
+    'Render the live project-truth priority, current task and schedule facts, and one dominant review action on Overview.',
+    'App.tsx',
   );
 }
 
-const appHeaderIndex = homeDashboard.indexOf('<AppHeader />');
-const missionCardIndex = homeDashboard.indexOf('<PIEMissionCard');
-const topMissionSection = missionCardIndex >= 0
-  ? homeDashboard.slice(missionCardIndex, missionCardIndex + 2600)
-  : '';
-
 if (
-  missionCardIndex > appHeaderIndex &&
   hasAll(homeDashboard, [
-    'function PIEMissionCard',
-    'greeting={`${getGreeting()}, David.`}',
-    "Today's mission",
-    'What should I do now?',
-    'Why',
-    'missionActionLabel(experience.primaryAction)',
-    'supportingItems',
-    'Critical Items',
-    'Report Ready',
-    'Schedule loaded',
-    'Evidence Needed',
-    'Needs Verification',
-    'Uncertain',
-    'Blocked',
-  ]) &&
-  !hasAny(topMissionSection, [
-    'Trust Score',
-    'Understanding Score',
-    'confidence percentage',
-    'PIE Experience',
+    'timeOfDayGreeting(displayName)',
+    "Today's Priority",
+    'Project Health',
+    'No immediate priority',
+    'Review priority',
+    'Observed today:',
   ])
 ) {
   pass(
     'PIE Mission screen',
-    'PIE screen starts with a mission card, greeting, why/reason, one dominant primary action, optional secondary action, and no dominant technical scoring.',
-    'components/HomeDashboard.tsx',
+    'Overview starts with a greeting, project health, one current priority, evidence context, and one dominant review action.',
+    'App.tsx',
   );
 } else {
   fail(
     'PIE Mission screen',
-    'PIE screen mission card placement or simplified language was not detected.',
-    'Make the first visible Home/PIE section a mission card with greeting, mission, why, one primary action, optional secondary action, and plain readiness language.',
-    'components/HomeDashboard.tsx',
+    'Overview priority placement or simplified decision language was not detected.',
+    'Keep greeting, project health, current priority, supporting evidence, and one review action near the top of Overview.',
+    'App.tsx',
   );
 }
 
@@ -6175,24 +6136,15 @@ const leakedNormalUiTerms = forbiddenNormalUiTerms.filter(term =>
 if (
   leakedNormalUiTerms.length === 0 &&
   hasAll(adminScreen, [
-    'Developer Tools',
+    'Advanced / Diagnostics',
     'Developer Support',
     'Diagnostics',
   ]) &&
-  hasAll(scheduleScreen, [
-    'Advanced Extraction Settings',
-    'advanced extraction is ready',
-    'Test Extraction',
-  ]) &&
+  hasAll(app, ['ScheduleImportFlow', 'Capture Evidence']) &&
   hasAll(
-    homeDashboard +
-      photoCapture +
-      reportsScreen +
-      projectOverviewScreen +
-      projectAssistantScreen,
+    app + reportsScreen,
     [
-      'Readiness',
-      'Ready',
+      'Evidence support',
       'Needs Review',
       'Why:',
     ],
@@ -6215,116 +6167,106 @@ if (
 }
 
 if (
-  hasAll(photoCapture, [
-    'buildPIEWalkExperience',
-    'GuidedCaptureCard',
-    'PIE needs',
+  hasAll(app, [
+    'function AddPhotosScreen',
+    'Capture Evidence',
     'Why:',
-    'walkExperience.primaryAction',
-    'walkExperience.secondaryAction',
-    'walkExperience.currentState',
-    'walkExperienceActionLabel',
-    'onAcceptRecommendation',
-    'onChangeProject',
+    'Accept Suggested Area',
     'onChangeArea',
-    'onUploadDocument',
     'onTakePhoto',
     'onNext',
     'Photo saved.',
     'Add Another Photo',
     'Add Note',
-    'Upload Document',
-    'Add Issue',
-    'Add Safety',
-    'Finish Walk',
+    'Add Document',
+    'Continue',
   ])
 ) {
   pass(
     'Capture Experience integration',
     'Capture consumes PIEExperienceEngine, starts with PIE guidance, preserves correction and capture controls, keeps users in Capture after photo capture, and keeps document, note, issue, and safety actions reachable.',
-    'components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Capture Experience integration',
     'Guided Capture Experience Engine integration markers were not detected.',
     'Use buildPIEWalkExperience in PhotoCapturePanel with GuidedCaptureCard, one dominant primary action, location correction, after-photo recommendation, and secondary Upload Document, Add Note, Add Issue, and Add Safety actions.',
-    'components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
 if (
   hasAll(reportsScreen, [
-    'buildPIEReviewExperience',
-    'ReviewExperiencePanel',
-    'reviewExperience.primaryAction',
-    'reviewExperience.secondaryAction',
-    'PIE Review Experience',
-    'Generate PIE Project Update',
-    'Review Draft',
+    'BeforeYouSharePanel',
+    'Report Check',
+    'Prepared Report',
     'Edit Report',
     'Approve Report',
+    'Share Report',
     'Copy Report',
     'Email Report',
-    'PIE found items that need review.',
-    'These warnings are for preview only and are not added to the email body by default.',
+    'Fix before approval',
     'reportApproved',
-    'disabled={!reportApproved}',
+    'reportApproved && reportApprovalAllowed && shareOpen',
     'No report is sent automatically',
-    'Weekly Executive Review',
-    'Project Health Report',
-    'Critical Path Report',
-    'Milestone Report',
-    'Saved History',
+    'Project Status Details',
+    'Read the report and approve it when it matches the current project status.',
+  ]) &&
+  !hasAny(reportsScreen, [
+    'Validation Requests',
+    'Evidence & Uncertainty',
+    'HOW THIS CONCLUSION WAS REACHED',
+    'Draft recovery mode:',
   ]) &&
   hasAll(app, [
-    'async function emailPIEReport',
+    'async function emailReport',
     'MailComposer.composeAsync',
     'body: report.body',
   ])
 ) {
   pass(
     'Review Experience integration',
-    'Review consumes PIEExperienceEngine, shows guidance, exposes review flags outside the email body, approval-gates copy/email, avoids automatic sending, and keeps existing report functions reachable.',
+    'Review presents a concise PM report check, keeps internal diagnostics out of the report surface, approval-gates copy/email, avoids automatic sending, and keeps existing report functions reachable.',
     'screens/ReportsScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'Review Experience integration',
-    'Review Experience Engine integration or approval boundary markers were not detected.',
-    'Use buildPIEReviewExperience in ReportsScreen, show review warnings in preview only, require approval before copy/email, and preserve existing report actions.',
+    'The concise report check or approval boundary markers were not detected.',
+    'Keep internal diagnostics out of the published report, show actionable PM warnings, require approval before copy/email, and preserve existing report actions.',
     'screens/ReportsScreen.tsx, App.tsx',
   );
 }
 
 if (
   hasAll(bottomNav, [
-    /label=["']Home["']/,
-    /label=["']Capture["']/,
-    /label=["']Review["']/,
-    /label=["']Share["']/,
+    /label=["']Overview["']/,
+    /label=["']Tasks["']/,
+    'Talk',
+    /label=["']Reports["']/,
     "onPress={() => onChange('Home')}",
-    'onPress={onNew}',
+    "onPress={() => onChange('Schedule')}",
+    'onPress={onTalk}',
     "onPress={() => onChange('Reports')}",
-    'onPress={onShare}',
   ]) &&
   !hasAny(bottomNav, [/label=["']More["']/]) &&
-  (bottomNav.match(/<TabButton/g) || []).length === 4 &&
-  bottomNav.indexOf('label="Home"') < bottomNav.indexOf('label="Capture"') &&
-  bottomNav.indexOf('label="Capture"') < bottomNav.indexOf('label="Review"') &&
-  bottomNav.indexOf('label="Review"') < bottomNav.indexOf('label="Share"')
+  (bottomNav.match(/<TabButton/g) || []).length === 3 &&
+  bottomNav.indexOf('label="Overview"') < bottomNav.indexOf('label="Tasks"') &&
+  bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('onPress={onTalk}') &&
+  bottomNav.indexOf('onPress={onTalk}') < bottomNav.indexOf('label="Reports"')
 ) {
   pass(
     'Bottom navigation',
-    'Required workflow labels Home, Capture, Review, and Share are present in the correct order.',
-    'components/BottomNavigation.tsx',
+    'The live workflow labels Overview, Tasks, Talk, and Reports are present in the correct order.',
+    'components/app-bottom-tabs.tsx',
   );
 } else {
   fail(
     'Bottom navigation',
     'One or more required workflow bottom nav labels are missing or out of order.',
-    'Ensure bottom nav exposes exactly Home, Capture, Review, and Share in workflow order.',
-    'components/BottomNavigation.tsx',
+    'Ensure the live bottom navigation exposes Overview, Tasks, Talk, and Reports in workflow order.',
+    'components/app-bottom-tabs.tsx',
   );
 }
 
@@ -6335,72 +6277,64 @@ if (
     /label=["']Diagnostics["']/,
     /label=["']Developer Tools["']/,
   ]) &&
-  hasAll(homeDashboard, ['onMoreTools', 'More Tools']) &&
   hasAll(adminScreen, [
-    'title="More"',
-    'Projects',
-    'Schedule',
-    'Documents',
-    'History',
     'Settings',
-    'Admin',
-    'Developer Tools',
+    'Advanced / Diagnostics',
     'Developer Support',
     'Diagnostics',
   ]) &&
   hasAll(app, [
-    "onProjectManagement={() => setScreen('Projects')}",
-    "onReferenceDocuments={() => setScreen('ReferenceDocuments')}",
-    "onSchedule={() => setScreen('Schedule')}",
-    "onHistory={() => setScreen('SavedUpdates')}",
-    "onDiagnostics={() => openDiagnostics('Admin')}",
+    "onSettings={() => setScreen('Admin')}",
+    "onOpenDocuments={() => setScreen('ProjectDocuments')}",
+    'Archived Projects',
+    'View All Activity',
+    "onDiagnostics={() => setScreen('Diagnostics')}",
   ])
 ) {
   pass(
     'PIE minimal navigation collapse',
     'Projects, Schedule, Documents, History, Admin, and Diagnostics remain reachable from Home overflow / More while Developer Tools and Diagnostics are not primary navigation.',
-    'components/BottomNavigation.tsx, screens/AdminScreen.tsx, App.tsx',
+    'components/app-bottom-tabs.tsx, screens/AdminScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'PIE minimal navigation collapse',
     'More organization or secondary workflow reachability is incomplete.',
-    'Keep bottom nav to Home/Capture/Review/Share and expose Projects, Schedule, Documents, History, Settings, Admin, and Developer Tools from the secondary More surface.',
-    'components/BottomNavigation.tsx, screens/AdminScreen.tsx, App.tsx',
+    'Keep daily navigation minimal and expose Projects, Documents, History, Settings, Admin, and Developer Tools from secondary surfaces.',
+    'components/app-bottom-tabs.tsx, screens/AdminScreen.tsx, App.tsx',
   );
 }
 
 if (
   hasAll(homeDashboard, [
-    'briefDetailList',
-    'Open Details',
-    'accessibilityHint="Shows the items behind this summary"',
-    'Schedule loaded',
-    'Evidence Needed',
+    "Today's Priority",
+    'Review priority',
+    'Active Projects',
+    'Recent Activity',
   ]) &&
   hasAll(reportsScreen, [
-    'preparedDetailsOpen',
-    'advancedReviewOpen',
-    'Why PIE recommends this',
-    'ReviewExperiencePanel',
+    'BeforeYouSharePanel',
+    'Report Check',
+    'Fix before approval',
   ]) &&
   hasAll(photoCapture, [
-    'GuidedCaptureCard',
-    'PIE needs',
-    'onUploadDocument',
+    'Capture Evidence',
+    'Accept Suggested Area',
+    'Add Another Photo',
+    'Add Note',
   ])
 ) {
   pass(
     'ECOS UI simplification workflow',
-    'Home summary counts expand to underlying items, Capture keeps inference-led evidence collection, and Review hides advanced reasoning by default.',
-    'components/HomeDashboard.tsx, components/PhotoCapturePanel.tsx, screens/ReportsScreen.tsx',
+    'Overview presents one actionable priority, Capture keeps guided collection, and Review presents a concise PM report check.',
+    'App.tsx, screens/ReportsScreen.tsx',
   );
 } else {
   fail(
     'ECOS UI simplification workflow',
-    'JARVIS cannot verify actionable summaries, guided Capture, or progressive Review disclosure.',
-    'Make Home counts tappable, keep Capture guided by PIE requests, and hide Review advanced details behind a disclosure.',
-    'components/HomeDashboard.tsx, components/PhotoCapturePanel.tsx, screens/ReportsScreen.tsx',
+    'JARVIS cannot verify actionable summaries, guided Capture, or the concise PM report check.',
+    'Keep Overview action-led, Capture guided, and Review focused on current facts and actionable approval warnings.',
+    'App.tsx, screens/ReportsScreen.tsx',
   );
 }
 
@@ -6434,44 +6368,46 @@ if (
 }
 
 if (
-  hasAny(scheduleScreen + app, [
-    'Use Demo Schedule',
-    'useDemoOcrScheduleResult',
+  hasAll(scheduleScreen + app, [
+    'ScheduleImportFlow',
+    'onImportFile={onImport}',
+    'Confirm the highlighted fields before adding them',
   ])
 ) {
   pass(
     'Schedule import',
-    'Demo schedule option is available for field testing without a live extraction service.',
-    'screens/ScheduleScreen.tsx, App.tsx',
+    'The live schedule workflow extracts draft items and requires confirmation before adding them.',
+    'App.tsx, components/ScheduleImportFlow.tsx',
   );
 } else {
-  warn(
+  fail(
     'Schedule import',
-    'Demo schedule option was not found.',
-    'Add a clearly labeled Use Demo Schedule action that creates draft schedule items.',
-    'screens/ScheduleScreen.tsx, App.tsx',
+    'The production schedule import and confirmation path was not found.',
+    'Keep ScheduleImportFlow wired to draft extraction and explicit confirmation.',
+    'App.tsx, components/ScheduleImportFlow.tsx',
   );
 }
 
 if (
-  hasAny(scheduleScreen + app, [
-    'Advanced extraction not set up',
-    'Advanced Extraction Settings',
-    'Test Extraction',
-    'advanced extraction first',
-  ])
+  hasAll(scheduleScreen + app, [
+    'isDavePdfTextExtractionAvailable',
+    'isDaveTextRecognitionAvailable',
+    'no dated activities were extracted',
+  ]) &&
+  !app.includes('extractScheduleItemsWithAiEndpoint') &&
+  !adminScreen.includes('Advanced schedule OCR endpoint')
 ) {
   pass(
     'Schedule import',
-    'Advanced extraction configuration and missing-service handling are available without exposing endpoint language in the normal workflow.',
-    'screens/ScheduleScreen.tsx, App.tsx',
+    'Schedule import uses bounded local extraction, has a user-facing failure path, and exposes no arbitrary upload endpoint.',
+    'App.tsx',
   );
 } else {
-  warn(
+  fail(
     'Schedule import',
-    'Advanced extraction setup handling was not found.',
-    'Explain when advanced extraction is needed and keep setup/testing behind Advanced Extraction Settings.',
-    'screens/ScheduleScreen.tsx, App.tsx',
+    'Safe local schedule extraction or its failure handling was not found.',
+    'Preserve bounded local extraction and clear failure handling without a user-configurable upload endpoint.',
+    'App.tsx',
   );
 }
 
@@ -6574,7 +6510,7 @@ if (
 }
 
 if (
-  hasAll(scheduleIntelligence + app, [
+  hasAll(scheduleIntelligence, [
     'PDF text detected',
     'Scanned PDF detected',
     'scannedDetected',
@@ -6612,14 +6548,13 @@ if (
     'contractor:',
     'critical:',
     'float:',
-    'dependencies:',
     'needsReview',
     'reviewFields',
   ])
 ) {
   pass(
     'Schedule normalization',
-    'Normalized schedule tasks include project, area, task, WBS, milestone, dates, duration, status, percent complete, owner, contractor, critical, float, dependencies, notes, confidence, and review fields.',
+    'Normalized schedule tasks include project, area, task, WBS, milestone, dates, duration, status, percent complete, owner, contractor, critical, float, notes, confidence, and review fields without importing schedule dependencies.',
     'services/PIEScheduleIntelligence.ts',
   );
 } else {
@@ -6686,15 +6621,16 @@ if (
 }
 
 if (
-  hasAll(scheduleIntelligence + app, [
+  hasAll(scheduleIntelligence + scheduleImportFlow, [
     'detectScheduleType',
     'Import Successful',
     'Import Partial',
     'Needs Review',
     'OCR Required',
     'Unsupported Schedule',
-    'We could extract',
-    'Please review highlighted activities',
+    'extractionConfidencePercent',
+    'Review Imported Schedule',
+    'need review',
   ])
 ) {
   pass(
@@ -6712,11 +6648,11 @@ if (
 }
 
 if (
-  hasAll(app, [
-    'showScheduleDraftReview',
+  hasAll(scheduleImportFlow, [
+    'Review Imported Schedule',
     'Accept All',
     'Accept Selected',
-    'Reject',
+    'Reject Import',
     'Project, Area, Task, Dates, Status, and Owner',
   ])
 ) {
@@ -6737,13 +6673,14 @@ if (
 if (
   hasAll(scheduleIntelligence + app, [
     'validationOutput',
-    'Schedule Summary',
-    'Critical Activities',
-    'Overdue Activities',
-    'Upcoming Activities',
-    'Recommended Walk Areas',
-    'Recommended Inspection Areas',
-    'Executive Summary',
+    'scheduleSummary:',
+    'criticalActivities:',
+    'overdueActivities:',
+    'upcomingActivities7Days',
+    'recommendedWalkAreas:',
+    'recommendedInspectionAreas:',
+    'executiveSummary:',
+    'topPriority.scheduleHealth',
   ])
 ) {
   pass(
@@ -6761,7 +6698,7 @@ if (
 }
 
 if (
-  hasAll(app + photoCapture, [
+  hasAll(app, [
     "source: 'schedule'",
     'Next Area to Visit',
     'getScheduleDrivenWalkRecommendation',
@@ -6771,73 +6708,69 @@ if (
   pass(
     'Walk recommendation updated',
     'Walk recommendations can be driven by urgent imported schedule activities.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Walk recommendation updated',
     'Schedule-driven Walk recommendation markers were not found.',
     'Use imported schedule urgency to recommend the next walk area.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
 if (
   hasAll(homeDashboard, [
-    'Schedule Summary',
-    'runtime.scheduleIntelligence.executiveSummary',
-    'based on imported schedule',
+    'const authoritativePriority =',
+    'overviewPrioritySupport',
+    'buildOverviewProjectRows',
+    'scheduleItems',
   ])
 ) {
   pass(
     'Today schedule updated',
-    'Today/Home reflects imported schedule evidence in Mission/Priorities/Recommendations/Executive Brief.',
-    'components/HomeDashboard.tsx',
+    'Overview reflects imported schedule evidence in the current project priority and supporting context.',
+    'App.tsx',
   );
 } else {
   fail(
     'Today schedule updated',
-    'Today/Home schedule update markers were not detected.',
-    'Surface imported schedule summary and schedule-driven priorities on Today.',
-    'components/HomeDashboard.tsx',
+    'Overview schedule-backed priority markers were not detected.',
+    'Surface imported schedule context with the current Overview priority.',
+    'App.tsx',
   );
 }
 
 if (
   hasAll(app, [
-    'commitImportedScheduleItems',
+    'approveScheduleImport',
     'SCHEDULE_ITEMS_STORAGE_KEY',
     'AsyncStorage.setItem',
-    'Schedule imported:',
-    'activities loaded',
-    '<HomeDashboard',
-    'scheduleItems={scheduleItems}',
+    'setScheduleItems(previous =>',
+    'ScheduleImportFlow',
+    'reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems',
+    'authoritativeScheduleItems',
+    'topPriority.scheduleHealth',
   ]) &&
-  hasAll(runtime, [
-    'projectScheduleIntelligence',
-    'projectScheduleIntelligence.scheduleSummary.totalItems === 0',
-    'projectName: null',
-    'context.scheduleItems',
-  ]) &&
-  hasAll(homeDashboard, [
-    'function buildTodayScheduleSummary',
-    'scheduleItems.length === 0',
-    'Schedule loaded:',
-    'scheduleBriefSummary',
-    'const runtime = liveAuthority.runtime;',
+  hasAll(daveProjectTruth, [
+    'function buildScheduleTruth',
+    "'overdue' | 'due_soon' | 'upcoming' | 'not_urgent'",
+    "completionState === 'reported_complete'",
+    'schedule: DAVEScheduleTruth[]',
+    'briefing: DAVEPMBriefing',
   ])
 ) {
   pass(
     'Schedule import to Today Runtime path',
     'Imported schedules are committed to state/storage and flow through the shared provider Runtime into HomeDashboard.',
-    'App.tsx, providers/PIELiveAuthorityProvider.tsx, components/HomeDashboard.tsx, services/PIERuntime.ts',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 } else {
   fail(
     'Schedule import to Today Runtime path',
     'Schedule import state/storage/Runtime/HomeDashboard connection is incomplete.',
     'Commit imported schedules to scheduleItems and AsyncStorage, pass scheduleItems into the shared live authority provider Runtime, and prevent Today from rendering the empty schedule summary when scheduleItems exist.',
-    'App.tsx, providers/PIELiveAuthorityProvider.tsx, components/HomeDashboard.tsx, services/PIERuntime.ts',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 }
 
@@ -6980,70 +6913,50 @@ if (
 }
 
 if (
-  fileExists('components/PIEConductorCard.tsx') &&
-  hasAll(pieConductorCard, [
-    'PIEConductorCard',
-    'attentionState',
-    'whatMattersNow',
-    'Reason',
-    'primaryButton',
-    'secondaryButton',
-    'onPrimaryAction',
-    'onSecondaryAction',
-  ]) &&
   hasAll(homeDashboard, [
-    'buildPIEAttentionState',
-    '<AppHeader />',
-    '<PIEMissionCard',
-    'attentionState',
-    'buildPIEExperience',
+    "Today's Priority",
+    'authoritativePriority',
+    'liveAuthority.projectTruth.briefing.nextActions',
+    'Review priority',
   ])
 ) {
   pass(
     'PIE Conductor Today',
-    'PIE starts with guided mission output from Attention and Experience while existing navigation remains available.',
-    'components/PIEConductorCard.tsx, components/HomeDashboard.tsx',
+    'DAVE starts with one authority-backed priority and one dominant review action while existing navigation remains available.',
+    'App.tsx',
   );
 } else {
   fail(
     'PIE Conductor Today',
-    'PIE mission guidance from Attention/Experience was not detected.',
-    'Render PIEMissionCard at the top of PIE/Home from PIEAttentionEngine and PIEExperienceEngine output.',
-    'components/PIEConductorCard.tsx, components/HomeDashboard.tsx',
+    'DAVE priority guidance was not detected on the live Overview.',
+    'Render one authority-backed current priority with one dominant review action.',
+    'App.tsx',
   );
 }
 
 if (
-  hasAll(photoCapture + attentionEngine, [
-    'GuidedCaptureCard',
-    'buildPIEWalkAttentionState',
-    'walkAttentionState',
-    'handleExperienceAction',
-    'recommend_project_area',
-    'confirm_location',
-    'capture_photo',
-    'continue_to_next_area',
-    'finish_walk',
-    'onAcceptRecommendation',
-    'Walk Options',
-    'Correct Project',
-    'Correct Area',
-    'photoConfirmation',
+  hasAll(photoCapture, [
+    'Capture Evidence',
+    'Current Area',
+    'Why:',
+    'Accept Suggested Area',
+    'Change Area',
+    'Photo saved.',
     'Add Another Photo',
-    'Finish Walk',
+    'Add Note',
   ])
 ) {
   pass(
     'PIE Guided Capture',
-    'Capture uses guided PIE attention states, starts from a PIE recommendation, preserves Accept/Correct, keeps the user in Capture after photo capture, and moves secondary controls behind Walk Options.',
-    'components/PhotoCapturePanel.tsx, services/PIEAttentionEngine.ts',
+    'Capture starts from location guidance, preserves Accept/Change Area, and keeps the user in context after photo capture.',
+    'App.tsx',
   );
 } else {
   fail(
     'PIE Guided Capture',
-    'Guided Capture flow markers were not detected.',
-    'Use GuidedCaptureCard in Capture, preserve Accept/Correct controls, keep photo capture in Capture, and move secondary controls behind subordinate options.',
-    'components/PhotoCapturePanel.tsx, services/PIEAttentionEngine.ts',
+    'Live guided capture markers were not detected.',
+    'Preserve current-area guidance, Accept/Change Area, capture confirmation, and subordinate repeat/note actions.',
+    'App.tsx',
   );
 }
 
@@ -7109,28 +7022,71 @@ if (
 }
 
 if (
-  hasAll(photoProgressIntelligence, [
-    'observation',
-    'inferredMeaning',
-    'verificationStatus',
-    'corroboratingEvidenceIds',
-    'contradictingEvidenceIds',
-    'completion still requires supporting evidence',
-    'PIE does not create completion percentages from photos alone.',
-    'No visible progress was detected in the comparable images. Work may have occurred outside the photographed area.',
+  hasAll(daveProjectTruth, [
+    'const hasComparablePrior',
+    'comparisonCompleted',
+    "comparability === 'strong' || comparability === 'probable'",
+    'safeVisualEvidence && hasComparablePrior',
+    "evidenceClass: safeVisualEvidence ? 'observation' : intelligence ? 'interpretation' : 'uncertainty'",
+    "progressClaim !== 'supported'",
+    'No confirmed prior photo is available.',
+    'The prior photo is not sufficiently comparable to support a change or progress conclusion.',
+    'The result is not supported by visual evidence alone.',
+    'Current project records disagree about task completion.',
   ])
 ) {
   pass(
     'Longitudinal photo claim safety',
     'Photo intelligence separates observation from inference, requires verification/corroboration, avoids unsupported completion percentages, and discloses invisible-work limits.',
-    'services/PIEPhotoProgressIntelligence.ts',
+    'services/DAVEProjectTruth.ts',
   );
 } else {
   fail(
     'Longitudinal photo claim safety',
     'Photo intelligence may be overclaiming completion or progress.',
     'Separate observations from inferences, require corroboration for completion, avoid invented percentages, and disclose invisible-work limits.',
-    'services/PIEPhotoProgressIntelligence.ts',
+    'services/DAVEProjectTruth.ts',
+  );
+}
+
+if (
+  fileExists('services/DAVEProjectReasoning.ts') &&
+  hasAll(daveProjectReasoning, [
+    'DAVEReasoningRelationship',
+    "'supports'",
+    "'contradicts'",
+    "'depends_on'",
+    "'delays'",
+    "'completes'",
+    "'changes'",
+    'DAVEReasoningHypothesis',
+    'DAVEReasoningChallenge',
+    'known_fact',
+    'supported_conclusion',
+    'reasonable_inference',
+    'unresolved_uncertainty',
+    'consequenceOfInaction',
+    'smallestNextAction',
+    'learningCues',
+    'buildDAVEProjectReasoning',
+  ]) &&
+  hasAll(daveProjectTruth, [
+    'buildDAVEProjectReasoning',
+    'reasoning: DAVEProjectReasoning',
+    'reasoning.decisions',
+  ])
+) {
+  pass(
+    'DAVE project reasoning authority',
+    'Project Truth connects evidence relationships, competing hypotheses, adversarial challenges, bounded conclusions, explained decisions, follow-through consequences, and outcome learning.',
+    'services/DAVEProjectReasoning.ts, services/DAVEProjectTruth.ts',
+  );
+} else {
+  fail(
+    'DAVE project reasoning authority',
+    'DAVE does not expose the complete evidence-to-decision reasoning contract.',
+    'Connect relationships, alternatives, challenges, knowledge classes, reasoning trails, decisions, consequences, and learned outcomes through Project Truth.',
+    'services/DAVEProjectReasoning.ts, services/DAVEProjectTruth.ts',
   );
 }
 
@@ -7224,13 +7180,11 @@ if (
 
 if (
   hasAll(homeDashboard + photoCapture, [
-    'conciseProgressCard',
-    'photoProgressCard.title',
-    'photoProgressCard.summary',
-    'photoProgressCard.primaryAction',
-    'Repeat photo needed',
-    'referencePhotoUri',
-    'alignmentGuide',
+    'repeatPhotoGuidance',
+    'continuityAnchor',
+    'Photo saved.',
+    'Next Suggested Action',
+    'Add Another Photo',
   ]) &&
   !hasAny(homeDashboard + photoCapture + bottomNav, [
     'Compare Photos',
@@ -7243,15 +7197,15 @@ if (
 ) {
   pass(
     'Longitudinal photo minimal UI',
-    'Home shows only a concise progress card, Capture shows high-value repeat-photo guidance, and no manual analysis controls or permanent photo tab were added.',
-    'components/HomeDashboard.tsx, components/PhotoCapturePanel.tsx, components/BottomNavigation.tsx',
+    'Photo intelligence stays automatic, Capture shows only high-value repeat guidance, and no manual analysis controls or permanent photo tab were added.',
+    'App.tsx, components/app-bottom-tabs.tsx',
   );
 } else {
   fail(
     'Longitudinal photo minimal UI',
-    'Photo intelligence UI is either missing concise guidance or exposes manual analysis controls.',
+    'Photo intelligence UI is either missing repeat guidance or exposes manual analysis controls.',
     'Keep processing automatic, show only concise progress/repeat-photo guidance, and avoid new navigation or manual compare/analyze buttons.',
-    'components/HomeDashboard.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx, components/app-bottom-tabs.tsx',
   );
 }
 
@@ -7284,39 +7238,24 @@ if (
 }
 
 if (
-  fileExists('services/PIEMultimodalEvidence.ts') &&
-  hasAll(multimodalEvidenceService, [
-    'export type PIEEvidenceType',
-    'photo',
-    'drawing',
-    'schedule',
-    'contract',
-    'inspection_report',
-    'email',
-    'meeting_note',
-    'cost_report',
-    'equipment_reading',
-    'oee_feed',
-    'field_measurement',
-    'PIEStructuredEvidenceAnalysis',
-    'PIEPhotoVisionAnalysis',
-    'validatePhotoVisionAnalysis',
-    'deterministicPhotoChecks',
-    'recordEvidenceCorrection',
-    'shouldReuseAnalysisCache',
+  hasAll(photoVisionFunction + photoVisionAuthority + photoProgressIntelligence, [
+    'photo_pair',
+    'validateVisionAuthority',
+    'buildPIEPhotoProgressIntelligence',
+    'visualJarvisValidation',
   ])
 ) {
   pass(
     'Multimodal evidence architecture',
-    'Shared evidence types, structured analysis, visual validation, deterministic checks, correction, and idempotency helpers are present.',
-    'services/PIEMultimodalEvidence.ts',
+    'The live server vision boundary and mobile longitudinal intelligence provide structured analysis and visual validation.',
+    'supabase/functions/pie-photo-vision/index.ts, services/PIEPhotoProgressIntelligence.ts',
   );
 } else {
   fail(
     'Multimodal evidence architecture',
-    'Shared multimodal evidence architecture markers are incomplete.',
-    'Create services/PIEMultimodalEvidence.ts with universal evidence types, structured analysis, photo validation, correction, and idempotency helpers.',
-    'services/PIEMultimodalEvidence.ts',
+    'The production visual evidence and longitudinal validation path is incomplete.',
+    'Keep structured server vision authority and mobile longitudinal validation connected.',
+    'supabase/functions/pie-photo-vision/index.ts, services/PIEPhotoProgressIntelligence.ts',
   );
 }
 
@@ -7354,11 +7293,15 @@ if (
   fileExists('supabase/functions/_shared/pie-vision-provider.ts') &&
   hasAll(photoVisionFunction, [
     'auth.getUser()',
-    'verifyProjectAccess',
+    'photoVisionCallerScopeIsAuthorized',
     'loadAuthorizedImage',
     'photo_pair',
     'pie_photo_semantic_comparison_results',
-    'validateNormalizedOutput',
+    'validateVisionAuthority',
+  ]) &&
+  hasAll(photoVisionAuthority, [
+    'blockingObservationReasons',
+    'progressAccepted = progressReasons.length === 0 && blockingObservationReasons.length === 0',
   ]) &&
   hasAll(photoVisionProvider, [
     'interface VisionProvider',
@@ -7416,19 +7359,15 @@ if (
 }
 
 if (
-  fileExists('scripts/multimodal-evidence-test.js') &&
   fileExists('validation/multimodal/photo-vision-scenarios.json') &&
   fileExists('supabase/migrations/20260702040000_production_vision_pipeline.sql') &&
-  fileExists('services/PIEPhotoVisionPipeline.ts') &&
+  fileExists('scripts/pie-photo-vision-authority-test.js') &&
   hasAll(packageJson, [
-    'test:multimodal-evidence',
-    'test:raw-photo-analysis',
-    'test:photo-comparison-intelligence',
-    'test:photo-baseline-failure-001',
-    'test:production-vision-pipeline',
-    'test:photo-corrections',
+    'test:photo-vision-authority',
+    'test:photo-comparison',
+    'test:visual-jarvis',
   ]) &&
-  hasAll(multimodalEvidenceTest + multimodalValidationScenarios + productionVisionMigration + photoVisionPipeline, [
+  hasAll(multimodalValidationScenarios + productionVisionMigration + photoVisionFunction + photoProgressIntelligence, [
     'hidden-condition-rejected',
     'comparison-not-comparable',
     'project-boundary-mismatch',
@@ -7437,26 +7376,23 @@ if (
     'failed_build_21',
     'black computer mouse',
     'does not establish project progress',
-    'validatePhotoVisionAnalysis',
-    'validatePhotoComparison',
     'pie_vision_analysis_requests',
     'pie_photo_semantic_comparison_results',
-    'analysis_pending',
-    'analysis_complete',
-    'hydratePhotoVisionState',
+    'validateVisionAuthority',
+    'visualJarvisValidation',
   ])
 ) {
   pass(
     'Multimodal evidence regression tests',
-    'New multimodal/photo/comparison/correction scripts and validation scenarios are present.',
-    'scripts/multimodal-evidence-test.js, validation/multimodal/photo-vision-scenarios.json, package.json',
+    'Production photo authority, longitudinal comparison, adversarial visual validation, and regression scenarios are covered.',
+    'scripts/pie-photo-vision-authority-test.js, scripts/photo-progress-intelligence-test.js, validation/multimodal/photo-vision-scenarios.json',
   );
 } else {
   fail(
     'Multimodal evidence regression tests',
-    'New multimodal/photo regression coverage is incomplete.',
-    'Add executable tests for multimodal evidence, raw-photo guardrails, photo comparison, correction history, and validation scenarios.',
-    'scripts/multimodal-evidence-test.js',
+    'Production photo authority or longitudinal regression coverage is incomplete.',
+    'Preserve live photo authority, comparison, visual JARVIS, and scenario coverage.',
+    'scripts/pie-photo-vision-authority-test.js, scripts/photo-progress-intelligence-test.js',
   );
 }
 
@@ -7584,12 +7520,12 @@ if (
     'groupEvidenceByLocation',
     'groupEvidenceByWorkArea',
     'formatDavidStyleProjectUpdate',
-    '${index + 1}. ${area.title}',
-    '• ${bullet.text}',
+    '${index + 1}. ${areaTitle}',
+    'reportBulletLabel(bullet)',
     'See Image',
     'See Images',
-    'Action Required – Assign owner to',
-    'Please ${lowercaseFirst(item.action)}',
+    'return ensureSentence(item.action);',
+    '${item.owner} – Please ${lowercaseFirst(item.action)}',
   ]) &&
   !hasAny(pieReporter, ['as an AI', 'AI says', 'based on the data', 'Owner needed'])
 ) {
@@ -7621,7 +7557,7 @@ if (
     'shouldSuppressReportBullet',
     'buildReportReviewFlags',
     'reviewFlags',
-    'Action Required – Assign owner to',
+    'return ensureSentence(item.action);',
     'Building 2321 East Driveway East Driveway',
     'Fire Pump House Pump House',
     'Canopy B Location',
@@ -7636,57 +7572,72 @@ if (
   ]) &&
   hasAll(reportsScreen, [
     'reviewFlagsPanel',
-    'PIE found items that need review.',
-    'These warnings are for preview only and are not added to the email body by default.',
-    'Action Items',
+    'Fix before approval',
+    'Report Check',
+    'Task Status',
+    'Schedule Health',
+    'Current Work',
+    'Needs Attention',
+    'Next Steps',
+    'Recent Changes',
+    'Progress by Work Area',
+    'Full Written Report',
     'Copy Report',
     'Email Report',
-    'disabled={!reportApproved}',
+    'reportApproved && reportApprovalAllowed && shareOpen',
+    'Project Status Details',
+    'Current task position and schedule',
   ]) &&
-  !reportsScreen.includes('No image references included.')
+  !hasAny(reportsScreen, [
+    'No image references included.',
+    'Validation Requests',
+    'Evidence & Uncertainty',
+    'Details & Reasoning',
+  ])
 ) {
   pass(
     'PIE Reporter narrative quality',
-    'Reporter 2.0 builds construction understanding, cleans work-area names, suppresses GPS/system phrasing, requires real action language, adds executive summary and review flags, and omits empty image-reference text.',
+    'Reporter builds construction understanding, cleans work-area names, suppresses system and verification-gap phrasing, requires real action language, and omits empty or unknown-state sections.',
     'services/PIEReporter.ts, screens/ReportsScreen.tsx',
   );
 } else {
   fail(
     'PIE Reporter narrative quality',
     'Reporter 2.0 quality gates were not satisfied.',
-    'Add construction-understanding stages, clean duplicated area names, remove automatic Owner needed action items, suppress GPS/system bullets, add executive summary/review flags, and omit empty image reference sections.',
+    'Keep construction understanding and review rigor internal while publishing only known current conditions, real actions, and non-empty report sections.',
     'services/PIEReporter.ts, screens/ReportsScreen.tsx',
   );
 }
 
 if (
-  hasAll(reportsScreen + buildUpdate + app + pieReporter, [
-    'PIE Reporter',
-    'Generate PIE Project Update',
+  hasAll(reportsScreen + app + pieReporter, [
+    'Prepared Report',
     'PIEReporterPreview',
     'buildPIEReportDraft',
-    'authoritativeReportDraft',
     'Single Project Update',
     'Combined Project Update',
     'Copy Report',
     'Email Report',
-    'Review required before sending or copying',
-    'onSendEmail',
-    'onCopy',
+    'Copy, Email, and Text unlock after approval',
+    'No report is sent automatically',
+    'reportApproved && reportApprovalAllowed && shareOpen',
+    'ReportShareButton',
+    'onEmailReport',
+    'onCopyReport',
   ]) &&
   !hasAny(pieReporter, ['MailComposer', 'SMS.sendSMSAsync', 'Clipboard.setStringAsync'])
 ) {
   pass(
     'PIE Reporter review boundary',
     'PIE Reporter is integrated into Review/Build Update preview and does not send, text, copy, or auto-approve anything by itself.',
-    'App.tsx, screens/ReportsScreen.tsx, screens/BuildUpdateScreen.tsx, services/PIEReporter.ts',
+    'App.tsx, screens/ReportsScreen.tsx, services/PIEReporter.ts',
   );
 } else {
   fail(
     'PIE Reporter review boundary',
     'Reporter review boundary or Build Update integration was incomplete.',
     'Show Generate PIE Project Update in Review/Build Update, preserve Single/Combined choices, and keep send/copy behind explicit user actions.',
-    'App.tsx, screens/ReportsScreen.tsx, screens/BuildUpdateScreen.tsx, services/PIEReporter.ts',
+    'App.tsx, screens/ReportsScreen.tsx, services/PIEReporter.ts',
   );
 }
 
@@ -7719,132 +7670,124 @@ if (
 }
 
 if (
-  fileExists('components/PhotoCapturePanel.tsx') &&
-  hasAny(photoCapture + app, ['title="Capture"', 'PIE needs'])
+  hasAll(photoCapture, ['Capture Evidence', 'Current Area', 'onTakePhoto'])
 ) {
   pass(
     'Capture workflow',
-    'Capture page/panel exists and presents PIE-guided evidence collection.',
-    'components/PhotoCapturePanel.tsx',
+    'The live field-update screen presents location-guided evidence collection.',
+    'App.tsx',
   );
 } else {
   fail(
     'Capture workflow',
-    'Guided Capture page/panel was not found.',
-    'Restore the Capture panel and connect it to the Capture tab.',
-    'components/PhotoCapturePanel.tsx',
+    'The live evidence-capture workflow was not found.',
+    'Keep location-guided evidence capture in the existing field-update flow.',
+    'App.tsx',
   );
 }
 
 if (
-  hasAll(photoCapture + app, [
-    'WalkLocationRecommendation',
-    'buildWalkLocationRecommendation',
+  hasAll(app, [
     'exact-gps-area',
     'gps-radius',
-    'project-boundary',
-    'last-active-project',
+    'schedule',
     'last-active-area',
     'user-selection',
+    'locationSource',
   ]) &&
-  hasAny(photoCapture + app, ['gpsUnavailable', 'gpsStatus', 'currentArea'])
+  hasAny(app, ['areaSuggestion', 'selectedArea', 'Current Area'])
 ) {
   pass(
     'GPS recommendation exists',
     'GPS recommendation priority order is present: exact area, radius, project boundary, last active project, last active area, and user selection.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'GPS recommendation exists',
     'GPS recommendation priority markers were not fully detected.',
     'Add exact GPS area, radius, project boundary, last active project, last active area, and user selection recommendation logic.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
 if (
-  hasAll(photoCapture + app, [
-    'onAcceptRecommendation',
-    'Correct Project',
-    'Correct Area',
-    'Choose Project',
-    'Choose Area',
+  hasAll(app, [
+    'Accept Suggested Area',
+    'Change Area',
     'setWalkCorrectionMemory',
     'correctionPenalty',
+    'AreaSelectionSheet',
   ])
 ) {
   pass(
     'Walk correction flow',
     'Accept, change/choose project, change/choose area, and correction confidence penalty behavior are exposed.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Walk correction flow',
     'Accept/correction controls or correction memory were not found.',
     'Expose Accept, Change/Choose Project, Change/Choose Area, and remember corrections for the current session.',
-    'components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
 if (
-  hasAll(photoCapture + app, [
+  hasAll(app, [
     'confidenceScore',
     'Why:',
-    'PIE is unsure of your location.',
-    'needsUserSelection',
+    'Location is uncertain.',
+    'Choose the project area',
     'Next Area to Visit',
   ])
 ) {
   pass(
     'Capture location confidence and reason',
     'Capture keeps location confidence in the recommendation model while displaying plain-language why, low-location uncertainty, and next area guidance.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Capture location confidence and reason',
     'Location confidence, why/reason, low-location uncertainty, or next area guidance was not detected.',
     'Keep confidence in the model, display plain-language why, low-location uncertainty copy, and next area recommendation.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
 if (
-  hasAll(photoCapture + app, [
-    'photoConfirmation',
+  hasAll(photoCapture, [
     'Photo saved.',
     'Current Area',
     'Next Suggested Action',
     'Add Another Photo',
     'Add Note',
-    'Finish Walk',
-    "setScreen('AddPhotos')",
-  ])
+  ]) &&
+  hasAll(app, ['Finish Walk', "setScreen('AddPhotos')"])
 ) {
   pass(
     'Capture photo flow',
     'Photo confirmation, current area, next action, and repeat/save buttons keep the user in Capture.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 } else {
   fail(
     'Capture photo flow',
     'Capture photo flow may not keep the user in context after adding a photo.',
     'Show Photo saved, Current Area, Next Suggested Action, Add Another Photo, Add Note, Save Walk Update, and return to Capture after photos.',
-    'App.tsx, components/PhotoCapturePanel.tsx',
+    'App.tsx',
   );
 }
 
 if (
   hasAll(app, [
-    "today's mission",
-    'priorities',
-    'executive summary',
-    'project workspace',
-    'saveCloudUpdate',
-    'setSavedUpdates',
+    'finishProjectWalk',
+    'prepareProjectWalkFieldUpdate',
+    'localDAVEProjectWalkSessionRepository',
+    'setCaptureMemories',
+    'liveAuthority.projectTruth',
   ]) &&
   hasAll(runtime + evidenceFusion, [
     'fusedEvidence',
@@ -7866,20 +7809,16 @@ if (
   );
 }
 
-const syncUserUi = adminScreen + diagnosticsScreen;
+const syncUserUi = adminScreen;
 
 if (
   hasAll(syncService + syncUserUi + app, [
     'isPhotoFileAvailable',
     'missingPhotos',
-    'Remove Missing Photo',
-    'Retry',
-    'Dismiss',
+    'Keep Update, Skip Photo',
     'could not be synced because',
-    'Partial sync complete.',
-    'Cloud Sync',
     'removeMissingPhotosFromSyncQueue',
-    'Some records could not sync and will be retried.',
+    'markMissingPhotosUnavailable',
   ]) &&
   hasAny(syncService + app, ['Photo sync could not finish', 'cleanupStoredPhotoDirectory']) &&
   hasAny(syncService + app, ['catch', 'try'])
@@ -7887,14 +7826,14 @@ if (
   pass(
     'Photo sync resilience',
     'Missing photos are detected before upload, skipped, reported with friendly actions, and removable from local updates plus sync queue.',
-    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx',
   );
 } else {
   fail(
     'Photo sync resilience',
     'Graceful missing photo sync handling was not fully detected.',
-    'Detect missing local photos before upload, continue syncing, show Remove Missing Photo / Retry / Dismiss, and clear orphaned queue references after confirmation.',
-    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'Detect missing local photos before upload, preserve the field update, show Keep Update, Skip Photo / Retry / Dismiss, and clear orphaned queue references after confirmation.',
+    'services/SyncService.ts, App.tsx, screens/AdminScreen.tsx',
   );
 }
 
@@ -7922,14 +7861,14 @@ if (
   pass(
     'Photo sync user-safe errors',
     'Admin and Diagnostics sync UI do not expose raw exceptions, file paths, stack traces, or readAsStringAsync.',
-    'screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'screens/AdminScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'Photo sync user-safe errors',
     'Raw exception, file path, stack, or readAsStringAsync marker was found in sync UI.',
     'Never display raw exceptions, file paths, stack traces, internal errors, or readAsStringAsync in user-facing sync UI.',
-    'screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'screens/AdminScreen.tsx, App.tsx',
   );
 }
 
@@ -7962,54 +7901,38 @@ if (
   ]) &&
   hasAll(adminScreen, [
     'Cloud sync tools are available.',
-    'Sync completed. Some unavailable photos may be skipped.',
+    'Field update history preserved. Unavailable photo retries were cleared.',
+    'formatMissingPhotoSyncMessage',
     'syncCleanupNotice',
     'setAdminActionSummary',
   ]) &&
   !hasAny(adminScreen, [
-    'syncStatus',
-    'syncMessage',
-    'syncResult',
-    'syncLog',
-    'syncProgress',
-    'actionResult',
+    'error.message',
+    'error.stack',
     'readAsStringAsync',
     'Sync failed',
     '/var/mobile',
     'does not exist',
-  ]) &&
-  hasAll(diagnosticsScreen, [
-    'sanitizeUserFacingSyncMessage(syncStatus?.message',
-    'sanitizeUserFacingSyncMessage(syncResult)',
-    'sanitizeUserFacingSyncMessage(syncProgress)',
-    'syncCleanupNotice',
-    'setSyncResult(',
-    'setSyncProgress(',
-    'Raw Diagnostics',
-    'Developer Support',
   ])
 ) {
   pass(
     'Sync status display sanitizer',
-    'Admin renders only static safe sync summaries while Diagnostics sync display paths use sanitizeUserFacingSyncMessage.',
-    'services/SyncService.ts, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'Admin renders bounded, non-technical sync summaries while Diagnostics sync display paths use sanitizeUserFacingSyncMessage.',
+    'services/SyncService.ts, screens/AdminScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'Sync status display sanitizer',
     'Sync display paths are not fully protected by sanitizeUserFacingSyncMessage.',
     'Apply sanitizeUserFacingSyncMessage to syncStatus, sync result, sync progress, alerts/status messages, and keep raw diagnostics under Developer Support > Raw Diagnostics.',
-    'services/SyncService.ts, screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'services/SyncService.ts, screens/AdminScreen.tsx, App.tsx',
   );
 }
 
 if (
   !hasAny(adminScreen, [
-    'syncStatus',
-    'syncMessage',
-    'syncResult',
-    'syncLog',
-    'syncProgress',
+    'error.message',
+    'error.stack',
     'readAsStringAsync',
     'Sync failed',
     '/var/mobile',
@@ -8017,12 +7940,14 @@ if (
   ]) &&
   hasAll(adminScreen, [
     'Cloud sync tools are available.',
-    'Sync completed. Some unavailable photos may be skipped.',
+    'Field update history preserved. Unavailable photo retries were cleared.',
+    'setAdminActionSummary',
+    'formatMissingPhotoSyncMessage',
   ])
 ) {
   pass(
     'Admin sync status removed',
-    'AdminScreen no longer renders dynamic sync status, sync logs, sync progress, or raw sync errors.',
+    'AdminScreen renders bounded, non-technical sync status without sync logs, raw file paths, or raw errors.',
     'screens/AdminScreen.tsx',
   );
 } else {
@@ -8042,8 +7967,8 @@ if (
   ]) &&
   hasAll(syncService, [
     'lastError: sanitizedResult',
-    'errors.push(sanitizedResult)',
-    'await AsyncStorage.setItem(key, result.value)',
+    'formatQueueItemFailure(item, sanitizedResult)',
+    'await persistVerifiedOfflineQueue(parseOfflineQueueValue(result.value))',
     'await AsyncStorage.setItem(key, nextValue)',
   ])
 ) {
@@ -8062,24 +7987,23 @@ if (
 }
 
 if (
-  hasAll(buildUpdate + app, ['Combined Update']) &&
-  hasAny(buildUpdate + app, [
-    'Nothing is sent automatically',
-    'Review required before sending or copying',
-    'Please review before sending or copying',
+  hasAll(reportsScreen, ['combined_project_update']) &&
+  hasAny(reportsScreen, [
+    'No report is sent automatically',
+    'Copy, Email, and Text unlock after approval',
   ])
 ) {
   pass(
     'Combined update',
     'Combined Update exists and requires review before sending/copying.',
-    'screens/BuildUpdateScreen.tsx, App.tsx',
+    'screens/ReportsScreen.tsx',
   );
 } else {
   warn(
     'Combined update',
     'Combined Update or review-before-send language was not found.',
     'Add Combined Update mode and keep send/copy behind explicit user review.',
-    'screens/BuildUpdateScreen.tsx, App.tsx',
+    'screens/ReportsScreen.tsx',
   );
 }
 
@@ -8090,23 +8014,20 @@ if (
   pass(
     'Location workflow placement',
     'Locations/Project Areas are not primary navigation and Area Mapping is in advanced admin configuration.',
-    'components/BottomNavigation.tsx, screens/AdminScreen.tsx',
+    'components/app-bottom-tabs.tsx, screens/AdminScreen.tsx',
   );
 } else {
   warn(
     'Location workflow placement',
     'Location or Project Areas may still appear as a primary workflow.',
     'Keep location/project-area setup behind More > Admin > Advanced Configuration > Area Mapping.',
-    'components/BottomNavigation.tsx, screens/AdminScreen.tsx',
+    'components/app-bottom-tabs.tsx, screens/AdminScreen.tsx',
   );
 }
 
 const diagnosticsIndex = adminScreen.indexOf('label="Diagnostics"');
-const advancedIndex = adminScreen.indexOf('Advanced Configuration');
+const advancedIndex = adminScreen.indexOf('Advanced / Diagnostics');
 const developerSupportIndex = adminScreen.indexOf('Developer Support');
-const rawCloudDiagnosticsIndex = adminScreen.indexOf('raw cloud diagnostics');
-const connectionTestsIndex = adminScreen.indexOf('connection tests');
-const debugDataIndex = adminScreen.indexOf('debug data');
 
 if (diagnosticsIndex === -1) {
   warn(
@@ -8118,14 +8039,11 @@ if (diagnosticsIndex === -1) {
 } else if (
   advancedIndex !== -1 &&
   developerSupportIndex > advancedIndex &&
-  diagnosticsIndex > advancedIndex &&
-  rawCloudDiagnosticsIndex > advancedIndex &&
-  connectionTestsIndex > advancedIndex &&
-  debugDataIndex > advancedIndex
+  diagnosticsIndex > developerSupportIndex
 ) {
   pass(
     'Admin diagnostics',
-    'Diagnostics is under Advanced Configuration / Developer Support with raw cloud diagnostics, connection tests, and debug data framed as support tools.',
+    'Diagnostics is under Advanced Configuration / Developer Support with friendly setup checks and connection tools.',
     'screens/AdminScreen.tsx',
   );
 } else {
@@ -8155,93 +8073,91 @@ if (
   adminRawDiagnosticLeaks.length === 0 &&
   hasAll(adminScreen, [
     'Cloud configuration is ready.',
-    'Projects synced through cloud',
+    'Projects currently shown in Vitruvius',
     'Developer Support',
     'label="Diagnostics"',
   ]) &&
   hasAll(diagnosticsScreen, [
-    'Raw Diagnostics',
-    'rawSupabaseUrl',
-    'createClientUrl',
-    'rootFetch.url',
-    'restFetch.url',
+    'Admin Diagnostics',
+    'System Check',
+    'GPS Setup Status',
+    'Basic setup status',
   ])
 ) {
   pass(
     'Admin raw diagnostics visibility',
-    'Normal Admin UI uses friendly cloud status while raw Supabase diagnostics stay in Developer Support diagnostics.',
-    'screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'Normal Admin and Diagnostics use friendly setup and cloud status without exposing raw backend details.',
+    'screens/AdminScreen.tsx, App.tsx',
   );
 } else {
   fail(
     'Admin raw diagnostics visibility',
     `Normal Admin can expose raw diagnostic details${adminRawDiagnosticLeaks.length ? `: ${adminRawDiagnosticLeaks.join(', ')}` : '.'}`,
-    'Remove raw Supabase URLs, fetch URLs, REST/status details, and diagnostic identifiers from normal Admin. Keep them only in Developer Support > Diagnostics > Raw Diagnostics.',
-    'screens/AdminScreen.tsx, screens/DiagnosticsScreen.tsx',
+    'Remove raw backend URLs, fetch status details, and diagnostic identifiers from normal Admin and Diagnostics.',
+    'screens/AdminScreen.tsx, App.tsx',
   );
 }
 
 if (
-  hasAll(homeDashboard, [
-    'function buildTodayScheduleSummary',
-    'scheduleItems.length === 0',
-    'Schedule loaded:',
-    'PIE is preparing schedule insights.',
-    'scheduleSummary.totalItems === 0',
-    'runtimeSummary: runtime.scheduleIntelligence.executiveSummary',
+  hasAll(app, [
+    'authoritativeScheduleItems',
+    'overviewPrioritySupport',
+    'topPriority.scheduleHealth',
   ]) &&
-  !homeDashboard.includes('PIE has no schedule to summarize yet.')
+  hasAll(daveProjectTruth, [
+    'function buildScheduleTruth',
+    'activities complete.',
+    'due within 7 days',
+  ])
 ) {
   pass(
     'Today schedule loaded fallback',
     'Today renders a non-empty Schedule loaded summary whenever scheduleItems are present, even while Runtime is preparing insights.',
-    'components/HomeDashboard.tsx',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 } else {
   fail(
     'Today schedule loaded fallback',
     'Today can still render the empty schedule message while scheduleItems are present.',
     'Build Today schedule text from scheduleItems first, show Schedule loaded: X activities, and reserve the empty Runtime summary only for zero scheduleItems.',
-    'components/HomeDashboard.tsx',
+    'App.tsx, services/DAVEProjectTruth.ts',
   );
 }
 
-if (hasAll(homeDashboard, ['PIEMissionCard', "Today's mission", 'Begin Capture'])) {
+if (hasAll(homeDashboard, ["Today's Priority", 'Review priority', 'liveAuthority.projectTruth.briefing'])) {
   pass(
     'Today PIE briefing',
-    'PIE/Home shows a mission card and leads toward Capture.',
-    'components/HomeDashboard.tsx',
+    'Overview shows DAVE’s current priority, supporting briefing, and one review action.',
+    'App.tsx',
   );
 } else {
   warn(
     'Today PIE briefing',
-    'Mission card or Capture entry point was not detected on PIE/Home.',
-    'Show mission, reason, and Begin Capture on PIE/Home.',
-    'components/HomeDashboard.tsx',
+    'DAVE priority briefing was not detected on Overview.',
+    'Show the current priority, supporting briefing, and one review action on Overview.',
+    'App.tsx',
   );
 }
 
 if (
   hasAll(projectCards, [
-    'Mission:',
-    'Next PIE Recommendation',
-    'Current concern',
-    'Area',
-    'GPS',
-    'Understanding',
+    'overviewProjectHealth',
+    'overviewProjectSummary',
+    'overviewProjectActivity',
+    'onOpenProject(row.project)',
   ])
 ) {
   pass(
     'Project cards',
-    'Project cards show PIE-driven mission, location, understanding, concern, and next action.',
-    'components/ProjectFinderRow.tsx',
+    'Project cards show current health, bounded project status, recent activity, and open the project workspace.',
+    'App.tsx',
   );
 } else {
   warn(
     'Project cards',
-    'Project cards may be missing PIE-driven location, mission, or next action context.',
-    'Show location/area, GPS status, PIE confidence/understanding, current concern, and next best action.',
-    'components/ProjectFinderRow.tsx',
+    'Project cards may be missing current health, status, activity, or workspace navigation.',
+    'Show project health, bounded status, recent activity, and a clear project destination.',
+    'App.tsx',
   );
 }
 
@@ -8303,9 +8219,11 @@ if (
 }
 
 if (
-  hasAll(homeDashboard, ['numberOfLines', 'adjustsFontSizeToFit', 'minimumFontScale', 'flexWrap']) &&
-  hasAll(photoCapture, ['numberOfLines', 'GuidedCaptureCard']) &&
-  hasAll(reportsScreen, ['numberOfLines', 'flexWrap', 'ReviewExperiencePanel'])
+  hasAll(homeDashboard, ['numberOfLines', 'overviewPriorityRecommendation', 'overviewPrioritySupport']) &&
+  hasAll(app, ['adjustsFontSizeToFit', 'minimumFontScale']) &&
+  hasAll(appShellTheme, ['flexWrap']) &&
+  hasAll(photoCapture, ['Capture Evidence', 'Photo saved.', 'Next Suggested Action']) &&
+  hasAll(reportsScreen, ['numberOfLines', 'flexWrap', 'BeforeYouSharePanel'])
 ) {
   pass(
     'Visual QA - flexible content',
@@ -8322,21 +8240,21 @@ if (
 }
 
 if (
-  hasAll([bottomNav, app].join('\n'), ['Home', 'Capture', 'Review', 'Share']) &&
+  hasAll(bottomNav, ['Overview', 'Tasks', 'Talk', 'Reports']) &&
   !hasAny(primaryBottomNavSource, ['Diagnostics', 'Developer Tools']) &&
   hasAny(bottomNav, ['flex: 1', 'numberOfLines', 'justifyContent'])
 ) {
   pass(
     'Visual QA - navigation labels',
-    'Bottom navigation uses the simplified Home / Capture / Review / Share workflow and does not expose developer labels.',
-    'components/BottomNavigation.tsx',
+    'Bottom navigation uses the live Overview / Tasks / Talk / Reports workflow and does not expose developer labels.',
+    'components/app-bottom-tabs.tsx',
   );
 } else {
   fail(
     'Visual QA - navigation labels',
     'Navigation labels may clip, confuse the user, or expose developer tools as primary navigation.',
-    'Keep bottom navigation to Home, Capture, Review, Share with resilient label sizing.',
-    'components/BottomNavigation.tsx',
+    'Keep bottom navigation to Overview, Tasks, Talk, and Reports with resilient label sizing.',
+    'components/app-bottom-tabs.tsx',
   );
 }
 
@@ -8374,28 +8292,32 @@ if (hasAll(majorUiSource, ['spacing']) && hasAll(majorUiSource, ['typography']))
 }
 
 if (
-  hasAll(homeDashboard, ['PIEMissionCard', 'primaryAction', 'secondaryAction']) &&
-  hasAll(photoCapture, ['GuidedCaptureCard', 'primaryAction', 'secondaryAction']) &&
-  hasAll(reportsScreen, ['ReviewExperiencePanel', 'reviewExperienceActionLabel', 'reportActionButtonPrimary'])
+  hasAll(homeDashboard, ["Today's Priority", 'Review priority']) &&
+  hasAll(photoCapture, ['Capture Evidence', 'Add Another Photo', 'Add Note']) &&
+  hasAll(reportsScreen, ['BeforeYouSharePanel', 'Approve Report', 'reportActionButtonPrimary'])
 ) {
   pass(
     'UX QA - one dominant action',
     'PIE, Capture, and Review expose one dominant action with secondary actions kept subordinate.',
-    'HomeDashboard, PhotoCapturePanel, ReportsScreen',
+    'App.tsx, screens/ReportsScreen.tsx',
   );
 } else {
   fail(
     'UX QA - one dominant action',
     'JARVIS cannot verify that major daily screens keep one dominant next action.',
     'Render one primary action on PIE, Capture, and Review, with secondary controls visually subordinate.',
-    'HomeDashboard, PhotoCapturePanel, ReportsScreen',
+    'App.tsx, screens/ReportsScreen.tsx',
   );
 }
 
 if (
-  hasAll(homeDashboard, ['primaryMessage', 'reason', 'primaryAction', 'nextState']) &&
-  hasAll(photoCapture, ['PIE needs', 'Why:', 'Photo saved']) &&
-  hasAll(reportsScreen, ['primaryMessage', 'reason', 'No report is sent automatically'])
+  hasAll(app, ['Why:', 'Photo saved.', 'Next Suggested Action']) &&
+  hasAll(reportsScreen, [
+    'Report Check',
+    'Read the report and approve it when it matches the current project status.',
+    'Approve Report',
+    'No report is sent automatically',
+  ])
 ) {
   pass(
     'Experience QA - user always has a next step',
@@ -8456,7 +8378,7 @@ if (
     'locationGroups',
     'whyRecommended',
   ]) &&
-  hasAll(reportsScreen, ['reviewFlags', 'Copy and Email unlock after approval', 'No report is sent automatically'])
+  hasAll(reportsScreen, ['reviewFlags', 'Copy, Email, and Text unlock after approval', 'No report is sent automatically'])
 ) {
   pass(
     'Executive QA - report quality gates',
@@ -8477,8 +8399,9 @@ if (
     'No supporting evidence was found for this report.',
     'Some evidence is missing a project.',
     'One or more action items need an owner.',
-    'Recommendation:',
-    'evidence-backed',
+    'One or more evidence items need a confirmed location.',
+    'One or more work areas need a clearer evidence summary.',
+    'Evidence-backed recommendation:',
   ])
 ) {
   pass(
@@ -8551,6 +8474,33 @@ if (
   );
 }
 
+const missingEvidencePaths = Array.from(new Set(
+  results.flatMap(result => {
+    const concretePaths = result.evidence?.match(
+      /(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:tsx|ts|js|md|json|sql)\b/g,
+    ) || [];
+
+    return concretePaths.filter(relativePath =>
+      !relativePath.includes('*') && !fileExists(relativePath),
+    );
+  }),
+));
+
+if (missingEvidencePaths.length > 0) {
+  fail(
+    'QA evidence integrity',
+    `JARVIS results cite missing files: ${missingEvidencePaths.join(', ')}.`,
+    'Update each affected result to cite the live implementation or remove the stale check.',
+    'scripts/jarvis-qa.js',
+  );
+} else {
+  pass(
+    'QA evidence integrity',
+    'Every concrete file cited by a JARVIS result exists in the current repository.',
+    'scripts/jarvis-qa.js',
+  );
+}
+
 const counts = results.reduce(
   (summary, result) => {
     summary[result.status] += 1;
@@ -8563,18 +8513,21 @@ const categoryScores = buildCategoryScores();
 const overallScore = Math.round(
   categoryScores.reduce((total, item) => total + item.score, 0) / categoryScores.length,
 );
-const buildStatus =
+const contractStatus =
   counts.FAIL > 0 ? 'FAIL' : counts.WARN > 0 ? 'PASS WITH WARNINGS' : 'PASS';
 const topProblems = buildTopProblems();
 const appleReviewNotes = buildAppleReviewNotes(categoryScores, counts);
 
-console.log('JARVIS Experience QA 2.0');
+console.log('V.I.C. Static Contract Audit');
 console.log(`Generated: ${new Date().toISOString()}`);
-console.log(`Build Status: ${buildStatus}`);
+console.log(`Contract Status: ${contractStatus}`);
 console.log(
-  `Summary: ${counts.PASS} PASS / ${counts.WARN} WARN / ${counts.FAIL} FAIL`,
+  `Contract Summary: ${counts.PASS} PASS / ${counts.WARN} WARN / ${counts.FAIL} FAIL`,
 );
-console.log(`Overall Score: ${overallScore}/100`);
+console.log(`Contract Score: ${overallScore}/100`);
+console.log('Runtime behavior: NOT EVALUATED');
+console.log('Physical-device behavior: NOT EVALUATED');
+console.log('Run npm run jarvis:qa for the complete automated release gate.');
 console.log('');
 
 console.log('Category Scores');
@@ -8586,9 +8539,9 @@ categoryScores.forEach(score => {
 console.log(`Overall: ${overallScore}/100`);
 console.log('');
 
-console.log('Rejection Report - Top 10 Problems');
+console.log('Static Contract Problems - Top 10');
 if (topProblems.length === 0) {
-  console.log('No blocking problems or warnings found. JARVIS still recommends the Apple Review Notes below before TestFlight.');
+  console.log('No static contract problems or warnings found. Runtime and device validation are still required.');
 } else {
   topProblems.forEach((problem, index) => {
     console.log(`${index + 1}. ${problem.workflow} [${problem.status}]`);

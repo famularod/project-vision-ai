@@ -1,5 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
+import { Image } from 'react-native';
 import {
   getCurrentSessionAccessToken,
   getSupabaseClient,
@@ -9,11 +10,58 @@ import {
 } from './SupabaseService';
 import type { ProjectUpdate, UpdatePhoto } from '../types';
 import {
+  createDAVEAreaIdentity,
+  daveAreaIdentitiesMatch,
+  daveVisualContinuityReason,
+  scoreDAVEVisualContinuityCandidate,
+} from './PIEVisualContinuity';
+import {
   PIE_PHOTO_FINDING_SCHEMA_VERSION,
   findingDisplayText,
   normalizePIEPhotoFindings,
   type PIEPhotoFinding,
 } from './PIEPhotoFindingNormalization';
+import {
+  derivePhotoAssessmentDisposition,
+  photoProjectProgressFromAuthority,
+  type PhotoAssessmentDisposition,
+} from './PhotoAssessment';
+import {
+  CURRENT_PHOTO_ANALYSIS_VERSIONS,
+  compareImmutablePhotoCapturedAt,
+  createPhotoAnalysisRunIdentity,
+  createPhotoEvidenceIdentity,
+  resolveImmutablePhotoCapturedAt,
+  type ImmutablePhotoCaptureOrder,
+  type ImmutablePhotoCaptureTimestamp,
+  type PhotoEvidenceIdentity,
+} from './PhotoAnalysisIdentity';
+import {
+  MAX_PHOTO_SOURCE_BYTES,
+  prepareSelectedPhotoPair,
+  readPhotoBase64WithinLimits,
+  selectWinningPriorPhotoCandidate,
+} from './PhotoPairPreparation';
+import {
+  buildPhotoEvidenceDeduplicationPlan,
+  decidePhotoEvidencePair,
+  type ExistingPhotoEvidenceVersion,
+} from './PhotoEvidenceDeduplication';
+import {
+  type PIEPhotoVisionProviderFailureReason,
+  validatePhotoAnalysisContractEnvelope,
+} from '../supabase/functions/_shared/pie-photo-analysis-contract';
+import {
+  providerFailureSummary,
+  readPIEPhotoVisionProviderResponse,
+  type PIEPhotoVisionFailureCategory,
+} from './PIEPhotoVisionResponse';
+import type { PhotoAnalysisTarget } from './PhotoAnalysisTarget';
+
+// The deployed provider may make two 45-second attempts. Keep the device
+// request open long enough for those attempts plus image preflight and result
+// persistence, while still bounding a genuinely stalled request.
+export const PIE_PHOTO_VISION_CLIENT_TIMEOUT_MS = 120_000;
 
 export type PIEPhotoIntelligenceStatus =
   | 'analyzing'
@@ -33,6 +81,7 @@ export type PIEPhotoIntelligenceDisplayState = {
   comparability: string | null;
   captureLimitations: string[];
   projectProgress: 'supported' | 'unsupported' | 'unable_to_determine';
+  assessmentDisposition?: PhotoAssessmentDisposition;
   repeatPhotoGuidance: string | null;
   authorityMessage: string;
   currentObservation?: string | null;
@@ -62,14 +111,20 @@ type AnalyzeInput = {
   photo: UpdatePhoto;
   priorUpdates: ProjectUpdate[];
   retryAttempt?: boolean;
+  onTargetPrepared?: (
+    target: Omit<PhotoAnalysisTarget, 'generation'>,
+  ) => void;
 };
 
 type StagedPhotoEvidence = {
   assetId: string;
   evidenceId: string;
+  evidenceVersion: number;
+  duplicateOfEvidenceId: string | null;
   storagePath: string;
   storagePathHash: string;
   contentHash: string;
+  contentSha256: string;
   sizeBytes: number;
 };
 
@@ -81,6 +136,9 @@ export type PIEPhotoPrepDiagnosticReason =
   | 'current_photo_upload_missing'
   | 'current_photo_storage_missing'
   | 'current_photo_unsupported_type'
+  | 'current_photo_too_large'
+  | 'current_photo_invalid_dimensions'
+  | 'current_photo_dimensions_too_large'
   | 'prior_photo_missing'
   | 'prior_photo_unreadable'
   | 'prior_photo_zero_bytes'
@@ -89,7 +147,10 @@ export type PIEPhotoPrepDiagnosticReason =
   | 'prior_photo_storage_missing'
   | 'prior_photo_stale_or_invalid'
   | 'prior_photo_wrong_area'
-  | 'prior_photo_unsupported_type';
+  | 'prior_photo_unsupported_type'
+  | 'prior_photo_too_large'
+  | 'prior_photo_invalid_dimensions'
+  | 'prior_photo_dimensions_too_large';
 
 export type PIEImagePrepareFailureReason =
   | PIEPhotoPrepDiagnosticReason
@@ -106,6 +167,8 @@ type PreparedPhotoFile =
       mimeType: string;
       extension: string;
       sizeBytes: number;
+      width: number;
+      height: number;
       sha256: string;
       base64: string;
     }
@@ -143,7 +206,8 @@ export type PIEPhotoVisionDiagnostics = {
   signedUrlsGenerated: boolean | null;
   providerInvocationId: string | null;
   providerResponseStatus: string | null;
-  failureCategory: 'network' | 'auth' | 'malformed_response' | 'provider_side' | 'unknown' | null;
+  providerFailureReason: PIEPhotoVisionProviderFailureReason | null;
+  failureCategory: PIEPhotoVisionFailureCategory | null;
   supabaseAuthState: 'loading' | 'signed_in' | 'signed_out' | 'expired' | 'unknown';
   tokenLookupResult: 'token_present' | 'token_missing' | null;
   tokenMissingReason: SupabaseSessionMissingReason | null;
@@ -203,7 +267,11 @@ export type PIEPriorNoPriorReason =
 export type PIEPriorPhotoMatchKey = {
   normalizedProjectKey: string | null;
   normalizedAreaKey: string | null;
-  capturedOrSavedAt: string | null;
+  normalizedAreaIdKey: string | null;
+  normalizedAreaNameKey: string | null;
+  capturedAt: string | null;
+  captureStatus: ImmutablePhotoCaptureTimestamp['status'];
+  captureSource: ImmutablePhotoCaptureTimestamp['source'];
   timestampMs: number | null;
   updateId: string | null;
   photoId: string | null;
@@ -228,13 +296,14 @@ export function buildAnalyzingPhotoIntelligenceState(): PIEPhotoIntelligenceDisp
   return {
     status: 'analyzing',
     title: 'Analyzing photo comparison',
-    summary: 'PIE is comparing this photo with prior project evidence.',
+    summary: 'Comparing this photo with prior project evidence.',
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
     comparability: null,
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: null,
     authorityMessage: 'Visual observations will not update project progress unless the evidence supports it.',
     updatedAt: new Date().toISOString(),
@@ -255,8 +324,9 @@ export function buildPreparingSecurePhotoAnalysisState(
     comparability: null,
     captureLimitations: [],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: null,
-    authorityMessage: 'PIE will compare the photos after the signed-in session is ready.',
+    authorityMessage: 'The photos will be compared after the signed-in session is ready.',
     currentObservation: null,
     changedFromPrior: null,
     additions: [],
@@ -277,20 +347,21 @@ export function buildPreparingSecurePhotoAnalysisState(
 }
 
 export function buildNoSuitablePriorPhotoIntelligenceState(
-  summary = 'PIE needs a prior photo from this project area before it can compare visible changes.',
+  summary = 'This first photo is saved for future comparison.',
 ): PIEPhotoIntelligenceDisplayState {
   return {
     status: 'no_suitable_prior_photo',
-    title: 'No suitable prior photo',
+    title: 'Baseline saved',
     summary,
     visibleChange: null,
     location: null,
     comparisonConfidence: null,
     comparability: null,
-    captureLimitations: ['No prior photo was available for a reliable comparison.'],
+    captureLimitations: [],
     projectProgress: 'unable_to_determine',
-    repeatPhotoGuidance: 'Capture a repeat photo from a similar angle when there is prior evidence to compare.',
-    authorityMessage: 'No project progress was inferred from this photo alone.',
+    assessmentDisposition: 'indeterminate',
+    repeatPhotoGuidance: 'Take the next photo from a similar angle to compare visible construction changes.',
+    authorityMessage: 'No project status was changed.',
     currentObservation: null,
     changedFromPrior: null,
     additions: [],
@@ -307,8 +378,37 @@ export async function analyzeProjectPhotoWithVision({
   photo,
   priorUpdates,
   retryAttempt = false,
+  onTargetPrepared,
 }: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
-  const currentPrepared = await preparePhotoFileForVision(photo, 'current');
+  const priorSelectionMetadata = findPriorComparablePhoto(update, photo, priorUpdates);
+  if (!priorSelectionMetadata.selected) {
+    return {
+      ...buildNoSuitablePriorPhotoIntelligenceState(
+        priorSelectionMetadata.candidateCount > 0
+          ? 'This photo is saved as the best available baseline for future comparison.'
+          : 'This first photo is saved for future comparison.',
+      ),
+      diagnostics: buildDiagnostics({
+        currentPhotoPrep: null,
+        selectedPriorPhotoId: null,
+        selectionCandidateCount: priorSelectionMetadata.candidateCount,
+        selectedPriorReason: null,
+        priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
+        rejectedPriorReasons: priorSelectionMetadata.rejectedReasons,
+        usablePriorCandidateFound: false,
+        skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount,
+        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection'],
+        resultProvenance: 'unsupported',
+      }),
+    };
+  }
+
+  const preparedPair = await prepareSelectedPhotoPair({
+    currentPhoto: photo,
+    priorPhoto: priorSelectionMetadata.selected.photo,
+    prepare: preparePhotoFileForVision,
+  });
+  const currentPrepared = preparedPair.current;
   if (!currentPrepared.ok) {
     return failedRetryState('Photo saved. Visual comparison unavailable.', {
       currentPhotoPrep: currentPrepared,
@@ -317,41 +417,72 @@ export async function analyzeProjectPhotoWithVision({
       failureCategory: 'malformed_response',
       selectedPriorPhotoId: null,
       priorUpdateUsed: null,
-      selectionCandidateCount: priorUpdates.reduce((total, item) => total + item.photos.length, 0),
+      selectionCandidateCount: priorSelectionMetadata.candidateCount,
       selectedPriorReason: null,
-      priorSelectionDiagnostics: buildEmptyPriorSelectionDiagnostics(update, photo, {
-        candidateCount: priorUpdates.reduce((total, item) => total + item.photos.length, 0),
-        noPriorReason: 'unknown',
-      }),
+      priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
       rejectedPriorReasons: [`current photo rejected: ${currentPrepared.reason}`],
-      executedStages: ['camera_capture', 'local_image_uri', 'current_photo_preparation_failed'],
+      executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection', 'current_photo_preparation_failed'],
       resultProvenance: 'unsupported',
       retryFetchedFreshToken: retryAttempt,
     });
   }
 
-  const priorSelection = await findPriorComparablePhoto(update, photo, priorUpdates);
-  if (!priorSelection.selected) {
+  onTargetPrepared?.({
+    projectId: projectIdForPhotoVision(update.projectName),
+    updateId: update.id,
+    photoId: photo.id,
+    contentSha256: currentPrepared.sha256,
+    capturedAt: resolveImmutablePhotoCapturedAt(photo).value,
+  });
+
+  const priorPrepared = preparedPair.prior;
+  if (!priorPrepared || !priorPrepared.ok) {
+    const priorFailure = priorPrepared ?? {
+      ok: false as const,
+      role: 'prior' as const,
+      reason: 'prior_photo_unreadable' as const,
+      sizeBytes: null,
+    };
+    const selectedLabel = `${priorSelectionMetadata.selected.update.id || 'update'}:${priorSelectionMetadata.selected.photo.id || 'photo'}`;
     return {
-      ...buildNoSuitablePriorPhotoIntelligenceState(
-        priorSelection.candidateCount > 0
-          ? 'No reliable prior photo to compare'
-          : 'No earlier photo is available for comparison.',
-      ),
+      ...buildNoSuitablePriorPhotoIntelligenceState('Prior photo unavailable'),
       diagnostics: buildDiagnostics({
         currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorFailure,
+        providerResponseStatus: priorFailure.reason,
+        imagePrepareFailureReason: priorFailure.reason,
+        failureCategory: 'malformed_response',
         selectedPriorPhotoId: null,
-        selectionCandidateCount: priorSelection.candidateCount,
+        priorUpdateUsed: null,
+        selectionCandidateCount: priorSelectionMetadata.candidateCount,
         selectedPriorReason: null,
-        priorSelectionDiagnostics: priorSelection.diagnostics,
-        rejectedPriorReasons: priorSelection.rejectedReasons,
+        priorSelectionDiagnostics: {
+          ...priorSelectionMetadata.diagnostics,
+          selectedPriorUpdateId: null,
+          selectedPriorPhotoId: null,
+          selectedPriorDate: null,
+          noPriorReason: 'no_usable_image',
+        },
+        rejectedPriorReasons: [
+          ...priorSelectionMetadata.rejectedReasons,
+          `${selectedLabel} rejected: ${priorFailure.reason}`,
+        ],
         usablePriorCandidateFound: false,
-        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
-        executedStages: ['camera_capture', 'local_image_uri', 'current_photo_prepared', 'prior_photo_selection'],
+        skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount + 1,
+        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection', 'current_photo_prepared', 'prior_photo_preparation_failed'],
+        retryFetchedFreshToken: retryAttempt,
         resultProvenance: 'unsupported',
       }),
     };
   }
+
+  const priorSelection = {
+    ...priorSelectionMetadata,
+    selected: {
+      ...priorSelectionMetadata.selected,
+      preparedFile: priorPrepared,
+    },
+  };
 
   const client = getSupabaseClient();
   if (!client) {
@@ -414,16 +545,84 @@ export async function analyzeProjectPhotoWithVision({
     });
     executedStages.push('current_photo_uploaded', 'current_evidence_record_created');
 
-    assertComparableEvidencePair(baselineEvidence, currentEvidence);
+    const pairDecision = decidePhotoEvidencePair({
+      baselineEvidenceId: baselineEvidence.evidenceId,
+      currentEvidenceId: currentEvidence.evidenceId,
+      baselineContentHash: baselineEvidence.contentHash,
+      currentContentHash: currentEvidence.contentHash,
+      baselineSizeBytes: baselineEvidence.sizeBytes,
+      currentSizeBytes: currentEvidence.sizeBytes,
+    });
+    if (pairDecision.kind === 'duplicate_bytes') {
+      executedStages.push('duplicate_evidence_lineage_resolved', 'identical_photo_provider_skipped');
+      return {
+        status: pairDecision.analysisStatus,
+        title: 'Duplicate photo recognized',
+        summary: 'This photo matches existing project evidence exactly and was linked without creating an analysis error.',
+        visibleChange: null,
+        location: photo.selectedAreaName || update.selectedAreaName || null,
+        comparisonConfidence: 'high',
+        comparability: 'identical_bytes',
+        captureLimitations: [
+          'The current and previous photo files are identical.',
+          'A duplicate file is not independent evidence of project progress.',
+        ],
+        projectProgress: pairDecision.projectProgress,
+        assessmentDisposition: 'indeterminate',
+        repeatPhotoGuidance: 'Capture a new photo of the current field condition before assessing change.',
+        authorityMessage: 'The duplicate was preserved as evidence lineage. No progress or project status was inferred.',
+        currentObservation: 'The current photo bytes match existing project evidence.',
+        changedFromPrior: 'No independent visual comparison was run because the files are identical.',
+        additions: [],
+        removals: [],
+        findings: [],
+        possibleProgress: 'No independent progress evidence was added by this duplicate photo.',
+        possibleConcerns: [],
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        currentPhotoAssetId: currentEvidence.assetId,
+        priorPhotoAssetId: baselineEvidence.assetId,
+        currentEvidenceId: currentEvidence.evidenceId,
+        priorEvidenceId: baselineEvidence.evidenceId,
+        semanticComparisonResultId: null,
+        provenance: 'unsupported',
+        visualGroundingRegions: [],
+        diagnostics: buildDiagnostics({
+          baselineEvidence,
+          currentEvidence,
+          providerResponseStatus: 'duplicate_bytes_resolved',
+          selectedPriorPhotoId: priorSelection.selected.photo.id,
+          priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+          selectionCandidateCount: priorSelection.candidateCount,
+          selectedPriorReason: priorSelection.selected.reason,
+          priorSelectionDiagnostics: priorSelection.diagnostics,
+          rejectedPriorReasons: priorSelection.rejectedReasons,
+          currentPhotoPrep: currentPrepared,
+          priorPhotoPrep: priorSelection.selected.preparedFile,
+          usablePriorCandidateFound: true,
+          skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
+          executedStages,
+          resultPairMatchesRequestedPair: true,
+          tokenLookup,
+          retryFetchedFreshToken: retryAttempt,
+          resultProvenance: 'unsupported',
+        }),
+        updatedAt: new Date().toISOString(),
+      };
+    }
 
-    const requestId = `pie-mobile-photo-pair-${stableHash([
+    const analysisRunIdentity = createPhotoAnalysisRunIdentity({
       organizationId,
       projectId,
-      baselineEvidence.evidenceId,
-      currentEvidence.evidenceId,
-    ].join(':'))}`;
+      priorEvidenceId: baselineEvidence.evidenceId,
+      currentEvidenceId: currentEvidence.evidenceId,
+      priorContentSha256: baselineEvidence.contentSha256,
+      currentContentSha256: currentEvidence.contentSha256,
+      versions: CURRENT_PHOTO_ANALYSIS_VERSIONS,
+    });
+    const requestId = analysisRunIdentity.requestId;
 
     const { data: functionData, error } = await client.functions.invoke('pie-photo-vision', {
+      timeout: PIE_PHOTO_VISION_CLIENT_TIMEOUT_MS,
       headers: {
         Authorization: `Bearer ${tokenLookup.accessToken}`,
       },
@@ -434,6 +633,11 @@ export async function analyzeProjectPhotoWithVision({
         projectId,
         baselineEvidenceId: baselineEvidence.evidenceId,
         currentEvidenceId: currentEvidence.evidenceId,
+        contractVersion: analysisRunIdentity.versions.contractVersion,
+        analyzerVersion: analysisRunIdentity.versions.analyzerVersion,
+        promptVersion: analysisRunIdentity.versions.promptVersion,
+        schemaVersion: analysisRunIdentity.versions.schemaVersion,
+        policyVersion: analysisRunIdentity.versions.policyVersion,
         projectName: update.projectName,
         areaName: photo.selectedAreaName || update.selectedAreaName || null,
         fieldNotes: update.notes || null,
@@ -442,7 +646,7 @@ export async function analyzeProjectPhotoWithVision({
     executedStages.push('edge_function_invoked');
 
     if (error) {
-      return failedRetryState('Photo intelligence could not finish. PIE will retry when cloud sync runs.', {
+      return failedRetryState('Photo intelligence could not finish. It will retry when cloud sync runs.', {
         baselineEvidence,
         currentEvidence,
         requestId,
@@ -464,14 +668,42 @@ export async function analyzeProjectPhotoWithVision({
       });
     }
 
-    const functionStatus = providerStatus(functionData);
-    if (functionStatus !== 'succeeded') {
-      return failedRetryState('Photo intelligence returned an unavailable comparison. Retry analysis.', {
+    const responseContract = validatePhotoAnalysisContractEnvelope('photo_pair', functionData);
+    if (!responseContract.valid) {
+      return failedRetryState('Photo intelligence returned an incompatible analysis contract. Retry after the analysis service is updated.', {
         baselineEvidence,
         currentEvidence,
         requestId,
-        providerResponseStatus: functionStatus,
-        failureCategory: functionStatus === 'degraded' ? 'malformed_response' : 'provider_side',
+        providerResponseStatus: 'photo_analysis_contract_mismatch',
+        failureCategory: 'malformed_response',
+        selectedPriorPhotoId: priorSelection.selected.photo.id,
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: priorSelection.selected.reason,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
+        rejectedPriorReasons: [
+          ...priorSelection.rejectedReasons,
+          ...responseContract.categories.map(category => `contract rejected: ${category}`),
+        ],
+        currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorSelection.selected.preparedFile,
+        usablePriorCandidateFound: true,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
+        executedStages: [...executedStages, 'provider_contract_rejected'],
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
+      });
+    }
+
+    const providerResponse = readPIEPhotoVisionProviderResponse(functionData);
+    if (providerResponse.status !== 'succeeded') {
+      return failedRetryState(providerFailureSummary(providerResponse.failureReason), {
+        baselineEvidence,
+        currentEvidence,
+        requestId,
+        providerResponseStatus: providerResponse.status,
+        providerFailureReason: providerResponse.failureReason,
+        failureCategory: providerResponse.failureCategory,
         selectedPriorPhotoId: priorSelection.selected.photo.id,
         priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
         selectionCandidateCount: priorSelection.candidateCount,
@@ -650,7 +882,7 @@ export async function analyzeProjectPhotoWithVision({
   }
 }
 
-async function findPriorComparablePhoto(
+function findPriorComparablePhoto(
   update: ProjectUpdate,
   photo: UpdatePhoto,
   priorUpdates: ProjectUpdate[],
@@ -662,7 +894,7 @@ async function findPriorComparablePhoto(
     reason: string;
     capturedAt: number;
     candidateIndex: number;
-    preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
+    continuityScore: number;
   }> = [];
   const acceptedAreaFallback: Array<{
     update: ProjectUpdate;
@@ -670,7 +902,7 @@ async function findPriorComparablePhoto(
     reason: string;
     capturedAt: number;
     candidateIndex: number;
-    preparedFile: Extract<PreparedPhotoFile, { ok: true }>;
+    continuityScore: number;
   }> = [];
   const rejectedReasons: string[] = [];
   let candidateCount = 0;
@@ -708,13 +940,26 @@ async function findPriorComparablePhoto(
       }
       afterSameProject += 1;
 
-      const isAreaFallbackCandidate =
-        Boolean(currentKey.normalizedAreaKey) && !candidateKey.normalizedAreaKey;
+      const currentAreaIdentity = createDAVEAreaIdentity(
+        currentKey.normalizedAreaIdKey,
+        currentKey.normalizedAreaNameKey,
+      );
+      const candidateAreaIdentity = createDAVEAreaIdentity(
+        candidateKey.normalizedAreaIdKey,
+        candidateKey.normalizedAreaNameKey,
+      );
+      const currentHasArea = Boolean(
+        currentAreaIdentity.idKey || currentAreaIdentity.nameKey,
+      );
+      const candidateHasArea = Boolean(
+        candidateAreaIdentity.idKey || candidateAreaIdentity.nameKey,
+      );
+      const isAreaFallbackCandidate = currentHasArea && !candidateHasArea;
 
       if (
-        currentKey.normalizedAreaKey &&
-        candidateKey.normalizedAreaKey &&
-        candidateKey.normalizedAreaKey !== currentKey.normalizedAreaKey
+        currentHasArea &&
+        candidateHasArea &&
+        !daveAreaIdentitiesMatch(currentAreaIdentity, candidateAreaIdentity)
       ) {
         rejectedReasons.push(`${label} rejected: prior_photo_wrong_area`);
         skippedCandidateCount += 1;
@@ -722,13 +967,11 @@ async function findPriorComparablePhoto(
       }
       afterSameArea += 1;
 
-      const timestampComparison = comparePriorCandidateTime(candidateKey, currentKey, candidateCount);
-      if (timestampComparison === 'invalid_current') {
-        rejectedReasons.push(`${label} rejected: timestamp_invalid`);
-        continue;
-      }
-      if (timestampComparison === 'not_earlier') {
-        rejectedReasons.push(`${label} rejected: not earlier than current photo`);
+      const timestampComparison = comparePriorCandidateTime(candidateKey, currentKey);
+      if (timestampComparison !== 'earlier') {
+        rejectedReasons.push(
+          `${label} rejected: ${priorCaptureRejectionReason(timestampComparison)}`,
+        );
         continue;
       }
       afterTimestamp += 1;
@@ -744,13 +987,6 @@ async function findPriorComparablePhoto(
         skippedCandidateCount += 1;
         continue;
       }
-
-      const preparedFile = await preparePhotoFileForVision(candidatePhoto, 'prior');
-      if (!preparedFile.ok) {
-        rejectedReasons.push(`${label} rejected: ${preparedFile.reason}`);
-        skippedCandidateCount += 1;
-        continue;
-      }
       afterUsableImage += 1;
 
       const candidateRecord = {
@@ -758,13 +994,21 @@ async function findPriorComparablePhoto(
         photo: candidatePhoto,
         capturedAt: candidateKey.timestampMs ?? 0,
         candidateIndex: candidateCount,
-        preparedFile,
+        continuityScore: scoreDAVEVisualContinuityCandidate({
+          currentUpdate: update,
+          currentPhoto: photo,
+          candidateUpdate,
+          candidatePhoto,
+        }),
         reason: isAreaFallbackCandidate
           ? 'most recent valid earlier photo from same project; prior photo has no area set, matched as area-unconfirmed fallback (no same-area candidate was available)'
           : currentKey.normalizedAreaKey
             ? 'most recent valid earlier photo from same project and area'
             : 'most recent valid earlier photo from same project',
       };
+      if (candidateRecord.continuityScore > 0) {
+        candidateRecord.reason = `${candidateRecord.reason}; preferred for ${daveVisualContinuityReason(candidateRecord.continuityScore)}`;
+      }
 
       if (isAreaFallbackCandidate) {
         acceptedAreaFallback.push(candidateRecord);
@@ -774,13 +1018,10 @@ async function findPriorComparablePhoto(
     }
   }
 
-  const byRecency = (
-    a: { capturedAt: number; candidateIndex: number },
-    b: { capturedAt: number; candidateIndex: number },
-  ) => b.capturedAt - a.capturedAt || a.candidateIndex - b.candidateIndex;
-  acceptedConfirmedArea.sort(byRecency);
-  acceptedAreaFallback.sort(byRecency);
-  const selected = acceptedConfirmedArea[0] ?? acceptedAreaFallback[0] ?? null;
+  const selected = selectWinningPriorPhotoCandidate(
+    acceptedConfirmedArea,
+    acceptedAreaFallback,
+  );
   const noPriorReason = selected
     ? null
     : noPriorReasonFromCounters({
@@ -815,27 +1056,22 @@ export function buildPIEPriorPhotoMatchKey(
   update: ProjectUpdate,
   photo?: UpdatePhoto | null,
 ): PIEPriorPhotoMatchKey {
-  const capturedOrSavedAt = firstNonEmptyString([
-    update.workflowTimestamps?.firstPhotoAddedAt,
-    update.workflowTimestamps?.sendTappedAt,
-    update.workflowTimestamps?.sendResolvedAt,
-    photo?.locationCapturedAt,
-    update.locationCapturedAt,
-    update.pieStartedAt,
-    update.date,
-  ]);
+  const captureTimestamp = resolveImmutablePhotoCapturedAt(photo);
+
+  const areaIdentity = createDAVEAreaIdentity(
+    photo?.selectedAreaId || update.selectedAreaId || null,
+    photo?.selectedAreaName || update.selectedAreaName || null,
+  );
 
   return {
     normalizedProjectKey: normalizedMatchKey(update.projectName),
-    normalizedAreaKey: normalizedMatchKey(
-      photo?.selectedAreaId ||
-      update.selectedAreaId ||
-      photo?.selectedAreaName ||
-      update.selectedAreaName ||
-      '',
-    ),
-    capturedOrSavedAt,
-    timestampMs: timestampMsOrNull(capturedOrSavedAt),
+    normalizedAreaKey: areaIdentity.idKey || areaIdentity.nameKey || null,
+    normalizedAreaIdKey: areaIdentity.idKey || null,
+    normalizedAreaNameKey: areaIdentity.nameKey || null,
+    capturedAt: captureTimestamp.value,
+    captureStatus: captureTimestamp.status,
+    captureSource: captureTimestamp.source,
+    timestampMs: captureTimestamp.epochMs,
     updateId: update.id || null,
     photoId: photo?.id || null,
   };
@@ -844,17 +1080,46 @@ export function buildPIEPriorPhotoMatchKey(
 function comparePriorCandidateTime(
   candidateKey: PIEPriorPhotoMatchKey,
   currentKey: PIEPriorPhotoMatchKey,
-  candidateIndex: number,
-): 'earlier' | 'not_earlier' | 'invalid_current' {
-  if (currentKey.timestampMs === null) return 'invalid_current';
-  if (candidateKey.timestampMs === null) return candidateIndex > 0 ? 'earlier' : 'not_earlier';
-  if (candidateKey.timestampMs < currentKey.timestampMs) return 'earlier';
-  if (candidateKey.timestampMs === currentKey.timestampMs) {
-    return candidateKey.updateId !== currentKey.updateId || candidateKey.photoId !== currentKey.photoId
-      ? 'earlier'
-      : 'not_earlier';
+): ImmutablePhotoCaptureOrder {
+  return compareImmutablePhotoCapturedAt(
+    captureTimestampFromMatchKey(candidateKey),
+    captureTimestampFromMatchKey(currentKey),
+  );
+}
+
+function captureTimestampFromMatchKey(
+  key: PIEPriorPhotoMatchKey,
+): ImmutablePhotoCaptureTimestamp {
+  return {
+    value: key.capturedAt,
+    epochMs: key.timestampMs,
+    status: key.captureStatus,
+    source: key.captureSource,
+  };
+}
+
+function validCaptureTimestampValue(photo: UpdatePhoto) {
+  const captureTimestamp = resolveImmutablePhotoCapturedAt(photo);
+  return captureTimestamp.status === 'valid' ? captureTimestamp.value : null;
+}
+
+function priorCaptureRejectionReason(order: ImmutablePhotoCaptureOrder) {
+  switch (order) {
+    case 'current_missing':
+      return 'timestamp_invalid (current photo capture time is missing)';
+    case 'current_invalid':
+      return 'timestamp_invalid (current photo capture time is invalid)';
+    case 'candidate_missing':
+      return 'prior photo capture time is missing';
+    case 'candidate_invalid':
+      return 'prior photo capture time is invalid';
+    case 'equal':
+      return 'capture time equals current photo; earlier order is unproven';
+    case 'later':
+      return 'not earlier than current photo';
+    case 'earlier':
+      return 'earlier';
   }
-  return 'not_earlier';
 }
 
 function noPriorReasonFromCounters({
@@ -876,7 +1141,7 @@ function noPriorReasonFromCounters({
 }): PIEPriorNoPriorReason {
   if (!currentKey.normalizedProjectKey) return 'missing_project_key';
   if (!currentKey.normalizedAreaKey) return 'missing_area_key';
-  if (currentKey.timestampMs === null) return 'timestamp_invalid';
+  if (currentKey.captureStatus !== 'valid') return 'timestamp_invalid';
   if (candidateCount === 0) return 'no_earlier_photo';
   if (afterSameProject === 0) return 'no_same_project';
   if (afterSameArea === 0) return 'no_same_area';
@@ -932,28 +1197,10 @@ function buildPriorSelectionDiagnostics(
     selectedPriorUpdateId: input.selected?.update.id || null,
     selectedPriorPhotoId: input.selected?.photo.id || null,
     selectedPriorDate: input.selected
-      ? firstNonEmptyString([
-          input.selected.photo.locationCapturedAt,
-          input.selected.update.workflowTimestamps?.firstPhotoAddedAt,
-          input.selected.update.date,
-        ])
+      ? validCaptureTimestampValue(input.selected.photo)
       : null,
     noPriorReason: input.noPriorReason,
   };
-}
-
-function buildPhotoEvidenceId(
-  organizationId: string,
-  projectId: string,
-  updateId: string,
-  photoId: string,
-) {
-  return `pie-mobile-photo-${stableHash([
-    organizationId,
-    projectId,
-    updateId,
-    photoId,
-  ].join(':'))}`;
 }
 
 const photoEvidenceStagingCache = new Map<string, Promise<StagedPhotoEvidence>>();
@@ -966,21 +1213,31 @@ function stagePhotoEvidence(params: {
   captureSource: 'camera' | 'library';
   preparedFile: PreparedPhotoFile;
 }): Promise<StagedPhotoEvidence> {
-  const evidenceId = buildPhotoEvidenceId(
-    params.organizationId,
-    params.projectId,
-    params.update.id,
-    params.photo.id,
-  );
+  if (!params.preparedFile.ok) {
+    return Promise.reject(new PhotoPreparationError(
+      params.preparedFile.role,
+      params.preparedFile.reason,
+      params.preparedFile.detail,
+    ));
+  }
 
-  const cached = photoEvidenceStagingCache.get(evidenceId);
+  const identity = createPhotoEvidenceIdentity({
+    organizationId: params.organizationId,
+    projectId: params.projectId,
+    updateId: params.update.id,
+    photoId: params.photo.id,
+    contentSha256: params.preparedFile.sha256,
+  });
+  const stagingCacheKey = identity.stagingCacheKey;
+
+  const cached = photoEvidenceStagingCache.get(stagingCacheKey);
   if (cached) return cached;
 
-  const staging = stagePhotoEvidenceUncached(params).catch(error => {
-    photoEvidenceStagingCache.delete(evidenceId);
+  const staging = stagePhotoEvidenceUncached({ ...params, identity }).catch(error => {
+    photoEvidenceStagingCache.delete(stagingCacheKey);
     throw error;
   });
-  photoEvidenceStagingCache.set(evidenceId, staging);
+  photoEvidenceStagingCache.set(stagingCacheKey, staging);
   return staging;
 }
 
@@ -991,6 +1248,7 @@ async function stagePhotoEvidenceUncached({
   photo,
   captureSource,
   preparedFile,
+  identity,
 }: {
   organizationId: string;
   projectId: string;
@@ -998,6 +1256,7 @@ async function stagePhotoEvidenceUncached({
   photo: UpdatePhoto;
   captureSource: 'camera' | 'library';
   preparedFile: PreparedPhotoFile;
+  identity: PhotoEvidenceIdentity;
 }): Promise<StagedPhotoEvidence> {
   const client = getSupabaseClient();
   if (!client) throw new Error('Supabase unavailable');
@@ -1006,115 +1265,257 @@ async function stagePhotoEvidenceUncached({
 
   const mimeType = preparedFile.mimeType;
   const extension = preparedFile.extension;
-  const evidenceId = buildPhotoEvidenceId(organizationId, projectId, update.id, photo.id);
-  const assetId = evidenceId;
-  const storagePath = `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
-  const storagePathHash = stableHash(storagePath);
+  const evidenceId = identity.evidenceId;
+  const assetId = identity.assetId;
   const contentHash = `sha256:${preparedFile.sha256}`;
+  const capturedAt = validCaptureTimestampValue(photo);
+  const receivedAt = new Date().toISOString();
+  let lastConflictMessage = 'photo_evidence_version_conflict';
 
-  const uploadResult = await uploadPreparedPhoto({
-    bucket: PIE_EVIDENCE_BUCKET,
-    path: storagePath,
-    preparedFile,
-    upsert: true,
-  });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const existingVersions = await loadExistingPhotoEvidenceVersions({
+      client,
+      organizationId,
+      projectId,
+      contentHash,
+      role: preparedFile.role,
+    });
+    const plan = buildPhotoEvidenceDeduplicationPlan({
+      intendedEvidenceId: evidenceId,
+      analyzerId: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerId,
+      analyzerVersion: CURRENT_PHOTO_ANALYSIS_VERSIONS.analyzerVersion,
+      existingVersions,
+    });
+    const storagePath = plan.existingStoragePath
+      || `${organizationId}/${projectId}/photo/${evidenceId}/original.${extension}`;
+    const storagePathHash = stableHash(storagePath);
 
-  if (!uploadResult.ok) {
+    if (plan.mode === 'idempotent_existing' && plan.existingStoragePath) {
+      const uploadResult = await uploadPreparedPhoto({
+        bucket: PIE_EVIDENCE_BUCKET,
+        path: storagePath,
+        preparedFile,
+        upsert: true,
+      });
+      if (!uploadResult.ok) {
+        throw new PhotoPreparationError(
+          preparedFile.role,
+          prepReason(preparedFile.role, 'upload_missing'),
+          uploadResult.error || 'Photo evidence upload failed',
+        );
+      }
+      return stagedPhotoEvidenceResult({
+        assetId,
+        evidenceId,
+        evidenceVersion: plan.evidenceVersion,
+        duplicateOfEvidenceId: plan.duplicateOfEvidenceId,
+        storagePath,
+        storagePathHash,
+        contentHash,
+        contentSha256: preparedFile.sha256,
+        sizeBytes: preparedFile.sizeBytes,
+      });
+    }
+
+    if (!plan.existingStoragePath) {
+      const uploadResult = await uploadPreparedPhoto({
+        bucket: PIE_EVIDENCE_BUCKET,
+        path: storagePath,
+        preparedFile,
+        upsert: true,
+      });
+
+      if (!uploadResult.ok) {
+        throw new PhotoPreparationError(
+          preparedFile.role,
+          prepReason(preparedFile.role, 'upload_missing'),
+          uploadResult.error || 'Photo evidence upload failed',
+        );
+      }
+    }
+
+    if (plan.mode !== 'idempotent_existing') {
+      const { data: userData } = await client.auth.getUser();
+      const storageRefs: JsonValue = [{
+        bucket: PIE_EVIDENCE_BUCKET,
+        path: storagePath,
+        variant: 'original',
+        mimeType,
+        sizeBytes: preparedFile.sizeBytes,
+        sha256: preparedFile.sha256,
+      }];
+      const evidencePayload = {
+        id: evidenceId,
+        organization_id: organizationId,
+        project_id: projectId,
+        evidence_type: 'photo',
+        source: 'mobile_photo_update',
+        source_system: 'project_photo_update_tool',
+        captured_at: capturedAt,
+        effective_at: update.date || receivedAt,
+        received_at: receivedAt,
+        author_id: userData.user?.id ?? null,
+        storage_refs: storageRefs,
+        content_hash: contentHash,
+        mime_type: mimeType,
+        evidence_version: plan.evidenceVersion,
+        authority: 'supporting',
+        processing_state: 'queued',
+        analyzer_id: plan.analyzerId,
+        analyzer_version: plan.analyzerVersion,
+        lineage: {
+          parentEvidenceIds: [...plan.parentEvidenceIds],
+          derivedEvidenceIds: [],
+          analyzerRunIds: [],
+          correctionIds: [],
+        },
+        associations: [{
+          type: 'location',
+          id: photo.selectedAreaId || update.selectedAreaId || projectId,
+          role: photo.selectedAreaName || update.selectedAreaName || update.projectName,
+        }],
+        related_evidence_ids: [...plan.parentEvidenceIds],
+        hidden_from_normal_queries: false,
+      };
+      const { error: evidenceError } = await client
+        .from('pie_evidence_records')
+        .upsert(evidencePayload);
+
+      if (evidenceError) {
+        lastConflictMessage = evidenceError.message;
+        if (attempt < 2 && isPhotoEvidenceVersionConflict(evidenceError)) continue;
+        throw new PhotoPreparationError(
+          preparedFile.role,
+          prepReason(preparedFile.role, 'storage_missing'),
+          evidenceError.message,
+        );
+      }
+    }
+
+    const { error: assetError } = await client
+      .from('pie_photo_assets')
+      .upsert({
+        evidence_id: evidenceId,
+        organization_id: organizationId,
+        project_id: projectId,
+        original_storage_path: storagePath,
+        analysis_derivative_path: null,
+        thumbnail_path: null,
+        content_hash: contentHash,
+        duplicate_of_evidence_id: plan.duplicateOfEvidenceId,
+        width: preparedFile.width,
+        height: preparedFile.height,
+        mime_type: mimeType,
+        size_bytes: preparedFile.sizeBytes,
+        capture_source: captureSource,
+        captured_at: capturedAt,
+        exif: {},
+        analysis_status: 'queued',
+        current_analysis_version: plan.currentAnalysisVersion,
+        hidden_from_normal_queries: false,
+      });
+
+    if (assetError) {
+      throw new PhotoPreparationError(
+        preparedFile.role,
+        prepReason(preparedFile.role, 'storage_missing'),
+        assetError.message,
+      );
+    }
+
+    return stagedPhotoEvidenceResult({
+      assetId,
+      evidenceId,
+      evidenceVersion: plan.evidenceVersion,
+      duplicateOfEvidenceId: plan.duplicateOfEvidenceId,
+      storagePath,
+      storagePathHash,
+      contentHash,
+      contentSha256: preparedFile.sha256,
+      sizeBytes: preparedFile.sizeBytes,
+    });
+  }
+
+  throw new PhotoPreparationError(
+    preparedFile.role,
+    prepReason(preparedFile.role, 'storage_missing'),
+    lastConflictMessage,
+  );
+}
+
+async function loadExistingPhotoEvidenceVersions({
+  client,
+  organizationId,
+  projectId,
+  contentHash,
+  role,
+}: {
+  client: NonNullable<ReturnType<typeof getSupabaseClient>>;
+  organizationId: string;
+  projectId: string;
+  contentHash: string;
+  role: PhotoPrepRole;
+}): Promise<ExistingPhotoEvidenceVersion[]> {
+  const { data: evidenceData, error: evidenceError } = await client
+    .from('pie_evidence_records')
+    .select('id,evidence_version,analyzer_id,analyzer_version,processing_state')
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .eq('content_hash', contentHash)
+    .order('evidence_version', { ascending: true });
+  if (evidenceError) {
     throw new PhotoPreparationError(
-      preparedFile.role,
-      prepReason(preparedFile.role, 'upload_missing'),
-      uploadResult.error || 'Photo evidence upload failed',
+      role,
+      prepReason(role, 'storage_missing'),
+      evidenceError.message,
     );
   }
 
-  const { data: userData } = await client.auth.getUser();
-  const receivedAt = new Date().toISOString();
-  const storageRefs: JsonValue = [{
-    bucket: PIE_EVIDENCE_BUCKET,
-    path: storagePath,
-    variant: 'original',
-    mimeType,
-    sizeBytes: preparedFile.sizeBytes,
-    sha256: preparedFile.sha256,
-  }];
+  const evidenceRows = arrayRecords(evidenceData);
+  if (evidenceRows.length === 0) return [];
 
-  const evidencePayload = {
-    id: evidenceId,
-    organization_id: organizationId,
-    project_id: projectId,
-    evidence_type: 'photo',
-    source: 'mobile_photo_update',
-    source_system: 'project_photo_update_tool',
-    captured_at: photo.locationCapturedAt || update.date || receivedAt,
-    effective_at: update.date || receivedAt,
-    received_at: receivedAt,
-    author_id: userData.user?.id ?? null,
-    storage_refs: storageRefs,
-    content_hash: contentHash,
-    mime_type: mimeType,
-    evidence_version: 1,
-    authority: 'supporting',
-    processing_state: 'queued',
-    analyzer_id: 'pie-production-photo-vision',
-    analyzer_version: null,
-    lineage: {
-      parentEvidenceIds: [],
-      derivedEvidenceIds: [],
-      analyzerRunIds: [],
-      correctionIds: [],
-    },
-    associations: [{
-      type: 'location',
-      id: photo.selectedAreaId || update.selectedAreaId || projectId,
-      role: photo.selectedAreaName || update.selectedAreaName || update.projectName,
-    }],
-    related_evidence_ids: [],
-    hidden_from_normal_queries: false,
-  };
-
-  const { error: evidenceError } = await client
-    .from('pie_evidence_records')
-    .upsert(evidencePayload);
-
-  if (evidenceError) {
-    throw new PhotoPreparationError(preparedFile.role, prepReason(preparedFile.role, 'storage_missing'), evidenceError.message);
-  }
-
-  const { error: assetError } = await client
+  const { data: assetData, error: assetError } = await client
     .from('pie_photo_assets')
-    .upsert({
-      evidence_id: evidenceId,
-      organization_id: organizationId,
-      project_id: projectId,
-      original_storage_path: storagePath,
-      analysis_derivative_path: null,
-      thumbnail_path: null,
-      content_hash: contentHash,
-      duplicate_of_evidence_id: null,
-      width: null,
-      height: null,
-      mime_type: mimeType,
-      size_bytes: preparedFile.sizeBytes,
-      capture_source: captureSource,
-      captured_at: photo.locationCapturedAt || update.date || receivedAt,
-      exif: {},
-      analysis_status: 'queued',
-      current_analysis_version: null,
-      hidden_from_normal_queries: false,
-    });
-
+    .select('evidence_id,duplicate_of_evidence_id,current_analysis_version,original_storage_path')
+    .eq('organization_id', organizationId)
+    .eq('project_id', projectId)
+    .eq('content_hash', contentHash);
   if (assetError) {
-    throw new PhotoPreparationError(preparedFile.role, prepReason(preparedFile.role, 'storage_missing'), assetError.message);
+    throw new PhotoPreparationError(
+      role,
+      prepReason(role, 'storage_missing'),
+      assetError.message,
+    );
   }
 
-  return {
-    assetId,
-    evidenceId,
-    storagePath,
-    storagePathHash,
-    contentHash,
-    sizeBytes: preparedFile.sizeBytes,
-  };
+  const assetsByEvidenceId = new Map(
+    arrayRecords(assetData).map(row => [String(row.evidence_id || ''), row]),
+  );
+  return evidenceRows.map(row => {
+    const id = String(row.id || '').trim();
+    const asset = assetsByEvidenceId.get(id) ?? {};
+    return {
+      id,
+      evidenceVersion: finiteNumberOrNull(row.evidence_version) ?? 0,
+      analyzerId: stringOrNull(row.analyzer_id),
+      analyzerVersion: stringOrNull(row.analyzer_version),
+      processingState: stringOrNull(row.processing_state),
+      duplicateOfEvidenceId: stringOrNull(asset.duplicate_of_evidence_id),
+      currentAnalysisVersion: stringOrNull(asset.current_analysis_version),
+      originalStoragePath: stringOrNull(asset.original_storage_path),
+    };
+  });
+}
+
+function stagedPhotoEvidenceResult(value: StagedPhotoEvidence): StagedPhotoEvidence {
+  return value;
+}
+
+function isPhotoEvidenceVersionConflict(error: { code?: string; message?: string }) {
+  const message = String(error.message || '').toLowerCase();
+  return error.code === '23505'
+    || message.includes('duplicate key')
+    || message.includes('unique constraint');
 }
 
 function buildDisplayStateFromComparison(
@@ -1155,7 +1556,18 @@ function buildDisplayStateFromComparison(
   const status = limitations.length > 0
     ? 'completed_with_limitations'
     : 'analysis_complete';
-  const progress = progressStatus(String(row.conclusion || ''), String(jarvis.progressDisposition || ''));
+  const progress = photoProjectProgressFromAuthority(
+    String(jarvis.progressDisposition || ''),
+  );
+  const assessmentDisposition = derivePhotoAssessmentDisposition({
+    observationAccepted,
+    conclusion: typeof row.conclusion === 'string' ? row.conclusion : null,
+    comparabilityClassification:
+      typeof row.comparability_classification === 'string'
+        ? row.comparability_classification
+        : null,
+    normalizedFindingCount: findings.length,
+  });
   const provenance = visibleChange ? 'visual_only' : 'unsupported';
   const title = observationAccepted
     ? status === 'completed_with_limitations'
@@ -1170,18 +1582,19 @@ function buildDisplayStateFromComparison(
       ? plainLanguageSummary
       : visibleChange
         ? `${visibleChange}${location ? ` ${location}.` : '.'}`
-        : 'PIE did not find a supported visible change in this comparison.',
+        : 'No supported visible change was found in this comparison.',
     visibleChange,
     location,
     comparisonConfidence: String(row.confidence || 'unknown'),
     comparability: String(row.comparability_classification || 'unknown'),
     captureLimitations: limitations,
     projectProgress: progress,
+    assessmentDisposition,
     repeatPhotoGuidance: stringArray(row.repeat_photo_guidance)[0] ?? null,
     authorityMessage: progress === 'supported'
-      ? 'PIE found visual evidence that may support progress, but project status still requires normal evidence checks.'
-      : 'This is a visual observation only. PIE did not create a milestone, schedule, cost, compliance, or status update.',
-    currentObservation: visibleChange || findings[0]?.description || 'PIE compared the current photo with prior visual evidence.',
+      ? 'Visual evidence may support progress, but project status still requires normal evidence checks.'
+      : 'This is a visual observation only. No milestone, schedule, cost, compliance, or status update was created.',
+    currentObservation: visibleChange || findings[0]?.description || 'The current photo was compared with prior visual evidence.',
     changedFromPrior: visibleChange || 'No reliable visual change was detected.',
     additions: additionLabels,
     removals: removalLabels,
@@ -1246,6 +1659,7 @@ function unavailableState(
       safeUnavailableReason(summary),
     ],
     projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
     repeatPhotoGuidance: null,
     authorityMessage: 'The app will continue saving photos and notes without photo intelligence.',
     currentObservation: null,
@@ -1284,7 +1698,8 @@ function failedRetryState(
       safeUnavailableReason(summary),
     ],
     projectProgress: 'unable_to_determine',
-    repeatPhotoGuidance: 'Keep the photo. PIE can retry from cloud evidence later.',
+    assessmentDisposition: 'indeterminate',
+    repeatPhotoGuidance: 'Keep the photo. Comparison can retry from cloud evidence later.',
     authorityMessage: 'No project progress was inferred while analysis was unavailable.',
     currentObservation: null,
     changedFromPrior: null,
@@ -1307,16 +1722,6 @@ function failedRetryState(
     }),
     updatedAt: new Date().toISOString(),
   };
-}
-
-function assertComparableEvidencePair(
-  baselineEvidence: StagedPhotoEvidence,
-  currentEvidence: StagedPhotoEvidence,
-) {
-  if (baselineEvidence.evidenceId === currentEvidence.evidenceId) throw new Error('photo_pair_same_evidence_id');
-  if (baselineEvidence.assetId === currentEvidence.assetId) throw new Error('photo_pair_same_asset_id');
-  if (baselineEvidence.contentHash === currentEvidence.contentHash) throw new Error('photo_pair_identical_sha256');
-  if (baselineEvidence.sizeBytes <= 0 || currentEvidence.sizeBytes <= 0) throw new Error('photo_pair_empty_file');
 }
 
 function describeVisibleChange(
@@ -1385,19 +1790,6 @@ function describeGroundingRegions(items: Record<string, unknown>[]) {
     .filter(Boolean);
 }
 
-function progressStatus(
-  conclusion: string,
-  disposition: string,
-): PIEPhotoIntelligenceDisplayState['projectProgress'] {
-  if (disposition === 'supported' || conclusion === 'progress_visible' || conclusion === 'partial_progress_visible') {
-    return 'supported';
-  }
-  if (disposition === 'unsupported' || conclusion === 'no_material_visible_change' || conclusion === 'no_progress_visible') {
-    return 'unsupported';
-  }
-  return 'unable_to_determine';
-}
-
 function projectIdForPhotoVision(projectName: string) {
   return `project-${projectName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'unassigned'}`;
 }
@@ -1430,7 +1822,10 @@ function prepReason(
     | 'storage_missing'
     | 'stale_or_invalid'
     | 'wrong_area'
-    | 'unsupported_type',
+    | 'unsupported_type'
+    | 'too_large'
+    | 'invalid_dimensions'
+    | 'dimensions_too_large',
 ): PIEPhotoPrepDiagnosticReason {
   return `${role}_photo_${kind}` as PIEPhotoPrepDiagnosticReason;
 }
@@ -1532,10 +1927,43 @@ async function preparePhotoFileForVision(photo: UpdatePhoto, role: PhotoPrepRole
     return { ok: false, role, reason: prepReason(role, 'zero_bytes'), sizeBytes: info.size };
   }
 
+  if (info.size > MAX_PHOTO_SOURCE_BYTES) {
+    return { ok: false, role, reason: prepReason(role, 'too_large'), sizeBytes: info.size };
+  }
+
+  let dimensions: { width: number; height: number };
   try {
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    dimensions = await Image.getSize(uri);
+  } catch (error) {
+    return {
+      ok: false,
+      role,
+      reason: prepReason(role, 'invalid_dimensions'),
+      sizeBytes: info.size,
+      detail: error instanceof Error ? error.message : 'image_dimensions_unavailable',
+    };
+  }
+
+  try {
+    const boundedRead = await readPhotoBase64WithinLimits(
+      {
+        sizeBytes: info.size,
+        width: dimensions.width,
+        height: dimensions.height,
+      },
+      () => FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      }),
+    );
+    if (!boundedRead.ok) {
+      return {
+        ok: false,
+        role,
+        reason: prepReason(role, boundedRead.reason),
+        sizeBytes: info.size,
+      };
+    }
+    const base64 = boundedRead.base64;
     if (!base64) {
       return { ok: false, role, reason: prepReason(role, 'encoding_failed'), sizeBytes: info.size };
     }
@@ -1547,6 +1975,8 @@ async function preparePhotoFileForVision(photo: UpdatePhoto, role: PhotoPrepRole
       mimeType,
       extension: mimeExtension(mimeType),
       sizeBytes: info.size,
+      width: dimensions.width,
+      height: dimensions.height,
       sha256: await sha256(base64),
       base64,
     };
@@ -1561,25 +1991,6 @@ async function preparePhotoFileForVision(photo: UpdatePhoto, role: PhotoPrepRole
   }
 }
 
-async function readPhotoFileDigest(uri: string): Promise<{ exists: boolean; sizeBytes: number; sha256: string }> {
-  try {
-    const info = await FileSystem.getInfoAsync(uri);
-    if (!info.exists || typeof info.size !== 'number') {
-      return { exists: false, sizeBytes: 0, sha256: '' };
-    }
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    return {
-      exists: true,
-      sizeBytes: info.size,
-      sha256: await sha256(base64),
-    };
-  } catch {
-    return { exists: false, sizeBytes: 0, sha256: '' };
-  }
-}
-
 type PIEPhotoVisionDiagnosticInput = {
   baselineEvidence: StagedPhotoEvidence | null;
   currentEvidence: StagedPhotoEvidence | null;
@@ -1589,6 +2000,7 @@ type PIEPhotoVisionDiagnosticInput = {
   analysisRequestId: string | null;
   semanticComparisonResultId: string | null;
   providerResponseStatus: string | null;
+  providerFailureReason: PIEPhotoVisionProviderFailureReason | null;
   failureCategory: PIEPhotoVisionDiagnostics['failureCategory'];
   selectedPriorPhotoId: string | null;
   priorUpdateUsed: string | null;
@@ -1649,6 +2061,7 @@ function buildDiagnostics(input: Partial<PIEPhotoVisionDiagnosticInput>): PIEPho
     signedUrlsGenerated: input.signedUrlsGenerated ?? null,
     providerInvocationId: input.requestId ?? input.analysisRequestId ?? null,
     providerResponseStatus: input.providerResponseStatus ?? null,
+    providerFailureReason: input.providerFailureReason ?? null,
     failureCategory: input.failureCategory ?? null,
     supabaseAuthState: input.tokenLookup?.authState ?? 'unknown',
     tokenLookupResult: input.tokenLookup?.status ?? null,
@@ -1761,11 +2174,6 @@ function timestampMs(value: string | null | undefined): number {
   return Number.isFinite(time) ? time : Number.NaN;
 }
 
-function timestampMsOrNull(value: string | null | undefined): number | null {
-  const time = timestampMs(value);
-  return Number.isFinite(time) ? time : null;
-}
-
 function stableHash(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -1847,6 +2255,10 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map(String).filter(item => item.trim().length > 0)
     : [];
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 function toRecord(value: unknown): Record<string, unknown> {

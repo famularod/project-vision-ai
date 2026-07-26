@@ -7,6 +7,8 @@ node_modules/
 .expo/
 dist/
 web-build/
+coverage/
+/build/
 expo-env.d.ts
 
 # Native
@@ -40,6 +42,47 @@ yarn-error.*
 /ios
 /android
 
+# Version the product icons even though native projects are generated.
+!/ios/
+/ios/*
+!/ios/ProjectPhotoUpdateTool/
+/ios/ProjectPhotoUpdateTool/*
+!/ios/ProjectPhotoUpdateTool/Images.xcassets/
+/ios/ProjectPhotoUpdateTool/Images.xcassets/*
+!/ios/ProjectPhotoUpdateTool/Images.xcassets/AppIcon.appiconset/
+!/ios/ProjectPhotoUpdateTool/Images.xcassets/AppIcon.appiconset/Contents.json
+!/ios/ProjectPhotoUpdateTool/Images.xcassets/AppIcon.appiconset/App-Icon-1024x1024@1x.png
+!/android/
+/android/*
+!/android/app/
+/android/app/*
+!/android/app/src/
+/android/app/src/*
+!/android/app/src/main/
+/android/app/src/main/*
+!/android/app/src/main/res/
+/android/app/src/main/res/*
+!/android/app/src/main/res/mipmap-anydpi-v26/
+!/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+!/android/app/src/main/res/mipmap-mdpi/
+!/android/app/src/main/res/mipmap-mdpi/ic_launcher.webp
+!/android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.webp
+!/android/app/src/main/res/mipmap-hdpi/
+!/android/app/src/main/res/mipmap-hdpi/ic_launcher.webp
+!/android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.webp
+!/android/app/src/main/res/mipmap-xhdpi/
+!/android/app/src/main/res/mipmap-xhdpi/ic_launcher.webp
+!/android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.webp
+!/android/app/src/main/res/mipmap-xxhdpi/
+!/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.webp
+!/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.webp
+!/android/app/src/main/res/mipmap-xxxhdpi/
+!/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.webp
+!/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.webp
+!/android/app/src/main/res/values/
+/android/app/src/main/res/values/*
+!/android/app/src/main/res/values/colors.xml
+
 # Project Vision AI exports
 exports/
 *.zip
@@ -54,3 +97,7 @@ supabase/.temp/
 # Temporary local reports
 pie_current_git_status.txt
 pie_current_diff_stat.txt
+/validation/output/
+
+# Local agent/editor settings (P2-14)
+.claude/settings.local.json

@@ -12,6 +12,10 @@ import {
   colors,
   spacing,
 } from '../../theme';
+import {
+  appShellContentSafeAreaEdges,
+  useAppShellLayout,
+} from '../app-shell-layout';
 
 export function Screen({
   children,
@@ -22,10 +26,12 @@ export function Screen({
   contentStyle?: StyleProp<ViewStyle>;
   scrollEnabled?: boolean;
 }) {
+  const appShellLayout = useAppShellLayout();
+
   return (
     <SafeAreaView
       style={styles.safeArea}
-      edges={['top', 'left', 'right']}
+      edges={appShellContentSafeAreaEdges(appShellLayout)}
     >
       <KeyboardAvoidingView
         style={styles.keyboard}

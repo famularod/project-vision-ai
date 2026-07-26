@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import {
   colors,
   radius,
+  shadows,
   spacing,
   typography,
 } from '../../theme';
@@ -67,8 +68,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radius.sm,
+    borderRadius: radius.lg,
     padding: spacing.md,
+    ...shadows.small,
   },
 
   labelRow: {

@@ -20,6 +20,11 @@ import {
   type ScheduleSummaryTask,
 } from '../utils/schedule';
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import { stripScheduleDependencyMetadata } from './PIEScheduleDependencyNetwork';
+import {
+  normalizeScheduleStatus,
+  reconcileScheduleProgress,
+} from './ScheduleProgressInvariant';
 
 export type PIEScheduleInputFormat =
   | 'pdf'
@@ -73,6 +78,23 @@ export type PIEScheduleImportStatus =
   | 'OCR Required'
   | 'Unsupported Schedule';
 
+export type PIEScheduleDelimitedParseIssue = {
+  code:
+    | 'unexpected_quote'
+    | 'characters_after_closing_quote'
+    | 'unterminated_quote'
+    | 'column_count_mismatch';
+  row: number;
+  column: number;
+  message: string;
+};
+
+export type PIEScheduleDelimitedParseResult = {
+  delimiter: ',' | '\t';
+  rows: string[][];
+  issues: PIEScheduleDelimitedParseIssue[];
+};
+
 export type PIENormalizedScheduleTask = {
   id: string;
   project: string;
@@ -89,7 +111,6 @@ export type PIENormalizedScheduleTask = {
   contractor: string | null;
   critical: boolean;
   float: number | null;
-  dependencies: string[];
   notes: string | null;
   sourceItem: ScheduleItem;
   needsReview: boolean;
@@ -174,6 +195,7 @@ export type NormalizeScheduleImportResult = {
   extractionConfidencePercent: number;
   items: ScheduleItem[];
   reviewItems: PIEScheduleReviewItem[];
+  parseIssues: PIEScheduleDelimitedParseIssue[];
   message: string;
   validationOutput: {
     scheduleSummary: ScheduleSummary;
@@ -211,6 +233,89 @@ function normalized(value: string) {
 function optionalText(value: string) {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+export function explicitScheduleNote(value: unknown) {
+  if (typeof value !== 'string') return '';
+
+  return stripScheduleDependencyMetadata(value).trim();
+}
+
+export function normalizeImportedScheduleNote(
+  value: unknown,
+  importedFrom?: string | null,
+  options?: { preserveEditingWhitespace?: boolean },
+) {
+  if (options?.preserveEditingWhitespace && typeof value === 'string') {
+    return value;
+  }
+
+  const note = explicitScheduleNote(value);
+  if (!note || !importedFrom?.trim()) return note;
+
+  if (
+    /^AI\/OCR extraction from imported Gantt PDF\b/i.test(note) ||
+    /^The PDF was saved, but no dated schedule activity could be extracted automatically\b/i.test(note)
+  ) {
+    return '';
+  }
+
+  if (/Imported from a structured Microsoft Project PDF/i.test(note)) {
+    return note
+      .replace(/\bActivity ID:\s*[^.]+\.?\s*/gi, ' ')
+      .replace(/\bDuration:\s*\d+(?:\.\d+)?\s+days?\.?\s*/gi, ' ')
+      .replace(/\bImported from a structured Microsoft Project PDF;?\s*/gi, ' ')
+      .replace(/\bverify highlighted fields before approval\.?\s*/gi, ' ')
+      .replace(/\s+([.,;:])/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  const legacyCommunication = note.match(
+    /^Extracted locally from .*?\. Original message:\s*(.*?)\s+Extraction confidence:\s*\d+%\./i,
+  );
+  if (legacyCommunication?.[1]) {
+    return legacyCommunication[1].trim();
+  }
+
+  let cleaned = note;
+
+  if (/\bSchedule confidence:/i.test(cleaned)) {
+    const metadataStart = [
+      /\bWBS:/i,
+      /\bDuration:/i,
+      /\bCritical:/i,
+      /\bFloat:/i,
+      /\bReview needed:/i,
+      /\bSchedule confidence:/i,
+    ]
+      .map(pattern => cleaned.search(pattern))
+      .filter(index => index >= 0)
+      .sort((left, right) => left - right)[0];
+
+    if (metadataStart !== undefined) {
+      cleaned = cleaned.slice(0, metadataStart);
+    }
+  }
+
+  const aiReviewStart = [
+    /\bReview strength:/i,
+    /\bSource page:/i,
+    /\bReview this AI-extracted item before relying on it\.?/i,
+    /\bReview task name, location, and dates before relying on this item\.?/i,
+  ]
+    .map(pattern => cleaned.search(pattern))
+    .filter(index => index >= 0)
+    .sort((left, right) => left - right)[0];
+
+  if (aiReviewStart !== undefined) {
+    cleaned = cleaned.slice(0, aiReviewStart);
+  }
+
+  return cleaned
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -300,6 +405,16 @@ export function detectScheduleFormat({
 }
 
 export function cleanPdfScheduleText(value: string) {
+  const readableLines = value
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]+/g, ' ').replace(/ +/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+  const appearsToBeRawPdf = value.startsWith('%PDF-') || /\b(?:obj|stream|endobj)\b/.test(value.slice(0, 5_000));
+
+  if (!appearsToBeRawPdf) return readableLines;
+
   const parentheticalText = Array.from(
     value.matchAll(/\((?:\\.|[^\\)])*\)/g),
   )
@@ -317,8 +432,11 @@ export function cleanPdfScheduleText(value: string) {
 
   return `${value}\n${parentheticalText}`
     .replace(/\r/g, '\n')
-    .replace(/[\u0000-\u001F]+/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]+/g, ' ')
+    .split('\n')
+    .map(line => line.replace(/ +/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n')
     .trim();
 }
 
@@ -349,30 +467,141 @@ export function extractPdfScheduleText(rawPdfText: string): PIEScheduleTextExtra
   };
 }
 
-function csvCells(line: string) {
-  const cells: string[] = [];
-  let current = '';
-  let quoted = false;
+export function parseScheduleDelimitedText(
+  contents: string,
+  delimiter: ',' | '\t' = ',',
+): PIEScheduleDelimitedParseResult {
+  const input = contents.startsWith('\uFEFF') ? contents.slice(1) : contents;
+  const rows: string[][] = [];
+  const issues: PIEScheduleDelimitedParseIssue[] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotedField = false;
+  let afterClosingQuote = false;
+  let reportedCharactersAfterQuote = false;
+  let recordStarted = false;
 
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
+  const currentRowNumber = () => rows.length + 1;
+  const currentColumnNumber = () => row.length + 1;
+  const pushField = () => {
+    row.push(field);
+    field = '';
+    afterClosingQuote = false;
+    reportedCharactersAfterQuote = false;
+  };
+  const pushRow = () => {
+    pushField();
+    rows.push(row);
+    row = [];
+    recordStarted = false;
+  };
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    const isLineBreak = char === '\r' || char === '\n';
+
+    if (inQuotedField) {
+      if (char === '"') {
+        if (input[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          inQuotedField = false;
+          afterClosingQuote = true;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (afterClosingQuote) {
+      if (char === delimiter) {
+        pushField();
+        recordStarted = true;
+        continue;
+      }
+
+      if (isLineBreak) {
+        pushRow();
+        if (char === '\r' && input[index + 1] === '\n') index += 1;
+        continue;
+      }
+
+      if (!reportedCharactersAfterQuote) {
+        issues.push({
+          code: 'characters_after_closing_quote',
+          row: currentRowNumber(),
+          column: currentColumnNumber(),
+          message: `Row ${currentRowNumber()}, column ${currentColumnNumber()} has characters after a closing quote.`,
+        });
+        reportedCharactersAfterQuote = true;
+      }
+      field += char;
+      recordStarted = true;
+      continue;
+    }
+
+    if (char === delimiter) {
+      pushField();
+      recordStarted = true;
+      continue;
+    }
+
+    if (isLineBreak) {
+      pushRow();
+      if (char === '\r' && input[index + 1] === '\n') index += 1;
+      continue;
+    }
 
     if (char === '"') {
-      quoted = !quoted;
+      if (field.length === 0) {
+        inQuotedField = true;
+      } else {
+        issues.push({
+          code: 'unexpected_quote',
+          row: currentRowNumber(),
+          column: currentColumnNumber(),
+          message: `Row ${currentRowNumber()}, column ${currentColumnNumber()} has a quote inside an unquoted field.`,
+        });
+        field += char;
+      }
+      recordStarted = true;
       continue;
     }
 
-    if ((char === ',' || char === '\t') && !quoted) {
-      cells.push(current.trim());
-      current = '';
-      continue;
-    }
-
-    current += char;
+    field += char;
+    recordStarted = true;
   }
 
-  cells.push(current.trim());
-  return cells;
+  if (inQuotedField) {
+    issues.push({
+      code: 'unterminated_quote',
+      row: currentRowNumber(),
+      column: currentColumnNumber(),
+      message: `Row ${currentRowNumber()}, column ${currentColumnNumber()} has an unterminated quoted field.`,
+    });
+  }
+
+  if (recordStarted || row.length > 0 || field.length > 0) pushRow();
+
+  return { delimiter, rows, issues };
+}
+
+function scheduleDelimiter(sourceName: string, mimeType: string | null | undefined, contents: string) {
+  const lowerName = sourceName.toLowerCase();
+  const lowerMime = (mimeType || '').toLowerCase();
+  const firstRecord = contents.replace(/^\uFEFF/, '').split(/\r\n?|\n/, 1)[0] || '';
+
+  if (
+    lowerName.endsWith('.tsv') ||
+    lowerMime.includes('tab-separated') ||
+    (firstRecord.includes('\t') && !firstRecord.includes(','))
+  ) {
+    return '\t' as const;
+  }
+
+  return ',' as const;
 }
 
 function headerKey(value: string) {
@@ -415,15 +644,7 @@ function cell(
 }
 
 function normalizeStatus(value: string): ScheduleStatus {
-  const lower = normalized(value);
-  const direct = SCHEDULE_STATUSES.find(status => normalized(status) === lower);
-
-  if (direct) return direct;
-  if (lower.includes('complete') || lower.includes('done')) return 'Complete';
-  if (lower.includes('progress') || lower.includes('active')) return 'In Progress';
-  if (lower.includes('wait') || lower.includes('hold')) return 'Waiting';
-
-  return 'Not Started';
+  return normalizeScheduleStatus(value);
 }
 
 function normalizePriority(value: string, finishDate: string): SchedulePriority {
@@ -464,13 +685,6 @@ function parseDuration(value: string) {
   return match ? Number(match[0]) : null;
 }
 
-function parseDependencies(value: string) {
-  return value
-    .split(/[;,|]+/)
-    .map(item => item.trim())
-    .filter(Boolean);
-}
-
 export function detectScheduleType(text: string): PIEScheduleType {
   const lower = text.toLowerCase();
 
@@ -509,9 +723,243 @@ export function detectScheduleType(text: string): PIEScheduleType {
 }
 
 function findNameMatch(value: string, names: string[]) {
-  const lower = value.toLowerCase();
+  const normalizedValue = ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
 
-  return names.find(name => name && lower.includes(name.toLowerCase())) || '';
+  return names.find(name => {
+    const normalizedName = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return normalizedName && normalizedValue.includes(` ${normalizedName} `);
+  }) || '';
+}
+
+function scheduleMatchTokens(value: string) {
+  const ignored = new Set([
+    'and', 'building', 'campus', 'location', 'phase', 'project', 'site', 'the', 'work',
+  ]);
+
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .filter(token => token && !ignored.has(token));
+}
+
+function bestScheduleProjectMatch(value: string, projects: string[]) {
+  const direct = findNameMatch(value, projects);
+  if (direct) return direct;
+
+  const valueNumbers = new Set(scheduleMatchTokens(value).filter(token => /^\d{3,}$/.test(token)));
+  const numericMatches = projects.filter(project =>
+    scheduleMatchTokens(project).some(token => valueNumbers.has(token)),
+  );
+  if (valueNumbers.size && numericMatches.length === 1) return numericMatches[0];
+
+  const valueWords = new Set(
+    scheduleMatchTokens(value).filter(token => !/^\d+$/.test(token)),
+  );
+  const scoredMatches = projects
+    .map(project => ({
+      project,
+      score: scheduleMatchTokens(project)
+        .filter(token => !/^\d+$/.test(token) && valueWords.has(token))
+        .length,
+    }))
+    .filter(candidate => candidate.score >= 2)
+    .sort((a, b) => b.score - a.score);
+
+  if (
+    scoredMatches.length > 0 &&
+    (scoredMatches.length === 1 || scoredMatches[0].score > scoredMatches[1].score)
+  ) {
+    return scoredMatches[0].project;
+  }
+
+  return '';
+}
+
+function bestScheduleAreaMatch(value: string, projectAreas: ProjectArea[]) {
+  const normalizedValue = ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const valueTokens = new Set(scheduleMatchTokens(value));
+  let bestArea = '';
+  let bestScore = 0;
+
+  projectAreas.forEach(area => {
+    const normalizedName = area.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (normalizedName && normalizedValue.includes(` ${normalizedName} `)) {
+      const score = 100 + normalizedName.length;
+      if (score > bestScore) {
+        bestArea = area.name;
+        bestScore = score;
+      }
+      return;
+    }
+
+    const areaTokens = scheduleMatchTokens(area.name);
+    const commonTokens = areaTokens.filter(token => valueTokens.has(token));
+    const requiredMatches = areaTokens.length <= 1 ? areaTokens.length : Math.min(2, areaTokens.length);
+
+    if (commonTokens.length >= requiredMatches && commonTokens.length > bestScore) {
+      bestArea = area.name;
+      bestScore = commonTokens.length;
+    }
+  });
+
+  return bestArea;
+}
+
+function microsoftProjectContextBoundary(value: string) {
+  return /\b(?:campus|canop(?:y|ies)|driveway|enclosure|house|lot|phase|sequence)\b/i.test(value);
+}
+
+function normalizeMicrosoftProjectDate(value: string) {
+  const dateMatch = value.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
+  if (!dateMatch) return '';
+
+  const month = Number(dateMatch[1]);
+  const day = Number(dateMatch[2]);
+  const rawYear = Number(dateMatch[3]);
+  const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+  const parsed = parseFlexibleDate(`${month}/${day}/${year}`);
+  if (!parsed) return '';
+
+  return `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${year}`;
+}
+
+function scheduleProjectNameFromGanttRoot(value: string) {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const locationCode = normalized.match(
+    /^(?:plz\s+)?([a-z0-9][a-z0-9-]{2,})\b.*\b(?:campus|project|site)\b/i,
+  )?.[1];
+
+  return locationCode && /\d/.test(locationCode)
+    ? `${locationCode.toUpperCase()} Compliance Project`
+    : normalized;
+}
+
+export function normalizeMicrosoftProjectPdfRows({
+  contents,
+  sourceName,
+  projects = [],
+  projectAreas = [],
+  now = new Date(),
+}: {
+  contents: string;
+  sourceName: string;
+  projects?: string[];
+  projectAreas?: ProjectArea[];
+  now?: Date;
+}) {
+  const lines = contents.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const header = (lines[0] || '').split('\t').map(value => headerKey(value.trim()));
+
+  if (!header.includes('task name') || !header.includes('indent') || !header.includes('finish')) {
+    return [] as ScheduleItem[];
+  }
+
+  const importedAt = now.toISOString();
+  const rows = lines.slice(1).map(line => {
+    const cells = line.split('\t').map(value => value.trim());
+    return {
+      activityId: cell(cells, header, ['id', 'activity id'], 0),
+      taskName: cell(cells, header, ['task name', 'task', 'activity'], 1),
+      indent: Number(cell(cells, header, ['indent'], 2)) || 0,
+      duration: parseDuration(cell(cells, header, ['duration'], 3)),
+      startDate: normalizeMicrosoftProjectDate(cell(cells, header, ['start', 'start date'], 4)),
+      finishDate: normalizeMicrosoftProjectDate(cell(cells, header, ['finish', 'finish date'], 5)),
+      percentComplete: normalizePercent(
+        cell(cells, header, ['percent complete', '% complete'], 6),
+        'Not Started',
+      ),
+      notes: cell(cells, header, ['notes', 'comments', 'remarks'], -1),
+    };
+  }).filter(row => row.taskName && row.finishDate);
+  const contexts = new Map<number, {
+    scheduleProjectName: string;
+    projectName: string;
+    locationName: string;
+  }>();
+  const items: ScheduleItem[] = [];
+
+  rows.forEach((row, index) => {
+    Array.from(contexts.keys()).forEach(level => {
+      if (level >= row.indent) contexts.delete(level);
+    });
+
+    let parentContext = { scheduleProjectName: '', projectName: '', locationName: '' };
+    for (let level = row.indent - 1; level >= 0; level -= 1) {
+      const candidate = contexts.get(level);
+      if (candidate) {
+        parentContext = candidate;
+        break;
+      }
+    }
+
+    const directProject = bestScheduleProjectMatch(row.taskName, projects);
+    const directArea = bestScheduleAreaMatch(row.taskName, projectAreas);
+    const hasChildren = (rows[index + 1]?.indent ?? -1) > row.indent;
+    const directScheduleProject = row.indent === 0 && hasChildren
+      ? scheduleProjectNameFromGanttRoot(row.taskName)
+      : '';
+    const startsNamedBranch = Boolean(
+      hasChildren &&
+      parentContext.locationName &&
+      directProject &&
+      microsoftProjectContextBoundary(row.taskName),
+    );
+    const changesMappedArea = Boolean(
+      directArea &&
+      parentContext.locationName &&
+      directArea !== parentContext.locationName,
+    );
+    const context = {
+      scheduleProjectName: directScheduleProject || parentContext.scheduleProjectName,
+      projectName: (
+        startsNamedBranch || changesMappedArea
+          ? directProject
+          : ''
+      ) || parentContext.projectName || directProject,
+      locationName: directArea || (
+        hasChildren && microsoftProjectContextBoundary(row.taskName)
+          ? ''
+          : parentContext.locationName
+      ),
+    };
+
+    if (hasChildren) {
+      contexts.set(row.indent, context);
+      return;
+    }
+
+    if (row.indent === 0) return;
+
+    const percentComplete = clamp(row.percentComplete, 0, 100);
+    const status: ScheduleStatus = percentComplete >= 100
+      ? 'Complete'
+      : percentComplete > 0
+        ? 'In Progress'
+        : 'Not Started';
+    items.push({
+      id: uid(),
+      scheduleProjectName: context.scheduleProjectName || null,
+      projectName: context.projectName,
+      locationName: directArea || context.locationName,
+      taskName: row.taskName,
+      startDate: row.startDate,
+      finishDate: row.finishDate,
+      milestone: row.duration === 0 ? row.taskName : '',
+      owner: '',
+      contractor: '',
+      durationDays: row.duration,
+      percentComplete,
+      priority: normalizePriority('', row.finishDate),
+      status,
+      notes: explicitScheduleNote(row.notes),
+      importedFrom: sourceName,
+      importedAt,
+      createdAt: importedAt,
+    });
+  });
+
+  return items;
 }
 
 function scheduleItemFromNormalizedTask(
@@ -519,21 +967,6 @@ function scheduleItemFromNormalizedTask(
   sourceName: string,
   importedAt: string,
 ): ScheduleItem {
-  const metadataNotes = [
-    task.notes,
-    task.wbs ? `WBS: ${task.wbs}` : null,
-    task.duration !== null ? `Duration: ${task.duration} day${task.duration === 1 ? '' : 's'}` : null,
-    task.critical ? 'Critical: yes' : null,
-    task.float !== null ? `Float: ${task.float}` : null,
-    task.dependencies.length ? `Dependencies: ${task.dependencies.join(', ')}` : null,
-    task.needsReview
-      ? `Review needed: ${task.reviewFields.join(', ')}.`
-      : null,
-    `Schedule confidence: ${task.confidence}.`,
-  ]
-    .filter(Boolean)
-    .join(' ');
-
   return {
     id: task.id,
     projectName: task.project,
@@ -544,10 +977,11 @@ function scheduleItemFromNormalizedTask(
     milestone: task.milestone || '',
     owner: task.owner || '',
     contractor: task.contractor || '',
+    durationDays: task.duration,
     percentComplete: task.percentComplete,
     priority: task.critical ? 'High' : normalizePriority('', task.finish || ''),
     status: task.status,
-    notes: metadataNotes,
+    notes: explicitScheduleNote(task.notes),
     importedFrom: sourceName,
     importedAt,
     createdAt: importedAt,
@@ -627,25 +1061,62 @@ export function normalizeScheduleImport({
         correctionFields: ['Project', 'Area', 'Dates', 'Task', 'Owner', 'Status'],
         confidence: 'low',
       }],
+      parseIssues: [],
       message:
         extraction?.message ||
-        'No readable schedule text was available. This import needs review and did not silently fail.',
+        'No schedule items were added automatically, so this import did not silently fail. No readable schedule text was available; OCR or review is required.',
       validationOutput: emptyValidationOutput,
     };
   }
 
   const importedAt = now.toISOString();
-  const lines = readableText
-    .split(/\r?\n|(?=\b\d{1,2}[\/-]\d{1,2}[\/-](?:\d{2}|\d{4})\b)/)
-    .map(line => line.trim())
-    .filter(Boolean);
-  const firstCells = csvCells(lines[0] || '');
+  const shouldParseWholeInput = format.format === 'csv' || format.format === 'excel';
+  const delimiter = scheduleDelimiter(sourceName, mimeType, readableText);
+  const parsedInput = shouldParseWholeInput
+    ? parseScheduleDelimitedText(readableText, delimiter)
+    : null;
+  const records = (parsedInput
+    ? parsedInput.rows.map((cells, index) => ({ cells, rowNumber: index + 1 }))
+    : readableText
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((line, index) => {
+          const lineDelimiter = line.includes('\t') ? '\t' : ',';
+          const parsedLine = parseScheduleDelimitedText(line, lineDelimiter);
+          return {
+            cells: parsedLine.rows[0] || [''],
+            rowNumber: index + 1,
+          };
+        }))
+    .map(record => ({
+      ...record,
+      cells: record.cells.map(value => value.trim()),
+    }))
+    .filter(record => record.cells.some(value => value.length > 0));
+  const firstCells = records[0]?.cells || [];
   const hasHeader = hasScheduleHeader(firstCells);
   const headers = hasHeader ? firstCells.map(headerKey) : [];
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-  const normalizedTasks = dataLines
-    .map(line => {
-      const cells = csvCells(line);
+  const dataRecords = hasHeader ? records.slice(1) : records;
+  const parseIssues = [...(parsedInput?.issues || [])];
+
+  if (parsedInput && hasHeader) {
+    const expectedColumnCount = firstCells.length;
+    dataRecords.forEach(record => {
+      if (record.cells.length === expectedColumnCount) return;
+
+      parseIssues.push({
+        code: 'column_count_mismatch',
+        row: record.rowNumber,
+        column: Math.min(record.cells.length, expectedColumnCount) + 1,
+        message: `Row ${record.rowNumber} has ${record.cells.length} column${record.cells.length === 1 ? '' : 's'}; the header defines ${expectedColumnCount}.`,
+      });
+    });
+  }
+
+  const normalizedTasks = dataRecords
+    .map(record => {
+      const { cells } = record;
+      const rowText = cells.join(' ');
       const task = cell(cells, headers, ['task', 'task name', 'activity', 'activity name', 'item'], 0);
       const finish = normalizeDate(
         cell(cells, headers, ['finish', 'finish date', 'due', 'due date'], 4),
@@ -654,26 +1125,26 @@ export function normalizeScheduleImport({
         cell(cells, headers, ['start', 'start date'], 3),
       );
       const project = cell(cells, headers, ['project', 'project name'], 1) ||
-        findNameMatch(line, projects);
+        findNameMatch(rowText, projects);
       const area = cell(cells, headers, ['area', 'location', 'work area'], 2) ||
-        findNameMatch(line, projectAreas.map(areaItem => areaItem.name));
-      const status = normalizeStatus(cell(cells, headers, ['status'], 7));
+        findNameMatch(rowText, projectAreas.map(areaItem => areaItem.name));
+      const rawStatus = cell(cells, headers, ['status'], 7);
+      const parsedStatus = normalizeStatus(rawStatus);
       const owner = cell(cells, headers, ['owner', 'responsible'], 6);
       const contractor = cell(cells, headers, ['contractor', 'company', 'trade'], 9) || owner;
       const wbs = cell(cells, headers, ['wbs', 'code', 'activity id'], 10);
       const milestone = cell(cells, headers, ['milestone'], 5);
-      const percentComplete = normalizePercent(
+      const parsedPercent = normalizePercent(
         cell(cells, headers, ['percent complete', '% complete', 'progress'], 11),
-        status,
+        parsedStatus,
       );
+      const progress = reconcileScheduleProgress(parsedStatus, parsedPercent);
+      const { status, percentComplete } = progress;
       const floatValue = parseDuration(
         cell(cells, headers, ['float', 'total float'], 12),
       );
-      const dependencies = parseDependencies(
-        cell(cells, headers, ['dependencies', 'predecessors', 'predecessor'], 13),
-      );
       const criticalText = cell(cells, headers, ['critical', 'critical path'], 14);
-      const notes = cell(cells, headers, ['notes', 'comments'], 8);
+      const notes = cell(cells, headers, ['notes', 'comments', 'remarks'], -1);
       const critical =
         normalized(criticalText).includes('yes') ||
         normalized(criticalText).includes('critical') ||
@@ -715,8 +1186,7 @@ export function normalizeScheduleImport({
         contractor: optionalText(contractor),
         critical,
         float: floatValue,
-        dependencies,
-        notes: optionalText(notes),
+        notes: optionalText(stripScheduleDependencyMetadata(notes)),
         needsReview: reviewFields.length > 0,
         reviewFields,
         confidence: confidenceFromScore(confidenceScore),
@@ -730,8 +1200,16 @@ export function normalizeScheduleImport({
     projectName: '',
     now,
   });
-  const totalCandidateLines = Math.max(dataLines.length, normalizedTasks.length);
-  const needsReviewCount = intelligence.reviewItems.length;
+  const parseReviewItems: PIEScheduleReviewItem[] = parseIssues.map(issue => ({
+    id: `schedule-parse-review-${uid()}`,
+    task: `Review imported schedule row ${issue.row}`,
+    reason: issue.message,
+    correctionFields: ['Task', 'Dates', 'Status'],
+    confidence: 'low',
+  }));
+  const reviewItems = [...parseReviewItems, ...intelligence.reviewItems];
+  const totalCandidateLines = Math.max(dataRecords.length, normalizedTasks.length);
+  const needsReviewCount = reviewItems.length;
   const extractionConfidencePercent = normalizedTasks.length === 0
     ? 0
     : clamp(
@@ -762,9 +1240,10 @@ export function normalizeScheduleImport({
     importStatus,
     extractionConfidencePercent,
     items: normalizedTasks,
-    reviewItems: intelligence.reviewItems,
+    reviewItems,
+    parseIssues,
     message: normalizedTasks.length
-      ? `${normalizedTasks.length} schedule item${normalizedTasks.length === 1 ? '' : 's'} normalized through Schedule Intelligence.`
+      ? `${normalizedTasks.length} schedule item${normalizedTasks.length === 1 ? '' : 's'} normalized through Schedule Intelligence.${parseIssues.length ? ` ${parseIssues.length} delimited row issue${parseIssues.length === 1 ? '' : 's'} need review.` : ''}`
       : 'No schedule activities were normalized. Review the file format and add uncertain items manually.',
     validationOutput: {
       scheduleSummary: intelligence.scheduleSummary,
@@ -790,11 +1269,10 @@ function parseNotesValue(notes: string, label: string) {
 
 function taskFromSummary(summaryTask: ScheduleSummaryTask): PIENormalizedScheduleTask {
   const item = summaryTask.item;
-  const dependencies = parseDependencies(
-    parseNotesValue(item.notes, 'Dependencies') || '',
-  );
   const floatValue = parseDuration(parseNotesValue(item.notes, 'Float') || '');
-  const duration = parseDuration(parseNotesValue(item.notes, 'Duration') || '');
+  const duration = typeof item.durationDays === 'number'
+    ? item.durationDays
+    : parseDuration(parseNotesValue(item.notes, 'Duration') || '');
   const critical =
     item.priority === 'High' ||
     summaryTask.isOverdue ||
@@ -835,8 +1313,7 @@ function taskFromSummary(summaryTask: ScheduleSummaryTask): PIENormalizedSchedul
     contractor: optionalText(item.contractor),
     critical,
     float: floatValue,
-    dependencies,
-    notes: optionalText(item.notes),
+    notes: optionalText(stripScheduleDependencyMetadata(item.notes)),
     sourceItem: item,
     needsReview: summaryTask.isNeedsReview || reviewFields.length > 0,
     reviewFields,
@@ -912,7 +1389,7 @@ export function buildScheduleIntelligence({
       reason:
         task.reviewFields.length > 0
           ? `Low confidence schedule item needs correction for ${task.reviewFields.join(', ')}.`
-          : 'Low confidence schedule item should be reviewed before PIE relies on it.',
+          : 'Low confidence schedule item should be reviewed before DAVE relies on it.',
       correctionFields: task.reviewFields.length
         ? task.reviewFields
         : (['Project', 'Area', 'Dates', 'Task', 'Owner', 'Status'] as PIEScheduleReviewItem['correctionFields']),
@@ -954,7 +1431,7 @@ export function buildScheduleIntelligence({
       : 'No inspection recommendation is available until schedule areas or inspection tasks are present.');
   const executiveSummary =
     scheduleSummary.totalItems === 0
-      ? 'PIE has no schedule to summarize yet.'
+      ? 'There is no schedule to summarize yet.'
       : `${scheduleSummary.totalItems} schedule item${scheduleSummary.totalItems === 1 ? '' : 's'} understood: ${scheduleSummary.upcoming30Count} upcoming in 30 days, ${scheduleSummary.overdueCount} overdue, ${scheduleSummary.milestoneCount} milestone${scheduleSummary.milestoneCount === 1 ? '' : 's'}, confidence ${scheduleConfidence}.`;
   const missionBlockers = uniqueText([
     ...overdueTasks.slice(0, 3).map(task => `${task.task} is overdue (${dueStatusText(task.finish || '')}).`),
@@ -962,7 +1439,7 @@ export function buildScheduleIntelligence({
   ]);
   const missionActions = uniqueText([
     overdueTasks.length > 0 ? 'Review overdue schedule work and confirm recovery dates.' : null,
-    criticalTasks.length > 0 ? 'Verify critical path tasks with owner, area, and dependency context.' : null,
+    criticalTasks.length > 0 ? 'Verify critical path tasks with the responsible owner and current field status.' : null,
     recommendedWalkAreas.length > 0 ? `Walk ${recommendedWalkAreas.slice(0, 2).join(', ')}.` : null,
     reviewItems.length > 0 ? 'Review low-confidence schedule import items before relying on the schedule.' : null,
   ]);
@@ -989,14 +1466,6 @@ export function buildScheduleIntelligence({
       });
     }
 
-    task.dependencies.forEach(dependency => {
-      nodes.push({
-        id: `dependency:${normalized(dependency)}`,
-        type: 'dependency',
-        label: dependency,
-      });
-    });
-
     return nodes;
   });
   const graphRelationships = normalizedTasks.flatMap(task => {
@@ -1017,14 +1486,6 @@ export function buildScheduleIntelligence({
         type: 'owned_by',
       });
     }
-
-    task.dependencies.forEach(dependency => {
-      relationships.push({
-        from: `schedule:${task.id}`,
-        to: `dependency:${normalized(dependency)}`,
-        type: task.critical ? 'blocks' : 'depends_on',
-      });
-    });
 
     return relationships;
   });

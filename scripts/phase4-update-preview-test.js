@@ -10,32 +10,23 @@ const sync = fs.readFileSync(path.join(root, 'services/SyncService.ts'), 'utf8')
 
 [
   'subtitle="Update Preview"',
-  'PIE Summary',
+  'Photo Analysis',
   'phase4SafetyFinding',
   'Safety concern detected',
   'View Details',
   'Photos ({update.photos.length})',
   'No photos attached',
   'Documents ({documents.length})',
-  'Recipients:',
   'Notes (optional)',
-  'Message Preview',
-  'View Full Message',
-  'Send Update',
-  'More Options',
-  'Text',
-  'Copy',
-  'Save Draft',
+  'Save Field Update',
   'Edit Photos',
   'Add Document',
-  'iOS Share Sheet',
-  'queuedStatusCopyForUpdate(finalUpdate)',
-  "Queued — will send when you're back online",
+  "Queued — will sync when you're back online",
   'Sync failed · Retry',
   'stableSendId',
   'idempotencyKey',
   'sendAttempts',
-  'Retry Send',
+  'Retry Sync',
   'Observed findings',
   'Possible interpretations',
   'Confirmed possible interpretations',
@@ -49,24 +40,43 @@ assert(
 );
 assert(
   app.includes('role={hasSafety && interpretation.toLowerCase().includes') &&
-    app.includes('role={hasBlocker ?') &&
-    app.includes("role={hasSafety ? 'safety' : 'confirmedClear'}"),
-  'Preview should use status roles for safety, interpretation, and confirmed-clear states.',
+    app.includes("role={hasBlocker ? 'interpretation' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}") &&
+    app.includes("role={hasSafety ? 'safety' : photoAssessment.state === 'assessed_clear' ? 'confirmedClear' : 'possibleFinding'}") &&
+    app.includes("photoAssessmentReviewCopy(photoAssessment.state, 'safety concern')") &&
+    app.includes("photoAssessmentReviewCopy(photoAssessment.state, 'blocker')"),
+  'Preview should reserve confirmed-clear states for updates with photo evidence.',
+);
+const livePreview = app.slice(
+  app.indexOf('function BuildUpdateScreen'),
+  app.indexOf('function ReadOnlyUpdateDetailScreen'),
 );
 assert(
-  app.includes("draft.recipients.contactIds.length === 0") &&
-    app.includes("text: 'Change Recipients'") &&
-    app.includes("text: 'Save Draft'"),
-  'Missing recipients should block send and offer Change Recipients or Save Draft.',
+  livePreview.includes('Save Field Update') &&
+    !livePreview.includes('Send Update') &&
+    !livePreview.includes('Message Preview') &&
+    !livePreview.includes('Recipients:') &&
+    !livePreview.includes('More Options'),
+  'Field Update review should save the record without exposing communication controls.',
 );
 assert(
-  app.includes('summary: PIE_STATUS_COPY.checking') &&
+  app.includes('function saveFieldUpdateFromReview()') &&
+    app.includes('const draftSnapshot = draftRef.current;') &&
+    app.includes('if (!hasSavableUpdate(draftSnapshot))') &&
+    !livePreview.includes('onSendEmail') &&
+    !livePreview.includes('onSendText'),
+  'Saving a Field Update should not require recipients or route through email/text actions.',
+);
+assert(
+  app.includes("status: 'analyzing'") &&
+    app.includes('summary: authCopy || (results.length === 0') &&
+    app.includes(': PIE_STATUS_COPY.checking') &&
     app.includes('Photo analysis is still in progress.'),
   'Pending PIE sends should use neutral in-progress language.',
 );
 assert(
-  sync.includes("id: `project-update-${update.id}`") &&
-    sync.includes('queue.filter(item => item.id !== queueItem.id)'),
+  sync.includes('id: projectUpdateQueueItemId(update.id)') &&
+    sync.includes('return `project-update-${updateId}`') &&
+    sync.includes('existing.id !== queueItem.id &&'),
   'Queued sends should use stable ids and replace duplicate queue entries.',
 );
 assert(

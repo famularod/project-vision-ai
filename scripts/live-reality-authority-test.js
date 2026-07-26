@@ -9,9 +9,11 @@ const assert = require('assert');
 const rootDir = path.resolve(__dirname, '..');
 const moduleCache = new Map();
 const memoryStore = new Map();
+const storageWrites = [];
 const AsyncStorage = {
   getItem: async key => memoryStore.has(key) ? memoryStore.get(key) : null,
   setItem: async (key, value) => {
+    storageWrites.push(key);
     memoryStore.set(key, value);
   },
   removeItem: async key => {
@@ -138,6 +140,7 @@ function actor() {
   assert.strictEqual(first.persistenceStatus, 'degraded_local_only');
   assert(first.snapshotId.includes('v1'));
 
+  const writesBeforeUnchangedRefresh = storageWrites.length;
   const second = await orchestrator.runPIERealityModelOrchestration({
     organizationId: 'org-live',
     projectId: 'project-live',
@@ -147,6 +150,11 @@ function actor() {
   });
   assert.strictEqual(second.model.version, 1, 'unchanged evidence should not create endless versions');
   assert(second.evidenceDeltas.every(delta => delta.status === 'unchanged'));
+  assert.strictEqual(
+    storageWrites.length,
+    writesBeforeUnchangedRefresh,
+    'unchanged evidence must reuse prior authority without rewriting model or delta storage',
+  );
 
   const changed = await orchestrator.runPIERealityModelOrchestration({
     organizationId: 'org-live',
@@ -224,9 +232,13 @@ function actor() {
   });
   assert.strictEqual(stale.persistenceStatus, 'stale_model', 'stale Reality use should be explicit');
 
+  let failingRepositoryLoadCount = 0;
   const failingRepository = {
     ...storage,
-    loadCurrent: async () => removed.model,
+    loadCurrent: async () => {
+      failingRepositoryLoadCount += 1;
+      return removed.model;
+    },
     saveSynchronized: async () => {
       throw new Error('simulated persistence failure');
     },
@@ -249,6 +261,11 @@ function actor() {
     identityTrusted: true,
   });
   assert.strictEqual(failedPersistence.persistenceStatus, 'persistence_failed');
+  assert.strictEqual(
+    failingRepositoryLoadCount,
+    1,
+    'orchestration must reuse the current model instead of loading and parsing it twice',
+  );
 
   assert.throws(
     () => judgment.buildPIEExecutiveJudgment({ realityModel: changed.model }),
@@ -285,7 +302,18 @@ function actor() {
     runtime: {},
     selectedProjectNames: ['Building 2375'],
   });
-  assert(report.body.includes(record.primaryRecommendation) || report.executiveSummary.join(' ').includes(record.primaryRecommendation));
+  const reportIncludesRecommendation =
+    report.body.includes(record.primaryRecommendation) ||
+    report.executiveSummary.join(' ').includes(record.primaryRecommendation);
+  if (judgmentResult.executiveReadiness === 'Ready') {
+    assert(reportIncludesRecommendation, 'Ready recommendations must remain traceable in the report.');
+  } else {
+    assert(!reportIncludesRecommendation, 'Unready recommendations must not be communicated as final guidance.');
+    assert(
+      /need review before this report is ready to send/i.test(report.body),
+      'Unready reports must explain that review is still required.',
+    );
+  }
 
   const sourceEvidence = [{
     id: 'schedule-canopy-b',

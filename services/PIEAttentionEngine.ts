@@ -702,7 +702,7 @@ function buildAttentionItems({
       reasons: [
         {
           id: 'attention-report-reason',
-          summary: 'PIE Reporter has a draft that requires user review before copy or email.',
+          summary: 'A report draft requires user review before copy or email.',
           source: 'Report Readiness',
         },
       ],
@@ -724,7 +724,7 @@ function buildAttentionItems({
       reasons: [
         {
           id: 'attention-photo-progress-reason',
-          summary: 'PIE has a photo comparison that should be accepted, edited, or rejected.',
+          summary: 'A photo comparison should be accepted, edited, or rejected.',
           source: 'Photo Progress',
         },
       ],
@@ -739,7 +739,7 @@ function buildAttentionItems({
   if (gpsNeedsCorrection) {
     items.push({
       id: 'attention-gps-correction',
-      whatMattersNow: 'PIE is unsure of your location.',
+      whatMattersNow: 'Project location is uncertain.',
       whyItMatters:
         gpsWalkRecommendation?.detail ||
         'Location confidence is low, so project and area context should be corrected before capture.',
@@ -764,7 +764,7 @@ function buildAttentionItems({
     items.push({
       id: 'attention-walk',
       whatMattersNow: `Your next Walk should start at ${walkArea}.`,
-      whyItMatters: 'PIE selected this area from schedule, mission, and evidence signals.',
+      whyItMatters: 'This area was selected from schedule, mission, and evidence signals.',
       priority: 'low',
       confidence: confidenceToScore(runtime.scheduleConfidence),
       reasons: [
@@ -834,8 +834,8 @@ function buildAttentionItems({
 function fallbackAttentionItem(): PIEAttentionItem {
   return {
     id: 'attention-fallback',
-    whatMattersNow: 'PIE is preparing today’s project attention.',
-    whyItMatters: 'More project evidence will help PIE recommend the next action.',
+    whatMattersNow: 'Preparing today’s project priorities.',
+    whyItMatters: 'More project evidence will improve the next recommended action.',
     priority: 'low',
     confidence: 50,
     reasons: [
@@ -864,7 +864,7 @@ function buildWalkAttentionItem(input: PIEWalkAttentionInput): PIEAttentionItem 
       stage: 'confirm_location',
       currentProject,
       currentArea,
-      whatMattersNow: 'PIE is unsure of your Walk location.',
+      whatMattersNow: 'Project Walk location is uncertain.',
       whyItMatters: input.recommendationReason || 'Project and area should be corrected before capture.',
       priority: 'high',
       confidence: input.confidence,
@@ -890,7 +890,7 @@ function buildWalkAttentionItem(input: PIEWalkAttentionInput): PIEAttentionItem 
       currentProject,
       currentArea,
       whatMattersNow: `Photo saved. Next, verify ${input.nextAreaName}.`,
-      whyItMatters: input.nextAreaReason || 'PIE found another area that may need field evidence.',
+      whyItMatters: input.nextAreaReason || 'Another area may need field evidence.',
       priority: 'medium',
       confidence: input.confidence,
       reasons: [
@@ -916,8 +916,8 @@ function buildWalkAttentionItem(input: PIEWalkAttentionInput): PIEAttentionItem 
       currentArea,
       whatMattersNow: input.photoConfirmation || 'Photo saved.',
       whyItMatters: input.hasNote
-        ? 'PIE has photo and note evidence ready for review.'
-        : 'A short note will help PIE explain what changed.',
+        ? 'Photo and note evidence is ready for review.'
+        : 'A short note will help explain what changed.',
       priority: 'medium',
       confidence: input.confidence,
       reasons: [
@@ -947,7 +947,7 @@ function buildWalkAttentionItem(input: PIEWalkAttentionInput): PIEAttentionItem 
       stage: 'recommend_project_area',
       currentProject,
       currentArea,
-      whatMattersNow: `PIE believes you are at ${locationSummary}.`,
+      whatMattersNow: `Suggested location: ${locationSummary}.`,
       whyItMatters: input.recommendationReason,
       priority: 'medium',
       confidence: input.confidence,
@@ -971,8 +971,8 @@ function buildWalkAttentionItem(input: PIEWalkAttentionInput): PIEAttentionItem 
     stage: 'capture_photo',
     currentProject,
     currentArea,
-    whatMattersNow: `PIE needs one progress photo for ${currentArea || currentProject}.`,
-    whyItMatters: input.recommendationReason || 'Current photo evidence will help PIE explain progress.',
+    whatMattersNow: `One progress photo is needed for ${currentArea || currentProject}.`,
+    whyItMatters: input.recommendationReason || 'Current photo evidence will help explain progress.',
     priority: 'medium',
     confidence: input.confidence,
     reasons: [

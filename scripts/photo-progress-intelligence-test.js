@@ -271,15 +271,25 @@ function testRepeatGuidance() {
 }
 
 function testUi() {
-  const home = fs.readFileSync(path.join(rootDir, 'components/HomeDashboard.tsx'), 'utf8');
-  const capture = fs.readFileSync(path.join(rootDir, 'components/PhotoCapturePanel.tsx'), 'utf8');
-  const bottomNav = fs.readFileSync(path.join(rootDir, 'components/BottomNavigation.tsx'), 'utf8');
+  const home = fs.readFileSync(path.join(rootDir, 'App.tsx'), 'utf8');
+  const capture = home;
+  const bottomNav = fs.readFileSync(path.join(rootDir, 'components/app-bottom-tabs.tsx'), 'utf8');
   const forbidden = ['Compare Photos', 'Analyze Progress', 'Run Visual Review', 'Calculate Progress', 'Validate Image'];
   forbidden.forEach(label => {
     assert(!home.includes(label) && !capture.includes(label), `${label} should not appear as a routine UI control`);
   });
-  assert(home.includes('Visible progress detected') || home.includes('conciseProgressCard'), 'Home should expose concise progress card');
-  assert(capture.includes('Repeat photo needed'), 'Capture should expose repeat-photo guidance');
+  assert(
+    home.includes('buildPIEBriefText') &&
+      home.includes('possible visual change') &&
+      home.includes('overviewPrioritySupport'),
+    'Home should surface useful photo-progress signals through the concise priority briefing',
+  );
+  assert(
+    capture.includes('repeatPhotoGuidance') &&
+      capture.includes('Match the Previous View') &&
+      capture.includes('Match Reference & Take Photo'),
+    'Capture should expose repeat-photo guidance through the current continuity flow',
+  );
   assert(!bottomNav.includes('Photo Progress'), 'No new permanent tab should be added');
 }
 

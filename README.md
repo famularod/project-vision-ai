@@ -1,14 +1,17 @@
-# Project Photo Update Tool
+# Vitruvius Project Intelligence
 
-MVP mobile app for creating clean project updates from field photos.
+Vitruvius is a project-intelligence workspace for iPhone, iPad, and web. It
+connects current tasks, field updates, schedules, documents, photos, and
+project-manager decisions into one shared project record.
 
-## Core Flow
+## Current workflow
 
-1. Select a project.
-2. Take or pick project photos.
-3. Add captions.
-4. Generate an email/text-ready update.
-5. Send, copy, or save the update.
+1. Use **Overview** to choose a project and review the current priority.
+2. Use **Tasks** to review schedule work, overdue items, and work needing attention.
+3. Use **New Field Update** to capture photos, location, status, and useful notes.
+4. Use **Talk** to ask about the selected project or record a confirmed memory.
+5. Use **Reports** to review and approve a current project summary.
+6. Use the web workspace for the same authorized record when a larger desktop view is useful.
 
 ## Run
 
@@ -17,25 +20,51 @@ npm install
 npm run start
 ```
 
-Open the app in Expo Go from the QR code, or run the iOS/Android commands from the Expo terminal.
+Open the app in Expo Go from the QR code, or run the native iOS/Android commands
+from the Expo terminal. The Expo Router web workspace is also supported:
 
-## MVP Screens
+```bash
+npm run web
+```
 
-- Home
-- Select Project
-- Projects with manual add and archive/reopen
-- Add Photos with camera and photo library support
-- Build Update
-- Send actions
-- Saved Updates
+## Quality gates
 
-## Project Management
+```bash
+npm test
+npm run test:release-contracts
+npm run qa:release
+```
 
-- Add project names manually from Select Project or Projects.
-- Close active projects to move them into Archived Projects.
-- Reopen archived projects when they become active again.
+`npm test` runs dependency/configuration checks, strict TypeScript, and executable
+Jest tests. `test:release-contracts` checks ordered migrations, current Maestro
+flows, UI policy, assets, and product metadata. `qa:release` runs the complete
+V.I.C. automated gate. Maestro execution and physical-device checks remain
+required for release certification.
 
-## Saved Updates
+## Product metadata
 
-- Open a saved update to revise, send, copy, or save it again.
-- Delete saved updates that are no longer needed.
+The shared identity and release number are recorded in
+`product-metadata.json`. Automated checks require it to match `app.json`,
+`package.json`, `package-lock.json`, the native build numbers, and this README.
+Product surfaces read the shared identity through `product-brand.ts`.
+
+## Native source policy
+
+This repository uses Expo Continuous Native Generation. The complete `ios/` and
+`android/` projects are generated release artifacts and are not the source of
+truth; reviewed app configuration, plugins, privacy strings, permissions, and
+version metadata live in `app.json`, `eas.json`, `plugins/`, and
+`product-metadata.json`. Signed artifacts still require platform entitlement,
+permission, backup-policy, and signing review before release.
+
+## Current identity
+
+- Product: Vitruvius Project Intelligence
+- Quality system: V.I.C. (Vitruvius Intelligence Center)
+- Bundle/package ID: `com.davidfamularo.projectphotoupdate`
+- Supported platforms: iPhone, iPad, Android, and web
+- Current version/build: `product-metadata.json`
+
+Some internal filenames and compatibility commands still use the legacy DAVE,
+PIE, JARVIS, or Project Vision AI names. They are implementation identifiers,
+not current user-facing product copy.

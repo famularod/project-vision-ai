@@ -1,9 +1,11 @@
 appId: ${APP_ID}
 ---
 - launchApp
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
 - tapOn: "Reports"
 - assertVisible: "Reports"
-- assertVisible: "Generate Executive Report"
-- assertVisible: "Weekly Executive Report"
-- assertVisible: "Saved Updates / History"
-
+- assertVisible: "Prepared Report"
+- assertVisible: "Report Options"
+- assertVisible: "Approve Report"

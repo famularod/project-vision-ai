@@ -1,29 +1,3 @@
-export type Screen =
-  | 'Home'
-  | 'SelectProject'
-  | 'AddPhotos'
-  | 'BuildUpdate'
-  | 'Projects'
-  | 'ProjectAssistant'
-  | 'SavedUpdates'
-  | 'Contacts'
-  | 'Diagnostics'
-  | 'ReferenceDocuments'
-  | 'Schedule'
-  | 'Upcoming'
-  | 'MilestoneTracking'
-  | 'CriticalPath'
-  | 'DelayAnalysis'
-  | 'ContractorPerformance'
-  | 'AIProjectCoach'
-  | 'AIExecutiveBrief'
-  | 'ProjectHealthDashboard'
-  | 'WeeklyExecutiveReport'
-  | 'ExecutiveKPIDashboard'
-  | 'ConstructionTimeline'
-  | 'ProjectRiskMatrix'
-  | 'PortfolioDashboard';
-
 export type PhotoCategory =
   | 'Open Issue'
   | 'Safety Concern'
@@ -34,6 +8,17 @@ export type ActionStatus =
   | 'In Progress'
   | 'Waiting'
   | 'Closed';
+
+export type PhotoContinuityAnchor = {
+  referencePhotoId: string;
+  referencePhotoUri?: string | null;
+  realityObjectId?: string | null;
+  projectName: string;
+  areaName?: string | null;
+  instruction: string;
+  alignmentGuide: string;
+  confirmedAt: string;
+};
 
 export type UpdatePhoto = {
   id: string;
@@ -46,6 +31,11 @@ export type UpdatePhoto = {
   actionStatus: ActionStatus;
   fileName?: string | null;
   mimeType?: string | null;
+  cloudStoragePath?: string | null;
+  cloudRecoveredAt?: string | null;
+  cloudRecoveryStatus?: 'cached' | 'signed_url' | 'unavailable' | null;
+  cloudSignedUrlExpiresAt?: string | null;
+  continuityAnchor?: PhotoContinuityAnchor | null;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
   gpsLatitude?: number | null;
@@ -53,7 +43,7 @@ export type UpdatePhoto = {
   gpsAccuracy?: number | null;
   distanceFromSelectedAreaFeet?: number | null;
   locationCapturedAt?: string | null;
-  photoIntelligence?: PhotoIntelligenceDisplayState | null;
+  photoIntelligence?: PIEPhotoIntelligenceDisplayState | null;
 };
 
 export type PhotoIntelligenceStatus =
@@ -141,6 +131,9 @@ export type ProjectUpdate = {
   photos: UpdatePhoto[];
   notes: string;
   recipients: RecipientSelection;
+  scheduleItemId?: string | null;
+  scheduleTaskName?: string | null;
+  scheduleProjectName?: string | null;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;
   gpsLatitude?: number | null;
@@ -149,6 +142,17 @@ export type ProjectUpdate = {
   distanceFromSelectedAreaFeet?: number | null;
   locationCapturedAt?: string | null;
   pieStartedAt?: string | null;
+  pieStatus?:
+    | 'not_started'
+    | 'analyzing'
+    | 'complete'
+    | 'no_prior_photo'
+    | 'no_visual_comparison'
+    | 'failed'
+    | 'taking_longer';
+  pieCompletedAt?: string | null;
+  pieSuggestedNote?: string | null;
+  pieSuggestedNoteAccepted?: boolean;
   status?: 'draft' | 'ready_to_send' | 'queued' | 'sent' | 'failed';
   workflowTimestamps?: {
     startedAt?: string;
@@ -178,11 +182,31 @@ export type ContactBook = {
 export type ProjectArea = {
   id: string;
   name: string;
+  /**
+   * Project ownership for new area records. Legacy records may omit this and
+   * are scoped conservatively from their existing task/update links.
+   */
+  projectName?: string | null;
   building?: string;
   latitude: number;
   longitude: number;
   radiusFeet: number;
   locationCapturedAt?: string | null;
+  /** Last user-authored change to area metadata or GPS. */
+  updatedAt?: string | null;
+};
+
+export type DAVESyncTombstoneEntity =
+  | 'project'
+  | 'project_update'
+  | 'project_area'
+  | 'schedule_item'
+  | 'reference_document';
+
+export type DAVESyncTombstone = {
+  entityType: DAVESyncTombstoneEntity;
+  recordId: string;
+  deletedAt: string;
 };
 
 export type AreaSuggestion = {
@@ -206,6 +230,26 @@ export type ReferenceDocument = {
   notes: string;
   isCurrent: boolean;
   importedAt: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  /** Projects explicitly covered when one shared document applies to more than one project. */
+  projectNames?: string[];
+  /** Immutable identity of the import review that created this document. */
+  importBatchId?: string | null;
+  /** Protected cloud object path. Cloud-only documents may not have a local uri. */
+  storagePath?: string | null;
+  sizeBytes?: number | null;
+  /** SHA-256 of the exact uploaded bytes, used to verify cloud recovery. */
+  contentSha256?: string | null;
+  /** Local business-data revision used to order cross-device changes. */
+  updatedAt?: string | null;
+  /** Cloud row revision. Transport metadata only; never persisted inside document_data. */
+  cloudUpdatedAt?: string | null;
+  /** Browser upload/version metadata retained when mobile refreshes the shared record. */
+  webFileFingerprint?: string | null;
+  webVersionGroupId?: string | null;
+  webContentReview?: string | null;
+  webReport?: unknown;
 };
 
 export type ProjectStats = {
@@ -225,8 +269,77 @@ export type ScheduleStatus =
 
 export type SchedulePriority = 'Low' | 'Medium' | 'High';
 
+/**
+ * The first Vitruvius-authored schedule release intentionally supports the
+ * most common construction relationship only. Additional relationship types
+ * can be added without changing the stored task shape.
+ */
+export type ScheduleDependencyType = 'FS';
+
+export type ScheduleDependency = {
+  predecessorItemId: string;
+  type: ScheduleDependencyType;
+  /** Working-day lag after the predecessor finishes. */
+  lagDays?: number | null;
+};
+
+export type ProjectItemType =
+  | 'Task'
+  | 'Issue'
+  | 'RFI'
+  | 'Submittal'
+  | 'Punch List'
+  | 'Decision'
+  | 'Inspection';
+
+export type ProjectItemActivity = {
+  id: string;
+  message: string;
+  author: string;
+  createdAt: string;
+};
+
+export type DAVECompletionVerificationStatus =
+  | 'reported_complete'
+  | 'evidence_supported'
+  | 'pm_verified'
+  | 'rejected'
+  | 'conflicting_evidence';
+
+export type DAVECompletionEvidenceKind =
+  | 'email'
+  | 'message_screenshot'
+  | 'photo'
+  | 'pm_confirmation'
+  | 'pm_note';
+
+export type DAVECompletionEvidence = {
+  id: string;
+  kind: DAVECompletionEvidenceKind;
+  sourceRecordId: string;
+  sourceName: string;
+  summary: string;
+  recordedAt: string;
+};
+
+export type DAVECompletionVerification = {
+  status: DAVECompletionVerificationStatus;
+  reportedAt: string;
+  reportedBy: string | null;
+  priorScheduleStatus: ScheduleStatus;
+  priorPercentComplete: number;
+  verifiedAt: string | null;
+  verifiedBy: string | null;
+  verificationNote: string | null;
+  evidence: DAVECompletionEvidence[];
+};
+
 export type ScheduleItem = {
   id: string;
+  /** PM-facing work type. Legacy schedule rows default to Task. */
+  itemType?: ProjectItemType;
+  scheduleProjectName?: string | null;
+  projectTimeZone?: string | null;
   projectName: string;
   locationName: string;
   taskName: string;
@@ -235,13 +348,37 @@ export type ScheduleItem = {
   milestone: string;
   owner: string;
   contractor: string;
+  durationDays?: number | null;
+  /** Optional planning hierarchy retained in the shared JSON task record. */
+  wbsCode?: string | null;
+  parentItemId?: string | null;
+  sortOrder?: number | null;
+  dependencies?: ScheduleDependency[];
+  isSummary?: boolean;
+  isMilestone?: boolean;
+  baselineStartDate?: string | null;
+  baselineFinishDate?: string | null;
   percentComplete: number;
+  progressSource?: 'project_manager' | 'schedule_import' | null;
+  progressConfirmedAt?: string | null;
+  progressConfirmedBy?: string | null;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
+  /** Smallest accountable step expected next. */
+  nextAction?: string;
+  /** Append-only PM activity retained with the shared task record. */
+  activity?: ProjectItemActivity[];
   importedFrom?: string | null;
   importedAt?: string | null;
+  /** Immutable import identity; filenames are display data only. */
+  importBatchId?: string | null;
+  /** Exact source within a multi-document import, when determinable. */
+  sourceDocumentId?: string | null;
+  completionVerification?: DAVECompletionVerification | null;
   createdAt: string;
+  /** Last user-authored task change. Imported legacy rows may omit it. */
+  updatedAt?: string | null;
 };
 
 export const EMPTY_PROJECT_STATS: ProjectStats = {
@@ -277,3 +414,14 @@ export const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Medium',
   'High',
 ];
+
+export const PROJECT_ITEM_TYPES: ProjectItemType[] = [
+  'Task',
+  'Issue',
+  'RFI',
+  'Submittal',
+  'Punch List',
+  'Decision',
+  'Inspection',
+];
+import type { PIEPhotoIntelligenceDisplayState } from '../services/PIEPhotoVisionMobileWorkflow';

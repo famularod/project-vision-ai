@@ -1,5 +1,9 @@
 const appJson = require('./app.json');
+const productMetadata = require('./product-metadata.json');
 const { spawnSync } = require('child_process');
+const {
+  applyProductMetadataToExpoConfig,
+} = require('./scripts/sync-product-metadata');
 
 const guard = spawnSync(
   process.execPath,
@@ -15,7 +19,10 @@ if (guard.status !== 0) {
   throw new Error(message.trim());
 }
 
-module.exports = ({ config }) => ({
-  ...appJson.expo,
-  ...config,
-});
+module.exports = ({ config }) => applyProductMetadataToExpoConfig(
+  {
+    ...appJson.expo,
+    ...config,
+  },
+  productMetadata,
+);

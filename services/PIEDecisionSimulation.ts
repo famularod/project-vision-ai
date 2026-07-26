@@ -140,6 +140,14 @@ export type PIEDecisionSensitivityFactor = {
   testedChange: string;
   preferredOptionAfterChange: string;
   changesRecommendation: boolean;
+  baselineMargin: number;
+  perturbedMargin: number;
+  eligibleOptionIds: string[];
+  rescoredOptions: Array<{
+    optionId: string;
+    totalWeightedScore: number;
+    disqualified: boolean;
+  }>;
   explanation: string;
 };
 
@@ -215,6 +223,8 @@ const BASE_SCENARIOS: PIEDecisionSimulationScenarioType[] = [
   'delay_case',
   'execution_failure_case',
 ];
+
+const OPTIONAL_SCENARIO_TEXT_CACHE = new WeakMap<object, string>();
 
 const SCORE_WEIGHTS: Record<PIEDecisionScoreCategory, number> = {
   safety: 12,
@@ -403,16 +413,22 @@ export function runDecisionSensitivityAnalysis(
     sensitivity('regulatory_interpretation', 'Compliance interpretation remains unchanged.', 'Compliance interpretation becomes stricter.', input, options, scores, selectedOption),
   ];
   const changes = factors.filter(factor => factor.changesRecommendation);
+  const minimumPerturbedMargin = factors.length
+    ? Math.min(...factors.map(factor => factor.perturbedMargin))
+    : 0;
+  const hasPerturbationWithoutEligibleOption = factors.some(
+    factor => factor.eligibleOptionIds.length === 0,
+  );
   const robustness: PIEDecisionRobustness =
     options.length === 0 || input.executiveJudgment.confidence === 'low'
       ? 'insufficient_evidence'
-      : changes.length === 0
-        ? 'robust'
-        : changes.length <= 2
-          ? 'moderately_sensitive'
-          : changes.length <= 5
-            ? 'highly_sensitive'
-            : 'unstable';
+      : hasPerturbationWithoutEligibleOption || changes.length > 4 || minimumPerturbedMargin < 2
+        ? 'unstable'
+        : changes.length > 0 || minimumPerturbedMargin < 5
+          ? 'highly_sensitive'
+          : minimumPerturbedMargin < 10
+            ? 'moderately_sensitive'
+            : 'robust';
 
   return {
     robustness,
@@ -456,13 +472,26 @@ export function detectMaterialSimulationChange(
   const reasons: string[] = [];
   if (prior.inputSignature !== inputSignature) reasons.push('Simulation input signature changed.');
   if (prior.selectedOption?.optionId !== selectedOption?.optionId) reasons.push('Preferred option changed.');
-  const priorTop = prior.scores[0]?.totalWeightedScore ?? null;
-  const nextTop = scores[0]?.totalWeightedScore ?? null;
+  const priorTop = scoreForPreferredOption(prior.scores, prior.selectedOption?.optionId);
+  const nextTop = scoreForPreferredOption(scores, selectedOption?.optionId);
   if (priorTop !== null && nextTop !== null && Math.abs(priorTop - nextTop) >= 10) {
     reasons.push('Option ranking or score changed materially.');
   }
   if (input.executiveJudgment.confidence !== 'high') reasons.push('Recommendation confidence is not high.');
   return reasons;
+}
+
+function scoreForPreferredOption(
+  scores: readonly PIEDecisionOptionScore[],
+  preferredOptionId: string | undefined,
+) {
+  const preferred = preferredOptionId
+    ? scores.find(score => score.optionId === preferredOptionId)
+    : null;
+  const bestEligible = [...scores]
+    .filter(score => !score.disqualified)
+    .sort((left, right) => right.totalWeightedScore - left.totalWeightedScore)[0];
+  return (preferred || bestEligible)?.totalWeightedScore ?? null;
 }
 
 function optionFromExecutiveAction(
@@ -532,7 +561,7 @@ function buildDelayEvidenceOption(input: PIEDecisionSimulationInput): PIEDecisio
     action: input.executiveJudgment.waitForEvidenceReasoning.smallestEvidenceRequest || 'Delay briefly and collect the highest-value missing evidence.',
     rationale: input.executiveJudgment.waitForEvidenceReasoning.reason,
     prerequisites: evidenceRequired(input).slice(0, 3),
-    expectedOutcome: 'PIE can make a stronger recommendation with less uncertainty.',
+    expectedOutcome: 'DAVE can make a stronger recommendation with less uncertainty.',
     expectedTimeframe: 'Before the next irreversible or high-impact decision.',
     estimatedCostDirection: 'neutral',
     scheduleImpact: input.executiveJudgment.decisionTiming.timeSensitivity === 'immediate' ? 'delays' : 'neutral',
@@ -574,7 +603,7 @@ function buildEscalationOption(input: PIEDecisionSimulationInput): PIEDecisionOp
 }
 
 function relevantOptionalScenarios(input: PIEDecisionSimulationInput): PIEDecisionSimulationScenarioType[] {
-  const text = stableStringify(input).toLowerCase();
+  const text = optionalScenarioSignalText(input);
   return [
     text.includes('resource') || text.includes('crew') ? 'resource_shortage' : null,
     text.includes('vendor') ? 'vendor_delay' : null,
@@ -589,6 +618,52 @@ function relevantOptionalScenarios(input: PIEDecisionSimulationInput): PIEDecisi
   ].filter((item): item is PIEDecisionSimulationScenarioType => Boolean(item));
 }
 
+function optionalScenarioSignalText(input: PIEDecisionSimulationInput): string {
+  const cached = OPTIONAL_SCENARIO_TEXT_CACHE.get(input);
+  if (cached !== undefined) return cached;
+
+  // Optional scenario selection needs only compact semantic signals. The old
+  // implementation recursively sorted and stringified the entire input,
+  // including the multi-megabyte Reality Model, once per option and again for
+  // every sensitivity perturbation. That work dominated the mobile JS thread.
+  const text = [
+    input.realityModel.summary.summary,
+    input.realityModel.expectedFutureState,
+    ...input.realityModel.activeRisks,
+    ...input.realityModel.objects.flatMap(object => [
+      object.name,
+      object.currentState.summary,
+      object.currentState.nextAction || '',
+    ]),
+    input.executiveJudgment.executiveJudgmentSummary,
+    input.executiveJudgment.highestValueAction?.action || '',
+    input.executiveJudgment.highestValueAction?.why || '',
+    ...input.executiveJudgment.executiveRisks.flatMap(risk => [risk.risk, risk.whyItMatters]),
+    ...input.executiveJudgment.executiveConstraints.flatMap(constraint => [
+      constraint.constraint,
+      constraint.limits,
+      constraint.actionRequired,
+    ]),
+    ...input.executiveJudgment.executiveOpportunities.flatMap(opportunity => [
+      opportunity.opportunity,
+      opportunity.valueCreated,
+      opportunity.action,
+    ]),
+    ...input.executiveJudgment.executiveResourceNeeds.flatMap(need => [need.resource, need.reason]),
+    ...(input.projectGoals || []),
+    ...(input.activeRisks || []),
+    ...(input.activeConstraints || []),
+    ...(input.dependencies || []),
+    ...(input.scheduleState || []),
+    ...(input.costInformation || []),
+    ...(input.resourceAvailability || []),
+    ...(input.authorityBoundaries || []),
+    input.missingEvidence?.summary || '',
+  ].join(' ').toLowerCase();
+  OPTIONAL_SCENARIO_TEXT_CACHE.set(input, text);
+  return text;
+}
+
 function scoreCategory(
   category: PIEDecisionScoreCategory,
   option: PIEDecisionOption,
@@ -598,9 +673,9 @@ function scoreCategory(
   const base = baseScore(category, option, input, scenarios);
   const uncertaintyPenalty = option.uncertainty.length > 2 ? -1 : 0;
   const gateStatus =
-    category === 'safety' && /violat|unsafe|critical safety/i.test(option.safetyImpact)
+    category === 'safety' && failsSafetyGate(option, input)
       ? 'fail'
-      : category === 'compliance' && /violat|non.?compliance/i.test(option.complianceImpact)
+      : category === 'compliance' && failsComplianceGate(option)
         ? 'fail'
         : base <= 3 && (category === 'safety' || category === 'compliance')
           ? 'warning'
@@ -616,6 +691,40 @@ function scoreCategory(
     explanation: explainCategoryScore(category, option, base),
     gateStatus,
   };
+}
+
+function failsSafetyGate(
+  option: PIEDecisionOption,
+  input: PIEDecisionSimulationInput,
+) {
+  const action = option.action.trim().toLowerCase();
+  const explicitlyUnsafeAction =
+    /\b(?:ignore|dismiss|bypass)\b.{0,60}\b(?:safety|hazard|unsafe|danger|risk)\b/i.test(action) ||
+    /\b(?:proceed|continue)\b.{0,60}\b(?:despite|with)\b.{0,30}\b(?:unsafe|hazard|danger|critical safety)\b/i.test(action) ||
+    /\b(?:this action|this option|implementation)\b.{0,40}\b(?:is unsafe|violates safety)\b/i.test(option.safetyImpact);
+  if (explicitlyUnsafeAction) return true;
+
+  const hasHighSafetyRisk = input.executiveJudgment.executiveRisks.some(risk =>
+    (risk.severity === 'critical' || risk.severity === 'high') &&
+    /\b(?:safety|hazard|unsafe|danger|injur|fatal|fall|fire|electr|exposure|collapse)\w*\b/i
+      .test(`${risk.risk} ${risk.whyItMatters}`),
+  );
+  if (!hasHighSafetyRisk) return false;
+  if (option.optionType === 'no_action') return true;
+
+  if (option.optionType === 'delay_and_gather_evidence') {
+    const protectsPeopleWhileWaiting =
+      /\b(?:stop|halt|pause|secure|isolate|evacuate|barricade|lockout|tagout|verify|inspect)\w*\b/i.test(action);
+    return !protectsPeopleWhileWaiting;
+  }
+  return false;
+}
+
+function failsComplianceGate(option: PIEDecisionOption) {
+  const action = option.action.trim().toLowerCase();
+  return /\b(?:ignore|bypass|skip|avoid|proceed without|continue without)\b.{0,60}\b(?:permit|inspection|code|compliance|approval)\b/i.test(action) ||
+    /^non.?compliance risk\b/i.test(option.complianceImpact.trim()) ||
+    /\b(?:this action|this option|implementation)\b.{0,40}\b(?:violat\w*|non.?compliance)\b/i.test(option.complianceImpact);
 }
 
 function baseScore(
@@ -694,26 +803,144 @@ function sensitivity(
   scores: PIEDecisionOptionScore[],
   selectedOption: PIEDecisionOption | null,
 ): PIEDecisionSensitivityFactor {
-  const alternative = options.find(option => option.optionId !== selectedOption?.optionId);
-  const changesRecommendation =
-    (factor === 'evidence_confidence' && input.executiveJudgment.confidence !== 'high') ||
-    (factor === 'implementation_quality' && selectedOption?.reversibility === 'low') ||
-    (factor === 'deadline' && input.executiveJudgment.decisionTiming.timeSensitivity === 'immediate') ||
-    (factor === 'regulatory_interpretation' && /permit|compliance|inspection/i.test(stableStringify(input.executiveJudgment))) ||
-    (factor === 'schedule_deadlines' && input.executiveJudgment.decisionTiming.timeSensitivity === 'immediate') ||
-    (factor === 'photo_progress_interpretation' && hasMaterialPhotoUncertainty(input));
+  const baselinePreferred = selectedOption || selectPreferredOption(options, scores);
+  const baselineMargin = eligibleScoreMargin(scores);
+  const perturbed = applySensitivityPerturbation(factor, input, options);
+  const generatedAt = input.generatedAt || input.executiveJudgment.generatedAt || input.realityModel.generatedAt;
+  const perturbedScenarios = perturbed.options.flatMap(option =>
+    simulateDecisionOption(option, perturbed.input, generatedAt),
+  );
+  const perturbedScores = perturbed.options.map(option =>
+    scoreDecisionOption(option, perturbed.input, perturbedScenarios),
+  );
+  const perturbedPreferred = selectPreferredOption(perturbed.options, perturbedScores);
+  const changesRecommendation = perturbedPreferred?.optionId !== baselinePreferred?.optionId;
+  const perturbedMargin = eligibleScoreMargin(perturbedScores);
+  const eligibleOptionIds = perturbedScores
+    .filter(score => !score.disqualified)
+    .map(score => score.optionId);
   return {
     factor,
     currentAssumption,
     testedChange,
-    preferredOptionAfterChange: changesRecommendation
-      ? alternative?.optionId || selectedOption?.optionId || 'none'
-      : selectedOption?.optionId || scores[0]?.optionId || 'none',
+    preferredOptionAfterChange: perturbedPreferred?.optionId || 'none',
     changesRecommendation,
+    baselineMargin,
+    perturbedMargin,
+    eligibleOptionIds,
+    rescoredOptions: perturbedScores.map(score => ({
+      optionId: score.optionId,
+      totalWeightedScore: score.totalWeightedScore,
+      disqualified: score.disqualified,
+    })),
     explanation: changesRecommendation
-      ? `${factor} can change the preferred option and must be disclosed.`
-      : `${factor} does not change the preferred option under reasonable variation.`,
+      ? `${factor} changed the preferred eligible option after every option was rescored; the perturbed winning margin is ${perturbedMargin} points.`
+      : `${factor} did not change the preferred eligible option after every option was rescored; the perturbed winning margin is ${perturbedMargin} points.`,
   };
+}
+
+function eligibleScoreMargin(scores: PIEDecisionOptionScore[]): number {
+  const eligible = scores
+    .filter(score => !score.disqualified)
+    .map(score => score.totalWeightedScore)
+    .sort((left, right) => right - left);
+  if (eligible.length === 0) return 0;
+  if (eligible.length === 1) return eligible[0];
+  return Math.max(0, eligible[0] - eligible[1]);
+}
+
+function applySensitivityPerturbation(
+  factor: PIEDecisionSensitivityFactor['factor'],
+  input: PIEDecisionSimulationInput,
+  options: PIEDecisionOption[],
+): { input: PIEDecisionSimulationInput; options: PIEDecisionOption[] } {
+  const perturbedInput: PIEDecisionSimulationInput = {
+    ...input,
+    executiveJudgment: {
+      ...input.executiveJudgment,
+      executiveRisks: [...input.executiveJudgment.executiveRisks],
+      decisionTiming: { ...input.executiveJudgment.decisionTiming },
+    },
+    activeRisks: [...(input.activeRisks || [])],
+    resourceAvailability: [...(input.resourceAvailability || [])],
+    scheduleState: [...(input.scheduleState || [])],
+    costInformation: [...(input.costInformation || [])],
+  };
+
+  if (factor === 'evidence_confidence') {
+    perturbedInput.executiveJudgment.confidence = 'low';
+  }
+  if (factor === 'risk_likelihood' || factor === 'risk_severity') {
+    perturbedInput.executiveJudgment.executiveRisks = [
+      ...perturbedInput.executiveJudgment.executiveRisks,
+      {
+        id: `sensitivity-${factor}`,
+        risk: factor === 'risk_likelihood'
+          ? 'The active risk is now likely to occur.'
+          : 'The active risk now has critical severity.',
+        whyItMatters: 'Sensitivity analysis must rescore the decision under the worsened risk.',
+        severity: factor === 'risk_severity' ? 'critical' : 'high',
+        shouldEscalate: true,
+        confidence: 'high',
+      },
+    ];
+  }
+  if (factor === 'deadline' || factor === 'schedule_deadlines' || factor === 'duration') {
+    perturbedInput.executiveJudgment.decisionTiming = {
+      ...perturbedInput.executiveJudgment.decisionTiming,
+      timeSensitivity: 'immediate',
+      decisionWindow: 'The decision window has moved earlier.',
+    };
+    perturbedInput.scheduleState = [
+      ...(perturbedInput.scheduleState || []),
+      'The authoritative deadline moved earlier.',
+    ];
+  }
+  if (factor === 'resource_availability') {
+    perturbedInput.resourceAvailability = ['The key resource is unavailable.'];
+  }
+  if (factor === 'cost') {
+    perturbedInput.costInformation = ['The active implementation option increased one cost category.'];
+  }
+
+  const perturbedOptions = options.map(option => {
+    const activeImplementation = option.optionType === 'recommended_action' || option.optionType === 'credible_alternative';
+    const next = {
+      ...option,
+      prerequisites: [...option.prerequisites],
+      assumptions: [...option.assumptions],
+      risks: [...option.risks],
+      uncertainty: [...option.uncertainty],
+    };
+
+    if (activeImplementation && factor === 'cost') next.estimatedCostDirection = 'increase';
+    if (activeImplementation && (factor === 'duration' || factor === 'deadline' || factor === 'schedule_deadlines')) {
+      next.scheduleImpact = 'delays';
+    }
+    if (activeImplementation && factor === 'resource_availability') {
+      next.resourceImpact = 'Required key resource is unavailable.';
+    }
+    if (activeImplementation && factor === 'implementation_quality') {
+      next.reversibility = 'low';
+      next.risks.push('Implementation may be incomplete or low fidelity.');
+    }
+    if (activeImplementation && factor === 'stakeholder_availability') {
+      next.operationalImpact = 'Stakeholder response is delayed and ownership is unavailable.';
+      next.uncertainty.push('Required stakeholder direction is unavailable.');
+    }
+    if (activeImplementation && factor === 'photo_progress_interpretation') {
+      next.uncertainty.push('Photo progress is downgraded and conflicts with written status.');
+    }
+    if (activeImplementation && factor === 'regulatory_interpretation') {
+      next.complianceImpact = 'Non-compliance risk under the stricter regulatory interpretation.';
+    }
+    if (option.optionType === 'no_action' && (factor === 'risk_likelihood' || factor === 'risk_severity')) {
+      next.risks.push('The worsened risk remains untreated.');
+    }
+    return next;
+  });
+
+  return { input: perturbedInput, options: perturbedOptions };
 }
 
 function buildDecisionSimulationProvenance(
@@ -765,7 +992,7 @@ function scenarioOutcome(
   if (scenarioType === 'conflicting_stakeholder_direction') return 'Stakeholder conflict requires authority clarification before action.';
   if (scenarioType === 'recurrence_of_original_issue') return 'Recurring issue pattern increases monitoring and verification value.';
   if (scenarioType === 'visual_progress_not_matching_reported_progress') {
-    return 'Visual progress and written status disagree; PIE lowers confidence and requests targeted confirmation instead of choosing one source silently.';
+    return 'Visual progress and written status disagree; DAVE lowers confidence and requests targeted confirmation instead of choosing one source silently.';
   }
   return option.expectedOutcome || input.executiveJudgment.executiveJudgmentSummary;
 }

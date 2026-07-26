@@ -8,17 +8,31 @@ const rootDir = path.resolve(__dirname, '..');
 const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
 
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
-const home = read('components/HomeDashboard.tsx');
+const app = read('App.tsx');
+const home = app;
 const reports = read('screens/ReportsScreen.tsx');
-const capture = read('components/PhotoCapturePanel.tsx');
+const capture = app;
 const piePanel = read('components/PIEPanel.tsx');
 
 assert(provider.includes('attention: PIECoreOutput'), 'Provider must expose Attention output.');
-assert(provider.includes('attention: core?.attention || null'), 'Provider value must include current attention.');
-assert(home.includes('liveAuthority.attention || buildPIEAttentionState'), 'Home must prefer provider attention.');
-assert(reports.includes('liveAuthority.attention || buildPIEAttentionState'), 'Review must prefer provider attention.');
+assert(provider.includes('attention: currentCore?.attention || null'), 'Provider value must include current scope attention.');
+assert(
+  home.includes('liveAuthority.projectTruth.briefing.nextActions') &&
+    home.includes('const authoritativePriority ='),
+  'Home must use the provider-backed Project Truth next action without exposing internal coverage diagnostics.',
+);
+assert(
+  reports.includes('selectStableReportDraft({') &&
+    reports.includes('liveDraft: liveAuthority.reportDraft') &&
+    reports.includes('fallbackDraft: runtime.response.reportDraft') &&
+    !reports.includes('buildPIEAttentionState'),
+  'Reports must retain the provider-backed report draft without rebuilding an internal attention explanation.',
+);
 assert(capture.includes('usePIELiveAuthority'), 'Capture must consume provider authority state.');
-assert(capture.includes('liveAuthority.policy.userMessage'), 'Capture must show friendly degraded authority status.');
+assert(
+  capture.includes('liveAuthority.core?.photoRepeatGuidance.find'),
+  'Capture must consume qualified repeat-photo guidance from provider authority.',
+);
 assert(piePanel.includes('liveAuthority?.runtime || fallbackRuntime'), 'Shared PIEPanel must prefer provider Runtime.');
 
 console.log('PASS attention authority routing');

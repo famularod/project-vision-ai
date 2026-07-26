@@ -1,17 +1,12 @@
 appId: ${APP_ID}
 ---
 - launchApp
-- assertVisible: "Home"
-- assertVisible: "Projects"
-- assertVisible: "Capture"
-- assertVisible: "Reports"
-- assertVisible: "More"
-- tapOn: "Projects"
-- assertVisible: "Projects"
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- tapOn: "Tasks"
+- assertVisible: "Work requiring attention"
 - tapOn: "Reports"
-- assertVisible: "Reports"
-- tapOn: "More"
-- assertVisible: "Admin"
-- tapOn: "Home"
-- assertVisible: "Home"
-
+- assertVisible: "Prepared Report"
+- tapOn: "Overview"
+- assertVisible: "Active Projects"

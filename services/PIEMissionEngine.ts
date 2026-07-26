@@ -21,6 +21,12 @@ import type {
 } from './ProjectIntelligenceEngine';
 import type { ProjectEvent } from './ProjectEventService';
 import type { PIERuntimeState } from './PIERuntime';
+import {
+  classifyDAVEBlocker,
+  classifyDAVEIssue,
+  classifyDAVESafety,
+  parseDAVEAssertions,
+} from './DAVEAssertionParser';
 
 export type PIEMissionType =
   | 'morning-brief'
@@ -250,7 +256,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
     purpose: 'Start the day with the clearest project-management priority.',
     objectiveTitle: 'Review what deserves attention today',
     objectiveSummary:
-      'Identify the top priority, what changed, what PIE needs from the user, and which project should be reviewed first.',
+      'Identify the top priority, what changed, what the user needs to provide, and which project should be reviewed first.',
     desiredOutcome:
       'The user starts with a clear, evidence-backed plan for the day.',
     expectedImpact:
@@ -266,12 +272,12 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'project-walk': {
     title: 'Project Walk',
     purpose:
-      'Guide the user through the field evidence PIE most needs to improve project reality.',
+      'Guide the user through the field evidence most needed to improve project reality.',
     objectiveTitle: 'Verify current field reality',
     objectiveSummary:
       'Confirm project, area, current work status, risks, and missing evidence while the user is in the field.',
     desiredOutcome:
-      'PIE receives current, user-verified evidence that strengthens project understanding.',
+      'Current, user-verified evidence strengthens project understanding.',
     expectedImpact:
       'Improves field accuracy, location confidence, photo coverage, and next-action quality.',
     defaultPriority: 'high',
@@ -323,7 +329,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'inspection-verification': {
     title: 'Inspection Verification',
     purpose:
-      'Confirm inspection status before PIE treats work as complete or communication-ready.',
+      'Confirm inspection status before work is treated as complete or communication-ready.',
     objectiveTitle: 'Verify inspection status',
     objectiveSummary:
       'Identify whether inspection evidence exists, what is missing, and what the user should verify first.',
@@ -342,12 +348,12 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'reduce-project-uncertainty': {
     title: 'Reduce Project Uncertainty',
     purpose:
-      'Collect the evidence that most improves PIE trust, understanding, and confidence.',
+      'Collect the evidence that most improves trust, understanding, and confidence.',
     objectiveTitle: 'Improve project understanding',
     objectiveSummary:
-      'Focus on missing updates, photos, schedule, documents, inspections, relationships, or answers that are limiting PIE.',
+      'Focus on missing updates, photos, schedule, documents, inspections, relationships, or answers that are limiting DAVE.',
     desiredOutcome:
-      'PIE knows what evidence is missing and what the user should verify first.',
+      'Missing evidence and the first item to verify are clearly identified.',
     expectedImpact:
       'Raises trust and understanding before decisions or communication are prepared.',
     defaultPriority: 'medium',
@@ -418,7 +424,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'schedule-recovery': {
     title: 'Schedule Recovery',
     purpose:
-      'Recover attention on overdue, blocked, waiting, or high-priority schedule work.',
+      'Recover attention on overdue, blocked, waiting, or dependency-limited schedule work.',
     objectiveTitle: 'Recover schedule control',
     objectiveSummary:
       'Identify overdue work, blockers, dependencies, missing owners, and next recovery action.',
@@ -437,7 +443,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   'communication-preparation': {
     title: 'Communication Preparation',
     purpose:
-      'Prepare stakeholder communication after PIE checks evidence, uncertainty, and approval needs.',
+      'Prepare stakeholder communication after checking evidence, uncertainty, and approval needs.',
     objectiveTitle: 'Prepare accurate communication',
     objectiveSummary:
       'Gather project status, changes, concerns, recommended language, missing context, and approval requirements.',
@@ -461,7 +467,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
     objectiveSummary:
       'Identify missing reports, documents, photos, updates, inspection records, or decision records.',
     desiredOutcome:
-      'The user knows what documentation would most improve PIE confidence.',
+      'The user knows what documentation would most improve confidence.',
     expectedImpact:
       'Improves traceability, report readiness, and future project memory.',
     defaultPriority: 'medium',
@@ -475,19 +481,19 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
   monitoring: {
     title: 'Monitoring',
     purpose:
-      'Stay quiet while PIE continues tracking evidence, risks, and changes.',
+      'Stay quiet while evidence, risks, and changes continue to be tracked.',
     objectiveTitle: 'Monitor project state',
     objectiveSummary:
       'Continue watching for meaningful change without creating unnecessary user work.',
     desiredOutcome:
-      'PIE remains ready without interrupting the user unnecessarily.',
+      'The system remains ready without interrupting the user unnecessarily.',
     expectedImpact:
       'Protects user attention while preserving current project awareness.',
     defaultPriority: 'low',
     nextMission: null,
     criteria: [
       'No urgent mission is currently supported by evidence.',
-      'PIE continues monitoring available signals.',
+      'Available signals continue to be monitored.',
       'User approval boundaries remain preserved.',
     ],
   },
@@ -656,7 +662,7 @@ export function buildMissionSummary(
       currentMission.missionType,
     ]).length,
     overallPurpose:
-      'Give PIE a clear purpose so recommendations, briefs, walks, reports, and questions all support the same project-management outcome.',
+      'Set a clear purpose so recommendations, briefs, walks, reports, and questions support the same project-management outcome.',
     nextMission: currentMission.nextMission,
     activeBlockers,
     recommendedActions,
@@ -939,7 +945,7 @@ function collectMissionEvidence(context: MissionContext): PIEMissionEvidence[] {
             id: 'behavior-active-recommendation',
             title: 'Behavior Recommendation',
             detail: context.behavior.activeRecommendation.recommendation ||
-              'PIE Behavior has an active recommendation.',
+      'There is an active recommendation.',
             source: 'pie-behavior',
             confidence:
               context.behavior.activeRecommendation.confidence ?? 'medium',
@@ -1160,14 +1166,14 @@ function buildMissionRecommendationsFromContext(
     recommendations.push({
       id: `mission-reflection-${reflectionQuestion.id}`,
       missionType: context.missionType,
-      title: 'Verify what PIE is least certain about',
+      title: 'Verify the least certain project detail',
       recommendation: reflectionQuestion.question,
       why: reflectionQuestion.reason,
       evidence: reflectionQuestion.evidence,
       confidence: reflectionQuestion.confidence,
       priority: reflectionQuestion.priority,
       expectedImpact:
-        'Improves PIE confidence before recommendations, reports, or decisions are treated as reliable.',
+        'Improves confidence before recommendations, reports, or decisions are treated as reliable.',
       userApprovalRequired: false,
       source: 'pie-reflection',
     });
@@ -1216,7 +1222,13 @@ function buildMissionSuccessCriteria(
 ): PIEMissionSuccessCriteria[] {
   const evidenceDetails = evidence.map(item => item.detail);
   const criteria = definition.criteria.map((description, index) => {
-    const met = missionCriterionMet(description, context, evidence, blockers);
+    const met = missionCriterionMet(
+      description,
+      context,
+      evidence,
+      evidenceNeeds,
+      blockers,
+    );
 
     return {
       id: `mission-criteria-${context.missionType}-${index}`,
@@ -1233,7 +1245,7 @@ function buildMissionSuccessCriteria(
     description: 'User approval boundaries are preserved.',
     met: true,
     required: true,
-    evidence: ['PIE prepares mission recommendations; the user approves action.'],
+    evidence: ['Mission recommendations are prepared; the user approves action.'],
     confidence: 'high',
   });
 
@@ -1317,7 +1329,7 @@ function buildMissionTransitions(
     transitions.push(transition({
       from: context.missionType,
       to: 'reduce-project-uncertainty',
-      reason: 'PIE needs stronger evidence before mission confidence improves.',
+      reason: 'Stronger evidence is needed before mission confidence improves.',
       condition: 'trust, understanding, reflection, or graph gaps are limiting confidence',
       confidence: 'medium',
     }));
@@ -1440,10 +1452,9 @@ function missionCriterionMet(
   description: string,
   context: MissionContext,
   evidence: PIEMissionEvidence[],
+  evidenceNeeds: string[],
   blockers: PIEMissionBlocker[],
 ): boolean {
-  const text = `${description} ${evidence.map(item => item.detail).join(' ')}`.toLowerCase();
-
   if (description.includes('Top priority')) {
     return Boolean(context.executiveBrief?.topPriority || context.runtime?.currentPriority);
   }
@@ -1456,13 +1467,12 @@ function missionCriterionMet(
   if (description.includes('Questions or approvals')) {
     return Boolean(
       (context.executiveBrief?.questionsForUser.length ?? 0) > 0 ||
-        (context.decisionQueue?.userApprovalRequiredDecisions.length ?? 0) > 0 ||
-        context.runtime,
+        (context.decisionQueue?.userApprovalRequiredDecisions.length ?? 0) > 0,
     );
   }
   if (description.includes('Project and area')) {
     return Boolean(context.intelligence?.locationIntelligence.currentArea) ||
-      text.includes('area');
+      Boolean(context.knowledgeGraph?.nodes.some(node => node.type === 'area'));
   }
   if (description.includes('Current progress')) {
     return Boolean(
@@ -1472,41 +1482,99 @@ function missionCriterionMet(
     );
   }
   if (description.includes('Inspection')) {
-    return !hasInspectionNeed(context) || text.includes('inspection');
+    return hasTypedMissionEvidence(context, 'inspection');
   }
   if (description.includes('Critical risk')) {
     return blockers.some(blocker => blocker.priority === 'critical') ||
       hasCriticalRisk(context);
   }
   if (description.includes('Safety')) {
-    return hasSafetySignal(context) || text.includes('safety');
+    return hasTypedMissionEvidence(context, 'safety');
   }
   if (description.includes('Issue')) {
-    return hasIssueInvestigationNeed(context) || text.includes('issue');
+    return hasTypedMissionEvidence(context, 'issue');
   }
   if (description.includes('schedule') || description.includes('Schedule')) {
-    return Boolean(
-      (context.intelligence?.metrics.scheduleItemCount ?? 0) > 0 ||
-        context.decisionQueue?.decisions.some(
-          decision => decision.impact.area === 'schedule',
-        ),
-    );
+    return hasTypedMissionEvidence(context, 'schedule');
   }
   if (description.includes('documentation') || description.includes('Documentation')) {
-    return !hasDocumentationNeed(context) ||
-      Boolean((context.intelligence?.metrics.documentCount ?? 0) > 0);
+    return hasTypedMissionEvidence(context, 'document');
   }
   if (description.includes('User approval boundaries')) return true;
+  if (description.includes('Missing evidence') || description.includes('Missing context')) {
+    return evidenceNeeds.length > 0;
+  }
+  if (description.includes('verification question')) {
+    return Boolean(
+      (context.executiveBrief?.questionsForUser.length ?? 0) > 0 ||
+      (context.reflection?.verificationQuestions.length ?? 0) > 0,
+    );
+  }
+  if (description.includes('Evidence and uncertainty')) {
+    return evidence.length > 0 && evidenceNeeds.length > 0;
+  }
+  if (description.includes('Decision or escalation')) {
+    return Boolean(
+      (context.decisionQueue?.decisions.length ?? 0) > 0 ||
+      (context.executiveBrief?.escalations.length ?? 0) > 0,
+    );
+  }
+  if (description.includes('User approval') || description.includes('user approval')) {
+    return missionRequiresApproval(context.missionType);
+  }
 
-  return evidence.length > 0;
+  // Unmapped criteria fail closed. A generic, unrelated evidence item must
+  // never satisfy a mission criterion merely because some evidence exists.
+  return false;
+}
+
+function hasTypedMissionEvidence(
+  context: MissionContext,
+  kind: 'inspection' | 'safety' | 'issue' | 'schedule' | 'document',
+) {
+  if (kind === 'inspection') {
+    return Boolean(
+      context.knowledgeGraph?.nodes.some(node => node.type === 'inspection') ||
+      context.projectEvents.some(event => event.eventType === 'inspection_event'),
+    );
+  }
+  if (kind === 'safety') {
+    return Boolean(
+      (context.intelligence?.metrics.safetyConcernCount ?? 0) > 0 ||
+      context.knowledgeGraph?.nodes.some(node => node.type === 'safety') ||
+      context.projectEvents.some(event => event.eventType === 'safety_observation'),
+    );
+  }
+  if (kind === 'issue') {
+    return Boolean(
+      (context.intelligence?.metrics.openIssueCount ?? 0) > 0 ||
+      context.knowledgeGraph?.nodes.some(node => node.type === 'issue') ||
+      context.projectEvents.some(event => event.eventType === 'issue_created'),
+    );
+  }
+  if (kind === 'schedule') {
+    return Boolean(
+      (context.intelligence?.metrics.scheduleItemCount ?? 0) > 0 ||
+      context.knowledgeGraph?.nodes.some(node => node.type === 'schedule_item') ||
+      context.projectEvents.some(event =>
+        event.eventType === 'schedule_imported' ||
+        event.eventType === 'schedule_item_overdue'
+      ),
+    );
+  }
+  return Boolean(
+    (context.intelligence?.metrics.documentCount ?? 0) > 0 ||
+    context.knowledgeGraph?.nodes.some(node => node.type === 'document') ||
+    context.projectEvents.some(event => event.relatedDocuments.length > 0),
+  );
 }
 
 function defaultMissionRecommendation(type: PIEMissionType): string {
   switch (type) {
     case 'morning-brief':
-      return 'Review PIE priorities and start with the highest-confidence management action.';
+      return 'Review project priorities and start with the highest-confidence management action.';
     case 'project-walk':
-      return 'Begin Project Walk and verify the field evidence PIE needs most.';
+      return 'Begin Project Walk and verify the field evidence needed most.';
     case 'executive-meeting-prep':
       return 'Review the executive brief, priority, risk, and approval-required decisions.';
     case 'customer-update-prep':
@@ -1561,9 +1629,17 @@ function isMission(input: MissionInput): input is PIEMission {
 }
 
 function hasSafetySignal(context: Omit<MissionContext, 'missionType'>): boolean {
-  return contextText(context).includes('safety') ||
-    contextText(context).includes('hazard') ||
-    (context.intelligence?.metrics.safetyConcernCount ?? 0) > 0;
+  const classification = classifyDAVESafety(
+    parseDAVEAssertions(contextText(context)),
+  );
+  return (
+    classification === 'issue_present' ||
+    classification === 'conflicting' ||
+    classification === 'uncertain' ||
+    (context.intelligence?.metrics.safetyConcernCount ?? 0) > 0 ||
+    Boolean(context.knowledgeGraph?.nodes.some(node => node.type === 'safety')) ||
+    context.projectEvents.some(event => event.eventType === 'safety_observation')
+  );
 }
 
 function hasCriticalRisk(context: Omit<MissionContext, 'missionType'>): boolean {
@@ -1583,7 +1659,8 @@ function hasInspectionNeed(context: Omit<MissionContext, 'missionType'>): boolea
     'missing inspection',
     'inspection not recorded',
     'verify inspection',
-    'inspection status',
+    'inspection status unknown',
+    'inspection status uncertain',
   ]);
 }
 
@@ -1595,7 +1672,12 @@ function hasScheduleRecoveryNeed(
       context.decisionQueue?.decisions.some(
         decision =>
           decision.impact.area === 'schedule' &&
-          (decision.priority === 'high' || decision.priority === 'critical'),
+          classifyDAVEBlocker(parseDAVEAssertions([
+            decision.title,
+            decision.summary,
+            decision.suggestedNextAction,
+            ...decision.evidence,
+          ].join(' '))) === 'blocked',
       ) ||
       context.knowledgeGraph?.relationships.some(
         relationship => relationship.edgeType === 'blocks',
@@ -1618,8 +1700,20 @@ function hasCommunicationNeed(
 function hasIssueInvestigationNeed(
   context: Omit<MissionContext, 'missionType'>,
 ): boolean {
-  return includesAny(contextText(context), ['issue', 'blocker', 'blocked']) ||
-    (context.intelligence?.metrics.openIssueCount ?? 0) > 0;
+  const parsed = parseDAVEAssertions(contextText(context));
+  const issue = classifyDAVEIssue(parsed);
+  const blocker = classifyDAVEBlocker(parsed);
+  return (
+    issue === 'issue_present' ||
+    issue === 'conflicting' ||
+    issue === 'uncertain' ||
+    blocker === 'blocked' ||
+    blocker === 'conflicting' ||
+    blocker === 'uncertain' ||
+    (context.intelligence?.metrics.openIssueCount ?? 0) > 0 ||
+    Boolean(context.knowledgeGraph?.nodes.some(node => node.type === 'issue')) ||
+    context.projectEvents.some(event => event.eventType === 'issue_created')
+  );
 }
 
 function hasDocumentationNeed(

@@ -448,10 +448,10 @@ function visualEstimate(labels: PIEPhotoChangeLabel[]): PIEPhotoProgressComparis
 
 function summaryForLabels(labels: PIEPhotoChangeLabel[], confidence: ProjectConfidenceLevel) {
   if (confidence === 'low' || labels.includes('Could not determine confidently')) {
-    return 'PIE could not determine the photo change confidently from local metadata and captions. Review is required before this becomes project evidence.';
+    return 'DAVE could not determine the photo change confidently from local metadata and captions. Review is required before this becomes project evidence.';
   }
 
-  return `PIE found ${labels.join(', ').toLowerCase()} based on local photo captions, categories, action status, area, GPS, and time evidence.`;
+  return `DAVE found ${labels.join(', ').toLowerCase()} based on local photo captions, categories, action status, area, GPS, and time evidence.`;
 }
 
 function photoRef(candidate: PhotoCandidate): PIEPhotoProgressPhotoRef {

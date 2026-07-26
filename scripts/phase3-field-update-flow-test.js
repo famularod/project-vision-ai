@@ -8,7 +8,6 @@ const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 
 [
-  "'PIEAnalysis'",
   'FieldUpdateStepIndicator',
   'Capture Evidence',
   'Take Photo',
@@ -25,8 +24,7 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
   'QUICK_CONTEXTS.map',
   "context === 'Safety'",
   'Update Preview',
-  'Send Update',
-  'Save Draft',
+  'Save Field Update',
   'minimumSendDataIssue',
   'workflowTimestamps',
   'cameraActionStartedAt',
@@ -50,6 +48,13 @@ const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 });
 
 assert(
+  !app.includes("setScreen('PIEAnalysis')") &&
+    app.includes("function continueToReview()") &&
+    app.includes("setScreen('BuildUpdate')"),
+  'Photo intelligence should run inline while Capture moves directly to Review.',
+);
+
+assert(
   app.includes('await ImagePicker.launchCameraAsync({'),
   'Take Photo should open the camera directly.',
 );
@@ -58,7 +63,10 @@ assert(
   'Captions must not gate Review.',
 );
 assert(
-  app.includes('summary: PIE_STATUS_COPY.checking'),
+  app.includes("status: 'analyzing'") &&
+    app.includes('summary: authCopy || (results.length === 0') &&
+    app.includes('? PIE_STATUS_COPY.preparingSecureAnalysis') &&
+    app.includes(': PIE_STATUS_COPY.checking'),
   'Review must show neutral status while PIE is still running.',
 );
 assert(
@@ -66,8 +74,10 @@ assert(
   'Zero-photo path must show no visual comparison available.',
 );
 assert(
-  app.includes("return 'Recipients are required before sending.'"),
-  'Send must require recipients while Save Draft remains available.',
+  app.includes('function saveFieldUpdateFromReview()') &&
+    app.includes('const draftSnapshot = draftRef.current;') &&
+    app.includes('if (!hasSavableUpdate(draftSnapshot))'),
+  'Review must save a substantive Field Update without requiring communication recipients.',
 );
 assert(
   app.includes('Observed findings') &&
@@ -77,8 +87,11 @@ assert(
   'Update Preview must separate visual observations from confirmable interpretations.',
 );
 assert(
-  app.includes('const idempotencyKey = draft.idempotencyKey || draft.stableSendId') &&
-    app.includes('idempotencyKey: update.idempotencyKey || update.stableSendId'),
+  app.includes('const idempotencyKey = draftSnapshot.idempotencyKey ||') &&
+    app.includes('draftSnapshot.stableSendId || `send-${draftSnapshot.id}`') &&
+    app.includes('stableSendId: idempotencyKey,') &&
+    app.includes('stableSendId: update.idempotencyKey || update.stableSendId || `send-${update.id}`') &&
+    app.includes('idempotencyKey: update.idempotencyKey || update.stableSendId || `send-${update.id}`'),
   'Send and retry must preserve the same client-side idempotency key.',
 );
 assert(

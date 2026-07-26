@@ -1,12 +1,12 @@
-# Project Vision AI JARVIS QA
+# Vitruvius Intelligence Center (V.I.C.) QA
 
 ## Purpose
 
-JARVIS QA is the internal quality system for Project Vision AI.
+V.I.C. is the internal quality system for Vitruvius Project Intelligence.
 
-Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, PIE intelligence, and release readiness. JARVIS QA should make it harder for broken text, clipped buttons, confusing navigation, or weak PIE output to reach TestFlight.
+Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. V.I.C. should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
 
-JARVIS QA does not replace human review. It gives the team a repeatable checklist and a future automation path so humans can review the product faster and with better confidence.
+V.I.C. does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence. Legacy source files and npm commands retain the JARVIS name until they can be migrated without breaking release automation.
 
 ## JARVIS Experience QA 2.0
 
@@ -705,13 +705,27 @@ Use this checklist before release handoff:
 - [ ] Empty states are helpful when project data is missing.
 - [ ] `npm run check` passes.
 
-## Active QA Runner
+## Active V.I.C. Runners
 
-JARVIS now includes a lightweight local static runner:
+V.I.C. keeps its lightweight static contract audit available through a compatibility command:
+
+```bash
+npm run jarvis:contracts
+```
+
+`jarvis:contracts` verifies required architecture, documentation, exports, safety boundaries, and source markers. Its score is a static contract score only. It does not prove runtime behavior or visual correctness.
+
+The complete automated runner is:
 
 ```bash
 npm run jarvis:qa
 ```
+
+It runs release configuration, architecture, strict Jest behavior and coverage, established domain scenarios, UI and reporting checks, core-flow simulation, photo intelligence, authority and safety checks, the escaped-defect coverage audit, a production web export, and the static contract audit. It continues through all layers to provide one complete failure report.
+
+Release configuration now verifies both the Expo source configuration and any checked-in generated Android manifest. The gate fails if Android OS backup is enabled or if the generated app actively requests broad external-storage, contact-write, or overlay permissions. Release contracts also exercise the production-secret guard against an untracked runtime dependency and require mobile/web data-export copy to state that the JSON is unencrypted and does not contain photo or document files.
+
+`validation/jarvis/escaped-defects.json` keeps previously escaped defect families visible. Every entry identifies severity, affected platforms, executable regression evidence, required manual validation, and the limitation of the automated evidence. V.I.C. fails when a registered evidence file disappears or is disabled.
 
 The active runner checks the highest-risk pre-field-test pathways:
 
@@ -788,7 +802,7 @@ The active runner checks the highest-risk pre-field-test pathways:
 - Reporter can use beliefs to improve narrative without presenting beliefs as final truth.
 - Documentation explains Belief Formation, Belief Revision, Evidence vs Belief, Belief Readiness, and Belief Explainability.
 
-Runner statuses:
+Static contract statuses:
 
 - `PASS`: expected pathway marker is present.
 - `WARN`: pathway exists partially or placement needs human review before release.
@@ -796,27 +810,28 @@ Runner statuses:
 
 ## Active QA Release Gate
 
-Before TestFlight or field testing, run:
+Before TestFlight or field testing, run the combined local release gate:
 
 ```bash
-npm run check
-npm run jarvis:qa
+npm run qa:release
 ```
 
-A release is blocked by any `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk.
+`qa:release` invokes the same full automated runner as `jarvis:qa`. Its summary deliberately separates `Automated Gate` from `Release Certification`. An automated PASS still reports `DEVICE VALIDATION REQUIRED`.
 
-## Current Lightweight QA Foundation
+Then run Maestro and physical-device validation for the coherent build milestone. A release is blocked by any executable failure or V.I.C. `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk. Live iPhone/iPad/web propagation, native device capabilities, touch latency, external providers, and visual review are not certified by a local automated run.
 
-The first JARVIS QA implementation combines the checklist above with the active static runner.
+## QA Foundation
 
-This is intentional for the first automation step:
+The original JARVIS implementation established a useful static contract runner. The current foundation separates compile safety, executable Jest behavior, existing domain scenarios, static JARVIS contracts, Maestro workflows, and physical-device validation.
 
-- It adds no packages.
-- It does not change build tooling beyond a local npm script.
-- It does not affect Supabase, storage, schema, or external AI.
-- It gives every release a repeatable manual and local QA contract immediately.
+This separation is intentional:
 
-The next safe step is to pair the static runner with Maestro and screenshot review once the screen labels and navigation targets are stable.
+- A static marker cannot substitute for runtime behavior.
+- A unit test cannot substitute for an end-to-end field workflow.
+- A simulator cannot fully substitute for camera, location, sync, and native sign-in on the physical phone.
+- Each passing command communicates exactly which risk was checked.
+
+The release gate does not alter Supabase, storage, schema, authentication, or external AI configuration.
 
 ## Future Automated Screenshot Comparison
 
@@ -1145,19 +1160,15 @@ JARVIS must verify the backend-safe foundation for multimodal evidence and raw-p
 
 Required:
 
-- `services/PIEMultimodalEvidence.ts` exists.
+- `services/PIEPhotoVisionMobileWorkflow.ts` and `services/PIEPhotoProgressIntelligence.ts` own the live mobile photo path.
 - `docs/PIE_MultimodalEvidenceArchitecture.md` exists.
 - `docs/PIE_TruePhotoIntelligence.md` exists.
 - `docs/PIE_VisualValidationPlan.md` exists.
 - `supabase/migrations/20260702030000_multimodal_evidence_foundation.sql` exists.
 - `supabase/functions/pie-photo-vision/index.ts` exists.
-- Evidence types include photo, drawing, schedule, contract, inspection_report, email, meeting_note, cost_report, equipment_reading, oee_feed, and field_measurement.
-- Structured analysis includes observations, inferences, entities, dates, commitments, owners, measurements, risks, conflicts, missing information, confidence, limitations, authority, and corroboration requirement.
+- The Edge Function returns structured visual observations, comparison findings, confidence, limitations, authority, and comparability.
 - Photo analysis authority remains `visual_observation_only`.
-- Deterministic checks validate duplicate key, MIME type, dimensions, size, orientation, and perceptual-hash presence where available.
 - JARVIS rejects hidden-work, code-compliance, causation, responsibility, inspection-pass, exact-progress, and non-comparable-change claims.
-- User corrections preserve the original analysis and create explicit correction lineage.
-- Analysis retries are idempotent when content hash, analyzer version, and policy version have not changed.
 - The Supabase bucket is private and organization/project scoped.
 - RLS is enabled on evidence, photo asset, analysis, visual JARVIS, and correction tables.
 - Raw-pixel provider calls live only in the Edge Function.
@@ -1167,13 +1178,10 @@ Required:
 - Baseline failure case 001, `mouse_added_to_table`, is recorded as a failed Build 21 physical-device case and required True Photo Intelligence acceptance case.
 - The mouse baseline case requires exact hashes, perceptual hashes, scene/viewpoint similarity, raw-pixel semantic comparison, object_added detection, persisted comparison, and explicit prevention of project-progress wording.
 - Production vision pipeline requires a provider-neutral server interface, Supabase Edge Function boundary, request persistence, comparison persistence, JARVIS persistence, timeout/retry/degraded behavior, and mobile pending/complete/degraded/hydration/correction state helpers.
-- Scripts exist: `test:multimodal-evidence`, `test:raw-photo-analysis`, `test:photo-comparison-intelligence`, `test:photo-baseline-failure-001`, `test:production-vision-pipeline`, and `test:photo-corrections`.
+- Production coverage exists for photo authority, longitudinal comparison, and adversarial visual validation.
 
 Required commands:
 
-- npm run test:multimodal-evidence
-- npm run test:raw-photo-analysis
-- npm run test:photo-comparison-intelligence
-- npm run test:photo-baseline-failure-001
-- npm run test:production-vision-pipeline
-- npm run test:photo-corrections
+- npm run test:photo-vision-authority
+- npm run test:photo-comparison
+- npm run test:visual-jarvis
