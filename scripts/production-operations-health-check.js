@@ -161,7 +161,7 @@ async function collectProductionOperationsHealth(client, now = new Date()) {
     countRows(
       client
         .from('dave_sync_tombstones')
-        .select('id', { count: 'exact', head: true }),
+        .select('record_id', { count: 'exact', head: true }),
       'Permanent deletion markers',
     ),
   ]);

@@ -1,10 +1,21 @@
 #!/usr/bin/env node
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const {
   analyzeProductionOperationsHealth,
   formatHealthSummary,
 } = require('./production-operations-health-check');
+
+const productionCheckSource = fs.readFileSync(
+  require.resolve('./production-operations-health-check'),
+  'utf8',
+);
+assert.match(
+  productionCheckSource,
+  /from\('dave_sync_tombstones'\)\s*\.select\('record_id',\s*\{\s*count:\s*'exact',\s*head:\s*true\s*\}\)/,
+  'Production tombstone monitoring must count the existing record_id column.',
+);
 
 const NOW = new Date('2026-07-26T12:00:00.000Z');
 
