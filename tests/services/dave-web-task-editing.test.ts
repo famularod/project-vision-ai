@@ -178,6 +178,162 @@ describe('DAVE desktop task editing model', () => {
     expect(updated.activity?.[1].message).toBe('Delivery confirmed for tomorrow.');
   });
 
+  test('rejects structured completion bypasses and uses explicit close/reopen transitions', () => {
+    const issue = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+      },
+      id: 'issue-workflow-1',
+      now: '2026-07-22T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(() => buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        status: 'Complete',
+        percentComplete: 100,
+      },
+      current: issue,
+      id: issue.id,
+      now: '2026-07-22T19:00:00.000Z',
+      actor: 'pm@example.com',
+    })).toThrow('Use "Close Issue"');
+
+    const closed = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        workflowAction: 'close',
+        activityMessage: 'Field outcome verified.',
+      },
+      current: issue,
+      id: issue.id,
+      now: '2026-07-22T19:00:00.000Z',
+      actor: 'signed-in-pm@example.com',
+    });
+    expect(closed).toMatchObject({
+      status: 'Complete',
+      percentComplete: 100,
+      progressConfirmedBy: 'signed-in-pm@example.com',
+      projectControls: {
+        workflowStage: 'Closed',
+        updatedBy: 'signed-in-pm@example.com',
+      },
+    });
+    expect(closed.activity?.at(-1)).toEqual(expect.objectContaining({
+      message: 'Issue closed: Field outcome verified.',
+      author: 'signed-in-pm@example.com',
+    }));
+
+    expect(() => buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        status: 'In Progress',
+        percentComplete: 80,
+      },
+      current: closed,
+      id: closed.id,
+      now: '2026-07-22T20:00:00.000Z',
+      actor: 'signed-in-pm@example.com',
+    })).toThrow('Use "Reopen Issue"');
+    expect(() => buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'RFI',
+        status: 'Complete',
+        percentComplete: 100,
+      },
+      current: closed,
+      id: closed.id,
+      now: '2026-07-22T20:00:00.000Z',
+      actor: 'signed-in-pm@example.com',
+    })).toThrow('Reopen Issue before changing its project item type.');
+    expect(() => buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'RFI',
+        status: 'Complete',
+        percentComplete: 100,
+        workflowAction: 'reopen',
+      },
+      current: closed,
+      id: closed.id,
+      now: '2026-07-22T20:00:00.000Z',
+      actor: 'signed-in-pm@example.com',
+    })).toThrow('Reopen Issue before changing its project item type.');
+
+    const reopened = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        status: 'Complete',
+        percentComplete: 100,
+        workflowAction: 'reopen',
+        activityMessage: 'Additional work discovered.',
+      },
+      current: closed,
+      id: closed.id,
+      now: '2026-07-22T21:00:00.000Z',
+      actor: 'signed-in-pm@example.com',
+    });
+    expect(reopened).toMatchObject({
+      status: 'In Progress',
+      percentComplete: 99,
+      projectControls: {
+        workflowStage: 'Open',
+      },
+    });
+    expect(reopened.activity?.at(-1)).toEqual(expect.objectContaining({
+      message: 'Issue reopened: Additional work discovered.',
+      author: 'signed-in-pm@example.com',
+    }));
+  });
+
+  test('allows a closed structured record to receive non-transition detail corrections', () => {
+    const issue = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+      },
+      id: 'issue-workflow-detail',
+      now: '2026-07-22T18:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+    const closed = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        workflowAction: 'close',
+      },
+      current: issue,
+      id: issue.id,
+      now: '2026-07-22T19:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    const corrected = buildDAVEWebScheduleItem({
+      draft: {
+        ...BASE_DRAFT,
+        itemType: 'Issue',
+        status: 'Complete',
+        percentComplete: 100,
+        notes: 'Corrected closeout detail.',
+      },
+      current: closed,
+      id: closed.id,
+      now: '2026-07-22T20:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(corrected.notes).toBe('Corrected closeout detail.');
+    expect(corrected.status).toBe('Complete');
+    expect(corrected.percentComplete).toBe(100);
+  });
+
   test('preserves planning hierarchy, baselines, and dependencies during ordinary edits', () => {
     const created = buildDAVEWebScheduleItem({
       draft: BASE_DRAFT,

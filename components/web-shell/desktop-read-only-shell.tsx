@@ -85,6 +85,13 @@ import { DesktopConnectionStatus } from './desktop-connection-status';
 import { DesktopOverviewPage } from './desktop-overview-page';
 import { DesktopSchedulePage } from './desktop-schedule-page';
 import { desktopSurfaces } from './desktop-surface-palette';
+import { ProjectControlsEditor } from '../project-controls-editor';
+import { buildVitruviusPortfolioImpact } from '../../services/VitruviusProjectControls';
+import { buildVitruviusMyWork } from '../../services/VitruviusMyWork';
+import {
+  projectItemWorkflowIsClosed,
+  projectItemWorkflowReadiness,
+} from '../../services/ProjectItemWorkflow';
 import {
   desktopNavigationItems,
   desktopRouteIsActive,
@@ -564,6 +571,14 @@ function workspaceMetricIconColor(tone: NonNullable<WorkspaceMetric['tone']>): s
   return desktopSurfaces.accent;
 }
 
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+  }).format(value);
+}
+
 function Section({ title, detail, children }: { title: string; detail: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
@@ -769,7 +784,7 @@ function TaskEditingWorkspace({
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<DAVEWebScheduleItem | null>(null);
-  const [taskView, setTaskView] = useState<'open' | 'completed'>('open');
+  const [taskView, setTaskView] = useState<'open' | 'mine' | 'completed'>('open');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<TaskWorkspaceStatusFilter>('all');
@@ -794,7 +809,28 @@ function TaskEditingWorkspace({
     () => openTasks.filter(task => task.status === 'In Progress'),
     [openTasks],
   );
-  const taskViewItems = taskView === 'completed' ? completedTasks : openTasks;
+  const desktopDisplayName = readVitruviusDesktopDisplayName();
+  const myWork = useMemo(
+    () => buildVitruviusMyWork({
+      items: tasks,
+      displayName: desktopDisplayName,
+      email: auth.userEmail,
+    }),
+    [auth.userEmail, desktopDisplayName, tasks],
+  );
+  const myWorkTasks = useMemo(
+    () => myWork.items.map(row => row.item as DAVEWebScheduleItem),
+    [myWork.items],
+  );
+  const portfolioImpact = useMemo(
+    () => buildVitruviusPortfolioImpact(tasks),
+    [tasks],
+  );
+  const taskViewItems = taskView === 'completed'
+    ? completedTasks
+    : taskView === 'mine'
+      ? myWorkTasks
+      : openTasks;
   const areaOptions = uniqueOptions(taskViewItems.map(task => task.locationName));
   const visibleTasks = useMemo(() => {
     const query = normalizedName(searchQuery);
@@ -996,9 +1032,34 @@ function TaskEditingWorkspace({
       detail="Changes sync automatically to the shared project record and appear on active Vitruvius devices."
     >
       <WorkspaceSummary metrics={[
+        { icon: 'person-circle-outline', label: 'My Work', value: myWork.counts.open },
         { icon: 'play-circle-outline', label: 'In Progress', value: inProgressTasks.length },
         { icon: 'checkmark-circle-outline', label: 'Completed', value: completedTasks.length, tone: 'success' },
         { icon: 'alert-circle-outline', label: 'Overdue', value: overdueTasks.length, tone: overdueTasks.length ? 'warning' : 'neutral' },
+        {
+          icon: 'person-outline',
+          label: 'Unassigned',
+          value: portfolioImpact.unassignedItemCount,
+          tone: portfolioImpact.unassignedItemCount ? 'warning' : 'neutral',
+        },
+        {
+          icon: 'shield-checkmark-outline',
+          label: 'Approval Needed',
+          value: portfolioImpact.pendingApprovalCount,
+          tone: portfolioImpact.pendingApprovalCount ? 'warning' : 'neutral',
+        },
+        {
+          icon: 'cash-outline',
+          label: 'Cost Exposure',
+          value: formatCurrency(portfolioImpact.costExposure),
+          tone: portfolioImpact.costExposure ? 'warning' : 'neutral',
+        },
+        {
+          icon: 'calendar-outline',
+          label: 'Task Delay Estimates',
+          value: `${portfolioImpact.taskDelayEstimateDaysTotal} day${portfolioImpact.taskDelayEstimateDaysTotal === 1 ? '' : 's'} total`,
+          tone: portfolioImpact.taskDelayEstimateDaysTotal ? 'warning' : 'neutral',
+        },
       ]} />
       <View style={styles.taskActionRow}>
         <Pressable
@@ -1043,6 +1104,15 @@ function TaskEditingWorkspace({
             active={taskView === 'open'}
             onPress={() => {
               setTaskView('open');
+              setStatusFilter('all');
+            }}
+          />
+          <TaskViewTab
+            label="My Work"
+            count={myWork.counts.open}
+            active={taskView === 'mine'}
+            onPress={() => {
+              setTaskView('mine');
               setStatusFilter('all');
             }}
           />
@@ -1103,7 +1173,8 @@ function TaskEditingWorkspace({
         </View>
       </View>
       <Text style={styles.taskResultCount}>
-        Showing {visibleTasks.length} of {taskViewItems.length} {taskView === 'completed' ? 'completed' : 'open'} tasks
+        Showing {visibleTasks.length} of {taskViewItems.length}{' '}
+        {taskView === 'completed' ? 'completed' : taskView === 'mine' ? 'assigned' : 'open'} tasks
       </Text>
 
       {notice ? (
@@ -1206,6 +1277,7 @@ function TaskEditingWorkspace({
                 locationOptions={locationOptions}
                 ownerOptions={ownerOptions}
                 contractorOptions={contractorOptions}
+                actor={auth.userEmail || 'Project manager'}
                 pending={pending}
                 onCancel={() => {
                   if (pending) return;
@@ -1602,6 +1674,7 @@ function TaskEditor({
   locationOptions,
   ownerOptions,
   contractorOptions,
+  actor,
   pending,
   onCancel,
   onSave,
@@ -1612,12 +1685,22 @@ function TaskEditor({
   locationOptions: readonly string[];
   ownerOptions: readonly string[];
   contractorOptions: readonly string[];
+  actor: string;
   pending: boolean;
   onCancel: () => void;
   onSave: (draft: DAVEWebTaskDraft) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<TaskFormState>(() => taskFormState(task, defaultProject));
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const workflowCandidate = taskEditorWorkflowCandidate(task, draft);
+  const structuredWorkflow = draft.itemType !== 'Task';
+  const workflowClosed = Boolean(task && projectItemWorkflowIsClosed(task));
+  const workflowReadiness = projectItemWorkflowReadiness(workflowCandidate, {
+    closingNote: draft.activityMessage,
+  });
+  const structuredStatusOptions: readonly ScheduleStatus[] = workflowClosed
+    ? ['Complete']
+    : ['Not Started', 'In Progress', 'Waiting'];
 
   const updateField = <K extends keyof TaskFormState,>(key: K, value: TaskFormState[K]) => {
     setDraft(previous => ({ ...previous, [key]: value }));
@@ -1630,8 +1713,31 @@ function TaskEditor({
       setValidationMessage('Percent complete must be a number from 0 to 100.');
       return;
     }
+    if (structuredWorkflow && !workflowClosed && percentComplete >= 100) {
+      setValidationMessage(
+        `Use "Close ${draft.itemType}" after the required information is complete.`,
+      );
+      return;
+    }
     try {
       await onSave({ ...draft, percentComplete });
+    } catch (error) {
+      setValidationMessage(taskMutationMessage(error));
+    }
+  };
+
+  const runWorkflowTransition = async () => {
+    setValidationMessage(null);
+    if (!workflowClosed && !workflowReadiness.readyToClose) {
+      setValidationMessage(workflowReadiness.message);
+      return;
+    }
+    try {
+      await onSave({
+        ...draft,
+        percentComplete: Number(draft.percentComplete),
+        workflowAction: workflowClosed ? 'reopen' : 'close',
+      });
     } catch (error) {
       setValidationMessage(taskMutationMessage(error));
     }
@@ -1645,11 +1751,33 @@ function TaskEditor({
       <LabeledTextField label="Task name" value={draft.taskName} onChangeText={value => updateField('taskName', value)} />
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Project item type</Text>
-        <OptionButtons<ProjectItemType>
-          options={PROJECT_ITEM_TYPES}
-          value={draft.itemType}
-          onChange={value => updateField('itemType', value)}
-        />
+        {workflowClosed ? (
+          <View style={styles.workflowProtectedField}>
+            <Text style={styles.workflowProtectedValue}>{draft.itemType}</Text>
+            <Text style={styles.dataMeta}>
+              Reopen this record before changing its project item type.
+            </Text>
+          </View>
+        ) : (
+          <OptionButtons<ProjectItemType>
+            options={PROJECT_ITEM_TYPES}
+            value={draft.itemType}
+            onChange={value => {
+              updateField('itemType', value);
+              if (value !== 'Task' && (
+                draft.status === 'Complete' ||
+                Number(draft.percentComplete) >= 100
+              )) {
+                setDraft(previous => ({
+                  ...previous,
+                  itemType: value,
+                  status: 'In Progress',
+                  percentComplete: '99',
+                }));
+              }
+            }}
+          />
+        )}
       </View>
       <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
       <ChoiceOrTypeField label="Location / area" value={draft.locationName} options={locationOptions} onChange={value => updateField('locationName', value)} optional />
@@ -1670,10 +1798,17 @@ function TaskEditor({
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Status</Text>
         <OptionButtons<ScheduleStatus>
-          options={SCHEDULE_STATUSES}
+          options={structuredWorkflow ? structuredStatusOptions : SCHEDULE_STATUSES}
           value={draft.status}
           onChange={value => updateField('status', value)}
         />
+        {structuredWorkflow ? (
+          <Text style={styles.dataMeta}>
+            {workflowClosed
+              ? `Use "Reopen ${draft.itemType}" to resume this record.`
+              : `Use "Close ${draft.itemType}" to record Complete and 100%.`}
+          </Text>
+        ) : null}
       </View>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Priority</Text>
@@ -1683,13 +1818,25 @@ function TaskEditor({
           onChange={value => updateField('priority', value)}
         />
       </View>
-      <LabeledTextField
-        label="Percent complete"
-        value={draft.percentComplete}
-        onChangeText={value => updateField('percentComplete', value)}
-        placeholder="0"
-        numeric
-      />
+      {structuredWorkflow && workflowClosed ? (
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Percent complete</Text>
+          <View style={styles.workflowProtectedField}>
+            <Text style={styles.workflowProtectedValue}>100%</Text>
+            <Text style={styles.dataMeta}>
+              Reopen this record before changing progress.
+            </Text>
+          </View>
+        </View>
+      ) : (
+        <LabeledTextField
+          label={structuredWorkflow ? 'Percent complete (0–99)' : 'Percent complete'}
+          value={draft.percentComplete}
+          onChangeText={value => updateField('percentComplete', value)}
+          placeholder="0"
+          numeric
+        />
+      )}
       <LabeledTextField
         label="Next action"
         value={draft.nextAction}
@@ -1697,6 +1844,83 @@ function TaskEditor({
         placeholder="Smallest accountable next step"
         optional
       />
+      <ProjectControlsEditor
+        item={{
+          ...(task || {
+            id: 'draft-project-controls',
+            createdAt: new Date().toISOString(),
+          }),
+          itemType: draft.itemType,
+          taskName: draft.taskName,
+          scheduleProjectName: draft.projectName,
+          projectName: draft.projectName,
+          locationName: draft.locationName,
+          startDate: draft.startDate,
+          finishDate: draft.finishDate,
+          milestone: draft.milestone,
+          owner: draft.owner,
+          contractor: draft.contractor,
+          percentComplete: Number(draft.percentComplete) || 0,
+          priority: draft.priority,
+          status: draft.status,
+          notes: draft.notes,
+          nextAction: draft.nextAction,
+          projectControls: draft.projectControls,
+        }}
+        actor={actor}
+        onUpdate={projectControls => {
+          const currentStage = draft.projectControls?.workflowStage || 'Open';
+          if (!workflowClosed && projectControls.workflowStage === 'Closed') {
+            setValidationMessage(
+              `Use "Close ${draft.itemType}" to record the closed workflow stage.`,
+            );
+            return;
+          }
+          if (workflowClosed && projectControls.workflowStage !== currentStage) {
+            setValidationMessage(
+              `Use "Reopen ${draft.itemType}" before changing its workflow stage.`,
+            );
+            return;
+          }
+          setValidationMessage(null);
+          updateField('projectControls', projectControls);
+        }}
+      />
+      {structuredWorkflow ? (
+        <View style={styles.workflowEditorCard}>
+          <View style={styles.workflowEditorHeading}>
+            <View style={styles.flexCopy}>
+              <Text style={styles.fieldLabel}>{draft.itemType} workflow</Text>
+              <Text style={styles.dataDetail}>{workflowReadiness.message}</Text>
+            </View>
+            <StatusBadge
+              label={workflowClosed ? 'Closed' : workflowReadiness.readyToClose ? 'Ready' : 'Not Ready'}
+              tone={workflowClosed || workflowReadiness.readyToClose ? 'good' : 'attention'}
+            />
+          </View>
+          {!workflowClosed && workflowReadiness.missing.slice(0, 4).map(missing => (
+            <Text key={missing} style={styles.workflowMissing}>• {missing}</Text>
+          ))}
+          <Pressable
+            style={({ pressed }) => [
+              styles.primaryButton,
+              !workflowClosed && !workflowReadiness.readyToClose && styles.workflowButtonDisabled,
+              pressed && styles.buttonPressed,
+            ]}
+            onPress={() => { void runWorkflowTransition(); }}
+            disabled={pending || (!workflowClosed && !workflowReadiness.readyToClose)}
+            accessibilityRole="button"
+          >
+            {pending ? (
+              <ActivityIndicator color={desktopSurfaces.onAccent} />
+            ) : (
+              <Text style={styles.primaryButtonText}>
+                {workflowClosed ? `Reopen ${draft.itemType}` : `Close ${draft.itemType}`}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Notes <Text style={styles.optionalLabel}>(optional)</Text></Text>
         <TextInput
@@ -1905,6 +2129,36 @@ function taskFormState(task: DAVEWebScheduleItem | null, defaultProject: string)
     notes: task?.notes ?? '',
     nextAction: task?.nextAction ?? '',
     activityMessage: '',
+    projectControls: task?.projectControls ?? null,
+  };
+}
+
+function taskEditorWorkflowCandidate(
+  task: DAVEWebScheduleItem | null,
+  draft: TaskFormState,
+): ScheduleItem {
+  const percentComplete = Number(draft.percentComplete);
+  return {
+    ...(task || {}),
+    id: task?.id || 'draft-project-item',
+    itemType: draft.itemType,
+    scheduleProjectName: draft.projectName,
+    projectName: draft.projectName,
+    locationName: draft.locationName,
+    taskName: draft.taskName,
+    startDate: draft.startDate,
+    finishDate: draft.finishDate,
+    milestone: draft.milestone,
+    owner: draft.owner,
+    contractor: draft.contractor,
+    percentComplete: Number.isFinite(percentComplete) ? percentComplete : 0,
+    priority: draft.priority,
+    status: draft.status,
+    notes: draft.notes,
+    nextAction: draft.nextAction,
+    activity: task?.activity || [],
+    projectControls: draft.projectControls,
+    createdAt: task?.createdAt || new Date().toISOString(),
   };
 }
 
@@ -5056,6 +5310,13 @@ const styles = StyleSheet.create({
   dangerButton: { minHeight: 42, borderRadius: 12, backgroundColor: '#C73535', alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
   editorCard: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg },
   editorTitle: { color: '#171A21', fontSize: 24, lineHeight: 31, fontWeight: '900' },
+  workflowProtectedField: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, gap: 2, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  workflowProtectedValue: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '900' },
+  workflowEditorCard: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, gap: spacing.sm, padding: spacing.md },
+  workflowEditorHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.sm },
+  workflowMissing: { color: '#76510A', fontSize: 13, lineHeight: 19, fontWeight: '700' },
+  workflowButtonDisabled: { opacity: 0.42 },
+  flexCopy: { flex: 1, minWidth: 0 },
   taskInspectorEmpty: { minHeight: 300, borderRadius: 16, borderWidth: 1, borderStyle: 'dashed', borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', gap: spacing.md, padding: spacing.xl },
   taskInspectorEmptyIcon: { width: 54, height: 54, borderRadius: 18, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
   taskInspectorEmptyTitle: { color: colors.text, fontSize: 20, lineHeight: 26, fontWeight: '900' },

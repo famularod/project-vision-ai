@@ -2,11 +2,27 @@ import {
   createScheduleItemTextSyncLifecycle,
   flushPendingScheduleItemTextSync,
   markScheduleItemTextSyncPending,
+  scheduleItemChangeUsesDebouncedSync,
   scheduleScheduleItemTextSync,
   settleScheduleItemTextSync,
 } from '../../services/ScheduleItemTextSyncLifecycle';
 
 describe('schedule item text sync lifecycle', () => {
+  it('debounces project-controls edits without delaying structural task changes', () => {
+    expect(scheduleItemChangeUsesDebouncedSync({
+      projectControls: { assignee: 'David Famularo' },
+    })).toBe(true);
+    expect(scheduleItemChangeUsesDebouncedSync({
+      notes: 'Ready',
+      projectControls: { trade: 'Electrical' },
+    })).toBe(true);
+    expect(scheduleItemChangeUsesDebouncedSync({
+      status: 'Complete',
+      projectControls: { assignee: 'David Famularo' },
+    })).toBe(false);
+    expect(scheduleItemChangeUsesDebouncedSync({})).toBe(false);
+  });
+
   beforeEach(() => {
     jest.useFakeTimers();
   });

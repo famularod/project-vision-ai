@@ -43,6 +43,7 @@ import {
   disposeScheduleItemTextSyncLifecycle,
   flushPendingScheduleItemTextSync,
   markScheduleItemTextSyncPending,
+  scheduleItemChangeUsesDebouncedSync,
   scheduleScheduleItemTextSync,
   settleScheduleItemTextSync,
 } from './services/ScheduleItemTextSyncLifecycle';
@@ -105,6 +106,7 @@ import {
 import {
   validateScheduleImportScope,
 } from './services/ScheduleImportScopeGuard';
+import { buildVitruviusMyWork } from './services/VitruviusMyWork';
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
 import { ScheduleTaskListControls, type ScheduleTaskFilter,
   type ScheduleTaskView, type ScheduleWorkspaceView } from './components/schedule-task-list-controls';
@@ -191,7 +193,13 @@ import type {
   UpdatePhoto,
   ReferenceDocument,
 } from './types';
-import { normalizeProjectItemActivity, normalizeProjectItemType } from './services/ProjectItemWorkflow';
+import {
+  normalizeProjectItemActivity,
+  normalizeProjectItemType,
+  projectItemWorkflowIsClosed,
+  resolveProjectItemWorkflowMutation,
+  type ProjectItemWorkflowMutationRequest,
+} from './services/ProjectItemWorkflow';
 import {
   deleteStoredReferenceDocument,
   ensureReferenceDocumentsDirectory,
@@ -222,6 +230,7 @@ import {
   salvageStartupContactBook,
 } from './services/StartupRecordValidation';
 import { normalizeScheduleDependencies } from './services/VitruviusScheduleEngine';
+import { normalizeProjectControls } from './services/VitruviusProjectControls';
 import { runExclusiveLocalStorageMutation } from './services/LocalStorageMutationCoordinator';
 import { reconcileFieldUpdateSyncResult } from './services/FieldUpdateSyncGeneration';
 import { createFieldUpdateLocalPersistence, FieldUpdatePersistenceBlockedError, prepareFieldUpdateStatusSave, prepareQueuedFieldUpdateSave } from './services/FieldUpdateLocalPersistence';
@@ -2636,6 +2645,7 @@ function normalizeScheduleItem(
     }),
     nextAction: optionalString(value.nextAction) || '',
     activity: normalizeProjectItemActivity(value.activity, uid),
+    projectControls: normalizeProjectControls(value.projectControls),
     importedFrom: optionalString(value.importedFrom),
     importedAt: optionalString(value.importedAt),
     importBatchId: optionalString(value.importBatchId),
@@ -11058,10 +11068,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
   }
 
-  function updateScheduleItem(itemId: string, next: Partial<ScheduleItem>) {
+  function updateScheduleItem(
+    itemId: string,
+    next: Partial<ScheduleItem>,
+    workflowRequest?: ProjectItemWorkflowMutationRequest,
+  ) {
     const current = scheduleItemsCurrentRef.current.find(item => item.id === itemId);
     if (!current) return;
-    const syncGeneration = advanceScheduleItemSyncGeneration(itemId);
     const now = new Date().toISOString();
     const progressChanged = (
       typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete
@@ -11079,7 +11092,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             : {}),
         })
       : null;
-    const updated = normalizeScheduleItem(
+    const candidate = normalizeScheduleItem(
       {
         ...current,
         ...next,
@@ -11094,6 +11107,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
       },
       { preserveEditedNotes: typeof next.notes === 'string' },
     );
+    const workflowMutation = resolveProjectItemWorkflowMutation({
+      current,
+      candidate,
+      request: workflowRequest,
+      now,
+    });
+    if (!workflowMutation.ok) {
+      Alert.alert('Workflow action required', workflowMutation.message);
+      return;
+    }
+    const updated = normalizeScheduleItem(
+      workflowMutation.item,
+      { preserveEditedNotes: typeof next.notes === 'string' },
+    );
+    const syncGeneration = advanceScheduleItemSyncGeneration(itemId);
     const changedFields = (Object.keys(updated) as Array<keyof ScheduleItem>)
       .filter(field => (
         JSON.stringify(updated[field]) !== JSON.stringify(current[field])
@@ -11103,17 +11131,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       item => item.id === itemId ? updated : item,
     );
     setScheduleItems(prev => prev.map(item => item.id === itemId ? updated : item));
-    const changedKeys = Object.keys(next);
-    const textOnlyChange = (
-      changedKeys.length > 0 &&
-      changedKeys.every(key => (
-        key === 'notes' ||
-        key === 'nextAction' ||
-        key === 'owner' ||
-        key === 'contractor' ||
-        key === 'percentComplete'
-      ))
-    );
+    const textOnlyChange = scheduleItemChangeUsesDebouncedSync(next);
 
     if (textOnlyChange) {
       markScheduleItemTextSyncPending(
@@ -13135,6 +13153,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               initialAddProjectName={scheduleAddProjectName}
               projectFilter={scheduleProjectFilter}
               defaultOwner={displayName}
+              currentUserEmail={layer4Identity?.authenticatedEmail || ''}
             />
           )}
 
@@ -17129,7 +17148,11 @@ function ProjectTaskControlPanel({
   projectName: string;
   scheduleItems: ScheduleItem[];
   savedUpdates: ProjectUpdate[];
-  onUpdate: (itemId: string, next: Partial<ScheduleItem>) => void;
+  onUpdate: (
+    itemId: string,
+    next: Partial<ScheduleItem>,
+    workflowRequest?: ProjectItemWorkflowMutationRequest,
+  ) => void;
   onDelete: (itemId: string) => void;
   onNewFieldUpdate: (item: ScheduleItem) => void;
   onAddTask: () => void;
@@ -17328,7 +17351,8 @@ function ProjectTaskControlPanel({
                 key={item.id}
                 item={item}
                 fieldWarnings={fieldWarnings.get(item.id) || []}
-                onUpdate={next => onUpdate(item.id, next)}
+                onUpdate={(next, workflowRequest) =>
+                  onUpdate(item.id, next, workflowRequest)}
                 onDelete={() => onDelete(item.id)}
                 onAddFieldUpdate={() => onNewFieldUpdate(item)}
               />
@@ -20428,6 +20452,7 @@ function ScheduleScreen({
   initialAddProjectName,
   projectFilter,
   defaultOwner,
+  currentUserEmail,
 }: {
   contentStyle: StyleProp<ViewStyle>;
   screenshotImportAvailable: boolean;
@@ -20441,7 +20466,11 @@ function ScheduleScreen({
   onDeleteDocument: (documentId: string) => void;
   onSetActiveDocument: (documentId: string) => void;
   onAdd: (item: Partial<ScheduleItem>) => void;
-  onUpdate: (itemId: string, next: Partial<ScheduleItem>) => void;
+  onUpdate: (
+    itemId: string,
+    next: Partial<ScheduleItem>,
+    workflowRequest?: ProjectItemWorkflowMutationRequest,
+  ) => void;
   onDelete: (itemId: string) => void;
   onImport: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onImportScreenshot: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
@@ -20455,6 +20484,7 @@ function ScheduleScreen({
   initialAddProjectName?: string | null;
   projectFilter?: string | null;
   defaultOwner?: string;
+  currentUserEmail?: string;
 }) {
   const { sizeClass } = useAppShellLayout();
   const scheduleScreenInsets = useSafeAreaInsets();
@@ -20657,6 +20687,18 @@ function ScheduleScreen({
     [sortedItems],
   );
   const completedTaskCount = sortedItems.length - openTaskCount;
+  const myWork = useMemo(
+    () => buildVitruviusMyWork({
+      items: sortedItems,
+      displayName: defaultOwner,
+      email: currentUserEmail,
+    }),
+    [currentUserEmail, defaultOwner, sortedItems],
+  );
+  const myWorkTaskIds = useMemo(
+    () => new Set(myWork.items.map(row => row.item.id)),
+    [myWork.items],
+  );
   const attentionTaskIds = useMemo(() => new Set(sortedItems
     .filter(item => {
       if (scheduleTaskIsComplete(item)) return false;
@@ -20689,9 +20731,11 @@ function ScheduleScreen({
     if (taskFilter === 'Today') return days === 0;
     if (taskFilter === '7 Days') return days !== null && days >= 0 && days <= 7;
     if (taskFilter === 'Overdue') return days !== null && days < 0;
+    if (taskFilter === 'My Work') return myWorkTaskIds.has(item.id);
     return attentionTaskIds.has(item.id);
   }), [
     attentionTaskIds,
+    myWorkTaskIds,
     sortedItems,
     taskFilter,
     taskView,
@@ -20703,6 +20747,8 @@ function ScheduleScreen({
   );
   const taskViewLabel = taskView === 'Completed Tasks'
     ? 'Completed Tasks'
+    : taskFilter === 'My Work'
+      ? 'My Work'
     : taskFilter === 'All'
       ? 'Open Tasks'
       : `${taskFilter} Tasks`;
@@ -20716,6 +20762,7 @@ function ScheduleScreen({
       dueSoonCount={dueSoon.length}
       overdueCount={overdue.length}
       needsActionCount={attentionTaskIds.size}
+      myWorkCount={myWork.counts.open}
       openTaskCount={openTaskCount}
       completedTaskCount={completedTaskCount}
       activeView={taskView}
@@ -20729,6 +20776,12 @@ function ScheduleScreen({
         setWorkspaceView('Tasks');
         setTaskView('Open Tasks');
         setTaskFilter('Attention');
+        setSelectedTaskId(null);
+      }}
+      onMyWorkPress={() => {
+        setWorkspaceView('Tasks');
+        setTaskView('Open Tasks');
+        setTaskFilter('My Work');
         setSelectedTaskId(null);
       }}
       onAddTask={() => setShowAdd(true)}
@@ -20962,12 +21015,26 @@ function ScheduleScreen({
           ) : null}
     </>
   );
-  const emptyState = (
-    <EmptyState
-      title="No schedule items yet"
-      text="Import a CSV/text schedule or add a schedule item manually."
-    />
-  );
+  const emptyState = taskView === 'Open Tasks' && taskFilter === 'My Work'
+    ? (
+        <EmptyState
+          title="No work assigned to you"
+          text="Open tasks assigned to your name or signed-in email will appear here."
+        />
+      )
+    : sortedItems.length > 0
+      ? (
+          <EmptyState
+            title="No tasks match this view"
+            text="Choose another task filter or project to review more work."
+          />
+        )
+      : (
+          <EmptyState
+            title="No schedule items yet"
+            text="Import a CSV/text schedule or add a schedule item manually."
+          />
+        );
   const taskEditor = (
     <ScheduleTaskEditorModal
       visible={showAdd}
@@ -21031,7 +21098,8 @@ function ScheduleScreen({
                 fieldWarnings={scheduleFieldResults.warnings.get(planningTask.id) || []}
                 expanded
                 activityAuthor={defaultOwner}
-                onUpdate={next => onUpdate(planningTask.id, next)}
+                onUpdate={(next, workflowRequest) =>
+                  onUpdate(planningTask.id, next, workflowRequest)}
                 onDelete={() => {
                   onDelete(planningTask.id);
                   setPlanningTaskId(null);
@@ -21094,7 +21162,8 @@ function ScheduleScreen({
               fieldWarnings={scheduleFieldResults.warnings.get(selectedTask.id) || []}
               expanded
               activityAuthor={defaultOwner}
-              onUpdate={next => onUpdate(selectedTask.id, next)}
+              onUpdate={(next, workflowRequest) =>
+                onUpdate(selectedTask.id, next, workflowRequest)}
               onDelete={() => onDelete(selectedTask.id)}
               onAddFieldUpdate={() => onNewFieldUpdateForTask(selectedTask)}
             />
@@ -21124,7 +21193,8 @@ function ScheduleScreen({
             dependencyNode={dependencyNodeByItemId.get(item.id) || null}
             fieldWarnings={scheduleFieldResults.warnings.get(item.id) || []}
             activityAuthor={defaultOwner}
-            onUpdate={next => onUpdate(item.id, next)}
+            onUpdate={(next, workflowRequest) =>
+              onUpdate(item.id, next, workflowRequest)}
             onDelete={() => onDelete(item.id)}
             onAddFieldUpdate={() => onNewFieldUpdateForTask(item)}
           />
@@ -21240,7 +21310,10 @@ function ScheduleItemRow({
   fieldWarnings?: PIEScheduleReconciliationWarning[];
   expanded?: boolean;
   activityAuthor?: string;
-  onUpdate: (next: Partial<ScheduleItem>) => void;
+  onUpdate: (
+    next: Partial<ScheduleItem>,
+    workflowRequest?: ProjectItemWorkflowMutationRequest,
+  ) => void;
   onDelete: () => void;
   onAddFieldUpdate?: () => void;
 }) {
@@ -21253,6 +21326,13 @@ function ScheduleItemRow({
     }
   };
   const [verificationNote, setVerificationNote] = useState('');
+  const normalizedItemType = normalizeProjectItemType(item.itemType);
+  const isStructuredProjectItem = normalizedItemType !== 'Task';
+  const isStructuredProjectItemClosed =
+    isStructuredProjectItem &&
+    projectItemWorkflowIsClosed(
+      item as unknown as import('./types').ScheduleItem,
+    );
   const needsCompletionVerification = scheduleItemNeedsCompletionVerification(
     item as unknown as import('./types').ScheduleItem,
   );
@@ -21392,7 +21472,7 @@ function ScheduleItemRow({
         {expanded ? (
           <View style={styles.areaManagerCard}>
             <AreaRow areaName={selectedArea?.name || item.locationName || 'Unassigned / Unknown Area'} onChange={() => setAreaSheetOpen(true)} />
-            {needsCompletionVerification ? (
+            {needsCompletionVerification && !isStructuredProjectItem ? (
               <View style={styles.scheduleVerificationActions}>
                 <Text style={styles.panelTitle}>Verify completion</Text>
                 <Text style={styles.rowSub}>
@@ -21447,7 +21527,7 @@ function ScheduleItemRow({
                 />
               </View>
             ) : null}
-            {onAddFieldUpdate && !needsCompletionVerification ? (
+            {onAddFieldUpdate && (!needsCompletionVerification || isStructuredProjectItem) ? (
               <PrimaryButton
                 label="Add Field Update"
                 icon="camera-outline"
@@ -21480,13 +21560,30 @@ function ScheduleItemRow({
 
             <Text style={styles.label}>Percent Complete</Text>
             <TextInput
-              style={styles.input}
+              style={[
+                styles.input,
+                isStructuredProjectItemClosed && { opacity: 0.55 },
+              ]}
               value={String(item.percentComplete)}
-              onChangeText={value => onUpdate({ percentComplete: Math.max(0, Math.min(100, Number(value.replace(/[^0-9]/g, '')) || 0)) })}
+              onChangeText={value => {
+                const requestedPercent = Number(
+                  value.replace(/[^0-9]/g, ''),
+                ) || 0;
+                onUpdate({
+                  percentComplete: Math.max(
+                    0,
+                    Math.min(
+                      isStructuredProjectItem ? 99 : 100,
+                      requestedPercent,
+                    ),
+                  ),
+                });
+              }}
               placeholder="0"
               placeholderTextColor={colors.muted}
               keyboardType="number-pad"
               maxLength={3}
+              editable={!isStructuredProjectItemClosed}
             />
 
             <Text style={styles.label}>Priority</Text>
@@ -21514,26 +21611,40 @@ function ScheduleItemRow({
 
             <Text style={styles.label}>Status</Text>
             <View style={styles.statusGrid}>
-              {SCHEDULE_STATUSES.map(status => (
-                <TouchableOpacity
-                  key={status}
-                  style={[
-                    styles.statusButton,
-                    item.status === status && styles.statusButtonActive,
-                  ]}
-                  onPress={() => onUpdate({ status })}
-                >
-                  <Text
+              {SCHEDULE_STATUSES.map(status => {
+                const directStatusChangeDisabled =
+                  isStructuredProjectItem &&
+                  (isStructuredProjectItemClosed || status === 'Complete');
+                return (
+                  <TouchableOpacity
+                    key={status}
                     style={[
-                      styles.statusButtonText,
-                      item.status === status && styles.statusButtonTextActive,
+                      styles.statusButton,
+                      item.status === status && styles.statusButtonActive,
+                      directStatusChangeDisabled && { opacity: 0.55 },
                     ]}
+                    onPress={() => onUpdate({ status })}
+                    disabled={directStatusChangeDisabled}
                   >
-                    {status}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    <Text
+                      style={[
+                        styles.statusButtonText,
+                        item.status === status && styles.statusButtonTextActive,
+                      ]}
+                    >
+                      {status}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
+            {isStructuredProjectItem ? (
+              <Text style={styles.rowSub}>
+                {isStructuredProjectItemClosed
+                  ? `Use the structured workflow below to reopen this ${normalizedItemType}.`
+                  : `Use the structured workflow below to close this ${normalizedItemType}.`}
+              </Text>
+            ) : null}
 
             <ProjectItemDetailsEditor item={item} activityAuthor={activityAuthor} onUpdate={onUpdate} />
             <AreaSelectionSheet visible={areaSheetOpen} projectAreas={itemProjectAreas}

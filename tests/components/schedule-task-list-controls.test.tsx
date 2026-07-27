@@ -17,6 +17,7 @@ describe('ScheduleTaskListControls', () => {
         dueSoonCount={1}
         overdueCount={1}
         needsActionCount={2}
+        myWorkCount={1}
         openTaskCount={2}
         completedTaskCount={4}
         activeView="Open Tasks"
@@ -24,6 +25,7 @@ describe('ScheduleTaskListControls', () => {
         onViewChange={onViewChange}
         onFilterChange={jest.fn()}
         onNeedsAttentionPress={jest.fn()}
+        onMyWorkPress={jest.fn()}
         onAddTask={jest.fn()}
       />,
     );
@@ -45,6 +47,7 @@ describe('ScheduleTaskListControls', () => {
         dueSoonCount={1}
         overdueCount={1}
         needsActionCount={2}
+        myWorkCount={1}
         openTaskCount={2}
         completedTaskCount={4}
         activeView="Completed Tasks"
@@ -52,6 +55,7 @@ describe('ScheduleTaskListControls', () => {
         onViewChange={jest.fn()}
         onFilterChange={jest.fn()}
         onNeedsAttentionPress={jest.fn()}
+        onMyWorkPress={jest.fn()}
         onAddTask={jest.fn()}
       />,
     );
@@ -68,6 +72,7 @@ describe('ScheduleTaskListControls', () => {
         dueSoonCount={1}
         overdueCount={1}
         needsActionCount={2}
+        myWorkCount={1}
         openTaskCount={2}
         completedTaskCount={4}
         activeView="Open Tasks"
@@ -75,6 +80,7 @@ describe('ScheduleTaskListControls', () => {
         onViewChange={jest.fn()}
         onFilterChange={jest.fn()}
         onNeedsAttentionPress={onNeedsAttentionPress}
+        onMyWorkPress={jest.fn()}
         onAddTask={jest.fn()}
       />,
     );
@@ -87,6 +93,36 @@ describe('ScheduleTaskListControls', () => {
     expect(onNeedsAttentionPress).toHaveBeenCalledTimes(1);
   });
 
+  it('shows and selects the current user assigned-work filter', async () => {
+    const onMyWorkPress = jest.fn();
+    const screen = await render(
+      <ScheduleTaskListControls
+        taskCount={6}
+        dueSoonCount={1}
+        overdueCount={1}
+        needsActionCount={2}
+        myWorkCount={3}
+        openTaskCount={4}
+        completedTaskCount={2}
+        activeView="Open Tasks"
+        activeFilter="My Work"
+        onViewChange={jest.fn()}
+        onFilterChange={jest.fn()}
+        onNeedsAttentionPress={jest.fn()}
+        onMyWorkPress={onMyWorkPress}
+        onAddTask={jest.fn()}
+      />,
+    );
+
+    const myWork = screen.getByRole('button', {
+      name: 'My Work: 3. Show open tasks assigned to me',
+    });
+    expect(myWork.props.accessibilityState).toEqual({ selected: true });
+
+    await fireEvent.press(myWork);
+    expect(onMyWorkPress).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the summary cards as the open-task filters', async () => {
     const onViewChange = jest.fn<void, [ScheduleTaskView]>();
     const onFilterChange = jest.fn();
@@ -96,6 +132,7 @@ describe('ScheduleTaskListControls', () => {
         dueSoonCount={1}
         overdueCount={1}
         needsActionCount={2}
+        myWorkCount={1}
         openTaskCount={2}
         completedTaskCount={4}
         activeView="Open Tasks"
@@ -103,6 +140,7 @@ describe('ScheduleTaskListControls', () => {
         onViewChange={onViewChange}
         onFilterChange={onFilterChange}
         onNeedsAttentionPress={jest.fn()}
+        onMyWorkPress={jest.fn()}
         onAddTask={jest.fn()}
       />,
     );
@@ -133,6 +171,7 @@ describe('ScheduleTaskListControls', () => {
         dueSoonCount={1}
         overdueCount={1}
         needsActionCount={2}
+        myWorkCount={1}
         openTaskCount={2}
         completedTaskCount={4}
         activeView="Open Tasks"
@@ -142,6 +181,7 @@ describe('ScheduleTaskListControls', () => {
         onViewChange={jest.fn()}
         onFilterChange={jest.fn()}
         onNeedsAttentionPress={jest.fn()}
+        onMyWorkPress={jest.fn()}
         onAddTask={jest.fn()}
       />,
     );
@@ -160,6 +200,7 @@ describe('ScheduleTaskListControls', () => {
         dueSoonCount={1}
         overdueCount={1}
         needsActionCount={2}
+        myWorkCount={1}
         openTaskCount={2}
         completedTaskCount={4}
         activeView="Open Tasks"
@@ -169,6 +210,7 @@ describe('ScheduleTaskListControls', () => {
         onViewChange={jest.fn()}
         onFilterChange={jest.fn()}
         onNeedsAttentionPress={jest.fn()}
+        onMyWorkPress={jest.fn()}
         onAddTask={jest.fn()}
       />,
     );

@@ -3,7 +3,13 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, radius, spacing } from '../theme';
 
-export type ScheduleTaskFilter = 'Attention' | 'Today' | '7 Days' | 'Overdue' | 'All';
+export type ScheduleTaskFilter =
+  | 'Attention'
+  | 'My Work'
+  | 'Today'
+  | '7 Days'
+  | 'Overdue'
+  | 'All';
 export type ScheduleTaskView = 'Open Tasks' | 'Completed Tasks';
 export type ScheduleWorkspaceView = 'Tasks' | 'Timeline' | 'Lookahead';
 
@@ -13,6 +19,7 @@ export function ScheduleTaskListControls({
   dueSoonCount,
   overdueCount,
   needsActionCount,
+  myWorkCount,
   openTaskCount,
   completedTaskCount,
   activeView,
@@ -20,6 +27,7 @@ export function ScheduleTaskListControls({
   onViewChange,
   onFilterChange,
   onNeedsAttentionPress,
+  onMyWorkPress,
   onAddTask,
   workspaceView = 'Tasks',
   onWorkspaceViewChange,
@@ -29,6 +37,7 @@ export function ScheduleTaskListControls({
   dueSoonCount: number;
   overdueCount: number;
   needsActionCount: number;
+  myWorkCount: number;
   openTaskCount: number;
   completedTaskCount: number;
   activeView: ScheduleTaskView;
@@ -36,6 +45,7 @@ export function ScheduleTaskListControls({
   onViewChange: (view: ScheduleTaskView) => void;
   onFilterChange: (filter: ScheduleTaskFilter) => void;
   onNeedsAttentionPress: () => void;
+  onMyWorkPress: () => void;
   onAddTask: () => void;
   workspaceView?: ScheduleWorkspaceView;
   onWorkspaceViewChange?: (view: ScheduleWorkspaceView) => void;
@@ -141,6 +151,14 @@ export function ScheduleTaskListControls({
               selected={activeView === 'Open Tasks' && activeFilter === 'Attention'}
               actionLabel="Show tasks that need attention"
               onPress={onNeedsAttentionPress}
+            />
+            <TaskMetric
+              label="My Work"
+              value={myWorkCount}
+              icon="person-outline"
+              selected={activeView === 'Open Tasks' && activeFilter === 'My Work'}
+              actionLabel="Show open tasks assigned to me"
+              onPress={onMyWorkPress}
             />
           </View>
 

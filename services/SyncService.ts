@@ -48,6 +48,7 @@ import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import { createPendingChangesRetryController } from './PendingChangesRetryController';
 import { processDAVEStorageCleanup } from './DAVEStorageCleanup';
 import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
+import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -1334,10 +1335,40 @@ function mergeScheduleItemQueueChangeScope(
     };
   }
 
+  const incomingFields = new Set(incomingPayload.changedFields);
+  const itemData = existingPayload.changedFields.reduce<ScheduleItem>(
+    (merged, field) => {
+      if (field === 'projectControls') {
+        if (!existingPayload.itemData.projectControls) return merged;
+        if (!merged.projectControls) {
+          return {
+            ...merged,
+            projectControls: existingPayload.itemData.projectControls,
+          };
+        }
+        return {
+          ...merged,
+          projectControls: mergeProjectControlsRevisions(
+            merged.projectControls,
+            existingPayload.itemData.projectControls,
+          ),
+        };
+      }
+      return incomingFields.has(field)
+        ? merged
+        : {
+            ...merged,
+            [field]: existingPayload.itemData[field],
+          };
+    },
+    incomingPayload.itemData,
+  );
+
   return {
     ...incoming,
     payload: {
       ...incomingPayload,
+      itemData,
       changedFields: [
         ...new Set([
           ...existingPayload.changedFields,
@@ -3383,10 +3414,20 @@ async function uploadQueueItem(
     const authoritative = remote && changedFields
       ? {
           ...changedFields.reduce<ScheduleItem>(
-            (merged, field) => ({
-              ...merged,
-              [field]: payload.itemData[field],
-            }),
+            (merged, field) => field === 'projectControls' &&
+              payload.itemData.projectControls &&
+              remote.projectControls
+              ? {
+                  ...merged,
+                  projectControls: mergeProjectControlsRevisions(
+                    payload.itemData.projectControls,
+                    remote.projectControls,
+                  ),
+                }
+              : {
+                  ...merged,
+                  [field]: payload.itemData[field],
+                },
             remote,
           ),
           updatedAt: new Date().toISOString(),

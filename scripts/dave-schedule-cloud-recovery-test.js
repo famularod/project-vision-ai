@@ -6,6 +6,28 @@ const path = require('path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
+const projectControlsPath = path.join(root, 'services/VitruviusProjectControls.ts');
+const compiledProjectControls = ts.transpileModule(
+  fs.readFileSync(projectControlsPath, 'utf8'),
+  {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  },
+).outputText;
+const projectControlsModule = { exports: {} };
+new Function(
+  'module',
+  'exports',
+  'require',
+  compiledProjectControls,
+)(
+  projectControlsModule,
+  projectControlsModule.exports,
+  require,
+);
+
 const sourcePath = path.join(root, 'services/DAVEScheduleRecovery.ts');
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
   compilerOptions: {
@@ -14,7 +36,18 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
   },
 }).outputText;
 const moduleUnderTest = { exports: {} };
-new Function('module', 'exports', compiled)(moduleUnderTest, moduleUnderTest.exports);
+new Function(
+  'module',
+  'exports',
+  'require',
+  compiled,
+)(
+  moduleUnderTest,
+  moduleUnderTest.exports,
+  specifier => specifier === './VitruviusProjectControls'
+    ? projectControlsModule.exports
+    : require(specifier),
+);
 
 const {
   isDAVESafeCloudScheduleRecord,

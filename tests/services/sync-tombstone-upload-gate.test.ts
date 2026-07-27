@@ -1,4 +1,5 @@
 import type { ReferenceDocument, ScheduleItem } from '../../types';
+import { emptyProjectControls } from '../../services/VitruviusProjectControls';
 
 const mockStorage = new Map<string, string>();
 const mockQueueWrites: string[][] = [];
@@ -733,6 +734,220 @@ describe('offline upload deletion barriers', () => {
       }),
     );
     await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('coalesces offline project-control edits and merges independent cloud edits field by field', async () => {
+    const task: ScheduleItem = {
+      id: 'task-controls-concurrent-merge',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'PLACE ASPHALT AT EMPLOYEE PARKING AREA',
+      startDate: '',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: '',
+      nextAction: '',
+      activity: [],
+      createdAt: '2026-07-21T22:31:36.387Z',
+      updatedAt: '2026-07-26T22:00:00.000Z',
+      projectControls: emptyProjectControls(),
+    };
+    const phoneAssigneeEdit: ScheduleItem = {
+      ...task,
+      updatedAt: '2026-07-26T22:01:00.000Z',
+      projectControls: {
+        ...emptyProjectControls(),
+        assignee: 'David',
+        revision: 1,
+        updatedAt: '2026-07-26T22:01:00.000Z',
+        updatedBy: 'David on iPhone',
+        fieldRevisions: {
+          assignee: {
+            revision: 1,
+            updatedAt: '2026-07-26T22:01:00.000Z',
+            updatedBy: 'David on iPhone',
+          },
+        },
+      },
+    };
+    const staleTabletApprovalEdit: ScheduleItem = {
+      ...task,
+      updatedAt: '2026-07-26T22:02:00.000Z',
+      projectControls: {
+        ...emptyProjectControls(),
+        approvalStatus: 'Pending',
+        revision: 1,
+        updatedAt: '2026-07-26T22:02:00.000Z',
+        updatedBy: 'David on iPad',
+        fieldRevisions: {
+          approvalStatus: {
+            revision: 1,
+            updatedAt: '2026-07-26T22:02:00.000Z',
+            updatedBy: 'David on iPad',
+          },
+        },
+      },
+    };
+    const cloudTradeEdit: ScheduleItem = {
+      ...task,
+      updatedAt: '2026-07-26T22:03:00.000Z',
+      projectControls: {
+        ...emptyProjectControls(),
+        trade: 'Paving',
+        revision: 1,
+        updatedAt: '2026-07-26T22:03:00.000Z',
+        updatedBy: 'David on desktop',
+        fieldRevisions: {
+          trade: {
+            revision: 1,
+            updatedAt: '2026-07-26T22:03:00.000Z',
+            updatedBy: 'David on desktop',
+          },
+        },
+      },
+    };
+
+    await queueScheduleItemRecord(
+      phoneAssigneeEdit,
+      false,
+      ['projectControls', 'updatedAt'],
+    );
+    await queueScheduleItemRecord(
+      staleTabletApprovalEdit,
+      false,
+      ['projectControls', 'updatedAt'],
+    );
+    mockListScheduleItems.mockResolvedValueOnce({
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: [cloudTradeEdit],
+    });
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      configured: true,
+      uploaded: 1,
+      queued: 0,
+      conflicts: 0,
+    });
+    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: task.id,
+        projectControls: expect.objectContaining({
+          assignee: 'David',
+          approvalStatus: 'Pending',
+          trade: 'Paving',
+          fieldRevisions: expect.objectContaining({
+            assignee: expect.any(Object),
+            approvalStatus: expect.any(Object),
+            trade: expect.any(Object),
+          }),
+        }),
+      }),
+    );
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('uses the later field stamp despite a lower device revision while preserving another local control edit', async () => {
+    const baseTask: ScheduleItem = {
+      id: 'task-controls-same-field-race',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: '2321 North Lot',
+      taskName: 'PLACE ASPHALT AT EMPLOYEE PARKING AREA',
+      startDate: '',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: '',
+      nextAction: '',
+      activity: [],
+      createdAt: '2026-07-21T22:31:36.387Z',
+      updatedAt: '2026-07-26T22:00:00.000Z',
+    };
+    const localTask: ScheduleItem = {
+      ...baseTask,
+      updatedAt: '2026-07-26T22:02:00.000Z',
+      projectControls: {
+        ...emptyProjectControls(),
+        assignee: 'Phone owner',
+        estimatedCostImpact: 5000,
+        revision: 8,
+        updatedAt: '2026-07-26T22:02:00.000Z',
+        updatedBy: 'David on iPhone',
+        fieldRevisions: {
+          assignee: {
+            revision: 8,
+            updatedAt: '2026-07-26T22:01:00.000Z',
+            updatedBy: 'David on iPhone',
+          },
+          estimatedCostImpact: {
+            revision: 2,
+            updatedAt: '2026-07-26T22:02:00.000Z',
+            updatedBy: 'David on iPhone',
+          },
+        },
+      },
+    };
+    const remoteTask: ScheduleItem = {
+      ...baseTask,
+      updatedAt: '2026-07-26T22:03:00.000Z',
+      projectControls: {
+        ...emptyProjectControls(),
+        assignee: 'Later desktop owner',
+        revision: 1,
+        updatedAt: '2026-07-26T22:03:00.000Z',
+        updatedBy: 'David on desktop',
+        fieldRevisions: {
+          assignee: {
+            revision: 1,
+            updatedAt: '2026-07-26T22:03:00.000Z',
+            updatedBy: 'David on desktop',
+          },
+        },
+      },
+    };
+    mockListScheduleItems.mockResolvedValueOnce({
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: [remoteTask],
+    });
+
+    await expect(
+      runScheduleItemCloudSync(localTask, ['projectControls', 'updatedAt']),
+    ).resolves.toMatchObject({
+      configured: true,
+      uploaded: 1,
+      queued: 0,
+      conflicts: 0,
+    });
+    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectControls: expect.objectContaining({
+          assignee: 'Later desktop owner',
+          estimatedCostImpact: 5000,
+          revision: 8,
+          fieldRevisions: expect.objectContaining({
+            assignee: {
+              revision: 1,
+              updatedAt: '2026-07-26T22:03:00.000Z',
+              updatedBy: 'David on desktop',
+            },
+          }),
+        }),
+      }),
+    );
   });
 
   it('retains every unsynced task field while successive edits replace the same durable queue row', async () => {

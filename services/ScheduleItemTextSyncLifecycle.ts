@@ -5,6 +5,23 @@ export type ScheduleItemTextSyncLifecycle = {
   timers: Map<string, ScheduleItemTextSyncTimer>;
 };
 
+const DEBOUNCED_SCHEDULE_ITEM_CHANGE_KEYS = new Set([
+  'notes',
+  'nextAction',
+  'owner',
+  'contractor',
+  'percentComplete',
+  'projectControls',
+]);
+
+export function scheduleItemChangeUsesDebouncedSync(next: object): boolean {
+  const changedKeys = Object.keys(next);
+  return (
+    changedKeys.length > 0 &&
+    changedKeys.every(key => DEBOUNCED_SCHEDULE_ITEM_CHANGE_KEYS.has(key))
+  );
+}
+
 export function createScheduleItemTextSyncLifecycle(): ScheduleItemTextSyncLifecycle {
   return {
     pendingIds: new Set<string>(),

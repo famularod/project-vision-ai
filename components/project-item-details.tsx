@@ -1,9 +1,20 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { appendProjectItemActivity } from '../services/ProjectItemWorkflow';
+import {
+  appendProjectItemActivity,
+  closeProjectItemWorkflow,
+  projectItemWorkflowIsClosed,
+  projectItemWorkflowReadiness,
+  reopenProjectItemWorkflow,
+  type ProjectItemWorkflowMutationRequest,
+} from '../services/ProjectItemWorkflow';
 import { colors, radius, spacing } from '../theme';
 import { PROJECT_ITEM_TYPES, type ProjectItemType, type ScheduleItem } from '../types';
+import {
+  ProjectControlsEditor,
+  ProjectControlsSummary,
+} from './project-controls-editor';
 
 export function ProjectItemTypeBadge({ item }: { item: ScheduleItem }) {
   return (
@@ -31,6 +42,7 @@ export function ProjectItemSummary({ item }: { item: ScheduleItem }) {
         <ProjectItemTypeBadge item={item} />
       </View>
       <ProjectItemNextAction item={item} />
+      <ProjectControlsSummary item={item} />
     </>
   );
 }
@@ -42,9 +54,15 @@ export function ProjectItemDetailsEditor({
 }: {
   item: ScheduleItem;
   activityAuthor?: string;
-  onUpdate: (next: Partial<ScheduleItem>) => void;
+  onUpdate: (
+    next: Partial<ScheduleItem>,
+    workflowRequest?: ProjectItemWorkflowMutationRequest,
+  ) => void;
 }) {
   const [activityMessage, setActivityMessage] = useState('');
+  const [workflowMessage, setWorkflowMessage] = useState('');
+  const readiness = projectItemWorkflowReadiness(item);
+  const workflowClosed = projectItemWorkflowIsClosed(item);
 
   const addActivity = () => {
     const message = activityMessage.trim();
@@ -66,24 +84,44 @@ export function ProjectItemDetailsEditor({
     <View>
       <FieldLabel text="Project item type" />
       <View style={styles.optionGrid}>
-        {PROJECT_ITEM_TYPES.map(itemType => (
+        {PROJECT_ITEM_TYPES.map(itemType => {
+          const itemTypeSelected = (item.itemType || 'Task') === itemType;
+          const itemTypeLocked = readiness.supported &&
+            workflowClosed &&
+            !itemTypeSelected;
+          return (
           <Pressable
             key={itemType}
             style={({ pressed }) => [
               styles.option,
-              (item.itemType || 'Task') === itemType && styles.optionActive,
+              itemTypeSelected && styles.optionActive,
+              itemTypeLocked && styles.optionDisabled,
               pressed && styles.pressed,
             ]}
-            onPress={() => onUpdate({ itemType: itemType as ProjectItemType })}
+            disabled={itemTypeLocked}
+            onPress={() => {
+              if (itemTypeLocked) {
+                setWorkflowMessage(
+                  `Reopen ${readiness.itemType} before changing its project item type.`,
+                );
+                return;
+              }
+              setWorkflowMessage('');
+              onUpdate({ itemType: itemType as ProjectItemType });
+            }}
             accessibilityRole="button"
-            accessibilityState={{ selected: (item.itemType || 'Task') === itemType }}
+            accessibilityState={{
+              selected: itemTypeSelected,
+              disabled: itemTypeLocked,
+            }}
           >
             <Text style={[
               styles.optionText,
-              (item.itemType || 'Task') === itemType && styles.optionTextActive,
+              itemTypeSelected && styles.optionTextActive,
             ]}>{itemType}</Text>
           </Pressable>
-        ))}
+          );
+        })}
       </View>
 
       <FieldLabel text="Next action" />
@@ -104,6 +142,85 @@ export function ProjectItemDetailsEditor({
         placeholderTextColor={colors.mutedText}
         multiline
       />
+
+      <ProjectControlsEditor
+        item={item}
+        actor={activityAuthor}
+        onUpdate={projectControls => {
+          if (
+            readiness.supported &&
+            !workflowClosed &&
+            projectControls.workflowStage === 'Closed'
+          ) {
+            setWorkflowMessage(
+              `Use "Close ${readiness.itemType}" to record the closed workflow stage.`,
+            );
+            return;
+          }
+          if (
+            readiness.supported &&
+            workflowClosed &&
+            projectControls.workflowStage !==
+              (item.projectControls?.workflowStage || 'Open')
+          ) {
+            setWorkflowMessage(
+              `Use "Reopen ${readiness.itemType}" before changing its workflow stage.`,
+            );
+            return;
+          }
+          setWorkflowMessage('');
+          onUpdate({ projectControls });
+        }}
+      />
+
+      {readiness.supported ? (
+        <View style={styles.workflowCard}>
+          <Text style={styles.workflowTitle}>
+            {readiness.itemType} workflow
+          </Text>
+          <Text style={styles.workflowDetail}>{readiness.message}</Text>
+          {!workflowClosed && readiness.missing.slice(0, 4).map(missing => (
+            <Text key={missing} style={styles.workflowMissing}>• {missing}</Text>
+          ))}
+          {workflowMessage ? (
+            <Text style={styles.workflowResult}>{workflowMessage}</Text>
+          ) : null}
+          <Pressable
+            style={({ pressed }) => [
+              styles.workflowButton,
+              !workflowClosed && !readiness.readyToClose && styles.workflowButtonDisabled,
+              pressed && styles.pressed,
+            ]}
+            disabled={!workflowClosed && !readiness.readyToClose}
+            onPress={() => {
+              const now = new Date().toISOString();
+              const result = workflowClosed
+                ? reopenProjectItemWorkflow({
+                    item,
+                    actor: activityAuthor?.trim() || item.owner.trim() || 'Project manager',
+                    now,
+                  })
+                : closeProjectItemWorkflow({
+                    item,
+                    actor: activityAuthor?.trim() || item.owner.trim() || 'Project manager',
+                    now,
+                  });
+              setWorkflowMessage(result.message);
+              if (result.ok) {
+                onUpdate({}, {
+                  action: result.action,
+                  actor: activityAuthor?.trim() || item.owner.trim() || 'Project manager',
+                });
+              }
+            }}
+            accessibilityRole="button"
+          >
+            <Text style={styles.workflowButtonText}>
+              {workflowClosed ? `Reopen ${readiness.itemType}` : `Close ${readiness.itemType}`}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <FieldLabel text="Activity" />
       {(item.activity || []).slice(-3).reverse().map(entry => (
@@ -152,6 +269,7 @@ const styles = StyleSheet.create({
   optionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   option: { minHeight: 44, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, justifyContent: 'center', paddingHorizontal: spacing.md },
   optionActive: { borderColor: colors.primary, backgroundColor: colors.primary },
+  optionDisabled: { opacity: 0.38 },
   optionText: { color: colors.text, fontSize: 13, fontWeight: '800' },
   optionTextActive: { color: '#FFFFFF' },
   input: { minHeight: 48, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 16, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
@@ -161,5 +279,13 @@ const styles = StyleSheet.create({
   activityMeta: { color: colors.mutedText, fontSize: 12, lineHeight: 17 },
   addActivityButton: { minHeight: 48, borderRadius: radius.md, borderWidth: 1, borderColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: spacing.sm, paddingHorizontal: spacing.md },
   addActivityText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  workflowCard: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, gap: 5, marginTop: spacing.md, padding: spacing.md },
+  workflowTitle: { color: colors.text, fontSize: 16, fontWeight: '900' },
+  workflowDetail: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  workflowMissing: { color: colors.warning, fontSize: 13, lineHeight: 19, fontWeight: '700' },
+  workflowResult: { color: colors.primary, fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  workflowButton: { minHeight: 46, borderRadius: radius.md, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: spacing.sm, paddingHorizontal: spacing.md },
+  workflowButtonDisabled: { opacity: 0.42 },
+  workflowButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   pressed: { opacity: 0.72 },
 });

@@ -290,13 +290,123 @@ export type ProjectItemType =
   | 'Submittal'
   | 'Punch List'
   | 'Decision'
-  | 'Inspection';
+  | 'Inspection'
+  | 'Daily Log'
+  | 'Safety Observation'
+  | 'Quality Check';
 
 export type ProjectItemActivity = {
   id: string;
   message: string;
   author: string;
   createdAt: string;
+};
+
+export type ProjectControlApprovalStatus =
+  | 'Not Required'
+  | 'Draft'
+  | 'Pending'
+  | 'Approved'
+  | 'Changes Requested';
+
+export type ProjectControlWorkflowStage =
+  | 'Open'
+  | 'In Review'
+  | 'Waiting on Response'
+  | 'Ready for Field'
+  | 'Closed';
+
+export type ProjectControlImpactConfidence = 'Low' | 'Medium' | 'High';
+
+export type ProjectControlChecklistItem = {
+  id: string;
+  label: string;
+  completed: boolean;
+  completedAt?: string | null;
+  completedBy?: string | null;
+};
+
+export type ProjectControlLinkedRecordKind =
+  | 'Drawing'
+  | 'Document'
+  | 'Photo'
+  | 'Schedule';
+
+export type ProjectControlLinkedRecord = {
+  id: string;
+  kind: ProjectControlLinkedRecordKind;
+  label: string;
+  revision?: string | null;
+};
+
+export type ProjectControlResourceKind =
+  | 'Person'
+  | 'Crew'
+  | 'Company'
+  | 'Equipment';
+
+export type ProjectControlResource = {
+  id: string;
+  name: string;
+  kind: ProjectControlResourceKind;
+  allocationPercent?: number | null;
+};
+
+export type ProjectControlDataField =
+  | 'assignee'
+  | 'trade'
+  | 'watchers'
+  | 'approvers'
+  | 'approvalStatus'
+  | 'workflowStage'
+  | 'referenceNumber'
+  | 'responseDueDate'
+  | 'checklist'
+  | 'linkedRecords'
+  | 'resources'
+  | 'estimatedCostImpact'
+  | 'estimatedScheduleImpactDays'
+  | 'impactConfidence'
+  | 'impactNotes';
+
+export type ProjectControlFieldRevision = {
+  revision: number;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+/**
+ * Shared project-control details stored inside the existing task JSON record.
+ * Keeping this data with the task lets the current cloud sync path carry it
+ * across iPhone, iPad, and desktop without a separate schema migration.
+ */
+export type ProjectControls = {
+  version: 1;
+  assignee: string;
+  trade: string;
+  watchers: string[];
+  approvers: string[];
+  approvalStatus: ProjectControlApprovalStatus;
+  workflowStage: ProjectControlWorkflowStage;
+  referenceNumber: string;
+  responseDueDate: string;
+  checklist: ProjectControlChecklistItem[];
+  linkedRecords: ProjectControlLinkedRecord[];
+  resources: ProjectControlResource[];
+  estimatedCostImpact: number | null;
+  estimatedScheduleImpactDays: number | null;
+  impactConfidence: ProjectControlImpactConfidence;
+  impactNotes: string;
+  revision: number;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  /**
+   * Per-field edit authority lets offline devices merge independent control
+   * changes without replacing the entire nested record.
+   */
+  fieldRevisions?: Partial<
+    Record<ProjectControlDataField, ProjectControlFieldRevision>
+  >;
 };
 
 export type DAVECompletionVerificationStatus =
@@ -369,6 +479,8 @@ export type ScheduleItem = {
   nextAction?: string;
   /** Append-only PM activity retained with the shared task record. */
   activity?: ProjectItemActivity[];
+  /** Accountability, workflow, field, plan, resource, and impact controls. */
+  projectControls?: ProjectControls | null;
   importedFrom?: string | null;
   importedAt?: string | null;
   /** Immutable import identity; filenames are display data only. */
@@ -429,5 +541,8 @@ export const PROJECT_ITEM_TYPES: ProjectItemType[] = [
   'Punch List',
   'Decision',
   'Inspection',
+  'Daily Log',
+  'Safety Observation',
+  'Quality Check',
 ];
 import type { PIEPhotoIntelligenceDisplayState } from '../services/PIEPhotoVisionMobileWorkflow';
