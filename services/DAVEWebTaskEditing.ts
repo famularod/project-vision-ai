@@ -1,5 +1,6 @@
 import type {
   ProjectItemType,
+  ProjectControls,
   ScheduleDependency,
   ScheduleItem,
   SchedulePriority,
@@ -9,8 +10,15 @@ import {
   reconcileScheduleProgress,
   reconcileScheduleProgressEdit,
 } from './ScheduleProgressInvariant';
-import { appendProjectItemActivity } from './ProjectItemWorkflow';
+import {
+  appendProjectItemActivity,
+  closeProjectItemWorkflow,
+  projectItemWorkflowIsClosed,
+  reopenProjectItemWorkflow,
+  validateProjectItemWorkflowEdit,
+} from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
+import { normalizeProjectControls } from './VitruviusProjectControls';
 
 export type DAVEWebScheduleItem = ScheduleItem & Readonly<{
   /** Exact cloud row revision used for optimistic concurrency checks. */
@@ -34,6 +42,8 @@ export type DAVEWebTaskDraft = Readonly<{
   nextAction: string;
   /** New append-only activity entered during this save. */
   activityMessage: string;
+  /** Explicit structured-record transition requested by the workflow control. */
+  workflowAction?: 'close' | 'reopen';
   /** Optional planning fields used by the desktop schedule builder. */
   wbsCode?: string;
   parentItemId?: string;
@@ -44,6 +54,8 @@ export type DAVEWebTaskDraft = Readonly<{
   isMilestone?: boolean;
   baselineStartDate?: string;
   baselineFinishDate?: string;
+  /** Shared project-control fields edited on desktop or retained from mobile. */
+  projectControls?: ProjectControls | null;
 }>;
 
 export class DAVEWebTaskValidationError extends Error {
@@ -103,15 +115,17 @@ export function buildDAVEWebScheduleItem({
     current.status !== progress.status ||
     current.percentComplete !== progress.percentComplete;
   const activityMessage = draft.activityMessage.trim();
-  const activity = appendProjectItemActivity({
-    activity: current?.activity,
-    message: activityMessage,
-    author: actor,
-    createdAt: now,
-    id: `activity-${now}-${current?.activity?.length ?? 0}`,
-  });
+  const activity = draft.workflowAction
+    ? [...(current?.activity || [])]
+    : appendProjectItemActivity({
+        activity: current?.activity,
+        message: activityMessage,
+        author: actor,
+        createdAt: now,
+        id: `activity-${now}-${current?.activity?.length ?? 0}`,
+      });
 
-  return {
+  const item: DAVEWebScheduleItem = {
     id: requiredText(id, 'Task identity'),
     itemType: draft.itemType,
     scheduleProjectName: projectName,
@@ -156,6 +170,11 @@ export function buildDAVEWebScheduleItem({
     notes: draft.notes.trim(),
     nextAction: draft.nextAction.trim(),
     activity,
+    projectControls: normalizeProjectControls(
+      draft.projectControls === undefined
+        ? current?.projectControls
+        : draft.projectControls,
+    ),
     importedFrom: current?.importedFrom ?? null,
     importedAt: current?.importedAt ?? null,
     importBatchId: current?.importBatchId ?? null,
@@ -165,6 +184,52 @@ export function buildDAVEWebScheduleItem({
     updatedAt: now,
     cloudUpdatedAt: current?.cloudUpdatedAt ?? null,
   };
+
+  if (draft.workflowAction) {
+    if (
+      draft.workflowAction === 'reopen' &&
+      current &&
+      projectItemWorkflowIsClosed(current) &&
+      (current.itemType || 'Task') !== draft.itemType
+    ) {
+      throw new DAVEWebTaskValidationError(
+        `Reopen ${current.itemType || 'Task'} before changing its project item type.`,
+      );
+    }
+    const transition = draft.workflowAction === 'close'
+      ? closeProjectItemWorkflow({
+          item,
+          actor,
+          now,
+          note: activityMessage || undefined,
+          activityId: `activity-close-${id}-${now}`,
+        })
+      : reopenProjectItemWorkflow({
+          item,
+          actor,
+          now,
+          note: activityMessage || undefined,
+          activityId: `activity-reopen-${id}-${now}`,
+        });
+    if (!transition.ok) {
+      throw new DAVEWebTaskValidationError(transition.message);
+    }
+    return {
+      ...item,
+      ...transition.item,
+      cloudUpdatedAt: item.cloudUpdatedAt,
+    };
+  }
+
+  const workflowValidation = validateProjectItemWorkflowEdit({
+    current,
+    next: item,
+  });
+  if (!workflowValidation.ok) {
+    throw new DAVEWebTaskValidationError(workflowValidation.message);
+  }
+
+  return item;
 }
 
 export function scheduleItemForCloud(

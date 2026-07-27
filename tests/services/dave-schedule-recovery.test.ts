@@ -1,4 +1,5 @@
 import { recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
+import { emptyProjectControls } from '../../services/VitruviusProjectControls';
 import type { ScheduleItem } from '../../types';
 
 function scheduleItem(overrides: Partial<ScheduleItem> = {}): ScheduleItem {
@@ -61,5 +62,117 @@ describe('DAVE schedule cloud recovery', () => {
         progressConfirmedBy: 'David on iPad',
       }),
     ]);
+  });
+
+  it('preserves independent project-control edits recovered from two devices', () => {
+    const local = scheduleItem({
+      projectControls: {
+        ...emptyProjectControls(),
+        assignee: 'David',
+        revision: 2,
+        updatedAt: '2026-07-26T22:00:00.000Z',
+        updatedBy: 'David on iPhone',
+        fieldRevisions: {
+          assignee: {
+            revision: 2,
+            updatedAt: '2026-07-26T22:00:00.000Z',
+            updatedBy: 'David on iPhone',
+          },
+        },
+      },
+    });
+    const cloud = scheduleItem({
+      updatedAt: '2026-07-26T22:01:00.000Z',
+      projectControls: {
+        ...emptyProjectControls(),
+        approvalStatus: 'Pending',
+        revision: 2,
+        updatedAt: '2026-07-26T22:01:00.000Z',
+        updatedBy: 'David on iPad',
+        fieldRevisions: {
+          approvalStatus: {
+            revision: 2,
+            updatedAt: '2026-07-26T22:01:00.000Z',
+            updatedBy: 'David on iPad',
+          },
+        },
+      },
+    });
+
+    const [recovered] = recoverDAVEScheduleRecords({
+      local: [local],
+      cloud: [cloud],
+      allowCloudOnly: true,
+    });
+
+    expect(recovered.projectControls).toEqual(expect.objectContaining({
+      assignee: 'David',
+      approvalStatus: 'Pending',
+      fieldRevisions: expect.objectContaining({
+        assignee: expect.objectContaining({ updatedBy: 'David on iPhone' }),
+        approvalStatus: expect.objectContaining({ updatedBy: 'David on iPad' }),
+      }),
+    }));
+  });
+
+  it('resolves same-control-field edits by later time despite unequal device revisions on every recovery path', () => {
+    const local = scheduleItem({
+      projectControls: {
+        ...emptyProjectControls(),
+        assignee: 'Later phone owner',
+        revision: 1,
+        updatedAt: '2026-07-26T22:02:00.000Z',
+        updatedBy: 'David on iPhone',
+        fieldRevisions: {
+          assignee: {
+            revision: 1,
+            updatedAt: '2026-07-26T22:02:00.000Z',
+            updatedBy: 'David on iPhone',
+          },
+        },
+      },
+    });
+    const cloud = scheduleItem({
+      updatedAt: '2026-07-26T22:01:00.000Z',
+      projectControls: {
+        ...emptyProjectControls(),
+        assignee: 'Earlier tablet owner',
+        revision: 9,
+        updatedAt: '2026-07-26T22:01:00.000Z',
+        updatedBy: 'David on iPad',
+        fieldRevisions: {
+          assignee: {
+            revision: 9,
+            updatedAt: '2026-07-26T22:01:00.000Z',
+            updatedBy: 'David on iPad',
+          },
+        },
+      },
+    });
+
+    const [localFirst] = recoverDAVEScheduleRecords({
+      local: [local],
+      cloud: [cloud],
+      allowCloudOnly: true,
+    });
+    const [cloudFirst] = recoverDAVEScheduleRecords({
+      local: [cloud],
+      cloud: [local],
+      allowCloudOnly: true,
+    });
+
+    expect(localFirst.projectControls?.assignee).toBe('Later phone owner');
+    expect(cloudFirst.projectControls?.assignee).toBe('Later phone owner');
+    expect(localFirst.projectControls).toEqual(expect.objectContaining({
+      revision: 9,
+      fieldRevisions: expect.objectContaining({
+        assignee: {
+          revision: 1,
+          updatedAt: '2026-07-26T22:02:00.000Z',
+          updatedBy: 'David on iPhone',
+        },
+      }),
+    }));
+    expect(cloudFirst.projectControls).toEqual(localFirst.projectControls);
   });
 });

@@ -72,6 +72,8 @@ describe('DesktopSchedulePage', () => {
     fireEvent.press(screen.getByLabelText('Edit Place asphalt'));
     expect(screen.getByText('Edit schedule item')).toBeTruthy();
     expect(screen.getByDisplayValue('Place asphalt')).toBeTruthy();
+    expect(screen.getByLabelText('Project').props.disabled).toBe(true);
+    expect(screen.getByText(/Project cannot be changed while editing/)).toBeTruthy();
     expect(screen.getByText('Baseline start')).toBeTruthy();
     expect(screen.getByText('Baseline finish')).toBeTruthy();
   });
@@ -192,6 +194,30 @@ describe('DesktopSchedulePage', () => {
 
     expect(screen.getByLabelText('Baseline start').props.value).toBe('2026-07-20');
     expect(screen.getByLabelText('Baseline finish').props.value).toBe('2026-07-21');
+  });
+
+  test('previews an unsafe edit and blocks save until the schedule issue is corrected', () => {
+    const screen = render(
+      <DesktopSchedulePage
+        tasks={[phase, predecessor, task]}
+        projects={['2321 Compliance Project']}
+        selectedProject="2321 Compliance Project"
+      />,
+    );
+
+    fireEvent.press(screen.getByLabelText('Edit Place asphalt'));
+    fireEvent(screen.getByLabelText('Finish date'), 'change', {
+      target: { value: '2026-07-19' },
+    });
+
+    expect(screen.getByText('Change impact preview')).toBeTruthy();
+    expect(screen.getByText('Needs correction')).toBeTruthy();
+    expect(screen.getByText('• Place asphalt finishes before it starts.')).toBeTruthy();
+
+    const blockedSaveLabel = screen.getByText('Correct Schedule Issues');
+    expect(blockedSaveLabel).toBeDisabled();
+    fireEvent.press(blockedSaveLabel);
+    expect(mockUpdateTask).not.toHaveBeenCalled();
   });
 
   test('saves a milestone as a zero-duration dated schedule item', async () => {

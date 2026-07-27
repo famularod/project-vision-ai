@@ -28,6 +28,7 @@ import type {
 } from './DAVEWebOperations';
 import { partitionProjectUpdatesByDeletedTask } from './DAVEDeletedTaskEvidence';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
+import { normalizeProjectControls } from './VitruviusProjectControls';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
@@ -177,6 +178,7 @@ function normalizeScheduleItem(value: unknown): DAVEWebScheduleItem | null {
     notes: readString(data.notes) ?? '',
     nextAction: readString(data.nextAction) ?? '',
     activity: normalizeProjectItemActivity(data.activity),
+    projectControls: normalizeProjectControls(data.projectControls),
     importedFrom: readString(data.importedFrom),
     importedAt: readString(data.importedAt),
     importBatchId: readString(data.importBatchId),

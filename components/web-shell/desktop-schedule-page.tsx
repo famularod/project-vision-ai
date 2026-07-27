@@ -30,6 +30,10 @@ import {
 } from '../../services/VitruviusLookahead';
 import { analyzeVitruviusSchedule } from '../../services/VitruviusScheduleAnalytics';
 import {
+  buildVitruviusScheduleChangeScenario,
+  type VitruviusScheduleChangeScenario,
+} from '../../services/VitruviusScheduleChangeScenario';
+import {
   buildVitruviusScheduleHierarchy,
   nextScheduleSortOrder,
   nextScheduleWbsCode,
@@ -107,6 +111,29 @@ export function DesktopSchedulePage({
         normalize(task.scheduleProjectName || task.projectName) === normalize(editor.projectName),
       )
     : [];
+  const editorScenario = useMemo(() => {
+    if (!editor || !editingTask || editor.kind === 'phase') return null;
+    return buildVitruviusScheduleChangeScenario({
+      items: tasks,
+      itemId: editingTask.id,
+      draft: {
+        startDate: editor.startDate,
+        finishDate: editor.kind === 'milestone'
+          ? editor.startDate
+          : editor.finishDate,
+        durationDays: editor.kind === 'milestone'
+          ? 0
+          : numberOrNull(editor.durationDays),
+        dependencies: planningDependenciesFromIds(
+          editor.predecessorItemIds,
+          numberOrZero(editor.lagDays),
+        ),
+        isMilestone: editor.kind === 'milestone',
+        status: editor.status,
+        percentComplete: numberOrZero(editor.percentComplete),
+      },
+    });
+  }, [editingTask, editor, tasks]);
 
   const openNew = (kind: ScheduleEditorKind, parentItemId: string | null = null) => {
     const projectTasks = tasks.filter(task =>
@@ -170,6 +197,17 @@ export function DesktopSchedulePage({
     if (!editor || pending) return;
     if (!editor.taskName.trim() || !editor.projectName.trim()) {
       setNotice({ tone: 'danger', text: 'Task name and project are required.' });
+      return;
+    }
+    if (
+      editingTask &&
+      normalize(editor.projectName) !==
+        normalize(editingTask.scheduleProjectName || editingTask.projectName)
+    ) {
+      setNotice({
+        tone: 'danger',
+        text: 'Move work between projects by creating it in the destination project, then remove the old item after review.',
+      });
       return;
     }
     const percentComplete = Number(editor.percentComplete);
@@ -240,6 +278,7 @@ export function DesktopSchedulePage({
         baselineFinishDate: editor.kind === 'milestone'
           ? editor.baselineStartDate
           : editor.baselineFinishDate,
+        projectControls: editingTask?.projectControls ?? null,
       };
       const item = buildDAVEWebScheduleItem({
         draft,
@@ -444,6 +483,7 @@ export function DesktopSchedulePage({
           editingTask={editingTask}
           projects={projectNames}
           projectTasks={editorProjectTasks}
+          scenario={editorScenario}
           pending={pending}
           onChange={setEditor}
           onCancel={() => {
@@ -1215,6 +1255,7 @@ function ScheduleEditor({
   editingTask,
   projects,
   projectTasks,
+  scenario,
   pending,
   onChange,
   onCancel,
@@ -1224,6 +1265,7 @@ function ScheduleEditor({
   editingTask: DAVEWebScheduleItem | null;
   projects: readonly string[];
   projectTasks: readonly DAVEWebScheduleItem[];
+  scenario: VitruviusScheduleChangeScenario | null;
   pending: boolean;
   onChange: (value: ScheduleEditorState) => void;
   onCancel: () => void;
@@ -1235,6 +1277,11 @@ function ScheduleEditor({
   const canCaptureBaseline = Boolean(
     state.startDate.trim() &&
     (state.kind === 'milestone' || state.finishDate.trim()),
+  );
+  const saveBlocked = pending || Boolean(
+    editingTask &&
+    scenario &&
+    !scenario.safety.safeToApply,
   );
   const update = <K extends keyof ScheduleEditorState>(
     key: K,
@@ -1260,6 +1307,7 @@ function ScheduleEditor({
           value={state.projectName}
           options={projects}
           onChange={value => update('projectName', value)}
+          disabled={Boolean(editingTask)}
           wide
         />
         <EditorField label="WBS" value={state.wbsCode} onChange={value => update('wbsCode', value)} />
@@ -1394,13 +1442,71 @@ function ScheduleEditor({
           placeholderTextColor="#7D8794"
         />
       </View>
+      {editingTask && scenario ? (
+        <View style={[
+          styles.scenarioPreview,
+          !scenario.safety.safeToApply && styles.scenarioPreviewDanger,
+        ]}>
+          <View style={styles.scenarioHeading}>
+            <View>
+              <Text style={styles.fieldLabel}>Change impact preview</Text>
+              <Text style={styles.helpText}>
+                Review the likely plan effect before saving this task.
+              </Text>
+            </View>
+            <Text style={[
+              styles.scenarioStatus,
+              !scenario.safety.safeToApply && styles.scenarioStatusDanger,
+            ]}>
+              {scenario.safety.safeToApply ? 'Ready to review' : 'Needs correction'}
+            </Text>
+          </View>
+          <View style={styles.scenarioFacts}>
+            <Text style={styles.scenarioFact}>
+              {scenario.downstreamChanges.length} downstream task{scenario.downstreamChanges.length === 1 ? '' : 's'} affected
+            </Text>
+            <Text style={styles.scenarioFact}>
+              Project finish: {scenario.projectFinish.after || 'Not calculated'}
+              {scenario.projectFinish.deltaCalendarDays
+                ? ` (${scenario.projectFinish.deltaCalendarDays > 0 ? '+' : ''}${scenario.projectFinish.deltaCalendarDays} days)`
+                : ''}
+            </Text>
+            <Text style={styles.scenarioFact}>
+              Critical path: {scenario.criticalPath.enteredItemIds.length} added, {scenario.criticalPath.exitedItemIds.length} removed
+            </Text>
+          </View>
+          {scenario.safety.issues.slice(0, 3).map(issue => (
+            <Text key={`${issue.code}-${issue.itemId || ''}`} style={styles.scenarioIssue}>
+              • {issue.message}
+            </Text>
+          ))}
+          {scenario.downstreamChanges.slice(0, 3).map(change => (
+            <Text key={change.itemId} style={styles.scenarioChange}>
+              {change.taskName}: {shortDate(change.previousStartDate)} → {shortDate(change.nextStartDate)}
+            </Text>
+          ))}
+          <Text style={styles.helpText}>
+            Saving changes this task only. Review calculated downstream dates in Gantt → Impact Preview before applying them.
+          </Text>
+        </View>
+      ) : null}
       <View style={styles.editorActions}>
         <Pressable style={styles.secondaryButton} onPress={onCancel} disabled={pending}>
           <Text style={styles.secondaryButtonText}>Cancel</Text>
         </Pressable>
-        <Pressable style={[styles.primaryButton, pending && styles.disabled]} onPress={onSave} disabled={pending}>
+        <Pressable
+          style={[styles.primaryButton, saveBlocked && styles.disabled]}
+          onPress={onSave}
+          disabled={saveBlocked}
+        >
           {pending ? <ActivityIndicator color={desktopSurfaces.onAccent} /> : (
-            <Text style={styles.primaryButtonText}>{editingTask ? 'Save Changes' : `Create ${capitalize(state.kind)}`}</Text>
+            <Text style={styles.primaryButtonText}>
+              {saveBlocked && editingTask
+                ? 'Correct Schedule Issues'
+                : editingTask
+                  ? 'Save Changes'
+                  : `Create ${capitalize(state.kind)}`}
+            </Text>
           )}
         </Pressable>
       </View>
@@ -1441,6 +1547,7 @@ function ChoiceField({
   optionLabel = candidate => candidate,
   onChange,
   allowNone = false,
+  disabled = false,
   wide = false,
 }: {
   label: string;
@@ -1449,6 +1556,7 @@ function ChoiceField({
   optionLabel?: (value: string) => string;
   onChange: (value: string) => void;
   allowNone?: boolean;
+  disabled?: boolean;
   wide?: boolean;
 }) {
   return (
@@ -1458,6 +1566,7 @@ function ChoiceField({
         value,
         onChange: (event: { target: { value: string } }) => onChange(event.target.value),
         style: webSelectStyle,
+        disabled,
         'aria-label': label,
         children: [
           ...(allowNone ? [createElement('option' as never, { key: 'none', value: '' }, 'No parent phase')] : []),
@@ -1468,6 +1577,11 @@ function ChoiceField({
           )),
         ],
       })}
+      {disabled ? (
+        <Text style={styles.helpText}>
+          Project cannot be changed while editing because dependencies are project-specific.
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -1641,6 +1755,17 @@ function shortDate(value: string) {
   return `${month}/${day}/${year?.slice(-2)}`;
 }
 
+function numberOrZero(value: string) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
+function numberOrNull(value: string) {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+}
+
 function uniqueText(values: readonly (string | null | undefined)[]) {
   const result = new Map<string, string>();
   values.forEach(value => {
@@ -1717,6 +1842,15 @@ const styles = StyleSheet.create({
   baselineCaptureButton: { minHeight: 38, borderRadius: 9, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
   baselineCaptureText: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
   helpText: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 19 },
+  scenarioPreview: { borderRadius: 13, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md, gap: spacing.sm },
+  scenarioPreviewDanger: { borderColor: '#E5A4A4', backgroundColor: desktopSurfaces.cardRose },
+  scenarioHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
+  scenarioStatus: { borderRadius: 999, backgroundColor: '#DDF2E5', color: '#27603B', fontSize: 11, lineHeight: 16, fontWeight: '900', paddingHorizontal: spacing.sm, paddingVertical: 5 },
+  scenarioStatusDanger: { backgroundColor: '#FFE1E1', color: '#8B2B24' },
+  scenarioFacts: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  scenarioFact: { borderRadius: 9, backgroundColor: desktopSurfaces.card, color: desktopSurfaces.text, fontSize: 12, lineHeight: 17, fontWeight: '800', paddingHorizontal: spacing.sm, paddingVertical: 7 },
+  scenarioIssue: { color: '#8B2B24', fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  scenarioChange: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '800' },
   choiceWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   choiceChip: { minHeight: 40, maxWidth: 360, borderRadius: 999, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   choiceChipSelected: { backgroundColor: desktopSurfaces.accent, borderColor: desktopSurfaces.accent },

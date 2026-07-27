@@ -1,4 +1,5 @@
 import type { ScheduleItem } from '../types';
+import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 const SCHEDULE_STATUSES = new Set<ScheduleItem['status']>([
   'Not Started',
@@ -119,7 +120,24 @@ function mergeScheduleRevisions(
     progressConfirmedAt: progressSource.progressConfirmedAt,
     progressConfirmedBy: progressSource.progressConfirmedBy,
     completionVerification: progressSource.completionVerification,
+    projectControls: mergeScheduleProjectControls(local, cloud, base),
   };
+}
+
+function mergeScheduleProjectControls(
+  local: ScheduleItem,
+  cloud: ScheduleItem,
+  base: ScheduleItem,
+) {
+  if (!local.projectControls && !cloud.projectControls) {
+    return base.projectControls;
+  }
+  if (!local.projectControls) return cloud.projectControls;
+  if (!cloud.projectControls) return local.projectControls;
+  return mergeProjectControlsRevisions(
+    local.projectControls,
+    cloud.projectControls,
+  );
 }
 
 function compareRecordRevision(left: ScheduleItem, right: ScheduleItem) {

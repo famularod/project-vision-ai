@@ -82,4 +82,38 @@ describe('Project item details', () => {
       notes: 'Asphalt placement moved to Monday morning.',
     });
   });
+
+  it('closes a ready structured record only through the explicit workflow action', () => {
+    const onUpdate = jest.fn();
+    const screen = render(
+      <ProjectItemDetailsEditor item={ITEM} activityAuthor="signed-in-pm@example.com" onUpdate={onUpdate} />,
+    );
+
+    fireEvent.press(screen.getByRole('button', { name: 'Close Issue' }));
+
+    expect(onUpdate).toHaveBeenCalledWith({}, {
+      action: 'close',
+      actor: 'signed-in-pm@example.com',
+    });
+  });
+
+  it('locks classification until a closed structured record is explicitly reopened', () => {
+    const onUpdate = jest.fn();
+    const closedItem: ScheduleItem = {
+      ...ITEM,
+      status: 'Complete',
+      percentComplete: 100,
+    };
+    const screen = render(
+      <ProjectItemDetailsEditor item={closedItem} activityAuthor="David" onUpdate={onUpdate} />,
+    );
+
+    expect(screen.getByRole('button', { name: 'RFI' })).toBeDisabled();
+    fireEvent.press(screen.getByRole('button', { name: 'Reopen Issue' }));
+
+    expect(onUpdate).toHaveBeenCalledWith({}, {
+      action: 'reopen',
+      actor: 'David',
+    });
+  });
 });
