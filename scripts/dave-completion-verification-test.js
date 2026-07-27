@@ -80,7 +80,7 @@ assert.deepStrictEqual(
 );
 
 const imported = communication.extractScheduleItemsFromCommunicationText({
-  text: 'Task A was completed in Canopy B.',
+  text: 'Task A was completed in Building 2375 Compliance, Canopy B.',
   sourceName: 'completion-email.png',
   projects: ['Building 2375 Compliance'],
   projectAreas: [{ id: 'canopy-b', name: 'Canopy B', latitude: 0, longitude: 0, radiusFeet: 250 }],

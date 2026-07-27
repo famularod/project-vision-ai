@@ -1,6 +1,7 @@
-import type { ScheduleItem } from '../../types';
+import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 const mockStorage = new Map<string, string>();
+const mockQueueWrites: string[][] = [];
 let mockCloudTombstonesResult: {
   ok: boolean;
   configured: boolean;
@@ -47,6 +48,9 @@ const mockListReferenceDocuments = jest.fn((..._args: unknown[]) =>
 const mockUpsertReferenceDocument = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
+const mockPrepareReferenceDocumentForCloud = jest.fn(
+  (document: ReferenceDocument) => Promise.resolve(document),
+);
 const mockDeleteProjectUpdate = jest.fn((..._args: unknown[]): Promise<{
   ok: boolean;
   configured: boolean;
@@ -79,6 +83,10 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     getItem: jest.fn(async (key: string) => mockStorage.get(key) ?? null),
     setItem: jest.fn(async (key: string, value: string) => {
       mockStorage.set(key, value);
+      if (key === 'projectVisionAI.syncQueue.v1') {
+        const parsed = JSON.parse(value) as Array<{ id: string }>;
+        mockQueueWrites.push(parsed.map(item => item.id));
+      }
     }),
     removeItem: jest.fn(async (key: string) => {
       mockStorage.delete(key);
@@ -123,12 +131,18 @@ jest.mock('../../services/ProjectUpdateDeletionJournal', () => ({
   })),
 }));
 
+jest.mock('../../services/ReferenceDocumentRepository', () => ({
+  prepareReferenceDocumentForCloud: (document: ReferenceDocument) =>
+    mockPrepareReferenceDocumentForCloud(document),
+}));
+
 import {
   enqueuePendingChange,
   getOfflineQueue,
   getSyncConflicts,
   queueScheduleItemRecord,
   resolveScheduleItemSyncConflict,
+  runScheduleImportCloudSync,
   runScheduleItemCloudSync,
   uploadPendingChanges,
 } from '../../services/SyncService';
@@ -158,6 +172,7 @@ function scheduleQueueItem(id: string) {
 
 beforeEach(() => {
   mockStorage.clear();
+  mockQueueWrites.length = 0;
   mockCloudTombstonesResult = {
     ok: true,
     configured: true,
@@ -170,12 +185,327 @@ beforeEach(() => {
   mockUpsertScheduleItem.mockClear();
   mockListReferenceDocuments.mockClear();
   mockUpsertReferenceDocument.mockClear();
+  mockPrepareReferenceDocumentForCloud.mockReset();
+  mockPrepareReferenceDocumentForCloud.mockImplementation(
+    (document: ReferenceDocument) => Promise.resolve(document),
+  );
   mockDeleteProjectUpdate.mockClear();
   mockConfirmProjectUpdateCloudDeletion.mockReset();
   mockConfirmProjectUpdateCloudDeletion.mockResolvedValue(undefined);
 });
 
 describe('offline upload deletion barriers', () => {
+  it('awaits the exact imported task and document records until both are synced', async () => {
+    const task: ScheduleItem = {
+      id: 'schedule-import-task-1',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      taskName: 'Place asphalt',
+      locationName: '2321 North Lot',
+      startDate: '2026-07-27',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: '',
+      nextAction: '',
+      activity: [],
+      createdAt: '2026-07-26T10:00:00.000Z',
+      updatedAt: '2026-07-26T10:00:00.000Z',
+    };
+    const document: ReferenceDocument = {
+      id: 'schedule-import-document-1',
+      name: 'Current schedule',
+      originalFileName: 'schedule.pdf',
+      uri: '',
+      mimeType: 'application/pdf',
+      category: 'Schedules',
+      notes: '',
+      isCurrent: true,
+      importedAt: '2026-07-26T10:00:00.000Z',
+      updatedAt: '2026-07-26T10:00:00.000Z',
+      storagePath: 'mobile/schedule-import-document-1/schedule.pdf',
+    };
+
+    await expect(runScheduleImportCloudSync({
+      scheduleItems: [task],
+      referenceDocuments: [document],
+    })).resolves.toMatchObject({
+      configured: true,
+      durablyQueued: true,
+      fullySynced: true,
+      uploaded: 2,
+      uploadedByEntity: {
+        schedule_item: 1,
+        reference_document: 1,
+      },
+      queued: 0,
+      conflicts: 0,
+      errors: [],
+      itemOutcomes: {
+        'schedule-item-schedule-import-task-1': 'uploaded',
+        'reference-document-schedule-import-document-1': 'uploaded',
+      },
+      supersededScheduleItemIds: [],
+      supersededReferenceDocumentIds: [],
+    });
+    expect(mockQueueWrites.find(ids => ids.length > 0)?.sort()).toEqual([
+      'reference-document-schedule-import-document-1',
+      'schedule-item-schedule-import-task-1',
+    ]);
+    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: task.id }),
+    );
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: document.id,
+        storagePath: document.storagePath,
+      }),
+    );
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('prepares local document bytes before uploading document metadata', async () => {
+    const document: ReferenceDocument = {
+      id: 'schedule-import-document-local',
+      name: 'Local schedule',
+      originalFileName: 'local-schedule.pdf',
+      uri: 'file:///owned/project-documents/local-schedule.pdf',
+      mimeType: 'application/pdf',
+      category: 'Schedules',
+      notes: '',
+      isCurrent: true,
+      importedAt: '2026-07-26T10:00:00.000Z',
+      updatedAt: '2026-07-26T10:00:00.000Z',
+      storagePath: null,
+    };
+    mockPrepareReferenceDocumentForCloud.mockResolvedValueOnce({
+      ...document,
+      storagePath: 'mobile/schedule-import-document-local/local-schedule.pdf',
+      contentSha256: 'a'.repeat(64),
+      sizeBytes: 1024,
+    });
+
+    const result = await runScheduleImportCloudSync({
+      scheduleItems: [],
+      referenceDocuments: [document],
+    });
+
+    expect(result).toMatchObject({
+      durablyQueued: true,
+      fullySynced: true,
+      uploaded: 1,
+      queued: 0,
+      conflicts: 0,
+      errors: [],
+      uploadedReferenceDocuments: [
+        expect.objectContaining({
+          id: document.id,
+          storagePath:
+            'mobile/schedule-import-document-local/local-schedule.pdf',
+          contentSha256: 'a'.repeat(64),
+          sizeBytes: 1024,
+        }),
+      ],
+    });
+    expect(mockPrepareReferenceDocumentForCloud).toHaveBeenCalledWith(document);
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storagePath:
+          'mobile/schedule-import-document-local/local-schedule.pdf',
+        contentSha256: 'a'.repeat(64),
+        sizeBytes: 1024,
+      }),
+    );
+  });
+
+  it('uploads an intentional metadata-only document without inventing a file failure', async () => {
+    const document: ReferenceDocument = {
+      id: 'schedule-import-document-metadata-only',
+      name: 'Schedule import record',
+      originalFileName: 'schedule.pdf',
+      uri: '',
+      mimeType: 'application/pdf',
+      category: 'Schedules',
+      notes: 'Metadata retained after the source was reviewed elsewhere.',
+      isCurrent: true,
+      importedAt: '2026-07-26T10:00:00.000Z',
+      updatedAt: '2026-07-26T10:00:00.000Z',
+      storagePath: null,
+    };
+
+    await expect(runScheduleImportCloudSync({
+      scheduleItems: [],
+      referenceDocuments: [document],
+    })).resolves.toMatchObject({
+      durablyQueued: true,
+      fullySynced: true,
+      uploaded: 1,
+      queued: 0,
+      conflicts: 0,
+      errors: [],
+    });
+    expect(mockPrepareReferenceDocumentForCloud).not.toHaveBeenCalled();
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(document);
+  });
+
+  it('keeps document metadata queued when protected file upload is incomplete', async () => {
+    const document: ReferenceDocument = {
+      id: 'schedule-import-document-waiting',
+      name: 'Waiting schedule',
+      originalFileName: 'waiting-schedule.pdf',
+      uri: 'file:///owned/project-documents/waiting-schedule.pdf',
+      mimeType: 'application/pdf',
+      category: 'Schedules',
+      notes: '',
+      isCurrent: true,
+      importedAt: '2026-07-26T10:00:00.000Z',
+      updatedAt: '2026-07-26T10:00:00.000Z',
+      storagePath: null,
+    };
+
+    await expect(runScheduleImportCloudSync({
+      scheduleItems: [],
+      referenceDocuments: [document],
+    })).resolves.toMatchObject({
+      configured: true,
+      durablyQueued: true,
+      fullySynced: false,
+      uploaded: 0,
+      queued: 1,
+      conflicts: 0,
+      errors: [expect.stringMatching(/could not sync|service attention/i)],
+      itemOutcomes: {
+        'reference-document-schedule-import-document-waiting': 'failed',
+      },
+    });
+    expect(mockUpsertReferenceDocument).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'reference-document-schedule-import-document-waiting',
+        retryCount: 1,
+      }),
+    ]);
+  });
+
+  it('does not resurrect imported records protected by deletion history', async () => {
+    const task: ScheduleItem = {
+      id: 'schedule-import-task-deleted',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      taskName: 'Deleted schedule task',
+      locationName: '2321 North Lot',
+      startDate: '2026-07-27',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: '',
+      nextAction: '',
+      activity: [],
+      createdAt: '2026-07-26T10:00:00.000Z',
+      updatedAt: '2026-07-26T10:00:00.000Z',
+    };
+    const tombstone = {
+      entityType: 'schedule_item' as const,
+      recordId: task.id,
+      deletedAt: '2026-07-26T10:05:00.000Z',
+    };
+    mockStorage.set(TOMBSTONE_KEY, JSON.stringify([tombstone]));
+    mockCloudTombstonesResult = {
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: [tombstone],
+    };
+
+    await expect(runScheduleImportCloudSync({
+      scheduleItems: [task],
+      referenceDocuments: [],
+    })).resolves.toMatchObject({
+      durablyQueued: true,
+      fullySynced: false,
+      uploaded: 0,
+      queued: 0,
+      conflicts: 0,
+      itemOutcomes: {
+        'schedule-item-schedule-import-task-deleted': 'superseded',
+      },
+      supersededScheduleItemIds: [task.id],
+      supersededReferenceDocumentIds: [],
+      errors: [expect.stringMatching(/protected deletion marker/i)],
+    });
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('reports a deletion marker that arrives after schedule import staging', async () => {
+    const task: ScheduleItem = {
+      id: 'schedule-import-task-deleted-during-upload',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      taskName: 'Deleted while the approved import was uploading',
+      locationName: '2321 North Lot',
+      startDate: '2026-07-27',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium',
+      status: 'Not Started',
+      notes: '',
+      nextAction: '',
+      activity: [],
+      createdAt: '2026-07-26T10:00:00.000Z',
+      updatedAt: '2026-07-26T10:00:00.000Z',
+    };
+    const tombstone = {
+      entityType: 'schedule_item' as const,
+      recordId: task.id,
+      deletedAt: '2026-07-26T10:05:00.000Z',
+    };
+    mockListDAVESyncTombstones
+      .mockResolvedValueOnce({
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: [],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: [tombstone],
+      });
+
+    await expect(runScheduleImportCloudSync({
+      scheduleItems: [task],
+      referenceDocuments: [],
+    })).resolves.toMatchObject({
+      durablyQueued: true,
+      fullySynced: false,
+      uploaded: 0,
+      queued: 0,
+      conflicts: 0,
+      itemOutcomes: {
+        'schedule-item-schedule-import-task-deleted-during-upload':
+          'superseded',
+      },
+      supersededScheduleItemIds: [task.id],
+      supersededReferenceDocumentIds: [],
+      errors: [expect.stringMatching(/protected deletion marker/i)],
+    });
+    expect(mockUpsertScheduleItem).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
   it('drops a stale queued task that matches a durable local tombstone without deleting the tombstone', async () => {
     const tombstone = {
       entityType: 'schedule_item' as const,

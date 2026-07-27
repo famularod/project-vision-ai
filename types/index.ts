@@ -375,6 +375,12 @@ export type ScheduleItem = {
   importBatchId?: string | null;
   /** Exact source within a multi-document import, when determinable. */
   sourceDocumentId?: string | null;
+  /** Immutable activity identifier captured from the source schedule row. */
+  sourceActivityId?: string | null;
+  /** Immutable WBS value captured from the source schedule row. */
+  sourceWbsCode?: string | null;
+  /** Immutable one-based source row used when activity/WBS values are not unique. */
+  sourceRowNumber?: number | null;
   completionVerification?: DAVECompletionVerification | null;
   createdAt: string;
   /** Last user-authored task change. Imported legacy rows may omit it. */
