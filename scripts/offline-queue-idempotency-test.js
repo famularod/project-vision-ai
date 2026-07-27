@@ -94,7 +94,10 @@ assert(
     sync.includes("return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS") &&
     sync.indexOf('return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS') <
       sync.indexOf('const remoteMetadata = await getProjectUpdateSyncMetadata(payload.id)') &&
-    sync.includes('if (result === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS)') &&
+    (
+      sync.includes('if (result === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS)') ||
+      sync.includes('if (resultCode === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS)')
+    ) &&
     sync.includes("databaseUpsertResult = metadataBlocked\n    ? 'skipped'"),
   'Project update metadata must remain durably queued without retry inflation until every referenced photo is cloud-available.',
 );
@@ -259,6 +262,13 @@ async function testConcurrentEnqueuePreservesBothItems() {
         }
         if (specifier === 'expo-file-system/legacy') return fileSystemMock;
         if (specifier.endsWith('SupabaseService')) return supabaseMock;
+        if (specifier.endsWith('ReferenceDocumentRepository')) {
+          return {
+            async prepareReferenceDocumentForCloud(document) {
+              return document;
+            },
+          };
+        }
         if (specifier.endsWith('/types') || specifier === '../types') return {};
         if (specifier.startsWith('.')) {
           return load(path.join(path.dirname(normalized), specifier));

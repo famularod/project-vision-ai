@@ -55,6 +55,14 @@ const { buildDAVEProjectScheduleRollup } = loadTypeScriptModule(
 );
 const appSource = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 const flowSource = fs.readFileSync(path.join(root, 'components/ScheduleImportFlow.tsx'), 'utf8');
+const projectItemDetailsSource = fs.readFileSync(
+  path.join(root, 'components/project-item-details.tsx'),
+  'utf8',
+);
+const referenceDocumentRepositorySource = fs.readFileSync(
+  path.join(root, 'services/ReferenceDocumentRepository.ts'),
+  'utf8',
+);
 const reportsSource = fs.readFileSync(path.join(root, 'screens/ReportsScreen.tsx'), 'utf8');
 const scheduleScreenSource = appSource.slice(
   appSource.indexOf('function ScheduleScreen'),
@@ -63,6 +71,14 @@ const scheduleScreenSource = appSource.slice(
 const screenshotImporterSource = appSource.slice(
   appSource.indexOf('async function importScheduleCommunicationScreenshot'),
   appSource.indexOf('function approveScheduleImport'),
+);
+const scheduleApprovalSource = appSource.slice(
+  appSource.indexOf('async function approveScheduleImport'),
+  appSource.indexOf('function ensureScheduleParentProjects'),
+);
+const projectWorkspaceSource = appSource.slice(
+  appSource.indexOf('function ProjectWorkspaceScreen'),
+  appSource.indexOf('function WorkspaceTool'),
 );
 
 function scheduleItem(overrides = {}) {
@@ -202,8 +218,13 @@ assert.deepStrictEqual(
 
 assert(
   appSource.includes('notes: normalizeImportedScheduleNote(value.notes, value.importedFrom, {') &&
-    appSource.includes('value={item.notes}'),
-  'Imported-note cleanup must run during local/cloud hydration before the live task Notes field renders.',
+    appSource.includes("from './components/project-item-details'") &&
+    appSource.includes(
+      '<ProjectItemDetailsEditor item={item} activityAuthor={activityAuthor} onUpdate={onUpdate} />',
+    ) &&
+    projectItemDetailsSource.includes('value={item.notes}') &&
+    projectItemDetailsSource.includes('onChangeText={notes => onUpdate({ notes })}'),
+  'Imported-note cleanup must run during local/cloud hydration before the live shared task editor renders and updates Notes.',
 );
 
 assert(
@@ -252,11 +273,16 @@ assert(
   'A PDF extraction fallback must require a real task name before approval.',
 );
 assert(
-  appSource.includes('function resolveReferenceDocumentUri(uri: string)') &&
-    appSource.includes('resolveLegacyOwnedLocalFilePath({') &&
-    appSource.includes('isLegacyOwnedLocalFileReadDeleteAuthorized({') &&
+  referenceDocumentRepositorySource.includes(
+    'export function resolveReferenceDocumentUri(uri: string)',
+  ) &&
+    referenceDocumentRepositorySource.includes('resolveLegacyOwnedLocalFilePath({') &&
+    referenceDocumentRepositorySource.includes(
+      'isLegacyOwnedLocalFileReadDeleteAuthorized({',
+    ) &&
+    appSource.includes('let resolvedUri = resolveReferenceDocumentUri(document.uri)') &&
     appSource.includes('FileSystem.getInfoAsync(resolvedUri)') &&
-    appSource.includes('Sharing.shareAsync(resolvedUri'),
+    appSource.includes('Sharing.shareAsync(readableDocument.uri'),
   'Reference documents must safely rebase stale app-container paths and authorize exact owned children before opening them.',
 );
 assert(
@@ -326,12 +352,19 @@ assert(
   'Tasks should render as one urgency-first list with completed work last and collapsed schedule sources.',
 );
 assert(
-  appSource.includes('ensureScheduleParentProjects(approvedItems, {') &&
-    appSource.includes('allowDeletedProjects: true') &&
-    appSource.includes('reopenArchivedParents: true') &&
+  scheduleApprovalSource.includes('validateScheduleImportScope({') &&
+    scheduleApprovalSource.includes('ensureScheduleParentProjects(approvedItems);') &&
+    !scheduleApprovalSource.includes('allowDeletedProjects: true') &&
+    !scheduleApprovalSource.includes('reopenArchivedParents: true') &&
+    scheduleApprovalSource.includes('runScheduleImportCloudSync({') &&
+    scheduleApprovalSource.includes('if (!syncResult.durablyQueued)') &&
+    !scheduleApprovalSource.includes('prepareReferenceDocumentForCloud(') &&
+    scheduleApprovalSource.includes('syncResult.supersededScheduleItemIds') &&
+    scheduleApprovalSource.includes('syncResult.supersededReferenceDocumentIds') &&
+    scheduleApprovalSource.includes('Deleted schedule records stayed deleted') &&
     appSource.includes('scheduleOverviewProjectNames(') &&
     appSource.includes('scheduleProjectScopeNames('),
-  'Approving a Gantt import must persist only parent projects and aggregate child work on Overview.',
+  'Approving a schedule import must stay inside selected active projects, durably queue reviewed work before upload, and keep tombstone-protected records deleted.',
 );
 assert(
   appSource.includes('deletedProjectNamesRef.current') &&
@@ -358,9 +391,12 @@ assert(
   'Task-group headings must represent work areas and must never use the parent project name as an area fallback.',
 );
 assert(
-  appSource.includes('projectUpdatesForScopes(savedUpdates, projectScopeNames)') &&
-    appSource.includes('updates: intelligenceUpdates') &&
-    appSource.includes('scheduleItems: intelligenceScheduleItems'),
+  projectWorkspaceSource.includes('projectUpdatesForParentProject(') &&
+    projectWorkspaceSource.includes('savedUpdates,') &&
+    projectWorkspaceSource.includes('projectName,') &&
+    projectWorkspaceSource.includes('scheduleItems,') &&
+    projectWorkspaceSource.includes('updates: intelligenceUpdates') &&
+    projectWorkspaceSource.includes('scheduleItems: intelligenceScheduleItems'),
   'Parent project intelligence should roll up child work without rewriting stored child records.',
 );
 assert(

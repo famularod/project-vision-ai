@@ -1,6 +1,9 @@
 import type { ReferenceDocument, ScheduleItem } from '../types';
-import { parseFlexibleDate } from '../utils/date';
 import { scheduleItemNeedsCompletionVerification } from './DAVECompletionVerification';
+import {
+  SCHEDULE_IMPORT_NEEDS_PROJECT,
+  scheduleImportDateWarnings,
+} from './ScheduleImportScopeGuard';
 import {
   bindScheduleImportBatch,
   scheduleItemsForExactImportBatch,
@@ -18,6 +21,7 @@ export type PIEScheduleImportBatch = {
   message: string;
   items: ScheduleItem[];
   documents: ReferenceDocument[];
+  warnings?: string[];
 };
 
 /**
@@ -59,12 +63,18 @@ export type PIEScheduleImportReviewField =
 export function scheduleImportReviewFields(
   item: ScheduleItem,
 ): PIEScheduleImportReviewField[] {
+  const completionVerification = scheduleItemNeedsCompletionVerification(item);
+  const hasDateDefect = scheduleImportDateWarnings(item).length > 0;
+
   return [
     !item.taskName.trim() ? 'task' : null,
-    !item.projectName.trim() ? 'project' : null,
+    !item.projectName.trim() ||
+      item.projectName.trim() === SCHEDULE_IMPORT_NEEDS_PROJECT ? 'project' : null,
     !item.locationName.trim() ? 'area' : null,
-    !scheduleItemNeedsCompletionVerification(item) &&
-      (!item.finishDate.trim() || !parseFlexibleDate(item.finishDate)) ? 'date' : null,
+    hasDateDefect ||
+      (!completionVerification && !item.finishDate.trim())
+      ? 'date'
+      : null,
     !item.owner.trim() ? 'owner' : null,
   ].filter(Boolean) as PIEScheduleImportReviewField[];
 }
@@ -74,9 +84,18 @@ export function scheduleImportItemIsReady(item: ScheduleItem) {
 }
 
 export function scheduleImportItemHasCoreFacts(item: ScheduleItem) {
-  return Boolean(item.taskName.trim() && (
-    parseFlexibleDate(item.finishDate) || scheduleItemNeedsCompletionVerification(item)
-  ));
+  if (
+    !item.taskName.trim() ||
+    !item.projectName.trim() ||
+    item.projectName.trim() === SCHEDULE_IMPORT_NEEDS_PROJECT ||
+    scheduleImportDateWarnings(item).length > 0
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    item.finishDate.trim() || scheduleItemNeedsCompletionVerification(item),
+  );
 }
 
 export function scheduleImportItemIdentity(item: ScheduleItem) {
@@ -85,8 +104,15 @@ export function scheduleImportItemIdentity(item: ScheduleItem) {
     item.finishDate,
     item.projectName,
     item.locationName,
+    item.sourceActivityId,
+    item.sourceWbsCode || item.wbsCode,
+    item.sourceRowNumber,
   ]
-    .map(value => value.trim().toLowerCase().replace(/\s+/g, ' '))
+    .map(value => (
+      typeof value === 'number'
+        ? Number.isFinite(value) ? String(Math.trunc(value)) : ''
+        : (value || '').trim().toLowerCase().replace(/\s+/g, ' ')
+    ))
     .join('|');
 }
 

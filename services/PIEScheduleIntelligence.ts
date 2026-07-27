@@ -856,10 +856,12 @@ export function normalizeMicrosoftProjectPdfRows({
   }
 
   const importedAt = now.toISOString();
-  const rows = lines.slice(1).map(line => {
+  const rows = lines.slice(1).map((line, index) => {
     const cells = line.split('\t').map(value => value.trim());
     return {
       activityId: cell(cells, header, ['id', 'activity id'], 0),
+      sourceWbsCode: cell(cells, header, ['wbs', 'wbs code', 'outline number'], -1),
+      sourceRowNumber: index + 2,
       taskName: cell(cells, header, ['task name', 'task', 'activity'], 1),
       indent: Number(cell(cells, header, ['indent'], 2)) || 0,
       duration: parseDuration(cell(cells, header, ['duration'], 3)),
@@ -949,12 +951,16 @@ export function normalizeMicrosoftProjectPdfRows({
       owner: '',
       contractor: '',
       durationDays: row.duration,
+      wbsCode: row.sourceWbsCode || null,
       percentComplete,
       priority: normalizePriority('', row.finishDate),
       status,
       notes: explicitScheduleNote(row.notes),
       importedFrom: sourceName,
       importedAt,
+      sourceActivityId: row.activityId || null,
+      sourceWbsCode: row.sourceWbsCode || null,
+      sourceRowNumber: row.sourceRowNumber,
       createdAt: importedAt,
     });
   });

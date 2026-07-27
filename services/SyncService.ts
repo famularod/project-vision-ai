@@ -47,6 +47,7 @@ import { createDurableLocalTransactionRepository } from './DurableLocalTransacti
 import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import { createPendingChangesRetryController } from './PendingChangesRetryController';
 import { processDAVEStorageCleanup } from './DAVEStorageCleanup';
+import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -101,6 +102,12 @@ export type SyncUploadResult = {
   configured: boolean;
   uploaded: number;
   uploadedByEntity?: Partial<Record<SyncEntity, number>>;
+  /**
+   * Exact authoritative document metadata accepted by the cloud during this
+   * pass. File-backed documents may gain storagePath/integrity fields while
+   * uploading, so callers must replace their older local copy with this one.
+   */
+  uploadedReferenceDocuments?: ReferenceDocument[];
   itemOutcomes?: Record<string, SyncItemOutcome>;
   queued: number;
   conflicts: number;
@@ -113,6 +120,24 @@ export type SyncItemOutcome =
   | 'conflict'
   | 'blocked'
   | 'failed';
+
+export type ScheduleImportCloudSyncResult = SyncUploadResult & {
+  /**
+   * True only after every exact task/document revision can be read back from
+   * the durable offline queue. This distinguishes a protected local save from
+   * an in-memory UI transition.
+   */
+  durablyQueued: boolean;
+  /**
+   * True only when every exact imported record was uploaded and none of those
+   * records remains queued or conflicted.
+   */
+  fullySynced: boolean;
+  /** Imported task ids rejected because deletion history outranks the import. */
+  supersededScheduleItemIds: string[];
+  /** Imported document ids rejected because deletion history outranks the import. */
+  supersededReferenceDocumentIds: string[];
+};
 
 /**
  * Audit P1-27: a failed cloud read must never be silently converted into an
@@ -1421,6 +1446,10 @@ function scheduleItemQueueItemId(itemId: string): string {
   return `schedule-item-${encodeURIComponent(itemId)}`;
 }
 
+function referenceDocumentQueueItemId(documentId: string): string {
+  return `reference-document-${encodeURIComponent(documentId)}`;
+}
+
 export async function queueScheduleItemRecord(
   item: ScheduleItem,
   autoUpload = true,
@@ -1510,15 +1539,512 @@ export async function runScheduleItemCloudSync(
 
 export async function queueReferenceDocumentRecord(
   document: ReferenceDocument,
+  autoUpload = true,
 ): Promise<void> {
   const changedAt = document.updatedAt || document.importedAt || new Date().toISOString();
   await enqueuePendingChange<ReferenceDocumentRecordPayload>({
-    id: `reference-document-${encodeURIComponent(document.id)}`,
+    id: referenceDocumentQueueItemId(document.id),
     entity: 'reference_document',
     operation: 'update',
     payload: { id: document.id, documentData: document },
     changedAt,
+    autoUpload,
   });
+}
+
+/**
+ * Durably stage an approved schedule import, then verify the exact task and
+ * document revisions rather than trusting aggregate queue totals. A global
+ * upload may already be in flight with an older queue snapshot, so one bounded
+ * follow-up pass is allowed only when one of these exact revisions appears to
+ * have been missed by that snapshot.
+ */
+export async function runScheduleImportCloudSync(input: {
+  scheduleItems: readonly ScheduleItem[];
+  referenceDocuments: readonly ReferenceDocument[];
+}): Promise<ScheduleImportCloudSyncResult> {
+  const scheduleItems = uniqueRecordsById(input.scheduleItems);
+  const referenceDocuments = uniqueRecordsById(input.referenceDocuments);
+  const scheduleQueueIds = new Map(
+    scheduleItems.map(item => [scheduleItemQueueItemId(item.id), item]),
+  );
+  const documentQueueIds = new Map(
+    referenceDocuments.map(document => [
+      referenceDocumentQueueItemId(document.id),
+      document,
+    ]),
+  );
+  const requestedQueueIds = new Set([
+    ...scheduleQueueIds.keys(),
+    ...documentQueueIds.keys(),
+  ]);
+  const configuration = getSupabaseConfigurationStatus();
+
+  if (requestedQueueIds.size === 0) {
+    return {
+      configured: configuration.configured,
+      uploaded: 0,
+      uploadedByEntity: {},
+      itemOutcomes: {},
+      queued: 0,
+      conflicts: 0,
+      errors: [],
+      durablyQueued: true,
+      fullySynced: true,
+      supersededScheduleItemIds: [],
+      supersededReferenceDocumentIds: [],
+    };
+  }
+
+  let tombstoneSync: DAVESyncTombstoneSyncResult;
+  try {
+    tombstoneSync = await synchronizeDAVESyncTombstones();
+  } catch {
+    return {
+      configured: configuration.configured,
+      uploaded: 0,
+      uploadedByEntity: {},
+      itemOutcomes: {},
+      queued: requestedQueueIds.size,
+      conflicts: 0,
+      errors: [
+        'The approved schedule could not be protected because deletion history is unavailable.',
+      ],
+      durablyQueued: false,
+      fullySynced: false,
+      supersededScheduleItemIds: [],
+      supersededReferenceDocumentIds: [],
+    };
+  }
+
+  let staged: ScheduleImportQueueStageResult;
+  try {
+    staged = await stageScheduleImportQueue({
+      scheduleItems,
+      referenceDocuments,
+      tombstones: tombstoneSync.tombstones,
+    });
+  } catch {
+    return {
+      configured: configuration.configured,
+      uploaded: 0,
+      uploadedByEntity: {},
+      itemOutcomes: {},
+      queued: requestedQueueIds.size,
+      conflicts: 0,
+      errors: [
+        'The approved schedule could not be protected in the local sync queue.',
+      ],
+      durablyQueued: false,
+      fullySynced: false,
+      supersededScheduleItemIds: [],
+      supersededReferenceDocumentIds: [],
+    };
+  }
+
+  const exactQueueIds = new Set(staged.acceptedQueueIds);
+  const stagedQueue = await getOfflineQueue();
+  const durablyQueued = staged.acceptedRevisions.every(expected =>
+    stagedQueue.some(current => sameQueueRevision(current, expected)),
+  );
+  if (!durablyQueued) {
+    const missingCount = staged.acceptedRevisions
+      .filter(expected =>
+        !stagedQueue.some(current => sameQueueRevision(current, expected)),
+      )
+      .length;
+    return {
+      configured: configuration.configured,
+      uploaded: 0,
+      uploadedByEntity: {},
+      itemOutcomes: {},
+      queued: missingCount,
+      conflicts: 0,
+      errors: [
+        'The approved schedule could not be fully verified in the local sync queue.',
+      ],
+      durablyQueued: false,
+      fullySynced: false,
+      supersededScheduleItemIds: staged.supersededScheduleItemIds,
+      supersededReferenceDocumentIds:
+        staged.supersededReferenceDocumentIds,
+    };
+  }
+
+  const exactOutcomes: Record<string, SyncItemOutcome> = Object.fromEntries([
+    ...staged.supersededScheduleItemIds.map(id => [
+      scheduleItemQueueItemId(id),
+      'superseded' as const,
+    ]),
+    ...staged.supersededReferenceDocumentIds.map(id => [
+      referenceDocumentQueueItemId(id),
+      'superseded' as const,
+    ]),
+  ]);
+
+  if (exactQueueIds.size === 0) {
+    const errors = exactScheduleImportSyncErrors({
+      configured: configuration.configured,
+      aggregateErrors: [],
+      exactRemaining: [],
+      exactConflicts: [],
+      exactOutcomes,
+      exactQueueIds: requestedQueueIds,
+      scheduleQueueIds,
+      documentQueueIds,
+    });
+    return {
+      configured: configuration.configured,
+      uploaded: 0,
+      uploadedByEntity: {},
+      itemOutcomes: exactOutcomes,
+      queued: 0,
+      conflicts: 0,
+      errors,
+      durablyQueued: true,
+      fullySynced: false,
+      supersededScheduleItemIds: staged.supersededScheduleItemIds,
+      supersededReferenceDocumentIds:
+        staged.supersededReferenceDocumentIds,
+    };
+  }
+
+  let upload = await uploadPendingChanges();
+  const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
+  mergeUploadedReferenceDocuments(
+    uploadedReferenceDocuments,
+    upload.uploadedReferenceDocuments,
+    documentIdsForQueueIds(exactQueueIds, documentQueueIds),
+  );
+  mergeExactItemOutcomes(exactOutcomes, upload.itemOutcomes, exactQueueIds);
+  let remainingQueue = await getOfflineQueue();
+  let exactRemaining = remainingQueue.filter(item => exactQueueIds.has(item.id));
+
+  if (
+    exactRemaining.some(item => {
+      const outcome = exactOutcomes[item.id];
+      return !outcome || outcome === 'uploaded';
+    })
+  ) {
+    upload = await uploadPendingChanges();
+    mergeUploadedReferenceDocuments(
+      uploadedReferenceDocuments,
+      upload.uploadedReferenceDocuments,
+      documentIdsForQueueIds(exactQueueIds, documentQueueIds),
+    );
+    mergeExactItemOutcomes(exactOutcomes, upload.itemOutcomes, exactQueueIds);
+    remainingQueue = await getOfflineQueue();
+    exactRemaining = remainingQueue.filter(item => exactQueueIds.has(item.id));
+  }
+
+  const scheduleIds = new Set(
+    [...exactQueueIds]
+      .map(id => scheduleQueueIds.get(id)?.id)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const documentIds = documentIdsForQueueIds(
+    exactQueueIds,
+    documentQueueIds,
+  );
+  const exactConflicts = (await getSyncConflicts()).filter(conflict => (
+    (conflict.entity === 'schedule_item' && scheduleIds.has(conflict.localId)) ||
+    (conflict.entity === 'reference_document' && documentIds.has(conflict.localId))
+  ));
+  const remainingIds = new Set(exactRemaining.map(item => item.id));
+  const conflictedQueueIds = new Set(exactConflicts.map(conflict =>
+    conflict.entity === 'schedule_item'
+      ? scheduleItemQueueItemId(conflict.localId)
+      : referenceDocumentQueueItemId(conflict.localId),
+  ));
+  const uploadedIds = [...exactQueueIds].filter(id => (
+    exactOutcomes[id] === 'uploaded' &&
+    !remainingIds.has(id) &&
+    !conflictedQueueIds.has(id)
+  ));
+  const errors = exactScheduleImportSyncErrors({
+    configured: upload.configured,
+    aggregateErrors: upload.errors,
+    exactRemaining,
+    exactConflicts,
+    exactOutcomes,
+    exactQueueIds: requestedQueueIds,
+    scheduleQueueIds,
+    documentQueueIds,
+  });
+  const uploadedScheduleCount = uploadedIds
+    .filter(id => scheduleQueueIds.has(id))
+    .length;
+  const uploadedDocumentCount = uploadedIds
+    .filter(id => documentQueueIds.has(id))
+    .length;
+  const uploadSupersededScheduleItemIds = [...exactQueueIds]
+    .filter(id => (
+      exactOutcomes[id] === 'superseded' &&
+      scheduleQueueIds.has(id)
+    ))
+    .map(id => scheduleQueueIds.get(id)?.id)
+    .filter((id): id is string => Boolean(id));
+  const uploadSupersededReferenceDocumentIds = [...exactQueueIds]
+    .filter(id => (
+      exactOutcomes[id] === 'superseded' &&
+      documentQueueIds.has(id)
+    ))
+    .map(id => documentQueueIds.get(id)?.id)
+    .filter((id): id is string => Boolean(id));
+  const supersededScheduleItemIds = uniqueStrings([
+    ...staged.supersededScheduleItemIds,
+    ...uploadSupersededScheduleItemIds,
+  ]);
+  const supersededReferenceDocumentIds = uniqueStrings([
+    ...staged.supersededReferenceDocumentIds,
+    ...uploadSupersededReferenceDocumentIds,
+  ]);
+  const fullySynced = (
+    durablyQueued &&
+    uploadedIds.length === exactQueueIds.size &&
+    exactRemaining.length === 0 &&
+    exactConflicts.length === 0 &&
+    supersededScheduleItemIds.length === 0 &&
+    supersededReferenceDocumentIds.length === 0
+  );
+
+  return {
+    configured: upload.configured,
+    uploaded: uploadedIds.length,
+    uploadedByEntity: {
+      ...(uploadedScheduleCount > 0
+        ? { schedule_item: uploadedScheduleCount }
+        : {}),
+      ...(uploadedDocumentCount > 0
+        ? { reference_document: uploadedDocumentCount }
+        : {}),
+    },
+    uploadedReferenceDocuments: [...uploadedReferenceDocuments.values()],
+    itemOutcomes: exactOutcomes,
+    queued: exactRemaining.length,
+    conflicts: exactConflicts.length,
+    errors,
+    durablyQueued,
+    fullySynced,
+    supersededScheduleItemIds,
+    supersededReferenceDocumentIds,
+  };
+}
+
+function documentIdsForQueueIds(
+  queueIds: ReadonlySet<string>,
+  documentQueueIds: ReadonlyMap<string, ReferenceDocument>,
+): Set<string> {
+  return new Set(
+    [...queueIds]
+      .map(id => documentQueueIds.get(id)?.id)
+      .filter((id): id is string => Boolean(id)),
+  );
+}
+
+function mergeUploadedReferenceDocuments(
+  target: Map<string, ReferenceDocument>,
+  source: readonly ReferenceDocument[] | undefined,
+  exactDocumentIds: ReadonlySet<string>,
+): void {
+  source?.forEach(document => {
+    if (exactDocumentIds.has(document.id)) target.set(document.id, document);
+  });
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+type ScheduleImportQueueStageResult = {
+  acceptedQueueIds: string[];
+  acceptedRevisions: SyncQueueItem[];
+  supersededScheduleItemIds: string[];
+  supersededReferenceDocumentIds: string[];
+};
+
+async function stageScheduleImportQueue(input: {
+  scheduleItems: readonly ScheduleItem[];
+  referenceDocuments: readonly ReferenceDocument[];
+  tombstones: readonly DAVESyncTombstone[];
+}): Promise<ScheduleImportQueueStageResult> {
+  const createdAt = new Date().toISOString();
+  const candidates: SyncQueueItem[] = [
+    ...input.scheduleItems.map(item => ({
+      id: scheduleItemQueueItemId(item.id),
+      entity: 'schedule_item' as const,
+      operation: 'update' as const,
+      payload: {
+        id: item.id,
+        itemData: item,
+      } satisfies ScheduleItemRecordPayload,
+      createdAt,
+      changedAt: validSyncTimestampOrFallback(
+        item.updatedAt || item.progressConfirmedAt,
+        createdAt,
+      ),
+      retryCount: 0,
+      lastError: null,
+    })),
+    ...input.referenceDocuments.map(document => ({
+      id: referenceDocumentQueueItemId(document.id),
+      entity: 'reference_document' as const,
+      operation: 'update' as const,
+      payload: {
+        id: document.id,
+        documentData: document,
+      } satisfies ReferenceDocumentRecordPayload,
+      createdAt,
+      changedAt: validSyncTimestampOrFallback(
+        document.updatedAt || document.importedAt,
+        createdAt,
+      ),
+      retryCount: 0,
+      lastError: null,
+    })),
+  ];
+
+  return mutateOfflineQueue(queue => {
+    let nextQueue = [...queue];
+    const result: ScheduleImportQueueStageResult = {
+      acceptedQueueIds: [],
+      acceptedRevisions: [],
+      supersededScheduleItemIds: [],
+      supersededReferenceDocumentIds: [],
+    };
+
+    candidates.forEach(candidate => {
+      const protectedByDelete = nextQueue.some(existing =>
+        queuedDeleteProtectsRecord(existing, candidate),
+      );
+      if (
+        protectedByDelete ||
+        queueItemMatchesDAVESyncTombstone(candidate, input.tombstones)
+      ) {
+        const payload = candidate.payload as { id: string };
+        if (candidate.entity === 'schedule_item') {
+          result.supersededScheduleItemIds.push(payload.id);
+        } else {
+          result.supersededReferenceDocumentIds.push(payload.id);
+        }
+        return;
+      }
+
+      const existingItem = nextQueue.find(existing =>
+        existing.id === candidate.id,
+      );
+      const mergedCandidate = mergeScheduleItemQueueChangeScope(
+        existingItem,
+        candidate,
+      );
+      nextQueue = [
+        ...nextQueue.filter(existing => existing.id !== candidate.id),
+        mergedCandidate,
+      ];
+      result.acceptedQueueIds.push(candidate.id);
+      result.acceptedRevisions.push(mergedCandidate);
+    });
+
+    return {
+      nextQueue,
+      result,
+      persist: result.acceptedQueueIds.length > 0,
+    };
+  });
+}
+
+function queuedDeleteProtectsRecord(
+  existing: SyncQueueItem,
+  incoming: SyncQueueItem,
+): boolean {
+  if (
+    existing.operation !== 'delete' ||
+    existing.entity !== incoming.entity
+  ) return false;
+  if (existing.id === incoming.id) return true;
+
+  const existingPayload = existing.payload as { id?: unknown };
+  const incomingPayload = incoming.payload as { id?: unknown };
+  return (
+    typeof existingPayload.id === 'string' &&
+    typeof incomingPayload.id === 'string' &&
+    existingPayload.id.trim().toLowerCase() ===
+      incomingPayload.id.trim().toLowerCase()
+  );
+}
+
+function validSyncTimestampOrFallback(
+  value: string | null | undefined,
+  fallback: string,
+): string {
+  return isFiniteSyncTimestamp(value) ? value : fallback;
+}
+
+function uniqueRecordsById<T extends { id: string }>(
+  records: readonly T[],
+): T[] {
+  return [...new Map(records.map(record => [record.id, record])).values()];
+}
+
+function mergeExactItemOutcomes(
+  target: Record<string, SyncItemOutcome>,
+  source: Record<string, SyncItemOutcome> | undefined,
+  exactQueueIds: ReadonlySet<string>,
+): void {
+  if (!source) return;
+  Object.entries(source).forEach(([id, outcome]) => {
+    if (exactQueueIds.has(id)) target[id] = outcome;
+  });
+}
+
+function exactScheduleImportSyncErrors(input: {
+  configured: boolean;
+  aggregateErrors: readonly string[];
+  exactRemaining: readonly SyncQueueItem[];
+  exactConflicts: readonly SyncConflict[];
+  exactOutcomes: Readonly<Record<string, SyncItemOutcome>>;
+  exactQueueIds: ReadonlySet<string>;
+  scheduleQueueIds: ReadonlyMap<string, ScheduleItem>;
+  documentQueueIds: ReadonlyMap<string, ReferenceDocument>;
+}): string[] {
+  const errors: string[] = [];
+  input.exactRemaining.forEach(item => {
+    if (item.lastError) {
+      errors.push(formatQueueItemFailure(item, item.lastError));
+    }
+  });
+  input.exactConflicts.forEach(conflict => {
+    errors.push(
+      conflict.entity === 'schedule_item'
+        ? 'An imported task has a cloud conflict that needs review.'
+        : 'An imported schedule document has a cloud conflict that needs review.',
+    );
+  });
+  input.exactQueueIds.forEach(id => {
+    const outcome = input.exactOutcomes[id];
+    if (outcome === 'superseded') {
+      errors.push(
+        input.scheduleQueueIds.has(id)
+          ? 'An imported task was removed because a protected deletion marker is newer.'
+          : 'An imported schedule document was removed because a protected deletion marker is newer.',
+      );
+    } else if (outcome === 'failed' && !input.exactRemaining.some(item => item.id === id)) {
+      const scheduleItem = input.scheduleQueueIds.get(id);
+      const document = input.documentQueueIds.get(id);
+      errors.push(
+        scheduleItem
+          ? `Task “${scheduleItem.taskName || 'Unnamed Task'}” could not sync.`
+          : `Document “${document?.name || 'Unnamed Document'}” could not sync.`,
+      );
+    }
+  });
+  if (!input.configured && errors.length === 0) {
+    errors.push(
+      input.aggregateErrors[0] ||
+        'Cloud sync is not configured. The approved schedule remains saved on this device.',
+    );
+  }
+  return [...new Set(errors)];
 }
 
 export async function removeOperationalRecordFromSyncQueue(
@@ -1834,6 +2360,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const attemptedItemsById = new Map(queue.map(item => [item.id, item]));
   const itemOutcomes: Record<string, SyncItemOutcome> = {};
   const errors: string[] = [];
+  const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
   let uploaded = 0;
   const uploadedByEntity: Record<SyncEntity, number> = {
     project: 0,
@@ -1878,27 +2405,34 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     }
 
     const result = await uploadQueueItem(item);
+    const resultCode = typeof result === 'string' ? result : result.outcome;
 
-    if (result === 'uploaded') {
+    if (resultCode === 'uploaded') {
       itemOutcomes[item.id] = 'uploaded';
       uploaded += 1;
       uploadedByEntity[item.entity] += 1;
+      if (typeof result !== 'string') {
+        uploadedReferenceDocuments.set(
+          result.referenceDocument.id,
+          result.referenceDocument,
+        );
+      }
       resolvedIds.add(item.id);
       continue;
     }
 
-    if (result === 'conflict') {
+    if (resultCode === 'conflict') {
       itemOutcomes[item.id] = 'conflict';
       resolvedIds.add(item.id);
       continue;
     }
 
-    if (result === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS) {
+    if (resultCode === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS) {
       itemOutcomes[item.id] = 'blocked';
       continue;
     }
 
-    const sanitizedResult = sanitizeUserFacingSyncMessage(result);
+    const sanitizedResult = sanitizeUserFacingSyncMessage(resultCode);
     itemOutcomes[item.id] = 'failed';
 
     retriedItemsById.set(item.id, {
@@ -1956,6 +2490,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     configured: true,
     uploaded,
     uploadedByEntity,
+    uploadedReferenceDocuments: [...uploadedReferenceDocuments.values()],
     itemOutcomes,
     queued: remaining.length + storageCleanupRemaining,
     conflicts: (await getSyncConflicts()).length,
@@ -2800,9 +3335,14 @@ export async function resolveScheduleItemSyncConflict(
   return localItem;
 }
 
+type ReferenceDocumentUploadSuccess = {
+  outcome: 'uploaded';
+  referenceDocument: ReferenceDocument;
+};
+
 async function uploadQueueItem(
   item: SyncQueueItem,
-): Promise<'uploaded' | 'conflict' | string> {
+): Promise<string | ReferenceDocumentUploadSuccess> {
   if (item.entity === 'project') {
     return uploadProjectQueueItem(item);
   }
@@ -2895,18 +3435,35 @@ async function uploadQueueItem(
       return cloud.error || cloud.message || 'Document authority could not be checked.';
     }
     const remote = cloud.data.find(candidate => candidate.id === payload.id);
-    const authoritative = remote
+    let authoritative = remote
       ? mergeDAVEReferenceDocumentRecoveryRecords({
           local: [payload.documentData],
           cloud: [remote],
         }).find(candidate => candidate.id === payload.id) || payload.documentData
       : payload.documentData;
+    const hasLocalFile = Boolean(authoritative.uri?.trim());
+    if (!authoritative.storagePath && hasLocalFile) {
+      try {
+        authoritative = await prepareReferenceDocumentForCloud(authoritative);
+      } catch {
+        return 'The document file could not be prepared for protected cloud storage.';
+      }
+      if (!authoritative.storagePath) {
+        return 'The document file is still waiting for protected cloud storage.';
+      }
+    }
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
-      return 'uploaded';
+      return {
+        outcome: 'uploaded',
+        referenceDocument: authoritative,
+      };
     }
     const result = await upsertReferenceDocument(authoritative);
     return result.ok && !result.stubbed
-      ? 'uploaded'
+      ? {
+          outcome: 'uploaded',
+          referenceDocument: authoritative,
+        }
       : result.error || result.message || 'Document sync is waiting for Supabase.';
   }
 

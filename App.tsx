@@ -24,6 +24,7 @@ import {
   removeMissingPhotosFromSyncQueue,
   removeProjectUpdateFromSyncQueue,
   runFieldUpdateCloudSync,
+  runScheduleImportCloudSync,
   runScheduleItemCloudSync,
   queueProjectAreaRecord,
   queueReferenceDocumentRecord,
@@ -97,6 +98,13 @@ import {
 } from './components/overview-responsive-layout';
 import { ScheduleImportFlow } from './components/ScheduleImportFlow';
 import { extractSchedulePdfWithServer } from './services/PIEScheduleRemoteExtraction';
+import {
+  bindStableScheduleImportItemIds,
+  buildScheduleImportSourceIdentity,
+} from './services/ScheduleImportSourceIdentity';
+import {
+  validateScheduleImportScope,
+} from './services/ScheduleImportScopeGuard';
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
 import { ScheduleTaskListControls, type ScheduleTaskFilter,
   type ScheduleTaskView, type ScheduleWorkspaceView } from './components/schedule-task-list-controls';
@@ -190,7 +198,6 @@ import {
   isStoredReferenceDocument,
   normalizeReferenceDocument,
   normalizeReferenceDocuments,
-  prepareReferenceDocumentForCloud,
   resolveReferenceDocumentUri,
 } from './services/ReferenceDocumentRepository';
 import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
@@ -231,7 +238,11 @@ import { buildProjectDeletionCascade, buildProjectDeletionOperations,
   PROJECT_DELETION_TRANSACTION_JOURNAL_KEY, type ProjectDeletionStorageKeys } from './services/ProjectDeletionTransaction';
 import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileCleaner, createProjectDeletionRuntime, ProjectDeletionIntentRecoveryRequiredError, ProjectDeletionRecoveryRequiredError } from './services/ProjectDeletionRuntime';
 import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
-import { FileSizePreflightError, preflightExpoFileRead } from './services/FileSizePreflight';
+import {
+  FileSizePreflightError,
+  preflightExpoFileRead,
+  prepareExpoFileUploadPayload,
+} from './services/FileSizePreflight';
 import {
   APP_BACKUP_VERSION,
   BackupRestoreRecoveryRequiredError,
@@ -1150,6 +1161,12 @@ const SCHEDULE_PRIORITIES: SchedulePriority[] = [
 ];
 const uid = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+function canonicalProjectNameSet(projectNames: readonly string[]) {
+  return [...new Set(projectNames
+    .map(name => name.trim().toLowerCase().replace(/\s+/g, ' '))
+    .filter(Boolean))]
+    .sort();
+}
 const zeroPad = (value: number) => value.toString().padStart(2, '0');
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -2623,6 +2640,14 @@ function normalizeScheduleItem(
     importedAt: optionalString(value.importedAt),
     importBatchId: optionalString(value.importBatchId),
     sourceDocumentId: optionalString(value.sourceDocumentId),
+    sourceActivityId: optionalString(value.sourceActivityId),
+    sourceWbsCode: optionalString(value.sourceWbsCode),
+    sourceRowNumber:
+      typeof value.sourceRowNumber === 'number' &&
+      Number.isFinite(value.sourceRowNumber) &&
+      value.sourceRowNumber > 0
+        ? Math.trunc(value.sourceRowNumber)
+        : null,
     completionVerification: normalizeDAVECompletionVerification(value.completionVerification),
     createdAt:
       typeof value.createdAt === 'string'
@@ -7275,6 +7300,16 @@ useEffect(() => {
     // matching how documents already work everywhere else in this screen.
     try {
       const selectedProjectNames = Array.from(selected);
+      if (category === 'Schedule' && !attachToDraft) {
+        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
+        if (batch) {
+          setIncomingScheduleImportBatch(batch);
+          setScheduleProjectFilter(null);
+          setScreen('Schedule');
+        }
+        return;
+      }
+
       for (const projectName of selected) {
         const document = await createProjectDocumentFromAsset(asset, {
           projectName,
@@ -7288,14 +7323,6 @@ useEffect(() => {
           },
         );
         confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
-      }
-      if (category === 'Schedule' && !attachToDraft) {
-        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
-        if (batch) {
-          setIncomingScheduleImportBatch(batch);
-          setScheduleProjectFilter(null);
-          setScreen('Schedule');
-        }
       }
     } catch (error) {
       Alert.alert(
@@ -10403,7 +10430,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setReferenceDocuments(updated);
     void Promise.all(updated
       .filter(document => target && document.category === target.category)
-      .map(queueReferenceDocumentRecord));
+      .map(document => queueReferenceDocumentRecord(document)));
   }
 
   async function ensureVerifiedReferenceDocumentBytes(
@@ -10675,7 +10702,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const queueResults = await Promise.allSettled(
       nextReferenceDocuments
         .filter(item => item.category === 'Schedules')
-        .map(queueReferenceDocumentRecord),
+        .map(document => queueReferenceDocumentRecord(document)),
     );
     if (queueResults.some(result => result.status === 'rejected')) {
       Alert.alert(
@@ -10812,7 +10839,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setReferenceDocuments(updated);
     void Promise.all(updated
       .filter(document => document.category === 'Schedules')
-      .map(queueReferenceDocumentRecord));
+      .map(document => queueReferenceDocumentRecord(document)));
   }
 
   function deleteScheduleDocument(documentId: string) {
@@ -11166,52 +11193,212 @@ Note: This update was opened through Outlook because PLZ email security may reje
     );
   }
   async function prepareScheduleImportFromAsset(
-    file: { uri: string; name?: string | null; mimeType?: string | null },
+    file: {
+      uri: string;
+      name?: string | null;
+      mimeType?: string | null;
+      size?: number | null;
+    },
     selectedProjectNames: readonly string[] = activeProjects.length ? activeProjects : projects,
   ): Promise<PIEScheduleImportBatch | null> {
     const fileName = file.name?.trim() || 'Imported schedule';
     const mimeType = file.mimeType || '';
-    const scopeProjects = Array.from(new Set(selectedProjectNames.map(name => name.trim()).filter(Boolean)));
+    const archivedKeys = new Set(
+      archivedProjectsCurrentRef.current.map(name => name.trim().toLowerCase()),
+    );
+    const deletedKeys = new Set(
+      deletedProjectNamesRef.current.map(name => name.trim().toLowerCase()),
+    );
+    const activeNameByKey = new Map(
+      projectsCurrentRef.current
+        .filter(name => {
+          const key = name.trim().toLowerCase();
+          return key && !archivedKeys.has(key) && !deletedKeys.has(key);
+        })
+        .map(name => [name.trim().toLowerCase(), name.trim()] as const),
+    );
+    const scopeProjects = Array.from(new Set(
+      selectedProjectNames
+        .map(name => activeNameByKey.get(name.trim().toLowerCase()) || '')
+        .filter(Boolean),
+    ));
+    if (!scopeProjects.length) {
+      Alert.alert(
+        'Choose an active project',
+        'A schedule can only be analyzed for an active project you explicitly select.',
+      );
+      return null;
+    }
+
+    const scopedProjectRecords = scopeProjects.map(projectName => {
+      const record = projectRecordsCurrentRef.current.find(candidate =>
+        candidate.name.trim().toLowerCase() === projectName.toLowerCase(),
+      );
+      const importIdentity = authorityProjectId(projectName);
+      return {
+        id: record?.id || importIdentity,
+        importIdentity,
+        name: projectName,
+      };
+    });
+    const scopedAreasByProject = new Map(scopeProjects.map(projectName => {
+      const areas = projectAreasForProject({
+        projectAreas: projectAreasCurrentRef.current,
+        projectName,
+        scheduleItems: scheduleItemsCurrentRef.current,
+        updates: savedUpdatesRef.current,
+      });
+      return [projectName, areas] as const;
+    }));
+    const scopedProjectAreas = Array.from(new Map(
+      [...scopedAreasByProject.values()]
+        .flat()
+        .map(area => [area.id, area] as const),
+    ).values());
+    const selectedScopeProjects = scopedProjectRecords.map(project => {
+      const existingChildNames = scheduleItemsCurrentRef.current
+        .filter(item =>
+          (item.scheduleProjectName || item.projectName).trim().toLowerCase() ===
+            project.name.toLowerCase(),
+        )
+        .flatMap(item => [item.projectName, item.locationName]);
+      return {
+        ...project,
+        aliases: [
+          ...(scopedAreasByProject.get(project.name) || []).map(area => area.name),
+          ...existingChildNames,
+        ],
+      };
+    });
+    const unavailableScopeProjects = [
+      ...archivedProjectsCurrentRef.current.map(name => ({
+        id: projectRecordsCurrentRef.current.find(record =>
+          record.name.trim().toLowerCase() === name.trim().toLowerCase(),
+        )?.id || authorityProjectId(name),
+        name,
+        state: 'archived' as const,
+      })),
+      ...deletedProjectNamesRef.current.map(name => ({
+        id: projectRecordsCurrentRef.current.find(record =>
+          record.name.trim().toLowerCase() === name.trim().toLowerCase(),
+        )?.id || authorityProjectId(name),
+        name,
+        state: 'deleted' as const,
+      })),
+    ];
+    const sourcePayload = await prepareExpoFileUploadPayload({
+      uri: file.uri,
+      reportedSizeBytes: file.size,
+    });
+    const sourceIdentity = buildScheduleImportSourceIdentity({
+      bytes: sourcePayload.data,
+      projects: scopedProjectRecords,
+    });
+    const alreadyImported = referenceDocumentsCurrentRef.current.some(document =>
+      document.id === sourceIdentity.documentId ||
+      (
+        document.category === 'Schedules' &&
+        document.contentSha256 === sourceIdentity.contentSha256 &&
+        canonicalProjectNameSet(document.projectNames || []).join('|') ===
+          canonicalProjectNameSet(scopeProjects).join('|')
+      ),
+    );
+    if (alreadyImported) {
+      Alert.alert(
+        'Schedule already added',
+        'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.',
+      );
+      return null;
+    }
+
     const isPdf = mimeType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
+    const directory = await ensureReferenceDocumentsDirectory();
+    const originalFileName = isPdf && !fileName.toLowerCase().endsWith('.pdf')
+      ? `${fileName}.pdf`
+      : fileName;
+    const targetUri =
+      `${directory}${sourceIdentity.documentId}-${sanitizeFilename(originalFileName)}`;
+    await FileSystem.deleteAsync(targetUri, { idempotent: true });
+    await FileSystem.copyAsync({ from: file.uri, to: targetUri });
+    const onlyProject = scopeProjects.length === 1 ? scopeProjects[0] : null;
+    const scheduleDocument = normalizeReferenceDocument({
+      id: sourceIdentity.documentId,
+      name: originalFileName.replace(/\.[^/.]+$/, ''),
+      originalFileName,
+      uri: targetUri,
+      mimeType: file.mimeType || (isPdf ? 'application/pdf' : 'text/plain'),
+      category: 'Schedules',
+      notes: 'Schedule uploaded for task extraction and project manager review.',
+      isCurrent: true,
+      importedAt: new Date().toISOString(),
+      projectId: onlyProject ? authorityProjectId(onlyProject) : null,
+      projectName: onlyProject,
+      projectNames: scopeProjects,
+      importBatchId: sourceIdentity.batchId,
+      sizeBytes: sourcePayload.sizeBytes,
+      contentSha256: sourceIdentity.contentSha256,
+    });
+    const validateAndBindItems = (
+      sourceItems: ScheduleItem[],
+      extractionWarnings: readonly string[] = [],
+    ) => {
+      const validation = validateScheduleImportScope({
+        items: sourceItems,
+        selectedProjects: selectedScopeProjects,
+        selectedProjectAreas: selectedScopeProjects.map(project => ({
+          projectId: project.id,
+          areas: (scopedAreasByProject.get(project.name) || []).map(area => ({
+            id: area.id,
+            name: area.name,
+          })),
+        })),
+        unavailableProjects: unavailableScopeProjects,
+      });
+      return {
+        items: bindStableScheduleImportItemIds(validation.items, sourceIdentity),
+        warnings: [
+          ...extractionWarnings.map(value => value.trim()).filter(Boolean),
+          ...validation.warnings.map(value => value.message),
+        ],
+      };
+    };
+
     if (!isPdf) {
-      const contents = await FileSystem.readAsStringAsync(file.uri);
+      const contents = await FileSystem.readAsStringAsync(targetUri);
       const normalizedImport = normalizeScheduleImport({
         contents, sourceName: fileName, mimeType,
         projects: scopeProjects,
-        projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+        projectAreas: scopedProjectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
       });
       const imported = normalizedImport.items as unknown as ScheduleItem[];
       if (!imported.length) {
+        await deleteStoredReferenceDocument(targetUri);
         Alert.alert(
           'No schedule items found',
           'Use a CSV or text file with at least a task name and date. Recommended columns: Task, Project, Location, Start, Finish, Owner, and Status.',
         );
         return null;
       }
-      const items = dedupeScheduleImportItems(imported as unknown as import('./types').ScheduleItem[]);
+      const validated = validateAndBindItems(imported);
+      const items = dedupeScheduleImportItems(
+        validated.items as unknown as import('./types').ScheduleItem[],
+      );
       return {
-        id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: fileName,
+        id: sourceIdentity.batchId,
+        kind: 'schedule_file',
+        sourceCount: 1,
+        sourceLabel: fileName,
         message: `${items.length} schedule ${items.length === 1 ? 'item' : 'items'} prepared. Import confidence: ${normalizedImport.extractionConfidencePercent}%.`,
-        items, documents: [],
+        items,
+        documents: [scheduleDocument],
+        warnings: validated.warnings,
       };
     }
 
-    const directory = await ensureReferenceDocumentsDirectory();
-    const originalFileName = fileName.toLowerCase().endsWith('.pdf') ? fileName : `${fileName}.pdf`;
-    const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
-    await FileSystem.copyAsync({ from: file.uri, to: targetUri });
-    const onlyProject = scopeProjects.length === 1 ? scopeProjects[0] : null;
-    const scheduleDocument = normalizeReferenceDocument({
-      id: uid(), name: originalFileName.replace(/\.[^/.]+$/, ''), originalFileName,
-      uri: targetUri, mimeType: file.mimeType || 'application/pdf', category: 'Schedules',
-      notes: 'Schedule uploaded for task extraction and project manager review.',
-      isCurrent: true, importedAt: new Date().toISOString(),
-      projectId: onlyProject ? authorityProjectId(onlyProject) : null,
-      projectName: onlyProject, projectNames: scopeProjects,
-    });
     let extractedItems: ScheduleItem[] = [];
     let extractionMethod = '';
     let extractionIssue = '';
+    let extractionWarnings: string[] = [];
     if (isDavePdfTextExtractionAvailable()) {
       try {
         const extractedPdf = await withScheduleImportTimeout(
@@ -11222,14 +11409,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
           extractedItems = normalizeMicrosoftProjectPdfRows({
             contents: extractedPdf.text, sourceName: originalFileName,
             projects: scopeProjects,
-            projectAreas: projectAreas as unknown as Parameters<typeof normalizeMicrosoftProjectPdfRows>[0]['projectAreas'],
+            projectAreas: scopedProjectAreas as unknown as Parameters<typeof normalizeMicrosoftProjectPdfRows>[0]['projectAreas'],
           }) as unknown as ScheduleItem[];
           extractionMethod = 'structured Microsoft Project rows';
         } else {
           const normalizedImport = normalizeScheduleImport({
             contents: extractedPdf.text, sourceName: originalFileName,
             mimeType: file.mimeType || 'application/pdf', projects: scopeProjects,
-            projectAreas: projectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
+            projectAreas: scopedProjectAreas as unknown as Parameters<typeof normalizeScheduleImport>[0]['projectAreas'],
           });
           extractedItems = (normalizedImport.items as unknown as ScheduleItem[])
             .filter(item => Boolean(item.startDate || item.finishDate || item.milestone))
@@ -11246,30 +11433,31 @@ Note: This update was opened through Outlook because PLZ email security may reje
           uri: targetUri, fileName: originalFileName,
           mimeType: file.mimeType || 'application/pdf',
           projects: scopeProjects,
-          projectRecords: scopeProjects.map(projectName => {
-            const record = projectRecords.find(candidate =>
-              candidate.name.trim().toLowerCase() === projectName.toLowerCase(),
-            );
-            return { id: record?.id || null, name: projectName };
-          }),
-          projectAreas,
-          idempotencyKey: scheduleDocument.id,
+          projectRecords: scopedProjectRecords,
+          projectAreas: scopedProjectAreas,
+          idempotencyKey: sourceIdentity.idempotencyKey,
         });
-        extractedItems = extracted.items.map(item => ({
-          ...item,
-          sourceDocumentId: scheduleDocument.id,
-        }));
+        extractedItems = extracted.items;
+        extractionWarnings = extracted.warnings;
         extractionMethod = 'schedule service';
       } catch (error) {
         extractionIssue = error instanceof Error ? error.message : 'Automatic schedule extraction could not finish.';
       }
     }
     if (extractedItems.length > 0) {
-      const items = dedupeScheduleImportItems(extractedItems as unknown as import('./types').ScheduleItem[]);
+      const validated = validateAndBindItems(extractedItems, extractionWarnings);
+      const items = dedupeScheduleImportItems(
+        validated.items as unknown as import('./types').ScheduleItem[],
+      );
       return {
-        id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: originalFileName,
+        id: sourceIdentity.batchId,
+        kind: 'schedule_file',
+        sourceCount: 1,
+        sourceLabel: originalFileName,
         message: `${items.length} possible schedule ${items.length === 1 ? 'item' : 'items'} extracted using ${extractionMethod || 'schedule extraction'}. Confirm the highlighted fields before adding them.`,
-        items, documents: [scheduleDocument],
+        items,
+        documents: [scheduleDocument],
+        warnings: validated.warnings,
       };
     }
     const reviewItem = {
@@ -11281,11 +11469,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }),
       taskName: '',
     };
+    const validatedReview = validateAndBindItems(
+      [reviewItem] as unknown as ScheduleItem[],
+    );
     return {
-      id: uid(), kind: 'schedule_file', sourceCount: 1, sourceLabel: originalFileName,
+      id: sourceIdentity.batchId,
+      kind: 'schedule_file',
+      sourceCount: 1,
+      sourceLabel: originalFileName,
       message: `The PDF was saved, but no dated activities were extracted. ${extractionIssue || 'Enter the actual task name and complete every highlighted field below.'}`,
-      items: [reviewItem] as unknown as import('./types').ScheduleItem[],
+      items: validatedReview.items as unknown as import('./types').ScheduleItem[],
       documents: [scheduleDocument],
+      warnings: validatedReview.warnings,
     };
   }
 
@@ -11430,24 +11625,95 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return null;
     }
   }
-  function approveScheduleImport(batch: PIEScheduleImportBatch) {
-    const approvedBatch = bindPIEScheduleImportBatchProvenance(batch);
+  async function approveScheduleImport(batch: PIEScheduleImportBatch): Promise<void> {
+    let scheduleSyncItems: ScheduleItem[] = [];
+    let referenceDocumentSyncRecords: ReferenceDocument[] = [];
+    const archivedKeys = new Set(
+      archivedProjectsCurrentRef.current.map(name => name.trim().toLowerCase()),
+    );
+    const deletedKeys = new Set(
+      deletedProjectNamesRef.current.map(name => name.trim().toLowerCase()),
+    );
+    const activeProjectRecords = projectsCurrentRef.current
+      .filter(name => {
+        const key = name.trim().toLowerCase();
+        return key && !archivedKeys.has(key) && !deletedKeys.has(key);
+      })
+      .map(name => {
+        const record = projectRecordsCurrentRef.current.find(candidate =>
+          candidate.name.trim().toLowerCase() === name.trim().toLowerCase(),
+        );
+        return {
+          id: record?.id || authorityProjectId(name),
+          name,
+        };
+      });
+    const documentScopeKeys = new Set(
+      batch.documents
+        .flatMap(document => document.projectNames || [])
+        .map(name => name.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const selectedProjectRecords = documentScopeKeys.size
+      ? activeProjectRecords.filter(project =>
+          documentScopeKeys.has(project.name.trim().toLowerCase()),
+        )
+      : activeProjectRecords;
+    const scopeValidation = validateScheduleImportScope({
+      items: batch.items,
+      selectedProjects: selectedProjectRecords,
+      selectedProjectAreas: selectedProjectRecords.map(project => ({
+        projectId: project.id,
+        areas: projectAreasForProject({
+          projectAreas: projectAreasCurrentRef.current,
+          projectName: project.name,
+          scheduleItems: scheduleItemsCurrentRef.current,
+          updates: savedUpdatesRef.current,
+        }).map(area => ({ id: area.id, name: area.name })),
+      })),
+      unavailableProjects: [
+        ...archivedProjectsCurrentRef.current.map(name => ({
+          id: projectRecordsCurrentRef.current.find(record =>
+            record.name.trim().toLowerCase() === name.trim().toLowerCase(),
+          )?.id || authorityProjectId(name),
+          name,
+          state: 'archived' as const,
+        })),
+        ...deletedProjectNamesRef.current.map(name => ({
+          id: projectRecordsCurrentRef.current.find(record =>
+            record.name.trim().toLowerCase() === name.trim().toLowerCase(),
+          )?.id || authorityProjectId(name),
+          name,
+          state: 'deleted' as const,
+        })),
+      ],
+    });
+    if (scopeValidation.needsProjectCount > 0) {
+      throw new Error(
+        'Choose an active project for every highlighted schedule item before saving.',
+      );
+    }
+
+    const approvedBatch = bindPIEScheduleImportBatchProvenance({
+      ...batch,
+      items: scopeValidation.items,
+      warnings: [
+        ...(batch.warnings || []),
+        ...scopeValidation.warnings.map(value => value.message),
+      ],
+    });
     const approvedItems = canonicalizeScheduleIdentityItems(
       approvedBatch.items.map(item =>
         normalizeScheduleItem(item as unknown as Partial<ScheduleItem>),
       ),
-      projectAreas,
+      projectAreasCurrentRef.current,
       identityCorrections,
     );
+
+    let synchronizedItems = scheduleItemsCurrentRef.current;
     if (approvedItems.length) {
-      markScheduleItemsAuthorityReady(true);
-      // Explicit user approval of an import into these projects is the user
-      // transition that permits reopening an archived parent (audit P1-57).
-      ensureScheduleParentProjects(approvedItems, {
-        allowDeletedProjects: true,
-        reopenArchivedParents: true,
-      });
-      let next = [...scheduleItems];
+      ensureScheduleParentProjects(approvedItems);
+      let next = [...scheduleItemsCurrentRef.current];
       const additions: ScheduleItem[] = [];
       approvedItems.forEach(importedItem => {
         const match = findExactScheduleTaskForCompletionClaim(
@@ -11471,15 +11737,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
         );
         if (!duplicate) additions.push(importedItem);
       });
-      const synchronizedItems = reconcileDAVEScheduleRecords([...additions, ...next]);
-      setScheduleItems(synchronizedItems);
-      const previousById = new Map(scheduleItems.map(item => [item.id, item]));
-      void Promise.all(synchronizedItems
-        .filter(item => JSON.stringify(item) !== JSON.stringify(previousById.get(item.id)))
-        .map(item => queueScheduleItemRecord(item))).then(() => uploadPendingChanges()).catch(() => undefined);
+      synchronizedItems = reconcileDAVEScheduleRecords([...additions, ...next]);
+      const previousById = new Map(
+        scheduleItemsCurrentRef.current.map(item => [item.id, item]),
+      );
+      scheduleSyncItems = synchronizedItems
+        .filter(item => JSON.stringify(item) !== JSON.stringify(previousById.get(item.id)));
     }
+
+    let synchronizedDocuments = referenceDocumentsCurrentRef.current;
     if (approvedBatch.documents.length) {
-      markReferenceDocumentsAuthorityReady(true);
       const referenceUpdatedAt = new Date().toISOString();
       const importedProjectNames = scheduleParentProjectNames(
         approvedItems as unknown as import('./types').ScheduleItem[],
@@ -11492,42 +11759,110 @@ Note: This update was opened through Outlook because PLZ email security may reje
           ? documentProjectNames[0]
           : null;
         return normalizeReferenceDocument({
-          ...document, projectNames: documentProjectNames,
+          ...document,
+          projectNames: documentProjectNames,
           projectId: importedProjectName ? authorityProjectId(importedProjectName) : null,
           projectName: importedProjectName,
           updatedAt: referenceUpdatedAt,
         });
       });
-      const hasCurrentSchedule = scopedDocuments.some(document =>
-        document.category === 'Schedules' && document.isCurrent,
+      const scopedById = new Map(
+        scopedDocuments.map(document => [document.id, document]),
       );
-      const synchronizedDocuments = [
-        ...scopedDocuments,
-        ...referenceDocuments.map(document =>
-          hasCurrentSchedule && document.category === 'Schedules'
-            ? { ...document, isCurrent: false, updatedAt: referenceUpdatedAt }
-            : document,
-        ),
-      ];
-      referenceDocumentsCurrentRef.current = synchronizedDocuments;
-      setReferenceDocuments(synchronizedDocuments);
-      void Promise.all(scopedDocuments.map(prepareReferenceDocumentForCloud))
-        .then(preparedDocuments => {
-          const preparedById = new Map(preparedDocuments.map(document => [document.id, document]));
-          const cloudReadyDocuments = referenceDocumentsCurrentRef.current.map(document =>
-            preparedById.get(document.id) || document,
+      const currentScheduleScope = new Set(
+        scopedDocuments
+          .filter(document => document.category === 'Schedules' && document.isCurrent)
+          .flatMap(document => document.projectNames || [])
+          .map(name => name.trim().toLowerCase()),
+      );
+      const existingDocuments = referenceDocumentsCurrentRef.current
+        .filter(document => !scopedById.has(document.id))
+        .map(document => {
+          const documentScope = (document.projectNames || [])
+            .map(name => name.trim().toLowerCase());
+          const sharesCurrentScope = documentScope.some(name =>
+            currentScheduleScope.has(name),
           );
-          referenceDocumentsCurrentRef.current = cloudReadyDocuments;
-          setReferenceDocuments(cloudReadyDocuments);
-          return Promise.all(cloudReadyDocuments
-            .filter(document => document.category === 'Schedules')
-            .map(queueReferenceDocumentRecord));
-        })
-        .catch(() => {
-          void Promise.all(synchronizedDocuments
-            .filter(document => document.category === 'Schedules')
-            .map(queueReferenceDocumentRecord));
+          return sharesCurrentScope &&
+            document.category === 'Schedules' &&
+            document.isCurrent
+            ? { ...document, isCurrent: false, updatedAt: referenceUpdatedAt }
+            : document;
         });
+      synchronizedDocuments = [...scopedDocuments, ...existingDocuments];
+      const previousById = new Map(
+        referenceDocumentsCurrentRef.current.map(document => [document.id, document]),
+      );
+      referenceDocumentSyncRecords = synchronizedDocuments
+        .filter(document =>
+          JSON.stringify(document) !== JSON.stringify(previousById.get(document.id)),
+        );
+    }
+
+    const syncResult = await runScheduleImportCloudSync({
+      scheduleItems: scheduleSyncItems,
+      referenceDocuments: referenceDocumentSyncRecords,
+    });
+    if (!syncResult.durablyQueued) {
+      throw new Error(
+        syncResult.errors[0] ||
+        'The reviewed schedule could not be protected for recovery. Try saving it again.',
+      );
+    }
+
+    const supersededScheduleItemIds = new Set(syncResult.supersededScheduleItemIds);
+    const supersededReferenceDocumentIds = new Set(
+      syncResult.supersededReferenceDocumentIds,
+    );
+    const uploadedReferenceDocumentsById = new Map(
+      (syncResult.uploadedReferenceDocuments || []).map(document => [
+        document.id,
+        document,
+      ]),
+    );
+    const cloudAlignedSynchronizedDocuments = uploadedReferenceDocumentsById.size
+      ? synchronizedDocuments.map(document =>
+          uploadedReferenceDocumentsById.get(document.id) || document,
+        )
+      : synchronizedDocuments;
+    const appliedSynchronizedItems = supersededScheduleItemIds.size
+      ? synchronizedItems.filter(item => !supersededScheduleItemIds.has(item.id))
+      : synchronizedItems;
+    const appliedSynchronizedDocuments = supersededReferenceDocumentIds.size
+      ? cloudAlignedSynchronizedDocuments.filter(document =>
+          !supersededReferenceDocumentIds.has(document.id),
+        )
+      : cloudAlignedSynchronizedDocuments;
+    const protectedDeletionCount =
+      supersededScheduleItemIds.size + supersededReferenceDocumentIds.size;
+
+    if (approvedItems.length) {
+      markScheduleItemsAuthorityReady(true);
+      scheduleItemsCurrentRef.current = appliedSynchronizedItems;
+      setScheduleItems(appliedSynchronizedItems);
+    }
+    if (approvedBatch.documents.length) {
+      markReferenceDocumentsAuthorityReady(true);
+      referenceDocumentsCurrentRef.current = appliedSynchronizedDocuments;
+      setReferenceDocuments(appliedSynchronizedDocuments);
+    }
+
+    if (protectedDeletionCount > 0) {
+      Alert.alert(
+        protectedDeletionCount === 1
+          ? 'Deleted schedule record stayed deleted'
+          : 'Deleted schedule records stayed deleted',
+        `Vitruvius found ${protectedDeletionCount} protected deletion ${
+          protectedDeletionCount === 1 ? 'marker' : 'markers'
+        } and did not restore ${
+          protectedDeletionCount === 1 ? 'that record' : 'those records'
+        }. Any other unfinished cloud work will retry automatically.`,
+      );
+    } else if (!syncResult.fullySynced) {
+      Alert.alert(
+        'Schedule saved on this device',
+        'The reviewed schedule is protected in the local recovery queue. Vitruvius will retry any unfinished cloud work automatically.',
+      );
     }
   }
 
@@ -20110,7 +20445,7 @@ function ScheduleScreen({
   onDelete: (itemId: string) => void;
   onImport: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onImportScreenshot: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
-  onApproveImport: (batch: PIEScheduleImportBatch) => void;
+  onApproveImport: (batch: PIEScheduleImportBatch) => Promise<void>;
   onCancelImport: (batch: PIEScheduleImportBatch) => void;
   incomingImportBatch: PIEScheduleImportBatch | null;
   onIncomingImportConsumed: () => void;

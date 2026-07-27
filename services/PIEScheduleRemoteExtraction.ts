@@ -122,13 +122,11 @@ export async function extractSchedulePdfWithServer({
   }
 }
 
-function scheduleExtractionFailureMessage(
+export function scheduleExtractionFailureMessage(
   body: RemoteScheduleResponse | null,
   status: number,
 ): string {
   const code = text(body?.code);
-  const serverMessage = text(body?.error).slice(0, 260);
-  if (serverMessage) return serverMessage;
   if (status === 401) return 'Your Vitruvius session has expired. Sign in and try again.';
   if (status === 403) return 'The signed-in account cannot import a schedule for one or more selected projects.';
   if (status === 409 && code === 'REQUEST_IN_PROGRESS') {

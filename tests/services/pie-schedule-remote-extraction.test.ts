@@ -1,5 +1,6 @@
 import {
   PIEScheduleRemoteExtractionError,
+  scheduleExtractionFailureMessage,
   scheduleExtractorUrl,
   scheduleItemsFromRemoteExtractorPayload,
 } from '../../services/PIEScheduleRemoteExtraction';
@@ -110,5 +111,31 @@ describe('PIE schedule remote extraction', () => {
       projects: ['2321 Compliance Project'],
       extractedAt: '2026-07-21T17:00:00.000Z',
     })).toThrow(PIEScheduleRemoteExtractionError);
+  });
+
+  it('never exposes raw server or provider error text', () => {
+    const rawProviderError =
+      'Provider timeout for tenant secret-project-42 using key sk-private-value';
+
+    expect(scheduleExtractionFailureMessage({
+      ok: false,
+      code: 'PROVIDER_FAILURE',
+      error: rawProviderError,
+    }, 502)).toBe(
+      'The schedule could not be analyzed. The PDF remains saved so you can retry.',
+    );
+    expect(scheduleExtractionFailureMessage({
+      ok: false,
+      code: 'REQUEST_IN_PROGRESS',
+      error: rawProviderError,
+    }, 409)).toBe(
+      'This schedule is already being analyzed. Wait a moment, then retry.',
+    );
+    expect(scheduleExtractionFailureMessage({
+      ok: false,
+      error: rawProviderError,
+    }, 401)).toBe(
+      'Your Vitruvius session has expired. Sign in and try again.',
+    );
   });
 });
