@@ -15,6 +15,7 @@ import {
   type FieldUpdateDeleteDiagnostics,
 } from './services/updateService';
 import {
+  clearScheduleItemSyncConflicts,
   cleanupStoredSyncStatusMessages,
   getOfflineQueue,
   hydrateRecoveredProjectUpdatePhotos,
@@ -23,6 +24,7 @@ import {
   removeMissingPhotosFromSyncQueue,
   removeProjectUpdateFromSyncQueue,
   runFieldUpdateCloudSync,
+  runScheduleItemCloudSync,
   queueProjectAreaRecord,
   queueReferenceDocumentRecord,
   queueScheduleItemRecord,
@@ -34,6 +36,15 @@ import {
   type PhotoStorageUploadFailureCategory,
   type SyncUploadResult,
 } from './services/SyncService';
+import {
+  cancelScheduleItemTextSync as cancelScheduleItemTextSyncLifecycle,
+  createScheduleItemTextSyncLifecycle,
+  disposeScheduleItemTextSyncLifecycle,
+  flushPendingScheduleItemTextSync,
+  markScheduleItemTextSyncPending,
+  scheduleScheduleItemTextSync,
+  settleScheduleItemTextSync,
+} from './services/ScheduleItemTextSyncLifecycle';
 import {
   accountDisplayNameForUser,
   getCurrentUser,
@@ -5259,7 +5270,42 @@ function AppShell() {
   const savedUpdatesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const scheduleItemTextSyncLifecycleRef = useRef(
+    createScheduleItemTextSyncLifecycle(),
+  );
+  const scheduleItemSyncGenerationsRef = useRef(new Map<string, number>());
+  const scheduleItemSyncWarningsRef = useRef(new Set<string>());
   const updateDetailReturnScreenRef = useRef<AppScreen>('SavedUpdates');
+
+  useEffect(() => () => {
+    disposeScheduleItemTextSyncLifecycle(scheduleItemTextSyncLifecycleRef.current);
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => {
+      if (state !== 'background' && state !== 'inactive') return;
+
+      const pendingItemIds = [
+        ...scheduleItemTextSyncLifecycleRef.current.pendingIds,
+      ];
+      if (pendingItemIds.length > 0) {
+        requestPendingChangesUpload('schedule_item_text_background');
+      }
+      flushPendingScheduleItemTextSync({
+        lifecycle: scheduleItemTextSyncLifecycleRef.current,
+        currentGeneration: itemId =>
+          scheduleItemSyncGenerationsRef.current.get(itemId),
+        onReady: (itemId, generation) => {
+          const latest = scheduleItemsCurrentRef.current.find(
+            candidate => candidate.id === itemId,
+          );
+          if (latest) void syncScheduleItemRevision(latest, generation);
+        },
+      });
+    });
+
+    return () => subscription.remove();
+  }, []);
 
   const startupCompletionLogged = useRef(false);
   const photoCleanupRan = useRef(false);
@@ -10815,21 +10861,41 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 recordId: item.id,
               })),
             ])
-              .then(() => {
+              .then(tombstones => {
                 const deletedItemIds = new Set(relatedScheduleItems.map(item => item.id));
+                relatedScheduleItems.forEach(item => {
+                  advanceScheduleItemSyncGeneration(item.id);
+                  cancelScheduleItemTextSync(item.id);
+                });
+                const deletedKeys = new Set(tombstones.map(tombstone =>
+                  `${tombstone.entityType}:${tombstone.recordId}`,
+                ));
+                const nextTombstones = [
+                  ...operationalSyncTombstonesRef.current.filter(tombstone =>
+                    !deletedKeys.has(`${tombstone.entityType}:${tombstone.recordId}`),
+                  ),
+                  ...tombstones,
+                ];
+                operationalSyncTombstonesRef.current = nextTombstones;
+                setOperationalSyncTombstones(nextTombstones);
                 markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
                 const updated = referenceDocumentsCurrentRef.current
                   .filter(item => item.id !== documentId);
+                const nextScheduleItems = scheduleItemsCurrentRef.current
+                  .filter(item => !deletedItemIds.has(item.id));
                 referenceDocumentsCurrentRef.current = updated;
+                scheduleItemsCurrentRef.current = nextScheduleItems;
                 setReferenceDocuments(updated);
-                setScheduleItems(prev =>
-                  prev.filter(item => !deletedItemIds.has(item.id)),
-                );
-                void Promise.all([
+                setScheduleItems(nextScheduleItems);
+                return Promise.all([
                   removeOperationalRecordFromSyncQueue('reference_document', documentId),
                   ...relatedScheduleItems.map(item =>
                     removeOperationalRecordFromSyncQueue('schedule_item', item.id)),
+                  ...relatedScheduleItems.map(item =>
+                    clearScheduleItemSyncConflicts(item.id)),
                 ]);
+              })
+              .then(() => {
                 deleteStoredReferenceDocument(document.uri).catch(() => undefined);
               })
               .catch(() => {
@@ -10857,15 +10923,118 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
 
     markScheduleItemsAuthorityReady(true);
+    scheduleItemsCurrentRef.current = [next, ...scheduleItemsCurrentRef.current];
     setScheduleItems(prev => [next, ...prev]);
-    void queueScheduleItemRecord(next).then(() => uploadPendingChanges()).catch(() => {
-      Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
+    const syncGeneration = advanceScheduleItemSyncGeneration(next.id);
+    void syncScheduleItemRevision(next, syncGeneration);
+  }
+
+  async function syncScheduleItemRevision(
+    item: ScheduleItem,
+    generation?: number,
+    changedFields?: readonly (keyof ScheduleItem)[],
+  ) {
+    try {
+      const result = await runScheduleItemCloudSync(item, changedFields);
+      const itemStillExists = scheduleItemsCurrentRef.current.some(
+        candidate => candidate.id === item.id,
+      );
+      const generationIsCurrent = (
+        generation === undefined ||
+        scheduleItemSyncGenerationsRef.current.get(item.id) === generation
+      );
+      if (!itemStillExists || !generationIsCurrent) return;
+
+      if (result.uploaded === 1 && result.queued === 0 && result.conflicts === 0) {
+        settleScheduleItemTextSync(
+          scheduleItemTextSyncLifecycleRef.current,
+          item.id,
+        );
+        scheduleItemSyncWarningsRef.current.delete(item.id);
+        return;
+      }
+
+      if (result.conflicts > 0) {
+        settleScheduleItemTextSync(
+          scheduleItemTextSyncLifecycleRef.current,
+          item.id,
+        );
+        if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
+          scheduleItemSyncWarningsRef.current.add(item.id);
+          Alert.alert(
+            'Task changed on another device',
+            'Vitruvius protected both versions. Open Settings and choose which task copy to keep before making another change.',
+          );
+        }
+        return;
+      }
+
+      requestPendingChangesUpload('schedule_item_save_pending');
+      if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
+        scheduleItemSyncWarningsRef.current.add(item.id);
+        Alert.alert(
+          'Task saved on this device',
+          'Vitruvius is still retrying this task’s cloud sync. Other devices will update after the cloud accepts it.',
+        );
+      }
+    } catch {
+      const itemStillExists = scheduleItemsCurrentRef.current.some(
+        candidate => candidate.id === item.id,
+      );
+      const generationIsCurrent = (
+        generation === undefined ||
+        scheduleItemSyncGenerationsRef.current.get(item.id) === generation
+      );
+      if (!itemStillExists || !generationIsCurrent) return;
+
+      requestPendingChangesUpload('schedule_item_save_error');
+      if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
+        scheduleItemSyncWarningsRef.current.add(item.id);
+        Alert.alert(
+          'Task saved on this device',
+          'Vitruvius is still retrying this task’s cloud sync. Other devices will update after the cloud accepts it.',
+        );
+      }
+    }
+  }
+
+  function cancelScheduleItemTextSync(itemId: string) {
+    cancelScheduleItemTextSyncLifecycle(
+      scheduleItemTextSyncLifecycleRef.current,
+      itemId,
+    );
+  }
+
+  function advanceScheduleItemSyncGeneration(itemId: string): number {
+    const generation = (scheduleItemSyncGenerationsRef.current.get(itemId) || 0) + 1;
+    scheduleItemSyncGenerationsRef.current.set(itemId, generation);
+    return generation;
+  }
+
+  function queueDebouncedScheduleItemTextSync(
+    itemId: string,
+    generation: number,
+  ) {
+    if (scheduleItemSyncGenerationsRef.current.get(itemId) !== generation) return;
+    scheduleScheduleItemTextSync({
+      lifecycle: scheduleItemTextSyncLifecycleRef.current,
+      itemId,
+      generation,
+      currentGeneration: () =>
+        scheduleItemSyncGenerationsRef.current.get(itemId),
+      onReady: (readyItemId, readyGeneration) => {
+        const latest = scheduleItemsCurrentRef.current.find(
+          candidate => candidate.id === readyItemId,
+        );
+        if (latest) void syncScheduleItemRevision(latest, readyGeneration);
+      },
     });
   }
 
   function updateScheduleItem(itemId: string, next: Partial<ScheduleItem>) {
-    const current = scheduleItems.find(item => item.id === itemId);
+    const current = scheduleItemsCurrentRef.current.find(item => item.id === itemId);
     if (!current) return;
+    const syncGeneration = advanceScheduleItemSyncGeneration(itemId);
     const now = new Date().toISOString();
     const progressChanged = (
       typeof next.percentComplete === 'number' && next.percentComplete !== current.percentComplete
@@ -10898,15 +11067,56 @@ Note: This update was opened through Outlook because PLZ email security may reje
       },
       { preserveEditedNotes: typeof next.notes === 'string' },
     );
+    const changedFields = (Object.keys(updated) as Array<keyof ScheduleItem>)
+      .filter(field => (
+        JSON.stringify(updated[field]) !== JSON.stringify(current[field])
+      ));
     markScheduleItemsAuthorityReady(true);
+    scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(
+      item => item.id === itemId ? updated : item,
+    );
     setScheduleItems(prev => prev.map(item => item.id === itemId ? updated : item));
-    void queueScheduleItemRecord(updated).then(() => uploadPendingChanges()).catch(() => {
-      Alert.alert('Task saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
-    });
+    const changedKeys = Object.keys(next);
+    const textOnlyChange = (
+      changedKeys.length > 0 &&
+      changedKeys.every(key => (
+        key === 'notes' ||
+        key === 'nextAction' ||
+        key === 'owner' ||
+        key === 'contractor' ||
+        key === 'percentComplete'
+      ))
+    );
+
+    if (textOnlyChange) {
+      markScheduleItemTextSyncPending(
+        scheduleItemTextSyncLifecycleRef.current,
+        itemId,
+      );
+      void queueScheduleItemRecord(updated, true, changedFields)
+        .then(() => queueDebouncedScheduleItemTextSync(itemId, syncGeneration))
+        .catch(() => {
+          if (
+            scheduleItemSyncGenerationsRef.current.get(itemId) === syncGeneration
+          ) {
+            cancelScheduleItemTextSync(itemId);
+          }
+          Alert.alert(
+            'Task not saved',
+            'Vitruvius could not protect this task edit on the device. Try again.',
+          );
+        });
+      return;
+    }
+
+    cancelScheduleItemTextSync(itemId);
+    void syncScheduleItemRevision(updated, syncGeneration, changedFields);
   }
 
   function deleteScheduleItem(itemId: string) {
-    const item = scheduleItems.find(scheduleItem => scheduleItem.id === itemId);
+    const item = scheduleItemsCurrentRef.current.find(
+      scheduleItem => scheduleItem.id === itemId,
+    );
     if (!item) return;
 
     Alert.alert(
@@ -10918,10 +11128,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
+            advanceScheduleItemSyncGeneration(itemId);
+            cancelScheduleItemTextSync(itemId);
             void recordDAVESyncTombstone('schedule_item', itemId)
-              .then(() => removeOperationalRecordFromSyncQueue('schedule_item', itemId))
+              .then(tombstone => {
+                const nextTombstones = [
+                  ...operationalSyncTombstonesRef.current.filter(candidate =>
+                    candidate.entityType !== 'schedule_item' ||
+                    candidate.recordId !== itemId,
+                  ),
+                  tombstone,
+                ];
+                operationalSyncTombstonesRef.current = nextTombstones;
+                setOperationalSyncTombstones(nextTombstones);
+                return Promise.all([
+                  removeOperationalRecordFromSyncQueue('schedule_item', itemId),
+                  clearScheduleItemSyncConflicts(itemId),
+                ]);
+              })
               .then(() => {
                 markScheduleItemsAuthorityReady(true);
+                scheduleItemsCurrentRef.current =
+                  scheduleItemsCurrentRef.current.filter(
+                    scheduleItem => scheduleItem.id !== itemId,
+                  );
                 setScheduleItems(prev => prev.filter(scheduleItem => scheduleItem.id !== itemId));
               })
               .catch(() => {
@@ -11246,7 +11476,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const previousById = new Map(scheduleItems.map(item => [item.id, item]));
       void Promise.all(synchronizedItems
         .filter(item => JSON.stringify(item) !== JSON.stringify(previousById.get(item.id)))
-        .map(queueScheduleItemRecord)).then(() => uploadPendingChanges()).catch(() => undefined);
+        .map(item => queueScheduleItemRecord(item))).then(() => uploadPendingChanges()).catch(() => undefined);
     }
     if (approvedBatch.documents.length) {
       markReferenceDocumentsAuthorityReady(true);
@@ -12617,6 +12847,29 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   cloudUpdates: [cloudUpdate],
                   tombstones: deletedUpdateTombstonesRef.current,
                 }));
+              }}
+              onApplyCloudConflictScheduleItem={item => {
+                const resolvedItem = migrateLegacyScheduleItem(
+                  normalizeScheduleItem(item),
+                );
+                const deletedItemIds = new Set(
+                  deletedDAVERecordIds(
+                    operationalSyncTombstonesRef.current,
+                    'schedule_item',
+                  ).map(itemId => itemId.trim().toLowerCase()),
+                );
+                if (deletedItemIds.has(resolvedItem.id.trim().toLowerCase())) {
+                  return;
+                }
+                const currentItems = scheduleItemsCurrentRef.current;
+                const nextItems = currentItems.some(
+                  candidate => candidate.id === resolvedItem.id,
+                )
+                  ? currentItems.map(candidate =>
+                      candidate.id === resolvedItem.id ? resolvedItem : candidate)
+                  : [resolvedItem, ...currentItems];
+                scheduleItemsCurrentRef.current = nextItems;
+                setScheduleItems(nextItems);
               }}
               onApplyCloudRecovery={recovered => {
                 // Audit P1-27: a collection whose cloud read failed arrives

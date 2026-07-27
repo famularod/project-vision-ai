@@ -66,4 +66,20 @@ describe('Project item details', () => {
     });
     expect(ITEM.notes).toBe('Material has not arrived.');
   });
+
+  it('passes the complete edited note revision to the task save callback', () => {
+    const onUpdate = jest.fn();
+    const screen = render(
+      <ProjectItemDetailsEditor item={ITEM} activityAuthor="David" onUpdate={onUpdate} />,
+    );
+
+    fireEvent.changeText(
+      screen.getByPlaceholderText('Background, constraints, or details'),
+      'Asphalt placement moved to Monday morning.',
+    );
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      notes: 'Asphalt placement moved to Monday morning.',
+    });
+  });
 });
