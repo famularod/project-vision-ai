@@ -51,6 +51,7 @@ import {
   getSyncStatus,
   reconcileSyncConflicts,
   resolveProjectUpdateSyncConflict,
+  resolveScheduleItemSyncConflict,
   synchronizeLocalData,
   uploadPendingChanges,
   type MissingSyncPhoto,
@@ -134,6 +135,7 @@ export function AdminScreen({
   onRemoveMissingPhotos,
   onRetryUpdateSync,
   onApplyCloudConflictUpdate,
+  onApplyCloudConflictScheduleItem,
   onApplyCloudRecovery,
   onSaveCaptureMemory,
 }: {
@@ -157,6 +159,7 @@ export function AdminScreen({
   onRemoveMissingPhotos: (missingPhotos: MissingSyncPhoto[]) => Promise<void>;
   onRetryUpdateSync: (update: ProjectUpdate) => Promise<{ status?: string }>;
   onApplyCloudConflictUpdate: (update: ProjectUpdate) => void;
+  onApplyCloudConflictScheduleItem: (item: ScheduleItem) => void;
   onApplyCloudRecovery: (recovered: FullSyncResult['recovered']) => void;
   onSaveCaptureMemory: (memory: DAVEConfirmedCaptureMemory) => Promise<void>;
 }) {
@@ -745,11 +748,12 @@ export function AdminScreen({
     resolution: 'keep_local' | 'keep_cloud',
   ) {
     const update = conflictUpdate(conflict, resolution);
-    const projectName = update?.projectName || 'this field update';
+    const task = conflictScheduleItem(conflict, resolution);
+    const recordName = task?.taskName || update?.projectName || 'this record';
     const title = resolution === 'keep_local' ? 'Keep Phone Copy?' : 'Keep Cloud Copy?';
     const message = resolution === 'keep_local'
-      ? `The version saved on this phone for ${projectName} will replace the cloud copy.`
-      : `The cloud version for ${projectName} will replace the copy saved on this phone.`;
+      ? `The version saved on this phone for ${recordName} will replace the cloud copy.`
+      : `The cloud version for ${recordName} will replace the copy saved on this phone.`;
 
     Alert.alert(title, message, [
       { text: 'Cancel', style: 'cancel' },
@@ -770,12 +774,20 @@ export function AdminScreen({
     setResolvingConflictId(conflict.id);
 
     try {
-      const resolvedUpdate = await resolveProjectUpdateSyncConflict<ProjectUpdate>(
-        conflict.id,
-        resolution,
-      );
-      if (resolution === 'keep_cloud') {
-        onApplyCloudConflictUpdate(resolvedUpdate);
+      if (conflict.entity === 'schedule_item') {
+        const resolvedItem = await resolveScheduleItemSyncConflict(
+          conflict.id,
+          resolution,
+        );
+        onApplyCloudConflictScheduleItem(resolvedItem);
+      } else {
+        const resolvedUpdate = await resolveProjectUpdateSyncConflict<ProjectUpdate>(
+          conflict.id,
+          resolution,
+        );
+        if (resolution === 'keep_cloud') {
+          onApplyCloudConflictUpdate(resolvedUpdate);
+        }
       }
 
       const [nextConflicts, nextStatus] = await Promise.all([
@@ -1169,7 +1181,7 @@ function SyncConflictReviewModal({
             <View style={styles.modalHeaderText}>
               <Text style={styles.cardTitle}>Review Cloud Conflicts</Text>
               <Text style={styles.cardText}>
-                These field updates have different phone and cloud copies. Nothing changes until you choose which copy to keep.
+                These field updates or tasks have different phone and cloud copies. Nothing changes until you choose which copy to keep.
               </Text>
             </View>
             <TouchableOpacity
@@ -1187,18 +1199,28 @@ function SyncConflictReviewModal({
           ) : conflicts.map(conflict => {
             const phoneUpdate = conflictUpdate(conflict, 'keep_local');
             const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
+            const phoneTask = conflictScheduleItem(conflict, 'keep_local');
+            const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
             const resolving = resolvingConflictId === conflict.id;
 
             return (
               <View key={conflict.id} style={styles.conflictCard}>
                 <Text style={styles.conflictTitle}>
-                  {phoneUpdate?.projectName || cloudUpdate?.projectName || 'Field update'}
+                  {phoneTask?.taskName ||
+                    cloudTask?.taskName ||
+                    phoneUpdate?.projectName ||
+                    cloudUpdate?.projectName ||
+                    'Project record'}
                 </Text>
                 <Text style={styles.settingsRowDetail}>
-                  Phone: {formatConflictCopy(phoneUpdate)}
+                  Phone: {phoneTask
+                    ? formatTaskConflictCopy(phoneTask)
+                    : formatConflictCopy(phoneUpdate)}
                 </Text>
                 <Text style={styles.settingsRowDetail}>
-                  Cloud: {formatConflictCopy(cloudUpdate)}
+                  Cloud: {cloudTask
+                    ? formatTaskConflictCopy(cloudTask)
+                    : formatConflictCopy(cloudUpdate)}
                 </Text>
                 <View style={styles.conflictActions}>
                   <SecondaryButton
@@ -1243,6 +1265,23 @@ function conflictUpdate(
   return update as ProjectUpdate;
 }
 
+function conflictScheduleItem(
+  conflict: SyncConflict,
+  source: 'keep_local' | 'keep_cloud',
+): ScheduleItem | null {
+  if (conflict.entity !== 'schedule_item') return null;
+  const payload = source === 'keep_local'
+    ? conflict.localPayload
+    : conflict.remotePayload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const item = source === 'keep_local' && record.itemData
+    ? record.itemData
+    : payload;
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  return item as ScheduleItem;
+}
+
 function formatConflictCopy(update: ProjectUpdate | null): string {
   if (!update) return 'Copy unavailable';
   const date = update.date ? new Date(update.date) : null;
@@ -1251,6 +1290,16 @@ function formatConflictCopy(update: ProjectUpdate | null): string {
     : 'date unavailable';
   const photoCount = Array.isArray(update.photos) ? update.photos.length : 0;
   return `${dateLabel} · ${photoCount} photo${photoCount === 1 ? '' : 's'}${update.notes?.trim() ? ` · ${update.notes.trim().slice(0, 80)}` : ''}`;
+}
+
+function formatTaskConflictCopy(item: ScheduleItem): string {
+  const status = item.status || 'Status unavailable';
+  const percent = Number.isFinite(item.percentComplete)
+    ? `${item.percentComplete}%`
+    : 'progress unavailable';
+  const area = item.locationName?.trim() || 'No area';
+  const note = item.notes?.trim();
+  return `${status} · ${percent} · ${area}${note ? ` · ${note.slice(0, 80)}` : ''}`;
 }
 
 export function SignInModal({

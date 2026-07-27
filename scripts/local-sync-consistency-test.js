@@ -18,6 +18,10 @@ const operationalRefresh = fs.readFileSync(
   path.join(root, 'services/DAVEOperationalRefresh.ts'),
   'utf8',
 );
+const scheduleItemTextSyncLifecycle = fs.readFileSync(
+  path.join(root, 'services/ScheduleItemTextSyncLifecycle.ts'),
+  'utf8',
+);
 const fileSizePreflight = fs.readFileSync(
   path.join(root, 'services/FileSizePreflight.ts'),
   'utf8',
@@ -117,6 +121,31 @@ includes(automaticSync, "key: 'field-update-automatic-sync'", 'automatic sync wo
 includes(automaticSync, 'reportBackgroundTaskFailure({', 'per-item automatic sync failures must be handled diagnostically');
 assert(!app.includes('void hydrateQueuedUpdates();'), 'automatic sync must not create a floating rejecting promise');
 includes(app, "AppState.addEventListener('change'", 'sync worker must run on app foreground');
+includes(
+  app,
+  'queueScheduleItemRecord(updated, true, changedFields)',
+  'task note edits must request upload as soon as their durable queue row is saved',
+);
+includes(
+  app,
+  "requestPendingChangesUpload('schedule_item_text_background')",
+  'backgrounding must re-request any task note upload that is still pending',
+);
+includes(
+  app,
+  'flushPendingScheduleItemTextSync({',
+  'backgrounding must flush the exact pending task note revision',
+);
+includes(
+  app,
+  'settleScheduleItemTextSync(',
+  'task note pending state must clear only after a terminal sync result',
+);
+includes(
+  scheduleItemTextSyncLifecycle,
+  'lifecycle.pendingIds.add(itemId);',
+  'debounced task note sync must retain a durable pending marker',
+);
 includes(app, 'subscribeToDAVEOperationalChanges', 'open devices must subscribe to shared operational changes');
 includes(operationalRefresh, 'DAVE_OPERATIONAL_POLL_INTERVAL_MS = 4_000', 'open-device fallback refresh must remain fast');
 includes(app, 'runDAVEOperationalCollectionRefreshes', 'task, area, and document pulls must refresh independently');

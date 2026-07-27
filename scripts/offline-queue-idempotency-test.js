@@ -43,7 +43,7 @@ assert(
     sync.includes('id: projectUpdateQueueItemId(update.id)') &&
     sync.includes('mutateOfflineQueue(queue =>') &&
     sync.includes('existing.id !== queueItem.id &&') &&
-    sync.includes('!sameProjectArchiveMutation(existing, queueItem as unknown as SyncQueueItem)') &&
+    sync.includes('!sameProjectArchiveMutation(existing, mergedQueueItem)') &&
     sync.includes('projectUpdateIdempotencyKey(payload.updateData, payload.id)'),
   'Offline queue must use a stable queue item id and pass a stable idempotency key to the cloud write.',
 );

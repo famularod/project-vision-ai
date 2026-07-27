@@ -463,6 +463,14 @@ type ProjectAreaRecordPayload = {
 type ScheduleItemRecordPayload = {
   id: string;
   itemData: ScheduleItem;
+  /**
+   * Exact fields changed by the user. Persisting this scope lets a delayed
+   * upload merge a note or ownership edit into a newer cloud task without
+   * overwriting unrelated changes made on another device.
+   */
+  changedFields?: Array<keyof ScheduleItem>;
+  /** Explicit conflict resolution may intentionally replace the cloud copy. */
+  forceLocal?: boolean;
 };
 
 type ReferenceDocumentRecordPayload = {
@@ -1249,14 +1257,19 @@ export async function enqueuePendingChange<TPayload>(
     if (existingDelete && queueItem.operation !== 'delete') {
       return { nextQueue: queue, result: undefined, persist: false };
     }
+    const existingItem = queue.find(existing => existing.id === queueItem.id);
+    const mergedQueueItem = mergeScheduleItemQueueChangeScope(
+      existingItem,
+      queueItem as unknown as SyncQueueItem,
+    );
 
     return {
       nextQueue: [
         ...queue.filter(existing => (
           existing.id !== queueItem.id &&
-          !sameProjectArchiveMutation(existing, queueItem as unknown as SyncQueueItem)
+          !sameProjectArchiveMutation(existing, mergedQueueItem)
         )),
-        queueItem as unknown as SyncQueueItem,
+        mergedQueueItem,
       ],
       result: undefined,
     };
@@ -1266,6 +1279,48 @@ export async function enqueuePendingChange<TPayload>(
   }
 
   return queueItem;
+}
+
+function mergeScheduleItemQueueChangeScope(
+  existing: SyncQueueItem | undefined,
+  incoming: SyncQueueItem,
+): SyncQueueItem {
+  if (
+    !existing ||
+    existing.entity !== 'schedule_item' ||
+    incoming.entity !== 'schedule_item' ||
+    existing.operation !== 'update' ||
+    incoming.operation !== 'update'
+  ) {
+    return incoming;
+  }
+
+  const existingPayload = existing.payload as ScheduleItemRecordPayload;
+  const incomingPayload = incoming.payload as ScheduleItemRecordPayload;
+  if (
+    !Array.isArray(existingPayload.changedFields) ||
+    !Array.isArray(incomingPayload.changedFields)
+  ) {
+    const fullRecordPayload = { ...incomingPayload };
+    delete fullRecordPayload.changedFields;
+    return {
+      ...incoming,
+      payload: fullRecordPayload,
+    };
+  }
+
+  return {
+    ...incoming,
+    payload: {
+      ...incomingPayload,
+      changedFields: [
+        ...new Set([
+          ...existingPayload.changedFields,
+          ...incomingPayload.changedFields,
+        ]),
+      ],
+    },
+  };
 }
 
 /**
@@ -1362,15 +1417,95 @@ export async function queueProjectAreaRecord(area: ProjectArea): Promise<void> {
   });
 }
 
-export async function queueScheduleItemRecord(item: ScheduleItem): Promise<void> {
+function scheduleItemQueueItemId(itemId: string): string {
+  return `schedule-item-${encodeURIComponent(itemId)}`;
+}
+
+export async function queueScheduleItemRecord(
+  item: ScheduleItem,
+  autoUpload = true,
+  changedFields?: readonly (keyof ScheduleItem)[],
+): Promise<void> {
   const changedAt = item.updatedAt || item.progressConfirmedAt || new Date().toISOString();
   await enqueuePendingChange<ScheduleItemRecordPayload>({
-    id: `schedule-item-${encodeURIComponent(item.id)}`,
+    id: scheduleItemQueueItemId(item.id),
     entity: 'schedule_item',
     operation: 'update',
-    payload: { id: item.id, itemData: item },
+    payload: {
+      id: item.id,
+      itemData: item,
+      ...(changedFields ? { changedFields: [...changedFields] } : {}),
+    },
     changedAt,
+    autoUpload,
   });
+}
+
+/**
+ * Durably stage one task revision and verify that exact queue item reaches the
+ * cloud. A resolved global upload is not sufficient because another upload
+ * pass may already have been in flight before this revision was queued.
+ */
+export async function runScheduleItemCloudSync(
+  item: ScheduleItem,
+  changedFields?: readonly (keyof ScheduleItem)[],
+): Promise<SyncUploadResult> {
+  const queueItemId = scheduleItemQueueItemId(item.id);
+  let effectiveChangedFields = changedFields;
+  if (effectiveChangedFields === undefined) {
+    const existingQueue = await getOfflineQueue();
+    const existing = existingQueue.find(candidate => candidate.id === queueItemId);
+    const existingPayload = existing?.payload as
+      | Partial<ScheduleItemRecordPayload>
+      | undefined;
+    if (Array.isArray(existingPayload?.changedFields)) {
+      effectiveChangedFields = existingPayload.changedFields;
+    }
+  }
+  await queueScheduleItemRecord(item, false, effectiveChangedFields);
+  let aggregateResult = await uploadPendingChanges();
+  let remainingQueue = await getOfflineQueue();
+  let remainingItem = remainingQueue.find(candidate => candidate.id === queueItemId);
+
+  // Task edits are metadata-only and idempotent. Give the exact revision one
+  // bounded follow-up pass when it was missed by an older in-flight snapshot
+  // or when the first handled attempt left it queued.
+  if (
+    remainingItem &&
+    (!aggregateResult.itemOutcomes?.[queueItemId] ||
+      aggregateResult.itemOutcomes[queueItemId] === 'uploaded')
+  ) {
+    aggregateResult = await uploadPendingChanges();
+    remainingQueue = await getOfflineQueue();
+    remainingItem = remainingQueue.find(candidate => candidate.id === queueItemId);
+  }
+
+  const conflicts = await getSyncConflicts();
+  const currentConflict = conflicts.find(
+    conflict => conflict.entity === 'schedule_item' && conflict.localId === item.id,
+  );
+  const itemOutcome = aggregateResult.itemOutcomes?.[queueItemId];
+  const itemSucceeded =
+    itemOutcome === 'uploaded' && !remainingItem && !currentConflict;
+  const itemErrors = remainingItem?.lastError
+    ? [formatQueueItemFailure(remainingItem, remainingItem.lastError)]
+    : currentConflict
+      ? [`Task “${item.taskName || 'Unnamed Task'}” has a cloud conflict that needs review.`]
+      : !aggregateResult.configured
+        ? [...aggregateResult.errors]
+        : itemOutcome === 'failed'
+          ? [`Task “${item.taskName || 'Unnamed Task'}” could not sync.`]
+          : [];
+
+  return {
+    configured: aggregateResult.configured,
+    uploaded: itemSucceeded ? 1 : 0,
+    uploadedByEntity: itemSucceeded ? { schedule_item: 1 } : {},
+    itemOutcomes: itemOutcome ? { [queueItemId]: itemOutcome } : {},
+    queued: remainingItem ? 1 : 0,
+    conflicts: currentConflict ? 1 : 0,
+    errors: itemErrors,
+  };
 }
 
 export async function queueReferenceDocumentRecord(
@@ -2517,6 +2652,12 @@ export async function clearResolvedConflict(conflictId: string): Promise<void> {
   });
 }
 
+export async function clearScheduleItemSyncConflicts(
+  itemId: string,
+): Promise<void> {
+  await clearConflictsForLocalRecord('schedule_item', itemId);
+}
+
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
@@ -2561,6 +2702,104 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   return localUpdateData;
 }
 
+export async function resolveScheduleItemSyncConflict(
+  conflictId: string,
+  resolution: 'keep_local' | 'keep_cloud',
+): Promise<ScheduleItem> {
+  const conflicts = await getSyncConflicts();
+  const conflict = conflicts.find(item => item.id === conflictId);
+
+  if (!conflict || conflict.entity !== 'schedule_item') {
+    throw new Error('sync_conflict_not_found');
+  }
+
+  const tombstoneSync = await synchronizeDAVESyncTombstones();
+  if (!tombstoneSync.cloudAuthoritative) {
+    throw new Error('sync_conflict_deletion_history_unavailable');
+  }
+  const tombstones = tombstoneSync.tombstones;
+  const normalizedConflictId = conflict.localId.trim().toLowerCase();
+  const itemWasDeleted = deletedDAVERecordIds(tombstones, 'schedule_item')
+    .some(recordId => recordId.trim().toLowerCase() === normalizedConflictId);
+  if (itemWasDeleted) {
+    await clearScheduleItemSyncConflicts(conflict.localId);
+    throw new Error('sync_conflict_record_deleted');
+  }
+
+  const localPayload = conflict.localPayload as ScheduleItemRecordPayload;
+  const localItem = localPayload.itemData;
+
+  if (resolution === 'keep_cloud') {
+    if (!isRecord(conflict.remotePayload)) {
+      throw new Error('sync_conflict_cloud_copy_missing');
+    }
+
+    const cloudItem = conflict.remotePayload as ScheduleItem;
+    // Remove both the conflict-era edit and any newer queued local revision.
+    // Waiting for the active uploader before restoring the selected cloud copy
+    // prevents an older in-flight task snapshot from winning afterward.
+    await removeOperationalRecordFromSyncQueue(
+      'schedule_item',
+      conflict.localId,
+    );
+    await uploadPendingChanges();
+    await removeOperationalRecordFromSyncQueue(
+      'schedule_item',
+      conflict.localId,
+    );
+    const restore = await upsertScheduleItem(cloudItem);
+    if (!restore.ok || restore.stubbed) {
+      throw new Error(
+        restore.error || restore.message || 'sync_conflict_save_failed',
+      );
+    }
+    await clearResolvedConflict(conflict.id);
+    return cloudItem;
+  }
+
+  if (!localItem || typeof localItem.id !== 'string') {
+    throw new Error('sync_conflict_local_copy_missing');
+  }
+
+  const queueItemId = scheduleItemQueueItemId(localItem.id);
+  await enqueuePendingChange<ScheduleItemRecordPayload>({
+    id: queueItemId,
+    entity: 'schedule_item',
+    operation: 'update',
+    payload: {
+      id: localItem.id,
+      itemData: localItem,
+      forceLocal: true,
+    },
+    changedAt: new Date().toISOString(),
+    autoUpload: false,
+  });
+  let result = await uploadPendingChanges();
+  let remainingQueue = await getOfflineQueue();
+  let exactItemStillQueued = remainingQueue.some(item => item.id === queueItemId);
+  let exactOutcome = result.itemOutcomes?.[queueItemId];
+
+  if (
+    exactItemStillQueued &&
+    (!exactOutcome || exactOutcome === 'uploaded')
+  ) {
+    result = await uploadPendingChanges();
+    remainingQueue = await getOfflineQueue();
+    exactItemStillQueued = remainingQueue.some(item => item.id === queueItemId);
+    exactOutcome = result.itemOutcomes?.[queueItemId];
+  }
+
+  if (
+    exactOutcome !== 'uploaded' ||
+    exactItemStillQueued
+  ) {
+    throw new Error(result.errors[0] || 'sync_conflict_save_failed');
+  }
+
+  await clearResolvedConflict(conflict.id);
+  return localItem;
+}
+
 async function uploadQueueItem(
   item: SyncQueueItem,
 ): Promise<'uploaded' | 'conflict' | string> {
@@ -2598,20 +2837,55 @@ async function uploadQueueItem(
       return cloud.error || cloud.message || 'Task authority could not be checked.';
     }
     const remote = cloud.data.find(candidate => candidate.id === payload.id);
-    const authoritative = remote
-      ? recoverDAVEScheduleRecords({
-          local: [payload.itemData],
-          cloud: [remote],
-          allowCloudOnly: true,
-        }).find(candidate => candidate.id === payload.id) || payload.itemData
-      : payload.itemData;
+    const changedFields = Array.isArray(payload.changedFields)
+      ? payload.changedFields
+      : null;
+    const authoritative = remote && changedFields
+      ? {
+          ...changedFields.reduce<ScheduleItem>(
+            (merged, field) => ({
+              ...merged,
+              [field]: payload.itemData[field],
+            }),
+            remote,
+          ),
+          updatedAt: new Date().toISOString(),
+        }
+      : remote && !payload.forceLocal
+        ? recoverDAVEScheduleRecords({
+            local: [payload.itemData],
+            cloud: [remote],
+            allowCloudOnly: true,
+          }).find(candidate => candidate.id === payload.id) || payload.itemData
+        : payload.itemData;
     if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
-      return 'uploaded';
+      if (
+        changedFields ||
+        JSON.stringify(payload.itemData) === JSON.stringify(remote)
+      ) {
+        await clearConflictsForLocalRecord('schedule_item', payload.id);
+        return 'uploaded';
+      }
+
+      await recordConflict({
+        id: createQueueId('schedule_item_conflict', new Date().toISOString()),
+        entity: 'schedule_item',
+        localId: payload.id,
+        localChangedAt: item.changedAt,
+        remoteChangedAt: remote.updatedAt || null,
+        reason: 'This task changed on another device before the local edit finished syncing.',
+        detectedAt: new Date().toISOString(),
+        localPayload: payload,
+        remotePayload: remote,
+      });
+      return 'conflict';
     }
     const result = await upsertScheduleItem(authoritative);
-    return result.ok && !result.stubbed
-      ? 'uploaded'
-      : result.error || result.message || 'Task sync is waiting for Supabase.';
+    if (result.ok && !result.stubbed) {
+      await clearConflictsForLocalRecord('schedule_item', payload.id);
+      return 'uploaded';
+    }
+    return result.error || result.message || 'Task sync is waiting for Supabase.';
   }
 
   if (item.entity === 'reference_document') {

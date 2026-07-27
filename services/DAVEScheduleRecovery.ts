@@ -86,11 +86,61 @@ export function recoverDAVEScheduleRecords({
   localRecords.forEach(record => {
     const id = normalized(record.id);
     const cloudRecord = combined.get(id);
-    if (!cloudRecord || compareScheduleAuthority(record, cloudRecord) >= 0) {
+    if (!cloudRecord) {
       combined.set(id, record);
+      return;
     }
+    combined.set(id, mergeScheduleRevisions(record, cloudRecord));
   });
   return reconcileDAVEScheduleRecords([...combined.values()]);
+}
+
+/**
+ * A task note and PM progress can be changed independently on different
+ * devices. The shared row has one `updatedAt`, so choosing the entire newest
+ * row would let a note-only edit roll back newer progress. Keep the newest
+ * authorized row as the base, but preserve the independently newer progress
+ * confirmation.
+ */
+function mergeScheduleRevisions(
+  local: ScheduleItem,
+  cloud: ScheduleItem,
+): ScheduleItem {
+  const base = compareScheduleAuthority(local, cloud) >= 0 ? local : cloud;
+  const noteSource = compareRecordRevision(local, cloud) >= 0 ? local : cloud;
+  const progressSource = compareProgressAuthority(local, cloud) >= 0 ? local : cloud;
+
+  return {
+    ...base,
+    notes: noteSource.notes,
+    status: progressSource.status,
+    percentComplete: progressSource.percentComplete,
+    progressSource: progressSource.progressSource,
+    progressConfirmedAt: progressSource.progressConfirmedAt,
+    progressConfirmedBy: progressSource.progressConfirmedBy,
+    completionVerification: progressSource.completionVerification,
+  };
+}
+
+function compareRecordRevision(left: ScheduleItem, right: ScheduleItem) {
+  const authorityDifference = scheduleAuthorityRank(left) - scheduleAuthorityRank(right);
+  if (authorityDifference !== 0) return authorityDifference;
+  return recordRevisionTimestamp(left) - recordRevisionTimestamp(right);
+}
+
+function compareProgressAuthority(left: ScheduleItem, right: ScheduleItem) {
+  const leftAuthority = scheduleAuthorityRank(left);
+  const rightAuthority = scheduleAuthorityRank(right);
+  const timeDifference = progressTimestamp(left) - progressTimestamp(right);
+  // A later explicit PM correction may reopen an earlier PM verification.
+  if (leftAuthority > 0 && rightAuthority > 0 && timeDifference !== 0) {
+    return timeDifference;
+  }
+
+  const authorityDifference = leftAuthority - rightAuthority;
+  if (authorityDifference !== 0) return authorityDifference;
+  if (timeDifference !== 0) return timeDifference;
+  return compareScheduleAuthority(left, right);
 }
 
 function isSupersededLegacyAlias(
@@ -257,6 +307,30 @@ function scheduleTimestamp(record: ScheduleItem) {
     const parsed = value ? new Date(value).getTime() : Number.NaN;
     return Number.isFinite(parsed) ? parsed : 0;
   }));
+}
+
+function recordRevisionTimestamp(record: ScheduleItem) {
+  return timestamp(record.updatedAt) ||
+    timestamp(record.importedAt) ||
+    timestamp(record.createdAt);
+}
+
+function progressTimestamp(record: ScheduleItem) {
+  return Math.max(
+    timestamp(record.progressConfirmedAt),
+    record.completionVerification?.status === 'pm_verified'
+      ? timestamp(
+          record.completionVerification.verifiedAt ||
+          record.completionVerification.reportedAt,
+        )
+      : 0,
+    record.progressSource === 'schedule_import' ? timestamp(record.importedAt) : 0,
+  );
+}
+
+function timestamp(value: unknown) {
+  const parsed = value ? new Date(String(value)).getTime() : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function scheduleScopeRank(record: ScheduleItem) {
