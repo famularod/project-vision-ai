@@ -1,16 +1,18 @@
-# Jarvis QA
+# VIGIL Quality Assurance
 
 ## Purpose
 
-Jarvis is the working name for the internal quality system protecting Vitruvius. Core is the Vitruvius intelligence engine; Jarvis is the separate quality and release-verification system.
+VIGIL (Vitruvius Integrity Gate and Inspection Layer) is the internal quality system protecting Vitruvius. Core is the Vitruvius intelligence engine; VIGIL is the separate quality and release-verification system.
 
-Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. Jarvis should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
+Legacy JARVIS filenames, command aliases, and internal compatibility identifiers remain temporarily supported while the repository migrates to the VIGIL name. They do not represent a separate QA system.
 
-Jarvis does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence.
+Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. VIGIL should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
 
-## JARVIS Experience QA 2.0
+VIGIL does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence.
 
-JARVIS now acts as a complete product reviewer, not only a technical checker. The controlling standard is `docs/PIE_JARVIS_ExperienceQA.md`.
+## VIGIL Experience QA
+
+VIGIL now acts as a complete product reviewer, not only a technical checker. The controlling standard remains `docs/PIE_JARVIS_ExperienceQA.md` until legacy internal filenames are migrated.
 
 Every run scores these categories:
 

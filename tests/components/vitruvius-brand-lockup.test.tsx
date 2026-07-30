@@ -36,6 +36,24 @@ describe('VitruviusBrandLockup', () => {
     expect(screen.queryByText('Vitruvius')).toBeNull();
   });
 
+  it('preserves the larger desktop mark and can omit only the subtitle', () => {
+    const screen = render(
+      <VitruviusBrandLockup
+        large
+        showSubtitle={false}
+        testID="desktop-brand-lockup"
+      />,
+    );
+
+    expect(screen.getByText('Vitruvius')).toBeTruthy();
+    expect(screen.queryByText('Project Intelligence')).toBeNull();
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId('desktop-brand-lockup-mark').props.style,
+      ).width,
+    ).toBe(56);
+  });
+
   it('opens the shared product history from the brand', () => {
     const screen = render(
       <VitruviusBrandLockup testID="brand-lockup" />,

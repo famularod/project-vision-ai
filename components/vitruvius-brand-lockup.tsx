@@ -16,10 +16,14 @@ export const VITRUVIUS_BRAND_BORDER = '#B8CDE3';
 
 export function VitruviusBrandLockup({
   compact = false,
+  large = false,
+  showSubtitle = true,
   showText = true,
   testID,
 }: {
   compact?: boolean;
+  large?: boolean;
+  showSubtitle?: boolean;
   showText?: boolean;
   testID?: string;
 }) {
@@ -35,15 +39,26 @@ export function VitruviusBrandLockup({
         style={({ pressed }) => [
           styles.lockup,
           compact && styles.lockupCompact,
+          large && styles.lockupLarge,
           pressed && styles.lockupPressed,
         ]}
         testID={testID}
       >
         <View
-          style={[styles.mark, compact && styles.markCompact]}
+          style={[
+            styles.mark,
+            compact && styles.markCompact,
+            large && styles.markLarge,
+          ]}
           testID={testID ? `${testID}-mark` : undefined}
         >
-          <Text style={[styles.markText, compact && styles.markTextCompact]}>
+          <Text
+            style={[
+              styles.markText,
+              compact && styles.markTextCompact,
+              large && styles.markTextLarge,
+            ]}
+          >
             {PRODUCT_BRAND.monogram}
           </Text>
         </View>
@@ -53,7 +68,9 @@ export function VitruviusBrandLockup({
             <Text style={[styles.name, compact && styles.nameCompact]}>
               {PRODUCT_BRAND.name}
             </Text>
-            <Text style={styles.subtitle}>{PRODUCT_BRAND.subtitle}</Text>
+            {showSubtitle ? (
+              <Text style={styles.subtitle}>{PRODUCT_BRAND.subtitle}</Text>
+            ) : null}
           </View>
         ) : null}
       </Pressable>
@@ -124,6 +141,9 @@ const styles = StyleSheet.create({
   lockupCompact: {
     gap: spacing.xs,
   },
+  lockupLarge: {
+    gap: spacing.sm,
+  },
   lockupPressed: {
     opacity: 0.72,
   },
@@ -143,6 +163,11 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 14,
   },
+  markLarge: {
+    width: 56,
+    height: 56,
+    borderRadius: 17,
+  },
   markText: {
     color: VITRUVIUS_BRAND_DARK_BLUE,
     fontSize: 32,
@@ -152,6 +177,10 @@ const styles = StyleSheet.create({
   markTextCompact: {
     fontSize: 29,
     lineHeight: 34,
+  },
+  markTextLarge: {
+    fontSize: 40,
+    lineHeight: 46,
   },
   copy: {
     flexShrink: 1,

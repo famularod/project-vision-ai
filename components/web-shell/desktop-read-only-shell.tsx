@@ -77,10 +77,7 @@ import {
 import { colors, spacing } from '../../theme';
 import { daysUntilDate } from '../../utils/date';
 import { PRODUCT_BRAND } from '../../product-brand';
-import {
-  VITRUVIUS_BRAND_DARK_BLUE,
-  VITRUVIUS_BRAND_SOFT_BLUE,
-} from '../vitruvius-brand-lockup';
+import { VitruviusBrandLockup } from '../vitruvius-brand-lockup';
 import { useDesktopAuth } from './desktop-auth-provider';
 import { DesktopConnectionStatus } from './desktop-connection-status';
 import { DesktopOverviewPage } from './desktop-overview-page';
@@ -183,13 +180,7 @@ function DesktopSessionGate() {
 
   return (
     <ScrollView style={styles.gateRoot} contentContainerStyle={styles.gateContent}>
-      <View style={styles.gateBrandRow}>
-        <View style={styles.brandMark}><Text style={styles.brandMarkText}>{PRODUCT_BRAND.monogram}</Text></View>
-        <View>
-          <Text style={styles.brandName}>{PRODUCT_BRAND.name}</Text>
-          <Text style={styles.brandSubtitle}>{PRODUCT_BRAND.subtitle}</Text>
-        </View>
-      </View>
+      <VitruviusBrandLockup large testID="desktop-sign-in-brand-lockup" />
       <View style={styles.gateCard}>
         <Text style={styles.eyebrow}>VITRUVIUS PROJECT INTELLIGENCE</Text>
         <Text style={styles.gateTitle}>Sign in to your project workspace</Text>
@@ -1043,6 +1034,29 @@ function TaskEditingWorkspace({
     }
   };
 
+  const addPhotoToTask = async (task: DAVEWebScheduleItem, file: File | null) => {
+    if (!file || pending) return;
+    setPending(true);
+    setNotice(null);
+    try {
+      await auth.uploadTaskPhoto(
+        task,
+        file.name || 'task-photo',
+        file.type || 'image/jpeg',
+        await file.arrayBuffer(),
+      );
+      setSelectedTaskId(task.id);
+      setNotice({
+        tone: 'good',
+        text: 'Photo added to this task and synced to the shared project record.',
+      });
+    } catch (error) {
+      setNotice({ tone: 'danger', text: taskPhotoMutationMessage(error) });
+    } finally {
+      setPending(false);
+    }
+  };
+
   return (
     <Section
       title={`${tasks.length} task${tasks.length === 1 ? '' : 's'}`}
@@ -1314,6 +1328,9 @@ function TaskEditingWorkspace({
                 contractorOptions={contractorOptions}
                 actor={auth.userEmail || 'Project manager'}
                 pending={pending}
+                onAddPhoto={editingTask
+                  ? file => addPhotoToTask(editingTask, file)
+                  : undefined}
                 onCancel={() => {
                   if (pending) return;
                   setEditorOpen(false);
@@ -1327,6 +1344,8 @@ function TaskEditingWorkspace({
                 task={selectedTask}
                 onClose={() => setSelectedTaskId(null)}
                 onEdit={() => openEdit(selectedTask)}
+                pending={pending}
+                onAddPhoto={file => addPhotoToTask(selectedTask, file)}
                 onDelete={() => {
                   setNotice(null);
                   setDeleteCandidate(selectedTask);
@@ -1711,6 +1730,7 @@ function TaskEditor({
   contractorOptions,
   actor,
   pending,
+  onAddPhoto,
   onCancel,
   onSave,
 }: {
@@ -1722,6 +1742,7 @@ function TaskEditor({
   contractorOptions: readonly string[];
   actor: string;
   pending: boolean;
+  onAddPhoto?: (file: File | null) => void;
   onCancel: () => void;
   onSave: (draft: DAVEWebTaskDraft) => Promise<void>;
 }) {
@@ -1827,6 +1848,13 @@ function TaskEditor({
       </View>
       <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
       <ChoiceOrTypeField label="Location / area" value={draft.locationName} options={locationOptions} onChange={value => updateField('locationName', value)} optional />
+      {task && onAddPhoto ? (
+        <TaskPhotoPicker
+          pending={pending}
+          onFile={onAddPhoto}
+          detail="Creates a field update linked to this task, project, and area."
+        />
+      ) : null}
 
       <View style={styles.twoColumnFields}>
         <View style={styles.flexField}>
@@ -2104,20 +2132,33 @@ function ChoiceOrTypeField({
     <View style={styles.fieldGroup}>
       <Text style={styles.fieldLabel}>{label} {optional ? <Text style={styles.optionalLabel}>(optional)</Text> : null}</Text>
       {options.length > 0 ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.optionRow}>
+        <View style={[styles.optionRow, styles.choiceFieldOptions]}>
           {options.map(option => (
             <Pressable
               key={option}
               onPress={() => onChange(option)}
-              style={({ pressed }) => [styles.smallChoice, normalizedName(value) === normalizedName(option) && styles.choiceActive, pressed && styles.buttonPressed]}
+              style={({ pressed }) => [
+                styles.smallChoice,
+                styles.choiceFieldChoice,
+                normalizedName(value) === normalizedName(option) && styles.choiceActive,
+                pressed && styles.buttonPressed,
+              ]}
               accessibilityRole="radio"
               accessibilityLabel={`${label}: ${option}`}
               accessibilityState={{ selected: normalizedName(value) === normalizedName(option) }}
             >
-              <Text style={[styles.choiceText, normalizedName(value) === normalizedName(option) && styles.choiceTextActive]}>{option}</Text>
+              <Text
+                style={[
+                  styles.choiceText,
+                  styles.choiceFieldChoiceText,
+                  normalizedName(value) === normalizedName(option) && styles.choiceTextActive,
+                ]}
+              >
+                {option}
+              </Text>
             </Pressable>
           ))}
-        </ScrollView>
+        </View>
       ) : null}
       <TextInput
         value={value}
@@ -2329,13 +2370,17 @@ function TaskInspectorEmpty({ onAddTask }: { onAddTask: () => void }) {
 
 function TaskDetailsPanel({
   task,
+  pending,
   onClose,
   onEdit,
+  onAddPhoto,
   onDelete,
 }: {
   task: DAVEWebScheduleItem;
+  pending: boolean;
   onClose: () => void;
   onEdit: () => void;
+  onAddPhoto: (file: File | null) => void;
   onDelete: () => void;
 }) {
   const latestActivity = task.activity?.[task.activity.length - 1] ?? null;
@@ -2400,6 +2445,12 @@ function TaskDetailsPanel({
           <Text style={styles.dataMeta}>{latestActivity.author} · {formatDateTime(latestActivity.createdAt)}</Text>
         </View>
       ) : null}
+
+      <TaskPhotoPicker
+        pending={pending}
+        onFile={onAddPhoto}
+        detail="The photo will be saved as a field update linked to this task and its current area."
+      />
 
       <View style={styles.taskInspectorActions}>
         <Pressable
@@ -4724,6 +4775,31 @@ function OperationsWorkspace({
   );
 }
 
+function TaskPhotoPicker({
+  pending,
+  detail,
+  onFile,
+}: {
+  pending: boolean;
+  detail: string;
+  onFile: (file: File | null) => void;
+}) {
+  return (
+    <View style={styles.taskPhotoPicker}>
+      <View style={styles.buttonLabelRow}>
+        <Ionicons name="camera-outline" size={20} color={desktopSurfaces.accent} />
+        <Text style={styles.taskDetailsSectionTitle}>Add a Photo</Text>
+      </View>
+      <Text style={styles.dataMeta}>{detail}</Text>
+      <WebFilePicker
+        label={pending ? 'Uploading photo…' : 'Choose task photo'}
+        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+        onFile={onFile}
+      />
+    </View>
+  );
+}
+
 function WebFilePicker({
   label,
   accept,
@@ -4763,6 +4839,11 @@ function documentMutationMessage(error: unknown): string {
   return 'The document could not be deleted. Refresh the workspace and try again.';
 }
 
+function taskPhotoMutationMessage(error: unknown): string {
+  if (error instanceof DAVEWebDocumentMutationError) return error.message;
+  return 'The task photo could not be saved. Refresh the workspace and try again.';
+}
+
 function StatusBadge({ label, tone }: { label: string; tone: 'good' | 'attention' | 'danger' | 'neutral' }) {
   return (
     <View style={[styles.statusBadge, styles[`statusBadge_${tone}`]]}>
@@ -4796,10 +4877,7 @@ function EmptyState({ text }: { text: string }) {
 function DesktopSidebar({ pathname, selectedProject }: { pathname: string; selectedProject: string | null }) {
   return (
     <View style={styles.sidebar}>
-      <View style={styles.gateBrandRow}>
-        <View style={[styles.brandMark, styles.sidebarBrandMark]}><Text style={[styles.brandMarkText, styles.sidebarBrandMarkText]}>{PRODUCT_BRAND.monogram}</Text></View>
-        <View><Text style={[styles.brandName, styles.sidebarBrandName]}>{PRODUCT_BRAND.name}</Text><Text style={[styles.brandSubtitle, styles.sidebarBrandSubtitle]}>{PRODUCT_BRAND.subtitle}</Text></View>
-      </View>
+      <VitruviusBrandLockup large testID="desktop-sidebar-brand-lockup" />
       <View style={styles.navigation} role="navigation">
         {desktopNavigationItems.map(item => (
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} />
@@ -4826,7 +4904,11 @@ function RefreshProjectDataButton({ onPress }: { onPress: () => void }) {
 function DesktopTopNavigation({ pathname, selectedProject }: { pathname: string; selectedProject: string | null }) {
   return (
     <View style={styles.topNavigation}>
-      <View style={styles.compactBrand}><View style={[styles.brandMark, styles.sidebarBrandMark]}><Text style={[styles.brandMarkText, styles.sidebarBrandMarkText]}>{PRODUCT_BRAND.monogram}</Text></View><Text style={[styles.brandName, styles.sidebarBrandName]}>{PRODUCT_BRAND.name}</Text></View>
+      <VitruviusBrandLockup
+        large
+        showSubtitle={false}
+        testID="desktop-top-brand-lockup"
+      />
       <View style={styles.topNavigationLinks} role="navigation">
         {desktopNavigationItems.map(item => (
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} compact />
@@ -5193,18 +5275,9 @@ const styles = StyleSheet.create({
   contentCompact: { padding: spacing.sm, gap: spacing.md },
   gateRoot: { flex: 1, minHeight: '100%', backgroundColor: desktopSurfaces.canvas },
   gateContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, gap: spacing.xl },
-  gateBrandRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   gateCard: { width: '100%', maxWidth: 560, borderRadius: 24, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xxl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
   gateTitle: { color: '#171A21', fontSize: 32, lineHeight: 39, fontWeight: '900' },
   sidebar: { width: 280, minHeight: '100%', backgroundColor: desktopSurfaces.sidebar, borderRightWidth: 1, borderRightColor: desktopSurfaces.sidebarDeep, padding: spacing.lg, gap: spacing.xl, boxShadow: desktopSurfaces.sidebarShadow },
-  brandMark: { width: 56, height: 56, borderRadius: 17, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: VITRUVIUS_BRAND_SOFT_BLUE, alignItems: 'center', justifyContent: 'center' },
-  brandMarkText: { color: VITRUVIUS_BRAND_DARK_BLUE, fontSize: 32, lineHeight: 38, fontWeight: '900' },
-  sidebarBrandMark: { backgroundColor: VITRUVIUS_BRAND_SOFT_BLUE },
-  sidebarBrandMarkText: { color: VITRUVIUS_BRAND_DARK_BLUE, fontSize: 40, lineHeight: 46 },
-  sidebarBrandName: { color: desktopSurfaces.sidebarText },
-  sidebarBrandSubtitle: { color: desktopSurfaces.sidebarMuted },
-  brandName: { color: '#171A21', fontSize: 17, fontWeight: '900', letterSpacing: 0.4 },
-  brandSubtitle: { color: '#6F7480', fontSize: 12, lineHeight: 16, fontWeight: '700' },
   navigation: { gap: spacing.xs },
   navigationLink: { minHeight: 64, borderRadius: 14, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
   topNavigationLink: { flexGrow: 1, flexBasis: 132, minWidth: 0, minHeight: 44, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, justifyContent: 'center', paddingHorizontal: spacing.sm },
@@ -5213,7 +5286,6 @@ const styles = StyleSheet.create({
   navigationLabelSidebar: { fontSize: 17, lineHeight: 23, fontWeight: '900' },
   navigationLabelActive: { color: desktopSurfaces.accent },
   pilotNote: { color: desktopSurfaces.sidebarMuted, fontSize: 12, lineHeight: 17, marginTop: 'auto', paddingHorizontal: spacing.xs },
-  compactBrand: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.xs },
   topNavigation: { backgroundColor: desktopSurfaces.sidebar, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 14, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
   topNavigationLinks: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, alignItems: 'center' },
   topRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.lg, borderLeftWidth: 5, borderLeftColor: desktopSurfaces.accent, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.header, paddingHorizontal: spacing.xl, paddingVertical: spacing.lg },
@@ -5455,11 +5527,15 @@ const styles = StyleSheet.create({
   taskDetailsSection: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, gap: 4 },
   taskDetailsSectionTitle: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '900' },
   taskDetailsSectionText: { color: '#4F5865', fontSize: 14, lineHeight: 21 },
+  taskPhotoPicker: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, gap: spacing.sm },
   taskInspectorActions: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   taskInspectorEditButton: { flexGrow: 1, minWidth: 180 },
   twoColumnFields: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
   flexField: { flexGrow: 1, flexBasis: 280 },
   optionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  choiceFieldOptions: { width: '100%' },
+  choiceFieldChoice: { maxWidth: '100%', flexShrink: 1 },
+  choiceFieldChoiceText: { flexShrink: 1 },
   smallChoice: { minHeight: 44, borderRadius: 999, borderWidth: 1, borderColor: desktopSurfaces.border, paddingHorizontal: spacing.md, justifyContent: 'center', backgroundColor: desktopSurfaces.input },
   optionalLabel: { color: '#7B828E', fontWeight: '500' },
   activityEntry: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: 3 },

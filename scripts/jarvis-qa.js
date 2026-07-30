@@ -8568,7 +8568,7 @@ const contractStatus =
 const topProblems = buildTopProblems();
 const appleReviewNotes = buildAppleReviewNotes(categoryScores, counts);
 
-console.log('Jarvis Static Contract Audit');
+console.log('VIGIL Static Contract Audit');
 console.log(`Generated: ${new Date().toISOString()}`);
 console.log(`Contract Status: ${contractStatus}`);
 console.log(
@@ -8577,7 +8577,7 @@ console.log(
 console.log(`Contract Score: ${overallScore}/100`);
 console.log('Runtime behavior: NOT EVALUATED');
 console.log('Physical-device behavior: NOT EVALUATED');
-console.log('Run npm run jarvis:qa for the complete automated release gate.');
+console.log('Run npm run vigil:qa for the complete automated release gate.');
 console.log('');
 
 console.log('Category Scores');

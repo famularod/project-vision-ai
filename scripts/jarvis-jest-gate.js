@@ -75,7 +75,7 @@ if (!fs.existsSync(coverageSummaryPath)) {
 fs.rmSync(coverageDirectory, { recursive: true, force: true });
 
 console.log('');
-console.log('Jarvis Strict Jest Gate');
+console.log('VIGIL Strict Jest Gate');
 if (failures.length === 0) {
   console.log('PASS: tests passed, serious harness warnings were absent, and coverage floors held.');
 } else {

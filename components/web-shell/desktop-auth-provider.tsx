@@ -58,6 +58,12 @@ type DesktopAuthContextValue = Readonly<{
   updateTask: (item: DAVEWebScheduleItem) => Promise<void>;
   updateTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
   deleteTask: (item: DAVEWebScheduleItem) => Promise<void>;
+  uploadTaskPhoto: (
+    item: DAVEWebScheduleItem,
+    fileName: string,
+    mimeType: string,
+    bytes: ArrayBuffer,
+  ) => Promise<void>;
   deleteDocument: (document: DAVEWebReferenceDocument, deleteLinkedTasks: boolean) => Promise<void>;
   uploadDocument: (
     prepared: DAVEWebPreparedUpload,
@@ -381,6 +387,22 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     await refreshSnapshot();
   }, [announceMutation, refreshSnapshot]);
 
+  const uploadTaskPhoto = useCallback(async (
+    item: DAVEWebScheduleItem,
+    fileName: string,
+    mimeType: string,
+    bytes: ArrayBuffer,
+  ) => {
+    await daveWebSupabaseGateway.uploadAuthorizedTaskPhoto({
+      task: scheduleItemForCloud(item),
+      fileName,
+      mimeType,
+      bytes,
+    });
+    announceMutation();
+    await refreshSnapshot();
+  }, [announceMutation, refreshSnapshot]);
+
   const deleteDocument = useCallback(async (
     document: DAVEWebReferenceDocument,
     deleteLinkedTasks: boolean,
@@ -461,6 +483,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     updateTask,
     updateTasks,
     deleteTask,
+    uploadTaskPhoto,
     deleteDocument,
     uploadDocument,
     setCurrentSchedule,
@@ -479,6 +502,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     signInWithPassword,
     signOutOfDesktop,
     snapshot,
+    uploadTaskPhoto,
     uploadDocument,
     setCurrentSchedule,
     saveReport,

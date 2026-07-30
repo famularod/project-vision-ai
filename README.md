@@ -38,7 +38,7 @@ npm run qa:release
 `npm test` runs dependency/configuration checks, strict TypeScript, and executable
 Jest tests. `test:release-contracts` checks ordered migrations, current Maestro
 flows, UI policy, assets, and product metadata. `qa:release` runs the complete
-V.I.C. automated gate. Maestro execution and physical-device checks remain
+VIGIL automated gate. Maestro execution and physical-device checks remain
 required for release certification.
 
 ## Product metadata
@@ -60,11 +60,12 @@ permission, backup-policy, and signing review before release.
 ## Current identity
 
 - Product: Vitruvius Project Intelligence
-- Quality system: V.I.C. (Vitruvius Intelligence Center)
+- Intelligence engine: Core
+- Quality system: VIGIL (Vitruvius Integrity Gate and Inspection Layer)
 - Bundle/package ID: `com.davidfamularo.projectphotoupdate`
 - Supported platforms: iPhone, iPad, Android, and web
 - Current version/build: `product-metadata.json`
 
 Some internal filenames and compatibility commands still use the legacy DAVE,
-PIE, JARVIS, or Project Vision AI names. They are implementation identifiers,
+PIE, JARVIS, V.I.C., or Project Vision AI names. They are implementation identifiers,
 not current user-facing product copy.

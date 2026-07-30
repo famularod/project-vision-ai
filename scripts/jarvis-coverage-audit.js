@@ -88,8 +88,10 @@ if (!fs.existsSync(registryPath)) {
 const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 const scripts = packageJson.scripts || {};
 const requiredScripts = {
-  'jarvis:qa': 'node scripts/jarvis-release-gate.js',
-  'jarvis:contracts': 'node scripts/jarvis-qa.js',
+  'vigil:qa': 'node scripts/jarvis-release-gate.js',
+  'vigil:contracts': 'node scripts/jarvis-qa.js',
+  'jarvis:qa': 'npm run vigil:qa',
+  'jarvis:contracts': 'npm run vigil:contracts',
   'test:unit:strict': 'node scripts/jarvis-jest-gate.js',
   'test:jarvis-coverage': 'node scripts/jarvis-coverage-audit.js',
   'check:android-production-signing': 'node scripts/android-production-signing-gate.js',
@@ -99,7 +101,7 @@ const requiredScripts = {
   'test:dependency-security': 'node scripts/dependency-security-contract-test.js',
   'test:release-evidence': 'node scripts/jarvis-release-evidence-test.js',
   'test:release-hardening': 'node scripts/android-production-signing-gate-test.js && node scripts/native-release-generation-contract-test.js && node scripts/dependency-security-contract-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:release-evidence && npm run test:production-hardening && npm run test:production-operations-health',
-  'qa:release': 'npm run jarvis:qa',
+  'qa:release': 'npm run vigil:qa',
 };
 for (const [name, expected] of Object.entries(requiredScripts)) {
   if (scripts[name] !== expected) fail(`${name} is not wired to ${expected}.`);
@@ -107,8 +109,8 @@ for (const [name, expected] of Object.entries(requiredScripts)) {
 if (!String(scripts['test:behavior'] || '').includes('test:unit:strict')) {
   fail('test:behavior bypasses the strict Jest gate.');
 }
-if (!String(scripts['jarvis:qa'] || '').includes('jarvis-release-gate.js')) {
-  fail('The complete Jarvis runner is not reproducibly wired from package.json.');
+if (!String(scripts['vigil:qa'] || '').includes('jarvis-release-gate.js')) {
+  fail('The complete VIGIL runner is not reproducibly wired from package.json.');
 }
 if (!String(scripts['test:release-contracts'] || '').includes('test:release-hardening')) {
   fail('The release contract suite bypasses Jarvis release hardening tests.');
@@ -119,7 +121,7 @@ for (const relativePath of requiredReleaseArtifacts) {
   }
 }
 
-console.log('Jarvis Escaped-Defect Coverage Audit');
+console.log('VIGIL Escaped-Defect Coverage Audit');
 if (failures.length === 0) {
   console.log('PASS: every registered defect family has executable evidence and an honest limitation statement.');
 } else {

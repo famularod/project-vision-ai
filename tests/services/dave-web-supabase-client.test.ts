@@ -477,6 +477,79 @@ describe('DAVE browser Supabase gateway', () => {
 
     expect(failedRestoreA.update).toHaveBeenCalled();
   });
+
+  test('uploads a task photo and creates a task-linked field update', async () => {
+    const updateInsert = mutationQuery({ data: null, error: null });
+    const fixture = mutationClient(() => updateInsert);
+    const storage = {
+      upload: jest.fn(async () => ({ error: null })),
+      remove: jest.fn(async () => ({ error: null })),
+    };
+    fixture.client.storage = { from: jest.fn(() => storage) };
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    const updateId = await gateway.uploadAuthorizedTaskPhoto({
+      task: SCHEDULE_ITEM,
+      bytes: new Uint8Array([1, 2, 3]).buffer,
+      fileName: 'handrails.jpg',
+      mimeType: 'image/jpeg',
+    });
+
+    expect(fixture.client.storage.from).toHaveBeenCalledWith('project-photos');
+    expect(storage.upload).toHaveBeenCalledWith(
+      expect.stringMatching(/^owner-1\/web-updates\/web-task-update-/),
+      expect.any(ArrayBuffer),
+      { contentType: 'image/jpeg', upsert: false },
+    );
+    expect(updateInsert.insert).toHaveBeenCalledWith(expect.objectContaining({
+      id: updateId,
+      owner_id: 'owner-1',
+      project_name: '2375 Compliance Project',
+      area_name: 'Canopy C',
+      idempotency_key: updateId,
+      update_data: expect.objectContaining({
+        scheduleItemId: 'task-1',
+        scheduleTaskName: 'Install handrails',
+        selectedAreaName: 'Canopy C',
+        photos: [
+          expect.objectContaining({
+            fileName: 'handrails.jpg',
+            mimeType: 'image/jpeg',
+            cloudStoragePath: expect.stringMatching(/^owner-1\/web-updates\//),
+          }),
+        ],
+      }),
+    }));
+    expect(storage.remove).not.toHaveBeenCalled();
+  });
+
+  test('removes a task photo when its field-update record cannot be saved', async () => {
+    const updateInsert = mutationQuery({
+      data: null,
+      error: { message: 'fault: project update insert' },
+    });
+    const fixture = mutationClient(() => updateInsert);
+    const storage = {
+      upload: jest.fn(async () => ({ error: null })),
+      remove: jest.fn(async () => ({ error: null })),
+    };
+    fixture.client.storage = { from: jest.fn(() => storage) };
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await expect(gateway.uploadAuthorizedTaskPhoto({
+      task: SCHEDULE_ITEM,
+      bytes: new Uint8Array([1, 2, 3]).buffer,
+      fileName: 'handrails.jpg',
+      mimeType: 'image/jpeg',
+    })).rejects.toMatchObject<Partial<DAVEWebDocumentMutationError>>({
+      code: 'write_failed',
+      message: expect.stringMatching(/uploaded file was removed/i),
+    });
+
+    expect(storage.remove).toHaveBeenCalledWith([
+      expect.stringMatching(/^owner-1\/web-updates\//),
+    ]);
+  });
 });
 
 const SCHEDULE_ITEM: ScheduleItem = {

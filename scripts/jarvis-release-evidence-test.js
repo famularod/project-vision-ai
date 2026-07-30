@@ -18,8 +18,8 @@ assert.equal(policy.schemaVersion, 1);
 assert.deepEqual(policy.identity, {
   product: 'Vitruvius',
   intelligenceEngine: 'Core',
-  qaSystem: 'Jarvis',
-  qaNameStatus: 'working_name',
+  qaSystem: 'VIGIL',
+  qaNameStatus: 'official',
 });
 assert.deepEqual(policy.requiredPlatforms, ['iphone', 'ipad', 'web']);
 assert(policy.requiredDeviceJourneys.length >= 6);
@@ -75,7 +75,7 @@ for (const defect of defects.defects) {
 }
 
 console.log(
-  `Jarvis release-evidence contracts PASS: ${policy.requiredDeviceJourneys.length} device journeys, `
+  `VIGIL release-evidence contracts PASS: ${policy.requiredDeviceJourneys.length} device journeys, `
   + `${policy.performanceBudgets.length} performance budgets, `
   + `${visual.platforms.length} visual platforms, and ${defects.defects.length} historical defect families.`,
 );

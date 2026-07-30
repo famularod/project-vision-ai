@@ -54,12 +54,12 @@ const manifest = buildReleaseManifest({
 assert.equal(manifest.summary.automatedGate, 'pass_with_warnings');
 assert.equal(manifest.summary.androidProductionCertification, 'not_certified');
 assert.equal(manifest.summary.releaseCertification, 'device_validation_required');
-assert.equal(manifest.gate, 'Jarvis Automated Release Gate');
+assert.equal(manifest.gate, 'VIGIL Automated Release Gate');
 assert.deepEqual(manifest.identity, {
   product: 'Vitruvius',
   intelligenceEngine: 'Core',
-  qaSystem: 'Jarvis',
-  qaNameStatus: 'working_name',
+  qaSystem: 'VIGIL',
+  qaNameStatus: 'official',
 });
 assert.equal(manifest.evidence.deviceValidation.status, 'required');
 assert.deepEqual(manifest.evidence.deviceValidation.requiredPlatforms, ['iphone', 'ipad', 'web']);
@@ -82,8 +82,8 @@ for (const script of [
 ]) {
   assert(
     releaseGateSource.includes(script),
-    `Jarvis must report ${script} as a named release layer.`,
+    `VIGIL must report ${script} as a named release layer.`,
   );
 }
 
-console.log('Jarvis release gate timeout and manifest contracts PASS.');
+console.log('VIGIL release gate timeout and manifest contracts PASS.');

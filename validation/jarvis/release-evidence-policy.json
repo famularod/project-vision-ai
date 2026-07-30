@@ -3,8 +3,8 @@
   "identity": {
     "product": "Vitruvius",
     "intelligenceEngine": "Core",
-    "qaSystem": "Jarvis",
-    "qaNameStatus": "working_name"
+    "qaSystem": "VIGIL",
+    "qaNameStatus": "official"
   },
   "requiredPlatforms": [
     "iphone",
