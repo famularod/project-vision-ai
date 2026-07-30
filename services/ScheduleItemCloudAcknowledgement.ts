@@ -16,6 +16,26 @@ export function scheduleItemCloudAcknowledgementMatches(
   return canonicalJson(record.item_data) === canonicalJson(expected);
 }
 
+/**
+ * Supabase normally returns the written JSONB row from the upsert. If that
+ * immediate representation does not match, one authoritative read separates a
+ * transient/normalized response from a genuinely stale persisted revision.
+ */
+export async function confirmScheduleItemCloudAcknowledgement(
+  expected: ScheduleItem,
+  immediateRow: unknown,
+  readPersistedRow: () => Promise<unknown>,
+): Promise<boolean> {
+  if (scheduleItemCloudAcknowledgementMatches(expected, immediateRow)) {
+    return true;
+  }
+
+  return scheduleItemCloudAcknowledgementMatches(
+    expected,
+    await readPersistedRow(),
+  );
+}
+
 function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalValue(value));
 }

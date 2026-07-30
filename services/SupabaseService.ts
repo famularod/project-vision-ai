@@ -19,7 +19,7 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
-import { scheduleItemCloudAcknowledgementMatches } from './ScheduleItemCloudAcknowledgement';
+import { confirmScheduleItemCloudAcknowledgement } from './ScheduleItemCloudAcknowledgement';
 import type {
   PIEActor,
   PIEActualOutcomeRecord,
@@ -1461,7 +1461,33 @@ export async function upsertScheduleItem(
     .single();
 
   if (error) return tableAwareErrorResult<ScheduleItem>(error.message, status);
-  if (!scheduleItemCloudAcknowledgementMatches(item, data)) {
+
+  const confirmationRead = {
+    errorMessage: null as string | null,
+    status,
+  };
+  const acknowledged = await confirmScheduleItemCloudAcknowledgement(
+    item,
+    data,
+    async () => {
+      const confirmation = await client
+        .from(SCHEDULE_ITEMS_TABLE)
+        .select('id, item_data')
+        .eq('id', item.id)
+        .eq('owner_id', owner.data)
+        .maybeSingle();
+      confirmationRead.errorMessage = confirmation.error?.message || null;
+      confirmationRead.status = confirmation.status;
+      return confirmation.data;
+    },
+  );
+  if (confirmationRead.errorMessage) {
+    return tableAwareErrorResult<ScheduleItem>(
+      confirmationRead.errorMessage,
+      confirmationRead.status,
+    );
+  }
+  if (!acknowledged) {
     return errorResult(
       'The cloud did not confirm the exact saved task revision.',
       409,

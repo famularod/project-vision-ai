@@ -35,8 +35,13 @@ const mockListScheduleItems = jest.fn((..._args: unknown[]): Promise<{
     data: [],
   }),
 );
-const mockUpsertScheduleItem = jest.fn((..._args: unknown[]) =>
-  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+const mockUpsertScheduleItem = jest.fn(
+  (..._args: unknown[]): Promise<{
+    ok: boolean;
+    configured: boolean;
+    stubbed: boolean;
+    error?: string;
+  }> => Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
 const mockListReferenceDocuments = jest.fn((..._args: unknown[]) =>
   Promise.resolve({
@@ -357,7 +362,7 @@ describe('offline upload deletion barriers', () => {
         id: document.id,
         documentData: document,
       },
-      changedAt: document.updatedAt,
+      changedAt: document.updatedAt ?? document.importedAt,
       autoUpload: false,
     });
 
