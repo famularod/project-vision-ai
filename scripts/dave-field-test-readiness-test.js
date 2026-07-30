@@ -41,7 +41,9 @@ const checks = [
   ['PM briefing reports evidence coverage', truth.includes('evidenceCoverage:')],
   ['workspace keeps project task control available', app.includes('<ProjectTaskControlPanel')],
   ['Overview renders current task and schedule facts',
-    app.includes('topPriority.taskCount') && app.includes('topPriority.scheduleHealth')],
+    app.includes('currentFocus.owner') &&
+      app.includes('currentFocus.timing') &&
+      app.includes('liveAuthority.projectTruth.briefing.schedule')],
 ];
 
 let failures = 0;

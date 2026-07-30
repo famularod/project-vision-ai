@@ -23,6 +23,14 @@ const fileSizePreflight = fs.readFileSync(
   path.join(root, 'services/FileSizePreflight.ts'),
   'utf8',
 );
+const storageUploadPolicy = fs.readFileSync(
+  path.join(root, 'services/StorageUploadPolicy.ts'),
+  'utf8',
+);
+const resumableStorageUpload = fs.readFileSync(
+  path.join(root, 'services/ResumableStorageUpload.ts'),
+  'utf8',
+);
 const projectDocumentsScreen = app.slice(
   app.indexOf('function ProjectDocumentsScreen'),
   app.indexOf('function ReferenceDocumentsScreen'),
@@ -38,9 +46,9 @@ const projectDocumentsScreen = app.slice(
   "ProjectDocumentsScreen",
   "ProjectDocumentCard",
   "ProjectDocumentInlineRow",
-  "Upload Document",
+  "Add Document",
   "Take Photo of Document",
-  "View Document",
+  "Download & Open",
   "Retry Upload",
   "Local only",
   "Document upload pending",
@@ -70,7 +78,10 @@ assert(
   app.includes('await preflightExpoFileRead({ uri: asset.uri, reportedSizeBytes: asset.size })') &&
     app.includes('error instanceof FileSizePreflightError') &&
     fileSizePreflight.includes("code: 'file_too_large'") &&
-    fileSizePreflight.includes('Choose a smaller file and retry.'),
+    fileSizePreflight.includes('MAX_PROJECT_DOCUMENT_FILE_BYTES = 50 * 1024 * 1024') &&
+    fileSizePreflight.includes('Compress, optimize, or split it, then retry.') &&
+    storageUploadPolicy.includes('RESUMABLE_UPLOAD_THRESHOLD_BYTES = 6 * 1024 * 1024') &&
+    resumableStorageUpload.includes('uploadFileResumably'),
   'Project documents must reject oversized files before copying or uploading them.',
 );
 
@@ -93,8 +104,11 @@ assert(
 assert(
   app.includes("status: 'local'") &&
     app.includes("status: 'uploading'") &&
-    app.includes("status: result.ok ? 'uploaded' : 'failed'"),
-  'Documents should preserve local state, show upload progress, and persist failed/uploaded results.',
+    app.includes("status: uploaded ? 'uploaded' : 'failed'") &&
+    app.includes('async function addProjectDocumentDurably(') &&
+    app.includes('await persistProjectDocumentsImmediately(nextDocuments);') &&
+    app.includes('await persistProjectDocumentsImmediately(\n        projectDocumentsCurrentRef.current,\n      );'),
+  'Documents should durably preserve local metadata before upload, show upload progress, and persist failed/uploaded results.',
 );
 
 assert(

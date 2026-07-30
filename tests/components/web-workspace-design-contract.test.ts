@@ -147,7 +147,7 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain("contentCompact: { padding: spacing.sm");
     expect(shell).toContain("titleBlock: { flex: 1, minWidth: 0");
     expect(shell).toContain("portfolioCard: { flexGrow: 1, flexBasis: 520, minWidth: 0");
-    expect(shell).toContain("evidenceCard: { flexGrow: 1, flexBasis: 430, minWidth: 0");
+    expect(shell).toContain("evidenceCard: { flexGrow: 0, flexBasis: 'auto', width: '100%', minWidth: 0");
     expect(shell).toContain("photoCard: { flexGrow: 1, flexBasis: 340, minWidth: 0");
     expect(shell).toContain("reportPreviewColumn: { flexGrow: 1, flexBasis: 620, minWidth: 0");
   });

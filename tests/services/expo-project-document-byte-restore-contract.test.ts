@@ -30,4 +30,34 @@ describe('project document cloud byte restore adapter', () => {
       "if (!uploaded.ok || uploaded.stubbed) return { ...document, ...integrity };",
     );
   });
+
+  test('reference uploads use the drawing-sized bounded preflight and upload ceiling', () => {
+    const repository = fs.readFileSync(
+      path.resolve(__dirname, '../../services/ReferenceDocumentRepository.ts'),
+      'utf8',
+    );
+    expect(repository).toContain('preflightExpoFileRead({');
+    expect(repository).toContain('maxBytes: MAX_PROJECT_DOCUMENT_FILE_BYTES');
+    expect(repository).toContain('reportedSizeBytes: preflight.sizeBytes');
+    expect(repository).toContain("'Drawing'");
+  });
+
+  test('new project documents are persisted before their upload begins', () => {
+    const app = fs.readFileSync(
+      path.resolve(__dirname, '../../App.tsx'),
+      'utf8',
+    );
+    const durableAdd = app.indexOf('await addProjectDocumentDurably(document);');
+    const upload = app.indexOf(
+      'await retryProjectDocumentUpload(document.id, document);',
+      durableAdd,
+    );
+
+    expect(durableAdd).toBeGreaterThan(-1);
+    expect(upload).toBeGreaterThan(durableAdd);
+    expect(app).toContain('await queueReferenceDocumentRecord(sharedDocument);');
+    expect(app).toContain('findSharedReferenceDocumentForProjectDocument');
+    expect(app).toContain('await ensureVerifiedReferenceDocumentBytes(sharedDocument)');
+    expect(app).toContain('Download & Open');
+  });
 });

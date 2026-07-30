@@ -133,8 +133,8 @@ describe('desktop project controls workspace', () => {
 
     expect(screen.getAllByText('My Work').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Approval Needed')).toBeTruthy();
-    expect(screen.getByText('Cost Exposure')).toBeTruthy();
-    expect(screen.getByText('$12,500')).toBeTruthy();
+    expect(screen.queryByText('Cost Exposure')).toBeNull();
+    expect(screen.queryByText('$12,500')).toBeNull();
     expect(screen.getByText('Task Delay Estimates')).toBeTruthy();
     expect(screen.getByText('4 days total')).toBeTruthy();
   });

@@ -10,8 +10,16 @@ const manifestPath = path.join(
   repoRoot,
   'validation',
   'output',
-  'vic-release-manifest.json',
+  'jarvis-release-manifest.json',
 );
+const evidencePolicy = JSON.parse(fs.readFileSync(
+  path.join(repoRoot, 'validation', 'jarvis', 'release-evidence-policy.json'),
+  'utf8',
+));
+const escapedDefectRegistry = JSON.parse(fs.readFileSync(
+  path.join(repoRoot, 'validation', 'jarvis', 'escaped-defects.json'),
+  'utf8',
+));
 const MIN_LAYER_TIMEOUT_MS = 30_000;
 const MAX_LAYER_TIMEOUT_MS = 30 * 60_000;
 
@@ -96,7 +104,8 @@ function buildReleaseManifest({
 
   return {
     schemaVersion: 1,
-    gate: 'V.I.C. Automated Release Gate',
+    gate: 'VIGIL Automated Release Gate',
+    identity: evidencePolicy.identity,
     startedAt,
     finishedAt,
     repository,
@@ -114,6 +123,27 @@ function buildReleaseManifest({
         : 'not_certified',
     },
     layers: results,
+    evidence: {
+      deviceValidation: {
+        status: 'required',
+        requiredPlatforms: evidencePolicy.requiredPlatforms,
+        requiredJourneys: evidencePolicy.requiredDeviceJourneys.map(journey => journey.id),
+        template: 'validation/jarvis/device-evidence-template.json',
+      },
+      performance: {
+        status: 'measurement_required',
+        budgets: evidencePolicy.performanceBudgets,
+      },
+      visualRegression: {
+        status: evidencePolicy.certificationRules.missingVisualBaselineStatus,
+        baselineDefinition: 'validation/jarvis/visual-regression-baselines.json',
+      },
+      historicalDefectReplay: {
+        status: 'registered',
+        registeredDefectFamilies: escapedDefectRegistry.defects.length,
+        registry: 'validation/jarvis/escaped-defects.json',
+      },
+    },
     manualValidationRequired: [
       'live iPhone, iPad, and web changes propagating without a restart',
       'camera, location, native sign-in, offline recovery, and touch latency on physical devices',
@@ -137,7 +167,7 @@ function runReleaseGate(env = process.env) {
   const results = [];
   const globalTimeout = env.VIC_LAYER_TIMEOUT_MS;
 
-  console.log('V.I.C. Automated Release Gate');
+  console.log('VIGIL Automated Release Gate');
   console.log(`Started: ${startedAt}`);
   console.log('This gate runs automated evidence. It does not certify physical-device behavior.');
   console.log('');
@@ -194,7 +224,7 @@ function runReleaseGate(env = process.env) {
   });
   writeManifest(manifest);
 
-  console.log('\nV.I.C. Automated Gate Summary');
+  console.log('\nVIGIL Automated Gate Summary');
   results.forEach(result => {
     console.log(
       `${result.status.toUpperCase()} ${result.label} (${(result.durationMs / 1000).toFixed(1)}s)`,

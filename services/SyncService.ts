@@ -31,6 +31,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getStoredJson, setStoredJson } from './StorageService';
 import {
   deletedDAVERecordIds,
+  refreshDAVESyncTombstonesFromCloud,
   removeDAVETombstonedRecords,
   synchronizeDAVESyncTombstones,
   type DAVESyncTombstoneSyncResult,
@@ -49,6 +50,7 @@ import { createPendingChangesRetryController } from './PendingChangesRetryContro
 import { processDAVEStorageCleanup } from './DAVEStorageCleanup';
 import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
+import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -2357,6 +2359,11 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
   const archiveRecovery = await stageMisclassifiedArchiveOnlyQuarantines();
   const queue = await getOfflineQueue();
+  const orderedQueue = pendingUploadOrder(queue);
+  const {
+    taskPriorityBatch,
+    uploadBatch,
+  } = planPendingUploadBatch(orderedQueue);
 
   if (!configuration.configured) {
     return {
@@ -2368,13 +2375,18 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     };
   }
 
-  const operationalQueueItems = queue.filter(item =>
+  const operationalQueueItems = uploadBatch.filter(item =>
     queueEntityUsesDAVESyncTombstones(item.entity),
   );
   let operationalTombstoneGate: DAVESyncTombstoneSyncResult | null = null;
   if (operationalQueueItems.length > 0) {
     try {
-      operationalTombstoneGate = await synchronizeDAVESyncTombstones();
+      // Routine task/area/document saves only need the authoritative deletion
+      // inventory before writing. synchronizeDAVESyncTombstones() also
+      // re-uploads the entire durable deletion journal; large long-lived
+      // workspaces can contain hundreds of markers, which previously blocked
+      // the current task save before its queue item was even attempted.
+      operationalTombstoneGate = await refreshDAVESyncTombstonesFromCloud();
     } catch (error) {
       operationalTombstoneGate = {
         tombstones: [],
@@ -2388,10 +2400,11 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 
   const resolvedIds = new Set<string>();
   const retriedItemsById = new Map<string, SyncQueueItem>();
-  const attemptedItemsById = new Map(queue.map(item => [item.id, item]));
+  const attemptedItemsById = new Map(uploadBatch.map(item => [item.id, item]));
   const itemOutcomes: Record<string, SyncItemOutcome> = {};
   const errors: string[] = [];
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
+  const uploadContext: QueueUploadContext = {};
   let uploaded = 0;
   const uploadedByEntity: Record<SyncEntity, number> = {
     project: 0,
@@ -2401,7 +2414,10 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     reference_document: 0,
   };
 
-  for (const item of queue) {
+  // A user-confirmed task edit is the interactive critical path. Finish and
+  // durably reconcile task rows as one bounded batch; unrelated historical
+  // field-update retries must not keep the Save button waiting.
+  for (const item of uploadBatch) {
     if (
       operationalTombstoneGate &&
       queueItemMatchesDAVESyncTombstone(
@@ -2435,7 +2451,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       continue;
     }
 
-    const result = await uploadQueueItem(item);
+    const result = await uploadQueueItem(item, uploadContext);
     const resultCode = typeof result === 'string' ? result : result.outcome;
 
     if (resultCode === 'uploaded') {
@@ -2491,26 +2507,28 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 
   let storageCleanupRemaining = 0;
   let storageCleanupCompleted = 0;
-  try {
-    const storageCleanup = await processDAVEStorageCleanup();
-    storageCleanupRemaining = storageCleanup.remaining;
-    storageCleanupCompleted = storageCleanup.completed;
-    errors.push(
-      ...storageCleanup.errors.map(error => sanitizeUserFacingSyncMessage(error)),
-    );
-  } catch {
-    storageCleanupRemaining = 1;
-    errors.push('Protected file cleanup is temporarily unavailable.');
-  }
+  if (!taskPriorityBatch) {
+    try {
+      const storageCleanup = await processDAVEStorageCleanup();
+      storageCleanupRemaining = storageCleanup.remaining;
+      storageCleanupCompleted = storageCleanup.completed;
+      errors.push(
+        ...storageCleanup.errors.map(error => sanitizeUserFacingSyncMessage(error)),
+      );
+    } catch {
+      storageCleanupRemaining = 1;
+      errors.push('Protected file cleanup is temporarily unavailable.');
+    }
 
-  // Deletion markers remain permanent. Only metadata-only deletion receipts
-  // whose one-year retention window has elapsed are purged, and the existing
-  // RPC still enforces the signed-in owner's authorization boundary.
-  try {
-    await purgeExpiredDAVEDeletionAudit();
-  } catch {
-    // Retention maintenance must never make otherwise-safe project sync look
-    // unsuccessful. The production health check reports overdue receipts.
+    // Deletion markers remain permanent. Only metadata-only deletion receipts
+    // whose one-year retention window has elapsed are purged, and the existing
+    // RPC still enforces the signed-in owner's authorization boundary.
+    try {
+      await purgeExpiredDAVEDeletionAudit();
+    } catch {
+      // Retention maintenance must never make otherwise-safe project sync look
+      // unsuccessful. The production health check reports overdue receipts.
+    }
   }
 
   if (uploaded > 0 || storageCleanupCompleted > 0) {
@@ -3371,8 +3389,39 @@ type ReferenceDocumentUploadSuccess = {
   referenceDocument: ReferenceDocument;
 };
 
+type QueueUploadContext = {
+  scheduleItemsAuthorityPromise?: ReturnType<typeof listScheduleItems>;
+  scheduleItemsById?: Map<string, ScheduleItem>;
+};
+
+function pendingUploadOrder(queue: readonly SyncQueueItem[]): SyncQueueItem[] {
+  return queue
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftIsTask = left.item.entity === 'schedule_item';
+      const rightIsTask = right.item.entity === 'schedule_item';
+      if (leftIsTask !== rightIsTask) return leftIsTask ? -1 : 1;
+
+      if (leftIsTask && rightIsTask) {
+        const leftChangedAt = new Date(left.item.changedAt).getTime();
+        const rightChangedAt = new Date(right.item.changedAt).getTime();
+        if (
+          Number.isFinite(leftChangedAt) &&
+          Number.isFinite(rightChangedAt) &&
+          leftChangedAt !== rightChangedAt
+        ) {
+          return rightChangedAt - leftChangedAt;
+        }
+      }
+
+      return left.index - right.index;
+    })
+    .map(entry => entry.item);
+}
+
 async function uploadQueueItem(
   item: SyncQueueItem,
+  context: QueueUploadContext,
 ): Promise<string | ReferenceDocumentUploadSuccess> {
   if (item.entity === 'project') {
     return uploadProjectQueueItem(item);
@@ -3403,11 +3452,15 @@ async function uploadQueueItem(
 
   if (item.entity === 'schedule_item') {
     const payload = item.payload as ScheduleItemRecordPayload;
-    const cloud = await listScheduleItems();
+    context.scheduleItemsAuthorityPromise ??= listScheduleItems();
+    const cloud = await context.scheduleItemsAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'Task authority could not be checked.';
     }
-    const remote = cloud.data.find(candidate => candidate.id === payload.id);
+    context.scheduleItemsById ??= new Map(
+      cloud.data.map(candidate => [candidate.id, candidate]),
+    );
+    const remote = context.scheduleItemsById.get(payload.id);
     const changedFields = Array.isArray(payload.changedFields)
       ? payload.changedFields
       : null;
@@ -3463,6 +3516,7 @@ async function uploadQueueItem(
     }
     const result = await upsertScheduleItem(authoritative);
     if (result.ok && !result.stubbed) {
+      context.scheduleItemsById.set(payload.id, authoritative);
       await clearConflictsForLocalRecord('schedule_item', payload.id);
       return 'uploaded';
     }

@@ -249,10 +249,9 @@ export function AdminScreen({
   const updateSyncAttentionCount = savedUpdates.filter(
     update => update.status === 'queued' || update.status === 'failed',
   ).length;
-  const pendingSyncCount = Math.max(
-    updateSyncAttentionCount,
-    syncStatus?.queuedChanges || 0,
-  );
+  const pendingSyncCount = syncStatus
+    ? syncStatus.queuedChanges
+    : updateSyncAttentionCount;
   const recoveryCopyCount = syncStatus?.recoveryCopies || 0;
   const recoveryCopyLabel = `${recoveryCopyCount} protected sync ${recoveryCopyCount === 1 ? 'copy' : 'copies'}`;
   const recoveryCopyVerb = recoveryCopyCount === 1 ? 'needs' : 'need';
@@ -260,12 +259,12 @@ export function AdminScreen({
     ? 'Sync in progress'
     : syncStatus?.recoveryAvailable
       ? pendingSyncCount > 0
-        ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting; ${recoveryCopyLabel} also ${recoveryCopyVerb} review`
+        ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} pending on this device; ${recoveryCopyLabel} also ${recoveryCopyVerb} review`
         : `${recoveryCopyLabel} ${recoveryCopyVerb} review`
     : pendingSyncCount > 0
-    ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} waiting to sync`
+    ? `${pendingSyncCount} item${pendingSyncCount === 1 ? '' : 's'} pending on this device`
     : syncStatus?.conflicts
-      ? `${syncStatus.conflicts} sync conflict${syncStatus.conflicts === 1 ? '' : 's'} need review`
+      ? `${syncStatus.conflicts} conflict${syncStatus.conflicts === 1 ? '' : 's'} on this device ${syncStatus.conflicts === 1 ? 'needs' : 'need'} review`
       : lastFullSyncIssueCount > 0
         ? `${lastFullSyncIssueCount} ${lastFullSyncIssueCount === 1 ? 'item needs' : 'items need'} retry`
       : 'All caught up';

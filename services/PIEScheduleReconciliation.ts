@@ -12,6 +12,7 @@ import {
   classifyDAVESafety,
   isDAVECurrentCertainAssertion,
   parseDAVEAssertions,
+  type DAVEAssertionParseResult,
 } from './DAVEAssertionParser';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
@@ -109,6 +110,19 @@ export function scheduleCompletionOverridesFieldMatch(
   // is at least as new as the contradictory field evidence.
   if (completionAt === 0 || fieldAt === 0) return pmVerified || pmRecorded;
   return completionAt >= fieldAt;
+}
+
+export function scheduleProgressOverridesFieldMatch(
+  item: ScheduleItem,
+  match: Pick<PIEScheduleFieldMatch, 'capturedAt'> | null,
+) {
+  if (item.progressSource !== 'project_manager') return false;
+  const progressAt = timestamp(
+    item.progressConfirmedAt || item.importedAt || item.createdAt || null,
+  );
+  const fieldAt = timestamp(match?.capturedAt || null);
+  if (progressAt === 0 || fieldAt === 0) return true;
+  return progressAt >= fieldAt;
 }
 
 const DAY_MS = 86_400_000;
@@ -367,7 +381,8 @@ export function buildPIEScheduleReconciliation({
 
       if (
         !scheduleProgressIsComplete(item) &&
-        bestMatch.signal === 'complete'
+        bestMatch.signal === 'complete' &&
+        !scheduleProgressOverridesFieldMatch(item, bestMatch)
       ) {
         warnings.push(makeWarning({
           item,
@@ -380,7 +395,8 @@ export function buildPIEScheduleReconciliation({
         }));
       } else if (
         item.status === 'Not Started' &&
-        bestMatch.signal === 'in_progress'
+        bestMatch.signal === 'in_progress' &&
+        !scheduleProgressOverridesFieldMatch(item, bestMatch)
       ) {
         warnings.push(makeWarning({
           item,
@@ -520,7 +536,12 @@ function matchScheduleItemToUpdate(
     : score >= 65
       ? 'medium'
       : 'low';
-  const signal = fieldSignal(scopedEvidence.signalText, scopedEvidence.photos);
+  const signal = fieldSignal(
+    item,
+    scopedEvidence.signalText,
+    scopedEvidence.photos,
+    storedTaskNameMatched,
+  );
 
   return {
     scheduleItemId: item.id,
@@ -613,8 +634,10 @@ function scheduleTaskText(item: ScheduleItem) {
 }
 
 function fieldSignal(
+  item: ScheduleItem,
   text: string,
   photos: ProjectUpdate['photos'],
+  storedTaskNameMatched: boolean,
 ): PIEScheduleFieldSignal {
   const hasOpenIssue = photos.some(photo =>
     (photo.category === 'Open Issue' || photo.category === 'Safety Concern') &&
@@ -644,12 +667,81 @@ function fieldSignal(
   ) {
     return 'issue';
   }
+  if (taskSpecificIncompleteEvidence(item, text, parsed)) return 'in_progress';
   if (completion === 'not_complete') return 'in_progress';
-  if (completion === 'complete') return 'complete';
+  if (completion === 'complete') {
+    if (storedTaskNameMatched || completionEvidenceNamesTask(item, parsed)) {
+      return 'complete';
+    }
+    // A generic whole-area or whole-project completion statement must not
+    // fall through to implementation classification and complete a named task.
+    return 'unknown';
+  }
   if (implementation === 'implemented' || implementation === 'in_progress') {
     return 'in_progress';
   }
   return 'unknown';
+}
+
+function completionEvidenceNamesTask(
+  item: ScheduleItem,
+  parsed: DAVEAssertionParseResult,
+) {
+  const taskTokens = new Set(tokens(scheduleTaskText(item)));
+  if (taskTokens.size === 0) return false;
+
+  return parsed.assertions.some(assertion =>
+    assertion.predicate === 'complete' &&
+    assertion.status === 'complete' &&
+    assertion.polarity === 'affirmed' &&
+    isDAVECurrentCertainAssertion(assertion) &&
+    tokens(assertion.subject || '').some(token => taskTokens.has(token)),
+  );
+}
+
+function taskSpecificIncompleteEvidence(
+  item: ScheduleItem,
+  text: string,
+  parsed: DAVEAssertionParseResult,
+) {
+  const taskTokens = new Set(tokens(scheduleTaskText(item)));
+  if (taskTokens.size === 0) return false;
+
+  const hasUnfinishedAssertion = parsed.assertions.some(assertion => {
+    if (
+      !assertion.subject ||
+      !isDAVECurrentCertainAssertion(assertion) ||
+      !tokens(assertion.subject).some(token => taskTokens.has(token))
+    ) {
+      return false;
+    }
+    return assertion.status === 'incomplete' ||
+      assertion.status === 'not_started' ||
+      assertion.status === 'not_implemented' ||
+      assertion.status === 'in_progress';
+  });
+  if (hasUnfinishedAssertion) return true;
+
+  const normalizedText = normalize(text);
+  return Array.from(taskTokens).some(token => {
+    const taskTerm = `${escapeRegExp(token)}(?:s|es)?`;
+    const namedException = new RegExp(
+      `\\b(?:except|excluding|without|missing|no|exception\\s+of)\\b(?:\\s+[a-z0-9]+){0,5}\\s+${taskTerm}\\b`,
+    );
+    const namedNegative = new RegExp(
+      `\\b${taskTerm}\\b\\s+(?:(?:has|have|is|are)\\s+)?not\\s+(?:been\\s+)?(?:installed|complete|completed|done|finished|present|visible)\\b`,
+    );
+    const namedIncomplete = new RegExp(
+      `\\b${taskTerm}\\b\\s+(?:is|are)\\s+(?:missing|absent|incomplete|pending)\\b`,
+    );
+    return namedException.test(normalizedText) ||
+      namedNegative.test(normalizedText) ||
+      namedIncomplete.test(normalizedText);
+  });
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function hasRecentStrongEvidence(match: PIEScheduleFieldMatch | null, now: Date) {

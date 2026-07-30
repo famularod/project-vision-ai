@@ -189,10 +189,13 @@ assert.deepStrictEqual(
 );
 
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-assert(app.includes("'dave-follow-through-reviews:v2'"));
-assert(app.includes('Reviewed for Now'));
-assert(app.includes('planDAVEFollowThrough'));
-assert(app.includes('parseDAVEFollowThroughReviewStatesResult'));
-assert(app.includes('No reminder history was changed.'));
+assert(!app.includes("'dave-follow-through-reviews:v2'"));
+assert(!app.includes('Reviewed for Now'));
+assert(!app.includes('planDAVEFollowThrough'));
+assert(!app.includes('parseDAVEFollowThroughReviewStatesResult'));
+assert(app.includes('const attentionScheduleItemIds = useMemo('));
+assert(app.includes('attentionScheduleItemIds.has(item.id)'));
 
-console.log('DAVE follow-through planner behavior tests passed.');
+console.log(
+  'DAVE follow-through planner behavior tests passed; the retired reminder panel stays out of the live app.',
+);

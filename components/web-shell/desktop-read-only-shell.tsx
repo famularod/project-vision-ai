@@ -18,6 +18,7 @@ import {
   SCHEDULE_STATUSES,
   type ProjectItemType,
   type ProjectUpdate,
+  type ReferenceDocument,
   type ScheduleItem,
   type SchedulePriority,
   type ScheduleStatus,
@@ -76,10 +77,7 @@ import {
 import { colors, spacing } from '../../theme';
 import { daysUntilDate } from '../../utils/date';
 import { PRODUCT_BRAND } from '../../product-brand';
-import {
-  VITRUVIUS_BRAND_DARK_BLUE,
-  VITRUVIUS_BRAND_SOFT_BLUE,
-} from '../vitruvius-brand-lockup';
+import { VitruviusBrandLockup } from '../vitruvius-brand-lockup';
 import { useDesktopAuth } from './desktop-auth-provider';
 import { DesktopConnectionStatus } from './desktop-connection-status';
 import { DesktopOverviewPage } from './desktop-overview-page';
@@ -87,7 +85,9 @@ import { DesktopSchedulePage } from './desktop-schedule-page';
 import { desktopSurfaces } from './desktop-surface-palette';
 import { ProjectControlsEditor } from '../project-controls-editor';
 import { buildVitruviusPortfolioImpact } from '../../services/VitruviusProjectControls';
+import { applyProjectControlTemplateToControls } from '../../services/ProjectControlTemplates';
 import { buildVitruviusMyWork } from '../../services/VitruviusMyWork';
+import { buildVitruviusReviewQueue } from '../../services/VitruviusReviewQueue';
 import {
   projectItemWorkflowIsClosed,
   projectItemWorkflowReadiness,
@@ -180,13 +180,7 @@ function DesktopSessionGate() {
 
   return (
     <ScrollView style={styles.gateRoot} contentContainerStyle={styles.gateContent}>
-      <View style={styles.gateBrandRow}>
-        <View style={styles.brandMark}><Text style={styles.brandMarkText}>{PRODUCT_BRAND.monogram}</Text></View>
-        <View>
-          <Text style={styles.brandName}>{PRODUCT_BRAND.name}</Text>
-          <Text style={styles.brandSubtitle}>{PRODUCT_BRAND.subtitle}</Text>
-        </View>
-      </View>
+      <VitruviusBrandLockup large testID="desktop-sign-in-brand-lockup" />
       <View style={styles.gateCard}>
         <Text style={styles.eyebrow}>VITRUVIUS PROJECT INTELLIGENCE</Text>
         <Text style={styles.gateTitle}>Sign in to your project workspace</Text>
@@ -784,12 +778,13 @@ function TaskEditingWorkspace({
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<DAVEWebScheduleItem | null>(null);
-  const [taskView, setTaskView] = useState<'open' | 'mine' | 'completed'>('open');
+  const [taskView, setTaskView] = useState<'open' | 'mine' | 'reviews' | 'completed'>('open');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<TaskWorkspaceStatusFilter>('all');
   const [areaFilter, setAreaFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | SchedulePriority>('all');
+  const [itemTypeFilter, setItemTypeFilter] = useState<'all' | ProjectItemType>('all');
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
   const [conflictDraft, setConflictDraft] = useState<TaskConflictDraft | null>(null);
@@ -822,6 +817,14 @@ function TaskEditingWorkspace({
     () => myWork.items.map(row => row.item as DAVEWebScheduleItem),
     [myWork.items],
   );
+  const myReviews = useMemo(
+    () => buildVitruviusReviewQueue({
+      items: tasks,
+      displayName: desktopDisplayName,
+      email: auth.userEmail,
+    }),
+    [auth.userEmail, desktopDisplayName, tasks],
+  );
   const portfolioImpact = useMemo(
     () => buildVitruviusPortfolioImpact(tasks),
     [tasks],
@@ -830,6 +833,8 @@ function TaskEditingWorkspace({
     ? completedTasks
     : taskView === 'mine'
       ? myWorkTasks
+      : taskView === 'reviews'
+        ? myReviews.items.map(item => item as DAVEWebScheduleItem)
       : openTasks;
   const areaOptions = uniqueOptions(taskViewItems.map(task => task.locationName));
   const visibleTasks = useMemo(() => {
@@ -838,17 +843,19 @@ function TaskEditingWorkspace({
       if (query && !taskSearchText(task).includes(query)) return false;
       if (areaFilter !== 'all' && normalizedName(task.locationName) !== normalizedName(areaFilter)) return false;
       if (priorityFilter !== 'all' && task.priority !== priorityFilter) return false;
+      if (itemTypeFilter !== 'all' && (task.itemType || 'Task') !== itemTypeFilter) return false;
       if (statusFilter === 'overdue' && !taskIsOverdue(task)) return false;
       if (statusFilter !== 'all' && statusFilter !== 'overdue' && task.status !== statusFilter) return false;
       return true;
     });
-  }, [areaFilter, priorityFilter, searchQuery, statusFilter, taskViewItems]);
+  }, [areaFilter, itemTypeFilter, priorityFilter, searchQuery, statusFilter, taskViewItems]);
   const selectedTask = tasks.find(task => task.id === selectedTaskId) ?? null;
   const filtersActive = Boolean(
     searchQuery.trim() ||
     statusFilter !== 'all' ||
     areaFilter !== 'all' ||
-    priorityFilter !== 'all',
+    priorityFilter !== 'all' ||
+    itemTypeFilter !== 'all',
   );
   useEffect(() => {
     if (
@@ -891,6 +898,7 @@ function TaskEditingWorkspace({
     setStatusFilter('all');
     setAreaFilter('all');
     setPriorityFilter('all');
+    setItemTypeFilter('all');
   };
 
   const saveTask = async (draft: DAVEWebTaskDraft) => {
@@ -1026,6 +1034,29 @@ function TaskEditingWorkspace({
     }
   };
 
+  const addPhotoToTask = async (task: DAVEWebScheduleItem, file: File | null) => {
+    if (!file || pending) return;
+    setPending(true);
+    setNotice(null);
+    try {
+      await auth.uploadTaskPhoto(
+        task,
+        file.name || 'task-photo',
+        file.type || 'image/jpeg',
+        await file.arrayBuffer(),
+      );
+      setSelectedTaskId(task.id);
+      setNotice({
+        tone: 'good',
+        text: 'Photo added to this task and synced to the shared project record.',
+      });
+    } catch (error) {
+      setNotice({ tone: 'danger', text: taskPhotoMutationMessage(error) });
+    } finally {
+      setPending(false);
+    }
+  };
+
   return (
     <Section
       title={`${tasks.length} task${tasks.length === 1 ? '' : 's'}`}
@@ -1047,12 +1078,6 @@ function TaskEditingWorkspace({
           label: 'Approval Needed',
           value: portfolioImpact.pendingApprovalCount,
           tone: portfolioImpact.pendingApprovalCount ? 'warning' : 'neutral',
-        },
-        {
-          icon: 'cash-outline',
-          label: 'Cost Exposure',
-          value: formatCurrency(portfolioImpact.costExposure),
-          tone: portfolioImpact.costExposure ? 'warning' : 'neutral',
         },
         {
           icon: 'calendar-outline',
@@ -1125,6 +1150,15 @@ function TaskEditingWorkspace({
               setStatusFilter('all');
             }}
           />
+          <TaskViewTab
+            label="My Reviews"
+            count={myReviews.items.length}
+            active={taskView === 'reviews'}
+            onPress={() => {
+              setTaskView('reviews');
+              setStatusFilter('all');
+            }}
+          />
         </View>
         <View style={styles.taskFilters}>
           <TaskFilterSelect
@@ -1153,6 +1187,15 @@ function TaskEditingWorkspace({
             onChange={setAreaFilter}
           />
           <TaskFilterSelect
+            label="Work type"
+            value={itemTypeFilter}
+            options={[
+              { value: 'all', label: 'All work types' },
+              ...PROJECT_ITEM_TYPES.map(itemType => ({ value: itemType, label: itemType })),
+            ]}
+            onChange={value => setItemTypeFilter(value as 'all' | ProjectItemType)}
+          />
+          <TaskFilterSelect
             label="Priority"
             value={priorityFilter}
             options={[
@@ -1174,7 +1217,13 @@ function TaskEditingWorkspace({
       </View>
       <Text style={styles.taskResultCount}>
         Showing {visibleTasks.length} of {taskViewItems.length}{' '}
-        {taskView === 'completed' ? 'completed' : taskView === 'mine' ? 'assigned' : 'open'} tasks
+        {taskView === 'completed'
+          ? 'completed'
+          : taskView === 'mine'
+            ? 'assigned'
+            : taskView === 'reviews'
+              ? 'review'
+              : 'open'} tasks
       </Text>
 
       {notice ? (
@@ -1246,7 +1295,7 @@ function TaskEditingWorkspace({
       <View style={styles.taskWorkspaceBody}>
         <View style={styles.taskListPane}>
           <GroupedTaskList
-            key={`${taskView}:${selectedProject ?? 'all-projects'}:${searchQuery}:${statusFilter}:${areaFilter}:${priorityFilter}`}
+            key={`${taskView}:${selectedProject ?? 'all-projects'}:${searchQuery}:${statusFilter}:${areaFilter}:${itemTypeFilter}:${priorityFilter}`}
             tasks={visibleTasks}
             selectedTaskId={selectedTaskId}
             autoExpandMatches={filtersActive}
@@ -1279,6 +1328,9 @@ function TaskEditingWorkspace({
                 contractorOptions={contractorOptions}
                 actor={auth.userEmail || 'Project manager'}
                 pending={pending}
+                onAddPhoto={editingTask
+                  ? file => addPhotoToTask(editingTask, file)
+                  : undefined}
                 onCancel={() => {
                   if (pending) return;
                   setEditorOpen(false);
@@ -1292,6 +1344,8 @@ function TaskEditingWorkspace({
                 task={selectedTask}
                 onClose={() => setSelectedTaskId(null)}
                 onEdit={() => openEdit(selectedTask)}
+                pending={pending}
+                onAddPhoto={file => addPhotoToTask(selectedTask, file)}
                 onDelete={() => {
                   setNotice(null);
                   setDeleteCandidate(selectedTask);
@@ -1676,6 +1730,7 @@ function TaskEditor({
   contractorOptions,
   actor,
   pending,
+  onAddPhoto,
   onCancel,
   onSave,
 }: {
@@ -1687,6 +1742,7 @@ function TaskEditor({
   contractorOptions: readonly string[];
   actor: string;
   pending: boolean;
+  onAddPhoto?: (file: File | null) => void;
   onCancel: () => void;
   onSave: (draft: DAVEWebTaskDraft) => Promise<void>;
 }) {
@@ -1763,7 +1819,18 @@ function TaskEditor({
             options={PROJECT_ITEM_TYPES}
             value={draft.itemType}
             onChange={value => {
-              updateField('itemType', value);
+              setDraft(previous => ({
+                ...previous,
+                itemType: value,
+                projectControls: value === 'Task'
+                  ? previous.projectControls
+                  : applyProjectControlTemplateToControls({
+                      itemType: value,
+                      current: previous.projectControls,
+                      actor: actor.trim() || previous.owner.trim() || 'Project manager',
+                      now: new Date().toISOString(),
+                    }),
+              }));
               if (value !== 'Task' && (
                 draft.status === 'Complete' ||
                 Number(draft.percentComplete) >= 100
@@ -1781,6 +1848,13 @@ function TaskEditor({
       </View>
       <ChoiceOrTypeField label="Project" value={draft.projectName} options={projectOptions} onChange={value => updateField('projectName', value)} />
       <ChoiceOrTypeField label="Location / area" value={draft.locationName} options={locationOptions} onChange={value => updateField('locationName', value)} optional />
+      {task && onAddPhoto ? (
+        <TaskPhotoPicker
+          pending={pending}
+          onFile={onAddPhoto}
+          detail="Creates a field update linked to this task, project, and area."
+        />
+      ) : null}
 
       <View style={styles.twoColumnFields}>
         <View style={styles.flexField}>
@@ -2058,20 +2132,33 @@ function ChoiceOrTypeField({
     <View style={styles.fieldGroup}>
       <Text style={styles.fieldLabel}>{label} {optional ? <Text style={styles.optionalLabel}>(optional)</Text> : null}</Text>
       {options.length > 0 ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.optionRow}>
+        <View style={[styles.optionRow, styles.choiceFieldOptions]}>
           {options.map(option => (
             <Pressable
               key={option}
               onPress={() => onChange(option)}
-              style={({ pressed }) => [styles.smallChoice, normalizedName(value) === normalizedName(option) && styles.choiceActive, pressed && styles.buttonPressed]}
+              style={({ pressed }) => [
+                styles.smallChoice,
+                styles.choiceFieldChoice,
+                normalizedName(value) === normalizedName(option) && styles.choiceActive,
+                pressed && styles.buttonPressed,
+              ]}
               accessibilityRole="radio"
               accessibilityLabel={`${label}: ${option}`}
               accessibilityState={{ selected: normalizedName(value) === normalizedName(option) }}
             >
-              <Text style={[styles.choiceText, normalizedName(value) === normalizedName(option) && styles.choiceTextActive]}>{option}</Text>
+              <Text
+                style={[
+                  styles.choiceText,
+                  styles.choiceFieldChoiceText,
+                  normalizedName(value) === normalizedName(option) && styles.choiceTextActive,
+                ]}
+              >
+                {option}
+              </Text>
             </Pressable>
           ))}
-        </ScrollView>
+        </View>
       ) : null}
       <TextInput
         value={value}
@@ -2283,13 +2370,17 @@ function TaskInspectorEmpty({ onAddTask }: { onAddTask: () => void }) {
 
 function TaskDetailsPanel({
   task,
+  pending,
   onClose,
   onEdit,
+  onAddPhoto,
   onDelete,
 }: {
   task: DAVEWebScheduleItem;
+  pending: boolean;
   onClose: () => void;
   onEdit: () => void;
+  onAddPhoto: (file: File | null) => void;
   onDelete: () => void;
 }) {
   const latestActivity = task.activity?.[task.activity.length - 1] ?? null;
@@ -2354,6 +2445,12 @@ function TaskDetailsPanel({
           <Text style={styles.dataMeta}>{latestActivity.author} · {formatDateTime(latestActivity.createdAt)}</Text>
         </View>
       ) : null}
+
+      <TaskPhotoPicker
+        pending={pending}
+        onFile={onAddPhoto}
+        detail="The photo will be saved as a field update linked to this task and its current area."
+      />
 
       <View style={styles.taskInspectorActions}>
         <Pressable
@@ -3091,12 +3188,19 @@ function DocumentManagementWorkspace({
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [uploadCategory, setUploadCategory] = useState<string>('Schedules');
+  const [drawingNumber, setDrawingNumber] = useState('');
+  const [drawingRevision, setDrawingRevision] = useState('');
+  const [drawingDiscipline, setDrawingDiscipline] = useState('');
+  const [drawingStatus, setDrawingStatus] = useState<NonNullable<ReferenceDocument['drawingStatus']>>('For Review');
+  const [drawingIssuedAt, setDrawingIssuedAt] = useState('');
   const [uploadProjects, setUploadProjects] = useState<string[]>(
     selectedProject ? [selectedProject] : projects[0] ? [projects[0]] : [],
   );
   const [replacementId, setReplacementId] = useState<string>('');
   const [preparedUpload, setPreparedUpload] = useState<DAVEWebPreparedUpload | null>(null);
   const [preparedBytes, setPreparedBytes] = useState<ArrayBuffer | null>(null);
+  const [preparedFile, setPreparedFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
   const groups = useMemo(() => groupDAVEWebDocuments(documents), [documents]);
   const categoryOptions = useMemo(
@@ -3154,21 +3258,41 @@ function DocumentManagementWorkspace({
         fingerprint,
         versionGroupId: replacement?.webVersionGroupId || replacement?.id || null,
       });
-      setPreparedUpload(prepared);
+      setPreparedUpload(normalizedName(uploadCategory) === 'drawing'
+        ? {
+            ...prepared,
+            document: {
+              ...prepared.document,
+              drawingNumber: drawingNumber.trim() || null,
+              drawingRevision: drawingRevision.trim() || null,
+              drawingDiscipline: drawingDiscipline.trim() || null,
+              drawingStatus,
+              drawingIssuedAt: drawingIssuedAt.trim() || null,
+            },
+          }
+        : prepared);
       setPreparedBytes(bytes);
+      setPreparedFile(file);
     } catch (error) {
       setPreparedUpload(null);
       setPreparedBytes(null);
+      setPreparedFile(null);
       setNotice({ tone: 'danger', text: error instanceof Error ? error.message : 'The document could not be prepared.' });
     }
   }
 
   async function uploadPreparedDocument() {
-    if (!preparedUpload || !preparedBytes || uploading) return;
+    if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
     setUploading(true);
+    setUploadProgress(0);
     setNotice(null);
     try {
-      await auth.uploadDocument(preparedUpload, preparedBytes);
+      await auth.uploadDocument(
+        preparedUpload,
+        preparedBytes,
+        preparedFile,
+        fraction => setUploadProgress(Math.round(fraction * 100)),
+      );
       setNotice({
         tone: 'good',
         text: preparedUpload.scheduleItems.length > 0
@@ -3177,12 +3301,14 @@ function DocumentManagementWorkspace({
       });
       setPreparedUpload(null);
       setPreparedBytes(null);
+      setPreparedFile(null);
       setUploadOpen(false);
       setReplacementId('');
     } catch (error) {
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   }
 
@@ -3242,7 +3368,7 @@ function DocumentManagementWorkspace({
             <Text style={styles.primaryButtonText}>{uploadOpen ? 'Close Upload' : 'Upload Document'}</Text>
           </View>
         </Pressable>
-        <Text style={styles.taskSyncHint}>Files are limited to 25 MB and saved in protected project storage.</Text>
+        <Text style={styles.taskSyncHint}>Files up to 50 MB are saved in protected project storage. Large files resume after interruption.</Text>
       </View>
 
       {uploadOpen ? (
@@ -3255,6 +3381,7 @@ function DocumentManagementWorkspace({
               setUploadCategory(value);
               setPreparedUpload(null);
               setPreparedBytes(null);
+              setPreparedFile(null);
             }} />
           </View>
           <View style={styles.fieldGroup}>
@@ -3273,6 +3400,7 @@ function DocumentManagementWorkspace({
                         : [...current, project]);
                       setPreparedUpload(null);
                       setPreparedBytes(null);
+                      setPreparedFile(null);
                     }}
                     accessibilityRole="checkbox"
                     accessibilityState={{ checked: selected }}
@@ -3310,6 +3438,26 @@ function DocumentManagementWorkspace({
               ))}
             </ScrollView>
           </View>
+          {normalizedName(uploadCategory) === 'drawing' ? (
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Drawing control</Text>
+              <Text style={styles.sectionDetail}>Record the sheet identity and issue status so the field team can distinguish the current revision.</Text>
+              <View style={styles.twoColumnFields}>
+                <LabeledTextField label="Drawing number" value={drawingNumber} onChangeText={setDrawingNumber} placeholder="A2.01" />
+                <LabeledTextField label="Revision" value={drawingRevision} onChangeText={setDrawingRevision} placeholder="3" />
+                <LabeledTextField label="Discipline" value={drawingDiscipline} onChangeText={setDrawingDiscipline} placeholder="Architectural" />
+              </View>
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Issue status</Text>
+                <OptionButtons<NonNullable<ReferenceDocument['drawingStatus']>>
+                  options={['Draft', 'For Review', 'For Construction', 'As-Built', 'Superseded']}
+                  value={drawingStatus}
+                  onChange={setDrawingStatus}
+                />
+              </View>
+              <LabeledTextField label="Issue date" value={drawingIssuedAt} onChangeText={setDrawingIssuedAt} placeholder="YYYY-MM-DD" />
+            </View>
+          ) : null}
           <WebFilePicker
             label="Choose file"
             accept=".pdf,.csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx"
@@ -3373,7 +3521,14 @@ function DocumentManagementWorkspace({
                 disabled={uploading}
                 accessibilityRole="button"
               >
-                {uploading ? <ActivityIndicator color={desktopSurfaces.onAccent} /> : <Text style={styles.primaryButtonText}>Upload Reviewed Document</Text>}
+                {uploading ? (
+                  <View style={styles.buttonLabelRow}>
+                    <ActivityIndicator color={desktopSurfaces.onAccent} />
+                    <Text style={styles.primaryButtonText}>
+                      Uploading {uploadProgress ?? 0}%
+                    </Text>
+                  </View>
+                ) : <Text style={styles.primaryButtonText}>Upload Reviewed Document</Text>}
               </Pressable>
             </View>
           ) : null}
@@ -3714,6 +3869,15 @@ function DocumentDetailsPanel({
         <TaskDetailFact label="Imported" value={formatDateTime(document.importedAt)} />
         <TaskDetailFact label="Linked Tasks" value={String(document.linkedScheduleItems.length)} />
         <TaskDetailFact label="File Size" value={sizeLabel} />
+        {normalizedName(document.category) === 'drawing' ? (
+          <>
+            <TaskDetailFact label="Drawing Number" value={document.drawingNumber || 'Not recorded'} />
+            <TaskDetailFact label="Revision" value={document.drawingRevision || 'Not recorded'} />
+            <TaskDetailFact label="Discipline" value={document.drawingDiscipline || 'Not recorded'} />
+            <TaskDetailFact label="Issue Status" value={document.drawingStatus || 'Not recorded'} />
+            <TaskDetailFact label="Issue Date" value={document.drawingIssuedAt || 'Not recorded'} />
+          </>
+        ) : null}
       </View>
       {document.notes ? (
         <View style={styles.taskDetailsSection}>
@@ -4611,6 +4775,31 @@ function OperationsWorkspace({
   );
 }
 
+function TaskPhotoPicker({
+  pending,
+  detail,
+  onFile,
+}: {
+  pending: boolean;
+  detail: string;
+  onFile: (file: File | null) => void;
+}) {
+  return (
+    <View style={styles.taskPhotoPicker}>
+      <View style={styles.buttonLabelRow}>
+        <Ionicons name="camera-outline" size={20} color={desktopSurfaces.accent} />
+        <Text style={styles.taskDetailsSectionTitle}>Add a Photo</Text>
+      </View>
+      <Text style={styles.dataMeta}>{detail}</Text>
+      <WebFilePicker
+        label={pending ? 'Uploading photo…' : 'Choose task photo'}
+        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+        onFile={onFile}
+      />
+    </View>
+  );
+}
+
 function WebFilePicker({
   label,
   accept,
@@ -4650,6 +4839,11 @@ function documentMutationMessage(error: unknown): string {
   return 'The document could not be deleted. Refresh the workspace and try again.';
 }
 
+function taskPhotoMutationMessage(error: unknown): string {
+  if (error instanceof DAVEWebDocumentMutationError) return error.message;
+  return 'The task photo could not be saved. Refresh the workspace and try again.';
+}
+
 function StatusBadge({ label, tone }: { label: string; tone: 'good' | 'attention' | 'danger' | 'neutral' }) {
   return (
     <View style={[styles.statusBadge, styles[`statusBadge_${tone}`]]}>
@@ -4683,10 +4877,7 @@ function EmptyState({ text }: { text: string }) {
 function DesktopSidebar({ pathname, selectedProject }: { pathname: string; selectedProject: string | null }) {
   return (
     <View style={styles.sidebar}>
-      <View style={styles.gateBrandRow}>
-        <View style={[styles.brandMark, styles.sidebarBrandMark]}><Text style={[styles.brandMarkText, styles.sidebarBrandMarkText]}>{PRODUCT_BRAND.monogram}</Text></View>
-        <View><Text style={[styles.brandName, styles.sidebarBrandName]}>{PRODUCT_BRAND.name}</Text><Text style={[styles.brandSubtitle, styles.sidebarBrandSubtitle]}>{PRODUCT_BRAND.subtitle}</Text></View>
-      </View>
+      <VitruviusBrandLockup large testID="desktop-sidebar-brand-lockup" />
       <View style={styles.navigation} role="navigation">
         {desktopNavigationItems.map(item => (
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} />
@@ -4713,7 +4904,11 @@ function RefreshProjectDataButton({ onPress }: { onPress: () => void }) {
 function DesktopTopNavigation({ pathname, selectedProject }: { pathname: string; selectedProject: string | null }) {
   return (
     <View style={styles.topNavigation}>
-      <View style={styles.compactBrand}><View style={[styles.brandMark, styles.sidebarBrandMark]}><Text style={[styles.brandMarkText, styles.sidebarBrandMarkText]}>{PRODUCT_BRAND.monogram}</Text></View><Text style={[styles.brandName, styles.sidebarBrandName]}>{PRODUCT_BRAND.name}</Text></View>
+      <VitruviusBrandLockup
+        large
+        showSubtitle={false}
+        testID="desktop-top-brand-lockup"
+      />
       <View style={styles.topNavigationLinks} role="navigation">
         {desktopNavigationItems.map(item => (
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} compact />
@@ -5080,18 +5275,9 @@ const styles = StyleSheet.create({
   contentCompact: { padding: spacing.sm, gap: spacing.md },
   gateRoot: { flex: 1, minHeight: '100%', backgroundColor: desktopSurfaces.canvas },
   gateContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, gap: spacing.xl },
-  gateBrandRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   gateCard: { width: '100%', maxWidth: 560, borderRadius: 24, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xxl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
   gateTitle: { color: '#171A21', fontSize: 32, lineHeight: 39, fontWeight: '900' },
   sidebar: { width: 280, minHeight: '100%', backgroundColor: desktopSurfaces.sidebar, borderRightWidth: 1, borderRightColor: desktopSurfaces.sidebarDeep, padding: spacing.lg, gap: spacing.xl, boxShadow: desktopSurfaces.sidebarShadow },
-  brandMark: { width: 56, height: 56, borderRadius: 17, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: VITRUVIUS_BRAND_SOFT_BLUE, alignItems: 'center', justifyContent: 'center' },
-  brandMarkText: { color: VITRUVIUS_BRAND_DARK_BLUE, fontSize: 32, lineHeight: 38, fontWeight: '900' },
-  sidebarBrandMark: { backgroundColor: VITRUVIUS_BRAND_SOFT_BLUE },
-  sidebarBrandMarkText: { color: VITRUVIUS_BRAND_DARK_BLUE, fontSize: 40, lineHeight: 46 },
-  sidebarBrandName: { color: desktopSurfaces.sidebarText },
-  sidebarBrandSubtitle: { color: desktopSurfaces.sidebarMuted },
-  brandName: { color: '#171A21', fontSize: 17, fontWeight: '900', letterSpacing: 0.4 },
-  brandSubtitle: { color: '#6F7480', fontSize: 12, lineHeight: 16, fontWeight: '700' },
   navigation: { gap: spacing.xs },
   navigationLink: { minHeight: 64, borderRadius: 14, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
   topNavigationLink: { flexGrow: 1, flexBasis: 132, minWidth: 0, minHeight: 44, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, justifyContent: 'center', paddingHorizontal: spacing.sm },
@@ -5100,7 +5286,6 @@ const styles = StyleSheet.create({
   navigationLabelSidebar: { fontSize: 17, lineHeight: 23, fontWeight: '900' },
   navigationLabelActive: { color: desktopSurfaces.accent },
   pilotNote: { color: desktopSurfaces.sidebarMuted, fontSize: 12, lineHeight: 17, marginTop: 'auto', paddingHorizontal: spacing.xs },
-  compactBrand: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.xs },
   topNavigation: { backgroundColor: desktopSurfaces.sidebar, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 14, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
   topNavigationLinks: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, alignItems: 'center' },
   topRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.lg, borderLeftWidth: 5, borderLeftColor: desktopSurfaces.accent, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.header, paddingHorizontal: spacing.xl, paddingVertical: spacing.lg },
@@ -5189,7 +5374,7 @@ const styles = StyleSheet.create({
   workspaceSearchField: { width: '100%', minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.input, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
   evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
   evidenceList: { gap: spacing.sm },
-  evidenceCard: { flexGrow: 1, flexBasis: 430, minWidth: 0, maxWidth: 680, borderLeftWidth: 4, borderLeftColor: desktopSurfaces.accent },
+  evidenceCard: { flexGrow: 0, flexBasis: 'auto', width: '100%', minWidth: 0, borderLeftWidth: 4, borderLeftColor: desktopSurfaces.accent, padding: spacing.md },
   evidenceCardSelected: { maxWidth: '100%', borderColor: desktopSurfaces.accent, boxShadow: '0 0 0 2px rgba(212,90,10,0.14)' },
   evidenceCardHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   evidenceIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
@@ -5342,11 +5527,15 @@ const styles = StyleSheet.create({
   taskDetailsSection: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, gap: 4 },
   taskDetailsSectionTitle: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '900' },
   taskDetailsSectionText: { color: '#4F5865', fontSize: 14, lineHeight: 21 },
+  taskPhotoPicker: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, gap: spacing.sm },
   taskInspectorActions: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   taskInspectorEditButton: { flexGrow: 1, minWidth: 180 },
   twoColumnFields: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
   flexField: { flexGrow: 1, flexBasis: 280 },
   optionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  choiceFieldOptions: { width: '100%' },
+  choiceFieldChoice: { maxWidth: '100%', flexShrink: 1 },
+  choiceFieldChoiceText: { flexShrink: 1 },
   smallChoice: { minHeight: 44, borderRadius: 999, borderWidth: 1, borderColor: desktopSurfaces.border, paddingHorizontal: spacing.md, justifyContent: 'center', backgroundColor: desktopSurfaces.input },
   optionalLabel: { color: '#7B828E', fontWeight: '500' },
   activityEntry: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: 3 },

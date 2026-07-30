@@ -8,3 +8,4 @@ appId: ${APP_ID}
 - assertVisible: "Settings"
 - assertVisible: "Sync Now"
 - assertVisible: "Export Complete Backup"
+- takeScreenshot: "jarvis-settings"

@@ -99,5 +99,8 @@ pie_current_git_status.txt
 pie_current_diff_stat.txt
 /validation/output/
 
+# Generated native build cache
+/.build/
+
 # Local agent/editor settings (P2-14)
 .claude/settings.local.json

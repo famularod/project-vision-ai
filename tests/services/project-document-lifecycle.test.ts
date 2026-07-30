@@ -4,9 +4,12 @@
  */
 
 import {
+  buildSharedReferenceDocument,
   cleanupProjectDocumentOwnedFileForRecordRemoval,
+  findSharedReferenceDocumentForProjectDocument,
   importProjectDocumentIntoOwnedStorage,
   OWNED_PROJECT_DOCUMENTS_FOLDER,
+  referenceCategoryForProjectDocument,
   recoverStaleUploadingDocuments,
   requireOwnedProjectDocumentAccess,
 } from '../../services/ProjectDocumentLifecycle';
@@ -36,6 +39,112 @@ describe('recoverStaleUploadingDocuments (audit P1-23)', () => {
     ];
 
     expect(recoverStaleUploadingDocuments(documents, NOW)).toEqual(documents);
+  });
+});
+
+describe('shared project-document metadata', () => {
+  it('finds the shared cloud download record when another device has no local file', () => {
+    const shared = buildSharedReferenceDocument({
+      document: {
+        id: 'drawing-1',
+        referenceDocumentId: 'shared-drawing-1',
+        projectId: 'project-2375',
+        name: '2375-site-plan.pdf',
+        category: 'Drawing',
+        storagePath: 'project-2375/drawing-1/2375-site-plan.pdf',
+        importedAt: NOW,
+      },
+      projectName: '2375 Compliance Project',
+      contentSha256: 'a'.repeat(64),
+      updatedAt: NOW,
+    });
+
+    expect(findSharedReferenceDocumentForProjectDocument({
+      id: 'drawing-1',
+      referenceDocumentId: 'shared-drawing-1',
+      projectId: 'project-2375',
+      storagePath: 'project-2375/drawing-1/2375-site-plan.pdf',
+    }, [shared])).toBe(shared);
+  });
+
+  it('does not borrow a same-named cloud record from another project', () => {
+    const shared = buildSharedReferenceDocument({
+      document: {
+        id: 'drawing-1',
+        projectId: 'project-2321',
+        name: 'site-plan.pdf',
+        category: 'Drawing',
+        storagePath: 'project-2321/drawing-1/site-plan.pdf',
+        importedAt: NOW,
+      },
+      projectName: '2321 Compliance Project',
+      contentSha256: 'b'.repeat(64),
+      updatedAt: NOW,
+    });
+
+    expect(findSharedReferenceDocumentForProjectDocument({
+      id: 'drawing-1',
+      projectId: 'project-2375',
+      storagePath: 'project-2321/drawing-1/site-plan.pdf',
+    }, [shared])).toBeNull();
+  });
+
+  it('preserves Drawing classification and stable identity for cloud sync', () => {
+    const reference = buildSharedReferenceDocument({
+      document: {
+        id: 'drawing-1',
+        referenceDocumentId: null,
+        projectId: 'project-2375',
+        name: '2375-site-plan.pdf',
+        category: 'Drawing',
+        mimeType: 'application/pdf',
+        sizeBytes: 4_900_484,
+        storagePath: 'project-2375/drawing-1/2375-site-plan.pdf',
+        note: 'Issued for field use',
+        drawingNumber: 'A2.01',
+        drawingRevision: '3',
+        drawingDiscipline: 'Architectural',
+        drawingStatus: 'For Construction',
+        drawingIssuedAt: '2026-07-17',
+        importedAt: NOW,
+      },
+      projectName: '2375 Compliance Project',
+      contentSha256: 'a'.repeat(64),
+      updatedAt: NOW,
+    });
+
+    expect(reference).toMatchObject({
+      id: 'drawing-1',
+      category: 'Drawing',
+      projectId: 'project-2375',
+      projectName: '2375 Compliance Project',
+      projectNames: ['2375 Compliance Project'],
+      storagePath: 'project-2375/drawing-1/2375-site-plan.pdf',
+      sizeBytes: 4_900_484,
+      contentSha256: 'a'.repeat(64),
+      isCurrent: false,
+      drawingNumber: 'A2.01',
+      drawingRevision: '3',
+      drawingDiscipline: 'Architectural',
+      drawingStatus: 'For Construction',
+      drawingIssuedAt: '2026-07-17',
+    });
+  });
+
+  it('does not make an uploaded schedule current without PM confirmation', () => {
+    expect(referenceCategoryForProjectDocument('Schedule')).toBe('Schedules');
+    expect(buildSharedReferenceDocument({
+      document: {
+        id: 'schedule-1',
+        projectId: 'project-2321',
+        name: 'lookahead.pdf',
+        category: 'Schedule',
+        importedAt: NOW,
+      },
+      projectName: '2321 Compliance Project',
+      contentSha256: null,
+      updatedAt: NOW,
+    }).isCurrent).toBe(false);
   });
 });
 

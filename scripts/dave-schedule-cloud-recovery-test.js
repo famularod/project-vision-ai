@@ -6,54 +6,42 @@ const path = require('path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
-const projectControlsPath = path.join(root, 'services/VitruviusProjectControls.ts');
-const compiledProjectControls = ts.transpileModule(
-  fs.readFileSync(projectControlsPath, 'utf8'),
-  {
+const cache = new Map();
+
+function loadTs(relativePath) {
+  const absolutePath = path.resolve(root, relativePath);
+  if (cache.has(absolutePath)) return cache.get(absolutePath).exports;
+  const moduleUnderTest = { exports: {} };
+  cache.set(absolutePath, moduleUnderTest);
+  const compiled = ts.transpileModule(fs.readFileSync(absolutePath, 'utf8'), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
     },
-  },
-).outputText;
-const projectControlsModule = { exports: {} };
-new Function(
-  'module',
-  'exports',
-  'require',
-  compiledProjectControls,
-)(
-  projectControlsModule,
-  projectControlsModule.exports,
-  require,
-);
-
-const sourcePath = path.join(root, 'services/DAVEScheduleRecovery.ts');
-const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2020,
-  },
-}).outputText;
-const moduleUnderTest = { exports: {} };
-new Function(
-  'module',
-  'exports',
-  'require',
-  compiled,
-)(
-  moduleUnderTest,
-  moduleUnderTest.exports,
-  specifier => specifier === './VitruviusProjectControls'
-    ? projectControlsModule.exports
-    : require(specifier),
-);
+    fileName: absolutePath,
+  }).outputText;
+  const localRequire = specifier => {
+    if (!specifier.startsWith('.')) return require(specifier);
+    const base = path.resolve(path.dirname(absolutePath), specifier);
+    const resolved = [base, `${base}.ts`, path.join(base, 'index.ts')]
+      .find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+    if (!resolved) throw new Error(`Cannot resolve ${specifier}`);
+    return loadTs(path.relative(root, resolved));
+  };
+  new Function('require', 'module', 'exports', compiled)(
+    localRequire,
+    moduleUnderTest,
+    moduleUnderTest.exports,
+  );
+  return moduleUnderTest.exports;
+}
 
 const {
   isDAVESafeCloudScheduleRecord,
   reconcileDAVEScheduleRecords,
   recoverDAVEScheduleRecords,
-} = moduleUnderTest.exports;
+} = loadTs('services/DAVEScheduleRecovery.ts');
 
 function schedule(overrides = {}) {
   return {

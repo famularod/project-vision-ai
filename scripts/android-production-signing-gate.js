@@ -77,7 +77,7 @@ function runAndroidProductionSigningGate({
       }
     : inspectAndroidReleaseSigning(source);
 
-  console.log('V.I.C. Android Production Signing Gate');
+  console.log('Jarvis Android Production Signing Gate');
   console.log(result.reason);
 
   if (result.status === 'configured') {

@@ -4,7 +4,12 @@ import {
   type Session,
   type SupabaseClient,
 } from '@supabase/supabase-js';
-import type { ReferenceDocument, ScheduleItem } from '../types';
+import type {
+  ProjectUpdate,
+  ReferenceDocument,
+  ScheduleItem,
+  UpdatePhoto,
+} from '../types';
 import type {
   DAVEWebDocumentExtension,
   DAVEWebReportRecord,
@@ -16,6 +21,9 @@ import {
   type DAVEOperationalRealtimeEntity,
   type DAVEOperationalRealtimeStatus,
 } from './DAVEOperationalRefresh';
+import { RESUMABLE_UPLOAD_THRESHOLD_BYTES } from './StorageUploadPolicy';
+import { uploadWebFileResumably } from './ResumableWebStorageUpload';
+import { MAX_PHOTO_SOURCE_BYTES } from './PhotoPairPreparation';
 
 export type DAVEWebRawRows = Readonly<{
   projects: readonly unknown[];
@@ -80,7 +88,16 @@ export class DAVEWebArtifactAccessError extends Error {
 export type DAVEWebDocumentUploadInput = Readonly<{
   document: ReferenceDocument & DAVEWebDocumentExtension;
   bytes: ArrayBuffer;
+  file?: Blob;
   scheduleItems?: readonly ScheduleItem[];
+  onProgress?: (fraction: number) => void;
+}>;
+
+export type DAVEWebTaskPhotoUploadInput = Readonly<{
+  task: ScheduleItem;
+  bytes: ArrayBuffer;
+  fileName: string;
+  mimeType: string;
 }>;
 
 type DAVEWebRevisionedReferenceDocument =
@@ -318,12 +335,17 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     async uploadAuthorizedReferenceDocument({
       document,
       bytes,
+      file,
       scheduleItems = [],
+      onProgress,
     }: DAVEWebDocumentUploadInput): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwner(client);
-      if (bytes.byteLength <= 0 || bytes.byteLength > 25 * 1024 * 1024) {
-        throw new DAVEWebDocumentMutationError('write_failed', 'The document must be between 1 byte and 25 MB.');
+      if (bytes.byteLength <= 0 || bytes.byteLength > 50 * 1024 * 1024) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The document must be between 1 byte and 50 MB.',
+        );
       }
 
       if (document.webFileFingerprint) {
@@ -349,12 +371,44 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       const storagePath = `${ownerId}/web/${safePathSegment(document.id)}/${safePathSegment(document.originalFileName)}`;
       const uploadedDocument = { ...document, storagePath };
       const storage = client.storage.from('project-documents');
-      const { error: uploadError } = await storage.upload(storagePath, bytes, {
-        contentType: document.mimeType || 'application/octet-stream',
-        upsert: false,
-      });
-      if (uploadError) {
-        throw new DAVEWebDocumentMutationError('write_failed', 'The file could not be uploaded to protected project storage.');
+      const contentType = document.mimeType || 'application/octet-stream';
+      if (bytes.byteLength > RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
+        const session = await client.auth.getSession();
+        const accessToken = session.data.session?.access_token;
+        if (!SUPABASE_URL || !accessToken) {
+          throw new DAVEWebDocumentMutationError(
+            'write_failed',
+            'The secure upload session is unavailable. Sign in again, then retry.',
+          );
+        }
+        try {
+          await uploadWebFileResumably({
+            projectUrl: SUPABASE_URL,
+            accessToken,
+            bucket: 'project-documents',
+            path: storagePath,
+            file: file ?? new Blob([bytes], { type: contentType }),
+            contentSha256: document.contentSha256 || '',
+            contentType,
+            upsert: false,
+            onProgress,
+          });
+        } catch {
+          throw new DAVEWebDocumentMutationError(
+            'write_failed',
+            'The resumable upload did not finish. Your file is still selected; retry to continue.',
+          );
+        }
+      } else {
+        onProgress?.(0);
+        const { error: uploadError } = await storage.upload(storagePath, bytes, {
+          contentType,
+          upsert: false,
+        });
+        if (uploadError) {
+          throw new DAVEWebDocumentMutationError('write_failed', 'The file could not be uploaded to protected project storage.');
+        }
+        onProgress?.(1);
       }
 
       const cloudUpdatedAt = new Date().toISOString();
@@ -399,6 +453,108 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         }
       }
       return cloudUpdatedAt;
+    },
+
+    async uploadAuthorizedTaskPhoto({
+      task,
+      bytes,
+      fileName,
+      mimeType,
+    }: DAVEWebTaskPhotoUploadInput): Promise<string> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwner(client);
+      if (bytes.byteLength <= 0 || bytes.byteLength > MAX_PHOTO_SOURCE_BYTES) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The photo must be between 1 byte and 12 MB.',
+        );
+      }
+      if (!mimeType.trim().toLowerCase().startsWith('image/')) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'Choose an image file to add to this task.',
+        );
+      }
+
+      const createdAt = new Date().toISOString();
+      const updateId = createWebMutationId('web-task-update');
+      const photoId = createWebMutationId('web-task-photo');
+      const projectName = (
+        task.scheduleProjectName ||
+        task.projectName ||
+        'Unassigned Project'
+      ).trim();
+      const areaName = task.locationName?.trim() || null;
+      const storagePath = [
+        ownerId,
+        'web-updates',
+        safePathSegment(updateId),
+        `${safePathSegment(photoId)}-${safePathSegment(fileName || 'task-photo')}`,
+      ].join('/');
+      const photo: UpdatePhoto = {
+        id: photoId,
+        uri: '',
+        caption: task.taskName,
+        category: 'Update',
+        actionRequired: '',
+        actionOwner: task.owner || '',
+        actionDueDate: '',
+        actionStatus: 'Open',
+        fileName: fileName || 'task-photo',
+        mimeType,
+        cloudStoragePath: storagePath,
+        selectedAreaId: null,
+        selectedAreaName: areaName,
+        photoIntelligence: null,
+      };
+      const update: ProjectUpdate = {
+        id: updateId,
+        projectName,
+        date: createdAt,
+        photos: [photo],
+        notes: '',
+        recipients: { contactIds: [] },
+        scheduleItemId: task.id,
+        scheduleTaskName: task.taskName,
+        scheduleProjectName: projectName,
+        selectedAreaId: null,
+        selectedAreaName: areaName,
+        pieStatus: 'not_started',
+        status: 'sent',
+      };
+      const storage = client.storage.from('project-photos');
+      const { error: uploadError } = await storage.upload(storagePath, bytes, {
+        contentType: mimeType,
+        upsert: false,
+      });
+      if (uploadError) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The task photo could not be uploaded to protected project storage.',
+        );
+      }
+
+      const { error: updateError } = await client
+        .from('project_updates')
+        .insert({
+          id: updateId,
+          owner_id: ownerId,
+          project_name: projectName,
+          area_name: areaName,
+          idempotency_key: updateId,
+          update_data: update,
+          updated_at: createdAt,
+        });
+      if (updateError) {
+        await storage.remove([storagePath]);
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The task photo record could not be saved. The uploaded file was removed.',
+        );
+      }
+
+      authorizedPhotoPaths.add(storagePath);
+      return updateId;
     },
 
     async setAuthorizedCurrentSchedule(
@@ -819,6 +975,12 @@ function referenceDocumentRow(
 
 function safePathSegment(value: string) {
   return value.trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'document';
+}
+
+function createWebMutationId(prefix: string): string {
+  const randomId = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${randomId}`;
 }
 
 function safeArtifactStoragePath(value: string): string {

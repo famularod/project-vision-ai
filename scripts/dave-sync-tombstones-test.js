@@ -193,7 +193,7 @@ async function run() {
     assert(app.includes(`'${entity}'`), `${entity} deletions must be wired into the live app`);
     assert(migration.includes(`'${entity}'`), `${entity} must be allowed by the database constraint`);
   }
-  const operationalRefreshStart = app.indexOf('async function refreshOperationalCollections()');
+  const operationalRefreshStart = app.indexOf('async function refreshOperationalCollections(');
   const operationalRefreshEnd = app.indexOf('const refreshController =', operationalRefreshStart);
   const operationalRefreshBlock = app.slice(operationalRefreshStart, operationalRefreshEnd);
   assert(

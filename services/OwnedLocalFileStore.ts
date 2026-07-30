@@ -27,6 +27,10 @@ export type OwnedLocalFileStoreDependencies = Readonly<{
   ensureDirectory: (directoryUri: string) => Promise<void>;
   copyFile: (sourceUri: string, destinationUri: string) => Promise<void>;
   readBytes: (fileUri: string) => Promise<Uint8Array>;
+  hashFile?: (
+    fileUri: string,
+    maxBytes?: number,
+  ) => Promise<Readonly<{ sha256: string; sizeBytes: number }>>;
   statFile: (fileUri: string) => Promise<OwnedLocalFileStat>;
   deleteFile: (fileUri: string) => Promise<void>;
   sha256: (bytes: Uint8Array) => Promise<string>;
@@ -87,6 +91,7 @@ export type StoreExternalOwnedFileInput = Readonly<{
   extension: string;
   mimeType: string;
   reportedSizeBytes?: number | null;
+  maxBytes?: number;
 }>;
 
 export type AuthorizedOwnedLocalFileInput = Readonly<{
@@ -108,6 +113,9 @@ export type OwnedLocalFileStore = Readonly<{
   readAuthorizedFile: (
     input: AuthorizedOwnedLocalFileInput,
   ) => Promise<Uint8Array>;
+  verifyAuthorizedFile: (
+    input: AuthorizedOwnedLocalFileInput,
+  ) => Promise<OwnedLocalFileManifestRecord>;
   deleteAuthorizedFile: (
     input: AuthorizedOwnedLocalFileInput,
   ) => Promise<OwnedLocalFileDeleteResult>;
@@ -146,22 +154,21 @@ export function createOwnedLocalFileStore({
     const sourcePreflight = await preflightExternalSource(
       input.sourceUri,
       input.reportedSizeBytes,
+      input.maxBytes,
       dependencies,
     );
-    const sourceBytes = await readSourceBytes(input.sourceUri, dependencies);
-    if (sourceBytes.byteLength !== sourcePreflight.sizeBytes) {
+    const sourceIntegrity = await hashSourceFile(
+      input.sourceUri,
+      sourcePreflight.maxBytes,
+      dependencies,
+    );
+    if (sourceIntegrity.sizeBytes !== sourcePreflight.sizeBytes) {
       throw storeError(
         'source_unreadable',
         'The selected file changed before it could be saved. Choose it again and retry.',
         'restore_or_reselect',
       );
     }
-    const sourceSha256 = await hashBytes(
-      sourceBytes,
-      dependencies,
-      'source_unreadable',
-      'The selected source file could not be hashed.',
-    );
 
     let record: OwnedLocalFileManifestRecord;
     try {
@@ -171,8 +178,8 @@ export function createOwnedLocalFileStore({
         fileId,
         kind: input.kind,
         generatedBasename,
-        sha256: sourceSha256,
-        sizeBytes: sourceBytes.byteLength,
+        sha256: sourceIntegrity.sha256,
+        sizeBytes: sourceIntegrity.sizeBytes,
         mimeType: input.mimeType,
         relativePath: generatedBasename,
       });
@@ -234,7 +241,7 @@ export function createOwnedLocalFileStore({
     }
 
     try {
-      await readVerifiedFile(
+      await verifyFileIntegrity(
         { record, path: destinationPath },
         dependencies,
       );
@@ -267,6 +274,14 @@ export function createOwnedLocalFileStore({
     return readVerifiedFile(authorized, dependencies);
   }
 
+  async function verifyAuthorizedFile(
+    input: AuthorizedOwnedLocalFileInput,
+  ): Promise<OwnedLocalFileManifestRecord> {
+    const authorized = authorizeOwnedFile(input, ownedRoot);
+    await verifyFileIntegrity(authorized, dependencies);
+    return authorized.record;
+  }
+
   async function deleteAuthorizedFile(
     input: AuthorizedOwnedLocalFileInput,
   ): Promise<OwnedLocalFileDeleteResult> {
@@ -274,7 +289,7 @@ export function createOwnedLocalFileStore({
 
     // Verify the manifest-bound bytes immediately before deletion. A file that
     // was replaced at the same path is not treated as the owned object.
-    await readVerifiedFile(authorized, dependencies);
+    await verifyFileIntegrity(authorized, dependencies);
 
     try {
       await dependencies.deleteFile(authorized.path);
@@ -300,6 +315,7 @@ export function createOwnedLocalFileStore({
   return Object.freeze({
     storeExternalFile,
     readAuthorizedFile,
+    verifyAuthorizedFile,
     deleteAuthorizedFile,
   });
 }
@@ -307,12 +323,14 @@ export function createOwnedLocalFileStore({
 async function preflightExternalSource(
   sourceUri: string,
   reportedSizeBytes: number | null | undefined,
+  maxBytes: number | undefined,
   dependencies: OwnedLocalFileStoreDependencies,
 ) {
   try {
     return await preflightLocalFileRead({
       uri: sourceUri,
       reportedSizeBytes,
+      maxBytes,
       statFile: dependencies.statFile,
     });
   } catch (cause) {
@@ -477,6 +495,115 @@ async function readVerifiedFile(
   }
 
   return bytes;
+}
+
+async function verifyFileIntegrity(
+  authorized: AuthorizedFile,
+  dependencies: OwnedLocalFileStoreDependencies,
+): Promise<void> {
+  if (!dependencies.hashFile) {
+    await readVerifiedFile(authorized, dependencies);
+    return;
+  }
+
+  let beforeRead: OwnedLocalFileStat;
+  try {
+    beforeRead = await dependencies.statFile(authorized.path);
+  } catch (cause) {
+    throw storeError(
+      'read_failed',
+      'The authorized owned file could not be inspected.',
+      'retryable',
+      cause,
+    );
+  }
+  if (!beforeRead.exists) {
+    throw storeError(
+      'file_missing',
+      'The manifest-owned file is missing from local storage.',
+      'restore_or_reselect',
+    );
+  }
+
+  let integrity: Readonly<{ sha256: string; sizeBytes: number }>;
+  try {
+    integrity = await dependencies.hashFile(
+      authorized.path,
+      authorized.record.sizeBytes,
+    );
+  } catch (cause) {
+    throw storeError(
+      'read_failed',
+      'The manifest-owned file could not be hashed.',
+      'retryable',
+      cause,
+    );
+  }
+
+  let afterRead: OwnedLocalFileStat;
+  try {
+    afterRead = await dependencies.statFile(authorized.path);
+  } catch (cause) {
+    throw storeError(
+      'read_failed',
+      'The manifest-owned file could not be re-inspected.',
+      'retryable',
+      cause,
+    );
+  }
+
+  if (!afterRead.exists) {
+    throw storeError(
+      'file_missing',
+      'The manifest-owned file disappeared during verification.',
+      'restore_or_reselect',
+    );
+  }
+  if (
+    beforeRead.sizeBytes === null ||
+    afterRead.sizeBytes === null ||
+    beforeRead.sizeBytes !== authorized.record.sizeBytes ||
+    afterRead.sizeBytes !== authorized.record.sizeBytes ||
+    integrity.sizeBytes !== authorized.record.sizeBytes ||
+    integrity.sha256 !== authorized.record.sha256
+  ) {
+    throw storeError(
+      'integrity_mismatch',
+      'The manifest-owned file does not match its recorded size and SHA-256.',
+      'restore_or_reselect',
+    );
+  }
+}
+
+async function hashSourceFile(
+  sourceUri: string,
+  maxBytes: number,
+  dependencies: OwnedLocalFileStoreDependencies,
+): Promise<Readonly<{ sha256: string; sizeBytes: number }>> {
+  if (dependencies.hashFile) {
+    try {
+      return await dependencies.hashFile(sourceUri, maxBytes);
+    } catch (cause) {
+      throw storeError(
+        'source_unreadable',
+        'The selected source file could not be hashed.',
+        'restore_or_reselect',
+        cause,
+      );
+    }
+  }
+
+  const sourceBytes = await readSourceBytes(sourceUri, dependencies);
+  const sourceSha256 = await hashBytes(
+    sourceBytes,
+    dependencies,
+    'source_unreadable',
+    'The selected source file could not be hashed.',
+  );
+  return Object.freeze({
+    sha256: sourceSha256,
+    sizeBytes: sourceBytes.byteLength,
+  });
 }
 
 async function readSourceBytes(

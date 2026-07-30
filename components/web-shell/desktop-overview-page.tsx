@@ -3,9 +3,16 @@ import { Link } from 'expo-router';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
-import { scheduleTasksForParentProject } from '../../services/dave-project-schedule-rollup';
+import {
+  scheduleTaskIsComplete,
+  scheduleTasksForParentProject,
+} from '../../services/dave-project-schedule-rollup';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
+import {
+  buildVitruviusCommitmentControl,
+  type VitruviusCommitmentControlItem,
+} from '../../services/VitruviusCommitmentControl';
 import { colors, radius, spacing } from '../../theme';
 import { desktopSurfaces } from './desktop-surface-palette';
 import type { ProjectUpdate, ScheduleItem } from '../../types';
@@ -28,7 +35,11 @@ export function DesktopOverviewPage({
   const wide = width >= 1180;
   const completedTasks = tasks.filter(taskIsComplete);
   const openTasks = tasks.filter(task => !taskIsComplete(task));
-  const priorityTask = [...openTasks].sort(comparePriorityTasks)[0] ?? null;
+  const commitmentControl = buildVitruviusCommitmentControl({
+    scheduleItems: tasks,
+    updates: updates.map(update => update.updateData),
+    projectNames: selectedProject ? [selectedProject] : undefined,
+  });
   const recentUpdates = [...updates].sort(compareUpdatesNewestFirst).slice(0, 6);
 
   return (
@@ -53,8 +64,13 @@ export function DesktopOverviewPage({
 
       <View style={[styles.workspace, wide && styles.workspaceWide]}>
         <View style={[styles.primaryColumn, wide && styles.primaryColumnWide]}>
-          <SectionHeading title="Today's Priority" />
-          <PriorityCard task={priorityTask} selectedProject={selectedProject} />
+          <SectionHeading title="Current Focus" />
+          <View style={styles.focusSummary}>
+            <FocusMetric label="Overdue" value={commitmentControl.missed} tone="danger" />
+            <FocusMetric label="At Risk" value={commitmentControl.atRisk} tone="warning" />
+            <FocusMetric label="Verify" value={commitmentControl.needsVerification} tone="primary" />
+          </View>
+          <PriorityCard item={commitmentControl.topItem} />
 
           <SectionHeading title="Active Projects" />
           <View style={styles.projectGrid}>
@@ -88,6 +104,28 @@ export function DesktopOverviewPage({
   );
 }
 
+function FocusMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'danger' | 'warning' | 'primary';
+}) {
+  const color = tone === 'danger'
+    ? colors.danger
+    : tone === 'warning'
+      ? colors.warning
+      : desktopSurfaces.accent;
+  return (
+    <View style={styles.focusMetric}>
+      <Text style={[styles.focusMetricValue, { color }]}>{value}</Text>
+      <Text style={styles.focusMetricLabel}>{label}</Text>
+    </View>
+  );
+}
+
 function HealthMetric({ label, value }: { label: string; value: number }) {
   return (
     <View style={styles.healthMetric}>
@@ -102,13 +140,11 @@ function SectionHeading({ title }: { title: string }) {
 }
 
 function PriorityCard({
-  task,
-  selectedProject,
+  item,
 }: {
-  task: ScheduleItem | null;
-  selectedProject: string | null;
+  item: VitruviusCommitmentControlItem | null;
 }) {
-  if (!task) {
+  if (!item) {
     return (
       <View style={styles.priorityCard}>
         <View style={styles.priorityVisual}>
@@ -116,17 +152,11 @@ function PriorityCard({
             <Ionicons name="checkmark-circle" size={34} color={colors.success} />
           </View>
           <Text style={styles.clearTitle}>All clear</Text>
-          <Text style={styles.clearText}>There are no open tasks in this project scope.</Text>
+          <Text style={styles.clearText}>There are no open commitments in this project scope.</Text>
         </View>
       </View>
     );
   }
-
-  const projectName = task.scheduleProjectName || task.projectName || selectedProject || 'Project';
-  const areaName = task.locationName?.trim() || 'No area assigned';
-  const days = daysUntilDate(task.finishDate, new Date(), task.projectTimeZone || undefined);
-  const timing = priorityTiming(days);
-  const nextAction = task.nextAction?.trim() || defaultPriorityAction(task, days);
 
   return (
     <View style={styles.priorityCard}>
@@ -138,30 +168,40 @@ function PriorityCard({
           </View>
           <Ionicons name="construct-outline" size={54} color="rgba(255,255,255,0.24)" />
         </View>
-        <Text style={styles.priorityTiming}>{timing}</Text>
-        <Text style={styles.priorityVisualProject}>{projectName}</Text>
-        <Text style={styles.priorityVisualArea}>{areaName}</Text>
+        <Text style={styles.priorityTiming}>{item.timing}</Text>
+        <Text style={styles.priorityVisualProject}>{item.projectName}</Text>
+        <Text style={styles.priorityVisualArea}>{item.areaName}</Text>
       </View>
       <View style={styles.priorityContent}>
         <View style={styles.priorityTitleRow}>
           <View style={styles.priorityTitleCopy}>
-            <Text style={styles.priorityTitle}>{task.taskName}</Text>
-            <Text style={styles.priorityMeta}>{task.status} · {task.percentComplete}% complete · {task.priority} priority</Text>
+            <Text style={styles.priorityTitle}>{item.promise}</Text>
+            <Text style={styles.priorityMeta}>Owner: {item.owner} · {item.priority} priority</Text>
           </View>
           <View style={styles.priorityStatusPill}>
-            <Text style={styles.priorityStatusText}>{task.status}</Text>
+            <Text style={styles.priorityStatusText}>{item.stateLabel}</Text>
           </View>
         </View>
         <View style={styles.nextActionCard}>
           <Ionicons name="arrow-forward-circle-outline" size={22} color={desktopSurfaces.accent} />
           <View style={styles.nextActionCopy}>
             <Text style={styles.nextActionLabel}>NEXT ACTION</Text>
-            <Text style={styles.nextActionText}>{nextAction}</Text>
+            <Text style={styles.nextActionText}>{item.recoveryAction}</Text>
           </View>
         </View>
-        <Link href={{ pathname: '/tasks', params: { project: projectName } }} asChild>
+        <View style={styles.commitmentDetails}>
+          <View style={styles.commitmentDetail}>
+            <Text style={styles.commitmentDetailLabel}>DECISION</Text>
+            <Text style={styles.commitmentDetailText}>{item.decisionNeeded}</Text>
+          </View>
+          <View style={styles.commitmentDetail}>
+            <Text style={styles.commitmentDetailLabel}>FIELD CONFIRMATION</Text>
+            <Text style={styles.commitmentDetailText}>{item.proofNeeded}</Text>
+          </View>
+        </View>
+        <Link href={{ pathname: '/tasks', params: { project: item.projectName } }} asChild>
           <Pressable style={({ pressed }) => [styles.primaryAction, pressed && styles.pressed]} accessibilityRole="link">
-            <Text style={styles.primaryActionText}>Review priority</Text>
+            <Text style={styles.primaryActionText}>Review task</Text>
             <Ionicons name="arrow-forward" size={18} color={desktopSurfaces.onAccent} />
           </Pressable>
         </Link>
@@ -243,21 +283,13 @@ function RecentActivityRow({ update }: { update: CloudProjectUpdate<ProjectUpdat
 }
 
 function taskIsComplete(task: ScheduleItem): boolean {
-  return task.status === 'Complete' || task.percentComplete >= 100;
+  return scheduleTaskIsComplete(task);
 }
 
 function taskIsOverdue(task: ScheduleItem): boolean {
   if (taskIsComplete(task)) return false;
   const days = daysUntilDate(task.finishDate, new Date(), task.projectTimeZone || undefined);
   return days !== null && days < 0;
-}
-
-function comparePriorityTasks(a: ScheduleItem, b: ScheduleItem): number {
-  const overdue = Number(taskIsOverdue(b)) - Number(taskIsOverdue(a));
-  if (overdue) return overdue;
-  const priority = priorityRank(b.priority) - priorityRank(a.priority);
-  if (priority) return priority;
-  return safeDate(a.finishDate) - safeDate(b.finishDate);
 }
 
 function compareUpdatesNewestFirst(
@@ -267,31 +299,9 @@ function compareUpdatesNewestFirst(
   return updateDate(b.updatedAt ?? b.updateData.date) - updateDate(a.updatedAt ?? a.updateData.date);
 }
 
-function priorityRank(priority: string): number {
-  return priority === 'High' ? 3 : priority === 'Medium' ? 2 : 1;
-}
-
-function safeDate(value: string | null | undefined): number {
-  const parsed = Date.parse(value || '');
-  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
-}
-
 function updateDate(value: string | null | undefined): number {
   const parsed = Date.parse(value || '');
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function priorityTiming(days: number | null): string {
-  if (days === null) return 'Review the current field status';
-  if (days < 0) return `${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'} overdue`;
-  if (days === 0) return 'Due today';
-  if (days === 1) return 'Due tomorrow';
-  return `Due in ${days} days`;
-}
-
-function defaultPriorityAction(task: ScheduleItem, days: number | null): string {
-  if (days !== null && days < 0) return `Confirm current field status and set a recovery date for ${task.taskName}.`;
-  return `Confirm the crew, material, access, and next accountable step for ${task.taskName}.`;
 }
 
 function normalize(value: string | null | undefined): string {
@@ -323,6 +333,10 @@ const styles = StyleSheet.create({
   secondaryColumn: { minWidth: 0, borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.sectionStrong, padding: spacing.xl, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
   secondaryColumnWide: { flex: 0.85 },
   sectionHeading: { color: colors.text, fontSize: 24, lineHeight: 31, fontWeight: '900', marginTop: spacing.xs },
+  focusSummary: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  focusMetric: { minWidth: 104, flexGrow: 1, borderRadius: radius.lg, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  focusMetricValue: { fontSize: 21, lineHeight: 26, fontWeight: '900' },
+  focusMetricLabel: { color: colors.mutedText, fontSize: 11, lineHeight: 15, fontWeight: '800', marginTop: 1 },
   priorityCard: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden', boxShadow: desktopSurfaces.shadow },
   priorityVisual: { minHeight: 176, backgroundColor: desktopSurfaces.heroStrong, padding: spacing.xl, justifyContent: 'flex-end' },
   priorityVisualHeader: { position: 'absolute', top: spacing.xl, left: spacing.xl, right: spacing.xl, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
@@ -345,6 +359,10 @@ const styles = StyleSheet.create({
   nextActionCopy: { flex: 1, gap: 3 },
   nextActionLabel: { color: desktopSurfaces.accentText, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1.1 },
   nextActionText: { color: colors.text, fontSize: 15, lineHeight: 22, fontWeight: '700' },
+  commitmentDetails: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  commitmentDetail: { flexGrow: 1, flexBasis: 220, borderRadius: radius.lg, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.sectionStrong, padding: spacing.md },
+  commitmentDetailLabel: { color: colors.mutedText, fontSize: 10, lineHeight: 14, fontWeight: '900', letterSpacing: 0.9 },
+  commitmentDetailText: { color: colors.text, fontSize: 13, lineHeight: 19, fontWeight: '700', marginTop: 4 },
   primaryAction: { minHeight: 52, borderRadius: 14, backgroundColor: desktopSurfaces.accent, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, paddingHorizontal: spacing.lg },
   primaryActionText: { color: desktopSurfaces.onAccent, fontSize: 16, lineHeight: 21, fontWeight: '900' },
   pressed: { opacity: 0.72 },

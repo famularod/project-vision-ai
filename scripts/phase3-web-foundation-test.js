@@ -26,7 +26,7 @@ function assert(condition, message) {
 assert(index.includes("import './entry'"), 'The root entry must resolve through a platform-specific entry module.');
 assert(nativeEntry.includes("import App from './App'"), 'Native must keep the established reachable App.tsx entry.');
 assert(nativeEntry.includes('PendingChangesRetryBoundary'), 'Native must install the pending-change recovery boundary at the reachable root.');
-assert(nativeEntry.includes('createElement(App)'), 'The native recovery root must still render the established reachable App.tsx.');
+assert(/createElement\(\s*App\b/.test(nativeEntry), 'The native recovery root must still render the established reachable App.tsx.');
 assert(nativeEntry.includes('registerRootComponent(NativeRoot)'), 'Native must register the recovery-aware Expo root.');
 assert(webEntry.includes("import 'expo-router/entry'"), 'Web must use the URL-addressable Expo Router entry.');
 assert(appConfig.platforms.includes('web'), 'Web must be an explicit application platform.');
@@ -84,7 +84,8 @@ for (const forbiddenMutation of ['createProject(', 'updateProject(', 'deleteProj
 assert(!webSupabaseClient.includes(".from('projects').update("), 'The browser gateway must not expose project editing.');
 assert(!webSupabaseClient.includes(".from('projects').delete("), 'The browser gateway must not expose project deletion.');
 assert(webSupabaseClient.includes("client.storage.from('project-documents')"), 'The reviewed browser workflow must upload only to protected project document storage.');
-assert(webSupabaseClient.includes('bytes.byteLength > 25 * 1024 * 1024'), 'Browser uploads must enforce the 25 MB boundary before storage writes.');
+assert(webSupabaseClient.includes('bytes.byteLength > 50 * 1024 * 1024'), 'Browser uploads must enforce the live backend 50 MB boundary before storage writes.');
+assert(webSupabaseClient.includes('uploadWebFileResumably'), 'Large browser uploads must use the resumable storage path.');
 assert(webSupabaseClient.includes('webFileFingerprint'), 'Browser uploads must check the content fingerprint before creating a duplicate document.');
 assert(!webSupabaseClient.includes('expo-file-system'), 'The browser Supabase gateway must not import native file support.');
 assert(!webSupabaseClient.includes('expo-secure-store'), 'The browser Supabase gateway must not import native SecureStore.');

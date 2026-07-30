@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { buildVitruviusGanttModel } from '../services/VitruviusGanttModel';
+import { scheduleTaskIsComplete } from '../services/dave-project-schedule-rollup';
 import {
   buildVitruviusLookahead,
   lookaheadStatusLabel,
@@ -68,7 +69,7 @@ function MobileScheduleTimeline({
         />
       ) : (
         rows.map(row => {
-          const complete = row.item.status === 'Complete' || row.item.percentComplete >= 100;
+          const complete = scheduleTaskIsComplete(row.item);
           const leftPercent = row.left === null
             ? 0
             : Math.max(0, Math.min(96, (row.left / model.timelineWidth) * 100));

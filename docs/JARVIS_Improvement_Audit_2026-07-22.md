@@ -1,10 +1,10 @@
-# V.I.C. Improvement Audit — 2026-07-22
+# Jarvis Improvement Audit — 2026-07-22
 
 ## Outcome
 
 The prior quality result could report 100/100 from static source markers while runtime defects still reached the app. That result was accurate only as a source-contract inventory, but its build-level wording overstated what had been verified.
 
-The first hardening phase turns V.I.C. (Vitruvius Intelligence Center) into a layered automated release gate while preserving the legacy `jarvis:*` compatibility commands and the static runner as a separately labeled contract audit. This phase changes QA behavior only. It does not change app behavior, Supabase schema or policies, authentication, storage, or deployed edge functions.
+The first hardening phase turns Jarvis into a layered automated release gate while preserving the `jarvis:*` commands and the static runner as a separately labeled contract audit. This phase changes QA behavior only. It does not change app behavior, Supabase schema or policies, authentication, storage, or deployed edge functions.
 
 ## Baseline Findings
 
@@ -55,6 +55,6 @@ The resulting status is `Automated Gate: PASS`. Release certification remains `D
 - Maestro requires a running build and remains a separate execution step.
 - Camera, location, native sign-in, offline recovery, storage pressure, and visual layout require physical-device evidence.
 
-## Next V.I.C. QA Phase
+## Next Jarvis QA Phase
 
-The future Vitruvius Intelligence Center QA program should add a recorded device evidence manifest, live three-client sync scenarios, repeatable performance budgets, automated screenshot comparison, provider-backed photo fixtures, and historical defect replay. Those layers should feed a release dashboard without converting incomplete evidence into a perfect score.
+Jarvis should add a recorded device evidence manifest, live three-client sync scenarios, repeatable performance budgets, automated screenshot comparison, provider-backed photo fixtures, and historical defect replay. Those layers should feed a release dashboard without converting incomplete evidence into a perfect score.

@@ -157,8 +157,9 @@ assert.strictEqual(empty.supportingEvidence.length, 0);
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
 assert(!app.includes('>Project Snapshot<'), 'Action Center must not restore the retired Project Snapshot.');
 assert(
-  app.includes('liveAuthority.projectTruth.briefing.nextActions[0]') &&
-    app.includes('{authoritativePriority || topPriority?.dueTodayLabel || topPriority?.subtitle'),
+  app.includes('liveAuthority.projectTruth.briefing.nextActions.find') &&
+    app.includes('authoritativePriority ||') &&
+    app.includes('currentFocus?.recoveryAction ||'),
   'The canonical next action must remain available in the concise Overview priority card.',
 );
 

@@ -4,6 +4,7 @@ import {
   analyzeVitruviusCriticalPath,
 } from './VitruviusScheduleAnalytics';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
+import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 
 export type VitruviusLookaheadWeeks = 3 | 6;
 
@@ -56,7 +57,7 @@ export function buildVitruviusLookahead({
   const criticalIds = analyzeVitruviusCriticalPath(items).criticalItemIds;
   const rows = items
     .filter(item => item.isSummary !== true)
-    .filter(item => item.status !== 'Complete' && item.percentComplete < 100)
+    .filter(item => !scheduleTaskIsComplete(item))
     .flatMap(item => {
       const start = parseVitruviusScheduleDate(item.startDate);
       const finish = parseVitruviusScheduleDate(item.finishDate);
@@ -76,8 +77,7 @@ export function buildVitruviusLookahead({
         .filter((predecessor): predecessor is ScheduleItem =>
           Boolean(
             predecessor &&
-            predecessor.status !== 'Complete' &&
-            predecessor.percentComplete < 100,
+            !scheduleTaskIsComplete(predecessor),
           ),
         );
       const status: VitruviusLookaheadStatus = !dated

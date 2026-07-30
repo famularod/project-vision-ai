@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "identity": {
+    "product": "Vitruvius",
+    "intelligenceEngine": "Core",
+    "qaSystem": "VIGIL",
+    "qaNameStatus": "official"
+  },
+  "requiredPlatforms": [
+    "iphone",
+    "ipad",
+    "web"
+  ],
+  "requiredDeviceJourneys": [
+    {
+      "id": "launch-navigation",
+      "title": "Launch and primary navigation",
+      "mutatesSharedData": false
+    },
+    {
+      "id": "three-client-sync",
+      "title": "Live iPhone, iPad, and web propagation",
+      "mutatesSharedData": true
+    },
+    {
+      "id": "task-edit-save",
+      "title": "Task edit, local confirmation, and cloud acknowledgement",
+      "mutatesSharedData": true
+    },
+    {
+      "id": "offline-recovery",
+      "title": "Offline save and automatic recovery",
+      "mutatesSharedData": true
+    },
+    {
+      "id": "documents-drawings",
+      "title": "Document and drawing upload, sync, and open",
+      "mutatesSharedData": true
+    },
+    {
+      "id": "camera-location",
+      "title": "Camera, photo analysis, and GPS area recommendation",
+      "mutatesSharedData": true
+    }
+  ],
+  "performanceBudgets": [
+    {
+      "id": "cold-launch-interactive",
+      "maximumMs": 5000,
+      "source": "physical_device",
+      "releaseBlockingAfterBaseline": true
+    },
+    {
+      "id": "primary-navigation-feedback",
+      "maximumMs": 2000,
+      "source": "physical_device",
+      "releaseBlockingAfterBaseline": true
+    },
+    {
+      "id": "task-save-local-confirmation",
+      "maximumMs": 2000,
+      "source": "physical_device",
+      "releaseBlockingAfterBaseline": true
+    },
+    {
+      "id": "peer-sync-propagation",
+      "maximumMs": 15000,
+      "source": "live_three_client",
+      "releaseBlockingAfterBaseline": true
+    },
+    {
+      "id": "protected-document-open",
+      "maximumMs": 5000,
+      "source": "physical_device",
+      "releaseBlockingAfterBaseline": true
+    }
+  ],
+  "certificationRules": {
+    "automatedPassCertifiesPhysicalDevices": false,
+    "automatedPassCertifiesExternalProviders": false,
+    "missingDeviceEvidenceStatus": "device_validation_required",
+    "missingVisualBaselineStatus": "visual_baseline_required"
+  }
+}

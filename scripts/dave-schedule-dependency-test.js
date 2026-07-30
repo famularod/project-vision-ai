@@ -6,25 +6,42 @@ const path = require('path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(
-  path.join(root, 'services/PIEScheduleDependencyNetwork.ts'),
-  'utf8',
-);
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-}).outputText;
-const moduleUnderTest = { exports: {} };
-new Function('require', 'module', 'exports', compiled)(
-  specifier => { throw new Error(`Unexpected runtime dependency: ${specifier}`); },
-  moduleUnderTest,
-  moduleUnderTest.exports,
-);
+const cache = new Map();
+
+function loadTs(relativePath) {
+  const absolutePath = path.resolve(root, relativePath);
+  if (cache.has(absolutePath)) return cache.get(absolutePath).exports;
+  const moduleUnderTest = { exports: {} };
+  cache.set(absolutePath, moduleUnderTest);
+  const compiled = ts.transpileModule(fs.readFileSync(absolutePath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
+    },
+    fileName: absolutePath,
+  }).outputText;
+  const localRequire = specifier => {
+    if (!specifier.startsWith('.')) return require(specifier);
+    const base = path.resolve(path.dirname(absolutePath), specifier);
+    const resolved = [base, `${base}.ts`, path.join(base, 'index.ts')]
+      .find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+    if (!resolved) throw new Error(`Cannot resolve ${specifier}`);
+    return loadTs(path.relative(root, resolved));
+  };
+  new Function('require', 'module', 'exports', compiled)(
+    localRequire,
+    moduleUnderTest,
+    moduleUnderTest.exports,
+  );
+  return moduleUnderTest.exports;
+}
 
 const {
   SCHEDULE_DEPENDENCY_EXTRACTION_ENABLED,
   buildPIEScheduleDependencyNetwork,
   stripScheduleDependencyMetadata,
-} = moduleUnderTest.exports;
+} = loadTs('services/PIEScheduleDependencyNetwork.ts');
 
 function task(id, status, notes, taskName = id, dependencies = []) {
   return {

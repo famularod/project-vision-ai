@@ -18,6 +18,9 @@ import {
   type OwnedLocalFileManifest,
   type OwnedLocalFileManifestRecord,
 } from './OwnedLocalFileRepository';
+import { MAX_PROJECT_DOCUMENT_FILE_BYTES } from './FileSizePreflight';
+import type { ReferenceDocument } from '../types';
+import type { ProjectDocumentCategory } from './ProjectDocumentClassification';
 
 type UploadLifecycleDocument = {
   status: 'local' | 'uploading' | 'uploaded' | 'failed';
@@ -86,6 +89,124 @@ export type ImportedOwnedProjectDocument = Readonly<{
   record: OwnedLocalFileManifestRecord;
 }>;
 
+type SharedProjectDocumentSource = Readonly<{
+  id: string;
+  referenceDocumentId?: string | null;
+  projectId: string;
+  name: string;
+  category: ProjectDocumentCategory;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+  storagePath?: string | null;
+  note?: string | null;
+  importedAt: string;
+  drawingNumber?: string | null;
+  drawingRevision?: string | null;
+  drawingDiscipline?: string | null;
+  drawingStatus?: ReferenceDocument['drawingStatus'];
+  drawingIssuedAt?: string | null;
+}>;
+
+type DownloadableProjectDocumentSource = Readonly<{
+  id: string;
+  referenceDocumentId?: string | null;
+  projectId: string;
+  storagePath?: string | null;
+}>;
+
+/**
+ * Finds the shared cloud record that owns an uploaded project document.
+ *
+ * Local project-document records contain device-specific manifest paths that
+ * legitimately stop working after an app reinstall or on another device. The
+ * shared reference record is the cross-device authority for downloading the
+ * protected bytes again. Prefer the explicit bridge ID, then the stable ID,
+ * and use the protected storage path only as a final exact-match fallback.
+ */
+export function findSharedReferenceDocumentForProjectDocument(
+  document: DownloadableProjectDocumentSource,
+  referenceDocuments: readonly ReferenceDocument[],
+): ReferenceDocument | null {
+  const projectId = document.projectId.trim();
+  const belongsToProject = (candidate: ReferenceDocument) =>
+    !candidate.projectId || candidate.projectId === projectId;
+  const referenceDocumentId = document.referenceDocumentId?.trim();
+
+  if (referenceDocumentId) {
+    const explicit = referenceDocuments.find(candidate =>
+      candidate.id === referenceDocumentId && belongsToProject(candidate),
+    );
+    if (explicit) return explicit;
+  }
+
+  const stableIdentity = referenceDocuments.find(candidate =>
+    candidate.id === document.id && belongsToProject(candidate),
+  );
+  if (stableIdentity) return stableIdentity;
+
+  const storagePath = document.storagePath?.trim();
+  if (!storagePath) return null;
+
+  return referenceDocuments.find(candidate =>
+    candidate.storagePath === storagePath && belongsToProject(candidate),
+  ) || null;
+}
+
+export function referenceCategoryForProjectDocument(
+  category: ProjectDocumentCategory,
+): string {
+  return category === 'Schedule' ? 'Schedules' : category;
+}
+
+/**
+ * Produces the cloud-visible metadata record for bytes already stored in the
+ * protected project-document bucket. The project-document ID is reused unless
+ * an earlier bridge ID exists, making upload retries idempotent.
+ */
+export function buildSharedReferenceDocument({
+  document,
+  projectName,
+  contentSha256,
+  updatedAt = new Date().toISOString(),
+}: Readonly<{
+  document: SharedProjectDocumentSource;
+  projectName: string | null;
+  contentSha256: string | null;
+  updatedAt?: string;
+}>): ReferenceDocument {
+  return Object.freeze({
+    id: document.referenceDocumentId || document.id,
+    name: document.name.replace(/\.[^/.]+$/, '') || document.name,
+    originalFileName: document.name,
+    uri: '',
+    mimeType: document.mimeType || null,
+    category: referenceCategoryForProjectDocument(document.category),
+    notes: document.note || '',
+    // A schedule becomes authoritative only through the explicit
+    // "Make Current" workflow. Uploading bytes alone must not supersede it.
+    isCurrent: false,
+    importedAt: document.importedAt,
+    projectId: document.projectId,
+    projectName,
+    projectNames: projectName ? [projectName] : [],
+    importBatchId: null,
+    storagePath: document.storagePath || null,
+    sizeBytes: document.sizeBytes || null,
+    contentSha256,
+    updatedAt,
+    cloudUpdatedAt: null,
+    webFileFingerprint: null,
+    webVersionGroupId: null,
+    webContentReview: null,
+    webReport: null,
+    drawingNumber: document.drawingNumber || null,
+    drawingRevision: document.drawingRevision || null,
+    drawingDiscipline: document.drawingDiscipline || null,
+    drawingStatus: document.drawingStatus || null,
+    drawingIssuedAt: document.drawingIssuedAt || null,
+  });
+}
+
 /**
  * Copies a picked project document into the app-owned persistence boundary
  * before a durable document record is created. Callers persist the returned
@@ -98,6 +219,7 @@ export async function importProjectDocumentIntoOwnedStorage({
   fileName,
   mimeType,
   reportedSizeBytes,
+  maxBytes = MAX_PROJECT_DOCUMENT_FILE_BYTES,
   dependencies = createExpoSdk54OwnedLocalFileStoreDependencies(),
 }: Readonly<{
   sourceUri: string;
@@ -106,6 +228,7 @@ export async function importProjectDocumentIntoOwnedStorage({
   fileName?: string | null;
   mimeType: string;
   reportedSizeBytes?: number | null;
+  maxBytes?: number;
   dependencies?: OwnedLocalFileStoreDependencies;
 }>): Promise<ImportedOwnedProjectDocument> {
   const store = createOwnedLocalFileStore({ ownedRoot, dependencies });
@@ -115,6 +238,7 @@ export async function importProjectDocumentIntoOwnedStorage({
     extension: extension || ownedProjectDocumentExtension(fileName, mimeType),
     mimeType,
     reportedSizeBytes,
+    maxBytes,
   });
   const manifest = createOwnedLocalFileManifest([record]);
 

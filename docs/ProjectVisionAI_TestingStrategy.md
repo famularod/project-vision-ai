@@ -26,7 +26,7 @@ npm run test:unit
 
 Jest with the Expo preset imports production modules and renders React Native components. These tests verify returned values, state transitions, prioritization rules, user-visible labels, and interaction callbacks.
 
-The V.I.C. release path uses the stricter command:
+The Jarvis release path uses the stricter command:
 
 ```bash
 npm run test:unit:strict
@@ -70,7 +70,7 @@ Static command:
 npm run jarvis:contracts
 ```
 
-V.I.C. contracts verify that required services, documents, exports, boundaries, and safety markers exist. The compatibility command remains `jarvis:contracts`. These are static architecture checks, and a PASS does not by itself prove that the app behaves correctly or renders correctly.
+Jarvis contracts verify that required services, documents, exports, boundaries, and safety markers exist. The command is `jarvis:contracts`. These are static architecture checks, and a PASS does not by itself prove that the app behaves correctly or renders correctly.
 
 The escaped-defect registry at `validation/jarvis/escaped-defects.json` maps defect families that previously reached users to executable regression evidence, manual validation, and the remaining limitation of that automation. `npm run test:jarvis-coverage` fails when this evidence becomes missing, skipped, or disconnected from the release gate.
 
@@ -94,11 +94,11 @@ npm run qa:release
 
 `qa:release` and `jarvis:qa` run the same complete automated gate. It runs compilation and secret checks, architecture checks, strict Jest behavior and coverage, established domain scenarios, UI and report contracts, core-flow simulation, photo intelligence, authority/safety tests, escaped-defect coverage, a production web export, and the static contract audit.
 
-The V.I.C. automated gate reports `Automated Gate: PASS` or `FAIL` separately from `Release Certification: DEVICE VALIDATION REQUIRED`. Maestro and physical-device validation follow when a coherent build milestone is ready. No automated PASS certifies live three-device sync, native camera/location/sign-in behavior, touch latency, real provider availability, or visual quality on supported screen sizes.
+The Jarvis automated gate reports `Automated Gate: PASS` or `FAIL` separately from `Release Certification: DEVICE VALIDATION REQUIRED`. Maestro and physical-device validation follow when a coherent build milestone is ready. No automated PASS certifies live three-device sync, native camera/location/sign-in behavior, touch latency, real provider availability, or visual quality on supported screen sizes.
 
 ## Coverage Policy
 
-The initial whole-repository Jest baseline is intentionally low because most behavior predates the Jest harness. Coverage is a migration indicator, not a release-quality score. V.I.C. starts with floors just below the measured baseline so coverage cannot silently regress while higher-risk domains are migrated.
+The initial whole-repository Jest baseline is intentionally low because most behavior predates the Jest harness. Coverage is a migration indicator, not a release-quality score. Jarvis starts with floors just below the measured baseline so coverage cannot silently regress while higher-risk domains are migrated.
 
 - Do not inflate coverage with tests that only execute lines.
 - Add focused behavior tests when production logic is changed or extracted.

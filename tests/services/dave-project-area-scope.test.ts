@@ -1,6 +1,7 @@
 import {
   explicitProjectAreaOwner,
   inferLegacyAreaProjectNames,
+  projectIdentifierFromAreaName,
   projectAreasForProject,
 } from '../../services/DAVEProjectAreaScope';
 import type { ProjectArea, ProjectUpdate, ScheduleItem } from '../../types';
@@ -135,6 +136,22 @@ describe('projectAreasForProject', () => {
       projectName: 'Project A',
       updates: [taskUpdate],
     })).toEqual([legacy]);
+  });
+
+  it('recovers legacy areas with an exact leading project identifier', () => {
+    const area = baseArea('legacy-2375-north', '2375 North Lot');
+    expect(projectIdentifierFromAreaName(
+      area.name,
+      ['2321 Compliance Project', '2375 Compliance Project'],
+    )).toBe('2375 Compliance Project');
+    expect(projectAreasForProject({
+      projectAreas: [area],
+      projectName: '2375 Compliance Project',
+    })).toEqual([area]);
+    expect(projectAreasForProject({
+      projectAreas: [area],
+      projectName: '2321 Compliance Project',
+    })).toEqual([]);
   });
 });
 

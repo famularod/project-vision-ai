@@ -28,6 +28,7 @@ import {
   type VitruviusLookaheadItem,
   type VitruviusLookaheadWeeks,
 } from '../../services/VitruviusLookahead';
+import { buildVitruviusCalendarExport } from '../../services/VitruviusCalendarExport';
 import { analyzeVitruviusSchedule } from '../../services/VitruviusScheduleAnalytics';
 import {
   buildVitruviusScheduleChangeScenario,
@@ -458,6 +459,11 @@ export function DesktopSchedulePage({
               onPress={() => setWorkspaceView('lookahead')}
             />
           </View>
+          <ActionButton
+            icon="calendar-outline"
+            label="Download Calendar"
+            onPress={() => downloadScheduleCalendar(tasks)}
+          />
           <ActionButton icon="layers-outline" label="Add Phase" onPress={() => openNew('phase')} />
           <ActionButton icon="add-circle-outline" label="Add Task" onPress={() => openNew('task')} primary />
           <ActionButton icon="diamond-outline" label="Add Milestone" onPress={() => openNew('milestone')} />
@@ -1721,6 +1727,25 @@ function downloadLookaheadCsv(
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = `vitruvius-${lookahead.weeks}-week-lookahead-${lookahead.rangeStart}.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadScheduleCalendar(tasks: readonly ScheduleItem[]) {
+  if (
+    typeof document === 'undefined' ||
+    typeof URL === 'undefined' ||
+    typeof Blob === 'undefined'
+  ) return;
+  const calendar = buildVitruviusCalendarExport(tasks);
+  if (calendar.eventCount === 0) return;
+  const url = URL.createObjectURL(new Blob(
+    [calendar.content],
+    { type: 'text/calendar;charset=utf-8' },
+  ));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'vitruvius-project-schedule.ics';
   anchor.click();
   URL.revokeObjectURL(url);
 }

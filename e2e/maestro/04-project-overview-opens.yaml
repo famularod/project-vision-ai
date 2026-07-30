@@ -8,3 +8,4 @@ appId: ${APP_ID}
 - assertVisible: ${PROJECT_NAME}
 - assertVisible: "Tasks and Schedule"
 - assertVisible: "New Field Update"
+- takeScreenshot: "jarvis-project-overview"

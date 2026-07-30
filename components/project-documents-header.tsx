@@ -39,7 +39,7 @@ export function ProjectDocumentsHeader<T extends string>({
       <ScreenCard style={styles.statusCard}>
         <Text accessibilityRole="header" style={styles.statusTitle}>Document Status</Text>
         <Text selectable style={styles.statusText}>
-          Local only, Document upload pending, Document upload failed · Retry, and Uploaded documents remain visible here. Failed uploads can be retried without duplicating the document record.
+          New files are saved on this device first, then synced to the shared project record. Existing cloud files can be downloaded and opened on any authorized device.
         </Text>
       </ScreenCard>
 
@@ -80,7 +80,7 @@ export function ProjectDocumentActions({
       testID="project-document-actions"
     >
       <DocumentAction
-        label="Upload Document"
+        label="Add Document"
         icon="document-attach-outline"
         primary
         wide={wide}

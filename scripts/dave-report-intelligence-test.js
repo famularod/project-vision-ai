@@ -126,20 +126,48 @@ const baseDraft = {
 };
 const pm = enhanceDAVEReportDraft(baseDraft, briefing, 'project_manager');
 const executive = enhanceDAVEReportDraft(baseDraft, briefing, 'executive');
-assert.match(pm.body, /PROJECT STATUS/);
-assert.match(pm.body, /ACTIVE WORK/);
-assert.match(pm.body, /RECENT CHANGES/);
-assert.match(pm.body, /SCHEDULE ISSUES/);
-assert.match(pm.body, /NEXT STEPS/);
+assert.match(pm.body, /CURRENT STATUS/);
+assert.match(pm.body, /SINCE THE LAST APPROVED REPORT/);
+assert.match(pm.body, /CURRENT WORK/);
+assert.match(pm.body, /ACTION PLAN/);
+assert.match(pm.body, /SCHEDULE RISKS/);
 assert.match(pm.body, /WORK AREAS \/ PHOTO NOTES/);
 assert(!/REPORT NOTES/.test(pm.body));
 assert(!/verification|not verified|uncertain|unknown|missing evidence|low confidence/i.test(pm.body));
 assert(!/No material field change|No immediate action|No problem requiring/i.test(pm.body));
 assert(!/verified construction progress/i.test(pm.body));
-assert.match(executive.body, /PROJECT STATUS/);
+assert.match(executive.body, /EXECUTIVE STATUS/);
+assert.match(executive.body, /PROJECT POSITION/);
+assert.match(executive.body, /MANAGEMENT ACTIONS/);
 assert(!/WORK AREAS \/ PHOTO NOTES/.test(executive.body));
 assert.notStrictEqual(pm.body, executive.body);
 assert.strictEqual(pm.daveBriefing, briefing);
+
+const completeNarrativeDraft = {
+  ...baseDraft,
+  locationGroups: [{
+    id: 'complete-group',
+    title: 'Field Notes',
+    workAreas: [{
+      id: 'complete-area',
+      title: 'Field Notes',
+      projectName: '2321 Compliance Project',
+      bullets: Array.from({ length: 9 }, (_, index) => ({
+        text: `Full field note ${index + 1} remains visible in the written report.`,
+      })),
+    }],
+  }],
+};
+const completeNarrative = enhanceDAVEReportDraft(
+  completeNarrativeDraft,
+  briefing,
+  'project_manager',
+);
+assert.match(
+  completeNarrative.body,
+  /Full field note 9 remains visible in the written report\./,
+  'The full written PM report must not truncate later work-area notes.',
+);
 
 assert.deepStrictEqual(buildPMReportReviewWarnings([
   'One or more action items need an owner.',
@@ -157,15 +185,19 @@ const reporter = fs.readFileSync(path.join(root, 'services/PIEReporter.ts'), 'ut
 assert(screen.includes('CURRENT PROJECT STATUS'));
 assert(screen.includes('Task Status'));
 assert(screen.includes('Schedule Health'));
+assert(screen.includes('ReportPeriodSummary'));
+assert(screen.includes('Reporting Period'));
+assert(screen.includes('previous_approved_report'));
+assert(screen.includes('Project Position'));
+assert(screen.includes('Management Actions'));
+assert(screen.includes('Action Plan'));
+assert(screen.includes('Milestones'));
+assert(screen.includes('Project Controls'));
 assert(screen.includes("flexBasis: '47%'"));
 assert(screen.includes('numberOfLines={1}'));
 assert(screen.includes('minimumFontScale={0.85}'));
 assert(screen.includes('Current Work'));
-assert(screen.includes('Recent Changes'));
-assert(screen.includes('Needs Attention'));
-assert(screen.includes('Next Steps'));
 assert(screen.includes('Progress by Work Area'));
-assert(screen.includes('Progress based on scheduled task duration'));
 assert(screen.includes('Completed Areas'));
 assert(screen.includes('Full Written Report'));
 assert(screen.includes('Project Status Details'));

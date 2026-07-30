@@ -97,6 +97,9 @@ const projectCards = homeDashboard;
 const photoCapture = liveAppSlice('function AddPhotosScreen', 'function PIEAnalysisStepScreen');
 const buildUpdate = liveAppSlice('function BuildUpdateScreen', 'function ReadOnlyUpdateDetailScreen');
 const reportsScreen = readFile('screens/ReportsScreen.tsx');
+const daveReportIntelligence = readFile('services/DAVEReportIntelligence.ts');
+const daveReportSnapshot = readFile('services/DAVEReportSnapshot.ts');
+const daveReportSnapshotRepository = readFile('services/DAVEReportSnapshotRepository.ts');
 const projectOverviewScreen = liveAppSlice('function ProjectWorkspaceScreen', 'function ProjectDocumentsScreen');
 const liveAuthorityProvider = readFile('providers/PIELiveAuthorityProvider.tsx');
 const daveProjectTruth = readFile('services/DAVEProjectTruth.ts');
@@ -6056,11 +6059,13 @@ if (
 if (
   hasAll(homeDashboard, [
     'usePIELiveAuthority',
-    "Today's Priority",
+    'Current Focus',
     'liveAuthority.projectTruth.briefing.nextActions',
-    'topPriority.taskCount',
-    'topPriority.scheduleHealth',
-    'Review priority',
+    'const authoritativePriority =',
+    'currentFocus.owner',
+    'currentFocus.timing',
+    'Schedule loaded:',
+    'Review task',
   ])
 ) {
   pass(
@@ -6080,11 +6085,11 @@ if (
 if (
   hasAll(homeDashboard, [
     'timeOfDayGreeting(displayName)',
-    "Today's Priority",
+    'Current Focus',
     'Project Health',
     'No immediate priority',
-    'Review priority',
-    'Observed today:',
+    'Review task',
+    'FIELD CONFIRMATION',
   ])
 ) {
   pass(
@@ -6307,10 +6312,10 @@ if (
 
 if (
   hasAll(homeDashboard, [
-    "Today's Priority",
-    'Review priority',
+    'Current Focus',
+    'Review task',
     'Active Projects',
-    'Recent Activity',
+    'FIELD CONFIRMATION',
   ]) &&
   hasAll(reportsScreen, [
     'BeforeYouSharePanel',
@@ -6680,7 +6685,8 @@ if (
     'recommendedWalkAreas:',
     'recommendedInspectionAreas:',
     'executiveSummary:',
-    'topPriority.scheduleHealth',
+    'liveAuthority.projectTruth.briefing.schedule',
+    'Schedule loaded:',
   ])
 ) {
   pass(
@@ -6750,7 +6756,8 @@ if (
     'ScheduleImportFlow',
     'reportEvidenceScope ? reportEvidenceScope.scheduleItems : authoritativeScheduleItems',
     'authoritativeScheduleItems',
-    'topPriority.scheduleHealth',
+    'buildVitruviusCommitmentControl({',
+    'liveAuthority.projectTruth.briefing.schedule',
   ]) &&
   hasAll(daveProjectTruth, [
     'function buildScheduleTruth',
@@ -6914,10 +6921,10 @@ if (
 
 if (
   hasAll(homeDashboard, [
-    "Today's Priority",
+    'Current Focus',
     'authoritativePriority',
     'liveAuthority.projectTruth.briefing.nextActions',
-    'Review priority',
+    'Review task',
   ])
 ) {
   pass(
@@ -7577,16 +7584,57 @@ if (
     'Task Status',
     'Schedule Health',
     'Current Work',
-    'Needs Attention',
-    'Next Steps',
-    'Recent Changes',
+    'Management actions',
+    'Reporting Period',
+    'Project Position',
+    'Management Actions',
+    'Action Plan',
+    'Milestones',
+    'Controls',
     'Progress by Work Area',
     'Full Written Report',
     'Copy Report',
     'Email Report',
     'reportApproved && reportApprovalAllowed && shareOpen',
     'Project Status Details',
-    'Current task position and schedule',
+    'Current Task Position',
+    'Source-backed task and schedule facts',
+    'This approval establishes the baseline for the next reporting period.',
+  ]) &&
+  hasAll(daveReportIntelligence, [
+    'DAVE_REPORT_INTELLIGENCE_VERSION',
+    "'dave-report-intelligence/2.0'",
+    'reportingPeriod',
+    'recentChanges',
+    'nextActions',
+    'milestones',
+    'schedulePosition',
+    'DAVEReportControlMetrics',
+    'controls',
+    'EXECUTIVE STATUS',
+    'SINCE THE LAST APPROVED REPORT',
+    'MANAGEMENT ACTIONS',
+    'CURRENT STATUS',
+    'ACTION PLAN',
+  ]) &&
+  hasAll(daveReportSnapshot, [
+    'buildDAVEReportSnapshot',
+    'compareDAVEReportSnapshots',
+    'completeDelta',
+    'openDelta',
+    'overdueDelta',
+    "'completed'",
+    "'reopened'",
+    "'progress'",
+    "'finish_date'",
+    "'owner'",
+    "'area'",
+    "'approval'",
+  ]) &&
+  hasAll(daveReportSnapshotRepository, [
+    'loadDAVEReportSnapshot',
+    'saveDAVEReportSnapshot',
+    'The approved report snapshot could not be verified after saving.',
   ]) &&
   !hasAny(reportsScreen, [
     'No image references included.',
@@ -7597,15 +7645,15 @@ if (
 ) {
   pass(
     'PIE Reporter narrative quality',
-    'Reporter builds construction understanding, cleans work-area names, suppresses system and verification-gap phrasing, requires real action language, and omits empty or unknown-state sections.',
-    'services/PIEReporter.ts, screens/ReportsScreen.tsx',
+    'Reporter builds construction understanding, compares against the last approved report, presents current project position and accountable management actions, and omits empty or unknown-state sections.',
+    'services/PIEReporter.ts, services/DAVEReportIntelligence.ts, services/DAVEReportSnapshot.ts, services/DAVEReportSnapshotRepository.ts, screens/ReportsScreen.tsx',
   );
 } else {
   fail(
     'PIE Reporter narrative quality',
     'Reporter 2.0 quality gates were not satisfied.',
-    'Keep construction understanding and review rigor internal while publishing only known current conditions, real actions, and non-empty report sections.',
-    'services/PIEReporter.ts, screens/ReportsScreen.tsx',
+    'Keep review rigor internal while publishing verified current conditions, movement since the last approved report, accountable actions, milestones, controls, and non-empty report sections.',
+    'services/PIEReporter.ts, services/DAVEReportIntelligence.ts, services/DAVEReportSnapshot.ts, services/DAVEReportSnapshotRepository.ts, screens/ReportsScreen.tsx',
   );
 }
 
@@ -8102,7 +8150,9 @@ if (
   hasAll(app, [
     'authoritativeScheduleItems',
     'overviewPrioritySupport',
-    'topPriority.scheduleHealth',
+    'liveAuthority.projectTruth.briefing.schedule',
+    'Schedule loaded:',
+    'currentFocus.timing',
   ]) &&
   hasAll(daveProjectTruth, [
     'function buildScheduleTruth',
@@ -8124,7 +8174,7 @@ if (
   );
 }
 
-if (hasAll(homeDashboard, ["Today's Priority", 'Review priority', 'liveAuthority.projectTruth.briefing'])) {
+if (hasAll(homeDashboard, ['Current Focus', 'Review task', 'liveAuthority.projectTruth.briefing'])) {
   pass(
     'Today PIE briefing',
     'Overview shows DAVE’s current priority, supporting briefing, and one review action.',
@@ -8292,7 +8342,7 @@ if (hasAll(majorUiSource, ['spacing']) && hasAll(majorUiSource, ['typography']))
 }
 
 if (
-  hasAll(homeDashboard, ["Today's Priority", 'Review priority']) &&
+  hasAll(homeDashboard, ['Current Focus', 'Review task']) &&
   hasAll(photoCapture, ['Capture Evidence', 'Add Another Photo', 'Add Note']) &&
   hasAll(reportsScreen, ['BeforeYouSharePanel', 'Approve Report', 'reportActionButtonPrimary'])
 ) {
@@ -8518,7 +8568,7 @@ const contractStatus =
 const topProblems = buildTopProblems();
 const appleReviewNotes = buildAppleReviewNotes(categoryScores, counts);
 
-console.log('V.I.C. Static Contract Audit');
+console.log('VIGIL Static Contract Audit');
 console.log(`Generated: ${new Date().toISOString()}`);
 console.log(`Contract Status: ${contractStatus}`);
 console.log(
@@ -8527,7 +8577,7 @@ console.log(
 console.log(`Contract Score: ${overallScore}/100`);
 console.log('Runtime behavior: NOT EVALUATED');
 console.log('Physical-device behavior: NOT EVALUATED');
-console.log('Run npm run jarvis:qa for the complete automated release gate.');
+console.log('Run npm run vigil:qa for the complete automated release gate.');
 console.log('');
 
 console.log('Category Scores');

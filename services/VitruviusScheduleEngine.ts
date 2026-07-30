@@ -6,6 +6,7 @@ import {
   buildPIEScheduleDependencyNetwork,
   type PIEScheduleDependencyNetwork,
 } from './PIEScheduleDependencyNetwork';
+import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 
 export type VitruviusScheduleIssueCode =
   | 'dependency_cycle'
@@ -133,7 +134,7 @@ export function previewVitruviusFinishToStartSchedule(
       }
       if (currentStart && currentStart.getTime() >= requiredStart.getTime()) return;
 
-      if (item.status === 'Complete' || item.percentComplete >= 100) {
+      if (scheduleTaskIsComplete(item)) {
         issues.push(Object.freeze({
           code: 'completed_task_locked',
           severity: 'error',

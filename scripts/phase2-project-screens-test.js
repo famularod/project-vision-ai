@@ -22,11 +22,11 @@ const projectStatus = fs.readFileSync(
   'ProjectSelectorSheet',
   'Needs Attention',
   'Project Health',
-  "Today's Priority",
+  'Current Focus',
   'All clear',
   "project{scopedProjects.length === 1 ? '' : 's'} reviewed",
   'Nothing due today',
-  "topPriority ? 'PRIORITY' : 'ALL CLEAR'",
+  "currentFocus?.stateLabel || (topPriority ? 'NEEDS SETUP' : 'ALL CLEAR')",
   'Active Projects',
   'Recent Activity',
   'View all activity',
@@ -143,10 +143,10 @@ assert(
   'Overview must preserve archived-project recovery after removing the duplicate Projects route.',
 );
 assert(
-  projectTruth.includes("evidenceClass: safeVisualEvidence ? 'observation'") &&
+    projectTruth.includes("evidenceClass: safeVisualEvidence ? 'observation'") &&
     projectTruth.includes('changeFromPrior: hasComparablePrior') &&
     app.includes('buildPIEProjectBriefModel') &&
-    app.includes('.observations.map'),
+    app.includes('const observations = brief.observations'),
   'Observed photo findings must remain available to concise Overview activity without restoring Project Brief.',
 );
 assert(

@@ -20,8 +20,9 @@ import {
 import { normalizeScheduleImport } from './PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
+import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 
-export const DAVE_WEB_MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+export const DAVE_WEB_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 
 export const DAVE_WEB_DOCUMENT_CATEGORIES = Object.freeze([
   'Schedules',
@@ -145,7 +146,9 @@ export function prepareDAVEWebDocumentUpload({
   if (!cleanName) throw new Error('Choose a named document before continuing.');
   if (selectedProjectNames.length === 0) throw new Error('Choose at least one project for this document.');
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) throw new Error('The selected document is empty.');
-  if (sizeBytes > DAVE_WEB_MAX_DOCUMENT_BYTES) throw new Error('The selected document is larger than 25 MB.');
+  if (sizeBytes > DAVE_WEB_MAX_DOCUMENT_BYTES) {
+    throw new Error('The selected document is larger than 50 MB. Optimize or split it, then retry.');
+  }
 
   const documentId = createDAVEWebId('web-document');
   const scheduleLike = normalized(category) === 'schedules';
@@ -401,7 +404,7 @@ export function buildDAVEWebTruthDiagnostics(
     scheduleDocumentIsScheduleLike(document) && document.isCurrent,
   );
   const completedTaskCount = snapshot.scheduleItems.filter(item =>
-    item.status === 'Complete' || item.percentComplete >= 100,
+    scheduleTaskIsComplete(item),
   ).length;
   const conflicts = [
     ...(duplicateTaskGroups.length ? [`${duplicateTaskGroups.length} duplicate task occurrence group${duplicateTaskGroups.length === 1 ? '' : 's'} need review.`] : []),

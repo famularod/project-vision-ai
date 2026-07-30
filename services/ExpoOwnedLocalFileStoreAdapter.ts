@@ -4,6 +4,7 @@ import type {
   OwnedLocalFileStoreDependencies,
   OwnedLocalFileStat,
 } from './OwnedLocalFileStore';
+import { hashExpoFileSha256 } from './FileSizePreflight';
 
 /**
  * Native dependency adapter for Expo SDK 54. This intentionally uses the SDK
@@ -43,6 +44,13 @@ export function createExpoSdk54OwnedLocalFileStoreDependencies(): OwnedLocalFile
       }
 
       return file.bytes();
+    },
+
+    async hashFile(fileUri: string, maxBytes?: number) {
+      return hashExpoFileSha256({
+        uri: fileUri,
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+      });
     },
 
     async statFile(fileUri: string): Promise<OwnedLocalFileStat> {

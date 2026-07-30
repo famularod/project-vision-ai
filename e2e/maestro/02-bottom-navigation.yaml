@@ -10,3 +10,4 @@ appId: ${APP_ID}
 - assertVisible: "Prepared Report"
 - tapOn: "Overview"
 - assertVisible: "Active Projects"
+- takeScreenshot: "jarvis-primary-navigation"

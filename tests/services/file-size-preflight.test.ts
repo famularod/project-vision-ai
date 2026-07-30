@@ -9,6 +9,7 @@ jest.mock('expo-file-system/legacy', () => ({
 
 import {
   FileSizePreflightError,
+  MAX_PROJECT_DOCUMENT_FILE_BYTES,
   MAX_SAFE_LOCAL_FILE_BYTES,
   prepareExpoFileUploadPayload,
   preflightLocalFileRead,
@@ -25,6 +26,10 @@ beforeEach(() => {
 });
 
 describe('whole-file size preflight', () => {
+  it('supports project documents up to 100 MiB', () => {
+    expect(MAX_PROJECT_DOCUMENT_FILE_BYTES).toBe(50 * 1024 * 1024);
+  });
+
   it('accepts a verified file exactly at the hard limit', async () => {
     await expect(preflightLocalFileRead({
       uri: URI,

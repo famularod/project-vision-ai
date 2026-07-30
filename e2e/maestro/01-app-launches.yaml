@@ -8,3 +8,4 @@ appId: ${APP_ID}
 - assertVisible: "Tasks"
 - assertVisible: "Talk"
 - assertVisible: "Reports"
+- takeScreenshot: "jarvis-overview"
