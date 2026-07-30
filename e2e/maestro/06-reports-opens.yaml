@@ -9,3 +9,4 @@ appId: ${APP_ID}
 - assertVisible: "Prepared Report"
 - assertVisible: "Report Options"
 - assertVisible: "Approve Report"
+- takeScreenshot: "jarvis-reports"

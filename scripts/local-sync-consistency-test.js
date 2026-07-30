@@ -26,6 +26,14 @@ const fileSizePreflight = fs.readFileSync(
   path.join(root, 'services/FileSizePreflight.ts'),
   'utf8',
 );
+const resumableStorageUpload = fs.readFileSync(
+  path.join(root, 'services/ResumableStorageUpload.ts'),
+  'utf8',
+);
+const storageUploadPolicy = fs.readFileSync(
+  path.join(root, 'services/StorageUploadPolicy.ts'),
+  'utf8',
+);
 const updateService = fs.readFileSync(path.join(root, 'services/updateService.ts'), 'utf8');
 const projectService = fs.readFileSync(path.join(root, 'services/projectService.ts'), 'utf8');
 const projectDeletionTransaction = fs.readFileSync(
@@ -155,7 +163,7 @@ includes(
   'createDAVEOperationalRefreshCommitGuard',
   'operational refreshes must expose a request-generation commit guard',
 );
-const operationalRefreshStart = app.indexOf('async function refreshOperationalCollections()');
+const operationalRefreshStart = app.indexOf('async function refreshOperationalCollections(');
 const operationalRefreshEnd = app.indexOf('const refreshController =', operationalRefreshStart);
 const operationalRefreshBlock = app.slice(operationalRefreshStart, operationalRefreshEnd);
 assert(
@@ -357,8 +365,12 @@ includes(sync, 'Project update database upsert failed', 'project update upsert p
 includes(app, 'project_update_metadata_select', 'database select failure must map to safe operation diagnostic');
 includes(app, 'project_update_upsert', 'database upsert failure must map to safe operation diagnostic');
 includes(app, "'missing_or_denied'", 'authenticated user without membership must map to missing_or_denied');
-includes(supabase, 'prepareExpoFileUploadPayload({ uri })', 'mobile upload must use bounded file preparation before Storage');
+includes(supabase, 'prepareExpoFileUploadPayload({', 'mobile upload must use bounded file preparation before Storage');
+includes(supabase, '...(maxBytes !== undefined ? { maxBytes } : {})', 'mobile upload must forward a bounded file-class limit before Storage');
 includes(fileSizePreflight, 'MAX_SAFE_LOCAL_FILE_BYTES = 15 * 1024 * 1024', 'whole-file reads must have a documented hard byte ceiling');
+includes(fileSizePreflight, 'MAX_PROJECT_DOCUMENT_FILE_BYTES = 50 * 1024 * 1024', 'project-document reads must retain the live backend 50 MiB ceiling');
+includes(storageUploadPolicy, 'TUS_UPLOAD_CHUNK_BYTES = 6 * 1024 * 1024', 'large project documents must use Supabase-compatible resumable chunks');
+includes(resumableStorageUpload, 'chunkSize: TUS_UPLOAD_CHUNK_BYTES', 'native resumable uploads must apply the shared chunk policy');
 includes(fileSizePreflight, 'const preflight = await preflightExpoFileRead(input);', 'upload payload must verify file size before base64 reading');
 assert(
   fileSizePreflight.indexOf('const preflight = await preflightExpoFileRead(input);') <
@@ -439,7 +451,7 @@ includes(sync, 'id: projectUpdateQueueItemId(update.id)', 'queued update retry m
 includes(admin, 'getSyncStatus()', 'Settings must read the durable offline sync queue status');
 includes(admin, 'title="Cloud sync"', 'Settings must surface sync status outside developer diagnostics');
 includes(admin, "'All caught up'", 'Settings must clearly identify an empty sync queue');
-includes(admin, 'waiting to sync', 'Settings must clearly identify pending sync work');
+includes(admin, 'pending on this device', 'Settings must clearly identify pending sync work');
 includes(admin, 'label={isSyncing ? \'Syncing…\' : \'Retry Sync\'}', 'pending sync work must expose a guarded retry action');
 includes(supabase, 'export async function listArchivedProjects', 'archived cloud projects must be queryable for recovery and reopening');
 includes(projectService, 'loadCloudArchivedProjectNames', 'project loading must include archived cloud project names');

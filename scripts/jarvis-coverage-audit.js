@@ -14,6 +14,7 @@ const requiredReleaseArtifacts = [
   'scripts/jarvis-release-gate.js',
   'scripts/jarvis-jest-gate.js',
   'scripts/jarvis-coverage-audit.js',
+  'scripts/jarvis-release-evidence-test.js',
   'scripts/jarvis-registry-bindings.js',
   'scripts/production-hardening-test.js',
   'scripts/production-operations-health-check.js',
@@ -23,6 +24,9 @@ const requiredReleaseArtifacts = [
   'scripts/android-production-signing-gate.js',
   'scripts/pie-vision-evaluation-harness-test.js',
   'validation/jarvis/escaped-defects.json',
+  'validation/jarvis/release-evidence-policy.json',
+  'validation/jarvis/device-evidence-template.json',
+  'validation/jarvis/visual-regression-baselines.json',
   'docs/JARVIS_Improvement_Audit_2026-07-22.md',
 ];
 
@@ -93,7 +97,8 @@ const requiredScripts = {
   'test:production-operations-health': 'node scripts/production-operations-health-check-test.js',
   'test:native-release-generation': 'node scripts/native-release-generation-contract-test.js',
   'test:dependency-security': 'node scripts/dependency-security-contract-test.js',
-  'test:release-hardening': 'node scripts/android-production-signing-gate-test.js && node scripts/native-release-generation-contract-test.js && node scripts/dependency-security-contract-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:production-hardening && npm run test:production-operations-health',
+  'test:release-evidence': 'node scripts/jarvis-release-evidence-test.js',
+  'test:release-hardening': 'node scripts/android-production-signing-gate-test.js && node scripts/native-release-generation-contract-test.js && node scripts/dependency-security-contract-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:release-evidence && npm run test:production-hardening && npm run test:production-operations-health',
   'qa:release': 'npm run jarvis:qa',
 };
 for (const [name, expected] of Object.entries(requiredScripts)) {
@@ -103,18 +108,18 @@ if (!String(scripts['test:behavior'] || '').includes('test:unit:strict')) {
   fail('test:behavior bypasses the strict Jest gate.');
 }
 if (!String(scripts['jarvis:qa'] || '').includes('jarvis-release-gate.js')) {
-  fail('The complete V.I.C. runner is not reproducibly wired from package.json.');
+  fail('The complete Jarvis runner is not reproducibly wired from package.json.');
 }
 if (!String(scripts['test:release-contracts'] || '').includes('test:release-hardening')) {
-  fail('The release contract suite bypasses V.I.C. release hardening tests.');
+  fail('The release contract suite bypasses Jarvis release hardening tests.');
 }
 for (const relativePath of requiredReleaseArtifacts) {
   if (!fs.existsSync(path.join(repoRoot, relativePath))) {
-    fail(`Required V.I.C. release artifact is missing: ${relativePath}.`);
+    fail(`Required Jarvis release artifact is missing: ${relativePath}.`);
   }
 }
 
-console.log('V.I.C. Escaped-Defect Coverage Audit');
+console.log('Jarvis Escaped-Defect Coverage Audit');
 if (failures.length === 0) {
   console.log('PASS: every registered defect family has executable evidence and an honest limitation statement.');
 } else {

@@ -31,4 +31,4 @@ assert.deepEqual(
   [],
 );
 
-console.log('V.I.C. escaped-defect named-test and production-symbol contracts PASS.');
+console.log('Jarvis escaped-defect named-test and production-symbol contracts PASS.');

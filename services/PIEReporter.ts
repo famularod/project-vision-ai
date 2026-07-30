@@ -2313,10 +2313,7 @@ function selectConciseAreaBullets(
     ...bullets.filter(bullet => !selectedIds.has(bullet.id)),
   ].slice(0, 3);
 
-  return selected.map(bullet => ({
-    ...bullet,
-    text: shortenReportBullet(bullet.text),
-  }));
+  return selected;
 }
 
 function shortenReportBullet(value: string, maximumLength = 160) {

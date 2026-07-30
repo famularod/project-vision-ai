@@ -15,6 +15,7 @@ const reporter = read('services/PIEReporter.ts');
 const runtime = read('services/PIERuntime.ts');
 const evidenceFusion = read('services/PIEEvidenceFusion.ts');
 const reportScope = read('services/ReportAuthorityScope.ts');
+const reportIntelligence = read('services/DAVEReportIntelligence.ts');
 
 assert(core.includes('buildPIEReportDraftFromExecutiveJudgment'), 'Live Core must build reports from persisted Executive Judgment.');
 assert(core.includes('executiveJudgmentRecord'), 'Live Core must persist and expose Executive Judgment records.');
@@ -109,7 +110,7 @@ assert(
   'Authoritative reports must receive raw selected updates and schedules, not only a high-level Runtime summary.',
 );
 assert(
-  reports.includes('Array.from(new Set([') &&
+  reportIntelligence.includes('return unique(values.map(value => {') &&
     reports.includes('key={`${index}-${warning}`}'),
   'Repeated report warnings must retain unique React keys.',
 );
@@ -129,8 +130,9 @@ assert(
   reporter.includes('].filter((item): item is string => Boolean(item))).slice(0, 5)') &&
     reporter.includes('return selectConciseAreaBullets(uniqueBullets(bullets))') &&
     reporter.includes('].slice(0, 3)') &&
-    reporter.includes('shortenReportBullet(bullet.text)'),
-  'Generated reports must use a concise executive summary and at most three short bullets per work area.',
+    reporter.includes('return selected;') &&
+    !reporter.includes('text: shortenReportBullet(bullet.text)'),
+  'Generated reports must use a concise executive summary and preserve the full text of selected work-area bullets.',
 );
 assert(
   reporter.includes('Key update: ${executiveAreaLabel(progressHighlight)}') &&

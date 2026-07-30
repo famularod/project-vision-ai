@@ -16,6 +16,9 @@ const syncService = read('services/SyncService.ts');
 const storageCleanup = read('services/DAVEStorageCleanup.ts');
 const backupArchive = read('services/CompleteBackupArchive.ts');
 const ownerSandbox = read('services/OwnerStorageSandbox.ts');
+const ownerWorkspaceAuthDecision = read(
+  'services/OwnerWorkspaceAuthDecision.ts',
+);
 const photoFunction = read('supabase/functions/pie-photo-vision/index.ts');
 const photoProvider = read('supabase/functions/_shared/pie-vision-provider.ts');
 const voiceFunction = read('supabase/functions/dave-transcribe-memory/index.ts');
@@ -71,9 +74,19 @@ assert(
 for (const marker of [
   'createOwnerStorageSandbox',
   'activateOwner',
-  'session?.user?.id || null',
+  'ownerWorkspaceAuthDecision(event, session?.user?.id)',
+  'getCurrentSessionUser',
 ]) {
   assert(entry.includes(marker), `Native entry must enforce ${marker}.`);
+}
+for (const marker of [
+  "event === 'SIGNED_OUT'",
+  "action: 'ignore'",
+]) {
+  assert(
+    ownerWorkspaceAuthDecision.includes(marker),
+    `Native account isolation must preserve ${marker}.`,
+  );
 }
 for (const marker of [
   'OWNER_STORAGE_SANDBOX_METADATA_KEY',

@@ -296,19 +296,16 @@ const realityCacheRecovery = fs.readFileSync(
   path.join(root, 'services/PIERealityModelCacheRecovery.ts'),
   'utf8',
 );
-const progressiveListHook = fs.readFileSync(
-  path.join(root, 'hooks/use-progressive-list-count.ts'),
-  'utf8',
-);
 assert(
   app.includes("| 'capture-review'") &&
     app.includes('const authorityMode = authorityModeForScreen(screen);'),
   'Primary navigation must share a stable authority mode.',
 );
 assert(
-  app.includes('useProgressiveListCount(') &&
-    progressiveListHook.includes('InteractionManager.runAfterInteractions'),
-  'The Action Inbox must mount progressively after the navigation interaction.',
+  app.includes('const attentionScheduleItemIds = useMemo(') &&
+    app.includes('attentionScheduleItemIds.has(item.id)') &&
+    !app.includes('<Text style={styles.panelTitle}>Action Inbox</Text>'),
+  'Attention signals must feed the task filter without rendering a duplicate Action Inbox panel.',
 );
 assert(
   app.includes('useRealityModelCacheRecovery()') &&

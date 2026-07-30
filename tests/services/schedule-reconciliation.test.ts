@@ -104,6 +104,31 @@ describe('schedule reconciliation authority', () => {
     ]));
   });
 
+  it('lets a newer PM confirmation preserve an intentional open status', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({
+        status: 'Not Started',
+        percentComplete: 0,
+        progressSource: 'project_manager',
+        progressConfirmedAt: '2026-07-16T18:00:00.000Z',
+      })],
+      updates: [{
+        id: 'possible-completion-before-confirmation',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes: 'Place concrete paving is complete.',
+        scheduleItemId: 'task-1',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'field_progress_not_reflected' }),
+    ]));
+  });
+
   it('lets a newer imported schedule completion override an older in-progress field update', () => {
     const result = buildPIEScheduleReconciliation({
       scheduleItems: [scheduleItem({
@@ -175,7 +200,7 @@ describe('schedule reconciliation authority', () => {
           id: 'newer-current-update',
           projectName: '2321 Compliance Project',
           date: '2026-07-16T17:00:00.000Z',
-          notes: 'Work is complete.',
+          notes: 'Place concrete paving is complete.',
           scheduleTaskName: 'Place concrete paving',
           selectedAreaName: 'North Lot',
           photos: [],
@@ -378,6 +403,87 @@ describe('schedule reconciliation authority', () => {
     expect(result.matches[0].signal).toBe('in_progress');
     expect(result.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'schedule_status_conflict' }),
+    ]));
+  });
+
+  it('does not treat overall completion with a task exception as task completion', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({
+        taskName: 'Handrails',
+        locationName: 'Canopy C',
+        status: 'In Progress',
+        percentComplete: 25,
+      })],
+      updates: [{
+        id: 'ramp-update',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes: 'Overall complete with exception of handrails. The ramp is in place.',
+        scheduleItemId: 'task-1',
+        selectedAreaName: 'Canopy C',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.matches[0].signal).toBe('in_progress');
+    expect(result.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'field_progress_not_reflected' }),
+    ]));
+  });
+
+  it('does not promote generic overall completion to completion of a named task', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({
+        taskName: 'Handrails',
+        locationName: 'Canopy C',
+        status: 'In Progress',
+        percentComplete: 25,
+      })],
+      updates: [{
+        id: 'overall-update',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes: 'Overall work is complete.',
+        scheduleItemId: 'task-1',
+        selectedAreaName: 'Canopy C',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.matches[0].signal).not.toBe('complete');
+    expect(result.warnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'field_progress_not_reflected' }),
+    ]));
+  });
+
+  it('still surfaces a direct task-specific completion statement', () => {
+    const result = buildPIEScheduleReconciliation({
+      scheduleItems: [scheduleItem({
+        taskName: 'Handrails',
+        locationName: 'Canopy C',
+        status: 'In Progress',
+        percentComplete: 25,
+      })],
+      updates: [{
+        id: 'handrails-update',
+        projectName: '2321 Compliance Project',
+        date: '2026-07-16T17:00:00.000Z',
+        notes: 'Handrails are complete.',
+        scheduleItemId: 'task-1',
+        selectedAreaName: 'Canopy C',
+        photos: [],
+        recipients: { contactIds: [] },
+      }],
+      now,
+    });
+
+    expect(result.matches[0].signal).toBe('complete');
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'field_progress_not_reflected' }),
     ]));
   });
 });

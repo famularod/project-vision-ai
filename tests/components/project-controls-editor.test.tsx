@@ -36,19 +36,19 @@ describe('ProjectControlsEditor', () => {
     );
 
     fireEvent.press(screen.getByRole('button', { name: /Project controls/i }));
-    fireEvent.changeText(
-      screen.getByPlaceholderText('Person responsible'),
-      'David Field Lead',
-    );
+    const assigneeInput = screen.getByPlaceholderText('Person responsible');
+    fireEvent.changeText(assigneeInput, 'David Field Lead');
+    fireEvent(assigneeInput, 'blur');
     expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
       assignee: 'David Field Lead',
       updatedBy: 'David',
     }));
 
-    fireEvent.changeText(
-      screen.getByPlaceholderText('Assumptions, exposure, or mitigation'),
-      'Night shift adds two days',
+    const impactNotesInput = screen.getByPlaceholderText(
+      'Assumptions, exposure, or mitigation',
     );
+    fireEvent.changeText(impactNotesInput, 'Night shift adds two days');
+    fireEvent(impactNotesInput, 'blur');
     expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
       impactNotes: 'Night shift adds two days',
       updatedBy: 'David',
@@ -91,7 +91,7 @@ describe('ProjectControlsEditor', () => {
     }));
   });
 
-  it('retains an in-progress decimal until the PM leaves the impact field', () => {
+  it('retains an in-progress decimal until the PM leaves the schedule-impact field', () => {
     const onUpdate = jest.fn<void, [ProjectControls]>();
     const screen = render(
       <ProjectControlsEditor
@@ -102,15 +102,15 @@ describe('ProjectControlsEditor', () => {
     );
 
     fireEvent.press(screen.getByRole('button', { name: /Project controls/i }));
-    const costInput = screen.getAllByPlaceholderText('0')[0];
-    fireEvent.changeText(costInput, '1.');
+    const scheduleImpactInput = screen.getByPlaceholderText('0');
+    fireEvent.changeText(scheduleImpactInput, '1.');
 
-    expect(screen.getAllByPlaceholderText('0')[0].props.value).toBe('1.');
+    expect(screen.getByPlaceholderText('0').props.value).toBe('1.');
     expect(onUpdate).not.toHaveBeenCalled();
 
-    fireEvent(screen.getAllByPlaceholderText('0')[0], 'blur');
+    fireEvent(screen.getByPlaceholderText('0'), 'blur');
     expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
-      estimatedCostImpact: 1,
+      estimatedScheduleImpactDays: 1,
       updatedBy: 'David',
     }));
   });

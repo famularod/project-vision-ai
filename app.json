@@ -2,7 +2,7 @@
   "expo": {
     "name": "Vitruvius",
     "slug": "project-photo-update-tool",
-    "version": "1.0.116",
+    "version": "1.0.130",
     "platforms": [
       "ios",
       "android",
@@ -15,7 +15,7 @@
       "supportsTablet": true,
       "requireFullScreen": false,
       "bundleIdentifier": "com.davidfamularo.projectphotoupdate",
-      "buildNumber": "116",
+      "buildNumber": "130",
       "icon": "./assets/icon-vitruvius.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Allow Vitruvius to capture project photos as field evidence.",
@@ -28,7 +28,7 @@
     },
     "android": {
       "package": "com.davidfamularo.projectphotoupdate",
-      "versionCode": 116,
+      "versionCode": 130,
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon-vitruvius.png",
         "backgroundColor": "#19466F"
@@ -79,7 +79,7 @@
       "favicon": "./assets/icon-vitruvius.png"
     },
     "extra": {
-      "buildLabel": "Build 116",
+      "buildLabel": "Build 130",
       "productName": "Vitruvius",
       "productMonogram": "V",
       "productSubtitle": "Project Intelligence",

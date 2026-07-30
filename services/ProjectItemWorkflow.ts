@@ -358,6 +358,30 @@ export function projectItemWorkflowReadiness(
     );
   }
 
+  if (itemType === 'Meeting') {
+    checks.push(
+      check('Set the meeting date.', Boolean(clean(item.startDate) || clean(item.finishDate))),
+      check('Record at least one attendee.', controls.watchers.length > 0),
+      check('Record at least one decision or action item.', controls.checklist.length > 0),
+    );
+  }
+
+  if (itemType === 'Risk') {
+    checks.push(
+      check('Set the risk review date.', dueDatePresent),
+      check('Record the risk impact or mitigation.', Boolean(clean(controls.impactNotes))),
+      check('Add at least one mitigation check.', controls.checklist.length > 0),
+    );
+  }
+
+  if (itemType === 'Transmittal') {
+    checks.push(
+      check('Add the transmittal reference number.', Boolean(clean(controls.referenceNumber))),
+      check('Identify at least one recipient.', controls.watchers.length > 0),
+      check('Link at least one issued document.', controls.linkedRecords.length > 0),
+    );
+  }
+
   if (itemType === 'Inspection' || itemType === 'Quality Check') {
     checks.push(check(
       `Add at least one ${itemType === 'Inspection' ? 'inspection' : 'quality'} checklist item.`,

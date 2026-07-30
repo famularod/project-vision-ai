@@ -250,6 +250,12 @@ export type ReferenceDocument = {
   webVersionGroupId?: string | null;
   webContentReview?: string | null;
   webReport?: unknown;
+  /** Drawing-control metadata. Retained on the shared record for every device. */
+  drawingNumber?: string | null;
+  drawingRevision?: string | null;
+  drawingDiscipline?: string | null;
+  drawingStatus?: 'Draft' | 'For Review' | 'For Construction' | 'As-Built' | 'Superseded' | null;
+  drawingIssuedAt?: string | null;
 };
 
 export type ProjectStats = {
@@ -288,10 +294,13 @@ export type ProjectItemType =
   | 'Issue'
   | 'RFI'
   | 'Submittal'
+  | 'Transmittal'
   | 'Punch List'
   | 'Decision'
   | 'Inspection'
   | 'Daily Log'
+  | 'Meeting'
+  | 'Risk'
   | 'Safety Observation'
   | 'Quality Check';
 
@@ -538,10 +547,13 @@ export const PROJECT_ITEM_TYPES: ProjectItemType[] = [
   'Issue',
   'RFI',
   'Submittal',
+  'Transmittal',
   'Punch List',
   'Decision',
   'Inspection',
   'Daily Log',
+  'Meeting',
+  'Risk',
   'Safety Observation',
   'Quality Check',
 ];

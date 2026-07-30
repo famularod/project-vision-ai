@@ -109,11 +109,32 @@ export type DAVEScheduleTruth = {
   itemType: ScheduleItem['itemType'];
   areaName: string | null;
   owner: string | null;
+  assignee: string | null;
+  contractor: string | null;
+  trade: string | null;
   nextAction: string | null;
   status: ScheduleItem['status'];
   percentComplete: number;
   durationWeight: number;
+  startDate: string | null;
   finishDate: string | null;
+  baselineStartDate: string | null;
+  baselineFinishDate: string | null;
+  isMilestone: boolean;
+  predecessorTaskIds: string[];
+  approvalStatus: string | null;
+  workflowStage: string | null;
+  responseDueDate: string | null;
+  referenceNumber: string | null;
+  checklistTotal: number;
+  checklistComplete: number;
+  estimatedScheduleImpactDays: number | null;
+  impactConfidence: string | null;
+  impactNotes: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  latestActivityAt: string | null;
+  latestActivitySummary: string | null;
   urgency: 'overdue' | 'due_soon' | 'upcoming' | 'not_urgent';
   completionState:
     | 'scheduled'
@@ -663,17 +684,46 @@ function buildScheduleTruth(
     );
     const conflicting = completionState === 'conflicting_evidence';
     const correlationEvidenceIds = correlation?.corroboratingEvidenceIds ?? [];
+    const controls = item.projectControls;
+    const latestActivity = [...(item.activity ?? [])]
+      .filter(activity => clean(activity.createdAt))
+      .sort((left, right) =>
+        (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''),
+      )[0];
     return {
       taskId: item.id,
       taskName: item.taskName,
       itemType: item.itemType || 'Task',
       areaName: clean(item.locationName),
       owner: clean(item.owner) || clean(item.contractor),
+      assignee: clean(controls?.assignee),
+      contractor: clean(item.contractor),
+      trade: clean(controls?.trade),
       nextAction: clean(item.nextAction),
       status: item.status,
       percentComplete: item.percentComplete,
       durationWeight: scheduleTaskDurationWeight(item),
+      startDate: clean(item.startDate),
       finishDate: clean(item.finishDate),
+      baselineStartDate: clean(item.baselineStartDate),
+      baselineFinishDate: clean(item.baselineFinishDate),
+      isMilestone: Boolean(item.isMilestone),
+      predecessorTaskIds: uniqueText(
+        (item.dependencies ?? []).map(dependency => clean(dependency.predecessorItemId)),
+      ),
+      approvalStatus: clean(controls?.approvalStatus),
+      workflowStage: clean(controls?.workflowStage),
+      responseDueDate: clean(controls?.responseDueDate),
+      referenceNumber: clean(controls?.referenceNumber),
+      checklistTotal: controls?.checklist?.length ?? 0,
+      checklistComplete: controls?.checklist?.filter(check => check.completed).length ?? 0,
+      estimatedScheduleImpactDays: finiteNumber(controls?.estimatedScheduleImpactDays),
+      impactConfidence: clean(controls?.impactConfidence),
+      impactNotes: clean(controls?.impactNotes),
+      updatedAt: clean(item.updatedAt) || clean(item.createdAt),
+      updatedBy: clean(controls?.updatedBy),
+      latestActivityAt: clean(latestActivity?.createdAt),
+      latestActivitySummary: clean(latestActivity?.message),
       urgency: taskUrgency(item, today, projectTimeZone),
       completionState: conflicting ? 'conflicting_evidence' : completionState,
       relatedEvidenceIds: uniqueText([...relatedEvidenceIds, ...correlationEvidenceIds]),
@@ -920,6 +970,10 @@ function validDate(value: string | undefined) {
   if (!value) return null;
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function finiteNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function evidenceKindLabel(kind: DAVEEvidenceKind) {

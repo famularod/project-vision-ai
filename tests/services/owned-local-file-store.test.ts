@@ -155,6 +155,21 @@ describe('OwnedLocalFileStore', () => {
     expect(fileSystem.copyCalls).toEqual([]);
   });
 
+  it('honors an explicit bounded limit for a larger document class', async () => {
+    const { store } = createFixture();
+
+    await expect(store.storeExternalFile({
+      sourceUri: SOURCE_URI,
+      kind: 'project_document',
+      extension: 'pdf',
+      mimeType: 'application/pdf',
+      maxBytes: SOURCE_BYTES.byteLength,
+    })).resolves.toMatchObject({
+      kind: 'project_document',
+      sizeBytes: SOURCE_BYTES.byteLength,
+    });
+  });
+
   it('rejects an unknown source size before reading or copying it', async () => {
     const { fileSystem, store } = createFixture();
     fileSystem.statOverrides.set(SOURCE_URI, null);

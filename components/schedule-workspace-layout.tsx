@@ -1,5 +1,6 @@
-import type { ReactElement, ReactNode } from 'react';
+import { useMemo, useState, type ReactElement, type ReactNode } from 'react';
 import { Pressable, ScrollView, SectionList, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { colors, radius, spacing } from '../theme';
 import type { ScheduleItem } from '../types';
@@ -25,13 +26,33 @@ export function ScheduleWideWorkspace({
   inspectorFooter: ReactNode;
   emptyState: ReactElement;
 }) {
-  const sections = groupScheduleWorkspaceItemsByProjectAndArea(items);
+  const sections = useMemo(
+    () => groupScheduleWorkspaceItemsByProjectAndArea(items),
+    [items],
+  );
+  const [collapsedAreas, setCollapsedAreas] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const visibleSections = useMemo(
+    () => sections.map(section => {
+      const areaKey = scheduleWorkspaceAreaKey(section);
+      const collapsed = collapsedAreas.has(areaKey);
+      return {
+        ...section,
+        areaKey,
+        areaTaskCount: section.data.length,
+        collapsed,
+        data: collapsed ? [] : section.data,
+      };
+    }),
+    [collapsedAreas, sections],
+  );
 
   return (
     <View style={styles.workspace} testID="schedule-wide-workspace">
       <View style={styles.masterColumn}>
         <SectionList
-          sections={sections}
+          sections={visibleSections}
           keyExtractor={item => item.id}
           renderItem={({ item }) => (
             <ScheduleTaskMasterRow
@@ -41,7 +62,20 @@ export function ScheduleWideWorkspace({
             />
           )}
           renderSectionHeader={({ section }) => (
-            <ScheduleTaskGroupHeader section={section} backgroundColor={colors.surface} />
+            <ScheduleTaskGroupHeader
+              section={section}
+              backgroundColor={colors.surface}
+              collapsed={section.collapsed}
+              taskCount={section.areaTaskCount}
+              onPress={() => {
+                setCollapsedAreas(current => {
+                  const next = new Set(current);
+                  if (next.has(section.areaKey)) next.delete(section.areaKey);
+                  else next.add(section.areaKey);
+                  return next;
+                });
+              }}
+            />
           )}
           ListHeaderComponent={masterHeader}
           ListEmptyComponent={emptyState}
@@ -69,13 +103,46 @@ export function ScheduleWideWorkspace({
   );
 }
 
+function scheduleWorkspaceAreaKey(
+  section: Pick<ScheduleWorkspaceProjectAreaGroup, 'projectName' | 'areaName'>,
+): string {
+  return `${section.projectName.trim().toLowerCase()}::${section.areaName.trim().toLowerCase()}`;
+}
+
 export function ScheduleTaskGroupHeader({
   section,
   backgroundColor = colors.background,
+  collapsed = false,
+  taskCount,
+  onPress,
 }: {
   section: ScheduleWorkspaceProjectAreaGroup;
   backgroundColor?: string;
+  collapsed?: boolean;
+  taskCount?: number;
+  onPress?: () => void;
 }) {
+  const areaTaskCount = taskCount ?? section.data.length;
+  const areaHeader = (
+    <View style={styles.areaGroupHeader}>
+      <View style={styles.areaGroupTitleRow}>
+        {onPress ? (
+          <Ionicons
+            name={collapsed ? 'chevron-forward' : 'chevron-down'}
+            size={20}
+            color={colors.primary}
+          />
+        ) : null}
+        <Text accessibilityRole="header" style={styles.areaGroupTitle}>
+          {section.areaName}
+        </Text>
+      </View>
+      <Text style={styles.areaGroupCount}>
+        {areaTaskCount} {areaTaskCount === 1 ? 'task' : 'tasks'}
+      </Text>
+    </View>
+  );
+
   return (
     <View style={[styles.groupHeader, { backgroundColor }]}>
       {section.isFirstAreaInProject ? (
@@ -88,12 +155,16 @@ export function ScheduleTaskGroupHeader({
           </Text>
         </View>
       ) : null}
-      <View style={styles.areaGroupHeader}>
-        <Text accessibilityRole="header" style={styles.areaGroupTitle}>{section.areaName}</Text>
-        <Text style={styles.areaGroupCount}>
-          {section.data.length} {section.data.length === 1 ? 'task' : 'tasks'}
-        </Text>
-      </View>
+      {onPress ? (
+        <Pressable
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${section.areaName}`}
+          accessibilityState={{ expanded: !collapsed }}
+        >
+          {areaHeader}
+        </Pressable>
+      ) : areaHeader}
     </View>
   );
 }
@@ -245,6 +316,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     marginBottom: spacing.sm,
+  },
+  areaGroupTitleRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
   },
   areaGroupTitle: {
     flex: 1,

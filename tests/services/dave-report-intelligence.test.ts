@@ -3,6 +3,10 @@ import {
   buildDAVEReportSourceFingerprint,
 } from '../../services/DAVEReportIntelligence';
 import type { DAVEProjectTruth } from '../../services/DAVEProjectTruth';
+import {
+  buildDAVEReportSnapshot,
+  daveReportSnapshotScopeKey,
+} from '../../services/DAVEReportSnapshot';
 
 function projectTruth(): DAVEProjectTruth {
   return {
@@ -111,5 +115,81 @@ describe('DAVE report intelligence', () => {
       action: 'Confirm the paving crew start time with the superintendent.',
       smallestNextAction: 'Confirm the paving crew start time with the superintendent.',
     });
+  });
+
+  it('surfaces accountable controls, milestones, and schedule impact as management facts', () => {
+    const truth = projectTruth();
+    const briefing = buildDAVEReportBriefing({
+      truths: [{
+        ...truth,
+        schedule: truth.schedule.map(task => ({
+          ...task,
+          owner: 'David',
+          assignee: 'North Lot crew',
+          isMilestone: true,
+          approvalStatus: 'Pending',
+          responseDueDate: '2026-07-17',
+          checklistTotal: 4,
+          checklistComplete: 2,
+          estimatedScheduleImpactDays: 3,
+          impactConfidence: 'high',
+          impactNotes: 'Inspection access may move the paving finish.',
+        })),
+      } as DAVEProjectTruth],
+    });
+
+    expect(briefing.dashboard.controls).toMatchObject({
+      pendingApprovals: 1,
+      responsesDue: 1,
+      incompleteChecklistItems: 2,
+      scheduleImpactItems: 1,
+      totalEstimatedScheduleImpactDays: 3,
+    });
+    expect(briefing.milestones).toEqual([
+      expect.objectContaining({
+        taskName: 'Place concrete paving',
+        state: 'due_soon',
+      }),
+    ]);
+    expect(briefing.nextActions[0]).toMatchObject({
+      owner: 'North Lot crew',
+      impact: 'Inspection access may move the paving finish.',
+      scheduleImpactDays: 3,
+    });
+  });
+
+  it('reports movement since the previous approved report instead of repeating current state', () => {
+    const previousTruth = projectTruth();
+    const previousSnapshot = buildDAVEReportSnapshot({
+      truths: [previousTruth],
+      scopeKey: daveReportSnapshotScopeKey([previousTruth.projectName]),
+      sourceFingerprint: 'previous',
+      capturedAt: '2026-07-09T15:00:00.000Z',
+    });
+    const currentTruth = {
+      ...previousTruth,
+      schedule: previousTruth.schedule.map(task => ({
+        ...task,
+        percentComplete: 80,
+      })),
+    } as DAVEProjectTruth;
+
+    const briefing = buildDAVEReportBriefing({
+      truths: [currentTruth],
+      previousSnapshot,
+    });
+
+    expect(briefing.reportingPeriod).toMatchObject({
+      basis: 'previous_approved_report',
+      startedAt: '2026-07-09T15:00:00.000Z',
+      completeDelta: 0,
+      openDelta: 0,
+    });
+    expect(briefing.recentChanges).toEqual([
+      expect.objectContaining({
+        source: 'approved_report_comparison',
+        summary: '2321 Compliance Project: Place concrete paving moved from 60% to 80% complete.',
+      }),
+    ]);
   });
 });

@@ -28,6 +28,14 @@ export function projectAreasForProject({
     const explicitOwner = normalizeName(area.projectName);
     if (explicitOwner) return explicitOwner === target;
 
+    const projectIdentifierOwner = projectIdentifierFromAreaName(
+      area.name,
+      projectName ? [projectName] : [],
+    );
+    if (projectIdentifierOwner) {
+      return normalizeName(projectIdentifierOwner) === target;
+    }
+
     const inferredOwners = inferLegacyAreaProjectNames(
       area,
       scheduleItems,
@@ -35,6 +43,24 @@ export function projectAreasForProject({
     );
     return inferredOwners.length === 1 && inferredOwners[0] === target;
   });
+}
+
+/**
+ * Legacy areas sometimes carry their project number in the user-authored
+ * name, for example "2375 North Lot", but predate the projectName field.
+ * Treat that exact leading identifier as ownership instead of hiding the area.
+ */
+export function projectIdentifierFromAreaName(
+  areaName: string,
+  activeProjects: readonly string[],
+): string | null {
+  const leadingIdentifier = areaName.trim().match(/^(\d{3,})\b/)?.[1];
+  if (!leadingIdentifier) return null;
+  const matches = activeProjects.filter(project =>
+    project.trim().toLowerCase().startsWith(`${leadingIdentifier} `) ||
+    project.trim().toLowerCase() === leadingIdentifier,
+  );
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export function inferLegacyAreaProjectNames(

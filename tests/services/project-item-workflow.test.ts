@@ -69,10 +69,16 @@ function workflowItem(
     activity: [],
     projectControls: controls({
       approvalStatus: itemType === 'Submittal' ? 'Approved' : 'Not Required',
-      linkedRecords: itemType === 'Submittal'
+      watchers: itemType === 'Meeting' || itemType === 'Transmittal'
+        ? ['Superintendent']
+        : [],
+      impactNotes: itemType === 'Risk'
+        ? 'Two-day delivery exposure; confirm alternate supplier.'
+        : '',
+      linkedRecords: itemType === 'Submittal' || itemType === 'Transmittal'
         ? [{ id: 'document-1', kind: 'Document', label: 'Reviewed submittal' }]
         : [],
-      checklist: requiresChecklist
+      checklist: requiresChecklist || itemType === 'Meeting' || itemType === 'Risk'
         ? [{
             id: 'check-1',
             label: 'Verify the field condition',
@@ -213,6 +219,44 @@ describe('Project item workflow', () => {
       'Record the daily field summary.',
     ]));
     expect(dailyLog.missing).not.toContain('Assign a responsible person.');
+
+    const meeting = projectItemWorkflowReadiness(workflowItem('Meeting', {
+      startDate: '',
+      finishDate: '',
+      projectControls: controls({ watchers: [], checklist: [] }),
+    }));
+    expect(meeting.missing).toEqual(expect.arrayContaining([
+      'Set the meeting date.',
+      'Record at least one attendee.',
+      'Record at least one decision or action item.',
+    ]));
+
+    const risk = projectItemWorkflowReadiness(workflowItem('Risk', {
+      finishDate: '',
+      projectControls: controls({
+        responseDueDate: '',
+        impactNotes: '',
+        checklist: [],
+      }),
+    }));
+    expect(risk.missing).toEqual(expect.arrayContaining([
+      'Set the risk review date.',
+      'Record the risk impact or mitigation.',
+      'Add at least one mitigation check.',
+    ]));
+
+    const transmittal = projectItemWorkflowReadiness(workflowItem('Transmittal', {
+      projectControls: controls({
+        referenceNumber: '',
+        watchers: [],
+        linkedRecords: [],
+      }),
+    }));
+    expect(transmittal.missing).toEqual(expect.arrayContaining([
+      'Add the transmittal reference number.',
+      'Identify at least one recipient.',
+      'Link at least one issued document.',
+    ]));
   });
 
   it('lets a closing note satisfy the outcome record without weakening other checks', () => {

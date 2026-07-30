@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "status": "baseline_required",
+  "comparisonMode": "advisory_until_approved",
+  "platforms": [
+    {
+      "id": "iphone",
+      "viewport": "physical_device",
+      "surfaces": [
+        "overview",
+        "tasks",
+        "task-editor",
+        "documents",
+        "reports",
+        "settings"
+      ]
+    },
+    {
+      "id": "ipad",
+      "viewport": "physical_device",
+      "surfaces": [
+        "overview",
+        "tasks",
+        "task-editor",
+        "documents",
+        "reports",
+        "settings"
+      ]
+    },
+    {
+      "id": "web",
+      "viewport": "1440x900",
+      "surfaces": [
+        "overview",
+        "projects",
+        "tasks",
+        "schedule",
+        "field-activity",
+        "documents",
+        "reports",
+        "settings"
+      ]
+    }
+  ],
+  "reviewRules": [
+    "no_text_clipping",
+    "no_mid_word_wrapping",
+    "no_hidden_controls",
+    "no_horizontal_overflow",
+    "no_broken_cards",
+    "status_and_counts_readable",
+    "selected_and_focused_states_visible"
+  ]
+}

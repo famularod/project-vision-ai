@@ -74,7 +74,11 @@ export function LiveAuthorityStatusBannerView({
     state === 'unavailable' ||
     state === 'persistence_failed' ||
     (degraded && cloudExpected && !localAuthorityExpected);
-  const message = policy.userMessage;
+  const message = degraded
+    ? acknowledgementRequired
+      ? 'Vitruvius could not confirm the latest shared project record. Project totals, task status, and recommendations may be incomplete.'
+      : 'Vitruvius is using information saved on this device. Retry to check for the latest shared project record.'
+    : policy.userMessage;
 
   return (
     <View
@@ -89,7 +93,7 @@ export function LiveAuthorityStatusBannerView({
       <View style={styles.copy}>
         <Text style={styles.title}>
           {acknowledgementRequired
-            ? 'Saved device data needs acknowledgement'
+            ? 'Latest cloud data is not confirmed'
             : degraded
               ? 'Using saved device data'
               : 'Project understanding needs attention'}
@@ -100,11 +104,11 @@ export function LiveAuthorityStatusBannerView({
       {acknowledgementRequired ? (
         <TouchableOpacity
           accessibilityRole="button"
-          accessibilityLabel="Acknowledge saved device data"
+          accessibilityLabel="Continue with saved device data"
           onPress={onAcknowledge}
           style={styles.button}
         >
-          <Text style={styles.buttonText}>Acknowledge</Text>
+          <Text style={styles.buttonText}>Continue with saved data</Text>
         </TouchableOpacity>
       ) : retryAllowed ? (
         <TouchableOpacity

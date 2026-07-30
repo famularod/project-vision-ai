@@ -148,8 +148,8 @@ includes(
 );
 assert.strictEqual(
   (service.match(/ownerScoped: true/g) || []).length,
-  3,
-  'only area, schedule, and reference-document generic writes should opt into legacy ownership',
+  2,
+  'only area and reference-document generic writes should opt into legacy ownership',
 );
 includes(
   service,

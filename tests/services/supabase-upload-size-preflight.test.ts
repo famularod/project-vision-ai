@@ -1,9 +1,14 @@
 const mockPrepareUploadPayload = jest.fn();
+const mockPreflightUpload = jest.fn();
+const mockResumableUpload = jest.fn();
 const mockStorageUpload = jest.fn();
 
 const mockSupabaseClient = {
   auth: {
-    getSession: jest.fn(async () => ({ data: { session: null }, error: null })),
+    getSession: jest.fn(async () => ({
+      data: { session: { access_token: 'session-token' } },
+      error: null,
+    })),
     onAuthStateChange: jest.fn(),
     startAutoRefresh: jest.fn(),
     stopAutoRefresh: jest.fn(),
@@ -63,10 +68,17 @@ jest.mock('../../services/FileSizePreflight', () => {
   const actual = jest.requireActual('../../services/FileSizePreflight');
   return {
     ...actual,
+    preflightExpoFileRead: (...args: unknown[]) =>
+      mockPreflightUpload(...args),
     prepareExpoFileUploadPayload: (...args: unknown[]) =>
       mockPrepareUploadPayload(...args),
   };
 });
+
+jest.mock('../../services/ResumableStorageUpload', () => ({
+  RESUMABLE_UPLOAD_THRESHOLD_BYTES: 6 * 1024 * 1024,
+  uploadFileResumably: (...args: unknown[]) => mockResumableUpload(...args),
+}));
 
 describe('Supabase upload file-size boundary', () => {
   const originalUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -92,12 +104,21 @@ describe('Supabase upload file-size boundary', () => {
       data: { path: 'owner/file.pdf', fullPath: 'bucket/owner/file.pdf' },
       error: null,
     });
+    mockPreflightUpload.mockResolvedValue({
+      uri: 'file:///app/cache/file.pdf',
+      sizeBytes: 3,
+      maxBytes: 15 * 1024 * 1024,
+    });
+    mockResumableUpload.mockResolvedValue({
+      path: 'owner/drawing.pdf',
+      uploadUrl: 'https://example.supabase.co/resumable/1',
+    });
   });
 
   it('returns a retryable 413 result without calling storage for an oversized file', async () => {
-    mockPrepareUploadPayload.mockRejectedValue(new FileSizePreflightError({
+    mockPreflightUpload.mockRejectedValue(new FileSizePreflightError({
       code: 'file_too_large',
-      message: 'This file is larger than 15 MB. Choose a smaller file and retry.',
+      message: 'This file is larger than 15 MB. Compress, optimize, or split it, then retry.',
       maxBytes: 15 * 1024 * 1024,
       observedSizeBytes: 15 * 1024 * 1024 + 1,
     }));
@@ -114,6 +135,7 @@ describe('Supabase upload file-size boundary', () => {
       code: 'file_too_large',
     });
     expect(mockStorageUpload).not.toHaveBeenCalled();
+    expect(mockResumableUpload).not.toHaveBeenCalled();
   });
 
   it('uploads only the bounded ArrayBuffer returned by verified preparation', async () => {
@@ -128,11 +150,37 @@ describe('Supabase upload file-size boundary', () => {
 
     expect(mockPrepareUploadPayload).toHaveBeenCalledWith({
       uri: 'file:///app/cache/file.pdf',
+      reportedSizeBytes: 3,
     });
     expect(mockStorageUpload).toHaveBeenCalledWith(
       'owner/file.pdf',
       data,
       expect.objectContaining({ contentType: 'application/pdf' }),
     );
+  });
+
+  it('routes a large project document to the resumable uploader', async () => {
+    mockPreflightUpload.mockResolvedValue({
+      uri: 'file:///app/documents/drawing.pdf',
+      sizeBytes: 20 * 1024 * 1024,
+      maxBytes: 50 * 1024 * 1024,
+    });
+
+    await uploadPhoto({
+      uri: 'file:///app/documents/drawing.pdf',
+      path: 'owner/drawing.pdf',
+      reportedSizeBytes: 20 * 1024 * 1024,
+      maxBytes: 50 * 1024 * 1024,
+    });
+
+    expect(mockResumableUpload).toHaveBeenCalledWith(expect.objectContaining({
+      bucket: 'project-photos',
+      path: 'owner/drawing.pdf',
+      uri: 'file:///app/documents/drawing.pdf',
+      sizeBytes: 20 * 1024 * 1024,
+      accessToken: 'session-token',
+    }));
+    expect(mockPrepareUploadPayload).not.toHaveBeenCalled();
+    expect(mockStorageUpload).not.toHaveBeenCalled();
   });
 });

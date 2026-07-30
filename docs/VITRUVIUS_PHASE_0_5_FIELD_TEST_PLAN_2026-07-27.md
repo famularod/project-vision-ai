@@ -1,8 +1,8 @@
 # Vitruvius Phase 0–5 Field Test Plan
 
-Date: July 27, 2026
+Date: July 28, 2026
 
-Release candidate: Vitruvius 1.0.116 / Build 116
+Release candidate: Vitruvius 1.0.126 (Build 126)
 
 Platforms: iPhone, iPad, and desktop web app
 
@@ -62,11 +62,19 @@ Repeat the close/reopen check with at least an RFI and a Submittal.
 - Reopen it with the workflow button. Confirm it returns to active work.
 - For a Submittal, verify approver, responsible trade, linked approved
   document, and Approved status are required before close.
+- Create a **Meeting**, **Risk**, and **Transmittal**. Confirm each one starts
+  with its recommended checklist:
+  - Meeting: attendees, decisions, action items, and distributed minutes.
+  - Risk: trigger, impact, mitigation owner, and mitigation verification.
+  - Transmittal: recipients, linked documents/revisions, and receipt.
+- Open **My Reviews** as the named approver. Confirm Pending and Changes
+  Requested records appear and Approved/Rejected records do not.
 - Confirm a closed structured item cannot silently become a different item
   type or be reopened by typing a lower percent.
 
 Pass: Complete/100% is reachable only through the structured close workflow,
-and reopen is explicit and recorded.
+reopen is explicit and recorded, and the personal review queue contains only
+the signed-in user's open approvals.
 
 ## Phase 3 — field controls
 
@@ -74,6 +82,8 @@ and reopen is explicit and recorded.
 - Add two checklist items to an Inspection or Quality Check.
 - Complete one checklist item on iPhone and the other on iPad.
 - Link one Drawing or Document reference and one Photo or Schedule reference.
+- Upload a Drawing and record its drawing number, revision, discipline, issue
+  status, and issue date. Confirm those fields survive synchronization.
 - Add a crew and one equipment resource.
 - Confirm the checklist, linked records, resources, and revision attribution
   agree on all three clients.
@@ -97,18 +107,22 @@ Use desktop Schedule Builder on a disposable or safely editable task.
 Pass: unsafe changes cannot save, safe changes show their likely effect, and
 no task is silently transferred between projects.
 
-## Phase 5 — portfolio signals
+## Phase 5 — portfolio workflow signals
 
-- Add a test cost estimate, task-delay estimate, confidence, and impact note.
-- Mark approval Pending. Confirm **Approval Needed**, **Cost Exposure**, and
-  **Task Delay Estimates** update on desktop.
-- Confirm the delay figure is explicitly described as a total of task
-  estimates, not a calculated project-finish delay.
-- Close the test item and confirm active cost/delay exposure no longer includes
-  it.
+Cost and payroll are deliberately outside this release.
 
-Pass: portfolio totals are transparent and do not present task estimates as a
-critical-path calculation.
+- Use the **Work type** filter on iPhone, iPad, and desktop to show Meetings,
+  Risks, Transmittals, RFIs, Submittals, and Punch Lists independently.
+- Mark one item approval Pending and another Changes Requested. Confirm
+  **My Reviews** identifies both only for the listed approver.
+- Set a schedule-impact estimate, confidence, and plain-language impact note.
+  Confirm the information remains attached to the correct project item after
+  another device edits a different control.
+- Close the test item and confirm it leaves open work/review queues and remains
+  available under Completed Tasks.
+
+Pass: operational queues and filters are consistent across all three clients,
+with no cost or payroll fields shown.
 
 ## Concurrent-edit test
 
@@ -149,4 +163,3 @@ This is the most important new regression test.
 - a structured item reaches Complete without satisfying its close checks;
 - counts differ after synchronization settles;
 - the app freezes, loses keyboard spaces, or needs repeated taps.
-

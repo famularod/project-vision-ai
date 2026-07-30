@@ -5,8 +5,15 @@ import {
   scheduleTaskDurationWeight,
 } from './dave-project-schedule-rollup';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import {
+  buildDAVEReportSnapshot,
+  compareDAVEReportSnapshots,
+  daveReportSnapshotScopeKey,
+  type DAVEReportPeriodComparison,
+  type DAVEReportSnapshot,
+} from './DAVEReportSnapshot';
 
-export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/1.2' as const;
+export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' as const;
 export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
 
 export type DAVEReportAction = Readonly<{
@@ -17,8 +24,13 @@ export type DAVEReportAction = Readonly<{
   action: string;
   owner: string;
   timing: string;
+  dueDate: string | null;
+  issue: string;
+  impact: string;
   consequence: string;
   smallestNextAction: string;
+  sourceTaskId: string;
+  scheduleImpactDays: number | null;
   confidence: 'high' | 'medium' | 'low';
 }>;
 
@@ -26,6 +38,40 @@ export type DAVEReportProjectCondition = Readonly<{
   projectName: string;
   currentReality: string;
   schedule: string;
+  percentComplete: number;
+  forecastFinish: string | null;
+  baselineFinish: string | null;
+  forecastVarianceDays: number | null;
+}>;
+
+export type DAVEReportMilestone = Readonly<{
+  id: string;
+  projectName: string;
+  taskName: string;
+  areaName: string | null;
+  finishDate: string | null;
+  status: string;
+  percentComplete: number;
+  state: 'complete' | 'missed' | 'due_soon' | 'upcoming' | 'undated';
+}>;
+
+export type DAVEReportRecentChange = Readonly<{
+  id: string;
+  projectName: string;
+  taskName: string;
+  areaName: string | null;
+  occurredAt: string | null;
+  summary: string;
+  source: 'approved_report_comparison' | 'task_activity' | 'task_revision' | 'project_update';
+}>;
+
+export type DAVEReportControlMetrics = Readonly<{
+  pendingApprovals: number;
+  responsesDue: number;
+  unassignedOpenWork: number;
+  incompleteChecklistItems: number;
+  scheduleImpactItems: number;
+  totalEstimatedScheduleImpactDays: number;
 }>;
 
 export type DAVEReportWorkAreaProgress = Readonly<{
@@ -59,6 +105,7 @@ export type DAVEReportDashboardMetrics = Readonly<{
     decisions: number;
     verification: number;
   }>;
+  controls: DAVEReportControlMetrics;
   workAreas: readonly DAVEReportWorkAreaProgress[];
 }>;
 
@@ -69,8 +116,11 @@ export type DAVEReportBriefing = Readonly<{
   overallCondition: 'critical' | 'attention' | 'stable' | 'insufficient_evidence';
   conditionLabel: string;
   executiveSnapshot: string;
+  reportingPeriod: DAVEReportPeriodComparison;
   dashboard: DAVEReportDashboardMetrics;
   projectConditions: readonly DAVEReportProjectCondition[];
+  recentChanges: readonly DAVEReportRecentChange[];
+  milestones: readonly DAVEReportMilestone[];
   currentWork: readonly string[];
   whatChanged: readonly string[];
   schedulePosition: readonly string[];
@@ -102,9 +152,11 @@ export function buildDAVEReportSourceFingerprint(
 export function buildDAVEReportBriefing({
   truths,
   selectedProjectNames,
+  previousSnapshot,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
+  previousSnapshot?: DAVEReportSnapshot | null;
 }): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
@@ -112,6 +164,17 @@ export function buildDAVEReportBriefing({
       .filter(Boolean),
   );
   const generatedAt = truths.map(truth => truth.generatedAt).sort().at(-1) || new Date().toISOString();
+  const snapshotScopeKey = daveReportSnapshotScopeKey(projectNames);
+  const currentSnapshot = buildDAVEReportSnapshot({
+    truths,
+    scopeKey: snapshotScopeKey,
+    sourceFingerprint: buildDAVEReportSourceFingerprint(truths),
+    capturedAt: generatedAt,
+  });
+  const reportingPeriod = compareDAVEReportSnapshots({
+    current: currentSnapshot,
+    previous: previousSnapshot,
+  });
   const projectConditions = truths.map(projectConditionFromTruth);
   const criticalDecisions = truths.flatMap(truth => truth.reasoning.criticalDecisions);
   const actionDecisions = uniqueBy([
@@ -131,8 +194,13 @@ export function buildDAVEReportBriefing({
       action: decision.recommendation.action,
       owner: decision.recommendation.owner,
       timing: decision.recommendation.timing,
+      dueDate: null,
+      issue: decision.taskName,
+      impact: decision.recommendation.consequenceOfInaction,
       consequence: decision.recommendation.consequenceOfInaction,
       smallestNextAction: decision.recommendation.smallestNextAction,
+      sourceTaskId: decision.taskId,
+      scheduleImpactDays: null,
       confidence: decision.confidence,
     }));
   const scheduleActions = truths.flatMap(truth => truth.schedule
@@ -149,6 +217,8 @@ export function buildDAVEReportBriefing({
     .map(decision =>
       `${truthProjectName(truths, decision.taskId)} — ${decision.taskName}: ${decision.recommendation.action}`,
     )).slice(0, 8);
+  const recentChanges = buildRecentChanges({ truths, reportingPeriod });
+  const milestones = buildReportMilestones(truths);
   const currentWork = unique(truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
     .sort((left, right) => reportScheduleActionRank(left) - reportScheduleActionRank(right))
@@ -170,6 +240,9 @@ export function buildDAVEReportBriefing({
     decisions: decisionsRequired.length,
     verification: 0,
   });
+  const hasCriticalScheduleImpact = dashboard.controls.totalEstimatedScheduleImpactDays > 0 ||
+    dashboard.scheduleHealth.overdue > 0 ||
+    dashboard.scheduleHealth.blocked > 0;
   const overallCondition = conditionFor({
     truths,
     criticalDecisions: decisionsRequired.length,
@@ -178,6 +251,7 @@ export function buildDAVEReportBriefing({
       dashboard.scheduleHealth.overdue > 0 ||
       dashboard.scheduleHealth.dueSoon > 0 ||
       dashboard.taskStatus.waiting > 0,
+    hasCriticalScheduleImpact,
   });
 
   return Object.freeze({
@@ -191,15 +265,21 @@ export function buildDAVEReportBriefing({
       condition: overallCondition,
       dashboard,
     }),
+    reportingPeriod,
     dashboard,
     projectConditions,
+    recentChanges,
+    milestones,
     currentWork,
-    whatChanged: unique(truths.flatMap(truth =>
+    whatChanged: unique([
+      ...recentChanges.map(change => change.summary),
+      ...truths.flatMap(truth =>
       truth.briefing.whatChanged
         .map(item => toPMReportLanguage(item))
         .filter(Boolean)
         .map(item => `${truths.length > 1 ? `${truth.projectName}: ` : ''}${item}`),
-    )).slice(0, 8),
+      ),
+    ]).slice(0, 8),
     schedulePosition: projectConditions.map(condition =>
       `${projectConditions.length > 1 ? `${condition.projectName}: ` : ''}${condition.schedule}`,
     ),
@@ -218,6 +298,10 @@ function projectConditionFromTruth(
       projectName: truth.projectName,
       currentReality: 'No schedule tasks are assigned to this project.',
       schedule: 'No current schedule dates are available.',
+      percentComplete: 0,
+      forecastFinish: null,
+      baselineFinish: null,
+      forecastVarianceDays: null,
     });
   }
 
@@ -238,6 +322,17 @@ function projectConditionFromTruth(
     dueSoon > 0 ? `${dueSoon} due within 7 days` : '',
     accounting.waiting > 0 ? `${accounting.waiting} waiting` : '',
   ].filter(Boolean);
+  const totalWeight = truth.schedule.reduce(
+    (total, task) => total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }),
+    0,
+  );
+  const weightedProgress = truth.schedule.reduce(
+    (total, task) =>
+      total + scheduleTaskDurationWeight({ durationDays: task.durationWeight }) * boundedPercent(task.percentComplete),
+    0,
+  );
+  const forecastFinish = latestDate(truth.schedule.map(task => task.finishDate));
+  const baselineFinish = latestDate(truth.schedule.map(task => task.baselineFinishDate));
 
   return Object.freeze({
     projectName: truth.projectName,
@@ -247,6 +342,10 @@ function projectConditionFromTruth(
       : accounting.open === 0
         ? 'All scheduled tasks are complete.'
         : `${accounting.open} open ${taskWord(accounting.open)}; none overdue or due within 7 days.`,
+    percentComplete: totalWeight > 0 ? Math.round(weightedProgress / totalWeight) : 0,
+    forecastFinish,
+    baselineFinish,
+    forecastVarianceDays: dateDifferenceDays(baselineFinish, forecastFinish),
   });
 }
 
@@ -349,6 +448,40 @@ function buildDashboardMetrics({
     left.averagePercent - right.averagePercent ||
     left.areaName.localeCompare(right.areaName),
   );
+  const controls = Object.freeze({
+    pendingApprovals: tasks.filter(task =>
+      !scheduleProgressIsComplete(task) &&
+      ['draft', 'pending', 'changes requested'].includes(normalized(task.approvalStatus)),
+    ).length,
+    responsesDue: tasks.filter(task =>
+      !scheduleProgressIsComplete(task) &&
+      Boolean(clean(task.responseDueDate)),
+    ).length,
+    unassignedOpenWork: tasks.filter(task =>
+      !scheduleProgressIsComplete(task) &&
+      !clean(task.assignee) &&
+      !clean(task.owner),
+    ).length,
+    incompleteChecklistItems: tasks.reduce(
+      (total, task) => total + Math.max(
+        0,
+        (finiteNumber(task.checklistTotal) ?? 0) -
+          (finiteNumber(task.checklistComplete) ?? 0),
+      ),
+      0,
+    ),
+    scheduleImpactItems: tasks.filter(task =>
+      !scheduleProgressIsComplete(task) &&
+      (
+        finiteNumber(task.estimatedScheduleImpactDays) !== null ||
+        Boolean(clean(task.impactNotes))
+      ),
+    ).length,
+    totalEstimatedScheduleImpactDays: tasks.reduce(
+      (total, task) => total + Math.max(0, finiteNumber(task.estimatedScheduleImpactDays) ?? 0),
+      0,
+    ),
+  });
 
   return Object.freeze({
     taskStatus: Object.freeze({
@@ -361,6 +494,7 @@ function buildDashboardMetrics({
     }),
     scheduleHealth: Object.freeze({ onTrack, blocked, dueSoon, overdue }),
     attention: Object.freeze({ risks, decisions, verification }),
+    controls,
     workAreas: Object.freeze(workAreas.map(item => Object.freeze(item))),
   });
 }
@@ -409,38 +543,90 @@ function formatReportBody(
   briefing: DAVEReportBriefing,
   format: 'project_manager' | 'executive',
 ) {
-  const attentionNeeded = unique([
-    ...briefing.criticalRisks,
-    ...briefing.decisionsRequired,
-  ]).slice(0, 4);
   const workAreaUpdates = unique(draft.locationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.bullets
       .map(bullet => toPMReportLanguage(bullet.text))
       .filter(Boolean)
       .map(bullet => `${area.projectName} — ${area.title}: ${bullet}`)),
-  )).slice(0, 6);
-  const currentReality = unique(briefing.projectConditions
-    .map(item => item.currentReality)
-    .filter(Boolean));
-  const lines = [
+  ));
+  const projectPosition = briefing.projectConditions.map(condition => {
+    const dates = [
+      condition.forecastFinish ? `forecast finish ${condition.forecastFinish}` : '',
+      condition.baselineFinish ? `baseline ${condition.baselineFinish}` : '',
+      condition.forecastVarianceDays === null
+        ? ''
+        : condition.forecastVarianceDays === 0
+          ? 'on baseline'
+          : `${Math.abs(condition.forecastVarianceDays)} day${Math.abs(condition.forecastVarianceDays) === 1 ? '' : 's'} ${condition.forecastVarianceDays > 0 ? 'late' : 'early'}`,
+    ].filter(Boolean);
+    return `${condition.projectName}: ${condition.percentComplete}% complete; ${condition.schedule}` +
+      `${dates.length ? ` ${dates.join('; ')}.` : ''}`;
+  });
+  const period = briefing.reportingPeriod;
+  const reportingMovement = period.basis === 'previous_approved_report'
+    ? [
+        `${period.completeDelta >= 0 ? '+' : ''}${period.completeDelta} completed; ` +
+          `${period.openDelta >= 0 ? '+' : ''}${period.openDelta} open; ` +
+          `${period.overdueDelta >= 0 ? '+' : ''}${period.overdueDelta} overdue.`,
+        ...briefing.recentChanges.slice(0, 6).map(change => change.summary),
+      ]
+    : ['This approval establishes the baseline for the next reporting period.'];
+  const actions = (format === 'executive'
+    ? briefing.nextActions.slice(0, 4)
+    : briefing.nextActions)
+    .map(formatReportAction);
+  const milestones = (format === 'executive'
+    ? briefing.milestones.slice(0, 5)
+    : briefing.milestones)
+    .map(milestone =>
+      `${milestone.projectName} — ${milestone.taskName}: ${milestoneStateLabel(milestone.state)}` +
+      `${milestone.finishDate ? `; ${milestone.finishDate}` : ''}.`,
+    );
+  const executiveLines = [
     draft.openingLine,
     '',
-    'PROJECT STATUS',
+    'EXECUTIVE STATUS',
     briefing.executiveSnapshot,
     '',
-    ...textSection('CURRENT CONDITIONS', currentReality),
-    ...textSection('ACTIVE WORK', briefing.currentWork.slice(0, 6)),
-    ...textSection('RECENT CHANGES', briefing.whatChanged.slice(0, 4)),
-    ...textSection('SCHEDULE ISSUES', attentionNeeded),
-    ...textSection('NEXT STEPS', briefing.nextActions.slice(0, 4).map(action =>
-      `${action.action} — ${action.owner}, ${action.timing}.`,
-    )),
+    ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection('PROJECT POSITION', projectPosition),
+    ...textSection('MANAGEMENT ACTIONS', actions),
+    ...textSection('MILESTONES', milestones),
+    ...textSection('DECISIONS REQUIRED', briefing.decisionsRequired.slice(0, 4)),
   ];
-  if (format === 'project_manager' && workAreaUpdates.length) {
-    lines.push(...textSection('WORK AREAS / PHOTO NOTES', workAreaUpdates));
-  }
+  const projectManagerLines = [
+    draft.openingLine,
+    '',
+    'CURRENT STATUS',
+    briefing.executiveSnapshot,
+    '',
+    ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection('CURRENT WORK', briefing.currentWork),
+    ...textSection('ACTION PLAN', actions),
+    ...textSection('MILESTONES', milestones),
+    ...textSection('SCHEDULE RISKS', briefing.criticalRisks),
+    ...textSection('WORK AREAS / PHOTO NOTES', workAreaUpdates),
+  ];
+  const lines = format === 'executive' ? executiveLines : projectManagerLines;
   lines.push('', draft.closingLine);
   return lines.filter((value, index, values) => value || values[index - 1]).join('\n').trim();
+}
+
+function formatReportAction(action: DAVEReportAction) {
+  const context = [action.projectName, action.areaName].filter(Boolean).join(' — ');
+  const due = action.dueDate ? ` Due ${action.dueDate}.` : '';
+  const impact = clean(action.impact);
+  return `${context}: ${action.taskName}. Issue: ${action.issue} ` +
+    `${impact ? `Impact: ${impact} ` : ''}` +
+    `Action: ${action.action} Owner: ${action.owner}.${due}`;
+}
+
+function milestoneStateLabel(state: DAVEReportMilestone['state']) {
+  if (state === 'complete') return 'Complete';
+  if (state === 'missed') return 'Missed';
+  if (state === 'due_soon') return 'Due soon';
+  if (state === 'upcoming') return 'Upcoming';
+  return 'No date';
 }
 
 function textSection(title: string, items: readonly string[], emptyText?: string) {
@@ -454,15 +640,17 @@ function conditionFor({
   criticalDecisions,
   establishedRisks,
   activeScheduleConcern,
+  hasCriticalScheduleImpact,
 }: {
   truths: readonly DAVEProjectTruth[];
   criticalDecisions: number;
   establishedRisks: number;
   activeScheduleConcern: boolean;
+  hasCriticalScheduleImpact: boolean;
 }): DAVEReportBriefing['overallCondition'] {
   if (!truths.length) return 'insufficient_evidence';
-  if (establishedRisks > 0) return 'critical';
-  if (criticalDecisions > 0 || activeScheduleConcern) return 'attention';
+  if (hasCriticalScheduleImpact) return 'critical';
+  if (criticalDecisions > 0 || establishedRisks > 0 || activeScheduleConcern) return 'attention';
   return 'stable';
 }
 
@@ -484,9 +672,16 @@ function scheduleBackedReportAction(
   projectName: string,
   task: DAVEProjectTruth['schedule'][number],
 ): DAVEReportAction {
-  const owner = clean(task.owner) || 'Project manager';
+  const owner = clean(task.assignee) || clean(task.owner) ||
+    clean(task.contractor) || clean(task.trade) || 'Project manager';
   const pmNextAction = clean(task.nextAction);
+  const dueDate = clean(task.responseDueDate) || clean(task.finishDate) || null;
+  const scheduleImpactDays = finiteNumber(task.estimatedScheduleImpactDays);
+  const recordedImpact = clean(task.impactNotes);
   if (task.urgency === 'overdue') {
+    const issue = `${task.taskName} is overdue at ${boundedPercent(task.percentComplete)}% complete.`;
+    const impact = recordedImpact ||
+      `${task.taskName} remains overdue without a recovery date or accountable next step.`;
     return Object.freeze({
       id: `report-schedule-action:${task.taskId}`,
       projectName,
@@ -495,12 +690,20 @@ function scheduleBackedReportAction(
       action: pmNextAction || `Set a recovery date and accountable next step for ${task.taskName}.`,
       owner,
       timing: 'Today',
-      consequence: `${task.taskName} remains overdue without a recovery plan.`,
+      dueDate,
+      issue,
+      impact,
+      consequence: impact,
       smallestNextAction: pmNextAction || 'Assign the recovery owner and date.',
+      sourceTaskId: task.taskId,
+      scheduleImpactDays,
       confidence: 'high',
     });
   }
   if (task.status === 'Waiting') {
+    const issue = `${task.taskName} is waiting at ${boundedPercent(task.percentComplete)}% complete.`;
+    const impact = recordedImpact ||
+      `${task.taskName} cannot advance while the blocker remains open.`;
     return Object.freeze({
       id: `report-schedule-action:${task.taskId}`,
       projectName,
@@ -509,11 +712,19 @@ function scheduleBackedReportAction(
       action: pmNextAction || `Resolve the blocker holding ${task.taskName}.`,
       owner,
       timing: 'Today',
-      consequence: `${task.taskName} cannot advance while the blocker remains open.`,
+      dueDate,
+      issue,
+      impact,
+      consequence: impact,
       smallestNextAction: pmNextAction || 'Name the blocker and responsible party.',
+      sourceTaskId: task.taskId,
+      scheduleImpactDays,
       confidence: 'high',
     });
   }
+  const issue = `${task.taskName} is due within 7 days at ${boundedPercent(task.percentComplete)}% complete.`;
+  const impact = recordedImpact ||
+    `${task.taskName} may miss its scheduled finish without advance coordination.`;
   return Object.freeze({
     id: `report-schedule-action:${task.taskId}`,
     projectName,
@@ -522,10 +733,113 @@ function scheduleBackedReportAction(
     action: pmNextAction || `Prepare the crew, materials, and access for ${task.taskName}.`,
     owner,
     timing: task.finishDate ? `Before ${task.finishDate}` : 'Within 7 days',
-    consequence: `${task.taskName} may miss its scheduled finish without advance coordination.`,
+    dueDate,
+    issue,
+    impact,
+    consequence: impact,
     smallestNextAction: pmNextAction || 'Confirm crew, materials, and access.',
+    sourceTaskId: task.taskId,
+    scheduleImpactDays,
     confidence: 'high',
   });
+}
+
+function buildRecentChanges({
+  truths,
+  reportingPeriod,
+}: {
+  truths: readonly DAVEProjectTruth[];
+  reportingPeriod: DAVEReportPeriodComparison;
+}): DAVEReportRecentChange[] {
+  const comparisonChanges = reportingPeriod.changes.map(change => Object.freeze({
+    id: `report-change:${change.id}`,
+    projectName: change.projectName,
+    taskName: change.taskName,
+    areaName: change.areaName,
+    occurredAt: reportingPeriod.endedAt,
+    summary: `${change.projectName}: ${change.summary}`,
+    source: 'approved_report_comparison' as const,
+  }));
+  const reportingPeriodStart = dateValue(reportingPeriod.startedAt);
+  const taskChanges: DAVEReportRecentChange[] = [];
+  for (const truth of truths) {
+    for (const task of truth.schedule) {
+      const occurredAt = latestDate([task.latestActivityAt, task.updatedAt]);
+      if (
+        reportingPeriodStart !== null &&
+        (dateValue(occurredAt) ?? 0) <= reportingPeriodStart
+      ) continue;
+      const activity = clean(task.latestActivitySummary);
+      if (activity) {
+        taskChanges.push(Object.freeze({
+          id: `report-change:${task.taskId}:activity`,
+          projectName: truth.projectName,
+          taskName: task.taskName,
+          areaName: task.areaName,
+          occurredAt,
+          summary: `${truth.projectName}: ${task.taskName} — ${toPMReportLanguage(activity) || activity}`,
+          source: 'task_activity',
+        }));
+      } else if (occurredAt) {
+        taskChanges.push(Object.freeze({
+          id: `report-change:${task.taskId}:revision`,
+          projectName: truth.projectName,
+          taskName: task.taskName,
+          areaName: task.areaName,
+          occurredAt,
+          summary: `${truth.projectName}: ${task.taskName} was updated.`,
+          source: 'task_revision',
+        }));
+      }
+    }
+  }
+
+  return uniqueBy(
+    [...comparisonChanges, ...taskChanges]
+      .sort((left, right) => (dateValue(right.occurredAt) ?? 0) - (dateValue(left.occurredAt) ?? 0)),
+    change => `${normalized(change.projectName)}|${change.taskName}|${normalized(change.summary)}`,
+  ).slice(0, 12);
+}
+
+function buildReportMilestones(
+  truths: readonly DAVEProjectTruth[],
+): DAVEReportMilestone[] {
+  return truths.flatMap(truth => truth.schedule
+    .filter(task => task.isMilestone || normalized(task.itemType) === 'milestone')
+    .map(task => Object.freeze({
+      id: `report-milestone:${task.taskId}`,
+      projectName: truth.projectName,
+      taskName: task.taskName,
+      areaName: task.areaName,
+      finishDate: clean(task.finishDate) || null,
+      status: task.status,
+      percentComplete: boundedPercent(task.percentComplete),
+      state: (
+        scheduleProgressIsComplete(task)
+          ? 'complete'
+          : task.urgency === 'overdue'
+            ? 'missed'
+            : task.urgency === 'due_soon'
+              ? 'due_soon'
+              : task.finishDate
+                ? 'upcoming'
+                : 'undated'
+      ) as DAVEReportMilestone['state'],
+    })))
+    .sort((left, right) =>
+      milestoneRank(left.state) - milestoneRank(right.state) ||
+      (dateValue(left.finishDate) ?? Number.MAX_SAFE_INTEGER) -
+        (dateValue(right.finishDate) ?? Number.MAX_SAFE_INTEGER),
+    )
+    .slice(0, 12);
+}
+
+function milestoneRank(state: DAVEReportMilestone['state']) {
+  if (state === 'missed') return 0;
+  if (state === 'due_soon') return 1;
+  if (state === 'upcoming') return 2;
+  if (state === 'undated') return 3;
+  return 4;
 }
 
 export function buildPMReportReviewWarnings(values: readonly string[]): string[] {
@@ -612,6 +926,32 @@ function normalized(value: unknown) {
 function boundedPercent(value: unknown) {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : 0;
   return Math.max(0, Math.min(100, numeric));
+}
+
+function finiteNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function dateValue(value: unknown) {
+  const text = clean(value);
+  if (!text) return null;
+  const timestamp = new Date(text).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function latestDate(values: readonly (string | null | undefined)[]) {
+  const dates = values
+    .map(value => ({ value: clean(value), timestamp: dateValue(value) }))
+    .filter((entry): entry is { value: string; timestamp: number } => entry.timestamp !== null)
+    .sort((left, right) => right.timestamp - left.timestamp);
+  return dates[0]?.value || null;
+}
+
+function dateDifferenceDays(from: string | null, to: string | null) {
+  const fromValue = dateValue(from);
+  const toValue = dateValue(to);
+  if (fromValue === null || toValue === null) return null;
+  return Math.round((toValue - fromValue) / (24 * 60 * 60 * 1000));
 }
 
 function unique(values: readonly string[]) {

@@ -128,13 +128,10 @@ export function reconcileScheduleProgressEdit(
     if (percentComplete === 100) {
       return Object.freeze({ status: 'Complete', percentComplete: 100 });
     }
-    if (currentProgress.status === 'Complete') {
-      return Object.freeze({
-        status: percentComplete === 0 ? 'Not Started' : 'In Progress',
-        percentComplete,
-      });
-    }
-    return reconcileScheduleProgress(currentProgress.status, percentComplete);
+    return Object.freeze({
+      status: percentComplete === 0 ? 'Not Started' : 'In Progress',
+      percentComplete,
+    });
   }
 
   return currentProgress;

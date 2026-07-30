@@ -1,11 +1,20 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { File } from 'expo-file-system';
+import { sha256 } from '@noble/hashes/sha256';
 
 /**
- * Hard ceiling for any local file that will be copied, hashed, or converted to
- * base64 in one operation. Fifteen MiB preserves the app's existing project-
- * document compatibility limit while bounding peak memory use.
+ * Default ceiling for photos, schedule sources, and reference files that are
+ * copied, hashed, or converted to base64 in one operation.
  */
 export const MAX_SAFE_LOCAL_FILE_BYTES = 15 * 1024 * 1024;
+
+/**
+ * Project documents and drawings use the same 100 MiB limit on mobile and web.
+ * Large files are hashed and uploaded in bounded chunks after this preflight.
+ */
+export const MAX_PROJECT_DOCUMENT_FILE_BYTES = 50 * 1024 * 1024;
+
+export const FILE_STREAM_CHUNK_BYTES = 1024 * 1024;
 
 export type FileSizePreflightErrorCode =
   | 'file_missing'
@@ -160,6 +169,72 @@ export function preflightExpoFileRead(input: Readonly<{
 }
 
 /**
+ * Computes an integrity digest without materializing the entire file in
+ * JavaScript memory. The file is re-inspected after hashing so a mid-read
+ * replacement is rejected.
+ */
+export async function hashExpoFileSha256(input: Readonly<{
+  uri: string;
+  reportedSizeBytes?: number | null;
+  maxBytes?: number;
+}>): Promise<Readonly<{ sha256: string; sizeBytes: number }>> {
+  const preflight = await preflightExpoFileRead(input);
+  const file = new File(input.uri);
+  let handle: ReturnType<File['open']> | null = null;
+
+  try {
+    handle = file.open();
+    if (handle.size !== preflight.sizeBytes) {
+      throw changedFileError(preflight);
+    }
+
+    const digest = sha256.create();
+    let bytesRead = 0;
+    while (bytesRead < preflight.sizeBytes) {
+      const nextLength = Math.min(
+        FILE_STREAM_CHUNK_BYTES,
+        preflight.sizeBytes - bytesRead,
+      );
+      const chunk = handle.readBytes(nextLength);
+      if (chunk.byteLength !== nextLength) {
+        throw changedFileError(preflight);
+      }
+      digest.update(chunk);
+      bytesRead += chunk.byteLength;
+    }
+
+    if (bytesRead !== preflight.sizeBytes) {
+      throw changedFileError(preflight);
+    }
+
+    const afterRead = await preflightExpoFileRead({
+      ...input,
+      reportedSizeBytes: preflight.sizeBytes,
+      maxBytes: preflight.maxBytes,
+    });
+    if (afterRead.sizeBytes !== preflight.sizeBytes) {
+      throw changedFileError(preflight);
+    }
+
+    return Object.freeze({
+      sha256: bytesToHex(digest.digest()),
+      sizeBytes: preflight.sizeBytes,
+    });
+  } catch (cause) {
+    if (cause instanceof FileSizePreflightError) throw cause;
+    throw new FileSizePreflightError({
+      code: 'file_read_failed',
+      message: 'Vitruvius could not read this file. Choose it again and retry.',
+      maxBytes: preflight.maxBytes,
+      observedSizeBytes: preflight.sizeBytes,
+      cause,
+    });
+  } finally {
+    handle?.close();
+  }
+}
+
+/**
  * Builds a bounded upload payload. The verified stat happens before the
  * base64 read, and a changed encoded length is rejected before ArrayBuffer
  * allocation. Decoding writes directly into a pre-sized byte array.
@@ -215,10 +290,16 @@ function knownFileSize(value: unknown): number | null {
     : null;
 }
 
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes)
+    .map(value => value.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 function tooLargeError(maxBytes: number, observedSizeBytes: number) {
   return new FileSizePreflightError({
     code: 'file_too_large',
-    message: `This file is larger than ${formatMiB(maxBytes)}. Choose a smaller file and retry.`,
+    message: `This file is larger than ${formatMiB(maxBytes)}. Compress, optimize, or split it, then retry.`,
     maxBytes,
     observedSizeBytes,
   });

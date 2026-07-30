@@ -1,0 +1,13 @@
+appId: ${APP_ID}
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- tapOn: "Tasks"
+- assertVisible: "Work requiring attention"
+- tapOn: "7 Days"
+- assertVisible: "Work requiring attention"
+- tapOn: "All"
+- assertVisible: "Work requiring attention"
+- takeScreenshot: "jarvis-task-filters"

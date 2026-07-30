@@ -16,7 +16,7 @@ const blockedPolicy = {
 };
 
 describe('LiveAuthorityStatusBannerView', () => {
-  it('requires an explicit acknowledgement for device-only data', () => {
+  it('explains the limitation before continuing with device-only data', () => {
     const onAcknowledge = jest.fn();
     const screen = render(
       <LiveAuthorityStatusBannerView
@@ -30,7 +30,13 @@ describe('LiveAuthorityStatusBannerView', () => {
       />,
     );
 
-    fireEvent.press(screen.getByLabelText('Acknowledge saved device data'));
+    expect(screen.getByText('Latest cloud data is not confirmed')).toBeTruthy();
+    expect(screen.getByText(
+      'Vitruvius could not confirm the latest shared project record. Project totals, task status, and recommendations may be incomplete.',
+    )).toBeTruthy();
+    expect(screen.queryByText(blockedPolicy.userMessage)).toBeNull();
+
+    fireEvent.press(screen.getByLabelText('Continue with saved device data'));
 
     expect(onAcknowledge).toHaveBeenCalledTimes(1);
     expect(screen.queryByLabelText('Retry project understanding')).toBeNull();

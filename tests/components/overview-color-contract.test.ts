@@ -38,7 +38,7 @@ describe('Overview color contract', () => {
       'utf8',
     );
 
-    expect(webOverview).toContain("SectionHeading title=\"Today's Priority\"");
+    expect(webOverview).toContain('SectionHeading title="Current Focus"');
     expect(webOverview).toContain('SectionHeading title="Active Projects"');
     expect(webOverview).toContain('SectionHeading title="Recent Activity"');
     expect(webOverview).not.toContain('Current attention');
@@ -53,10 +53,15 @@ describe('Overview color contract', () => {
       app.indexOf('{overviewRows.length === 0 ?'),
     );
 
-    expect(priorityCard).toContain(') : topPriority ? (');
-    expect(priorityCard).toContain('Priority needs review');
+    expect(priorityCard).toContain(') : currentFocusProject ? (');
+    expect(priorityCard).toContain('Current focus');
     expect(priorityCard).toContain('No project cover photo is available.');
-    expect(priorityCard).toContain("{topPriority ? 'PRIORITY' : 'ALL CLEAR'}");
+    expect(priorityCard).toContain(
+      "{currentFocus?.stateLabel || (topPriority ? 'NEEDS SETUP' : 'ALL CLEAR')}",
+    );
+    expect(priorityCard).toContain(
+      "{currentFocus ? 'Review task' : topPriority ? 'Set up project' : 'Add project'}",
+    );
   });
 
   it('describes the due-today rollup as projects rather than individual tasks', () => {

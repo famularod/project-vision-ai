@@ -6,17 +6,18 @@ describe('Action Inbox responsive presentation', () => {
     path.resolve(__dirname, '../../App.tsx'),
     'utf8',
   );
+  const scheduleScreenStart = appSource.indexOf('function ScheduleScreen');
   const scheduleScreen = appSource.slice(
-    appSource.indexOf('function ScheduleScreen'),
-    appSource.indexOf('function DAVEActionInboxRow'),
+    scheduleScreenStart,
+    appSource.indexOf('function ScheduleCommittedTextField', scheduleScreenStart),
   );
 
-  it('keeps the expanded Action Inbox out of compact and medium task layouts', () => {
-    expect(scheduleScreen).toContain(
-      '{isWideWorkspace && actionInbox.items.length > 0 ? (',
-    );
-    expect(scheduleScreen).toContain(
-      ') : isWideWorkspace ? (',
+  it('uses Needs Attention instead of rendering a duplicate Action Inbox panel', () => {
+    expect(scheduleScreen).toContain('const actionInbox = useMemo(');
+    expect(scheduleScreen).toContain('const attentionScheduleItemIds = useMemo(');
+    expect(scheduleScreen).toContain('attentionScheduleItemIds.has(item.id)');
+    expect(scheduleScreen).not.toContain(
+      '<Text style={styles.panelTitle}>Action Inbox</Text>',
     );
   });
 

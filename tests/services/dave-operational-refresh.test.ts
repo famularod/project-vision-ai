@@ -3,6 +3,7 @@ import {
   attachDAVEOperationalRealtime,
   createDAVEOperationalRefreshCommitGuard,
   createDAVEOperationalRefreshController,
+  daveOperationalCollectionForRealtimeEntity,
   DAVE_OPERATIONAL_POLL_INTERVAL_MS,
   DAVE_OPERATIONAL_REALTIME_RETRY_DELAYS_MS,
   runDAVEOperationalCollectionRefreshes,
@@ -56,6 +57,50 @@ describe('DAVE operational cross-device refresh', () => {
     expect(refresh).toHaveBeenLastCalledWith('realtime');
 
     controller.stop();
+  });
+
+  it('refreshes only the collection named by a realtime event', async () => {
+    const refresh = jest.fn().mockResolvedValue(undefined);
+    const controller = createDAVEOperationalRefreshController({ refresh });
+
+    controller.start();
+    await flushPromises();
+
+    const collection = daveOperationalCollectionForRealtimeEntity('schedule_item');
+    expect(collection).toBe('schedule_items');
+    await controller.request('realtime', collection ? [collection] : undefined);
+
+    expect(refresh).toHaveBeenLastCalledWith('realtime', ['schedule_items']);
+    controller.stop();
+  });
+
+  it('merges targeted notifications that arrive during an active refresh', async () => {
+    let finishInitialRefresh: () => void = () => undefined;
+    const refresh = jest.fn()
+      .mockImplementationOnce(() => new Promise<void>(resolve => {
+        finishInitialRefresh = resolve;
+      }))
+      .mockResolvedValue(undefined);
+    const controller = createDAVEOperationalRefreshController({ refresh });
+
+    controller.start();
+    await flushPromises();
+
+    void controller.request('realtime', ['schedule_items']);
+    void controller.request('realtime', ['project_areas']);
+    finishInitialRefresh();
+    await flushPromises();
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenLastCalledWith(
+      'realtime',
+      expect.arrayContaining(['schedule_items', 'project_areas']),
+    );
+    controller.stop();
+  });
+
+  it('uses a full refresh for tombstone events because the deleted collection is not known', () => {
+    expect(daveOperationalCollectionForRealtimeEntity('sync_tombstone')).toBeNull();
   });
 
   it('reports a retrying state and automatically recovers on the next request', async () => {

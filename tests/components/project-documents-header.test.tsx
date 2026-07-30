@@ -28,7 +28,7 @@ describe('ProjectDocumentsHeader', () => {
     expect(screen.getByRole('radio', { name: 'Show Drawing documents' }).props
       .accessibilityState).toEqual({ selected: true });
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Upload Document' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Add Document' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Take Photo of Document' }));
     await fireEvent.press(screen.getByRole('radio', { name: 'Show Permit Card documents' }));
 
@@ -52,6 +52,6 @@ describe('ProjectDocumentsHeader', () => {
     );
 
     expect(screen.queryByTestId('project-document-actions')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Upload Document' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add Document' })).toBeNull();
   });
 });

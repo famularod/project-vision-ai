@@ -1,4 +1,5 @@
 import type { ScheduleItem } from '../types';
+import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 
 /**
  * Free-text predecessor extraction remains disabled. Vitruvius only trusts
@@ -85,8 +86,7 @@ export function buildPIEScheduleDependencyNetwork(
         const predecessor = itemsById.get(predecessorId);
         return Boolean(
           predecessor &&
-          predecessor.status !== 'Complete' &&
-          predecessor.percentComplete < 100,
+          !scheduleTaskIsComplete(predecessor),
         );
       });
       const cycle = cyclicIds.has(itemId);

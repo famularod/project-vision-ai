@@ -60,11 +60,33 @@ export type DAVEOperationalRefreshCommitGuard = Readonly<{
 }>;
 
 type OperationalRefreshControllerOptions = {
-  refresh: (trigger: DAVEOperationalRefreshTrigger) => Promise<void>;
+  refresh: (
+    trigger: DAVEOperationalRefreshTrigger,
+    collections?: readonly DAVEOperationalCollectionName[],
+  ) => Promise<void>;
   canRefresh?: () => boolean;
   onStateChange?: (state: DAVEOperationalRefreshState) => void;
   pollIntervalMs?: number;
 };
+
+export function daveOperationalCollectionForRealtimeEntity(
+  entity: DAVEOperationalRealtimeEntity,
+): DAVEOperationalCollectionName | null {
+  switch (entity) {
+    case 'project':
+      return 'projects';
+    case 'project_update':
+      return 'project_updates';
+    case 'project_area':
+      return 'project_areas';
+    case 'schedule_item':
+      return 'schedule_items';
+    case 'reference_document':
+      return 'reference_documents';
+    case 'sync_tombstone':
+      return null;
+  }
+}
 
 /**
  * Creates a request-generation guard for asynchronous refreshes whose network
@@ -106,28 +128,48 @@ export function createDAVEOperationalRefreshController({
   let running = false;
   let inFlight = false;
   let trailingRefreshRequested = false;
+  let trailingCollections: Set<DAVEOperationalCollectionName> | null = null;
   let interval: ReturnType<typeof setInterval> | null = null;
   let lastSuccessfulRefreshAt: string | null = null;
 
-  async function request(trigger: DAVEOperationalRefreshTrigger): Promise<void> {
+  function queueTrailingCollections(
+    collections?: readonly DAVEOperationalCollectionName[],
+  ) {
+    if (!collections) {
+      trailingCollections = null;
+      return;
+    }
+    if (trailingCollections === null && trailingRefreshRequested) return;
+    trailingCollections ??= new Set<DAVEOperationalCollectionName>();
+    collections.forEach(collection => trailingCollections?.add(collection));
+  }
+
+  async function request(
+    trigger: DAVEOperationalRefreshTrigger,
+    collections?: readonly DAVEOperationalCollectionName[],
+  ): Promise<void> {
     if (!running || !canRefresh()) return;
     if (inFlight) {
+      queueTrailingCollections(collections);
       trailingRefreshRequested = true;
       return;
     }
 
     inFlight = true;
     let nextTrigger = trigger;
+    let nextCollections = collections;
     try {
       do {
         trailingRefreshRequested = false;
+        trailingCollections = null;
         onStateChange({
           status: 'refreshing',
           trigger: nextTrigger,
           lastSuccessfulRefreshAt,
         });
         try {
-          await refresh(nextTrigger);
+          if (nextCollections) await refresh(nextTrigger, nextCollections);
+          else await refresh(nextTrigger);
           lastSuccessfulRefreshAt = new Date().toISOString();
           onStateChange({
             status: 'ready',
@@ -141,6 +183,9 @@ export function createDAVEOperationalRefreshController({
             lastSuccessfulRefreshAt,
           });
         }
+        nextCollections = trailingCollections
+          ? Array.from(trailingCollections)
+          : undefined;
         nextTrigger = 'realtime';
       } while (running && canRefresh() && trailingRefreshRequested);
     } finally {
@@ -160,6 +205,7 @@ export function createDAVEOperationalRefreshController({
   function stop() {
     running = false;
     trailingRefreshRequested = false;
+    trailingCollections = null;
     if (interval) clearInterval(interval);
     interval = null;
   }

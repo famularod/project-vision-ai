@@ -1705,6 +1705,37 @@ export const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
+  overviewFocusSummary: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+
+  overviewFocusMetric: {
+    flex: 1,
+    minWidth: 0,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 11,
+  },
+
+  overviewFocusMetricValue: {
+    fontSize: 19,
+    lineHeight: 23,
+    fontWeight: '900',
+  },
+
+  overviewFocusMetricLabel: {
+    color: colors.muted,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '800',
+    marginTop: 1,
+  },
+
   overviewDashboardLink: {
     color: colors.primary,
     fontSize: 13,
@@ -1829,11 +1860,24 @@ export const styles = StyleSheet.create({
   },
 
   overviewPriorityObservationText: {
-    flex: 1,
     color: colors.text,
     fontSize: 13,
     lineHeight: 18,
     fontWeight: '600',
+  },
+
+  overviewPriorityObservationCopy: {
+    flex: 1,
+    gap: 3,
+  },
+
+  overviewPriorityObservationLabel: {
+    color: colors.primary,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+    marginTop: 2,
   },
 
   overviewPriorityButton: {
@@ -3193,6 +3237,19 @@ export const styles = StyleSheet.create({
   scheduleVerificationActions: {
     gap: 10,
     paddingBottom: 12,
+  },
+  keyboardAccessory: {
+    alignItems: 'flex-end',
+    backgroundColor: colors.card,
+    borderTopColor: colors.line,
+    borderTopWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  keyboardAccessoryText: {
+    color: colors.primary,
+    fontSize: 16,
+    fontWeight: '800',
   },
 
 });

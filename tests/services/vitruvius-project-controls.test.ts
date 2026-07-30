@@ -530,7 +530,7 @@ describe('Vitruvius project controls', () => {
   });
 
   describe('portfolio impact', () => {
-    it('summarizes only active cost, schedule, assignment, and confidence exposure', () => {
+    it('summarizes only canonically completed cost, schedule, assignment, and confidence exposure', () => {
       const items = [
         scheduleItem({
           id: 'active-high',
@@ -577,9 +577,9 @@ describe('Vitruvius project controls', () => {
 
       expect(buildVitruviusPortfolioImpact(items)).toEqual({
         itemCount: 4,
-        costExposure: 1250,
-        taskDelayEstimateDaysTotal: 7,
-        highConfidenceItemCount: 1,
+        costExposure: 4250,
+        taskDelayEstimateDaysTotal: 17,
+        highConfidenceItemCount: 2,
         pendingApprovalCount: 2,
         unassignedItemCount: 1,
       });

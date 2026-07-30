@@ -75,6 +75,21 @@ describe('schedule progress invariant', () => {
     )).toEqual({ status: 'Not Started', percentComplete: 0 });
   });
 
+  it('derives status from every intentional percentage edit', () => {
+    expect(reconcileScheduleProgressEdit(
+      { status: 'In Progress', percentComplete: 10 },
+      { percentComplete: 0 },
+    )).toEqual({ status: 'Not Started', percentComplete: 0 });
+    expect(reconcileScheduleProgressEdit(
+      { status: 'Waiting', percentComplete: 0 },
+      { percentComplete: 15 },
+    )).toEqual({ status: 'In Progress', percentComplete: 15 });
+    expect(reconcileScheduleProgressEdit(
+      { status: 'Not Started', percentComplete: 0 },
+      { percentComplete: 100 },
+    )).toEqual({ status: 'Complete', percentComplete: 100 });
+  });
+
   it('applies exact status semantics to imported CSV rows', () => {
     const result = normalizeScheduleImport({
       contents: [

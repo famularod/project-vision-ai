@@ -398,12 +398,12 @@ function validateJarvisAdversarial() {
   assert.equal(
     result.status,
     0,
-    `Executable V.I.C. adversarial validation failed:\n${result.stdout || ''}${result.stderr || ''}`,
+    `Executable Jarvis adversarial validation failed:\n${result.stdout || ''}${result.stderr || ''}`,
   );
   assert.match(
     result.stdout,
     /PASS jarvis-reasoning/,
-    'Executable V.I.C. adversarial validation did not report success.',
+    'Executable Jarvis adversarial validation did not report success.',
   );
   return {
     executableBehavior: true,

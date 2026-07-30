@@ -19,6 +19,7 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
+import { scheduleItemCloudAcknowledgementMatches } from './ScheduleItemCloudAcknowledgement';
 import type {
   PIEActor,
   PIEActualOutcomeRecord,
@@ -43,8 +44,13 @@ import {
 } from './PIERealityHistoryIntegrity';
 import {
   FileSizePreflightError,
+  preflightExpoFileRead,
   prepareExpoFileUploadPayload,
 } from './FileSizePreflight';
+import {
+  RESUMABLE_UPLOAD_THRESHOLD_BYTES,
+  uploadFileResumably,
+} from './ResumableStorageUpload';
 import {
   attachDAVEOperationalRealtime,
   type DAVEOperationalRealtimeEntity,
@@ -243,6 +249,9 @@ export type UploadPhotoParams = {
   contentType?: string;
   upsert?: boolean;
   cacheControl?: string;
+  reportedSizeBytes?: number | null;
+  maxBytes?: number;
+  onProgress?: (fraction: number) => void;
 };
 
 export type UploadedPhoto = {
@@ -571,6 +580,26 @@ export async function getCurrentUser(): Promise<SupabaseServiceResult<User | nul
   return okResult(data.user ?? null);
 }
 
+export async function getCurrentSessionUser(): Promise<SupabaseServiceResult<User | null>> {
+  const client = getSupabaseClient();
+
+  if (!client) return notConfiguredResult<User | null>();
+
+  const hydrated = await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
+  if (!hydrated) {
+    return errorResult(
+      'Authentication is still loading. Try opening this workspace again in a moment.',
+      503,
+      'auth_loading',
+    );
+  }
+
+  const { data, error } = await client.auth.getSession();
+  if (error) return errorResult(error.message, 401, 'auth_required');
+
+  return okResult(data.session?.user ?? null);
+}
+
 export function accountDisplayNameForUser(user: User | null | undefined): string {
   return accountDisplayNameForMetadata(user?.user_metadata);
 }
@@ -705,14 +734,21 @@ export async function uploadPhoto({
   contentType = 'image/jpeg',
   upsert = true,
   cacheControl = '3600',
+  reportedSizeBytes,
+  maxBytes,
+  onProgress,
 }: UploadPhotoParams): Promise<SupabaseServiceResult<UploadedPhoto>> {
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<UploadedPhoto>();
 
-  let fileData: ArrayBuffer;
+  let verifiedSizeBytes: number;
   try {
-    fileData = (await prepareExpoFileUploadPayload({ uri })).data;
+    verifiedSizeBytes = (await preflightExpoFileRead({
+      uri,
+      ...(reportedSizeBytes !== undefined ? { reportedSizeBytes } : {}),
+      ...(maxBytes !== undefined ? { maxBytes } : {}),
+    })).sizeBytes;
   } catch (cause) {
     if (cause instanceof FileSizePreflightError) {
       return errorResult(
@@ -728,6 +764,65 @@ export async function uploadPhoto({
     );
   }
 
+  if (verifiedSizeBytes > RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
+    const configuration = getSupabaseConfigurationStatus();
+    const { data: sessionData, error: sessionError } = await client.auth.getSession();
+    if (sessionError || !sessionData.session?.access_token) {
+      return errorResult(
+        sessionError?.message || 'Sign in again before uploading this large file.',
+        401,
+        'missing_upload_session',
+      );
+    }
+
+    try {
+      const uploaded = await uploadFileResumably({
+        projectUrl: configuration.projectUrl || '',
+        accessToken: sessionData.session.access_token,
+        bucket,
+        path,
+        uri,
+        sizeBytes: verifiedSizeBytes,
+        contentType,
+        cacheControl,
+        upsert,
+        ...(onProgress ? { onProgress } : {}),
+      });
+      return okResult({
+        bucket,
+        path: uploaded.path,
+        fullPath: null,
+      });
+    } catch (cause) {
+      return errorResult(
+        cause instanceof Error
+          ? cause.message
+          : 'The resumable upload could not be completed.',
+        undefined,
+        'resumable_upload_failed',
+      );
+    }
+  }
+
+  let fileData: ArrayBuffer;
+  try {
+    fileData = (await prepareExpoFileUploadPayload({
+      uri,
+      reportedSizeBytes: verifiedSizeBytes,
+      ...(maxBytes !== undefined ? { maxBytes } : {}),
+    })).data;
+  } catch (cause) {
+    if (cause instanceof FileSizePreflightError) {
+      return errorResult(cause.message, 422, cause.code);
+    }
+    return errorResult(
+      'Vitruvius could not safely prepare this file. Choose it again and retry.',
+      422,
+      'file_read_failed',
+    );
+  }
+
+  onProgress?.(0);
   const { data, error } = await client.storage
     .from(bucket)
     .upload(path, fileData, {
@@ -754,6 +849,7 @@ export async function uploadPhoto({
     return errorResult(error.message, status, code);
   }
 
+  onProgress?.(1);
   return okResult({
     bucket,
     path: data?.path ?? path,
@@ -1343,18 +1439,37 @@ export async function upsertProjectArea(
 export async function upsertScheduleItem(
   item: ScheduleItem,
 ): Promise<SupabaseServiceResult<ScheduleItem>> {
-  return upsertJsonRecord<ScheduleItem>({
-    table: SCHEDULE_ITEMS_TABLE,
-    ownerScoped: true,
-    payload: {
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<ScheduleItem>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { data, error, status } = await client
+    .from(SCHEDULE_ITEMS_TABLE)
+    .upsert({
       id: item.id,
+      owner_id: owner.data,
       project_name: item.projectName,
       task_name: item.taskName,
       item_data: toJsonValue(item),
       updated_at: new Date().toISOString(),
-    },
-    data: item,
-  });
+    })
+    .select('id, item_data')
+    .single();
+
+  if (error) return tableAwareErrorResult<ScheduleItem>(error.message, status);
+  if (!scheduleItemCloudAcknowledgementMatches(item, data)) {
+    return errorResult(
+      'The cloud did not confirm the exact saved task revision.',
+      409,
+      'cloud_acknowledgement_missing',
+    );
+  }
+
+  return okResult(item, status);
 }
 
 export async function upsertReferenceDocument(

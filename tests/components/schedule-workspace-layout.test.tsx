@@ -5,6 +5,15 @@ import { Text } from 'react-native';
 import { ScheduleWideWorkspace } from '../../components/schedule-workspace-layout';
 import type { ScheduleItem } from '../../types';
 
+jest.mock('@expo/vector-icons', () => {
+  const React = require('react');
+  const { Text: MockText } = require('react-native');
+  return {
+    Ionicons: ({ name }: { name?: string }) =>
+      React.createElement(MockText, null, name || 'icon'),
+  };
+});
+
 const taskA: ScheduleItem = {
   id: 'task-a',
   projectName: 'Project A',
@@ -62,6 +71,40 @@ describe('ScheduleWideWorkspace', () => {
     expect(screen.getByRole('header', { name: 'Canopy A' })).toBeTruthy();
     expect(screen.getByRole('header', { name: 'North Lot' })).toBeTruthy();
     expect(screen.getAllByText('1 task')).toHaveLength(4);
+  });
+
+  it('collapses and expands an area from its group header', async () => {
+    const screen = await render(
+      <ScheduleWideWorkspace
+        items={[taskA]}
+        selectedTaskId="task-a"
+        onSelectTask={jest.fn()}
+        masterHeader={<Text>All Tasks</Text>}
+        inspector={<Text>Inspector</Text>}
+        inspectorFooter={null}
+        emptyState={<Text>No tasks</Text>}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Open task Install panels' }),
+    ).toBeTruthy();
+
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Collapse Canopy A' }),
+    );
+
+    expect(
+      screen.queryByRole('button', { name: 'Open task Install panels' }),
+    ).toBeNull();
+
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Expand Canopy A' }),
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Open task Install panels' }),
+    ).toBeTruthy();
   });
 });
 

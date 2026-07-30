@@ -45,7 +45,7 @@ assert(app.includes('scheduleTaskName'), 'Task-linked field updates should prese
 
 assert(capture.includes('Capture Evidence'), 'Field updates should expose the live evidence capture step');
 assert(capture.includes('DAVEVoiceCaptureSheet'), 'Project Walk should expose DAVE voice capture');
-assert(capture.includes('label="Upload Document"'), 'document upload should remain reachable');
+assert(capture.includes('label="Add Document"'), 'document upload should remain reachable');
 
 assert(review.includes('BeforeYouSharePanel'), 'Reports should consolidate review guidance before sharing');
 assert(review.includes('Report Check'), 'Reports should present one concise report readiness area');
@@ -72,7 +72,7 @@ assert(
     app.includes('scheduleWarningIsUserActionable') &&
     app.includes('Schedule Alert') &&
     app.includes('fieldWarnings?.find(scheduleWarningIsUserActionable)') &&
-    !app.includes('{fieldWarning.suggestedAction}'),
+    app.includes('{fieldWarning.suggestedAction}'),
   'Live Schedule should show only bounded, decision-useful schedule and field conflicts.',
 );
 assert(
@@ -87,11 +87,11 @@ assert(
 );
 assert(
   review.includes('<View style={styles.reportProgressHeading}>') &&
-    review.includes('Progress based on scheduled task duration'),
+    review.includes('Weighted by scheduled duration'),
   'The work-area progress explanation should sit below its heading instead of competing for horizontal space.',
 );
 assert(
-  review.includes('</View>\n          {completedAreas.length ? (\n            <View style={styles.reportDisclosure}>'),
+  review.includes('</View>\n              {completedAreas.length ? (\n                <View style={styles.reportDisclosure}>'),
   'Completed Areas should be a full-width sibling of the progress card, not a nested inset disclosure.',
 );
 const reportDisclosureStyles = review.slice(

@@ -190,12 +190,131 @@ beforeEach(() => {
   mockPrepareReferenceDocumentForCloud.mockImplementation(
     (document: ReferenceDocument) => Promise.resolve(document),
   );
-  mockDeleteProjectUpdate.mockClear();
+  mockDeleteProjectUpdate.mockReset();
+  mockDeleteProjectUpdate.mockResolvedValue({
+    ok: true,
+    configured: true,
+    stubbed: false,
+  });
   mockConfirmProjectUpdateCloudDeletion.mockReset();
   mockConfirmProjectUpdateCloudDeletion.mockResolvedValue(undefined);
 });
 
 describe('offline upload deletion barriers', () => {
+  it('does not re-upload the full deletion journal before a routine task save', async () => {
+    const tombstones = Array.from({ length: 500 }, (_value, index) => ({
+      entityType: 'schedule_item' as const,
+      recordId: `historically-deleted-task-${index}`,
+      deletedAt: `2026-07-20T08:${String(index % 60).padStart(2, '0')}:00.000Z`,
+    }));
+    mockStorage.set(TOMBSTONE_KEY, JSON.stringify(tombstones));
+    mockCloudTombstonesResult = {
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: tombstones,
+    };
+    await enqueuePendingChange(scheduleQueueItem('current-task-save'));
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+      itemOutcomes: {
+        'schedule-item-current-task-save': 'uploaded',
+      },
+    });
+
+    expect(mockListDAVESyncTombstones).toHaveBeenCalledTimes(1);
+    expect(mockUpsertDAVESyncTombstone).not.toHaveBeenCalled();
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('uploads the newest task first and reads task authority once for the batch', async () => {
+    const olderTask: ScheduleItem = {
+      id: 'task-batch-older',
+      itemType: 'Task',
+      projectName: '2321 Compliance Project',
+      locationName: 'North Lot',
+      taskName: 'Older queued task',
+      startDate: '',
+      finishDate: '2026-07-31',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 10,
+      priority: 'Medium',
+      status: 'In Progress',
+      notes: '',
+      nextAction: '',
+      activity: [],
+      createdAt: '2026-07-27T10:00:00.000Z',
+      updatedAt: '2026-07-27T10:01:00.000Z',
+    };
+    const newestTask: ScheduleItem = {
+      ...olderTask,
+      id: 'task-batch-newest',
+      taskName: 'Newest queued task',
+      percentComplete: 15,
+      updatedAt: '2026-07-27T10:02:00.000Z',
+    };
+
+    await queueScheduleItemRecord(olderTask, false, [
+      'percentComplete',
+      'status',
+      'updatedAt',
+    ]);
+    await queueScheduleItemRecord(newestTask, false, [
+      'percentComplete',
+      'status',
+      'updatedAt',
+    ]);
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 2,
+      queued: 0,
+      errors: [],
+    });
+
+    expect(mockListScheduleItems).toHaveBeenCalledTimes(1);
+    expect(
+      mockUpsertScheduleItem.mock.calls.map(([item]) => (item as ScheduleItem).id),
+    ).toEqual([newestTask.id, olderTask.id]);
+  });
+
+  it('confirms a task save without waiting for unrelated field-update retries', async () => {
+    mockDeleteProjectUpdate.mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+    await enqueuePendingChange({
+      id: 'project-update-unrelated-retry',
+      entity: 'project_update',
+      operation: 'delete',
+      payload: {
+        id: 'unrelated-update',
+        projectName: '2321 Compliance Project',
+      },
+      changedAt: '2026-07-20T08:00:00.000Z',
+      autoUpload: false,
+    });
+    await enqueuePendingChange(scheduleQueueItem('current-task-save'));
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 1,
+      itemOutcomes: {
+        'schedule-item-current-task-save': 'uploaded',
+      },
+    });
+
+    expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1);
+    expect(mockDeleteProjectUpdate).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'project-update-unrelated-retry',
+      }),
+    ]);
+  });
+
   it('awaits the exact imported task and document records until both are synced', async () => {
     const task: ScheduleItem = {
       id: 'schedule-import-task-1',

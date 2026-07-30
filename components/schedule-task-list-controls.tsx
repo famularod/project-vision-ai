@@ -2,10 +2,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, radius, spacing } from '../theme';
+import { PROJECT_ITEM_TYPES, type ProjectItemType } from '../types';
 
 export type ScheduleTaskFilter =
   | 'Attention'
   | 'My Work'
+  | 'My Reviews'
   | 'Today'
   | '7 Days'
   | 'Overdue'
@@ -20,6 +22,7 @@ export function ScheduleTaskListControls({
   overdueCount,
   needsActionCount,
   myWorkCount,
+  myReviewCount = 0,
   openTaskCount,
   completedTaskCount,
   activeView,
@@ -28,7 +31,10 @@ export function ScheduleTaskListControls({
   onFilterChange,
   onNeedsAttentionPress,
   onMyWorkPress,
+  onMyReviewsPress,
   onAddTask,
+  activeItemType,
+  onItemTypeChange,
   workspaceView = 'Tasks',
   onWorkspaceViewChange,
 }: {
@@ -38,6 +44,7 @@ export function ScheduleTaskListControls({
   overdueCount: number;
   needsActionCount: number;
   myWorkCount: number;
+  myReviewCount?: number;
   openTaskCount: number;
   completedTaskCount: number;
   activeView: ScheduleTaskView;
@@ -46,7 +53,10 @@ export function ScheduleTaskListControls({
   onFilterChange: (filter: ScheduleTaskFilter) => void;
   onNeedsAttentionPress: () => void;
   onMyWorkPress: () => void;
+  onMyReviewsPress?: () => void;
   onAddTask: () => void;
+  activeItemType?: ProjectItemType | 'All';
+  onItemTypeChange?: (itemType: ProjectItemType | 'All') => void;
   workspaceView?: ScheduleWorkspaceView;
   onWorkspaceViewChange?: (view: ScheduleWorkspaceView) => void;
 }) {
@@ -160,6 +170,17 @@ export function ScheduleTaskListControls({
               actionLabel="Show open tasks assigned to me"
               onPress={onMyWorkPress}
             />
+            <TaskMetric
+              label="My Reviews"
+              value={myReviewCount}
+              icon="checkmark-done-outline"
+              selected={activeView === 'Open Tasks' && activeFilter === 'My Reviews'}
+              actionLabel="Show records waiting for my approval"
+              onPress={onMyReviewsPress ?? (() => {
+                onViewChange('Open Tasks');
+                onFilterChange('My Reviews');
+              })}
+            />
           </View>
 
           <View style={styles.viewTabs} accessibilityRole="tablist">
@@ -192,6 +213,38 @@ export function ScheduleTaskListControls({
               );
             })}
           </View>
+
+          {onItemTypeChange ? (
+            <View style={styles.itemTypeFilterBlock}>
+              <Text style={styles.itemTypeFilterLabel}>Work type</Text>
+              <View style={styles.itemTypeFilterWrap}>
+                {(['All', ...PROJECT_ITEM_TYPES] as const).map(itemType => {
+                  const selected = (activeItemType || 'All') === itemType;
+                  return (
+                    <Pressable
+                      key={itemType}
+                      style={({ pressed }) => [
+                        styles.itemTypeFilterChip,
+                        selected && styles.itemTypeFilterChipSelected,
+                        pressed && styles.pressed,
+                      ]}
+                      onPress={() => onItemTypeChange(itemType)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`Show ${itemType === 'All' ? 'all work types' : itemType}`}
+                    >
+                      <Text style={[
+                        styles.itemTypeFilterText,
+                        selected && styles.itemTypeFilterTextSelected,
+                      ]}>
+                        {itemType}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
         </>
       ) : null}
 
@@ -363,6 +416,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     marginBottom: 14,
+  },
+  itemTypeFilterBlock: {
+    marginTop: spacing.sm,
+  },
+  itemTypeFilterLabel: {
+    color: colors.mutedText,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+    marginBottom: spacing.xs,
+  },
+  itemTypeFilterWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  itemTypeFilterChip: {
+    minHeight: 36,
+    justifyContent: 'center',
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.sm,
+  },
+  itemTypeFilterChipSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
+  },
+  itemTypeFilterText: {
+    color: colors.mutedText,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  itemTypeFilterTextSelected: {
+    color: colors.primary,
   },
   viewTab: {
     flex: 1,

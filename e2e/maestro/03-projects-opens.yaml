@@ -7,3 +7,4 @@ appId: ${APP_ID}
 - assertVisible: "2321 Compliance Project"
 - assertVisible: "2375 Compliance Project"
 - assertVisible: "Add project"
+- takeScreenshot: "jarvis-project-list"

@@ -20,6 +20,7 @@ import type {
 } from '../types';
 import { PROJECT_ITEM_TYPES } from '../types';
 import { projectAreasForProject } from '../services/DAVEProjectAreaScope';
+import { applyProjectControlTemplateToControls } from '../services/ProjectControlTemplates';
 import { parseFlexibleDate } from '../utils/date';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { NativeDateField } from './native-date-field';
@@ -170,6 +171,13 @@ export function ScheduleTaskEditorModal({
       status,
       notes,
       nextAction,
+      projectControls: itemType === 'Task'
+        ? null
+        : applyProjectControlTemplateToControls({
+            itemType,
+            actor: owner.trim() || defaultOwner?.trim() || 'Project manager',
+            now: new Date().toISOString(),
+          }),
     });
     reset();
     onClose();

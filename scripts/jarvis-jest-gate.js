@@ -67,7 +67,7 @@ if (!fs.existsSync(coverageSummaryPath)) {
     if (typeof actual !== 'number') {
       failures.push(`Coverage metric ${metric} is missing.`);
     } else if (actual < floor) {
-      failures.push(`${metric} coverage ${actual}% is below the V.I.C. floor of ${floor}%.`);
+      failures.push(`${metric} coverage ${actual}% is below the Jarvis floor of ${floor}%.`);
     }
   }
 }
@@ -75,7 +75,7 @@ if (!fs.existsSync(coverageSummaryPath)) {
 fs.rmSync(coverageDirectory, { recursive: true, force: true });
 
 console.log('');
-console.log('V.I.C. Strict Jest Gate');
+console.log('Jarvis Strict Jest Gate');
 if (failures.length === 0) {
   console.log('PASS: tests passed, serious harness warnings were absent, and coverage floors held.');
 } else {

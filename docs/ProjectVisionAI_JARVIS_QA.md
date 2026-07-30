@@ -1,12 +1,12 @@
-# Vitruvius Intelligence Center (V.I.C.) QA
+# Jarvis QA
 
 ## Purpose
 
-V.I.C. is the internal quality system for Vitruvius Project Intelligence.
+Jarvis is the working name for the internal quality system protecting Vitruvius. Core is the Vitruvius intelligence engine; Jarvis is the separate quality and release-verification system.
 
-Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. V.I.C. should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
+Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. Jarvis should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
 
-V.I.C. does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence. Legacy source files and npm commands retain the JARVIS name until they can be migrated without breaking release automation.
+Jarvis does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence.
 
 ## JARVIS Experience QA 2.0
 
@@ -705,9 +705,9 @@ Use this checklist before release handoff:
 - [ ] Empty states are helpful when project data is missing.
 - [ ] `npm run check` passes.
 
-## Active V.I.C. Runners
+## Active Jarvis Runners
 
-V.I.C. keeps its lightweight static contract audit available through a compatibility command:
+Jarvis keeps its lightweight static contract audit available through this command:
 
 ```bash
 npm run jarvis:contracts
@@ -725,7 +725,7 @@ It runs release configuration, architecture, strict Jest behavior and coverage, 
 
 Release configuration now verifies both the Expo source configuration and any checked-in generated Android manifest. The gate fails if Android OS backup is enabled or if the generated app actively requests broad external-storage, contact-write, or overlay permissions. Release contracts also exercise the production-secret guard against an untracked runtime dependency and require mobile/web data-export copy to state that the JSON is unencrypted and does not contain photo or document files.
 
-`validation/jarvis/escaped-defects.json` keeps previously escaped defect families visible. Every entry identifies severity, affected platforms, executable regression evidence, required manual validation, and the limitation of the automated evidence. V.I.C. fails when a registered evidence file disappears or is disabled.
+`validation/jarvis/escaped-defects.json` keeps previously escaped defect families visible. Every entry identifies severity, affected platforms, executable regression evidence, required manual validation, and the limitation of the automated evidence. Jarvis fails when a registered evidence file disappears or is disabled.
 
 The active runner checks the highest-risk pre-field-test pathways:
 
@@ -818,7 +818,7 @@ npm run qa:release
 
 `qa:release` invokes the same full automated runner as `jarvis:qa`. Its summary deliberately separates `Automated Gate` from `Release Certification`. An automated PASS still reports `DEVICE VALIDATION REQUIRED`.
 
-Then run Maestro and physical-device validation for the coherent build milestone. A release is blocked by any executable failure or V.I.C. `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk. Live iPhone/iPad/web propagation, native device capabilities, touch latency, external providers, and visual review are not certified by a local automated run.
+Then run Maestro and physical-device validation for the coherent build milestone. A release is blocked by any executable failure or Jarvis `FAIL`. A `WARN` requires review and either a fix or a conscious release note explaining the remaining risk. Live iPhone/iPad/web propagation, native device capabilities, touch latency, external providers, and visual review are not certified by a local automated run.
 
 ## QA Foundation
 

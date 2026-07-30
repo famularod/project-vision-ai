@@ -16,9 +16,10 @@ import {
   type OwnerStorageSandboxError,
 } from './services/OwnerStorageSandbox';
 import {
-  getCurrentUser,
+  getCurrentSessionUser,
   subscribeToAuthStateChange,
 } from './services/SupabaseService';
+import { ownerWorkspaceAuthDecision } from './services/OwnerWorkspaceAuthDecision';
 
 // Native keeps the established application entry and navigation controller.
 // Metro resolves entry.web.ts on the browser platform instead.
@@ -60,10 +61,11 @@ function NativeRoot() {
         });
     }
 
-    const unsubscribe = subscribeToAuthStateChange((_event, session) => {
-      activate(session?.user?.id || null);
+    const unsubscribe = subscribeToAuthStateChange((event, session) => {
+      const decision = ownerWorkspaceAuthDecision(event, session?.user?.id);
+      if (decision.action === 'activate') activate(decision.ownerId);
     });
-    void getCurrentUser().then(result => {
+    void getCurrentSessionUser().then(result => {
       if (!result.ok) {
         throw new Error(
           result.message || result.error ||
@@ -119,7 +121,7 @@ function NativeRoot() {
           accessibilityRole: 'button',
           onPress: () => {
             setState({ status: 'loading' });
-            void getCurrentUser().then(result => {
+            void getCurrentSessionUser().then(result => {
               if (!result.ok) {
                 throw new Error(
                   result.message || result.error ||

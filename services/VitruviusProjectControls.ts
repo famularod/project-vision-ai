@@ -12,6 +12,7 @@ import type {
   ProjectControlWorkflowStage,
   ScheduleItem,
 } from '../types';
+import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 
 export const PROJECT_CONTROL_APPROVAL_STATUSES: readonly ProjectControlApprovalStatus[] = [
   'Not Required',
@@ -341,7 +342,7 @@ export function buildVitruviusPortfolioImpact(
     .filter(item => item.isSummary !== true)
     .reduce<VitruviusPortfolioImpact>((summary, item) => {
       const controls = normalizeProjectControls(item.projectControls);
-      const completed = item.status === 'Complete' || item.percentComplete >= 100;
+      const completed = scheduleTaskIsComplete(item);
       return {
         itemCount: summary.itemCount + 1,
         costExposure: summary.costExposure +

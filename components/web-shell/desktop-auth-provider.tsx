@@ -59,7 +59,12 @@ type DesktopAuthContextValue = Readonly<{
   updateTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
   deleteTask: (item: DAVEWebScheduleItem) => Promise<void>;
   deleteDocument: (document: DAVEWebReferenceDocument, deleteLinkedTasks: boolean) => Promise<void>;
-  uploadDocument: (prepared: DAVEWebPreparedUpload, bytes: ArrayBuffer) => Promise<void>;
+  uploadDocument: (
+    prepared: DAVEWebPreparedUpload,
+    bytes: ArrayBuffer,
+    file?: Blob,
+    onProgress?: (fraction: number) => void,
+  ) => Promise<void>;
   setCurrentSchedule: (document: DAVEWebReferenceDocument) => Promise<void>;
   saveReport: (input: {
     id: string;
@@ -392,11 +397,15 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const uploadDocument = useCallback(async (
     prepared: DAVEWebPreparedUpload,
     bytes: ArrayBuffer,
+    file?: Blob,
+    onProgress?: (fraction: number) => void,
   ) => {
     await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({
       document: prepared.document,
       bytes,
+      file,
       scheduleItems: prepared.scheduleItems,
+      onProgress,
     });
     announceMutation();
     await refreshSnapshot();

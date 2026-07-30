@@ -21,6 +21,10 @@ import {
   reviseProjectControls,
   setProjectControlChecklistCompletion,
 } from '../services/VitruviusProjectControls';
+import {
+  applyProjectControlTemplate,
+  projectControlTemplate,
+} from '../services/ProjectControlTemplates';
 import { colors, radius, spacing } from '../theme';
 import type {
   ProjectControlApprovalStatus,
@@ -86,9 +90,11 @@ export function ProjectControlsEditor({
     useState<ProjectControlResourceKind>('Crew');
   const [watchersText, setWatchersText] = useState(controls.watchers.join(', '));
   const [approversText, setApproversText] = useState(controls.approvers.join(', '));
-  const [costImpactText, setCostImpactText] = useState(
-    numberText(controls.estimatedCostImpact),
-  );
+  const [assigneeText, setAssigneeText] = useState(controls.assignee);
+  const [tradeText, setTradeText] = useState(controls.trade);
+  const [referenceNumberText, setReferenceNumberText] =
+    useState(controls.referenceNumber);
+  const [impactNotesText, setImpactNotesText] = useState(controls.impactNotes);
   const [scheduleImpactText, setScheduleImpactText] = useState(
     numberText(controls.estimatedScheduleImpactDays),
   );
@@ -96,10 +102,13 @@ export function ProjectControlsEditor({
   const approverValue = controls.approvers.join(', ');
   useEffect(() => setWatchersText(watcherValue), [watcherValue]);
   useEffect(() => setApproversText(approverValue), [approverValue]);
+  useEffect(() => setAssigneeText(controls.assignee), [controls.assignee]);
+  useEffect(() => setTradeText(controls.trade), [controls.trade]);
   useEffect(
-    () => setCostImpactText(numberText(controls.estimatedCostImpact)),
-    [controls.estimatedCostImpact],
+    () => setReferenceNumberText(controls.referenceNumber),
+    [controls.referenceNumber],
   );
+  useEffect(() => setImpactNotesText(controls.impactNotes), [controls.impactNotes]);
   useEffect(
     () => setScheduleImpactText(numberText(controls.estimatedScheduleImpactDays)),
     [controls.estimatedScheduleImpactDays],
@@ -111,6 +120,7 @@ export function ProjectControlsEditor({
     now: new Date().toISOString(),
   }));
   const readiness = projectControlReadiness({ ...item, projectControls: controls });
+  const selectedTemplate = projectControlTemplate(item.itemType);
 
   return (
     <View style={styles.container}>
@@ -135,20 +145,51 @@ export function ProjectControlsEditor({
 
       {open ? (
         <View style={styles.editor}>
+          <View style={styles.workflowTemplate}>
+            <View style={styles.workflowTemplateCopy}>
+              <Text style={styles.workflowTemplateEyebrow}>
+                {item.itemType || 'Task'} WORKFLOW
+              </Text>
+              <Text style={styles.workflowTemplateTitle}>
+                {selectedTemplate.title}
+              </Text>
+              <Text style={styles.workflowTemplateDetail}>
+                {selectedTemplate.purpose}
+              </Text>
+            </View>
+            <Pressable
+              style={({ pressed }) => [
+                styles.templateButton,
+                pressed && styles.pressed,
+              ]}
+              onPress={() => onUpdate(applyProjectControlTemplate({
+                item: { ...item, projectControls: controls },
+                actor: actor?.trim() || item.owner.trim() || 'Project manager',
+                now: new Date().toISOString(),
+              }))}
+              accessibilityRole="button"
+              accessibilityLabel={`Apply recommended ${item.itemType || 'Task'} setup`}
+            >
+              <Text style={styles.templateButtonText}>Apply recommended setup</Text>
+            </Pressable>
+          </View>
+
           <SectionTitle
             title="Accountability"
             detail="Who owns the next result and who must review it."
           />
           <Field
             label="Assigned to"
-            value={controls.assignee}
-            onChangeText={assignee => update({ assignee })}
+            value={assigneeText}
+            onChangeText={setAssigneeText}
+            onBlur={() => update({ assignee: assigneeText.trim() })}
             placeholder="Person responsible"
           />
           <Field
             label="Trade / company"
-            value={controls.trade}
-            onChangeText={trade => update({ trade })}
+            value={tradeText}
+            onChangeText={setTradeText}
+            onBlur={() => update({ trade: tradeText.trim() })}
             placeholder="Trade or responsible company"
           />
           <Field
@@ -184,8 +225,9 @@ export function ProjectControlsEditor({
           />
           <Field
             label="Reference number"
-            value={controls.referenceNumber}
-            onChangeText={referenceNumber => update({ referenceNumber })}
+            value={referenceNumberText}
+            onChangeText={setReferenceNumberText}
+            onBlur={() => update({ referenceNumber: referenceNumberText.trim() })}
             placeholder="RFI, submittal, inspection, or decision number"
           />
           <CrossPlatformDateField
@@ -331,34 +373,18 @@ export function ProjectControlsEditor({
 
           <SectionTitle
             title="Impact"
-            detail="Early PM estimate for portfolio and change review."
+            detail="Record schedule exposure, confidence, and mitigation. Cost and payroll are intentionally excluded from this release."
           />
-          <View style={styles.twoColumn}>
-            <View style={styles.flexField}>
-              <Field
-                label="Estimated cost impact"
-                value={costImpactText}
-                onChangeText={setCostImpactText}
-                onBlur={() => update({
-                  estimatedCostImpact: optionalNumber(costImpactText),
-                })}
-                placeholder="0"
-                keyboardType="decimal-pad"
-              />
-            </View>
-            <View style={styles.flexField}>
-              <Field
-                label="Schedule impact (days)"
-                value={scheduleImpactText}
-                onChangeText={setScheduleImpactText}
-                onBlur={() => update({
-                  estimatedScheduleImpactDays: optionalNumber(scheduleImpactText),
-                })}
-                placeholder="0"
-                keyboardType="decimal-pad"
-              />
-            </View>
-          </View>
+          <Field
+            label="Schedule impact (days)"
+            value={scheduleImpactText}
+            onChangeText={setScheduleImpactText}
+            onBlur={() => update({
+              estimatedScheduleImpactDays: optionalNumber(scheduleImpactText),
+            })}
+            placeholder="0"
+            keyboardType="decimal-pad"
+          />
           <ChoiceRow<ProjectControlImpactConfidence>
             label="Impact confidence"
             options={PROJECT_CONTROL_IMPACT_CONFIDENCE}
@@ -367,8 +393,9 @@ export function ProjectControlsEditor({
           />
           <Field
             label="Impact notes"
-            value={controls.impactNotes}
-            onChangeText={impactNotes => update({ impactNotes })}
+            value={impactNotesText}
+            onChangeText={setImpactNotesText}
+            onBlur={() => update({ impactNotes: impactNotesText.trim() })}
             placeholder="Assumptions, exposure, or mitigation"
             multiline
           />
@@ -606,6 +633,46 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: radius.md,
     backgroundColor: colors.surface,
     padding: spacing.md,
+  },
+  workflowTemplate: {
+    borderWidth: 1,
+    borderColor: `${colors.primary}55`,
+    borderRadius: radius.md,
+    backgroundColor: `${colors.primary}0D`,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  workflowTemplateCopy: {
+    gap: 4,
+  },
+  workflowTemplateEyebrow: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.1,
+  },
+  workflowTemplateTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  workflowTemplateDetail: {
+    color: colors.mutedText,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  templateButton: {
+    minHeight: 46,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+  },
+  templateButtonText: {
+    color: colors.surface,
+    fontSize: 14,
+    fontWeight: '900',
   },
   summary: {
     borderWidth: 1,
