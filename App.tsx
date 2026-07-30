@@ -84,6 +84,10 @@ import {
 import { AdminScreen, SignInModal } from './screens/AdminScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
 import {
+  ScheduleCommittedPercentField,
+  ScheduleCommittedTextField,
+} from './components/ScheduleCommittedFields';
+import {
   mailComposerOutcome,
   smsComposerOutcome,
   type ReportCommunicationOutcome,
@@ -21685,131 +21689,6 @@ function ScheduleScreen({
   );
 }
 
-function ScheduleCommittedTextField({
-  label,
-  value,
-  placeholder,
-  onCommit,
-}: {
-  label: string;
-  value: string;
-  placeholder: string;
-  onCommit: (value: string) => void;
-}) {
-  const [draftValue, setDraftValue] = useState(value);
-  const focusedRef = useRef(false);
-  const committedValueRef = useRef(value);
-
-  useEffect(() => {
-    if (!focusedRef.current) {
-      committedValueRef.current = value;
-      setDraftValue(value);
-    }
-  }, [value]);
-
-  function commitDraft() {
-    focusedRef.current = false;
-    const committed = draftValue.trim();
-    if (committed === committedValueRef.current) return;
-    committedValueRef.current = committed;
-    onCommit(committed);
-  }
-
-  return (
-    <>
-      <Text style={styles.label}>{label}</Text>
-      <TextInput
-        style={styles.input}
-        value={draftValue}
-        onChangeText={setDraftValue}
-        onFocus={() => {
-          focusedRef.current = true;
-        }}
-        onBlur={commitDraft}
-        onEndEditing={commitDraft}
-        onSubmitEditing={() => {
-          commitDraft();
-          Keyboard.dismiss();
-        }}
-        placeholder={placeholder}
-        placeholderTextColor={colors.muted}
-        inputAccessoryViewID="vitruvius-keyboard-done"
-        returnKeyType="done"
-      />
-    </>
-  );
-}
-
-function ScheduleCommittedPercentField({
-  value,
-  maximum,
-  disabled,
-  onCommit,
-}: {
-  value: number;
-  maximum: number;
-  disabled: boolean;
-  onCommit: (value: number) => void;
-}) {
-  const [draftValue, setDraftValue] = useState(String(value));
-  const focusedRef = useRef(false);
-  const committedValueRef = useRef(value);
-
-  useEffect(() => {
-    if (!focusedRef.current) {
-      committedValueRef.current = value;
-      setDraftValue(String(value));
-    }
-  }, [value]);
-
-  function commitDraft() {
-    focusedRef.current = false;
-    const requested = Number(draftValue || '0');
-    const committed = Math.max(0, Math.min(maximum, requested));
-    setDraftValue(String(committed));
-    if (committed === committedValueRef.current) return;
-    committedValueRef.current = committed;
-    onCommit(committed);
-  }
-
-  return (
-    <>
-      <Text style={styles.label}>Percent Complete</Text>
-      <TextInput
-        style={[
-          styles.input,
-          disabled && { opacity: 0.55 },
-        ]}
-        value={draftValue}
-        onChangeText={nextValue => {
-          const sanitized = nextValue.replace(/[^0-9]/g, '').slice(0, 3);
-          setDraftValue(sanitized);
-          if (sanitized) {
-            onCommit(Math.max(0, Math.min(maximum, Number(sanitized))));
-          }
-        }}
-        onFocus={() => {
-          focusedRef.current = true;
-        }}
-        onBlur={commitDraft}
-        onEndEditing={commitDraft}
-        onSubmitEditing={() => {
-          commitDraft();
-          Keyboard.dismiss();
-        }}
-        placeholder="0"
-        placeholderTextColor={colors.muted}
-        keyboardType="number-pad"
-        inputAccessoryViewID="vitruvius-keyboard-done"
-        maxLength={3}
-        editable={!disabled}
-        selectTextOnFocus
-        accessibilityLabel="Percent Complete"
-      />
-    </>
-  );
-}
-
 function ScheduleItemRow({
   item,
   scheduleItems = [],
@@ -22143,6 +22022,9 @@ function ScheduleItemRow({
               value={item.owner}
               placeholder="PLZ owner / internal owner"
               onCommit={owner => onUpdate({ owner })}
+              labelStyle={styles.label}
+              inputStyle={styles.input}
+              mutedColor={colors.muted}
             />
 
             <ScheduleCommittedTextField
@@ -22150,6 +22032,9 @@ function ScheduleItemRow({
               value={item.contractor}
               placeholder="Contractor / responsible company"
               onCommit={contractor => onUpdate({ contractor })}
+              labelStyle={styles.label}
+              inputStyle={styles.input}
+              mutedColor={colors.muted}
             />
 
             <ScheduleCommittedPercentField
@@ -22157,6 +22042,9 @@ function ScheduleItemRow({
               maximum={isStructuredProjectItem ? 99 : 100}
               disabled={isStructuredProjectItemClosed}
               onCommit={percentComplete => stageProgressEdit({ percentComplete })}
+              labelStyle={styles.label}
+              inputStyle={styles.input}
+              mutedColor={colors.muted}
             />
 
             <Text style={styles.label}>Priority</Text>
