@@ -50,6 +50,7 @@ import { createPendingChangesRetryController } from './PendingChangesRetryContro
 import { processDAVEStorageCleanup } from './DAVEStorageCleanup';
 import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
+import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -2359,12 +2360,10 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const archiveRecovery = await stageMisclassifiedArchiveOnlyQuarantines();
   const queue = await getOfflineQueue();
   const orderedQueue = pendingUploadOrder(queue);
-  const taskPriorityBatch = orderedQueue.some(
-    item => item.entity === 'schedule_item',
-  );
-  const uploadBatch = taskPriorityBatch
-    ? orderedQueue.filter(item => item.entity === 'schedule_item')
-    : orderedQueue;
+  const {
+    taskPriorityBatch,
+    uploadBatch,
+  } = planPendingUploadBatch(orderedQueue);
 
   if (!configuration.configured) {
     return {

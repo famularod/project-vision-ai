@@ -183,9 +183,19 @@ beforeEach(() => {
   mockListDAVESyncTombstones.mockClear();
   mockUpsertDAVESyncTombstone.mockClear();
   mockListScheduleItems.mockClear();
-  mockUpsertScheduleItem.mockClear();
+  mockUpsertScheduleItem.mockReset();
+  mockUpsertScheduleItem.mockResolvedValue({
+    ok: true,
+    configured: true,
+    stubbed: false,
+  });
   mockListReferenceDocuments.mockClear();
-  mockUpsertReferenceDocument.mockClear();
+  mockUpsertReferenceDocument.mockReset();
+  mockUpsertReferenceDocument.mockResolvedValue({
+    ok: true,
+    configured: true,
+    stubbed: false,
+  });
   mockPrepareReferenceDocumentForCloud.mockReset();
   mockPrepareReferenceDocumentForCloud.mockImplementation(
     (document: ReferenceDocument) => Promise.resolve(document),
@@ -311,6 +321,73 @@ describe('offline upload deletion barriers', () => {
     await expect(getOfflineQueue()).resolves.toEqual([
       expect.objectContaining({
         id: 'project-update-unrelated-retry',
+      }),
+    ]);
+  });
+
+  it('does not let a permanently failing task starve a waiting document', async () => {
+    const document: ReferenceDocument = {
+      id: 'document-waiting-behind-task',
+      name: 'Field drawing',
+      originalFileName: 'field-drawing.pdf',
+      uri: '',
+      mimeType: 'application/pdf',
+      category: 'Drawing',
+      notes: '',
+      isCurrent: false,
+      importedAt: '2026-07-30T08:00:00.000Z',
+      updatedAt: '2026-07-30T08:00:00.000Z',
+      storagePath: 'mobile/document-waiting-behind-task/field-drawing.pdf',
+    };
+    mockUpsertScheduleItem.mockResolvedValue({
+      ok: false,
+      configured: true,
+      stubbed: false,
+      error: 'The task revision was rejected.',
+    });
+    await enqueuePendingChange({
+      ...scheduleQueueItem('permanent-task-failure'),
+      autoUpload: false,
+    });
+    await enqueuePendingChange({
+      id: `reference-document-${document.id}`,
+      entity: 'reference_document',
+      operation: 'update',
+      payload: {
+        id: document.id,
+        documentData: document,
+      },
+      changedAt: document.updatedAt,
+      autoUpload: false,
+    });
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 0,
+      queued: 2,
+      itemOutcomes: {
+        'schedule-item-permanent-task-failure': 'failed',
+      },
+    });
+    expect(mockUpsertReferenceDocument).not.toHaveBeenCalled();
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 1,
+      uploadedByEntity: {
+        reference_document: 1,
+      },
+      itemOutcomes: {
+        'schedule-item-permanent-task-failure': 'failed',
+        'reference-document-document-waiting-behind-task': 'uploaded',
+      },
+    });
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ id: document.id }),
+    );
+    await expect(getOfflineQueue()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'schedule-item-permanent-task-failure',
+        retryCount: 2,
       }),
     ]);
   });
