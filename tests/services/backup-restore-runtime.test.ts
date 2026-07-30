@@ -20,6 +20,7 @@ const targetKeys: BackupRestoreTargetKeys = {
   referenceDocuments: 'reference-documents',
   projectDocuments: 'project-documents',
   scheduleItems: 'schedule-items',
+  captureMemories: 'capture-memories',
   activeDraft: 'draft',
 };
 
@@ -42,6 +43,7 @@ const validators = {
   referenceDocument: (value: unknown) => Boolean(record(value)?.id),
   projectDocument: (value: unknown) => Boolean(record(value)?.id),
   scheduleItem: (value: unknown) => Boolean(record(value)?.id),
+  captureMemory: (value: unknown) => Boolean(record(value)?.id),
   draftEnvelope: (value: unknown) => Boolean(record(value)?.draft),
 };
 
@@ -57,6 +59,7 @@ function validBackup() {
     referenceDocuments: [{ id: 'reference-1' }],
     projectDocuments: [{ id: 'document-1' }],
     scheduleItems: [{ id: 'schedule-1' }],
+    captureMemories: [{ id: 'memory-1' }],
     activeDraft: null,
   };
 }
@@ -109,6 +112,7 @@ function restoreValues(projects: unknown, updates: unknown) {
     referenceDocuments: [],
     projectDocuments: [],
     scheduleItems: [],
+    captureMemories: [],
     activeDraft: null,
   };
 }
@@ -248,6 +252,10 @@ describe('atomic backup restore', () => {
           referenceDocuments: [],
           projectDocuments: [],
           scheduleItems: [],
+          captureMemories: [
+            { id: 'deleted-memory', projectName: 'Deleted Project' },
+            { id: 'keep-memory', projectName: 'Keep Project' },
+          ],
           storedDraft: null,
         },
         barriers,
@@ -256,6 +264,9 @@ describe('atomic backup restore', () => {
         referenceDocumentBelongsToProject: () => false,
         projectDocumentBelongsToProject: () => false,
         scheduleItemBelongsToProject: () => false,
+        captureMemoryBelongsToProject: (memory, name) =>
+          memory.projectName.toLowerCase() === name.toLowerCase(),
+        serializeCaptureMemories: memories => memories,
         createEmptyDraft: projectName => ({ id: 'draft', projectName }),
       });
       return {
@@ -267,6 +278,9 @@ describe('atomic backup restore', () => {
     expect(JSON.parse(values.get(targetKeys.projects) || '[]')).toEqual([{ name: 'Keep Project' }]);
     expect(JSON.parse(values.get(targetKeys.updates) || '[]')).toEqual([
       { id: 'keep-update', projectName: 'Keep Project' },
+    ]);
+    expect(JSON.parse(values.get(targetKeys.captureMemories) || '[]')).toEqual([
+      { id: 'keep-memory', projectName: 'Keep Project' },
     ]);
     expect(JSON.parse(values.get(barrierKeys.deletedProjects) || '[]')).toEqual(['Deleted Project']);
   });

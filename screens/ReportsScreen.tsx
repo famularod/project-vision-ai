@@ -93,6 +93,10 @@ import {
   selectStableReportDraft,
   type StableReportDraftCache,
 } from '../services/ReportDraftRefresh';
+import {
+  buildAutomaticReportDrawingReferences,
+  type ReportDrawingReference,
+} from '../services/ReportDrawingReferences';
 
 export function ReportsScreen({
   contentStyle,
@@ -272,12 +276,27 @@ export function ReportsScreen({
     () => daveReportSnapshotScopeKey(selectedProjectNames),
     [selectedProjectNames],
   );
+  const drawingReferences = useMemo(() => buildAutomaticReportDrawingReferences({
+    documents: referenceDocuments || [],
+    scheduleItems,
+    selectedProjectNames,
+  }), [
+    referenceDocuments,
+    scheduleItems,
+    selectedProjectNames,
+  ]);
   const currentReportSnapshot = useMemo(() => buildDAVEReportSnapshot({
     truths: reportTruths,
     scopeKey: reportSnapshotScopeKey,
     sourceFingerprint: reportSourceFingerprint,
     capturedAt: reportTruths.map(truth => truth.generatedAt).sort().at(-1),
+    sourceReferences: drawingReferences.map(reference => ({
+      ...reference.citation,
+      projectName: reference.projectName,
+      areaName: reference.areaName,
+    })),
   }), [
+    drawingReferences,
     reportSnapshotScopeKey,
     reportSourceFingerprint,
     reportTruths,
@@ -541,6 +560,7 @@ export function ReportsScreen({
             communicationPending={communicationPending}
             communicationError={communicationError}
             reportEditing={reportEditing}
+            drawingReferences={drawingReferences}
             onApproveReport={markReportApproved}
             onEditReport={() => {
               setReportEditing(true);
@@ -719,6 +739,7 @@ function PIEReporterPreview({
   communicationPending,
   communicationError,
   reportEditing,
+  drawingReferences,
   onApproveReport,
   onEditReport,
   onTitleChange,
@@ -744,6 +765,7 @@ function PIEReporterPreview({
   communicationPending: boolean;
   communicationError: string;
   reportEditing: boolean;
+  drawingReferences: readonly ReportDrawingReference[];
   onApproveReport: () => void;
   onEditReport: () => void;
   onTitleChange: (title: string) => void;
@@ -864,6 +886,26 @@ function PIEReporterPreview({
         />
         </View>
       </View> : null}
+
+      {drawingReferences.length > 0 ? (
+        <View style={styles.reportSourcePanel}>
+          <Text style={styles.reportPreviewLabel}>Drawing References</Text>
+          <Text style={styles.reportListText}>
+            Vitruvius matched these work areas to the current drawing set. Low-confidence matches are omitted.
+          </Text>
+          {drawingReferences.slice(0, 6).map(reference => (
+            <View key={reference.id} style={styles.drawingReferenceRow}>
+              <Ionicons name="map-outline" size={17} color={colors.primary} />
+              <View style={styles.drawingReferenceText}>
+                <Text style={styles.managementActionTitle}>
+                  {reference.projectName} · {reference.areaName}
+                </Text>
+                <Text style={styles.reportListText}>{reference.citation.label}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       {reportEditing ? (
         <View style={styles.reportEditFields}>
@@ -3652,6 +3694,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     fontWeight: '700',
+  },
+
+  reportSourcePanel: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.primarySoft,
+    padding: spacing.sm,
+    gap: spacing.xs,
+  },
+
+  drawingReferenceRow: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.08)',
+    paddingTop: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.xs,
+  },
+
+  drawingReferenceText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
 
   managementActionRow: {

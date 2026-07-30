@@ -48,6 +48,7 @@ import {
   type ExistingPhotoEvidenceVersion,
 } from './PhotoEvidenceDeduplication';
 import {
+  photoAnalysisContractEnvelope,
   type PIEPhotoVisionProviderFailureReason,
   validatePhotoAnalysisContractEnvelope,
 } from '../supabase/functions/_shared/pie-photo-analysis-contract';
@@ -382,25 +383,13 @@ export async function analyzeProjectPhotoWithVision({
 }: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
   const priorSelectionMetadata = findPriorComparablePhoto(update, photo, priorUpdates);
   if (!priorSelectionMetadata.selected) {
-    return {
-      ...buildNoSuitablePriorPhotoIntelligenceState(
-        priorSelectionMetadata.candidateCount > 0
-          ? 'This photo is saved as the best available baseline for future comparison.'
-          : 'This first photo is saved for future comparison.',
-      ),
-      diagnostics: buildDiagnostics({
-        currentPhotoPrep: null,
-        selectedPriorPhotoId: null,
-        selectionCandidateCount: priorSelectionMetadata.candidateCount,
-        selectedPriorReason: null,
-        priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
-        rejectedPriorReasons: priorSelectionMetadata.rejectedReasons,
-        usablePriorCandidateFound: false,
-        skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount,
-        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection'],
-        resultProvenance: 'unsupported',
-      }),
-    };
+    return analyzeSingleProjectPhoto({
+      update,
+      photo,
+      retryAttempt,
+      onTargetPrepared,
+      priorSelectionMetadata,
+    });
   }
 
   const preparedPair = await prepareSelectedPhotoPair({
@@ -880,6 +869,195 @@ export async function analyzeProjectPhotoWithVision({
       retryFetchedFreshToken: retryAttempt,
     });
   }
+}
+
+async function analyzeSingleProjectPhoto({
+  update,
+  photo,
+  retryAttempt,
+  onTargetPrepared,
+  priorSelectionMetadata,
+}: Pick<AnalyzeInput, 'update' | 'photo' | 'retryAttempt' | 'onTargetPrepared'> & {
+  priorSelectionMetadata: ReturnType<typeof findPriorComparablePhoto>;
+}): Promise<PIEPhotoIntelligenceDisplayState> {
+  const fallback = () => ({
+    ...buildNoSuitablePriorPhotoIntelligenceState(
+      priorSelectionMetadata.candidateCount > 0
+        ? 'This photo is saved as the best available baseline for future comparison.'
+        : 'This first photo is saved for future comparison.',
+    ),
+    diagnostics: buildDiagnostics({
+      currentPhotoPrep: null,
+      selectedPriorPhotoId: null,
+      selectionCandidateCount: priorSelectionMetadata.candidateCount,
+      selectedPriorReason: null,
+      priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
+      rejectedPriorReasons: priorSelectionMetadata.rejectedReasons,
+      usablePriorCandidateFound: false,
+      skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount,
+      executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection'],
+      resultProvenance: 'unsupported',
+    }),
+  });
+
+  const client = getSupabaseClient();
+  if (!client) return fallback();
+  const sessionTokenResult = await getCurrentSessionAccessToken();
+  const tokenLookup = sessionTokenResult.data;
+  if (
+    !sessionTokenResult.ok ||
+    !tokenLookup ||
+    tokenLookup.status !== 'token_present' ||
+    !tokenLookup.accessToken ||
+    !tokenLookup.userId
+  ) {
+    return fallback();
+  }
+
+  const currentPrepared = await preparePhotoFileForVision(photo, 'current');
+  if (!currentPrepared.ok) return fallback();
+  const projectId = projectIdForPhotoVision(update.projectName);
+  onTargetPrepared?.({
+    projectId,
+    updateId: update.id,
+    photoId: photo.id,
+    contentSha256: currentPrepared.sha256,
+    capturedAt: resolveImmutablePhotoCapturedAt(photo).value,
+  });
+  const currentEvidence = await stagePhotoEvidence({
+    organizationId: tokenLookup.userId,
+    projectId,
+    update,
+    photo,
+    captureSource: 'camera',
+    preparedFile: currentPrepared,
+  });
+  const contract = photoAnalysisContractEnvelope('single_photo');
+  const requestId = [
+    'photo-analysis-single/v1',
+    currentEvidence.evidenceId,
+    contract.analyzerVersion,
+    contract.promptVersion,
+    contract.policyVersion,
+  ].join('|');
+  const executedStages = [
+    'camera_capture',
+    'local_image_uri',
+    'prior_photo_selection',
+    'current_photo_prepared',
+    'current_photo_uploaded',
+    'current_evidence_record_created',
+  ];
+  const { data: functionData, error } = await client.functions.invoke('pie-photo-vision', {
+    timeout: PIE_PHOTO_VISION_CLIENT_TIMEOUT_MS,
+    headers: { Authorization: `Bearer ${tokenLookup.accessToken}` },
+    body: {
+      requestId,
+      mode: 'single_photo',
+      organizationId: tokenLookup.userId,
+      projectId,
+      evidenceId: currentEvidence.evidenceId,
+      contractVersion: contract.contractVersion,
+      analyzerVersion: contract.analyzerVersion,
+      promptVersion: contract.promptVersion,
+      schemaVersion: contract.schemaVersion,
+      policyVersion: contract.policyVersion,
+      projectName: update.projectName,
+      areaName: photo.selectedAreaName || update.selectedAreaName || null,
+      fieldNotes: update.notes || null,
+    },
+  });
+  executedStages.push('edge_function_invoked');
+  if (error || !validatePhotoAnalysisContractEnvelope('single_photo', functionData).valid) {
+    return {
+      ...fallback(),
+      summary: 'The photo was saved as a baseline. Its visual review will retry during cloud sync.',
+      diagnostics: buildDiagnostics({
+        currentEvidence,
+        currentPhotoPrep: currentPrepared,
+        requestId,
+        providerResponseStatus: error ? 'function_error' : 'photo_analysis_contract_mismatch',
+        selectedPriorPhotoId: null,
+        selectionCandidateCount: priorSelectionMetadata.candidateCount,
+        priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
+        rejectedPriorReasons: priorSelectionMetadata.rejectedReasons,
+        usablePriorCandidateFound: false,
+        skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount,
+        executedStages,
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
+        resultProvenance: 'unsupported',
+      }),
+    };
+  }
+
+  const { data } = await client
+    .from('pie_evidence_analyses')
+    .select('visual_findings,observations,inferences,confidence,limitations,missing_information')
+    .eq('evidence_id', currentEvidence.evidenceId)
+    .eq('analysis_type', 'production_single_photo')
+    .maybeSingle();
+  const analysis = toRecord(data);
+  const findings = toRecord(analysis.visual_findings);
+  const directObservations = stringArray(
+    findings.directObservations || analysis.observations,
+  );
+  const visibleWork = stringArray(findings.visibleWork);
+  const limitations = stringArray(findings.limitations || analysis.limitations);
+  executedStages.push('single_photo_result_hydrated', 'user_card_render_ready');
+  return {
+    status: limitations.length ? 'completed_with_limitations' : 'analysis_complete',
+    title: 'Current condition reviewed',
+    summary: directObservations[0] || visibleWork[0] ||
+      'The current photo was reviewed and saved as the baseline for future comparison.',
+    visibleChange: null,
+    location: stringOrNull(findings.probableProjectArea) ||
+      photo.selectedAreaName || update.selectedAreaName || null,
+    comparisonConfidence: stringOrNull(findings.confidence) ||
+      stringOrNull(analysis.confidence),
+    comparability: null,
+    captureLimitations: limitations,
+    projectProgress: 'unable_to_determine',
+    assessmentDisposition: 'indeterminate',
+    repeatPhotoGuidance: stringArray(findings.recommendedFollowUpEvidence)[0] ||
+      'Take the next photo from a similar angle to compare visible change.',
+    authorityMessage: 'This is a visual observation only. No task status or percentage was changed.',
+    currentObservation: directObservations.join(' ') || null,
+    changedFromPrior: null,
+    additions: [],
+    removals: [],
+    findings: [],
+    possibleProgress: visibleWork.join('; ') || null,
+    possibleConcerns: [
+      ...stringArray(findings.possibleQualityConcerns),
+      ...stringArray(findings.possibleSafetyConcerns),
+    ],
+    priorUpdateUsed: null,
+    currentPhotoAssetId: currentEvidence.assetId,
+    priorPhotoAssetId: null,
+    currentEvidenceId: currentEvidence.evidenceId,
+    priorEvidenceId: null,
+    semanticComparisonResultId: null,
+    provenance: 'visual_only',
+    visualGroundingRegions: [],
+    diagnostics: buildDiagnostics({
+      currentEvidence,
+      currentPhotoPrep: currentPrepared,
+      requestId,
+      providerResponseStatus: providerStatus(functionData),
+      selectedPriorPhotoId: null,
+      selectionCandidateCount: priorSelectionMetadata.candidateCount,
+      priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
+      rejectedPriorReasons: priorSelectionMetadata.rejectedReasons,
+      usablePriorCandidateFound: false,
+      skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount,
+      executedStages,
+      tokenLookup,
+      retryFetchedFreshToken: retryAttempt,
+      resultProvenance: 'visual_only',
+    }),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function findPriorComparablePhoto(

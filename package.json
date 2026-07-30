@@ -1,6 +1,6 @@
 {
   "name": "project-photo-update-tool",
-  "version": "1.0.131",
+  "version": "1.0.132",
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.8",
@@ -180,7 +180,8 @@
     "test:photo-progress-ui": "node scripts/photo-progress-intelligence-test.js photo-progress-ui",
     "test:photo-intelligence": "npm run test:photo-evaluation-harness && npm run test:photo-sequences && npm run test:photo-comparison && npm run test:photo-progress && npm run test:visual-jarvis && npm run test:repeat-photo-guidance && npm run test:photo-progress-ui",
     "test:authority-contracts": "npm run test:attention && npm run test:experience && npm run test:live-provider && npm run test:layer3",
-    "test:workspace-contracts": "npm run test:capture-confirmation-ui && npm run test:project-cover-photo && npm run test:timeline && npm run test:report-intelligence",
+    "test:authoritative-intelligence": "node scripts/authoritative-intelligence-contract-test.js",
+    "test:workspace-contracts": "npm run test:capture-confirmation-ui && npm run test:project-cover-photo && npm run test:timeline && npm run test:report-intelligence && npm run test:authoritative-intelligence",
     "test:decision-intelligence-all": "npm run test:simulation && npm run test:challenge && npm run test:jarvis-reasoning && npm run test:confidence && npm run test:causal-reasoning && npm run test:prediction && npm run test:evidence-value && npm run test:decision-quality && npm run test:minimal-ui-intelligence",
     "test:master-validation-all": "npm run test:master-validation && npm run test:calibration && npm run test:prediction-backtest && npm run test:layer4-learning && npm run test:learning-guards && npm run test:jarvis-adversarial && npm run test:reporter-fidelity && npm run test:attention-quality && npm run test:failure-containment && npm run test:performance && npm run test:accessibility && npm run test:minimal-ui-complete && npm run test:security-isolation",
     "test:audit-contracts": "npm run test:authority-contracts && npm run test:workspace-contracts && npm run test:decision-intelligence-all && npm run test:master-validation-all && npm run test:photo-rls-policy && npm run test:voice-capture",

@@ -82,6 +82,15 @@ export function normalizeReferenceDocument(
         ? value.drawingStatus
         : null,
     drawingIssuedAt: stringOrNull(value.drawingIssuedAt),
+    extractedText: stringOrNull(value.extractedText),
+    extractionStatus:
+      value.extractionStatus === 'pending' ||
+      value.extractionStatus === 'complete' ||
+      value.extractionStatus === 'failed' ||
+      value.extractionStatus === 'not_supported'
+        ? value.extractionStatus
+        : null,
+    extractedPages: normalizeExtractedPages(value.extractedPages),
   };
 }
 
@@ -171,6 +180,47 @@ function finiteNumberOrNull(value: unknown) {
 function canonicalSha256(value: unknown) {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
+}
+
+function normalizeExtractedPages(value: unknown): ReferenceDocument['extractedPages'] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(page => {
+    if (!isRecord(page)) return [];
+    const pageNumber = finiteNumberOrNull(page.pageNumber);
+    if (!pageNumber || pageNumber < 1) return [];
+    const regions = Array.isArray(page.regions)
+      ? page.regions.flatMap(region => {
+          if (!isRecord(region)) return [];
+          const x = finiteNumberOrNull(region.x);
+          const y = finiteNumberOrNull(region.y);
+          const width = finiteNumberOrNull(region.width);
+          const height = finiteNumberOrNull(region.height);
+          if ([x, y, width, height].some(item => item === null)) return [];
+          if (x! < 0 || y! < 0 || width! <= 0 || height! <= 0) return [];
+          return [{
+            id: stringOrNull(region.id) || createProjectId(),
+            label: stringOrNull(region.label),
+            text: stringOrNull(region.text),
+            areaNames: Array.isArray(region.areaNames)
+              ? region.areaNames.filter((name): name is string =>
+                  typeof name === 'string' && Boolean(name.trim()))
+              : [],
+            x: x!,
+            y: y!,
+            width: width!,
+            height: height!,
+            confidence: finiteNumberOrNull(region.confidence),
+          }];
+        })
+      : [];
+    return [{
+      pageNumber,
+      sheetNumber: stringOrNull(page.sheetNumber),
+      title: stringOrNull(page.title),
+      text: stringOrNull(page.text),
+      regions,
+    }];
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -256,6 +256,42 @@ export type ReferenceDocument = {
   drawingDiscipline?: string | null;
   drawingStatus?: 'Draft' | 'For Review' | 'For Construction' | 'As-Built' | 'Superseded' | null;
   drawingIssuedAt?: string | null;
+  /** Searchable text extracted from the immutable source bytes. */
+  extractedText?: string | null;
+  extractionStatus?: 'pending' | 'complete' | 'failed' | 'not_supported' | null;
+  /** Optional page/region index used for exact citations and automatic report excerpts. */
+  extractedPages?: ReferenceDocumentExtractedPage[];
+};
+
+export type ReferenceDocumentRegion = {
+  id: string;
+  label?: string | null;
+  text?: string | null;
+  areaNames?: string[];
+  /** Normalized page coordinates from 0 through 1. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence?: number | null;
+};
+
+export type ReferenceDocumentExtractedPage = {
+  pageNumber: number;
+  sheetNumber?: string | null;
+  title?: string | null;
+  text?: string | null;
+  regions?: ReferenceDocumentRegion[];
+};
+
+export type ReferenceDocumentCitation = {
+  documentId: string;
+  documentName: string;
+  revision: string | null;
+  pageNumber: number | null;
+  sheetNumber: string | null;
+  regionId: string | null;
+  label: string;
 };
 
 export type ProjectStats = {

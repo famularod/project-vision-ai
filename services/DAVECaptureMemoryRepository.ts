@@ -28,6 +28,7 @@ export type DAVECaptureMemoryRepository = Readonly<{
   read(id: string): Promise<DAVEConfirmedCaptureMemory | null>;
   update(memory: DAVEConfirmedCaptureMemory): Promise<DAVEConfirmedCaptureMemory>;
   delete(id: string): Promise<boolean>;
+  replaceAll(memories: readonly DAVEConfirmedCaptureMemory[]): Promise<readonly DAVEConfirmedCaptureMemory[]>;
 }>;
 
 type StoredCaptureMemories = Readonly<{
@@ -41,7 +42,7 @@ export function createDAVECaptureMemoryRepository(
   async function write(records: readonly DAVEConfirmedCaptureMemory[]): Promise<void> {
     await storage.setItem(
       DAVE_CAPTURE_MEMORY_STORAGE_KEY,
-      serializeCaptureMemories(records),
+      JSON.stringify(captureMemoryRepositoryStorageValue(records)),
     );
   }
 
@@ -93,6 +94,12 @@ export function createDAVECaptureMemoryRepository(
       if (next.length === records.length) return false;
       await write(next);
       return true;
+    },
+
+    async replaceAll(memories) {
+      const records = normalizeConfirmedCaptureMemories(memories);
+      await write(records);
+      return Object.freeze(records);
     },
   });
 }
@@ -175,14 +182,19 @@ async function hydrateRecords(
 function serializeCaptureMemories(
   records: readonly DAVEConfirmedCaptureMemory[],
 ): string {
-  const value: StoredCaptureMemories = {
+  return JSON.stringify(captureMemoryRepositoryStorageValue(records));
+}
+
+export function captureMemoryRepositoryStorageValue(
+  records: readonly DAVEConfirmedCaptureMemory[],
+): StoredCaptureMemories {
+  return {
     schemaVersion: DAVE_CAPTURE_MEMORY_REPOSITORY_VERSION,
     records,
   };
-  return JSON.stringify(value);
 }
 
-function normalizeConfirmedMemory(value: unknown): DAVEConfirmedCaptureMemory {
+export function normalizeConfirmedMemory(value: unknown): DAVEConfirmedCaptureMemory {
   if (!isRecord(value)) throw new Error('Confirmed memory is invalid.');
   if (
     value.schemaVersion !== DAVE_CAPTURE_MEMORY_VERSION ||
@@ -214,6 +226,20 @@ function normalizeConfirmedMemory(value: unknown): DAVEConfirmedCaptureMemory {
     throw new Error('Transcript evidence link is required.');
   }
   return deepFreeze(memory);
+}
+
+export function normalizeConfirmedCaptureMemories(
+  values: readonly unknown[],
+): DAVEConfirmedCaptureMemory[] {
+  const records = values.map(normalizeConfirmedMemory);
+  const ids = new Set<string>();
+  records.forEach(memory => {
+    if (ids.has(memory.id)) {
+      throw new Error(`Confirmed capture memory contains the duplicate id "${memory.id}".`);
+    }
+    ids.add(memory.id);
+  });
+  return records.sort(compareMemories);
 }
 
 function normalizeRecommendation(value: unknown, requiredValue: boolean, label: string): DAVECaptureRecommendation {

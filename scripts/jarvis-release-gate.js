@@ -38,6 +38,7 @@ const layers = [
   layer('Core workflow simulation', 'test:e2e-core-flow', 5),
   layer('Photo intelligence', 'test:photo-intelligence', 10),
   layer('Authority and safety contracts', 'test:audit-contracts', 15),
+  layer('Authoritative intelligence integration', 'test:authoritative-intelligence', 2),
   layer('Escaped-defect coverage audit', 'test:jarvis-coverage', 5),
   layer('Web production export', 'web:export', 10),
   layer('Static product contracts', 'jarvis:contracts', 5),

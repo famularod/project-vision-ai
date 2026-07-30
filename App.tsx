@@ -128,7 +128,10 @@ import {
   ProjectItemNextAction,
   ProjectItemTypeBadge,
 } from './components/project-item-details';
-import { UpdatesWideWorkspace } from './components/updates-workspace-layout';
+import {
+  UpdatePhotoComparison,
+  UpdatesWideWorkspace,
+} from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
@@ -145,6 +148,11 @@ import { groupScheduleWorkspaceItemsByProjectAndArea, resolveScheduleWorkspaceTa
   scheduleItemsForWorkspaceProject, scheduleWorkspaceProjectOptions } from './services/DAVEScheduleWorkspace';
 import { buildDAVEUpdatePhotoComparison, filterDAVEUpdateWorkspace,
   resolveUpdateWorkspaceUpdate, updateWorkspaceProjectOptions } from './services/DAVEUpdateWorkspace';
+import { buildVitruviusCalendarExport } from './services/VitruviusCalendarExport';
+import {
+  buildVitruviusLookahead,
+  vitruviusLookaheadCsv,
+} from './services/VitruviusLookahead';
 import { filterDAVEDocumentWorkspace, markCurrentProjectScheduleDocument,
   resolveDAVEDocumentWorkspaceDocument } from './services/DAVEDocumentWorkspace';
 import {
@@ -219,6 +227,10 @@ import {
   normalizeReferenceDocuments,
   resolveReferenceDocumentUri,
 } from './services/ReferenceDocumentRepository';
+import {
+  markAuthoritativeDocumentCurrent,
+  unmarkAuthoritativeDocumentCurrent,
+} from './services/AuthoritativeDocumentSystem';
 import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
 import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
@@ -406,7 +418,12 @@ import {
   type DAVECaptureMemory,
   type DAVEConfirmedCaptureMemory,
 } from './services/DAVECaptureMemory';
-import { localDAVECaptureMemoryRepository } from './services/DAVECaptureMemoryRepository';
+import {
+  DAVE_CAPTURE_MEMORY_STORAGE_KEY,
+  captureMemoryRepositoryStorageValue,
+  localDAVECaptureMemoryRepository,
+  normalizeConfirmedMemory,
+} from './services/DAVECaptureMemoryRepository';
 import {
   localDAVEIdentityRepository,
 } from './services/DAVEIdentityRepository';
@@ -789,6 +806,7 @@ type RestoredAppData = {
   contactBook: ContactBook; projectAreas: ProjectArea[];
   referenceDocuments: ReferenceDocument[]; projectDocuments: ProjectDocument[];
   scheduleItems: ScheduleItem[];
+  captureMemories: DAVEConfirmedCaptureMemory[];
   storedDraft: StoredDraft | null;
 };
 type ProjectStats = {
@@ -864,6 +882,7 @@ const backupRestoreRuntime = createBackupRestoreRuntime({
     contacts: CONTACTS_STORAGE_KEY,
     projectAreas: PROJECT_AREAS_STORAGE_KEY, referenceDocuments: REFERENCE_DOCUMENTS_STORAGE_KEY,
     projectDocuments: PROJECT_DOCUMENTS_STORAGE_KEY, scheduleItems: SCHEDULE_ITEMS_STORAGE_KEY,
+    captureMemories: DAVE_CAPTURE_MEMORY_STORAGE_KEY,
     activeDraft: DRAFT_STORAGE_KEY,
   },
   barrierKeys: {
@@ -2796,6 +2815,14 @@ function normalizeBackupData(value: unknown) {
     contactBook: isStartupContactBook, projectArea: isStartupProjectAreaRecord,
     referenceDocument: isStartupReferenceDocumentRecord,
     projectDocument: isStartupStandaloneProjectDocumentRecord, scheduleItem: isStartupScheduleItemRecord,
+    captureMemory: value => {
+      try {
+        normalizeConfirmedMemory(value);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     draftEnvelope: isStartupDeviceDraftEnvelope,
   });
   if (!preflight.ok) return preflight;
@@ -2808,6 +2835,7 @@ function normalizeBackupData(value: unknown) {
       contactBook: normalizeContacts(data.contacts), projectAreas: normalizeProjectAreas(data.projectAreas),
       referenceDocuments: normalizeReferenceDocuments(data.referenceDocuments),
       projectDocuments: normalizeProjectDocuments(data.projectDocuments), scheduleItems: normalizeScheduleItems(data.scheduleItems),
+      captureMemories: data.captureMemories.map(normalizeConfirmedMemory),
       storedDraft: normalizeStoredDraft(data.activeDraft),
     } satisfies RestoredAppData,
   };
@@ -2841,6 +2869,63 @@ function filenameFromUri(uri: string, index: number, mimeType: string) {
 
 function sanitizeFilename(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, '-');
+}
+
+async function shareGeneratedScheduleFile({
+  filename,
+  content,
+  mimeType,
+  uti,
+  dialogTitle,
+}: {
+  filename: string;
+  content: string;
+  mimeType: string;
+  uti: string;
+  dialogTitle: string;
+}) {
+  if (!await Sharing.isAvailableAsync()) {
+    Alert.alert('Share unavailable', 'The Share Sheet is not available on this device.');
+    return;
+  }
+  const directory = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+  if (!directory) {
+    Alert.alert('Share unavailable', 'A temporary folder could not be found.');
+    return;
+  }
+  const fileUri = `${directory}${sanitizeFilename(filename)}`;
+  try {
+    await FileSystem.writeAsStringAsync(fileUri, content);
+    await Sharing.shareAsync(fileUri, { dialogTitle, mimeType, UTI: uti });
+  } finally {
+    await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
+  }
+}
+
+async function shareScheduleCalendar(items: readonly ScheduleItem[]) {
+  const calendar = buildVitruviusCalendarExport(items);
+  if (calendar.eventCount === 0) {
+    Alert.alert('Calendar unavailable', 'Add a start or finish date to at least one task first.');
+    return;
+  }
+  await shareGeneratedScheduleFile({
+    filename: 'vitruvius-project-schedule.ics',
+    content: calendar.content,
+    mimeType: 'text/calendar',
+    uti: 'public.calendar-event',
+    dialogTitle: 'Share Vitruvius Schedule Calendar',
+  });
+}
+
+async function shareScheduleLookahead(items: readonly ScheduleItem[]) {
+  const lookahead = buildVitruviusLookahead({ items, weeks: 3 });
+  await shareGeneratedScheduleFile({
+    filename: `vitruvius-3-week-lookahead-${lookahead.rangeStart}.csv`,
+    content: vitruviusLookaheadCsv(lookahead),
+    mimeType: 'text/csv',
+    uti: 'public.comma-separated-values-text',
+    dialogTitle: 'Share Vitruvius 3-Week Lookahead',
+  });
 }
 
 async function ensurePhotoStorageDirectory() {
@@ -10318,6 +10403,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         referenceDocuments: backupReferenceDocuments,
         projectDocuments: backupProjectDocuments,
         scheduleItems,
+        captureMemories,
         activeDraft: backupDraft
           ? {
               draft: backupDraft,
@@ -10394,6 +10480,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
             referenceDocumentMatchesDeletedProject(document, name, authorityProjectId(name)),
           projectDocumentBelongsToProject: projectDocumentMatchesProject,
           scheduleItemBelongsToProject: scheduleItemMatchesDeletedProject,
+          captureMemoryBelongsToProject: (memory, name) =>
+            (memory.recommendedProject.value || '').trim().toLowerCase() === name.trim().toLowerCase(),
+          serializeCaptureMemories: captureMemoryRepositoryStorageValue,
           createEmptyDraft: createDraft,
         });
         return { values: result.values, result };
@@ -10404,14 +10493,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setProjects(restored.projects); setArchivedProjects(restored.archivedProjects);
       setContactBook(restored.contactBook); setProjectAreas(restored.projectAreas);
       setReferenceDocuments(restored.referenceDocuments); setProjectDocuments(restored.projectDocuments);
-      setScheduleItems(restored.scheduleItems); setDraft(restored.draft);
+      setScheduleItems(restored.scheduleItems); setCaptureMemories(restored.captureMemories);
+      setDraft(restored.draft);
       markProjectAreasAuthorityReady(true); markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
       setDraftSavedAt(restored.storedDraft?.savedAt || null); setSelectedWorkspaceProject(restored.activeProject);
       setOverviewProjectSelection(undefined); setOverviewProjectManuallySelected(false);
 
       Alert.alert(
         'Complete backup restored',
-        'Project data, photos, and documents were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.',
+        'Project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.',
       );
       return true;
     } catch (error) {
@@ -10719,6 +10809,35 @@ Note: This update was opened through Outlook because PLZ email security may reje
         to: targetUri,
       });
 
+      let extractedText: string | null = null;
+      let extractionStatus: ReferenceDocument['extractionStatus'] = 'not_supported';
+      try {
+        if (
+          (asset.mimeType === 'application/pdf' || originalFileName.toLowerCase().endsWith('.pdf')) &&
+          isDavePdfTextExtractionAvailable()
+        ) {
+          extractionStatus = 'pending';
+          const extracted = await withScheduleImportTimeout(
+            extractTextFromPdf(targetUri),
+            20_000,
+            `Text extraction timed out for ${originalFileName}.`,
+          );
+          extractedText = extracted.text.trim() || null;
+          extractionStatus = extractedText ? 'complete' : 'failed';
+        } else if (asset.mimeType?.startsWith('image/') && isDaveTextRecognitionAvailable()) {
+          extractionStatus = 'pending';
+          const recognized = await withScheduleImportTimeout(
+            recognizeTextFromImage(targetUri),
+            20_000,
+            `Text recognition timed out for ${originalFileName}.`,
+          );
+          extractedText = recognized.text.trim() || null;
+          extractionStatus = extractedText ? 'complete' : 'failed';
+        }
+      } catch {
+        extractionStatus = 'failed';
+      }
+
       const nextDocument = normalizeReferenceDocument({
         id: uid(),
         name: originalFileName.replace(/\.[^/.]+$/, ''),
@@ -10729,12 +10848,27 @@ Note: This update was opened through Outlook because PLZ email security may reje
         notes: '',
         isCurrent: false,
         importedAt: new Date().toISOString(),
+        extractedText,
+        extractionStatus,
+        extractedPages: extractedText
+          ? [{ pageNumber: 1, text: extractedText, regions: [] }]
+          : [],
       });
 
       markReferenceDocumentsAuthorityReady(true);
-      setReferenceDocuments(prev => [nextDocument, ...prev]);
+      referenceDocumentsCurrentRef.current = [
+        nextDocument,
+        ...referenceDocumentsCurrentRef.current,
+      ];
+      setReferenceDocuments(referenceDocumentsCurrentRef.current);
+      void queueReferenceDocumentRecord(nextDocument);
 
-      Alert.alert('Document imported', `${nextDocument.name} was saved to Reference Documents.`);
+      Alert.alert(
+        'Document imported',
+        extractionStatus === 'complete'
+          ? `${nextDocument.name} was saved and its searchable text was indexed. Mark the correct revision Current before Core uses it.`
+          : `${nextDocument.name} was saved. Mark the correct revision Current before Core uses it.`,
+      );
     } catch (error) {
       Alert.alert('Import failed', error instanceof FileSizePreflightError
         ? error.message : 'The selected reference document could not be imported.');
@@ -10760,25 +10894,26 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   function markReferenceDocumentCurrent(documentId: string) {
     const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+    if (!target) return;
     const updatedAt = new Date().toISOString();
-    const updated = referenceDocumentsCurrentRef.current.map(document => ({
-      ...document,
-      isCurrent:
-        document.id === documentId
-          ? true
-          : target && document.category === target.category
-            ? false
-            : document.isCurrent,
-      updatedAt: target && document.category === target.category
-        ? updatedAt
-        : document.updatedAt,
-    }));
+    const result = target.isCurrent
+      ? unmarkAuthoritativeDocumentCurrent(
+          referenceDocumentsCurrentRef.current,
+          documentId,
+          updatedAt,
+        )
+      : markAuthoritativeDocumentCurrent(
+          referenceDocumentsCurrentRef.current,
+          documentId,
+          updatedAt,
+        );
+    const updated = result.documents;
 
     markReferenceDocumentsAuthorityReady(true);
     referenceDocumentsCurrentRef.current = updated;
     setReferenceDocuments(updated);
     void Promise.all(updated
-      .filter(document => target && document.category === target.category)
+      .filter(document => result.changedDocumentIds.includes(document.id))
       .map(document => queueReferenceDocumentRecord(document)));
   }
 
@@ -14213,6 +14348,15 @@ function HomeScreen({
       ? `Schedule loaded: ${liveAuthority.projectTruth.schedule.length} activities. ${liveAuthority.projectTruth.briefing.schedule}`
       : `Schedule task: ${currentFocus.timing}.`
     : null;
+  const dailyBrief = authorityMatchesCurrentFocus
+    ? liveAuthority.projectTruth.intelligence.dailyBrief
+    : null;
+  const dailyBriefItems = dailyBrief
+    ? [
+        ...dailyBrief.attentionItems,
+        ...dailyBrief.changedItems,
+      ].slice(0, 4)
+    : [];
   const overviewScopedUpdates = Array.from(new Map(
     overviewRows
       .flatMap(row =>
@@ -14577,6 +14721,30 @@ function HomeScreen({
 
       </OverviewResponsiveColumn>
       <OverviewResponsiveColumn priority="secondary">
+
+      {dailyBrief ? (
+        <View style={styles.phase2BriefCard}>
+          <DailyBriefSection
+            title="Daily Brief"
+            items={dailyBriefItems}
+            emptyText={dailyBrief.emptyStates.attention}
+            onOpen={item => {
+              if (item.navigationTarget === 'update_detail') {
+                const update = savedUpdates.find(candidate => candidate.id === item.sourceRecordId);
+                if (update) {
+                  onOpenUpdate(update);
+                  return;
+                }
+              }
+              if (item.navigationTarget === 'capture') {
+                onNewUpdate(liveAuthority.projectTruth.projectName);
+                return;
+              }
+              onOpenProject(liveAuthority.projectTruth.projectName);
+            }}
+          />
+        </View>
+      ) : null}
 
       {archivedProjects.length > 0 ? (
         <View style={styles.phase2BriefCard}>
@@ -19897,6 +20065,7 @@ function SavedUpdatesScreen({
     withinDays: initialWithinDays ?? null,
   });
   const [selectedUpdateId, setSelectedUpdateId] = useState<string | null>(null);
+  const [expandedComparisonId, setExpandedComparisonId] = useState<string | null>(null);
 
   useEffect(() => {
     setFilters(current => current.project === projectFilter
@@ -19975,6 +20144,16 @@ function SavedUpdatesScreen({
   ) {
     const group = updateTimelineGroup(update.date);
     const previousGroup = index > 0 ? updateTimelineGroup(filteredUpdates[index - 1].date) : null;
+    const mobileComparison = buildDAVEUpdatePhotoComparison(update, updates);
+    const mobileComparisonViewModel = mobileComparison ? {
+      priorUri: mobileComparison.priorPhotoUri,
+      priorLabel: formatDisplayDate(mobileComparison.priorUpdateDate),
+      currentUri: mobileComparison.currentPhotoUri,
+      currentLabel: formatDisplayDate(mobileComparison.currentUpdateDate),
+      summary: mobileComparison.summary,
+      confidence: mobileComparison.comparisonConfidence,
+      comparability: mobileComparison.comparability,
+    } : null;
 
     return (
       <>
@@ -19990,6 +20169,25 @@ function SavedUpdatesScreen({
           onArchive={() => onArchive(update.id)}
           selected={selected}
         />
+        {sizeClass !== 'wide' && mobileComparisonViewModel ? (
+          <>
+            <TouchableOpacity
+              style={styles.compactInlineAction}
+              onPress={() => setExpandedComparisonId(current =>
+                current === update.id ? null : update.id)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: expandedComparisonId === update.id }}
+              accessibilityLabel={`Compare current and prior photos for ${update.projectName}`}
+            >
+              <Text style={styles.compactInlineActionText}>
+                {expandedComparisonId === update.id ? 'Hide photo comparison' : 'Compare photos'}
+              </Text>
+            </TouchableOpacity>
+            {expandedComparisonId === update.id ? (
+              <UpdatePhotoComparison comparison={mobileComparisonViewModel} />
+            ) : null}
+          </>
+        ) : null}
       </>
     );
   }
@@ -21285,6 +21483,37 @@ function ScheduleScreen({
   );
   const scheduleTools = (
     <>
+          <View style={styles.panel}>
+            <Text style={styles.panelTitle}>Share Schedule</Text>
+            <Text style={styles.rowSub}>
+              Send the current task dates to a calendar or share a 3-week lookahead spreadsheet.
+            </Text>
+            <View style={styles.inlineActionRow}>
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={() => {
+                  void shareScheduleCalendar(workspaceScheduleItems);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Share schedule calendar"
+              >
+                <Ionicons name="calendar-outline" size={17} color={colors.primary} />
+                <Text style={styles.compactInlineActionText}>Calendar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.compactInlineAction}
+                onPress={() => {
+                  void shareScheduleLookahead(workspaceScheduleItems);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Share 3-week lookahead"
+              >
+                <Ionicons name="share-outline" size={17} color={colors.primary} />
+                <Text style={styles.compactInlineActionText}>3-Week Lookahead</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
           {actionableScheduleWarnings.length > 0 ||
           dependencyNetwork.blockedItemCount > 0 ||
           dependencyNetwork.unresolvedReferenceCount > 0 ||

@@ -2984,6 +2984,13 @@ export const styles = StyleSheet.create({
     maxWidth: 96,
   },
 
+  inlineActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
+
   compactInlineAction: {
     borderRadius: 999,
     paddingVertical: 5,

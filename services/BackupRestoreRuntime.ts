@@ -21,6 +21,7 @@ export type BackupRestoreTargetKeys = Readonly<{
   referenceDocuments: string;
   projectDocuments: string;
   scheduleItems: string;
+  captureMemories: string;
   activeDraft: string;
 }>;
 
@@ -51,6 +52,7 @@ export type BackupRestoreValues = Readonly<{
   referenceDocuments: unknown;
   projectDocuments: unknown;
   scheduleItems: unknown;
+  captureMemories: unknown;
   activeDraft: unknown | null;
 }>;
 
@@ -62,6 +64,7 @@ export function buildDeletionSafeRestoreState<
   TReferenceDocument,
   TProjectDocument,
   TScheduleItem,
+  TCaptureMemory,
   TDraft extends { id: string; projectName: string },
   TStoredDraft extends { draft: TDraft; savedAt: string },
 >({
@@ -72,6 +75,8 @@ export function buildDeletionSafeRestoreState<
   referenceDocumentBelongsToProject,
   projectDocumentBelongsToProject,
   scheduleItemBelongsToProject,
+  captureMemoryBelongsToProject,
+  serializeCaptureMemories,
   createEmptyDraft,
 }: Readonly<{
   data: Readonly<{
@@ -83,6 +88,7 @@ export function buildDeletionSafeRestoreState<
     referenceDocuments: TReferenceDocument[];
     projectDocuments: TProjectDocument[];
     scheduleItems: TScheduleItem[];
+    captureMemories: TCaptureMemory[];
     storedDraft: TStoredDraft | null;
   }>;
   barriers: BackupRestoreBarrierState;
@@ -94,6 +100,8 @@ export function buildDeletionSafeRestoreState<
   referenceDocumentBelongsToProject: (document: TReferenceDocument, projectName: string) => boolean;
   projectDocumentBelongsToProject: (document: TProjectDocument, projectName: string) => boolean;
   scheduleItemBelongsToProject: (item: TScheduleItem, projectName: string) => boolean;
+  captureMemoryBelongsToProject: (memory: TCaptureMemory, projectName: string) => boolean;
+  serializeCaptureMemories: (memories: readonly TCaptureMemory[]) => unknown;
   createEmptyDraft: (projectName: string) => TDraft;
 }>) {
   const deletedProjectKeys = new Set(barriers.deletedProjectNames.map(normalizedKey));
@@ -120,6 +128,9 @@ export function buildDeletionSafeRestoreState<
   const scheduleItems = data.scheduleItems.filter(item =>
     !barriers.deletedProjectNames.some(name => scheduleItemBelongsToProject(item, name)),
   );
+  const captureMemories = data.captureMemories.filter(memory =>
+    !barriers.deletedProjectNames.some(name => captureMemoryBelongsToProject(memory, name)),
+  );
   const storedDraft = data.storedDraft &&
     !deletedUpdateIds.has(data.storedDraft.draft.id) &&
     !projectIsDeleted(data.storedDraft.draft.projectName) &&
@@ -141,6 +152,7 @@ export function buildDeletionSafeRestoreState<
     referenceDocuments,
     projectDocuments,
     scheduleItems,
+    captureMemories,
     storedDraft,
     draft,
     activeProject,
@@ -153,6 +165,7 @@ export function buildDeletionSafeRestoreState<
       referenceDocuments,
       projectDocuments,
       scheduleItems,
+      captureMemories: serializeCaptureMemories(captureMemories),
       activeDraft: storedDraft,
     } satisfies BackupRestoreValues,
   };
@@ -188,6 +201,7 @@ export type BackupPreflightValidators = Readonly<{
   referenceDocument: (value: unknown) => boolean;
   projectDocument: (value: unknown) => boolean;
   scheduleItem: (value: unknown) => boolean;
+  captureMemory: (value: unknown) => boolean;
   draftEnvelope: (value: unknown) => boolean;
 }>;
 
@@ -202,6 +216,7 @@ export type StrictAppBackupPayload = Readonly<{
   referenceDocuments: unknown[];
   projectDocuments: unknown[];
   scheduleItems: unknown[];
+  captureMemories: unknown[];
   activeDraft: unknown | null;
 }>;
 
@@ -243,6 +258,7 @@ export function preflightAppBackup(
     ['referenceDocuments', value.referenceDocuments, validators.referenceDocument],
     ['projectDocuments', value.projectDocuments, validators.projectDocument],
     ['scheduleItems', value.scheduleItems, validators.scheduleItem],
+    ['captureMemories', value.captureMemories ?? [], validators.captureMemory],
   ];
   for (const [field, candidate, validator] of collectionChecks) {
     if (!Array.isArray(candidate)) return invalid(field, `${field} must be an array.`);
@@ -260,6 +276,7 @@ export function preflightAppBackup(
     'referenceDocuments',
     'projectDocuments',
     'scheduleItems',
+    'captureMemories',
   ] as const) {
     const duplicateOrMissing = duplicateOrMissingStableId(value[field] as unknown[]);
     if (duplicateOrMissing) {
@@ -288,6 +305,7 @@ export function preflightAppBackup(
       referenceDocuments: value.referenceDocuments as unknown[],
       projectDocuments: value.projectDocuments as unknown[],
       scheduleItems: value.scheduleItems as unknown[],
+      captureMemories: (value.captureMemories ?? []) as unknown[],
       activeDraft: value.activeDraft ?? null,
     },
   };
@@ -415,6 +433,7 @@ async function restoreOperations(
     ['referenceDocuments', 'referenceDocuments'],
     ['projectDocuments', 'projectDocuments'],
     ['scheduleItems', 'scheduleItems'],
+    ['captureMemories', 'captureMemories'],
     ['activeDraft', 'activeDraft'],
   ];
   const operations: DurableLocalTransactionOperation[] = [];

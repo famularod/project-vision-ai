@@ -26,6 +26,24 @@ export type DAVEReportSnapshot = Readonly<{
   capturedAt: string;
   sourceFingerprint: string;
   tasks: readonly DAVEReportSnapshotTask[];
+  /**
+   * Exact authoritative document references used in the approved report.
+   * Optional for backward compatibility with snapshots created before
+   * document excerpts were connected.
+   */
+  sourceReferences?: readonly DAVEReportSnapshotSourceReference[];
+}>;
+
+export type DAVEReportSnapshotSourceReference = Readonly<{
+  documentId: string;
+  documentName: string;
+  revision: string | null;
+  pageNumber: number | null;
+  sheetNumber: string | null;
+  regionId: string | null;
+  label: string;
+  projectName: string;
+  areaName: string;
 }>;
 
 export type DAVEReportPeriodChange = Readonly<{
@@ -65,11 +83,13 @@ export function buildDAVEReportSnapshot({
   scopeKey,
   sourceFingerprint,
   capturedAt,
+  sourceReferences,
 }: {
   truths: readonly DAVEProjectTruth[];
   scopeKey: string;
   sourceFingerprint: string;
   capturedAt?: string;
+  sourceReferences?: readonly DAVEReportSnapshotSourceReference[];
 }): DAVEReportSnapshot {
   const tasks = truths.flatMap(truth => truth.schedule.map(task => Object.freeze({
     taskId: task.taskId,
@@ -89,13 +109,27 @@ export function buildDAVEReportSnapshot({
     left.taskId.localeCompare(right.taskId),
   );
 
-  return Object.freeze({
+  const snapshot: DAVEReportSnapshot = {
     version: DAVE_REPORT_SNAPSHOT_VERSION,
     scopeKey,
     capturedAt: validDate(capturedAt) || new Date().toISOString(),
     sourceFingerprint,
     tasks: Object.freeze(tasks),
-  });
+    ...(sourceReferences
+      ? {
+          sourceReferences: Object.freeze(
+            sourceReferences
+              .map(reference => Object.freeze({ ...reference }))
+              .sort((left, right) =>
+                normalized(left.projectName).localeCompare(normalized(right.projectName)) ||
+                normalized(left.areaName).localeCompare(normalized(right.areaName)) ||
+                left.documentId.localeCompare(right.documentId),
+              ),
+          ),
+        }
+      : {}),
+  };
+  return Object.freeze(snapshot);
 }
 
 export function compareDAVEReportSnapshots({
