@@ -1,5 +1,6 @@
 const mockPrepareUploadPayload = jest.fn();
 const mockPreflightUpload = jest.fn();
+const mockHashUpload = jest.fn();
 const mockResumableUpload = jest.fn();
 const mockStorageUpload = jest.fn();
 
@@ -70,6 +71,8 @@ jest.mock('../../services/FileSizePreflight', () => {
     ...actual,
     preflightExpoFileRead: (...args: unknown[]) =>
       mockPreflightUpload(...args),
+    hashExpoFileSha256: (...args: unknown[]) =>
+      mockHashUpload(...args),
     prepareExpoFileUploadPayload: (...args: unknown[]) =>
       mockPrepareUploadPayload(...args),
   };
@@ -112,6 +115,10 @@ describe('Supabase upload file-size boundary', () => {
     mockResumableUpload.mockResolvedValue({
       path: 'owner/drawing.pdf',
       uploadUrl: 'https://example.supabase.co/resumable/1',
+    });
+    mockHashUpload.mockResolvedValue({
+      sha256: 'a'.repeat(64),
+      sizeBytes: 20 * 1024 * 1024,
     });
   });
 
@@ -163,6 +170,7 @@ describe('Supabase upload file-size boundary', () => {
     mockPreflightUpload.mockResolvedValue({
       uri: 'file:///app/documents/drawing.pdf',
       sizeBytes: 20 * 1024 * 1024,
+      contentSha256: 'a'.repeat(64),
       maxBytes: 50 * 1024 * 1024,
     });
 

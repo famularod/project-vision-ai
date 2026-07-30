@@ -375,6 +375,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
             bucket: 'project-documents',
             path: storagePath,
             file: file ?? new Blob([bytes], { type: contentType }),
+            contentSha256: document.contentSha256 || '',
             contentType,
             upsert: false,
             onProgress,

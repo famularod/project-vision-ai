@@ -50,8 +50,11 @@ jest.mock('tus-js-client', () => ({
 
 import {
   TUS_UPLOAD_CHUNK_BYTES,
+  resumableUploadFingerprint,
   uploadFileResumably,
 } from '../../services/ResumableStorageUpload';
+
+const CONTENT_SHA256 = 'a'.repeat(64);
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -70,6 +73,7 @@ describe('resumable project-document upload', () => {
       path: 'mobile/document/drawing.pdf',
       uri: 'file:///drawing.pdf',
       sizeBytes: 12,
+      contentSha256: CONTENT_SHA256,
       contentType: 'application/pdf',
       cacheControl: '3600',
       upsert: true,
@@ -92,6 +96,7 @@ describe('resumable project-document upload', () => {
       bucketName: 'project-documents',
       objectName: 'mobile/document/drawing.pdf',
     });
+    await expect(options.fingerprint()).resolves.toContain(CONTENT_SHA256);
     expect(onProgress).toHaveBeenCalledWith(0.5);
     expect(onProgress).toHaveBeenLastCalledWith(1);
   });
@@ -120,6 +125,7 @@ describe('resumable project-document upload', () => {
       path: 'mobile/document/drawing.pdf',
       uri: 'file:///drawing.pdf',
       sizeBytes: 12,
+      contentSha256: CONTENT_SHA256,
       contentType: 'application/pdf',
       cacheControl: '3600',
       upsert: true,
@@ -127,5 +133,21 @@ describe('resumable project-document upload', () => {
 
     expect(mockResume).toHaveBeenCalledWith(newer);
     expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reuse a resumable fingerprint for different bytes at the same path and size', () => {
+    const base = {
+      bucket: 'project-documents',
+      path: 'mobile/document/drawing.pdf',
+      sizeBytes: 12,
+    };
+
+    expect(resumableUploadFingerprint({
+      ...base,
+      contentSha256: 'a'.repeat(64),
+    })).not.toBe(resumableUploadFingerprint({
+      ...base,
+      contentSha256: 'b'.repeat(64),
+    }));
   });
 });

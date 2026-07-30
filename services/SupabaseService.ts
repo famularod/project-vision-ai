@@ -44,6 +44,7 @@ import {
 } from './PIERealityHistoryIntegrity';
 import {
   FileSizePreflightError,
+  hashExpoFileSha256,
   preflightExpoFileRead,
   prepareExpoFileUploadPayload,
 } from './FileSizePreflight';
@@ -776,13 +777,19 @@ export async function uploadPhoto({
     }
 
     try {
+      const integrity = await hashExpoFileSha256({
+        uri,
+        reportedSizeBytes: verifiedSizeBytes,
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+      });
       const uploaded = await uploadFileResumably({
         projectUrl: configuration.projectUrl || '',
         accessToken: sessionData.session.access_token,
         bucket,
         path,
         uri,
-        sizeBytes: verifiedSizeBytes,
+        sizeBytes: integrity.sizeBytes,
+        contentSha256: integrity.sha256,
         contentType,
         cacheControl,
         upsert,
@@ -794,6 +801,13 @@ export async function uploadPhoto({
         fullPath: null,
       });
     } catch (cause) {
+      if (cause instanceof FileSizePreflightError) {
+        return errorResult(
+          cause.message,
+          cause.code === 'file_too_large' ? 413 : 422,
+          cause.code,
+        );
+      }
       return errorResult(
         cause instanceof Error
           ? cause.message

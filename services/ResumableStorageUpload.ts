@@ -27,6 +27,7 @@ type ResumableUploadInput = Readonly<{
   path: string;
   uri: string;
   sizeBytes: number;
+  contentSha256: string;
   contentType: string;
   cacheControl: string;
   upsert: boolean;
@@ -170,11 +171,23 @@ export async function uploadFileResumably(
   });
 }
 
-function resumableUploadFingerprint(input: ResumableUploadInput) {
+export function resumableUploadFingerprint(
+  input: Pick<
+    ResumableUploadInput,
+    'bucket' | 'path' | 'sizeBytes' | 'contentSha256'
+  >,
+) {
+  const contentSha256 = input.contentSha256.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(contentSha256)) {
+    throw new Error(
+      'A verified SHA-256 content identity is required before resuming this upload.',
+    );
+  }
   return [
     'vitruvius-project-document',
     input.bucket,
     input.path,
     input.sizeBytes,
+    contentSha256,
   ].join(':');
 }

@@ -23,6 +23,8 @@ jest.mock('tus-js-client', () => ({
 import { uploadWebFileResumably } from '../../services/ResumableWebStorageUpload';
 import { TUS_UPLOAD_CHUNK_BYTES } from '../../services/StorageUploadPolicy';
 
+const CONTENT_SHA256 = 'a'.repeat(64);
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockUploadInstances.length = 0;
@@ -40,6 +42,7 @@ describe('resumable desktop project-document upload', () => {
       bucket: 'project-documents',
       path: 'owner/web/document/drawing.pdf',
       file,
+      contentSha256: CONTENT_SHA256,
       contentType: 'application/pdf',
       onProgress,
     })).resolves.toBeUndefined();
@@ -55,6 +58,7 @@ describe('resumable desktop project-document upload', () => {
       objectName: 'owner/web/document/drawing.pdf',
       contentType: 'application/pdf',
     });
+    await expect(options.fingerprint()).resolves.toContain(CONTENT_SHA256);
     expect(onProgress).toHaveBeenCalledWith(0.5);
     expect(onProgress).toHaveBeenLastCalledWith(1);
   });
@@ -78,6 +82,7 @@ describe('resumable desktop project-document upload', () => {
       bucket: 'project-documents',
       path: 'owner/web/document/drawing.pdf',
       file: new Blob([new Uint8Array(12)]),
+      contentSha256: CONTENT_SHA256,
       contentType: 'application/pdf',
     });
 

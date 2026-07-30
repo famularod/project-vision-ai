@@ -7,17 +7,25 @@ export async function uploadWebFileResumably(input: Readonly<{
   bucket: string;
   path: string;
   file: Blob;
+  contentSha256: string;
   contentType: string;
   cacheControl?: string;
   upsert?: boolean;
   onProgress?: (fraction: number) => void;
 }>): Promise<void> {
   const endpoint = `${input.projectUrl.replace(/\/+$/, '')}/storage/v1/upload/resumable`;
+  const contentSha256 = input.contentSha256.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(contentSha256)) {
+    throw new Error(
+      'A verified SHA-256 content identity is required before resuming this upload.',
+    );
+  }
   const fingerprint = [
     'vitruvius-web-document',
     input.bucket,
     input.path,
     input.file.size,
+    contentSha256,
   ].join(':');
 
   return new Promise((resolve, reject) => {
