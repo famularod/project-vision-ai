@@ -71,7 +71,7 @@ describe('PIE schedule remote extraction', () => {
     });
   });
 
-  it('normalizes trustworthy progress and rejects malformed provider progress', () => {
+  it('uses numeric progress as authoritative and rejects malformed provider progress', () => {
     const result = scheduleItemsFromRemoteExtractorPayload({
       items: [
         { taskName: 'Mobilize', status: 'Not Started', percentComplete: 35 },
@@ -87,9 +87,9 @@ describe('PIE schedule remote extraction', () => {
 
     expect(result.items.map(item => [item.status, item.percentComplete])).toEqual([
       ['In Progress', 35],
-      ['Complete', 100],
-      ['In Progress', 0],
-      ['In Progress', 0],
+      ['In Progress', 12],
+      ['Not Started', 0],
+      ['Not Started', 0],
     ]);
   });
 

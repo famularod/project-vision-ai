@@ -350,6 +350,11 @@ export function normalizeWebReport(value: unknown): DAVEWebReportRecord | null {
     : [];
   return {
     status: report.status === 'approved' ? 'approved' : 'draft',
+    audience: report.audience === 'executive'
+      ? 'executive'
+      : report.audience === 'project_manager'
+        ? 'project_manager'
+        : undefined,
     title,
     body,
     generatedAt,

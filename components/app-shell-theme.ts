@@ -1898,18 +1898,23 @@ export const styles = StyleSheet.create({
   },
 
   overviewDailyBriefCard: {
+    alignSelf: 'stretch',
     backgroundColor: colors.card,
     borderRadius: 16,
     borderColor: colors.line,
     borderWidth: 1,
+    flexDirection: 'column',
+    gap: 8,
     paddingHorizontal: 15,
     paddingVertical: 4,
     marginBottom: 22,
+    minWidth: 0,
     shadowColor: '#17213A',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
+    width: '100%',
   },
 
   overviewBriefRow: {

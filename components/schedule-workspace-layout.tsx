@@ -8,11 +8,15 @@ import {
   groupScheduleWorkspaceItemsByProjectAndArea,
   type ScheduleWorkspaceProjectAreaGroup,
 } from '../services/DAVEScheduleWorkspace';
+import type { DAVETaskAreaSummary } from '../services/DAVETaskAreaSummary';
+import { formatAppDate } from '../utils/date';
 
 export function ScheduleWideWorkspace({
   items,
   selectedTaskId,
+  selectedAreaKey,
   onSelectTask,
+  onSelectArea,
   masterHeader,
   inspector,
   inspectorFooter,
@@ -20,7 +24,9 @@ export function ScheduleWideWorkspace({
 }: {
   items: ScheduleItem[];
   selectedTaskId: string | null;
+  selectedAreaKey?: string | null;
   onSelectTask: (taskId: string) => void;
+  onSelectArea?: (section: ScheduleWorkspaceProjectAreaGroup) => void;
   masterHeader: ReactElement;
   inspector: ReactNode;
   inspectorFooter: ReactNode;
@@ -66,6 +72,7 @@ export function ScheduleWideWorkspace({
               section={section}
               backgroundColor={colors.surface}
               collapsed={section.collapsed}
+              selected={section.areaKey === selectedAreaKey}
               taskCount={section.areaTaskCount}
               onPress={() => {
                 setCollapsedAreas(current => {
@@ -74,6 +81,7 @@ export function ScheduleWideWorkspace({
                   else next.add(section.areaKey);
                   return next;
                 });
+                onSelectArea?.(section);
               }}
             />
           )}
@@ -103,7 +111,7 @@ export function ScheduleWideWorkspace({
   );
 }
 
-function scheduleWorkspaceAreaKey(
+export function scheduleWorkspaceAreaKey(
   section: Pick<ScheduleWorkspaceProjectAreaGroup, 'projectName' | 'areaName'>,
 ): string {
   return `${section.projectName.trim().toLowerCase()}::${section.areaName.trim().toLowerCase()}`;
@@ -113,18 +121,24 @@ export function ScheduleTaskGroupHeader({
   section,
   backgroundColor = colors.background,
   collapsed = false,
+  selected = false,
   taskCount,
   onPress,
+  summary,
+  onOpenTask,
 }: {
   section: ScheduleWorkspaceProjectAreaGroup;
   backgroundColor?: string;
   collapsed?: boolean;
+  selected?: boolean;
   taskCount?: number;
   onPress?: () => void;
+  summary?: DAVETaskAreaSummary | null;
+  onOpenTask?: (taskId: string) => void;
 }) {
   const areaTaskCount = taskCount ?? section.data.length;
   const areaHeader = (
-    <View style={styles.areaGroupHeader}>
+    <View style={[styles.areaGroupHeader, selected && styles.areaGroupHeaderSelected]}>
       <View style={styles.areaGroupTitleRow}>
         {onPress ? (
           <Ionicons
@@ -160,11 +174,136 @@ export function ScheduleTaskGroupHeader({
           onPress={onPress}
           accessibilityRole="button"
           accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${section.areaName}`}
-          accessibilityState={{ expanded: !collapsed }}
+          accessibilityHint={`Also opens the ${section.areaName} area summary.`}
+          accessibilityState={{ expanded: !collapsed, selected }}
         >
           {areaHeader}
         </Pressable>
       ) : areaHeader}
+      {summary ? (
+        <ScheduleTaskAreaSummaryPanel summary={summary} onOpenTask={onOpenTask} />
+      ) : null}
+    </View>
+  );
+}
+
+export function ScheduleTaskAreaSummaryPanel({
+  summary,
+  onOpenTask,
+}: {
+  summary: DAVETaskAreaSummary;
+  onOpenTask?: (taskId: string) => void;
+}) {
+  const missingDateParts = [
+    summary.missingStartCount > 0
+      ? `${summary.missingStartCount} ${summary.missingStartCount === 1 ? 'task is' : 'tasks are'} missing a start date`
+      : null,
+    summary.missingFinishCount > 0
+      ? `${summary.missingFinishCount} ${summary.missingFinishCount === 1 ? 'task is' : 'tasks are'} missing a finish / due date`
+      : null,
+  ].filter(Boolean);
+
+  return (
+    <View style={styles.areaSummaryCard} testID="schedule-area-summary">
+      <View style={styles.areaSummaryHeadingRow}>
+        <View style={styles.areaSummaryHeadingCopy}>
+          <Text accessibilityRole="header" style={styles.areaSummaryTitle}>
+            {summary.areaName} area summary
+          </Text>
+          <Text style={styles.areaSummaryProject}>{summary.projectName}</Text>
+        </View>
+        <View style={[
+          styles.areaSummaryRiskBadge,
+          summary.overdueCount > 0 ? styles.areaSummaryRiskBadgeDanger : styles.areaSummaryRiskBadgeClear,
+        ]}>
+          <Text style={[
+            styles.areaSummaryRiskText,
+            summary.overdueCount > 0 ? styles.areaSummaryRiskTextDanger : styles.areaSummaryRiskTextClear,
+          ]}>
+            {summary.overdueCount > 0
+              ? `${summary.overdueCount} past due`
+              : 'Dates on track'}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.areaSummaryMetrics}>
+        <AreaSummaryMetric label="Tasks" value={summary.taskCount} />
+        <AreaSummaryMetric label="Open" value={summary.openCount} />
+        <AreaSummaryMetric label="In progress" value={summary.inProgressCount} />
+        <AreaSummaryMetric label="Complete" value={summary.completeCount} />
+      </View>
+
+      <View style={styles.areaSummaryScheduleCard}>
+        <Text style={styles.areaSummarySectionLabel}>AREA SCHEDULE</Text>
+        <Text style={styles.areaSummaryScheduleValue}>
+          {summary.earliestStartLabel} to {summary.latestFinishLabel}
+        </Text>
+        {missingDateParts.length > 0 ? (
+          <Text style={styles.areaSummaryMissingDates}>{missingDateParts.join('. ')}.</Text>
+        ) : null}
+      </View>
+
+      {summary.warnings.length > 0 ? (
+        <View style={styles.areaSummaryWarnings}>
+          <Text style={styles.areaSummarySectionLabel}>DATES NEED ATTENTION</Text>
+          {summary.warnings.map(warning => (
+            <Pressable
+              key={`${warning.taskId}-${warning.message}`}
+              style={({ pressed }) => [styles.areaSummaryWarningRow, pressed && styles.taskRowPressed]}
+              onPress={onOpenTask ? () => onOpenTask(warning.taskId) : undefined}
+              accessibilityRole={onOpenTask ? 'button' : undefined}
+              accessibilityLabel={onOpenTask ? `Open ${warning.taskName}: ${warning.message}` : undefined}
+            >
+              <Ionicons name="warning-outline" size={18} color={colors.danger} />
+              <View style={styles.areaSummaryWarningCopy}>
+                <Text style={styles.areaSummaryWarningTask}>{warning.taskName}</Text>
+                <Text style={styles.areaSummaryWarningMessage}>{warning.message}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+
+      <View style={styles.areaSummaryWorkList}>
+        <Text style={styles.areaSummarySectionLabel}>WORK IN THIS AREA</Text>
+        {summary.workItems.map(workItem => {
+          const row = (
+            <>
+              <View style={styles.areaSummaryWorkHeading}>
+                <Text style={styles.areaSummaryWorkTitle}>{workItem.taskName}</Text>
+                <Text style={styles.areaSummaryWorkPercent}>{workItem.percentComplete}%</Text>
+              </View>
+              <Text style={styles.areaSummaryWorkStatus}>{workItem.statusLabel}</Text>
+              <Text style={styles.areaSummaryWorkDates}>
+                Start {workItem.startDateLabel}  •  Finish / Due {workItem.finishDateLabel}
+              </Text>
+            </>
+          );
+          return onOpenTask ? (
+            <Pressable
+              key={workItem.taskId}
+              style={({ pressed }) => [styles.areaSummaryWorkRow, pressed && styles.taskRowPressed]}
+              onPress={() => onOpenTask(workItem.taskId)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${workItem.taskName}`}
+            >
+              {row}
+            </Pressable>
+          ) : (
+            <View key={workItem.taskId} style={styles.areaSummaryWorkRow}>{row}</View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function AreaSummaryMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <View style={styles.areaSummaryMetric}>
+      <Text style={styles.areaSummaryMetricValue}>{value}</Text>
+      <Text style={styles.areaSummaryMetricLabel}>{label}</Text>
     </View>
   );
 }
@@ -179,6 +318,8 @@ function ScheduleTaskMasterRow({
   onPress: () => void;
 }) {
   const projectName = item.scheduleProjectName?.trim() || item.projectName.trim() || 'No project';
+  const startDateLabel = item.startDate?.trim() ? formatAppDate(item.startDate) : 'Not set';
+  const finishDateLabel = item.finishDate?.trim() ? formatAppDate(item.finishDate) : 'Not set';
 
   return (
     <Pressable
@@ -200,7 +341,10 @@ function ScheduleTaskMasterRow({
         {projectName}{item.locationName ? ` • ${item.locationName}` : ''}
       </Text>
       <Text style={styles.taskContext} numberOfLines={1}>
-        {item.status} • {item.priority}{item.finishDate ? ` • ${item.finishDate}` : ''}
+        {item.status} • {item.priority}
+      </Text>
+      <Text style={styles.taskDates}>
+        Start {startDateLabel}  •  Finish / Due {finishDateLabel}
       </Text>
       <View style={styles.progressTrack}>
         <View
@@ -238,7 +382,7 @@ const styles = StyleSheet.create({
     height: spacing.sm,
   },
   taskRow: {
-    minHeight: 132,
+    minHeight: 146,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.md,
@@ -276,6 +420,12 @@ const styles = StyleSheet.create({
     color: colors.mutedText,
     fontSize: 13,
     lineHeight: 18,
+  },
+  taskDates: {
+    color: colors.text,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
   },
   projectGroupHeader: {
     minHeight: 54,
@@ -317,6 +467,12 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     marginBottom: spacing.sm,
   },
+  areaGroupHeaderSelected: {
+    borderColor: colors.primary,
+    borderWidth: 1,
+    borderLeftWidth: 5,
+    backgroundColor: colors.primarySoft,
+  },
   areaGroupTitleRow: {
     flex: 1,
     minWidth: 0,
@@ -338,6 +494,50 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
   },
+  areaSummaryCard: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    gap: spacing.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  areaSummaryHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  areaSummaryHeadingCopy: { flex: 1, minWidth: 0 },
+  areaSummaryTitle: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  areaSummaryProject: { color: colors.mutedText, fontSize: 13, lineHeight: 18 },
+  areaSummaryRiskBadge: { borderRadius: radius.xl, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
+  areaSummaryRiskBadgeDanger: { backgroundColor: colors.dangerSoft },
+  areaSummaryRiskBadgeClear: { backgroundColor: colors.successSoft },
+  areaSummaryRiskText: { fontSize: 12, lineHeight: 16, fontWeight: '900' },
+  areaSummaryRiskTextDanger: { color: colors.danger },
+  areaSummaryRiskTextClear: { color: colors.success },
+  areaSummaryMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  areaSummaryMetric: { minWidth: 94, flexGrow: 1, borderRadius: radius.sm, backgroundColor: colors.surfaceMuted, padding: spacing.sm },
+  areaSummaryMetricValue: { color: colors.text, fontSize: 20, lineHeight: 24, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  areaSummaryMetricLabel: { color: colors.mutedText, fontSize: 12, lineHeight: 16, fontWeight: '700' },
+  areaSummaryScheduleCard: { borderLeftWidth: 4, borderLeftColor: colors.primary, backgroundColor: colors.primarySoft, borderRadius: radius.sm, padding: spacing.sm },
+  areaSummarySectionLabel: { color: colors.tertiaryText, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 0.9 },
+  areaSummaryScheduleValue: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '900' },
+  areaSummaryMissingDates: { color: colors.warning, fontSize: 13, lineHeight: 18, fontWeight: '700', marginTop: spacing.xs },
+  areaSummaryWarnings: { gap: spacing.xs },
+  areaSummaryWarningRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.dangerSoft, padding: spacing.sm },
+  areaSummaryWarningCopy: { flex: 1, minWidth: 0 },
+  areaSummaryWarningTask: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '900' },
+  areaSummaryWarningMessage: { color: colors.danger, fontSize: 13, lineHeight: 18, fontWeight: '700' },
+  areaSummaryWorkList: { gap: spacing.xs },
+  areaSummaryWorkRow: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, gap: 2, padding: spacing.sm },
+  areaSummaryWorkHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  areaSummaryWorkTitle: { flex: 1, color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '900' },
+  areaSummaryWorkPercent: { color: colors.primary, fontSize: 14, lineHeight: 19, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  areaSummaryWorkStatus: { color: colors.mutedText, fontSize: 12, lineHeight: 16, fontWeight: '700' },
+  areaSummaryWorkDates: { color: colors.text, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   progressTrack: {
     height: 5,
     borderRadius: 3,

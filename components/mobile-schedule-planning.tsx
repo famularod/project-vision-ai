@@ -18,15 +18,17 @@ export function MobileSchedulePlanning({
   items,
   view,
   onOpenTask,
+  today,
 }: {
   items: readonly ScheduleItem[];
   view: 'Timeline' | 'Lookahead';
   onOpenTask: (item: ScheduleItem) => void;
+  today?: Date;
 }) {
   if (view === 'Timeline') {
     return <MobileScheduleTimeline items={items} onOpenTask={onOpenTask} />;
   }
-  return <MobileScheduleLookahead items={items} onOpenTask={onOpenTask} />;
+  return <MobileScheduleLookahead items={items} onOpenTask={onOpenTask} today={today} />;
 }
 
 function MobileScheduleTimeline({
@@ -148,15 +150,17 @@ function MobileScheduleTimeline({
 function MobileScheduleLookahead({
   items,
   onOpenTask,
+  today,
 }: {
   items: readonly ScheduleItem[];
   onOpenTask: (item: ScheduleItem) => void;
+  today?: Date;
 }) {
   const { sizeClass } = useAppShellLayout();
   const [weeks, setWeeks] = useState<VitruviusLookaheadWeeks>(3);
   const lookahead = useMemo(
-    () => buildVitruviusLookahead({ items, weeks }),
-    [items, weeks],
+    () => buildVitruviusLookahead({ items, weeks, today }),
+    [items, weeks, today],
   );
 
   return (

@@ -74,6 +74,36 @@ describe('DAVE report intelligence', () => {
     expect(JSON.stringify(briefing)).not.toMatch(/not verified|verification needed|missing evidence/i);
   });
 
+  it('lists completed tasks separately and clearly instead of hiding them in totals', () => {
+    const truth = projectTruth();
+    const briefing = buildDAVEReportBriefing({
+      truths: [{
+        ...truth,
+        schedule: [
+          ...truth.schedule,
+          {
+            ...truth.schedule[0],
+            taskId: 'completed-curb',
+            taskName: 'Install north lot curb',
+            areaName: 'North Lot',
+            status: 'Complete',
+            percentComplete: 100,
+            urgency: 'not_urgent',
+            completionState: 'pm_verified',
+            latestActivityAt: '2026-07-15T18:00:00.000Z',
+          },
+        ],
+      } as DAVEProjectTruth],
+    });
+
+    expect(briefing.completedWork).toEqual([
+      'Install north lot curb (North Lot): Complete; 100% complete. Last updated Jul 15, 2026.',
+    ]);
+    expect(briefing.currentWork).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('Install north lot curb')]),
+    );
+  });
+
   it('changes the report source only when semantic project facts change', () => {
     const first = projectTruth();
     const refreshOnly = {

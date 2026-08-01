@@ -35,10 +35,10 @@ describe('schedule progress invariant', () => {
     });
   });
 
-  it('makes Complete and 100 percent mutually consistent', () => {
+  it('treats an explicit percentage as authoritative and keeps 100 percent complete', () => {
     expect(reconcileScheduleProgress('Complete', 42)).toEqual({
-      status: 'Complete',
-      percentComplete: 100,
+      status: 'In Progress',
+      percentComplete: 42,
     });
     expect(reconcileScheduleProgress('In Progress', 100)).toEqual({
       status: 'Complete',
@@ -106,7 +106,7 @@ describe('schedule progress invariant', () => {
     expect(result.items.map(item => [item.status, item.percentComplete])).toEqual([
       ['In Progress', 80],
       ['In Progress', 25],
-      ['Complete', 100],
+      ['In Progress', 10],
     ]);
   });
 

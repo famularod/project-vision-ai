@@ -1,8 +1,11 @@
 import {
+  buildDAVEWebReportDraft,
   buildDAVEWebReportSource,
+  buildDAVEWebReportTitle,
   buildDAVEWebTruthDiagnostics,
   createDAVEWebBackup,
   daveWebReportSourceIsCurrent,
+  formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
   validateDAVEWebBackup,
 } from '../../services/DAVEWebOperations';
@@ -127,6 +130,29 @@ describe('DAVE web phase 4 operations', () => {
     expect(daveWebReportSourceIsCurrent(source.fingerprint, sameFacts)).toBe(true);
     expect(daveWebReportSourceIsCurrent(source.fingerprint, changedFacts)).toBe(false);
     expect(daveWebReportSourceIsCurrent(null, sameFacts)).toBe(false);
+  });
+
+  it('generates distinct project manager and executive reports from the same facts', () => {
+    const current = snapshot([
+      task('a', 'Complete', 100),
+      task('b', 'In Progress', 50),
+    ], '2026-07-20T12:00:00.000Z');
+    const briefing = buildDAVEWebReportDraft(current, 'Alpha Project');
+    const projectManagerReport = formatDAVEWebReport(briefing, 'project_manager');
+    const executiveReport = formatDAVEWebReport(briefing, 'executive');
+
+    expect(buildDAVEWebReportTitle(briefing, 'project_manager')).toBe(
+      'Alpha Project — Project Manager Report',
+    );
+    expect(buildDAVEWebReportTitle(briefing, 'executive')).toBe(
+      'Alpha Project — Executive Summary',
+    );
+    expect(projectManagerReport).toContain('## Current Work');
+    expect(projectManagerReport).toContain('## Next Actions');
+    expect(executiveReport).toContain('## Executive Snapshot');
+    expect(executiveReport).toContain('## Management Actions');
+    expect(executiveReport).not.toContain('## Current Work');
+    expect(executiveReport).not.toBe(projectManagerReport);
   });
 
   it('does not invalidate an approved report merely because its artifact was saved', () => {

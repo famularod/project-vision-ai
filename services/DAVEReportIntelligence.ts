@@ -121,6 +121,7 @@ export type DAVEReportBriefing = Readonly<{
   projectConditions: readonly DAVEReportProjectCondition[];
   recentChanges: readonly DAVEReportRecentChange[];
   milestones: readonly DAVEReportMilestone[];
+  completedWork: readonly string[];
   currentWork: readonly string[];
   whatChanged: readonly string[];
   schedulePosition: readonly string[];
@@ -219,6 +220,11 @@ export function buildDAVEReportBriefing({
     )).slice(0, 8);
   const recentChanges = buildRecentChanges({ truths, reportingPeriod });
   const milestones = buildReportMilestones(truths);
+  const completedWork = unique(truths.flatMap(truth => truth.schedule
+    .filter(scheduleProgressIsComplete)
+    .sort((left, right) => reportCompletedTaskRank(left) - reportCompletedTaskRank(right))
+    .map(task => reportCompletedTaskFact(truth.projectName, task, truths.length > 1))),
+  ).slice(0, 12);
   const currentWork = unique(truths.flatMap(truth => truth.schedule
     .filter(task => !scheduleProgressIsComplete(task))
     .sort((left, right) => reportScheduleActionRank(left) - reportScheduleActionRank(right))
@@ -270,6 +276,7 @@ export function buildDAVEReportBriefing({
     projectConditions,
     recentChanges,
     milestones,
+    completedWork,
     currentWork,
     whatChanged: unique([
       ...recentChanges.map(change => change.summary),
@@ -362,6 +369,40 @@ function reportTaskFact(
     task.finishDate ? `due ${task.finishDate}` : '',
   ].filter(Boolean);
   return `${prefix}${task.taskName}${area}: ${parts.join('; ')}.`;
+}
+
+function reportCompletedTaskFact(
+  projectName: string,
+  task: DAVEProjectTruth['schedule'][number],
+  includeProject: boolean,
+) {
+  const prefix = includeProject ? `${projectName} — ` : '';
+  const area = task.areaName ? ` (${task.areaName})` : '';
+  const latestChange = latestDate([task.latestActivityAt, task.updatedAt]);
+  const lastUpdated = latestChange
+    ? ` Last updated ${formatReportDate(latestChange)}.`
+    : '';
+  return `${prefix}${task.taskName}${area}: Complete; 100% complete.${lastUpdated}`;
+}
+
+function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number]) {
+  const timestamp = dateValue(latestDate([
+    task.latestActivityAt,
+    task.updatedAt,
+    task.finishDate,
+  ]));
+  return timestamp === null ? Number.MAX_SAFE_INTEGER : -timestamp;
+}
+
+function formatReportDate(value: string) {
+  const timestamp = dateValue(value);
+  if (timestamp === null) return value;
+  return new Date(timestamp).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
 }
 
 function reportTaskConcern(
@@ -589,6 +630,7 @@ function formatReportBody(
     briefing.executiveSnapshot,
     '',
     ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection('COMPLETED WORK', briefing.completedWork.slice(0, 6), 'No completed work is recorded in the current project scope.'),
     ...textSection('PROJECT POSITION', projectPosition),
     ...textSection('MANAGEMENT ACTIONS', actions),
     ...textSection('MILESTONES', milestones),
@@ -601,6 +643,7 @@ function formatReportBody(
     briefing.executiveSnapshot,
     '',
     ...textSection('SINCE THE LAST APPROVED REPORT', reportingMovement),
+    ...textSection('COMPLETED WORK', briefing.completedWork, 'No completed work is recorded in the current project scope.'),
     ...textSection('CURRENT WORK', briefing.currentWork),
     ...textSection('ACTION PLAN', actions),
     ...textSection('MILESTONES', milestones),

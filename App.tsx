@@ -120,7 +120,13 @@ import { buildVitruviusCommitmentControl } from './services/VitruviusCommitmentC
 import { ScheduleTaskEditorModal } from './components/schedule-task-editor-modal';
 import { ScheduleTaskListControls, type ScheduleTaskFilter,
   type ScheduleTaskView, type ScheduleWorkspaceView } from './components/schedule-task-list-controls';
-import { ScheduleTaskGroupHeader, ScheduleWideWorkspace } from './components/schedule-workspace-layout';
+import {
+  ScheduleTaskAreaSummaryPanel,
+  ScheduleTaskGroupHeader,
+  ScheduleWideWorkspace,
+  scheduleWorkspaceAreaKey,
+} from './components/schedule-workspace-layout';
+import { buildDAVETaskAreaSummary } from './services/DAVETaskAreaSummary';
 import { MobileSchedulePlanning } from './components/mobile-schedule-planning';
 import { NativeDateField } from './components/native-date-field';
 import {
@@ -358,6 +364,7 @@ import {
   dedupeAttentionItemsById,
 } from './services/PIEAttentionIdentity';
 import { buildDAVEProjectTruth } from './services/DAVEProjectTruth';
+import { selectActionableDailyBriefItems } from './services/DAVEDailyBrief';
 import { parseDAVEAssertions } from './services/DAVEAssertionParser';
 import {
   mergeDAVECloudRecoveredProjectUpdate,
@@ -476,6 +483,15 @@ import { createLocalPIEDecisionHistoryActions } from './services/LocalPIEDecisio
 import { buildVerifiedLearningEventsFromDecisionLedger } from './services/PIEDecisionOutcomeLearning';
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
+import {
+  buildReportWordBase64,
+  summarizeReportWordUnavailableMedia,
+} from './services/ReportWordDocument';
+import {
+  renderNativeReportDrawingPreview,
+  resolveNativeReportWordMedia,
+} from './services/ReportWordMedia.native';
+import type { ReportDrawingReference } from './services/ReportDrawingReferences';
 import {
   buildPIEScheduleReconciliation,
   reconcileCurrentScheduleDocuments,
@@ -10235,6 +10251,152 @@ Note: This update was opened through Outlook because PLZ email security may reje
     return smsComposerOutcome(result);
   }
 
+  async function downloadWordReport(
+    report: PIEReportDraft,
+    drawingReferences: readonly ReportDrawingReference[],
+  ): Promise<ReportCommunicationOutcome> {
+    const sharingAvailable = await Sharing.isAvailableAsync();
+    if (!sharingAvailable) {
+      Alert.alert(
+        'Word report unavailable',
+        'The iOS Share Sheet is not available on this device.',
+      );
+      return 'unknown';
+    }
+
+    const directory = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+    if (!directory) {
+      Alert.alert(
+        'Word report unavailable',
+        'A temporary folder could not be found on this device.',
+      );
+      return 'unknown';
+    }
+
+    const reportPhotoIds = uniqueStrings(
+      report.locationGroups.flatMap(group =>
+        group.workAreas.flatMap(area =>
+          area.imageReferences.map(reference => reference.photoId))),
+    );
+    const reportPhotoNumbers = new Map(
+      report.locationGroups.flatMap(group =>
+        group.workAreas.flatMap(area =>
+          area.imageReferences.map(reference => [
+            reference.photoId,
+            reference.imageNumber,
+          ] as const))),
+    );
+    const reportPhotoIdSet = new Set(reportPhotoIds);
+    const relevantUpdates = activeSavedUpdates.filter(update =>
+      update.photos.some(photo => reportPhotoIdSet.has(photo.id)));
+    const hydratedUpdates = await Promise.all(
+      relevantUpdates.map(update => hydrateRecoveredProjectUpdatePhotos(update)),
+    );
+    const readableDrawingReferences = await Promise.all(
+      drawingReferences.map(async reference => {
+        try {
+          const readableDocument =
+            await ensureVerifiedReferenceDocumentBytes(reference.excerpt.document);
+          return {
+            ...reference,
+            excerpt: {
+              ...reference.excerpt,
+              document: readableDocument,
+            },
+          };
+        } catch {
+          return reference;
+        }
+      }),
+    );
+    const resolvedMedia = await resolveNativeReportWordMedia({
+      updates: hydratedUpdates as unknown as Parameters<
+        typeof resolveNativeReportWordMedia
+      >[0]['updates'],
+      reportPhotoIds,
+      drawingReferences: readableDrawingReferences,
+    });
+    const fileUri =
+      `${directory}${sanitizeFilename(report.title || 'Vitruvius Project Report')}.docx`;
+
+    try {
+      const base64 = await buildReportWordBase64({
+        title: report.title,
+        body: report.body,
+        generatedAt: report.generatedAt,
+        media: resolvedMedia.media.map(item => item.kind === 'photo'
+          ? {
+            ...item,
+            displayNumber: reportPhotoNumbers.get(item.id) || null,
+          }
+          : item),
+        unavailableMedia: resolvedMedia.unavailableMedia,
+      });
+      await FileSystem.writeAsStringAsync(fileUri, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      await Sharing.shareAsync(fileUri, {
+        dialogTitle: 'Open or save the Word report',
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        UTI: 'org.openxmlformats.wordprocessingml.document',
+      });
+
+      const unavailable = resolvedMedia.unavailableMedia.length;
+      if (unavailable > 0) {
+        const unavailableDetail = unavailable === 1
+          ? `\n\n${resolvedMedia.unavailableMedia[0].label}: ${resolvedMedia.unavailableMedia[0].reason}`
+          : '';
+        Alert.alert(
+          'Word report prepared',
+          `${summarizeReportWordUnavailableMedia(resolvedMedia.unavailableMedia)}` +
+            `${unavailableDetail}\n\nEach unavailable source image is listed in Media Requiring Review.`,
+        );
+      }
+      return 'completed';
+    } catch (error) {
+      Alert.alert(
+        'Word report unavailable',
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : 'The Word report could not be prepared from the current project files.',
+      );
+      return 'unknown';
+    } finally {
+      await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
+    }
+  }
+
+  async function resolveReportDrawingPreview(
+    reference: ReportDrawingReference,
+  ): Promise<string | null> {
+    try {
+      const readableDocument =
+        await ensureVerifiedReferenceDocumentBytes(reference.excerpt.document);
+      return await renderNativeReportDrawingPreview({
+        ...reference,
+        excerpt: {
+          ...reference.excerpt,
+          document: readableDocument,
+        },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveReportPhotoPreview(photoId: string): Promise<string | null> {
+    const update = activeSavedUpdates.find(candidate =>
+      candidate.photos.some(photo => photo.id === photoId));
+    if (!update) return null;
+    try {
+      const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
+      return hydrated.photos.find(photo => photo.id === photoId)?.uri?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function openSystemShareSheet() {
     const available = await Sharing.isAvailableAsync();
 
@@ -13602,6 +13764,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onCopyReport={copyReport}
               onEmailReport={emailReport}
               onTextReport={textReport}
+              onDownloadWordReport={downloadWordReport}
+              onResolveDrawingPreview={resolveReportDrawingPreview}
+              onResolvePhotoPreview={resolveReportPhotoPreview}
             />
           )}
 
@@ -14352,10 +14517,7 @@ function HomeScreen({
     ? liveAuthority.projectTruth.intelligence.dailyBrief
     : null;
   const dailyBriefItems = dailyBrief
-    ? [
-        ...dailyBrief.attentionItems,
-        ...dailyBrief.changedItems,
-      ].slice(0, 4)
+    ? selectActionableDailyBriefItems(dailyBrief)
     : [];
   const overviewScopedUpdates = Array.from(new Map(
     overviewRows
@@ -14722,12 +14884,12 @@ function HomeScreen({
       </OverviewResponsiveColumn>
       <OverviewResponsiveColumn priority="secondary">
 
-      {dailyBrief ? (
-        <View style={styles.phase2BriefCard}>
+      {dailyBriefItems.length > 0 ? (
+        <View style={styles.overviewDailyBriefCard}>
           <DailyBriefSection
             title="Daily Brief"
             items={dailyBriefItems}
-            emptyText={dailyBrief.emptyStates.attention}
+            emptyText=""
             onOpen={item => {
               if (item.navigationTarget === 'update_detail') {
                 const update = savedUpdates.find(candidate => candidate.id === item.sourceRecordId);
@@ -21210,6 +21372,7 @@ function ScheduleScreen({
     () => new Set(),
   );
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedAreaKey, setSelectedAreaKey] = useState<string | null>(null);
   const [planningTaskId, setPlanningTaskId] = useState<string | null>(null);
   const [scheduleManagementOpen, setScheduleManagementOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(Boolean(initialAddProjectName));
@@ -21405,6 +21568,20 @@ function ScheduleScreen({
     () => groupScheduleWorkspaceItemsByProjectAndArea(filteredItems),
     [filteredItems],
   );
+  const taskAreaSummaries = useMemo(
+    () => new Map(groupedTaskSections.map(section => {
+      const areaKey = scheduleWorkspaceAreaKey(section);
+      return [areaKey, buildDAVETaskAreaSummary({
+        projectName: section.projectName,
+        areaName: section.areaName,
+        tasks: section.data,
+      })];
+    })),
+    [groupedTaskSections],
+  );
+  const selectedAreaSummary = selectedAreaKey
+    ? taskAreaSummaries.get(selectedAreaKey) || null
+    : null;
   const mobileTaskSections = useMemo(
     () => groupedTaskSections.map(section => {
       const areaKey = `${section.projectName.trim().toLowerCase()}::${section.areaName.trim().toLowerCase()}`;
@@ -21448,29 +21625,38 @@ function ScheduleScreen({
       onItemTypeChange={itemType => {
         setItemTypeFilter(itemType);
         setSelectedTaskId(null);
+        setSelectedAreaKey(null);
       }}
       onViewChange={view => {
         setTaskView(view);
         setSelectedTaskId(null);
+        setSelectedAreaKey(null);
       }}
-      onFilterChange={setTaskFilter}
+      onFilterChange={filter => {
+        setTaskFilter(filter);
+        setSelectedTaskId(null);
+        setSelectedAreaKey(null);
+      }}
       onNeedsAttentionPress={() => {
         setWorkspaceView('Tasks');
         setTaskView('Open Tasks');
         setTaskFilter('Attention');
         setSelectedTaskId(null);
+        setSelectedAreaKey(null);
       }}
       onMyWorkPress={() => {
         setWorkspaceView('Tasks');
         setTaskView('Open Tasks');
         setTaskFilter('My Work');
         setSelectedTaskId(null);
+        setSelectedAreaKey(null);
       }}
       onMyReviewsPress={() => {
         setWorkspaceView('Tasks');
         setTaskView('Open Tasks');
         setTaskFilter('My Reviews');
         setSelectedTaskId(null);
+        setSelectedAreaKey(null);
       }}
       onAddTask={() => setShowAdd(true)}
       workspaceView={workspaceView}
@@ -21826,7 +22012,15 @@ function ScheduleScreen({
         <ScheduleWideWorkspace
           items={filteredItems}
           selectedTaskId={selectedTask?.id || null}
-          onSelectTask={setSelectedTaskId}
+          selectedAreaKey={selectedAreaKey}
+          onSelectTask={taskId => {
+            setSelectedTaskId(taskId);
+            setSelectedAreaKey(null);
+          }}
+          onSelectArea={section => {
+            setSelectedTaskId(null);
+            setSelectedAreaKey(scheduleWorkspaceAreaKey(section));
+          }}
           masterHeader={(
             <>
               {taskControls}
@@ -21850,6 +22044,14 @@ function ScheduleScreen({
               onSave={() => onSave(selectedTask.id)}
               onDelete={() => onDelete(selectedTask.id)}
               onAddFieldUpdate={() => onNewFieldUpdateForTask(selectedTask)}
+            />
+          ) : selectedAreaSummary ? (
+            <ScheduleTaskAreaSummaryPanel
+              summary={selectedAreaSummary}
+              onOpenTask={taskId => {
+                setSelectedTaskId(taskId);
+                setSelectedAreaKey(null);
+              }}
             />
           ) : emptyState}
           inspectorFooter={taskView === 'Open Tasks' ? scheduleTools : null}
@@ -21888,8 +22090,13 @@ function ScheduleScreen({
           <ScheduleTaskGroupHeader
             section={section}
             collapsed={section.collapsed}
+            selected={section.areaKey === selectedAreaKey}
             taskCount={section.areaTaskCount}
+            summary={section.areaKey === selectedAreaKey
+              ? taskAreaSummaries.get(section.areaKey) || null
+              : null}
             onPress={() => {
+              setSelectedAreaKey(current => current === section.areaKey ? null : section.areaKey);
               setCollapsedMobileTaskAreas(current => {
                 const next = new Set(current);
                 if (next.has(section.areaKey)) next.delete(section.areaKey);
@@ -21910,7 +22117,7 @@ function ScheduleScreen({
           </>
         )}
         ListEmptyComponent={emptyState}
-        stickySectionHeadersEnabled
+        stickySectionHeadersEnabled={!selectedAreaKey}
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
       />
       {taskEditor}
@@ -21994,6 +22201,12 @@ function ScheduleItemRow({
     : displayedItem.finishDate
       ? dueStatusText(displayedItem.finishDate, displayedItem.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)
       : 'No finish date';
+  const startDateLabel = displayedItem.startDate?.trim()
+    ? formatAppDate(displayedItem.startDate)
+    : 'Not set';
+  const finishDateLabel = displayedItem.finishDate?.trim()
+    ? formatAppDate(displayedItem.finishDate)
+    : 'Not set';
   const priorityColor = item.priority === 'High' ? colors.danger : item.priority === 'Low' ? colors.success : colors.warning;
   const statusColor = itemComplete ? colors.success : displayedItem.status === 'In Progress' ? colors.warning : displayedItem.status === 'Waiting' ? colors.muted : colors.primary;
   const blockerNames = (dependencyNode?.blockingPredecessorIds || []).map(blockerId =>
@@ -22067,6 +22280,9 @@ function ScheduleItemRow({
           </Text>
           <Text style={[styles.rowSub, styles.scheduleItemContext]}>
             {timingStatus}{item.contractor ? ` • ${item.contractor}` : ''}
+          </Text>
+          <Text style={[styles.rowSub, styles.scheduleItemContext]}>
+            Start {startDateLabel} • Finish / Due {finishDateLabel}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -22241,6 +22457,12 @@ function ScheduleItemRow({
               />
             ) : null}
             <NativeDateField
+              label="Start Date"
+              value={item.startDate}
+              onChange={startDate => onUpdate({ startDate })}
+              testID={`schedule-start-date-${item.id}`}
+            />
+            <NativeDateField
               label="Finish / Due Date"
               value={item.finishDate}
               onChange={finishDate => onUpdate({ finishDate })}
@@ -22300,6 +22522,9 @@ function ScheduleItemRow({
             </View>
 
             <Text style={styles.label}>Status</Text>
+            <Text style={styles.rowSub}>
+              Percentage sets the normal status automatically: 0% is Not Started, 1–99% is In Progress, and 100% is Complete. Choose Waiting only when work is on hold.
+            </Text>
             <View style={styles.statusGrid}>
               {SCHEDULE_STATUSES.map(status => {
                 const directStatusChangeDisabled =

@@ -1,6 +1,7 @@
 import ExpoModulesCore
 import ImageIO
 import PDFKit
+import UIKit
 import Vision
 
 public final class DaveTextRecognitionModule: Module {
@@ -113,7 +114,144 @@ public final class DaveTextRecognitionModule: Module {
         }
       }
     }
+
+    AsyncFunction("renderPdfExcerpt") {
+      (
+        pdfUrl: URL,
+        pageNumber: Int,
+        x: Double,
+        y: Double,
+        width: Double,
+        height: Double,
+        promise: Promise
+      ) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        autoreleasepool {
+          do {
+            let result = try renderPdfExcerpt(
+              at: pdfUrl,
+              pageNumber: pageNumber,
+              normalizedRegion: CGRect(
+                x: x,
+                y: y,
+                width: width,
+                height: height
+              )
+            )
+            promise.resolve(result)
+          } catch {
+            promise.reject(
+              Exception(
+                name: "DavePdfExcerptRenderingError",
+                description: error.localizedDescription
+              )
+            )
+          }
+        }
+      }
+    }
   }
+}
+
+private func renderPdfExcerpt(
+  at pdfUrl: URL,
+  pageNumber: Int,
+  normalizedRegion: CGRect
+) throws -> RenderedPdfExcerptResult {
+  guard let document = PDFDocument(url: pdfUrl) else {
+    throw NSError(
+      domain: "DaveTextRecognition",
+      code: 10,
+      userInfo: [NSLocalizedDescriptionKey: "The current drawing PDF could not be opened."]
+    )
+  }
+  let pageIndex = pageNumber - 1
+  guard pageIndex >= 0, pageIndex < document.pageCount,
+        let page = document.page(at: pageIndex) else {
+    throw NSError(
+      domain: "DaveTextRecognition",
+      code: 11,
+      userInfo: [NSLocalizedDescriptionKey: "The cited drawing page is not present in this PDF."]
+    )
+  }
+
+  let pageBounds = page.bounds(for: .mediaBox)
+  guard pageBounds.width > 0, pageBounds.height > 0 else {
+    throw NSError(
+      domain: "DaveTextRecognition",
+      code: 12,
+      userInfo: [NSLocalizedDescriptionKey: "The cited drawing page has invalid dimensions."]
+    )
+  }
+
+  let maximumDimension: CGFloat = 2_000
+  let scale = min(
+    maximumDimension / pageBounds.width,
+    maximumDimension / pageBounds.height
+  )
+  let renderedSize = CGSize(
+    width: max(1, floor(pageBounds.width * scale)),
+    height: max(1, floor(pageBounds.height * scale))
+  )
+  let renderedPage = page.thumbnail(of: renderedSize, for: .mediaBox)
+  guard let pageImage = renderedPage.cgImage else {
+    throw NSError(
+      domain: "DaveTextRecognition",
+      code: 13,
+      userInfo: [NSLocalizedDescriptionKey: "The cited drawing page could not be rendered."]
+    )
+  }
+
+  // Indexed regions use normalized, top-left page coordinates. Add a small
+  // margin so the report excerpt retains the nearby drawing context.
+  let padding: CGFloat = 0.045
+  let left = max(0, CGFloat(normalizedRegion.minX) - padding)
+  let top = max(0, CGFloat(normalizedRegion.minY) - padding)
+  let right = min(1, CGFloat(normalizedRegion.maxX) + padding)
+  let bottom = min(1, CGFloat(normalizedRegion.maxY) + padding)
+  guard right > left, bottom > top else {
+    throw NSError(
+      domain: "DaveTextRecognition",
+      code: 14,
+      userInfo: [NSLocalizedDescriptionKey: "The cited drawing area has invalid coordinates."]
+    )
+  }
+
+  let pixelWidth = CGFloat(pageImage.width)
+  let pixelHeight = CGFloat(pageImage.height)
+  let cropRect = CGRect(
+    x: floor(left * pixelWidth),
+    y: floor(top * pixelHeight),
+    width: ceil((right - left) * pixelWidth),
+    height: ceil((bottom - top) * pixelHeight)
+  ).intersection(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+  guard cropRect.width >= 2, cropRect.height >= 2,
+        let excerptImage = pageImage.cropping(to: cropRect) else {
+    throw NSError(
+      domain: "DaveTextRecognition",
+      code: 15,
+      userInfo: [NSLocalizedDescriptionKey: "The cited drawing area could not be cropped."]
+    )
+  }
+
+  let image = UIImage(cgImage: excerptImage)
+  guard let jpeg = image.jpegData(compressionQuality: 0.88) else {
+    throw NSError(
+      domain: "DaveTextRecognition",
+      code: 16,
+      userInfo: [NSLocalizedDescriptionKey: "The drawing excerpt could not be encoded."]
+    )
+  }
+
+  let destination = FileManager.default.temporaryDirectory
+    .appendingPathComponent("vitruvius-drawing-\(UUID().uuidString).jpg")
+  try jpeg.write(to: destination, options: .atomic)
+
+  let result = RenderedPdfExcerptResult()
+  result.uri = destination.absoluteString
+  result.width = excerptImage.width
+  result.height = excerptImage.height
+  return result
 }
 
 private struct PdfTextCell {
@@ -237,6 +375,12 @@ private struct ExtractedPdfTextResult: Record {
   @Field var format: String = "plain_text"
   @Field var pageCount: Int = 0
   @Field var pagesRead: Int = 0
+}
+
+private struct RenderedPdfExcerptResult: Record {
+  @Field var uri: String = ""
+  @Field var width: Int = 0
+  @Field var height: Int = 0
 }
 
 private struct RecognizedLine {

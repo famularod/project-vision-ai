@@ -32,7 +32,7 @@ export function referenceDocumentAppliesToProject(
   projectName: string,
 ) {
   const projects = referenceDocumentProjectNames(document);
-  return projects.length === 0 || projects.includes(compact(projectName));
+  return projects.length > 0 && projects.includes(compact(projectName));
 }
 
 function normalizedDocumentStem(document: Pick<
@@ -84,10 +84,12 @@ export function markAuthoritativeDocumentCurrent(
   const targetCategory = canonicalReferenceCategory(target);
   const targetFamily = referenceDocumentRevisionFamily(target);
   const targetProjects = referenceDocumentProjectNames(target);
+  if (targetProjects.length === 0) {
+    return { documents, changedDocumentIds: [] as string[] };
+  }
   const overlapsTargetProject = (document: ReferenceDocument) => {
     const projects = referenceDocumentProjectNames(document);
-    if (!targetProjects.length || !projects.length) return true;
-    return projects.some(project => targetProjects.includes(project));
+    return projects.length > 0 && projects.some(project => targetProjects.includes(project));
   };
 
   const changedDocumentIds: string[] = [];

@@ -91,6 +91,11 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain('title="Risks and decisions"');
     expect(shell).toContain('>Next actions</Text>');
     expect(shell).toContain("composerOpen ? 'Close Report Workspace' : 'Review & Prepare Report'");
+    expect(shell).toContain('>Report audience</Text>');
+    expect(shell).toContain('>Project Manager</Text>');
+    expect(shell).toContain('>Executive Summary</Text>');
+    expect(shell).toContain('accessibilityLabel="Project Manager report"');
+    expect(shell).toContain('accessibilityLabel="Executive Summary report"');
     expect(shell).toContain('Based on {report.sourceTaskIds.length} tasks and {report.sourceUpdateIds.length} field updates');
     expect(shell).not.toContain('Each saved artifact keeps its exact source refresh');
   });
@@ -187,7 +192,8 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain('>Expand all</Text>');
     expect(shell).toContain('>Collapse all</Text>');
     expect(shell).toContain('accessibilityState={{ expanded: projectExpanded }}');
-    expect(shell).toContain('accessibilityState={{ expanded: areaExpanded }}');
+    expect(shell).toContain('expanded: areaExpanded,');
+    expect(shell).toContain('selected: selectedAreaKey === areaKey,');
     expect(shell).toContain('taskProjectGroup');
     expect(shell).toContain('taskAreaContent');
     expect(shell).toContain("taskProjectGroup: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted");

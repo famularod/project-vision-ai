@@ -13,9 +13,23 @@ export type DaveExtractedPdfText = {
   pagesRead: number;
 };
 
+export type DaveRenderedPdfExcerpt = {
+  uri: string;
+  width: number;
+  height: number;
+};
+
 type DaveTextRecognitionNativeModule = {
   recognizeText(imageUri: string): Promise<DaveRecognizedText>;
   extractTextFromPdf?(pdfUri: string): Promise<DaveExtractedPdfText>;
+  renderPdfExcerpt?(
+    pdfUri: string,
+    pageNumber: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ): Promise<DaveRenderedPdfExcerpt>;
 };
 
 function getNativeModule() {
@@ -30,6 +44,10 @@ export function isDaveTextRecognitionAvailable() {
 
 export function isDavePdfTextExtractionAvailable() {
   return Boolean(getNativeModule()?.extractTextFromPdf);
+}
+
+export function isDavePdfExcerptRenderingAvailable() {
+  return Boolean(getNativeModule()?.renderPdfExcerpt);
 }
 
 export async function recognizeTextFromImage(imageUri: string) {
@@ -50,4 +68,30 @@ export async function extractTextFromPdf(pdfUri: string) {
   }
 
   return nativeModule.extractTextFromPdf(pdfUri);
+}
+
+export async function renderPdfExcerpt(
+  pdfUri: string,
+  pageNumber: number,
+  region: Readonly<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>,
+) {
+  const nativeModule = getNativeModule();
+
+  if (!nativeModule?.renderPdfExcerpt) {
+    throw new Error('Vitruvius PDF excerpt rendering is not included in this app build.');
+  }
+
+  return nativeModule.renderPdfExcerpt(
+    pdfUri,
+    pageNumber,
+    region.x,
+    region.y,
+    region.width,
+    region.height,
+  );
 }

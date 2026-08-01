@@ -1,5 +1,6 @@
 import type { ReferenceDocument } from '../../types';
 import {
+  currentAuthoritativeDocumentsForProject,
   markAuthoritativeDocumentCurrent,
   selectAutomaticDrawingExcerpt,
 } from '../../services/AuthoritativeDocumentSystem';
@@ -85,5 +86,26 @@ describe('authoritative document system', () => {
       projectName: 'Project A',
       areaName: 'South Lot',
     })).toBeNull();
+  });
+
+  it('fails closed when a document has no explicit project assignment', () => {
+    const unscoped = document('unscoped', { isCurrent: true });
+    expect(currentAuthoritativeDocumentsForProject([unscoped], 'Project A')).toEqual([]);
+
+    const result = markAuthoritativeDocumentCurrent([unscoped], unscoped.id);
+    expect(result.changedDocumentIds).toEqual([]);
+    expect(result.documents).toEqual([unscoped]);
+  });
+
+  it('does not supersede an ambiguous unscoped document', () => {
+    const result = markAuthoritativeDocumentCurrent([
+      document('unscoped', { isCurrent: true, drawingNumber: 'A-101' }),
+      document('scoped', { projectName: 'Project A', drawingNumber: 'A-101' }),
+    ], 'scoped');
+
+    expect(result.documents.map(item => [item.id, item.isCurrent])).toEqual([
+      ['unscoped', true],
+      ['scoped', true],
+    ]);
   });
 });

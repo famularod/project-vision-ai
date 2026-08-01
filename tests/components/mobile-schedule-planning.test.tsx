@@ -34,6 +34,7 @@ describe('MobileSchedulePlanning', () => {
           items={scheduleItems}
           view="Lookahead"
           onOpenTask={onOpenTask}
+          today={new Date('2026-07-24T12:00:00.000Z')}
         />
       </AppShellLayoutProvider>,
     );

@@ -172,7 +172,7 @@ export function DailyBriefSection({
   onOpen: (item: DAVEProjectDailyBriefItem | DAVEProjectDailyBriefAttentionItem) => void;
 }) {
   return (
-    <View>
+    <View style={styles.dailyBriefSection}>
       <Text style={styles.sectionLabel}>{title}</Text>
       {items.length === 0 ? (
         <Text style={styles.detailText}>{emptyText}</Text>
@@ -190,7 +190,12 @@ export function DailyBriefSection({
               <Text style={styles.briefSubtext}>{item.whyItMatters} {item.actionText}</Text>
             ) : null}
           </View>
-          <Ionicons name="chevron-forward" size={17} color={colors.mutedText} />
+          <Ionicons
+            name="chevron-forward"
+            size={17}
+            color={colors.mutedText}
+            style={styles.briefChevron}
+          />
         </TouchableOpacity>
       ))}
     </View>
@@ -264,22 +269,37 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 12,
   },
-  verificationCopy: { flex: 1 },
+  verificationCopy: { flex: 1, minWidth: 0 },
   verificationTitle: { color: colors.warning, fontSize: 13, fontWeight: '900', marginBottom: 2 },
   verificationLabel: { color: colors.warning, fontSize: 12, fontWeight: '800', marginBottom: 5 },
   sectionLabel: { color: colors.text, fontSize: 13, fontWeight: '700', textTransform: 'uppercase' },
   detailText: { color: colors.mutedText, fontSize: 13, fontWeight: '700', lineHeight: 19, marginTop: 7 },
   briefSubtext: { color: colors.mutedText, fontSize: 13, fontWeight: '500', marginTop: 4 },
+  dailyBriefSection: {
+    alignSelf: 'stretch',
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    width: '100%',
+  },
   briefRow: {
-    alignItems: 'center',
+    alignSelf: 'stretch',
     borderColor: colors.border,
     borderRadius: 8,
     borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
     marginBottom: 9,
     minHeight: 60,
+    minWidth: 0,
     padding: 12,
+    paddingRight: 40,
+    position: 'relative',
+    width: '100%',
+  },
+  briefChevron: {
+    marginTop: -9,
+    position: 'absolute',
+    right: 12,
+    top: '50%',
   },
   skeleton: { gap: 9, paddingVertical: 8 },
   skeletonLine: { backgroundColor: colors.surfaceMuted, borderRadius: 6, height: 12 },

@@ -46,8 +46,11 @@ export type DAVEWebReportAuditEvent = Readonly<{
   at: string;
 }>;
 
+export type DAVEWebReportAudience = 'project_manager' | 'executive';
+
 export type DAVEWebReportRecord = Readonly<{
   status: 'draft' | 'approved';
+  audience?: DAVEWebReportAudience;
   title: string;
   body: string;
   generatedAt: string;
@@ -351,9 +354,90 @@ function buildDAVEWebProjectTruths(
   });
 }
 
-export function formatDAVEWebReport(briefing: DAVEReportBriefing): string {
+export function buildDAVEWebReportTitle(
+  briefing: DAVEReportBriefing,
+  audience: DAVEWebReportAudience,
+): string {
+  return audience === 'executive'
+    ? `${briefing.scopeLabel} — Executive Summary`
+    : `${briefing.scopeLabel} — Project Manager Report`;
+}
+
+function cappedReportItems(
+  items: readonly string[],
+  limit: number,
+  emptyText: string,
+): string[] {
+  if (items.length === 0) return [`- ${emptyText}`];
+  const visible = items.slice(0, limit).map(item => `- ${item}`);
+  const remaining = items.length - visible.length;
+  return remaining > 0
+    ? [...visible, `- ${remaining} additional item${remaining === 1 ? '' : 's'} available in the detailed project record.`]
+    : visible;
+}
+
+export function formatDAVEWebReport(
+  briefing: DAVEReportBriefing,
+  audience: DAVEWebReportAudience = 'project_manager',
+): string {
+  if (audience === 'executive') {
+    const executiveLines = [
+      `# ${buildDAVEWebReportTitle(briefing, audience)}`,
+      '',
+      `Generated: ${new Date(briefing.generatedAt).toLocaleString()}`,
+      `Overall condition: ${briefing.conditionLabel}`,
+      '',
+      '## Executive Snapshot',
+      briefing.executiveSnapshot,
+      '',
+      '## Project Status',
+      ...briefing.projectConditions.map(item => `- ${item.projectName}: ${item.currentReality} ${item.schedule}`),
+      '',
+      '## Completed Work',
+      ...cappedReportItems(
+        briefing.completedWork,
+        5,
+        'No completed work is recorded in the current project scope.',
+      ),
+      '',
+      '## Material Changes',
+      ...cappedReportItems(
+        briefing.whatChanged,
+        5,
+        'No recent material changes are recorded.',
+      ),
+      '',
+      '## Schedule Position',
+      ...cappedReportItems(
+        briefing.schedulePosition,
+        5,
+        'No schedule position is available.',
+      ),
+      '',
+      '## Risks and Decisions',
+      ...cappedReportItems(
+        [
+          ...briefing.criticalRisks,
+          ...briefing.decisionsRequired.map(item => `Decision required: ${item}`),
+        ],
+        5,
+        'No current critical risks or pending decisions are recorded.',
+      ),
+      '',
+      '## Management Actions',
+      ...cappedReportItems(
+        briefing.nextActions.map(item =>
+          `${item.projectName} — ${item.taskName}: ${item.action} Owner: ${item.owner}. Timing: ${item.timing}.`,
+        ),
+        4,
+        'Continue planned work and record the next material change.',
+      ),
+    ];
+    return executiveLines.join('\n');
+  }
+
   const lines = [
-    `# ${briefing.scopeLabel} Project Report`,
+    `# ${buildDAVEWebReportTitle(briefing, audience)}`,
     '',
     `Generated: ${new Date(briefing.generatedAt).toLocaleString()}`,
     `Overall condition: ${briefing.conditionLabel}`,
@@ -363,6 +447,11 @@ export function formatDAVEWebReport(briefing: DAVEReportBriefing): string {
     '',
     '## Project Status',
     ...briefing.projectConditions.map(item => `- ${item.projectName}: ${item.currentReality} ${item.schedule}`),
+    '',
+    '## Completed Work',
+    ...(briefing.completedWork.length
+      ? briefing.completedWork.map(item => `- ${item}`)
+      : ['- No completed work is recorded in the current project scope.']),
     '',
     '## Current Work',
     ...(briefing.currentWork.length ? briefing.currentWork.map(item => `- ${item}`) : ['- No current work is recorded.']),

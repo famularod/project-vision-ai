@@ -15,7 +15,6 @@ import {
 import {
   PROJECT_ITEM_TYPES,
   SCHEDULE_PRIORITIES,
-  SCHEDULE_STATUSES,
   type ProjectItemType,
   type ProjectUpdate,
   type ReferenceDocument,
@@ -56,10 +55,12 @@ import {
   DAVE_WEB_TASK_PAGE_SIZE,
   type DAVEWebTaskRenderGroup,
 } from '../../services/DAVEWebTaskPagination';
+import { buildDAVETaskAreaSummary } from '../../services/DAVETaskAreaSummary';
 import { presentDAVEWebFreshness } from '../../services/DAVEWebFreshness';
 import {
   buildDAVEWebReportDraft,
   buildDAVEWebReportSource,
+  buildDAVEWebReportTitle,
   buildDAVEWebTruthDiagnostics,
   createDAVEWebBackup,
   createDAVEWebId,
@@ -71,6 +72,7 @@ import {
   validateDAVEWebBackup,
   type DAVEWebBackup,
   type DAVEWebPreparedUpload,
+  type DAVEWebReportAudience,
   type DAVEWebReportRecord,
   type DAVEWebReportSource,
 } from '../../services/DAVEWebOperations';
@@ -84,6 +86,7 @@ import { DesktopOverviewPage } from './desktop-overview-page';
 import { DesktopSchedulePage } from './desktop-schedule-page';
 import { desktopSurfaces } from './desktop-surface-palette';
 import { ProjectControlsEditor } from '../project-controls-editor';
+import { ScheduleTaskAreaSummaryPanel } from '../schedule-workspace-layout';
 import { buildVitruviusPortfolioImpact } from '../../services/VitruviusProjectControls';
 import { applyProjectControlTemplateToControls } from '../../services/ProjectControlTemplates';
 import { buildVitruviusMyWork } from '../../services/VitruviusMyWork';
@@ -92,6 +95,12 @@ import {
   projectItemWorkflowIsClosed,
   projectItemWorkflowReadiness,
 } from '../../services/ProjectItemWorkflow';
+import {
+  buildReportWordBlob,
+  summarizeReportWordUnavailableMedia,
+} from '../../services/ReportWordDocument';
+import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
+import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
 import {
   desktopNavigationItems,
   desktopRouteIsActive,
@@ -780,6 +789,7 @@ function TaskEditingWorkspace({
   const [deleteCandidate, setDeleteCandidate] = useState<DAVEWebScheduleItem | null>(null);
   const [taskView, setTaskView] = useState<'open' | 'mine' | 'reviews' | 'completed'>('open');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedAreaKey, setSelectedAreaKey] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<TaskWorkspaceStatusFilter>('all');
   const [areaFilter, setAreaFilter] = useState('all');
@@ -849,7 +859,29 @@ function TaskEditingWorkspace({
       return true;
     });
   }, [areaFilter, itemTypeFilter, priorityFilter, searchQuery, statusFilter, taskViewItems]);
+  const taskAreaSummaries = useMemo(() => {
+    const groups = new Map<string, {
+      projectName: string;
+      areaName: string;
+      tasks: ScheduleItem[];
+    }>();
+    visibleTasks.forEach(task => {
+      const projectName = task.scheduleProjectName?.trim() || task.projectName.trim() || 'No project';
+      const areaName = task.locationName?.trim() || 'No Area Assigned';
+      const key = taskAreaGroupKey(projectName, areaName);
+      const group = groups.get(key) ?? { projectName, areaName, tasks: [] };
+      group.tasks.push(task);
+      groups.set(key, group);
+    });
+    return new Map([...groups.entries()].map(([key, group]) => [
+      key,
+      buildDAVETaskAreaSummary(group),
+    ]));
+  }, [visibleTasks]);
   const selectedTask = tasks.find(task => task.id === selectedTaskId) ?? null;
+  const selectedAreaSummary = selectedAreaKey
+    ? taskAreaSummaries.get(selectedAreaKey) ?? null
+    : null;
   const filtersActive = Boolean(
     searchQuery.trim() ||
     statusFilter !== 'all' ||
@@ -866,10 +898,16 @@ function TaskEditingWorkspace({
       setSelectedTaskId(null);
     }
   }, [editorOpen, selectedTaskId, visibleTasks]);
+  useEffect(() => {
+    if (selectedAreaKey && !taskAreaSummaries.has(selectedAreaKey)) {
+      setSelectedAreaKey(null);
+    }
+  }, [selectedAreaKey, taskAreaSummaries]);
 
   const openCreate = () => {
     setEditingTask(null);
     setSelectedTaskId(null);
+    setSelectedAreaKey(null);
     setDeleteCandidate(null);
     setNotice(null);
     setConflictDraft(null);
@@ -879,6 +917,7 @@ function TaskEditingWorkspace({
   const openEdit = (task: ScheduleItem) => {
     setEditingTask(task as DAVEWebScheduleItem);
     setSelectedTaskId(task.id);
+    setSelectedAreaKey(null);
     setDeleteCandidate(null);
     setNotice(null);
     setConflictDraft(null);
@@ -887,6 +926,7 @@ function TaskEditingWorkspace({
 
   const openDetails = (task: ScheduleItem) => {
     setSelectedTaskId(task.id);
+    setSelectedAreaKey(null);
     setEditingTask(null);
     setEditorOpen(false);
     setDeleteCandidate(null);
@@ -1298,8 +1338,18 @@ function TaskEditingWorkspace({
             key={`${taskView}:${selectedProject ?? 'all-projects'}:${searchQuery}:${statusFilter}:${areaFilter}:${itemTypeFilter}:${priorityFilter}`}
             tasks={visibleTasks}
             selectedTaskId={selectedTaskId}
+            selectedAreaKey={selectedAreaKey}
             autoExpandMatches={filtersActive}
             onSelect={openDetails}
+            onSelectArea={(projectName, areaName) => {
+              const key = taskAreaGroupKey(projectName, areaName);
+              setSelectedTaskId(null);
+              setEditingTask(null);
+              setEditorOpen(false);
+              setDeleteCandidate(null);
+              setConflictDraft(null);
+              setSelectedAreaKey(current => current === key ? null : key);
+            }}
             onEdit={openEdit}
             onDelete={task => {
               setEditorOpen(false);
@@ -1309,7 +1359,7 @@ function TaskEditingWorkspace({
             }}
           />
         </View>
-        {editorOpen || selectedTask || !compactTaskWorkspace ? (
+        {editorOpen || selectedTask || selectedAreaSummary || !compactTaskWorkspace ? (
           <View
             style={[
               styles.taskInspectorPane,
@@ -1349,6 +1399,14 @@ function TaskEditingWorkspace({
                 onDelete={() => {
                   setNotice(null);
                   setDeleteCandidate(selectedTask);
+                }}
+              />
+            ) : selectedAreaSummary ? (
+              <ScheduleTaskAreaSummaryPanel
+                summary={selectedAreaSummary}
+                onOpenTask={taskId => {
+                  const task = tasks.find(item => item.id === taskId);
+                  if (task) openDetails(task);
                 }}
               />
             ) : (
@@ -1478,15 +1536,19 @@ function WorkspaceFilterSelect({
 function GroupedTaskList({
   tasks,
   selectedTaskId,
+  selectedAreaKey,
   autoExpandMatches,
   onSelect,
+  onSelectArea,
   onEdit,
   onDelete,
 }: {
   tasks: readonly ScheduleItem[];
   selectedTaskId?: string | null;
+  selectedAreaKey?: string | null;
   autoExpandMatches?: boolean;
   onSelect?: (task: ScheduleItem) => void;
+  onSelectArea?: (projectName: string, areaName: string) => void;
   onEdit?: (task: ScheduleItem) => void;
   onDelete?: (task: ScheduleItem) => void;
 }) {
@@ -1638,12 +1700,20 @@ function GroupedTaskList({
                   <Pressable
                     style={({ pressed }) => [
                       styles.taskAreaHeading,
+                      selectedAreaKey === areaKey && styles.taskAreaHeadingSelected,
                       pressed && styles.taskHierarchyHeadingPressed,
                     ]}
-                    onPress={() => toggleArea(project.projectName, area.areaName)}
+                    onPress={() => {
+                      toggleArea(project.projectName, area.areaName);
+                      onSelectArea?.(project.projectName, area.areaName);
+                    }}
                     accessibilityRole="button"
                     accessibilityLabel={`${areaExpanded ? 'Collapse' : 'Expand'} ${area.areaName}`}
-                    accessibilityState={{ expanded: areaExpanded }}
+                    accessibilityHint={`Also opens the ${area.areaName} area summary.`}
+                    accessibilityState={{
+                      expanded: areaExpanded,
+                      selected: selectedAreaKey === areaKey,
+                    }}
                   >
                     <View style={styles.taskAreaHeadingCopy}>
                       <Ionicons
@@ -1721,6 +1791,12 @@ function toggleSetValue(current: Set<string>, value: string): Set<string> {
   return next;
 }
 
+function automaticTaskStatus(percentComplete: number): ScheduleStatus {
+  if (percentComplete >= 100) return 'Complete';
+  if (percentComplete > 0) return 'In Progress';
+  return 'Not Started';
+}
+
 function TaskEditor({
   task,
   defaultProject,
@@ -1757,9 +1833,33 @@ function TaskEditor({
   const structuredStatusOptions: readonly ScheduleStatus[] = workflowClosed
     ? ['Complete']
     : ['Not Started', 'In Progress', 'Waiting'];
+  const parsedPercentComplete = Number(draft.percentComplete);
+  const derivedTaskStatus = automaticTaskStatus(
+    Number.isFinite(parsedPercentComplete) ? parsedPercentComplete : 0,
+  );
+  const taskStatusOptions = Array.from(new Set<ScheduleStatus>([
+    derivedTaskStatus,
+    'Waiting',
+  ]));
 
   const updateField = <K extends keyof TaskFormState,>(key: K, value: TaskFormState[K]) => {
     setDraft(previous => ({ ...previous, [key]: value }));
+  };
+
+  const updatePercentComplete = (value: string) => {
+    setDraft(previous => {
+      const percentComplete = Number(value);
+      if (!Number.isFinite(percentComplete)) {
+        return { ...previous, percentComplete: value };
+      }
+      return {
+        ...previous,
+        percentComplete: value,
+        status: previous.status === 'Waiting' && percentComplete < 100
+          ? 'Waiting'
+          : automaticTaskStatus(percentComplete),
+      };
+    });
   };
 
   const submit = async () => {
@@ -1776,7 +1876,15 @@ function TaskEditor({
       return;
     }
     try {
-      await onSave({ ...draft, percentComplete });
+      await onSave({
+        ...draft,
+        percentComplete,
+        status: structuredWorkflow
+          ? draft.status
+          : draft.status === 'Waiting' && percentComplete < 100
+            ? 'Waiting'
+            : automaticTaskStatus(percentComplete),
+      });
     } catch (error) {
       setValidationMessage(taskMutationMessage(error));
     }
@@ -1872,7 +1980,7 @@ function TaskEditor({
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Status</Text>
         <OptionButtons<ScheduleStatus>
-          options={structuredWorkflow ? structuredStatusOptions : SCHEDULE_STATUSES}
+          options={structuredWorkflow ? structuredStatusOptions : taskStatusOptions}
           value={draft.status}
           onChange={value => updateField('status', value)}
         />
@@ -1882,7 +1990,11 @@ function TaskEditor({
               ? `Use "Reopen ${draft.itemType}" to resume this record.`
               : `Use "Close ${draft.itemType}" to record Complete and 100%.`}
           </Text>
-        ) : null}
+        ) : (
+          <Text style={styles.dataMeta}>
+            Percentage sets Not Started, In Progress, or Complete. Choose Waiting only for a true hold.
+          </Text>
+        )}
       </View>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Priority</Text>
@@ -1906,7 +2018,7 @@ function TaskEditor({
         <LabeledTextField
           label={structuredWorkflow ? 'Percent complete (0–99)' : 'Percent complete'}
           value={draft.percentComplete}
-          onChangeText={value => updateField('percentComplete', value)}
+          onChangeText={updatePercentComplete}
           placeholder="0"
           numeric
         />
@@ -2310,7 +2422,9 @@ function TaskList({
             <View style={styles.taskCompactFacts}>
               <Text style={styles.dataDetail}>{task.percentComplete}% complete</Text>
               <Text style={styles.taskFactDivider}>•</Text>
-              <Text style={styles.dataDetail}>Finish {formatDate(task.finishDate)}</Text>
+              <Text style={styles.dataDetail}>Start {formatDate(task.startDate)}</Text>
+              <Text style={styles.taskFactDivider}>•</Text>
+              <Text style={styles.dataDetail}>Finish / Due {formatDate(task.finishDate)}</Text>
               <Text style={styles.taskFactDivider}>•</Text>
               <Text style={styles.dataDetail}>{task.priority} priority</Text>
               {task.owner ? (
@@ -4051,14 +4165,22 @@ function ReportWorkspace({
     () => buildDAVEWebReportDraft(snapshot, selectedProject),
     [selectedProject, snapshot],
   );
-  const generatedBody = useMemo(() => formatDAVEWebReport(briefing), [briefing]);
+  const [reportAudience, setReportAudience] = useState<DAVEWebReportAudience>('project_manager');
+  const generatedTitle = useMemo(
+    () => buildDAVEWebReportTitle(briefing, reportAudience),
+    [briefing, reportAudience],
+  );
+  const generatedBody = useMemo(
+    () => formatDAVEWebReport(briefing, reportAudience),
+    [briefing, reportAudience],
+  );
   const currentReportSource = useMemo(
     () => buildDAVEWebReportSource(snapshot, selectedProject),
     [selectedProject, snapshot],
   );
   const reportDocuments = documents.filter(document => reportRecordFromDocument(document));
   const [reportId, setReportId] = useState(() => createDAVEWebId('web-report'));
-  const [reportTitle, setReportTitle] = useState(`${briefing.scopeLabel} Project Report`);
+  const [reportTitle, setReportTitle] = useState(generatedTitle);
   const [reportBody, setReportBody] = useState(generatedBody);
   const [reportGeneratedAt, setReportGeneratedAt] = useState(briefing.generatedAt);
   const [expectedRevision, setExpectedRevision] = useState<string | null>(null);
@@ -4069,10 +4191,84 @@ function ReportWorkspace({
   const [editingReportBody, setEditingReportBody] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  const selectedProjectNames = useMemo(
+    () => selectedProject
+      ? scheduleProjectScopeNames(selectedProject, [...snapshot.scheduleItems])
+      : snapshot.projects.map(project => project.name),
+    [selectedProject, snapshot.projects, snapshot.scheduleItems],
+  );
+
+  const downloadWordReport = async ({
+    title,
+    body,
+    generatedAt,
+    updateIds,
+  }: {
+    title: string;
+    body: string;
+    generatedAt: string;
+    updateIds: readonly string[];
+  }) => {
+    if (pending) return;
+    setPending(true);
+    setNotice(null);
+    try {
+      const sourceIds = new Set(updateIds);
+      const sourceUpdates = snapshot.projectUpdates
+        .filter(update => sourceIds.has(update.id) || sourceIds.has(update.updateData.id))
+        .map(update => update.updateData);
+      const reportPhotoIds = uniqueStrings(
+        sourceUpdates.flatMap(update => update.photos.map(photo => photo.id)),
+      );
+      const drawingReferences = buildAutomaticReportDrawingReferences({
+        documents: [...snapshot.referenceDocuments],
+        scheduleItems: [...snapshot.scheduleItems],
+        selectedProjectNames,
+      });
+      const resolvedMedia = await resolveWebReportWordMedia({
+        updates: sourceUpdates,
+        reportPhotoIds,
+        drawingReferences,
+        getArtifactUrl: auth.getArtifactUrl,
+      });
+      const blob = await buildReportWordBlob({
+        title,
+        body,
+        generatedAt,
+        media: resolvedMedia.media,
+        unavailableMedia: resolvedMedia.unavailableMedia,
+      });
+      downloadBlob(`${safeDownloadName(title)}.docx`, blob);
+      const embeddedPhotos = resolvedMedia.media.filter(item => item.kind === 'photo').length;
+      const embeddedDrawings = resolvedMedia.media.filter(item => item.kind === 'drawing').length;
+      const embedded = embeddedPhotos + embeddedDrawings;
+      const unavailable = resolvedMedia.unavailableMedia.length;
+      const unavailableSummary =
+        summarizeReportWordUnavailableMedia(resolvedMedia.unavailableMedia);
+      const unavailableDetail = unavailable === 1
+        ? ` ${resolvedMedia.unavailableMedia[0].label}: ${resolvedMedia.unavailableMedia[0].reason}`
+        : '';
+      setNotice({
+        tone: unavailable ? 'danger' : 'good',
+        text: unavailable
+          ? `Word report downloaded with ${embedded} embedded source image${embedded === 1 ? '' : 's'}. ${unavailableSummary}${unavailableDetail} Each unavailable source image is listed in Media Requiring Review.`
+          : `Word report downloaded with ${embeddedPhotos} embedded project photo${embeddedPhotos === 1 ? '' : 's'} and ${embeddedDrawings} current drawing excerpt${embeddedDrawings === 1 ? '' : 's'}.`,
+      });
+    } catch (error) {
+      setNotice({
+        tone: 'danger',
+        text: error instanceof Error && error.message.trim()
+          ? `The Word report could not be prepared: ${error.message.trim()}`
+          : 'The Word report could not be prepared from the current project files.',
+      });
+    } finally {
+      setPending(false);
+    }
+  };
 
   const resetFromCurrentTruth = () => {
     setReportId(createDAVEWebId('web-report'));
-    setReportTitle(`${briefing.scopeLabel} Project Report`);
+    setReportTitle(generatedTitle);
     setReportBody(generatedBody);
     setReportGeneratedAt(briefing.generatedAt);
     setExpectedRevision(null);
@@ -4080,6 +4276,28 @@ function ReportWorkspace({
     setReportSource(currentReportSource);
     setReportStatus('draft');
     setNotice({ tone: 'good', text: 'A fresh draft was generated from the latest reconciled project record.' });
+  };
+
+  const applyReportAudience = (audience: DAVEWebReportAudience) => {
+    if (audience === reportAudience) return;
+    const nextTitle = buildDAVEWebReportTitle(briefing, audience);
+    const nextBody = formatDAVEWebReport(briefing, audience);
+    setReportAudience(audience);
+    setReportId(createDAVEWebId('web-report'));
+    setReportTitle(nextTitle);
+    setReportBody(nextBody);
+    setReportGeneratedAt(briefing.generatedAt);
+    setExpectedRevision(null);
+    setAudit([]);
+    setReportSource(currentReportSource);
+    setReportStatus('draft');
+    setEditingReportBody(false);
+    setNotice({
+      tone: 'good',
+      text: audience === 'executive'
+        ? 'An executive summary was generated from the current project facts.'
+        : 'A detailed project manager report was generated from the current project facts.',
+    });
   };
 
   const save = async (status: 'draft' | 'approved') => {
@@ -4105,6 +4323,7 @@ function ReportWorkspace({
     ];
     const report: DAVEWebReportRecord = {
       status,
+      audience: reportAudience,
       title: reportTitle.trim(),
       body: reportBody.trim(),
       generatedAt: reportGeneratedAt,
@@ -4138,6 +4357,9 @@ function ReportWorkspace({
   const openReport = (document: DAVEWebReferenceDocument) => {
     const report = reportRecordFromDocument(document);
     if (!report) return;
+    const savedAudience: DAVEWebReportAudience = report.audience
+      || (report.title.toLowerCase().includes('executive') ? 'executive' : 'project_manager');
+    setReportAudience(savedAudience);
     setReportId(document.id);
     setReportTitle(report.title);
     setReportBody(report.body);
@@ -4328,6 +4550,52 @@ function ReportWorkspace({
       {composerOpen ? (
         <Section title="Prepare Report" detail="This draft uses the current task, schedule, and field-update facts shown above.">
           <View style={styles.editorCard}>
+            <View style={styles.reportAudienceField}>
+              <View>
+                <Text style={styles.cardTitle}>Report audience</Text>
+                <Text style={styles.dataMeta}>Choose the level of detail before reviewing or downloading the report.</Text>
+              </View>
+              <View style={styles.reportAudienceChoices}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.reportAudienceChoice,
+                    reportAudience === 'project_manager' && styles.reportAudienceChoiceActive,
+                    pressed && styles.buttonPressed,
+                  ]}
+                  onPress={() => applyReportAudience('project_manager')}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: reportAudience === 'project_manager' }}
+                  accessibilityLabel="Project Manager report"
+                >
+                  <Text style={[
+                    styles.reportAudienceChoiceTitle,
+                    reportAudience === 'project_manager' && styles.reportAudienceChoiceTitleActive,
+                  ]}>Project Manager</Text>
+                  <Text style={styles.reportAudienceChoiceDetail}>
+                    Detailed task status, completed work, schedule position, risks, decisions, and next actions.
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.reportAudienceChoice,
+                    reportAudience === 'executive' && styles.reportAudienceChoiceActive,
+                    pressed && styles.buttonPressed,
+                  ]}
+                  onPress={() => applyReportAudience('executive')}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: reportAudience === 'executive' }}
+                  accessibilityLabel="Executive Summary report"
+                >
+                  <Text style={[
+                    styles.reportAudienceChoiceTitle,
+                    reportAudience === 'executive' && styles.reportAudienceChoiceTitleActive,
+                  ]}>Executive Summary</Text>
+                  <Text style={styles.reportAudienceChoiceDetail}>
+                    Concise project condition, completed work, material changes, schedule, risks, and management actions.
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
             <LabeledTextField
               label="Report title"
               value={reportTitle}
@@ -4388,8 +4656,19 @@ function ReportWorkspace({
                   <Pressable style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]} onPress={resetFromCurrentTruth} disabled={pending}>
                     <Text style={styles.secondaryButtonText}>Regenerate from Current Facts</Text>
                   </Pressable>
-                  <Pressable style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]} onPress={() => downloadText(`${safeDownloadName(reportTitle)}.md`, reportBody)}>
-                    <Text style={styles.secondaryButtonText}>Download Draft</Text>
+                  <Pressable
+                    style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]}
+                    onPress={() => {
+                      void downloadWordReport({
+                        title: reportTitle,
+                        body: reportBody,
+                        generatedAt: reportGeneratedAt,
+                        updateIds: reportSource.updateIds,
+                      });
+                    }}
+                    disabled={pending}
+                  >
+                    <Text style={styles.secondaryButtonText}>Download Word Report</Text>
                   </Pressable>
                   <Pressable style={({ pressed }) => [styles.secondaryButton, styles.reportActionButton, pressed && styles.buttonPressed]} onPress={() => { void save('draft'); }} disabled={pending}>
                     <Text style={styles.secondaryButtonText}>Save Draft</Text>
@@ -4443,7 +4722,9 @@ function ReportWorkspace({
                 <View style={styles.dataRow}>
                   <View style={styles.dataGrow}>
                     <Text style={styles.dataTitle}>{report.title}</Text>
-                    <Text style={styles.dataMeta}>Prepared {formatDateTime(report.generatedAt)} · {report.audit.length} recorded review event{report.audit.length === 1 ? '' : 's'}</Text>
+                    <Text style={styles.dataMeta}>
+                      {report.audience === 'executive' ? 'Executive Summary' : 'Project Manager'} · Prepared {formatDateTime(report.generatedAt)} · {report.audit.length} recorded review event{report.audit.length === 1 ? '' : 's'}
+                    </Text>
                     <Text style={styles.dataMeta}>Based on {report.sourceTaskIds.length} tasks and {report.sourceUpdateIds.length} field updates</Text>
                   </View>
                   <StatusBadge label={report.status === 'approved' ? 'Approved' : 'Draft'} tone={report.status === 'approved' ? 'good' : 'attention'} />
@@ -4452,8 +4733,19 @@ function ReportWorkspace({
                   <Pressable style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]} onPress={() => openReport(document)}>
                     <Text style={styles.secondaryButtonText}>Open</Text>
                   </Pressable>
-                  <Pressable style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]} onPress={() => downloadText(`${safeDownloadName(report.title)}.md`, report.body)}>
-                    <Text style={styles.secondaryButtonText}>Download</Text>
+                  <Pressable
+                    style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                    onPress={() => {
+                      void downloadWordReport({
+                        title: report.title,
+                        body: report.body,
+                        generatedAt: report.generatedAt,
+                        updateIds: report.sourceUpdateIds,
+                      });
+                    }}
+                    disabled={pending}
+                  >
+                    <Text style={styles.secondaryButtonText}>Download Word Report</Text>
                   </Pressable>
                 </View>
               </View>
@@ -5236,6 +5528,22 @@ function downloadText(fileName: string, contents: string, mimeType = 'text/markd
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function downloadBlob(fileName: string, blob: Blob) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function uniqueStrings(values: readonly string[]) {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))];
+}
+
 function openSignedArtifact(url: string, downloadName: string | null) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   if (!downloadName) {
@@ -5474,6 +5782,7 @@ const styles = StyleSheet.create({
   taskProjectCount: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 19, fontWeight: '900' },
   taskGroup: { borderRadius: 13, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.sm, gap: spacing.sm },
   taskAreaHeading: { minHeight: 48, borderLeftWidth: 5, borderLeftColor: desktopSurfaces.accent, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.selected, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  taskAreaHeadingSelected: { borderWidth: 2, borderLeftWidth: 6, borderColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.accentSoft },
   taskAreaHeadingCopy: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   taskAreaTitle: { flex: 1, color: '#1B1F27', fontSize: 15, lineHeight: 20, fontWeight: '900' },
   taskAreaCount: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
@@ -5577,6 +5886,13 @@ const styles = StyleSheet.create({
   reportPMActionMeta: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 19, fontWeight: '800', marginTop: 2 },
   reportPrepareBar: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.lg, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.lg },
   reportPrepareButton: { minWidth: 240 },
+  reportAudienceField: { gap: spacing.sm },
+  reportAudienceChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  reportAudienceChoice: { flexGrow: 1, flexBasis: 300, minWidth: 240, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md, gap: spacing.xs },
+  reportAudienceChoiceActive: { borderColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.selected },
+  reportAudienceChoiceTitle: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '900' },
+  reportAudienceChoiceTitleActive: { color: desktopSurfaces.accentText },
+  reportAudienceChoiceDetail: { color: colors.mutedText, fontSize: 13, lineHeight: 19 },
   reportComposer: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: spacing.lg },
   reportPreviewColumn: { flexGrow: 1, flexBasis: 620, minWidth: 0, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
   reportPreviewHeader: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },

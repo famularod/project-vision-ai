@@ -38,7 +38,10 @@ function loadTs(relativePath, cache = new Map()) {
   return module.exports;
 }
 
-const { buildProjectDailyBrief } = loadTs('services/DAVEDailyBrief.ts');
+const {
+  buildProjectDailyBrief,
+  selectActionableDailyBriefItems,
+} = loadTs('services/DAVEDailyBrief.ts');
 
 const now = '2026-07-11T12:00:00.000Z';
 const projectId = 'project-alpha';
@@ -118,6 +121,15 @@ const failed = brief({ updates: [update({ photos: [photo({ photoIntelligence: {
 } })] })] });
 assert.strictEqual(failed.changedItems.length, 0, 'Failed analysis must not create a changed claim.');
 assert(failed.uncertaintyItems.some(item => item.text === 'Analysis unavailable · Retry'));
+assert(
+  failed.attentionItems.some(item => item.text === 'Photo analysis is unavailable.'),
+  'Failed analysis must remain available to diagnostic and retry workflows.',
+);
+assert.strictEqual(
+  selectActionableDailyBriefItems(failed).length,
+  0,
+  'Technical photo-analysis failures must not become PM-facing Daily Brief items.',
+);
 
 const notComparable = brief({ updates: [update({ photos: [photo({ photoIntelligence: {
   ...tanCaseResult,
@@ -147,6 +159,15 @@ assert.strictEqual(attention.attentionItems[0].category, 'safety_concern', 'Safe
 assert.strictEqual(attention.attentionItems.filter(item => item.id.includes('safety-photo')).length, 1, 'Stable identity must deduplicate repeated attention items.');
 assert(attention.recommendedAction, 'One supported action must be selected.');
 assert(attention.recommendedAction.reason && attention.recommendedAction.navigationTarget, 'Recommendation must include reason and navigation target.');
+assert(
+  selectActionableDailyBriefItems(attention).every(item => item.category !== 'analysis'),
+  'The PM-facing Daily Brief must contain operational items rather than analysis diagnostics.',
+);
+assert.strictEqual(
+  selectActionableDailyBriefItems(changed)[0]?.id,
+  changed.changedItems[0].id,
+  'A verified material change must remain eligible for the PM-facing Daily Brief.',
+);
 
 const reworded = brief({ updates: [update({
   ...attentionUpdate,
@@ -178,5 +199,10 @@ assert(
   'Canonical Project Truth must remain available to task workflows without restoring the retired Project Snapshot.',
 );
 assert(!app.includes("title=\"DAVE Daily Brief\""), 'Daily Brief must not add a top-level navigation screen.');
+assert(
+  app.includes('selectActionableDailyBriefItems(dailyBrief)') &&
+    app.includes('{dailyBriefItems.length > 0 ? ('),
+  'Overview must hide the Daily Brief when no operational PM items remain.',
+);
 
 console.log('DAVE Daily Brief behavioral tests passed.');

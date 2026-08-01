@@ -90,6 +90,43 @@ export type DAVEProjectDailyBrief = {
   };
 };
 
+export type DAVEProjectDailyBriefDisplayItem =
+  | DAVEProjectDailyBriefItem
+  | DAVEProjectDailyBriefAttentionItem;
+
+const NON_OPERATIONAL_DAILY_BRIEF_CATEGORIES = new Set([
+  'analysis',
+  'failed_analysis',
+]);
+
+const NON_OPERATIONAL_DAILY_BRIEF_COPY =
+  /\b(?:photo )?analysis (?:is )?unavailable\b|\bretry(?: the)? (?:failed )?(?:photo )?analysis\b|\btechnical (?:error|failure)\b/i;
+
+function isOperationalDailyBriefItem(item: DAVEProjectDailyBriefDisplayItem): boolean {
+  if (item.evidenceClass === 'uncertainty') return false;
+  if (NON_OPERATIONAL_DAILY_BRIEF_CATEGORIES.has(item.category)) return false;
+  if (NON_OPERATIONAL_DAILY_BRIEF_COPY.test(item.text)) return false;
+  if ('actionText' in item && NON_OPERATIONAL_DAILY_BRIEF_COPY.test(item.actionText)) return false;
+  return true;
+}
+
+export function selectActionableDailyBriefItems(
+  brief: Pick<DAVEProjectDailyBrief, 'attentionItems' | 'changedItems'>,
+  limit = 4,
+): DAVEProjectDailyBriefDisplayItem[] {
+  if (!Number.isFinite(limit) || limit <= 0) return [];
+
+  const selected: DAVEProjectDailyBriefDisplayItem[] = [];
+  const seen = new Set<string>();
+  for (const item of [...brief.attentionItems, ...brief.changedItems]) {
+    if (seen.has(item.id) || !isOperationalDailyBriefItem(item)) continue;
+    seen.add(item.id);
+    selected.push(item);
+    if (selected.length >= Math.floor(limit)) break;
+  }
+  return selected;
+}
+
 export type DAVEDailyBriefPhotoFinding = {
   findingType?: string;
   description?: string;

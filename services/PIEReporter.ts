@@ -201,6 +201,7 @@ export type PIEReportSourceEvidence = {
   confidence: PIEReportConfidence;
   owner?: string | null;
   photoId?: string | null;
+  sourceUpdateId?: string | null;
   actionRequired?: string | null;
   status?: string | null;
 };
@@ -211,6 +212,9 @@ export type PIEReportImageReference = {
   projectName: string;
   areaName: string;
   caption: string;
+  sourceUpdateId?: string | null;
+  classificationStatus?: 'classified' | 'needs_classification';
+  classificationReason?: string | null;
 };
 
 export type PIEReportActionItem = {
@@ -570,6 +574,7 @@ export function collectReportEvidence(
         areaName: context.areaName,
         summary: cleanReportBulletText(update.notes),
         confidence: isUnclearText(update.notes) ? 'low' : 'medium',
+        sourceUpdateId: update.id,
       });
     }
 
@@ -691,8 +696,11 @@ export function buildConstructionUnderstanding(
     const areaName = workAreaName || 'Project Work';
     const sourceEvidenceIds = items.map(item => item.id);
     const imageRefs = imageReferences.filter(ref =>
-      normalizeName(cleanReportWorkAreaName(ref.projectName, ref.areaName, ref.caption)) ===
-      normalizeName(areaName),
+      imageReferenceMatchesWorkArea(ref, {
+        projectName,
+        areaName,
+        evidence: items,
+      }),
     );
     const progress = items
       .filter(isVerifiedConstructionProgressEvidence)
@@ -754,15 +762,99 @@ export function buildConstructionUnderstanding(
     };
   });
 
-  const locationGroups = groupUnderstandingByLocation(workAreas);
-  const reviewFlags = buildReportReviewFlags({ evidence, workAreas });
+  const numberedWorkAreas = renumberWorkAreaImageReferences(workAreas);
+  const locationGroups = groupUnderstandingByLocation(numberedWorkAreas);
+  const reviewFlags = buildReportReviewFlags({
+    evidence,
+    workAreas: numberedWorkAreas,
+    imageReferences,
+  });
 
   return {
     locationGroups,
-    workAreas,
-    executiveSummaryBullets: buildExecutiveSummaryBullets(workAreas),
+    workAreas: numberedWorkAreas,
+    executiveSummaryBullets: buildExecutiveSummaryBullets(numberedWorkAreas),
     reviewFlags,
   };
+}
+
+function imageReferenceMatchesWorkArea(
+  reference: PIEReportImageReference,
+  {
+    projectName,
+    areaName,
+    evidence,
+  }: {
+    projectName: string;
+    areaName: string;
+    evidence: PIEReportSourceEvidence[];
+  },
+) {
+  if (reference.classificationStatus === 'needs_classification') {
+    return false;
+  }
+
+  if (normalizeName(reference.projectName) !== normalizeName(projectName)) {
+    return false;
+  }
+
+  const directPhotoIds = new Set(
+    evidence
+      .map(item => item.photoId?.trim())
+      .filter((photoId): photoId is string => Boolean(photoId)),
+  );
+  const directUpdateIds = new Set(
+    evidence
+      .map(item => item.sourceUpdateId?.trim())
+      .filter((updateId): updateId is string => Boolean(updateId)),
+  );
+  const targetArea = normalizeName(areaName);
+  const referenceArea = normalizeName(
+    cleanReportWorkAreaName(
+      reference.projectName,
+      reference.areaName,
+      reference.caption,
+    ),
+  );
+  const genericArea = !targetArea || /^(project work|unassigned|unknown)/i.test(areaName);
+
+  if (genericArea) {
+    return directPhotoIds.has(reference.photoId);
+  }
+
+  if (referenceArea !== targetArea) return false;
+
+  return (
+    directPhotoIds.has(reference.photoId) ||
+    !reference.sourceUpdateId ||
+    directUpdateIds.has(reference.sourceUpdateId)
+  );
+}
+
+function renumberWorkAreaImageReferences(
+  workAreas: PIEWorkAreaUnderstanding[],
+): PIEWorkAreaUnderstanding[] {
+  const orderedReferences = workAreas
+    .flatMap(area => area.imageReferences)
+    .sort((left, right) => left.imageNumber - right.imageNumber);
+  const imageNumberByPhotoId = new Map<string, number>();
+
+  orderedReferences.forEach(reference => {
+    if (!imageNumberByPhotoId.has(reference.photoId)) {
+      imageNumberByPhotoId.set(reference.photoId, imageNumberByPhotoId.size + 1);
+    }
+  });
+
+  return workAreas.map(area => ({
+    ...area,
+    imageReferences: area.imageReferences
+      .map(reference => ({
+        ...reference,
+        imageNumber:
+          imageNumberByPhotoId.get(reference.photoId) || reference.imageNumber,
+      }))
+      .sort((left, right) => left.imageNumber - right.imageNumber),
+  }));
 }
 
 export function buildProjectNarrative(
@@ -911,6 +1003,7 @@ export function buildReportImageReferences(
 ): PIEReportImageReference[] {
   const selected = selectedProjectNames.map(normalizeName);
   const references: PIEReportImageReference[] = [];
+  const seenPhotoIds = new Set<string>();
 
   updates.forEach(update => {
     if (
@@ -921,12 +1014,18 @@ export function buildReportImageReferences(
     }
 
     update.photos.forEach(photo => {
+      if (seenPhotoIds.has(photo.id)) return;
+      seenPhotoIds.add(photo.id);
+      const areaResolution = resolveReportPhotoArea(update, photo);
       references.push({
         imageNumber: references.length + 1,
         photoId: photo.id,
         projectName: update.projectName,
-        areaName: photo.selectedAreaName || update.selectedAreaName || cleanReportWorkAreaName(update.projectName, '', photo.caption),
+        areaName: areaResolution.areaName,
         caption: cleanReportBulletText(photo.caption),
+        sourceUpdateId: update.id,
+        classificationStatus: areaResolution.status,
+        classificationReason: areaResolution.reason,
       });
     });
   });
@@ -934,13 +1033,69 @@ export function buildReportImageReferences(
   return references;
 }
 
+function resolveReportPhotoAreaName(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+) {
+  return resolveReportPhotoArea(update, photo).areaName;
+}
+
+function resolveReportPhotoArea(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+): {
+  areaName: string;
+  status: 'classified' | 'needs_classification';
+  reason: string | null;
+} {
+  const generatedAreaCaption = photo.caption
+    .trim()
+    .match(/^(?:photo\s+\d+\s*[—-]\s*)?project photo from\s+(.+?)\.?$/i);
+  const candidates = [
+    photo.selectedAreaName?.trim(),
+    photo.continuityAnchor?.areaName?.trim(),
+    generatedAreaCaption?.[1]?.trim(),
+  ].filter((value): value is string => Boolean(value));
+  const uniqueCandidates = candidates.filter((candidate, index) =>
+    candidates.findIndex(value => normalizeName(value) === normalizeName(candidate)) === index,
+  );
+
+  if (uniqueCandidates.length > 1) {
+    return {
+      areaName: 'Needs Classification',
+      status: 'needs_classification',
+      reason: `Conflicting photo areas: ${uniqueCandidates.join(', ')}.`,
+    };
+  }
+
+  const resolvedArea = uniqueCandidates[0] || update.selectedAreaName?.trim() || '';
+  if (!resolvedArea) {
+    return {
+      areaName: 'Needs Classification',
+      status: 'needs_classification',
+      reason: 'No project area is recorded for this photo.',
+    };
+  }
+
+  return {
+    areaName: resolvedArea,
+    status: 'classified',
+    reason: null,
+  };
+}
+
 export function buildReportReviewFlags({
   evidence,
   workAreas,
+  imageReferences = [],
 }: {
   evidence: PIEReportSourceEvidence[];
   workAreas: PIEWorkAreaUnderstanding[];
+  imageReferences?: PIEReportImageReference[];
 }): string[] {
+  const photosNeedingClassification = imageReferences.filter(
+    reference => reference.classificationStatus === 'needs_classification',
+  ).length;
   const flags = [
     evidence.length === 0 ? 'No supporting evidence was found for this report.' : null,
     evidence.some(item => !item.projectName.trim()) ? 'Some evidence is missing a project.' : null,
@@ -962,6 +1117,9 @@ export function buildReportReviewFlags({
       : null,
     workAreas.some(area => area.status === 'Blocked' || area.status === 'At Risk')
       ? 'Schedule or work-area conflict may need review.'
+      : null,
+    photosNeedingClassification > 0
+      ? `${photosNeedingClassification} photo${photosNeedingClassification === 1 ? '' : 's'} need${photosNeedingClassification === 1 ? 's' : ''} area classification before report use.`
       : null,
   ].filter(Boolean) as string[];
 
@@ -996,7 +1154,16 @@ export function cleanReportWorkAreaName(
       .replace(/\s+/g, ' ')
       .trim(),
   );
+  const explicitArea = candidates[0];
+  const explicitAreaIsSpecific = Boolean(
+    explicitArea &&
+    normalizeName(explicitArea) !== normalizeName(candidates[1]) &&
+    !/^(project|project work|schedule area|location|unassigned|unknown)$/i.test(
+      explicitArea,
+    ),
+  );
   const best =
+    (explicitAreaIsSpecific ? explicitArea : '') ||
     chooseBestWorkAreaName(candidates.slice(0, 2)) ||
     chooseBestWorkAreaName(candidates.slice(2)) ||
     'Project Work';
@@ -2102,11 +2269,12 @@ function photoToEvidence(
     id: `photo-${photo.id}`,
     source,
     projectName: context.projectName,
-    areaName: photo.selectedAreaName || context.areaName,
+    areaName: resolveReportPhotoAreaName(update, photo) || context.areaName,
     summary: cleanReportBulletText(summary),
     confidence: summary ? 'high' : 'medium',
     owner: photo.actionOwner || null,
     photoId: photo.id,
+    sourceUpdateId: update.id,
     actionRequired: photo.actionRequired || null,
     status: photo.actionStatus,
   };
@@ -2257,7 +2425,18 @@ function strongestProjectName(items: PIEReportSourceEvidence[]) {
 }
 
 function projectAreaFromPhotos(update: ProjectUpdate) {
-  return update.photos.find(photo => photo.selectedAreaName)?.selectedAreaName || '';
+  const namedAreas = update.photos
+    .map(photo => photo.selectedAreaName?.trim())
+    .filter((areaName): areaName is string => Boolean(areaName));
+  const uniqueAreas = new Map<string, string>();
+
+  namedAreas.forEach(areaName => {
+    uniqueAreas.set(normalizeName(areaName), areaName);
+  });
+
+  return uniqueAreas.size === 1
+    ? Array.from(uniqueAreas.values())[0]
+    : '';
 }
 
 function locationTitle(projectName: string, areaName: string) {

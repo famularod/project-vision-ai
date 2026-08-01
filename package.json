@@ -1,6 +1,6 @@
 {
   "name": "project-photo-update-tool",
-  "version": "1.0.132",
+  "version": "1.0.136",
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.8",
@@ -11,6 +11,7 @@
     "@react-native-community/datetimepicker": "9.1.0",
     "@supabase/supabase-js": "^2.108.2",
     "base64-js": "1.5.1",
+    "docx": "^9.7.1",
     "expo": "~57.0.9",
     "expo-asset": "~57.0.8",
     "expo-audio": "~57.0.3",
@@ -22,6 +23,7 @@
     "expo-document-picker": "~57.0.1",
     "expo-file-system": "~57.0.1",
     "expo-font": "~57.0.1",
+    "expo-image-manipulator": "~57.0.7",
     "expo-image-picker": "~57.0.7",
     "expo-linear-gradient": "~57.0.1",
     "expo-linking": "~57.0.4",
@@ -32,6 +34,8 @@
     "expo-sharing": "~57.0.8",
     "expo-sms": "~57.0.1",
     "expo-status-bar": "~57.0.1",
+    "heic-to": "^1.5.2",
+    "pdfjs-dist": "^6.2.108",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.2",

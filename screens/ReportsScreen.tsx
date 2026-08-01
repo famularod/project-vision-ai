@@ -5,6 +5,7 @@ import type {
   ViewStyle,
 } from 'react-native';
 import {
+  Image,
   StyleSheet,
   Text,
   TextInput,
@@ -141,6 +142,9 @@ export function ReportsScreen({
   onCopyReport,
   onEmailReport,
   onTextReport,
+  onDownloadWordReport,
+  onResolveDrawingPreview,
+  onResolvePhotoPreview,
 }: {
   contentStyle?: StyleProp<ViewStyle>;
   projectName: string;
@@ -200,6 +204,14 @@ export function ReportsScreen({
   onCopyReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
   onEmailReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
   onTextReport: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>;
+  onDownloadWordReport: (
+    report: PIEReportDraft,
+    drawingReferences: readonly ReportDrawingReference[],
+  ) => Promise<ReportCommunicationOutcome>;
+  onResolveDrawingPreview?: (
+    reference: ReportDrawingReference,
+  ) => Promise<string | null>;
+  onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
 }) {
   const { sizeClass } = useAppShellLayout();
   const [reportApproved, setReportApproved] = useState(false);
@@ -561,6 +573,9 @@ export function ReportsScreen({
             communicationError={communicationError}
             reportEditing={reportEditing}
             drawingReferences={drawingReferences}
+            updates={updates}
+            onResolveDrawingPreview={onResolveDrawingPreview}
+            onResolvePhotoPreview={onResolvePhotoPreview}
             onApproveReport={markReportApproved}
             onEditReport={() => {
               setReportEditing(true);
@@ -591,6 +606,10 @@ export function ReportsScreen({
             }}
             onTextReport={() => {
               completeCommunication(onTextReport);
+            }}
+            onDownloadWordReport={() => {
+              completeCommunication(report =>
+                onDownloadWordReport(report, drawingReferences));
             }}
           />
     </ScreenCard>
@@ -740,6 +759,9 @@ function PIEReporterPreview({
   communicationError,
   reportEditing,
   drawingReferences,
+  updates,
+  onResolveDrawingPreview,
+  onResolvePhotoPreview,
   onApproveReport,
   onEditReport,
   onTitleChange,
@@ -747,6 +769,7 @@ function PIEReporterPreview({
   onCopyReport,
   onEmailReport,
   onTextReport,
+  onDownloadWordReport,
 }: {
   reportDraft: PIEReportDraft;
   hasManualEdits: boolean;
@@ -766,6 +789,11 @@ function PIEReporterPreview({
   communicationError: string;
   reportEditing: boolean;
   drawingReferences: readonly ReportDrawingReference[];
+  updates: readonly ProjectUpdate[];
+  onResolveDrawingPreview?: (
+    reference: ReportDrawingReference,
+  ) => Promise<string | null>;
+  onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
   onApproveReport: () => void;
   onEditReport: () => void;
   onTitleChange: (title: string) => void;
@@ -773,6 +801,7 @@ function PIEReporterPreview({
   onCopyReport: () => void;
   onEmailReport: () => void;
   onTextReport: () => void;
+  onDownloadWordReport: () => void;
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -901,6 +930,10 @@ function PIEReporterPreview({
                   {reference.projectName} · {reference.areaName}
                 </Text>
                 <Text style={styles.reportListText}>{reference.citation.label}</Text>
+                <ReportDrawingReferencePreview
+                  reference={reference}
+                  onResolveDrawingPreview={onResolveDrawingPreview}
+                />
               </View>
             </View>
           ))}
@@ -940,6 +973,8 @@ function PIEReporterPreview({
           reportDraft={reportDraft}
           reportFormat={reportFormat}
           hasManualEdits={hasManualEdits}
+          updates={updates}
+          onResolvePhotoPreview={onResolvePhotoPreview}
         />
       )}
 
@@ -991,6 +1026,28 @@ function PIEReporterPreview({
         </TouchableOpacity>
       </View>
 
+      <TouchableOpacity
+        style={[
+          styles.reportWordDownloadButton,
+          communicationPending && styles.reportActionButtonDisabled,
+        ]}
+        onPress={onDownloadWordReport}
+        disabled={communicationPending}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: communicationPending }}
+        accessibilityLabel="Download Word Report"
+        accessibilityHint="Downloads a Word review copy with available report photos and drawing excerpts"
+      >
+        <Ionicons name="document-attach-outline" size={19} color={colors.primary} />
+        <View style={styles.reportWordDownloadCopy}>
+          <Text style={styles.reportActionText}>Download Word Report</Text>
+          <Text style={styles.reportWordDownloadHint}>
+            Review copy with available photos and drawing excerpts
+          </Text>
+        </View>
+        <Ionicons name="download-outline" size={19} color={colors.primary} />
+      </TouchableOpacity>
+
       {reportApproved && reportApprovalAllowed && shareOpen ? (
         <View style={styles.reportShareMenu}>
           <ReportShareButton icon="copy-outline" label="Copy Report" onPress={onCopyReport} disabled={communicationPending} />
@@ -1022,14 +1079,19 @@ function ReportDocumentPreview({
   reportDraft,
   reportFormat,
   hasManualEdits,
+  updates,
+  onResolvePhotoPreview,
 }: {
   reportDraft: PIEReportDraft;
   reportFormat: ReportFormat;
   hasManualEdits: boolean;
+  updates: readonly ProjectUpdate[];
+  onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
 }) {
   const briefing = reportDraft.daveBriefing;
-  const [workAreasOpen, setWorkAreasOpen] = useState(false);
+  const [workAreasOpen, setWorkAreasOpen] = useState(true);
   const [writtenReportOpen, setWrittenReportOpen] = useState(false);
+  const photosById = useMemo(() => reportPhotosById(updates), [updates]);
   const workAreaCount = reportDraft.locationGroups.reduce((total, group) => total + group.workAreas.length, 0);
   const photoCount = reportDraft.locationGroups.reduce(
     (total, group) => total + group.workAreas.reduce((areaTotal, area) => areaTotal + area.imageReferences.length, 0),
@@ -1120,6 +1182,8 @@ function ReportDocumentPreview({
                 <ReportWorkArea
                   key={`${area.id}-${areaIndex}`}
                   area={area}
+                  photosById={photosById}
+                  onResolvePhotoPreview={onResolvePhotoPreview}
                 />
               ))}
             </View>
@@ -1163,6 +1227,13 @@ function DAVEReportOverview({
         changes={periodChanges}
       />
       <ReportProjectPosition briefing={briefing} />
+      <ReportSummaryCard
+        title="Completed Work"
+        items={briefing.completedWork.length
+          ? briefing.completedWork.slice(0, 8)
+          : ['No completed work is recorded in the current project scope.']}
+        tone="complete"
+      />
 
       {reportFormat === 'executive' ? (
         <>
@@ -1572,12 +1643,16 @@ function ReportSummaryCard({
 }: {
   title: string;
   items: readonly string[];
-  tone: 'progress' | 'risk' | 'action';
+  tone: 'progress' | 'risk' | 'action' | 'complete';
 }) {
   return (
     <View style={[
       styles.reportSummaryCard,
-      tone === 'risk' ? styles.reportSummaryRisk : tone === 'action' ? styles.reportSummaryAction : styles.reportSummaryProgress,
+      tone === 'risk'
+        ? styles.reportSummaryRisk
+        : tone === 'action' || tone === 'complete'
+          ? styles.reportSummaryAction
+          : styles.reportSummaryProgress,
     ]}>
       <Text accessibilityRole="header" style={styles.reportSummaryTitle}>{title}</Text>
       {items.map((item, index) => (
@@ -1645,10 +1720,14 @@ function ReportInsightSection({
 
 function ReportWorkArea({
   area,
+  photosById,
+  onResolvePhotoPreview,
 }: {
   area: PIEReportDraft['locationGroups'][number]['workAreas'][number];
+  photosById: ReadonlyMap<string, ProjectUpdate['photos'][number]>;
+  onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const title = area.projectName !== area.title
     ? `${area.projectName} — ${area.title}`
     : area.title;
@@ -1684,13 +1763,173 @@ function ReportWorkArea({
         ))}
         {area.imageReferences.map((reference, index) => (
           <View key={`${reference.photoId}-${index}`} style={styles.reportEvidenceReference}>
-            <Ionicons name="image-outline" size={16} color={colors.primary} />
+            <ReportPhotoReferencePreview
+              photoId={reference.photoId}
+              directUri={photosById.get(reference.photoId)?.uri || null}
+              areaName={reference.areaName}
+              imageNumber={reference.imageNumber}
+              onResolvePhotoPreview={onResolvePhotoPreview}
+            />
             <Text style={styles.reportEvidenceReferenceText}>
               Photo {reference.imageNumber} — {reference.caption || `Project photo from ${reference.areaName}`}
             </Text>
           </View>
         ))}
       </View> : null}
+    </View>
+  );
+}
+
+function ReportPhotoReferencePreview({
+  photoId,
+  directUri,
+  areaName,
+  imageNumber,
+  onResolvePhotoPreview,
+}: {
+  photoId: string;
+  directUri: string | null;
+  areaName: string;
+  imageNumber: number;
+  onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
+}) {
+  const resolverRef = useRef(onResolvePhotoPreview);
+  resolverRef.current = onResolvePhotoPreview;
+  const [resolvedUri, setResolvedUri] = useState<string | null>(directUri);
+  const [resolutionFinished, setResolutionFinished] = useState(Boolean(directUri));
+
+  useEffect(() => {
+    let active = true;
+    if (directUri) {
+      setResolvedUri(directUri);
+      setResolutionFinished(true);
+      return () => {
+        active = false;
+      };
+    }
+    if (!resolverRef.current) {
+      setResolvedUri(null);
+      setResolutionFinished(true);
+      return () => {
+        active = false;
+      };
+    }
+    setResolvedUri(null);
+    setResolutionFinished(false);
+    void resolverRef.current(photoId)
+      .then(uri => {
+        if (!active) return;
+        setResolvedUri(uri);
+        setResolutionFinished(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setResolvedUri(null);
+        setResolutionFinished(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [directUri, photoId]);
+
+  if (resolvedUri) {
+    return (
+      <Image
+        source={{ uri: resolvedUri }}
+        style={styles.reportEvidenceImage}
+        resizeMode="cover"
+        accessibilityLabel={`Photo ${imageNumber} from ${areaName}`}
+      />
+    );
+  }
+  return (
+    <View style={styles.reportEvidenceUnavailable}>
+      <Ionicons name="image-outline" size={22} color={colors.primary} />
+      <Text style={styles.reportMediaAvailabilityText}>
+        {resolutionFinished
+          ? 'The referenced photo is unavailable from the authorized project files.'
+          : 'Loading the referenced photo…'}
+      </Text>
+    </View>
+  );
+}
+
+function reportPhotosById(updates: readonly ProjectUpdate[]) {
+  return new Map(
+    updates.flatMap(update => update.photos.map(photo => [photo.id, photo] as const)),
+  );
+}
+
+function drawingPreviewUri(reference: ReportDrawingReference) {
+  const document = reference.excerpt.document;
+  const mimeType = (document.mimeType || '').toLowerCase();
+  const name = (document.originalFileName || document.name || '').toLowerCase();
+  if (mimeType.includes('pdf') || name.endsWith('.pdf')) return null;
+  return document.uri?.trim() || null;
+}
+
+function ReportDrawingReferencePreview({
+  reference,
+  onResolveDrawingPreview,
+}: {
+  reference: ReportDrawingReference;
+  onResolveDrawingPreview?: (
+    reference: ReportDrawingReference,
+  ) => Promise<string | null>;
+}) {
+  const directUri = drawingPreviewUri(reference);
+  const resolverRef = useRef(onResolveDrawingPreview);
+  resolverRef.current = onResolveDrawingPreview;
+  const referenceKey =
+    `${reference.id}:${reference.citation.documentId}:${reference.citation.pageNumber}`;
+  const [resolvedUri, setResolvedUri] = useState<string | null>(directUri);
+  const [resolutionFinished, setResolutionFinished] = useState(Boolean(directUri));
+
+  useEffect(() => {
+    let active = true;
+    if (directUri || !resolverRef.current) {
+      setResolvedUri(directUri);
+      setResolutionFinished(true);
+      return () => {
+        active = false;
+      };
+    }
+    setResolvedUri(null);
+    setResolutionFinished(false);
+    void resolverRef.current(reference)
+      .then(uri => {
+        if (!active) return;
+        setResolvedUri(uri);
+        setResolutionFinished(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setResolvedUri(null);
+        setResolutionFinished(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [directUri, referenceKey]);
+
+  if (resolvedUri) {
+    return (
+      <Image
+        source={{ uri: resolvedUri }}
+        style={styles.drawingReferencePreview}
+        resizeMode="contain"
+        accessibilityLabel={`Drawing reference for ${reference.areaName}`}
+      />
+    );
+  }
+  return (
+    <View style={styles.reportEvidenceUnavailable}>
+      <Ionicons name="map-outline" size={22} color={colors.primary} />
+      <Text style={styles.reportMediaAvailabilityText}>
+        {resolutionFinished
+          ? 'The current drawing excerpt is unavailable from the authorized project files.'
+          : 'Preparing the current drawing excerpt…'}
+      </Text>
     </View>
   );
 }
@@ -3512,13 +3751,29 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.primarySoft,
     padding: spacing.xs,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'stretch',
     gap: spacing.xs,
   },
 
+  reportEvidenceImage: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceMuted,
+  },
+
+  reportEvidenceUnavailable: {
+    width: '100%',
+    minHeight: 96,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    padding: spacing.sm,
+  },
+
   reportEvidenceReferenceText: {
-    flex: 1,
     color: colors.text,
     fontSize: 12,
     lineHeight: 18,
@@ -3720,6 +3975,22 @@ const styles = StyleSheet.create({
     gap: 2,
   },
 
+  drawingReferencePreview: {
+    width: '100%',
+    aspectRatio: 16 / 9,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceMuted,
+    marginTop: spacing.xs,
+  },
+
+  reportMediaAvailabilityText: {
+    color: colors.mutedText,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+
   managementActionRow: {
     borderTopWidth: 1,
     borderTopColor: 'rgba(0,0,0,0.08)',
@@ -3785,6 +4056,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.xxs,
+  },
+
+  reportWordDownloadButton: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderColor: colors.primary,
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 54,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+
+  reportWordDownloadCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  reportWordDownloadHint: {
+    color: colors.mutedText,
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 15,
+    marginTop: 2,
   },
 
   reportActionButtonPrimary: {

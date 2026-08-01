@@ -63,18 +63,27 @@ export function reconcileScheduleProgress(
     : typeof percentValue === 'string' && percentValue.trim()
       ? Number(percentValue.replace('%', '').trim())
       : Number.NaN;
-  let percentComplete = Number.isFinite(numericPercent)
-    ? Math.max(0, Math.min(100, Math.round(numericPercent)))
-    : status === 'Complete' ? 100 : 0;
+  if (!Number.isFinite(numericPercent)) {
+    if (status === 'Complete') {
+      return Object.freeze({ status: 'Complete', percentComplete: 100 });
+    }
+    if (status === 'In Progress') {
+      return Object.freeze({ status: 'In Progress', percentComplete: 1 });
+    }
+    return Object.freeze({ status, percentComplete: 0 });
+  }
 
-  if (status === 'Complete' || percentComplete === 100) {
+  const percentComplete = Math.max(0, Math.min(100, Math.round(numericPercent)));
+  if (percentComplete === 100) {
     return Object.freeze({ status: 'Complete', percentComplete: 100 });
   }
-  if (status === 'Not Started' && percentComplete > 0) {
-    return Object.freeze({ status: 'In Progress', percentComplete });
+  if (status === 'Waiting') {
+    return Object.freeze({ status: 'Waiting', percentComplete });
   }
-  if (status === 'Not Started') percentComplete = 0;
-  return Object.freeze({ status, percentComplete });
+  if (percentComplete === 0) {
+    return Object.freeze({ status: 'Not Started', percentComplete: 0 });
+  }
+  return Object.freeze({ status: 'In Progress', percentComplete });
 }
 
 /**
