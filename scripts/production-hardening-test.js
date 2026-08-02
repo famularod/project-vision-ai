@@ -14,6 +14,7 @@ const entry = read('entry.ts');
 const supabaseService = read('services/SupabaseService.ts');
 const syncService = read('services/SyncService.ts');
 const storageCleanup = read('services/DAVEStorageCleanup.ts');
+const cloudMaintenanceBudget = read('services/DAVECloudMaintenanceBudget.ts');
 const backupArchive = read('services/CompleteBackupArchive.ts');
 const ownerSandbox = read('services/OwnerStorageSandbox.ts');
 const ownerWorkspaceAuthDecision = read(
@@ -171,13 +172,25 @@ for (const marker of [
   );
 }
 for (const marker of [
-  'processDAVEStorageCleanup',
-  'purgeExpiredDAVEDeletionAudit',
+  'runDAVECloudMaintenanceIfDue',
+  'forceStorageCleanup',
   'storageCleanupRemaining',
 ]) {
   assert(
     syncService.includes(marker),
     `Mobile synchronization must preserve ${marker}.`,
+  );
+}
+for (const marker of [
+  'processDAVEStorageCleanup',
+  'purgeExpiredDAVEDeletionAudit',
+  'DAVE_STORAGE_CLEANUP_INTERVAL_MS',
+  'DAVE_DELETION_AUDIT_INTERVAL_MS',
+  'Promise.allSettled',
+]) {
+  assert(
+    cloudMaintenanceBudget.includes(marker),
+    `Cloud maintenance request budgeting must preserve ${marker}.`,
   );
 }
 for (const marker of [

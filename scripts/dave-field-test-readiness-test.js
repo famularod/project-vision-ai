@@ -14,10 +14,10 @@ const checks = [
   ['live authority exposes Project Truth', provider.includes('projectTruth: DAVEProjectTruth')],
   ['confirmed memories enter authority signature',
     provider.includes("from '../services/PIELiveAuthoritySignature'") &&
-      signature.includes('captureMemories: input.captureMemories')],
+      signature.includes('captureMemories: cachedStableStringify(input.captureMemories || [])')],
   ['project documents enter authority signature',
     provider.includes("from '../services/PIELiveAuthoritySignature'") &&
-      signature.includes('projectDocuments: input.projectDocuments')],
+      signature.includes('projectDocuments: cachedStableStringify(input.projectDocuments || [])')],
   ['workspace consumes live Project Truth', app.includes('const projectIntelligence = liveAuthority.projectTruth.intelligence')],
   ['Ask DAVE uses Project Truth builder', app.includes('return buildDAVEProjectTruth({')],
   ['Home displays the authoritative next action',

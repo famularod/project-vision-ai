@@ -80,7 +80,7 @@ describe('AppShellFrame', () => {
     ).toBe(104);
     expect(
       StyleSheet.flatten(screen.getByText('Overview').props.style).fontSize,
-    ).toBe(13);
+    ).toBe(14);
     expect(
       StyleSheet.flatten(
         screen.getByRole('tab', { name: 'Overview' }).props.style,
@@ -150,6 +150,7 @@ describe('AppShellFrame', () => {
         currentScreen="Schedule"
         onScreenChange={onScreenChange}
         onTalk={onTalk}
+        documentCount={3}
       >
         <Text>Wide project workspace</Text>
       </AppShellFrame>,
@@ -168,12 +169,12 @@ describe('AppShellFrame', () => {
     ).toBe(248);
     expect(
       StyleSheet.flatten(screen.getByText('Overview').props.style).fontSize,
-    ).toBe(16);
+    ).toBe(18);
     expect(
       StyleSheet.flatten(
         screen.getByRole('tab', { name: 'Overview' }).props.style,
       ).minHeight,
-    ).toBe(76);
+    ).toBe(82);
     expect(
       screen.getByRole('tab', { name: 'Tasks' }).props.accessibilityState,
     ).toEqual({ selected: true });
@@ -182,10 +183,13 @@ describe('AppShellFrame', () => {
     ).backgroundColor).toBe('transparent');
     expect(
       StyleSheet.flatten(screen.getByTestId('app-nav-overview-icon-slot').props.style).width,
-    ).toBe(44);
+    ).toBe(48);
     expect(
       StyleSheet.flatten(screen.getByTestId('app-nav-talk-icon-slot').props.style).width,
-    ).toBe(44);
+    ).toBe(48);
+    expect(
+      screen.getByRole('tab', { name: 'Documents, 3 documents' }),
+    ).toBeTruthy();
 
     await fireEvent.press(screen.getByRole('tab', { name: 'Reports' }));
     await fireEvent.press(

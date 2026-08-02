@@ -3,9 +3,11 @@ export const PENDING_CHANGES_RETRY_DELAYS_MS = Object.freeze([
   15_000,
   30_000,
   60_000,
+  5 * 60_000,
+  15 * 60_000,
 ]) as readonly number[];
 
-export const PENDING_CHANGES_IDLE_CHECK_INTERVAL_MS = 30_000;
+export const PENDING_CHANGES_IDLE_CHECK_INTERVAL_MS = 5 * 60_000;
 
 export type PendingChangesRetryTrigger =
   | 'initial'

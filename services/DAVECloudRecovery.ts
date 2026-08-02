@@ -156,5 +156,10 @@ function mergePhotoRecoveryTransport(local: UpdatePhoto, cloud: UpdatePhoto): Up
     cloudRecoveryStatus: cloud.cloudRecoveryStatus || local.cloudRecoveryStatus || null,
     cloudSignedUrlExpiresAt:
       cloud.cloudSignedUrlExpiresAt || local.cloudSignedUrlExpiresAt || null,
+    cloudPreviewUri: cloud.cloudPreviewUri || local.cloudPreviewUri || null,
+    cloudPreviewSignedUrlExpiresAt:
+      cloud.cloudPreviewSignedUrlExpiresAt ||
+      local.cloudPreviewSignedUrlExpiresAt ||
+      null,
   };
 }

@@ -52,6 +52,8 @@ function isStartupPhotoRecord(value: unknown): boolean {
     'cloudStoragePath',
     'cloudRecoveredAt',
     'cloudSignedUrlExpiresAt',
+    'cloudPreviewUri',
+    'cloudPreviewSignedUrlExpiresAt',
     'selectedAreaId',
     'selectedAreaName',
     'locationCapturedAt',

@@ -54,6 +54,7 @@ import {
 } from './ResumableStorageUpload';
 import {
   attachDAVEOperationalRealtime,
+  type DAVEOperationalCollectionName,
   type DAVEOperationalRealtimeEntity,
   type DAVEOperationalRealtimeStatus,
 } from './DAVEOperationalRefresh';
@@ -635,7 +636,11 @@ export async function subscribeToDAVEOperationalChanges({
   onChange,
   onStatus,
 }: {
-  onChange: (entity: DAVEOperationalRealtimeEntity) => void;
+  onChange: (
+    entity: DAVEOperationalRealtimeEntity,
+    collections?: readonly DAVEOperationalCollectionName[],
+    payload?: import('./DAVEOperationalRefresh').DAVEOperationalRealtimePayload,
+  ) => void;
   onStatus?: (status: DAVEOperationalRealtimeStatus) => void;
 }): Promise<() => void> {
   const client = getSupabaseClient();
@@ -650,6 +655,54 @@ export async function subscribeToDAVEOperationalChanges({
     onChange,
     onStatus,
   });
+}
+
+/** Converts an owner-filtered Realtime row into the same model returned by
+ * the collection readers, allowing the app to merge one changed row instead
+ * of downloading the complete table. */
+export function normalizeDAVEOperationalRealtimeRecord(
+  entity: DAVEOperationalRealtimeEntity,
+  value: unknown,
+): unknown | null {
+  const row = toRecord(value);
+  if (Object.keys(row).length === 0) return null;
+  if (entity === 'project') return normalizeProject(row);
+  if (entity === 'project_update') return normalizeProjectUpdate(row);
+  if (entity === 'sync_tombstone') {
+    const entityType = typeof row.entity_type === 'string'
+      ? row.entity_type
+      : '';
+    const recordId = typeof row.record_id === 'string'
+      ? row.record_id.trim()
+      : '';
+    const deletedAt = typeof row.deleted_at === 'string'
+      ? row.deleted_at
+      : '';
+    return recordId && deletedAt && [
+      'project',
+      'project_update',
+      'project_area',
+      'schedule_item',
+      'reference_document',
+    ].includes(entityType)
+      ? { entityType, recordId, deletedAt }
+      : null;
+  }
+  const jsonColumn = entity === 'project_area'
+    ? 'area_data'
+    : entity === 'schedule_item'
+      ? 'item_data'
+      : 'document_data';
+  const jsonRecord = toRecord(row[jsonColumn]);
+  if (Object.keys(jsonRecord).length === 0) return null;
+  const record = bindDAVECloudDatabaseIdentity(jsonRecord, row.id);
+  return entity === 'reference_document'
+    ? {
+        ...record,
+        cloudUpdatedAt:
+          typeof row.updated_at === 'string' ? row.updated_at : null,
+      }
+    : record;
 }
 
 export async function getCurrentSessionAccessToken(): Promise<SupabaseServiceResult<SupabaseSessionTokenLookupResult>> {
@@ -1008,12 +1061,19 @@ export async function createPhotoSignedUrl(
   path: string,
   expiresIn = 300,
   bucket = PROJECT_PHOTOS_BUCKET,
+  transform?: Readonly<{
+    width?: number;
+    height?: number;
+    quality?: number;
+    resize?: 'cover' | 'contain' | 'fill';
+  }>,
 ): Promise<SupabaseServiceResult<string>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<string>();
-  const { data, error } = await client.storage
-    .from(bucket)
-    .createSignedUrl(path, expiresIn);
+  const storage = client.storage.from(bucket);
+  const { data, error } = transform
+    ? await storage.createSignedUrl(path, expiresIn, { transform })
+    : await storage.createSignedUrl(path, expiresIn);
   if (error) {
     const errorRecord = error as unknown as Record<string, unknown>;
     const rawStatus = errorRecord.statusCode ?? errorRecord.status;

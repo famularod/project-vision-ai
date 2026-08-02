@@ -20,6 +20,7 @@ jest.mock('../../services/DAVEWebSupabaseClient', () => {
       getSessionStatus: jest.fn(),
       subscribeToAuthStateChange: jest.fn(),
       subscribeToAuthorizedOperationalChanges: jest.fn(),
+      runAuthorizedMaintenance: jest.fn(),
       signOut: jest.fn(),
     },
   };
@@ -64,6 +65,7 @@ describe('DesktopAuthProvider refresh continuity', () => {
       () => undefined,
     );
     mockedGateway.subscribeToAuthStateChange.mockReturnValue(() => undefined);
+    mockedGateway.runAuthorizedMaintenance.mockResolvedValue(undefined);
     mockedLoadSnapshot.mockResolvedValueOnce({
       projects: [],
       scheduleItems: [],
@@ -143,5 +145,41 @@ describe('DesktopAuthProvider refresh continuity', () => {
       expect(screen.getByTestId('snapshot').props.children).toBe(nextRefreshAt);
       expect(mockedLoadSnapshot).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it('refreshes only the web collection reported by Realtime', async () => {
+    let onChange: (
+      entity: 'schedule_item',
+      collections?: readonly ['schedule_items'],
+    ) => void = () => undefined;
+    mockedGateway.subscribeToAuthorizedOperationalChanges.mockImplementationOnce(
+      async handlers => {
+        onChange = handlers.onChange as typeof onChange;
+        return () => undefined;
+      },
+    );
+    mockedLoadSnapshot.mockResolvedValueOnce({
+      projects: [],
+      scheduleItems: [],
+      projectUpdates: [],
+      referenceDocuments: [],
+      refreshedAt: new Date(Date.now() + 10_000).toISOString(),
+    });
+
+    render(
+      <DesktopAuthProvider>
+        <Harness />
+      </DesktopAuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockedLoadSnapshot).toHaveBeenCalledTimes(1);
+    });
+    onChange('schedule_item', ['schedule_items']);
+
+    await waitFor(() => {
+      expect(mockedLoadSnapshot).toHaveBeenLastCalledWith(['schedule_items']);
+    });
+    expect(mockedGateway.runAuthorizedMaintenance).toHaveBeenCalledTimes(1);
   });
 });

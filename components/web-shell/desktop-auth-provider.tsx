@@ -33,6 +33,10 @@ import {
   recordDAVEWebRefreshSuccess,
   type DAVEWebFreshnessState,
 } from '../../services/DAVEWebFreshness';
+import {
+  DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS,
+  type DAVEOperationalCollectionName,
+} from '../../services/DAVEOperationalRefresh';
 
 export type DesktopAuthPhase =
   | 'checking'
@@ -53,7 +57,11 @@ type DesktopAuthContextValue = Readonly<{
   signInWithPassword: (email: string, password: string) => Promise<boolean>;
   signOutOfDesktop: () => Promise<void>;
   refreshSnapshot: () => Promise<boolean>;
-  getArtifactUrl: (bucket: DAVEWebStorageBucket, path: string) => Promise<string>;
+  getArtifactUrl: (
+    bucket: DAVEWebStorageBucket,
+    path: string,
+    options?: Readonly<{ preview?: boolean }>,
+  ) => Promise<string>;
   createTask: (item: DAVEWebScheduleItem) => Promise<void>;
   updateTask: (item: DAVEWebScheduleItem) => Promise<void>;
   updateTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
@@ -99,6 +107,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const snapshotRef = useRef<DAVEWebReadOnlySnapshot | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const backgroundRefreshRef = useRef<Promise<void> | null>(null);
+  const pendingBackgroundCollectionsRef = useRef<Set<DAVEOperationalCollectionName>>(new Set());
+  const pendingFullBackgroundRefreshRef = useRef(false);
+  const maintenanceOwnerRef = useRef<string | null>(null);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -106,6 +117,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     setUserEmail(null);
     setSessionExpiresAt(null);
     snapshotRef.current = null;
+    maintenanceOwnerRef.current = null;
+    pendingBackgroundCollectionsRef.current.clear();
+    pendingFullBackgroundRefreshRef.current = false;
     setSnapshot(null);
     setFreshness(initialDAVEWebFreshnessState());
     setMessage(null);
@@ -114,7 +128,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
   const loadAuthorizedSnapshot = useCallback(async (
     session: Session | null,
-    options: { background?: boolean } = {},
+    options: {
+      background?: boolean;
+      collections?: readonly DAVEOperationalCollectionName[];
+    } = {},
   ) => {
     if (!session?.user) {
       clearSessionView();
@@ -131,7 +148,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const nextSnapshot = await loadDAVEWebReadOnlySnapshot();
+      const nextSnapshot = await loadDAVEWebReadOnlySnapshot(options.collections);
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
       snapshotRef.current = nextSnapshot;
       setSnapshot(nextSnapshot);
@@ -140,6 +157,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       if (options.background) {
         setMessage(current =>
           current === AUTOMATIC_REFRESH_WAITING_MESSAGE ? null : current);
+      }
+      if (maintenanceOwnerRef.current !== session.user.id) {
+        maintenanceOwnerRef.current = session.user.id;
+        void daveWebSupabaseGateway.runAuthorizedMaintenance().catch(() => undefined);
       }
       return true;
     } catch (error) {
@@ -243,37 +264,85 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const getArtifactUrl = useCallback((
     bucket: DAVEWebStorageBucket,
     path: string,
-  ) => daveWebSupabaseGateway.createAuthorizedArtifactSignedUrl(bucket, path), []);
+    options?: Readonly<{ preview?: boolean }>,
+  ) => daveWebSupabaseGateway.createAuthorizedArtifactSignedUrl(
+    bucket,
+    path,
+    600,
+    options,
+  ), []);
 
-  const refreshSnapshotInBackground = useCallback((): Promise<void> => {
-    if (backgroundRefreshRef.current) return backgroundRefreshRef.current;
+  const refreshSnapshotInBackground = useCallback((
+    collections?: readonly DAVEOperationalCollectionName[],
+  ): Promise<void> => {
+    const webCollections = collections?.filter(collection => collection !== 'project_areas');
+    if (collections && webCollections?.length === 0) return Promise.resolve();
+    if (backgroundRefreshRef.current) {
+      if (!webCollections) pendingFullBackgroundRefreshRef.current = true;
+      else webCollections.forEach(collection => pendingBackgroundCollectionsRef.current.add(collection));
+      return backgroundRefreshRef.current;
+    }
     const run = (async () => {
-      try {
-        const status = await daveWebSupabaseGateway.getSessionStatus();
+      let nextCollections: readonly DAVEOperationalCollectionName[] | undefined = webCollections;
+      while (true) {
+        pendingFullBackgroundRefreshRef.current = false;
+        pendingBackgroundCollectionsRef.current.clear();
+        try {
+          const status = await daveWebSupabaseGateway.getSessionStatus();
+          if (!mountedRef.current) return;
+          if (!status.session) {
+            clearSessionView();
+            return;
+          }
+          await loadAuthorizedSnapshot(status.session, {
+            background: true,
+            collections: nextCollections,
+          });
+        } catch {
+          if (mountedRef.current) {
+            setFreshness(current =>
+              recordDAVEWebRefreshFailure(current, new Date().toISOString()));
+            setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
+          }
+        }
         if (!mountedRef.current) return;
-        if (!status.session) {
-          clearSessionView();
-          return;
+        if (pendingFullBackgroundRefreshRef.current) {
+          nextCollections = undefined;
+          continue;
         }
-        await loadAuthorizedSnapshot(status.session, { background: true });
-      } catch {
-        if (mountedRef.current) {
-          setFreshness(current =>
-            recordDAVEWebRefreshFailure(current, new Date().toISOString()));
-          setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
+        if (pendingBackgroundCollectionsRef.current.size > 0) {
+          nextCollections = Array.from(pendingBackgroundCollectionsRef.current);
+          continue;
         }
+        break;
       }
     })();
     backgroundRefreshRef.current = run;
     void run.finally(() => {
       if (backgroundRefreshRef.current === run) backgroundRefreshRef.current = null;
+      if (
+        mountedRef.current &&
+        (pendingFullBackgroundRefreshRef.current ||
+          pendingBackgroundCollectionsRef.current.size > 0)
+      ) {
+        const pendingCollections = pendingFullBackgroundRefreshRef.current
+          ? undefined
+          : Array.from(pendingBackgroundCollectionsRef.current);
+        pendingFullBackgroundRefreshRef.current = false;
+        pendingBackgroundCollectionsRef.current.clear();
+        void refreshSnapshotInBackground(pendingCollections);
+      }
     });
     return run;
   }, [clearSessionView, loadAuthorizedSnapshot]);
 
   useEffect(() => {
     if (phase !== 'ready') return;
-    const timer = setInterval(() => { void refreshSnapshotInBackground(); }, 12_000);
+    const timer = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        void refreshSnapshotInBackground();
+      }
+    }, DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS);
     return () => {
       clearInterval(timer);
     };
@@ -282,10 +351,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (phase !== 'ready') return;
     let active = true;
+    let realtimeHasSubscribed = false;
     let unsubscribe: () => void = () => undefined;
     void daveWebSupabaseGateway.subscribeToAuthorizedOperationalChanges({
-      onChange: () => {
-        if (active) void refreshSnapshotInBackground();
+      onChange: (_entity, collections) => {
+        if (active) void refreshSnapshotInBackground(collections);
       },
       onStatus: status => {
         if (active && (status === 'error' || status === 'closed')) {
@@ -293,7 +363,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
             recordDAVEWebRefreshFailure(current, new Date().toISOString()));
           setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
         } else if (active && status === 'subscribed') {
-          void refreshSnapshotInBackground();
+          if (realtimeHasSubscribed) void refreshSnapshotInBackground();
+          realtimeHasSubscribed = true;
         }
       },
     }).then(stop => {

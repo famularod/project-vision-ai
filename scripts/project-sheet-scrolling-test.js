@@ -10,6 +10,10 @@ const sharedSheet = fs.readFileSync(
   path.join(root, 'components/project-action-sheet.tsx'),
   'utf8',
 );
+const documentUploadSheet = fs.readFileSync(
+  path.join(root, 'components/document-upload-details-sheet.tsx'),
+  'utf8',
+);
 
 assert(
   sharedSheet.includes('<ScrollView') &&
@@ -38,7 +42,6 @@ assert(
 );
 
 [
-  ['ProjectSelectorSheet', 'title="Choose Project"'],
   ['AreaSelectionSheet', 'title="Change Area"'],
   ['RecipientSelectionSheet', 'title="Recipients"'],
   ['UpdateFilterSheet', 'title="Filter Updates"'],
@@ -55,17 +58,29 @@ assert(
 });
 
 assert(
-  app.includes('{projects.map(project => (') &&
-    app.includes('label={project}') &&
-    app.includes('onPress={() => onSelect(project)}'),
-  'Choose Project must keep every project reachable through the scrollable project list.',
+  documentUploadSheet.includes('<ProjectActionSheet') &&
+    documentUploadSheet.includes('title="Document Details"'),
+  'DocumentUploadDetailsSheet must use the shared scrollable project action sheet.',
+);
+
+const selectProjectScreen = app.slice(
+  app.indexOf('function SelectProjectScreen'),
+  app.indexOf('function SelectProjectScreen') + 2600,
+);
+assert(
+  selectProjectScreen.includes('<FlatList') &&
+    selectProjectScreen.includes('data={projects}') &&
+    selectProjectScreen.includes('renderItem={renderProject}') &&
+    selectProjectScreen.includes('onPress={() => onSelect(project)}'),
+  'Select Project must keep every project reachable through its scrollable project list.',
 );
 
 assert(
   app.includes('resolveProjectForDetectedArea(') &&
-    app.includes('suggestedArea') &&
-    app.includes('GPS found multiple nearby projects'),
-  'GPS defaulting and multi-candidate picker context must remain intact.',
+    app.includes("setProjectDetectionStatus('multiple')") &&
+    app.includes("projectDetectionStatus === 'detected' ? detectedProjectName : null") &&
+    app.includes("setScreen('SelectProject')"),
+  'GPS ambiguity must avoid an arbitrary project default and fall back to the complete project list.',
 );
 
 console.log('Project sheet scrolling tests passed.');

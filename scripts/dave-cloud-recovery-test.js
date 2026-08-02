@@ -131,8 +131,8 @@ assert(
   'synced photo metadata must retain its cloud path and recovered updates must hydrate pixels',
 );
 assert(
-  updateService.includes('hydrateRecoveredProjectUpdatePhotos(update)'),
-  'startup cloud update loading must replace stale device photo URIs',
+  updateService.includes('hydrateProjectUpdatePhotoPreviews(update)'),
+  'startup cloud update loading must use bandwidth-bounded photo previews',
 );
 assert(
   app.includes('onApplyCloudRecovery={recovered => {'),

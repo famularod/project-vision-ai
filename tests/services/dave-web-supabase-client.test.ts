@@ -16,6 +16,15 @@ function queryWithRows(rows: unknown[]) {
   return query;
 }
 
+function cleanupQueryWithRows(rows: unknown[] = []) {
+  const query: Record<string, jest.Mock> = {};
+  for (const method of ['select', 'eq', 'in', 'order']) {
+    query[method] = jest.fn(() => query);
+  }
+  query.limit = jest.fn(async () => ({ data: rows, error: null, status: 200 }));
+  return query;
+}
+
 function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
   const queries = new Map([
     ['projects', queryWithRows([{ id: 'p1' }])],
@@ -24,7 +33,9 @@ function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
     ['reference_documents', queryWithRows([])],
     ['dave_sync_tombstones', queryWithRows([])],
   ]);
-  const from = jest.fn((table: string) => queries.get(table));
+  const cleanupQuery = cleanupQueryWithRows();
+  const from = jest.fn((table: string) =>
+    table === 'dave_storage_cleanup_intents' ? cleanupQuery : queries.get(table));
   const rpc = jest.fn(async () => ({ data: authorized, error: null, status: 200 }));
   const auth = {
     getUser: jest.fn(async () => ({ data: { user: { id: 'owner-1' } }, error: null })),
@@ -44,6 +55,7 @@ function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
     from,
     rpc,
     queries,
+    cleanupQuery,
     createSignedUrl,
     storageFrom,
   };
@@ -71,11 +83,89 @@ describe('DAVE browser Supabase gateway', () => {
       'project_updates',
       'reference_documents',
       'dave_sync_tombstones',
-      'dave_storage_cleanup_intents',
     ]);
     for (const query of fixture.queries.values()) {
       expect(query.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
     }
+  });
+
+  test('reuses cached collections for a targeted realtime refresh', async () => {
+    const fixture = clientFixture();
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    const initial = await gateway.loadAuthorizedRows();
+    fixture.from.mockClear();
+
+    const targeted = await gateway.loadAuthorizedRows(['schedule_items']);
+
+    expect(fixture.from.mock.calls.map(call => call[0])).toEqual(['schedule_items']);
+    expect(targeted.projects).toBe(initial.projects);
+    expect(targeted.projectUpdates).toBe(initial.projectUpdates);
+    expect(targeted.referenceDocuments).toBe(initial.referenceDocuments);
+    expect(targeted.syncTombstones).toBe(initial.syncTombstones);
+  });
+
+  test('reuses the owner authorization check during its short session cache window', async () => {
+    const fixture = clientFixture();
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await gateway.loadAuthorizedRows();
+    await gateway.createAuthorizedArtifactSignedUrl(
+      'project-photos',
+      'owner-1/project-a/photo.jpg',
+    );
+
+    expect(fixture.auth.getUser).toHaveBeenCalledTimes(1);
+    expect(fixture.rpc).toHaveBeenCalledTimes(1);
+    expect(fixture.rpc).toHaveBeenCalledWith('dave_is_app_owner');
+  });
+
+  test('applies a realtime task row without issuing a duplicate targeted table read', async () => {
+    const fixture = clientFixture();
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const realtimeChannel: { on: jest.Mock; subscribe: jest.Mock } = {
+      on: jest.fn(),
+      subscribe: jest.fn(),
+    };
+    realtimeChannel.on.mockImplementation(
+      (_kind: string, configuration: { table: string }, handler: (payload: unknown) => void) => {
+        handlers.set(configuration.table, handler);
+        return realtimeChannel;
+      },
+    );
+    realtimeChannel.subscribe.mockImplementation(() => realtimeChannel);
+    fixture.client.channel = jest.fn(() => realtimeChannel);
+    fixture.client.removeChannel = jest.fn().mockResolvedValue('ok');
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await gateway.loadAuthorizedRows();
+    await gateway.subscribeToAuthorizedOperationalChanges({ onChange: jest.fn() });
+    fixture.from.mockClear();
+    handlers.get('schedule_items')?.({
+      eventType: 'UPDATE',
+      new: { id: 'task-1', item_data: { id: 'task-1', taskName: 'Updated task' } },
+      old: {},
+    });
+
+    const rows = await gateway.loadAuthorizedRows(['schedule_items']);
+    expect(fixture.from).not.toHaveBeenCalled();
+    expect(rows.scheduleItems).toEqual([
+      expect.objectContaining({ id: 'task-1' }),
+    ]);
+  });
+
+  test('runs storage cleanup and deletion-audit purge only when maintenance is requested', async () => {
+    const fixture = clientFixture();
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await gateway.loadAuthorizedRows();
+    expect(fixture.from).not.toHaveBeenCalledWith('dave_storage_cleanup_intents');
+    expect(fixture.rpc).not.toHaveBeenCalledWith('dave_purge_expired_deletion_audit');
+
+    await gateway.runAuthorizedMaintenance();
+
+    expect(fixture.from).toHaveBeenCalledWith('dave_storage_cleanup_intents');
+    expect(fixture.rpc).toHaveBeenCalledWith('dave_purge_expired_deletion_audit');
   });
 
   test('creates short-lived URLs only for owner-scoped paths in allowlisted buckets', async () => {
@@ -95,6 +185,24 @@ describe('DAVE browser Supabase gateway', () => {
     expect(fixture.createSignedUrl).toHaveBeenCalledWith(
       'owner-1/project-a/photo.jpg',
       600,
+    );
+  });
+
+  test('requests a bounded image transform for photo previews', async () => {
+    const fixture = clientFixture();
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await gateway.createAuthorizedArtifactSignedUrl(
+      'project-photos',
+      'owner-1/project-a/photo.jpg',
+      600,
+      { preview: true },
+    );
+
+    expect(fixture.createSignedUrl).toHaveBeenCalledWith(
+      'owner-1/project-a/photo.jpg',
+      600,
+      { transform: { width: 960, quality: 72, resize: 'contain' } },
     );
   });
 

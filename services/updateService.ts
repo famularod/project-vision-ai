@@ -1,6 +1,7 @@
 import { listProjectUpdates } from './SupabaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  hydrateProjectUpdatePhotoPreviews,
   hydrateRecoveredProjectUpdatePhotos,
   queueProjectUpdateArchive,
   queueProjectUpdateDelete,
@@ -174,7 +175,7 @@ export async function loadCloudUpdates<TUpdate>(): Promise<TUpdate[]> {
     .filter((update): update is TUpdate => Boolean(update));
   return Promise.all(updates.map(async update => {
     if (!isProjectUpdateWithPhotos(update)) return update;
-    return await hydrateRecoveredProjectUpdatePhotos(update) as unknown as TUpdate;
+    return await hydrateProjectUpdatePhotoPreviews(update) as unknown as TUpdate;
   }));
 }
 

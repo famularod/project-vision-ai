@@ -8,7 +8,8 @@ const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
 const filename = path.join(root, 'services/ProjectCoverPhotoService.ts');
-const compiled = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+const source = fs.readFileSync(filename, 'utf8');
+const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 });
 const moduleValue = { exports: {} };
@@ -85,6 +86,16 @@ assert.strictEqual(restarted[0].coverPhoto.localUri, selected.localUri,
   'Restart hydration must preserve the selected local cover photo.');
 assert.strictEqual(restarted[0].coverPhotoMode, 'manual',
   'Restart hydration must preserve manual cover mode.');
+assert(
+  source.includes('function coverPhotoCacheRevision') &&
+    source.includes('coverPhotoCacheUri(projectId, coverPhoto, extension)'),
+  'Cover photo cache keys must include the selected remote revision.',
+);
+assert(
+  source.includes('incomingCover.remotePath === localCover?.remotePath') &&
+    source.includes('incomingCover.updatedAt === localCover?.updatedAt'),
+  'A newer remote cover revision must not inherit a stale local cache URI.',
+);
 
 const projectData = cloudProjectCoverData(selected, 'manual', { organizationId: 'org-1' });
 assert.strictEqual(projectData.organizationId, 'org-1',
@@ -172,7 +183,9 @@ for (const marker of [
   assert(app.includes(marker), `Project cover flow is missing ${marker}.`);
 }
 const overviewStart = app.indexOf('function HomeScreen');
-const overviewEnd = app.indexOf('function OverviewHeroCard');
+const overviewEnd = app.indexOf('function Phase2ActivityRow');
+assert(overviewStart >= 0 && overviewEnd > overviewStart,
+  'The reachable Overview source boundary must remain discoverable.');
 const overviewSource = app.slice(overviewStart, overviewEnd);
 assert(!overviewSource.includes('Set Project Cover') &&
   !overviewSource.includes('ProjectCoverEntryButton') &&
@@ -195,8 +208,8 @@ assert(
   projectActionSheet.includes('accessibilityLabel={`Close ${title}`}'),
   'Project Options must expose an accessible close control tied to the sheet title.',
 );
-assert((app.match(/resolveProjectCoverPhotoUri\(/g) || []).length >= 3,
-  'Overview, Projects, and Project Workspace must use the canonical project cover resolver.');
+assert((app.match(/resolveProjectCoverPhotoUri\(/g) || []).length >= 2,
+  'Overview and Project Workspace must use the canonical project cover resolver.');
 assert(app.includes('projectRecords={projectRecords}'),
   'Projects must receive project cover records instead of selecting an independent thumbnail.');
 assert(app.includes('coverPhotoUri={resolveProjectCoverPhotoUri('),

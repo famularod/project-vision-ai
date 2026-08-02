@@ -31,6 +31,7 @@ export function AppShellFrame({
   selectedUpdateProject,
   onUpdateProjectChange,
   documentProjects,
+  documentCount,
   selectedDocumentProject,
   onDocumentProjectChange,
 }: {
@@ -45,6 +46,7 @@ export function AppShellFrame({
   selectedUpdateProject?: string | null;
   onUpdateProjectChange?: (projectName: string | null) => void;
   documentProjects?: string[];
+  documentCount?: number;
   selectedDocumentProject?: string | null;
   onDocumentProjectChange?: (projectName: string | null) => void;
 }) {
@@ -96,6 +98,7 @@ export function AppShellFrame({
                 selectedUpdateProject={selectedUpdateProject}
                 onUpdateProjectChange={onUpdateProjectChange}
                 documentProjects={documentProjects}
+                documentCount={documentCount}
                 selectedDocumentProject={selectedDocumentProject}
                 onDocumentProjectChange={onDocumentProjectChange}
               />

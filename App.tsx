@@ -17,7 +17,9 @@ import {
 import {
   clearScheduleItemSyncConflicts,
   cleanupStoredSyncStatusMessages,
+  cloudPhotoPreviewIsFresh,
   getOfflineQueue,
+  hydrateProjectUpdatePhotoPreviews,
   hydrateRecoveredProjectUpdatePhotos,
   markMissingPhotosUnavailable,
   requestPendingChangesUpload,
@@ -68,13 +70,13 @@ import {
 import {
   createDAVEOperationalRefreshCommitGuard,
   createDAVEOperationalRefreshController,
-  daveOperationalCollectionForRealtimeEntity,
   DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE,
   runDAVEOperationalCollectionRefreshes,
   type DAVEOperationalCollectionName,
   type DAVEOperationalCollectionRefresh,
   type DAVEOperationalRefreshTrigger,
 } from './services/DAVEOperationalRefresh';
+import { createDAVEOperationalRealtimeApplier, createDAVEOperationalRealtimeCommit, mergeProjectNames } from './services/DAVEOperationalRealtimeApplication';
 import { reconcileDAVEOperationalProjects } from './services/DAVEOperationalProjectRecovery';
 import {
   isLegacyNonProjectShellName,
@@ -318,7 +320,7 @@ import {
   type PersistedFieldUpdateStatus,
 } from './services/FieldUpdateLifecycle';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import * as Contacts from 'expo-contacts';
 import * as DocumentPicker from 'expo-document-picker';
@@ -483,10 +485,6 @@ import { createLocalPIEDecisionHistoryActions } from './services/LocalPIEDecisio
 import { buildVerifiedLearningEventsFromDecisionLedger } from './services/PIEDecisionOutcomeLearning';
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
-import {
-  buildReportWordBase64,
-  summarizeReportWordUnavailableMedia,
-} from './services/ReportWordDocument';
 import {
   renderNativeReportDrawingPreview,
   resolveNativeReportWordMedia,
@@ -783,13 +781,11 @@ type LocationSnapshot = {
   accuracy: number | null;
   capturedAt: string;
 };
-type OverviewProjectSelection = string | null | undefined;
 type OverviewDetectionStatus =
   | 'checking'
   | 'detected'
   | 'denied'
   | 'multiple'
-  | 'not_applied'
   | 'unmatched'
   | 'none'
   | 'unavailable';
@@ -1462,24 +1458,6 @@ function isDueTodayAction(photo: UpdatePhoto) {
   return daysUntilDate(photo.actionDueDate) === 0;
 }
 
-function mergeProjectNames(base: string[], ...sources: string[][]) {
-  const names: string[] = [];
-
-  [...sources.flat(), ...base].forEach(name => {
-    const trimmed = typeof name === 'string' ? name.trim() : '';
-
-    if (!trimmed) return;
-
-    const exists = names.some(
-      existing => existing.toLowerCase() === trimmed.toLowerCase(),
-    );
-
-    if (!exists) names.push(trimmed);
-  });
-
-  return names;
-}
-
 function optionalNumber(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value)
     ? value
@@ -1558,6 +1536,10 @@ function normalizePhoto(photo: Partial<UpdatePhoto>): UpdatePhoto {
         ? photo.cloudRecoveryStatus
         : null,
     cloudSignedUrlExpiresAt: optionalString(photo.cloudSignedUrlExpiresAt),
+    cloudPreviewUri: optionalString(photo.cloudPreviewUri),
+    cloudPreviewSignedUrlExpiresAt: optionalString(
+      photo.cloudPreviewSignedUrlExpiresAt,
+    ),
     continuityAnchor: photo.continuityAnchor || null,
     selectedAreaId: optionalString(photo.selectedAreaId),
     selectedAreaName: optionalString(photo.selectedAreaName),
@@ -1983,7 +1965,11 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
     projectName,
     date: typeof update.date === 'string' ? update.date : isoToday(),
     photos: Array.isArray(update.photos)
-      ? update.photos.map(normalizePhoto).filter(photo => photo.uri)
+      ? update.photos
+          .map(normalizePhoto)
+          .filter(photo => Boolean(
+            resolveProjectPhotoDisplayUri(photo) || photo.cloudStoragePath,
+          ))
       : [],
     documents: normalizeFieldUpdateDocuments(update.documents, {
       projectId: authorityProjectId(projectName),
@@ -2087,7 +2073,10 @@ function isStartupDeviceSavedUpdateRecord(value: unknown) {
   if (!isStartupSavedUpdateRecord(value) || !isRecord(value)) return false;
   if (!Array.isArray(value.photos)) return true;
   return value.photos.every(photo =>
-    Boolean(resolveProjectPhotoUri(photo as Partial<UpdatePhoto>)),
+    Boolean(
+      resolveProjectPhotoDisplayUri(photo as Partial<UpdatePhoto>) ||
+      (photo as Partial<UpdatePhoto>).cloudStoragePath,
+    ),
   );
 }
 
@@ -2257,10 +2246,6 @@ function phoneContactToProjectContact(
     selectedEmail: emails[0] || null,
     selectedPhone: phones[0] || null,
   });
-}
-
-function hasReachableContactInfo(contact: Contacts.ExistingContact) {
-  return Boolean(contactEmails(contact).length || contactPhones(contact).length);
 }
 
 function hasActionDetails(photo: UpdatePhoto) {
@@ -2552,15 +2537,6 @@ async function getCurrentLocationSnapshot(): Promise<LocationSnapshot | null> {
 }
 
 
-function normalizeDateInput(value: string) {
-  const digits = value.replace(/\D/g, '').slice(0, 8);
-
-  if (digits.length <= 2) return digits;
-  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
-
-  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
-}
-
 function parseFlexibleDate(value: string) {
   const trimmed = value.trim();
 
@@ -2611,6 +2587,14 @@ function formatAppDate(value: string) {
   if (!date) return value.trim();
 
   return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear()}`;
+}
+
+function formatCompactAppDate(value: string) {
+  const date = parseFlexibleDate(value);
+
+  if (!date) return value.trim();
+
+  return `${date.getMonth() + 1}/${date.getDate()}/${String(date.getFullYear()).slice(-2)}`;
 }
 
 function daysUntilDate(value: string, projectTimeZone: string = DEFAULT_PROJECT_TIME_ZONE) {
@@ -2784,23 +2768,6 @@ async function withScheduleImportTimeout<T>(
   } finally {
     if (timeout) clearTimeout(timeout);
   }
-}
-
-function actionItemsFromUpdates(savedUpdates: ProjectUpdate[]) {
-  return savedUpdates.flatMap(update =>
-    update.photos
-      .filter(photo => isOpenAction(photo) && photo.actionDueDate.trim())
-      .map(photo => ({
-        id: `${update.id}-${photo.id}`,
-        projectName: update.projectName,
-        locationName: photo.selectedAreaName || update.selectedAreaName || '',
-        taskName: photo.actionRequired || photo.caption || photo.category,
-        finishDate: photo.actionDueDate,
-        owner: photo.actionOwner,
-        status: photo.actionStatus,
-        dueLabel: dueStatusText(photo.actionDueDate),
-      })),
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2983,6 +2950,11 @@ function resolveProjectPhotoUri(photo: Partial<UpdatePhoto>) {
   return photo.cloudRecoveryStatus === 'cached' && cacheRoot
     ? resolveLegacyOwnedLocalFilePath({ ownedRoot: cacheRoot, legacyFolderName: RECOVERED_PHOTO_CACHE_FOLDER, candidatePath: uri }) || ''
     : '';
+}
+
+function resolveProjectPhotoDisplayUri(photo: Partial<UpdatePhoto>) {
+  const originalUri = resolveProjectPhotoUri(photo);
+  return originalUri || (cloudPhotoPreviewIsFresh(photo) ? photo.cloudPreviewUri || '' : '');
 }
 
 async function deleteStoredPhotoIfUnused(
@@ -3351,20 +3323,6 @@ function projectStatsForUpdates(savedUpdates: ProjectUpdate[]): ProjectStats {
   }, createEmptyProjectStats());
 }
 
-function documentCountForProject(
-  projectName: string | null,
-  documents: ReferenceDocument[],
-) {
-  if (!projectName) return documents.length;
-
-  const normalizedProject = projectName.toLowerCase();
-
-  return documents.filter(document => {
-    const searchable = `${document.name} ${document.originalFileName} ${document.notes}`.toLowerCase();
-    return searchable.includes(normalizedProject);
-  }).length;
-}
-
 function canonicalReferenceDocumentSha256(value: unknown) {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
@@ -3466,22 +3424,6 @@ function projectDocumentStatusDetail(document: ProjectDocument) {
 
 function isComplianceSensitiveProjectDocument(document: ProjectDocument) {
   return COMPLIANCE_SENSITIVE_DOCUMENT_CATEGORIES.includes(document.category);
-}
-
-function buildProjectDocumentMetadataBrief(
-  projectName: string,
-  documents: ProjectDocument[],
-) {
-  const scoped = projectDocumentsForProject(projectName, documents);
-  const uploaded = scoped.filter(document => document.status === 'uploaded').length;
-  const pending = scoped.filter(document =>
-    document.status === 'local' || document.status === 'uploading',
-  ).length;
-  const failed = scoped.filter(document => document.status === 'failed').length;
-
-  if (scoped.length === 0) return 'No project documents linked yet.';
-
-  return `${scoped.length} project document${scoped.length === 1 ? '' : 's'} linked: ${uploaded} uploaded, ${pending} local or pending, ${failed} failed.`;
 }
 
 function duplicateProjectDocumentForAsset(
@@ -5166,15 +5108,6 @@ function stableUiHash(value: string) {
   return Math.abs(hash).toString(36);
 }
 
-function projectThumbnailUri(
-  projectName: string,
-  savedUpdates: ProjectUpdate[],
-) {
-  return savedUpdates.find(
-    update => projectMatchesScope(update, projectName) && update.photos[0]?.uri,
-  )?.photos[0]?.uri;
-}
-
 export default function App() {
   return (
     <StartupErrorBoundary>
@@ -5215,6 +5148,7 @@ function AppShell() {
   } | null>(null);
   const [scheduleEntryFilter, setScheduleEntryFilter] = useState<ScheduleTaskFilter>('Attention');
   const [scheduleAddProjectName, setScheduleAddProjectName] = useState<string | null>(null);
+  const [scheduleAddGuided, setScheduleAddGuided] = useState(false);
   const [scheduleProjectFilter, setScheduleProjectFilter] = useState<string | null>(null);
   const [updatesProjectFilter, setUpdatesProjectFilter] = useState<string | null>(null);
 
@@ -5227,24 +5161,17 @@ function AppShell() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen !== 'Schedule' && scheduleAddProjectName !== null) {
-      setScheduleAddProjectName(null);
+    if (screen !== 'Schedule') {
+      if (scheduleAddProjectName !== null) setScheduleAddProjectName(null);
+      if (scheduleAddGuided) setScheduleAddGuided(false);
     }
-  }, [scheduleAddProjectName, screen]);
+  }, [scheduleAddGuided, scheduleAddProjectName, screen]);
 
   const [selectedWorkspaceProject, setSelectedWorkspaceProject] =
     useState(DEFAULT_PROJECTS[0]);
 
-  const [overviewProjectSelection, setOverviewProjectSelection] =
-    useState<OverviewProjectSelection>(undefined);
-  const [overviewProjectManuallySelected, setOverviewProjectManuallySelected] =
-    useState(false);
-
   const [detectedProjectName, setDetectedProjectName] =
     useState<string | null>(null);
-  const [gpsCandidateProjectNames, setGpsCandidateProjectNames] =
-    useState<string[]>([]);
-
   const [projectDetectionStatus, setProjectDetectionStatus] =
     useState<OverviewDetectionStatus>('checking');
 
@@ -5314,38 +5241,16 @@ function AppShell() {
   const projectRecordsCurrentRef = useRef(projectRecords);
   const archivedProjectsCurrentRef = useRef(archivedProjects);
   const operationalSyncTombstonesRef = useRef(operationalSyncTombstones);
-
-  useEffect(() => {
-    projectAreasCurrentRef.current = projectAreas;
-  }, [projectAreas]);
-
-  useEffect(() => {
-    referenceDocumentsCurrentRef.current = referenceDocuments;
-  }, [referenceDocuments]);
-
-  useEffect(() => {
-    projectDocumentsCurrentRef.current = projectDocuments;
-  }, [projectDocuments]);
-
-  useEffect(() => {
-    scheduleItemsCurrentRef.current = scheduleItems;
-  }, [scheduleItems]);
-
-  useEffect(() => {
-    projectsCurrentRef.current = projects;
-  }, [projects]);
-
-  useEffect(() => {
-    projectRecordsCurrentRef.current = projectRecords;
-  }, [projectRecords]);
-
-  useEffect(() => {
-    archivedProjectsCurrentRef.current = archivedProjects;
-  }, [archivedProjects]);
-
-  useEffect(() => {
-    operationalSyncTombstonesRef.current = operationalSyncTombstones;
-  }, [operationalSyncTombstones]);
+  // These refs are read only by asynchronous callbacks. Assigning during the
+  // render keeps them current without scheduling eight post-render effects.
+  projectAreasCurrentRef.current = projectAreas;
+  referenceDocumentsCurrentRef.current = referenceDocuments;
+  projectDocumentsCurrentRef.current = projectDocuments;
+  scheduleItemsCurrentRef.current = scheduleItems;
+  projectsCurrentRef.current = projects;
+  projectRecordsCurrentRef.current = projectRecords;
+  archivedProjectsCurrentRef.current = archivedProjects;
+  operationalSyncTombstonesRef.current = operationalSyncTombstones;
 
   const [displayName, setDisplayName] =
     useState('');
@@ -6389,42 +6294,46 @@ useEffect(() => {
 
   useEffect(() => {
     if (!startupHydrationReady || !updatesLoaded || !hasQueuedSyncRetries) return;
-
-    const timer = setInterval(() => {
-      startAutomaticSyncBackgroundTask('interval', hydrateQueuedUpdates);
-    }, 30000);
-
     startAutomaticSyncBackgroundTask('queued_updates_detected', hydrateQueuedUpdates);
-
-    return () => clearInterval(timer);
   }, [updatesLoaded, hasQueuedSyncRetries, startupHydrationReady]);
 
   useEffect(() => {
-    if (!startupHydrationReady || !updatesLoaded) return;
-
-    const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active') {
-        startAutomaticSyncBackgroundTask('app_foreground', hydrateQueuedUpdates);
-      }
-    });
-
-    return () => subscription.remove();
-  }, [updatesLoaded, startupHydrationReady]);
-
-  useEffect(() => {
-    if (
-      !startupHydrationReady ||
-      !(
-        projectsLoaded ||
-        updatesLoaded ||
-        projectAreasLoaded ||
-        referenceDocumentsLoaded ||
-        scheduleItemsLoaded
-      )
-    ) return;
+    const operationalDataLoaded = projectsLoaded || updatesLoaded || projectAreasLoaded ||
+      referenceDocumentsLoaded || scheduleItemsLoaded;
+    if (!startupHydrationReady || !operationalDataLoaded) return;
     let active = true;
     const operationalRefreshCommitGuard =
       createDAVEOperationalRefreshCommitGuard();
+
+    const applyRealtimeOperationalPayload = createDAVEOperationalRealtimeApplier({
+      isActive: () => active,
+      snapshot: () => ({
+        projects: projectsCurrentRef.current, projectRecords: projectRecordsCurrentRef.current,
+        archivedProjects: archivedProjectsCurrentRef.current, deletedProjectNames: deletedProjectNamesRef.current,
+        updates: savedUpdatesRef.current, deletedUpdates: deletedUpdateTombstonesRef.current,
+        tombstones: operationalSyncTombstonesRef.current, areas: projectAreasCurrentRef.current,
+        scheduleItems: scheduleItemsCurrentRef.current, documents: referenceDocumentsCurrentRef.current,
+      }),
+      getPendingQueue: getOfflineQueue, normalizeUpdate: normalizeStoredUpdateRecord,
+      normalizeAreas: normalizeProjectAreas, normalizeSchedule: normalizeScheduleItems,
+      normalizeDocuments: normalizeReferenceDocuments, migrateSchedule: migrateLegacyScheduleItem,
+      localPhotoUri: resolveProjectPhotoUri, mergeProjectNames,
+      mergeUpdates: mergeSavedUpdatesWithTombstones, buildUpdateTombstone,
+      buildCloudDeletionBarrier: buildCloudUpdateDeletionBarrier,
+      upsertDeletedUpdate: upsertDeletedUpdateTombstone,
+      commitProjects: (records, projects, archived) => {
+        projectRecordsCurrentRef.current = records; projectsCurrentRef.current = projects;
+        archivedProjectsCurrentRef.current = archived;
+        setProjectRecords(records); setProjects(projects); setArchivedProjects(archived);
+      },
+      commitDeletedProjects: createDAVEOperationalRealtimeCommit(deletedProjectNamesRef, setDeletedProjectNames),
+      commitUpdates: createDAVEOperationalRealtimeCommit(savedUpdatesRef, setSavedUpdates),
+      commitDeletedUpdates: createDAVEOperationalRealtimeCommit(deletedUpdateTombstonesRef, setDeletedUpdateTombstones),
+      commitTombstones: createDAVEOperationalRealtimeCommit(operationalSyncTombstonesRef, setOperationalSyncTombstones),
+      commitAreas: createDAVEOperationalRealtimeCommit(projectAreasCurrentRef, setProjectAreas),
+      commitSchedule: createDAVEOperationalRealtimeCommit(scheduleItemsCurrentRef, setScheduleItems),
+      commitDocuments: createDAVEOperationalRealtimeCommit(referenceDocumentsCurrentRef, setReferenceDocuments),
+    });
 
     async function refreshOperationalCollections(
       _trigger: DAVEOperationalRefreshTrigger,
@@ -6573,8 +6482,8 @@ useEffect(() => {
                 : cloudPhoto;
             });
             const cloudUpdateWithLocalPhotoCache = { ...cloudUpdate, photos };
-            return photos.some(photo => !resolveProjectPhotoUri(photo))
-              ? hydrateRecoveredProjectUpdatePhotos(cloudUpdateWithLocalPhotoCache)
+            return photos.some(photo => !resolveProjectPhotoDisplayUri(photo))
+              ? hydrateProjectUpdatePhotoPreviews(cloudUpdateWithLocalPhotoCache)
               : cloudUpdateWithLocalPhotoCache;
           }),
         );
@@ -6710,18 +6619,28 @@ useEffect(() => {
     });
     refreshController.start();
 
+    let realtimeHasSubscribed = false;
     let realtimeUnsubscribe: () => void = () => undefined;
     void subscribeToDAVEOperationalChanges({
-      onChange: entity => {
-        const collection = daveOperationalCollectionForRealtimeEntity(entity);
-        void refreshController.request(
-          'realtime',
-          collection ? [collection] : undefined,
-        );
+      onChange: (entity, collections, payload) => {
+        void applyRealtimeOperationalPayload(entity, payload)
+          .then(applied => {
+            if (!applied) {
+              const fallbackCollections = collections
+                ? Array.from(new Set(['sync_tombstones', ...collections])) as DAVEOperationalCollectionName[]
+                : undefined;
+              void refreshController.request('realtime', fallbackCollections);
+            }
+          })
+          .catch(() => {
+            void refreshController.request('realtime');
+          });
       },
       onStatus: status => {
         if (status === 'subscribed') {
           requestPendingChangesUpload('realtime_reconnected');
+          if (realtimeHasSubscribed) void refreshController.request('realtime');
+          realtimeHasSubscribed = true;
         }
         if (active && (status === 'error' || status === 'closed')) {
           setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
@@ -6784,10 +6703,7 @@ useEffect(() => {
     [activeSavedUpdates],
   );
 
-  const overviewProjectName =
-    overviewProjectSelection === undefined
-      ? detectedProjectName
-      : overviewProjectSelection;
+  const overviewProjectName = detectedProjectName;
 
   useEffect(() => {
     let mounted = true;
@@ -6795,7 +6711,6 @@ useEffect(() => {
     async function detectOverviewProject() {
       if (!GPS_CAPTURE_ENABLED || projectAreas.length === 0) {
         setDetectedProjectName(null);
-        setGpsCandidateProjectNames([]);
         setProjectDetectionStatus('none');
         return;
       }
@@ -6810,7 +6725,6 @@ useEffect(() => {
 
         if (!snapshot) {
           setDetectedProjectName(null);
-          setGpsCandidateProjectNames([]);
           setProjectDetectionStatus('denied');
           return;
         }
@@ -6825,36 +6739,23 @@ useEffect(() => {
 
         if (!suggestion?.withinRadius || gpsCandidates.topCandidates.length === 0) {
           setDetectedProjectName(null);
-          setGpsCandidateProjectNames([]);
           setProjectDetectionStatus('unmatched');
           return;
         }
 
         if (gpsCandidates.ambiguous) {
           setDetectedProjectName(null);
-          setGpsCandidateProjectNames(
-            gpsCandidates.topCandidates.map(candidate => candidate.projectName),
-          );
           setProjectDetectionStatus('multiple');
           return;
         }
 
         const projectName = gpsCandidates.clearProjectName;
-        if (overviewProjectManuallySelected) {
-          setDetectedProjectName(null);
-          setGpsCandidateProjectNames(projectName ? [projectName] : []);
-          setProjectDetectionStatus(projectName ? 'not_applied' : 'unmatched');
-          return;
-        }
-
         setDetectedProjectName(projectName);
-        setGpsCandidateProjectNames(projectName ? [projectName] : []);
         setProjectDetectionStatus(projectName ? 'detected' : 'unmatched');
       } catch {
         if (!mounted) return;
 
         setDetectedProjectName(null);
-        setGpsCandidateProjectNames([]);
         setProjectDetectionStatus('unavailable');
       }
     }
@@ -6864,7 +6765,7 @@ useEffect(() => {
     return () => {
       mounted = false;
     };
-  }, [activeProjects, overviewProjectManuallySelected, projectAreas, savedUpdates]);
+  }, [activeProjects, projectAreas, savedUpdates, scheduleItems]);
 
   const message = useMemo(
     () => buildMessage(draft),
@@ -8426,7 +8327,6 @@ useEffect(() => {
     const confidentTarget =
       projectName ||
       (activeProjects.length === 1 ? activeProjects[0] : null) ||
-      overviewProjectSelection ||
       (projectDetectionStatus === 'detected' ? detectedProjectName : null);
 
     function proceed() {
@@ -9163,14 +9063,6 @@ function addProject(projectName: string) {
         draftRef.current = replacementDraft;
         setDraft(replacementDraft);
         setDraftSavedAt(null);
-      }
-
-      if (
-        overviewProjectSelection &&
-        overviewProjectSelection.toLowerCase() === projectName.toLowerCase()
-      ) {
-        setOverviewProjectSelection(undefined);
-        setOverviewProjectManuallySelected(false);
       }
 
       setSelectedWorkspaceProject(fallbackProject);
@@ -10320,6 +10212,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       `${directory}${sanitizeFilename(report.title || 'Vitruvius Project Report')}.docx`;
 
     try {
+      const {
+        buildReportWordBase64,
+        summarizeReportWordUnavailableMedia,
+      } = await import('./services/ReportWordDocument');
       const base64 = await buildReportWordBase64({
         title: report.title,
         body: report.body,
@@ -10659,8 +10555,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setDraft(restored.draft);
       markProjectAreasAuthorityReady(true); markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
       setDraftSavedAt(restored.storedDraft?.savedAt || null); setSelectedWorkspaceProject(restored.activeProject);
-      setOverviewProjectSelection(undefined); setOverviewProjectManuallySelected(false);
-
       Alert.alert(
         'Complete backup restored',
         'Project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.',
@@ -13097,6 +12991,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
     setTalkVoiceOpen(true);
   }
 
+  function openGuidedTaskFromTalk() {
+    const projectName = talkProjectName.trim();
+    if (!projectName) return;
+    setTalkVoiceOpen(false);
+    setTalkTypedOpen(false);
+    setTalkTaskId(null);
+    setScheduleEntryFilter('All');
+    setScheduleProjectFilter(projectName);
+    setScheduleAddGuided(true);
+    setScheduleAddProjectName(projectName);
+    setScreen('Schedule');
+  }
+
   function navigateFromTalk(
     target: DAVEConversationNavigationTarget,
     projectName: string,
@@ -13484,11 +13391,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     selectedWorkspaceProject,
   ]);
 
-  function selectOverviewProject(projectName: OverviewProjectSelection) {
-    setOverviewProjectManuallySelected(true);
-    setOverviewProjectSelection(projectName);
-  }
-
   const liveDetailUpdate = selectedDetailUpdate
     ? savedUpdates.find(item => item.id === selectedDetailUpdate.id) || selectedDetailUpdate
     : null;
@@ -13517,6 +13419,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             if (projectName) setSelectedWorkspaceProject(projectName);
           }}
           documentProjects={activeProjects}
+          documentCount={referenceDocuments.length}
           selectedDocumentProject={selectedWorkspaceProject}
           onDocumentProjectChange={projectName => {
             if (projectName) setSelectedWorkspaceProject(projectName);
@@ -13533,16 +13436,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               displayName={displayName}
               unfinishedDraft={unfinishedDraft}
               draftSavedAt={draftSavedAt}
-              selectedProjectName={overviewProjectName}
-              detectedProjectName={detectedProjectName}
-              gpsCandidateProjectNames={gpsCandidateProjectNames}
-              projectDetectionStatus={projectDetectionStatus}
               projectRecords={projectRecords}
               statusReady={projectStatusReady}
               onResumeDraft={resumeDraft}
               onDiscardDraft={discardDraft}
               onNewUpdate={createNewUpdate}
-              onSelectProject={selectOverviewProject}
               onOpenProject={openProjectWorkspace}
               onOpenUpdate={update => openSavedUpdate(update, 'ProjectWorkspace')}
               onAddProject={addProject}
@@ -13647,6 +13545,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'ProjectWorkspace' && projectStatusReady && (
             <ProjectWorkspaceScreen
               contentStyle={contentStyle}
+              projectId={projectRecords.find(project => project.name.trim().toLowerCase() === selectedWorkspaceProject.trim().toLowerCase())?.id?.trim() || null}
               projectName={selectedWorkspaceProject}
               savedUpdates={activeSavedUpdates}
               captureMemories={captureMemories}
@@ -13694,6 +13593,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               }
               onAddTask={() => {
                 setScheduleEntryFilter('All');
+                setScheduleAddGuided(false);
                 setScheduleAddProjectName(selectedWorkspaceProject);
                 setScheduleProjectFilter(selectedWorkspaceProject);
                 setScreen('Schedule');
@@ -13812,6 +13712,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               savedUpdates={activeSavedUpdates}
               projectAreas={projectAreas}
               projects={projects}
+              projectRecords={projectRecords}
               scheduleDocuments={referenceDocuments.filter(document =>
                 document.category === 'Schedules' ||
                 document.notes.includes('[Schedule communication screenshot]'),
@@ -13842,6 +13743,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onOpenUpdate={update => openSavedUpdate(update, 'Schedule')}
               initialFilter={scheduleEntryFilter}
               initialAddProjectName={scheduleAddProjectName}
+              initialAddGuided={scheduleAddGuided}
+              onInitialAddGuidedConsumed={() => setScheduleAddGuided(false)}
               projectFilter={scheduleProjectFilter}
               defaultOwner={displayName}
               currentUserEmail={layer4Identity?.authenticatedEmail || ''}
@@ -14166,6 +14069,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
           <DAVEVoiceCaptureSheet
             visible={talkVoiceOpen}
+            projectId={projectRecords.find(project => project.name.trim().toLowerCase() === talkProjectName.trim().toLowerCase())?.id?.trim() || null}
             projectName={talkProjectName}
             candidateProjects={reportAvailableProjectNames}
             candidateTasks={talkCandidateTasks}
@@ -14175,6 +14079,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
             prompt="What do you need?"
             guidance="Ask a project question, update a task, open a screen, or record something that should be remembered."
             continueLabel="Continue"
+            operationLabel="Create a task"
+            operationGuidance="Answer guided questions so every task field is reviewed before saving."
             showWalkContext={false}
             onMemoryReady={result => handleTalkInput(result.transcript, result)}
             onProjectChange={projectName => {
@@ -14182,6 +14088,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               setTalkTaskId(null);
             }}
             onTaskChange={setTalkTaskId}
+            onOperation={openGuidedTaskFromTalk}
             onTypeInstead={() => {
               setTalkVoiceOpen(false);
               setTalkTypedOpen(true);
@@ -14198,7 +14105,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
             placeholder="Example: Mark electrical rough-in complete. Or: What changed today?"
             continueLabel="Continue"
             accessibilityLabel="Talk message"
+            operationLabel="Create a task"
+            operationGuidance="Answer guided questions so every task field is reviewed before saving."
             onContinue={text => handleTalkInput(text)}
+            onOperation={openGuidedTaskFromTalk}
             onCancel={() => setTalkTypedOpen(false)}
           />
 
@@ -14357,56 +14267,6 @@ function ScreenScroll({
   );
 }
 
-function useCountUp(target: number, durationMs: number) {
-  const [value, setValue] = useState(0);
-
-  useEffect(() => {
-    let frame: number;
-    const startedAt = Date.now();
-
-    function step() {
-      const elapsed = Date.now() - startedAt;
-      const progress = Math.min(1, elapsed / durationMs);
-
-      setValue(Math.round(progress * target));
-
-      if (progress < 1) {
-        frame = requestAnimationFrame(step);
-      }
-    }
-
-    frame = requestAnimationFrame(step);
-
-    return () => cancelAnimationFrame(frame);
-  }, [target, durationMs]);
-
-  return value;
-}
-
-function useFadeSlideIn(durationMs: number) {
-  const anim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.timing(anim, {
-      toValue: 1,
-      duration: durationMs,
-      useNativeDriver: true,
-    }).start();
-  }, [anim, durationMs]);
-
-  return {
-    opacity: anim,
-    transform: [
-      {
-        translateY: anim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [8, 0],
-        }),
-      },
-    ],
-  };
-}
-
 function HomeScreen({
   contentStyle,
   projects,
@@ -14416,16 +14276,11 @@ function HomeScreen({
   displayName,
   unfinishedDraft,
   draftSavedAt,
-  selectedProjectName,
-  detectedProjectName,
-  gpsCandidateProjectNames,
-  projectDetectionStatus,
   projectRecords,
   statusReady,
   onResumeDraft,
   onDiscardDraft,
   onNewUpdate,
-  onSelectProject,
   onOpenProject,
   onOpenUpdate,
   onAddProject,
@@ -14442,16 +14297,11 @@ function HomeScreen({
   displayName: string;
   unfinishedDraft: ProjectUpdate | null;
   draftSavedAt: string | null;
-  selectedProjectName: string | null;
-  detectedProjectName: string | null;
-  gpsCandidateProjectNames: string[];
-  projectDetectionStatus: OverviewDetectionStatus;
   projectRecords: ProjectRecord[];
   statusReady: boolean;
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
   onNewUpdate: (projectName?: string) => void;
-  onSelectProject: (projectName: OverviewProjectSelection) => void;
   onOpenProject: (projectName: string) => void;
   onOpenUpdate: (update: ProjectUpdate) => void;
   onAddProject: (projectName: string) => boolean;
@@ -14483,10 +14333,6 @@ function HomeScreen({
     scheduleItems,
   );
   const attentionRows = overviewRows.filter(row => row.health !== 'Healthy');
-  const caughtUpRows = overviewRows.filter(row => row.health === 'Healthy');
-  const needsSetupRows = overviewRows.filter(row => row.health === 'Needs Setup');
-  const blockedRows = overviewRows.filter(row => row.health === 'Blocked');
-  const atRiskRows = overviewRows.filter(row => row.health === 'At Risk');
   const topPriority = attentionRows[0] || null;
   const commitmentControl = buildVitruviusCommitmentControl({
     scheduleItems,
@@ -14526,6 +14372,13 @@ function HomeScreen({
       )
       .map(update => [update.id, update]),
   ).values());
+  const overviewScopedTasks = Array.from(new Map(
+    scopedProjects
+      .flatMap(projectName => scheduleTasksForParentProject(projectName, scheduleItems))
+      .map(item => [item.id, item]),
+  ).values());
+  const overviewCompletedTasks = overviewScopedTasks.filter(scheduleTaskIsComplete);
+  const overviewOpenTasks = overviewScopedTasks.filter(item => !scheduleTaskIsComplete(item));
 
   const dueTodayCount = overviewRows.filter(row => row.dueTodayLabel !== null).length;
   const sentThisWeekCount = overviewScopedUpdates.filter(update => {
@@ -14662,14 +14515,30 @@ function HomeScreen({
         <View style={styles.overviewHealthMetrics}>
           {[
             { label: 'Active Projects', value: scopedProjects.length },
-            { label: 'Healthy', value: caughtUpRows.length },
-            { label: 'Needs Setup', value: needsSetupRows.length },
-            { label: 'At Risk', value: atRiskRows.length },
-            { label: 'Blocked', value: blockedRows.length },
+            { label: 'Total Tasks', value: overviewScopedTasks.length },
+            { label: 'Completed', value: overviewCompletedTasks.length },
+            { label: 'Open', value: overviewOpenTasks.length },
+            { label: 'Field Updates', value: overviewScopedUpdates.length },
           ].map(metric => (
             <View key={metric.label} style={styles.overviewHealthMetric}>
               <Text style={styles.overviewHealthMetricValue}>{metric.value}</Text>
-              <Text style={styles.overviewHealthMetricLabel}>{metric.label}</Text>
+              <View
+                style={styles.overviewHealthMetricLabelGroup}
+                accessible
+                accessibilityLabel={metric.label}
+              >
+                {metric.label.split(' ').map(word => (
+                  <Text
+                    key={`${metric.label}-${word}`}
+                    style={styles.overviewHealthMetricLabel}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.82}
+                  >
+                    {word}
+                  </Text>
+                ))}
+              </View>
             </View>
           ))}
         </View>
@@ -14974,364 +14843,6 @@ function HomeScreen({
   );
 }
 
-function OverviewHeroCard({
-  openItemsCount,
-  dueTodayCount,
-  heroPhotoUri,
-}: {
-  openItemsCount: number;
-  dueTodayCount: number;
-  heroPhotoUri: string | null;
-}) {
-  const animatedStyle = useFadeSlideIn(400);
-  const displayedCount = useCountUp(openItemsCount, 700);
-  const isClear = openItemsCount === 0;
-  const glowColor = isClear ? colors.success : colors.warning;
-
-  return (
-    <Animated.View style={[styles.overviewHeroCard, animatedStyle]}>
-      <LinearGradient
-        colors={['#0B2A6B', '#1E4FBF', '#5B4FC9']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-
-      {heroPhotoUri ? (
-        <Image
-          source={{ uri: heroPhotoUri }}
-          style={[StyleSheet.absoluteFill, styles.overviewHeroPhoto]}
-        />
-      ) : null}
-
-      <LinearGradient
-        colors={['rgba(9,16,40,0.15)', 'rgba(9,16,40,0.6)']}
-        style={StyleSheet.absoluteFill}
-      />
-
-      <View style={styles.overviewHeroContent}>
-        <Text style={styles.overviewHeroLabel}>Open Issues</Text>
-
-        <View>
-          <Text style={[styles.overviewHeroNumber, { color: glowColor }]}>
-            {displayedCount}
-          </Text>
-          <Text style={styles.overviewHeroCaption}>
-            {isClear
-              ? 'No open issues logged'
-              : `open issue${displayedCount === 1 ? '' : 's'} logged across your projects`}
-          </Text>
-        </View>
-
-        {dueTodayCount > 0 ? (
-          <View style={styles.overviewHeroPill}>
-            <Ionicons name="time-outline" size={13} color="#FFC670" />
-            <Text style={styles.overviewHeroPillText}>
-              {dueTodayCount} project{dueTodayCount === 1 ? '' : 's'} with work due today
-            </Text>
-          </View>
-        ) : null}
-      </View>
-    </Animated.View>
-  );
-}
-
-function OverviewBentoCard({
-  icon,
-  iconColor,
-  backgroundColor,
-  value,
-  label,
-  onPress,
-}: {
-  icon: IconName;
-  iconColor: string;
-  backgroundColor: string;
-  value: number;
-  label: string;
-  onPress: () => void;
-}) {
-  const animatedStyle = useFadeSlideIn(400);
-  const displayedValue = useCountUp(value, 700);
-
-  return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.8} style={styles.overviewBentoCardTouchable}>
-      <Animated.View style={[styles.overviewBentoCard, { backgroundColor }, animatedStyle]}>
-        <View style={styles.overviewBentoIconWrap}>
-          <Ionicons name={icon} size={16} color={iconColor} />
-        </View>
-        <Text style={styles.overviewBentoNumber}>{displayedValue}</Text>
-        <Text style={styles.overviewBentoLabel}>{label}</Text>
-      </Animated.View>
-    </TouchableOpacity>
-  );
-}
-
-function DaveObservationsModal({
-  visible,
-  observations,
-  onClose,
-  onOpenProject,
-}: {
-  visible: boolean;
-  observations: Array<PIEProjectBriefObservation & { projectName: string }>;
-  onClose: () => void;
-  onOpenProject: (projectName: string) => void;
-}) {
-  const insets = useSafeAreaInsets();
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent
-      onRequestClose={onClose}
-    >
-      <View style={styles.sheetModalBackdrop}>
-        <View
-          style={[
-            styles.sheetModalSafeArea,
-            { paddingTop: insets.top, paddingBottom: insets.bottom },
-          ]}
-        >
-          <View style={styles.sheetModalHeader}>
-            <View style={styles.sheetModalTitleWrap}>
-              <Text style={styles.sheetModalTitle}>Observations</Text>
-              <Text style={styles.sheetModalCaption}>
-                {observations.length} {pluralWord(observations.length, 'observation')}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.sheetModalCloseButton}
-              onPress={onClose}
-              accessibilityLabel="Close observations"
-            >
-              <Ionicons name="close" size={26} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView
-            style={styles.appFrame}
-            contentContainerStyle={[styles.content, { paddingTop: 8, paddingBottom: 24 }]}
-          >
-            {observations.length === 0 ? (
-              <EmptyState
-                title="No observations yet."
-                text="Findings from photo analysis will appear here once available."
-              />
-            ) : (
-              observations.map(observation => (
-                <TouchableOpacity
-                  key={observation.id}
-                  style={styles.savedRow}
-                  onPress={() => {
-                    onClose();
-                    onOpenProject(observation.projectName);
-                  }}
-                >
-                  <View style={styles.rowIconBubble}>
-                    <Ionicons name="bulb-outline" size={20} color={colors.insight} />
-                  </View>
-                  <View style={styles.rowMain}>
-                    <Text style={styles.projectName}>{observation.projectName}</Text>
-                    <Text style={styles.rowSub}>{observation.context}</Text>
-                    <Text style={styles.bodyText}>{observation.text}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-                </TouchableOpacity>
-              ))
-            )}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-function ProjectSelectorSheet({
-  visible,
-  projects,
-  narrowed,
-  selectedProjectName,
-  detectedProjectName,
-  onSelect,
-  onClose,
-}: {
-  visible: boolean;
-  projects: string[];
-  narrowed?: boolean;
-  selectedProjectName: string | null;
-  detectedProjectName: string | null;
-  onSelect: (projectName: string | null) => void;
-  onClose: () => void;
-}) {
-  return (
-    <ProjectActionSheet visible={visible} title="Choose Project" onClose={onClose}>
-      {narrowed ? (
-        <Text style={styles.bodyText}>
-          GPS found multiple nearby projects. Choose one of these likely matches.
-        </Text>
-      ) : null}
-
-      {detectedProjectName ? (
-        <ProjectSelectorRow
-          label={`Detected: ${detectedProjectName}`}
-          detail="Use the project nearest your current location."
-          selected={selectedProjectName === detectedProjectName}
-          onPress={() => onSelect(detectedProjectName)}
-        />
-      ) : null}
-
-      <ProjectSelectorRow
-        label="All Projects"
-        detail="Show the full portfolio overview."
-        selected={selectedProjectName === null}
-        onPress={() => onSelect(null)}
-      />
-
-      {projects.map(project => (
-        <ProjectSelectorRow
-          key={project}
-          label={project}
-          detail="Open this project overview."
-          selected={selectedProjectName === project}
-          onPress={() => onSelect(project)}
-        />
-      ))}
-    </ProjectActionSheet>
-  );
-}
-
-function PhotoIntelligenceSignInModal({
-  visible,
-  email,
-  password,
-  message,
-  submitting,
-  developmentSignupEnabled,
-  onEmailChange,
-  onPasswordChange,
-  onSubmit,
-  onDevelopmentSignUp,
-  onClose,
-}: {
-  visible: boolean;
-  email: string;
-  password: string;
-  message: string | null;
-  submitting: boolean;
-  developmentSignupEnabled: boolean;
-  onEmailChange: (value: string) => void;
-  onPasswordChange: (value: string) => void;
-  onSubmit: () => void;
-  onDevelopmentSignUp: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.detailModalBackdrop}>
-        <KeyboardAvoidingModalCard
-          frameStyle={styles.detailModalCardFrame}
-          contentContainerStyle={styles.detailModalCardContent}
-        >
-          <View style={styles.detailModalHeader}>
-            <View style={styles.rowMain}>
-              <Text style={styles.panelTitle}>Sign in to enable photo intelligence</Text>
-              <Text style={styles.rowSub}>
-                Photo comparison needs a signed-in cloud session before it can analyze photos.
-              </Text>
-              <Text style={styles.rowSub}>
-                Use the email and password for your cloud sync account. Do not use Apple Developer, Expo, or TestFlight credentials.
-              </Text>
-            </View>
-            <TouchableOpacity style={styles.iconOnlyButton} onPress={onClose}>
-              <Ionicons name="close-outline" size={22} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-
-          <Text style={styles.label}>Email</Text>
-          <TextInput
-            style={styles.input}
-            value={email}
-            onChangeText={onEmailChange}
-            placeholder="you@example.com"
-            placeholderTextColor={colors.muted}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            textContentType="username"
-          />
-
-          <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={onPasswordChange}
-            placeholder="Password"
-            placeholderTextColor={colors.muted}
-            secureTextEntry
-            textContentType="password"
-          />
-
-          {message ? (
-            <Text style={styles.dateHelpError}>{message}</Text>
-          ) : null}
-
-          <PrimaryButton
-            label={submitting ? 'Signing in…' : 'Sign in to enable photo intelligence'}
-            icon="person-circle-outline"
-            onPress={onSubmit}
-            disabled={submitting || !email.trim() || !password}
-          />
-          {developmentSignupEnabled ? (
-            <SecondaryButton
-              label="Create or sign in development account"
-              icon="flask-outline"
-              onPress={onDevelopmentSignUp}
-            />
-          ) : null}
-          <SecondaryButton
-            label="Not now"
-            icon="close-outline"
-            onPress={onClose}
-          />
-        </KeyboardAvoidingModalCard>
-      </View>
-    </Modal>
-  );
-}
-
-function ProjectSelectorRow({
-  label,
-  detail,
-  selected,
-  onPress,
-}: {
-  label: string;
-  detail: string;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      style={[
-        styles.projectSelectorRow,
-        selected && styles.projectSelectorRowSelected,
-      ]}
-      onPress={onPress}
-    >
-      <View style={styles.rowMain}>
-        <Text style={styles.projectName}>{label}</Text>
-        <Text style={styles.rowSub}>{detail}</Text>
-      </View>
-      {selected ? (
-        <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
-      ) : (
-        <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-      )}
-    </TouchableOpacity>
-  );
-}
-
 function Phase2ActivityRow({
   item,
   onPress,
@@ -15407,6 +14918,7 @@ function SelectProjectScreen({
       style={styles.appFrame}
       contentContainerStyle={contentStyle}
       keyboardShouldPersistTaps="handled"
+      initialNumToRender={12} maxToRenderPerBatch={12} windowSize={7} removeClippedSubviews={Platform.OS === 'android'}
       data={projects}
       keyExtractor={project => project}
       renderItem={renderProject}
@@ -16043,148 +15555,6 @@ function RecipientSelectionSheet({
   );
 }
 
-function ProjectAreaPanel({
-  update,
-  projectAreas,
-  selectedArea,
-  areaSuggestion,
-  locationStatus,
-  onConfirmArea,
-  onChangeArea,
-  onRefreshLocation,
-}: {
-  update: ProjectUpdate;
-  projectAreas: ProjectArea[];
-  selectedArea: ProjectArea | null;
-  areaSuggestion: AreaSuggestion | null;
-  locationStatus: string | null;
-  onConfirmArea: () => void;
-  onChangeArea: (areaId: string) => void;
-  onRefreshLocation: () => void;
-}) {
-  const hasGps =
-    update.gpsLatitude !== null &&
-    update.gpsLatitude !== undefined &&
-    update.gpsLongitude !== null &&
-    update.gpsLongitude !== undefined;
-
-  const savedAreaLocationCount = projectAreas.filter(
-    hasSavedAreaLocation,
-  ).length;
-
-  const suggestionText = areaSuggestion
-    ? areaSuggestion.withinRadius
-      ? `Suggested Area: ${areaSuggestion.area.name}`
-      : `Closest Area: ${areaSuggestion.area.name}, but you are outside the saved radius.`
-    : savedAreaLocationCount === 0
-      ? 'No GPS points are saved for project areas yet. You can still select the area manually.'
-      : savedAreaLocationCount < projectAreas.length
-        ? 'Refresh GPS Location or choose an area manually. GPS suggestions use only areas that have saved GPS points.'
-        : 'Refresh GPS Location or choose an area manually.';
-
-  return (
-    <View style={styles.locationPanel}>
-      <View style={styles.locationPanelHeader}>
-        <View style={styles.rowIconBubble}>
-          <Ionicons
-            name="location-outline"
-            size={20}
-            color={colors.primary}
-          />
-        </View>
-
-        <View style={styles.rowMain}>
-          <Text style={styles.panelTitle}>
-            Project Area
-          </Text>
-
-          <Text style={styles.rowSub}>
-            {selectedArea
-              ? selectedArea.name
-              : update.selectedAreaName || 'No area selected'}
-          </Text>
-        </View>
-      </View>
-
-      <Text style={styles.bodyText}>
-        {suggestionText}
-      </Text>
-
-      {areaSuggestion ? (
-        <Text style={styles.locationDetailText}>
-          Distance: {formatFeet(areaSuggestion.distanceFeet)} | Radius:{' '}
-          {formatFeet(areaSuggestion.area.radiusFeet)}
-        </Text>
-      ) : null}
-
-      <Text style={styles.locationDetailText}>
-        {hasGps
-          ? `Area auto-detected${
-              update.gpsAccuracy
-                ? ` | Accuracy ${formatFeet(update.gpsAccuracy)}`
-                : ''
-            }`
-          : locationStatus || 'Area suggested'}
-      </Text>
-
-      {locationStatus && hasGps ? (
-        <Text style={styles.locationDetailText}>
-          {locationStatus}
-        </Text>
-      ) : null}
-
-      <View style={styles.locationActionRow}>
-        <PrimaryButton
-          label="Confirm Area"
-          icon="checkmark-circle-outline"
-          onPress={onConfirmArea}
-          disabled={!areaSuggestion}
-          compact
-        />
-
-        <SecondaryButton
-          label="Refresh GPS"
-          icon="navigate-outline"
-          onPress={onRefreshLocation}
-          compact
-        />
-      </View>
-
-      <Text style={styles.sectionLabel}>
-        Change Area
-      </Text>
-
-      <View style={styles.areaChipWrap}>
-        {projectAreas.map(area => {
-          const selected =
-            area.id === update.selectedAreaId ||
-            area.id === selectedArea?.id;
-
-          return (
-            <TouchableOpacity
-              key={area.id}
-              style={[
-                styles.areaChip,
-                selected && styles.areaChipSelected,
-              ]}
-              onPress={() => onChangeArea(area.id)}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  selected && styles.areaChipTextSelected,
-                ]}
-              >
-                {area.name}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
-  );
-}
-
 function PhotoCard({
   projectName,
   photo,
@@ -16222,7 +15592,7 @@ function PhotoCard({
           accessibilityLabel={`Preview photo ${index + 1}`}
         >
           <Image
-            source={{ uri: photo.uri }}
+            source={{ uri: resolveProjectPhotoDisplayUri(photo) }}
             style={styles.photoThumb}
           />
 
@@ -16802,122 +16172,6 @@ function PIEFindingRow({
   );
 }
 
-function UpdatePIEStatusSection({
-  update,
-  onRetryPhotoAnalysis,
-  onSignInForPhotoAnalysis,
-}: {
-  update: ProjectUpdate;
-  onRetryPhotoAnalysis: (photo: UpdatePhoto) => void;
-  onSignInForPhotoAnalysis?: (photo: UpdatePhoto) => void;
-}) {
-  const photosWithPIE = update.photos.filter(photo => photo.photoIntelligence);
-
-  if (update.photos.length === 0) return null;
-
-  return (
-    <View style={styles.panel}>
-      <Text style={styles.panelTitle}>Photo Review</Text>
-      {photosWithPIE.length === 0 ? (
-        <Text style={styles.bodyText}>{PIE_STATUS_COPY.checking}</Text>
-      ) : (
-        photosWithPIE.map((photo, index) => (
-          <RootPhotoIntelligenceCard
-            key={photo.id}
-            result={photo.photoIntelligence as PIEPhotoIntelligenceDisplayState}
-            projectName={update.projectName}
-            photo={photo}
-            onRetry={
-              photo.photoIntelligence?.status === 'analysis_failed_retry' ||
-              photo.photoIntelligence?.status === 'comparison_unavailable'
-                ? () => onRetryPhotoAnalysis(photo)
-                : undefined
-            }
-            onSignInRequired={
-              pieResultRequiresSupabaseSignIn(photo.photoIntelligence)
-                ? () => (onSignInForPhotoAnalysis || onRetryPhotoAnalysis)(photo)
-                : undefined
-            }
-          />
-        ))
-      )}
-    </View>
-  );
-}
-
-function SavedUpdatePIESummary({
-  update,
-  onRetryPhotoAnalysis,
-  onSignInForPhotoAnalysis,
-}: {
-  update: ProjectUpdate;
-  onRetryPhotoAnalysis: (update: ProjectUpdate, photo: UpdatePhoto) => void;
-  onSignInForPhotoAnalysis?: (update: ProjectUpdate, photo: UpdatePhoto) => void;
-}) {
-  const firstResult = update.photos.find(photo => photo.photoIntelligence)?.photoIntelligence;
-  const firstPriorUpdateUsed = priorUpdateUsedForPIEResult(firstResult);
-  const failedPhoto = update.photos.find(
-    photo =>
-      photo.photoIntelligence?.status === 'analysis_failed_retry' ||
-      photo.photoIntelligence?.status === 'comparison_unavailable',
-  );
-
-  if (update.photos.length === 0) return null;
-
-  return (
-    <View style={styles.setupProgressCard}>
-      <Text style={styles.sectionLabelNoMargin}>Photo Review</Text>
-      <Text style={styles.bodyText}>
-        {firstResult
-          ? pieUserStatus(firstResult)
-          : PIE_STATUS_COPY.checking}
-      </Text>
-      {firstResult?.summary ? (
-        <Text style={styles.locationDetailText}>
-          {firstResult.status === 'no_suitable_prior_photo'
-            ? 'Future photos from this area can be compared against this baseline.'
-            : firstResult.summary}
-        </Text>
-      ) : null}
-      {firstResult?.comparisonConfidence ? (
-        <Text style={styles.locationDetailText}>
-          {pieConfidenceSentence(firstResult.comparisonConfidence)}
-        </Text>
-      ) : null}
-      {firstResult?.comparability ? (
-        <Text style={styles.locationDetailText}>
-          {pieComparabilitySentence(firstResult.comparability)}
-        </Text>
-      ) : null}
-      {firstPriorUpdateUsed ? (
-        <Text style={styles.locationDetailText}>
-          Prior update used: {firstPriorUpdateUsed}
-        </Text>
-      ) : null}
-      {failedPhoto ? (
-        <TouchableOpacity
-          style={styles.photoControlButton}
-          onPress={() => onRetryPhotoAnalysis(update, failedPhoto)}
-          accessibilityLabel="Retry photo analysis"
-        >
-          <Ionicons name="refresh-outline" size={17} color={colors.primary} />
-          <Text style={styles.photoControlText}>Retry Analysis</Text>
-        </TouchableOpacity>
-      ) : null}
-      {firstResult && pieResultRequiresSupabaseSignIn(firstResult) && failedPhoto ? (
-        <TouchableOpacity
-          style={styles.photoControlButton}
-          onPress={() => (onSignInForPhotoAnalysis || onRetryPhotoAnalysis)(update, failedPhoto)}
-          accessibilityLabel="Sign in to enable photo intelligence"
-        >
-          <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
-          <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
-        </TouchableOpacity>
-      ) : null}
-    </View>
-  );
-}
-
 function pieUserStatus(result: PIEPhotoIntelligenceDisplayState) {
   const authCopy = authStatusCopyForPIEResult(result);
   if (authCopy) return authCopy;
@@ -16932,138 +16186,6 @@ function pieUserStatus(result: PIEPhotoIntelligenceDisplayState) {
   }
   if (result.projectProgress === 'unsupported') return PIE_STATUS_COPY.noReliableChange;
   return PIE_STATUS_COPY.noReliableChange;
-}
-
-function PIEAnalysisStepScreen({
-  update,
-  pieStatus,
-  onAddPhoto,
-  onAddDocument,
-  onRetryDocumentUpload,
-  onContinue,
-  onQuickContext,
-  onRetry,
-}: {
-  update: ProjectUpdate;
-  pieStatus: { status: FieldUpdatePIEStatus; summary: string };
-  onAddPhoto: () => void;
-  onAddDocument: () => void;
-  onRetryDocumentUpload: (documentId: string) => void;
-  onContinue: () => void;
-  onQuickContext: (context: QuickContext) => void;
-  onRetry: () => void;
-}) {
-  const documents = update.documents || [];
-  const firstPrior = update.photos
-    .map(photo => priorUpdateUsedForPIEResult(photo.photoIntelligence))
-    .find(Boolean);
-
-  return (
-    <View>
-      <ScreenTitle
-        title={update.projectName}
-        subtitle="New Field Update"
-      />
-
-      <FieldUpdateStepIndicator
-        current="Photo Analysis"
-        pieStatus={pieStatus.status === 'complete' ? 'complete' : 'in_progress'}
-      />
-
-      <View style={styles.phase2BriefCard}>
-        <View style={styles.phase2BriefIcon}>
-          <Ionicons
-            name={pieStatus.status === 'failed' ? 'warning-outline' : 'sync-outline'}
-            size={21}
-            color={pieStatus.status === 'failed' ? colors.warning : colors.primary}
-          />
-        </View>
-        <View style={styles.rowMain}>
-          <Text style={styles.panelTitle}>
-            {pieStatus.status === 'failed'
-              ? PIE_STATUS_COPY.unavailableRetry
-              : pieStatus.status === 'no_prior_photo'
-                ? PIE_STATUS_COPY.noPriorPhoto
-                : pieStatus.status === 'no_visual_comparison'
-                  ? 'No visual comparison available'
-                  : pieStatus.status === 'analyzing'
-                    ? PIE_STATUS_COPY.checking
-                    : pieStatus.summary}
-          </Text>
-          <Text style={styles.bodyText}>
-            {firstPrior
-              ? `Comparing to prior photo from ${firstPrior}. This usually takes 10–30 seconds.`
-              : pieStatus.status === 'no_prior_photo'
-                ? 'This appears to be the first comparable photo for this project area.'
-                : 'Analysis runs in the background. You can continue to Review now.'}
-          </Text>
-          {pieStatus.status === 'failed' || pieStatus.status === 'taking_longer' ? (
-            <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
-              <Ionicons name="refresh-outline" size={17} color={colors.primary} />
-              <Text style={styles.photoControlText}>Retry</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      </View>
-
-      <Text style={styles.sectionLabel}>Photos ({update.photos.length})</Text>
-      {update.photos.length > 0 ? (
-        <View style={styles.phase3ThumbRow}>
-          {update.photos.map(photo => (
-            <Image key={photo.id} source={{ uri: photo.uri }} style={styles.phase3Thumb} />
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.mutedNote}>No photos attached</Text>
-      )}
-      <SecondaryButton label="Add More" icon="camera-outline" onPress={onAddPhoto} />
-
-      <Text style={styles.sectionLabel}>Documents</Text>
-      {documents.length > 0 ? (
-        documents.map(document => (
-          <ProjectDocumentInlineRow
-            key={document.id}
-            document={document}
-            onRetry={() => onRetryDocumentUpload(document.id)}
-          />
-        ))
-      ) : null}
-      <SecondaryButton label="Add Document" icon="document-attach-outline" onPress={onAddDocument} />
-
-      <Text style={styles.sectionLabel}>What best describes what you’re seeing?</Text>
-      <View style={styles.phase3ChipWrap}>
-        {QUICK_CONTEXTS.map(context => {
-          const selected = update.quickContext === context;
-
-          return (
-            <TouchableOpacity
-              key={context}
-              style={[
-                styles.phase3ContextChip,
-                selected && styles.phase3ContextChipSelected,
-              ]}
-              onPress={() => onQuickContext(context)}
-            >
-              <Text
-                style={[
-                  styles.phase3ContextText,
-                  selected && styles.phase3ContextTextSelected,
-                ]}
-              >
-                {context}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      <PrimaryButton
-        label="Continue to Review"
-        icon="arrow-forward-outline"
-        onPress={onContinue}
-      />
-    </View>
-  );
 }
 
 function BuildUpdateScreen({
@@ -17302,7 +16424,7 @@ function BuildUpdateScreen({
       {update.photos.length > 0 ? (
         <View style={styles.phase3ThumbRow}>
           {update.photos.map(photo => (
-            <Image key={photo.id} source={{ uri: photo.uri }} style={styles.phase3Thumb} />
+            <Image key={photo.id} source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.phase3Thumb} />
           ))}
         </View>
       ) : (
@@ -17561,7 +16683,7 @@ function ReadOnlyUpdateDetailScreen({
           <Text style={styles.sectionLabel}>Photos ({update.photos.length})</Text>
           <View style={styles.phase3ThumbRow}>
             {update.photos.map(photo => (
-              <Image key={photo.id} source={{ uri: photo.uri }} style={styles.phase3Thumb} />
+              <Image key={photo.id} source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.phase3Thumb} />
             ))}
           </View>
         </>
@@ -17581,299 +16703,6 @@ function ReadOnlyUpdateDetailScreen({
         </View>
       ) : null}
     </View>
-  );
-}
-
-function ProjectsScreen({
-  contentStyle,
-  activeProjects,
-  archivedProjects,
-  savedUpdates,
-  projectDocuments,
-  contactBook,
-  projectStatsByName,
-  projectRecords,
-  onSelect,
-  onAddProject,
-  onReopenProject,
-  initialStatusFilter,
-}: {
-  contentStyle: StyleProp<ViewStyle>;
-  activeProjects: string[];
-  archivedProjects: string[];
-  savedUpdates: ProjectUpdate[];
-  projectDocuments: ProjectDocument[];
-  contactBook: ContactBook;
-  projectStatsByName: Record<string, ProjectStats>;
-  projectRecords: ProjectRecord[];
-  onSelect: (projectName: string) => void;
-  onAddProject: (projectName: string) => boolean;
-  onReopenProject: (projectName: string) => void;
-  initialStatusFilter?: 'onTrack';
-}) {
-  const [searchText, setSearchText] = useState('');
-  const [showAddProject, setShowAddProject] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<'onTrack' | null>(
-    initialStatusFilter ?? null,
-  );
-  const search = searchText.trim().toLowerCase();
-
-  const projectRows = activeProjects
-    .map(project => ({
-      project,
-      stats: projectStatsForName(projectStatsByName, project),
-      thumbnailUri: resolveProjectCoverPhotoUri(
-        projectRecords,
-        project,
-        projectThumbnailUri(project, savedUpdates),
-      ),
-      documentCount: projectDocumentCountForProject(project, projectDocuments),
-      contactCount: contactBook.contacts.length,
-      attentionCount: buildPhase2AttentionItems(savedUpdates, project).length,
-    }))
-    .filter(item => {
-      if (!search) return true;
-
-      return item.project.toLowerCase().includes(search);
-    })
-    .filter(item => {
-      if (statusFilter !== 'onTrack') return true;
-
-      return projectRowStatus(item.attentionCount, item.stats.openActions) === 'On Track';
-    })
-    .sort((a, b) => {
-      if (b.stats.overdueActions !== a.stats.overdueActions) {
-        return b.stats.overdueActions - a.stats.overdueActions;
-      }
-      if (b.stats.openActions !== a.stats.openActions) {
-        return b.stats.openActions - a.stats.openActions;
-      }
-
-      return a.project.localeCompare(b.project);
-    });
-
-  const renderProject = ({ item }: { item: typeof projectRows[number] }) => {
-    return (
-      <Phase2ProjectCard
-        item={item}
-        onPress={() => onSelect(item.project)}
-      />
-    );
-  };
-
-  return (
-    <FlatList
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-      data={projectRows}
-      keyExtractor={item => `active-${item.project}`}
-      renderItem={renderProject}
-      ListHeaderComponent={
-        <>
-          <ScreenTitle
-            title="Project Management"
-            subtitle="Add, search, archive, or reopen project records."
-          />
-
-          <View style={styles.projectFinderPanel}>
-            <View style={styles.projectSearchBox}>
-              <Ionicons
-                name="search-outline"
-                size={19}
-                color={colors.muted}
-              />
-
-              <TextInput
-                style={styles.projectSearchInput}
-                value={searchText}
-                onChangeText={setSearchText}
-                placeholder="Search projects"
-                placeholderTextColor={colors.muted}
-                autoCapitalize="none"
-              />
-
-              {searchText.trim() ? (
-                <TouchableOpacity
-                  style={styles.projectSearchClearButton}
-                  onPress={() => setSearchText('')}
-                  accessibilityRole="button"
-                  accessibilityLabel="Clear project search"
-                >
-                  <Ionicons
-                    name="close-circle"
-                    size={21}
-                    color={colors.muted}
-                  />
-                </TouchableOpacity>
-              ) : null}
-            </View>
-
-            <Text style={styles.locationDetailText}>
-              {projectRows.length} open project{projectRows.length === 1 ? '' : 's'} shown
-              {statusFilter === 'onTrack' ? ' · showing on-track projects only' : ''}
-            </Text>
-
-            {statusFilter === 'onTrack' ? (
-              <SecondaryButton
-                label="Show all projects"
-                icon="close-circle-outline"
-                onPress={() => setStatusFilter(null)}
-                compact
-              />
-            ) : null}
-          </View>
-
-          <PrimaryButton
-            label="New Project"
-            icon="add-circle-outline"
-            onPress={() => setShowAddProject(prev => !prev)}
-          />
-
-          {showAddProject ? (
-            <AddProjectCard
-              buttonLabel="Create Project"
-              placeholder="New project name"
-              onAdd={onAddProject}
-            />
-          ) : null}
-
-          <Text style={styles.sectionLabel}>
-            Open Projects
-          </Text>
-        </>
-      }
-      ListEmptyComponent={
-        <EmptyState
-          title={search ? 'No matching projects' : 'No projects yet'}
-          text={search
-            ? 'Try a different project name or clear the search.'
-            : 'Create your first project to begin capturing updates and building project intelligence.'}
-        />
-      }
-      ListFooterComponent={archivedProjects.length > 0 ? (
-        <View>
-          <Text style={styles.sectionLabel}>Archived Projects</Text>
-          {archivedProjects.map(project => (
-            <View key={`archived-${project}`} style={styles.compactLocationRow}>
-              <View style={styles.rowMain}>
-                <Text style={styles.projectName}>{project}</Text>
-                <Text style={styles.rowSub}>Archived · hidden from active project views</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.phase3ChangeButton}
-                onPress={() => onReopenProject(project)}
-                accessibilityRole="button"
-                accessibilityLabel={`Reopen ${project}`}
-              >
-                <Text style={styles.dashboardManageText}>Reopen</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
-        </View>
-      ) : null}
-    />
-  );
-}
-
-function projectRowStatus(
-  attentionCount: number,
-  openActions: number,
-): 'Attention Needed' | 'Waiting' | 'On Track' {
-  if (attentionCount > 0) return 'Attention Needed';
-  if (openActions > 0) return 'Waiting';
-
-  return 'On Track';
-}
-
-function Phase2ProjectCard({
-  item,
-  onPress,
-}: {
-  item: {
-    project: string;
-    stats: ProjectStats;
-    thumbnailUri?: string | null;
-    documentCount: number;
-    contactCount: number;
-    attentionCount: number;
-  };
-  onPress: () => void;
-}) {
-  const hasActivity = item.stats.updates > 0;
-  const status = projectRowStatus(item.attentionCount, item.stats.openActions);
-  const tier = !hasActivity
-    ? {
-        tint: colors.fill,
-        iconColor: colors.muted,
-        icon: 'business-outline' as const,
-        label: 'No activity yet',
-      }
-    : status === 'Attention Needed'
-      ? {
-          tint: colors.warningSoft,
-          iconColor: colors.warning,
-          icon: 'warning-outline' as const,
-          label: 'At Risk',
-        }
-      : status === 'Waiting'
-        ? {
-            tint: colors.primarySoft,
-            iconColor: colors.primary,
-            icon: 'time-outline' as const,
-            label: 'In Progress',
-          }
-        : {
-            tint: colors.successSoft,
-            iconColor: colors.success,
-            icon: 'checkmark-circle-outline' as const,
-            label: 'Healthy',
-          };
-
-  const activitySegments = [
-    item.stats.photos > 0
-      ? `${item.stats.photos} photo${item.stats.photos === 1 ? '' : 's'}`
-      : null,
-    item.documentCount > 0
-      ? `${item.documentCount} document${item.documentCount === 1 ? '' : 's'}`
-      : null,
-    item.stats.openActions > 0
-      ? `${item.stats.openActions} open item${item.stats.openActions === 1 ? '' : 's'}`
-      : null,
-  ].filter(Boolean);
-
-  return (
-    <TouchableOpacity
-      style={styles.phase2ProjectCard}
-      onPress={onPress}
-    >
-      {item.thumbnailUri ? (
-        <Image source={{ uri: item.thumbnailUri }} style={styles.phase2ProjectThumb} />
-      ) : (
-        <View style={styles.phase2ProjectThumbPlaceholder}>
-          <Ionicons name={tier.icon} size={28} color={tier.iconColor} />
-        </View>
-      )}
-
-      <View style={styles.rowMain}>
-        <View style={styles.phase2ProjectTitleRow}>
-          <Text style={styles.phase2ProjectTitle} numberOfLines={1}>{item.project}</Text>
-          <View style={[styles.phase2ProjectStatusPill, { backgroundColor: tier.tint }]}>
-            <Text style={[styles.phase2ProjectStatusText, { color: tier.iconColor }]}>{tier.label}</Text>
-          </View>
-        </View>
-        {activitySegments.length > 0 ? (
-          <Text style={styles.phase2ProjectSummary} numberOfLines={2}>{activitySegments.join(' · ')}</Text>
-        ) : null}
-        <Text style={styles.phase2ProjectActivity}>
-          {item.stats.lastUpdate
-            ? `Last activity ${relativeUpdateDateLabel(item.stats.lastUpdate)}`
-            : hasActivity ? 'Activity recorded' : 'No activity recorded yet'}
-        </Text>
-      </View>
-
-      <Ionicons name="chevron-forward" size={22} color={colors.muted} />
-    </TouchableOpacity>
   );
 }
 
@@ -18127,6 +16956,7 @@ function ProjectTaskControlPanel({
 
 function ProjectWorkspaceScreen({
   contentStyle,
+  projectId,
   projectName,
   savedUpdates,
   captureMemories,
@@ -18169,6 +16999,7 @@ function ProjectWorkspaceScreen({
   isDeletingProject,
 }: {
   contentStyle: StyleProp<ViewStyle>;
+  projectId: string | null;
   projectName: string;
   savedUpdates: ProjectUpdate[];
   captureMemories: readonly DAVEConfirmedCaptureMemory[];
@@ -18494,6 +17325,7 @@ function ProjectWorkspaceScreen({
 
       <DAVEVoiceCaptureSheet
         visible={voiceCaptureOpen}
+        projectId={projectId}
         projectName={projectName}
         walkContext={projectWalkContext}
         candidateLocations={projectAreas.map(area => area.name)}
@@ -18773,28 +17605,6 @@ function ProjectWorkspaceScreen({
   );
 }
 
-function WorkspaceTool({
-  label,
-  subtitle,
-  icon,
-  onPress,
-}: {
-  label: string;
-  subtitle: string;
-  icon: IconName;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity style={styles.phase2ToolCard} onPress={onPress}>
-      <View style={styles.rowIconBubble}>
-        <Ionicons name={icon} size={20} color={colors.primary} />
-      </View>
-      <Text style={styles.phase2ToolLabel}>{label}</Text>
-      <Text style={styles.rowSub}>{subtitle}</Text>
-    </TouchableOpacity>
-  );
-}
-
 function ProjectDocumentsScreen({
   contentStyle,
   projectName,
@@ -18913,6 +17723,7 @@ function ProjectDocumentsScreen({
       style={styles.appFrame}
       contentContainerStyle={contentStyle}
       keyboardShouldPersistTaps="handled"
+      initialNumToRender={12} maxToRenderPerBatch={12} windowSize={7} removeClippedSubviews={Platform.OS === 'android'}
       data={visibleDocuments}
       keyExtractor={document => document.id}
       renderItem={renderDocument}
@@ -19257,248 +18068,6 @@ function ProjectDocumentCard({
           </TouchableOpacity>
         </View>
       ) : null}
-    </View>
-  );
-}
-
-function ReferenceDocumentsScreen({
-  contentStyle,
-  documents,
-  onBack,
-  onImport,
-  onUpdate,
-  onToggleCurrent,
-  onOpen,
-  onDelete,
-}: {
-  contentStyle: StyleProp<ViewStyle>;
-  documents: ReferenceDocument[];
-  onBack: () => void;
-  onImport: () => void;
-  onUpdate: (documentId: string, next: Partial<ReferenceDocument>) => void;
-  onToggleCurrent: (documentId: string) => void;
-  onOpen: (document: ReferenceDocument) => void;
-  onDelete: (documentId: string) => void;
-}) {
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
-
-  const filteredDocuments = categoryFilter
-    ? documents.filter(document => document.category === categoryFilter)
-    : documents;
-
-  const renderDocument = ({ item: document }: { item: ReferenceDocument }) => (
-    <ReferenceDocumentCard
-      document={document}
-      onUpdate={next => onUpdate(document.id, next)}
-      onToggleCurrent={() => onToggleCurrent(document.id)}
-      onOpen={() => onOpen(document)}
-      onDelete={() => onDelete(document.id)}
-    />
-  );
-
-  return (
-    <FlatList
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-      data={filteredDocuments}
-      keyExtractor={document => document.id}
-      renderItem={renderDocument}
-      ListHeaderComponent={
-        <>
-          <ScreenTitle
-            title="Reference Documents"
-            subtitle="Import drawings, PDFs, site plans, and reference files for local use on this phone."
-          />
-
-          <SecondaryButton
-            label="Back to Settings"
-            icon="arrow-back-outline"
-            onPress={onBack}
-          />
-
-          <PrimaryButton
-            label="Import PDF or Image"
-            icon="document-attach-outline"
-            onPress={onImport}
-          />
-
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Local Storage</Text>
-            <Text style={styles.bodyText}>
-              Reference documents are copied into this app on this phone. JSON data exports include document metadata only; large PDF and image files remain stored locally on the device.
-            </Text>
-          </View>
-
-          <Text style={styles.sectionLabel}>Filter by Category</Text>
-
-          <View style={styles.areaChipWrap}>
-            <TouchableOpacity
-              style={[
-                styles.areaChip,
-                !categoryFilter && styles.areaChipSelected,
-              ]}
-              onPress={() => setCategoryFilter(null)}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  !categoryFilter && styles.areaChipTextSelected,
-                ]}
-              >
-                All Documents
-              </Text>
-            </TouchableOpacity>
-
-            {REFERENCE_DOCUMENT_CATEGORIES.map(category => {
-              const selected = categoryFilter === category;
-
-              return (
-                <TouchableOpacity
-                  key={category}
-                  style={[
-                    styles.areaChip,
-                    selected && styles.areaChipSelected,
-                  ]}
-                  onPress={() => setCategoryFilter(category)}
-                >
-                  <Text
-                    style={[
-                      styles.areaChipText,
-                      selected && styles.areaChipTextSelected,
-                    ]}
-                  >
-                    {category}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </>
-      }
-      ListEmptyComponent={
-        documents.length === 0 ? (
-          <EmptyState
-            title="No reference documents"
-            text="Import PDFs, drawings, site plans, or images to keep local project references available in the app."
-          />
-        ) : (
-          <EmptyState
-            title="No documents in this category"
-            text="Choose All Documents or import a file for this category."
-          />
-        )
-      }
-    />
-  );
-}
-
-function ReferenceDocumentCard({
-  document,
-  onUpdate,
-  onToggleCurrent,
-  onOpen,
-  onDelete,
-}: {
-  document: ReferenceDocument;
-  onUpdate: (next: Partial<ReferenceDocument>) => void;
-  onToggleCurrent: () => void;
-  onOpen: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <View style={styles.photoCard}>
-      <View style={styles.photoHeader}>
-        <View style={styles.rowIconBubble}>
-          <Ionicons
-            name={document.mimeType?.includes('image') ? 'image-outline' : 'document-text-outline'}
-            size={20}
-            color={colors.primary}
-          />
-        </View>
-
-        <View style={styles.rowMain}>
-          <Text style={styles.photoTitle}>{document.name}</Text>
-          <Text style={styles.rowSub}>
-            {document.category} | Imported {formatSavedTime(document.importedAt)}
-          </Text>
-          {document.isCurrent ? (
-            <Text style={styles.locationDetailText}>Current reference</Text>
-          ) : null}
-        </View>
-      </View>
-
-      <Text style={styles.label}>Document Name</Text>
-      <TextInput
-        style={styles.input}
-        value={document.name}
-        onChangeText={name => onUpdate({ name })}
-        placeholder="Document name"
-        placeholderTextColor={colors.muted}
-      />
-
-      <Text style={styles.label}>Category</Text>
-      <View style={styles.areaChipWrap}>
-        {REFERENCE_DOCUMENT_CATEGORIES.map(category => {
-          const selected = document.category === category;
-
-          return (
-            <TouchableOpacity
-              key={category}
-              style={[
-                styles.areaChip,
-                selected && styles.areaChipSelected,
-              ]}
-              onPress={() => onUpdate({ category })}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  selected && styles.areaChipTextSelected,
-                ]}
-              >
-                {category}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      <Text style={styles.label}>Notes</Text>
-      <TextInput
-        style={[styles.input, styles.notesInput]}
-        value={document.notes}
-        onChangeText={notes => onUpdate({ notes })}
-        placeholder="Revision, drawing purpose, area covered, or important notes."
-        placeholderTextColor={colors.muted}
-        multiline
-      />
-
-      <Text style={styles.locationDetailText}>
-        Original file: {document.originalFileName}
-      </Text>
-
-      <View style={styles.sendRow}>
-        <PrimaryButton
-          label="Open"
-          icon="open-outline"
-          onPress={onOpen}
-          compact
-        />
-
-        <SecondaryButton
-          label={document.isCurrent ? 'Unmark Current' : 'Mark Current'}
-          icon={document.isCurrent ? 'star' : 'star-outline'}
-          onPress={onToggleCurrent}
-          compact
-        />
-      </View>
-
-      <SecondaryButton
-        label="Delete Document"
-        icon="trash-outline"
-        onPress={onDelete}
-      />
     </View>
   );
 }
@@ -20432,6 +19001,7 @@ function SavedUpdatesScreen({
       contentContainerStyle={contentStyle}
       contentInsetAdjustmentBehavior="automatic"
       keyboardShouldPersistTaps="handled"
+      initialNumToRender={12} maxToRenderPerBatch={12} windowSize={7} removeClippedSubviews={Platform.OS === 'android'}
       data={filteredUpdates}
       keyExtractor={update => update.id}
       renderItem={renderUpdate}
@@ -20595,7 +19165,9 @@ function UpdateHistoryCard({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
-  const thumbnail = update.photos[0]?.uri;
+  const thumbnail = update.photos[0]
+    ? resolveProjectPhotoDisplayUri(update.photos[0])
+    : '';
   const statusLine =
     lifecycle === 'queued'
       ? queuedStatusCopyForUpdate(update)
@@ -20766,538 +19338,6 @@ function UpdateOverflowMenu({
   );
 }
 
-function DashboardMetric({
-  label,
-  value,
-  icon,
-  danger = false,
-}: {
-  label: string;
-  value: number;
-  icon: IconName;
-  danger?: boolean;
-}) {
-  return (
-    <View
-      style={[
-        styles.dashboardMetricCard,
-        danger && styles.dashboardMetricDanger,
-      ]}
-    >
-      <View style={styles.dashboardMetricIconRow}>
-        <Ionicons
-          name={icon}
-          size={19}
-          color={danger ? colors.danger : colors.primary}
-        />
-
-        <Text
-          style={[
-            styles.dashboardMetricValue,
-            danger && styles.dashboardMetricValueDanger,
-          ]}
-        >
-          {value.toLocaleString('en-US')}
-        </Text>
-      </View>
-
-      <Text style={styles.dashboardMetricLabel}>
-        {label}
-      </Text>
-    </View>
-  );
-}
-
-function QuickActionButton({
-  label,
-  icon,
-  onPress,
-  primary = false,
-}: {
-  label: string;
-  icon: IconName;
-  onPress: () => void;
-  primary?: boolean;
-}) {
-  return (
-    <TouchableOpacity
-      style={[
-        styles.quickActionButton,
-        primary && styles.quickActionButtonPrimary,
-      ]}
-      onPress={onPress}
-    >
-      <Ionicons
-        name={icon}
-        size={22}
-        color={primary ? '#FFFFFF' : colors.primary}
-      />
-
-      <Text
-        style={[
-          styles.quickActionText,
-          primary && styles.quickActionTextPrimary,
-        ]}
-        numberOfLines={2}
-        adjustsFontSizeToFit
-        minimumFontScale={0.8}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
-function ProjectAttentionCard({
-  project,
-  stats,
-  onPress,
-}: {
-  project: string;
-  stats: ProjectStats;
-  onPress: () => void;
-}) {
-  const urgent = stats.overdueActions > 0;
-
-  return (
-    <TouchableOpacity
-      style={[
-        styles.attentionCard,
-        urgent && styles.attentionCardUrgent,
-      ]}
-      onPress={onPress}
-    >
-      <View style={styles.rowIconBubble}>
-        <Ionicons
-          name={urgent ? 'warning-outline' : 'alert-circle-outline'}
-          size={20}
-          color={urgent ? colors.danger : colors.primary}
-        />
-      </View>
-
-      <View style={styles.rowMain}>
-        <Text style={styles.projectName}>
-          {project}
-        </Text>
-
-        <Text style={styles.rowSub}>
-          {stats.openActions} open | {stats.overdueActions} overdue | {stats.dueThisWeek} due this week
-        </Text>
-      </View>
-
-      <Ionicons
-        name="chevron-forward-outline"
-        size={20}
-        color={colors.muted}
-      />
-    </TouchableOpacity>
-  );
-}
-
-function ActivityRow({
-  update,
-}: {
-  update: ProjectUpdate;
-}) {
-  return (
-    <View style={styles.activityRow}>
-      <View style={styles.rowIconBubble}>
-        <Ionicons
-          name="time-outline"
-          size={20}
-          color={colors.primary}
-        />
-      </View>
-
-      <View style={styles.rowMain}>
-        <Text style={styles.projectName}>
-          {update.projectName}
-        </Text>
-
-        <Text style={styles.rowSub}>
-          {formatDisplayDate(update.date)} | {update.photos.length} photo
-          {update.photos.length === 1 ? '' : 's'}
-          {update.selectedAreaName ? ` | ${update.selectedAreaName}` : ''}
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-function ProjectFinderRow({
-  project,
-  stats,
-  archived,
-  favorite,
-  onPress,
-  onFavorite,
-  onClose,
-}: {
-  project: string;
-  stats: ProjectStats;
-  archived: boolean;
-  favorite: boolean;
-  onPress: () => void;
-  onFavorite: () => void;
-  onClose?: () => void;
-}) {
-  return (
-    <View style={styles.projectFinderRow}>
-      <TouchableOpacity
-        style={styles.favoriteButton}
-        onPress={onFavorite}
-      >
-        <Ionicons
-          name={favorite ? 'star' : 'star-outline'}
-          size={22}
-          color={favorite ? colors.warning : colors.muted}
-        />
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.rowMain}
-        onPress={onPress}
-      >
-        <Text style={styles.projectName}>
-          {project}
-        </Text>
-
-        <Text style={styles.rowSub}>
-          {archived ? 'Archived' : 'Active'} | Last update:{' '}
-          {stats.lastUpdate ? formatDisplayDate(stats.lastUpdate) : 'None yet'}
-        </Text>
-
-        <View style={styles.compactStatsRow}>
-          <Text style={styles.compactStatText}>
-            Open {stats.openActions}
-          </Text>
-
-          <Text
-            style={[
-              styles.compactStatText,
-              stats.overdueActions > 0 && styles.compactStatDanger,
-            ]}
-          >
-            Overdue {stats.overdueActions}
-          </Text>
-
-          <Text style={styles.compactStatText}>
-            Due {stats.dueThisWeek}
-          </Text>
-
-          <Text style={styles.compactStatText}>
-            Photos {stats.photos}
-          </Text>
-        </View>
-      </TouchableOpacity>
-
-      <View style={styles.projectFinderActions}>
-        <TouchableOpacity
-          style={styles.smallAction}
-          onPress={onPress}
-        >
-          <Text style={styles.smallActionText}>
-            {archived ? 'Reopen' : 'Update'}
-          </Text>
-        </TouchableOpacity>
-
-        {onClose ? (
-          <TouchableOpacity
-            style={[styles.smallAction, styles.smallActionDanger]}
-            onPress={onClose}
-          >
-            <Text style={styles.smallActionDangerText}>
-              Close
-            </Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-
-
-function UpcomingScreen({
-  contentStyle,
-  scheduleItems,
-  savedUpdates,
-  onBack,
-  onSchedule,
-  onNewUpdate,
-  autoOpenDueToday,
-}: {
-  contentStyle: StyleProp<ViewStyle>;
-  scheduleItems: ScheduleItem[];
-  savedUpdates: ProjectUpdate[];
-  onBack: () => void;
-  onSchedule: () => void;
-  onNewUpdate: () => void;
-  autoOpenDueToday?: boolean;
-}) {
-  const insets = useSafeAreaInsets();
-  const [selectedSection, setSelectedSection] = useState<{
-    title: string;
-    items: Array<{
-      id: string;
-      source: string;
-      title: string;
-      projectName: string;
-      projectTimeZone?: string | null;
-      locationName: string;
-      owner: string;
-      contractor: string;
-      dueDate: string;
-      status: string;
-      percentComplete: number;
-      priority: SchedulePriority;
-      notes: string;
-      days: number | null;
-    }>;
-  } | null>(null);
-
-  const actionItems = actionItemsFromUpdates(savedUpdates);
-  type UpcomingItem = {
-    id: string;
-    source: string;
-    title: string;
-    projectName: string;
-    projectTimeZone?: string | null;
-    locationName: string;
-    owner: string;
-    contractor: string;
-    dueDate: string;
-    status: string;
-    percentComplete: number;
-    priority: SchedulePriority;
-    notes: string;
-  };
-
-  const combinedItems: UpcomingItem[] = [
-    ...scheduleItems
-      .filter(item => !scheduleTaskIsComplete(item))
-      .map(item => ({
-        id: item.id,
-        source: 'Schedule',
-        title: item.taskName,
-        projectName: item.projectName,
-        projectTimeZone: item.projectTimeZone,
-        locationName: item.locationName,
-        owner: item.owner,
-        contractor: item.contractor,
-        dueDate: item.finishDate,
-        status: item.status,
-        percentComplete: item.percentComplete,
-        priority: item.priority,
-        notes: item.notes,
-      })),
-    ...actionItems.map(item => ({
-      id: item.id,
-      source: 'Action Item',
-      title: item.taskName,
-      projectName: item.projectName,
-      projectTimeZone: DEFAULT_PROJECT_TIME_ZONE,
-      locationName: item.locationName,
-      owner: item.owner,
-      contractor: '',
-      dueDate: item.finishDate,
-      status: item.status,
-      percentComplete: 0,
-      priority: 'High' as SchedulePriority,
-      notes: '',
-    })),
-  ];
-
-  const withDueDates = combinedItems
-    .map(item => ({ ...item, days: daysUntilDate(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE) }))
-    .filter(item => item.days !== null)
-    .sort((a, b) => (a.days ?? 99999) - (b.days ?? 99999));
-
-  const today = withDueDates.filter(item => item.days === 0);
-  const tomorrow = withDueDates.filter(item => item.days === 1);
-  const nextSevenDays = withDueDates.filter(
-    item => item.days !== null && item.days >= 2 && item.days <= 7,
-  );
-  const overdue = withDueDates.filter(item => item.days !== null && item.days < 0);
-  const later = withDueDates.filter(item => item.days !== null && item.days > 7);
-
-  const renderUpcomingItem = (item: UpcomingItem & { days: number | null }) => (
-    <View key={`${item.source}-${item.id}`} style={styles.savedRow}>
-      <View style={styles.rowIconBubble}>
-        <Ionicons
-          name={item.days !== null && item.days < 0 ? 'alert-circle-outline' : item.days === 0 ? 'today-outline' : 'calendar-outline'}
-          size={20}
-          color={item.days !== null && item.days < 0 ? colors.danger : item.days === 0 ? colors.warning : colors.primary}
-        />
-      </View>
-
-      <View style={styles.rowMain}>
-        <Text style={styles.projectName}>{item.title || 'Untitled item'}</Text>
-        <Text style={styles.rowSub}>
-          {item.projectName || 'No project'}{item.locationName ? ` • ${item.locationName}` : ''}
-        </Text>
-        <Text style={styles.rowSub}>
-          {dueStatusText(item.dueDate, item.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)} • {item.source}{item.contractor ? ` • ${item.contractor}` : item.owner ? ` • ${item.owner}` : ''}
-        </Text>
-        <View style={styles.scheduleMetaRow}>
-          <View style={[styles.statusPill, { backgroundColor: `${colors.primary}1A` }]}>
-            <Text style={styles.statusPillText}>{item.status} • {item.percentComplete}%</Text>
-          </View>
-        </View>
-        {item.notes ? (
-          <Text style={styles.rowSub} numberOfLines={2}>
-            {item.notes}
-          </Text>
-        ) : null}
-      </View>
-    </View>
-  );
-
-  const openSection = (title: string, items: typeof withDueDates) => {
-    setSelectedSection({ title, items });
-  };
-
-  useEffect(() => {
-    if (autoOpenDueToday && today.length > 0) {
-      openSection('Due Today', today);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoOpenDueToday]);
-
-  const renderSection = (title: string, items: typeof withDueDates, emptyText: string) => {
-    const previewItems = items.slice(0, 2);
-    const hasItems = items.length > 0;
-
-    return (
-      <TouchableOpacity
-        style={styles.panel}
-        activeOpacity={hasItems ? 0.82 : 1}
-        onPress={() => hasItems && openSection(title, items)}
-      >
-        <View style={styles.sectionHeaderRow}>
-          <View style={styles.rowMain}>
-            <Text style={styles.panelTitle}>{title}</Text>
-            {hasItems ? (
-              <Text style={styles.rowSub}>
-                Tap to view {items.length} {pluralWord(items.length, 'item')}
-              </Text>
-            ) : null}
-          </View>
-
-          <View style={[styles.countPill, title === 'Overdue' && items.length > 0 && styles.countPillDanger]}>
-            <Text style={[styles.countPillText, title === 'Overdue' && items.length > 0 && styles.countPillTextDanger]}>
-              {items.length}
-            </Text>
-          </View>
-        </View>
-
-        {hasItems ? (
-          <>
-            {previewItems.map(renderUpcomingItem)}
-            {items.length > previewItems.length ? (
-              <Text style={styles.inlineLinkText}>
-                View all {items.length} {pluralWord(items.length, 'item')}
-              </Text>
-            ) : null}
-          </>
-        ) : (
-          <Text style={styles.bodyText}>{emptyText}</Text>
-        )}
-      </TouchableOpacity>
-    );
-  };
-
-  return (
-    <>
-      <ScrollView
-        style={styles.appFrame}
-        contentContainerStyle={contentStyle}
-        keyboardShouldPersistTaps="handled"
-      >
-        <ScreenTitle
-          title="Upcoming"
-          subtitle="Tap a section to see the schedule items and action items due in that timeframe."
-        />
-
-        <SecondaryButton
-          label="Back to Overview"
-          icon="arrow-back-outline"
-          onPress={onBack}
-        />
-
-        {withDueDates.length === 0 ? (
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>No dated items yet</Text>
-            <Text style={styles.bodyText}>
-              Import a schedule PDF, add schedule items from the PDF, or add action item due dates to populate Upcoming.
-            </Text>
-          </View>
-        ) : null}
-
-        {renderSection('Due Today', today, 'No schedule items or action items are due today.')}
-        {renderSection('Due Tomorrow', tomorrow, 'No items are due tomorrow.')}
-        {renderSection('Next 7 Days', nextSevenDays, 'No additional items are due in the next seven days.')}
-        {renderSection('Overdue', overdue, 'No overdue items.')}
-        {renderSection('Later', later, 'No later dated items found yet.')}
-
-        <View style={styles.dataActionRow}>
-          <PrimaryButton
-            label="Open Schedule"
-            icon="calendar-outline"
-            onPress={onSchedule}
-            compact
-          />
-          <SecondaryButton
-            label="Capture Update"
-            icon="camera-outline"
-            onPress={onNewUpdate}
-            compact
-          />
-        </View>
-      </ScrollView>
-
-      <Modal
-        visible={Boolean(selectedSection)}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setSelectedSection(null)}
-      >
-        <View style={styles.sheetModalBackdrop}>
-          <View
-            style={[
-              styles.sheetModalSafeArea,
-              { paddingTop: insets.top, paddingBottom: insets.bottom },
-            ]}
-          >
-            <View style={styles.sheetModalHeader}>
-              <View style={styles.sheetModalTitleWrap}>
-                <Text style={styles.sheetModalTitle}>{selectedSection?.title}</Text>
-                <Text style={styles.sheetModalCaption}>
-                  {selectedSection?.items.length || 0} {pluralWord(selectedSection?.items.length || 0, 'item')}
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={styles.sheetModalCloseButton}
-                onPress={() => setSelectedSection(null)}
-                accessibilityLabel="Close upcoming list"
-              >
-                <Ionicons name="close" size={26} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={styles.appFrame}
-              contentContainerStyle={[styles.content, { paddingTop: 8, paddingBottom: 24 }]}
-            >
-              {selectedSection?.items.map(renderUpcomingItem)}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-    </>
-  );
-}
-
 function ScheduleScreen({
   contentStyle,
   screenshotImportAvailable,
@@ -21305,6 +19345,7 @@ function ScheduleScreen({
   savedUpdates,
   projectAreas,
   projects,
+  projectRecords,
   scheduleDocuments,
   onBack,
   onOpenDocument,
@@ -21324,6 +19365,8 @@ function ScheduleScreen({
   onOpenUpdate,
   initialFilter,
   initialAddProjectName,
+  initialAddGuided,
+  onInitialAddGuidedConsumed,
   projectFilter,
   defaultOwner,
   currentUserEmail,
@@ -21334,6 +19377,7 @@ function ScheduleScreen({
   savedUpdates: ProjectUpdate[];
   projectAreas: ProjectArea[];
   projects: string[];
+  projectRecords: readonly ProjectRecord[];
   scheduleDocuments: ReferenceDocument[];
   onBack: () => void;
   onOpenDocument: (document: ReferenceDocument) => void;
@@ -21357,6 +19401,8 @@ function ScheduleScreen({
   onOpenUpdate: (update: ProjectUpdate) => void;
   initialFilter?: ScheduleTaskFilter;
   initialAddProjectName?: string | null;
+  initialAddGuided?: boolean;
+  onInitialAddGuidedConsumed?: () => void;
   projectFilter?: string | null;
   defaultOwner?: string;
   currentUserEmail?: string;
@@ -21907,11 +19953,16 @@ function ScheduleScreen({
     <ScheduleTaskEditorModal
       visible={showAdd}
       projects={projects}
+      projectRecords={projectRecords}
       projectAreas={projectAreas}
       scheduleItems={scheduleItems}
       initialProjectName={initialAddProjectName || (isWideWorkspace ? projectFilter : null)}
+      initiallyGuided={Boolean(initialAddGuided)}
       defaultOwner={defaultOwner}
-      onClose={() => setShowAdd(false)}
+      onClose={() => {
+        setShowAdd(false);
+        onInitialAddGuidedConsumed?.();
+      }}
       onSubmit={onAdd}
     />
   );
@@ -22069,6 +20120,7 @@ function ScheduleScreen({
         contentContainerStyle={contentStyle}
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
+        initialNumToRender={12} maxToRenderPerBatch={12} windowSize={7} removeClippedSubviews={Platform.OS === 'android'}
         sections={mobileTaskSections}
         keyExtractor={item => item.id}
         renderItem={({ item }) => (
@@ -22201,12 +20253,20 @@ function ScheduleItemRow({
     : displayedItem.finishDate
       ? dueStatusText(displayedItem.finishDate, displayedItem.projectTimeZone || DEFAULT_PROJECT_TIME_ZONE)
       : 'No finish date';
-  const startDateLabel = displayedItem.startDate?.trim()
-    ? formatAppDate(displayedItem.startDate)
-    : 'Not set';
-  const finishDateLabel = displayedItem.finishDate?.trim()
-    ? formatAppDate(displayedItem.finishDate)
-    : 'Not set';
+  const compactStartDateLabel = displayedItem.startDate?.trim()
+    ? formatCompactAppDate(displayedItem.startDate)
+    : null;
+  const compactFinishDateLabel = displayedItem.finishDate?.trim()
+    ? formatCompactAppDate(displayedItem.finishDate)
+    : null;
+  const compactScheduleDateLabel = [
+    compactStartDateLabel ? `Start ${compactStartDateLabel}` : null,
+    compactFinishDateLabel
+      ? `${itemComplete ? 'Finished' : 'Due'} ${compactFinishDateLabel}`
+      : null,
+  ]
+    .filter((label): label is string => Boolean(label))
+    .join(' • ');
   const priorityColor = item.priority === 'High' ? colors.danger : item.priority === 'Low' ? colors.success : colors.warning;
   const statusColor = itemComplete ? colors.success : displayedItem.status === 'In Progress' ? colors.warning : displayedItem.status === 'Waiting' ? colors.muted : colors.primary;
   const blockerNames = (dependencyNode?.blockingPredecessorIds || []).map(blockerId =>
@@ -22281,9 +20341,17 @@ function ScheduleItemRow({
           <Text style={[styles.rowSub, styles.scheduleItemContext]}>
             {timingStatus}{item.contractor ? ` • ${item.contractor}` : ''}
           </Text>
-          <Text style={[styles.rowSub, styles.scheduleItemContext]}>
-            Start {startDateLabel} • Finish / Due {finishDateLabel}
-          </Text>
+          {compactScheduleDateLabel ? (
+            <Text
+              style={[styles.rowSub, styles.scheduleItemContext]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.88}
+              accessibilityLabel={compactScheduleDateLabel}
+            >
+              {compactScheduleDateLabel}
+            </Text>
+          ) : null}
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.iconOnlyDangerButton}

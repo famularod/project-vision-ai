@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Link } from 'expo-router';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
@@ -7,7 +7,6 @@ import {
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
-import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
 import {
   buildVitruviusCommitmentControl,
@@ -19,13 +18,11 @@ import type { ProjectUpdate, ScheduleItem } from '../../types';
 import { daysUntilDate } from '../../utils/date';
 
 export function DesktopOverviewPage({
-  documents,
   projects,
   selectedProject,
   tasks,
   updates,
 }: {
-  documents: readonly DAVEWebReferenceDocument[];
   projects: readonly CloudProject[];
   selectedProject: string | null;
   tasks: readonly ScheduleItem[];
@@ -58,7 +55,6 @@ export function DesktopOverviewPage({
           <HealthMetric label="Completed" value={completedTasks.length} />
           <HealthMetric label="Open" value={openTasks.length} />
           <HealthMetric label="Field Updates" value={updates.length} />
-          <HealthMetric label="Documents" value={documents.length} />
         </View>
       </View>
 

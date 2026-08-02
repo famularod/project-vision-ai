@@ -35,7 +35,10 @@ assert(editing.includes('reconcileScheduleProgress'), 'Desktop task writes must 
 assert(editing.includes('reconcileScheduleProgressEdit'), 'Desktop task edits must allow a completed task to be reopened safely.');
 assert(editing.includes("progressSource: 'project_manager'"), 'Desktop edits must be recorded as explicit PM authority.');
 assert(editing.includes('cloudUpdatedAt'), 'Desktop task models must retain the exact cloud revision for conflict checks.');
-assert(provider.includes('12_000'), 'The open desktop workspace must refresh cloud truth every 12 seconds.');
+assert(
+  provider.includes('DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS'),
+  'The open desktop workspace must use the shared resource-bounded fallback refresh.',
+);
 assert(provider.includes('scheduleItemForCloud'), 'Browser-only revision metadata must not be persisted in task payloads.');
 assert(
   shell.includes('onPress={openCreate}') && shell.includes('>Add Task</Text>'),

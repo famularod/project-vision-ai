@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -20,8 +20,17 @@ import type {
 } from '../types';
 import { PROJECT_ITEM_TYPES } from '../types';
 import { projectAreasForProject } from '../services/DAVEProjectAreaScope';
+import type { DAVETaskFillPatch } from '../services/DAVETaskFieldParser';
 import { applyProjectControlTemplateToControls } from '../services/ProjectControlTemplates';
+import {
+  reconcileScheduleProgress,
+  reconcileScheduleProgressEdit,
+} from '../services/ScheduleProgressInvariant';
 import { parseFlexibleDate } from '../utils/date';
+import {
+  DAVETaskFillAssistant,
+  type DAVETaskFillProjectRecord,
+} from './dave-task-fill-assistant';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { NativeDateField } from './native-date-field';
 
@@ -31,18 +40,22 @@ const STATUSES: ScheduleStatus[] = ['Not Started', 'In Progress', 'Waiting', 'Co
 export function ScheduleTaskEditorModal({
   visible,
   projects,
+  projectRecords = [],
   projectAreas,
   scheduleItems,
   initialProjectName,
+  initiallyGuided = false,
   defaultOwner,
   onClose,
   onSubmit,
 }: {
   visible: boolean;
   projects: string[];
+  projectRecords?: readonly DAVETaskFillProjectRecord[];
   projectAreas: ProjectArea[];
   scheduleItems: ScheduleItem[];
   initialProjectName?: string | null;
+  initiallyGuided?: boolean;
   defaultOwner?: string;
   onClose: () => void;
   onSubmit: (item: Partial<ScheduleItem>) => void;
@@ -125,6 +138,18 @@ export function ScheduleTaskEditorModal({
     () => uniqueOptions(scheduleItems.map(item => item.milestone)),
     [scheduleItems],
   );
+  const taskFillLocationOptions = useMemo(() => uniqueOptions([
+    ...projectAreas.map(area => area.name),
+    ...scheduleItems.map(item => item.locationName),
+  ]), [projectAreas, scheduleItems]);
+  const taskFillCandidates = useMemo(() => scheduleItems.map(item => ({
+    id: item.id,
+    taskName: item.taskName,
+    projectName: item.scheduleProjectName?.trim() || item.projectName,
+    locationName: item.locationName,
+    status: item.status,
+    percentComplete: item.percentComplete,
+  })), [scheduleItems]);
 
   function reset() {
     setTaskName('');
@@ -156,6 +181,7 @@ export function ScheduleTaskEditorModal({
       Alert.alert('Invalid start date', 'Use MM/DD/YYYY for the start date.');
       return;
     }
+    const progress = reconcileScheduleProgress(status, percentComplete);
     onSubmit({
       taskName,
       itemType,
@@ -166,9 +192,9 @@ export function ScheduleTaskEditorModal({
       milestone,
       owner,
       contractor,
-      percentComplete: Number(percentComplete) || 0,
+      percentComplete: progress.percentComplete,
       priority,
-      status,
+      status: progress.status,
       notes,
       nextAction,
       projectControls: itemType === 'Task'
@@ -181,6 +207,51 @@ export function ScheduleTaskEditorModal({
     });
     reset();
     onClose();
+  }
+
+  function applyTaskFillPatch(patch: DAVETaskFillPatch) {
+    if (patch.taskName !== undefined) setTaskName(patch.taskName);
+    if (patch.itemType !== undefined) setItemType(patch.itemType);
+    if (patch.projectName !== undefined) setProjectName(patch.projectName);
+    if (patch.locationName !== undefined) setLocationName(patch.locationName);
+    if (patch.startDate !== undefined) setStartDate(patch.startDate);
+    if (patch.finishDate !== undefined) setFinishDate(patch.finishDate);
+    if (patch.milestone !== undefined) setMilestone(patch.milestone);
+    if (patch.owner !== undefined) setOwner(patch.owner);
+    if (patch.contractor !== undefined) setContractor(patch.contractor);
+    if (patch.percentComplete !== undefined || patch.status !== undefined) {
+      const progress = reconcileScheduleProgressEdit(
+        { status, percentComplete: Number(percentComplete) || 0 },
+        {
+          ...(patch.status !== undefined ? { status: patch.status } : {}),
+          ...(patch.percentComplete !== undefined
+            ? { percentComplete: patch.percentComplete }
+            : {}),
+        },
+      );
+      setPercentComplete(String(progress.percentComplete));
+      setStatus(progress.status);
+    }
+    if (patch.priority !== undefined) setPriority(patch.priority);
+    if (patch.notes !== undefined) setNotes(patch.notes);
+    if (patch.nextAction !== undefined) setNextAction(patch.nextAction);
+  }
+
+  function updatePercentComplete(rawValue: string) {
+    const value = rawValue.replace(/[^0-9]/g, '').slice(0, 3);
+    setPercentComplete(value);
+    if (!value) return;
+    const progress = reconcileScheduleProgress(status, value);
+    setStatus(progress.status);
+  }
+
+  function updateStatus(nextStatus: ScheduleStatus) {
+    const progress = reconcileScheduleProgressEdit(
+      { status, percentComplete: Number(percentComplete) || 0 },
+      { status: nextStatus },
+    );
+    setStatus(progress.status);
+    setPercentComplete(String(progress.percentComplete));
   }
 
   return (
@@ -201,6 +272,35 @@ export function ScheduleTaskEditorModal({
                 <Ionicons name="close-outline" size={24} color={colors.text} />
               </TouchableOpacity>
             </View>
+
+            <DAVETaskFillAssistant
+              active={visible}
+              initiallyGuided={initiallyGuided}
+              projectNames={projectOptions}
+              projectRecords={projectRecords}
+              locationNames={taskFillLocationOptions}
+              ownerNames={ownerOptions}
+              contractorNames={contractorOptions}
+              milestoneNames={milestoneOptions}
+              taskCandidates={taskFillCandidates}
+              currentValues={{
+                taskName,
+                itemType,
+                projectName,
+                locationName,
+                startDate,
+                finishDate,
+                milestone,
+                owner,
+                contractor,
+                percentComplete: Number(percentComplete) || 0,
+                priority,
+                status,
+                notes,
+                nextAction,
+              }}
+              onApply={applyTaskFillPatch}
+            />
 
             <Label text="Task or milestone" />
             <Input accessibilityLabel="Task or milestone" value={taskName} onChange={setTaskName} placeholder="Example: East driveway striping" />
@@ -239,13 +339,13 @@ export function ScheduleTaskEditorModal({
             <ChoiceOrText label="Owner" value={owner} onChange={setOwner} options={ownerOptions} placeholder="PLZ owner or internal owner" />
             <ChoiceOrText label="Contractor" value={contractor} onChange={setContractor} options={contractorOptions} placeholder="Contractor / responsible company" />
             <Label text="Percent Complete" />
-            <Input accessibilityLabel="Percent Complete" value={percentComplete} onChange={value => setPercentComplete(value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder="0" numeric maxLength={3} />
-            <Chips values={['0', '25', '50', '75', '100']} selected={percentComplete} onSelect={setPercentComplete} suffix="%" />
+            <Input accessibilityLabel="Percent Complete" value={percentComplete} onChange={updatePercentComplete} placeholder="0" numeric maxLength={3} />
+            <Chips values={['0', '25', '50', '75', '100']} selected={percentComplete} onSelect={updatePercentComplete} suffix="%" />
             <Label text="Priority" />
             <Chips values={PRIORITIES} selected={priority} onSelect={value => setPriority(value as SchedulePriority)} />
             <ChoiceOrText label="Milestone" value={milestone} onChange={setMilestone} options={milestoneOptions} placeholder="Optional milestone" />
             <Label text="Status" />
-            <Chips values={STATUSES} selected={status} onSelect={value => setStatus(value as ScheduleStatus)} />
+            <Chips values={STATUSES} selected={status} onSelect={value => updateStatus(value as ScheduleStatus)} />
             <Label text="Next action" />
             <Input accessibilityLabel="Next action" value={nextAction} onChange={setNextAction} placeholder="Smallest accountable next step" />
             <Label text="Notes" />

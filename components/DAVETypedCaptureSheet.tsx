@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect, useState } from 'react';
 import {
   Modal,
@@ -20,7 +20,10 @@ export function DAVETypedCaptureSheet({
   placeholder = 'Example: ABC Electric committed to finish conduit by Friday.',
   continueLabel = 'Review Memory',
   accessibilityLabel = 'Project memory',
+  operationLabel,
+  operationGuidance,
   onContinue,
+  onOperation,
   onCancel,
 }: {
   visible: boolean;
@@ -31,7 +34,10 @@ export function DAVETypedCaptureSheet({
   placeholder?: string;
   continueLabel?: string;
   accessibilityLabel?: string;
+  operationLabel?: string;
+  operationGuidance?: string;
   onContinue: (text: string) => void;
+  onOperation?: () => void;
   onCancel: () => void;
 }) {
   const [text, setText] = useState('');
@@ -80,6 +86,24 @@ export function DAVETypedCaptureSheet({
               <Ionicons name="close" size={22} color={colors.text} />
             </TouchableOpacity>
           </View>
+
+          {onOperation && operationLabel ? (
+            <TouchableOpacity
+              style={styles.operationCard}
+              onPress={onOperation}
+              accessibilityRole="button"
+              accessibilityLabel={operationLabel}
+            >
+              <View style={styles.operationIcon}>
+                <Ionicons name="list-outline" size={21} color={colors.primary} />
+              </View>
+              <View style={styles.main}>
+                <Text style={styles.operationLabel}>{operationLabel}</Text>
+                {operationGuidance ? <Text style={styles.operationGuidance}>{operationGuidance}</Text> : null}
+              </View>
+              <Ionicons name="chevron-forward-outline" size={20} color={colors.primary} />
+            </TouchableOpacity>
+          ) : null}
 
           <Text style={styles.prompt}>{prompt}</Text>
           <Text style={styles.guidance}>{guidance}</Text>
@@ -163,6 +187,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  operationCard: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderColor: colors.primary,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    minHeight: 72,
+    padding: spacing.md,
+  },
+  operationIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  operationLabel: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  operationGuidance: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
   prompt: { color: colors.text, fontSize: 18, fontWeight: '800' },
   guidance: {
     color: colors.mutedText,

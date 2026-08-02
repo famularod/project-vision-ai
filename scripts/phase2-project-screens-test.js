@@ -10,7 +10,11 @@ const statusViews = fs.readFileSync(
   path.join(root, 'components/DAVEProjectStatusViews.tsx'),
   'utf8',
 );
-const uiSource = `${app}\n${statusViews}`;
+const projectActionSheet = fs.readFileSync(
+  path.join(root, 'components/project-action-sheet.tsx'),
+  'utf8',
+);
+const uiSource = `${app}\n${statusViews}\n${projectActionSheet}`;
 const projectTruth = fs.readFileSync(path.join(root, 'services/DAVEProjectTruth.ts'), 'utf8');
 const projectStatus = fs.readFileSync(
   path.join(root, 'services/DAVEProjectOperationalStatus.ts'),
@@ -19,7 +23,7 @@ const projectStatus = fs.readFileSync(
 
 [
   'function HomeScreen({',
-  'ProjectSelectorSheet',
+  'styles.overviewProjectCard',
   'Needs Attention',
   'Project Health',
   'Current Focus',
@@ -35,13 +39,11 @@ const projectStatus = fs.readFileSync(
   'Needs Setup',
   'At Risk',
   'Blocked',
-  'title="Project Management"',
-  'label="New Project"',
-  "label: 'Healthy'",
+  '>Project Management<',
+  'Add project manually',
+  "label: 'Overdue'",
   "label: 'At Risk'",
-  "title={search ? 'No matching projects' : 'No projects yet'}",
-  'accessibilityLabel="Clear project search"',
-  'Open Projects',
+  'title="No projects yet."',
   'ProjectWorkspace',
   'ProjectTaskControlPanel',
   'Tasks and Schedule',
@@ -54,7 +56,6 @@ const projectStatus = fs.readFileSync(
   'View All Tasks',
   'New Field Update',
   'Recent project activity will show up here.',
-  'Attention Needed',
   'Waiting',
   'On Track',
   'overviewAskDaveButton',
@@ -200,7 +201,8 @@ assert(
   'Overview must use authoritative schedule rows and surface actionable field reconciliation warnings.',
 );
 assert(
-  app.includes("<Modal visible={visible} animationType=\"slide\" transparent"),
+  projectActionSheet.includes('<Modal visible={visible} animationType="slide" transparent') &&
+    projectActionSheet.includes('maxHeight: \'82%\''),
   'Project selector must be a bottom sheet, not a native dropdown.',
 );
 

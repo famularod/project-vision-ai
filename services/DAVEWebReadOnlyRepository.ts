@@ -29,6 +29,7 @@ import type {
 import { partitionProjectUpdatesByDeletedTask } from './DAVEDeletedTaskEvidence';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { normalizeProjectControls } from './VitruviusProjectControls';
+import type { DAVEOperationalCollectionName } from './DAVEOperationalRefresh';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
@@ -46,8 +47,10 @@ export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtens
   }>[];
 }>;
 
-export async function loadDAVEWebReadOnlySnapshot(): Promise<DAVEWebReadOnlySnapshot> {
-  const rows = await daveWebSupabaseGateway.loadAuthorizedRows();
+export async function loadDAVEWebReadOnlySnapshot(
+  collections?: readonly DAVEOperationalCollectionName[],
+): Promise<DAVEWebReadOnlySnapshot> {
+  const rows = await daveWebSupabaseGateway.loadAuthorizedRows(collections);
   const rawProjects = rows.projects.map(normalizeProject).filter(isPresent);
   const tombstones = rows.syncTombstones.map(normalizeTombstone).filter(isPresent);
   const reconciledDocuments = reconcileCurrentScheduleDocuments(

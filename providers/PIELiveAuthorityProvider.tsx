@@ -188,6 +188,7 @@ export function PIELiveAuthorityProvider({
     useState<string | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const coreCacheRef = useRef(new Map<string, PIECoreOutput>());
+  const runtimeCacheRef = useRef(new Map<string, PIERuntimeState>());
   const sequenceRef = useRef(0);
   const mountedRef = useRef(true);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -338,7 +339,9 @@ export function PIELiveAuthorityProvider({
       try {
         await waitForLiveAuthorityInteractionIdle();
         if (!refreshIsCurrent()) return;
-        const runtime = safeBuildProviderRuntime(refreshInput);
+        const runtime = runtimeCacheRef.current.get(refreshSignature) ||
+          safeBuildProviderRuntime(refreshInput);
+        rememberPIERuntime(runtimeCacheRef.current, refreshSignature, runtime);
         if (mountedRef.current) setFallbackRuntime(runtime);
         const coreInput = {
           runtime,
@@ -851,6 +854,20 @@ function rememberLiveAuthorityCore(
     const oldestGeneration = cache.keys().next().value as string | undefined;
     if (!oldestGeneration) break;
     cache.delete(oldestGeneration);
+  }
+}
+
+function rememberPIERuntime(
+  cache: Map<string, PIERuntimeState>,
+  signature: string,
+  runtime: PIERuntimeState,
+) {
+  cache.delete(signature);
+  cache.set(signature, runtime);
+  while (cache.size > LIVE_AUTHORITY_CORE_CACHE_MAX_ENTRIES) {
+    const oldestSignature = cache.keys().next().value as string | undefined;
+    if (!oldestSignature) break;
+    cache.delete(oldestSignature);
   }
 }
 

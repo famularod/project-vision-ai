@@ -155,7 +155,16 @@ includes(
   'debounced task note sync must retain a durable pending marker',
 );
 includes(app, 'subscribeToDAVEOperationalChanges', 'open devices must subscribe to shared operational changes');
-includes(operationalRefresh, 'DAVE_OPERATIONAL_POLL_INTERVAL_MS = 4_000', 'open-device fallback refresh must remain fast');
+includes(
+  operationalRefresh,
+  'DAVE_OPERATIONAL_POLL_INTERVAL_MS = 30 * 60_000',
+  'open-device fallback refresh must stay resource-bounded while Realtime remains primary',
+);
+includes(
+  operationalRefresh,
+  'DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS = 30 * 60_000',
+  'desktop fallback refresh must share the bounded full-read safety interval',
+);
 includes(app, 'runDAVEOperationalCollectionRefreshes', 'task, area, and document pulls must refresh independently');
 includes(app, 'loadDAVEOperationalTombstones()', 'open-device refresh must use bounded receive-side deletion history');
 includes(

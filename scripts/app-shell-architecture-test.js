@@ -1,11 +1,44 @@
 const fs = require('fs');
 const path = require('path');
+const ts = require('typescript');
 
 const appPath = path.join(__dirname, '..', 'App.tsx');
 const source = fs.readFileSync(appPath, 'utf8');
 const lineCount = source.split('\n').length - (source.endsWith('\n') ? 1 : 0);
-const maximumLines = 23511;
+const maximumLines = 21066;
 const failures = [];
+
+const sourceFile = ts.createSourceFile(
+  appPath,
+  source,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TSX,
+);
+const topLevelFunctionNames = sourceFile.statements
+  .filter(ts.isFunctionDeclaration)
+  .map(statement => statement.name?.text)
+  .filter(Boolean);
+const identifierCounts = new Map();
+
+function countIdentifiers(node) {
+  if (ts.isIdentifier(node)) {
+    identifierCounts.set(node.text, (identifierCounts.get(node.text) || 0) + 1);
+  }
+  ts.forEachChild(node, countIdentifiers);
+}
+
+countIdentifiers(sourceFile);
+
+const unreachableTopLevelFunctions = topLevelFunctionNames.filter(
+  name => name !== 'App' && identifierCounts.get(name) === 1,
+);
+
+if (unreachableTopLevelFunctions.length > 0) {
+  failures.push(
+    `App.tsx contains unreachable top-level functions: ${unreachableTopLevelFunctions.join(', ')}.`,
+  );
+}
 
 if (lineCount > maximumLines) {
   failures.push(
@@ -42,5 +75,5 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `PASS App shell architecture: ${lineCount}/${maximumLines} lines; navigation state is externalized.`,
+  `PASS App shell architecture: ${lineCount}/${maximumLines} lines; navigation state is externalized; no unreachable top-level functions detected.`,
 );

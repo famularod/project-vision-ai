@@ -18,9 +18,13 @@ import { supabaseSecureAuthStorage } from './SupabaseAuthStorage.web';
 import { paginateSupabaseCollection } from './SupabaseCollectionPagination';
 import {
   attachDAVEOperationalRealtime,
+  type DAVEOperationalCollectionName,
   type DAVEOperationalRealtimeEntity,
+  type DAVEOperationalRealtimePayload,
   type DAVEOperationalRealtimeStatus,
 } from './DAVEOperationalRefresh';
+
+export const DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
 import { RESUMABLE_UPLOAD_THRESHOLD_BYTES } from './StorageUploadPolicy';
 import { uploadWebFileResumably } from './ResumableWebStorageUpload';
 import { MAX_PHOTO_SOURCE_BYTES } from './PhotoPairPreparation';
@@ -125,6 +129,39 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
   let artifactPathOwnerId: string | null = null;
   let authorizedPhotoPaths = new Set<string>();
   let authorizedDocumentPaths = new Set<string>();
+  let cachedRowsOwnerId: string | null = null;
+  let cachedAuthorizedRows: DAVEWebRawRows | null = null;
+  let authorizationCache: Readonly<{ ownerId: string; expiresAt: number }> | null = null;
+  let authorizationInFlight: Promise<string> | null = null;
+  const realtimeSatisfiedCollections = new Set<DAVEOperationalCollectionName>();
+
+  function invalidateAuthorization() {
+    authorizationCache = null;
+    authorizationInFlight = null;
+  }
+
+  async function requireAuthorizedOwnerCached(): Promise<string> {
+    if (
+      authorizationCache &&
+      authorizationCache.expiresAt > Date.now()
+    ) {
+      return authorizationCache.ownerId;
+    }
+    if (authorizationInFlight) return authorizationInFlight;
+    const request = requireAuthorizedOwner(client!).then(ownerId => {
+      authorizationCache = Object.freeze({
+        ownerId,
+        expiresAt: Date.now() + DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS,
+      });
+      return ownerId;
+    });
+    authorizationInFlight = request;
+    try {
+      return await request;
+    } finally {
+      if (authorizationInFlight === request) authorizationInFlight = null;
+    }
+  }
 
   return Object.freeze({
     async getSessionStatus(): Promise<DAVEWebSessionStatus> {
@@ -138,7 +175,10 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       callback: (event: AuthChangeEvent, session: Session | null) => void,
     ): () => void {
       if (!client) return () => undefined;
-      const { data } = client.auth.onAuthStateChange((event, session) => callback(event, session));
+      const { data } = client.auth.onAuthStateChange((event, session) => {
+        invalidateAuthorization();
+        callback(event, session);
+      });
       return () => data.subscription.unsubscribe();
     },
 
@@ -146,15 +186,33 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       onChange,
       onStatus,
     }: {
-      onChange: (entity: DAVEOperationalRealtimeEntity) => void;
+      onChange: (
+        entity: DAVEOperationalRealtimeEntity,
+        collections?: readonly DAVEOperationalCollectionName[],
+        payload?: DAVEOperationalRealtimePayload,
+      ) => void;
       onStatus?: (status: DAVEOperationalRealtimeStatus) => void;
     }): Promise<() => void> {
       if (!client) return () => undefined;
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       return attachDAVEOperationalRealtime({
         client,
         ownerId,
-        onChange,
+        onChange: (entity, collections, payload) => {
+          if (payload && cachedAuthorizedRows) {
+            const applied = applyDAVEWebRealtimeRows(
+              cachedAuthorizedRows,
+              entity,
+              payload,
+            );
+            if (applied) {
+              cachedAuthorizedRows = applied.rows;
+              applied.collections.forEach(collection =>
+                realtimeSatisfiedCollections.add(collection));
+            }
+          }
+          onChange(entity, collections, payload);
+        },
         onStatus,
       });
     },
@@ -163,6 +221,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (!client) return { ok: false, session: null };
       const { data, error } = await client.auth.signInWithPassword({ email, password });
       if (error || !data.session) return { ok: false, session: null };
+      invalidateAuthorization();
       return { ok: true, session: data.session };
     },
 
@@ -170,35 +229,85 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (!client) return;
       const { error } = await client.auth.signOut();
       if (error) throw new Error('The desktop session could not be closed.');
+      invalidateAuthorization();
+      cachedRowsOwnerId = null;
+      cachedAuthorizedRows = null;
+      artifactPathOwnerId = null;
+      authorizedPhotoPaths = new Set<string>();
+      authorizedDocumentPaths = new Set<string>();
     },
 
-    async loadAuthorizedRows(): Promise<DAVEWebRawRows> {
+    async loadAuthorizedRows(
+      collections?: readonly DAVEOperationalCollectionName[],
+    ): Promise<DAVEWebRawRows> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      const userId = await requireAuthorizedOwner(client);
+      const userId = await requireAuthorizedOwnerCached();
+      const cachedRows = cachedRowsOwnerId === userId ? cachedAuthorizedRows : null;
+      const requestedCollections = cachedRows && collections
+        ? new Set(collections)
+        : null;
+      const shouldRead = (collection: DAVEOperationalCollectionName) =>
+        !requestedCollections || (
+          requestedCollections.has(collection) &&
+          !realtimeSatisfiedCollections.has(collection)
+        );
 
       const [projects, scheduleItems, projectUpdates, referenceDocuments, syncTombstones] = await Promise.all([
-        readOwnerRows(client, 'projects', userId, query => query.eq('archived', false).order('created_at', { ascending: false })),
-        readOwnerRows(client, 'schedule_items', userId, query => query.order('updated_at', { ascending: false })),
-        readOwnerRows(client, 'project_updates', userId, query => query.order('created_at', { ascending: false })),
-        readOwnerRows(client, 'reference_documents', userId, query => query.order('updated_at', { ascending: false })),
-        readOwnerRows(client, 'dave_sync_tombstones', userId, query => query.order('deleted_at', { ascending: false })),
+        shouldRead('projects')
+          ? readOwnerRows(client, 'projects', userId, query => query.eq('archived', false).order('created_at', { ascending: false }))
+          : Promise.resolve(cachedRows?.projects ?? []),
+        shouldRead('schedule_items')
+          ? readOwnerRows(client, 'schedule_items', userId, query => query.order('updated_at', { ascending: false }))
+          : Promise.resolve(cachedRows?.scheduleItems ?? []),
+        shouldRead('project_updates')
+          ? readOwnerRows(client, 'project_updates', userId, query => query.order('created_at', { ascending: false }))
+          : Promise.resolve(cachedRows?.projectUpdates ?? []),
+        shouldRead('reference_documents')
+          ? readOwnerRows(client, 'reference_documents', userId, query => query.order('updated_at', { ascending: false }))
+          : Promise.resolve(cachedRows?.referenceDocuments ?? []),
+        shouldRead('sync_tombstones')
+          ? readOwnerRows(client, 'dave_sync_tombstones', userId, query => query.order('deleted_at', { ascending: false }))
+          : Promise.resolve(cachedRows?.syncTombstones ?? []),
       ]);
+      const nextRows = Object.freeze({
+        projects,
+        scheduleItems,
+        projectUpdates,
+        referenceDocuments,
+        syncTombstones,
+      });
+      cachedRowsOwnerId = userId;
+      cachedAuthorizedRows = nextRows;
       artifactPathOwnerId = userId;
       authorizedPhotoPaths = collectOwnerPhotoStoragePaths(projectUpdates);
       authorizedDocumentPaths = collectOwnerDocumentStoragePaths(referenceDocuments);
-      void processAuthorizedStorageCleanup(client, userId).catch(() => undefined);
-      void purgeAuthorizedDeletionAudit(client).catch(() => undefined);
+      if (requestedCollections) {
+        requestedCollections.forEach(collection =>
+          realtimeSatisfiedCollections.delete(collection));
+      } else {
+        realtimeSatisfiedCollections.clear();
+      }
 
-      return Object.freeze({ projects, scheduleItems, projectUpdates, referenceDocuments, syncTombstones });
+      return nextRows;
+    },
+
+    async runAuthorizedMaintenance(): Promise<void> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const userId = await requireAuthorizedOwnerCached();
+      await Promise.all([
+        processAuthorizedStorageCleanup(client, userId),
+        purgeAuthorizedDeletionAudit(client),
+      ]);
     },
 
     async createAuthorizedArtifactSignedUrl(
       bucket: DAVEWebStorageBucket,
       path: string,
       expiresInSeconds = 600,
+      options: Readonly<{ preview?: boolean }> = {},
     ): Promise<string> {
       if (!client) throw new DAVEWebArtifactAccessError('The desktop cloud connection is not configured.');
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       if (bucket !== 'project-photos' && bucket !== 'project-documents') {
         throw new DAVEWebArtifactAccessError('This project file type is not available in the desktop workspace.');
       }
@@ -214,9 +323,16 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         );
       }
       const lifetime = Math.min(900, Math.max(60, Math.floor(expiresInSeconds)));
-      const { data, error } = await client.storage
-        .from(bucket)
-        .createSignedUrl(safePath, lifetime);
+      const storage = client.storage.from(bucket);
+      const { data, error } = bucket === 'project-photos' && options.preview
+        ? await storage.createSignedUrl(safePath, lifetime, {
+            transform: {
+              width: 960,
+              quality: 72,
+              resize: 'contain',
+            },
+          })
+        : await storage.createSignedUrl(safePath, lifetime);
       const signedUrl = typeof data?.signedUrl === 'string' ? data.signedUrl.trim() : '';
       if (error || !signedUrl) {
         throw new DAVEWebArtifactAccessError(
@@ -228,7 +344,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
 
     async createAuthorizedScheduleItem(item: ScheduleItem): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       const cloudUpdatedAt = new Date().toISOString();
       const { data, error } = await client
         .from('schedule_items')
@@ -251,7 +367,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       if (!expectedCloudUpdatedAt) throw staleTaskError();
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       if (await scheduleItemWasDeleted(client, ownerId, item.id)) {
         throw new DAVEWebTaskMutationError(
           'deleted',
@@ -285,7 +401,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       if (!expectedCloudUpdatedAt) throw staleTaskError();
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
 
       if (await scheduleItemWasDeleted(client, ownerId, itemId)) {
         return new Date().toISOString();
@@ -340,7 +456,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       onProgress,
     }: DAVEWebDocumentUploadInput): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       if (bytes.byteLength <= 0 || bytes.byteLength > 50 * 1024 * 1024) {
         throw new DAVEWebDocumentMutationError(
           'write_failed',
@@ -462,7 +578,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       mimeType,
     }: DAVEWebTaskPhotoUploadInput): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       if (bytes.byteLength <= 0 || bytes.byteLength > MAX_PHOTO_SOURCE_BYTES) {
         throw new DAVEWebDocumentMutationError(
           'write_failed',
@@ -562,7 +678,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       scheduleDocuments: readonly (ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null })[],
     ): Promise<void> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       const candidates = scheduleDocuments.filter(document => document.id && document.cloudUpdatedAt);
       if (!selected.cloudUpdatedAt || !candidates.some(document => document.id === selected.id)) throw staleDocumentError();
 
@@ -645,7 +761,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       expectedCloudUpdatedAt?: string | null;
     }): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
       const updatedAt = new Date().toISOString();
       const document: ReferenceDocument & DAVEWebDocumentExtension = {
         id,
@@ -690,7 +806,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     ): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       if (!expectedCloudUpdatedAt) throw staleDocumentError();
-      const ownerId = await requireAuthorizedOwner(client);
+      const ownerId = await requireAuthorizedOwnerCached();
 
       if (await recordWasDeleted(client, ownerId, 'reference_document', documentId)) {
         return new Date().toISOString();
@@ -778,6 +894,147 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return deletedAt;
     },
   });
+}
+
+function applyDAVEWebRealtimeRows(
+  rows: DAVEWebRawRows,
+  entity: DAVEOperationalRealtimeEntity,
+  payload: DAVEOperationalRealtimePayload,
+): Readonly<{
+  rows: DAVEWebRawRows;
+  collections: readonly DAVEOperationalCollectionName[];
+}> | null {
+  const candidate = payload.eventType === 'DELETE'
+    ? payload.oldRow
+    : payload.newRow;
+  if (!candidate) return null;
+
+  if (entity === 'sync_tombstone') {
+    const entityType = typeof candidate.entity_type === 'string'
+      ? candidate.entity_type
+      : '';
+    const recordId = typeof candidate.record_id === 'string'
+      ? candidate.record_id
+      : '';
+    if (!entityType || !recordId) return null;
+    const collection = webCollectionForTombstoneEntity(entityType);
+    const nextRows: {
+      -readonly [Key in keyof DAVEWebRawRows]: DAVEWebRawRows[Key]
+    } = {
+      ...rows,
+      syncTombstones: mergeRealtimeRows(
+        rows.syncTombstones,
+        candidate,
+        payload.eventType,
+        value => `${readRawString(value, 'entity_type')}:${readRawString(value, 'record_id')}`,
+      ),
+    };
+    if (collection) {
+      const property = webRowsProperty(collection);
+      if (property) {
+        nextRows[property] = removeRealtimeRow(
+          nextRows[property],
+          recordId,
+          value => readRawString(value, 'id'),
+        ) as never;
+      }
+    }
+    return Object.freeze({
+      rows: Object.freeze(nextRows),
+      collections: Object.freeze([
+        'sync_tombstones' as const,
+        ...(collection ? [collection] : []),
+      ]),
+    });
+  }
+
+  const collection = daveWebCollectionForRealtimeEntity(entity);
+  const property = collection ? webRowsProperty(collection) : null;
+  const id = readRawString(candidate, 'id');
+  if (!collection || !property || !id) return null;
+  const removeProject = entity === 'project' && candidate.archived === true;
+  const nextCollection = removeProject
+    ? removeRealtimeRow(rows[property], id, value => readRawString(value, 'id'))
+    : mergeRealtimeRows(
+        rows[property],
+        candidate,
+        payload.eventType,
+        value => readRawString(value, 'id'),
+      );
+  return Object.freeze({
+    rows: Object.freeze({ ...rows, [property]: nextCollection }),
+    collections: Object.freeze([collection]),
+  });
+}
+
+function daveWebCollectionForRealtimeEntity(
+  entity: DAVEOperationalRealtimeEntity,
+): DAVEOperationalCollectionName | null {
+  switch (entity) {
+    case 'project': return 'projects';
+    case 'project_update': return 'project_updates';
+    case 'schedule_item': return 'schedule_items';
+    case 'reference_document': return 'reference_documents';
+    case 'project_area':
+    case 'sync_tombstone':
+      return null;
+  }
+}
+
+function webCollectionForTombstoneEntity(
+  entityType: string,
+): DAVEOperationalCollectionName | null {
+  switch (entityType) {
+    case 'project': return 'projects';
+    case 'project_update': return 'project_updates';
+    case 'schedule_item': return 'schedule_items';
+    case 'reference_document': return 'reference_documents';
+    default: return null;
+  }
+}
+
+function webRowsProperty(
+  collection: DAVEOperationalCollectionName,
+): keyof DAVEWebRawRows | null {
+  switch (collection) {
+    case 'projects': return 'projects';
+    case 'project_updates': return 'projectUpdates';
+    case 'schedule_items': return 'scheduleItems';
+    case 'reference_documents': return 'referenceDocuments';
+    case 'sync_tombstones': return 'syncTombstones';
+    case 'project_areas': return null;
+  }
+}
+
+function mergeRealtimeRows(
+  rows: readonly unknown[],
+  candidate: Readonly<Record<string, unknown>>,
+  eventType: DAVEOperationalRealtimePayload['eventType'],
+  keyFor: (value: unknown) => string,
+): readonly unknown[] {
+  const key = keyFor(candidate);
+  if (!key) return rows;
+  if (eventType === 'DELETE') return removeRealtimeRow(rows, key, keyFor);
+  const next = [...rows];
+  const index = next.findIndex(value => keyFor(value) === key);
+  if (index >= 0) next[index] = candidate;
+  else next.unshift(candidate);
+  return Object.freeze(next);
+}
+
+function removeRealtimeRow(
+  rows: readonly unknown[],
+  key: string,
+  keyFor: (value: unknown) => string,
+): readonly unknown[] {
+  const next = rows.filter(value => keyFor(value) !== key);
+  return next.length === rows.length ? rows : Object.freeze(next);
+}
+
+function readRawString(value: unknown, key: string): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === 'string' ? candidate.trim() : '';
 }
 
 export const daveWebSupabaseGateway = createDAVEWebSupabaseGateway(browserClient);

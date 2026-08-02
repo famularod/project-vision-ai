@@ -46,8 +46,8 @@ assert(
   'No-prior-photo updates must display the positive shared baseline status.',
 );
 assert(
-  app.includes("noPriorPhoto: 'Baseline saved'") &&
-    app.includes('Future photos from this area can be compared against this baseline.'),
+    app.includes("noPriorPhoto: 'Baseline saved'") &&
+    app.includes('Baseline saved for future comparison.'),
   'Baseline updates must explain future comparison value without presenting a failure.',
 );
 assert(
@@ -85,23 +85,15 @@ assert(
 assert(
   app.includes("setProjectDetectionStatus('denied')") &&
     app.includes("setProjectDetectionStatus('multiple')") &&
-    app.includes("setProjectDetectionStatus(projectName ? 'not_applied' : 'unmatched')") &&
     app.includes("setProjectDetectionStatus('unmatched')") &&
     app.includes("setProjectDetectionStatus(projectName ? 'detected' : 'unmatched')"),
-  'GPS defaulting must distinguish denied, multiple, unmatched, not-applied, and detected states.',
+  'GPS defaulting must distinguish denied, multiple, unmatched, and detected states.',
 );
 assert(
-  app.includes('overviewProjectSelection === undefined') &&
-    app.includes('? detectedProjectName') &&
-    app.includes('selectedProjectName={overviewProjectName}'),
-  'Detected GPS project must become the active Overview project without depending on removed duplicate New Update copy.',
-);
-assert(
-  app.includes('label="All Projects"') &&
-    app.includes('detail="Show the full portfolio overview."') &&
-    app.includes('selected={selectedProjectName === null}') &&
-    app.includes('GPS found multiple nearby projects. Choose one of these likely matches.'),
-  'GPS fallback must retain an explicit All Projects choice and explain ambiguous detection.',
+  app.includes("projectDetectionStatus === 'detected' ? detectedProjectName : null") &&
+    app.includes("setProjectDetectionStatus('multiple')") &&
+    app.includes('setDetectedProjectName(null)'),
+  'A clear GPS match may seed a new update, while an ambiguous match must require project selection.',
 );
 assert(
   app.includes('likelyProjectCandidatesFromGps') &&
@@ -109,8 +101,7 @@ assert(
     app.includes('slice(0, 3)') &&
     app.includes('GPS_CLEAR_WINNER_DISTANCE_FEET') &&
     app.includes('gpsCandidates.ambiguous') &&
-    app.includes('setGpsCandidateProjectNames(') &&
-    app.includes('gpsCandidates.topCandidates.map(candidate => candidate.projectName)'),
+    app.includes('gpsCandidates.topCandidates.length === 0'),
   'Multiple similar GPS matches must preserve only the narrowed top-2-to-3 candidate set.',
 );
 assert(
@@ -120,30 +111,24 @@ assert(
     !app.includes('PIE_GPS_MATCH_DIAGNOSTIC coordinates'),
   'Dev GPS diagnostics must flag missing saved project-area coordinates without exposing raw coordinates.',
 );
-assert(
-  app.includes('overviewProjectManuallySelected') &&
-    app.includes('setOverviewProjectManuallySelected(true)') &&
-    app.includes("setProjectDetectionStatus(projectName ? 'not_applied' : 'unmatched')"),
-  'Late GPS matches must not override a manual Overview project selection.',
-);
-
-const projectCard = sliceBetween(app, 'function Phase2ProjectCard', 'function ProjectWorkspaceScreen');
+const overviewScreen = sliceBetween(app, 'function HomeScreen', 'function SelectProjectScreen');
 assert(
   app.includes('buildProjectCardPIEStatus([], scopedFieldUpdates)'),
   'Overview project cards must use the exact parent-scoped DAVE status copy.',
 );
 assert(
-  !projectCard.includes('All projects on track — nothing needs your attention.'),
+  !overviewScreen.includes('All projects on track — nothing needs your attention.'),
   'Project cards must not render the Overview all-project empty-state string.',
 );
 assert(
-  app.includes('if (attentionCount > 0) return \'Attention Needed\';') &&
-    projectCard.includes('projectRowStatus(item.attentionCount, item.stats.openActions)') &&
-    app.includes('attentionCount: buildPhase2AttentionItems(savedUpdates, project).length'),
-  'A project with open Needs Attention items must show Attention Needed instead of On Track.',
+  app.includes('const attentionItems = buildPhase2AttentionItems(scopedFieldUpdates, null);') &&
+    app.includes('hasAttention: attentionItems.length > 0') &&
+    app.includes("const needsAttention = operationalStatus.status !== 'Healthy';") &&
+    overviewScreen.includes("<Text style={[styles.overviewProjectHealth, { color: healthColor }]}>{health}</Text>"),
+  'Overview project cards must derive and display operational health from current attention items.',
 );
 assert(
-  !projectCard.includes('Needs Review'),
+  !overviewScreen.includes('Needs Review'),
   'Project card status must not use Needs Review.',
 );
 [
@@ -157,7 +142,7 @@ assert(
   assert(app.includes(marker), `Project card status should include ${marker}`);
 });
 
-const attentionBuilder = sliceBetween(app, 'function buildPhase2AttentionItems', 'function projectThumbnailUri');
+const attentionBuilder = sliceBetween(app, 'function buildPhase2AttentionItems', 'function stableOpenItemAttentionId');
 [
   'Safety concern detected',
   'PIE_STATUS_COPY.unavailableRetry',

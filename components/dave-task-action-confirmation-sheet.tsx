@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { DAVETaskUpdateCommand } from '../services/DAVETaskConversation';
 import { colors, spacing } from '../theme';

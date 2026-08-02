@@ -3,6 +3,36 @@ import { fireEvent, render } from '@testing-library/react-native';
 import { ScheduleTaskEditorModal } from '../../components/schedule-task-editor-modal';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
+jest.mock('../../components/DAVEVoiceCaptureSheet', () => {
+  const { Pressable, Text } = require('react-native');
+  return {
+    DAVEVoiceCaptureSheet: ({
+      visible,
+      onMemoryReady,
+    }: {
+      visible: boolean;
+      onMemoryReady: (result: Record<string, unknown>) => void;
+    }) => visible ? (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Complete mock task recording"
+        onPress={() => onMemoryReady({
+          schemaVersion: 'dave-voice-understanding/1.0',
+          transcript: 'Task: Inspect storefront; area: East Lobby; percent: 50%;',
+          transcriptionModel: 'mock-transcriber',
+          understanding: {
+            status: 'unavailable',
+            model: null,
+            recommendedLocation: { value: null, confidence: 'unknown' },
+            fields: {},
+          },
+        })}
+      >
+        <Text>Complete mock task recording</Text>
+      </Pressable>
+    ) : null,
+  };
+});
 jest.mock('@react-native-community/datetimepicker', () => {
   const { View } = require('react-native');
   return {
@@ -160,5 +190,207 @@ describe('ScheduleTaskEditorModal', () => {
     expect(screen.getByDisplayValue('Typed work in progress')).toBeTruthy();
     expect(screen.getByDisplayValue('Manual field area')).toBeTruthy();
     expect(screen.getByDisplayValue('Field superintendent')).toBeTruthy();
+  });
+
+  it('keeps keyboard instructions proposed until the user applies the review', async () => {
+    const screen = await render(
+      <ScheduleTaskEditorModal
+        visible
+        projects={['Project A']}
+        projectAreas={[{
+          id: 'area-a',
+          name: 'East Lobby',
+          projectName: 'Project A',
+          latitude: 34,
+          longitude: -118,
+          radiusFeet: 250,
+        }]}
+        scheduleItems={[]}
+        initialProjectName="Project A"
+        defaultOwner="David"
+        onClose={jest.fn()}
+        onSubmit={jest.fn()}
+      />,
+    );
+
+    fireEvent.press(screen.getByRole('button', { name: 'Fill task with voice or text' }));
+    fireEvent.changeText(
+      screen.getByLabelText('Editable task instruction'),
+      'Task: Install storefront glass; project: Project A; area: East Lobby; owner: David; percent: 50%;',
+    );
+    fireEvent.press(screen.getByRole('button', { name: 'Review proposed task changes' }));
+
+    expect(screen.getByText('Proposed field changes')).toBeTruthy();
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('');
+    expect(screen.getByRole('button', { name: 'Apply proposed changes to task form' }).props.accessibilityState?.disabled)
+      .not.toBe(true);
+
+    fireEvent.press(screen.getByRole('button', { name: 'Apply proposed changes to task form' }));
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('Install storefront glass');
+    expect(screen.getByLabelText('Location').props.value).toBe('East Lobby');
+    expect(screen.getByLabelText('Owner').props.value).toBe('David');
+    expect(screen.getByLabelText('Percent Complete').props.value).toBe('50');
+    expect(screen.getByRole('radio', { name: 'In Progress' }).props.accessibilityState)
+      .toEqual({ selected: true });
+  });
+
+  it('uses the shared voice transcript as editable mixed input before review', async () => {
+    const screen = await render(
+      <ScheduleTaskEditorModal
+        visible
+        projects={['Project A']}
+        projectAreas={[{
+          id: 'area-a',
+          name: 'East Lobby',
+          projectName: 'Project A',
+          latitude: 34,
+          longitude: -118,
+          radiusFeet: 250,
+        }]}
+        scheduleItems={[]}
+        initialProjectName="Project A"
+        onClose={jest.fn()}
+        onSubmit={jest.fn()}
+      />,
+    );
+
+    fireEvent.press(screen.getByRole('button', { name: 'Fill task with voice or text' }));
+    fireEvent.changeText(
+      screen.getByLabelText('Editable task instruction'),
+      'Task: Inspect storefront;',
+    );
+    fireEvent.press(screen.getByRole('button', { name: 'Record task instruction' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Complete mock task recording' }));
+
+    expect(screen.getByLabelText('Editable task instruction').props.value)
+      .toBe('Task: Inspect storefront;\nTask: Inspect storefront; area: East Lobby; percent: 50%;');
+    fireEvent.press(screen.getByRole('button', { name: 'Review proposed task changes' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Apply proposed changes to task form' }));
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('Inspect storefront');
+    expect(screen.getByLabelText('Location').props.value).toBe('East Lobby');
+    expect(screen.getByLabelText('Percent Complete').props.value).toBe('50');
+  });
+
+  it('applies a voice-only task transcript only after review', async () => {
+    const screen = await render(
+      <ScheduleTaskEditorModal
+        visible
+        projects={['Project A']}
+        projectAreas={[{
+          id: 'area-a',
+          name: 'East Lobby',
+          projectName: 'Project A',
+          latitude: 34,
+          longitude: -118,
+          radiusFeet: 250,
+        }]}
+        scheduleItems={[]}
+        initialProjectName="Project A"
+        onClose={jest.fn()}
+        onSubmit={jest.fn()}
+      />,
+    );
+
+    fireEvent.press(screen.getByRole('button', { name: 'Fill task with voice or text' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Record task instruction' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Complete mock task recording' }));
+
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('');
+    fireEvent.press(screen.getByRole('button', { name: 'Review proposed task changes' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Apply proposed changes to task form' }));
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('Inspect storefront');
+    expect(screen.getByLabelText('Location').props.value).toBe('East Lobby');
+    expect(screen.getByLabelText('Percent Complete').props.value).toBe('50');
+  });
+
+  it('cancels an unapplied task-fill draft without altering the task form', async () => {
+    const screen = await render(
+      <ScheduleTaskEditorModal
+        visible
+        projects={['Project A']}
+        projectAreas={[]}
+        scheduleItems={[]}
+        initialProjectName="Project A"
+        onClose={jest.fn()}
+        onSubmit={jest.fn()}
+      />,
+    );
+
+    fireEvent.press(screen.getByRole('button', { name: 'Fill task with voice or text' }));
+    fireEvent.changeText(
+      screen.getByLabelText('Editable task instruction'),
+      'Task: This should not apply; percent: 100%;',
+    );
+    fireEvent.press(screen.getByRole('button', { name: 'Review proposed task changes' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Cancel task fill' }));
+
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('');
+    expect(screen.getByLabelText('Percent Complete').props.value).toBe('0');
+    expect(screen.queryByLabelText('Editable task instruction')).toBeNull();
+  });
+
+  it('guides a Talk-created task through every field and records intentional skips', async () => {
+    const onSubmit = jest.fn();
+    const screen = await render(
+      <ScheduleTaskEditorModal
+        visible
+        initiallyGuided
+        projects={['Project A']}
+        projectAreas={[{
+          id: 'area-a',
+          name: 'East Lobby',
+          projectName: 'Project A',
+          latitude: 34,
+          longitude: -118,
+          radiusFeet: 250,
+        }]}
+        scheduleItems={[]}
+        initialProjectName="Project A"
+        defaultOwner="David"
+        onClose={jest.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const saveAnswer = (label: string) => fireEvent.press(
+      screen.getByRole('button', { name: `Save ${label} answer and continue` }),
+    );
+    const skipAnswer = (label: string) => fireEvent.press(
+      screen.getByRole('button', { name: `Skip optional ${label}` }),
+    );
+
+    expect(screen.getByText('Question 1 of 14')).toBeTruthy();
+    expect(screen.getByText('What should this task be called?')).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText('Answer Task'), 'Install east lobby doors');
+    saveAnswer('Task');
+    saveAnswer('Item type');
+    saveAnswer('Project');
+    saveAnswer('Area / location');
+    skipAnswer('Start date');
+    skipAnswer('Finish / due date');
+    skipAnswer('Milestone');
+    saveAnswer('Owner');
+    skipAnswer('Trade / contractor');
+    saveAnswer('Percent complete');
+    saveAnswer('Priority');
+    saveAnswer('Status');
+    fireEvent.changeText(screen.getByLabelText('Answer Next action'), 'Confirm delivery date');
+    saveAnswer('Next action');
+    skipAnswer('Notes');
+
+    expect(screen.getByText('All task fields reviewed')).toBeTruthy();
+    expect(screen.getByText(/5 optional fields were intentionally skipped/)).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Review completed task form' }));
+
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('Install east lobby doors');
+    expect(screen.getByLabelText('Next action').props.value).toBe('Confirm delivery date');
+    fireEvent.press(screen.getByRole('button', { name: 'Save Task' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      taskName: 'Install east lobby doors',
+      projectName: 'Project A',
+      locationName: 'East Lobby',
+      owner: 'David',
+      nextAction: 'Confirm delivery date',
+    }));
   });
 });

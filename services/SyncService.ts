@@ -12,7 +12,6 @@ import {
   listProjects,
   listReferenceDocuments,
   listScheduleItems,
-  purgeExpiredDAVEDeletionAudit,
   saveProjectUpdate,
   testSupabaseConnection,
   updateProject,
@@ -47,7 +46,7 @@ import {
 import { createDurableLocalTransactionRepository } from './DurableLocalTransaction';
 import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import { createPendingChangesRetryController } from './PendingChangesRetryController';
-import { processDAVEStorageCleanup } from './DAVEStorageCleanup';
+import { runDAVECloudMaintenanceIfDue } from './DAVECloudMaintenanceBudget';
 import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
@@ -334,6 +333,8 @@ export type OfflineQueueRecoveryAttempt = {
 
 const PROJECT_PHOTOS_BUCKET = 'project-photos';
 const RECOVERED_PHOTOS_FOLDER = 'dave-recovered-project-photos';
+export const PROJECT_PHOTO_PREVIEW_WIDTH = 960;
+export const PROJECT_PHOTO_PREVIEW_QUALITY = 72;
 
 export function sanitizeUserFacingSyncMessage(message: string): string {
   if (!message.trim()) return message;
@@ -2509,25 +2510,19 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   let storageCleanupCompleted = 0;
   if (!taskPriorityBatch) {
     try {
-      const storageCleanup = await processDAVEStorageCleanup();
-      storageCleanupRemaining = storageCleanup.remaining;
-      storageCleanupCompleted = storageCleanup.completed;
+      const maintenance = await runDAVECloudMaintenanceIfDue({
+        forceStorageCleanup: uploadBatch.some(item =>
+          item.entity === 'project' && item.operation === 'delete'),
+      });
+      storageCleanupRemaining = maintenance.storageCleanupRemaining;
+      storageCleanupCompleted = maintenance.storageCleanupCompleted;
       errors.push(
-        ...storageCleanup.errors.map(error => sanitizeUserFacingSyncMessage(error)),
+        ...maintenance.storageCleanupErrors.map(error =>
+          sanitizeUserFacingSyncMessage(error)),
       );
     } catch {
       storageCleanupRemaining = 1;
       errors.push('Protected file cleanup is temporarily unavailable.');
-    }
-
-    // Deletion markers remain permanent. Only metadata-only deletion receipts
-    // whose one-year retention window has elapsed are purged, and the existing
-    // RPC still enforces the signed-in owner's authorization boundary.
-    try {
-      await purgeExpiredDAVEDeletionAudit();
-    } catch {
-      // Retention maintenance must never make otherwise-safe project sync look
-      // unsuccessful. The production health check reports overdue receipts.
     }
   }
 
@@ -3015,7 +3010,7 @@ export async function synchronizeLocalData(
   progress('Downloading cloud changes');
   const download = await downloadCloudChanges<ProjectUpdate>(tombstoneSync);
   const recoveredUpdates = await Promise.all(
-    download.updates.map(row => hydrateRecoveredProjectUpdatePhotos(row.updateData)),
+    download.updates.map(row => hydrateProjectUpdatePhotoPreviews(row.updateData)),
   );
   details.cloudProjectsDownloaded = download.projects.length;
   details.cloudUpdatesDownloaded = download.updates.length;
@@ -4314,6 +4309,65 @@ export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends Projec
     };
   }));
   return { ...update, photos };
+}
+
+/**
+ * Adds a bandwidth-bounded presentation URL without downloading the original
+ * evidence file. Reports, backup, and photo analysis continue to call
+ * hydrateRecoveredProjectUpdatePhotos() and therefore retain original bytes.
+ */
+export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectUpdate>(
+  update: TUpdate,
+): Promise<TUpdate> {
+  const photos = await Promise.all(update.photos.map(async photo => {
+    if (await hasUsablePhotoUri(photo)) return photo;
+    if (cloudPhotoPreviewIsFresh(photo)) return photo;
+    const cloudStoragePath =
+      photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
+    const transform = projectPhotoPreviewTransform(photo);
+    const signed = await createPhotoSignedUrl(
+      cloudStoragePath,
+      600,
+      PROJECT_PHOTOS_BUCKET,
+      transform,
+    );
+    if (!signed.ok || !signed.data || signed.stubbed) {
+      return { ...photo, cloudStoragePath };
+    }
+    return {
+      ...photo,
+      cloudStoragePath,
+      cloudPreviewUri: signed.data,
+      cloudPreviewSignedUrlExpiresAt:
+        new Date(Date.now() + 9 * 60_000).toISOString(),
+    };
+  }));
+  return { ...update, photos };
+}
+
+export function cloudPhotoPreviewIsFresh(
+  photo: Pick<UpdatePhoto, 'cloudPreviewUri' | 'cloudPreviewSignedUrlExpiresAt'>,
+  now = Date.now(),
+): boolean {
+  if (!photo.cloudPreviewUri?.trim()) return false;
+  const expiresAt = photo.cloudPreviewSignedUrlExpiresAt
+    ? new Date(photo.cloudPreviewSignedUrlExpiresAt).getTime()
+    : Number.NaN;
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+export function projectPhotoPreviewTransform(
+  photo: Pick<UpdatePhoto, 'mimeType' | 'fileName' | 'cloudStoragePath'>,
+): Readonly<{ width: number; quality: number; resize: 'contain' }> | undefined {
+  const value = `${photo.mimeType || ''} ${photo.fileName || ''} ${photo.cloudStoragePath || ''}`
+    .toLowerCase();
+  return /heic|heif/.test(value)
+    ? undefined
+    : {
+        width: PROJECT_PHOTO_PREVIEW_WIDTH,
+        quality: PROJECT_PHOTO_PREVIEW_QUALITY,
+        resize: 'contain',
+      };
 }
 
 async function uploadUpdatePhotosForSync(

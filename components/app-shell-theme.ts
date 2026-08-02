@@ -1637,7 +1637,8 @@ export const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 20,
     borderRadius: 20,
-    padding: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 20,
     backgroundColor: colors.primary,
     shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 8 },
@@ -1669,26 +1670,38 @@ export const styles = StyleSheet.create({
 
   overviewHealthMetrics: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
+    gap: 0,
   },
 
   overviewHealthMetric: {
-    flex: 1,
+    flexBasis: 0,
+    flexGrow: 1,
+    minWidth: 0,
+    alignItems: 'center',
   },
 
   overviewHealthMetricValue: {
     color: '#FFFFFF',
     fontSize: 25,
     fontWeight: '800',
-    marginBottom: 3,
+    marginBottom: 4,
+    width: '100%',
+    textAlign: 'center',
+  },
+
+  overviewHealthMetricLabelGroup: {
+    minHeight: 26,
+    width: '100%',
+    alignItems: 'center',
   },
 
   overviewHealthMetricLabel: {
     color: 'rgba(255,255,255,0.72)',
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 10,
+    lineHeight: 13,
     fontWeight: '700',
+    width: '100%',
+    textAlign: 'center',
   },
 
   overviewDashboardHeadingRow: {

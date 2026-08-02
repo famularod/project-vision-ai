@@ -60,12 +60,14 @@ assert(
 );
 
 assert(
-    app.includes('function PhotoIntelligenceSignInModal') &&
+    app.includes('onSignInForAnalysis={() => onRetryPhotoAnalysis(photo)}') &&
+    app.includes('pieResultRequiresSupabaseSignIn(photo.photoIntelligence)') &&
     app.includes('Sign in to enable photo intelligence') &&
-    app.includes('Use the email and password for your cloud sync account') &&
-    app.includes('Do not use Apple Developer, Expo, or TestFlight credentials') &&
-    app.includes('onSignInRequired') &&
-    app.includes('pieResultRequiresSupabaseSignIn'),
+    app.includes('<SignInModal') &&
+    app.includes('visible={Boolean(photoAuthRequest)}') &&
+    app.includes('void submitPhotoIntelligenceSignIn();') &&
+    admin.includes('export function SignInModal') &&
+    admin.includes('Use a Supabase Auth email and password to enable cloud sync and photo intelligence.'),
   'sign-in-required PIE state includes a sign-in action, not only Retry',
 );
 
@@ -73,8 +75,9 @@ assert(
   supabase.includes('export async function signUp') &&
     supabase.includes('client.auth.signUp') &&
     app.includes('EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP') &&
-    app.includes('developmentSignupEnabled') &&
-    app.includes('Create or sign in development account') &&
+    app.includes('developmentSignupEnabled={ENABLE_DEV_AUTH_SIGNUP}') &&
+    admin.includes('developmentSignupEnabled') &&
+    admin.includes('Create or sign in development account') &&
     envExample.includes('EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP=false') &&
     !app.includes('SUPABASE_SERVICE_ROLE_KEY') &&
     !supabase.includes('SUPABASE_SERVICE_ROLE_KEY'),
@@ -152,4 +155,12 @@ assert(
   app.includes("if (reason === 'expired_session') return PIE_STATUS_COPY.sessionExpired;") &&
     app.includes("tokenLookup?.missingReason === 'expired_session'"),
   'expired sessions show Session expired and route to sign-in before retry',
+);
+
+assert(
+  admin.includes('const SETTINGS_STATUS_TIMEOUT_MS = 8_000;') &&
+    admin.includes('withSyncTimeout(') &&
+    admin.includes('SETTINGS_STATUS_TIMEOUT_MS') &&
+    admin.includes('void refreshAdminStatus().catch(() => undefined);'),
+  'Settings bounds connection and sync status probes without blocking successful sign-in',
 );

@@ -4,6 +4,9 @@ module.exports = {
   modulePathIgnorePatterns: [
     '<rootDir>/build/',
   ],
+  moduleNameMapper: {
+    '^@expo/vector-icons/Ionicons$': '<rootDir>/tests/mocks/ionicons.ts',
+  },
   collectCoverageFrom: [
     'services/**/*.{ts,tsx}',
     'components/**/*.{ts,tsx}',

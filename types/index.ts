@@ -35,6 +35,9 @@ export type UpdatePhoto = {
   cloudRecoveredAt?: string | null;
   cloudRecoveryStatus?: 'cached' | 'signed_url' | 'unavailable' | null;
   cloudSignedUrlExpiresAt?: string | null;
+  /** Short-lived transformed image used only for list/grid presentation. */
+  cloudPreviewUri?: string | null;
+  cloudPreviewSignedUrlExpiresAt?: string | null;
   continuityAnchor?: PhotoContinuityAnchor | null;
   selectedAreaId?: string | null;
   selectedAreaName?: string | null;

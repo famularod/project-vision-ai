@@ -36,8 +36,8 @@ assert(bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('label="Reports"')
 assert(app.includes('accessibilityLabel="Open Settings"'), 'Overview should expose Settings from a gear button');
 
 assert(home.includes('function HomeScreen'), 'Overview must render from the live HomeScreen implementation');
-assert(home.includes('OverviewHeroCard'), 'Overview should lead with the live project portfolio summary');
-assert(home.includes('OverviewBentoCard'), 'Overview should expose bounded project status cards');
+assert(home.includes('styles.overviewHealthCard'), 'Overview should lead with the live project portfolio summary');
+assert(home.includes('styles.overviewPriorityCard'), 'Overview should expose a bounded current-focus card');
 assert(home.includes('accessibilityLabel="Open Settings"'), 'Settings should remain reachable from Overview');
 assert(app.includes('ProjectTaskControlPanel'), 'Parent projects should open a task-first project control view');
 assert(app.includes('onNewFieldUpdateForTask'), 'Each schedule task should support a task-linked field update');

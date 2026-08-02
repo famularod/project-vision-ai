@@ -31,6 +31,22 @@ const COVER_PHOTO_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${COVER_PHOTO_FOLDER}/`
   : null;
 
+function coverPhotoCacheRevision(
+  coverPhoto: Pick<ProjectCoverPhoto, 'remotePath' | 'updatedAt'>,
+): string {
+  const revisionSource = `${coverPhoto.remotePath || 'local'}-${coverPhoto.updatedAt || 'unknown'}`;
+  return revisionSource.replace(/[^a-zA-Z0-9]/g, '').slice(-48) || 'unknown';
+}
+
+function coverPhotoCacheUri(
+  projectId: string,
+  coverPhoto: Pick<ProjectCoverPhoto, 'remotePath' | 'updatedAt'>,
+  extension: string,
+): string | null {
+  if (!COVER_PHOTO_DIR) return null;
+  return `${COVER_PHOTO_DIR}${projectId}-${coverPhotoCacheRevision(coverPhoto)}.${extension}`;
+}
+
 function optionalText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -107,10 +123,15 @@ export function normalizeProjectRecords(values: unknown): ProjectRecord[] {
     const existingIndex = records.findIndex(item => sameProjectIdentity(item, next));
     if (existingIndex < 0) records.push(next);
     else if (next.coverPhoto) {
-      records[existingIndex] = {
-        ...next,
-        id: records[existingIndex].id || next.id || null,
-      };
+      const previous = records[existingIndex];
+      const previousUpdatedAt = previous.coverPhotoUpdatedAt || previous.coverPhoto?.updatedAt || '';
+      const incomingUpdatedAt = next.coverPhotoUpdatedAt || next.coverPhoto.updatedAt || '';
+      if (!previous.coverPhoto || incomingUpdatedAt >= previousUpdatedAt) {
+        records[existingIndex] = {
+          ...next,
+          id: previous.id || next.id || null,
+        };
+      }
     } else if (!records[existingIndex].id && next.id) {
       records[existingIndex] = { ...records[existingIndex], id: next.id };
     }
@@ -168,7 +189,11 @@ export function mergeProjectRecords(
         coverPhoto: incomingCover
           ? {
               ...incomingCover,
-              localUri: incomingCover.localUri || localCover?.localUri || null,
+              localUri:
+                incomingCover.remotePath === localCover?.remotePath &&
+                incomingCover.updatedAt === localCover?.updatedAt
+                  ? incomingCover.localUri || localCover.localUri || null
+                  : incomingCover.localUri || null,
             }
           : null,
       };
@@ -254,9 +279,10 @@ export async function cacheSelectedProjectCoverPhoto(
   await FileSystem.makeDirectoryAsync(COVER_PHOTO_DIR, { intermediates: true });
   const extension = mimeType.includes('png') ? 'png' : 'jpg';
   const updatedAt = new Date().toISOString();
-  const localUri = `${COVER_PHOTO_DIR}${projectId}.${extension}`;
-  await FileSystem.copyAsync({ from: sourceUri, to: localUri });
   const remotePath = `project-covers/${projectId}/cover.${extension}`;
+  const localUri = coverPhotoCacheUri(projectId, { remotePath, updatedAt }, extension);
+  if (!localUri) throw new Error('Local cover photo storage is unavailable.');
+  await FileSystem.copyAsync({ from: sourceUri, to: localUri });
   return {
     localUri,
     remotePath,
@@ -269,17 +295,25 @@ export async function hydrateProjectCoverPhotoCache(
   projectId: string,
   coverPhoto: ProjectCoverPhoto,
 ): Promise<ProjectCoverPhoto> {
-  if (coverPhoto.localUri) {
+  if (!COVER_PHOTO_DIR || !coverPhoto.remotePath) return coverPhoto;
+  const extension = coverPhoto.mimeType?.includes('png') ? 'png' : 'jpg';
+  const localUri = coverPhotoCacheUri(projectId, coverPhoto, extension);
+  if (!localUri) return coverPhoto;
+  if (coverPhoto.localUri === localUri) {
     const info = await FileSystem.getInfoAsync(coverPhoto.localUri).catch(() => null);
     if (info?.exists) return coverPhoto;
   }
-  if (!COVER_PHOTO_DIR || !coverPhoto.remotePath) return coverPhoto;
   const signedUrl = await createPhotoSignedUrl(coverPhoto.remotePath, 300);
   if (!signedUrl.ok || !signedUrl.data) return coverPhoto;
   await FileSystem.makeDirectoryAsync(COVER_PHOTO_DIR, { intermediates: true });
-  const extension = coverPhoto.mimeType?.includes('png') ? 'png' : 'jpg';
-  const localUri = `${COVER_PHOTO_DIR}${projectId}.${extension}`;
   await FileSystem.downloadAsync(signedUrl.data, localUri);
+  if (
+    coverPhoto.localUri &&
+    coverPhoto.localUri !== localUri &&
+    coverPhoto.localUri.startsWith(COVER_PHOTO_DIR)
+  ) {
+    await FileSystem.deleteAsync(coverPhoto.localUri, { idempotent: true }).catch(() => undefined);
+  }
   return { ...coverPhoto, localUri };
 }
 

@@ -1,6 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-export const DAVE_OPERATIONAL_POLL_INTERVAL_MS = 4_000;
+// Realtime and foreground activation keep active work current. This is only a
+// safety net for a missed event, so keep full-collection reads infrequent.
+export const DAVE_OPERATIONAL_POLL_INTERVAL_MS = 30 * 60_000;
+export const DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS = 30 * 60_000;
 export const DAVE_OPERATIONAL_REQUEST_TIMEOUT_MS = 3_500;
 export const DAVE_OPERATIONAL_REALTIME_RETRY_DELAYS_MS = Object.freeze([
   1_000,
@@ -36,12 +39,20 @@ export type DAVEOperationalRealtimeStatus =
   | 'error'
   | 'closed';
 
+export type DAVEOperationalRealtimePayload = Readonly<{
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE' | 'UNKNOWN';
+  newRow: Readonly<Record<string, unknown>> | null;
+  oldRow: Readonly<Record<string, unknown>> | null;
+  raw: unknown;
+}>;
+
 export type DAVEOperationalCollectionName =
   | 'projects'
   | 'project_updates'
   | 'project_areas'
   | 'schedule_items'
-  | 'reference_documents';
+  | 'reference_documents'
+  | 'sync_tombstones';
 
 export type DAVEOperationalCollectionRefresh = Readonly<{
   name: DAVEOperationalCollectionName;
@@ -86,6 +97,41 @@ export function daveOperationalCollectionForRealtimeEntity(
     case 'sync_tombstone':
       return null;
   }
+}
+
+export function daveOperationalCollectionsForRealtimeEvent(
+  entity: DAVEOperationalRealtimeEntity,
+  payload?: unknown,
+): readonly DAVEOperationalCollectionName[] | undefined {
+  const directCollection = daveOperationalCollectionForRealtimeEntity(entity);
+  if (directCollection) return [directCollection];
+
+  const tombstoneCollection = collectionForTombstonePayload(payload);
+  return tombstoneCollection
+    ? ['sync_tombstones', tombstoneCollection]
+    : undefined;
+}
+
+export function normalizeDAVEOperationalRealtimePayload(
+  payload: unknown,
+): DAVEOperationalRealtimePayload {
+  const record = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : {};
+  const rawEventType = typeof record.eventType === 'string'
+    ? record.eventType.toUpperCase()
+    : 'UNKNOWN';
+  const eventType = rawEventType === 'INSERT' ||
+    rawEventType === 'UPDATE' ||
+    rawEventType === 'DELETE'
+    ? rawEventType
+    : 'UNKNOWN';
+  return Object.freeze({
+    eventType,
+    newRow: realtimeRow(record.new),
+    oldRow: realtimeRow(record.old),
+    raw: payload,
+  });
 }
 
 /**
@@ -256,7 +302,11 @@ export function attachDAVEOperationalRealtime({
 }: {
   client: Pick<SupabaseClient, 'channel' | 'removeChannel'>;
   ownerId: string;
-  onChange: (entity: DAVEOperationalRealtimeEntity) => void;
+  onChange: (
+    entity: DAVEOperationalRealtimeEntity,
+    collections?: readonly DAVEOperationalCollectionName[],
+    payload?: DAVEOperationalRealtimePayload,
+  ) => void;
   onStatus?: (status: DAVEOperationalRealtimeStatus) => void;
 }): () => void {
   const ownerFilter = `owner_id=eq.${ownerId}`;
@@ -301,32 +351,56 @@ export function attachDAVEOperationalRealtime({
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'projects', filter: ownerFilter },
-        () => onChange('project'),
+        payload => onChange(
+          'project',
+          daveOperationalCollectionsForRealtimeEvent('project', payload),
+          normalizeDAVEOperationalRealtimePayload(payload),
+        ),
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'project_updates', filter: ownerFilter },
-        () => onChange('project_update'),
+        payload => onChange(
+          'project_update',
+          daveOperationalCollectionsForRealtimeEvent('project_update', payload),
+          normalizeDAVEOperationalRealtimePayload(payload),
+        ),
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'project_areas', filter: ownerFilter },
-        () => onChange('project_area'),
+        payload => onChange(
+          'project_area',
+          daveOperationalCollectionsForRealtimeEvent('project_area', payload),
+          normalizeDAVEOperationalRealtimePayload(payload),
+        ),
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'schedule_items', filter: ownerFilter },
-        () => onChange('schedule_item'),
+        payload => onChange(
+          'schedule_item',
+          daveOperationalCollectionsForRealtimeEvent('schedule_item', payload),
+          normalizeDAVEOperationalRealtimePayload(payload),
+        ),
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'reference_documents', filter: ownerFilter },
-        () => onChange('reference_document'),
+        payload => onChange(
+          'reference_document',
+          daveOperationalCollectionsForRealtimeEvent('reference_document', payload),
+          normalizeDAVEOperationalRealtimePayload(payload),
+        ),
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'dave_sync_tombstones', filter: ownerFilter },
-        () => onChange('sync_tombstone'),
+        payload => onChange(
+          'sync_tombstone',
+          daveOperationalCollectionsForRealtimeEvent('sync_tombstone', payload),
+          normalizeDAVEOperationalRealtimePayload(payload),
+        ),
       )
       .subscribe(status => {
         if (stopped || channel !== nextChannel) return;
@@ -354,4 +428,36 @@ export function attachDAVEOperationalRealtime({
     channel = null;
     if (activeChannel) void client.removeChannel(activeChannel);
   };
+}
+
+function realtimeRow(value: unknown): Readonly<Record<string, unknown>> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.freeze({ ...(value as Record<string, unknown>) })
+    : null;
+}
+
+function collectionForTombstonePayload(
+  payload: unknown,
+): DAVEOperationalCollectionName | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const event = payload as Record<string, unknown>;
+  const candidateRows = [event.new, event.old];
+  for (const candidate of candidateRows) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const entityType = (candidate as Record<string, unknown>).entity_type;
+    if (typeof entityType !== 'string') continue;
+    switch (entityType) {
+      case 'project':
+        return 'projects';
+      case 'project_update':
+        return 'project_updates';
+      case 'project_area':
+        return 'project_areas';
+      case 'schedule_item':
+        return 'schedule_items';
+      case 'reference_document':
+        return 'reference_documents';
+    }
+  }
+  return null;
 }

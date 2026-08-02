@@ -9,6 +9,7 @@ import {
   usePIELiveAuthority,
 } from '../../providers/PIELiveAuthorityProvider';
 import { buildLivePIECoreIntelligence } from '../../services/PIECoreIntelligence';
+import { buildRuntime } from '../../services/PIERuntime';
 import { createDAVEProjectTruthRepository } from '../../services/DAVEProjectTruthRepository';
 import {
   LIVE_AUTHORITY_MAX_AUTO_RETRY_ATTEMPTS,
@@ -51,6 +52,7 @@ jest.mock('../../services/PIEPhotoProgressIntelligenceStorage', () => ({
 const buildCoreMock = buildLivePIECoreIntelligence as jest.MockedFunction<
   typeof buildLivePIECoreIntelligence
 >;
+const buildRuntimeMock = buildRuntime as jest.MockedFunction<typeof buildRuntime>;
 const createProjectTruthRepositoryMock = createDAVEProjectTruthRepository as jest.MockedFunction<
   typeof createDAVEProjectTruthRepository
 >;
@@ -144,6 +146,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     });
     currentAuthority = null;
     buildCoreMock.mockReset();
+    buildRuntimeMock.mockClear();
     saveProjectTruthMock.mockReset();
     saveProjectTruthMock.mockResolvedValue({
       snapshot: { revision: 1 },
@@ -358,6 +361,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     expect(currentAuthority?.state).toBe('unavailable');
     expect(currentAuthority?.retryPending).toBe(true);
     expect(buildCoreMock).toHaveBeenCalledTimes(1);
+    const runtimeBuildCountAfterFailure = buildRuntimeMock.mock.calls.length;
 
     await act(async () => {
       jest.advanceTimersByTime(liveAuthorityRetryDelayMs(1));
@@ -366,6 +370,7 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     });
 
     expect(buildCoreMock).toHaveBeenCalledTimes(2);
+    expect(buildRuntimeMock).toHaveBeenCalledTimes(runtimeBuildCountAfterFailure);
     expect(currentAuthority?.state).toBe('ready');
     expect(currentAuthority?.retryPending).toBe(false);
     expect(currentAuthority?.error).toBeNull();

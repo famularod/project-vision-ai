@@ -4,8 +4,11 @@ import {
   createDAVEOperationalRefreshCommitGuard,
   createDAVEOperationalRefreshController,
   daveOperationalCollectionForRealtimeEntity,
+  daveOperationalCollectionsForRealtimeEvent,
+  normalizeDAVEOperationalRealtimePayload,
   DAVE_OPERATIONAL_POLL_INTERVAL_MS,
   DAVE_OPERATIONAL_REALTIME_RETRY_DELAYS_MS,
+  DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS,
   runDAVEOperationalCollectionRefreshes,
   type DAVEOperationalRealtimeEntity,
   type DAVEOperationalRefreshState,
@@ -16,7 +19,7 @@ describe('DAVE operational cross-device refresh', () => {
     jest.useRealTimers();
   });
 
-  it('refreshes an already-open device immediately and retains the fast polling fallback', async () => {
+  it('refreshes an already-open device immediately and retains a bounded polling fallback', async () => {
     jest.useFakeTimers();
     const refresh = jest.fn().mockResolvedValue(undefined);
     const controller = createDAVEOperationalRefreshController({ refresh });
@@ -32,6 +35,31 @@ describe('DAVE operational cross-device refresh', () => {
     await flushPromises();
     expect(refresh).toHaveBeenCalledWith('interval');
 
+    controller.stop();
+  });
+
+  it('keeps mobile and desktop full-read safety polls at a thirty-minute request budget', () => {
+    expect(DAVE_OPERATIONAL_POLL_INTERVAL_MS).toBe(30 * 60_000);
+    expect(DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS).toBe(30 * 60_000);
+  });
+
+  it('does not poll while the refresh owner is backgrounded', async () => {
+    jest.useFakeTimers();
+    let active = false;
+    const refresh = jest.fn().mockResolvedValue(undefined);
+    const controller = createDAVEOperationalRefreshController({
+      refresh,
+      canRefresh: () => active,
+    });
+
+    controller.start();
+    jest.advanceTimersByTime(DAVE_OPERATIONAL_POLL_INTERVAL_MS * 2);
+    await flushPromises();
+    expect(refresh).not.toHaveBeenCalled();
+
+    active = true;
+    await controller.request('foreground');
+    expect(refresh).toHaveBeenCalledWith('foreground');
     controller.stop();
   });
 
@@ -101,6 +129,30 @@ describe('DAVE operational cross-device refresh', () => {
 
   it('uses a full refresh for tombstone events because the deleted collection is not known', () => {
     expect(daveOperationalCollectionForRealtimeEntity('sync_tombstone')).toBeNull();
+  });
+
+  it('uses tombstone payload identity to refresh only the deleted collection and tombstones', () => {
+    expect(daveOperationalCollectionsForRealtimeEvent('sync_tombstone', {
+      new: { entity_type: 'schedule_item' },
+    })).toEqual(['sync_tombstones', 'schedule_items']);
+    expect(daveOperationalCollectionsForRealtimeEvent('sync_tombstone', {
+      old: { entity_type: 'project_update' },
+    })).toEqual(['sync_tombstones', 'project_updates']);
+    expect(daveOperationalCollectionsForRealtimeEvent('sync_tombstone', {}))
+      .toBeUndefined();
+  });
+
+  it('normalizes realtime row payloads without retaining mutable Supabase objects', () => {
+    const source = { eventType: 'UPDATE', new: { id: 'task-1' }, old: { id: 'task-1' } };
+    const payload = normalizeDAVEOperationalRealtimePayload(source);
+    source.new.id = 'changed-after-delivery';
+
+    expect(payload).toMatchObject({
+      eventType: 'UPDATE',
+      newRow: { id: 'task-1' },
+      oldRow: { id: 'task-1' },
+    });
+    expect(Object.isFrozen(payload.newRow)).toBe(true);
   });
 
   it('reports a retrying state and automatically recovers on the next request', async () => {
@@ -211,14 +263,14 @@ describe('DAVE operational cross-device refresh', () => {
   });
 
   it('subscribes to owner-scoped project, update, task, area, document, and deletion changes', () => {
-    const handlers = new Map<string, () => void>();
+    const handlers = new Map<string, (payload?: unknown) => void>();
     let statusHandler: (status: string) => void = () => undefined;
     const channel: { on: jest.Mock; subscribe: jest.Mock } = {
       on: jest.fn(),
       subscribe: jest.fn(),
     };
     channel.on.mockImplementation(
-      (_kind: string, config: { table: string; filter: string }, handler: () => void) => {
+      (_kind: string, config: { table: string; filter: string }, handler: (payload?: unknown) => void) => {
         handlers.set(config.table, handler);
         expect(config.filter).toBe('owner_id=eq.owner-1');
         return channel;
@@ -234,19 +286,23 @@ describe('DAVE operational cross-device refresh', () => {
       removeChannel,
     } as unknown as Pick<SupabaseClient, 'channel' | 'removeChannel'>;
     const entities: DAVEOperationalRealtimeEntity[] = [];
+    const deliveredRows: Array<unknown> = [];
     const statuses: string[] = [];
 
     const unsubscribe = attachDAVEOperationalRealtime({
       client,
       ownerId: 'owner-1',
-      onChange: entity => entities.push(entity),
+      onChange: (entity, _collections, payload) => {
+        entities.push(entity);
+        deliveredRows.push(payload?.newRow || null);
+      },
       onStatus: status => statuses.push(status),
     });
 
     statusHandler('SUBSCRIBED');
     handlers.get('projects')?.();
     handlers.get('project_updates')?.();
-    handlers.get('schedule_items')?.();
+    handlers.get('schedule_items')?.({ eventType: 'UPDATE', new: { id: 'task-1' } });
     handlers.get('project_areas')?.();
     handlers.get('reference_documents')?.();
     handlers.get('dave_sync_tombstones')?.();
@@ -260,6 +316,7 @@ describe('DAVE operational cross-device refresh', () => {
       'reference_document',
       'sync_tombstone',
     ]);
+    expect(deliveredRows[2]).toEqual({ id: 'task-1' });
     expect(channel.on).toHaveBeenCalledTimes(6);
 
     unsubscribe();

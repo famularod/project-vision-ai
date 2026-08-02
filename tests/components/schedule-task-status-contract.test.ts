@@ -24,6 +24,18 @@ describe('schedule task status copy contract', () => {
     );
   });
 
+  it('keeps the compact start and due dates on one readable card line', () => {
+    expect(scheduleItemRow).toContain('const compactScheduleDateLabel = [');
+    expect(scheduleItemRow).toContain(
+      "`${itemComplete ? 'Finished' : 'Due'} ${compactFinishDateLabel}`",
+    );
+    expect(scheduleItemRow).toContain('numberOfLines={1}');
+    expect(scheduleItemRow).toContain('adjustsFontSizeToFit');
+    expect(scheduleItemRow).not.toContain(
+      'Start {startDateLabel} • Finish / Due {finishDateLabel}',
+    );
+  });
+
   it('keeps progress changes staged until the explicit save action', () => {
     expect(scheduleItemRow).toContain(
       'onCommit={percentComplete => stageProgressEdit({ percentComplete })}',

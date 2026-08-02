@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
@@ -22,6 +22,11 @@ import {
 import { transcribeDAVECaptureMemoryAudio } from '../services/DAVEVoiceTranscriptionService';
 import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnderstanding';
 import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
+import {
+  DAVE_MIN_RECORDING_DURATION_MS,
+  daveRecordingIsLongEnough,
+  preserveDAVERecordingDuration,
+} from '../services/DAVEVoiceRecording';
 import { colors, spacing } from '../theme';
 import {
   DAVE_VOICE_CAPTURE_TABLET_MAX_WIDTH,
@@ -37,6 +42,7 @@ const MAX_RECORDING_SECONDS = 180;
 
 export function DAVEVoiceCaptureSheet({
   visible,
+  projectId,
   projectName,
   candidateProjects = [],
   candidateTasks = [],
@@ -47,14 +53,18 @@ export function DAVEVoiceCaptureSheet({
   prompt = 'Record a project memory',
   guidance = 'Commitment, decision, issue, request, schedule change, or follow-up.',
   continueLabel = 'Review Memory',
+  operationLabel,
+  operationGuidance,
   showWalkContext = true,
   onMemoryReady,
   onProjectChange,
   onTaskChange,
+  onOperation,
   onTypeInstead,
   onCancel,
 }: {
   visible: boolean;
+  projectId: string | null;
   projectName: string;
   candidateProjects?: readonly string[];
   candidateTasks?: readonly DAVEVoiceTaskOption[];
@@ -65,10 +75,13 @@ export function DAVEVoiceCaptureSheet({
   prompt?: string;
   guidance?: string;
   continueLabel?: string;
+  operationLabel?: string;
+  operationGuidance?: string;
   showWalkContext?: boolean;
   onMemoryReady: (result: DAVEVoiceUnderstandingResponse) => void;
   onProjectChange?: (projectName: string) => void;
   onTaskChange?: (taskId: string | null) => void;
+  onOperation?: () => void;
   onTypeInstead: () => void;
   onCancel: () => void;
 }) {
@@ -84,6 +97,7 @@ export function DAVEVoiceCaptureSheet({
   const [taskSearch, setTaskSearch] = useState('');
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const recordingActiveRef = useRef(false);
+  const recordingDurationRef = useRef(0);
   const transcriptionOperationRef = useRef(0);
 
   useEffect(() => {
@@ -104,13 +118,21 @@ export function DAVEVoiceCaptureSheet({
   });
 
   useEffect(() => {
-    if (!recordingActiveRef.current || recorderState.isRecording || !recorderState.url) return;
+    if (recorderState.isRecording) {
+      recordingDurationRef.current = preserveDAVERecordingDuration(
+        recordingDurationRef.current,
+        recorderState.durationMillis,
+        recorder.currentTime * 1_000,
+      );
+      return;
+    }
+    if (!recordingActiveRef.current || !recorderState.url) return;
     recordingActiveRef.current = false;
     setRecordingUri(recorderState.url);
-    setRecordingDuration(recorderState.durationMillis);
+    setRecordingDuration(recordingDurationRef.current);
     void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true })
       .catch(() => setError('Recording ended, but audio settings could not be reset. Close and reopen Talk.'));
-  }, [recorderState.durationMillis, recorderState.isRecording, recorderState.url]);
+  }, [recorder, recorderState.durationMillis, recorderState.isRecording, recorderState.url]);
 
   async function startRecording() {
     if (isTranscribing || recorderState.isRecording) return;
@@ -118,6 +140,7 @@ export function DAVEVoiceCaptureSheet({
     await removeRecording(recordingUri);
     setRecordingUri(null);
     setRecordingDuration(0);
+    recordingDurationRef.current = 0;
 
     try {
       const permission = await requestRecordingPermissionsAsync();
@@ -137,14 +160,20 @@ export function DAVEVoiceCaptureSheet({
 
   async function stopRecording() {
     if (!recorderState.isRecording) return;
+    const stoppedDuration = preserveDAVERecordingDuration(
+      recordingDurationRef.current,
+      recorderState.durationMillis,
+      recorder.currentTime * 1_000,
+    );
+    recordingActiveRef.current = false;
     try {
       await recorder.stop();
       const status = recorder.getStatus();
       const uri = recorder.uri || status.url;
       if (!uri) throw new Error('Recording file missing.');
-      recordingActiveRef.current = false;
+      recordingDurationRef.current = stoppedDuration;
       setRecordingUri(uri);
-      setRecordingDuration(status.durationMillis);
+      setRecordingDuration(stoppedDuration);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
     } catch {
       recordingActiveRef.current = false;
@@ -154,12 +183,17 @@ export function DAVEVoiceCaptureSheet({
 
   async function transcribe() {
     if (!recordingUri || isTranscribing) return;
+    if (!daveRecordingIsLongEnough(recordingDuration)) {
+      setError(`The recording is too short. Speak for at least ${DAVE_MIN_RECORDING_DURATION_MS / 1_000} second, then try again.`);
+      return;
+    }
     const operation = ++transcriptionOperationRef.current;
     setError(null);
     setIsTranscribing(true);
     try {
       const result = await transcribeDAVECaptureMemoryAudio({
         uri: recordingUri,
+        projectId,
         projectName,
         candidateLocations,
       });
@@ -182,6 +216,7 @@ export function DAVEVoiceCaptureSheet({
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(recordingUri || recorder.uri);
     setRecordingUri(null);
+    recordingDurationRef.current = 0;
     onCancel();
   }
 
@@ -192,7 +227,20 @@ export function DAVEVoiceCaptureSheet({
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     await removeRecording(recordingUri || recorder.uri);
     setRecordingUri(null);
+    recordingDurationRef.current = 0;
     onTypeInstead();
+  }
+
+  async function openOperation() {
+    if (!onOperation) return;
+    transcriptionOperationRef.current += 1;
+    if (recorderState.isRecording) await recorder.stop().catch(() => undefined);
+    recordingActiveRef.current = false;
+    await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
+    await removeRecording(recordingUri || recorder.uri);
+    setRecordingUri(null);
+    recordingDurationRef.current = 0;
+    onOperation();
   }
 
   const elapsed = recorderState.isRecording ? recorderState.durationMillis : recordingDuration;
@@ -240,6 +288,25 @@ export function DAVEVoiceCaptureSheet({
                 ))}
               </View>
             </View>
+          ) : null}
+
+          {onOperation && operationLabel ? (
+            <TouchableOpacity
+              style={[styles.operationCard, !projectName && styles.buttonDisabled]}
+              onPress={() => { void openOperation(); }}
+              accessibilityRole="button"
+              accessibilityLabel={operationLabel}
+              disabled={!projectName}
+            >
+              <View style={styles.operationIcon}>
+                <Ionicons name="list-outline" size={21} color={colors.primary} />
+              </View>
+              <View style={styles.main}>
+                <Text style={styles.operationLabel}>{operationLabel}</Text>
+                {operationGuidance ? <Text style={styles.operationGuidance}>{operationGuidance}</Text> : null}
+              </View>
+              <Ionicons name="chevron-forward-outline" size={20} color={colors.primary} />
+            </TouchableOpacity>
           ) : null}
 
           {projectName && candidateTasks.length > 0 ? (
@@ -452,6 +519,10 @@ const styles = StyleSheet.create({
   projectChoices: { gap: spacing.sm },
   projectChoiceButton: { minHeight: 48, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
   projectChoiceText: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: '700', flex: 1 },
+  operationCard: { alignItems: 'center', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md, minHeight: 72, padding: spacing.md },
+  operationIcon: { alignItems: 'center', backgroundColor: colors.surface, borderRadius: 20, height: 40, justifyContent: 'center', width: 40 },
+  operationLabel: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  operationGuidance: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
   taskContextCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.lg, overflow: 'hidden' },
   taskContextHeader: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
   taskContextLabel: { color: colors.mutedText, fontSize: 12, lineHeight: 16, fontWeight: '800', textTransform: 'uppercase' },

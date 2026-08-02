@@ -1,5 +1,7 @@
 import {
   createPendingChangesRetryController,
+  PENDING_CHANGES_IDLE_CHECK_INTERVAL_MS,
+  PENDING_CHANGES_RETRY_DELAYS_MS,
   pendingChangesUploadNeedsRetry,
   type PendingChangesUploadResult,
   type PendingChangesRetryState,
@@ -57,6 +59,13 @@ async function flushAsyncWork() {
 }
 
 describe('pending changes retry controller', () => {
+  it('backs off to fifteen minutes and uses a five-minute idle safety check', () => {
+    expect(PENDING_CHANGES_RETRY_DELAYS_MS).toEqual([
+      5_000, 15_000, 30_000, 60_000, 5 * 60_000, 15 * 60_000,
+    ]);
+    expect(PENDING_CHANGES_IDLE_CHECK_INTERVAL_MS).toBe(5 * 60_000);
+  });
+
   it('retries a resolved upload result that reports queued errors', async () => {
     const scheduler = controlledScheduler();
     const states: PendingChangesRetryState[] = [];

@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactElement, type ReactNode } from 'react';
 import { Pressable, ScrollView, SectionList, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { colors, radius, spacing } from '../theme';
 import type { ScheduleItem } from '../types';

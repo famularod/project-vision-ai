@@ -1,8 +1,10 @@
 import {
   markMissingPhotosUnavailable,
   projectUpdatePhotoStoragePath,
+  projectPhotoPreviewTransform,
   projectUpdateWithCloudPhotoPaths,
   recoveredSignedPhotoUriIsFresh,
+  cloudPhotoPreviewIsFresh,
   sanitizeUserFacingSyncMessage,
 } from '../../services/SyncService';
 import type { ProjectUpdate } from '../../types';
@@ -79,6 +81,19 @@ describe('SyncService user-safe behavior', () => {
       cloudRecoveryStatus: 'cached',
       cloudSignedUrlExpiresAt: null,
     })).toBe(true);
+  });
+
+  it('uses a bounded preview transform while keeping HEIC originals untransformed', () => {
+    expect(projectPhotoPreviewTransform({ mimeType: 'image/jpeg' })).toEqual({
+      width: 960,
+      quality: 72,
+      resize: 'contain',
+    });
+    expect(projectPhotoPreviewTransform({ fileName: 'evidence.heic' })).toBeUndefined();
+    expect(cloudPhotoPreviewIsFresh({
+      cloudPreviewUri: 'https://signed.example/preview.jpg',
+      cloudPreviewSignedUrlExpiresAt: '2026-08-01T10:10:00.000Z',
+    }, new Date('2026-08-01T10:00:00.000Z').getTime())).toBe(true);
   });
 
 });

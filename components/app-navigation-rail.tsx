@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -23,6 +23,7 @@ export function AppNavigationRail({
   selectedUpdateProject = null,
   onUpdateProjectChange,
   documentProjects = [],
+  documentCount,
   selectedDocumentProject = null,
   onDocumentProjectChange,
 }: {
@@ -37,6 +38,7 @@ export function AppNavigationRail({
   selectedUpdateProject?: string | null;
   onUpdateProjectChange?: (projectName: string | null) => void;
   documentProjects?: string[];
+  documentCount?: number;
   selectedDocumentProject?: string | null;
   onDocumentProjectChange?: (projectName: string | null) => void;
 }) {
@@ -73,6 +75,7 @@ export function AppNavigationRail({
         <RailButton
           label="Documents"
           icon="folder-open-outline"
+          badgeCount={documentCount}
           active={current === 'ProjectDocuments'}
           expanded={expanded}
           onPress={() => onChange('ProjectDocuments')}
@@ -94,7 +97,7 @@ export function AppNavigationRail({
           >
             <Ionicons
               name="mic"
-              size={expanded ? 27 : 25}
+              size={expanded ? 30 : 27}
               color={colors.surface}
             />
           </View>
@@ -148,12 +151,14 @@ function RailButton({
   expanded,
   icon,
   label,
+  badgeCount,
   onPress,
 }: {
   active: boolean;
   expanded: boolean;
   icon: IconName;
   label: string;
+  badgeCount?: number;
   onPress: () => void;
 }) {
   return (
@@ -167,7 +172,9 @@ function RailButton({
       onPress={onPress}
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
-      accessibilityLabel={label}
+      accessibilityLabel={badgeCount === undefined
+        ? label
+        : `${label}, ${badgeCount} document${badgeCount === 1 ? '' : 's'}`}
     >
       <View
         testID={`app-nav-${label.toLowerCase()}-icon-slot`}
@@ -178,9 +185,16 @@ function RailButton({
       >
         <Ionicons
           name={icon}
-          size={expanded ? 29 : 27}
+          size={expanded ? 32 : 29}
           color={active ? colors.primary : colors.mutedText}
         />
+        {badgeCount !== undefined ? (
+          <View style={styles.railIconCountBadge}>
+            <Text style={styles.railIconCountText}>
+              {badgeCount > 99 ? '99+' : String(badgeCount)}
+            </Text>
+          </View>
+        ) : null}
       </View>
       <Text
         style={[
@@ -233,7 +247,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xs,
   },
   railButtonExpanded: {
-    minHeight: 76,
+    minHeight: 82,
     flexDirection: 'row',
     justifyContent: 'flex-start',
     gap: spacing.md,
@@ -247,20 +261,22 @@ const styles = StyleSheet.create({
     height: 40,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+    overflow: 'visible',
   },
   railIconSlotExpanded: {
-    width: 44,
-    height: 44,
+    width: 48,
+    height: 48,
   },
   railLabel: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: '800',
   },
   railLabelExpanded: {
-    fontSize: 16,
-    lineHeight: 21,
+    fontSize: 18,
+    lineHeight: 24,
     fontWeight: '900',
   },
   railLabelActive: {
@@ -278,19 +294,39 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   talkIconExpanded: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
   },
   talkText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: '900',
   },
   talkTextExpanded: {
-    fontSize: 16,
-    lineHeight: 21,
+    fontSize: 18,
+    lineHeight: 24,
+  },
+  railIconCountBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -6,
+    minWidth: 19,
+    height: 19,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
+    borderWidth: 2,
+    borderColor: colors.surface,
+    paddingHorizontal: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  railIconCountText: {
+    color: colors.surface,
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: '900',
   },
   buttonPressed: {
     opacity: 0.72,

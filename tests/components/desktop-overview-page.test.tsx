@@ -1,7 +1,6 @@
 import { render } from '@testing-library/react-native';
 
 import { DesktopOverviewPage } from '../../components/web-shell/desktop-overview-page';
-import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import type { CloudProjectUpdate } from '../../services/SupabaseService';
 import type { ProjectUpdate, ScheduleItem } from '../../types';
 
@@ -83,24 +82,10 @@ const updates: CloudProjectUpdate<ProjectUpdate>[] = [
   }),
 ];
 
-const documentRecord: DAVEWebReferenceDocument = {
-  id: 'document-1',
-  name: 'Current Schedule',
-  originalFileName: 'schedule.pdf',
-  uri: '',
-  category: 'Schedules',
-  notes: '',
-  isCurrent: true,
-  importedAt: '2026-07-21T12:00:00.000Z',
-  cloudUpdatedAt: '2026-07-21T12:00:00.000Z',
-  linkedScheduleItems: [],
-};
-
 describe('DesktopOverviewPage', () => {
   it('renders current portfolio facts, priority work, projects, and recent activity', () => {
     const screen = render(
       <DesktopOverviewPage
-        documents={[documentRecord]}
         projects={[
           { id: 'project-alpha', name: 'Project Alpha' },
           { id: 'project-beta', name: 'Project Beta' },
@@ -112,6 +97,8 @@ describe('DesktopOverviewPage', () => {
     );
 
     expect(screen.getByText('Project Health')).toBeTruthy();
+    expect(screen.getByText('Field Updates')).toBeTruthy();
+    expect(screen.queryByText('Documents')).toBeNull();
     expect(screen.getAllByText('3')).toHaveLength(2);
     expect(screen.getByText('Install panels')).toBeTruthy();
     expect(screen.getByText('Panel framing started.')).toBeTruthy();

@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
 import { useEffect, useRef, useState } from 'react';
 import type {
@@ -74,6 +74,8 @@ import {
 const ENABLE_DEV_AUTH_SIGNUP =
   __DEV__ && process.env.EXPO_PUBLIC_ENABLE_DEV_AUTH_SIGNUP === 'true';
 const SETTINGS_SYNC_TIMEOUT_MS = 30_000;
+const SETTINGS_STATUS_TIMEOUT_MS = 8_000;
+const SETTINGS_SYNC_TIMEOUT = Symbol('settings_sync_timeout');
 
 const APP_VERSION = Constants.expoConfig?.version || 'Unknown';
 const APP_BUILD_NUMBER = getInstalledBuildNumber();
@@ -106,7 +108,7 @@ async function withSyncTimeout<T>(
     return await Promise.race([
       work,
       new Promise<T>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('sync_timeout')), timeoutMs);
+        timeout = setTimeout(() => reject(SETTINGS_SYNC_TIMEOUT), timeoutMs);
       }),
     ]);
   } finally {
@@ -565,15 +567,18 @@ export function AdminScreen({
     setIsCheckingConnection(true);
 
     try {
-      const [, connection, test] = await Promise.all([
-        reconcileSyncConflicts(),
-        getSupabaseConnectionStatus(),
-        nextTest ? Promise.resolve(nextTest) : testSupabaseConnection(),
-      ]);
-      const [currentSyncStatus, currentConflicts] = await Promise.all([
-        getSyncStatus(),
-        getSyncConflicts(),
-      ]);
+      const [, connection, test] = await withSyncTimeout(
+        Promise.all([
+          reconcileSyncConflicts(),
+          getSupabaseConnectionStatus(),
+          nextTest ? Promise.resolve(nextTest) : testSupabaseConnection(),
+        ]),
+        SETTINGS_STATUS_TIMEOUT_MS,
+      );
+      const [currentSyncStatus, currentConflicts] = await withSyncTimeout(
+        Promise.all([getSyncStatus(), getSyncConflicts()]),
+        SETTINGS_STATUS_TIMEOUT_MS,
+      );
 
       if (!isCurrentRefresh()) return;
 
@@ -581,6 +586,13 @@ export function AdminScreen({
       setTestResult(test);
       setSyncStatus(currentSyncStatus);
       setSyncConflicts(currentConflicts);
+    } catch (error) {
+      if (!isCurrentRefresh()) return;
+      setAdminActionSummary(
+        error === SETTINGS_SYNC_TIMEOUT
+          ? 'The cloud status check is taking longer than expected. Saved device changes remain protected while Vitruvius retries.'
+          : 'Cloud status could not be refreshed right now.',
+      );
     } finally {
       if (isCurrentRefresh()) setIsCheckingConnection(false);
     }
@@ -591,7 +603,10 @@ export function AdminScreen({
     setAdminActionSummary('Cloud sync tools are available.');
 
     try {
-      const result = await testSupabaseConnection();
+      const result = await withSyncTimeout(
+        testSupabaseConnection(),
+        SETTINGS_STATUS_TIMEOUT_MS,
+      );
       await refreshAdminStatus(result);
 
       setAdminActionSummary(
@@ -625,7 +640,10 @@ export function AdminScreen({
       const queueResult = updatesToRetry.length === 0
         ? await withSyncTimeout(uploadPendingChanges())
         : null;
-      const nextSyncStatus = await getSyncStatus();
+      const nextSyncStatus = await withSyncTimeout(
+        getSyncStatus(),
+        SETTINGS_STATUS_TIMEOUT_MS,
+      );
       setSyncStatus(nextSyncStatus);
 
       const syncedUpdates = retryResults.filter(update => update.status === 'sent').length;
@@ -647,7 +665,12 @@ export function AdminScreen({
         : `${Math.max(unsyncedUpdates, remainingQueue)} ${Math.max(unsyncedUpdates, remainingQueue) === 1 ? 'item still needs' : 'items still need'} attention. It remains saved on this phone.`;
       setSyncAttemptMessage(message);
       setAdminActionSummary(message);
-      setSyncConflicts(await getSyncConflicts());
+      setSyncConflicts(
+        await withSyncTimeout(
+          getSyncConflicts(),
+          SETTINGS_STATUS_TIMEOUT_MS,
+        ),
+      );
     } catch (error) {
       const timedOut = String(error).includes('sync_timeout');
       const message = timedOut
@@ -867,7 +890,7 @@ export function AdminScreen({
       setSignInEmail('');
       setSignInPassword('');
       setSignInMessage(null);
-      await refreshAdminStatus();
+      void refreshAdminStatus().catch(() => undefined);
     } finally {
       setSignInSubmitting(false);
     }

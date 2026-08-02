@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { createElement, useMemo, useState } from 'react';
 import {
   ActivityIndicator,

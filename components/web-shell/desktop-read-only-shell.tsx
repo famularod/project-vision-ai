@@ -1,5 +1,5 @@
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { createElement, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -95,10 +95,6 @@ import {
   projectItemWorkflowIsClosed,
   projectItemWorkflowReadiness,
 } from '../../services/ProjectItemWorkflow';
-import {
-  buildReportWordBlob,
-  summarizeReportWordUnavailableMedia,
-} from '../../services/ReportWordDocument';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
 import {
@@ -306,7 +302,13 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
 
   return (
     <View style={[styles.root, usesSidebar && styles.rootWide]}>
-      {usesSidebar ? <DesktopSidebar pathname={pathname} selectedProject={selectedProject} /> : null}
+      {usesSidebar ? (
+        <DesktopSidebar
+          pathname={pathname}
+          selectedProject={selectedProject}
+          documentCount={snapshot.referenceDocuments.length}
+        />
+      ) : null}
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.content, compactContent && styles.contentCompact]}
@@ -436,7 +438,6 @@ function DesktopPageData({
         projects={projects}
         tasks={tasks}
         updates={updates}
-        documents={documents}
         selectedProject={selectedProject}
       />
     );
@@ -2378,6 +2379,34 @@ function uniqueOptions(values: readonly (string | null | undefined)[]) {
   return [...options.values()];
 }
 
+const WEB_LIST_PAGE_SIZE = 75;
+
+function useProgressiveListLimit(length: number, resetKey: string) {
+  const [limit, setLimit] = useState(WEB_LIST_PAGE_SIZE);
+  useEffect(() => setLimit(WEB_LIST_PAGE_SIZE), [resetKey]);
+  return {
+    limit,
+    showMore: length > limit
+      ? () => setLimit(current => Math.min(length, current + WEB_LIST_PAGE_SIZE))
+      : null,
+  };
+}
+
+function ProgressiveListFooter({ remaining, onShowMore }: {
+  remaining: number;
+  onShowMore: () => void;
+}) {
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+      onPress={onShowMore}
+      accessibilityRole="button"
+    >
+      <Text style={styles.secondaryButtonText}>Show {Math.min(remaining, WEB_LIST_PAGE_SIZE)} more</Text>
+    </Pressable>
+  );
+}
+
 function TaskList({
   tasks,
   selectedTaskId,
@@ -2391,10 +2420,14 @@ function TaskList({
   onEdit?: (task: ScheduleItem) => void;
   onDelete?: (task: ScheduleItem) => void;
 }) {
+  const progressive = useProgressiveListLimit(
+    tasks.length,
+    `${tasks.length}:${tasks[0]?.id || ''}:${tasks[tasks.length - 1]?.id || ''}`,
+  );
   if (tasks.length === 0) return <EmptyState text="No tasks match this view." />;
   return (
     <View style={styles.list}>
-      {tasks.map(task => (
+      {tasks.slice(0, progressive.limit).map(task => (
         <View
           key={task.id}
           style={[
@@ -2457,6 +2490,7 @@ function TaskList({
           ) : null}
         </View>
       ))}
+      {progressive.showMore ? <ProgressiveListFooter remaining={tasks.length - progressive.limit} onShowMore={progressive.showMore} /> : null}
     </View>
   );
 }
@@ -2731,10 +2765,14 @@ function EvidenceList({
   selectedUpdateId: string | null;
   onSelect: (update: CloudProjectUpdate<ProjectUpdate>) => void;
 }) {
+  const progressive = useProgressiveListLimit(
+    updates.length,
+    `${updates.length}:${updates[0]?.id || ''}:${updates[updates.length - 1]?.id || ''}`,
+  );
   if (updates.length === 0) return <EmptyState text="No field activity matches these filters." />;
   return (
     <View style={styles.evidenceList}>
-      {updates.map(update => {
+      {updates.slice(0, progressive.limit).map(update => {
         const selected = selectedUpdateId === update.id;
         const note = update.updateData.notes?.trim();
         return (
@@ -2777,6 +2815,7 @@ function EvidenceList({
           </Pressable>
         );
       })}
+      {progressive.showMore ? <ProgressiveListFooter remaining={updates.length - progressive.limit} onShowMore={progressive.showMore} /> : null}
     </View>
   );
 }
@@ -2982,10 +3021,14 @@ function PhotoList({
   selectedPhotoKey: string | null;
   onSelect: (item: PhotoWorkspaceItem) => void;
 }) {
+  const progressive = useProgressiveListLimit(
+    photos.length,
+    `${photos.length}:${photos[0] ? photoItemKey(photos[0]) : ''}:${photos[photos.length - 1] ? photoItemKey(photos[photos.length - 1]) : ''}`,
+  );
   if (photos.length === 0) return <EmptyState text="No project photos match these filters." />;
   return (
     <View style={styles.photoGrid}>
-      {photos.map(item => {
+      {photos.slice(0, progressive.limit).map(item => {
         const { update, photo } = item;
         const selected = selectedPhotoKey === photoItemKey(item);
         return (
@@ -3027,6 +3070,7 @@ function PhotoList({
           </Pressable>
         );
       })}
+      {progressive.showMore ? <ProgressiveListFooter remaining={photos.length - progressive.limit} onShowMore={progressive.showMore} /> : null}
     </View>
   );
 }
@@ -3218,6 +3262,7 @@ function SignedPhotoPreview({
   const [state, setState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>(
     photo.cloudStoragePath ? 'loading' : 'unavailable',
   );
+  const [useOriginal, setUseOriginal] = useState(false);
 
   useEffect(() => {
     const path = photo.cloudStoragePath?.trim();
@@ -3228,7 +3273,9 @@ function SignedPhotoPreview({
     }
     let active = true;
     setState('loading');
-    void auth.getArtifactUrl('project-photos', path)
+    void auth.getArtifactUrl('project-photos', path, {
+      preview: !useOriginal,
+    })
       .then(url => {
         if (!active) return;
         setSignedUrl(url);
@@ -3242,7 +3289,7 @@ function SignedPhotoPreview({
     return () => {
       active = false;
     };
-  }, [auth.getArtifactUrl, photo.cloudStoragePath]);
+  }, [auth.getArtifactUrl, photo.cloudStoragePath, useOriginal]);
 
   const label = `${photo.caption?.trim() || 'Project photo'} for ${projectName}${areaName ? `, ${areaName}` : ''}`;
   if (state === 'ready' && signedUrl) {
@@ -3252,6 +3299,10 @@ function SignedPhotoPreview({
           source={{ uri: signedUrl }}
           style={styles.photoImage}
           resizeMode="cover"
+          onError={() => {
+            if (!useOriginal) setUseOriginal(true);
+            else setState('error');
+          }}
           accessible
           accessibilityLabel={label}
         />
@@ -3880,10 +3931,14 @@ function DocumentList({
   onMakeCurrent?: (document: DAVEWebReferenceDocument) => void;
   emptyText?: string;
 }) {
+  const progressive = useProgressiveListLimit(
+    documents.length,
+    `${documents.length}:${documents[0]?.id || ''}:${documents[documents.length - 1]?.id || ''}`,
+  );
   if (documents.length === 0) return <EmptyState text={emptyText} />;
   return (
     <View style={styles.list}>
-      {documents.map(document => (
+      {documents.slice(0, progressive.limit).map(document => (
         <View
           key={document.id}
           style={[
@@ -3943,6 +3998,7 @@ function DocumentList({
           ) : null}
         </View>
       ))}
+      {progressive.showMore ? <ProgressiveListFooter remaining={documents.length - progressive.limit} onShowMore={progressive.showMore} /> : null}
     </View>
   );
 }
@@ -4231,6 +4287,10 @@ function ReportWorkspace({
         drawingReferences,
         getArtifactUrl: auth.getArtifactUrl,
       });
+      const {
+        buildReportWordBlob,
+        summarizeReportWordUnavailableMedia,
+      } = await import('../../services/ReportWordDocument');
       const blob = await buildReportWordBlob({
         title,
         body,
@@ -4876,7 +4936,7 @@ function SettingsWorkspace({
           </View>
           <View style={styles.dataGrow}>
             <Text style={styles.cardTitle}>This computer</Text>
-            <Text style={styles.syncGuideText}>Refreshes the shared cloud record automatically every 12 seconds while Vitruvius is open.</Text>
+            <Text style={styles.syncGuideText}>Keeps the shared cloud record current through live updates and a periodic safety refresh while Vitruvius is open.</Text>
           </View>
         </View>
         <View style={styles.syncGuideCard}>
@@ -5166,13 +5226,27 @@ function EmptyState({ text }: { text: string }) {
   return <View style={styles.emptyState}><Text style={styles.emptyStateText}>{text}</Text></View>;
 }
 
-function DesktopSidebar({ pathname, selectedProject }: { pathname: string; selectedProject: string | null }) {
+function DesktopSidebar({
+  pathname,
+  selectedProject,
+  documentCount,
+}: {
+  pathname: string;
+  selectedProject: string | null;
+  documentCount: number;
+}) {
   return (
     <View style={styles.sidebar}>
       <VitruviusBrandLockup large testID="desktop-sidebar-brand-lockup" />
       <View style={styles.navigation} role="navigation">
         {desktopNavigationItems.map(item => (
-          <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} />
+          <DesktopNavigationLink
+            key={item.href}
+            pathname={pathname}
+            item={item}
+            selectedProject={selectedProject}
+            badgeCount={item.page === 'documents' ? documentCount : undefined}
+          />
         ))}
       </View>
       <Text style={styles.pilotNote}>{PRODUCT_BRAND.name} · {PRODUCT_BRAND.subtitle}</Text>
@@ -5215,11 +5289,13 @@ function DesktopNavigationLink({
   item,
   selectedProject,
   compact = false,
+  badgeCount,
 }: {
   pathname: string;
   item: DesktopNavigationItem;
   selectedProject: string | null;
   compact?: boolean;
+  badgeCount?: number;
 }) {
   const active = desktopRouteIsActive(pathname, item.href);
   const href = selectedProject ? { pathname: item.href, params: { project: selectedProject } } : item.href;
@@ -5229,12 +5305,24 @@ function DesktopNavigationLink({
         style={({ pressed }) => [compact ? styles.topNavigationLink : styles.navigationLink, active && styles.navigationLinkActive, pressed && styles.buttonPressed]}
         accessibilityRole="link"
         accessibilityState={{ selected: active }}
+        accessibilityLabel={!compact && badgeCount !== undefined
+          ? `${item.label}, ${badgeCount} document${badgeCount === 1 ? '' : 's'}`
+          : item.label}
       >
-        <Ionicons
-          name={item.icon}
-          size={compact ? 19 : 25}
-          color={active ? desktopSurfaces.accent : desktopSurfaces.sidebarMuted}
-        />
+        <View style={compact ? styles.topNavigationIconWrap : styles.navigationIconWrap}>
+          <Ionicons
+            name={item.icon}
+            size={compact ? 19 : 30}
+            color={active ? desktopSurfaces.accent : desktopSurfaces.sidebarMuted}
+          />
+          {!compact && badgeCount !== undefined ? (
+            <View style={styles.navigationIconCountBadge}>
+              <Text style={styles.navigationIconCountText}>
+                {badgeCount > 99 ? '99+' : String(badgeCount)}
+              </Text>
+            </View>
+          ) : null}
+        </View>
         <Text
           style={[
             styles.navigationLabel,
@@ -5587,11 +5675,15 @@ const styles = StyleSheet.create({
   gateTitle: { color: '#171A21', fontSize: 32, lineHeight: 39, fontWeight: '900' },
   sidebar: { width: 280, minHeight: '100%', backgroundColor: desktopSurfaces.sidebar, borderRightWidth: 1, borderRightColor: desktopSurfaces.sidebarDeep, padding: spacing.lg, gap: spacing.xl, boxShadow: desktopSurfaces.sidebarShadow },
   navigation: { gap: spacing.xs },
-  navigationLink: { minHeight: 64, borderRadius: 14, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
+  navigationLink: { minHeight: 68, borderRadius: 14, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
   topNavigationLink: { flexGrow: 1, flexBasis: 132, minWidth: 0, minHeight: 44, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, justifyContent: 'center', paddingHorizontal: spacing.sm },
   navigationLinkActive: { backgroundColor: desktopSurfaces.selected, borderLeftWidth: 4, borderLeftColor: desktopSurfaces.accent },
   navigationLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  navigationLabelSidebar: { fontSize: 17, lineHeight: 23, fontWeight: '900' },
+  navigationLabelSidebar: { fontSize: 19, lineHeight: 25, fontWeight: '900' },
+  navigationIconWrap: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'visible' },
+  topNavigationIconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
+  navigationIconCountBadge: { position: 'absolute', top: -3, right: -6, minWidth: 20, height: 20, borderRadius: 10, backgroundColor: desktopSurfaces.accent, borderWidth: 2, borderColor: desktopSurfaces.sidebar, paddingHorizontal: 3, alignItems: 'center', justifyContent: 'center' },
+  navigationIconCountText: { color: desktopSurfaces.onAccent, fontSize: 10, lineHeight: 12, fontWeight: '900' },
   navigationLabelActive: { color: desktopSurfaces.accent },
   pilotNote: { color: desktopSurfaces.sidebarMuted, fontSize: 12, lineHeight: 17, marginTop: 'auto', paddingHorizontal: spacing.xs },
   topNavigation: { backgroundColor: desktopSurfaces.sidebar, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 14, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },

@@ -103,9 +103,9 @@ if (violations.length > 0) {
 
 const app = fs.readFileSync(path.join(repoRoot, 'App.tsx'), 'utf8');
 for (const expectedLabel of [
-  'Photo Review',
   'Photo Analysis',
   'Analysis status',
+  'Photo status',
 ]) {
   if (!app.includes(expectedLabel)) {
     throw new Error(`Expected consolidated DAVE label is missing: ${expectedLabel}`);
