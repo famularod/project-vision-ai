@@ -35,6 +35,7 @@ import {
 } from '../../services/DAVEWebFreshness';
 import {
   DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS,
+  shouldRefreshDAVEOperationalDataOnForeground,
   type DAVEOperationalCollectionName,
 } from '../../services/DAVEOperationalRefresh';
 
@@ -110,6 +111,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const pendingBackgroundCollectionsRef = useRef<Set<DAVEOperationalCollectionName>>(new Set());
   const pendingFullBackgroundRefreshRef = useRef(false);
   const maintenanceOwnerRef = useRef<string | null>(null);
+  const realtimeHealthyRef = useRef(false);
+  const lastSuccessfulRefreshAtRef = useRef<string | null>(null);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -118,6 +121,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     setSessionExpiresAt(null);
     snapshotRef.current = null;
     maintenanceOwnerRef.current = null;
+    realtimeHealthyRef.current = false;
+    lastSuccessfulRefreshAtRef.current = null;
     pendingBackgroundCollectionsRef.current.clear();
     pendingFullBackgroundRefreshRef.current = false;
     setSnapshot(null);
@@ -151,6 +156,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       const nextSnapshot = await loadDAVEWebReadOnlySnapshot(options.collections);
       if (!mountedRef.current || loadSequenceRef.current !== loadSequence) return false;
       snapshotRef.current = nextSnapshot;
+      lastSuccessfulRefreshAtRef.current = nextSnapshot.refreshedAt;
       setSnapshot(nextSnapshot);
       setPhase('ready');
       setFreshness(recordDAVEWebRefreshSuccess(nextSnapshot.refreshedAt));
@@ -359,10 +365,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       },
       onStatus: status => {
         if (active && (status === 'error' || status === 'closed')) {
+          realtimeHealthyRef.current = false;
           setFreshness(current =>
             recordDAVEWebRefreshFailure(current, new Date().toISOString()));
           setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
         } else if (active && status === 'subscribed') {
+          realtimeHealthyRef.current = true;
           if (realtimeHasSubscribed) void refreshSnapshotInBackground();
           realtimeHasSubscribed = true;
         }
@@ -387,8 +395,15 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     if (typeof BroadcastChannel === 'undefined') return;
     const channel = new BroadcastChannel('vitruvius-shared-record-v1');
     channelRef.current = channel;
-    channel.onmessage = () => {
-      if (phase === 'ready') void refreshSnapshotInBackground();
+    channel.onmessage = event => {
+      if (phase !== 'ready') return;
+      const data = event.data && typeof event.data === 'object'
+        ? event.data as { type?: unknown; collections?: unknown }
+        : null;
+      const collections = data?.type === 'cloud-mutated' && Array.isArray(data.collections)
+        ? data.collections.filter(isDAVEOperationalCollectionName)
+        : undefined;
+      void refreshSnapshotInBackground(collections?.length ? collections : undefined);
     };
     return () => {
       channelRef.current = null;
@@ -400,7 +415,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible' && phase === 'ready') {
-        void refreshSnapshotInBackground();
+        if (shouldRefreshDAVEOperationalDataOnForeground({
+          realtimeHealthy: realtimeHealthyRef.current,
+          lastSuccessfulRefreshAt: lastSuccessfulRefreshAtRef.current,
+        })) {
+          void refreshSnapshotInBackground();
+        }
       }
     };
     window.addEventListener('focus', refreshWhenVisible);
@@ -411,26 +431,34 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     };
   }, [phase, refreshSnapshotInBackground]);
 
-  const announceMutation = useCallback(() => {
-    channelRef.current?.postMessage({ type: 'cloud-mutated', at: Date.now() });
+  const announceMutation = useCallback((
+    collections: readonly DAVEOperationalCollectionName[],
+  ) => {
+    channelRef.current?.postMessage({
+      type: 'cloud-mutated',
+      at: Date.now(),
+      collections,
+    });
   }, []);
 
   const createTask = useCallback(async (item: DAVEWebScheduleItem) => {
     await daveWebSupabaseGateway.createAuthorizedScheduleItem(
       scheduleItemForCloud(item),
     );
-    announceMutation();
-    await refreshSnapshot();
-  }, [announceMutation, refreshSnapshot]);
+    const collections = ['schedule_items'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const updateTask = useCallback(async (item: DAVEWebScheduleItem) => {
     await daveWebSupabaseGateway.updateAuthorizedScheduleItem(
       scheduleItemForCloud(item),
       item.cloudUpdatedAt,
     );
-    announceMutation();
-    await refreshSnapshot();
-  }, [announceMutation, refreshSnapshot]);
+    const collections = ['schedule_items'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const updateTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     let updated = 0;
@@ -443,20 +471,24 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         updated += 1;
       }
     } finally {
-      if (updated > 0) announceMutation();
-      await refreshSnapshot();
+      if (updated > 0) {
+        const collections = ['schedule_items'] as const;
+        announceMutation(collections);
+        await refreshSnapshotInBackground(collections);
+      }
     }
     return updated;
-  }, [announceMutation, refreshSnapshot]);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const deleteTask = useCallback(async (item: DAVEWebScheduleItem) => {
     await daveWebSupabaseGateway.deleteAuthorizedScheduleItem(
       item.id,
       item.cloudUpdatedAt,
     );
-    announceMutation();
-    await refreshSnapshot();
-  }, [announceMutation, refreshSnapshot]);
+    const collections = ['sync_tombstones', 'schedule_items'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const uploadTaskPhoto = useCallback(async (
     item: DAVEWebScheduleItem,
@@ -470,9 +502,10 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       mimeType,
       bytes,
     });
-    announceMutation();
-    await refreshSnapshot();
-  }, [announceMutation, refreshSnapshot]);
+    const collections = ['project_updates'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const deleteDocument = useCallback(async (
     document: DAVEWebReferenceDocument,
@@ -483,9 +516,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       document.cloudUpdatedAt,
       deleteLinkedTasks ? document.linkedScheduleItems : [],
     );
-    announceMutation();
-    await refreshSnapshot();
-  }, [announceMutation, refreshSnapshot]);
+    const collections: readonly DAVEOperationalCollectionName[] = deleteLinkedTasks
+      ? ['sync_tombstones', 'reference_documents', 'schedule_items']
+      : ['sync_tombstones', 'reference_documents'];
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const uploadDocument = useCallback(async (
     prepared: DAVEWebPreparedUpload,
@@ -500,18 +536,22 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       scheduleItems: prepared.scheduleItems,
       onProgress,
     });
-    announceMutation();
-    await refreshSnapshot();
-  }, [announceMutation, refreshSnapshot]);
+    const collections: readonly DAVEOperationalCollectionName[] = prepared.scheduleItems.length > 0
+      ? ['reference_documents', 'schedule_items']
+      : ['reference_documents'];
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const setCurrentSchedule = useCallback(async (document: DAVEWebReferenceDocument) => {
     const scheduleDocuments = (snapshot?.referenceDocuments || []).filter(item =>
       item.category === 'Schedules' || item.category === 'Schedule',
     );
     await daveWebSupabaseGateway.setAuthorizedCurrentSchedule(document, scheduleDocuments);
-    announceMutation();
-    await refreshSnapshot();
-  }, [announceMutation, refreshSnapshot, snapshot?.referenceDocuments]);
+    const collections = ['reference_documents'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments]);
 
   const saveReport = useCallback(async (input: {
     id: string;
@@ -520,10 +560,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     expectedCloudUpdatedAt?: string | null;
   }) => {
     const revision = await daveWebSupabaseGateway.saveAuthorizedReportArtifact(input);
-    announceMutation();
-    await refreshSnapshot();
+    const collections = ['reference_documents'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
     return revision;
-  }, [announceMutation, refreshSnapshot]);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const restoreMissingTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     const currentIds = new Set(snapshot?.scheduleItems.map(item => item.id) || []);
@@ -534,10 +575,13 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       currentIds.add(item.id);
       restored += 1;
     }
-    if (restored > 0) announceMutation();
-    await refreshSnapshot();
+    if (restored > 0) {
+      const collections = ['schedule_items'] as const;
+      announceMutation(collections);
+      await refreshSnapshotInBackground(collections);
+    }
     return restored;
-  }, [announceMutation, refreshSnapshot, snapshot?.scheduleItems]);
+  }, [announceMutation, refreshSnapshotInBackground, snapshot?.scheduleItems]);
 
   const value = useMemo<DesktopAuthContextValue>(() => ({
     phase,
@@ -590,4 +634,15 @@ export function useDesktopAuth(): DesktopAuthContextValue {
   const value = useContext(DesktopAuthContext);
   if (!value) throw new Error('useDesktopAuth must be used inside DesktopAuthProvider.');
   return value;
+}
+
+function isDAVEOperationalCollectionName(
+  value: unknown,
+): value is DAVEOperationalCollectionName {
+  return value === 'projects' ||
+    value === 'project_updates' ||
+    value === 'project_areas' ||
+    value === 'schedule_items' ||
+    value === 'reference_documents' ||
+    value === 'sync_tombstones';
 }

@@ -21,7 +21,7 @@ function sliceBetween(source, start, end) {
 const interpretationHelper = sliceBetween(
   app,
   'function possibleInterpretationsForPIEResult',
-  'function buildSuggestedObservedNote',
+  'function updateSupportsPIEInterpretations',
 );
 assert(
   interpretationHelper.includes('pieResultSupportsInterpretations') &&
@@ -48,9 +48,10 @@ const resultApply = sliceBetween(
   'async function retryPhotoAnalysis',
 );
 assert(
-  resultApply.includes("summary.status === 'complete' ? update.possibleInterpretations || [] : []") &&
-    resultApply.includes('possibleInterpretationsForPIEResult(result)'),
-  'Failed analysis hydration must not keep stale stored failure text in possible interpretations.',
+  resultApply.includes("summary.status === 'complete'") &&
+    resultApply.includes('? update.possibleInterpretations || []') &&
+    !resultApply.includes('possibleInterpretationsForPIEResult(result)'),
+  'Failed analysis hydration must clear stale failure text, while unconfirmed AI output must not be inserted into interpretations.',
 );
 
 const unavailable = sliceBetween(workflow, 'function unavailableState', 'function failedRetryState');

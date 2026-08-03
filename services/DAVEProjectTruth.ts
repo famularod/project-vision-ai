@@ -28,6 +28,7 @@ import {
   type DAVEProjectReasoning,
 } from './DAVEProjectReasoning';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
   projectDateRelativeDays,
@@ -380,7 +381,8 @@ function buildEvidenceLedger(
             : 'GPS exists, but it is not connected to a confirmed project area.',
         }));
       }
-      if (photo.photoIntelligence) {
+      const photoIntelligence = photo.photoIntelligence;
+      if (photoIntelligence && photoDisplayResultCanInformProject(photoIntelligence)) {
         records.push(record({
           id: `photo-comparison:${photo.id}`,
           kind: 'photo-comparison',
@@ -389,8 +391,8 @@ function buildEvidenceLedger(
           areaName: clean(photo.selectedAreaName) || areaName,
           taskId: clean(update.scheduleItemId),
           text: photoIntelligenceText(photo),
-          capturedAt: photo.photoIntelligence.updatedAt,
-          summary: photo.photoIntelligence.visibleChange || photo.photoIntelligence.currentObservation || photo.photoIntelligence.summary,
+          capturedAt: photoIntelligence.updatedAt,
+          summary: photoIntelligence.visibleChange || photoIntelligence.currentObservation || photoIntelligence.summary,
           connected: Boolean(clean(photo.selectedAreaName) || areaName),
           reason: clean(photo.selectedAreaName) || areaName
             ? 'Photo analysis is connected to project and area evidence.'
@@ -615,22 +617,16 @@ function bestNamedMatch(
 }
 
 function buildPhotoComparisons(updates: ProjectUpdate[], links: DAVEEntityLink[]): DAVEPhotoComparisonTruth[] {
-  return updates.flatMap(update => update.photos.map(photo => {
+  return updates.flatMap(update => update.photos
+    .filter(photo => photoDisplayResultCanInformProject(photo.photoIntelligence))
+    .map(photo => {
     const intelligence = photo.photoIntelligence;
     const taskLink = links.find(item => item.sourceEvidenceId === `photo:${photo.id}` && item.targetType === 'schedule-task');
     const observation = clean(intelligence?.currentObservation) || clean(intelligence?.visibleChange) || clean(photo.caption) || 'No specific visible condition was recorded.';
     const hasPriorPhoto = Boolean(
       intelligence?.priorUpdateUsed || intelligence?.priorEvidenceId,
     );
-    const comparability = clean(intelligence?.comparability)?.toLowerCase();
-    const comparisonCompleted =
-      intelligence?.status === 'analysis_complete' ||
-      intelligence?.status === 'completed_with_limitations';
-    const hasComparablePrior = Boolean(
-      hasPriorPhoto &&
-      comparisonCompleted &&
-      (comparability === 'strong' || comparability === 'probable'),
-    );
+    const hasComparablePrior = photoDisplayResultCanInformProject(intelligence);
     const safeVisualEvidence = intelligence?.provenance === 'visual_only' || intelligence?.provenance === 'visual_and_caption';
     const progressClaim = safeVisualEvidence && hasComparablePrior
       ? intelligence?.projectProgress || 'unable_to_determine'

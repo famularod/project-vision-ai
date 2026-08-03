@@ -606,7 +606,7 @@ export function buildPIECoreIntelligence(
   input: PIECoreInput = {},
 ): PIECoreOutput {
   if (input.enforceLiveReality && !input.liveRealityAuthority) {
-    throw new Error('DAVE Core requires live authoritative Reality Model orchestration in production mode.');
+    throw new Error('ECOS Core requires live authoritative Reality Model orchestration in production mode.');
   }
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
   const reportScope = coreReportScope(input, runtime);
@@ -1078,7 +1078,7 @@ export function buildPIECoreIntelligence(
   return {
     domain: input.domain || 'project_intelligence',
     generatedAt: runtime.generatedAt,
-    appName: input.appName || 'Project Vision AI',
+    appName: input.appName || 'Vitruvius Project Intelligence',
     ecosCognitiveFramework,
     pieDomainIntelligence,
     evidenceQuality,

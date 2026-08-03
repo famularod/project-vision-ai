@@ -1,18 +1,29 @@
-# VIGIL Quality Assurance
+# ECOS Assurance
+
+> Compatibility specification: this filename, legacy command aliases, and
+> historical internal labels remain temporarily because release checks depend on
+> them. ECOS Assurance is the canonical independent validation component. It is
+> separate from ECOS Core and must verify Core output rather than allowing Core
+> to approve its own work.
 
 ## Purpose
 
-VIGIL (Vitruvius Integrity Gate and Inspection Layer) is the internal quality system protecting Vitruvius. Core is the Vitruvius intelligence engine; VIGIL is the separate quality and release-verification system.
+ECOS Assurance is the independent quality and release-verification system
+protecting Vitruvius. ECOS Core is the reasoning component; ECOS Assurance is
+the separate validation component.
 
-Legacy JARVIS filenames, command aliases, and internal compatibility identifiers remain temporarily supported while the repository migrates to the VIGIL name. They do not represent a separate QA system.
+Legacy filenames, command aliases, and internal compatibility identifiers remain
+temporarily supported. They do not represent a separate QA system.
 
-Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. VIGIL should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
+Its purpose is to protect the product experience before every release by checking layout, navigation, critical workflows, project intelligence, and release readiness. ECOS Assurance should make it harder for broken text, clipped buttons, confusing navigation, or weak intelligence output to reach a field build.
 
-VIGIL does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence.
+ECOS Assurance does not replace human review. It gives the team a repeatable checklist and automation path so humans can review the product faster and with better confidence.
 
-## VIGIL Experience QA
+## ECOS Experience QA
 
-VIGIL now acts as a complete product reviewer, not only a technical checker. The controlling standard remains `docs/PIE_JARVIS_ExperienceQA.md` until legacy internal filenames are migrated.
+ECOS Assurance covers complete product review, not only technical checks. The
+controlling experience standard retains a compatibility filename until internal
+paths are migrated.
 
 Every run scores these categories:
 
@@ -762,7 +773,7 @@ The active runner checks the highest-risk pre-field-test pathways:
 - Photo Progress comparison service presence.
 - Photo comparison generation from project, area, GPS proximity, time, and user-selected comparison markers.
 - Photo comparison confidence and no-fabricated-change guardrails.
-- Low-confidence photo comparison review prompt: "Does this summary look correct?" with Accept, Edit, Reject.
+- Comparable raw-pixel findings require an explicit user review: Confirm, Incorrect, or Not useful. Caption and status text cannot create visual-progress evidence.
 - Runtime photo progress contract: photoProgressSummary, lastComparison, comparisonConfidence, visualProgressEstimate, and comparisonNeedsReview.
 - Accepted photo comparison evidence feeds Runtime, Mission, Executive, Evidence Fusion, Knowledge Graph, Review, and Combined Update pathways.
 - Walk page presence.

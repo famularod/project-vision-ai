@@ -491,7 +491,7 @@ export function buildRecoveryActions(
           id: 'recovery-impact-verification',
           action: `Verify ${impacts[0].area} risk before acting.`,
           recovers: impacts[0].summary,
-          expectedRecovery: 'Prevents DAVE from overstating a weak prediction.',
+          expectedRecovery: 'Prevents ECOS from overstating a weak prediction.',
           value: impacts[0].severity === 'high' ? 8 : 5,
           requiredEvidence: buildPredictionEvidenceNeeds(input).slice(0, 3),
           confidence: impacts[0].confidence,

@@ -110,6 +110,8 @@ jest.mock('../../services/SupabaseService', () => ({
     mockListDAVESyncTombstones(...args),
   upsertDAVESyncTombstone: (...args: unknown[]) =>
     mockUpsertDAVESyncTombstone(...args),
+  upsertDAVESyncTombstones: (tombstones: unknown[]) =>
+    Promise.resolve({ ok: true, configured: true, stubbed: false, data: tombstones }),
   listScheduleItems: (...args: unknown[]) => mockListScheduleItems(...args),
   upsertScheduleItem: (...args: unknown[]) => mockUpsertScheduleItem(...args),
   listReferenceDocuments: (...args: unknown[]) =>
@@ -294,6 +296,40 @@ describe('offline upload deletion barriers', () => {
     expect(
       mockUpsertScheduleItem.mock.calls.map(([item]) => (item as ScheduleItem).id),
     ).toEqual([newestTask.id, olderTask.id]);
+  });
+
+  it('reads document authority once for multiple queued documents', async () => {
+    const documents: ReferenceDocument[] = ['one', 'two'].map((suffix, index) => ({
+      id: `document-batch-${suffix}`,
+      name: `Drawing ${suffix}`,
+      originalFileName: `drawing-${suffix}.pdf`,
+      uri: '',
+      mimeType: 'application/pdf',
+      category: 'Drawing',
+      notes: '',
+      isCurrent: false,
+      importedAt: `2026-07-27T10:0${index}:00.000Z`,
+      updatedAt: `2026-07-27T10:0${index}:00.000Z`,
+      storagePath: `mobile/document-batch-${suffix}/drawing-${suffix}.pdf`,
+    }));
+    for (const document of documents) {
+      await enqueuePendingChange({
+        id: `reference-document-${document.id}`,
+        entity: 'reference_document',
+        operation: 'update',
+        payload: { id: document.id, documentData: document },
+        changedAt: document.updatedAt || document.importedAt,
+        autoUpload: false,
+      });
+    }
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 2,
+      queued: 0,
+      errors: [],
+    });
+    expect(mockListReferenceDocuments).toHaveBeenCalledTimes(1);
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledTimes(2);
   });
 
   it('confirms a task save without waiting for unrelated field-update retries', async () => {

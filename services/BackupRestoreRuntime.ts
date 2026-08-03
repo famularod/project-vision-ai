@@ -485,7 +485,7 @@ function readBarrierState(
   );
   // File cleanup and DAVE tombstone bytes are protected and must be valid JSON.
   parseJsonArray(raw.get(keys.projectDeletionFileCleanupIntents), 'pending project file cleanup');
-  parseJsonArray(raw.get(keys.daveSyncTombstones), 'DAVE sync tombstones');
+  parseJsonArray(raw.get(keys.daveSyncTombstones), 'ECOS sync tombstones');
   return Object.freeze({
     deletedProjectNames: uniqueStrings([
       ...deletedProjectNames,

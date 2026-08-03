@@ -102,7 +102,7 @@ export async function preflightLocalFileRead({
   } catch (cause) {
     throw new FileSizePreflightError({
       code: 'file_size_unavailable',
-      message: 'DAVE could not safely verify this file size. Choose the file again and retry.',
+      message: 'ECOS could not safely verify this file size. Choose the file again and retry.',
       maxBytes,
       cause,
     });
@@ -120,7 +120,7 @@ export async function preflightLocalFileRead({
   if (verifiedSize === null) {
     throw new FileSizePreflightError({
       code: 'file_size_unavailable',
-      message: 'DAVE could not safely verify this file size. Choose the file again and retry.',
+      message: 'ECOS could not safely verify this file size. Choose the file again and retry.',
       maxBytes,
     });
   }
@@ -253,7 +253,7 @@ export async function prepareExpoFileUploadPayload(input: Readonly<{
   } catch (cause) {
     throw new FileSizePreflightError({
       code: 'file_read_failed',
-      message: 'DAVE could not read this file. Choose it again and retry.',
+      message: 'ECOS could not read this file. Choose it again and retry.',
       maxBytes: preflight.maxBytes,
       observedSizeBytes: preflight.sizeBytes,
       cause,
@@ -271,7 +271,7 @@ export async function prepareExpoFileUploadPayload(input: Readonly<{
   } catch (cause) {
     throw new FileSizePreflightError({
       code: 'file_read_failed',
-      message: 'DAVE could not prepare this file. Choose it again and retry.',
+      message: 'ECOS could not prepare this file. Choose it again and retry.',
       maxBytes: preflight.maxBytes,
       observedSizeBytes: preflight.sizeBytes,
       cause,

@@ -17,9 +17,10 @@ const defects = readJson('validation/jarvis/escaped-defects.json');
 assert.equal(policy.schemaVersion, 1);
 assert.deepEqual(policy.identity, {
   product: 'Vitruvius',
-  intelligenceEngine: 'Core',
-  qaSystem: 'VIGIL',
-  qaNameStatus: 'official',
+  intelligenceSystem: 'ECOS',
+  intelligenceEngine: 'ECOS Core',
+  qaSystem: 'ECOS Assurance',
+  qaNameStatus: 'canonical',
 });
 assert.deepEqual(policy.requiredPlatforms, ['iphone', 'ipad', 'web']);
 assert(policy.requiredDeviceJourneys.length >= 6);
@@ -75,7 +76,7 @@ for (const defect of defects.defects) {
 }
 
 console.log(
-  `VIGIL release-evidence contracts PASS: ${policy.requiredDeviceJourneys.length} device journeys, `
+  `ECOS Assurance release-evidence contracts PASS: ${policy.requiredDeviceJourneys.length} device journeys, `
   + `${policy.performanceBudgets.length} performance budgets, `
   + `${visual.platforms.length} visual platforms, and ${defects.defects.length} historical defect families.`,
 );

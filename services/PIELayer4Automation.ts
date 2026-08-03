@@ -159,7 +159,7 @@ export function classifyLayer4AutomationPolicy(
   ) {
     return {
       level: 'confirmation_required',
-      reason: 'DAVE can prepare the action, but confirmation is needed before materially changing the decision record.',
+      reason: 'ECOS can prepare the action, but confirmation is needed before materially changing the decision record.',
       humanReviewAvailable: true,
     };
   }
@@ -233,7 +233,7 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
       created: false,
       duplicateDecisionId: duplicate.id,
       decision: duplicate,
-      explanation: 'DAVE found an existing decision candidate for this persisted Executive Judgment.',
+      explanation: 'ECOS found an existing decision candidate for this persisted Executive Judgment.',
     };
   }
 
@@ -314,7 +314,7 @@ export function buildLayer4DecisionCandidateFromExecutiveJudgment(
   return {
     created: true,
     decision,
-    explanation: 'DAVE created a decision candidate from a persisted Executive Judgment and authoritative Reality Model snapshot.',
+    explanation: 'ECOS created a decision candidate from a persisted Executive Judgment and authoritative Reality Model snapshot.',
   };
 }
 
@@ -330,7 +330,7 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
     return {
       created: false,
       skippedReason: 'Report is informational, incomplete, low confidence, or still needs too much review.',
-      explanation: 'DAVE did not create a decision candidate because this does not meet the meaningful-decision threshold.',
+      explanation: 'ECOS did not create a decision candidate because this does not meet the meaningful-decision threshold.',
     };
   }
 
@@ -340,7 +340,7 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
       created: false,
       duplicateDecisionId: duplicate.id,
       decision: duplicate,
-      explanation: 'DAVE found an existing decision candidate and avoided a duplicate.',
+      explanation: 'ECOS found an existing decision candidate and avoided a duplicate.',
     };
   }
 
@@ -363,14 +363,14 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
     assumptions: buildDecisionAssumptions(input.report),
     risks: input.report.risks.length
       ? input.report.risks.map(risk => risk.summary)
-      : ['DAVE must not treat implementation as outcome success without verification.'],
+      : ['ECOS must not treat implementation as outcome success without verification.'],
     constraints: buildDecisionConstraints(input.report),
     predictedOutcomes: predictions,
     recommendationConfidence: input.report.confidence,
     confidenceExplanation: input.report.reviewFlags[0] ||
-      `DAVE confidence is ${input.report.confidence} based on current report evidence and review flags.`,
+      `ECOS confidence is ${input.report.confidence} based on current report evidence and review flags.`,
     selectedReason: input.report.executiveSummary[0] ||
-      `DAVE detected a ${trigger.replace(/_/g, ' ')} that should be tracked through outcome review.`,
+      `ECOS detected a ${trigger.replace(/_/g, ' ')} that should be tracked through outcome review.`,
   };
   const decision = createDecisionRecord({
     id: `pie-auto-decision-${stableHash(`${input.organizationId}:${input.projectId}:${input.report.id}:${snapshot.selectedOption}`)}`,
@@ -384,7 +384,7 @@ export function buildDeprecatedReportOnlyLayer4DecisionCandidate(input: PIELayer
   return {
     created: true,
     decision,
-    explanation: 'DAVE created a decision candidate automatically from a meaningful Layer 3 recommendation.',
+    explanation: 'ECOS created a decision candidate automatically from a meaningful Layer 3 recommendation.',
   };
 }
 
@@ -455,7 +455,7 @@ export function proposeImplementationQualityFromEvidence(
   if (!relevant.length) {
     return {
       quality: 'unknown',
-      reason: 'DAVE does not have enough implementation evidence yet.',
+      reason: 'ECOS does not have enough implementation evidence yet.',
       confidence: 'low',
       supportingEvidence: [],
     };
@@ -513,8 +513,8 @@ export function comparePredictedAndActualOutcomesAutomatically(
     projectId: decision.projectId,
     classification,
     summary: hasOutcomeEvidence
-      ? 'DAVE found project evidence related to the predicted outcome.'
-      : 'DAVE found possible outcome evidence, but the result needs review.',
+      ? 'ECOS found project evidence related to the predicted outcome.'
+      : 'ECOS found possible outcome evidence, but the result needs review.',
     actualResults: relevant.length
       ? relevant.map(item => item.summary)
       : ['No reliable outcome evidence available yet.'],
@@ -588,7 +588,7 @@ export function automateLayer4DecisionLifecycle(
       id: `exception-conflict-${decision.id}`,
       message: 'Conflicting evidence needs review.',
       action: 'resolve_conflict',
-      reason: 'DAVE found evidence that could change the decision outcome or implementation quality.',
+      reason: 'ECOS found evidence that could change the decision outcome or implementation quality.',
     });
   }
 
@@ -635,7 +635,7 @@ export function automateLayer4DecisionLifecycle(
   if (policy.level === 'human_decision_required') {
     exceptions.push({
       id: `exception-approval-${decision.id}`,
-      message: 'Human approval is required before DAVE changes this decision.',
+      message: 'Human approval is required before ECOS changes this decision.',
       action: 'approve',
       reason: policy.reason,
     });
@@ -645,7 +645,7 @@ export function automateLayer4DecisionLifecycle(
   if (policy.level === 'confirmation_required') {
     exceptions.push({
       id: `exception-confirm-${decision.id}`,
-      message: 'DAVE prepared the next step and needs a quick confirmation.',
+      message: 'ECOS prepared the next step and needs a quick confirmation.',
       action: 'approve',
       reason: policy.reason,
     });
@@ -656,7 +656,7 @@ export function automateLayer4DecisionLifecycle(
     const proposed = proposeImplementationQualityFromEvidence(decision, linkedEvidence);
     exceptions.push({
       id: `exception-implementation-${decision.id}`,
-      message: 'Implementation needs confirmation before DAVE changes decision status.',
+      message: 'Implementation needs confirmation before ECOS changes decision status.',
       action: 'confirm_implementation',
       reason: proposed.quality === 'not_started' || proposed.quality === 'unknown'
         ? proposed.reason
@@ -669,7 +669,7 @@ export function automateLayer4DecisionLifecycle(
       decision,
       nextStatus: 'awaiting_outcome',
       actor: input.actor,
-      reason: 'DAVE moved implemented decision to outcome review automatically.',
+      reason: 'ECOS moved implemented decision to outcome review automatically.',
       source: 'system',
       linkedEvidence,
       timestamp: now,
@@ -697,7 +697,7 @@ export function automateLayer4DecisionLifecycle(
       decision,
       nextStatus: 'outcome_observed',
       actor: input.actor,
-      reason: 'DAVE observed outcome evidence and compared it to the prediction.',
+      reason: 'ECOS observed outcome evidence and compared it to the prediction.',
       source: 'system',
       linkedEvidence,
       actualOutcome: outcome,
@@ -724,7 +724,7 @@ export function automateLayer4DecisionLifecycle(
       action: authorityRequired ? 'validate_high_impact_outcome' : 'provide_missing_evidence',
       reason: authorityRequired
         ? 'This decision affects high-impact authority boundaries.'
-        : 'Automatic comparison can organize evidence, but DAVE cannot validate its own outcome.',
+        : 'Automatic comparison can organize evidence, but ECOS cannot validate its own outcome.',
     });
   }
 
@@ -739,7 +739,7 @@ export function automateLayer4DecisionLifecycle(
       decision,
       nextStatus: 'closed',
       actor: input.actor,
-      reason: 'DAVE closed this low-risk decision after documented outcome support satisfied closeout requirements.',
+      reason: 'ECOS closed this low-risk decision after documented outcome support satisfied closeout requirements.',
       source: 'system',
       linkedEvidence,
       timestamp: now,
@@ -812,7 +812,7 @@ export function generatePredictedOutcomesFromReport(
       validationAuthority: authority,
       predictionConfidence: report.confidence,
       rationale: report.reviewFlags[0] ||
-        'DAVE generated this outcome from the recommendation context, schedule/evidence signals, and report action items.',
+        'ECOS generated this outcome from the recommendation context, schedule/evidence signals, and report action items.',
     }),
   ];
 }
@@ -900,10 +900,10 @@ function reviewResult(
     exceptions,
     linkedEvidence,
     conciseExplanation: exceptions.length
-      ? 'DAVE found decision history items that need review.'
+      ? 'ECOS found decision history items that need review.'
       : actions.length
-        ? 'DAVE updated decision history from project evidence.'
-        : 'DAVE is monitoring this decision for outcome evidence.',
+        ? 'ECOS updated decision history from project evidence.'
+        : 'ECOS is monitoring this decision for outcome evidence.',
   };
 }
 

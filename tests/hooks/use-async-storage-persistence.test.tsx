@@ -2,6 +2,7 @@ import { renderHook, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Alert } from 'react-native';
 import {
+  flushPendingStoragePersistence,
   persistStorageItem,
   reportStoragePersistenceFailure,
   useJsonStoragePersistence,
@@ -167,5 +168,59 @@ describe('async storage persistence hooks', () => {
     const buttons = alert.mock.calls[1]?.[2];
     buttons?.[0]?.onPress?.();
     alert.mockRestore();
+  });
+
+  it('coalesces rapid collection changes and persists only the latest value', async () => {
+    jest.useFakeTimers();
+    type Props = { value: string[] };
+    const { rerender } = await renderHook(
+      ({ value }: Props) => useJsonStoragePersistence({
+        enabled: true,
+        storageKey: 'coalesced-projects',
+        value,
+        debounceMs: 750,
+      }),
+      { initialProps: { value: ['first'] } },
+    );
+
+    rerender({ value: ['second'] });
+    rerender({ value: ['latest'] });
+    expect(setItem).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(750);
+    await waitFor(() => expect(setItem).toHaveBeenCalledTimes(1));
+    expect(setItem).toHaveBeenCalledWith('coalesced-projects', '["latest"]');
+    jest.useRealTimers();
+  });
+
+  it('flushes a pending debounced write before the app backgrounds', async () => {
+    jest.useFakeTimers();
+    await renderHook(() => useJsonStoragePersistence({
+      enabled: true,
+      storageKey: 'background-projects',
+      value: ['safe'],
+      debounceMs: 750,
+    }));
+
+    expect(setItem).not.toHaveBeenCalled();
+    await flushPendingStoragePersistence();
+    expect(setItem).toHaveBeenCalledWith('background-projects', '["safe"]');
+    jest.useRealTimers();
+  });
+
+  it('does not rewrite semantically unchanged JSON from a new object identity', async () => {
+    type Props = { value: { contacts: string[] } };
+    const { rerender } = await renderHook(
+      ({ value }: Props) => useJsonStoragePersistence({
+        enabled: true,
+        storageKey: 'stable-contacts',
+        value,
+      }),
+      { initialProps: { value: { contacts: ['one'] } } },
+    );
+    await waitFor(() => expect(setItem).toHaveBeenCalledTimes(1));
+
+    rerender({ value: { contacts: ['one'] } });
+    await Promise.resolve();
+    expect(setItem).toHaveBeenCalledTimes(1);
   });
 });

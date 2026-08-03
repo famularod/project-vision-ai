@@ -246,7 +246,7 @@ export function buildPIEKnowledgeGraph(
     type: 'project',
     projectName: parts.projectName,
     label: parts.projectName,
-    summary: 'Project root for DAVE Knowledge Graph.',
+    summary: 'Project root for ECOS Knowledge Graph.',
     source: 'knowledge-graph',
     confidence: 'high',
     occurredAt: parts.generatedAt,
@@ -1081,7 +1081,7 @@ function addReasoningNodes(
       fromNodeId: node.id,
       toNodeId: projectNodeIdValue,
       label: 'Evidence supports project understanding',
-      summary: `${evidence.title} supports DAVE's understanding of ${parts.projectName}.`,
+      summary: `${evidence.title} supports the ECOS Analysis for ${parts.projectName}.`,
       source: 'pie-reasoning',
       confidence: evidence.confidence,
       evidence: [evidence.detail],
@@ -1811,7 +1811,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-updates',
       title: 'No update evidence',
-      summary: 'DAVE does not see saved update nodes in the graph.',
+      summary: 'ECOS did not find saved update nodes in the graph.',
       missingNodeType: 'update',
       severity: 'high',
       suggestedAction: 'Capture or sync recent project updates.',
@@ -1822,7 +1822,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-photos',
       title: 'No photo evidence',
-      summary: 'DAVE does not see photo nodes in the graph.',
+      summary: 'ECOS did not find photo nodes in the graph.',
       missingNodeType: 'photo',
       severity: 'medium',
       suggestedAction: 'Capture current field photos with captions.',
@@ -1833,7 +1833,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-schedule',
       title: 'No schedule evidence',
-      summary: 'DAVE does not see schedule item nodes in the graph.',
+      summary: 'ECOS did not find schedule item nodes in the graph.',
       missingNodeType: 'schedule_item',
       severity: 'high',
       suggestedAction: 'Import or enter schedule items.',
@@ -1844,7 +1844,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-documents',
       title: 'No document context',
-      summary: 'DAVE does not see document metadata linked to this project graph.',
+      summary: 'ECOS did not find document metadata linked to this project graph.',
       missingNodeType: 'document',
       severity: 'medium',
       suggestedAction: 'Add current reference documents or schedule documents.',
@@ -1855,7 +1855,7 @@ function buildGraphGapsFromParts(
     gaps.push(graphGap(parts, {
       id: 'missing-reports',
       title: 'No report history',
-      summary: 'DAVE does not see report history nodes in the graph.',
+      summary: 'ECOS did not find report history nodes in the graph.',
       missingNodeType: 'report',
       severity: 'low',
       suggestedAction: 'Generate and review a project report when communication is needed.',
@@ -1915,7 +1915,7 @@ function buildGraphInsightsFromParts(
       relationshipIds: relationships
         .filter(relationship => relationship.edgeType === 'supports')
         .map(relationship => relationship.id),
-      suggestedNextAction: 'Use connected evidence when reviewing DAVE recommendations.',
+      suggestedNextAction: 'Use connected evidence when reviewing ECOS recommendations.',
     });
   }
 
@@ -1994,7 +1994,7 @@ function buildGraphInsightsFromParts(
       relationshipIds: relationships
         .filter(relationship => relationship.edgeType === 'requires_approval')
         .map(relationship => relationship.id),
-      suggestedNextAction: 'Review approval-required decisions before DAVE acts.',
+      suggestedNextAction: 'Review approval-required decisions before any action is applied.',
     });
   }
 

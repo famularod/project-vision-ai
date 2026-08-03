@@ -4,6 +4,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // safety net for a missed event, so keep full-collection reads infrequent.
 export const DAVE_OPERATIONAL_POLL_INTERVAL_MS = 30 * 60_000;
 export const DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS = 30 * 60_000;
+// A healthy Realtime channel already applies row-level changes. Re-entering
+// the app inside this window therefore does not need another full portfolio
+// read; older or disconnected sessions still take the conservative path.
+export const DAVE_OPERATIONAL_FOREGROUND_FRESHNESS_MS = 5 * 60_000;
 export const DAVE_OPERATIONAL_REQUEST_TIMEOUT_MS = 3_500;
 export const DAVE_OPERATIONAL_REALTIME_RETRY_DELAYS_MS = Object.freeze([
   1_000,
@@ -69,6 +73,23 @@ export type DAVEOperationalRefreshCommitGuard = Readonly<{
   begin: () => DAVEOperationalRefreshCommit;
   invalidate: () => void;
 }>;
+
+export function shouldRefreshDAVEOperationalDataOnForeground({
+  realtimeHealthy,
+  lastSuccessfulRefreshAt,
+  now = Date.now(),
+  freshnessMs = DAVE_OPERATIONAL_FOREGROUND_FRESHNESS_MS,
+}: Readonly<{
+  realtimeHealthy: boolean;
+  lastSuccessfulRefreshAt: string | null;
+  now?: number;
+  freshnessMs?: number;
+}>): boolean {
+  if (!realtimeHealthy || !lastSuccessfulRefreshAt) return true;
+  const refreshedAt = new Date(lastSuccessfulRefreshAt).getTime();
+  if (!Number.isFinite(refreshedAt)) return true;
+  return now - refreshedAt >= freshnessMs;
+}
 
 type OperationalRefreshControllerOptions = {
   refresh: (

@@ -812,7 +812,7 @@ export async function uploadPhoto({
       );
     }
     return errorResult(
-      'DAVE could not safely inspect this file. Choose it again and retry.',
+      'ECOS could not safely inspect this file. Choose it again and retry.',
       422,
       'file_size_unavailable',
     );
@@ -1639,6 +1639,34 @@ export async function upsertDAVESyncTombstone(
   return okResult(tombstone, status);
 }
 
+export async function upsertDAVESyncTombstones(
+  tombstones: readonly DAVESyncTombstone[],
+): Promise<SupabaseServiceResult<DAVESyncTombstone[]>> {
+  if (tombstones.length === 0) return okResult([]);
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<DAVESyncTombstone[]>();
+
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  const { error, status } = await client
+    .from(DAVE_SYNC_TOMBSTONES_TABLE)
+    .upsert(
+      tombstones.map(tombstone => ({
+        owner_id: owner.data,
+        entity_type: tombstone.entityType,
+        record_id: tombstone.recordId,
+        deleted_at: tombstone.deletedAt,
+      })),
+      { onConflict: 'owner_id,entity_type,record_id' },
+    );
+
+  if (error) return tableAwareErrorResult<DAVESyncTombstone[]>(error.message, status);
+  return okResult([...tombstones], status);
+}
+
 export async function listDAVESyncTombstones(): Promise<
   SupabaseServiceResult<DAVESyncTombstone[]>
 > {
@@ -1801,7 +1829,7 @@ export async function loadPIERealityModelCloud(
 
 export async function savePIERealityModelCloud(
   model: PIERealityModel,
-  reason = 'Reality Model synchronized from live DAVE authority.',
+  reason = 'Reality Model synchronized from live ECOS authority.',
 ): Promise<SupabaseServiceResult<PIERealityModel>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<PIERealityModel>();

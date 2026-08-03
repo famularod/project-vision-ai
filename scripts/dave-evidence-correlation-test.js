@@ -111,7 +111,10 @@ function photo(id, progress = 'supported') {
       authorityMessage: 'PM verification required.',
       currentObservation: 'Additional installed equipment is visible.',
       priorEvidenceId: 'prior-photo-evidence',
+      assessmentDisposition: 'finding',
+      findings: [{ findingType: 'added', description: 'Additional installed equipment is visible.' }],
       provenance: 'visual_only',
+      userReview: 'confirmed',
       updatedAt: '2026-07-16T13:01:00.000Z',
     },
   };

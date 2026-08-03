@@ -10,6 +10,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 jest.mock('../../services/SupabaseService', () => ({
   listDAVESyncTombstones: jest.fn(),
   upsertDAVESyncTombstone: jest.fn(),
+  upsertDAVESyncTombstones: jest.fn(),
 }));
 
 import {

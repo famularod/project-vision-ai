@@ -351,7 +351,7 @@ const MISSION_DEFINITIONS: Record<PIEMissionType, MissionDefinition> = {
       'Collect the evidence that most improves trust, understanding, and confidence.',
     objectiveTitle: 'Improve project understanding',
     objectiveSummary:
-      'Focus on missing updates, photos, schedule, documents, inspections, relationships, or answers that are limiting DAVE.',
+      'Focus on missing updates, photos, schedule, documents, inspections, relationships, or answers that are limiting ECOS.',
     desiredOutcome:
       'Missing evidence and the first item to verify are clearly identified.',
     expectedImpact:

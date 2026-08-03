@@ -100,7 +100,11 @@ const comparison = {
   status: 'analysis_complete',
   updatedAt: sameTimestamp,
   comparisonConfidence: 'high',
+  comparability: 'strong',
   priorEvidenceId: 'baseline-evidence',
+  assessmentDisposition: 'finding',
+  provenance: 'visual_only',
+  userReview: 'confirmed',
   findings: [{ findingType: 'added', description: 'A tan case appears near the laptop.', confidence: 0.9 }],
 };
 const orderedUpdate = update('ordered-update', sameTimestamp, [

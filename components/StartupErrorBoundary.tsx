@@ -55,7 +55,7 @@ export class StartupErrorBoundary extends Component<
       return (
         <View style={styles.container}>
           <Text style={styles.title}>
-            DAVE could not finish starting.
+            ECOS could not finish starting.
           </Text>
 
           <Text style={styles.body}>

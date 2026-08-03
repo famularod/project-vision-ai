@@ -13,6 +13,10 @@ import {
 } from './DAVEProjectReality';
 import type { DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
 import type { ProjectTimeZone } from './ProjectDateTime';
+import {
+  photoDisplayResultCanInformProject,
+  type PhotoAnalysisLifecycleStatus,
+} from './PhotoAssessment';
 
 export type DAVEEvidenceClass = 'fact' | 'observation' | 'uncertainty';
 export type DAVEBriefSourceType =
@@ -135,7 +139,7 @@ export type DAVEDailyBriefPhotoFinding = {
 };
 
 export type DAVEDailyBriefPhotoResult = {
-  status: string;
+  status: PhotoAnalysisLifecycleStatus;
   visibleChange?: string | null;
   currentObservation?: string | null;
   additions?: string[];
@@ -146,6 +150,8 @@ export type DAVEDailyBriefPhotoResult = {
   captureLimitations?: string[];
   priorUpdateUsed?: string | null;
   priorEvidenceId?: string | null;
+  provenance?: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
+  userReview?: 'confirmed' | 'incorrect' | 'not_useful' | null;
   updatedAt?: string | null;
 };
 
@@ -346,7 +352,7 @@ function buildChangedItems(
   for (const update of updates) {
     for (const photo of update.photos) {
       const result = photo.photoIntelligence;
-      if (!isCompletedComparison(result) || !hasPriorComparison(result)) continue;
+      if (!result || !photoDisplayResultCanInformProject(result)) continue;
       if (timestampMs(result.updatedAt || photo.locationCapturedAt || updateTimestamp(update)) < recentCutoff) continue;
       const observations = safePhotoObservations(result);
       observations.forEach((observation, index) => {
@@ -395,20 +401,7 @@ function buildUncertaintyItems(
   for (const update of updates) {
     for (const photo of update.photos) {
       const result = photo.photoIntelligence;
-      if (result?.status === 'no_suitable_prior_photo') {
-        items.push({
-          id: stableBriefId('uncertainty', update.id, photo.id, 'no-prior-photo'),
-          evidenceClass: 'uncertainty',
-          category: 'missing_verification',
-          text: 'No prior photo is available for comparison.',
-          sourceType: 'photo',
-          sourceRecordId: update.id,
-          timestamp: result.updatedAt || updateTimestamp(update),
-          confidence: null,
-          navigationTarget: 'update_detail',
-          limitations: ['The photo is a baseline and is not evidence of change.'],
-        });
-      } else if (isFailedAnalysis(result)) {
+      if (isFailedAnalysis(result)) {
         items.push({
           id: stableBriefId('uncertainty', update.id, photo.id, 'analysis-unavailable'),
           evidenceClass: 'uncertainty',

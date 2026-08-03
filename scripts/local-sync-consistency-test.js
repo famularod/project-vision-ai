@@ -232,7 +232,8 @@ includes(admin, 'lastFullSyncIssueCount > 0', 'Settings must not show All caught
 assert(!settingsFullSyncHandler.includes('setLastFullSyncIssueCount(1);'), 'full sync exceptions must not invent a one-item retry count');
 includes(admin, 'no pending retry items were found', 'full sync exceptions with an empty queue must explain that no item is pending');
 includes(sync, 'export async function runFieldUpdateCloudSync', 'shared sync service must own field update orchestration');
-includes(sync, 'update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo))', 'shared sync must await photo upload work with diagnostics');
+includes(sync, 'photo => uploadLocalPhotoWithDiagnostics(update, photo)', 'shared sync must await photo upload work with diagnostics');
+includes(sync, 'mapWithBoundedConcurrency(', 'shared sync must bound concurrent photo upload work');
 includes(sync, 'await queueProjectUpdateRecord(cloudRecoverableUpdate, false)', 'shared sync must stage cloud-recoverable update metadata in the durable queue');
 assert(
   sync.indexOf('await queueProjectUpdateRecord(cloudRecoverableUpdate, false)') <

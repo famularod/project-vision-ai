@@ -92,6 +92,9 @@ export type PIEPhotoIntelligenceDisplayState = {
   findings?: PIEPhotoFinding[];
   possibleProgress?: string | null;
   possibleConcerns?: string[];
+  priorPhotoUri?: string | null;
+  userReview?: 'confirmed' | 'incorrect' | 'not_useful' | null;
+  userReviewedAt?: string | null;
   priorUpdateUsed?: string | null;
   requestId?: string | null;
   comparisonId?: string | null;
@@ -383,13 +386,25 @@ export async function analyzeProjectPhotoWithVision({
 }: AnalyzeInput): Promise<PIEPhotoIntelligenceDisplayState> {
   const priorSelectionMetadata = findPriorComparablePhoto(update, photo, priorUpdates);
   if (!priorSelectionMetadata.selected) {
-    return analyzeSingleProjectPhoto({
-      update,
-      photo,
-      retryAttempt,
-      onTargetPrepared,
-      priorSelectionMetadata,
-    });
+    return {
+      ...buildNoSuitablePriorPhotoIntelligenceState(
+        priorSelectionMetadata.candidateCount > 0
+          ? 'This photo is saved as the best available baseline for future comparison.'
+          : 'This first photo is saved for future comparison.',
+      ),
+      diagnostics: buildDiagnostics({
+        currentPhotoPrep: null,
+        selectedPriorPhotoId: null,
+        selectionCandidateCount: priorSelectionMetadata.candidateCount,
+        selectedPriorReason: null,
+        priorSelectionDiagnostics: priorSelectionMetadata.diagnostics,
+        rejectedPriorReasons: priorSelectionMetadata.rejectedReasons,
+        usablePriorCandidateFound: false,
+        skippedPriorCandidateCount: priorSelectionMetadata.skippedCandidateCount,
+        executedStages: ['camera_capture', 'local_image_uri', 'prior_photo_selection', 'baseline_saved_without_ai'],
+        resultProvenance: 'unsupported',
+      }),
+    };
   }
 
   const preparedPair = await prepareSelectedPhotoPair({
@@ -788,26 +803,31 @@ export async function analyzeProjectPhotoWithVision({
 
     executedStages.push('jarvis_result_persisted', 'mobile_result_hydrated', 'user_card_render_ready');
 
-    return buildDisplayStateFromComparison(row, {
-      baselineEvidence,
-      currentEvidence,
-      requestId,
-      providerResponseStatus: providerStatus(functionData),
-      selectedPriorPhotoId: priorSelection.selected.photo.id,
-      priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
-      selectionCandidateCount: priorSelection.candidateCount,
-      selectedPriorReason: priorSelection.selected.reason,
-      priorSelectionDiagnostics: priorSelection.diagnostics,
-      rejectedPriorReasons: priorSelection.rejectedReasons,
-      currentPhotoPrep: currentPrepared,
-      priorPhotoPrep: priorSelection.selected.preparedFile,
-      usablePriorCandidateFound: true,
-      skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
-      executedStages,
-      resultPairMatchesRequestedPair: true,
-      tokenLookup,
-      retryFetchedFreshToken: retryAttempt,
-    });
+    return {
+      ...buildDisplayStateFromComparison(row, {
+        baselineEvidence,
+        currentEvidence,
+        requestId,
+        providerResponseStatus: providerStatus(functionData),
+        selectedPriorPhotoId: priorSelection.selected.photo.id,
+        priorUpdateUsed: priorSelection.selected.update.date || priorSelection.selected.update.id,
+        selectionCandidateCount: priorSelection.candidateCount,
+        selectedPriorReason: priorSelection.selected.reason,
+        priorSelectionDiagnostics: priorSelection.diagnostics,
+        rejectedPriorReasons: priorSelection.rejectedReasons,
+        currentPhotoPrep: currentPrepared,
+        priorPhotoPrep: priorSelection.selected.preparedFile,
+        usablePriorCandidateFound: true,
+        skippedPriorCandidateCount: priorSelection.skippedCandidateCount,
+        executedStages,
+        resultPairMatchesRequestedPair: true,
+        tokenLookup,
+        retryFetchedFreshToken: retryAttempt,
+      }),
+      priorPhotoUri: priorSelection.selected.photo.uri,
+      userReview: null,
+      userReviewedAt: null,
+    };
   } catch (error) {
     const prepError = error instanceof PhotoPreparationError ? error : null;
     if (prepError?.role === 'prior') {

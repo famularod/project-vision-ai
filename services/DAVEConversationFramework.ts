@@ -33,7 +33,7 @@ export function transitionConversation(
   failureReason?: string | null,
 ): DAVEConversationSnapshot {
   if (!DAVE_CONVERSATION_TRANSITIONS[snapshot.state].includes(nextState)) {
-    throw new Error(`Invalid DAVE conversation transition: ${snapshot.state} -> ${nextState}`);
+    throw new Error(`Invalid ECOS conversation transition: ${snapshot.state} -> ${nextState}`);
   }
   return Object.freeze({
     state: nextState,

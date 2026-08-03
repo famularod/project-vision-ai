@@ -50,6 +50,10 @@ import { runDAVECloudMaintenanceIfDue } from './DAVECloudMaintenanceBudget';
 import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
+import {
+  createBoundedTaskRunner,
+  mapWithBoundedConcurrency,
+} from './BoundedConcurrency';
 import type {
   DAVESyncTombstone,
   ProjectArea,
@@ -335,6 +339,22 @@ const PROJECT_PHOTOS_BUCKET = 'project-photos';
 const RECOVERED_PHOTOS_FOLDER = 'dave-recovered-project-photos';
 export const PROJECT_PHOTO_PREVIEW_WIDTH = 960;
 export const PROJECT_PHOTO_PREVIEW_QUALITY = 72;
+export const PROJECT_PHOTO_NETWORK_CONCURRENCY = 3;
+const PROJECT_PHOTO_PREVIEW_CACHE_LIMIT = 256;
+const PROJECT_PHOTO_PREVIEW_USABLE_MS = 9 * 60_000;
+type PhotoSignedUrlResult = Awaited<ReturnType<typeof createPhotoSignedUrl>>;
+type CachedPhotoPreviewSignedUrl = Readonly<{
+  result: PhotoSignedUrlResult;
+  usableUntil: number;
+}>;
+const photoPreviewSigningRunner = createBoundedTaskRunner(
+  PROJECT_PHOTO_NETWORK_CONCURRENCY,
+);
+const photoPreviewSigningInFlight = new Map<
+  string,
+  Promise<CachedPhotoPreviewSignedUrl>
+>();
+const photoPreviewSignedUrlCache = new Map<string, CachedPhotoPreviewSignedUrl>();
 
 export function sanitizeUserFacingSyncMessage(message: string): string {
   if (!message.trim()) return message;
@@ -2794,7 +2814,7 @@ export async function synchronizeLocalData(
       cloudProjectCount: connection.projectCount,
       lastSyncAt: null,
       errors: [
-        `Full cloud sync stopped because DAVE could not verify cross-device deletion history. No local records were uploaded.${
+        `Full cloud sync stopped because ECOS could not verify cross-device deletion history. No local records were uploaded.${
           tombstoneSync.cloudError ? ` ${tombstoneSync.cloudError}` : ''
         }`,
       ],
@@ -3385,8 +3405,12 @@ type ReferenceDocumentUploadSuccess = {
 };
 
 type QueueUploadContext = {
+  projectAreasAuthorityPromise?: ReturnType<typeof listProjectAreas>;
+  projectAreasById?: Map<string, ProjectArea>;
   scheduleItemsAuthorityPromise?: ReturnType<typeof listScheduleItems>;
   scheduleItemsById?: Map<string, ScheduleItem>;
+  referenceDocumentsAuthorityPromise?: ReturnType<typeof listReferenceDocuments>;
+  referenceDocumentsById?: Map<string, ReferenceDocument>;
 };
 
 function pendingUploadOrder(queue: readonly SyncQueueItem[]): SyncQueueItem[] {
@@ -3428,21 +3452,30 @@ async function uploadQueueItem(
 
   if (item.entity === 'project_area') {
     const payload = item.payload as ProjectAreaRecordPayload;
-    const cloud = await listProjectAreas();
+    context.projectAreasAuthorityPromise ??= listProjectAreas();
+    const cloud = await context.projectAreasAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'GPS area authority could not be checked.';
     }
-    const remote = cloud.data.find(area => area.id === payload.id);
+    context.projectAreasById ??= new Map(
+      cloud.data.map(candidate => [candidate.id, candidate]),
+    );
+    const remote = context.projectAreasById.get(payload.id);
     const authoritative = remote
       ? mergeDAVEProjectAreaRecoveryRecords({
           local: [payload.areaData],
           cloud: [remote],
         })[0]
       : payload.areaData;
+    if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
+      return 'uploaded';
+    }
     const result = await upsertProjectArea(authoritative);
-    return result.ok && !result.stubbed
-      ? 'uploaded'
-      : result.error || result.message || 'GPS area sync is waiting for Supabase.';
+    if (result.ok && !result.stubbed) {
+      context.projectAreasById.set(payload.id, authoritative);
+      return 'uploaded';
+    }
+    return result.error || result.message || 'GPS area sync is waiting for Supabase.';
   }
 
   if (item.entity === 'schedule_item') {
@@ -3520,11 +3553,15 @@ async function uploadQueueItem(
 
   if (item.entity === 'reference_document') {
     const payload = item.payload as ReferenceDocumentRecordPayload;
-    const cloud = await listReferenceDocuments();
+    context.referenceDocumentsAuthorityPromise ??= listReferenceDocuments();
+    const cloud = await context.referenceDocumentsAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'Document authority could not be checked.';
     }
-    const remote = cloud.data.find(candidate => candidate.id === payload.id);
+    context.referenceDocumentsById ??= new Map(
+      cloud.data.map(candidate => [candidate.id, candidate]),
+    );
+    const remote = context.referenceDocumentsById.get(payload.id);
     let authoritative = remote
       ? mergeDAVEReferenceDocumentRecoveryRecords({
           local: [payload.documentData],
@@ -3549,12 +3586,14 @@ async function uploadQueueItem(
       };
     }
     const result = await upsertReferenceDocument(authoritative);
-    return result.ok && !result.stubbed
-      ? {
-          outcome: 'uploaded',
-          referenceDocument: authoritative,
-        }
-      : result.error || result.message || 'Document sync is waiting for Supabase.';
+    if (result.ok && !result.stubbed) {
+      context.referenceDocumentsById.set(payload.id, authoritative);
+      return {
+        outcome: 'uploaded',
+        referenceDocument: authoritative,
+      };
+    }
+    return result.error || result.message || 'Document sync is waiting for Supabase.';
   }
 
   return `Unsupported sync entity: ${item.entity}`;
@@ -4325,12 +4364,11 @@ export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectU
     const cloudStoragePath =
       photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
     const transform = projectPhotoPreviewTransform(photo);
-    const signed = await createPhotoSignedUrl(
+    const signedRequest = await createCachedPhotoPreviewSignedUrl(
       cloudStoragePath,
-      600,
-      PROJECT_PHOTOS_BUCKET,
       transform,
     );
+    const signed = signedRequest.result;
     if (!signed.ok || !signed.data || signed.stubbed) {
       return { ...photo, cloudStoragePath };
     }
@@ -4339,7 +4377,7 @@ export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectU
       cloudStoragePath,
       cloudPreviewUri: signed.data,
       cloudPreviewSignedUrlExpiresAt:
-        new Date(Date.now() + 9 * 60_000).toISOString(),
+        new Date(signedRequest.usableUntil).toISOString(),
     };
   }));
   return { ...update, photos };
@@ -4368,6 +4406,51 @@ export function projectPhotoPreviewTransform(
         quality: PROJECT_PHOTO_PREVIEW_QUALITY,
         resize: 'contain',
       };
+}
+
+async function createCachedPhotoPreviewSignedUrl(
+  cloudStoragePath: string,
+  transform: ReturnType<typeof projectPhotoPreviewTransform>,
+): Promise<CachedPhotoPreviewSignedUrl> {
+  const cacheKey = `${cloudStoragePath}|${JSON.stringify(transform || null)}`;
+  const now = Date.now();
+  for (const [key, cached] of photoPreviewSignedUrlCache) {
+    if (cached.usableUntil <= now) photoPreviewSignedUrlCache.delete(key);
+  }
+  const cached = photoPreviewSignedUrlCache.get(cacheKey);
+  if (cached && cached.usableUntil > now) return cached;
+  const inFlight = photoPreviewSigningInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const request = photoPreviewSigningRunner.run(async () => {
+    const result = await createPhotoSignedUrl(
+      cloudStoragePath,
+      600,
+      PROJECT_PHOTOS_BUCKET,
+      transform,
+    );
+    const signed = {
+      result,
+      usableUntil: Date.now() + PROJECT_PHOTO_PREVIEW_USABLE_MS,
+    };
+    if (result.ok && result.data && !result.stubbed) {
+      photoPreviewSignedUrlCache.set(cacheKey, signed);
+      while (photoPreviewSignedUrlCache.size > PROJECT_PHOTO_PREVIEW_CACHE_LIMIT) {
+        const oldestKey = photoPreviewSignedUrlCache.keys().next().value;
+        if (typeof oldestKey !== 'string') break;
+        photoPreviewSignedUrlCache.delete(oldestKey);
+      }
+    }
+    return signed;
+  });
+  photoPreviewSigningInFlight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    if (photoPreviewSigningInFlight.get(cacheKey) === request) {
+      photoPreviewSigningInFlight.delete(cacheKey);
+    }
+  }
 }
 
 async function uploadUpdatePhotosForSync(
@@ -4403,8 +4486,10 @@ async function uploadUpdatePhotosForSync(
     };
   }
 
-  const results = await Promise.all(
-    update.photos.map(photo => uploadLocalPhotoWithDiagnostics(update, photo)),
+  const results = await mapWithBoundedConcurrency(
+    update.photos,
+    PROJECT_PHOTO_NETWORK_CONCURRENCY,
+    photo => uploadLocalPhotoWithDiagnostics(update, photo),
   );
   const failures = results.flatMap((result, index) =>
     result.result !== 'uploaded' && result.result !== 'skipped'

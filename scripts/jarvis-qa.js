@@ -113,6 +113,7 @@ const runtime = readFile('services/PIERuntime.ts');
 const evidenceFusion = readFile('services/PIEEvidenceFusion.ts');
 const scheduleIntelligence = readFile('services/PIEScheduleIntelligence.ts');
 const photoProgress = readFile('services/PIEPhotoProgress.ts');
+const photoAssessment = readFile('services/PhotoAssessment.ts');
 const photoProgressIntelligence = readFile('services/PIEPhotoProgressIntelligence.ts');
 const photoProgressIntelligenceStorage = readFile('services/PIEPhotoProgressIntelligenceStorage.ts');
 const evidenceQuality = readFile('services/PIEEvidenceQuality.ts');
@@ -433,7 +434,7 @@ function buildAppleReviewNotes(scores, counts) {
     notes.push('Run a real-device pass for mission, capture, review, dialogs, and More before TestFlight.');
   }
 
-  notes.push('Confirm every normal screen has one obvious next action and no visible internal PIE terminology.');
+  notes.push('Confirm every normal screen has one obvious next action and no retired branding.');
   notes.push('Review generated project updates for executive tone, owners, locations, and evidence-backed recommendations.');
 
   return [...new Set(notes)].slice(0, 5);
@@ -2079,7 +2080,7 @@ if (
     'lower-level action has failed',
     'timing requires leadership action',
     'evidence is strong enough to justify escalation',
-    'Escalation should wait until DAVE verifies the evidence',
+    'Escalation should wait until ECOS Assurance verifies the evidence',
   ])
 ) {
   pass(
@@ -3426,15 +3427,16 @@ if (
 if (
   fileExists('docs/ECOS_CognitiveFramework.md') &&
   hasAll(ecosCognitiveFrameworkDoc, [
-    'ECOS = Executive Cognitive Operating System',
-    'Cognitive Framework = reusable thinking layer',
-    'PIE = project-specific intelligence engine using the framework',
+    'ECOS = intelligence platform powering Vitruvius',
+    'Cognitive Framework = reusable reasoning layer inside ECOS Core',
+    'ECOS Core = reasoning component that prepares proposals',
+    'ECOS Assurance = independent validation component',
     'User',
-    'App / Interface',
+    'Vitruvius / Interface',
     'ECOS',
     'Cognitive Framework',
-    'Domain Intelligence Engine',
-    'Recommendations / Decisions / Reports',
+    'Project Domain Adapter',
+    'Proposed Recommendations / Decisions / Reports',
     'Observation',
     'Evidence Review',
     'Interpretation',
@@ -3781,7 +3783,8 @@ if (
       'ECOS',
       'Cognitive Framework',
       'Domain Intelligence Engine',
-      'PIE as first domain engine',
+      'ECOS Core',
+      'ECOS Assurance',
       'If a capability is domain-independent, it belongs to ECOS Cognitive Framework.',
       'If it is project-specific, it belongs to PIE.',
       'Apps collect input and display',
@@ -5242,7 +5245,7 @@ if (
 if (
   hasAll(reflectionEngine, [
     'memoryRecall',
-    'Past memory should influence DAVE interpretation',
+    'Past memory should influence ECOS Analysis',
     'User corrections indicate similar future assumptions should be treated carefully',
     'Lower confidence and ask for verification',
   ]) &&
@@ -5929,11 +5932,11 @@ if (
     'walk_completion',
     'daily_reflection',
     'What changed',
-    'What did DAVE previously believe',
-    'Was DAVE wrong',
-    'Was DAVE correct',
+    'What did the prior analysis conclude',
+    'Did later evidence contradict the prior conclusion',
+    'Did later evidence support the prior conclusion',
     'What still needs verification',
-    'What should DAVE do differently next time',
+    'What should the analysis change next time',
   ])
 ) {
   pass(
@@ -6790,55 +6793,47 @@ if (
     'currentPhoto',
     'daysBetween',
     'confidence',
-    'Project',
-    'Area',
-    'GPS proximity',
-    'User-selected comparison',
+    'photoDisplayResultCanBeReviewed',
+    'selectedPriorPhotoId',
+    'Provider-selected prior photo',
+    'userReview',
   ])
 ) {
   pass(
     'Photo comparison service',
-    'Photo comparison service exists and matches by project, area, GPS proximity, time, and user-selected comparison markers.',
+    'Photo comparison service consumes the exact provider-selected raw-pixel pair and its user review state.',
     'services/PIEPhotoProgress.ts',
   );
 } else {
   fail(
     'Photo comparison service',
-    'Photo comparison service or matching markers were not found.',
-    'Create services/PIEPhotoProgress.ts with project, area, GPS proximity, time, user-selected matching, and previous/current comparison output.',
+    'Canonical raw-pixel comparison or review markers were not found.',
+    'Build downstream photo progress only from the provider-selected pair and explicit user review.',
     'services/PIEPhotoProgress.ts',
   );
 }
 
 if (
   hasAll(photoProgress, [
+    'Visible change',
+    'Visible concern',
     'No visible change',
-    'Minor progress',
-    'Moderate progress',
-    'Major progress',
-    'Completed work',
     'Material added',
     'Material removed',
-    'Equipment installed',
-    'Equipment removed',
-    'Housekeeping improved',
-    'Housekeeping declined',
-    'New safety concern',
-    'Safety concern resolved',
     'Could not determine confidently',
-    'No external AI or computer vision was used.',
+    'result.findings',
   ])
 ) {
   pass(
     'Photo comparison summary',
-    'Photo comparison generates bounded change summaries and includes no-fabrication language for low-confidence/local-only comparison.',
+    'Photo comparison summaries are derived from structured raw-pixel findings rather than caption or status guesses.',
     'services/PIEPhotoProgress.ts',
   );
 } else {
   fail(
     'Photo comparison summary',
-    'Bounded change labels or no-fabrication language were not found.',
-    'Generate only approved change labels and state when change cannot be determined confidently.',
+    'Structured visual change labels or provider-finding routing were not found.',
+    'Generate downstream labels only from structured provider findings.',
     'services/PIEPhotoProgress.ts',
   );
 }
@@ -6847,10 +6842,10 @@ if (
   hasAll(photoProgress + runtime, [
     'comparisonConfidence',
     'comparisonNeedsReview',
-    'Does this summary look correct?',
-    'Accept',
-    'Edit',
-    'Reject',
+    'Is this visible finding correct?',
+    'Confirm',
+    'Incorrect',
+    'Not useful',
     'acceptedEvidence',
     'buildPhotoProgressOutputsFromState',
     'photoProgressSummary',
@@ -7029,11 +7024,11 @@ if (
 }
 
 if (
-  hasAll(daveProjectTruth, [
+  hasAll(daveProjectTruth + photoAssessment, [
+    'photoDisplayResultCanInformProject',
     'const hasComparablePrior',
-    'comparisonCompleted',
-    "comparability === 'strong' || comparability === 'probable'",
     'safeVisualEvidence && hasComparablePrior',
+    "result?.userReview === 'confirmed'",
     "evidenceClass: safeVisualEvidence ? 'observation' : intelligence ? 'interpretation' : 'uncertainty'",
     "progressClaim !== 'supported'",
     'No confirmed prior photo is available.',
@@ -8539,14 +8534,14 @@ const missingEvidencePaths = Array.from(new Set(
 if (missingEvidencePaths.length > 0) {
   fail(
     'QA evidence integrity',
-    `JARVIS results cite missing files: ${missingEvidencePaths.join(', ')}.`,
+    `ECOS Assurance results cite missing files: ${missingEvidencePaths.join(', ')}.`,
     'Update each affected result to cite the live implementation or remove the stale check.',
     'scripts/jarvis-qa.js',
   );
 } else {
   pass(
     'QA evidence integrity',
-    'Every concrete file cited by a JARVIS result exists in the current repository.',
+    'Every concrete file cited by an ECOS Assurance result exists in the current repository.',
     'scripts/jarvis-qa.js',
   );
 }
@@ -8568,7 +8563,7 @@ const contractStatus =
 const topProblems = buildTopProblems();
 const appleReviewNotes = buildAppleReviewNotes(categoryScores, counts);
 
-console.log('VIGIL Static Contract Audit');
+console.log('ECOS Assurance Static Contract Audit');
 console.log(`Generated: ${new Date().toISOString()}`);
 console.log(`Contract Status: ${contractStatus}`);
 console.log(
@@ -8577,7 +8572,7 @@ console.log(
 console.log(`Contract Score: ${overallScore}/100`);
 console.log('Runtime behavior: NOT EVALUATED');
 console.log('Physical-device behavior: NOT EVALUATED');
-console.log('Run npm run vigil:qa for the complete automated release gate.');
+console.log('Run npm run ecos:assurance for the complete automated release gate.');
 console.log('');
 
 console.log('Category Scores');

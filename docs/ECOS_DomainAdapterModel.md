@@ -2,11 +2,13 @@
 
 ## Purpose
 
-The ECOS Domain Adapter keeps reusable cognition separate from domain-specific intelligence.
+The ECOS Domain Adapter keeps ECOS Core reasoning separate from project-specific interpretation.
 
 ECOS Cognitive Framework defines how thinking works.
 
-Domain adapters translate domain evidence into ECOS generic cognitive input and translate ECOS cognitive output back into domain-specific intelligence.
+Domain adapters translate project evidence into ECOS Core input and translate
+ECOS Core output back into project-specific proposals. ECOS Assurance validates
+the result independently before any material change can be final.
 
 ## Adapter Flow
 
@@ -64,9 +66,11 @@ Domain engines own domain-specific reasoning and output.
 
 Apps own capture, interaction, approval, and display.
 
-## Current Adapter
+## Current Compatibility Adapter
 
-PIE is the first domain adapter.
+`PIEDomainAdapter` is the legacy internal identifier for the current Vitruvius
+project adapter. It remains temporarily to avoid risky module and contract
+renames; it does not identify a separate user-facing system.
 
 PIE-specific inputs may include:
 
@@ -96,21 +100,10 @@ PIE-specific outputs include:
 - project next best actions
 - report insights
 
-## Future Adapters
-
-Future domain engines should use the same adapter pattern:
-
-- MIE: Manufacturing Intelligence Engine
-- Maintenance Intelligence Engine
-- SIE: Safety Intelligence Engine
-- CIE: Compliance Intelligence Engine
-- FIE: Facilities Intelligence Engine
-- Logistics Intelligence Engine
-
 ## Rule
 
-If a capability is domain-independent, it belongs to ECOS Cognitive Framework.
+If a capability is domain-independent reasoning, it belongs to ECOS Core.
 
 If a capability translates between a domain and ECOS, it belongs to a Domain Adapter.
 
-If a capability is domain-specific reasoning or output, it belongs to the Domain Intelligence Engine.
+If a capability verifies a proposal or durable result, it belongs to ECOS Assurance.

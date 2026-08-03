@@ -1293,7 +1293,7 @@ function questionFromPriority(priority: PIEExecutivePriority) {
     return 'What is the current inspection status?';
   }
   if (includesAny(priority.title, ['location', 'area'])) {
-    return 'Is DAVE using the correct project area?';
+    return 'Is ECOS using the correct project area?';
   }
   if (includesAny(priority.title, ['owner'])) {
     return 'Who owns this open item?';

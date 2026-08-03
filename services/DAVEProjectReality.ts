@@ -245,8 +245,6 @@ function buildUncertainties(
       const status = photo.photoIntelligence?.status;
       if (status === 'analysis_failed_retry' || status === 'comparison_unavailable') {
         items.push(uncertaintyItem(update.id, 'analysis_unavailable', 'Photo analysis is unavailable; no visual conclusion was accepted.'));
-      } else if (status === 'no_suitable_prior_photo') {
-        items.push(uncertaintyItem(update.id, 'no_prior_photo', 'No prior photo is available for visual comparison.'));
       }
     }
   }

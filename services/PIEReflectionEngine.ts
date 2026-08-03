@@ -169,12 +169,12 @@ export type PIEReflectionInput = {
 
 export const PIE_REFLECTION_QUESTIONS = [
   'What changed?',
-  'What did DAVE previously believe?',
-  'Did new evidence strengthen or weaken that belief?',
-  'Was DAVE wrong?',
-  'Was DAVE correct?',
+  'What did the prior analysis conclude?',
+  'Did new evidence strengthen or weaken that conclusion?',
+  'Did later evidence contradict the prior conclusion?',
+  'Did later evidence support the prior conclusion?',
   'What still needs verification?',
-  'What should DAVE do differently next time?',
+  'What should the analysis change next time?',
 ] as const;
 
 export function buildPIEReflection(
@@ -355,13 +355,13 @@ function buildBeliefChanges(
       updatedBelief: strengthened
         ? `${belief.statement} This belief is better supported after ${event.replace(/_/g, ' ')}.`
         : weakened
-          ? `${belief.statement} This belief needs verification before DAVE relies on it.`
+          ? `${belief.statement} This belief needs verification before ECOS relies on it.`
           : belief.statement,
       direction,
       wasPIEWrong: direction === 'weakened' && belief.status === 'contested',
       wasPIECorrect: direction === 'strengthened',
       reason: strengthened
-        ? 'New evidence aligns with existing DAVE understanding.'
+        ? 'New evidence aligns with existing ECOS understanding.'
         : weakened
           ? firstGap?.summary || 'New evidence exposed uncertainty in the current belief.'
           : 'New evidence did not materially change this belief.',
@@ -462,7 +462,7 @@ function buildLessonsLearned(
     lessons.push({
       id: `lesson-memory-${influence.id}`,
       event,
-      lesson: `Past memory should influence DAVE interpretation: ${influence.summary}`,
+      lesson: `Past memory should influence ECOS Analysis: ${influence.summary}`,
       whatPIEShouldDoDifferently:
         influence.influence || 'Compare new evidence against past memory before recommending action.',
       confidence: influence.confidence,
@@ -501,7 +501,7 @@ function buildLessonsLearned(
     lessons.push({
       id: 'lesson-understanding-stable',
       event,
-      lesson: 'New evidence did not weaken DAVE understanding.',
+      lesson: 'New evidence did not weaken ECOS understanding.',
       whatPIEShouldDoDifferently:
         'Continue using the same evidence pattern while watching for stale or missing inputs.',
       confidence: input.overallConfidence,
@@ -524,7 +524,7 @@ function buildRecommendationImprovements(
   return evidence.map((item, index) => ({
     id: `reflection-recommendation-${index}`,
     recommendation: `Collect ${item.toLowerCase()}.`,
-    reason: 'Reflection identified this as the next evidence that would strengthen DAVE understanding.',
+    reason: 'Reflection identified this as the next evidence that would strengthen ECOS understanding.',
     recommendedNextEvidence: item,
   }));
 }
@@ -547,10 +547,10 @@ function buildReflectionSummary(
 
   return {
     summary: decreased
-      ? 'Reflection found weaker confidence and recommends verification before DAVE acts.'
+      ? 'Reflection found weaker confidence and requires verification before any action is applied.'
       : increased
-        ? 'Reflection found stronger evidence support for DAVE understanding.'
-        : 'Reflection found DAVE understanding mostly stable after new evidence.',
+        ? 'Reflection found stronger evidence support for ECOS understanding.'
+        : 'Reflection found ECOS understanding mostly stable after new evidence.',
     whatChanged: [
       input.intelligentSummary.whatChanged,
       input.photoProgress.photoProgressSummary,

@@ -472,13 +472,13 @@ export function ProjectDetailsCard({
 
   const suggestionText = areaSuggestion
     ? areaSuggestion.withinRadius
-      ? `DAVE believes this is ${areaSuggestion.area.name}. Confirm if correct.`
-      : `DAVE found ${areaSuggestion.area.name}, but your GPS is outside the saved radius.`
+      ? `ECOS Analysis identifies this as ${areaSuggestion.area.name}. Confirm if correct.`
+      : `ECOS found ${areaSuggestion.area.name}, but your GPS is outside the saved radius.`
     : savedAreaLocationCount === 0
-      ? 'DAVE is using remembered area context. Area Mapping GPS can be configured from Advanced Configuration.'
+      ? 'ECOS is using remembered area context. Area Mapping GPS can be configured from Advanced Configuration.'
       : savedAreaLocationCount < projectAreas.length
-        ? 'DAVE can suggest areas with saved GPS points. Correct the area only if DAVE is wrong.'
-        : 'DAVE can refresh GPS when the area needs verification.';
+        ? 'ECOS can suggest areas with saved GPS points. Correct the area only if ECOS is wrong.'
+        : 'ECOS can refresh GPS when the area needs verification.';
 
   return (
     <View style={styles.locationPanel}>
@@ -493,7 +493,7 @@ export function ProjectDetailsCard({
 
         <View style={styles.rowMain}>
           <Text style={styles.panelTitle}>
-            DAVE Location Context
+            ECOS Location Context
           </Text>
 
           <Text style={styles.rowSub}>
@@ -534,7 +534,7 @@ export function ProjectDetailsCard({
       <View style={styles.locationActionRow}>
         {areaSuggestion ? (
           <PrimaryButton
-            label="Confirm DAVE Area"
+            label="Confirm ECOS Area"
             icon="checkmark-circle-outline"
             onPress={onConfirmArea}
             compact

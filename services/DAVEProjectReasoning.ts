@@ -214,7 +214,7 @@ function buildConnections(
       reason = 'The recorded finish date has passed while the task remains open.';
     } else if (evidence.kind !== 'schedule' && evidence.stance === 'in_progress') {
       relationship = 'changes';
-      reason = 'New field evidence changes DAVE’s understanding of task progress.';
+      reason = 'New field evidence changes the ECOS Analysis of task progress.';
     }
     return Object.freeze({
       id: `reasoning-connection:${item.id}:${evidence.id}:${relationship}`,
@@ -260,7 +260,7 @@ function challengeConclusion(
 ) {
   const challenges: DAVEReasoningChallenge[] = [];
   const external = correlation.evidence.filter(value => value.kind !== 'schedule');
-  if (!external.length) challenges.push(challenge(item.id, 'missing_evidence', 'What current field evidence confirms the schedule status?', 'DAVE cannot distinguish an accurate schedule from a stale one.', 'One current field update or task-connected photo.'));
+  if (!external.length) challenges.push(challenge(item.id, 'missing_evidence', 'What current field evidence confirms the schedule status?', 'ECOS cannot distinguish an accurate schedule from a stale one.', 'One current field update or task-connected photo.'));
   if (correlation.conclusion === 'conflicting_evidence') challenges.push(challenge(item.id, 'source_conflict', 'Which source reflects the current field condition?', 'Acting on the wrong source could close unfinished work or chase already completed work.', 'A PM inspection, current verification photo, or explicit correction.'));
   if (external.some(value => isStale(value.recordedAt, now))) challenges.push(challenge(item.id, 'stale_evidence', 'Has the condition changed since the latest supporting evidence?', 'Old evidence may support a conclusion that is no longer true.', 'One current status confirmation from the responsible owner.'));
   if (external.some(value => value.authority === 'observed')) challenges.push(challenge(item.id, 'alternative_explanation', 'Could the photograph show only visible partial scope?', 'Hidden connections, testing, inspection, and acceptance criteria may remain.', 'A closeout record or PM verification of the full task scope.'));
@@ -305,7 +305,7 @@ function recommendationFor(
   const pmNextAction = clean(item.nextAction);
   if (correlation.conclusion === 'verified_complete') return { action: 'Preserve the verification and monitor downstream work.', owner, timing: 'No immediate action', consequenceOfInaction: 'No immediate consequence is identified from this task.', smallestNextAction: 'Confirm the next dependent activity is ready.' };
   if (correlation.needsVerification || challenges.length) return { action: correlation.requestedAction || 'Verify the current task condition.', owner: 'Project manager', timing, consequenceOfInaction: isOverdue(item, new Date(now), projectTimeZone) ? 'The project may continue relying on an overdue or incorrect task status.' : 'Downstream decisions may rely on an unsupported task status.', smallestNextAction: smallest };
-  return { action: pmNextAction || 'Continue the planned work and capture the next material change.', owner, timing, consequenceOfInaction: 'DAVE may lose visibility into progress and emerging delay.', smallestNextAction: pmNextAction || smallest };
+  return { action: pmNextAction || 'Continue the planned work and capture the next material change.', owner, timing, consequenceOfInaction: 'ECOS may lose visibility into progress and emerging delay.', smallestNextAction: pmNextAction || smallest };
 }
 
 function outcomeLearningCues(item: ScheduleItem) {

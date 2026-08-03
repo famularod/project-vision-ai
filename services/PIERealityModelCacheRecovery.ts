@@ -45,7 +45,7 @@ export async function recoverLegacyPIERealityModelCache(): Promise<PIERealityMod
   await AsyncStorage.multiRemove(legacyKeys);
   const remainingLegacyKeys = (await AsyncStorage.getAllKeys()).filter(isLegacyRealityCacheKey);
   if (remainingLegacyKeys.length > 0) {
-    throw new Error('Derived DAVE Reality Model cache cleanup could not be verified.');
+    throw new Error('Derived ECOS Reality Model cache cleanup could not be verified.');
   }
 
   return {

@@ -242,8 +242,8 @@ export function runPIEScientificMethod(
 function buildQuestion(input: PIEScientificMethodInput): PIEScientificQuestion {
   return {
     id: 'scientific-question',
-    question: `What should DAVE recommend for ${input.runtime.projectName} right now?`,
-    whyItMatters: 'DAVE should make important recommendations only after evidence, hypothesis, self-challenge, uncertainty, and explanation are reviewed.',
+    question: `What should ECOS recommend for ${input.runtime.projectName} right now?`,
+    whyItMatters: 'Important recommendations require review of evidence, hypotheses, challenges, uncertainty, and explanation.',
   };
 }
 
@@ -363,7 +363,7 @@ function generateHypotheses(
   return [
     {
       id: 'hypothesis-primary',
-      statement: `If DAVE recommends "${primary}", the user will reduce the most important uncertainty or risk.`,
+      statement: `If ECOS recommends "${primary}", the user will reduce the most important uncertainty or risk.`,
       supportingEvidence: evidence.filter(item => item.supports.length > 0).map(item => item.summary).slice(0, 5),
       contradictingEvidence: evidence.filter(item => item.contradicts.length > 0).map(item => item.summary).slice(0, 5),
       readiness: input.deliberation?.recommendationReadiness || readinessFromConfidence(input.runtime.overallConfidence),
@@ -372,7 +372,7 @@ function generateHypotheses(
     },
     {
       id: 'hypothesis-verify-first',
-      statement: 'If DAVE verifies the weakest assumption first, the final recommendation will be more reliable.',
+      statement: 'If ECOS verifies the weakest assumption first, the final recommendation will be more reliable.',
       supportingEvidence: input.deliberation?.missingEvidence || input.runtime.recommendedEvidence,
       contradictingEvidence: [],
       readiness: 'Needs Verification',
@@ -382,7 +382,7 @@ function generateHypotheses(
     patternMatch
       ? {
           id: 'hypothesis-pattern',
-          statement: `If this condition matches "${patternMatch.pattern.title}", DAVE should account for what happened historically before recommending action.`,
+          statement: `If this condition matches "${patternMatch.pattern.title}", the historical outcome must be considered before recommending action.`,
           supportingEvidence: patternMatch.pattern.evidence.map(item => item.summary).slice(0, 5),
           contradictingEvidence: patternMatch.pattern.outcome.outcome === 'unknown'
             ? ['Historical outcome is not confirmed.']
@@ -406,7 +406,7 @@ function challengeHypotheses(
       input.runtime.evidenceConflicts[0]?.summary ||
       'No direct contradiction surfaced yet.';
     const weakestAssumption = input.deliberation?.assumptions[0]?.assumption ||
-      'DAVE assumes Runtime evidence is current.';
+      'ECOS assumes Runtime evidence is current.';
     const verifyFirst = input.deliberation?.missingEvidence[0] ||
       input.patternIntelligence?.earlyWarnings[0]?.whatToVerify ||
       hypothesis.testNeeded ||
@@ -542,7 +542,7 @@ function buildExplanation(
   uncertainty: PIEUncertainty[],
 ): PIEScientificExplanation {
   return {
-    summary: `${decision.selectedAction} is ${decision.readiness}. DAVE selected this after reviewing evidence, hypotheses, alternatives, uncertainty, and self-challenge.`,
+    summary: `${decision.selectedAction} is ${decision.readiness}. ECOS selected this after reviewing evidence, hypotheses, alternatives, uncertainty, and self-challenge.`,
     evidenceTrace: evidence.slice(0, 6).map(item => item.summary),
     uncertainty: uncertainty.slice(0, 4).map(item => item.uncertainty),
     whatWouldChangeThis: input.deliberation?.whatWouldChangeRecommendation ||
@@ -569,9 +569,9 @@ function buildScientificReflection(
   decision: PIEScientificDecision,
 ): PIEScientificReflection {
   return {
-    reflectionPrompt: `Did the decision "${decision.selectedAction}" improve DAVE understanding or require correction?`,
+    reflectionPrompt: `Did the decision "${decision.selectedAction}" improve ECOS understanding or require correction?`,
     outcomeQuestions: [
-      'Was DAVE right or wrong?',
+      'Did later evidence support or contradict the prior conclusion?',
       'Did the user correct the recommendation?',
       'Did the recommended evidence reduce uncertainty?',
       'Should future confidence increase or decrease?',

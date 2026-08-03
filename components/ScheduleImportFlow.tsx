@@ -325,7 +325,7 @@ export function ScheduleImportFlow({
             ) : null}
             {pendingBatch ? (
               <Text style={styles.bulkSaveText}>
-                Review Project, Area, Task, Dates, Status, and Owner. Accept only the activities you want DAVE to use.
+                Review Project, Area, Task, Dates, Status, and Owner. Accept only the activities you want ECOS to use.
               </Text>
             ) : null}
 
@@ -385,7 +385,7 @@ export function ScheduleImportFlow({
                         <View style={styles.verificationNotice}>
                           <Text style={styles.verificationTitle}>Completion is not verified</Text>
                           <Text style={styles.bulkSaveText}>
-                            DAVE will preserve this source as a completion report. The schedule will change to Complete only after PM confirmation or supporting evidence.
+                            ECOS will preserve this source as a completion report. The schedule will change to Complete only after PM confirmation or supporting evidence.
                           </Text>
                         </View>
                       ) : null}

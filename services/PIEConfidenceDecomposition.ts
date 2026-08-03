@@ -73,7 +73,7 @@ export function decomposePIERecommendationConfidence(
     name: 'overall_recommendation',
     level: overallLevel,
     score: Math.min(average, scoreForLevel(input.executiveJudgment.confidence)),
-    explanation: `Overall recommendation confidence is bounded by Executive Judgment, evidence quality, simulation robustness, and JARVIS validation.`,
+    explanation: `Overall recommendation confidence is bounded by Executive Judgment, evidence quality, simulation robustness, and ECOS Assurance validation.`,
     loweringFactors: components.flatMap(component => component.loweringFactors).slice(0, 6),
   };
   const allComponents = [...components, overall];

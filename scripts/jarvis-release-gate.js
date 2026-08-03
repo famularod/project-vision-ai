@@ -105,7 +105,7 @@ function buildReleaseManifest({
 
   return {
     schemaVersion: 1,
-    gate: 'VIGIL Automated Release Gate',
+    gate: 'ECOS Assurance Automated Release Gate',
     identity: evidencePolicy.identity,
     startedAt,
     finishedAt,
@@ -168,7 +168,7 @@ function runReleaseGate(env = process.env) {
   const results = [];
   const globalTimeout = env.VIC_LAYER_TIMEOUT_MS;
 
-  console.log('VIGIL Automated Release Gate');
+  console.log('ECOS Assurance Automated Release Gate');
   console.log(`Started: ${startedAt}`);
   console.log('This gate runs automated evidence. It does not certify physical-device behavior.');
   console.log('');
@@ -225,7 +225,7 @@ function runReleaseGate(env = process.env) {
   });
   writeManifest(manifest);
 
-  console.log('\nVIGIL Automated Gate Summary');
+  console.log('\nECOS Assurance Automated Gate Summary');
   results.forEach(result => {
     console.log(
       `${result.status.toUpperCase()} ${result.label} (${(result.durationMs / 1000).toFixed(1)}s)`,

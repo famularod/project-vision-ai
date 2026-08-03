@@ -14,6 +14,13 @@ export type SupabaseCollectionPageRequest = Readonly<{
   includeExactCount: boolean;
 }>;
 
+export type SupabaseCollectionPaginationOptions = Readonly<{
+  /** Exact counts make PostgreSQL scan the whole matching set. Operational
+   * reads stop on a short page instead and request a count only when a caller
+   * explicitly needs count-mismatch diagnostics. */
+  requestExactCount?: boolean;
+}>;
+
 export type SupabaseCollectionResult<T> =
   | Readonly<{
       ok: true;
@@ -35,6 +42,7 @@ export async function paginateSupabaseCollection<T>(
     request: SupabaseCollectionPageRequest,
   ) => Promise<SupabaseCollectionPage<T>>,
   pageSize = SUPABASE_COLLECTION_PAGE_SIZE,
+  options: SupabaseCollectionPaginationOptions = {},
 ): Promise<SupabaseCollectionResult<T>> {
   if (!Number.isInteger(pageSize) || pageSize < 1) {
     throw new Error('Supabase collection page size must be a positive integer.');
@@ -49,7 +57,7 @@ export async function paginateSupabaseCollection<T>(
     const response = await fetchPage({
       from,
       to: from + pageSize - 1,
-      includeExactCount: page === 0,
+      includeExactCount: options.requestExactCount === true && page === 0,
     });
     lastStatus = response.status ?? lastStatus;
 

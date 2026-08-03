@@ -51,6 +51,11 @@ export type PhotoAssessmentDisplayResult = Readonly<{
   additions?: readonly unknown[] | null;
   removals?: readonly unknown[] | null;
   currentObservation?: string | null;
+  priorUpdateUsed?: string | null;
+  priorEvidenceId?: string | null;
+  comparability?: string | null;
+  provenance?: 'visual_only' | 'caption_only' | 'visual_and_caption' | 'inferred' | 'unsupported';
+  userReview?: 'confirmed' | 'incorrect' | 'not_useful' | null;
 }>;
 
 export type PhotoProjectProgress =
@@ -127,7 +132,7 @@ export function derivePhotoAssessmentDisposition({
 /**
  * Converts only the validated authority decision into mobile project progress.
  * Raw provider conclusions are observations, not an authority fallback: a
- * blocked or missing JARVIS disposition must remain unable to determine.
+ * blocked or missing ECOS Assurance disposition must remain unable to determine.
  */
 export function photoProjectProgressFromAuthority(
   disposition: string | null | undefined,
@@ -151,6 +156,70 @@ export function photoDisplayResultHasExplicitFinding(
     result.additions?.length ||
     result.removals?.length,
   );
+}
+
+export function photoDisplayResultHasActionableFinding(
+  result: PhotoAssessmentDisplayResult | null | undefined,
+) {
+  if (!photoDisplayResultHasExplicitFinding(result)) return false;
+  const structuredFindings = result?.findings ?? [];
+  if (structuredFindings.length === 0) return true;
+
+  return structuredFindings.some(finding => {
+    if (!finding || typeof finding !== 'object') return true;
+    return (finding as { findingType?: unknown }).findingType !== 'uncertain';
+  });
+}
+
+export function photoDisplayResultHasCompletedComparablePair(
+  result: PhotoAssessmentDisplayResult | null | undefined,
+) {
+  if (!result) return false;
+  const completed =
+    result.status === 'analysis_complete' ||
+    result.status === 'completed_with_limitations';
+  const hasPrior = Boolean(result.priorUpdateUsed || result.priorEvidenceId);
+  const comparability = result.comparability?.trim().toLowerCase();
+
+  return completed && hasPrior && (comparability === 'strong' || comparability === 'probable');
+}
+
+export function photoDisplayResultIsVisuallyGrounded(
+  result: PhotoAssessmentDisplayResult | null | undefined,
+) {
+  return result?.provenance === 'visual_only' || result?.provenance === 'visual_and_caption';
+}
+
+/**
+ * A result may be shown for user review only when the provider completed a
+ * trustworthy image pair and returned an explicit visible finding. Metadata,
+ * captions, and a completed request alone never create a reviewable finding.
+ */
+export function photoDisplayResultIsReviewCandidate(
+  result: PhotoAssessmentDisplayResult | null | undefined,
+) {
+  return Boolean(
+    photoDisplayResultHasCompletedComparablePair(result) &&
+      photoDisplayResultIsVisuallyGrounded(result) &&
+      photoDisplayResultHasActionableFinding(result),
+  );
+}
+
+export function photoDisplayResultCanBeReviewed(
+  result: PhotoAssessmentDisplayResult | null | undefined,
+) {
+  return Boolean(
+    photoDisplayResultIsReviewCandidate(result) &&
+      result?.userReview !== 'incorrect' &&
+      result?.userReview !== 'not_useful',
+  );
+}
+
+/** Only an explicitly confirmed raw-pixel finding can inform project outputs. */
+export function photoDisplayResultCanInformProject(
+  result: PhotoAssessmentDisplayResult | null | undefined,
+) {
+  return photoDisplayResultIsReviewCandidate(result) && result?.userReview === 'confirmed';
 }
 
 export function aggregatePhotoDisplayResults(

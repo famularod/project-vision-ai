@@ -3,32 +3,19 @@ const path = require('path');
 const ts = require('typescript');
 
 const repoRoot = path.resolve(__dirname, '..');
-const sourceRoots = ['App.tsx', 'components', 'providers', 'screens', 'services'];
-const sourceFiles = [];
-const visibleDaveFiles = new Set([
+const sourceRoots = [
   'App.tsx',
-  'screens/AdminScreen.tsx',
-  'screens/ReportsScreen.tsx',
-  'components/DAVEAskExperience.tsx',
-  'components/DAVETypedCaptureSheet.tsx',
-  'components/DAVEVoiceCaptureSheet.tsx',
-  'components/DAVECaptureConfirmationSheet.tsx',
-  'components/DAVECaptureMemoryDetailSheet.tsx',
-  'components/PIEPanel.tsx',
-  'services/DAVEDailyBrief.ts',
-  'services/DAVEProjectReality.ts',
-  'services/DAVEProjectEvidenceQuality.ts',
-  'services/PIEAttentionEngine.ts',
-  'services/PIEConversationEngine.ts',
-  'services/PIEDecisionEngine.ts',
-  'services/PIEEvidenceFusion.ts',
-  'services/PIEExperienceEngine.ts',
-  'services/PIEMissingEvidence.ts',
-  'services/PIEPhotoVisionMobileWorkflow.ts',
-  'services/PIEReporter.ts',
-  'services/PIEScheduleReconciliation.ts',
-  'services/ProjectIntelligenceEngine.ts',
-]);
+  'entry.ts',
+  'entry.web.ts',
+  'app',
+  'components',
+  'providers',
+  'screens',
+  'services',
+];
+const sourceFiles = [];
+const retiredBrandPattern = /\b(?:DAVE|JARVIS|PIE)\b|Project Vision AI|Project Photo Update Tool/;
+const humanStyleEcosPattern = /ECOS (?:believes|thinks|knows|remembers|sees|does not see)|What does ECOS know|What is ECOS assuming|Was ECOS (?:wrong|correct)|corrected ECOS/;
 
 function collectSourceFiles(relativePath) {
   const absolutePath = path.join(repoRoot, relativePath);
@@ -46,7 +33,7 @@ function collectSourceFiles(relativePath) {
 sourceRoots.forEach(collectSourceFiles);
 
 const violations = [];
-const visibleDaveViolations = [];
+const humanStyleViolations = [];
 for (const relativePath of sourceFiles) {
   const absolutePath = path.join(repoRoot, relativePath);
   const source = fs.readFileSync(absolutePath, 'utf8');
@@ -70,18 +57,21 @@ for (const relativePath of sourceFiles) {
       (ts.isImportDeclaration(node.parent) && node.parent.moduleSpecifier === node) ||
       (ts.isExportDeclaration(node.parent) && node.parent.moduleSpecifier === node)
     );
-    if (isUserReadableText && /\bPIE\b/.test(node.text)) {
+    if (
+      isUserReadableText &&
+      !isModuleSpecifier &&
+      retiredBrandPattern.test(node.text)
+    ) {
       const location = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
       violations.push(`${relativePath}:${location.line + 1}`);
     }
     if (
-      visibleDaveFiles.has(relativePath) &&
       isUserReadableText &&
       !isModuleSpecifier &&
-      /\bDAVE\b/.test(node.text)
+      humanStyleEcosPattern.test(node.text)
     ) {
       const location = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-      visibleDaveViolations.push(`${relativePath}:${location.line + 1}`);
+      humanStyleViolations.push(`${relativePath}:${location.line + 1}`);
     }
     ts.forEachChild(node, visit);
   }
@@ -89,15 +79,15 @@ for (const relativePath of sourceFiles) {
   visit(sourceFile);
 }
 
-if (visibleDaveViolations.length > 0) {
+if (violations.length > 0) {
   throw new Error(
-    `Functional UI copy should describe the capability instead of repeating DAVE:\n${visibleDaveViolations.join('\n')}`,
+    `Retired branding remains in user-readable source text:\n${violations.join('\n')}`,
   );
 }
 
-if (violations.length > 0) {
+if (humanStyleViolations.length > 0) {
   throw new Error(
-    `Visible legacy PIE branding remains in user-readable source text:\n${violations.join('\n')}`,
+    `ECOS is presented as a human-style assistant in user-readable text:\n${humanStyleViolations.join('\n')}`,
   );
 }
 
@@ -108,8 +98,35 @@ for (const expectedLabel of [
   'Photo status',
 ]) {
   if (!app.includes(expectedLabel)) {
-    throw new Error(`Expected consolidated DAVE label is missing: ${expectedLabel}`);
+    throw new Error(`Expected consolidated ECOS label is missing: ${expectedLabel}`);
   }
 }
 
-console.log('DAVE brand consolidation tests passed.');
+const productBrand = fs.readFileSync(path.join(repoRoot, 'product-brand.ts'), 'utf8');
+for (const expectedContract of [
+  'Vitruvius Project Intelligence, powered by ECOS.',
+  "core: 'ECOS Core'",
+  "assurance: 'ECOS Assurance'",
+  'coreMayApproveOwnWork: false',
+  'assuranceIsIndependent: true',
+]) {
+  if (!productBrand.includes(expectedContract)) {
+    throw new Error(`Canonical ECOS contract is missing: ${expectedContract}`);
+  }
+}
+
+const architectureDoc = fs.readFileSync(
+  path.join(repoRoot, 'docs/VITRUVIUS_ECOS_NAMING_AND_ARCHITECTURE.md'),
+  'utf8',
+);
+for (const expectedArchitectureRule of [
+  'ECOS Core must not approve its own work.',
+  'ECOS Assurance independently verifies:',
+  'Vitruvius is the product. ECOS is the intelligence system. ECOS Core reasons.',
+]) {
+  if (!architectureDoc.includes(expectedArchitectureRule)) {
+    throw new Error(`Canonical architecture documentation is missing: ${expectedArchitectureRule}`);
+  }
+}
+
+console.log('Vitruvius and ECOS naming contract tests passed.');

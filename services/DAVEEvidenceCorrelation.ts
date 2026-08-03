@@ -11,6 +11,7 @@ import {
   parseDAVEAssertions,
 } from './DAVEAssertionParser';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 
 export const DAVE_EVIDENCE_CORRELATION_VERSION = 'dave-evidence-correlation/1.0' as const;
 
@@ -317,6 +318,7 @@ function scheduleClaim(item: ScheduleItem): DAVETaskEvidenceClaim {
 
 function photoClaim(update: ProjectUpdate, photo: UpdatePhoto): DAVETaskEvidenceClaim {
   const intelligence = photo.photoIntelligence;
+  const confirmedVisualFinding = photoDisplayResultCanInformProject(intelligence);
   const visuallyGrounded = intelligence?.provenance === 'visual_only' ||
     intelligence?.provenance === 'visual_and_caption';
   const comparability = clean(intelligence?.comparability)?.toLowerCase();
@@ -328,12 +330,12 @@ function photoClaim(update: ProjectUpdate, photo: UpdatePhoto): DAVETaskEvidence
     (intelligence?.priorUpdateUsed || intelligence?.priorEvidenceId) &&
     (comparability === 'strong' || comparability === 'probable'),
   );
-  const progressSupported = visuallyGrounded &&
+  const progressSupported = confirmedVisualFinding && visuallyGrounded &&
     comparablePair &&
     intelligence?.projectProgress === 'supported';
-  const summary = clean(intelligence?.currentObservation) ||
-    clean(intelligence?.changedFromPrior) ||
-    clean(intelligence?.visibleChange) ||
+  const summary = (confirmedVisualFinding ? clean(intelligence?.currentObservation) : null) ||
+    (confirmedVisualFinding ? clean(intelligence?.changedFromPrior) : null) ||
+    (confirmedVisualFinding ? clean(intelligence?.visibleChange) : null) ||
     clean(photo.caption) ||
     'A task-connected field photo is available.';
   return {

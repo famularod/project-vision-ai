@@ -72,14 +72,14 @@ export class DAVEAskHistoryPersistenceError extends Error {
   constructor(code: DAVEAskHistoryPersistenceError['code'], cause?: unknown) {
     super(
       code === 'corrupt_history'
-        ? 'Saved DAVE Ask history is corrupt.'
+        ? 'Saved ECOS Ask history is corrupt.'
         : code === 'corrupt_journal'
-          ? 'The pending DAVE Ask history journal is corrupt.'
+          ? 'The pending ECOS Ask history journal is corrupt.'
           : code === 'journal_conflict'
-            ? 'The pending DAVE Ask history journal conflicts with saved history.'
+            ? 'The pending ECOS Ask history journal conflicts with saved history.'
             : code === 'read_failed'
-              ? 'Saved DAVE Ask history could not be read.'
-              : 'DAVE Ask history could not be saved.',
+              ? 'Saved ECOS Ask history could not be read.'
+              : 'ECOS Ask history could not be saved.',
     );
     this.name = 'DAVEAskHistoryPersistenceError';
     this.code = code;

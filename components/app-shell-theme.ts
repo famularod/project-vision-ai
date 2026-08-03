@@ -240,6 +240,53 @@ export const styles = StyleSheet.create({
     marginTop: 12,
   },
 
+  photoComparisonPreviewRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 10,
+  },
+
+  photoComparisonPreviewItem: {
+    flex: 1,
+    gap: 5,
+  },
+
+  photoComparisonPreviewImage: {
+    width: '100%',
+    aspectRatio: 1.35,
+    borderRadius: 8,
+    backgroundColor: colors.line,
+  },
+
+  photoComparisonPreviewLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+
+  photoComparisonReviewRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+
+  photoComparisonReviewActionSelected: {
+    backgroundColor: colors.primary,
+  },
+
+  photoComparisonReviewActionTextSelected: {
+    color: '#FFFFFF',
+  },
+
+  photoComparisonDetailsButton: {
+    minHeight: VITRUVIUS_NATIVE_MIN_TOUCH_TARGET,
+    alignSelf: 'flex-start',
+    justifyContent: 'center',
+    marginTop: 6,
+  },
+
   areaChipWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',

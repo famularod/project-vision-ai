@@ -987,6 +987,7 @@ export function buildRuntime(
       intelligentSummary: evidenceFusionOutputs.intelligentSummary,
       fusedEvidence: evidenceFusionOutputs.fusedEvidence,
       photoProgressSummary: photoProgressOutputs.photoProgressSummary,
+      photoProgress: photoProgressOutputs.photoProgress,
       recommendedWalkAreas: scheduleOutputs.recommendedWalkAreas,
     },
     generatedAt: new Date(engineState.generatedAt),
@@ -1379,7 +1380,7 @@ function buildExecutiveOutputsFromState(
           confidence: photoProgressOutputs.comparisonConfidence,
           userApprovalRequired: photoProgressOutputs.comparisonNeedsReview,
           suggestedNextAction: photoProgressOutputs.comparisonNeedsReview
-            ? 'Does this summary look correct? Accept, edit, or reject.'
+            ? 'Confirm the visible finding, mark it incorrect, or mark it not useful.'
             : 'Use accepted photo progress in Review and Combined Update.',
         }
       : null;
@@ -1389,7 +1390,7 @@ function buildExecutiveOutputsFromState(
       ? {
           id: `photo-progress-question-${runtimeSlug(photoProgressOutputs.lastComparison.id)}`,
           projectName: state.projectName,
-          question: 'Does this summary look correct?',
+          question: 'Is this visible finding correct?',
           reason:
             'User verification is needed before using photo comparison as project evidence.',
           priority: 'medium',
@@ -1812,7 +1813,7 @@ function buildEvidenceFusionRecommendations(
     impact:
       firstConflict?.summary ||
       firstHighGap?.summary ||
-      'Fused evidence improves DAVE reliability across schedule, field photos, GPS, and updates.',
+      'Fused evidence improves ECOS reliability across schedule, field photos, GPS, and updates.',
     suggestedNextAction:
       firstConflict?.suggestedAction ||
       firstHighGap?.suggestedAction ||
@@ -1848,7 +1849,7 @@ function buildPhotoProgressRecommendations(
     impact:
       'Photo progress comparison can explain what changed between current and previous project photos after user verification.',
     suggestedNextAction: progress.comparisonNeedsReview
-      ? 'Ask: Does this summary look correct? Accept, edit, or reject before using it as project evidence.'
+      ? 'Ask the user to confirm the visible finding, mark it incorrect, or mark it not useful before using it as project evidence.'
       : 'Include accepted photo progress in Review and Combined Update context.',
     requiresApproval: progress.comparisonNeedsReview,
   }];
@@ -1888,7 +1889,7 @@ function buildInsightsFromState(
     projectName: state.projectName,
     title: 'Project Story Highlight',
     summary: highlight,
-    whyItMatters: 'This helps DAVE explain what changed and what matters now.',
+    whyItMatters: 'This helps ECOS explain what changed and what matters now.',
     source: 'event-engine' as const,
     confidence: eventConfidence(state.projectEvents),
     priority: 'medium' as const,
@@ -1901,7 +1902,7 @@ function buildInsightsFromState(
     title: response.title,
     summary: response.summary,
     whyItMatters:
-      'The Conversation Engine synthesized current DAVE state into user-facing project-manager language.',
+      'The Conversation Engine synthesized current ECOS state into user-facing project-manager language.',
     source: 'conversation-engine' as const,
     confidence: response.confidence,
     priority: response.confidence === 'low' ? 'medium' as const : 'low' as const,
@@ -1945,7 +1946,7 @@ function buildUnknownsFromState(
           summary: photoProgressOutputs.photoProgressSummary,
           impact:
             'Photo comparison output should not be treated as project evidence until the user accepts or edits it.',
-          suggestedAction: 'Does this summary look correct? Accept, edit, or reject.',
+          suggestedAction: 'Confirm the visible finding, mark it incorrect, or mark it not useful.',
           source: 'photo-progress' as const,
           confidence: photoProgressOutputs.comparisonConfidence,
           priority: 'medium' as const,
@@ -1960,7 +1961,7 @@ function buildUnknownsFromState(
         title: 'Communication Context Missing',
         summary: item,
         impact:
-          'DAVE may not have enough context to prepare a complete stakeholder update.',
+          'ECOS may not have enough context to prepare a complete stakeholder update.',
         suggestedAction: item,
         source: 'intelligence-engine' as const,
         confidence: state.intelligence.communicationReadiness.confidence,
@@ -1988,7 +1989,7 @@ function buildUnknownsFromState(
       ? [{
           id: 'runtime-no-evidence',
           projectName: state.projectName,
-          title: 'No DAVE Evidence Yet',
+          title: 'No ECOS Evidence Yet',
           summary:
             'The current local data has no field evidence for this project.',
           impact:
@@ -2018,7 +2019,7 @@ function buildUnknownsFromState(
       title: blocker.title,
       summary: blocker.summary,
       impact:
-        'This blocker limits DAVE progress on the current mission.',
+        'This blocker limits ECOS progress on the current mission.',
       suggestedAction: blocker.suggestedAction,
       source: 'mission-engine' as const,
       confidence: blocker.confidence,
@@ -2064,7 +2065,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-evidence-fusion',
       projectName: state.projectName,
-      statement: `DAVE fused schedule, photo, GPS, and update evidence into a ${intelligentSummary.projectStatus.toLowerCase()} summary.`,
+      statement: `ECOS fused schedule, photo, GPS, and update evidence into a ${intelligentSummary.projectStatus.toLowerCase()} summary.`,
       confidence: fusedSummary.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2111,7 +2112,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-current-mission',
       projectName: state.projectName,
-      statement: `DAVE's current mission is ${currentMission.title}.`,
+      statement: `The current ECOS mission is ${currentMission.title}.`,
       confidence: currentMission.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2179,7 +2180,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-project-health',
       projectName: state.projectName,
-      statement: `DAVE currently believes project health is ${state.intelligence.healthStatus}.`,
+      statement: `ECOS currently believes project health is ${state.intelligence.healthStatus}.`,
       confidence: healthSignal.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2208,7 +2209,7 @@ function buildBeliefsFromState(
       projectName: state.projectName,
       statement:
         state.intelligence.metrics.scheduleItemCount > 0
-          ? `DAVE currently believes schedule status is ${state.intelligence.scheduleStatus}.`
+          ? `ECOS currently believes schedule status is ${state.intelligence.scheduleStatus}.`
           : 'There is not enough schedule evidence to confirm schedule status.',
       confidence:
         state.intelligence.metrics.scheduleItemCount > 0
@@ -2233,7 +2234,7 @@ function buildBeliefsFromState(
       id: 'belief-current-area',
       projectName: state.projectName,
       statement: location.currentArea
-        ? `DAVE currently believes the active area is ${location.currentArea}.`
+        ? `ECOS currently believes the active area is ${location.currentArea}.`
         : 'The current project area has not been confirmed.',
       confidence: location.confidence,
       supportingEvidence: [
@@ -2259,7 +2260,7 @@ function buildBeliefsFromState(
       id: 'belief-latest-activity',
       projectName: state.projectName,
       statement: latestEvent
-        ? `DAVE believes the latest notable activity is ${latestEvent.title}.`
+        ? `ECOS Analysis identifies the latest notable activity as ${latestEvent.title}.`
         : 'There is no recent activity history for this project.',
       confidence: latestEvent?.confidence ?? 'low',
       supportingEvidence: latestEvent
@@ -2283,7 +2284,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-next-best-action',
       projectName: state.projectName,
-      statement: `DAVE believes the next best action is ${nextRecommendation?.title || nextBestAction.title}.`,
+      statement: `ECOS recommends ${nextRecommendation?.title || nextBestAction.title} as the next best action.`,
       confidence: nextRecommendation?.confidence || nextBestAction.confidence,
       supportingEvidence:
         nextRecommendation
@@ -2303,7 +2304,7 @@ function buildBeliefsFromState(
     makeBelief({
       id: 'belief-communication-readiness',
       projectName: state.projectName,
-      statement: `DAVE believes communication readiness is ${state.intelligence.communicationReadiness.level}.`,
+      statement: `ECOS Analysis rates communication readiness as ${state.intelligence.communicationReadiness.level}.`,
       confidence: state.intelligence.communicationReadiness.confidence,
       supportingEvidence: [
         runtimeBeliefEvidence({
@@ -2334,7 +2335,7 @@ function buildBeliefsFromState(
       ? makeBelief({
           id: 'belief-current-concern',
           projectName: state.projectName,
-          statement: `DAVE believes ${currentConcern.title} is a current concern.`,
+          statement: `ECOS Analysis identifies ${currentConcern.title} as a current concern.`,
           confidence: currentConcern.confidence,
           supportingEvidence: [
             runtimeBeliefEvidence({
@@ -2363,7 +2364,7 @@ function buildBeliefsFromState(
       makeBelief({
         id: `belief-risk-${risk.id}`,
         projectName: state.projectName,
-        statement: `DAVE believes ${risk.label} is a current risk signal.`,
+        statement: `ECOS Analysis identifies ${risk.label} as a current risk signal.`,
         confidence: risk.confidence,
         supportingEvidence: [
           runtimeBeliefEvidence({
@@ -2982,7 +2983,7 @@ function makeCurrentUnderstanding(
       graphNeed ||
       firstNeed?.suggestedAction ||
       response.whatPIENeedsFromYou ||
-      'Review DAVE output before taking action.',
+      'Review ECOS output before taking action.',
     overallConfidence: parts.overallConfidence,
     trustScore: parts.trustScore,
     understandingScore: parts.understandingScore,
@@ -3563,7 +3564,7 @@ function graphInsightToInsight(insight: PIEGraphInsight): PIEInsight {
     title: insight.title,
     summary: insight.summary,
     whyItMatters:
-      'The Knowledge Graph found relationships between project records that improve DAVE explainability.',
+      'The Knowledge Graph found relationships between project records that improve ECOS explainability.',
     source: 'knowledge-graph',
     confidence: insight.confidence,
     priority: insight.priority,
@@ -3587,7 +3588,7 @@ function evidenceFusionToInsight(
     projectName: summary.projectName,
     title: 'Evidence Fusion Summary',
     summary:
-      'DAVE combined schedule, photos, GPS, and updates into this summary.',
+      'ECOS combined schedule, photos, GPS, and updates into this summary.',
     whyItMatters: intelligentSummary.pieRecommendation,
     source: 'evidence-fusion',
     confidence: summary.confidence,
@@ -3635,7 +3636,7 @@ function photoProgressToInsight(
       ),
     ]),
     suggestedNextAction: photoProgressOutputs.comparisonNeedsReview
-      ? 'Does this summary look correct? Accept, edit, or reject.'
+      ? 'Confirm the visible finding, mark it incorrect, or mark it not useful.'
       : 'Use the accepted comparison in the project review.',
   };
 }
@@ -3718,7 +3719,7 @@ function questionToUnknown(question: PIEQuestion): PIEUnknown {
   return {
     id: `runtime-question-${question.id}`,
     projectName: question.projectName,
-    title: 'Question DAVE Needs Answered',
+    title: 'Question ECOS Needs Answered',
     summary: question.question,
     impact: question.reason,
     suggestedAction: question.question,
@@ -3752,7 +3753,7 @@ function briefSummary(
   }
 
   if (type === 'project') {
-    return `${mission} ${state.projectName}: DAVE understands ${state.evidence.length} evidence signal${state.evidence.length === 1 ? '' : 's'} and recommends ${priority}.`;
+    return `${mission} ${state.projectName}: ECOS understands ${state.evidence.length} evidence signal${state.evidence.length === 1 ? '' : 's'} and recommends ${priority}.`;
   }
 
   return `${mission} ${state.projectName}: today's highest priority is ${priority}; confidence is ${confidence}.`;
@@ -3826,7 +3827,7 @@ function evidenceFusionKnowledgeLine(
 
   if (summary.sourceCount === 0) return null;
 
-  return `DAVE combined schedule, photos, GPS, and updates into this summary with ${summary.trustScore}% fusion trust.`;
+  return `ECOS combined schedule, photos, GPS, and updates into this summary with ${summary.trustScore}% fusion trust.`;
 }
 
 function evidenceFusionConcernLine(
@@ -4149,7 +4150,7 @@ function openQuestionsFactor(
       weight: 1,
       status: 'strong',
       reason: 'There are no unresolved questions in the current runtime state.',
-      improvementSuggestion: 'Keep reviewing DAVE questions when new gaps appear.',
+      improvementSuggestion: 'Keep reviewing ECOS questions when new gaps appear.',
     });
   }
 
@@ -4163,7 +4164,7 @@ function openQuestionsFactor(
     weight: 1,
     status: statusFromScore(score),
     reason: `${openQuestionCount} open question${openQuestionCount === 1 ? '' : 's'} or unknown${openQuestionCount === 1 ? '' : 's'} need review.`,
-    improvementSuggestion: 'Answer DAVE questions and fill missing project context.',
+    improvementSuggestion: 'Answer ECOS questions and fill missing project context.',
   });
 }
 
@@ -4440,7 +4441,7 @@ function understandingEvidenceCoverageFactor(
     },
     {
       present: counts.reasoningThoughts > 0,
-      missing: 'DAVE reasoning thoughts',
+      missing: 'ECOS reasoning thoughts',
     },
   ];
   const presentCount = sourceChecks.filter(check => check.present).length;
@@ -4639,10 +4640,10 @@ function understandingOpenQuestionsFactor(
     reason:
       openQuestionCount === 0
         ? 'There are no unresolved reasoning questions.'
-        : `${openQuestionCount} DAVE question${openQuestionCount === 1 ? '' : 's'} need review.`,
+        : `${openQuestionCount} ECOS question${openQuestionCount === 1 ? '' : 's'} need review.`,
     missingInformation:
       openQuestionCount === 0 ? null : 'There are unanswered project questions.',
-    improvementSuggestion: 'Answer DAVE questions or confirm missing context.',
+    improvementSuggestion: 'Answer ECOS questions or confirm missing context.',
   });
 }
 
@@ -4668,7 +4669,7 @@ function understandingUnknownsFactor(
     reason:
       unknownCount === 0
         ? 'There are no major unknowns in the current runtime state.'
-        : `${unknownCount} unknown${unknownCount === 1 ? '' : 's'} limit DAVE's understanding.`,
+        : `${unknownCount} unknown${unknownCount === 1 ? '' : 's'} limit ECOS Confidence.`,
     missingInformation:
       unknownCount === 0 ? null : unknowns[0]?.summary || 'Project context is incomplete.',
     improvementSuggestion:
@@ -4721,7 +4722,7 @@ function understandingEvidenceFusionFactor(
     score: summary.trustScore,
     weight: 1,
     present: summary.trustScore >= 70 && summary.conflictCount === 0,
-    reason: `DAVE fused schedule (${summary.scheduleItemCount}), photos (${summary.photoCount}), GPS (${summary.gpsAvailable ? 'available' : 'missing'}), and updates (${summary.userUpdateCount}).`,
+    reason: `ECOS fused schedule (${summary.scheduleItemCount}), photos (${summary.photoCount}), GPS (${summary.gpsAvailable ? 'available' : 'missing'}), and updates (${summary.userUpdateCount}).`,
     missingInformation:
       firstConflict?.summary ||
       firstGap?.summary ||

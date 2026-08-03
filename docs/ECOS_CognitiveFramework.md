@@ -2,19 +2,18 @@
 
 ## Purpose
 
-ECOS means Executive Cognitive Operating System.
+ECOS is the complete intelligence, evidence, reasoning, validation, and learning
+system that powers Vitruvius Project Intelligence.
 
-The Cognitive Framework is the reusable thinking layer inside ECOS. It defines how an intelligence engine observes evidence, interprets meaning, forms beliefs, challenges itself, scores decisions, explains recommendations, reflects, and learns.
+The Cognitive Framework is a reusable reasoning layer inside ECOS Core. It
+defines how evidence is observed, interpreted, challenged, scored, explained,
+reflected on, and learned from. ECOS Assurance remains independently responsible
+for validating the resulting evidence support, confidence, identity, authority,
+business rules, approvals, synchronization, and release quality.
 
-PIE is the first domain intelligence engine using this framework. PIE applies the framework to project intelligence, but the framework itself must remain domain-independent.
-
-Future domain engines may include:
-
-- PIE: Project Intelligence Engine
-- MIE: Manufacturing Intelligence Engine
-- SIE: Safety Intelligence Engine
-- CIE: Compliance Intelligence Engine
-- FIE: Facilities Intelligence Engine
+Legacy project-specific module names may retain the `PIE` identifier during the
+controlled migration. Those identifiers implement ECOS behavior; they are not a
+separate current product or intelligence-system brand.
 
 ## Architecture
 
@@ -22,40 +21,48 @@ Future domain engines may include:
 User
   |
   v
-App / Interface
+Vitruvius / Interface
   |
   v
-ECOS
+ECOS Core
   |
   v
 Cognitive Framework
   |
   v
-Domain Intelligence Engine
+Project Domain Adapter
   |
   v
-Recommendations / Decisions / Reports
+Proposed Recommendations / Decisions / Reports
+  |
+  v
+ECOS Assurance
+  |
+  v
+Required Human Review / Verified Save
 ```
 
 ## Definitions
 
-ECOS = Executive Cognitive Operating System
+ECOS = intelligence platform powering Vitruvius
 
-Cognitive Framework = reusable thinking layer
+Cognitive Framework = reusable reasoning layer inside ECOS Core
 
-PIE = project-specific intelligence engine using the framework
+ECOS Core = reasoning component that prepares proposals
 
-ECOS owns reusable thinking.
+ECOS Assurance = independent validation component
 
-The Cognitive Framework owns the general cognitive process.
+ECOS Core owns the general cognitive process and must not approve its own work.
 
 The ECOS Domain Adapter owns translation between domain-specific evidence and ECOS generic cognitive input.
 
-Domain Intelligence Engines own domain translation and domain-specific outputs.
+Domain adapters own domain translation and domain-specific outputs.
 
-Apps own evidence capture, interaction, approval, and display.
+Vitruvius owns evidence capture, interaction, authorized human approval, and display.
 
-PIE is a domain engine inside ECOS. PIE translates project evidence into generic cognitive inputs and translates generic cognitive output back into project recommendations, project risks, project beliefs, project predictions, and project report insights.
+Legacy project adapter modules translate project evidence into generic cognitive
+inputs and translate ECOS Core output back into project recommendations, risks,
+beliefs, predictions, and report insights.
 
 ## Domain-Independent Cognitive Abilities
 
@@ -117,20 +124,21 @@ Observe
   -> Reduce Uncertainty
 ```
 
-## ECOS / PIE Boundary
+## ECOS Core / ECOS Assurance Boundary
 
-If a capability is domain-independent, it belongs to the ECOS Cognitive Framework.
-
-If a capability is project-specific, it belongs to PIE.
+If a capability interprets evidence or prepares a conclusion, it belongs to
+ECOS Core. If it verifies support, confidence, identity, authority, business
+rules, approval requirements, persistence, synchronization, tests, or release
+quality, it belongs to ECOS Assurance.
 
 Examples:
 
-- ECOS forms a generic belief from evidence.
-- PIE turns that belief into a project belief.
-- ECOS identifies a risk and uncertainty.
-- PIE turns that into project risk language and field recommendations.
-- ECOS scores a decision.
-- PIE translates the score into project approval, inspection, communication, or evidence-collection actions.
+- ECOS Core forms a proposed belief from evidence.
+- A project adapter translates that proposal into project language.
+- ECOS Core identifies risk and uncertainty.
+- ECOS Assurance verifies the evidence and confidence before the result can be final.
+- An authorized person approves material project changes.
+- ECOS Assurance verifies the final save and synchronization.
 
 ## Output Contract
 

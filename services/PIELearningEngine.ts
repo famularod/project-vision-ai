@@ -514,11 +514,11 @@ export function summarizeLearning({
   confidenceCalibration: PIELearningConfidenceCalibration[];
 }): string {
   if (learningSignals.length === 0) {
-    return 'DAVE did not find a strong learning outcome yet.';
+    return 'ECOS did not find a strong learning outcome yet.';
   }
 
   return [
-    `DAVE learned from ${learningSignals.length} signal${learningSignals.length === 1 ? '' : 's'}.`,
+    `ECOS learned from ${learningSignals.length} signal${learningSignals.length === 1 ? '' : 's'}.`,
     lessonsLearned[0]?.lesson,
     futureAdjustments[0],
     confidenceCalibration[0]?.reason,

@@ -114,8 +114,8 @@ export type PIEDeliberationInput = {
 };
 
 export const PIE_DELIBERATION_QUESTIONS = [
-  'What does DAVE know?',
-  'What is DAVE assuming?',
+  'What evidence is available?',
+  'What assumptions are present?',
   'What evidence supports this?',
   'What evidence contradicts this?',
   'What is missing?',
@@ -123,7 +123,7 @@ export const PIE_DELIBERATION_QUESTIONS = [
   'What are the trade-offs?',
   'What is the strongest recommendation?',
   'Why is this better than the alternatives?',
-  "What would change DAVE's recommendation?",
+  'What would change the recommendation?',
 ] as const;
 
 export function buildPIEDeliberation(
@@ -218,7 +218,7 @@ export function identifyAssumptions(
     {
       id: 'assumption-runtime-current',
       assumption: 'Runtime reflects the current project state.',
-      whyItMatters: 'DAVE recommendations depend on current schedule, evidence, memory, and mission state.',
+      whyItMatters: 'ECOS recommendations depend on current schedule, evidence, memory, and mission state.',
       confidence: input.runtime.overallConfidence,
     },
   ];
@@ -429,13 +429,13 @@ export function explainDeliberation({
   missingEvidence: string[];
 }): string {
   const alternativeText = alternatives[1]
-    ? `DAVE considered ${alternatives[1].action}`
-    : 'DAVE considered waiting for more evidence';
+    ? `ECOS considered ${alternatives[1].action}`
+    : 'ECOS considered waiting for more evidence';
   const tradeoffText = tradeoffs[0]
     ? tradeoffs[0].benefit
     : recommendation.whyBetterThanAlternatives;
   const caution = contradictions.length > 0 || missingEvidence.length > 0
-    ? ' DAVE also found uncertainty that should be verified.'
+    ? ' ECOS also found uncertainty that should be verified.'
     : '';
 
   return `${recommendation.action} is ${recommendation.readiness}. ${alternativeText}, but ${tradeoffText}.${caution}`;
@@ -472,13 +472,13 @@ function buildDeliberationQuestions(input: PIEDeliberationInput & {
   return [
     {
       id: 'question-what-known',
-      question: 'What does DAVE know?',
+      question: 'What evidence is available?',
       answer: input.runtime.currentUnderstanding.whatPIEKnows,
       confidence: input.runtime.overallConfidence,
     },
     {
       id: 'question-assumptions',
-      question: 'What is DAVE assuming?',
+      question: 'What assumptions are present?',
       answer: input.assumptions.map(item => item.assumption).join(' '),
       confidence: confidenceFromReadiness(input.recommendation.readiness),
     },
@@ -526,7 +526,7 @@ function buildDeliberationQuestions(input: PIEDeliberationInput & {
     },
     {
       id: 'question-change',
-      question: "What would change DAVE's recommendation?",
+      question: 'What would change the recommendation?',
       answer: input.recommendation.whatWouldChangeRecommendation.join(' '),
       confidence: 'medium',
     },

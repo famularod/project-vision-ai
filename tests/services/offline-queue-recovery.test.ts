@@ -73,6 +73,8 @@ jest.mock('../../services/SupabaseService', () => ({
   upsertReferenceDocument: (...args: unknown[]) => mockUpsertReferenceDocument(...args),
   listDAVESyncTombstones: (...args: unknown[]) => mockListDAVESyncTombstones(...args),
   upsertDAVESyncTombstone: (...args: unknown[]) => mockUpsertDAVESyncTombstone(...args),
+  upsertDAVESyncTombstones: (tombstones: unknown[]) =>
+    Promise.resolve({ ok: true, configured: true, stubbed: false, data: tombstones }),
   listDAVEStorageCleanupIntents: (...args: unknown[]) =>
     mockListDAVEStorageCleanupIntents(...args),
   removeProtectedStorageObject: (...args: unknown[]) =>

@@ -1,5 +1,12 @@
 # PIE Product Operating Plan
 
+> Compatibility specification: this filename and legacy flow labels remain so
+> current implementation contracts keep working during the migration. The
+> canonical product is Vitruvius Project Intelligence, powered by ECOS. ECOS
+> Core prepares proposals; ECOS Assurance independently verifies them. See
+> `docs/VITRUVIUS_ECOS_NAMING_AND_ARCHITECTURE.md` for the controlling naming and
+> responsibility standard.
+
 ## Purpose
 
 This is the controlling product operating plan for Project Vision AI.

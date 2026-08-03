@@ -18,6 +18,7 @@ import {
   reconcileScheduleProgress,
   scheduleProgressIsComplete,
 } from './ScheduleProgressInvariant';
+import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 
 export type DAVEProjectTimelineEventType =
   | 'project_created'
@@ -369,7 +370,7 @@ function buildPhotoEvents(
       limitations: ['Baseline evidence is informational and does not establish project progress.'],
     })];
   }
-  if (!isCompletedComparison(result.status) || !(result.priorEvidenceId || result.priorUpdateUsed)) return [];
+  if (!photoDisplayResultCanInformProject(result)) return [];
   return observationDescriptions(result).map((description, index) => event({
     projectId,
     timestamp,
@@ -588,10 +589,6 @@ function hasActionRecord(photo: DAVEDailyBriefPhoto): boolean {
 
 function isCommitmentRecord(photo: DAVEDailyBriefPhoto): boolean {
   return Boolean(photo.actionOwner?.trim() || photo.actionDueDate?.trim());
-}
-
-function isCompletedComparison(status: string): boolean {
-  return status === 'analysis_complete' || status === 'completed_with_limitations';
 }
 
 function normalizedConfidence(value: string | null | undefined): DAVEProjectRealityConfidence {

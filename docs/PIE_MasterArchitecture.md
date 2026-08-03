@@ -1,5 +1,12 @@
 # PIE Master Architecture
 
+> Compatibility specification: this filename and the implementation identifiers
+> below are retained for controlled migration. The canonical architecture is
+> Vitruvius powered by ECOS: ECOS Core reasons and ECOS Assurance independently
+> verifies. See `docs/VITRUVIUS_ECOS_NAMING_AND_ARCHITECTURE.md`. References to
+> retired names in this file describe existing internal modules, not current
+> product branding.
+
 ## 1. Vision
 
 ECOS stands for Executive Cognitive Operating System.

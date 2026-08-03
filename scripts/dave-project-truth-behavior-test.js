@@ -121,7 +121,10 @@ function photo(id) {
       currentObservation: 'Visible equipment is present.',
       changedFromPrior: 'Equipment position appears different.',
       priorEvidenceId: 'prior-photo-alpha',
+      assessmentDisposition: 'finding',
+      findings: [{ findingType: 'material_change', description: 'Equipment position appears different.' }],
       provenance: 'visual_only',
+      userReview: 'confirmed',
       updatedAt: '2026-07-15T12:01:00.000Z',
     },
   };
@@ -195,10 +198,9 @@ const notComparableTruth = buildDAVEProjectTruth({
   updates: [update('update-not-comparable', 'Alpha', notComparableInput)],
   scheduleItems: [],
 });
-const notComparable = notComparableTruth.photoComparisons[0];
-assert.strictEqual(notComparable.comparablePriorAvailable, false);
-assert.strictEqual(notComparable.changeFromPrior, null);
-assert.strictEqual(notComparable.progressClaim, 'unable_to_determine');
-assert(notComparable.limitations.some(item => /not sufficiently comparable/i.test(item)));
+assert.strictEqual(notComparableTruth.photoComparisons.length, 0,
+  'A not-comparable result must be excluded from project comparison truth.');
+assert(!notComparableTruth.evidence.records.some(item => item.kind === 'photo-comparison'),
+  'A rejected comparison must not create a decision-evidence record.');
 
 console.log('PASS DAVE Project Truth behavior');

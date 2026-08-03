@@ -212,6 +212,14 @@ async function testConcurrentEnqueuePreservesBothItems() {
         data: tombstone,
       };
     },
+    async upsertDAVESyncTombstones(tombstones) {
+      return {
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: tombstones,
+      };
+    },
     async listDAVEStorageCleanupIntents() {
       return {
         ok: true,

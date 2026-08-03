@@ -6,6 +6,8 @@ import {
   daveOperationalCollectionForRealtimeEntity,
   daveOperationalCollectionsForRealtimeEvent,
   normalizeDAVEOperationalRealtimePayload,
+  shouldRefreshDAVEOperationalDataOnForeground,
+  DAVE_OPERATIONAL_FOREGROUND_FRESHNESS_MS,
   DAVE_OPERATIONAL_POLL_INTERVAL_MS,
   DAVE_OPERATIONAL_REALTIME_RETRY_DELAYS_MS,
   DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS,
@@ -41,6 +43,30 @@ describe('DAVE operational cross-device refresh', () => {
   it('keeps mobile and desktop full-read safety polls at a thirty-minute request budget', () => {
     expect(DAVE_OPERATIONAL_POLL_INTERVAL_MS).toBe(30 * 60_000);
     expect(DAVE_WEB_OPERATIONAL_POLL_INTERVAL_MS).toBe(30 * 60_000);
+  });
+
+  it('skips a redundant foreground full read only while Realtime is healthy and fresh', () => {
+    const now = new Date('2026-08-02T12:05:00.000Z').getTime();
+    expect(shouldRefreshDAVEOperationalDataOnForeground({
+      realtimeHealthy: true,
+      lastSuccessfulRefreshAt: new Date(now - DAVE_OPERATIONAL_FOREGROUND_FRESHNESS_MS + 1).toISOString(),
+      now,
+    })).toBe(false);
+    expect(shouldRefreshDAVEOperationalDataOnForeground({
+      realtimeHealthy: true,
+      lastSuccessfulRefreshAt: new Date(now - DAVE_OPERATIONAL_FOREGROUND_FRESHNESS_MS).toISOString(),
+      now,
+    })).toBe(true);
+    expect(shouldRefreshDAVEOperationalDataOnForeground({
+      realtimeHealthy: false,
+      lastSuccessfulRefreshAt: new Date(now - 1_000).toISOString(),
+      now,
+    })).toBe(true);
+    expect(shouldRefreshDAVEOperationalDataOnForeground({
+      realtimeHealthy: true,
+      lastSuccessfulRefreshAt: null,
+      now,
+    })).toBe(true);
   });
 
   it('does not poll while the refresh owner is backgrounded', async () => {

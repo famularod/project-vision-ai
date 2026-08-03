@@ -48,6 +48,10 @@ const mockedRequire = request => {
         uploaded.push(tombstone);
         return { ok: true, configured: true, data: tombstone };
       },
+      async upsertDAVESyncTombstones(tombstones) {
+        uploaded.push(...tombstones);
+        return { ok: true, configured: true, data: tombstones };
+      },
     };
   }
   if (request === './LocalStorageCorruptionQuarantine') {

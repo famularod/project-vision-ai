@@ -49,7 +49,7 @@ export function resolveDAVEConversationContext({
       'What project information are you referring to?',
       null,
       null,
-      'No recent answer exists for this project, so DAVE must ask for context instead of guessing.',
+      'No recent answer exists for this project, so ECOS must ask for context instead of guessing.',
     );
   }
 
@@ -65,7 +65,7 @@ export function resolveDAVEConversationContext({
         : `Explain why the project answer to "${shorten(prior.question, 90)}" is supported.`,
       prior,
       'explanation',
-      'The follow-up asks DAVE to explain the previous conclusion or recommendation.',
+      'The follow-up asks ECOS to explain the previous conclusion or recommendation.',
     );
   }
   if (/\b(?:schedule|dates?|deadline|deadlines|late|overdue|due)\b/.test(text)) {

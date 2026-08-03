@@ -25,6 +25,16 @@ const mockUpsertTombstone = jest.fn();
 jest.mock('../../services/SupabaseService', () => ({
   listDAVESyncTombstones: (...args: unknown[]) => mockListTombstones(...args),
   upsertDAVESyncTombstone: (...args: unknown[]) => mockUpsertTombstone(...args),
+  upsertDAVESyncTombstones: async (tombstones: unknown[]) => {
+    const results = await Promise.all(tombstones.map(tombstone =>
+      mockUpsertTombstone(tombstone)));
+    return results.find(result => result?.ok === false) || {
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: tombstones,
+    };
+  },
 }));
 
 import {
@@ -125,7 +135,7 @@ describe('DAVESyncTombstones durability (audit P1-28)', () => {
     const result = await synchronizeDAVESyncTombstones();
 
     expect(result.cloudAuthoritative).toBe(true);
-    expect(result.uploadFailures).toBe(1);
+    expect(result.uploadFailures).toBe(2);
     // The failed tombstone remains journaled for the next pass.
     expect(result.tombstones).toHaveLength(2);
   });

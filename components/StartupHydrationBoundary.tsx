@@ -41,8 +41,8 @@ export function StartupHydrationBoundary({
           </Text>
           <Text style={styles.body}>
             {blocked
-              ? 'DAVE could not safely read all saved information on this phone. Nothing will be saved, synced, restored, backed up, or exported until recovery succeeds.'
-              : 'DAVE is safely loading projects, updates, schedules, documents, and contacts before opening the workspace.'}
+              ? 'ECOS could not safely read all saved information on this phone. Nothing will be saved, synced, restored, backed up, or exported until recovery succeeds.'
+              : 'ECOS is safely loading projects, updates, schedules, documents, and contacts before opening the workspace.'}
           </Text>
           {failures.map(failure => (
             <View key={failure.key} style={styles.failureRow}>

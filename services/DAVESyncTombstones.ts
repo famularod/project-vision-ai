@@ -5,7 +5,7 @@ import type {
 } from '../types';
 import {
   listDAVESyncTombstones,
-  upsertDAVESyncTombstone,
+  upsertDAVESyncTombstones,
 } from './SupabaseService';
 import {
   localCorruptionRecoveryError,
@@ -40,6 +40,7 @@ export type DAVESyncTombstoneSyncResult = {
 };
 
 const DAVE_OPERATIONAL_TOMBSTONE_REFRESH_TIMEOUT_MS = 1_500;
+export const DAVE_SYNC_TOMBSTONE_UPLOAD_BATCH_SIZE = 100;
 
 export function parseDAVESyncTombstones(value: unknown): DAVESyncTombstone[] {
   if (!Array.isArray(value)) return [];
@@ -149,9 +150,7 @@ export async function recordDAVESyncTombstones(
     await persistLocalTombstones(mergeDAVESyncTombstones(local, validTombstones));
   });
 
-  await Promise.allSettled(
-    validTombstones.map(tombstone => upsertDAVESyncTombstone(tombstone)),
-  );
+  await uploadDAVESyncTombstoneBatches(validTombstones);
 
   return validTombstones;
 }
@@ -174,14 +173,33 @@ async function performTombstoneSynchronization(): Promise<DAVESyncTombstoneSyncR
   // Audit P1-28: count unacknowledged uploads instead of discarding results.
   // Failed tombstones remain in the durable local journal and are re-sent on
   // every explicit/full synchronization pass.
-  const uploadResults = await Promise.allSettled(
-    refreshed.tombstones.map(tombstone => upsertDAVESyncTombstone(tombstone)),
-  );
-  const uploadFailures = uploadResults.filter(result =>
-    result.status === 'rejected' ||
-    (result.value.configured && !result.value.stubbed && !result.value.ok),
-  ).length;
+  const uploadFailures = await uploadDAVESyncTombstoneBatches(refreshed.tombstones);
   return { ...refreshed, uploadFailures };
+}
+
+async function uploadDAVESyncTombstoneBatches(
+  tombstones: readonly DAVESyncTombstone[],
+): Promise<number> {
+  let uploadFailures = 0;
+  for (
+    let index = 0;
+    index < tombstones.length;
+    index += DAVE_SYNC_TOMBSTONE_UPLOAD_BATCH_SIZE
+  ) {
+    const batch = tombstones.slice(
+      index,
+      index + DAVE_SYNC_TOMBSTONE_UPLOAD_BATCH_SIZE,
+    );
+    try {
+      const result = await upsertDAVESyncTombstones(batch);
+      if (result.configured && !result.stubbed && !result.ok) {
+        uploadFailures += batch.length;
+      }
+    } catch {
+      uploadFailures += batch.length;
+    }
+  }
+  return uploadFailures;
 }
 
 /**

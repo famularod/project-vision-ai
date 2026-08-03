@@ -82,7 +82,7 @@ export function validatePIEReasoningWithJARVIS(
       : status === 'pass_with_warnings'
         ? 'Recommendation may be shown with uncertainty wording.'
         : 'Recommendation must request evidence or human review before high-impact action.',
-    summary: `JARVIS reasoning validation ${status}: ${checks.length - warnings.length - blockingIssues.length}/${checks.length} checks passed without issue.`,
+    summary: `ECOS Assurance reasoning validation ${status}: ${checks.length - warnings.length - blockingIssues.length}/${checks.length} checks passed without issue.`,
   };
 }
 

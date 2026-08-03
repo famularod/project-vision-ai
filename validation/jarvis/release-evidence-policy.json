@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "identity": {
     "product": "Vitruvius",
-    "intelligenceEngine": "Core",
-    "qaSystem": "VIGIL",
-    "qaNameStatus": "official"
+    "intelligenceSystem": "ECOS",
+    "intelligenceEngine": "ECOS Core",
+    "qaSystem": "ECOS Assurance",
+    "qaNameStatus": "canonical"
   },
   "requiredPlatforms": [
     "iphone",

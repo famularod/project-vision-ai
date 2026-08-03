@@ -54,12 +54,13 @@ const manifest = buildReleaseManifest({
 assert.equal(manifest.summary.automatedGate, 'pass_with_warnings');
 assert.equal(manifest.summary.androidProductionCertification, 'not_certified');
 assert.equal(manifest.summary.releaseCertification, 'device_validation_required');
-assert.equal(manifest.gate, 'VIGIL Automated Release Gate');
+assert.equal(manifest.gate, 'ECOS Assurance Automated Release Gate');
 assert.deepEqual(manifest.identity, {
   product: 'Vitruvius',
-  intelligenceEngine: 'Core',
-  qaSystem: 'VIGIL',
-  qaNameStatus: 'official',
+  intelligenceSystem: 'ECOS',
+  intelligenceEngine: 'ECOS Core',
+  qaSystem: 'ECOS Assurance',
+  qaNameStatus: 'canonical',
 });
 assert.equal(manifest.evidence.deviceValidation.status, 'required');
 assert.deepEqual(manifest.evidence.deviceValidation.requiredPlatforms, ['iphone', 'ipad', 'web']);
@@ -82,8 +83,8 @@ for (const script of [
 ]) {
   assert(
     releaseGateSource.includes(script),
-    `VIGIL must report ${script} as a named release layer.`,
+    `ECOS Assurance must report ${script} as a named release layer.`,
   );
 }
 
-console.log('VIGIL release gate timeout and manifest contracts PASS.');
+console.log('ECOS Assurance release gate timeout and manifest contracts PASS.');

@@ -325,6 +325,7 @@ export type PIEReporterRuntimeInput = {
     scheduleReconciliation?: PIEScheduleReconciliationResult;
   } | null;
   photoProgressSummary?: string;
+  photoProgress?: { acceptedEvidence: unknown[] } | null;
   recommendedWalkAreas?: string[];
   reflectionSummary?: string | { summary?: string; recommendedEvidence?: string[] };
   lessonsLearned?: unknown[];
@@ -643,6 +644,7 @@ export function collectReportEvidence(
 
   if (
     runtime?.photoProgressSummary &&
+    Boolean(runtime.photoProgress?.acceptedEvidence.length) &&
     !isEmptyRuntimeSummary(runtime.photoProgressSummary) &&
     isConstructionRelevantObservation(runtime.photoProgressSummary)
   ) {

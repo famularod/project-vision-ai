@@ -34,7 +34,7 @@ export function authorityMutationScopeKey(
   const organization = organizationId.trim();
   const project = projectId.trim();
   if (!organization || !project) {
-    throw new Error('DAVE authority persistence requires an exact organization and project scope.');
+    throw new Error('ECOS authority persistence requires an exact organization and project scope.');
   }
   return `${organization.length}:${organization}|${project.length}:${project}`;
 }

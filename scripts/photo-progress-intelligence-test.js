@@ -86,6 +86,47 @@ function photo(id, caption, date, overrides = {}) {
     gpsLongitude: overrides.gpsLongitude ?? -117.1234,
     gpsAccuracy: 12,
     locationCapturedAt: date,
+    photoIntelligence: overrides.photoIntelligence || null,
+  };
+}
+
+function confirmedComparison(priorPhotoId, overrides = {}) {
+  const findingType = overrides.findingType || 'material_change';
+  const description = overrides.description || 'The newer photo shows a confirmed visible material change.';
+  return {
+    status: 'analysis_complete',
+    title: 'Possible visible changes',
+    summary: description,
+    visibleChange: description,
+    location: 'Canopy B',
+    comparisonConfidence: 'high',
+    comparability: 'strong',
+    captureLimitations: [],
+    projectProgress: overrides.projectProgress || 'unable_to_determine',
+    assessmentDisposition: 'finding',
+    repeatPhotoGuidance: null,
+    authorityMessage: 'Visual observation only.',
+    currentObservation: description,
+    changedFromPrior: description,
+    findings: [{
+      findingType,
+      description,
+      objectName: null,
+      baselineState: null,
+      currentState: null,
+      location: 'Canopy B',
+      confidence: 0.95,
+      limitations: [],
+      evidenceRegions: [],
+      source: 'structured_provider',
+    }],
+    priorUpdateUsed: '2026-06-12T09:00:00.000Z',
+    priorEvidenceId: `evidence-${priorPhotoId}`,
+    provenance: 'visual_only',
+    userReview: 'confirmed',
+    userReviewedAt: '2026-07-02T11:00:00.000Z',
+    diagnostics: { selectedPriorPhotoId: priorPhotoId },
+    updatedAt: '2026-07-02T10:00:00.000Z',
   };
 }
 
@@ -142,7 +183,10 @@ function build(overrides = {}) {
         photo('p1', 'Canopy B platform facing north before guardrail installation.', '2026-06-12T09:00:00.000Z'),
       ]),
       update('u2', 'Building 2375', '2026-07-01T09:00:00.000Z', [
-        photo('p2', 'Canopy B platform facing north guardrail and toe board installed.', '2026-07-01T09:00:00.000Z', { actionStatus: 'Closed' }),
+        photo('p2', 'Canopy B platform facing north guardrail and toe board installed.', '2026-07-01T09:00:00.000Z', {
+          actionStatus: 'Closed',
+          photoIntelligence: confirmedComparison('p1', { projectProgress: 'supported' }),
+        }),
       ]),
     ],
     now: new Date('2026-07-02T12:00:00.000Z'),
@@ -235,11 +279,16 @@ function testVisualJarvis() {
         photo('p1', 'Canopy B platform facing north before guardrail installation.', '2026-06-12T09:00:00.000Z'),
       ]),
       update('u2', 'Building 2375', '2026-07-01T09:00:00.000Z', [
-        photo('p2', 'Canopy B platform facing north guardrail still in progress, incomplete.', '2026-07-01T09:00:00.000Z'),
+        photo('p2', 'Canopy B platform facing north guardrail still in progress, incomplete.', '2026-07-01T09:00:00.000Z', {
+          photoIntelligence: confirmedComparison('p1'),
+        }),
       ]),
     ],
   });
-  assert(incomplete.visualJarvisValidation.outcome !== 'supported' || incomplete.progressEvents[0].contradictingEvidenceIds.length > 0, 'JARVIS should validate contradictions');
+  assert(
+    incomplete.progressEvents[0].observation === 'The newer photo shows a confirmed visible material change.',
+    'caption wording must not replace the confirmed provider observation',
+  );
 
   const regression = build({
     updates: [
@@ -247,7 +296,12 @@ function testVisualJarvis() {
         photo('p1', 'Canopy B platform facing north guardrail installed.', '2026-06-12T09:00:00.000Z'),
       ]),
       update('u2', 'Building 2375', '2026-07-01T09:00:00.000Z', [
-        photo('p2', 'Canopy B platform facing north missing guardrail and safety removed.', '2026-07-01T09:00:00.000Z'),
+        photo('p2', 'Canopy B platform facing north missing guardrail and safety removed.', '2026-07-01T09:00:00.000Z', {
+          photoIntelligence: confirmedComparison('p1', {
+            findingType: 'visible_concern',
+            description: 'The guardrail visible in the baseline is missing in the newer photo.',
+          }),
+        }),
       ]),
     ],
   });
@@ -291,6 +345,11 @@ function testUi() {
     'Capture should expose repeat-photo guidance through the current continuity flow',
   );
   assert(!bottomNav.includes('Photo Progress'), 'No new permanent tab should be added');
+  ['What changed', 'Why it matters', 'Next action', 'Confirm', 'Incorrect', 'Not useful'].forEach(label => {
+    assert(capture.includes(label), `${label} should appear in the concise photo comparison review`);
+  });
+  assert(capture.includes('Before') && capture.includes('After'),
+    'The comparison review should identify the exact before and after images.');
 }
 
 function testEdgeCases() {

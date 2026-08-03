@@ -88,6 +88,9 @@ const tanCaseResult = {
   comparability: 'strong',
   captureLimitations: [],
   priorEvidenceId: 'baseline-evidence',
+  assessmentDisposition: 'finding',
+  provenance: 'visual_only',
+  userReview: 'confirmed',
   updatedAt: '2026-07-11T10:01:00.000Z',
   findings: [{
     findingType: 'added',
@@ -111,7 +114,8 @@ const baseline = brief({ updates: [update({ photos: [photo({ photoIntelligence: 
   updatedAt: now,
 } })] })] });
 assert.strictEqual(baseline.changedItems.length, 0, 'Baseline-only photos must not be presented as changes.');
-assert(baseline.uncertaintyItems.some(item => item.category === 'missing_verification'));
+assert(!baseline.uncertaintyItems.some(item => item.category === 'missing_verification'),
+  'A saved baseline must not create a project attention item.');
 
 const failed = brief({ updates: [update({ photos: [photo({ photoIntelligence: {
   status: 'comparison_unavailable',
@@ -136,7 +140,8 @@ const notComparable = brief({ updates: [update({ photos: [photo({ photoIntellige
   comparability: 'not_comparable',
 } })] })] });
 assert.strictEqual(notComparable.changedItems.length, 0, 'Not-comparable photos must not be presented as changes.');
-assert(notComparable.uncertaintyItems.some(item => /not sufficiently comparable/i.test(item.text)));
+assert(!notComparable.attentionItems.some(item => item.sourceType === 'photo'),
+  'A rejected comparison must not create project attention noise.');
 
 const missing = brief();
 assert(!JSON.stringify(missing).toLowerCase().includes('work is incomplete'), 'Missing evidence must not claim incomplete work.');

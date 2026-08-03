@@ -21,6 +21,7 @@ jest.mock('../../services/DAVEWebSupabaseClient', () => {
       subscribeToAuthStateChange: jest.fn(),
       subscribeToAuthorizedOperationalChanges: jest.fn(),
       runAuthorizedMaintenance: jest.fn(),
+      createAuthorizedScheduleItem: jest.fn(),
       signOut: jest.fn(),
     },
   };
@@ -40,6 +41,9 @@ function Harness() {
       <Text testID="message">{auth.message || 'none'}</Text>
       <Pressable testID="refresh" onPress={() => { void auth.refreshSnapshot(); }}>
         <Text>Refresh</Text>
+      </Pressable>
+      <Pressable testID="create-task" onPress={() => { void auth.createTask({} as never); }}>
+        <Text>Create task</Text>
       </Pressable>
     </View>
   );
@@ -66,6 +70,7 @@ describe('DesktopAuthProvider refresh continuity', () => {
     );
     mockedGateway.subscribeToAuthStateChange.mockReturnValue(() => undefined);
     mockedGateway.runAuthorizedMaintenance.mockResolvedValue(undefined);
+    mockedGateway.createAuthorizedScheduleItem.mockResolvedValue(recentRefreshAt);
     mockedLoadSnapshot.mockResolvedValueOnce({
       projects: [],
       scheduleItems: [],
@@ -181,5 +186,28 @@ describe('DesktopAuthProvider refresh continuity', () => {
       expect(mockedLoadSnapshot).toHaveBeenLastCalledWith(['schedule_items']);
     });
     expect(mockedGateway.runAuthorizedMaintenance).toHaveBeenCalledTimes(1);
+  });
+
+  it('revalidates only tasks after a successful desktop task mutation', async () => {
+    mockedLoadSnapshot.mockResolvedValueOnce({
+      projects: [],
+      scheduleItems: [],
+      projectUpdates: [],
+      referenceDocuments: [],
+      refreshedAt: new Date(Date.now() + 15_000).toISOString(),
+    });
+    const screen = render(
+      <DesktopAuthProvider>
+        <Harness />
+      </DesktopAuthProvider>,
+    );
+
+    await waitFor(() => expect(mockedLoadSnapshot).toHaveBeenCalledTimes(1));
+    fireEvent.press(screen.getByTestId('create-task'));
+
+    await waitFor(() => {
+      expect(mockedGateway.createAuthorizedScheduleItem).toHaveBeenCalledTimes(1);
+      expect(mockedLoadSnapshot).toHaveBeenLastCalledWith(['schedule_items']);
+    });
   });
 });

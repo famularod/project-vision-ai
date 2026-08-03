@@ -1,10 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 import { runExclusiveLocalStorageMutation } from '../services/LocalStorageMutationCoordinator';
 
 const RETRY_DELAYS_MS = [50, 250] as const;
 let persistenceAlertVisible = false;
+const pendingPersistenceByKey = new Map<string, {
+  value: string;
+  label: string;
+  onError: (failure: StoragePersistenceFailure) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+}>();
 
 export type StoragePersistenceFailure = Readonly<{
   storageKey: string;
@@ -40,14 +46,17 @@ export function useJsonStoragePersistence<T>({
   storageKey,
   value,
   label = 'app data',
+  debounceMs = 750,
   onError = reportStoragePersistenceFailure,
 }: {
   enabled: boolean;
   storageKey: string;
   value: T;
   label?: string;
+  debounceMs?: number;
   onError?: (failure: StoragePersistenceFailure) => void;
 }) {
+  const lastScheduledValueRef = useRef<string | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let serialized: string;
@@ -61,10 +70,22 @@ export function useJsonStoragePersistence<T>({
       onError({ storageKey, label, error });
       return;
     }
-    void persistStorageItem(storageKey, serialized).catch(error => {
-      onError({ storageKey, label, error });
+    const signature = `${storageKey}\u0000${serialized}`;
+    if (lastScheduledValueRef.current === signature) return;
+    lastScheduledValueRef.current = signature;
+    scheduleStoragePersistence({
+      storageKey,
+      value: serialized,
+      label,
+      debounceMs,
+      onError: failure => {
+        if (lastScheduledValueRef.current === signature) {
+          lastScheduledValueRef.current = null;
+        }
+        onError(failure);
+      },
     });
-  }, [enabled, label, onError, storageKey, value]);
+  }, [debounceMs, enabled, label, onError, storageKey, value]);
 }
 
 export function useStringStoragePersistence({
@@ -72,20 +93,89 @@ export function useStringStoragePersistence({
   storageKey,
   value,
   label = 'setting',
+  debounceMs = 0,
   onError = reportStoragePersistenceFailure,
 }: {
   enabled: boolean;
   storageKey: string;
   value: string;
   label?: string;
+  debounceMs?: number;
   onError?: (failure: StoragePersistenceFailure) => void;
 }) {
+  const lastScheduledValueRef = useRef<string | null>(null);
   useEffect(() => {
     if (!enabled) return;
-    void persistStorageItem(storageKey, value).catch(error => {
-      onError({ storageKey, label, error });
+    const signature = `${storageKey}\u0000${value}`;
+    if (lastScheduledValueRef.current === signature) return;
+    lastScheduledValueRef.current = signature;
+    scheduleStoragePersistence({
+      storageKey,
+      value,
+      label,
+      debounceMs,
+      onError: failure => {
+        if (lastScheduledValueRef.current === signature) {
+          lastScheduledValueRef.current = null;
+        }
+        onError(failure);
+      },
     });
-  }, [enabled, label, onError, storageKey, value]);
+  }, [debounceMs, enabled, label, onError, storageKey, value]);
+}
+
+export async function flushPendingStoragePersistence(): Promise<void> {
+  const storageKeys = [...pendingPersistenceByKey.keys()];
+  await Promise.all(storageKeys.map(writePendingStoragePersistence));
+}
+
+function scheduleStoragePersistence({
+  storageKey,
+  value,
+  label,
+  debounceMs,
+  onError,
+}: {
+  storageKey: string;
+  value: string;
+  label: string;
+  debounceMs: number;
+  onError: (failure: StoragePersistenceFailure) => void;
+}) {
+  const existing = pendingPersistenceByKey.get(storageKey);
+  if (existing?.value === value) {
+    pendingPersistenceByKey.set(storageKey, { ...existing, label, onError });
+    return;
+  }
+
+  if (existing?.timer) clearTimeout(existing.timer);
+  const delay = Number.isFinite(debounceMs) ? Math.max(0, debounceMs) : 0;
+  const pending = {
+    value,
+    label,
+    onError,
+    timer: null as ReturnType<typeof setTimeout> | null,
+  };
+  pendingPersistenceByKey.set(storageKey, pending);
+  if (delay === 0) {
+    void writePendingStoragePersistence(storageKey);
+    return;
+  }
+  pending.timer = setTimeout(() => {
+    void writePendingStoragePersistence(storageKey);
+  }, delay);
+}
+
+async function writePendingStoragePersistence(storageKey: string): Promise<void> {
+  const pending = pendingPersistenceByKey.get(storageKey);
+  if (!pending) return;
+  pendingPersistenceByKey.delete(storageKey);
+  if (pending.timer) clearTimeout(pending.timer);
+  try {
+    await persistStorageItem(storageKey, pending.value);
+  } catch (error) {
+    pending.onError({ storageKey, label: pending.label, error });
+  }
 }
 
 async function retryStorageMutation(mutate: () => Promise<void>) {

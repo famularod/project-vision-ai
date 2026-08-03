@@ -403,12 +403,12 @@ export function PIELiveAuthorityProvider({
         setState(refreshedState);
         setError(null);
         setLastSuccessfulRefreshAt(new Date().toISOString());
-        logStartupDiagnostic('shared_provider_ready', 'DAVE live authority provider is ready.', {
+        logStartupDiagnostic('shared_provider_ready', 'ECOS live authority provider is ready.', {
           state: refreshedState,
         });
       } catch (error) {
         if (!refreshIsCurrent()) return;
-        logStartupDiagnostic('degraded_mode_entered', 'DAVE live authority failed; fallback Runtime remains available.', {
+        logStartupDiagnostic('degraded_mode_entered', 'ECOS live authority failed; fallback Runtime remains available.', {
           error: startupErrorMessage(error),
         });
         setError(`${PRODUCT_BRAND.name} could not refresh the current project understanding.`);
@@ -669,7 +669,7 @@ export function PIELiveAuthorityProvider({
       .then(result => {
         logStartupDiagnostic(
           'project_truth_persisted',
-          'Versioned DAVE Project Truth snapshot persisted.',
+          'Versioned ECOS Project Truth snapshot persisted.',
           {
             revision: result.snapshot.revision,
             created: result.created,
@@ -680,7 +680,7 @@ export function PIELiveAuthorityProvider({
       .catch(error => {
         logStartupDiagnostic(
           'project_truth_persistence_failed',
-          'DAVE Project Truth remains available in memory, but its snapshot could not be persisted.',
+          'ECOS Project Truth remains available in memory, but its snapshot could not be persisted.',
           { error: startupErrorMessage(error) },
         );
       });

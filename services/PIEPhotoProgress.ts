@@ -3,28 +3,24 @@ import type {
   UpdatePhoto,
 } from '../types';
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import {
+  photoDisplayResultCanBeReviewed,
+} from './PhotoAssessment';
 
 export type PIEPhotoChangeLabel =
+  | 'Visible change'
+  | 'Visible concern'
   | 'No visible change'
-  | 'Minor progress'
-  | 'Moderate progress'
-  | 'Major progress'
-  | 'Completed work'
   | 'Material added'
   | 'Material removed'
-  | 'Equipment installed'
-  | 'Equipment removed'
-  | 'Housekeeping improved'
-  | 'Housekeeping declined'
-  | 'New safety concern'
-  | 'Safety concern resolved'
   | 'Could not determine confidently';
 
 export type PIEPhotoProgressVerificationStatus =
   | 'needs-review'
   | 'accepted'
   | 'edited'
-  | 'rejected';
+  | 'rejected'
+  | 'not-useful';
 
 export type PIEPhotoProgressPhotoRef = {
   photoId: string;
@@ -56,12 +52,12 @@ export type PIEPhotoProgressComparison = {
     summary: string;
     evidence: string[];
     limitations: string[];
-    verificationQuestion: 'Does this summary look correct?';
+    verificationQuestion: 'Is this visible finding correct?';
   };
   visualProgressEstimate: 'none' | 'minor' | 'moderate' | 'major' | 'complete' | 'unknown';
   needsReview: boolean;
   verificationStatus: PIEPhotoProgressVerificationStatus;
-  userActions: ['Accept', 'Edit', 'Reject'];
+  userActions: ['Confirm', 'Incorrect', 'Not useful'];
 };
 
 export type PIEPhotoProgressEvidence = {
@@ -111,8 +107,8 @@ export type PIEPhotoProgressResult = {
     }>;
   };
   reviewFeed: {
-    prompt: 'Does this summary look correct?';
-    actions: ['Accept', 'Edit', 'Reject'];
+    prompt: 'Is this visible finding correct?';
+    actions: ['Confirm', 'Incorrect', 'Not useful'];
     pendingCount: number;
   };
   combinedUpdateFeed: {
@@ -133,8 +129,7 @@ export type BuildPhotoProgressParams = {
 };
 
 type PhotoCandidate = PIEPhotoProgressPhotoRef & {
-  updateDate: string | null;
-  sourceText: string;
+  photoIntelligence: UpdatePhoto['photoIntelligence'];
 };
 
 function trimOrNull(value: string | null | undefined) {
@@ -182,34 +177,6 @@ function daysBetween(left: string | null, right: string | null) {
   return Math.round((rightDate.getTime() - leftDate.getTime()) / 86400000);
 }
 
-function distanceFeet(
-  lat1: number | null,
-  lon1: number | null,
-  lat2: number | null,
-  lon2: number | null,
-) {
-  if (
-    typeof lat1 !== 'number' ||
-    typeof lon1 !== 'number' ||
-    typeof lat2 !== 'number' ||
-    typeof lon2 !== 'number'
-  ) {
-    return null;
-  }
-
-  const radians = Math.PI / 180;
-  const earthFeet = 20902231;
-  const dLat = (lat2 - lat1) * radians;
-  const dLon = (lon2 - lon1) * radians;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * radians) *
-      Math.cos(lat2 * radians) *
-      Math.sin(dLon / 2) ** 2;
-
-  return 2 * earthFeet * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 function photoDate(update: ProjectUpdate, photo: UpdatePhoto) {
   return photo.locationCapturedAt || update.locationCapturedAt || update.date || null;
 }
@@ -224,16 +191,6 @@ function flattenPhotos(updates: ProjectUpdate[], projectName?: string | null) {
           trimOrNull(update.selectedAreaName);
         const capturedAt = photoDate(update, photo);
         const caption = trimOrNull(photo.caption);
-        const sourceText = [
-          caption,
-          photo.category,
-          photo.actionRequired,
-          photo.actionStatus,
-          update.notes,
-        ]
-          .filter(Boolean)
-          .join(' ');
-
         return {
           photoId: photo.id,
           updateId: update.id,
@@ -241,7 +198,6 @@ function flattenPhotos(updates: ProjectUpdate[], projectName?: string | null) {
           projectName: update.projectName,
           areaName,
           capturedAt,
-          updateDate: update.date || null,
           caption,
           category: photo.category,
           actionStatus: photo.actionStatus,
@@ -257,7 +213,7 @@ function flattenPhotos(updates: ProjectUpdate[], projectName?: string | null) {
               : typeof update.gpsLongitude === 'number'
                 ? update.gpsLongitude
                 : null,
-          sourceText,
+          photoIntelligence: photo.photoIntelligence ?? null,
         };
       }),
     )
@@ -269,189 +225,38 @@ function flattenPhotos(updates: ProjectUpdate[], projectName?: string | null) {
     });
 }
 
-function scorePreviousPhoto({
-  current,
-  previous,
-  userSelected,
-}: {
-  current: PhotoCandidate;
-  previous: PhotoCandidate;
-  userSelected: boolean;
-}) {
-  const reasons: string[] = [];
-  let score = userSelected ? 55 : 0;
-
-  if (current.projectName && normalized(current.projectName) === normalized(previous.projectName)) {
-    score += 20;
-    reasons.push('Same project');
-  }
-
-  if (current.areaName && normalized(current.areaName) === normalized(previous.areaName)) {
-    score += 25;
-    reasons.push('Same area');
-  }
-
-  const distance = distanceFeet(
-    current.gpsLatitude,
-    current.gpsLongitude,
-    previous.gpsLatitude,
-    previous.gpsLongitude,
-  );
-
-  if (distance !== null && distance <= 100) {
-    score += 25;
-    reasons.push(`GPS proximity ${Math.round(distance)} ft`);
-  } else if (distance !== null && distance <= 300) {
-    score += 15;
-    reasons.push(`Nearby GPS ${Math.round(distance)} ft`);
-  }
-
-  const gap = daysBetween(previous.capturedAt, current.capturedAt);
-
-  if (gap !== null && gap > 0 && gap <= 90) {
-    score += 20;
-    reasons.push(`${gap} days between photos`);
-  } else if (gap !== null && gap > 90) {
-    score += 8;
-    reasons.push(`${gap} days between photos`);
-  }
-
-  if (current.category === previous.category) {
-    score += 8;
-    reasons.push('Same photo category');
-  }
-
-  if (userSelected) reasons.push('User-selected comparison');
-
-  return {
-    score,
-    reasons,
-  };
-}
-
-function confidenceFromScore(score: number): ProjectConfidenceLevel {
-  if (score >= 75) return 'high';
-  if (score >= 45) return 'medium';
+function confidenceFromResult(value: string | null): ProjectConfidenceLevel {
+  if (value === 'high' || value === 'medium' || value === 'low') return value;
   return 'low';
 }
 
-function includesAny(text: string, words: string[]) {
-  const lower = text.toLowerCase();
-
-  return words.some(word => lower.includes(word));
-}
-
-function verificationStatus(text: string): PIEPhotoProgressVerificationStatus {
-  const lower = text.toLowerCase();
-
-  if (lower.includes('photo progress rejected')) return 'rejected';
-  if (lower.includes('photo progress edited')) return 'edited';
-  if (lower.includes('photo progress accepted') || lower.includes('accepted photo progress')) {
-    return 'accepted';
-  }
-
+function verificationStatus(
+  review: NonNullable<UpdatePhoto['photoIntelligence']>['userReview'],
+): PIEPhotoProgressVerificationStatus {
+  if (review === 'confirmed') return 'accepted';
+  if (review === 'incorrect') return 'rejected';
+  if (review === 'not_useful') return 'not-useful';
   return 'needs-review';
 }
 
-function changeLabels(
-  previous: PhotoCandidate,
-  current: PhotoCandidate,
-  confidence: ProjectConfidenceLevel,
-): PIEPhotoChangeLabel[] {
-  const combined = `${previous.sourceText} ${current.sourceText}`;
-  const currentText = current.sourceText;
-  const previousText = previous.sourceText;
+function changeLabels(current: PhotoCandidate): PIEPhotoChangeLabel[] {
+  const result = current.photoIntelligence;
   const labels: PIEPhotoChangeLabel[] = [];
-
-  if (confidence === 'low') return ['Could not determine confidently'];
-
-  if (
-    current.category === 'Safety Concern' &&
-    current.actionStatus !== 'Closed' &&
-    previous.category !== 'Safety Concern'
-  ) {
-    labels.push('New safety concern');
+  for (const finding of result?.findings ?? []) {
+    if (finding.findingType === 'added') labels.push('Material added');
+    else if (finding.findingType === 'removed') labels.push('Material removed');
+    else if (finding.findingType === 'visible_concern') labels.push('Visible concern');
+    else if (finding.findingType !== 'uncertain') labels.push('Visible change');
   }
-
-  if (
-    previous.category === 'Safety Concern' &&
-    current.actionStatus === 'Closed'
-  ) {
-    labels.push('Safety concern resolved');
-  }
-
-  if (
-    previous.actionStatus !== 'Closed' &&
-    current.actionStatus === 'Closed'
-  ) {
-    labels.push('Completed work');
-  }
-
-  if (includesAny(currentText, ['installed', 'set in place', 'mounted'])) {
-    labels.push('Equipment installed');
-  }
-
-  if (includesAny(currentText, ['removed', 'demo complete', 'demolished'])) {
-    labels.push(
-      includesAny(combined, ['equipment', 'unit', 'panel', 'pump', 'fan'])
-        ? 'Equipment removed'
-        : 'Material removed',
-    );
-  }
-
-  if (includesAny(currentText, ['delivered', 'material', 'stockpiled', 'staged'])) {
-    labels.push('Material added');
-  }
-
-  if (includesAny(currentText, ['clean', 'organized', 'swept'])) {
-    labels.push('Housekeeping improved');
-  }
-
-  if (includesAny(currentText, ['debris', 'trash', 'clutter', 'housekeeping issue'])) {
-    labels.push('Housekeeping declined');
-  }
-
-  if (
-    includesAny(currentText, ['progress', 'continued', 'rough-in', 'framing']) ||
-    current.actionStatus === 'In Progress'
-  ) {
-    labels.push('Moderate progress');
-  }
-
-  if (
-    current.caption &&
-    previous.caption &&
-    normalized(current.caption) === normalized(previous.caption) &&
-    current.category === previous.category
-  ) {
-    labels.push('No visible change');
-  }
-
-  if (labels.length === 0 && current.caption && current.caption !== previous.caption) {
-    labels.push('Minor progress');
-  }
-
+  if (labels.length === 0 && result?.visibleChange) labels.push('Visible change');
   if (labels.length === 0) labels.push('Could not determine confidently');
 
   return Array.from(new Set(labels));
 }
 
 function visualEstimate(labels: PIEPhotoChangeLabel[]): PIEPhotoProgressComparison['visualProgressEstimate'] {
-  if (labels.includes('Completed work')) return 'complete';
-  if (labels.includes('Major progress') || labels.includes('Equipment installed')) return 'major';
-  if (labels.includes('Moderate progress') || labels.includes('Material added')) return 'moderate';
-  if (labels.includes('Minor progress')) return 'minor';
   if (labels.includes('No visible change')) return 'none';
-
   return 'unknown';
-}
-
-function summaryForLabels(labels: PIEPhotoChangeLabel[], confidence: ProjectConfidenceLevel) {
-  if (confidence === 'low' || labels.includes('Could not determine confidently')) {
-    return 'DAVE could not determine the photo change confidently from local metadata and captions. Review is required before this becomes project evidence.';
-  }
-
-  return `DAVE found ${labels.join(', ').toLowerCase()} based on local photo captions, categories, action status, area, GPS, and time evidence.`;
 }
 
 function photoRef(candidate: PhotoCandidate): PIEPhotoProgressPhotoRef {
@@ -479,81 +284,56 @@ export function buildPhotoProgress({
 }: BuildPhotoProgressParams = {}): PIEPhotoProgressResult {
   const allUpdates = currentUpdate ? [...updates, currentUpdate] : updates;
   const photos = flattenPhotos(allUpdates, projectName);
-  const selectedMap = new Map(
-    userSelectedComparisons.map(item => [item.currentPhotoId, item.previousPhotoId]),
-  );
   const comparisons = photos.flatMap(current => {
-    const currentTime = parseDate(current.capturedAt)?.getTime() || 0;
-    const selectedPreviousId = selectedMap.get(current.photoId);
-    const previousCandidates = photos.filter(previous => {
-      if (previous.photoId === current.photoId) return false;
-      if (selectedPreviousId) return previous.photoId === selectedPreviousId;
+    const result = current.photoIntelligence;
+    if (!photoDisplayResultCanBeReviewed(result)) return [];
+    const selectedPreviousId = result?.diagnostics?.selectedPriorPhotoId || null;
+    const userSelectedPreviousId = userSelectedComparisons.find(
+      item => item.currentPhotoId === current.photoId,
+    )?.previousPhotoId;
+    const previous = photos.find(candidate =>
+      candidate.photoId === (selectedPreviousId || userSelectedPreviousId) &&
+      candidate.photoId !== current.photoId,
+    );
+    if (!previous || !result) return [];
 
-      const previousTime = parseDate(previous.capturedAt)?.getTime() || 0;
-
-      return previousTime <= currentTime && previous.updateId !== current.updateId;
-    });
-
-    if (previousCandidates.length === 0) return [];
-
-    const scored = previousCandidates
-      .map(previous => ({
-        previous,
-        ...scorePreviousPhoto({
-          current,
-          previous,
-          userSelected: previous.photoId === selectedPreviousId,
-        }),
-      }))
-      .sort((left, right) => right.score - left.score);
-    const best = scored[0];
-
-    if (!best || best.score < 30) return [];
-
-    const confidence = confidenceFromScore(best.score);
-    const labels = changeLabels(best.previous, current, confidence);
+    const confidence = confidenceFromResult(result.comparisonConfidence);
+    const labels = changeLabels(current);
     const estimate = visualEstimate(labels);
-    const status = verificationStatus(current.sourceText);
-    const summary = summaryForLabels(labels, confidence);
-    const needsReview =
-      confidence === 'low' ||
-      labels.includes('Could not determine confidently') ||
-      status === 'needs-review' ||
-      status === 'edited';
+    const status = verificationStatus(result.userReview);
+    const summary = result.summary.trim() || result.visibleChange || 'A visible photo change is ready for review.';
+    const needsReview = status === 'needs-review';
+    const matchReasons = [
+      'Provider-selected prior photo',
+      `Comparability: ${result.comparability}`,
+      `Visual confidence: ${result.comparisonConfidence}`,
+    ];
 
     return [{
-      id: `photo-progress:${best.previous.photoId}:${current.photoId}`,
-      previousPhoto: photoRef(best.previous),
+      id: `photo-progress:${previous.photoId}:${current.photoId}`,
+      previousPhoto: photoRef(previous),
       currentPhoto: photoRef(current),
-      daysBetween: daysBetween(best.previous.capturedAt, current.capturedAt),
-      area: current.areaName || best.previous.areaName,
+      daysBetween: daysBetween(previous.capturedAt, current.capturedAt),
+      area: current.areaName || previous.areaName,
       project: current.projectName,
       confidence,
-      confidenceScore: Math.min(100, Math.round(best.score)),
-      matchReasons: best.reasons,
+      confidenceScore: confidence === 'high' ? 90 : confidence === 'medium' ? 65 : 35,
+      matchReasons,
       changeLabels: labels,
       structuredSummary: {
         primaryChange: labels[0],
         summary,
         evidence: [
-          ...best.reasons,
-          best.previous.caption ? `Previous caption: ${best.previous.caption}` : null,
-          current.caption ? `Current caption: ${current.caption}` : null,
-          `Previous status: ${best.previous.actionStatus}`,
-          `Current status: ${current.actionStatus}`,
+          ...matchReasons,
+          ...(result.findings ?? []).map(finding => finding.description),
         ].filter((item): item is string => Boolean(item)),
-        limitations: [
-          'No external AI or computer vision was used.',
-          confidence === 'low'
-            ? 'Low metadata/caption confidence means the change could not be determined confidently.'
-            : null,
-        ].filter((item): item is string => Boolean(item)),
-        verificationQuestion: 'Does this summary look correct?' as const,
+        limitations: result.captureLimitations,
+        verificationQuestion: 'Is this visible finding correct?' as const,
       },
       visualProgressEstimate: estimate,
       needsReview,
       verificationStatus: status,
-      userActions: ['Accept', 'Edit', 'Reject'] as ['Accept', 'Edit', 'Reject'],
+      userActions: ['Confirm', 'Incorrect', 'Not useful'] as ['Confirm', 'Incorrect', 'Not useful'],
     }];
   });
   const sortedComparisons = comparisons.sort((left, right) => {
@@ -582,9 +362,7 @@ export function buildPhotoProgress({
   const photoProgressSummary =
     lastComparison?.structuredSummary.summary ||
     'No comparable previous project photo was found yet.';
-  const comparisonNeedsReview =
-    !lastComparison ||
-    sortedComparisons.some(comparison => comparison.needsReview);
+  const comparisonNeedsReview = sortedComparisons.some(comparison => comparison.needsReview);
   const pendingSummaries = sortedComparisons
     .filter(comparison => comparison.verificationStatus !== 'accepted')
     .slice(0, 5)
@@ -601,17 +379,15 @@ export function buildPhotoProgress({
     comparisonNeedsReview,
     acceptedEvidence,
     missionFeed: {
-      evidence: [
-        ...acceptedEvidence.map(item => item.summary),
-        lastComparison?.structuredSummary.summary,
-      ].filter((item): item is string => Boolean(item)),
+      evidence: acceptedEvidence.map(item => item.summary),
       recommendedActions: comparisonNeedsReview
-        ? ['Ask the user: Does this summary look correct? Accept, edit, or reject before using it as project evidence.']
+        ? ['Ask the user to confirm the visible finding, mark it incorrect, or mark it not useful before using it as project evidence.']
         : ['Use accepted photo progress as project evidence for review and updates.'],
     },
     executiveFeed: {
       summary: photoProgressSummary,
       progressSignals: sortedComparisons
+        .filter(comparison => comparison.verificationStatus === 'accepted')
         .slice(0, 5)
         .map(comparison => `${comparison.project}: ${comparison.changeLabels.join(', ')}`),
       reviewRequired: comparisonNeedsReview,
@@ -668,8 +444,8 @@ export function buildPhotoProgress({
       ]),
     },
     reviewFeed: {
-      prompt: 'Does this summary look correct?',
-      actions: ['Accept', 'Edit', 'Reject'],
+      prompt: 'Is this visible finding correct?',
+      actions: ['Confirm', 'Incorrect', 'Not useful'],
       pendingCount: sortedComparisons.filter(
         comparison => comparison.verificationStatus !== 'accepted',
       ).length,

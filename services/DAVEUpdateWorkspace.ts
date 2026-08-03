@@ -33,6 +33,7 @@ export type DAVEUpdateWorkspaceRecord = {
       comparability?: string | null;
       currentPhotoAssetId?: string | null;
       priorPhotoAssetId?: string | null;
+      userReview?: 'confirmed' | 'incorrect' | 'not_useful' | null;
       diagnostics?: {
         selectedPriorPhotoId?: string | null;
       } | null;
@@ -160,6 +161,7 @@ export function buildDAVEUpdatePhotoComparison<
   for (const currentPhoto of currentUpdate.photos) {
     const intelligence = currentPhoto.photoIntelligence;
     if (!intelligence) continue;
+    if (intelligence.userReview === 'incorrect' || intelligence.userReview === 'not_useful') continue;
 
     const selectedPriorPhotoId = intelligence.diagnostics?.selectedPriorPhotoId?.trim();
     const priorAssetId = intelligence.priorPhotoAssetId?.trim();

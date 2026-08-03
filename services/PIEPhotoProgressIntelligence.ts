@@ -13,6 +13,7 @@ import type {
   PIERealityObject,
 } from './PIERealityModel';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 
 export type PIEPhotoComparability =
   | 'strong_match'
@@ -29,6 +30,8 @@ export type PIEPhotoProgressDirection =
   | 'not_comparable';
 
 export type PIEPhotoProgressCategory =
+  | 'visible_change'
+  | 'visible_concern'
   | 'new_installation'
   | 'removed_material_or_equipment'
   | 'demolition'
@@ -103,6 +106,7 @@ export type PIEPhotoIntelligencePhoto = {
   };
   sourceSignature: string;
   duplicateKey: string;
+  photoComparison: UpdatePhoto['photoIntelligence'];
 };
 
 export type PIEPhotoSequence = {
@@ -498,6 +502,7 @@ function flattenPhotos(input: PIEPhotoProgressIntelligenceInput): PIEPhotoIntell
           imageQuality: imageQualityFromText(text),
           sourceSignature: stableHash(photoSignature(photo, update)),
           duplicateKey: stableHash(duplicateKey(photo, update)),
+          photoComparison: photo.photoIntelligence ?? null,
         };
       }),
     )
@@ -704,6 +709,7 @@ export function detectPhotoProgressEvent({
   issues?: PIEPhotoProgressIntelligenceInput['issues'];
   generatedAt: string;
 }): PIEPhotoProgressEvent | null {
+  if (!photoDisplayResultCanInformProject(later.photoComparison)) return null;
   if (comparability.duplicateDetected) return null;
   if (comparability.classification === 'not_comparable') return null;
 
@@ -742,7 +748,7 @@ export function detectPhotoProgressEvent({
     earlierCaptureDate: earlier.capturedAt,
     laterCaptureDate: later.capturedAt,
     observation: observationFor(category, earlier, later),
-    inferredMeaning: inferenceFor(category, direction),
+    inferredMeaning: inferenceFor(category, direction, later),
     progressCategory: category,
     progressDirection: direction,
     confidence,
@@ -750,7 +756,7 @@ export function detectPhotoProgressEvent({
     imageRegions: regionHintsFor(later),
     limitations: [
       ...comparability.limitations,
-      'DAVE separates visible observation from completion approval.',
+      'ECOS separates visible observation from completion approval.',
       confidence === 'low' ? 'Low confidence prevents a firm project conclusion.' : null,
     ].filter((item): item is string => Boolean(item)),
     corroboratingEvidenceIds,
@@ -763,30 +769,71 @@ export function detectPhotoProgressEvent({
   };
 }
 
+function providerComparabilityAssessment(
+  earlier: PIEPhotoIntelligencePhoto,
+  later: PIEPhotoIntelligencePhoto,
+): PIEPhotoComparabilityAssessment {
+  const result = later.photoComparison;
+  const classification: PIEPhotoComparability =
+    result?.comparability === 'strong'
+      ? 'strong_match'
+      : result?.comparability === 'probable'
+        ? 'probable_match'
+        : result?.comparability === 'weak'
+          ? 'weak_match'
+          : 'not_comparable';
+  return {
+    earlierPhotoId: earlier.photoId,
+    laterPhotoId: later.photoId,
+    classification,
+    score: classification === 'strong_match' ? 95 : classification === 'probable_match' ? 75 : 25,
+    reasons: ['Raw-pixel provider comparison selected this exact photo pair.'],
+    limitations: result?.captureLimitations ?? [],
+    normalizationOperations: normalizationOperationsFor(earlier, later, classification),
+    duplicateDetected: false,
+  };
+}
+
+function sequenceForConfirmedPair(
+  sequences: PIEPhotoSequence[],
+  earlier: PIEPhotoIntelligencePhoto,
+  later: PIEPhotoIntelligencePhoto,
+): PIEPhotoSequence {
+  const existing = sequences.find(sequence =>
+    sequence.photoIds.includes(earlier.photoId) && sequence.photoIds.includes(later.photoId),
+  );
+  if (existing) return existing;
+  return {
+    id: `photo-sequence-${stableHash(`${earlier.photoId}:${later.photoId}`)}`,
+    organizationId: later.organizationId,
+    projectId: later.projectId,
+    projectName: later.projectName,
+    buildingName: later.buildingName,
+    areaName: later.areaName || earlier.areaName,
+    roomName: later.roomName || earlier.roomName,
+    realityObjectId: later.realityObjectId || earlier.realityObjectId,
+    equipmentOrAssetName: later.equipmentOrAssetName || earlier.equipmentOrAssetName,
+    subject: later.subject,
+    approximateViewpoint: later.viewpointKey,
+    photoIds: [earlier.photoId, later.photoId],
+    firstCaptureDate: earlier.capturedAt,
+    lastCaptureDate: later.capturedAt,
+    identityConfidence: 'high',
+    stableKey: stableHash(`${later.projectId}:${earlier.photoId}:${later.photoId}`),
+  };
+}
+
 function inferProgressCategory(
   earlier: PIEPhotoIntelligencePhoto,
   later: PIEPhotoIntelligencePhoto,
   comparability: PIEPhotoComparabilityAssessment,
 ): PIEPhotoProgressCategory {
   if (comparability.classification === 'not_comparable') return 'not_comparable';
-  const previous = `${earlier.caption || ''} ${earlier.notes || ''} ${earlier.actionStatus}`;
-  const current = `${later.caption || ''} ${later.notes || ''} ${later.actionStatus}`;
-
-  if (includesAny(current, ['removed guardrail', 'missing guardrail', 'barrier removed', 'safety removed'])) return 'safety_control_removed';
-  if (includesAny(current, ['damage', 'leak', 'crack', 'corrosion', 'deterioration'])) return 'visible_damage_or_deterioration';
-  if (includesAny(current, ['obstructed', 'blocked', 'stored material', 'new obstruction'])) return 'new_obstruction';
-  if (includesAny(current, ['debris', 'trash', 'housekeeping issue', 'clutter'])) return 'housekeeping_deterioration';
-  if (includesAny(current, ['incomplete', 'still in progress', 'not complete', 'partially complete'])) return 'partial_construction';
-  if (includesAny(current, ['complete', 'completed', 'closed']) || later.actionStatus === 'Closed') return 'completed_construction';
-  if (includesAny(current, ['progress', 'rough-in', 'framing', 'started', 'in progress']) || later.actionStatus === 'In Progress') return 'partial_construction';
-  if (includesAny(current, ['installed', 'mounted', 'set in place', 'conduit', 'guardrail', 'toe board'])) return 'new_installation';
-  if (includesAny(current, ['clean', 'cleared', 'organized', 'swept']) && !includesAny(previous, ['clean', 'cleared'])) return 'housekeeping_improvement';
-  if (includesAny(current, ['removed', 'demolished', 'demo'])) return 'removed_material_or_equipment';
-  if (normalized(previous) === normalized(current) && current.trim()) return 'no_meaningful_change';
-  if (daysBetween(earlier.capturedAt, later.capturedAt) !== null && daysBetween(earlier.capturedAt, later.capturedAt)! >= 14) {
-    return 'temporary_condition_remaining';
-  }
-  return 'no_meaningful_change';
+  const result = later.photoComparison;
+  const findings = result?.findings ?? [];
+  if (findings.some(finding => finding.findingType === 'visible_concern')) return 'visible_concern';
+  if (result?.projectProgress === 'supported') return 'partial_construction';
+  return 'visible_change';
 }
 
 function progressDirectionFor(
@@ -794,6 +841,8 @@ function progressDirectionFor(
   comparability: PIEPhotoComparabilityAssessment,
 ): PIEPhotoProgressDirection {
   if (category === 'not_comparable' || comparability.classification === 'not_comparable') return 'not_comparable';
+  if (category === 'visible_concern') return 'regressed';
+  if (category === 'visible_change') return 'uncertain';
   if (
     category === 'safety_control_removed' ||
     category === 'visible_damage_or_deterioration' ||
@@ -811,8 +860,12 @@ function observationFor(
   earlier: PIEPhotoIntelligencePhoto,
   later: PIEPhotoIntelligencePhoto,
 ) {
+  const providerObservation = later.photoComparison?.visibleChange ||
+    later.photoComparison?.changedFromPrior ||
+    later.photoComparison?.summary;
+  if (providerObservation) return providerObservation;
   if (category === 'not_comparable') return 'The photos do not show the same subject or viewpoint reliably.';
-  if (category === 'no_meaningful_change') return 'The comparable photos show no meaningful visible change from the available metadata and captions.';
+  if (category === 'no_meaningful_change') return 'The comparable photos show no meaningful visible change.';
   if (category === 'safety_control_removed') return 'A safety control or barrier appears missing or removed in the later photo context.';
   if (category === 'visible_damage_or_deterioration') return 'Visible damage, leak, crack, corrosion, debris, or deterioration is described in the later photo context.';
   if (category === 'new_installation') return `The later photo context includes installed or added work for ${later.subject}.`;
@@ -822,7 +875,17 @@ function observationFor(
   return `The later photo context differs from the earlier photo for ${earlier.subject}.`;
 }
 
-function inferenceFor(category: PIEPhotoProgressCategory, direction: PIEPhotoProgressDirection) {
+function inferenceFor(
+  category: PIEPhotoProgressCategory,
+  direction: PIEPhotoProgressDirection,
+  later: PIEPhotoIntelligencePhoto,
+) {
+  if (later.photoComparison?.projectProgress === 'supported') {
+    return 'The confirmed visual finding may support project progress, but normal scope and project evidence checks still apply.';
+  }
+  if (category === 'visible_change' || category === 'visible_concern') {
+    return 'The user confirmed the visible finding. Its project impact still requires scope or task evidence.';
+  }
   if (direction === 'regressed') return 'This may indicate regression or an unresolved condition. Human or corroborating validation is required before presenting it as fact.';
   if (direction === 'unchanged') return 'No visible progress was detected in the comparable images. Work may have occurred outside the photographed area.';
   if (category === 'completed_construction') return 'The work may be complete, but completion still requires supporting evidence such as inspection, schedule, action-item, or human confirmation.';
@@ -987,7 +1050,7 @@ function buildConflicts(events: PIEPhotoProgressEvent[]): PIEPhotoProgressConfli
         projectId: event.projectId,
         eventId: event.id,
         conflictType: 'visual_regression_candidate',
-        summary: 'A possible visual regression was detected and requires JARVIS/human validation before it is treated as fact.',
+        summary: 'A possible visual regression was detected and requires ECOS Assurance/human validation before it is treated as fact.',
         evidenceIds: [event.earlierPhotoId, event.laterPhotoId],
         reviewRequired: true,
       });
@@ -1316,18 +1379,32 @@ export function buildPIEPhotoProgressIntelligence(
       const later = sequencePhotos[index];
       const assessment = assessPhotoComparability(earlier, later);
       assessments.push(assessment);
-      const event = detectPhotoProgressEvent({
-        sequence,
-        earlier,
-        later,
-        comparability: assessment,
-        scheduleItems: input.scheduleItems,
-        actionItems: input.actionItems,
-        issues: input.issues,
-        generatedAt,
-      });
-      if (event) events.push(event);
     }
+  });
+
+  photos.forEach(later => {
+    if (!photoDisplayResultCanInformProject(later.photoComparison)) return;
+    const priorPhotoId = later.photoComparison?.diagnostics?.selectedPriorPhotoId;
+    const earlier = priorPhotoId ? photoById.get(priorPhotoId) : null;
+    if (!earlier) return;
+    const sequence = sequenceForConfirmedPair(sequences, earlier, later);
+    const assessment = providerComparabilityAssessment(earlier, later);
+    const existingAssessmentIndex = assessments.findIndex(item =>
+      item.earlierPhotoId === earlier.photoId && item.laterPhotoId === later.photoId,
+    );
+    if (existingAssessmentIndex >= 0) assessments[existingAssessmentIndex] = assessment;
+    else assessments.push(assessment);
+    const event = detectPhotoProgressEvent({
+      sequence,
+      earlier,
+      later,
+      comparability: assessment,
+      scheduleItems: input.scheduleItems,
+      actionItems: input.actionItems,
+      issues: input.issues,
+      generatedAt,
+    });
+    if (event) events.push(event);
   });
 
   const conflicts = buildConflicts(events);

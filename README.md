@@ -4,6 +4,10 @@ Vitruvius is a project-intelligence workspace for iPhone, iPad, and web. It
 connects current tasks, field updates, schedules, documents, photos, and
 project-manager decisions into one shared project record.
 
+**Vitruvius Project Intelligence, powered by ECOS.** Vitruvius is the product
+people use. ECOS is the intelligence system: ECOS Core reasons and proposes;
+ECOS Assurance independently verifies.
+
 ## Current workflow
 
 1. Use **Overview** to choose a project and review the current priority.
@@ -38,7 +42,7 @@ npm run qa:release
 `npm test` runs dependency/configuration checks, strict TypeScript, and executable
 Jest tests. `test:release-contracts` checks ordered migrations, current Maestro
 flows, UI policy, assets, and product metadata. `qa:release` runs the complete
-VIGIL automated gate. Maestro execution and physical-device checks remain
+ECOS Assurance automated gate. Maestro execution and physical-device checks remain
 required for release certification.
 
 ## Product metadata
@@ -60,12 +64,14 @@ permission, backup-policy, and signing review before release.
 ## Current identity
 
 - Product: Vitruvius Project Intelligence
-- Intelligence engine: Core
-- Quality system: VIGIL (Vitruvius Integrity Gate and Inspection Layer)
+- Intelligence platform: ECOS
+- Reasoning component: ECOS Core
+- Independent validation component: ECOS Assurance
 - Bundle/package ID: `com.davidfamularo.projectphotoupdate`
 - Supported platforms: iPhone, iPad, Android, and web
 - Current version/build: `product-metadata.json`
 
-Some internal filenames and compatibility commands still use the legacy DAVE,
-PIE, JARVIS, V.I.C., or Project Vision AI names. They are implementation identifiers,
-not current user-facing product copy.
+Some internal filenames, storage keys, validation assets, and compatibility
+commands retain retired identifiers during the controlled migration. They are
+implementation identifiers, not current user-facing product copy, and they must
+not weaken the independent ECOS Assurance gate.

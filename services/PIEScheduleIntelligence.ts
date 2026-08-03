@@ -1395,7 +1395,7 @@ export function buildScheduleIntelligence({
       reason:
         task.reviewFields.length > 0
           ? `Low confidence schedule item needs correction for ${task.reviewFields.join(', ')}.`
-          : 'Low confidence schedule item should be reviewed before DAVE relies on it.',
+          : 'Low confidence schedule item should be reviewed before ECOS relies on it.',
       correctionFields: task.reviewFields.length
         ? task.reviewFields
         : (['Project', 'Area', 'Dates', 'Task', 'Owner', 'Status'] as PIEScheduleReviewItem['correctionFields']),

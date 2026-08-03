@@ -71,7 +71,7 @@ import {
   createDAVEOperationalRefreshCommitGuard,
   createDAVEOperationalRefreshController,
   DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE,
-  runDAVEOperationalCollectionRefreshes,
+  runDAVEOperationalCollectionRefreshes, shouldRefreshDAVEOperationalDataOnForeground,
   type DAVEOperationalCollectionName,
   type DAVEOperationalCollectionRefresh,
   type DAVEOperationalRefreshTrigger,
@@ -191,7 +191,7 @@ import {
 import { StartupErrorBoundary } from './components/StartupErrorBoundary';
 import { StartupHydrationBoundary } from './components/StartupHydrationBoundary';
 import {
-  persistStorageItem,
+  flushPendingStoragePersistence, persistStorageItem,
   removePersistedStorageItem,
   reportStoragePersistenceFailure,
   useJsonStoragePersistence,
@@ -358,7 +358,8 @@ import {
 import {
   aggregatePhotoDisplayResults,
   photoAssessmentReviewCopy,
-  photoDisplayResultHasExplicitFinding,
+  photoDisplayResultCanInformProject,
+  photoDisplayResultIsReviewCandidate,
 } from './services/PhotoAssessment';
 import {
   attentionCategoryForPhotoCategory,
@@ -3457,9 +3458,7 @@ function duplicateProjectDocumentForAsset(
 function photoHasVisualChange(photo: UpdatePhoto) {
   const result = photo.photoIntelligence;
 
-  if (!result) return false;
-  if (!pieResultHasCompletedVisualComparison(result)) return false;
-  return photoDisplayResultHasExplicitFinding(result);
+  return photoDisplayResultCanInformProject(result);
 }
 
 function photoAssessmentForUpdate(update: ProjectUpdate) {
@@ -3628,7 +3627,7 @@ function pieResultsForUpdate(update: ProjectUpdate) {
 function observedFindingsForPIEResult(
   result: PIEPhotoIntelligenceDisplayState | undefined,
 ) {
-  if (!result || !pieResultHasCompletedVisualComparison(result) || pieResultIsBaselineOnly(result)) return [];
+  if (!result || !photoDisplayResultCanInformProject(result) || pieResultIsBaselineOnly(result)) return [];
 
   return uniqueStrings([
     result.currentObservation || '',
@@ -3653,6 +3652,7 @@ function pieResultSupportsInterpretations(
 ) {
   return Boolean(
     result &&
+      photoDisplayResultCanInformProject(result) &&
       ![
         'analysis_failed_retry',
         'comparison_unavailable',
@@ -3669,17 +3669,6 @@ function updateSupportsPIEInterpretations(
   if (summary.status !== 'complete') return false;
 
   return pieResultsForUpdate(update).some(pieResultSupportsInterpretations);
-}
-
-function buildSuggestedObservedNote(observedFindings: string[]) {
-  const observedOnly = constructionRelevantObservations(uniqueStrings(observedFindings))
-    .filter(item => item.trim())
-    .filter(item => !/possible|progress|blocker|quality|concern|ahead|behind|delay|risk/i.test(item))
-    .slice(0, 3);
-
-  if (observedOnly.length === 0) return null;
-
-  return observedOnly.join(', ');
 }
 
 function updateInterpretationState(
@@ -6147,23 +6136,19 @@ useEffect(() => {
       }
     };
   }, [savedUpdates, startupHydrationReady, updatesLoaded]);
-
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state !== 'background' && state !== 'inactive') return;
+      void flushPendingStoragePersistence();
       if (!savedUpdatesSaveTimer.current) return;
-
       clearTimeout(savedUpdatesSaveTimer.current);
       savedUpdatesSaveTimer.current = null;
-
       persistStorageItem(UPDATES_STORAGE_KEY, JSON.stringify(savedUpdatesRef.current)).catch(error =>
         reportStoragePersistenceFailure({ storageKey: UPDATES_STORAGE_KEY, label: 'saved updates', error }),
       );
     });
-
     return () => subscription.remove();
   }, []);
-
   useJsonStoragePersistence({
     enabled: startupHydrationReady && deletedUpdateTombstonesLoaded,
     storageKey: DELETED_UPDATES_STORAGE_KEY,
@@ -6212,7 +6197,6 @@ useEffect(() => {
     value: scheduleItems,
     label: 'schedule',
   });
-
   useEffect(() => {
     if (!startupHydrationReady || !scheduleItemsLoaded || !projectsLoaded) return;
     ensureScheduleParentProjects(scheduleItems);
@@ -6237,7 +6221,6 @@ useEffect(() => {
     value: contactBook,
     label: 'contacts',
   });
-
   useEffect(() => {
     if (!startupHydrationReady || !draftLoaded) return;
 
@@ -6604,7 +6587,7 @@ useEffect(() => {
       const failures = await runDAVEOperationalCollectionRefreshes(collectionRefreshes);
       if (failures.length > 0) throw new Error(`operational_collection_refresh_incomplete:${failures.join(',')}`);
     }
-
+    let realtimeHealthy = false, lastSuccessfulRefreshAt: string | null = null;
     const refreshController = createDAVEOperationalRefreshController({
       refresh: refreshOperationalCollections,
       canRefresh: () => active && AppState.currentState !== 'background',
@@ -6612,6 +6595,7 @@ useEffect(() => {
         if (!active) return;
         if (state.status === 'retrying') setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
         else if (state.status === 'ready') {
+          lastSuccessfulRefreshAt = state.lastSuccessfulRefreshAt;
           setSyncCleanupNotice(current =>
             current === DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE ? null : current);
         }
@@ -6638,11 +6622,13 @@ useEffect(() => {
       },
       onStatus: status => {
         if (status === 'subscribed') {
+          realtimeHealthy = true;
           requestPendingChangesUpload('realtime_reconnected');
           if (realtimeHasSubscribed) void refreshController.request('realtime');
           realtimeHasSubscribed = true;
         }
         if (active && (status === 'error' || status === 'closed')) {
+          realtimeHealthy = false;
           setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
         }
       },
@@ -6652,9 +6638,12 @@ useEffect(() => {
     }).catch(() => { if (active) setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE); });
 
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active') void refreshController.request('foreground');
+      if (state === 'active' && shouldRefreshDAVEOperationalDataOnForeground({
+        realtimeHealthy, lastSuccessfulRefreshAt,
+      })) {
+        void refreshController.request('foreground');
+      }
     });
-
     return () => {
       active = false;
       operationalRefreshCommitGuard.invalidate();
@@ -9676,18 +9665,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ),
       };
       const summary = summarizePIEStatusForUpdate(nextUpdate);
-      const observedFindings = uniqueStrings([
-        ...(update.observedFindings || []),
-        ...observedFindingsForPIEResult(result),
-      ]);
-      const possibleInterpretations = uniqueStrings([
-        ...(summary.status === 'complete' ? update.possibleInterpretations || [] : []),
-        ...possibleInterpretationsForPIEResult(result),
-      ]);
-      const suggestedNote = buildSuggestedObservedNote(observedFindings);
-      const shouldApplySuggestedNote =
-        Boolean(suggestedNote) &&
-        (!update.notes.trim() || update.notes === update.pieSuggestedNote);
+      const observedFindings = update.observedFindings || [];
+      const possibleInterpretations = summary.status === 'complete'
+        ? update.possibleInterpretations || []
+        : [];
 
       return {
         ...nextUpdate,
@@ -9696,9 +9677,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
         pieSummary: summary.summary,
         observedFindings,
         possibleInterpretations,
-        notes: shouldApplySuggestedNote ? suggestedNote || '' : update.notes,
-        pieSuggestedNote: suggestedNote,
-        pieSuggestedNoteAccepted: shouldApplySuggestedNote,
+        notes: update.notes,
+        pieSuggestedNote: update.pieSuggestedNote || null,
+        pieSuggestedNoteAccepted: update.pieSuggestedNoteAccepted || false,
         pieCompletedAt:
           summary.status !== 'analyzing'
             ? new Date().toISOString()
@@ -15645,6 +15626,13 @@ function PhotoCard({
               ? onSignInForAnalysis
               : undefined
           }
+          onReview={review => onUpdate({
+            photoIntelligence: {
+              ...photo.photoIntelligence!,
+              userReview: review,
+              userReviewedAt: new Date().toISOString(),
+            },
+          })}
         />
       ) : null}
 
@@ -15891,13 +15879,16 @@ function RootPhotoIntelligenceCard({
   photo,
   onRetry,
   onSignInRequired,
+  onReview,
 }: {
   result: PIEPhotoIntelligenceDisplayState;
   projectName?: string;
   photo?: UpdatePhoto;
   onRetry?: () => void;
   onSignInRequired?: () => void;
+  onReview?: (review: 'confirmed' | 'incorrect' | 'not_useful') => void;
 }) {
+  const [showDetails, setShowDetails] = useState(false);
   if (result.status === 'no_suitable_prior_photo') {
     const comparisonArea = photo?.selectedAreaName?.trim() || projectName?.trim() || 'this area';
 
@@ -15919,130 +15910,138 @@ function RootPhotoIntelligenceCard({
     );
   }
 
-  const priorUpdateUsed = priorUpdateUsedForPIEResult(result);
-  const progress =
-    result.projectProgress === 'supported'
-      ? 'Project progress may be supported'
-      : result.projectProgress === 'unsupported'
-        ? 'Project progress unsupported'
-        : 'Project progress unable to determine';
+  if (result.status !== 'analysis_complete' && result.status !== 'completed_with_limitations') {
+    return (
+      <View style={styles.locationPanel}>
+        <View style={styles.locationPanelHeader}>
+          <View style={styles.rowIconBubble}>
+            <Ionicons
+              name={result.status === 'analyzing' ? 'sync-outline' : 'image-outline'}
+              size={20}
+              color={result.status === 'analysis_failed_retry' ? colors.warning : colors.primary}
+            />
+          </View>
+          <View style={styles.rowMain}>
+            <Text style={styles.panelTitle}>{pieUserStatus(result)}</Text>
+            <Text style={styles.rowSub}>{result.summary}</Text>
+          </View>
+        </View>
+        {onRetry ? (
+          <TouchableOpacity
+            style={styles.photoControlButton}
+            onPress={onRetry}
+            accessibilityLabel="Retry photo analysis"
+          >
+            <Ionicons name="refresh-outline" size={17} color={colors.primary} />
+            <Text style={styles.photoControlText}>Retry Analysis</Text>
+          </TouchableOpacity>
+        ) : null}
+        {onSignInRequired ? (
+          <TouchableOpacity
+            style={styles.photoControlButton}
+            onPress={onSignInRequired}
+            accessibilityLabel="Sign in to enable photo intelligence"
+          >
+            <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
+            <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+    );
+  }
 
-  const additions = result.additions || [];
-  const removals = result.removals || [];
-  const concerns =
-    result.possibleConcerns && result.possibleConcerns.length > 0
-      ? result.possibleConcerns
-      : result.captureLimitations;
-  const concernsLabel =
-    result.possibleConcerns && result.possibleConcerns.length > 0
-      ? 'Possible concerns'
-      : 'Limitations';
+  const priorUpdateUsed = priorUpdateUsedForPIEResult(result);
+  const reviewCandidate = photoDisplayResultIsReviewCandidate(result);
+  const primaryFinding = result.visibleChange || result.changedFromPrior || result.summary;
+  const firstConcern = result.possibleConcerns?.[0] || null;
+  const whyItMatters = firstConcern
+    ? `Review this visible concern: ${firstConcern}`
+    : result.projectProgress === 'supported'
+      ? 'This visible change may support progress after normal scope and project-evidence checks.'
+      : 'This is a visible change only. Confirm it before it is used in project reports or decisions.';
+  const nextAction = result.userReview === 'confirmed'
+    ? 'Confirmed for project intelligence.'
+    : result.userReview === 'incorrect'
+      ? 'Marked incorrect and excluded from project intelligence.'
+      : result.userReview === 'not_useful'
+        ? 'Marked not useful and excluded from project intelligence.'
+        : result.repeatPhotoGuidance || 'Confirm, mark incorrect, or mark not useful.';
 
   return (
     <View style={styles.locationPanel}>
       <View style={styles.locationPanelHeader}>
         <View style={styles.rowIconBubble}>
           <Ionicons
-            name={
-              result.status === 'analyzing'
-                ? 'sync-outline'
-                : result.status === 'analysis_failed_retry' ||
-                  result.status === 'comparison_unavailable'
-                  ? 'image-outline'
-                  : 'sparkles-outline'
-            }
+            name="sparkles-outline"
             size={20}
-            color={
-              result.status === 'analysis_failed_retry'
-                ? colors.warning
-                : result.status === 'analysis_complete' ||
-                  result.status === 'completed_with_limitations'
-                  ? colors.success
-                  : colors.primary
-            }
+            color={colors.success}
           />
         </View>
 
         <View style={styles.rowMain}>
           <Text style={styles.panelTitle}>{pieUserStatus(result)}</Text>
-          <Text style={styles.rowSub}>{progress}</Text>
+          <Text style={styles.rowSub}>
+            {reviewCandidate ? 'Review the visible finding before it is used elsewhere.' : result.summary}
+          </Text>
         </View>
       </View>
-
-      <Text style={styles.bodyText}>{result.summary}</Text>
-
-      {result.currentObservation ? (
-        <PIEDetailLine label="Current photo" value={result.currentObservation} />
+      {result.priorPhotoUri && photo?.uri ? (
+        <View style={styles.photoComparisonPreviewRow}>
+          <View style={styles.photoComparisonPreviewItem}>
+            <Image source={{ uri: result.priorPhotoUri }} style={styles.photoComparisonPreviewImage} />
+            <Text style={styles.photoComparisonPreviewLabel}>Before</Text>
+          </View>
+          <View style={styles.photoComparisonPreviewItem}>
+            <Image source={{ uri: resolveProjectPhotoDisplayUri(photo) }} style={styles.photoComparisonPreviewImage} />
+            <Text style={styles.photoComparisonPreviewLabel}>After</Text>
+          </View>
+        </View>
       ) : null}
-
-      {result.changedFromPrior ? (
-        <PIEDetailLine label="Changed from prior" value={result.changedFromPrior} />
+      <PIEDetailLine label="What changed" value={primaryFinding} />
+      {reviewCandidate ? <PIEDetailLine label="Why it matters" value={whyItMatters} /> : null}
+      {reviewCandidate ? <PIEDetailLine label="Next action" value={nextAction} /> : null}
+      {reviewCandidate && onReview ? (
+        <View style={styles.photoComparisonReviewRow}>
+          {([
+            ['confirmed', 'Confirm'],
+            ['incorrect', 'Incorrect'],
+            ['not_useful', 'Not useful'],
+          ] as const).map(([review, label]) => (
+            <TouchableOpacity
+              key={review}
+              style={[
+                styles.compactInlineAction,
+                result.userReview === review && styles.photoComparisonReviewActionSelected,
+              ]}
+              onPress={() => onReview(review)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: result.userReview === review }}
+            >
+              <Text style={[styles.compactInlineActionText,
+                result.userReview === review && styles.photoComparisonReviewActionTextSelected]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       ) : null}
-
-      {additions.length > 0 ? (
-        <PIEDetailLine label="Additions" value={additions.join(', ')} />
+      <TouchableOpacity
+        style={styles.photoComparisonDetailsButton}
+        onPress={() => setShowDetails(current => !current)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: showDetails }}
+      >
+        <Text style={styles.dashboardManageText}>{showDetails ? 'Hide Details' : 'Details'}</Text>
+      </TouchableOpacity>
+      {showDetails ? (
+        <View>
+          {result.location ? <PIEDetailLine label="Location" value={result.location} /> : null}
+          {result.comparisonConfidence ? <PIEDetailLine label="Confidence" value={pieConfidenceSentence(result.comparisonConfidence)} /> : null}
+          {result.comparability ? <PIEDetailLine label="Comparability" value={pieComparabilitySentence(result.comparability)} /> : null}
+          {result.captureLimitations.length > 0 ? <PIEDetailLine label="Limitations" value={result.captureLimitations.join(' ')} /> : null}
+          {priorUpdateUsed ? <PIEDetailLine label="Prior update" value={priorUpdateUsed} /> : null}
+          <PIEDetailLine label="Analysis time" value={analysisTimeTextForPIEResult(result.updatedAt)} />
+          <Text style={styles.locationDetailText}>{result.authorityMessage}</Text>
+        </View>
       ) : null}
-
-      {removals.length > 0 ? (
-        <PIEDetailLine label="Removals" value={removals.join(', ')} />
-      ) : null}
-
-      {result.possibleProgress ? (
-        <PIEDetailLine label="Possible progress" value={result.possibleProgress} />
-      ) : null}
-
-      {concerns.length > 0 ? (
-        <PIEDetailLine label={concernsLabel} value={concerns.join(' ')} />
-      ) : null}
-
-      {result.location ? (
-        <Text style={styles.locationDetailText}>{result.location}</Text>
-      ) : null}
-
-      {result.comparisonConfidence ? (
-        <Text style={styles.locationDetailText}>
-          {pieConfidenceSentence(result.comparisonConfidence)}
-        </Text>
-      ) : null}
-
-      {result.comparability ? (
-        <Text style={styles.locationDetailText}>
-          {pieComparabilitySentence(result.comparability)}
-        </Text>
-      ) : null}
-
-      {priorUpdateUsed ? (
-        <PIEDetailLine label="Prior update used" value={priorUpdateUsed} />
-      ) : null}
-
-      <PIEDetailLine label="Analysis time" value={analysisTimeTextForPIEResult(result.updatedAt)} />
-
-      <Text style={styles.locationDetailText}>
-        {result.authorityMessage}
-      </Text>
-
-      {onRetry ? (
-        <TouchableOpacity
-          style={styles.photoControlButton}
-          onPress={onRetry}
-          accessibilityLabel="Retry photo analysis"
-        >
-          <Ionicons name="refresh-outline" size={17} color={colors.primary} />
-          <Text style={styles.photoControlText}>Retry Analysis</Text>
-        </TouchableOpacity>
-      ) : null}
-
-      {onSignInRequired ? (
-        <TouchableOpacity
-          style={styles.photoControlButton}
-          onPress={onSignInRequired}
-          accessibilityLabel="Sign in to enable photo intelligence"
-        >
-          <Ionicons name="person-circle-outline" size={17} color={colors.primary} />
-          <Text style={styles.photoControlText}>Sign in to enable photo intelligence</Text>
-        </TouchableOpacity>
-      ) : null}
-
     </View>
   );
 }
@@ -20120,7 +20119,7 @@ function ScheduleScreen({
         contentContainerStyle={contentStyle}
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
-        initialNumToRender={12} maxToRenderPerBatch={12} windowSize={7} removeClippedSubviews={Platform.OS === 'android'}
+        initialNumToRender={12} maxToRenderPerBatch={Platform.OS === 'ios' ? 16 : 12} windowSize={Platform.OS === 'ios' ? 21 : 7} removeClippedSubviews={Platform.OS === 'android'}
         sections={mobileTaskSections}
         keyExtractor={item => item.id}
         renderItem={({ item }) => (
@@ -20169,7 +20168,7 @@ function ScheduleScreen({
           </>
         )}
         ListEmptyComponent={emptyState}
-        stickySectionHeadersEnabled={!selectedAreaKey}
+        stickySectionHeadersEnabled={false}
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
       />
       {taskEditor}

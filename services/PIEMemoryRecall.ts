@@ -166,10 +166,10 @@ export const PIE_MEMORY_RECALL_QUESTIONS = [
   'Is this recurring?',
   'Is this different from last time?',
   'Did a previous recommendation work?',
-  'Did the user correct DAVE on something similar?',
+  'Did the user correct ECOS on something similar?',
   'Does this match or contradict past evidence?',
   'What happened the last time this condition existed?',
-  'What should DAVE be careful about based on history?',
+  'What should ECOS be careful about based on history?',
 ] as const;
 
 export function buildPIEMemoryRecall(
@@ -423,7 +423,7 @@ export function compareNewEvidenceToPast(
     comparisons.push({
       id: 'seen-before',
       question: 'seen_before',
-      summary: `DAVE found ${memories.length} past memor${memories.length === 1 ? 'y' : 'ies'} related to this evidence.`,
+      summary: `ECOS found ${memories.length} past memor${memories.length === 1 ? 'y' : 'ies'} related to this evidence.`,
       relatedMemoryIds: memories.slice(0, 6).map(memory => memory.id),
       confidence: confidenceFromCount(memories.length),
     });
@@ -443,7 +443,7 @@ export function compareNewEvidenceToPast(
     comparisons.push({
       id: 'previous-recommendation',
       question: 'previous_recommendation_worked',
-      summary: `DAVE previously recommended: ${recommendations[0].suggestedNextAction}`,
+      summary: `ECOS previously recommended: ${recommendations[0].suggestedNextAction}`,
       relatedMemoryIds: recommendations.slice(0, 4).map(item => `recommendation-${item.id}`),
       confidence: recommendations[0].confidence,
     });
@@ -463,7 +463,7 @@ export function compareNewEvidenceToPast(
     comparisons.push({
       id: 'history-caution',
       question: 'history_caution',
-      summary: 'Past memory includes open, waiting, incomplete, blocked, or overdue language; DAVE should avoid overconfident progress claims.',
+      summary: 'Past memory includes open, waiting, incomplete, blocked, or overdue language; ECOS Confidence must remain conservative.',
       relatedMemoryIds: memories
         .filter(memory => /waiting|incomplete|overdue|open|blocked|still/i.test(memory.summary))
         .slice(0, 6)
@@ -507,8 +507,8 @@ export function buildMemoryInfluences(
     influences.push({
       id: 'recurring-opinion-influence',
       appliesTo: 'opinion',
-      summary: 'Past recurrence should make DAVE more opinionated but still evidence-bound.',
-      influence: 'If the same condition keeps appearing, DAVE should treat it as more important than a one-off note.',
+      summary: 'Past recurrence should make ECOS more opinionated but still evidence-bound.',
+      influence: 'A recurring condition carries more weight than a one-off note.',
       confidence: patterns[0].confidence,
       relatedMemoryIds: patterns[0].relatedMemoryIds,
     });
@@ -526,7 +526,7 @@ export function buildMemoryInfluences(
     influences.push({
       id: 'correction-confidence-influence',
       appliesTo: 'experience',
-      summary: 'The user previously corrected DAVE on similar context.',
+      summary: 'The user previously corrected a similar ECOS Analysis.',
       influence: 'Lower confidence and ask the user to verify before acting.',
       confidence: 'high',
       relatedMemoryIds: comparisons
@@ -634,7 +634,7 @@ export function summarizeRecallForPIE({
   memoryInfluences: PIEMemoryInfluence[];
 }): string {
   if (memories.length === 0) {
-    return 'DAVE did not find relevant past memory for this evidence yet.';
+    return 'ECOS did not find relevant past memory for this evidence yet.';
   }
 
   const patternLine = patterns[0]
@@ -647,7 +647,7 @@ export function summarizeRecallForPIE({
     ? ` ${memoryInfluences[0].influence}`
     : '';
 
-  return `DAVE recalled ${memories.length} relevant past memor${memories.length === 1 ? 'y' : 'ies'}.${comparisonLine}${patternLine}${influenceLine}`.trim();
+  return `ECOS recalled ${memories.length} relevant past memor${memories.length === 1 ? 'y' : 'ies'}.${comparisonLine}${patternLine}${influenceLine}`.trim();
 }
 
 function findRelevantBeliefsAndOpinions(
@@ -673,9 +673,9 @@ function findRelevantBeliefsAndOpinions(
         project: input.projectName || null,
         area: input.areaName || null,
         summary: beliefText(belief),
-        whyRelevant: 'A prior DAVE belief uses similar language or context.',
+        whyRelevant: 'A prior ECOS belief uses similar language or context.',
         confidence: belief.confidence,
-        influence: 'Use this prior belief to decide whether current evidence strengthens or weakens DAVE understanding.',
+        influence: 'Use this prior belief to decide whether current evidence strengthens or weakens ECOS understanding.',
       })),
     ...opinions
       .filter(opinion => matchesText(input, `${opinion.opinion} ${opinion.reason}`))
@@ -687,7 +687,7 @@ function findRelevantBeliefsAndOpinions(
         project: input.projectName || null,
         area: input.areaName || null,
         summary: opinion.opinion,
-        whyRelevant: 'A prior DAVE opinion uses similar language or context.',
+        whyRelevant: 'A prior ECOS opinion uses similar language or context.',
         confidence: opinion.confidence,
         influence: 'Use this prior opinion as context, but verify it against current evidence before recommending action.',
       })),
@@ -776,7 +776,7 @@ function correctionToMemory(correction: PIEPastCorrection): PIERelevantMemory {
     project: correction.project,
     area: correction.area,
     summary: correction.summary,
-    whyRelevant: 'The user corrected DAVE on similar context before.',
+    whyRelevant: 'The user corrected a similar ECOS Analysis before.',
     confidence: correction.confidence,
     influence: correction.confidenceAdjustment === 'lower'
       ? 'Lower confidence and ask for verification.'

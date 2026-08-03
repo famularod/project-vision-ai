@@ -16,6 +16,7 @@ import {
 } from './DAVEAssertionParser';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { reconcileDAVEScheduleRecords } from './DAVEScheduleRecovery';
+import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 
 export type PIEScheduleFieldSignal =
   | 'complete'
@@ -593,15 +594,20 @@ function updateEvidenceForScheduleItem(
       ? sameName(updateArea, itemArea)
       : !hasAreaTaggedPhotos
   );
-  const photoEvidence = photos.flatMap(photo => [
+  const photoEvidence = photos.flatMap(photo => {
+    const intelligence = photoDisplayResultCanInformProject(photo.photoIntelligence)
+      ? photo.photoIntelligence
+      : null;
+    return [
       photo.caption,
       photo.category,
       photo.actionRequired,
-      photo.photoIntelligence?.currentObservation,
-      photo.photoIntelligence?.visibleChange,
-      photo.photoIntelligence?.possibleProgress,
-      ...(photo.photoIntelligence?.possibleConcerns || []),
-    ]);
+      intelligence?.currentObservation,
+      intelligence?.visibleChange,
+      intelligence?.possibleProgress,
+      ...(intelligence?.possibleConcerns || []),
+    ];
+  });
   const matchingParts = [
     update.scheduleTaskName,
     includeUpdateText ? update.notes : null,
