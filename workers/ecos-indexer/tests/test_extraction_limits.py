@@ -3772,6 +3772,31 @@ class ExtractionLimitTests(unittest.TestCase):
             for region in production_low
         ))
 
+        hosted_width_support = copy.deepcopy(production_support)
+        hosted_left_line = next(
+            region for region in hosted_width_support
+            if region.get("id")
+            == "visual-tile-0:500:333:500-subtile-2:1-line-7"
+        )
+        hosted_left_line["width"] = 0.039841
+        hosted_trusted, hosted_low = run(
+            [*handrail, *hosted_width_support, unrelated],
+            [*handrail, *hosted_width_support, unrelated],
+        )
+        self.assertEqual([unrelated], hosted_trusted)
+        self.assertEqual(3, sum(
+            region.get("source") in {
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+            }
+            for region in hosted_low
+        ))
+        self.assertFalse(any(
+            region.get("text") == "CONCRETE @ MAx. 6'-0\""
+            and region.get("visualAuthorityStatus") is None
+            for region in hosted_low
+        ))
+
         for identity in (
             {"project_id": "wrong"}, {"source_sha256": "0" * 64},
             {"page_number": 39},

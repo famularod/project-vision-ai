@@ -2457,6 +2457,44 @@ EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_AUTHORITIES = (
                     "boundaryTruncated": False,
                 },
             ),
+            (
+                {
+                    "id": "visual-tile-0:500:333:500-subtile-2:1-line-5",
+                    "text": "POST. CORE AND COLD-",
+                    "bounds": {
+                        "x": 0.142063, "y": 0.855556,
+                        "width": 0.040476, "height": 0.003333,
+                    },
+                    "ocrPrefix": "visual-tile-0:500:333:500-subtile-2:1",
+                    "ocrKind": "line",
+                    "lineage": (6, 1, 1),
+                    "boundaryTruncated": False,
+                },
+                {
+                    "id": "visual-tile-0:500:333:500-subtile-2:1-line-7",
+                    "text": "CONCRETE @ MAx. 6'-0\"",
+                    "bounds": {
+                        "x": 0.142063, "y": 0.864667,
+                        "width": 0.039841, "height": 0.003556,
+                    },
+                    "ocrPrefix": "visual-tile-0:500:333:500-subtile-2:1",
+                    "ocrKind": "line",
+                    "lineage": (8, 1, 1),
+                    "boundaryTruncated": False,
+                },
+                {
+                    "id": "visual-tile-0:500:333:500-subtile-2:1-word-52",
+                    "text": "Oc.",
+                    "bounds": {
+                        "x": 0.142063, "y": 0.869556,
+                        "width": 0.00619, "height": 0.003111,
+                    },
+                    "ocrPrefix": "visual-tile-0:500:333:500-subtile-2:1",
+                    "ocrKind": "word",
+                    "lineage": (9, 1, 1),
+                    "boundaryTruncated": False,
+                },
+            ),
         ),
     },
     {
