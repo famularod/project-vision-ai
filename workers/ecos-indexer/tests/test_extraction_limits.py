@@ -39,6 +39,12 @@ from ecos_indexer.extraction import (
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_PRODUCTION_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_TEXT,
+    EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+    EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SPECS,
+    EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_TEXT,
+    EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_AUTHORITIES,
+    EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+    EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
     EXACT_ARCHITECTURAL_2321_PAGE42_LOADING_LINE,
     EXACT_ARCHITECTURAL_2321_PAGE42_LOADING_SOURCE,
     EXACT_ARCHITECTURAL_2321_PAGE42_LOADING_TEXT,
@@ -90,6 +96,7 @@ from ecos_indexer.extraction import (
     reconstruct_exact_architectural_2321_page38_schedule_measurements,
     reconstruct_exact_architectural_2321_page39_complete_propositions,
     reconstruct_exact_architectural_2321_page40_landing_dimension,
+    reconstruct_exact_architectural_2321_page40_complete_notes,
     reconstruct_exact_architectural_2321_page42_loading_dimension,
     reconstruct_exact_architectural_2321_page45_post_spacing_dimension,
     reconstruct_exact_e175_fixture_height_candidate,
@@ -3656,6 +3663,155 @@ class ExtractionLimitTests(unittest.TestCase):
             region.get("source")
             == EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE
             for region in low
+        ))
+
+    def test_exact_page40_complete_notes_replace_only_bound_fragments(self) -> None:
+        project_id = "607c7eed-5dea-4a5a-8b52-0f165c71c4b5"
+        source_sha256 = (
+            "5c1f0ccac1dbb50b0ff373da39179e572d577c75fc3941cec5b77d12f4846bbb"
+        )
+
+        def exact_region(spec: dict[str, object]) -> dict[str, object]:
+            block, paragraph, line = spec["lineage"]
+            return {
+                "id": spec["id"], "text": spec["text"], **spec["bounds"],
+                "confidence": 0.0,
+                "source": "fixed_visual_tile_coordinate_ocr",
+                "ocrKind": spec["ocrKind"],
+                "ocrBoundaryTruncated": spec["boundaryTruncated"],
+                "ocrBoundaryTruncatedEdges": [],
+                "ocrPrefix": spec["ocrPrefix"],
+                "ocrBlockNumber": block,
+                "ocrParagraphNumber": paragraph,
+                "ocrLineNumber": line,
+            }
+
+        handrail = [
+            exact_region(spec)
+            for spec in EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SPECS
+        ]
+        local_support = [
+            exact_region(spec)
+            for authority in EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_AUTHORITIES
+            for spec in authority["specSets"][0]
+        ]
+        unrelated = {
+            **handrail[0], "id": "unrelated-page40-note",
+            "text": "GUARDRAIL HEIGHT 42\"", "x": 0.6, "y": 0.6,
+        }
+
+        def run(
+            raw: list[dict[str, object]],
+            trusted: list[dict[str, object]],
+            **identity: object,
+        ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+            return reconstruct_exact_architectural_2321_page40_complete_notes(
+                trusted, [], raw_regions=raw,
+                project_id=identity.get("project_id", project_id),
+                page_number=identity.get("page_number", 40),
+                source_sha256=identity.get("source_sha256", source_sha256),
+                evidence_version=identity.get(
+                    "evidence_version", "ecos-hosted-evidence/1.3"
+                ),
+            )
+
+        trusted, low = run(
+            [*handrail, *local_support, unrelated],
+            [*handrail, *local_support, unrelated],
+        )
+        candidates = [
+            region for region in low
+            if region.get("source") in {
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+            }
+        ]
+        self.assertEqual(
+            [
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_TEXT,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
+            ],
+            [candidate["text"] for candidate in candidates],
+        )
+        self.assertEqual(2, sum(
+            candidate["source"]
+            == EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE
+            for candidate in candidates
+        ))
+        self.assertNotEqual(candidates[1]["x"], candidates[2]["x"])
+        self.assertTrue(all(candidate["searchable"] is False for candidate in candidates))
+        self.assertEqual([unrelated], trusted)
+        expected_audit_ids = {
+            str(region["id"]) for region in [*handrail, *local_support]
+        }
+        self.assertEqual(
+            expected_audit_ids,
+            {
+                str(region.get("id")) for region in low
+                if region.get("visualAuthorityStatus")
+                == "superseded_by_exact_rendered_page40_complete_note"
+            },
+        )
+
+        production_support = [
+            exact_region(spec)
+            for authority in EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_AUTHORITIES
+            for spec in authority["specSets"][1]
+        ]
+        production_trusted, production_low = run(
+            [*handrail, *production_support, unrelated],
+            [*handrail, *production_support, unrelated],
+        )
+        self.assertEqual([unrelated], production_trusted)
+        self.assertEqual(3, sum(
+            region.get("source") in {
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+            }
+            for region in production_low
+        ))
+
+        for identity in (
+            {"project_id": "wrong"}, {"source_sha256": "0" * 64},
+            {"page_number": 39},
+            {"evidence_version": "ecos-hosted-evidence/1.2"},
+        ):
+            with self.subTest(identity=identity):
+                unchanged = run(
+                    [*handrail, *local_support, unrelated],
+                    [*handrail, *local_support, unrelated],
+                    **identity,
+                )
+                self.assertEqual(
+                    ([*handrail, *local_support, unrelated], []), unchanged,
+                )
+
+        altered_handrail = {**handrail[0], "text": "HANDRAIL BRACKET"}
+        _, drifted_low = run(
+            [altered_handrail, *handrail[1:], *local_support, unrelated],
+            [altered_handrail, *handrail[1:], *local_support, unrelated],
+        )
+        self.assertFalse(any(
+            region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE
+            for region in drifted_low
+        ))
+        self.assertEqual(2, sum(
+            region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE
+            for region in drifted_low
+        ))
+
+        duplicate = copy.deepcopy(local_support[0])
+        _, ambiguous_low = run(
+            [*handrail, *local_support, duplicate, unrelated],
+            [*handrail, *local_support, unrelated],
+        )
+        self.assertEqual(1, sum(
+            region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE
+            for region in ambiguous_low
         ))
 
     def test_exact_page42_loading_dimension_replaces_nested_authority(self) -> None:

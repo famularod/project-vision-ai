@@ -16,6 +16,12 @@ from ecos_indexer.extraction import (
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE,
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_TEXT,
+    EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+    EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SPECS,
+    EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_TEXT,
+    EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_AUTHORITIES,
+    EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+    EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
     extract_page,
     resumed_visual_tile_work,
     visual_tile_checkpoint_payload,
@@ -50,6 +56,24 @@ def landing_exception(result: dict[str, object]) -> dict[str, object]:
     if len(matches) != 1:
         raise AssertionError(f"Expected one landing exception, found {len(matches)}")
     return matches[0]
+
+
+def complete_note_exceptions(
+    result: dict[str, object],
+) -> list[dict[str, object]]:
+    matches = [
+        exception for exception in result["unresolved"]
+        if any(
+            candidate.get("source") in {
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+            }
+            for candidate in exception.get("diagnosticCandidates", [])
+        )
+    ]
+    if len(matches) != 3:
+        raise AssertionError(f"Expected three complete-note exceptions, found {len(matches)}")
+    return matches
 
 
 def provider_payload(
@@ -252,6 +276,146 @@ class ExactArchitectural2321Page40ProductionTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(published))
         self.assertIs(published[0]["searchable"], True)
+        assurance = assure_page(
+            page_data=result["final"],
+            expected_project_id=PROJECT_ID,
+            expected_page_number=PAGE_NUMBER,
+            expected_source_sha256=SOURCE_SHA256,
+            expected_evidence_version=EVIDENCE_VERSION,
+            unresolved_region_count=0,
+        )
+        self.assertTrue(assurance["accepted"], assurance["failureCodes"])
+
+    def test_complete_printed_notes_require_dual_provider_acceptance(self) -> None:
+        targets = complete_note_exceptions(self.result)
+        candidates = [
+            exception["diagnosticCandidates"][0] for exception in targets
+        ]
+        self.assertTrue(all(
+            len(exception["diagnosticCandidates"]) == 1
+            for exception in targets
+        ))
+        self.assertEqual(
+            [
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_TEXT,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
+            ],
+            [candidate["text"] for candidate in candidates],
+        )
+        self.assertEqual(
+            [
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+            ],
+            [candidate["source"] for candidate in candidates],
+        )
+        self.assertNotEqual(candidates[1]["bounds"], candidates[2]["bounds"])
+        self.assertFalse(any(
+            region.get("searchable") is True
+            and region.get("text") in {
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_TEXT,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
+            }
+            for region in self.result["final"]["regions"]
+        ))
+
+        expected_audit_ids = {
+            str(spec["id"])
+            for spec in EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SPECS
+        }
+        expected_audit_ids.update(
+            str(spec["id"])
+            for authority in EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_AUTHORITIES
+            for spec in authority["specSets"][0]
+        )
+        audited_ids = {
+            str(region.get("id"))
+            for region in self.result["ocr"]["rejectedLowConfidenceRegions"]
+            if region.get("visualAuthorityStatus")
+            == "superseded_by_exact_rendered_page40_complete_note"
+        }
+        self.assertEqual(expected_audit_ids, audited_ids)
+
+        regions = self.result["ocr"]["visualTileRegions"]
+        proofs = self.result["ocr"]["visualTileProofs"]
+        checkpoint = visual_tile_checkpoint_payload(
+            page_number=PAGE_NUMBER,
+            source_sha256=SOURCE_SHA256,
+            evidence_version=EVIDENCE_VERSION,
+            regions=regions,
+            proofs=proofs,
+        )
+        document = pymupdf.open(str(SOURCE_PATH))
+        try:
+            replayed = extract_page(
+                document[PAGE_NUMBER - 1], SOURCE_SHA256,
+                project_id=PROJECT_ID,
+                document_sheet_identity=self.structural_identity,
+                visual_tile_checkpoint=checkpoint,
+            )
+        finally:
+            document.close()
+        replayed_targets = complete_note_exceptions(replayed)
+        self.assertEqual(targets, replayed_targets)
+        self.assertEqual(
+            [visual_exception_fingerprint(item) for item in targets],
+            [visual_exception_fingerprint(item) for item in replayed_targets],
+        )
+
+        handrail = targets[0]
+        accepted = provider_payload(handrail, accept=True)
+        one_sided = {
+            **accepted,
+            "assuranceAcceptedCandidateIndexes": [],
+            "facts": [],
+        }
+        self.assertFalse(
+            validated_visual_resolution(one_sided, handrail).resolved
+        )
+        mixed = {
+            **accepted,
+            "assuranceAcceptedCandidateIndexes": [],
+            "assuranceDismissedCandidateIndexes": [0],
+        }
+        self.assertFalse(validated_visual_resolution(mixed, handrail).resolved)
+
+        result = copy.deepcopy(self.result)
+        target_keys = {target["regionKey"] for target in targets}
+        for exception in result["unresolved"]:
+            resolution = validated_visual_resolution(
+                provider_payload(
+                    exception,
+                    accept=exception["regionKey"] in target_keys,
+                ),
+                exception,
+            )
+            self.assertTrue(
+                resolution.resolved,
+                f"{exception.get('regionKey')}: {resolution.internal_diagnostics}",
+            )
+            if resolution.evidence:
+                append_visual_evidence(result, exception, resolution.evidence)
+
+        published = [
+            region for region in result["final"]["regions"]
+            if region.get("source") == "vision"
+            and region.get("text") in {
+                EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_TEXT,
+                EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT,
+            }
+        ]
+        self.assertEqual(3, len(published))
+        self.assertEqual(1, sum(
+            region["text"] == EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_TEXT
+            for region in published
+        ))
+        self.assertEqual(2, sum(
+            region["text"] == EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_TEXT
+            for region in published
+        ))
+        self.assertTrue(all(region["searchable"] is True for region in published))
         assurance = assure_page(
             page_data=result["final"],
             expected_project_id=PROJECT_ID,
