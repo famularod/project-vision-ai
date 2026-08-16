@@ -36,6 +36,7 @@ from ecos_indexer.extraction import (
     EXACT_ARCHITECTURAL_2321_PAGE39_PROPOSITION_SOURCE,
     EXACT_ARCHITECTURAL_2321_PAGE39_PROPOSITION_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE,
+    EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_PRODUCTION_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_TEXT,
     EXACT_ARCHITECTURAL_2321_PAGE42_LOADING_LINE,
@@ -3490,7 +3491,8 @@ class ExtractionLimitTests(unittest.TestCase):
                 "id": spec["id"], "text": spec["text"], **spec["bounds"],
                 "confidence": 0.0,
                 "source": "fixed_visual_tile_coordinate_ocr",
-                "ocrKind": "word", "ocrBoundaryTruncated": False,
+                "ocrKind": spec.get("ocrKind", "word"),
+                "ocrBoundaryTruncated": False,
                 "ocrBoundaryTruncatedEdges": [],
                 "ocrPrefix": spec["ocrPrefix"],
                 "ocrBlockNumber": block,
@@ -3544,6 +3546,86 @@ class ExtractionLimitTests(unittest.TestCase):
             audited_ids,
         )
         self.assertIn(unrelated, trusted)
+
+        production = [
+            fixed_word(spec)
+            for spec in EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_PRODUCTION_SPECS
+        ]
+        production_trusted, production_low = (
+            reconstruct_exact_architectural_2321_page40_landing_dimension(
+                [unrelated], production, raw_regions=[*production, unrelated],
+                project_id=project_id, page_number=40,
+                source_sha256=source_sha256,
+                evidence_version="ecos-hosted-evidence/1.3",
+            )
+        )
+        production_composites = [
+            region for region in production_low
+            if region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE
+        ]
+        self.assertEqual(1, len(production_composites))
+        self.assertEqual(
+            EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_TEXT,
+            production_composites[0]["text"],
+        )
+        self.assertEqual(
+            EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_PRODUCTION_SPECS[0][
+                "bounds"
+            ],
+            {
+                key: production_composites[0][key]
+                for key in ("x", "y", "width", "height")
+            },
+        )
+        self.assertEqual([unrelated], production_trusted)
+        self.assertEqual(
+            {
+                str(spec["id"])
+                for spec in (
+                    EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_PRODUCTION_SPECS
+                )
+            },
+            {
+                str(region.get("id")) for region in production_low
+                if region.get("visualAuthorityStatus")
+                == (
+                    "superseded_by_exact_rendered_page40_"
+                    "landing_dimension_composite"
+                )
+            },
+        )
+        _, ambiguous_low = (
+            reconstruct_exact_architectural_2321_page40_landing_dimension(
+                [unrelated], [*malformed, *production],
+                raw_regions=[*malformed, *production, unrelated],
+                project_id=project_id, page_number=40,
+                source_sha256=source_sha256,
+                evidence_version="ecos-hosted-evidence/1.3",
+            )
+        )
+        self.assertFalse(any(
+            region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE
+            for region in ambiguous_low
+        ))
+        production_drift = {
+            **production[0], "ocrKind": "word",
+        }
+        _, drifted_low = (
+            reconstruct_exact_architectural_2321_page40_landing_dimension(
+                [unrelated], production,
+                raw_regions=[production_drift, production[1], unrelated],
+                project_id=project_id, page_number=40,
+                source_sha256=source_sha256,
+                evidence_version="ecos-hosted-evidence/1.3",
+            )
+        )
+        self.assertFalse(any(
+            region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE
+            for region in drifted_low
+        ))
 
         for identity in (
             {"project_id": "wrong"}, {"source_sha256": "0" * 64},

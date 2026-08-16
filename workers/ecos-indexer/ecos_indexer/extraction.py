@@ -2262,7 +2262,7 @@ EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE = (
     "exact_rendered_page40_landing_dimension_candidate"
 )
 EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_TEXT = "14'-6\""
-EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS = (
+EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_LOCAL_SPECS = (
     {
         "id": "visual-tile-0:0:333:500-subtile-1:0-word-16",
         "text": "[1'-6*]",
@@ -2283,6 +2283,40 @@ EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS = (
         "ocrPrefix": "visual-tile-0:0:333:500-subtile-1:1",
         "lineage": (3, 1, 1),
     },
+)
+EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_PRODUCTION_SPECS = (
+    {
+        "id": "visual-tile-0:0:333:500-subtile-1:0-line-3",
+        "text": "[4 '-6*]",
+        "bounds": {
+            "x": 0.106825, "y": 0.174,
+            "width": 0.01127, "height": 0.010222,
+        },
+        "ocrPrefix": "visual-tile-0:0:333:500-subtile-1:0",
+        "ocrKind": "line",
+        "lineage": (4, 1, 1),
+    },
+    {
+        "id": "visual-tile-0:0:333:500-subtile-1:1-word-12",
+        "text": "14'-6*)",
+        "bounds": {
+            "x": 0.10873, "y": 0.176,
+            "width": 0.00873, "height": 0.003556,
+        },
+        "ocrPrefix": "visual-tile-0:0:333:500-subtile-1:1",
+        "ocrKind": "word",
+        "lineage": (3, 1, 1),
+    },
+)
+# Keep the original symbol for the SHA-pinned local regression and older
+# callers, while accepting the separately observed immutable production OCR
+# rendering only through its own exact specification set.
+EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS = (
+    EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_LOCAL_SPECS
+)
+EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPEC_SETS = (
+    EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_LOCAL_SPECS,
+    EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_PRODUCTION_SPECS,
 )
 EXACT_ARCHITECTURAL_2321_PAGE42_NUMBER = 42
 EXACT_ARCHITECTURAL_2321_PAGE42_LOADING_SOURCE = (
@@ -9050,30 +9084,37 @@ def reconstruct_exact_architectural_2321_page40_landing_dimension(
             return None
         return bounds
 
-    matched: list[dict[str, Any]] = []
-    for spec in EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS:
-        block_number, paragraph_number, line_number = spec["lineage"]
-        matches = [
-            region for region in raw_regions
-            if str(region.get("id") or "") == str(spec["id"])
-            and str(region.get("text") or "") == str(spec["text"])
-            and str(region.get("source") or "")
-            == "fixed_visual_tile_coordinate_ocr"
-            and str(region.get("ocrKind") or "") == "word"
-            and region.get("ocrBoundaryTruncated") is False
-            and str(region.get("ocrPrefix") or "") == str(spec["ocrPrefix"])
-            and region.get("ocrBlockNumber") == block_number
-            and region.get("ocrParagraphNumber") == paragraph_number
-            and region.get("ocrLineNumber") == line_number
-            and strict_bounds(region) == dict(spec["bounds"])
-        ]
-        if len(matches) != 1:
-            return trusted, low
-        matched.append(matches[0])
+    matched_sets: list[tuple[tuple[dict[str, Any], ...], list[dict[str, Any]]]] = []
+    for spec_set in EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPEC_SETS:
+        matched: list[dict[str, Any]] = []
+        for spec in spec_set:
+            block_number, paragraph_number, line_number = spec["lineage"]
+            matches = [
+                region for region in raw_regions
+                if str(region.get("id") or "") == str(spec["id"])
+                and str(region.get("text") or "") == str(spec["text"])
+                and str(region.get("source") or "")
+                == "fixed_visual_tile_coordinate_ocr"
+                and str(region.get("ocrKind") or "")
+                == str(spec.get("ocrKind") or "word")
+                and region.get("ocrBoundaryTruncated") is False
+                and str(region.get("ocrPrefix") or "") == str(spec["ocrPrefix"])
+                and region.get("ocrBlockNumber") == block_number
+                and region.get("ocrParagraphNumber") == paragraph_number
+                and region.get("ocrLineNumber") == line_number
+                and strict_bounds(region) == dict(spec["bounds"])
+            ]
+            if len(matches) != 1:
+                break
+            matched.append(matches[0])
+        if len(matched) == len(spec_set):
+            matched_sets.append((spec_set, matched))
+    # Multiple complete render signatures would make the authority ambiguous.
+    if len(matched_sets) != 1:
+        return trusted, low
+    selected_specs, _matched = matched_sets[0]
 
-    authority_ids = tuple(str(spec["id"]) for spec in (
-        EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS
-    ))
+    authority_ids = tuple(str(spec["id"]) for spec in selected_specs)
     replacement_id = f"{authority_ids[0]}-exact-page40-landing-dimension"
     trusted_by_id = {
         str(region.get("id") or ""): region
@@ -9113,7 +9154,7 @@ def reconstruct_exact_architectural_2321_page40_landing_dimension(
         "id": replacement_id,
         "text": EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_TEXT,
         "label": EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_TEXT,
-        **dict(EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SPECS[0]["bounds"]),
+        **dict(selected_specs[0]["bounds"]),
         "confidence": 0.0,
         "source": EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE,
         "searchable": False,
