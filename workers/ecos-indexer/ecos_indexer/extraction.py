@@ -8470,11 +8470,16 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
     remove only that non-text rule without guessing any digit.  The original
     OCR remains non-searchable in the audit partition.
 
-    Ten exact cells contain a genuinely missing or substituted glyph.  Those
-    are never accepted here.  They are replaced only with non-searchable
-    propositions for the ordinary dual-provider resolver.  Any source, page,
-    header, coordinate, lineage, text, or evidence-version drift returns the
-    original fail-closed evidence unchanged.
+    Ten exact cells contain a genuinely missing or substituted glyph.  OCR
+    word ordinals are not authoritative because Tesseract can number the same
+    rendered cell differently across otherwise identical executions.  Those
+    cells are therefore bound by the immutable sheet, exact column/row
+    geometry, OCR tile pass, and fixed proposition bounds.  A syntactically
+    complete current rendering is corrected deterministically; every other
+    cell becomes a non-searchable proposition for the ordinary dual-provider
+    resolver.  Any source, page, header, geometry, lineage, or
+    evidence-version drift returns the original fail-closed evidence
+    unchanged.
     """
     trusted = [dict(region) for region in trusted_regions]
     low = [dict(region) for region in low_confidence_regions]
@@ -8536,24 +8541,27 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
             and strict_bounds(region) == bounds
         )
 
-    for header in EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_HEADER_SPECS:
+    for header_index, header in enumerate(
+        EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_HEADER_SPECS
+    ):
+        accepted_texts = (
+            {"HEIGHT]", "HEIGHT}"}
+            if header_index == 1
+            else {str(header["text"])}
+        )
         matches = [
             region for region in raw_regions
             if exact_fixed_word(
                 region,
                 region_id=str(header["id"]),
-                text=str(header["text"]),
+                text=exact_text(region.get("text")),
                 bounds=dict(header["bounds"]),
                 prefix=str(header["ocrPrefix"]),
             )
+            and exact_text(region.get("text")) in accepted_texts
         ]
         if len(matches) != 1:
             return trusted, low
-
-    ambiguous_ids = {
-        str(spec["id"])
-        for spec in EXACT_ARCHITECTURAL_2321_PAGE38_AMBIGUOUS_SPECS
-    }
     trusted_by_id = {
         str(region.get("id") or ""): region
         for region in trusted
@@ -8636,8 +8644,192 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
             audited["visualAuthorityReplacementId"] = replacement_id
         low_by_id[region_id] = audited
 
+    def schedule_column(bounds: dict[str, float]) -> str:
+        return "width" if bounds["x"] < 0.43 else "height"
+
+    def fixed_schedule_word(region: dict[str, Any], *, prefix: str) -> bool:
+        bounds = strict_bounds(region)
+        lineage = tuple(
+            region.get(key)
+            for key in (
+                "ocrBlockNumber", "ocrParagraphNumber", "ocrLineNumber",
+            )
+        )
+        return bool(
+            bounds is not None
+            and in_exact_schedule_column(bounds)
+            and str(region.get("source") or "")
+            == "fixed_visual_tile_coordinate_ocr"
+            and str(region.get("ocrKind") or "") == "word"
+            and region.get("ocrBoundaryTruncated") is False
+            and str(region.get("ocrPrefix") or "") == prefix
+            and all(
+                not isinstance(value, bool) and isinstance(value, int)
+                for value in lineage
+            )
+        )
+
+    def corrected_measurement(
+        *,
+        replacement_id: str,
+        canonical: str,
+        bounds: dict[str, float],
+        confidence: float,
+        raw_text: str,
+    ) -> dict[str, Any]:
+        return {
+            "id": replacement_id,
+            "text": canonical,
+            "label": canonical,
+            "subject": canonical,
+            "location": "door schedule width/height cell",
+            "evidenceText": canonical,
+            **bounds,
+            "confidence": round(bounded(confidence), 5),
+            "source": "exact_page38_door_schedule_grid_measurement",
+            "factKind": "drawing_fact",
+            "searchable": True,
+            "ocrValidationStatus": "exact_schedule_grid_syntax_validated",
+            "reconstructionMethod": (
+                "exact_source_bound_door_schedule_grid_rule_separation"
+            ),
+            "rawOcrText": raw_text,
+            "evidenceSources": ["fixed_visual_tile_coordinate_ocr"],
+        }
+
+    # Bind the ten reviewed cells by immutable cell geometry rather than OCR
+    # word ordinals.  This preserves the exact authority if Tesseract inserts,
+    # removes, or renumbers an unrelated word earlier in the same tile.
+    composites: list[dict[str, Any]] = []
+    ambiguous_member_ids: set[str] = set()
+    anchor_rows: list[tuple[str, float, str, str]] = []
+    for spec_index, spec in enumerate(
+        EXACT_ARCHITECTURAL_2321_PAGE38_AMBIGUOUS_SPECS,
+        start=1,
+    ):
+        spec_bounds = dict(spec["bounds"])
+        spec_column = schedule_column(spec_bounds)
+        spec_center_y = spec_bounds["y"] + (spec_bounds["height"] / 2)
+        current_matches: list[dict[str, Any]] = []
+        for raw in raw_regions:
+            if not fixed_schedule_word(raw, prefix=str(spec["ocrPrefix"])):
+                continue
+            raw_bounds = strict_bounds(raw)
+            if raw_bounds is None:
+                continue
+            raw_center_y = raw_bounds["y"] + (raw_bounds["height"] / 2)
+            if (
+                schedule_column(raw_bounds) == spec_column
+                and abs(raw_center_y - spec_center_y) <= 0.0015
+            ):
+                current_matches.append(raw)
+
+        current_matches.sort(key=lambda item: str(item.get("id") or ""))
+        member_ids = {
+            str(region.get("id") or "")
+            for region in current_matches
+            if str(region.get("id") or "")
+        }
+        ambiguous_member_ids.update(member_ids)
+        stable_stem = f"exact-page38-schedule-cell-{spec_index:02d}"
+        canonical = str(spec["canonical"])
+        parsed = [
+            region for region in current_matches
+            if schedule_canonical(region) == canonical
+        ]
+        parsed_canonicals = {
+            schedule_canonical(region)
+            for region in current_matches
+            if schedule_canonical(region)
+        }
+        deterministic = bool(parsed) and parsed_canonicals == {canonical}
+        replacement_id = (
+            f"{stable_stem}-measurement"
+            if deterministic
+            else f"{stable_stem}-candidate"
+        )
+        reason = (
+            "exact_issued_door_schedule_grid_rule_is_not_measurement_text"
+            if deterministic
+            else "review_complete_issued_door_schedule_measurement_instead"
+        )
+        for member_id in sorted(member_ids):
+            quarantine_authority(
+                member_id,
+                reason=reason,
+                replacement_id=replacement_id,
+            )
+
+        anchor_rows.append((
+            spec_column,
+            spec_center_y,
+            canonical,
+            replacement_id,
+        ))
+        if deterministic:
+            representative = sorted(
+                parsed,
+                key=lambda item: (
+                    -float(item.get("confidence") or 0),
+                    str(item.get("id") or ""),
+                ),
+            )[0]
+            corrected.append(corrected_measurement(
+                replacement_id=replacement_id,
+                canonical=canonical,
+                bounds=spec_bounds,
+                confidence=max(
+                    float(region.get("confidence") or 0)
+                    for region in parsed
+                ),
+                raw_text=exact_text(representative.get("text")),
+            ))
+            continue
+
+        composites.append({
+            "id": replacement_id,
+            "text": canonical,
+            "label": canonical,
+            **spec_bounds,
+            "confidence": round(bounded(max(
+                (
+                    float(region.get("confidence") or 0)
+                    for region in current_matches
+                ),
+                default=0.0,
+            )), 5),
+            "source": EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE,
+            "searchable": False,
+            "ocrValidationStatus": "unresolved_low_confidence",
+            "visualAuthorityStatus": (
+                EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE
+            ),
+            "reconstructionMethod": (
+                "exact_source_bound_rendered_page38_door_schedule_proposition"
+            ),
+            "evidenceSources": ["fixed_visual_tile_coordinate_ocr"],
+            "constituentEvidence": sorted(member_ids),
+        })
+
+    # Anchor overlapping fragment suppression to every complete rendered
+    # value, including one whose coordinate authority was already enriched or
+    # deduplicated before this source-bound repair runs.
+    for region_id, raw in raw_by_id.items():
+        if region_id in ambiguous_member_ids:
+            continue
+        bounds = strict_bounds(raw)
+        canonical = schedule_canonical(raw)
+        if bounds is None or not canonical:
+            continue
+        anchor_rows.append((
+            schedule_column(bounds),
+            bounds["y"] + (bounds["height"] / 2),
+            canonical,
+            f"{region_id}-exact-page38-schedule-measurement",
+        ))
+
     for region_id in sorted(authority_ids):
-        if region_id in ambiguous_ids:
+        if region_id in ambiguous_member_ids:
             continue
         authority = trusted_by_id.get(region_id) or low_by_id.get(region_id)
         raw = raw_by_id.get(region_id)
@@ -8647,13 +8839,16 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
         if not canonical:
             continue
         raw_text = exact_text(raw.get("text"))
+        bounds = strict_bounds(raw)
+        if bounds is None:
+            continue
+        replacement_id = f"{region_id}-exact-page38-schedule-measurement"
         if (
             canonical == raw_text
             and region_id in trusted_by_id
             and trusted_by_id[region_id].get("searchable") is not False
         ):
             continue
-        replacement_id = f"{region_id}-exact-page38-schedule-measurement"
         audited = {
             **authority,
             "searchable": False,
@@ -8668,28 +8863,13 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
         }
         trusted_by_id.pop(region_id, None)
         low_by_id[region_id] = audited
-        bounds = strict_bounds(raw)
-        if bounds is None:
-            continue
-        corrected.append({
-            "id": replacement_id,
-            "text": canonical,
-            "label": canonical,
-            "subject": canonical,
-            "location": "door schedule width/height cell",
-            "evidenceText": canonical,
-            **bounds,
-            "confidence": round(bounded(float(raw.get("confidence") or 0)), 5),
-            "source": "exact_page38_door_schedule_grid_measurement",
-            "factKind": "drawing_fact",
-            "searchable": True,
-            "ocrValidationStatus": "exact_schedule_grid_syntax_validated",
-            "reconstructionMethod": (
-                "exact_source_bound_door_schedule_grid_rule_separation"
-            ),
-            "rawOcrText": raw_text,
-            "evidenceSources": ["fixed_visual_tile_coordinate_ocr"],
-        })
+        corrected.append(corrected_measurement(
+            replacement_id=replacement_id,
+            canonical=canonical,
+            bounds=bounds,
+            confidence=float(raw.get("confidence") or 0),
+            raw_text=raw_text,
+        ))
 
     # Exact thin table rules occasionally survive OCR as short searchable
     # tokens. They are not door values and must remain audit-only.
@@ -8715,35 +8895,8 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
     # a complete value. Suppress that duplicate authority only when a full
     # canonical or exact-review proposition exists in the same schedule
     # column and on the same printed row.
-    anchor_rows: list[tuple[str, float, str, str]] = []
-    ambiguous_by_id = {
-        str(spec["id"]): spec
-        for spec in EXACT_ARCHITECTURAL_2321_PAGE38_AMBIGUOUS_SPECS
-    }
-    for region_id, raw in raw_by_id.items():
-        bounds = strict_bounds(raw)
-        if bounds is None:
-            continue
-        canonical = schedule_canonical(raw)
-        spec = ambiguous_by_id.get(region_id)
-        if not canonical and spec is None:
-            continue
-        column = "width" if bounds["x"] < 0.43 else "height"
-        center_y = bounds["y"] + (bounds["height"] / 2)
-        replacement_id = (
-            f"{region_id}-exact-page38-schedule-candidate"
-            if spec is not None
-            else f"{region_id}-exact-page38-schedule-measurement"
-        )
-        anchor_rows.append((
-            column,
-            center_y,
-            str(spec["canonical"]) if spec is not None else canonical,
-            replacement_id,
-        ))
-
     for region_id in sorted(set(trusted_by_id) | set(low_by_id)):
-        if region_id in ambiguous_ids:
+        if region_id in ambiguous_member_ids:
             continue
         raw = raw_by_id.get(region_id)
         if raw is None or schedule_canonical(raw):
@@ -8760,7 +8913,7 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
             re.IGNORECASE,
         ):
             continue
-        column = "width" if bounds["x"] < 0.43 else "height"
+        column = schedule_column(bounds)
         center_y = bounds["y"] + (bounds["height"] / 2)
         matching_anchors = [
             anchor for anchor in anchor_rows
@@ -8776,48 +8929,6 @@ def reconstruct_exact_architectural_2321_page38_schedule_measurements(
             ),
             replacement_id=matching_anchors[0][3],
         )
-
-    composites: list[dict[str, Any]] = []
-    for spec in EXACT_ARCHITECTURAL_2321_PAGE38_AMBIGUOUS_SPECS:
-        region_id = str(spec["id"])
-        raw_matches = [
-            region for region in raw_regions
-            if exact_fixed_word(
-                region,
-                region_id=region_id,
-                text=str(spec["text"]),
-                bounds=dict(spec["bounds"]),
-                prefix=str(spec["ocrPrefix"]),
-            )
-        ]
-        if len(raw_matches) != 1:
-            continue
-        replacement_id = f"{region_id}-exact-page38-schedule-candidate"
-        quarantine_authority(
-            region_id,
-            reason="review_complete_issued_door_schedule_measurement_instead",
-            replacement_id=replacement_id,
-        )
-        composites.append({
-            "id": replacement_id,
-            "text": str(spec["canonical"]),
-            "label": str(spec["canonical"]),
-            **dict(spec["bounds"]),
-            "confidence": round(
-                bounded(float(raw_matches[0].get("confidence") or 0)), 5
-            ),
-            "source": EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE,
-            "searchable": False,
-            "ocrValidationStatus": "unresolved_low_confidence",
-            "visualAuthorityStatus": (
-                EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE
-            ),
-            "reconstructionMethod": (
-                "exact_source_bound_rendered_page38_door_schedule_proposition"
-            ),
-            "evidenceSources": ["fixed_visual_tile_coordinate_ocr"],
-            "constituentEvidence": [region_id],
-        })
 
     return (
         dedupe_regions([*trusted_by_id.values(), *corrected]),

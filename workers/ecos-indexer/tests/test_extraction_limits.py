@@ -3170,22 +3170,6 @@ class ExtractionLimitTests(unittest.TestCase):
             with self.subTest(identity=identity):
                 self.assertEqual(([], [baseline]), run([baseline], [baseline], **identity))
 
-        for mutation in (
-            {"text": "80\""}, {"x": 0.434},
-            {"ocrPrefix": "visual-tile-wrong"}, {"source": "other"},
-            {"ocrKind": "line"}, {"ocrBoundaryTruncated": True},
-            {"ocrBlockNumber": False},
-        ):
-            altered = {**baseline, **mutation}
-            with self.subTest(mutation=mutation):
-                _, low = run([altered], [altered])
-                self.assertFalse(any(
-                    region.get("source")
-                    == EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE
-                    for region in low
-                ))
-                self.assertIn(altered, low)
-
         wrong_header = {**headers[0], "text": "WIDTH"}
         saved_headers = headers
         try:
@@ -3193,11 +3177,144 @@ class ExtractionLimitTests(unittest.TestCase):
             self.assertEqual(([], [baseline]), run([baseline], [baseline]))
         finally:
             headers = saved_headers
-        _, duplicate = run([baseline], [baseline, copy.deepcopy(baseline)])
-        self.assertFalse(any(
-            region.get("source") == EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE
-            for region in duplicate
-        ))
+
+        unknown_height_header = {**headers[1], "text": "HE1GHT"}
+        try:
+            headers = [headers[0], unknown_height_header]
+            self.assertEqual(([], [baseline]), run([baseline], [baseline]))
+        finally:
+            headers = saved_headers
+
+        # Raw OCR drift cannot become searchable authority. The immutable cell
+        # still yields one untrusted proposition for ordinary dual-provider
+        # review, while a nonmatching raw record remains in the audit set.
+        for mutation in (
+            {"text": "80\""}, {"x": 0.1},
+            {"ocrPrefix": "visual-tile-wrong"}, {"source": "other"},
+            {"ocrKind": "line"}, {"ocrBoundaryTruncated": True},
+            {"ocrBlockNumber": False},
+        ):
+            altered = {**baseline, **mutation}
+            with self.subTest(mutation=mutation):
+                trusted, low = run([altered], [altered])
+                self.assertEqual([], trusted)
+                candidates = [
+                    region for region in low
+                    if region.get("source")
+                    == EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE
+                ]
+                self.assertEqual(10, len(candidates))
+                self.assertTrue(all(
+                    candidate.get("searchable") is False
+                    for candidate in candidates
+                ))
+                self.assertTrue(any(
+                    region.get("id") == altered.get("id")
+                    for region in low
+                ))
+
+    def test_exact_page38_schedule_uses_cell_geometry_across_production_ocr_drift(
+        self,
+    ) -> None:
+        project_id = "607c7eed-5dea-4a5a-8b52-0f165c71c4b5"
+        source_sha256 = (
+            "5c1f0ccac1dbb50b0ff373da39179e572d577c75fc3941cec5b77d12f4846bbb"
+        )
+
+        def fixed_word(spec: dict[str, object], index: int) -> dict[str, object]:
+            return {
+                "id": spec["id"], "text": spec["text"], **spec["bounds"],
+                "confidence": 0.2,
+                "source": "fixed_visual_tile_coordinate_ocr",
+                "ocrKind": "word", "ocrBoundaryTruncated": False,
+                "ocrPrefix": spec["ocrPrefix"],
+                "ocrBlockNumber": index + 1,
+                "ocrParagraphNumber": 1, "ocrLineNumber": 1,
+            }
+
+        headers = [
+            fixed_word(spec, index)
+            for index, spec in enumerate(
+                EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_HEADER_SPECS
+            )
+        ]
+        headers[1] = {**headers[1], "text": "HEIGHT}"}
+        specs = list(EXACT_ARCHITECTURAL_2321_PAGE38_AMBIGUOUS_SPECS)
+        production: list[dict[str, object]] = []
+        production_texts = (
+            "7-0\"", "0\"", None, "7-07", "0'-0'",
+            "i0’-0'", "70'-0\"", "12'-0\"|", "72'-0\"|", "7-07",
+        )
+        for index, (spec, text) in enumerate(zip(specs, production_texts)):
+            if text is None:
+                continue
+            item = fixed_word(spec, index + 20)
+            item["id"] = f"production-shifted-word-{index + 1}"
+            item["text"] = text
+            if index == 1:
+                item.update({
+                    "x": 0.421429, "y": 0.225333,
+                    "width": 0.003175, "height": 0.003778,
+                })
+            production.append(item)
+
+        bracketed_height = {
+            "id": "production-row68-height", "text": "[10'-0\"]",
+            "x": 0.432857, "y": 0.624667,
+            "width": 0.01127, "height": 0.004889,
+            "confidence": 0.02,
+            "source": "fixed_visual_tile_coordinate_ocr",
+            "ocrKind": "word", "ocrBoundaryTruncated": False,
+            "ocrPrefix": "visual-tile-333:500:333:500-subtile-1:0",
+            "ocrBlockNumber": 272,
+            "ocrParagraphNumber": 1, "ocrLineNumber": 1,
+        }
+        raw = [*headers, *production, bracketed_height]
+        trusted, low = reconstruct_exact_architectural_2321_page38_schedule_measurements(
+            [], [*production, bracketed_height],
+            raw_regions=raw,
+            project_id=project_id,
+            page_number=38,
+            source_sha256=source_sha256,
+            evidence_version="ecos-hosted-evidence/1.3",
+        )
+
+        spec_measurements = [
+            region for region in trusted
+            if str(region.get("id", "")).startswith(
+                "exact-page38-schedule-cell-"
+            )
+        ]
+        self.assertEqual(
+            [("exact-page38-schedule-cell-01-measurement", "7'-0\""),
+             ("exact-page38-schedule-cell-08-measurement", "12'-0\"")],
+            [(region["id"], region["text"]) for region in spec_measurements],
+        )
+        candidates = [
+            region for region in low
+            if region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE
+        ]
+        self.assertEqual(8, len(candidates))
+        self.assertEqual(
+            [spec["canonical"] for index, spec in enumerate(specs) if index not in {0, 7}],
+            [candidate["text"] for candidate in candidates],
+        )
+        bracketed_correction = [
+            region for region in trusted
+            if region.get("rawOcrText") == "[10'-0\"]"
+        ]
+        self.assertEqual(1, len(bracketed_correction))
+        self.assertEqual("10'-0\"", bracketed_correction[0]["text"])
+        audited_ids = {
+            str(region.get("id")) for region in low
+            if region.get("visualAuthorityStatus")
+            == "superseded_by_exact_page38_door_schedule_measurement"
+        }
+        self.assertTrue(
+            {str(region["id"]) for region in production}.issubset(audited_ids)
+        )
+        self.assertIn(bracketed_height["id"], audited_ids)
 
     def test_exact_page40_landing_dimension_replaces_malformed_authorities(self) -> None:
         project_id = "607c7eed-5dea-4a5a-8b52-0f165c71c4b5"
