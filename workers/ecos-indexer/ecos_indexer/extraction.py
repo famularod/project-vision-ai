@@ -1977,6 +1977,45 @@ EXACT_ARCHITECTURAL_2321_PAGE31_PROPOSITION_SPECS = (
         ),
     },
 )
+EXACT_ARCHITECTURAL_2321_PAGE36_NUMBER = 36
+EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SOURCE = (
+    "exact_rendered_page36_clearance_proposition_candidate"
+)
+EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_TEXT = "5'-0\" CLR"
+EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SPECS = (
+    {
+        "id": "visual-tile-333:500:333:500-subtile-2:2-word-16",
+        "acceptedIds": (
+            "visual-tile-333:500:333:500-subtile-2:2-word-16",
+            "visual-tile-333:500:333:500-subtile-2:2-word-21",
+        ),
+        "text": "5'-O\"",
+        "bounds": {
+            "x": 0.623651, "y": 0.9,
+            "width": 0.010794, "height": 0.004,
+        },
+        "ocrPrefix": "visual-tile-333:500:333:500-subtile-2:2",
+        "ocrKind": "word",
+        "lineage": (3, 1, 1),
+        "acceptedLineages": ((3, 1, 1), (4, 1, 1)),
+    },
+    {
+        "id": "visual-tile-333:500:333:500-subtile-2:2-line-2",
+        "acceptedIds": (
+            "visual-tile-333:500:333:500-subtile-2:2-line-2",
+            "visual-tile-333:500:333:500-subtile-2:2-line-3",
+        ),
+        "text": "5'-O\" CLR]",
+        "bounds": {
+            "x": 0.623651, "y": 0.899778,
+            "width": 0.022698, "height": 0.004444,
+        },
+        "ocrPrefix": "visual-tile-333:500:333:500-subtile-2:2",
+        "ocrKind": "line",
+        "lineage": (3, 1, 1),
+        "acceptedLineages": ((3, 1, 1), (4, 1, 1)),
+    },
+)
 EXACT_ARCHITECTURAL_2321_PAGE38_NUMBER = 38
 EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE = (
     "exact_rendered_page38_door_schedule_measurement_candidate"
@@ -2631,6 +2670,7 @@ QUARANTINED_VISUAL_AUTHORITY_STATUSES = frozenset({
     "superseded_by_exact_rendered_page30_dimension_candidate",
     "superseded_by_exact_rendered_page30_complete_proposition_candidate",
     "superseded_by_exact_rendered_page31_complete_proposition_candidate",
+    "superseded_by_exact_rendered_page36_clearance_proposition_candidate",
     "superseded_by_exact_page38_door_schedule_measurement",
     "superseded_by_exact_rendered_page40_landing_dimension_composite",
     "superseded_by_exact_rendered_page42_loading_dimension_composite",
@@ -2893,6 +2933,18 @@ def extract_page(
         ocr_regions,
         low_confidence_regions,
     ) = reconstruct_exact_architectural_2321_page31_complete_propositions(
+        ocr_regions,
+        low_confidence_regions,
+        raw_regions=raw_ocr_regions,
+        project_id=project_id,
+        page_number=page.number + 1,
+        source_sha256=source_sha256,
+        evidence_version=evidence_version,
+    )
+    (
+        ocr_regions,
+        low_confidence_regions,
+    ) = reconstruct_exact_architectural_2321_page36_clearance_proposition(
         ocr_regions,
         low_confidence_regions,
         raw_regions=raw_ocr_regions,
@@ -6950,6 +7002,7 @@ def coalesce_low_confidence_regions(
             EXACT_ARCHITECTURAL_2321_PAGE30_DIMENSION_SOURCE,
             EXACT_ARCHITECTURAL_2321_PAGE30_COMPLETE_PROPOSITION_SOURCE,
             EXACT_ARCHITECTURAL_2321_PAGE31_PROPOSITION_SOURCE,
+            EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SOURCE,
             EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE,
             EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE,
             EXACT_ARCHITECTURAL_2321_PAGE42_LOADING_SOURCE,
@@ -7042,6 +7095,7 @@ def coalesce_low_confidence_regions(
                 EXACT_ARCHITECTURAL_2321_PAGE30_DIMENSION_SOURCE,
                 EXACT_ARCHITECTURAL_2321_PAGE30_COMPLETE_PROPOSITION_SOURCE,
                 EXACT_ARCHITECTURAL_2321_PAGE31_PROPOSITION_SOURCE,
+                EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SOURCE,
                 EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_SOURCE,
                 EXACT_ARCHITECTURAL_2321_PAGE40_LANDING_SOURCE,
                 EXACT_ARCHITECTURAL_2321_PAGE42_LOADING_SOURCE,
@@ -9793,6 +9847,173 @@ def reconstruct_exact_architectural_2321_page31_complete_propositions(
     return (
         dedupe_regions(list(trusted_by_id.values())),
         [*composites, *low_by_id.values()],
+    )
+
+
+def reconstruct_exact_architectural_2321_page36_clearance_proposition(
+    trusted_regions: list[dict[str, Any]],
+    low_confidence_regions: list[dict[str, Any]],
+    *,
+    raw_regions: list[dict[str, Any]],
+    project_id: str | None,
+    page_number: int | None,
+    source_sha256: str | None,
+    evidence_version: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Review the exact printed page-36 clearance as one proposition.
+
+    The fixed rendered OCR reads the issued ``5'-0\" CLR`` dimension as the
+    malformed word ``5'-O\"`` and enclosing line ``5'-O\" CLR]``. Repeated
+    provider review of that malformed authority is ambiguous even though the
+    complete printed proposition is visible. This immutable-source rule binds
+    both raw OCR authorities by ID, text, geometry, pass, kind, and lineage,
+    retains them as non-searchable audit evidence, and emits one unresolved
+    canonical proposition for the ordinary dual-provider resolver. It never
+    publishes a fact by reconstruction itself; any drift stays fail closed.
+    """
+    trusted = [dict(region) for region in trusted_regions]
+    low = [dict(region) for region in low_confidence_regions]
+    if not (
+        source_sha256
+        == EXACT_ARCHITECTURAL_2321_FIRE_SEPARATION_SOURCE_SHA256
+        and project_id == EXACT_ARCHITECTURAL_2321_FIRE_SEPARATION_PROJECT_ID
+        and evidence_version
+        == EXACT_ARCHITECTURAL_2321_FIRE_SEPARATION_EVIDENCE_VERSION
+        and page_number == EXACT_ARCHITECTURAL_2321_PAGE36_NUMBER
+    ):
+        return trusted, low
+
+    def strict_bounds(region: dict[str, Any]) -> dict[str, float] | None:
+        values = tuple(
+            region.get(key) for key in ("x", "y", "width", "height")
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in values
+        ):
+            return None
+        bounds = normalized_region_bounds(region)
+        if bounds["width"] <= 0 or bounds["height"] <= 0:
+            return None
+        return bounds
+
+    def authority_matches(
+        region: dict[str, Any], spec: dict[str, Any],
+    ) -> bool:
+        lineage = tuple(
+            region.get(key)
+            for key in (
+                "ocrBlockNumber", "ocrParagraphNumber", "ocrLineNumber",
+            )
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in lineage
+        ):
+            return False
+        accepted_ids = tuple(
+            str(value)
+            for value in spec.get("acceptedIds", (spec["id"],))
+        )
+        accepted_lineages = tuple(
+            tuple(value)
+            for value in spec.get("acceptedLineages", (spec["lineage"],))
+        )
+        return bool(
+            str(region.get("id") or "") in accepted_ids
+            and str(region.get("text") or "") == str(spec["text"])
+            and str(region.get("source") or "")
+            == "fixed_visual_tile_coordinate_ocr"
+            and str(region.get("ocrKind") or "") == str(spec["ocrKind"])
+            and region.get("ocrBoundaryTruncated") is False
+            and str(region.get("ocrPrefix") or "") == str(spec["ocrPrefix"])
+            and lineage in accepted_lineages
+            and strict_bounds(region) == dict(spec["bounds"])
+        )
+
+    matched: list[dict[str, Any]] = []
+    for spec in EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SPECS:
+        matches = [
+            region for region in raw_regions
+            if authority_matches(region, spec)
+        ]
+        if len(matches) != 1:
+            return trusted, low
+        matched.append(matches[0])
+    matched_lineages = {
+        tuple(
+            region.get(key)
+            for key in (
+                "ocrBlockNumber", "ocrParagraphNumber", "ocrLineNumber",
+            )
+        )
+        for region in matched
+    }
+    if len(matched_lineages) != 1:
+        return trusted, low
+
+    authority_ids = tuple(str(region.get("id") or "") for region in matched)
+    replacement_id = "architectural-2321-page36-clearance-proposition-candidate"
+    trusted_by_id = {
+        str(region.get("id") or ""): region
+        for region in trusted if str(region.get("id") or "")
+    }
+    low_by_id = {
+        str(region.get("id") or ""): region
+        for region in low if str(region.get("id") or "")
+    }
+    raw_by_id = {
+        str(region.get("id") or ""): region
+        for region in raw_regions if str(region.get("id") or "")
+    }
+    for region_id in authority_ids:
+        authority = trusted_by_id.pop(region_id, None)
+        if authority is None:
+            authority = low_by_id.pop(region_id, None)
+        if authority is None:
+            authority = raw_by_id[region_id]
+        low_by_id[region_id] = {
+            **authority,
+            "searchable": False,
+            "ocrValidationStatus": (
+                "superseded_exact_page36_clearance_proposition"
+            ),
+            "visualAuthorityStatus": (
+                "superseded_by_exact_rendered_page36_clearance_proposition_candidate"
+            ),
+            "visualAuthorityReason": (
+                "review_the_complete_printed_clearance_proposition_instead"
+            ),
+            "visualAuthorityReplacementId": replacement_id,
+        }
+
+    line_bounds = dict(EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SPECS[1]["bounds"])
+    candidate = {
+        "id": replacement_id,
+        "text": EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_TEXT,
+        "label": EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_TEXT,
+        **line_bounds,
+        "confidence": round(
+            min(float(region.get("confidence") or 0) for region in matched),
+            5,
+        ),
+        "source": EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SOURCE,
+        "searchable": False,
+        "ocrValidationStatus": "unresolved_low_confidence",
+        "visualAuthorityStatus": (
+            EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SOURCE
+        ),
+        "reconstructionMethod": (
+            "exact_source_bound_rendered_page36_clearance_proposition"
+        ),
+        "evidenceSources": ["fixed_visual_tile_coordinate_ocr"],
+        "constituentEvidence": list(authority_ids),
+    }
+    return (
+        dedupe_regions(list(trusted_by_id.values())),
+        [candidate, *low_by_id.values()],
     )
 
 

@@ -26,6 +26,9 @@ from ecos_indexer.extraction import (
     EXACT_ARCHITECTURAL_2321_PAGE30_COMPLETE_PROPOSITION_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE31_PROPOSITION_SOURCE,
     EXACT_ARCHITECTURAL_2321_PAGE31_PROPOSITION_SPECS,
+    EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SOURCE,
+    EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SPECS,
+    EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_TEXT,
     EXACT_ARCHITECTURAL_2321_PAGE38_AMBIGUOUS_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE38_GRID_ARTIFACT_SPECS,
     EXACT_ARCHITECTURAL_2321_PAGE38_SCHEDULE_HEADER_SPECS,
@@ -80,6 +83,7 @@ from ecos_indexer.extraction import (
     reconstruct_exact_architectural_2321_page30_dimension_candidates,
     reconstruct_exact_architectural_2321_page30_complete_propositions,
     reconstruct_exact_architectural_2321_page31_complete_propositions,
+    reconstruct_exact_architectural_2321_page36_clearance_proposition,
     reconstruct_exact_architectural_2321_page38_schedule_measurements,
     reconstruct_exact_architectural_2321_page40_landing_dimension,
     reconstruct_exact_architectural_2321_page42_loading_dimension,
@@ -2875,6 +2879,132 @@ class ExtractionLimitTests(unittest.TestCase):
         ):
             with self.subTest(identity=identity):
                 self.assertEqual(([], dimension), run(dimension, **identity))
+
+    def test_exact_page36_clearance_uses_one_complete_review_authority(self) -> None:
+        def authority(spec: dict[str, object]) -> dict[str, object]:
+            block, paragraph, line = spec["lineage"]
+            return {
+                "id": spec["id"], "text": spec["text"],
+                **spec["bounds"], "confidence": 0.55,
+                "source": "fixed_visual_tile_coordinate_ocr",
+                "ocrKind": spec["ocrKind"],
+                "ocrBoundaryTruncated": False,
+                "ocrPrefix": spec["ocrPrefix"],
+                "ocrBlockNumber": block,
+                "ocrParagraphNumber": paragraph,
+                "ocrLineNumber": line,
+            }
+
+        raw = [
+            authority(spec)
+            for spec in EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SPECS
+        ]
+        unrelated = {
+            "id": "page36-unrelated", "text": "5'-0\"",
+            "x": 0.2, "y": 0.2, "width": 0.01, "height": 0.004,
+            "confidence": 0.2,
+            "source": "fixed_visual_tile_coordinate_ocr",
+            "ocrKind": "word", "ocrBoundaryTruncated": False,
+            "ocrPrefix": "visual-tile-unrelated",
+            "ocrBlockNumber": 1, "ocrParagraphNumber": 1,
+            "ocrLineNumber": 1,
+        }
+        trusted, low = reconstruct_exact_architectural_2321_page36_clearance_proposition(
+            [], [*copy.deepcopy(raw), unrelated],
+            raw_regions=copy.deepcopy(raw),
+            project_id="607c7eed-5dea-4a5a-8b52-0f165c71c4b5",
+            page_number=36,
+            source_sha256=(
+                "5c1f0ccac1dbb50b0ff373da39179e572d577c75fc3941cec5b77d12f4846bbb"
+            ),
+            evidence_version="ecos-hosted-evidence/1.3",
+        )
+        self.assertEqual([], trusted)
+        composites = [
+            region for region in low
+            if region.get("source")
+            == EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SOURCE
+        ]
+        self.assertEqual(1, len(composites))
+        self.assertEqual(EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_TEXT, composites[0]["text"])
+        self.assertEqual(
+            EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SPECS[1]["bounds"],
+            {key: composites[0][key] for key in ("x", "y", "width", "height")},
+        )
+        self.assertIs(composites[0]["searchable"], False)
+        superseded = [
+            region for region in low
+            if region.get("visualAuthorityStatus")
+            == "superseded_by_exact_rendered_page36_clearance_proposition_candidate"
+        ]
+        self.assertEqual(2, len(superseded))
+        self.assertTrue(all(region["searchable"] is False for region in superseded))
+        self.assertIn(unrelated, low)
+
+    def test_exact_page36_clearance_fails_closed_on_any_authority_drift(self) -> None:
+        project_id = "607c7eed-5dea-4a5a-8b52-0f165c71c4b5"
+        source_sha256 = (
+            "5c1f0ccac1dbb50b0ff373da39179e572d577c75fc3941cec5b77d12f4846bbb"
+        )
+
+        def authority(spec: dict[str, object]) -> dict[str, object]:
+            block, paragraph, line = spec["lineage"]
+            return {
+                "id": spec["id"], "text": spec["text"],
+                **spec["bounds"], "confidence": 0.55,
+                "source": "fixed_visual_tile_coordinate_ocr",
+                "ocrKind": spec["ocrKind"],
+                "ocrBoundaryTruncated": False,
+                "ocrPrefix": spec["ocrPrefix"],
+                "ocrBlockNumber": block,
+                "ocrParagraphNumber": paragraph,
+                "ocrLineNumber": line,
+            }
+
+        baseline = [
+            authority(spec)
+            for spec in EXACT_ARCHITECTURAL_2321_PAGE36_CLEARANCE_SPECS
+        ]
+
+        def run(
+            raw: list[dict[str, object]], **identity: object,
+        ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+            return reconstruct_exact_architectural_2321_page36_clearance_proposition(
+                [], copy.deepcopy(raw), raw_regions=copy.deepcopy(raw),
+                project_id=identity.get("project_id", project_id),
+                page_number=identity.get("page_number", 36),
+                source_sha256=identity.get("source_sha256", source_sha256),
+                evidence_version=identity.get(
+                    "evidence_version", "ecos-hosted-evidence/1.3",
+                ),
+            )
+
+        for mutation in (
+            {"id": "wrong-id"},
+            {"text": "5'-0\" CLR"},
+            {"x": 0.1},
+            {"source": "other"},
+            {"ocrKind": "word"},
+            {"ocrPrefix": "visual-tile-wrong"},
+            {"ocrBlockNumber": False},
+            {"ocrBoundaryTruncated": True},
+        ):
+            altered = copy.deepcopy(baseline)
+            altered[1] = {**altered[1], **mutation}
+            with self.subTest(mutation=mutation):
+                self.assertEqual(([], altered), run(altered))
+        self.assertEqual(
+            ([], [*baseline, copy.deepcopy(baseline[0])]),
+            run([*baseline, copy.deepcopy(baseline[0])]),
+        )
+        for identity in (
+            {"project_id": "wrong"},
+            {"source_sha256": "0" * 64},
+            {"page_number": 35},
+            {"evidence_version": "ecos-hosted-evidence/1.2"},
+        ):
+            with self.subTest(identity=identity):
+                self.assertEqual(([], baseline), run(baseline, **identity))
 
     def test_exact_page38_schedule_repairs_grid_syntax_and_queues_ambiguity(self) -> None:
         project_id = "607c7eed-5dea-4a5a-8b52-0f165c71c4b5"
