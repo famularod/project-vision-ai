@@ -336,7 +336,41 @@ class ExactArchitectural2321Page40ProductionTests(unittest.TestCase):
             if region.get("visualAuthorityStatus")
             == "superseded_by_exact_rendered_page40_complete_note"
         }
-        self.assertEqual(expected_audit_ids, audited_ids)
+        self.assertTrue(expected_audit_ids.issubset(audited_ids))
+        self.assertIn(
+            "visual-tile-0:500:333:500-subtile-2:1-word-48",
+            audited_ids,
+        )
+        self.assertTrue(any(
+            region.get("id")
+            == "visual-tile-0:500:333:500-subtile-2:1-word-48"
+            and region.get("text") == "6'-3\""
+            for region in self.result["ocr"]["visualTileRegions"]
+        ))
+
+        complete_sources = {
+            EXACT_ARCHITECTURAL_2321_PAGE40_HANDRAIL_SOURCE,
+            EXACT_ARCHITECTURAL_2321_PAGE40_SUPPORT_POST_SOURCE,
+        }
+        authority_bounds = [candidate["bounds"] for candidate in candidates]
+        for exception in self.result["unresolved"]:
+            for candidate in exception.get("diagnosticCandidates", []):
+                if candidate.get("source") in complete_sources:
+                    continue
+                bounds = candidate["bounds"]
+                for authority in authority_bounds:
+                    contained = (
+                        bounds["x"] >= authority["x"] - 0.000001
+                        and bounds["y"] >= authority["y"] - 0.000001
+                        and bounds["x"] + bounds["width"]
+                        <= authority["x"] + authority["width"] + 0.000001
+                        and bounds["y"] + bounds["height"]
+                        <= authority["y"] + authority["height"] + 0.000001
+                    )
+                    self.assertFalse(
+                        contained,
+                        f"duplicate fragment remained authoritative: {candidate}",
+                    )
 
         regions = self.result["ocr"]["visualTileRegions"]
         proofs = self.result["ocr"]["visualTileProofs"]

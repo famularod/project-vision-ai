@@ -3814,6 +3814,67 @@ class ExtractionLimitTests(unittest.TestCase):
             for region in ambiguous_low
         ))
 
+        contained_fragment = {
+            "id": "derived-left-support-measurement",
+            "text": "6'-3\"",
+            "x": 0.173492,
+            "y": 0.864667,
+            "width": 0.008413,
+            "height": 0.003333,
+            "confidence": 0.2,
+            "source": "fixed_visual_tile_coordinate_ocr",
+            "ocrKind": "word",
+            "ocrBoundaryTruncated": False,
+            "ocrBoundaryTruncatedEdges": [],
+            "ocrPrefix": "visual-tile-0:500:333:500-subtile-2:1",
+            "ocrBlockNumber": 8,
+            "ocrParagraphNumber": 1,
+            "ocrLineNumber": 1,
+        }
+        outside_fragment = {
+            **contained_fragment,
+            "id": "independent-page40-measurement",
+            "text": "8'-2\"",
+            "x": 0.25,
+            "y": 0.9,
+        }
+        duplicate_trusted, duplicate_low = (
+            reconstruct_exact_architectural_2321_page40_complete_notes(
+                [*handrail, *local_support, unrelated],
+                [
+                    copy.deepcopy(handrail[0]),
+                    copy.deepcopy(local_support[0]),
+                    contained_fragment,
+                    outside_fragment,
+                ],
+                raw_regions=[
+                    *handrail,
+                    *local_support,
+                    contained_fragment,
+                    outside_fragment,
+                    unrelated,
+                ],
+                project_id=project_id,
+                page_number=40,
+                source_sha256=source_sha256,
+                evidence_version="ecos-hosted-evidence/1.3",
+            )
+        )
+        self.assertEqual([unrelated], duplicate_trusted)
+        superseded_ids = {
+            str(region.get("id"))
+            for region in duplicate_low
+            if region.get("visualAuthorityStatus")
+            == "superseded_by_exact_rendered_page40_complete_note"
+        }
+        self.assertTrue(expected_audit_ids.issubset(superseded_ids))
+        self.assertIn("derived-left-support-measurement", superseded_ids)
+        self.assertEqual(1, sum(
+            region.get("id") == "independent-page40-measurement"
+            and region.get("visualAuthorityStatus") is None
+            for region in duplicate_low
+        ))
+
     def test_exact_page42_loading_dimension_replaces_nested_authority(self) -> None:
         project_id = "607c7eed-5dea-4a5a-8b52-0f165c71c4b5"
         source_sha256 = (

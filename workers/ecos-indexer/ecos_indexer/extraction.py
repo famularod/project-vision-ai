@@ -2964,6 +2964,7 @@ QUARANTINED_VISUAL_AUTHORITY_STATUSES = frozenset({
     "superseded_by_exact_rendered_page39_complete_proposition_candidate",
     "superseded_by_exact_page38_door_schedule_measurement",
     "superseded_by_exact_rendered_page40_landing_dimension_composite",
+    "superseded_by_exact_rendered_page40_complete_note",
     "superseded_by_exact_rendered_page42_loading_dimension_composite",
     "superseded_by_exact_rendered_page45_post_spacing_dimension_composite",
     "quarantined_exact_drawing_title_identifier",
@@ -9518,12 +9519,35 @@ def reconstruct_exact_architectural_2321_page40_complete_notes(
         replacement_id = (
             f"{authority_ids[0]}-exact-page40-{authority['key']}-complete-note"
         )
-        for region_id in authority_ids:
-            evidence = trusted_by_id.pop(region_id, None)
+        # ``trusted_ocr_regions`` can place the same raw OCR identity in both
+        # the trusted and rejected partitions after syntax-specific checks.
+        # Remove the authority from both maps; otherwise the rejected copy is
+        # later coalesced into a second provider question even though its
+        # complete printed proposition is already represented below.
+        fragment_ids = set(authority_ids)
+        for partition in (trusted_by_id, low_by_id):
+            for region_id, region in partition.items():
+                if (
+                    str(region.get("source") or "")
+                    == "fixed_visual_tile_coordinate_ocr"
+                    and strict_bounds(region) is not None
+                    and exact_region_contains(
+                        dict(authority["bounds"]), region, tolerance=0.000001,
+                    )
+                ):
+                    # These are line/word fragments inside the exact printed
+                    # note rectangle (for example the isolated ``6'-3\"``
+                    # misread). The raw checkpoint remains unchanged; only
+                    # duplicate visual authority is removed.
+                    fragment_ids.add(region_id)
+        for region_id in sorted(fragment_ids):
+            trusted_evidence = trusted_by_id.pop(region_id, None)
+            low_evidence = low_by_id.pop(region_id, None)
+            evidence = low_evidence or trusted_evidence
             if evidence is None:
-                evidence = low_by_id.pop(region_id, None)
+                evidence = raw_by_id.get(region_id)
             if evidence is None:
-                evidence = raw_by_id[region_id]
+                continue
             low_by_id[region_id] = {
                 **evidence,
                 "searchable": False,
