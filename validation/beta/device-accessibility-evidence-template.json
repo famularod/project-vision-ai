@@ -1,0 +1,270 @@
+{
+  "schemaVersion": 2,
+  "releaseCandidate": {
+    "version": null,
+    "build": null,
+    "sourceRevision": null
+  },
+  "recordedAt": null,
+  "tester": null,
+  "overallStatus": "pending",
+  "evidenceClassification": {
+    "installedDeviceMetadata": [],
+    "automatedSourceChecks": [],
+    "actualDeviceBehavior": [],
+    "humanBlocked": []
+  },
+  "platforms": {
+    "iphone": {
+      "status": "pending",
+      "evidenceSource": "physical_device",
+      "deviceOrBrowser": null,
+      "operatingSystem": null,
+      "installedVersion": null,
+      "installedBuild": null,
+      "installedSourceRevision": null,
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "coverPropagation": {
+        "projectId": null,
+        "selectedObjectPath": null,
+        "replacementObjectPath": null,
+        "removed": null
+      },
+      "functionMatrix": {
+        "cover_select_propagation": "pending",
+        "cover_replace_propagation": "pending",
+        "cover_remove_propagation": "pending",
+        "document_count_exact": "pending",
+        "document_list_exact": "pending",
+        "document_open_exact": "pending",
+        "uploaded_photo_byte_parity": "pending",
+        "uploaded_photo_digest_parity": "pending",
+        "offline_change_saved": "pending",
+        "restart_restored_pending_work": "pending",
+        "reconnect_propagated_change": "pending",
+        "duplicate_write_prevented": "pending",
+        "conflict_visible_without_overwrite": "pending"
+      },
+      "documentParity": {
+        "expectedCount": null,
+        "observedCount": null,
+        "expectedDocumentIds": [],
+        "observedDocumentIds": [],
+        "openedDocumentId": null
+      },
+      "uploadedPhotoParity": {
+        "photoId": null,
+        "storageObjectPath": null,
+        "sourceByteCount": null,
+        "observedByteCount": null,
+        "sourceSha256": null,
+        "observedSha256": null
+      },
+      "syncZero": {
+        "queued": null,
+        "conflicts": null,
+        "errors": [],
+        "missingPhotos": [],
+        "queuedChanges": null,
+        "recoveryAvailable": null,
+        "recoveryCopies": null,
+        "lastSyncAt": null,
+        "peerPropagation": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [],
+      "behaviorEvidenceRefs": [],
+      "exactBuildEvidenceRefs": []
+    },
+    "ipad": {
+      "status": "pending",
+      "evidenceSource": "physical_device",
+      "deviceOrBrowser": null,
+      "operatingSystem": null,
+      "installedVersion": null,
+      "installedBuild": null,
+      "installedSourceRevision": null,
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "coverPropagation": {
+        "projectId": null,
+        "selectedObjectPath": null,
+        "replacementObjectPath": null,
+        "removed": null
+      },
+      "functionMatrix": {
+        "cover_select_propagation": "pending",
+        "cover_replace_propagation": "pending",
+        "cover_remove_propagation": "pending",
+        "document_count_exact": "pending",
+        "document_list_exact": "pending",
+        "document_open_exact": "pending",
+        "uploaded_photo_byte_parity": "pending",
+        "uploaded_photo_digest_parity": "pending",
+        "offline_change_saved": "pending",
+        "restart_restored_pending_work": "pending",
+        "reconnect_propagated_change": "pending",
+        "duplicate_write_prevented": "pending",
+        "conflict_visible_without_overwrite": "pending"
+      },
+      "documentParity": {
+        "expectedCount": null,
+        "observedCount": null,
+        "expectedDocumentIds": [],
+        "observedDocumentIds": [],
+        "openedDocumentId": null
+      },
+      "uploadedPhotoParity": {
+        "photoId": null,
+        "storageObjectPath": null,
+        "sourceByteCount": null,
+        "observedByteCount": null,
+        "sourceSha256": null,
+        "observedSha256": null
+      },
+      "syncZero": {
+        "queued": null,
+        "conflicts": null,
+        "errors": [],
+        "missingPhotos": [],
+        "queuedChanges": null,
+        "recoveryAvailable": null,
+        "recoveryCopies": null,
+        "lastSyncAt": null,
+        "peerPropagation": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [],
+      "behaviorEvidenceRefs": [],
+      "exactBuildEvidenceRefs": []
+    },
+    "web": {
+      "status": "pending",
+      "evidenceSource": "interactive_web",
+      "deviceOrBrowser": null,
+      "operatingSystem": null,
+      "installedVersion": null,
+      "installedBuild": null,
+      "installedSourceRevision": null,
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "coverPropagation": {
+        "projectId": null,
+        "selectedObjectPath": null,
+        "replacementObjectPath": null,
+        "removed": null
+      },
+      "functionMatrix": {
+        "cover_select_propagation": "pending",
+        "cover_replace_propagation": "pending",
+        "cover_remove_propagation": "pending",
+        "document_count_exact": "pending",
+        "document_list_exact": "pending",
+        "document_open_exact": "pending",
+        "uploaded_photo_byte_parity": "pending",
+        "uploaded_photo_digest_parity": "pending",
+        "offline_change_saved": "pending",
+        "restart_restored_pending_work": "pending",
+        "reconnect_propagated_change": "pending",
+        "duplicate_write_prevented": "pending",
+        "conflict_visible_without_overwrite": "pending"
+      },
+      "documentParity": {
+        "expectedCount": null,
+        "observedCount": null,
+        "expectedDocumentIds": [],
+        "observedDocumentIds": [],
+        "openedDocumentId": null
+      },
+      "uploadedPhotoParity": {
+        "photoId": null,
+        "storageObjectPath": null,
+        "sourceByteCount": null,
+        "observedByteCount": null,
+        "sourceSha256": null,
+        "observedSha256": null
+      },
+      "syncZero": {
+        "queued": null,
+        "conflicts": null,
+        "errors": [],
+        "missingPhotos": [],
+        "queuedChanges": null,
+        "recoveryAvailable": null,
+        "recoveryCopies": null,
+        "lastSyncAt": null,
+        "peerPropagation": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [],
+      "behaviorEvidenceRefs": [],
+      "exactBuildEvidenceRefs": []
+    }
+  },
+  "accessibility": {
+    "iphone": {
+      "checks": {
+        "voice_over": "pending",
+        "dynamic_type": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending",
+        "touch_targets": "pending"
+      },
+      "evidenceRefs": []
+    },
+    "ipad": {
+      "checks": {
+        "voice_over": "pending",
+        "dynamic_type": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending",
+        "touch_targets": "pending"
+      },
+      "evidenceRefs": []
+    },
+    "web": {
+      "checks": {
+        "keyboard_navigation": "pending",
+        "screen_reader": "pending",
+        "zoom_200_percent": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending"
+      },
+      "evidenceRefs": []
+    }
+  },
+  "offlineAndRecovery": {
+    "scenarios": {
+      "offline_create_and_reconnect": "pending",
+      "background_foreground_resume": "pending",
+      "duplicate_write_prevention": "pending",
+      "sync_conflict_is_visible": "pending",
+      "restart_with_pending_work": "pending"
+    },
+    "evidenceRefs": []
+  },
+  "defects": [],
+  "notes": []
+}

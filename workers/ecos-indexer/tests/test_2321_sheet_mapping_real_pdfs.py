@@ -1,0 +1,229 @@
+import hashlib
+import os
+import unittest
+from pathlib import Path
+
+from ecos_indexer.document_structure import (
+    document_sheet_identity_map,
+    parse_bookmark_sheet_number,
+    sheet_number_map,
+)
+from ecos_indexer.extraction import (
+    corroborate_document_structural_identity,
+    native_text_regions,
+    open_pdf,
+    sheet_identity_ocr_regions,
+    title_block_ocr_regions,
+    trusted_ocr_regions,
+)
+from ecos_indexer.sheet_mapping import analyze_coordinate_sheet, map_sheet
+
+
+SOURCE_DIRECTORY = Path(os.getenv(
+    "ECOS_2321_REGRESSION_DIRECTORY",
+    str(
+        Path.home()
+        / "Library/Mobile Documents/com~apple~CloudDocs/Compliance Project Approved"
+        / "2321 approved"
+    ),
+))
+
+SOURCES = {
+    "01 - PLZ CORP - 2321 THIRD STREET - ARCHITECTURAL.pdf": {
+        "sha256": "5c1f0ccac1dbb50b0ff373da39179e572d577c75fc3941cec5b77d12f4846bbb",
+        "pages": {14: "A-1.5", 15: "A-1.5A"},
+    },
+    "03 - PLZ CORP - 2321 THIRD STREET - STRUCTURAL.pdf": {
+        "sha256": "db676ce857951ace78ed6dd2af0ceeafa29e1cf7664d187bd9f212fa02512840",
+        "pages": {2: "SB-1.1"},
+    },
+    "04 - PLZ CORP - 2321 THIRD STREET - MECHANICAL.pdf": {
+        "sha256": "b77bc0725e5cd28017dfab8c7ab1a0356898a676e941d1ca420a9dcbabc88884",
+        "pages": {2: "MB-1.2"},
+    },
+    "05 - PLZ CORP - 2321 THIRD STREET - PLUMBING.pdf": {
+        "sha256": "b098fe54ea96aa02e8792df76c61e5825d4aafd38588fe03bea21d98c4a242b0",
+        "pages": {2: "PB-1.2"},
+    },
+    "06 - PLZ CORP - 2321 THIRD STREET - ELECTRICAL.pdf": {
+        "sha256": "202598b84307c1cda4a353b9aa8873b062de896dbea9f6111ecd81dbbf85cc77",
+        "pages": {11: "E-2.5", 13: "E-2.7"},
+    },
+    "07 - PLZ CORP - 2321 THIRD STREET - LANDSCAPE.pdf": {
+        "sha256": "1e10ba1a90422aefb7a46bf563afdca525f2c947a38beaeee579cb859f748eb3",
+        "pages": {1: "L-1", 2: "L-2", 4: "L-4"},
+    },
+}
+
+MECHANICAL_PAGE5_SOURCE = Path(os.getenv(
+    "ECOS_09839_REGRESSION_PDF",
+    str(SOURCE_DIRECTORY / "04 - PLZ CORP - 2321 THIRD STREET - MECHANICAL.pdf"),
+))
+MECHANICAL_PAGE5_SHA256 = (
+    "b77bc0725e5cd28017dfab8c7ab1a0356898a676e941d1ca420a9dcbabc88884"
+)
+
+
+@unittest.skipUnless(
+    MECHANICAL_PAGE5_SOURCE.exists(),
+    "Exact job 09839 Mechanical source PDF is not present on this machine.",
+)
+class Exact09839MechanicalPage5Tests(unittest.TestCase):
+    def test_coordinate_only_mb_2_35_read_cannot_override_mb_2_3_bookmark(self) -> None:
+        payload = MECHANICAL_PAGE5_SOURCE.read_bytes()
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), MECHANICAL_PAGE5_SHA256)
+        document = open_pdf(payload)
+        try:
+            structural_identity = document_sheet_identity_map(document)[5]
+            self.assertEqual(structural_identity.sheet_number, "MB-2.3")
+            self.assertEqual(structural_identity.source, "pdf_bookmark")
+
+            page = document[4]
+            page_width = float(page.rect.width)
+            page_height = float(page.rect.height)
+            rendered, _rejected = trusted_ocr_regions([
+                *title_block_ocr_regions(page, page_width, page_height),
+                *sheet_identity_ocr_regions(page, page_width, page_height),
+            ])
+            analysis = analyze_coordinate_sheet(rendered, page_width, page_height)
+            self.assertIsNotNone(analysis.strong_candidate)
+            assert analysis.strong_candidate is not None
+            self.assertEqual(analysis.strong_candidate.sheet_number, "MB-2.35")
+            self.assertIsNone(corroborate_document_structural_identity(
+                structural_identity,
+                native_regions=[],
+                rendered_regions=rendered,
+            ))
+
+            mapping = map_sheet(rendered, page_width, page_height)
+            self.assertEqual(mapping["sheetMappingStatus"], "unverified")
+            self.assertIsNone(mapping["sheetNumber"])
+            self.assertEqual(mapping["sheetMappingSource"], "coordinate_text")
+            self.assertEqual(mapping["sheetMappingEvidence"], [])
+            self.assertEqual(
+                mapping["sheetMappingCandidates"][0]["sheetNumber"],
+                "MB-2.35",
+            )
+        finally:
+            document.close()
+
+
+@unittest.skipUnless(
+    all((SOURCE_DIRECTORY / filename).exists() for filename in SOURCES),
+    "Exact issued 2321 benchmark PDFs are not present on this machine.",
+)
+class Exact2321SheetMappingTests(unittest.TestCase):
+    def test_ten_benchmark_pages_map_from_exact_sha_pinned_sources(self) -> None:
+        checked_pages = 0
+        for filename, contract in SOURCES.items():
+            with self.subTest(filename=filename):
+                path = SOURCE_DIRECTORY / filename
+                payload = path.read_bytes()
+                self.assertEqual(
+                    hashlib.sha256(payload).hexdigest(),
+                    contract["sha256"],
+                    f"Issued 2321 regression source changed: {filename}",
+                )
+                document = open_pdf(payload)
+                try:
+                    structural_map = document_sheet_identity_map(document)
+                    for page_number, expected_sheet in contract["pages"].items():
+                        with self.subTest(
+                            filename=filename,
+                            page_number=page_number,
+                            expected_sheet=expected_sheet,
+                        ):
+                            checked_pages += 1
+                            identity = structural_map.get(page_number)
+                            self.assertIsNotNone(identity)
+                            assert identity is not None
+                            self.assertEqual(
+                                identity.sheet_number,
+                                expected_sheet,
+                            )
+                            page = document[page_number - 1]
+                            mapping = map_sheet(
+                                [],
+                                float(page.rect.width),
+                                float(page.rect.height),
+                                structural_identity=identity,
+                                page_number=page_number,
+                            )
+                            expected_source = (
+                                "native_title_band"
+                                if "LANDSCAPE" in filename
+                                else "pdf_bookmark"
+                            )
+                            # Every structural source is a prescan candidate.
+                            # Promotion is covered by the extraction/Assurance
+                            # regressions only after same-page rendered OCR
+                            # independently reads the exact sheet token.
+                            self.assertEqual(mapping["sheetMappingStatus"], "unverified")
+                            self.assertIsNone(mapping["sheetNumber"])
+                            self.assertIsNone(mapping["sheetMappingSource"])
+                            if expected_source == "pdf_bookmark":
+                                toc_entries = [
+                                    str(entry[1])
+                                    for entry in document.get_toc(simple=True)
+                                    if int(entry[2]) == page_number
+                                ]
+                                for evidence in identity.evidence:
+                                    self.assertIn(evidence.text, toc_entries)
+                                    self.assertEqual(
+                                        parse_bookmark_sheet_number(evidence.text),
+                                        expected_sheet,
+                                    )
+                                    self.assertIsNone(evidence.normalized_bounds)
+                            else:
+                                native_regions = {
+                                    region["id"]: region
+                                    for region in native_text_regions(
+                                        page,
+                                        float(page.rect.width),
+                                        float(page.rect.height),
+                                    )
+                                }
+                                for evidence in identity.evidence:
+                                    self.assertEqual(evidence.source, "embedded_text")
+                                    self.assertIsNotNone(evidence.normalized_bounds)
+                                    self.assertIn(evidence.evidence_id, native_regions)
+                                    self.assertEqual(
+                                        native_regions[evidence.evidence_id]["text"],
+                                        evidence.text,
+                                    )
+                finally:
+                    document.close()
+
+        self.assertEqual(checked_pages, 10)
+
+    def test_exact_landscape_source_requires_unique_title_band_token_on_every_page(self) -> None:
+        contract = SOURCES["07 - PLZ CORP - 2321 THIRD STREET - LANDSCAPE.pdf"]
+        path = SOURCE_DIRECTORY / "07 - PLZ CORP - 2321 THIRD STREET - LANDSCAPE.pdf"
+        payload = path.read_bytes()
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), contract["sha256"])
+        document = open_pdf(payload)
+        try:
+            self.assertEqual(document.page_count, 6)
+            identity_map = document_sheet_identity_map(document)
+            self.assertEqual(sheet_number_map(identity_map), {
+                1: "L-1",
+                2: "L-2",
+                3: "L-3",
+                4: "L-4",
+                5: "L-5",
+                6: "L-6",
+            })
+            self.assertTrue(identity_map)
+            for page_number, identity in identity_map.items():
+                self.assertEqual(identity.source, "native_title_band")
+                self.assertEqual(len(identity.evidence), 1)
+                evidence = identity.evidence[0]
+                self.assertEqual(evidence.page_number, page_number)
+                self.assertEqual(evidence.source, "embedded_text")
+                self.assertIsNotNone(evidence.normalized_bounds)
+        finally:
+            document.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

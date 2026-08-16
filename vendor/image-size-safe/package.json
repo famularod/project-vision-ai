@@ -1,0 +1,14 @@
+{
+  "name": "image-size",
+  "version": "2.0.3-vitruvius.1",
+  "description": "Bounded Metro-compatible image dimension adapter for Vitruvius builds",
+  "main": "index.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "probe-image-size": "7.3.0"
+  }
+}

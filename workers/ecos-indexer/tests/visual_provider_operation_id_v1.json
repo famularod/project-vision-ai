@@ -1,0 +1,29 @@
+{
+  "canonicalInput": {
+    "documentId": "web-document-09314ce4-aff1-4857-9cc9-5f13ecae4603",
+    "evidenceVersion": "ecos-hosted-evidence/1.3",
+    "hostedClaimToken": "55555555-5555-4555-8555-555555555555",
+    "hostedJobId": "44444444-4444-4444-8444-444444444444",
+    "organizationId": "pie-rls-validation-org-a",
+    "pageNumber": 17,
+    "projectId": "2321 Compliance Project",
+    "schemaVersion": "ecos-visual-provider-operation/1.0",
+    "sourceSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "visualExceptionFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "visualRegionKey": "low-confidence-ocr-17-3"
+  },
+  "canonicalBytes": "{\"documentId\":\"web-document-09314ce4-aff1-4857-9cc9-5f13ecae4603\",\"evidenceVersion\":\"ecos-hosted-evidence/1.3\",\"hostedClaimToken\":\"55555555-5555-4555-8555-555555555555\",\"hostedJobId\":\"44444444-4444-4444-8444-444444444444\",\"organizationId\":\"pie-rls-validation-org-a\",\"pageNumber\":17,\"projectId\":\"2321 Compliance Project\",\"schemaVersion\":\"ecos-visual-provider-operation/1.0\",\"sourceSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"visualExceptionFingerprint\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"visualRegionKey\":\"low-confidence-ocr-17-3\"}",
+  "requestIdentity": {
+    "organizationId": "pie-rls-validation-org-a",
+    "projectId": "2321 Compliance Project",
+    "documentId": "web-document-09314ce4-aff1-4857-9cc9-5f13ecae4603",
+    "hostedJobId": "44444444-4444-4444-8444-444444444444",
+    "hostedClaimToken": "55555555-5555-4555-8555-555555555555",
+    "sourceSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pageNumber": 17,
+    "evidenceVersion": "ecos-hosted-evidence/1.3",
+    "visualRegionKey": "low-confidence-ocr-17-3",
+    "visualExceptionFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "providerOperationId": "8cb03b0dda19df38df3018f308da0f33cfd1aae77f0af36c0e8b6cf3431e3ea9"
+  }
+}

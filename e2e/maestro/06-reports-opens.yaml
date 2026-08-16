@@ -1,0 +1,12 @@
+appId: ${APP_ID}
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "Active Projects"
+    timeout: 30000
+- tapOn: "Reports"
+- assertVisible: "Reports"
+- assertVisible: "Prepared Report"
+- assertVisible: "Report Options"
+- assertVisible: "Approve Report"
+- takeScreenshot: "jarvis-reports"

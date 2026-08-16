@@ -1,0 +1,242 @@
+# Project Context & Working Agreement
+
+This file is read automatically by Claude Code at the start of every session in
+this repo. It exists so David doesn't have to re-explain the same rules every
+time. If anything here goes stale, update this file rather than letting the
+convention drift.
+
+## What this app is
+
+Vitruvius, with the DAVE intelligence layer running on ECOS (formerly PIE / Project Intelligence Engine) — a
+single-user React Native/Expo field documentation tool for construction
+project managers. Core goal: submit a photo-based project update in ~60
+seconds, with AI-powered visual comparison of baseline vs. update photos,
+GPS-based project auto-detection, and background intelligence processing.
+
+### Naming (as of 2026-07-19)
+The product-facing application name is **Vitruvius**. The established DAVE
+assistant/intelligence layer continues running on **ECOS**.
+This application rename is **docs/UI-only for now** — do not rename `pie_*`
+tables, files, functions, or other identifiers in the codebase as part of
+this. Internal `DAVE*` and `PIE*` identifiers remain unchanged unless there
+is a separate, explicit decision to migrate those contracts. Product-shell
+branding, installed-app names, permission copy, and product icons should say
+Vitruvius.
+
+- Repo: `https://github.com/famularod/project-vision-ai`
+- Local path: `/Users/davidfamularo/Downloads/project-photo-update-tool`
+- Backend: Supabase (Postgres, Storage, Edge Functions)
+- Testing: physical iOS device is the release authority. Normal field builds
+  are signed local Release builds with an embedded JavaScript bundle, so the
+  phone does not need Metro or the laptop after installation. A simulator may
+  be used for bounded diagnostics, but it does not replace the device pass.
+- David is a beginner developer / product owner. Explain terminal steps
+  explicitly and in order. Don't assume familiarity with git, SQL, or
+  Supabase's dashboard.
+
+## Architecture gotchas (read this before assuming anything)
+
+- **The live app is a 23,511-line `App.tsx` monolith (2026-07-17).** A parallel
+  `screens/`, `components/`, `hooks/` directory structure exists but is
+  **mostly disconnected** from the live app unless explicitly wired into
+  `App.tsx`'s navigation. Before touching a file in `screens/` or
+  `components/`, confirm it's actually imported and rendered from `App.tsx` —
+  don't assume a file's existence means it's reachable by the user.
+- **`App.tsx` has a no-growth ratchet.** New features must ship in a module
+  with only a small wiring block in `App.tsx`. Any PR touching `App.tsx`
+  should leave it no larger than it started unless the PR explicitly records
+  why that was impossible. Prefer extracting one tested behavior at a time;
+  do not attempt a wholesale rewrite.
+- **There are duplicate type systems.** `App.tsx` has its own local
+  `ProjectUpdate`/`ProjectArea`/etc. types, separate from the ones in
+  `types/index.ts` that `screens/`/`components/` files import. They're
+  usually structurally compatible but not always — expect occasional small
+  type patches when wiring the two together.
+- **Cloud update sync has one queue-owned execution path.** Field send/retry
+  and Settings reconciliation both stage update photos and metadata through
+  `services/SyncService.ts`; `App.tsx` no longer owns a second database-write
+  implementation. Area, schedule, and reference-document snapshot
+  reconciliation remains in the same service because those entities do not
+  yet have change queues.
+- **RLS policy pattern**: this app is single-user with no team/org sharing.
+  Supabase tables under the PIE evidence/vision pipeline use a direct
+  ownership check — `organization_id = auth.uid()::text` — not the older
+  `pie_layer4_has_permission`/`organization_memberships` membership model
+  (that table has no rows for any account and nothing provisions it). If you
+  find a table still gated by `pie_layer4_has_permission` that the mobile
+  client or an edge function actually reads/writes, it likely has the same
+  bug: silent RLS rejection with no membership row ever created. Check
+  `supabase/migrations/20260709000000_simplify_pie_evidence_single_user_rls.sql`
+  and `20260709010000_simplify_pie_vision_pipeline_single_user_rls.sql` for
+  the established fix pattern before proposing a new one.
+- **Two style sheets that look shared often aren't.** Multiple files reuse
+  identical-looking style property names (e.g. `detailModalCard`,
+  `modalCard`) but each file defines its own independent style object. Don't
+  assume patching one fixes the others — verify per-file.
+
+## Design language (established 2026-07-11, starting with the Overview redesign)
+
+Applies to every screen redesign from here on (Project, Updates, and
+anything after) — the goal is for pages built in different sessions to
+still read as one considered product, not a patchwork.
+
+- **Colors always carry consistent meaning, never decorative.** Use
+  `App.tsx`'s existing soft-tinted semantic colors — `dangerSoft`/`danger`
+  (problems, destructive actions), `warningSoft`/`warning` (caution, due
+  soon, pending), `successSoft`/`success` (good/caught-up state),
+  `primarySoft`/`primary` (neutral default UI, not tied to a specific
+  status), `insightSoft`/`insight` (purple — reserved specifically for
+  real DAVE/AI-derived findings, not just "a 4th color to fill a grid").
+  Before assigning a color to anything, ask what it actually means — if a
+  stat or icon doesn't genuinely represent one of these meanings, leave it
+  neutral/muted rather than forcing a color on for visual variety.
+- **Native iOS grouped-list is the base structural pattern**: a single
+  rounded container per section, inset hairline separators between rows,
+  no per-row shadow/border, right-chevron disclosure indicators, section
+  headers as small uppercase muted labels above the group (not large bold
+  headings). Prefer this over ad hoc bordered cards floating with gaps.
+- **Subtle load-in animation is the established motion language**: content
+  fades in with a small upward slide (~400ms), and key numbers count up
+  from 0 to their real value over ~600-700ms, once on screen load. Nothing
+  continuous, no spinners-as-decoration, no bounce/overshoot — everything
+  settles within under a second and then stops moving.
+
+## Working agreement
+
+### Default flow for anything non-trivial
+1. **Diagnose first.** Trace root cause before proposing a fix. Report
+   findings plainly — don't speculate as fact.
+2. **Propose before implementing.** Give David the plan, flag any real
+   decision points (don't silently pick one), and wait for explicit
+   go-ahead.
+3. **Implement on a new branch off `v0.8-architecture-refactor`.** Never
+   commit directly to that branch or to `main`.
+4. **Run `npm run qa:release`** before calling release work done. The gate
+   includes the production-secret guard, Expo dependency validation,
+   TypeScript, 10 Jest suites (20 tests as of 2026-07-17), DAVE stages 1–8,
+   UI/reporter contracts, and JARVIS contracts. Use `npm run check` as the
+   faster minimum gate during implementation, not as the final release gate.
+5. **Summarize the diff** before committing — what changed, what was
+   deliberately left untouched, any tech debt noticed along the way.
+6. **David live-tests on his physical device** before merge, unless the fix
+   is unreachable without deploying (e.g. a Supabase migration or edge
+   function) — in that case, deploy first, then test.
+7. **Open a PR via `gh`** targeting `v0.8-architecture-refactor`. Merge only
+   after David confirms the live test passed.
+
+### When it's safe to move faster
+For small, clearly-scoped, low-risk changes — copy tweaks, obvious null
+checks, adding a missing prop, UI-only fixes with no data/auth implications —
+skip the separate "propose a plan" round-trip. Just implement, run the check,
+and show the diff for review. Still branch + PR + live-test as normal; the
+only step being skipped is the up-front plan approval.
+
+### When to always stop and get explicit sign-off first
+- Any Supabase RLS policy or schema change.
+- Any edge function change (these deploy independently of app code and are
+  harder to roll back).
+- Anything touching authentication, sessions, or security boundaries.
+- Anything that's genuinely hard to undo.
+For these, show the exact SQL/code before applying anything to the live
+database or deploying — same as every migration today.
+
+### Applying SQL / exact-text changes
+Chat-based copy/paste has corrupted long SQL blocks before (dropped
+characters, garbled table names). Prefer applying migrations directly via
+`supabase db push` (CLI is linked and authenticated) over asking David to
+paste SQL into the dashboard by hand. If a manual paste is unavoidable, write
+it to a file first and have David `cat` it from the terminal rather than
+relaying it through chat.
+
+### Communication style
+- Plain, sequential, numbered steps for anything David needs to do manually
+  (terminal commands, app navigation, Supabase dashboard clicks).
+- No jargon without a one-line plain-English translation.
+- State assumptions and decision points explicitly rather than silently
+  picking one, unless the fix is small enough to fall under "move faster"
+  above.
+- If a test result is ambiguous or a live-test loop isn't converging, say so
+  and switch to direct inspection (logs, DB queries, deployed source diffing)
+  rather than asking for another manual phone test that's unlikely to
+  reveal new information.
+
+## Known open issues (update this list as things get fixed)
+
+Fixed 2026-07-09/10 (do not re-investigate — see merged PRs #1-16 on
+GitHub for history if context is needed):
+- Sign-in screen unreachable — fixed (PR #5, #6).
+- Hold-to-delete project — verified working.
+- Building 2321 / photo-comparison pipeline totally broken — root cause was
+  a missing organization_memberships row blocking RLS at three separate
+  points in the pipeline (storage upload, edge function auth, result
+  read-back). Fixed via direct single-user ownership RLS policies (PR #8)
+  and an edge function fix (PR #9). Full pipeline confirmed working
+  end-to-end on device, including a real AI comparison result.
+- Photo-analysis area/upload timing race for back-to-back photos — fixed
+  (PR #7).
+- Keyboard covering text fields in three modals (Area Mapping Details, both
+  sign-in modals) — fixed via a shared KeyboardAvoidingModalCard wrapper
+  (PR #12).
+- Area name field snapping back to "New Area" mid-edit — fixed by giving it
+  a local state buffer, same pattern as the GPS radius field (PR #16).
+- Duplicate React key warnings (open-item-vdvdah, open-item-8xud1c) —
+  root cause was stableOpenItemAttentionId hashing project+area+category
+  instead of a unique per-photo id, silently colliding and hiding some
+  "Needs Attention" cards. Fixed (PR #13).
+- "Retry Analysis"/"Retry Send" doing nothing visible on the sent-update
+  detail screen — root cause was ReadOnlyUpdateDetailScreen rendering
+  from a frozen one-time snapshot instead of live savedUpdates state.
+  Fixed (PR #14).
+- Backup exports with empty photos arrays — root-caused 2026-07-13. The
+  missing-photo sync cleanup removed photo records from savedUpdates, and
+  backup export correctly serialized that already-damaged state. Cleanup now
+  removes missing files only from the retry queue while preserving historical
+  photo metadata in saved updates and backups. Existing backups that already
+  contain photos: [] cannot reconstruct those deleted records by themselves.
+- Resumed saved updates can now be deleted directly from Add Photos and
+  Build Update. Brand-new unsaved drafts do not show the action, and confirmed
+  deletion removes unreferenced local photo files correctly.
+- Archived projects and invisible sync work — addressed 2026-07-13. The live
+  project workspace now exposes Archive Project, Projects lists archived
+  projects with Reopen, cloud loading recovers archived rows, and archive/
+  reopen changes enter cloud sync. Settings now shows All caught up or the
+  number of items waiting to sync and exposes Retry Sync when attention is
+  needed.
+- Lighting/obstruction comparability downgrades no longer keyword-match model
+  prose such as "shadow", "glare", or "occluded". The strict photo-pair schema
+  now requires independent none/minor/limiting impact fields, and only a
+  structured limiting impact can trigger this downgrade. Deployed as
+  pie-photo-vision version 20 on 2026-07-13. The residual alignment/overlap
+  free-text safety check remains deliberately.
+- Reports is live in the main five-tab navigation. It uses the shared DAVE
+  authority provider, supports real single/combined project scope, editable
+  review, explicit approval, copy, and email. Unreachable advanced report
+  destinations remain hidden rather than presenting dead controls.
+- The gradual `App.tsx` refactor is underway through behavior-driven slices:
+  app navigation types and bottom tabs are extracted, and field-update sync
+  orchestration now lives in `services/SyncService.ts`. Do not turn this into
+  a wholesale rewrite; continue extracting only code touched by real work.
+
+Still open:
+- GPS auto-detection defaulting to "All Projects" — not a code bug.
+  findProjectAreaSuggestions only trusts areas with locationCapturedAt
+  set (i.e. captured live via the app's own GPS flow), and all 12 areas
+  were seeded with hand-typed coordinates, never actually GPS-captured.
+  The "Save GPS" flow works correctly and is reachable via gear icon →
+  Settings → Area Mapping. This is a fieldwork task for David (visit each
+  area physically, tap "Save GPS"), not a code fix.
+- App.tsx remains large. Continue the gradual behavior-driven extraction and
+  enforce the no-growth ratchet above. Verified unreachable files should be
+  removed in reviewable batches after static reachability, release-gate, and
+  device validation rather than preserved as parallel implementations.
+
+Closed tracking note 2026-07-17:
+- The expired one-time comparability scheduled-check note was removed. Its
+  historical result was not recovered. The current structured comparability
+  contract is covered by repository tests, and the live `pie-photo-vision`
+  function was verified active at version 21. Re-open only for a concrete
+  current-data failure, not because the old scheduled task no longer exists.
+
+Process note: verify PR/merge state directly against GitHub before marking
+anything "fixed" in this file — don't rely on conversation history or
+assumption, even within the same session.

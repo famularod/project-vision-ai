@@ -1,0 +1,9 @@
+**
+!.dockerignore
+!Dockerfile
+!requirements.txt
+!entrypoint.sh
+!clamav-databases.sha256
+!ecos_indexer/
+!ecos_indexer/*.py
+!ecos_indexer/**/*.py

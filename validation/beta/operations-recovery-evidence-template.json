@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "releaseCandidate": {
+    "version": null,
+    "build": null,
+    "sourceRevision": null
+  },
+  "recordedAt": null,
+  "overallStatus": "pending",
+  "ownership": {
+    "incidentCommander": null,
+    "supportOwner": null,
+    "securityOwner": null,
+    "privacyOwner": null,
+    "supportEmail": null,
+    "helpCenterRef": null,
+    "serviceStatusProcedureRef": null
+  },
+  "approvedDecisions": {
+    "recoveryTimeObjectiveMinutes": null,
+    "recoveryPointObjectiveMinutes": null,
+    "incidentNotificationTargetMinutes": null,
+    "pilotCapacityMaxUsers": null,
+    "retentionPolicyRef": null,
+    "supportHours": null,
+    "providerOutagePolicyRef": null
+  },
+  "monitors": {
+    "queue_age": {
+      "status": "pending",
+      "alertRoute": null,
+      "evidenceRefs": []
+    },
+    "failure_rate": {
+      "status": "pending",
+      "alertRoute": null,
+      "evidenceRefs": []
+    },
+    "latency": {
+      "status": "pending",
+      "alertRoute": null,
+      "evidenceRefs": []
+    },
+    "capacity": {
+      "status": "pending",
+      "alertRoute": null,
+      "evidenceRefs": []
+    },
+    "cost": {
+      "status": "pending",
+      "alertRoute": null,
+      "evidenceRefs": []
+    }
+  },
+  "recoveryDrills": {
+    "provider_outage_fails_closed": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    },
+    "worker_checkpoint_resume": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    },
+    "backup_restore": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    },
+    "export_restore_disposable_project": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    },
+    "deleted_records_do_not_return": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    },
+    "cross_tenant_access_denied": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    },
+    "application_rollback": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    },
+    "customer_safe_incident_reference": {
+      "status": "pending",
+      "performedAt": null,
+      "tester": null,
+      "evidenceRefs": []
+    }
+  },
+  "openRisks": [],
+  "notes": []
+}

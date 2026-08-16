@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "build": null,
+  "recordedAt": null,
+  "tester": null,
+  "overallStatus": "pending",
+  "platforms": {
+    "iphone": {
+      "device": null,
+      "osVersion": null,
+      "installedBuild": null,
+      "status": "pending",
+      "journeys": {}
+    },
+    "ipad": {
+      "device": null,
+      "osVersion": null,
+      "installedBuild": null,
+      "status": "pending",
+      "journeys": {}
+    },
+    "web": {
+      "browser": null,
+      "appVersion": null,
+      "status": "pending",
+      "journeys": {}
+    }
+  },
+  "measurements": [],
+  "visualReview": {
+    "status": "pending",
+    "screenshots": []
+  },
+  "externalProviders": {
+    "status": "pending",
+    "checks": []
+  },
+  "notes": []
+}

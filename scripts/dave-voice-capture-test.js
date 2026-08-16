@@ -1,0 +1,157 @@
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const ts = require('typescript');
+
+const root = path.resolve(__dirname, '..');
+const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
+const app = read('App.tsx');
+const sheet = read('components/DAVEVoiceCaptureSheet.tsx');
+const taskFillAssistant = read('components/dave-task-fill-assistant.tsx');
+const sheetLayout = read('components/dave-voice-capture-layout.ts');
+const service = read('services/DAVEVoiceTranscriptionService.ts');
+const understandingSource = read('services/DAVEVoiceUnderstanding.ts');
+const talkProjectIntelligence = read('services/ECOSTalkProjectIntelligence.ts');
+const edge = read('supabase/functions/dave-transcribe-memory/index.ts');
+const appConfig = JSON.parse(read('app.json'));
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function loadTypeScript(source, fileName) {
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  });
+  const moduleValue = { exports: {} };
+  vm.runInNewContext(compiled.outputText, {
+    module: moduleValue,
+    exports: moduleValue.exports,
+    require,
+    Object,
+    Set,
+    Array,
+    Error,
+  }, { filename: fileName });
+  return moduleValue.exports;
+}
+
+assert(app.includes('<DAVEVoiceCaptureSheet'), 'Live Project Workspace must render voice capture.');
+assert(app.includes('voice-transcription:'), 'Voice transcript must retain source provenance.');
+assert(sheet.includes('requestRecordingPermissionsAsync'), 'Recording must request microphone permission on demand.');
+assert(sheet.includes('Record Again'), 'Voice capture must support re-recording.');
+assert(sheet.includes('Replay Recording'), 'Voice capture must support replay.');
+assert(sheet.includes('Type Instead'), 'Voice capture must preserve typed fallback.');
+assert(sheet.includes('ECOS is ready for:') && sheet.includes('ECOS is listening for:'), 'Guided voice capture must show which field is ready and actively listening.');
+assert(sheet.includes('autoStartRecording'), 'Guided field capture must be able to begin listening as soon as its recording sheet opens.');
+assert(sheet.includes('autoSubmitOnStop') && sheet.includes('Stop & Continue'), 'Guided field capture must transcribe and advance from one stop action.');
+assert(taskFillAssistant.includes('normalizeDAVETaskGuidedVoiceAnswer'), 'Guided capture must accept a spoken field header without saving that header as the answer.');
+assert(taskFillAssistant.includes('guidedAnswerRequestsSkip') && taskFillAssistant.includes("onApply({ [currentGuidedField]: '' }"), 'Skipping an optional guided field must clear any prefilled value before continuing.');
+assert(
+  sheet.includes('containerStyle={[') && sheet.includes('styles.sheetContainer,'),
+  'Voice capture must preserve the full-height phone modal layout container.',
+);
+assert(sheet.includes("sheetContainer: { flex: 1, justifyContent: 'flex-end' }"), 'Voice capture must bottom-align the complete scrollable sheet.');
+assert(
+  sheet.includes('usesTabletSheet && styles.sheetContainerTablet') &&
+    sheet.includes('usesTabletSheet && styles.sheetTablet') &&
+    sheetLayout.includes('DAVE_VOICE_CAPTURE_TABLET_MAX_WIDTH = 720'),
+  'Voice capture must use a bounded tablet form without replacing the phone sheet.',
+);
+assert(sheet.includes('Which project is this about?'), 'Global Talk must visibly request project context instead of silently choosing one.');
+assert(sheet.includes('disabled={!projectName}'), 'Voice recording must wait for an explicit project choice when no project context exists.');
+assert(sheet.includes('Specific task (optional)'), 'Talk must offer optional task context after a project is selected.');
+assert(sheet.includes('Search tasks'), 'A project with many tasks must provide searchable task selection.');
+assert(sheet.includes('General project conversation'), 'Task selection must preserve a general-project option.');
+assert(sheet.includes('Show completed'), 'Task selection must keep completed work behind an explicit control.');
+assert(app.includes('isComplete: scheduleTaskIsComplete(item)'), 'Talk must identify completed tasks from the canonical schedule invariant.');
+assert(
+  app.includes('setTalkProjectId(contextualSelection?.id || null)') &&
+    app.includes("setTalkProjectName(contextualSelection?.name || '')"),
+  'Global Talk must fail closed unless its contextual project resolves to one immutable identity.',
+);
+assert(app.includes("screen === 'ProjectWorkspace'"), 'Talk opened inside a project must retain that explicit project context.');
+assert(app.includes('candidateTasks={talkCandidateTasks}'), 'Live Talk must receive tasks for the selected project.');
+assert(app.includes('selectedTaskId={talkTaskId}'), 'Live Talk must preserve the optional selected task context.');
+assert(
+  app.includes('onTaskChange={taskId => {') &&
+    app.includes('talkRequestAuthority.invalidate();\n              setTalkTaskId(taskId);'),
+  'The task picker must invalidate stale Talk work before updating live context.',
+);
+assert(
+  app.includes('projectId={currentTalkProject?.id || null}') &&
+    app.includes('candidateProjectOptions={talkProjectOptions}') &&
+    app.includes('onProjectSelectionChange={project => {'),
+  'Live Talk must select duplicate-name projects by immutable ID, never a first name match.',
+);
+assert(sheet.includes('operationLabel') && sheet.includes('operationGuidance'), 'Talk must expose a visible guided operation entry point.');
+assert(app.includes('operationLabel="Create a task"'), 'Live Talk must offer the guided Create a task operation.');
+assert(app.includes('onOperation={openGuidedTaskFromTalk}'), 'The Talk operation must open the live guided task flow.');
+assert(app.includes('initialAddGuided={scheduleAddGuided}'), 'Talk-created tasks must start the existing task editor in guided mode.');
+assert(
+  app.includes('projectIntelligenceForTalk(projectId, projectName, taskContextId, talkDocuments)') &&
+    app.includes('history = await talkHistoryPersistence.read(projectId)') &&
+    /persistTalkAnswer\(\s*projectId,\s*projectName,\s*requestTicket\.identity\.question/.test(app) &&
+    /loadECOSTalkReferenceDocuments\(\{[\s\S]*?projectId,\s*question: context\.status/.test(app) &&
+    app.includes('if (!requestIsCurrent()) return;') &&
+    talkProjectIntelligence.includes('scheduleTasksForParentProject(') &&
+    talkProjectIntelligence.includes('selectedProjectId,') &&
+    talkProjectIntelligence.includes('? normalizedProjectScheduleItems.filter(item => item.id === taskId)'),
+  'Questions must bind history, cloud documents, and task-scoped intelligence to the selected immutable project.',
+);
+assert(sheet.includes('deleteAsync'), 'Temporary recordings must be cleaned up.');
+assert(service.includes("functions.invoke('dave-transcribe-memory'"), 'Client must invoke the dedicated transcription function.');
+assert(service.includes('FileSystem.uploadAsync'), 'Native Talk must upload recordings with the native multipart uploader.');
+assert(service.includes('FileSystemUploadType.MULTIPART'), 'Native Talk must send audio as multipart form data.');
+assert(service.includes("info.size <= 0"), 'Talk must reject empty recording files before upload.');
+assert(service.includes('projectId?.trim()') && service.includes('DAVE_PROJECT_UUID_PATTERN.test(submittedProjectId)'), 'Talk must require the real immutable project UUID before upload.');
+assert(!service.includes('project-${submittedProjectName'), 'Talk must not fabricate a project ID from the display name.');
+assert(sheet.includes('projectId,') && taskFillAssistant.includes('projectId={currentProjectId}'), 'Task-fill voice capture must receive its selected project UUID.');
+assert(app.includes('projectRecords={projectRecords}'), 'The live Schedule flow must pass canonical project records into guided task voice capture.');
+assert(service.includes('Authorization: `Bearer'), 'Client must explicitly forward the signed-in session.');
+assert(service.includes("formData.append('projectName'") && service.includes("formData.append('candidateLocations'"), 'Client must send bounded project context for review preparation.');
+assert(edge.includes('supabase.auth.getUser()'), 'Edge function must verify the authenticated user.');
+assert(edge.includes('MAX_AUDIO_BYTES'), 'Edge function must enforce an audio size limit.');
+assert(edge.includes("https://api.openai.com/v1/audio/transcriptions"), 'Edge function must use the transcription endpoint.');
+assert(edge.includes("https://api.openai.com/v1/responses"), 'Edge function must prepare structured memory fields server-side.');
+assert(edge.includes("type: 'json_schema'") && edge.includes('strict: true'), 'Memory understanding must use a strict structured-output contract.');
+assert(edge.includes('Use only facts explicitly stated in the transcript.'), 'Memory understanding must prohibit invented facts.');
+assert(edge.includes("status: 'unavailable'"), 'A failed understanding call must preserve a safe transcript-only fallback.');
+assert(!edge.includes('serviceRoleKey'), 'Transcription must not require database service-role access.');
+assert(!edge.includes('providerBody?.text') || !edge.includes('console.log(providerBody'), 'Transcripts must not be logged.');
+assert(app.includes('fields: proposedFields') && app.includes('confirmed: false'), 'Structured proposals must remain editable and location must require PM confirmation.');
+
+const understanding = loadTypeScript(understandingSource, 'services/DAVEVoiceUnderstanding.ts');
+const parsed = understanding.parseDAVEVoiceUnderstandingResponse({
+  schemaVersion: understanding.DAVE_VOICE_UNDERSTANDING_SCHEMA_VERSION,
+  transcript: 'ABC Electric committed to finish conduit by Friday in Canopy B.',
+  transcriptionModel: 'gpt-4o-mini-transcribe',
+  understanding: {
+    status: 'succeeded',
+    model: 'gpt-4o-mini',
+    recommendedLocation: { value: 'Canopy B', confidence: 'high' },
+    fields: {
+      peopleOrCompany: 'ABC Electric', commitment: 'Finish conduit', dueDate: 'Friday',
+      decision: null, ownerRequest: null, inspectionChange: null, scheduleChange: null,
+      issue: null, risk: null, followUp: null, generalMemory: null,
+    },
+  },
+}, ['Canopy B']);
+assert(parsed.understanding.fields.commitment === 'Finish conduit', 'Validated structured fields must reach the confirmation draft.');
+assert(parsed.understanding.recommendedLocation.value === 'Canopy B', 'Only supplied location candidates may be recommended.');
+
+const unsupportedLocation = understanding.parseDAVEVoiceUnderstandingResponse({
+  ...parsed,
+  understanding: {
+    ...parsed.understanding,
+    recommendedLocation: { value: 'Invented Area', confidence: 'high' },
+  },
+}, ['Canopy B']);
+assert(unsupportedLocation.understanding.recommendedLocation.value === null, 'An unsupported location must be discarded client-side.');
+
+const audioPlugin = appConfig.expo.plugins.find(plugin => Array.isArray(plugin) && plugin[0] === 'expo-audio');
+assert(audioPlugin, 'expo-audio config plugin must be enabled.');
+assert(audioPlugin[1].enableBackgroundRecording === false, 'Background recording must stay disabled.');
+assert(Boolean(audioPlugin[1].microphonePermission), 'A microphone permission explanation is required.');
+
+console.log('PASS dave voice capture security and live-wiring checks');

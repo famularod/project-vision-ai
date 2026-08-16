@@ -1,0 +1,321 @@
+{
+  "schemaVersion": "ecos-ask-live-acceptance/1.0",
+  "projectId": "72e941d8-8114-4082-a976-ae5b2b5daba9",
+  "projectName": "2375 Compliance Project",
+  "productionHost": "xdytqlpsqsseoeuxgzre.supabase.co",
+  "requiredIndexMode": "live",
+  "minimumPassingCases": 15,
+  "requiredPassRate": 1,
+  "evidenceMaximumAgeHours": 24,
+  "cases": [
+    {
+      "id": "north-lot-pcc-design-thickness",
+      "question": "What thickness does the current drawing specify for the new PCC paving in the 2375 North Lot?",
+      "expectedAnswer": "The current civil drawing, Sheet C6, specifies 6.0 inches of PCC paving at the 2375 North Lot.",
+      "requiredAnswerPatterns": ["\\b6(?:\\.0)?\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\bPCC\\b", "\\b(?:drawing|design|specif(?:y|ies|ied))\\b"],
+      "forbiddenAnswerPatterns": ["\\b4\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C6$"],
+          "excerptPatterns": ["6(?:\\.0)?\\s*[\\\"”]?\\s*THICK\\s+PCC\\s+PAVING"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "north-lot-installed-thickness-limit",
+      "question": "How thick was the new concrete that was poured behind 2375 on the north side?",
+      "expectedAnswer": "Current Civil Sheet C6 specifies a design thickness of 6.0 inches for PCC paving, but the drawing does not verify or confirm the actual installed or poured thickness in the field.",
+      "requiredAnswerPatterns": ["\\b6(?:\\.0)?\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\b(?:drawing|design)\\b", "\\b(?:not|cannot|does not)\\b.{0,80}\\b(?:verify|confirm|prove)\\b.{0,80}\\b(?:installed|poured|actual|field)\\b"],
+      "forbiddenAnswerPatterns": ["^(?!.*(?:not|cannot|does not).*(?:verify|confirm|prove)).*\\b(?:was|is)\\s+6(?:\\.0)?\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])"],
+      "requiredLimitationPatterns": ["\\b(?:design|drawing)\\b", "\\b(?:installed|poured|actual|field|as-built)\\b"],
+      "allowedAssuranceStatuses": ["verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C6$"],
+          "excerptPatterns": ["6(?:\\.0)?\\s*[\\\"”]?\\s*THICK\\s+PCC\\s+PAVING"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "pcc-walkway-thickness",
+      "question": "How thick is the new PCC walkway, and is that the same as the PCC paving thickness?",
+      "expectedAnswer": "The PCC walkway is 4 inches thick. It is different from and not the same as the PCC paving, which is 6.0 inches thick.",
+      "requiredAnswerPatterns": ["\\b4(?:\\.0)?\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\bwalkway\\b", "\\b6(?:\\.0)?\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\bpaving\\b", "\\b(?:different|not the same|separate)\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 2,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C(?:5|6)$"],
+          "excerptPatterns": ["4\\s*[\\\"”]?\\s*THICK\\s+PCC\\s+WALKWAY", "6(?:\\.0)?\\s*[\\\"”]?\\s*THICK\\s+PCC\\s+PAVING"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "north-lot-ac-paving-section",
+      "question": "What asphalt and base thicknesses are specified for the new AC paving at the 2375 North Lot?",
+      "expectedAnswer": "The North Lot AC paving section is 3.5 inches of AC over 6.5 inches of base.",
+      "requiredAnswerPatterns": ["\\b3\\.5\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\bAC\\b", "\\b6\\.5\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\bbase\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C6$"],
+          "excerptPatterns": ["3\\.5\\s*[\\\"”]?\\s*AC\\s+OVER\\s+6\\.5\\s*[\\\"”]?\\s*BASE"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "ada-parking-maximum-grade",
+      "question": "What is the maximum permitted grade in the delineated ADA-accessible parking areas?",
+      "expectedAnswer": "The maximum grade is 2.00% in all directions within the delineated ADA-accessible parking areas.",
+      "requiredAnswerPatterns": ["\\b2(?:\\.00)?\\s*%", "\\bmax(?:imum)?\\b", "\\ball directions\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C5$"],
+          "excerptPatterns": ["ADA\\s+ACCESSIBLE\\s+PARKING", "2(?:\\.00)?%\\s+MAX", "ALL\\s+DIRECTIONS"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "area-drain-size-and-filter",
+      "question": "What size area drain is called out for the new paving, and what filter is required?",
+      "expectedAnswer": "The drawing calls for a 12 x 12 inch ID area drain with a Flo-Gard filter and local depression.",
+      "requiredAnswerPatterns": ["12\\s*[\\\"”]?\\s*(?:x|×|by)\\s*12\\s*[\\\"”]?", "\\b(?:inch|inches|ID|inside diameter)\\b", "Flo[- ]?Gard", "\\bfilter\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C(?:5|6)$"],
+          "excerptPatterns": ["12\\s*[\\\"”]?\\s*(?:X|×)\\s*12\\s*[\\\"”]?", "AREA\\s+DRAIN", "FLO[- ]?GARD\\s+FILTER"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "sewer-lateral-requirement",
+      "question": "What size sewer lateral is required, which city standard applies, and where is its material specified?",
+      "expectedAnswer": "The drawing requires a 4-inch sewer lateral and cleanout per Riverside City Standard 562; the material is specified in the mechanical drawings.",
+      "requiredAnswerPatterns": ["\\b4\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\b562\\b", "\\bmechanical\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C(?:5|6)$"],
+          "excerptPatterns": ["4\\s*[\\\"”]?\\s*SEWER\\s+LATERAL", "STANDARD\\s+562", "MATERIAL\\s+PER\\s+MECHANICAL"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "canopy-a-plan-footprint",
+      "question": "Using the overall dimensions on the current Canopy A plan, what is its calculated plan footprint?",
+      "expectedAnswer": "Using the 122'-0\" by 52'-0\" overall dimensions, Canopy A has a calculated plan footprint of 6,344 square feet; this is a calculation, not a printed area value.",
+      "requiredAnswerPatterns": ["122\\s*['’]?-?0?[\\\"”]?", "52\\s*['’]?-?0?[\\\"”]?", "6[,]?344\\s*(?:square feet|sq\\.?\\s*ft\\.?|sf)", "\\bcalculated\\b", "\\bplan footprint\\b"],
+      "forbiddenAnswerPatterns": ["\\bis\\s+(?:a\\s+)?printed area\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 0,
+      "minimumDistinctPages": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "08A.*2375.*CANOPY.*A",
+          "sheetNumberPatterns": [],
+          "pageNumberPatterns": ["^4$"],
+          "excerptPatterns": ["122\\s*['’]-?0?[\\\"”]", "52\\s*['’]-?0?[\\\"”]", "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "canopy-lighting-presence",
+      "question": "Do the north-side canopies at 2375 have lighting shown on the current electrical drawings?",
+      "expectedAnswer": "Yes. Current Electrical Sheet E-1.1 shows lighting fixtures in the 2375 exterior storage areas corresponding to the north-side canopies.",
+      "requiredAnswerPatterns": ["\\byes\\b", "\\b(?:light|lighting|fixture|luminaire)s?\\b", "\\belectrical\\b"],
+      "forbiddenAnswerPatterns": ["\\bflooring change\\b", "\\bupdate:[a-z0-9-]+\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "06.*2375.*ELECTRICAL",
+          "sheetNumberPatterns": ["^E-1\\.1$"],
+          "excerptPatterns": ["EXTERIOR\\s+STORAGE", "\\b(?:LIGHT|LIGHTING|FIXTURE|LUMINAIRE)\\b"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "electrical-sheet-e-2-1-purpose",
+      "question": "What does current electrical Sheet E-2.1 show for Building Area 1 at 2375?",
+      "expectedAnswer": "Electrical Sheet E-2.1 shows the 2375 Building Area 1 Enlarged Lighting Plan.",
+      "requiredAnswerPatterns": ["\\b(?:Building|BLDG)\\s+Area 1\\b", "\\benlarged lighting plan\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "06.*2375.*ELECTRICAL",
+          "sheetNumberPatterns": ["^E-2\\.1$"],
+          "excerptPatterns": ["(?:BUILDING|BLDG)\\s+AREA\\s+1", "ENLARGED\\s+LIGHTING\\s+PLAN"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "site-photometric-statistics",
+      "question": "According to the current site photometrics plan, what are the average, maximum, and minimum light levels?",
+      "expectedAnswer": "The site photometrics plan lists an average of 2.8 fc, a maximum of 21.1 fc, and a minimum of 0.0 fc.",
+      "requiredAnswerPatterns": ["\\b2\\.8\\s*(?:fc|foot-candles?)\\b", "\\b21\\.1\\s*(?:fc|foot-candles?)\\b", "\\b0(?:\\.0)?\\s*(?:fc|foot-candles?)\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "06.*2375.*ELECTRICAL",
+          "sheetNumberPatterns": ["^E-2\\.7$"],
+          "excerptPatterns": ["SITE\\s+PHOTOMETRICS\\s+PLAN", "2\\.8\\s*fc", "21\\.1\\s*fc", "0\\.0\\s*fc"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "cross-discipline-area-lighting",
+      "question": "The civil north-lot plan sends area lighting to other disciplines. Confirm whether lighting is shown and identify the current drawing sources the field team should use.",
+      "expectedAnswer": "Yes. Civil Sheet C6 directs area lighting to the architectural and electrical drawings, and current electrical lighting plans show the lighting fixtures. The field team should use the civil and electrical sources together.",
+      "requiredAnswerPatterns": ["\\byes\\b", "\\bcivil\\b", "\\belectrical\\b", "\\b(?:light|lighting|fixture|luminaire)s?\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 2,
+      "minimumDistinctDocuments": 2,
+      "minimumDistinctSheets": 2,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C6$"],
+          "excerptPatterns": ["AREA\\s+LIGHTING", "ARCHITECTURAL\\s+AND\\s+ELECTRICAL\\s+DRAWINGS"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        },
+        {
+          "documentNamePattern": "06.*2375.*ELECTRICAL",
+          "sheetNumberPatterns": ["^E-(?:1\\.0|1\\.1|2\\.1|2\\.7)$"],
+          "excerptPatterns": ["\\b(?:LIGHT|LIGHTING|FIXTURE|LUMINAIRE|PHOTOMETRICS)\\b"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "infiltration-chamber-detail-location",
+      "question": "Which current civil sheet contains the underground infiltration chamber details, and what sheet sends the field team there?",
+      "expectedAnswer": "Civil Sheet C6 sends the field team to Sheet C8 for the underground infiltration chamber details; C8 contains those details.",
+      "requiredAnswerPatterns": ["\\bC8\\b", "\\bC6\\b", "\\bunderground infiltration chambers?\\b"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 2,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 2,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C6$"],
+          "excerptPatterns": ["UNDERGROUND\\s+INFILTRATION\\s+CHAMBERS", "DETAILS\\s+ON\\s+SHEET\\s+8"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        },
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C8$"],
+          "excerptPatterns": ["INFILTRATION|CHAMBER"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "field-wording-concrete-slab-inches",
+      "question": "About how many inches is the new concrete slab on the north side of 2375?",
+      "expectedAnswer": "The current Civil Sheet C6 drawing specifies 6.0-inch-thick PCC paving for the 2375 North Lot.",
+      "requiredAnswerPatterns": ["\\b6(?:\\.0)?\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])", "\\bPCC\\s+paving\\b", "\\b(?:drawing|design|specif(?:y|ies|ied))\\b"],
+      "forbiddenAnswerPatterns": ["\\b4\\s*-?\\s*(?:(?:inch(?:es)?|in\\.?)\\b|[\\\"”])"],
+      "allowedAssuranceStatuses": ["verified", "verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "02A.*2375.*CIVIL",
+          "sheetNumberPatterns": ["^C6$"],
+          "excerptPatterns": ["6(?:\\.0)?\\s*[\\\"”]?\\s*THICK\\s+PCC\\s+PAVING"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    },
+    {
+      "id": "field-wording-canopy-lights-scheduled",
+      "question": "Are lights scheduled to be installed in the canopies at 2375?",
+      "expectedAnswer": "Yes. Current Electrical Sheet E-1.1 shows lighting fixtures in the 2375 exterior storage areas corresponding to the canopies; the drawing does not establish the installation date or current field status.",
+      "requiredAnswerPatterns": ["\\byes\\b", "\\b(?:light|lighting|fixture|luminaire)s?\\b", "\\belectrical\\b"],
+      "forbiddenAnswerPatterns": ["\\bflooring change\\b", "\\bupdate:[a-z0-9-]+\\b"],
+      "requiredLimitationPatterns": ["\\b(?:installation date|field status|schedule|timing)\\b"],
+      "allowedAssuranceStatuses": ["verified_with_limits"],
+      "minimumDocumentCitations": 1,
+      "minimumDistinctDocuments": 1,
+      "minimumDistinctSheets": 1,
+      "expectedEvidence": [
+        {
+          "documentNamePattern": "06.*2375.*ELECTRICAL",
+          "sheetNumberPatterns": ["^E-1\\.1$"],
+          "excerptPatterns": ["EXTERIOR\\s+STORAGE", "\\b(?:LIGHT|LIGHTING|FIXTURE|LUMINAIRE)\\b"],
+          "requireBoundedRegion": true,
+          "requireHighResolutionCoverage": true
+        }
+      ]
+    }
+  ]
+}

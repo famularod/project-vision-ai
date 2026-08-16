@@ -1,0 +1,100 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@std/assert@1.0.18": "1.0.18",
+    "jsr:@std/internal@^1.0.12": "1.0.14"
+  },
+  "jsr": {
+    "@std/assert@1.0.18": {
+      "integrity": "270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/internal@1.0.14": {
+      "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    }
+  },
+  "redirects": {
+    "https://esm.sh/@supabase/phoenix@^0.4.2?target=denonext": "https://esm.sh/@supabase/phoenix@0.4.5?target=denonext",
+    "https://esm.sh/iceberg-js@^0.8.1?target=denonext": "https://esm.sh/iceberg-js@0.8.1?target=denonext"
+  },
+  "remote": {
+    "https://esm.sh/@supabase/auth-js@2.108.2/denonext/auth-js.mjs": "9f40126f47eb0bd2803bae8d48a9a90a341704395996806ac5cac87e345e4ab4",
+    "https://esm.sh/@supabase/functions-js@2.108.2/denonext/functions-js.mjs": "cb8c9f454e644c0e7ccf568c046ec026baaf88aca20185fe8365ec89026576d3",
+    "https://esm.sh/@supabase/phoenix@0.4.5/denonext/phoenix.mjs": "40bd2a70829cd847848baac58e635bacd83fd62188f6624b44e2c295341004eb",
+    "https://esm.sh/@supabase/phoenix@0.4.5?target=denonext": "28b2760cf24e1117ed0644a665bfab1c60d132872fa95bcae4cc3fecc7499ee2",
+    "https://esm.sh/@supabase/postgrest-js@2.108.2/denonext/postgrest-js.mjs": "4f97eb01ffd7ed89869a5bcf910eb45e0e48230ab9462e0d3667fe243ce2ca94",
+    "https://esm.sh/@supabase/realtime-js@2.108.2/denonext/realtime-js.mjs": "7dd89b17c7617a5b4e9047144f53fa324a805853c77a5d3388e18b189c9d3be3",
+    "https://esm.sh/@supabase/storage-js@2.108.2/denonext/storage-js.mjs": "cc4cb3161c606e44108efad0ad1d6f770e6c337293b6ed068e2ba58ffd24fdfb",
+    "https://esm.sh/@supabase/supabase-js@2.108.2": "7fbe17c4ef67b80d388cef1f0a0c7ecb28b2b1c3c4110875925a4bc82ff28e13",
+    "https://esm.sh/@supabase/supabase-js@2.108.2/denonext/supabase-js.mjs": "46f2f36b66e96481e47095942551fea2d14069e97acafb2bc3a1a3b1c2442195",
+    "https://esm.sh/iceberg-js@0.8.1/denonext/iceberg-js.mjs": "d839d81a2e3966500ca2cdd0c1cb458e9608bacfc91f7bb67a69b2e878dcdb4f",
+    "https://esm.sh/iceberg-js@0.8.1?target=denonext": "58c849d7fe2bf4eca4a84eb501e83c161a7d8c34ca1bec15a962b3bec3062633",
+    "https://esm.sh/tslib@2.8.1/denonext/tslib.mjs": "c38da5dd6da6281964435002ce204cd586634fe3bdfb24a0ee116f48cf3292e9"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@expo/metro-runtime@~57.0.8",
+        "npm:@expo/vector-icons@^15.0.3",
+        "npm:@noble/ciphers@1.3.0",
+        "npm:@noble/hashes@1.8.0",
+        "npm:@react-native-async-storage/async-storage@2.2.0",
+        "npm:@react-native-community/datetimepicker@9.1.0",
+        "npm:@react-native/jest-preset@0.86.2",
+        "npm:@supabase/supabase-js@^2.108.2",
+        "npm:@testing-library/react-native@13.3.3",
+        "npm:@types/jest@29.5.14",
+        "npm:@types/node@^24.13.3",
+        "npm:@types/react@~19.2.4",
+        "npm:base64-js@1.5.1",
+        "npm:docx@^9.7.1",
+        "npm:expo-asset@~57.0.9",
+        "npm:expo-audio@~57.0.3",
+        "npm:expo-clipboard@~57.0.1",
+        "npm:expo-constants@~57.0.9",
+        "npm:expo-contacts@~57.0.3",
+        "npm:expo-crypto@~57.0.1",
+        "npm:expo-dev-client@~57.0.10",
+        "npm:expo-document-picker@~57.0.1",
+        "npm:expo-file-system@~57.0.2",
+        "npm:expo-font@~57.0.1",
+        "npm:expo-image-manipulator@~57.0.8",
+        "npm:expo-image-picker@~57.0.8",
+        "npm:expo-linear-gradient@~57.0.1",
+        "npm:expo-linking@~57.0.5",
+        "npm:expo-location@~57.0.8",
+        "npm:expo-mail-composer@~57.0.1",
+        "npm:expo-router@~57.0.11",
+        "npm:expo-secure-store@~57.0.1",
+        "npm:expo-sharing@~57.0.10",
+        "npm:expo-sms@~57.0.1",
+        "npm:expo-status-bar@~57.0.1",
+        "npm:expo@~57.0.11",
+        "npm:heic-to@^1.5.2",
+        "npm:jest-expo@~57.0.3",
+        "npm:jest@29.7",
+        "npm:pdfjs-dist@^6.2.108",
+        "npm:react-dom@19.2.3",
+        "npm:react-native-safe-area-context@5.7",
+        "npm:react-native-screens@4.26",
+        "npm:react-native-url-polyfill@3",
+        "npm:react-native-web@0.21",
+        "npm:react-native@0.86.2",
+        "npm:react-test-renderer@19.2.3",
+        "npm:react@19.2.3",
+        "npm:tesseract.js@^6.0.1",
+        "npm:tus-js-client@^4.3.1",
+        "npm:typescript@~6.0.3",
+        "npm:ws@^8.21.1"
+      ],
+      "overrides": {
+        "brace-expansion": "5.0.9",
+        "xcode": {
+          "uuid": "11.1.1"
+        }
+      }
+    }
+  }
+}
