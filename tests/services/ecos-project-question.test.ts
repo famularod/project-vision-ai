@@ -238,6 +238,27 @@ describe('ECOS project question contract', () => {
       }),
     }));
   });
+
+  it.each([
+    ['proof_source_unavailable', 503, 'ECOS found relevant evidence, but the protected cited page is not ready to open yet. The answer was not completed.'],
+    ['proof_authority_unavailable', 503, 'The protected proof service is temporarily unavailable. The answer was not completed.'],
+    ['proof_authority_identity_mismatch', 409, 'A cited document changed while ECOS was preparing the answer. Refresh the project and ask again.'],
+    ['proof_authority_response_invalid', 502, 'ECOS rejected an invalid proof response. The answer was not completed.'],
+  ])('explains the protected proof failure %s accurately', async (code, status, message) => {
+    const response = new Response(JSON.stringify({ error: code }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+    await expect(askECOSProjectQuestion({
+      client: {
+        auth: { getSession: jest.fn().mockResolvedValue({ data: { session: { access_token: 'token' } }, error: null }) },
+        functions: { invoke: jest.fn().mockResolvedValue({ data: null, error: new Error('request failed'), response }) },
+      } as never,
+      projectId: 'project-2375',
+      projectName: '2375 Compliance Project',
+      question: 'How many square feet is Canopy A?',
+    })).rejects.toMatchObject({ code, message });
+  });
 });
 
 function diagnostics() {

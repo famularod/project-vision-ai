@@ -312,6 +312,21 @@ function projectQuestionErrorMessage(
   projectName: string,
   question: string,
 ) {
+  if (code === 'proof_authority_permission_denied') {
+    return 'Your sign-in is valid, but this account cannot verify the cited project proof.';
+  }
+  if (code === 'proof_authority_identity_mismatch') {
+    return 'A cited document changed while ECOS was preparing the answer. Refresh the project and ask again.';
+  }
+  if (code === 'proof_source_unavailable') {
+    return 'ECOS found relevant evidence, but the protected cited page is not ready to open yet. The answer was not completed.';
+  }
+  if (code === 'proof_authority_unavailable') {
+    return 'The protected proof service is temporarily unavailable. The answer was not completed.';
+  }
+  if (code === 'proof_authority_response_invalid') {
+    return 'ECOS rejected an invalid proof response. The answer was not completed.';
+  }
   if (status === 401 || code === 'unauthorized') {
     return 'Your sign-in could not be verified. Sign in again, then retry.';
   }
