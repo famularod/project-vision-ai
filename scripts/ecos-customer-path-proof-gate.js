@@ -258,6 +258,7 @@ function normalizeSheet(value) {
 module.exports = {
   classifyProofRpcFailure,
   extractDocumentClaim,
+  run,
   validateDocumentSnapshot,
   validateProofAuthorityRows,
   validateProtectedSourceResponse,
