@@ -1441,6 +1441,83 @@ Deno.test("deterministic area calculation owns variable model wording", () => {
   assertEquals(first.facts.length, 1);
 });
 
+Deno.test("complete Assurance keeps Canopy A, B, and C areas source-bound", () => {
+  const sources = [
+    documentSource({
+      id: "canopy-a",
+      title: "08A - Canopy 'A' drawing",
+      excerpt:
+        "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 122'-0\" × 52'-0\" = 6,344 square feet.",
+      page: 4,
+      sheet: "WPA-4",
+      region: "canopy-a-overall",
+    }),
+    documentSource({
+      id: "canopy-b",
+      title: "08B - Canopy 'B' drawing",
+      excerpt:
+        "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 82'-0\" × 64'-0\" = 5,248 square feet.",
+      page: 4,
+      sheet: "WPR-4",
+      region: "canopy-b-overall",
+    }),
+    documentSource({
+      id: "canopy-c",
+      title: "08C - Canopy 'C' drawing",
+      excerpt:
+        "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 82'-0\" × 32'-0\" = 2,624 square feet.",
+      page: 4,
+      sheet: "WPR-4",
+      region: "canopy-c-overall",
+    }),
+  ];
+  for (
+    const [identity, area, sourceId] of [
+      ["A", "6,344", "canopy-a"],
+      ["B", "5,248", "canopy-b"],
+      ["C", "2,624", "canopy-c"],
+    ] as const
+  ) {
+    const result = assureAnswer({
+      proposed: variableProposal(sources.map((source) => source.id), 1),
+      sources,
+      projectId: "project-2375",
+      projectName: "2375 Compliance Project",
+      question: `What is the square footage for canopy ${identity}?`,
+      model: "gpt-5.6-terra",
+    });
+    assertEquals(result.assurance.status, "verified_with_limits");
+    assertEquals(result.facts.length, 1);
+    assertEquals(result.facts[0]?.sourceIds, [sourceId]);
+    if (!result.answer.includes(`${area} square feet`)) {
+      throw new Error(
+        `Canopy ${identity} answer used the wrong area: ${result.answer}`,
+      );
+    }
+  }
+
+  const wrongOnly = assureAnswer({
+    proposed: {
+      shortAnswer: "Canopy B is 6,344 square feet.",
+      facts: [{
+        statement: "Canopy B is 6,344 square feet.",
+        classification: "fact",
+        sourceIds: [sources[0].id],
+      }],
+      limitations: [],
+      conflicts: [],
+      suggestedQuestions: [],
+    },
+    sources: [sources[0]],
+    projectId: "project-2375",
+    projectName: "2375 Compliance Project",
+    question: "What is the square footage for canopy B?",
+    model: "gpt-5.6-terra",
+  });
+  assertEquals(wrongOnly.assurance.status, "insufficient_evidence");
+  assertEquals(wrongOnly.facts.length, 0);
+});
+
 Deno.test("deterministic canopy lighting join owns wording, proof, and status", () => {
   const architectural = documentSource({
     id: "a17",

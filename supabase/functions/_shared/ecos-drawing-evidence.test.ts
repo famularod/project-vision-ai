@@ -187,6 +187,67 @@ Deno.test("whole-canopy footprint rejects component roof-covering dimensions", (
   );
 });
 
+Deno.test("plan-footprint calculation rejects a different named canopy", () => {
+  const regions = [
+    {
+      id: "horizontal-overall",
+      text: "82'-0\" OVERALL",
+      x: 0.40,
+      y: 0.70,
+      width: 0.20,
+      height: 0.01,
+      confidence: 0.99,
+      source: "vision",
+      searchable: true,
+    },
+    {
+      id: "vertical-overall",
+      text: "64'-0\" OVERALL",
+      x: 0.10,
+      y: 0.40,
+      width: 0.01,
+      height: 0.20,
+      confidence: 0.99,
+      source: "vision",
+      searchable: true,
+    },
+    {
+      id: "canopy-b-context",
+      text: "CANOPY B ANCHOR ROD PLAN",
+      x: 0.3,
+      y: 0.3,
+      width: 0.2,
+      height: 0.02,
+      confidence: 0.99,
+      source: "vision",
+      searchable: true,
+    },
+  ] as const;
+  const wrongQuestionPassages = buildECOSDrawingEvidencePassages({
+    pageText: "CANOPY B ANCHOR ROD PLAN",
+    regions,
+    question: "What is the square footage for canopy C?",
+    pageIdentity: "DRAWING PAGE CONTEXT: 08B — CANOPY 'B', Sheet WPR-4.",
+  });
+  assert(
+    !wrongQuestionPassages.some((passage) =>
+      passage.text.includes("ECOS VERIFIED PLAN-FOOTPRINT CALCULATION")
+    ),
+  );
+
+  const matchingPassages = buildECOSDrawingEvidencePassages({
+    pageText: "CANOPY B ANCHOR ROD PLAN",
+    regions,
+    question: "What is the square footage for canopy B?",
+    pageIdentity: "DRAWING PAGE CONTEXT: 08B — CANOPY 'B', Sheet WPR-4.",
+  });
+  assert(
+    matchingPassages.some((passage) =>
+      passage.text.includes("82'-0\" × 64'-0\" = 5,248 square feet")
+    ),
+  );
+});
+
 Deno.test("roof-covering area questions may use roof-covering dimensions", () => {
   const passages = buildECOSDrawingEvidencePassages({
     pageText: "CANOPY A ROOF COVERING PLAN",

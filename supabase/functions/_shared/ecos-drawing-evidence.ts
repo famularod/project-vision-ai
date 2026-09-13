@@ -7,7 +7,9 @@ import {
   ecosEvidenceQuestionContextScore,
 } from "./ecos-project-answer-policy.ts";
 import {
+  ecosNamedCanopyIdentities,
   ecosQuestionExplicitSheetReferences,
+  ecosQuestionNamedCanopyIdentity,
 } from "./ecos-question-language.ts";
 
 export type ECOSDrawingRegionInput = Readonly<{
@@ -583,6 +585,15 @@ function buildCalculatedAreaPassages(
     pageText,
     ...regions.map((region) => region.text),
   ]).join("\n");
+  const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
+  if (requestedCanopyIdentity) {
+    const pageIdentityCanopies = ecosNamedCanopyIdentities(pageIdentity);
+    const pageContextCanopies = ecosNamedCanopyIdentities(pageContextText);
+    const authoritativeCanopies = pageIdentityCanopies.length > 0
+      ? pageIdentityCanopies
+      : pageContextCanopies;
+    if (!authoritativeCanopies.includes(requestedCanopyIdentity)) return [];
+  }
   const pageContext = analyzeECOSQuestionEvidenceContext(
     question,
     pageContextText,

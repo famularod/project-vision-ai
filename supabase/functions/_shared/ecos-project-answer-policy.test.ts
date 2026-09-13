@@ -154,6 +154,61 @@ Deno.test("work-out-the-footprint wording uses the verified Canopy A calculation
   assert(fallback.statement.match(/calculated plan footprint/i));
 });
 
+Deno.test("calculated canopy area is bound to the requested canopy document", () => {
+  const sources = [
+    {
+      id: "document:canopy-a:plan-dimensions",
+      sourceType: "document",
+      title: "08A - Canopy 'A', Sheet WPA-4",
+      excerpt:
+        "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 122'-0\" × 52'-0\" = 6,344 square feet.",
+    },
+    {
+      id: "document:canopy-b:plan-dimensions",
+      sourceType: "document",
+      title: "08B - Canopy 'B', Sheet WPR-4",
+      excerpt:
+        "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 82'-0\" × 64'-0\" = 5,248 square feet.",
+    },
+    {
+      id: "document:canopy-c:plan-dimensions",
+      sourceType: "document",
+      title: "08C - Canopy 'C', Sheet WPR-4",
+      excerpt:
+        "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 82'-0\" × 32'-0\" = 2,624 square feet.",
+    },
+  ] as const;
+  for (
+    const [identity, expectedArea, expectedSourceId] of [
+      ["A", "6,344", "document:canopy-a:plan-dimensions"],
+      ["B", "5,248", "document:canopy-b:plan-dimensions"],
+      ["C", "2,624", "document:canopy-c:plan-dimensions"],
+    ] as const
+  ) {
+    const question = `What is the square footage for canopy ${identity}?`;
+    const fallback = buildECOSDrawingAreaFallback(question, sources);
+    assert(fallback);
+    assert(fallback.statement.includes(`${expectedArea} square feet`));
+    assertEquals(fallback.sourceIds, [expectedSourceId]);
+  }
+
+  assertEquals(
+    buildECOSDrawingAreaFallback(
+      "What is the square footage for canopy B?",
+      [sources[0]],
+    ),
+    null,
+  );
+  assertEquals(
+    ecosFactAnswersQuestion({
+      question: "What is the square footage for canopy B?",
+      statement: "Canopy B has a calculated footprint of 6,344 square feet.",
+      sourceExcerpts: [`${sources[0].title} ${sources[0].excerpt}`],
+    }),
+    false,
+  );
+});
+
 Deno.test("drawing-only installed evidence forces a negative direct answer", () => {
   assert(
     ecosIsNegativePresenceStatement(

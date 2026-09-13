@@ -1,6 +1,8 @@
 import {
   canonicalizeECOSQuestionLanguage,
+  ecosNamedCanopyIdentities,
   ecosQuestionExplicitSheetReferences,
+  ecosQuestionNamedCanopyIdentity,
   ecosQuestionRequestsDrawingLocation,
   ecosQuestionRetrievalVariants,
   ecosSheetReferenceMatches,
@@ -282,6 +284,18 @@ export function ecosFactAnswersQuestion({
   statement: string;
   sourceExcerpts: readonly string[];
 }) {
+  const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
+  if (requestedCanopyIdentity) {
+    const sourceCanopyIdentities = ecosNamedCanopyIdentities(
+      sourceExcerpts.join(" "),
+    );
+    if (!sourceCanopyIdentities.includes(requestedCanopyIdentity)) return false;
+    const statementCanopyIdentities = ecosNamedCanopyIdentities(statement);
+    if (
+      statementCanopyIdentities.length > 0 &&
+      !statementCanopyIdentities.includes(requestedCanopyIdentity)
+    ) return false;
+  }
   const requirement = analyzeECOSProjectQuestion(question);
   if (requirement.kind === "general") return true;
 
@@ -821,8 +835,23 @@ export function buildECOSDrawingAreaFallback(
   if (requirement.kind !== "measurement" || requirement.attribute !== "area") {
     return null;
   }
+  const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
   for (const source of sources) {
     if (source.sourceType !== "document") continue;
+    if (requestedCanopyIdentity) {
+      const titleCanopyIdentities = ecosNamedCanopyIdentities(
+        source.title || "",
+      );
+      const evidenceCanopyIdentities = ecosNamedCanopyIdentities(
+        source.excerpt,
+      );
+      const authoritativeCanopyIdentities = titleCanopyIdentities.length > 0
+        ? titleCanopyIdentities
+        : evidenceCanopyIdentities;
+      if (!authoritativeCanopyIdentities.includes(requestedCanopyIdentity)) {
+        continue;
+      }
+    }
     const match = source.excerpt.match(
       /ECOS VERIFIED PLAN-FOOTPRINT CALCULATION:\s*([^\n×]{1,80})\s*×\s*([^\n=]{1,80})\s*=\s*([\d,]+(?:\.\d+)?)\s+square feet/i,
     );

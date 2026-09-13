@@ -2,17 +2,56 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   canonicalizeECOSQuestionLanguage,
   ecosExpandedQuestionTokens,
+  ecosNamedCanopyIdentities,
   ecosPrimaryLexicalQueries,
   ecosQuestionDocumentAffinity,
   ecosQuestionEquipmentReferences,
   ecosQuestionExplicitSheetReferences,
   ecosQuestionLexicalQueries,
+  ecosQuestionNamedCanopyIdentity,
   ecosQuestionNeedsViewedDocumentIdentity,
   ecosQuestionRequestsDrawingLocation,
   ecosQuestionRequiredDocumentDisciplines,
   ecosQuestionRetrievalVariants,
   ecosSheetReferenceMatches,
 } from "./ecos-question-language.ts";
+
+Deno.test("named canopy identity is preserved across punctuation and retrieval", () => {
+  assertEquals(ecosNamedCanopyIdentities("08A — CANOPY 'A'"), ["A"]);
+  assertEquals(ecosNamedCanopyIdentities("08B — Canopy B"), ["B"]);
+  assertEquals(
+    ecosQuestionNamedCanopyIdentity(
+      "What is the square footage for canopy C?",
+    ),
+    "C",
+  );
+  assertEquals(
+    ecosQuestionNamedCanopyIdentity(
+      "Compare Canopy A with Canopy B.",
+    ),
+    null,
+  );
+
+  for (const identity of ["A", "B", "C"] as const) {
+    const question = `What is the square footage for canopy ${identity}?`;
+    const otherIdentity = identity === "A" ? "B" : "A";
+    assert(
+      ecosQuestionRetrievalVariants(question).some((variant) =>
+        variant.includes(`canopy ${identity} overall plan dimensions`)
+      ),
+    );
+    assert(
+      ecosQuestionDocumentAffinity(
+        question,
+        `08${identity} Canopy '${identity}'`,
+      ) >
+        ecosQuestionDocumentAffinity(
+          question,
+          `08${otherIdentity} Canopy '${otherIdentity}'`,
+        ),
+    );
+  }
+});
 
 Deno.test("primary lexical retrieval excludes broad single-token fan-out when phrases exist", () => {
   assertEquals(
@@ -22,8 +61,8 @@ Deno.test("primary lexical retrieval excludes broad single-token fan-out when ph
       "canopy overall plan dimension length width footprint square",
       "How many square feet is Canopy A",
       "canopy A overall plan dimensions length width plan footprint square feet",
-      "canopy a",
-      "canopy 'a'",
+      "roof plan",
+      "anchor rod plan",
     ],
   );
 });

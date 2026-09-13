@@ -117,7 +117,7 @@ const QUESTION_SYNONYMS: Readonly<Record<string, readonly string[]>> = Object
     concrete: ["slab", "pcc", "cement", "footing", "foundation"],
     area: ["square feet", "square foot", "sq ft", "sf", "footprint"],
     square: ["area", "footprint"],
-    canopy: ["canopy a", "canopy 'a'", "roof plan", "anchor rod plan"],
+    canopy: ["canopies", "roof plan", "anchor rod plan"],
     lighting: [
       "light",
       "lights",
@@ -243,6 +243,32 @@ export function canonicalizeECOSQuestionLanguage(value: string) {
   });
   return normalized.replace(LEADING_ECOS_GREETING, "")
     .replace(LEADING_SCAFFOLD, "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Extracts explicit canopy identities without treating a generic reference to
+ * a canopy as an identity. These tokens are authority boundaries: Canopy A
+ * evidence must never be relabeled as Canopy B or Canopy C evidence.
+ */
+export function ecosNamedCanopyIdentities(value: string) {
+  const normalized = value
+    .replace(/\p{Cf}/gu, "")
+    .normalize("NFKC")
+    .toUpperCase();
+  return Object.freeze(
+    uniqueQuestionValues(
+      [...normalized.matchAll(
+        /\bCANOP(?:Y|IES)\s+['"\u2018\u2019\u201C\u201D]?([A-Z]|\d{1,3})['"\u2018\u2019\u201C\u201D]?\b/g,
+      )].map((match) => match[1]),
+    ),
+  );
+}
+
+export function ecosQuestionNamedCanopyIdentity(value: string) {
+  const identities = ecosNamedCanopyIdentities(
+    canonicalizeECOSQuestionLanguage(value),
+  );
+  return identities.length === 1 ? identities[0] : null;
 }
 
 export function ecosQuestionRetrievalVariants(value: string) {
@@ -407,7 +433,11 @@ export function ecosQuestionDocumentAffinity(
     "",
   );
   const affinities: number[] = [];
-  const asksCanopyAFootprint = /\bcanopy\s+a\b/.test(query) &&
+  const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(query);
+  const documentCanopyIdentities = ecosNamedCanopyIdentities(
+    documentDescriptor,
+  );
+  const asksNamedCanopyFootprint = requestedCanopyIdentity != null &&
     /\b(?:area|size|square|feet|footprint|dimension|big)\b/.test(query);
   const asksCanopyStructure =
     /\b(?:slab|pad|foundation|footing|reinforced)\b/.test(query) &&
@@ -422,8 +452,11 @@ export function ecosQuestionDocumentAffinity(
     /\b(?:civil|pcc|concrete|paving|pavement|asphalt|sewer|drain|parking|north lot|north side|rear side|back lot)\b/
       .test(query);
 
-  if (asksCanopyAFootprint && /\bcanopy\s+a\b/.test(document)) {
-    affinities.push(10);
+  if (
+    asksNamedCanopyFootprint && requestedCanopyIdentity &&
+    documentCanopyIdentities.includes(requestedCanopyIdentity)
+  ) {
+    affinities.push(12);
   }
   if (asksCanopyStructure && /\bstructural\b/.test(document)) {
     affinities.push(9);
@@ -572,6 +605,7 @@ export function ecosQuestionRequiredDocumentDisciplines(value: string) {
 
 function domainRetrievalVariants(value: string) {
   const variants: string[] = [];
+  const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(value);
   if (
     /\bcanop(?:y|ies)\b/i.test(value) &&
     /\b(?:light|lights|lighting|fixture|fixtures|luminaire|luminaires)\b/i.test(
@@ -594,11 +628,11 @@ function domainRetrievalVariants(value: string) {
     );
   }
   if (
-    /\bcanopy\s+a\b/i.test(value) &&
+    requestedCanopyIdentity &&
     /\b(?:area|size|square|feet|footprint|dimensions|big)\b/i.test(value)
   ) {
     variants.push(
-      "canopy A overall plan dimensions length width plan footprint square feet",
+      `canopy ${requestedCanopyIdentity} overall plan dimensions length width plan footprint square feet`,
     );
   }
   if (

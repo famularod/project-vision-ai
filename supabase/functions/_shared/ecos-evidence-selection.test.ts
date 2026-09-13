@@ -201,6 +201,30 @@ Deno.test("selection reserves exact calculated Canopy A proof", () => {
   assertEquals(selected[0]?.id, "canopy-area");
 });
 
+Deno.test("selection cannot substitute Canopy A proof for Canopy B", () => {
+  const selected = selectECOSEvidenceSources(
+    "What is the square footage for canopy B?",
+    [
+      source({
+        id: "wrong-canopy-a-area",
+        title: "08A - Canopy 'A', Sheet WPA-4",
+        score: 500,
+        excerpt:
+          "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 122'-0\" × 52'-0\" = 6,344 square feet.",
+      }),
+      source({
+        id: "correct-canopy-b-area",
+        title: "08B - Canopy 'B', Sheet WPR-4",
+        score: 5,
+        excerpt:
+          "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 82'-0\" × 64'-0\" = 5,248 square feet.",
+      }),
+    ],
+    2,
+  );
+  assertEquals(selected.map((item) => item.id), ["correct-canopy-b-area"]);
+});
+
 Deno.test("selection reserves both sides of bounded canopy lighting proof", () => {
   const selected = selectECOSEvidenceSources(
     "Is canopy lighting part of the current drawings?",
