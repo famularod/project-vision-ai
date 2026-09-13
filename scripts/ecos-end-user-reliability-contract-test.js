@@ -35,7 +35,7 @@ const customerPathProofTest = fs.readFileSync(
   'utf8',
 );
 const proofMigration = fs.readFileSync(
-  path.join(root, 'supabase/migrations/20260913194000_ecos_reapply_atomic_customer_proof_contract.sql'),
+  path.join(root, 'supabase/migrations/20260913194700_ecos_reapply_atomic_contract_for_owner_runtime.sql'),
   'utf8',
 );
 assert(protectedPageService.includes("functions/v1/ecos-source-preview"));
