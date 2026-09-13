@@ -18,7 +18,7 @@ const snapshot = JSON.parse(fs.readFileSync(
   'utf8',
 ));
 const migration = fs.readFileSync(
-  path.join(ROOT, 'supabase/migrations/20260913191748_ecos_atomic_customer_proof_contract.sql'),
+  path.join(ROOT, 'supabase/migrations/20260913194000_ecos_reapply_atomic_customer_proof_contract.sql'),
   'utf8',
 );
 const projectId = snapshot.project.id;
