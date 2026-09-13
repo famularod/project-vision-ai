@@ -254,6 +254,7 @@ export function isStartupReferenceDocumentRecord(value: unknown): boolean {
     'projectName',
     'importBatchId',
     'storagePath',
+    'sourceProvider',
     'contentSha256',
     'updatedAt',
     'cloudUpdatedAt',

@@ -243,6 +243,21 @@ export type ReferenceDocument = {
   importBatchId?: string | null;
   /** Protected cloud object path. Cloud-only documents may not have a local uri. */
   storagePath?: string | null;
+  /** Original-file provider retained so every device can offer an honest open action. */
+  sourceProvider?: 'supabase_storage' | 'google_drive' | null;
+  /** Immutable Google Drive identity. Vitruvius never persists the short-lived access token. */
+  externalSource?: Readonly<{
+    provider: 'google_drive';
+    fileId: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+    modifiedTime: string | null;
+    revisionId: string | null;
+    md5Checksum: string | null;
+    resourceKey: string | null;
+    webViewLink: string | null;
+  }> | null;
   sizeBytes?: number | null;
   /** SHA-256 of the exact uploaded bytes, used to verify cloud recovery. */
   contentSha256?: string | null;

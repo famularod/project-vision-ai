@@ -65,6 +65,16 @@ export function normalizeReferenceDocument(
       : [],
     importBatchId: stringOrNull(value.importBatchId),
     storagePath: stringOrNull(value.storagePath),
+    sourceProvider:
+      value.sourceProvider === 'google_drive'
+        ? 'google_drive'
+        : value.sourceProvider === 'supabase_storage'
+          ? 'supabase_storage'
+          : null,
+    externalSource:
+      value.sourceProvider === 'google_drive'
+        ? normalizeGoogleDriveLinkedSource(value.externalSource)
+        : null,
     sizeBytes: finiteNumberOrNull(value.sizeBytes),
     contentSha256:
       canonicalSha256(value.contentSha256) ||
@@ -268,6 +278,33 @@ function hostedIndexStatusOrNull(
 function canonicalSha256(value: unknown) {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
+}
+
+function normalizeGoogleDriveLinkedSource(
+  value: unknown,
+): ReferenceDocument['externalSource'] {
+  if (!isRecord(value)) return null;
+  const fileId = stringOrNull(value.fileId);
+  const name = stringOrNull(value.name);
+  const mimeType = stringOrNull(value.mimeType);
+  const sizeBytes = finiteNumberOrNull(value.sizeBytes);
+  if (
+    value.provider !== 'google_drive' ||
+    !fileId || !/^[A-Za-z0-9_-]{8,512}$/.test(fileId) ||
+    !name || !mimeType || !sizeBytes || sizeBytes <= 0
+  ) return null;
+  return Object.freeze({
+    provider: 'google_drive',
+    fileId,
+    name,
+    mimeType,
+    sizeBytes,
+    modifiedTime: stringOrNull(value.modifiedTime),
+    revisionId: stringOrNull(value.revisionId),
+    md5Checksum: stringOrNull(value.md5Checksum),
+    resourceKey: stringOrNull(value.resourceKey),
+    webViewLink: stringOrNull(value.webViewLink),
+  });
 }
 
 function normalizeExtractedPages(value: unknown): ReferenceDocument['extractedPages'] {

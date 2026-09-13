@@ -256,6 +256,7 @@ import {
   validateECOSMobileDrawingControls,
 } from './services/ECOSMobileDrawingOnboarding';
 import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
+import { googleDriveReferenceDocumentUrl } from './services/ReferenceDocumentOpenAccess';
 import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
 import {
@@ -11126,6 +11127,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   async function openReferenceDocument(document: ReferenceDocument) {
     try {
+      const driveUrl = googleDriveReferenceDocumentUrl(document);
+      if (driveUrl) {
+        await Linking.openURL(driveUrl);
+        return;
+      }
       const readableDocument =
         await ensureVerifiedReferenceDocumentBytes(document);
 

@@ -15,6 +15,7 @@ import type { DAVEAskEvidence } from '../services/DAVEAsk';
 import type { ECOSDocumentEvidenceBinding } from '../services/ECOSDocumentEvidenceBinding';
 import type { ECOSDocumentEvidenceImageBounds } from '../hooks/use-ecos-document-evidence';
 import type { ReferenceDocument } from '../types';
+import { referenceDocumentOpenMode } from '../services/ReferenceDocumentOpenAccess';
 import { colors, spacing } from '../theme';
 
 export function ECOSDocumentEvidenceSheet({
@@ -48,6 +49,7 @@ export function ECOSDocumentEvidenceSheet({
   const hostedRegion = binding?.proofMode === 'hosted_cited_region';
   const [imageLayout, setImageLayout] = useState({ width: 0, height: 0 });
   const protectedPage = Boolean(imageUri && imageWidth > 0 && imageHeight > 0);
+  const documentOpenMode = referenceDocumentOpenMode(document);
   const onImageLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     setImageLayout({ width, height });
@@ -125,15 +127,26 @@ export function ECOSDocumentEvidenceSheet({
                 </Text>
               </View>
             ) : null}
-            <TouchableOpacity
-              style={styles.primaryButton}
-              onPress={onOpenDocument}
-              disabled={!document || !binding?.exact || loading}
-              accessibilityRole="button"
-            >
-              <Ionicons name="document-text-outline" size={20} color="#FFF" />
-              <Text style={styles.primaryText}>Open Full Document</Text>
-            </TouchableOpacity>
+            {documentOpenMode === 'unavailable' ? (
+              <View style={styles.unavailableCard} accessibilityRole="text">
+                <Ionicons name="information-circle-outline" size={20} color={colors.mutedText} />
+                <Text style={styles.unavailableText}>
+                  The verified cited page is shown above. The original full document is not available from this device.
+                </Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.primaryButton}
+                onPress={onOpenDocument}
+                disabled={!binding?.exact || loading}
+                accessibilityRole="button"
+              >
+                <Ionicons name="document-text-outline" size={20} color="#FFF" />
+                <Text style={styles.primaryText}>
+                  {documentOpenMode === 'google_drive' ? 'Open in Google Drive' : 'Open Full Document'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </ScrollView>
         </View>
       </View>
@@ -166,4 +179,6 @@ const styles = StyleSheet.create({
   error: { color: colors.danger, fontSize: 13, lineHeight: 19, fontWeight: '700' },
   primaryButton: { minHeight: 54, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm },
   primaryText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  unavailableCard: { flexDirection: 'row', gap: spacing.sm, borderRadius: 14, backgroundColor: colors.surfaceMuted, padding: spacing.md },
+  unavailableText: { flex: 1, color: colors.mutedText, fontSize: 13, lineHeight: 19, fontWeight: '700' },
 });
