@@ -185,6 +185,16 @@ async function loadAuthoritativeProof(
     );
   }
   if (Object.keys(record(row.source_view_citation)).length === 0) {
+    console.error(JSON.stringify({
+      event: "ecos_answer_proof_source_unavailable",
+      documentId: claim.documentId,
+      projectId: claim.projectId,
+      sourceSha256: claim.sourceSha256,
+      revision: claim.revision,
+      pageNumber: claim.pageNumber,
+      sheetNumber: claim.sheetNumber,
+      regionId: claim.regionId,
+    }));
     throw new ECOSAnswerProofAuthorityError("proof_source_unavailable");
   }
   return Object.freeze({ bounds });
