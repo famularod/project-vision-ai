@@ -158,6 +158,10 @@ import {
   parseECOSAgentConversationOperationRecord,
   resolveECOSAgentConversationQuestion,
 } from "../_shared/ecos-agent-conversation-context.ts";
+import {
+  bindECOSAnswerToAuthoritativeProof,
+  ECOSAnswerProofAuthorityError,
+} from "../_shared/ecos-answer-proof-authority.ts";
 
 const SCHEMA_VERSION = ECOS_LEGACY_QUESTION_CONTRACT;
 const ASSURANCE_POLICY_VERSION = "ecos-project-answer-policy/3.0";
@@ -1205,9 +1209,40 @@ export async function handleECOSAskProjectCandidateRequest(request: Request) {
       question: effectiveQuestion,
       model,
     });
-    const answer = effectiveQuestion === question
+    const questionBoundAnswer = effectiveQuestion === question
       ? assuredAnswer
       : Object.freeze({ ...assuredAnswer, question });
+    enterStage("verify_document_proof_authority");
+    let answer: typeof questionBoundAnswer;
+    try {
+      answer = await bindECOSAnswerToAuthoritativeProof(
+        supabase,
+        questionBoundAnswer,
+      );
+    } catch (error) {
+      if (!(error instanceof ECOSAnswerProofAuthorityError)) throw error;
+      const finalized = await finishAIOperation(
+        supabase,
+        operationRequestId,
+        "failed",
+        null,
+        error.code,
+      );
+      if (!finalized) {
+        return await tracedResponse({
+          body: { error: "ai_operation_finalize_failed" },
+          status: 503,
+          outcome: "failed",
+          errorCode: "ai_operation_finalize_failed",
+        });
+      }
+      return await tracedResponse({
+        body: { error: error.code },
+        status: proofAuthorityHTTPStatus(error.code),
+        outcome: "failed",
+        errorCode: error.code,
+      });
+    }
     const contractedAnswer = withResponseContract(answer, requestContract);
     const conversation = conversationId
       ? {
@@ -5517,6 +5552,7 @@ function safeErrorMetadata(error: unknown) {
 }
 
 function safeQuestionDiagnosticErrorCode(error: unknown) {
+  if (error instanceof ECOSAnswerProofAuthorityError) return error.code;
   if (error instanceof ECOSEmbeddingError) return error.code;
   const record = isRecord(error) ? error : {};
   const code = clean(record.code, 80);
@@ -5526,6 +5562,18 @@ function safeQuestionDiagnosticErrorCode(error: unknown) {
     return "dependency_timed_out";
   }
   return "answer_provider_failed";
+}
+
+function proofAuthorityHTTPStatus(
+  code: ECOSAnswerProofAuthorityError["code"],
+) {
+  if (code === "proof_authority_permission_denied") return 403;
+  if (code === "proof_authority_identity_mismatch") return 409;
+  if (
+    code === "proof_authority_unavailable" ||
+    code === "proof_source_unavailable"
+  ) return 503;
+  return 502;
 }
 
 function requiredEnv(name: string) {
