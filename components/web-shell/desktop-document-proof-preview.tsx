@@ -18,7 +18,9 @@ import type { ECOSProjectIdentity } from '../../services/ECOSDocumentEvidenceBin
 import type {
   ECOSAuthorizedDocumentProof,
   ECOSDocumentProofClaim,
+  ECOSDocumentProofAuthorityErrorCode,
 } from '../../services/ECOSDocumentProofAuthority';
+import { ECOSDocumentProofAuthorityError } from '../../services/ECOSDocumentProofAuthority';
 import {
   renderECOSWebDocumentProofPreview,
   renderECOSWebProtectedPageProofPreview,
@@ -50,6 +52,7 @@ type ProofAuthorityState = Readonly<{
   status: 'idle' | 'loading' | 'ready' | 'failed';
   proof: ECOSAuthorizedDocumentProof | null;
   message: string | null;
+  errorCode: ECOSDocumentProofAuthorityErrorCode | null;
 }>;
 
 const EMPTY_AUTHORITY: ProofAuthorityState = Object.freeze({
@@ -57,6 +60,7 @@ const EMPTY_AUTHORITY: ProofAuthorityState = Object.freeze({
   status: 'idle',
   proof: null,
   message: null,
+  errorCode: null,
 });
 
 export function DesktopDocumentProofPreview({
@@ -110,6 +114,7 @@ export function DesktopDocumentProofPreview({
       status: 'loading',
       proof: null,
       message: null,
+      errorCode: null,
     }));
     void loadProofDocument(document, focus)
       .then(proof => {
@@ -119,6 +124,7 @@ export function DesktopDocumentProofPreview({
           status: 'ready',
           proof,
           message: null,
+          errorCode: null,
         }));
       })
       .catch(error => {
@@ -130,6 +136,9 @@ export function DesktopDocumentProofPreview({
           message: error instanceof Error && error.message.trim()
             ? error.message.trim()
             : 'The exact cited proof could not be verified against the current project document.',
+          errorCode: error instanceof ECOSDocumentProofAuthorityError
+            ? error.code
+            : 'proof_service_unavailable',
         }));
       });
     return () => {
@@ -276,7 +285,7 @@ export function DesktopDocumentProofPreview({
           </View>
           <View style={styles.main}>
             <Text style={[styles.eyebrow, styles.unavailableEyebrow]}>ASK ECOS PROOF UNAVAILABLE</Text>
-            <Text style={styles.title}>{proofUnavailableTitle(binding?.reason)}</Text>
+            <Text style={styles.title}>{proofUnavailableTitle(currentAuthority.errorCode, binding?.reason)}</Text>
             <Text style={styles.limited}>
               {currentAuthority.message || binding?.message || 'Refresh project documents and ask ECOS again before relying on this proof.'}
             </Text>
@@ -353,7 +362,25 @@ export function DesktopDocumentProofPreview({
   );
 }
 
-function proofUnavailableTitle(reason: string | null | undefined) {
+function proofUnavailableTitle(
+  errorCode: ECOSDocumentProofAuthorityErrorCode | null,
+  reason: string | null | undefined,
+) {
+  if (errorCode === 'proof_service_unavailable') {
+    return 'The protected proof service is unavailable.';
+  }
+  if (errorCode === 'permission_denied') {
+    return 'This account cannot open the cited project source.';
+  }
+  if (errorCode === 'invalid_claim') {
+    return 'This answer does not contain a complete proof reference.';
+  }
+  if (errorCode === 'proof_not_found') {
+    return 'The exact cited page or region is unavailable.';
+  }
+  if (errorCode === 'proof_response_invalid') {
+    return 'The protected proof response could not be verified.';
+  }
   if (reason === 'visual_coverage_mismatch') {
     return 'This build cannot display the exact hosted drawing region.';
   }

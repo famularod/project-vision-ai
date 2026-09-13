@@ -35,7 +35,7 @@ const customerPathProofTest = fs.readFileSync(
   'utf8',
 );
 const proofMigration = fs.readFileSync(
-  path.join(root, 'supabase/migrations/20260913144434_dave_protected_ecos_page_source.sql'),
+  path.join(root, 'supabase/migrations/20260913191748_ecos_atomic_customer_proof_contract.sql'),
   'utf8',
 );
 assert(protectedPageService.includes("functions/v1/ecos-source-preview"));
@@ -88,6 +88,9 @@ const validResult = {
     questionSubmittedThroughUI: true,
     requestTraceSurfaceMatches: true,
     citationOpened: true,
+    proofRpcInvoked: true,
+    protectedRasterOpened: true,
+    originalSourceOpened: true,
   })),
 };
 assert.deepEqual(validateEndUserReliabilityResult(matrix, validResult), []);
@@ -99,6 +102,14 @@ assert(validateEndUserReliabilityResult(matrix, repeatedTrace).some(item => item
 const failedCitation = structuredClone(validResult);
 failedCitation.surfaceChecks.find(item => item.surface === 'iphone').citationOpened = false;
 assert(validateEndUserReliabilityResult(matrix, failedCitation).some(item => item.includes('iphone')));
+
+const shallowProof = structuredClone(validResult);
+shallowProof.surfaceChecks.find(item => item.surface === 'web').protectedRasterOpened = false;
+assert(validateEndUserReliabilityResult(matrix, shallowProof).some(item => item.includes('web')));
+
+const unopenedOriginal = structuredClone(validResult);
+unopenedOriginal.surfaceChecks.find(item => item.surface === 'ipad').originalSourceOpened = false;
+assert(validateEndUserReliabilityResult(matrix, unopenedOriginal).some(item => item.includes('ipad')));
 
 const shadowResult = structuredClone(validResult);
 shadowResult.executionBoundary.validationMode = 'shadow';

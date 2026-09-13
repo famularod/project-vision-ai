@@ -180,8 +180,50 @@ describe('ECOS document proof authority', () => {
       client: { rpc } as any,
       document: { ...compactDocument, contentSha256: 'f'.repeat(64) },
       claim,
-    })).rejects.toBeInstanceOf(ECOSDocumentProofAuthorityError);
+    })).rejects.toMatchObject({ code: 'source_identity_mismatch' });
     expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('identifies a missing deployed proof function as a service failure, not source drift', async () => {
+    await expect(loadAuthorizedECOSDocumentProof({
+      client: {
+        rpc: jest.fn(async () => ({
+          data: null,
+          error: {
+            code: 'PGRST202',
+            message: 'Could not find the function public.dave_verify_current_ecos_document_proof in the schema cache',
+          },
+        })),
+      } as any,
+      document: compactDocument,
+      claim,
+    })).rejects.toMatchObject({
+      code: 'proof_service_unavailable',
+      message: 'The protected proof service is temporarily unavailable. The project document was not reported as changed.',
+    });
+  });
+
+  it('keeps project authorization failures distinct from missing proof data', async () => {
+    await expect(loadAuthorizedECOSDocumentProof({
+      client: {
+        rpc: jest.fn(async () => ({ data: null, error: { code: '42501', message: 'permission denied' } })),
+      } as any,
+      document: compactDocument,
+      claim,
+    })).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+
+  it('reports an exact proof miss separately from a malformed proof response', async () => {
+    await expect(loadAuthorizedECOSDocumentProof({
+      client: { rpc: jest.fn(async () => ({ data: [], error: null })) } as any,
+      document: compactDocument,
+      claim,
+    })).rejects.toMatchObject({ code: 'proof_not_found' });
+    await expect(loadAuthorizedECOSDocumentProof({
+      client: { rpc: jest.fn(async () => ({ data: [authorityRow({ page_number: 7 })], error: null })) } as any,
+      document: compactDocument,
+      claim,
+    })).rejects.toMatchObject({ code: 'proof_response_invalid' });
   });
 
   it('rejects oversized proof identifiers before the RPC', async () => {

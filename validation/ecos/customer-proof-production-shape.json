@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "ecos-customer-proof-production-shape/1.1",
+  "capturedFrom": "live-metadata-only",
+  "project": {
+    "id": "72e941d8-8114-4082-a976-ae5b2b5daba9",
+    "name": "2375 Compliance Project"
+  },
+  "documents": [
+    {
+      "id": "web-document-edb4a270-4a4e-463f-90fc-e378dd23dd3c",
+      "name": "02A - PLZ CORP - 2375 THIRD STREET - CIVIL",
+      "sourceProvider": "google_drive",
+      "isCurrent": true,
+      "sourceSha256": "eef6c5b751dd6d235f174370c1ab34bdb4126a92378bdee16d69d19482b45a01",
+      "revision": "1",
+      "sourcePageCount": 8,
+      "committedPageCount": 8
+    },
+    {
+      "id": "web-document-eda89a83-2ebc-4276-9beb-a05be5d31571",
+      "name": "08A - PLZ CORP - 2375 THIRD STREET - CANOPY 'A'",
+      "sourceProvider": "google_drive",
+      "isCurrent": true,
+      "sourceSha256": "3449c10a40a0524b0409c42a256d3ee8e5455718946896c2c80d113da16e34df",
+      "revision": "1",
+      "sourcePageCount": 30,
+      "committedPageCount": 30
+    }
+  ],
+  "customerQuestions": [
+    "How thick is the new concrete on the north lot?",
+    "How many square feet is Canopy A?"
+  ],
+  "requiredProofContract": {
+    "evidenceVersion": "ecos-hosted-evidence/1.3",
+    "proofRpc": "dave_verify_current_ecos_document_proof",
+    "sourceEndpoint": "ecos-source-preview",
+    "requireProtectedRaster": true,
+    "requireVisibleOriginalSourceOpen": true
+  }
+}

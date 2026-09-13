@@ -50,6 +50,12 @@ function validateEndUserReliabilityMatrix(matrix) {
     problems.push('Release evidence must be submitted through the real Ask ECOS application UI boundary.');
   }
   if (releasePath.authentication !== 'signed_in_user') problems.push('The customer path must use a signed-in user session.');
+  if (releasePath.proofVerification !== 'signed_in_user_rpc_and_protected_raster') {
+    problems.push('Proof must call the signed-user proof RPC and open its protected raster.');
+  }
+  if (releasePath.originalSourceOpening !== 'visible_app') {
+    problems.push('Original source opening must be verified in the visible app.');
+  }
   if (releasePath.publicationMode !== 'live' || releasePath.validationMode !== null) {
     problems.push('Release evidence must use live publication without shadow validation mode.');
   }
@@ -143,7 +149,7 @@ function validateEndUserReliabilityResult(matrix, result) {
   }
   for (const key of [
     'mode', 'functionSlug', 'requestTransport', 'invocationMode', 'appInvocationBoundary',
-    'authentication', 'publicationMode',
+    'authentication', 'publicationMode', 'proofVerification', 'originalSourceOpening',
   ]) {
     if (boundary[key] !== expectedBoundary[key]) failures.push(`Customer execution boundary ${key} is invalid.`);
   }
@@ -203,7 +209,8 @@ function validateEndUserReliabilityResult(matrix, result) {
     const row = surfaceChecks.find(item => item?.surface === surface);
     if (!row || row.passed !== true || row.usedUnifiedQuestionPath !== true ||
       row.questionSubmittedThroughUI !== true || row.requestTraceSurfaceMatches !== true ||
-      row.citationOpened !== true) {
+      row.citationOpened !== true || row.proofRpcInvoked !== true ||
+      row.protectedRasterOpened !== true || row.originalSourceOpened !== true) {
       failures.push(`${surface} did not pass the unified-path and citation-opening check.`);
     }
   }

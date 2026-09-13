@@ -3,6 +3,7 @@ import { DesktopDocumentProofPreview } from '../../components/web-shell/desktop-
 import type { ECOSDesktopDocumentProofFocus } from '../../services/ECOSDesktopProofNavigation';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import { renderECOSWebProtectedPageProofPreview } from '../../services/ECOSWebDocumentProofPreview';
+import { ECOSDocumentProofAuthorityError } from '../../services/ECOSDocumentProofAuthority';
 
 jest.mock('../../services/ECOSWebDocumentProofPreview', () => ({
   renderECOSWebDocumentProofPreview: jest.fn(async () => ({
@@ -106,5 +107,27 @@ describe('DesktopDocumentProofPreview customer path', () => {
       bounds: BOUNDS,
     });
     expect(view.queryByText('ASK ECOS PROOF UNAVAILABLE')).toBeNull();
+  });
+
+  it('does not tell the user the document changed when the proof service is missing', async () => {
+    const view = render(
+      <DesktopDocumentProofPreview
+        document={compactDocument}
+        focus={focus}
+        projectIdentities={[{ id: PROJECT_ID, name: '2375 Compliance Project' }]}
+        loadProofDocument={jest.fn(async () => {
+          throw new ECOSDocumentProofAuthorityError('proof_service_unavailable');
+        })}
+        getArtifactUrl={jest.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.getByText('The protected proof service is unavailable.')).toBeTruthy();
+    });
+    expect(view.getByText(
+      'The protected proof service is temporarily unavailable. The project document was not reported as changed.',
+    )).toBeTruthy();
+    expect(view.queryByText('The cited source no longer matches this document.')).toBeNull();
   });
 });

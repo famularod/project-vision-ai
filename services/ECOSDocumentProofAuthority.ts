@@ -41,10 +41,24 @@ export type ECOSAuthorizedDocumentProof = Readonly<{
   protectedPage: ECOSProtectedDocumentPage | null;
 }>;
 
+export type ECOSDocumentProofAuthorityErrorCode =
+  | 'invalid_claim'
+  | 'source_identity_mismatch'
+  | 'proof_service_unavailable'
+  | 'permission_denied'
+  | 'proof_not_found'
+  | 'proof_response_invalid';
+
 export class ECOSDocumentProofAuthorityError extends Error {
-  constructor(message = 'The exact cited proof could not be verified against the current project document.') {
+  readonly code: ECOSDocumentProofAuthorityErrorCode;
+
+  constructor(
+    code: ECOSDocumentProofAuthorityErrorCode = 'proof_response_invalid',
+    message = proofAuthorityErrorMessage(code),
+  ) {
     super(message);
     this.name = 'ECOSDocumentProofAuthorityError';
+    this.code = code;
   }
 }
 
@@ -135,8 +149,11 @@ async function loadVerifiedProofAuthority({
   document: ReferenceDocument;
   sourceViewCitation: ECOSProtectedSourceCitation | null;
 }>> {
-  if (!client || !validProofClaim(claim) || !baseDocumentMatchesClaim(document, claim)) {
-    throw new ECOSDocumentProofAuthorityError();
+  if (!client || !validProofClaim(claim)) {
+    throw new ECOSDocumentProofAuthorityError('invalid_claim');
+  }
+  if (!baseDocumentMatchesClaim(document, claim)) {
+    throw new ECOSDocumentProofAuthorityError('source_identity_mismatch');
   }
 
   const { data, error } = await client.rpc('dave_verify_current_ecos_document_proof', {
@@ -149,17 +166,20 @@ async function loadVerifiedProofAuthority({
     p_sheet_number: claim.sheetNumber,
     p_region_id: claim.regionId,
   });
-  if (error || !Array.isArray(data) || data.length !== 1) {
-    throw new ECOSDocumentProofAuthorityError();
+  if (error) {
+    throw new ECOSDocumentProofAuthorityError(proofAuthorityRPCErrorCode(error));
+  }
+  if (!Array.isArray(data) || data.length !== 1) {
+    throw new ECOSDocumentProofAuthorityError('proof_not_found');
   }
 
   const row = normalizeAuthorityRow(data[0]);
   if (!row || !authorityRowMatchesClaim(row, claim)) {
-    throw new ECOSDocumentProofAuthorityError();
+    throw new ECOSDocumentProofAuthorityError('proof_response_invalid');
   }
   const region = authorityRegion(row, claim);
   if (claim.regionId && !region) {
-    throw new ECOSDocumentProofAuthorityError();
+    throw new ECOSDocumentProofAuthorityError('proof_response_invalid');
   }
   const page: ReferenceDocumentExtractedPage = {
     pageNumber: row.page_number,
@@ -181,9 +201,47 @@ async function loadVerifiedProofAuthority({
     ? null
     : normalizeECOSProtectedSourceCitation(row.source_view_citation, claim);
   if (row.source_view_citation != null && !sourceViewCitation) {
-    throw new ECOSDocumentProofAuthorityError();
+    throw new ECOSDocumentProofAuthorityError('proof_response_invalid');
   }
   return Object.freeze({ document: proofDocument, sourceViewCitation });
+}
+
+export function proofAuthorityErrorMessage(code: ECOSDocumentProofAuthorityErrorCode) {
+  switch (code) {
+    case 'invalid_claim':
+      return 'This answer did not include a complete proof identity. Ask ECOS again before relying on it.';
+    case 'source_identity_mismatch':
+      return 'The cited document changed after this answer was prepared. Refresh the project and ask ECOS again.';
+    case 'proof_service_unavailable':
+      return 'The protected proof service is temporarily unavailable. The project document was not reported as changed.';
+    case 'permission_denied':
+      return 'This signed-in account cannot open the cited project source.';
+    case 'proof_not_found':
+      return 'The current document does not contain the exact cited page and region.';
+    default:
+      return 'The protected proof response could not be safely verified.';
+  }
+}
+
+function proofAuthorityRPCErrorCode(error: unknown): ECOSDocumentProofAuthorityErrorCode {
+  const value = record(error);
+  const code = clean(value.code).toUpperCase();
+  const message = [value.message, value.details, value.hint]
+    .map(clean)
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (
+    code === 'PGRST202' || code === '42883' ||
+    /could not find the function|function .* does not exist|schema cache/.test(message)
+  ) return 'proof_service_unavailable';
+  if (code === '42501' || /permission denied|not authorized|requires an authorized owner/.test(message)) {
+    return 'permission_denied';
+  }
+  if (code === '57014' || /^PGRST5/.test(code) || /timeout|timed out|connection/.test(message)) {
+    return 'proof_service_unavailable';
+  }
+  return 'proof_response_invalid';
 }
 
 function baseDocumentMatchesClaim(

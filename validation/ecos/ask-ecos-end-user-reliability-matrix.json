@@ -14,6 +14,8 @@
     "authentication": "signed_in_user",
     "publicationMode": "live",
     "validationMode": null,
+    "proofVerification": "signed_in_user_rpc_and_protected_raster",
+    "originalSourceOpening": "visible_app",
     "serviceWorkerTokenAllowed": false,
     "privateDiagnosticResultsCanRelease": false
   },
