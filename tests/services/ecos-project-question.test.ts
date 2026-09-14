@@ -314,6 +314,16 @@ describe('server-owned Ask ECOS conversation transport', () => {
     });
     await expect(askECOSProjectQuestion({ ...input, client })).rejects.toMatchObject({ code: 'conversation_context_unavailable' });
   });
+  it('keeps a standalone answer compatible with the unchanged non-conversational fallback', async () => {
+    const { client } = clientFor(data => { delete data.conversation; });
+    const result = await askECOSProjectQuestion({ ...input, question: 'What is the square footage of canopy C?', priorTurnId: undefined, client });
+    expect(result.conversation).toBeUndefined();
+    expect(result.answer).toBeTruthy();
+  });
+  it('does not accept a malformed receipt on an initial turn', async () => {
+    const { client } = clientFor(data => { data.conversation = {}; });
+    await expect(askECOSProjectQuestion({ ...input, priorTurnId: undefined, client })).rejects.toMatchObject({ code: 'conversation_context_unavailable' });
+  });
   it.each([{ conversationId: undefined }, { conversationId: 'bad' }, { priorTurnId: 'bad' }])('rejects malformed references before invoking the server: %j', override => {
     const { client, invoke } = clientFor();
     return expect(askECOSProjectQuestion({ ...input, ...override, client })).rejects.toMatchObject({ code: 'conversation_context_invalid' }).then(() => {

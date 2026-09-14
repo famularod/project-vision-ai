@@ -179,7 +179,11 @@ export async function askECOSProjectQuestion({
     );
   }
   const answer = parseECOSProjectQuestionAnswer(data);
-  if (conversationId && (answer.conversation?.conversationId !== conversationId ||
+  // Older/general routing can answer standalone questions without supporting
+  // continuity. Never turn that into an outage; linked follow-ups still require
+  // a verified receipt, as does any server claiming conversation support.
+  const requiresConversationReceipt = Boolean(priorTurnId) || objectValue(data).conversation != null;
+  if (conversationId && requiresConversationReceipt && (answer.conversation?.conversationId !== conversationId ||
     answer.conversation.priorTurnId !== (priorTurnId || null) || answer.conversation.turnId === priorTurnId || !answer.diagnostics.persisted)) {
     throw new ECOSProjectQuestionError('conversation_context_unavailable',
       'ECOS could not verify this conversation. Start a new question with the full details.', answer.diagnostics.traceId);

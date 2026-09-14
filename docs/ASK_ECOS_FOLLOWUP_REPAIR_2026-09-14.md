@@ -1,4 +1,18 @@
-# Ask ECOS follow-up repair — local candidate, not released
+# Ask ECOS follow-up repair — private runtime validated, apps not released
+
+## Private hosted validation, subsequent continuation
+
+Runtime `f7fdf691bf7ff9eff095841e8ee12b47c89ed994` built as Cloud Build `ddfda079-688b-4506-b778-8769b719619f`. All 42 uploaded inputs matched; image `sha256:e0413a0b1d3b7affc92681e514e08a54840e0d06125563b3d42cf4e64cba9ad0`, package `fb32aa6763675f325089c61bdb20856c782a04691132783b73cfbd436bdb882c`. New zero-traffic revision `ecos-agent-query-preview-followupf7fdf69` passed immutable readback and missing-gateway-token rejection. Existing traffic and tags unchanged.
+
+One fresh private conversation returned B 5,248 SF (14,172 ms), “And canopy C?” 2,624 SF (12,741 ms), then “And canopy A?” 6,344 SF (12,922 ms). Each retained the correct conversation/turn chain and distinct exact page-4 document citation, with calculation caveats. No replay or seeded fixture. Invalid prior-turn UUID returned 409 before research. Temporary session was locally revoked, refresh denied, and independently verified absent from auth.sessions. Receipt directory: `../research/private-runtime-questions-f401a75b728041baad0d6b1abf4e1852/` relative to the app checkout. This is private API verification, NOT visible UI acceptance.
+
+Release review also caught a compatibility issue in the initial local client patch: requiring a conversation receipt for every initial answer would reject standalone answers from unchanged general/fallback routing. The client now accepts a normal initial standalone answer with no conversation capability, but still rejects missing receipts for linked follow-ups and malformed/mismatched receipts from any route claiming support. No fallback answer is retained as conversation evidence.
+
+## Exact regression-source recovery
+
+The initial pre-bump release gate failed both the still-incomplete live acceptance gate and the local 2321 source-identity test. The default iCloud architectural file had SHA-256 `9d7e0c86758c6aef8ef8654f586a3e0d80953db7cac6329c153d551d15846059`, not the test's pinned `5c1f0ccac1dbb50b0ff373da39179e572d577c75fc3941cec5b77d12f4846bbb`. The Downloads copy matches the original expected hash exactly. A hash difference establishes different bytes, not why they changed or which revision is authoritative for live project questions.
+
+Six original benchmark files were copied into private read-only fixtures under `../research/private-2321-pinned-ZOfaL5/`, with all expected hashes checked before and after copying and a manifest of the selected inputs. Neither user source was changed; no expected hash or assertion was changed. Explicit `ECOS_2321_REGRESSION_DIRECTORY` selection restored the hosted indexer run: 313 tests run, OK, 9 existing skips. Those skips are not passes. The ten-page mapping check now executes successfully. This verifies the pinned historical regression inputs, not the authority or indexing of the separate iCloud file. Complete release and device acceptance remain open.
 
 ## Observed end-user results
 
@@ -44,4 +58,4 @@ Read-only database verification found trace `646e6167-d1e8-461a-b0e5-d8d4d6ceabc
 3. Perform controlled owner-only release, then submit full B question → “And canopy C?” → another subject through actual desktop, iPhone and iPad controls. Inspect each correct proof and original source. Repeat with reordered questions and project switches.
 4. Capture any remaining proof error precisely; do not relax proof checks or relabel a refusal as success.
 
-No app, runtime, database, routing, evidence publication, session or installed version was changed by this local patch. Native Build 196 and web Build 194 remain the tested installed baseline. Step 4 and the complete beta acceptance gate remain open.
+No app deployment, database migration, owner/customer routing change, evidence publication, or installed version change has occurred for this repair. The separately noted private runtime revision and temporary test session were created during hosted validation; the session was revoked. Native Build 196 and web Build 194 remain the installed baseline. Step 4 and the complete beta acceptance gate remain open.
