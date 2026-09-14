@@ -12,9 +12,9 @@ export function createECOSOwnerSourceViewGatewayFromEnvironment(
   try {
     return createECOSOwnerSourceViewGateway({
       enabled: true,
-      sourceURL: "https://proof-ed2f84f---ecos-owner-query-preview-vjn77z65la-uw.a.run.app/source",
+      sourceURL: "https://proof-4292042---ecos-owner-query-preview-vjn77z65la-uw.a.run.app/source",
       gatewayToken: read("ECOS_OWNER_QUERY_GATEWAY_TOKEN"),
-      packagedSourceSha256: "aea626813abc48338632b44a345b98368b69b8d44fc772d8db02a4f14a3ccfa4",
+      packagedSourceSha256: "fa1ba27723e5111e8fdbedf40e50ee3b1a6059dd5daec7789cef3fb97e473768",
       googleIdentity: readECOSOwnerPrivateGatewayIdentity(read),
     });
   } catch {
@@ -24,4 +24,3 @@ export function createECOSOwnerSourceViewGatewayFromEnvironment(
 if (import.meta.main) {
   Deno.serve(createECOSOwnerSourceViewGatewayFromEnvironment());
 }
-
