@@ -4,8 +4,26 @@ let handle: (r: Request) => Promise<Response>;
 const serve = Deno.serve;
 // Capture the real request handler without opening a listener.
 (Deno as unknown as { serve: unknown }).serve = (h: typeof handle) => { handle = h; };
-await import("./index.ts");
+const { geminiThinkingLevel, privateStructuredFailureCode } = await import("./index.ts");
 (Deno as unknown as { serve: unknown }).serve = serve;
+
+Deno.test("private single-label reasoning budget cannot inherit broad drawing settings", () => {
+  const old = Deno.env.get("ECOS_GEMINI_DRAWING_THINKING_LEVEL");
+  try {
+    Deno.env.set("ECOS_GEMINI_DRAWING_THINKING_LEVEL", "HIGH");
+    if (geminiThinkingLevel("gemini-3.6-flash", "ecos_drawing_page_analysis") !== "MINIMAL") throw Error("Budget inherited");
+    if (geminiThinkingLevel("gemini-3-pro", "ecos_drawing_page_analysis") !== "LOW") throw Error("Invalid pro budget");
+  } finally {
+    if (old === undefined) Deno.env.delete("ECOS_GEMINI_DRAWING_THINKING_LEVEL");
+    else Deno.env.set("ECOS_GEMINI_DRAWING_THINKING_LEVEL", old);
+  }
+});
+
+Deno.test("private failures distinguish token exhaustion from malformed output without exposing provider text", () => {
+  if (privateStructuredFailureCode({ candidates: [{ finishReason: "MAX_TOKENS" }] }) !== "analysis_output_token_limit") throw Error("Token limit lost");
+  if (privateStructuredFailureCode({ candidates: [{ finishReason: "STOP" }] }) !== "analysis_invalid_structured_output") throw Error("Invalid output lost");
+  if (privateStructuredFailureCode({ candidates: [{ finishReason: "SAFETY" }] }) !== "analysis_output_blocked") throw Error("Safety failure lost");
+});
 
 Deno.test("private drawing preview rejects unauthorized, broad and non-shadow requests before paid work", async () => {
   const oldToken = Deno.env.get("ECOS_SERVICE_WORKER_TOKEN");

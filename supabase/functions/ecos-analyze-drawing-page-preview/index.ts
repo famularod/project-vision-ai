@@ -539,7 +539,12 @@ Deno.serve(async (request) => {
         tileImageCount: tileImages.length,
       }));
       return await finishFailureResponse({
-        error: "analysis_invalid",
+        error: privateStructuredFailureCode(providerBody),
+        privateDiagnostics: {
+          reason: structuredOutput.failureReason,
+          outputLength: structuredOutput.normalizedText.length,
+          finishReasons: structuredProviderDiagnostics(providerBody).map((item) => item.finishReason),
+        },
         ...(comparisonMode
           ? {
             comparisonAnalysisDiagnostics: {
@@ -1210,19 +1215,19 @@ function stripUnsupportedOpenAISchema(value: unknown): unknown {
   );
 }
 
-function geminiThinkingLevel(model: string, schemaName: string) {
-  if (schemaName === "ecos_drawing_visual_assurance") {
-    return model.includes("pro") ? "LOW" : "MINIMAL";
-  }
-  const configured = clean(
-    Deno.env.get("ECOS_GEMINI_DRAWING_THINKING_LEVEL"),
-    20,
-  ).toUpperCase();
-  if (
-    configured === "LOW" || configured === "MEDIUM" || configured === "HIGH"
-  ) return configured;
-  if (configured === "MINIMAL" && !model.includes("pro")) return configured;
+export function geminiThinkingLevel(model: string, _schemaName: string) {
+  // This isolated service reads one label, not a whole drawing. Shared broad
+  // drawing settings must not exhaust this service's small output budget.
   return model.includes("pro") ? "LOW" : "MINIMAL";
+}
+
+export function privateStructuredFailureCode(value: unknown) {
+  const reasons = structuredProviderDiagnostics(value).map((item) => item.finishReason);
+  if (reasons.includes("MAX_TOKENS")) return "analysis_output_token_limit";
+  if (reasons.some((reason) => reason && ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT"].includes(reason))) {
+    return "analysis_output_blocked";
+  }
+  return "analysis_invalid_structured_output";
 }
 
 async function fetchGemini(
