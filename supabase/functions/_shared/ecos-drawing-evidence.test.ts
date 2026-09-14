@@ -127,6 +127,29 @@ Deno.test("calculated area proof precedes long canopy context", () => {
   );
 });
 
+Deno.test("plan calculation retains exact document identity when page heading omits the entity", () => {
+  const regions = [
+    { id: "plan-heading", text: "ANCHOR ROD PLAN", x: .4, y: .8, width: .2, height: .02, source: "vision", confidence: .99, searchable: true },
+    { id: "width", text: "OVERALL WIDTH: 82'-0\"", x: .49, y: .76, width: .02, height: .003, source: "vision", confidence: .99, searchable: true },
+    { id: "length", text: "OVERALL LENGTH: 64'-0\"", x: .25, y: .5, width: .003, height: .02, source: "vision", confidence: .99, searchable: true },
+  ];
+  for (const [asked, title, heading, expected] of [
+    ["canopy B", "CANOPY 'B', Sheet WPB-4", "ANCHOR ROD PLAN", true],
+    ["canopy A", "CANOPY 'B', Sheet WPB-4", "ANCHOR ROD PLAN", false],
+    ["canopy B", "CANOPY 'B', Sheet WPB-4", "CANOPY A ANCHOR ROD PLAN", false],
+    ["canopy B", "UNLABELED, Sheet X4", "ANCHOR ROD PLAN", false],
+    ["building 2", "BUILDING 2, Sheet S4", "ANCHOR ROD PLAN", true],
+    ["building 3", "BUILDING 2, Sheet S4", "ANCHOR ROD PLAN", false],
+  ] as const) {
+    const passages = buildECOSDrawingEvidencePassages({
+      pageText: heading, regions: [{ ...regions[0], text: heading }, ...regions.slice(1)],
+      question: `What is the square footage of ${asked}?`, pageIdentity: title,
+    });
+    assertEquals(passages.some(p => p.text.includes("82'-0\" × 64'-0\" = 5,248 square feet")), expected,
+      `${asked}: ${title}: ${heading}`);
+  }
+});
+
 Deno.test("whole-canopy footprint rejects component roof-covering dimensions", () => {
   const passages = buildECOSDrawingEvidencePassages({
     pageText: "CANOPY A ROOF COVERING PLAN",

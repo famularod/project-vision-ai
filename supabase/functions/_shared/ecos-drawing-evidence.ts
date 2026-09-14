@@ -613,7 +613,11 @@ function buildCalculatedAreaPassages(
   }
   const pageContext = analyzeECOSQuestionEvidenceContext(
     question,
-    pageContextText,
+    // The exact document/page identity was checked independently above.
+    // Keep it through the second context check: a legitimate plan heading
+    // need not repeat its document's entity label. Conflicting page labels
+    // still fail the independent title/excerpt check before reaching here.
+    unique([pageIdentity, pageContextText]).join("\n"),
   );
   if (
     !pageContext.subjectMatched || !pageContext.locationMatched ||
