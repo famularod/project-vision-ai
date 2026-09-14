@@ -10,6 +10,7 @@
 !workers/
 !workers/ecos-agent-query-runtime/
 !workers/ecos-agent-query-runtime/main.ts
+!workers/ecos-agent-query-runtime/startup-smoke.ts
 !workers/ecos-agent-query-runtime/Dockerfile
 !workers/ecos-agent-query-runtime/cloudbuild.yaml
 **/*.test.ts
