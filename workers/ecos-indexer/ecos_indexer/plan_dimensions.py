@@ -244,6 +244,7 @@ def derive_verified_plan_dimensions(analysis, *, project_id, source_sha256, page
                 "id": f"plan-overall-{analysis['contextHash'][:16]}-{axis}",
                 "text": label, "label": label, "evidenceText": fact["evidenceText"],
                 "factKind": "plan_dimension_relationship", "source": "deterministic",
+                "searchable": True,
                 "confidence": fact["confidence"], **fact["bounds"],
                 "reconstructionMethod": "closed_plan_full_span_dual_visual_v1",
                 "planContextHash": analysis["contextHash"],

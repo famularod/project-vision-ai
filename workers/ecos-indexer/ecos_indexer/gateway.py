@@ -412,6 +412,11 @@ class SupabaseWorkerGateway:
         embedding_dimensions: int,
         rows: list[dict[str, Any]],
     ) -> int:
+        if os.getenv("ECOS_CLAIMED_SEMANTIC_BATCHES") == "enabled":
+            return self.replace_claimed_shadow_embeddings_bounded(
+                job, embedding_model=embedding_model,
+                embedding_dimensions=embedding_dimensions, rows=rows,
+            )
         result = self.rpc("ecos_replace_hosted_shadow_chunk_embeddings", {
             "p_job_id": job.job_id,
             "p_claim_token": job.claim_token,
@@ -425,6 +430,30 @@ class SupabaseWorkerGateway:
             raise ProtectedGatewayError("Semantic replacement response was invalid") from error
         if count != len(rows):
             raise ProtectedGatewayError("Semantic replacement count was incomplete")
+        return count
+
+    def replace_claimed_shadow_embeddings_bounded(
+        self, job: HostedJob, *, embedding_model: str,
+        embedding_dimensions: int, rows: list[dict[str, Any]],
+    ) -> int:
+        if job.mode != "shadow" or not 1 <= len(rows) <= 25000:
+            raise ProtectedGatewayError("Bounded semantic replacement requires an exact shadow inventory")
+        identity = {"p_job_id": job.job_id, "p_claim_token": job.claim_token}
+        count = self.rpc("ecos_begin_claimed_shadow_embeddings", {
+            **identity, "p_embedding_model": embedding_model,
+            "p_embedding_dimensions": embedding_dimensions, "p_expected_count": len(rows),
+        })
+        if type(count) is not int or count != len(rows):
+            raise ProtectedGatewayError("Bounded semantic begin count was incomplete")
+        for offset in range(0, len(rows), 16):
+            self.extend_lease(job)
+            batch = rows[offset:offset + 16]
+            accepted = self.rpc("ecos_upsert_claimed_shadow_embedding_batch", {**identity, "p_rows": batch})
+            if type(accepted) is not int or accepted != len(batch):
+                raise ProtectedGatewayError("Bounded semantic batch count was incomplete")
+        count = self.rpc("ecos_finish_claimed_shadow_embeddings", identity)
+        if type(count) is not int or count != len(rows):
+            raise ProtectedGatewayError("Bounded semantic final count was incomplete")
         return count
 
     def ready_shadow_job_for_semantic_backfill(

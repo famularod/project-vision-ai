@@ -6,6 +6,7 @@ import pymupdf as fitz
 from ecos_indexer.plan_dimensions import detect_plan_dimension_reads, derive_verified_plan_dimensions, rectangular_plan_candidates, single_dimension_stroke
 from ecos_indexer.visual import VISUAL_SCHEMA_VERSION, visual_exception_fingerprint
 from ecos_indexer.extraction import exact_simple_measurement_keys, corrupted_zero_inch_foot_measurements
+from ecos_indexer.worker import append_visual_evidence
 
 IDENTITY = dict(project_id="test-project", source_sha256="a"*64, page_number=1,
                 evidence_version="ecos-hosted-evidence/1.3")
@@ -84,6 +85,19 @@ class PlanDimensionTests(unittest.TestCase):
         self.assertEqual([r["text"] for r in regions], ['OVERALL WIDTH: 20\'-0"', 'OVERALL LENGTH: 40\'-0"'])
         self.assertTrue(all(r["constituentEvidence"] and r["corroboratingEvidence"] for r in regions))
         self.assertTrue(all(r["evidenceText"] != r["text"] for r in regions))
+
+    def test_verified_relationship_and_visual_facts_cross_explicit_search_boundary(self):
+        analysis = fixture()
+        result = {"final": {"regions": [], "planDimensionAnalysis": analysis}}
+        for target in analysis["targets"]:
+            append_visual_evidence(result, target, verified_read(target)["evidence"])
+        derived, errors = derive_verified_plan_dimensions(analysis, **IDENTITY)
+        self.assertEqual(errors, [])
+        all_facts = result["final"]["regions"] + derived
+        # The deployed shadow materializer requires JSON boolean true, not
+        # merely absence of false. Exercise the producer's actual output.
+        self.assertEqual(len(all_facts), 4)
+        self.assertTrue(all(r.get("searchable") is True for r in all_facts))
 
     def test_cross_project_source_page_and_epoch_cannot_reuse_reads(self):
         analysis = fixture()

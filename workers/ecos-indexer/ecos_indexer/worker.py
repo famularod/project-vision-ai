@@ -716,6 +716,7 @@ def append_visual_evidence(
             "label": fact["statement"][:240],
             "evidenceText": fact["evidenceText"],
             "factKind": "drawing_fact",
+            "searchable": True,
             "subject": fact.get("subject") or fact["evidenceText"],
             "location": fact.get("location") or "",
             **fact["bounds"],

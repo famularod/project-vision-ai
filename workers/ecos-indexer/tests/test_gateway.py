@@ -321,6 +321,46 @@ class GatewayTests(unittest.TestCase):
                 rows=rows,
             )
 
+    @patch.object(SupabaseWorkerGateway, "extend_lease")
+    @patch.object(SupabaseWorkerGateway, "rpc")
+    def test_claimed_embeddings_are_bounded_and_finalized(self, rpc: Mock, lease: Mock) -> None:
+        rows = [{"pageNumber": 1, "regionId": str(i)} for i in range(35)]
+        rpc.side_effect = [35, 16, 16, 3, 35]
+        with patch.dict(os.environ, {"ECOS_CLAIMED_SEMANTIC_BATCHES": "enabled"}):
+            count = SupabaseWorkerGateway().replace_shadow_chunk_embeddings(self.job(),
+                embedding_model="text-embedding-3-small", embedding_dimensions=1536, rows=rows)
+        self.assertEqual(count, 35)
+        self.assertEqual(lease.call_count, 3)
+        calls = rpc.call_args_list
+        self.assertEqual(calls[0].args[0], "ecos_begin_claimed_shadow_embeddings")
+        self.assertEqual([len(c.args[1]["p_rows"]) for c in calls[1:4]], [16,16,3])
+        self.assertEqual(calls[-1].args[0], "ecos_finish_claimed_shadow_embeddings")
+        self.assertTrue(all(c.args[1]["p_claim_token"] == "claim-1" for c in calls))
+
+    @patch.object(SupabaseWorkerGateway, "extend_lease")
+    @patch.object(SupabaseWorkerGateway, "rpc")
+    def test_incomplete_batch_never_finishes_and_live_jobs_cannot_batch(self, rpc: Mock, lease: Mock) -> None:
+        rpc.side_effect = [20, 15]
+        gateway = SupabaseWorkerGateway()
+        with self.assertRaisesRegex(ProtectedGatewayError, "batch count"):
+            gateway.replace_claimed_shadow_embeddings_bounded(self.job(),
+                embedding_model="text-embedding-3-small", embedding_dimensions=1536, rows=[{}]*20)
+        self.assertNotIn("ecos_finish_claimed_shadow_embeddings", [c.args[0] for c in rpc.call_args_list])
+        rpc.reset_mock()
+        with self.assertRaisesRegex(ProtectedGatewayError, "exact shadow inventory"):
+            gateway.replace_claimed_shadow_embeddings_bounded(HostedJob(**{**self.job().__dict__, "mode": "live"}),
+                embedding_model="text-embedding-3-small", embedding_dimensions=1536, rows=[{}])
+        rpc.assert_not_called()
+
+    @patch.object(SupabaseWorkerGateway, "extend_lease")
+    @patch.object(SupabaseWorkerGateway, "rpc")
+    def test_claimed_embeddings_reject_incomplete_or_malformed_final_count(self, rpc: Mock, lease: Mock) -> None:
+        for wrong in (0, True, "1", None):
+            rpc.side_effect = [1, 1, wrong]
+            with self.assertRaisesRegex(ProtectedGatewayError, "final count"):
+                SupabaseWorkerGateway().replace_claimed_shadow_embeddings_bounded(self.job(),
+                    embedding_model="text-embedding-3-small", embedding_dimensions=1536, rows=[{}])
+
     @patch("ecos_indexer.gateway.requests.get")
     def test_ready_semantic_backfill_job_is_exact_and_idle(self, get: Mock) -> None:
         response = Mock(status_code=200, content=b"[]")
