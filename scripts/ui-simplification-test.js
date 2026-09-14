@@ -128,12 +128,16 @@ const settingsMain = settings.slice(
   'title="Advanced / Diagnostics"',
   'title="Display name"',
   'title="Connection status"',
-  'title="Export Complete Backup"',
-  'title="Restore Complete Backup"',
+  'title="Export Limited Device Backup"',
+  'title="Restore Device Backup"',
+  '{DEVICE_BACKUP_SCOPE_NOTICE}',
   'title="Send Feedback"',
   'title="Help"',
   'title="About"',
 ].forEach(marker => assert(settings.includes(marker), `Settings should include ${marker}`));
+for (const obsolete of ['title="Export Complete Backup"', 'title="Restore Complete Backup"']) {
+  assert(!settings.includes(obsolete), `Settings must not overstate backup coverage: ${obsolete}`);
+}
 assert(
   settings.indexOf('title="Account"') < settings.indexOf('title="Data & Sync"') &&
     settings.indexOf('title="Data & Sync"') < settings.indexOf('title="Support"') &&

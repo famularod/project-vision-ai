@@ -16,6 +16,7 @@ const syncService = read('services/SyncService.ts');
 const storageCleanup = read('services/DAVEStorageCleanup.ts');
 const cloudMaintenanceBudget = read('services/DAVECloudMaintenanceBudget.ts');
 const backupArchive = read('services/CompleteBackupArchive.ts');
+const backupPolicy = read('services/BackupExportPolicy.ts');
 const ownerSandbox = read('services/OwnerStorageSandbox.ts');
 const ownerWorkspaceAuthDecision = read(
   'services/OwnerWorkspaceAuthDecision.ts',
@@ -68,9 +69,18 @@ for (const marker of [
   assert(app.includes(marker), `Live backup workflow must use ${marker}.`);
 }
 assert(
-  app.includes('project records, photos, and documents are encrypted'),
-  'Mobile backup confirmation must describe the complete encrypted archive.',
+  app.includes('${DEVICE_BACKUP_SCOPE_NOTICE}') &&
+    app.includes('${DEVICE_BACKUP_RESTORE_NOTICE}') &&
+    app.includes('Confirm that the file was saved in your chosen destination.'),
+  'Mobile backup confirmation must disclose scope and require destination verification.',
 );
+for (const marker of [
+  'Field Notes are not included.',
+  'not a complete account or cloud backup',
+  'existing Field Notes will not be replaced',
+]) assert(backupPolicy.includes(marker), `Backup must explicitly disclose: ${marker}`);
+assert(!app.includes('Complete backup shared') && !app.includes('Complete backup restored'),
+  'A limited device archive must not be represented as complete recovery.');
 
 for (const marker of [
   'createOwnerStorageSandbox',
@@ -277,5 +287,5 @@ assert(
 );
 
 console.log(
-  'Production hardening PASS: AI controls, atomic deletion, owner isolation, and complete encrypted backup are wired into the live runtime.',
+  'Production hardening PASS: AI controls, atomic deletion, owner isolation, and explicitly limited encrypted device backup are wired into the live runtime.',
 );
