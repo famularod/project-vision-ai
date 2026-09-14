@@ -29,6 +29,7 @@ import {
   SecondaryButton,
 } from '../components/ProjectDetailsCard';
 import { getAIConfigurationStatus } from '../services/AIClientBoundaryService';
+import { DEVICE_BACKUP_SCOPE_NOTICE } from '../services/BackupExportPolicy';
 import {
   createCaptureMemory,
   type DAVECaptureMemory,
@@ -443,7 +444,7 @@ export function AdminScreen({
                 </Text>
               ) : null}
               <Text style={styles.actionSummary}>
-                Complete backups include project records, photos, and documents. They are encrypted with a passphrase of at least 12 characters. Vitruvius cannot recover a forgotten passphrase.
+                {DEVICE_BACKUP_SCOPE_NOTICE} Archives must fit within 128 MB after encryption and encoding. Use a passphrase of at least 12 characters. Vitruvius cannot recover a forgotten passphrase.
               </Text>
               <TextInput
                 style={styles.modalInput}
@@ -459,14 +460,14 @@ export function AdminScreen({
               />
               <SettingsActionRow
                 icon="download-outline"
-                title="Export Complete Backup"
-                detail="Create an encrypted backup containing project data, photos, and documents"
+                title="Export Limited Device Backup"
+                detail="Encrypt the included local data and files; excludes Field Notes and a full cloud-account restore"
                 onPress={() => onBackup(backupPassphrase)}
               />
               <SettingsActionRow
                 icon="cloud-upload-outline"
-                title="Restore Complete Backup"
-                detail="Verify and restore a complete encrypted Vitruvius backup"
+                title="Restore Device Backup"
+                detail="Verify and restore included data only; existing Field Notes are not replaced"
                 onPress={() => onRestore(backupPassphrase)}
                 last
               />

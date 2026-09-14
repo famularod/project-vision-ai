@@ -167,6 +167,32 @@ describe('strict backup preflight', () => {
 });
 
 describe('atomic backup restore', () => {
+  it.each([false, true])('preserves both owners Field Notes outside the limited restore, including interrupted recovery=%s', async interrupt => {
+    const values = initialValues();
+    const ownerNotes = new Map([
+      ['@vitruvius/field-notes/v1.owner.owner-1', '{"records":[{"id":"pending-1","syncState":"pending"}]}'],
+      ['@vitruvius/field-notes/v1.owner.owner-2', '{"records":[{"id":"other-owner","syncState":"synced"}]}'],
+    ]);
+    ownerNotes.forEach((value, key) => values.set(key, value));
+    let blocked = interrupt;
+    const runtime = runtimeFor(values, async (key, value) => {
+      if (key === targetKeys.contacts && blocked) throw new Error('interrupted device write');
+      values.set(key, value);
+    });
+    const commit = runtime.commit(() => ({
+      values: restoreValues(['Restored Project'], []), result: undefined,
+    }));
+    if (interrupt) {
+      await expect(commit).rejects.toBeInstanceOf(BackupRestoreRecoveryRequiredError);
+      blocked = false;
+      await runtimeFor(values).recoverBeforeStartupReads();
+    } else {
+      await commit;
+    }
+    ownerNotes.forEach((value, key) => expect(values.get(key)).toBe(value));
+    expect(values.has(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY)).toBe(false);
+  });
+
   it('rolls a one-time mid-write failure forward and preserves every deletion barrier', async () => {
     const values = initialValues();
     const barrierBefore = new Map(

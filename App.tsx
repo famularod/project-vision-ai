@@ -364,6 +364,11 @@ import {
   type CompleteBackupPlainAsset,
 } from './services/CompleteBackupArchive';
 import {
+  createBackupAssetBudget, readBudgetedBackupBytes, assertBackupSerializedFits,
+  DEVICE_BACKUP_SCOPE_NOTICE, DEVICE_BACKUP_RESTORE_NOTICE,
+  MAX_DEVICE_BACKUP_BYTES, type BackupAssetBudget,
+} from './services/BackupExportPolicy';
+import {
   analyzeProjectPhotoWithVision,
   buildAnalyzingPhotoIntelligenceState,
   type PIEPhotoIntelligenceDisplayState,
@@ -889,7 +894,7 @@ const PROJECT_DELETION_STORAGE_KEYS: ProjectDeletionStorageKeys = {
 const ANALYSIS_TIMEOUT_SECONDS = 135;
 const PIE_ANALYSIS_PENDING_TIMEOUT_MS = ANALYSIS_TIMEOUT_SECONDS * 1000;
 const GPS_CLEAR_WINNER_DISTANCE_FEET = 75;
-const MAX_BACKUP_FILE_BYTES = 128 * 1024 * 1024;
+const MAX_BACKUP_FILE_BYTES = MAX_DEVICE_BACKUP_BYTES;
 const PHOTO_STORAGE_FOLDER = 'project-photos';
 const PHOTO_STORAGE_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}${PHOTO_STORAGE_FOLDER}/`
@@ -10404,19 +10409,23 @@ Note: This update was opened through Outlook because PLZ email security may reje
     kind: CompleteBackupPlainAsset['kind'],
     relativePath: string,
     uri: string,
+    budget: BackupAssetBudget,
   ): Promise<CompleteBackupPlainAsset> {
     const info = await FileSystem.getInfoAsync(uri);
     if (!info.exists) {
       throw new Error(`The required ${kind.replace('_', ' ')} file is unavailable.`);
     }
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
+    const bytes = await readBudgetedBackupBytes(id, info.size, budget, async () => {
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      return toByteArray(base64);
     });
     return {
       id,
       kind,
       relativePath: sanitizeFilename(relativePath),
-      bytes: toByteArray(base64),
+      bytes,
     };
   }
 
@@ -10424,6 +10433,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     update: ProjectUpdate,
     assetPrefix: string,
     assets: CompleteBackupPlainAsset[],
+    budget: BackupAssetBudget,
   ): Promise<ProjectUpdate> {
     const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
     const photos = [];
@@ -10438,6 +10448,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           photo.mimeType || 'image/jpeg',
         ),
         photo.uri,
+        budget,
       ));
       photos.push({
         ...photo,
@@ -10462,23 +10473,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const targetDirectory = FileSystem.cacheDirectory;
     if (!targetDirectory) {
       Alert.alert(
-        'Complete backup unavailable',
+        'Device backup unavailable',
         'A temporary app folder for the encrypted backup could not be found.',
       );
       return;
     }
 
     const fileUri =
-      `${targetDirectory}vitruvius-complete-backup-${isoToday()}.vitruvius-backup`;
+      `${targetDirectory}vitruvius-device-backup-${isoToday()}.vitruvius-backup`;
 
     try {
       const assets: CompleteBackupPlainAsset[] = [];
+      const budget = createBackupAssetBudget();
       const backupUpdates = [];
       for (const update of savedUpdates) {
         backupUpdates.push(await prepareUpdateForCompleteBackup(
           update,
           `update:${update.id}`,
           assets,
+          budget,
         ));
       }
       const backupReferenceDocuments = [];
@@ -10490,6 +10503,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           'reference_document',
           document.originalFileName,
           readable.uri,
+          budget,
         ));
         backupReferenceDocuments.push({
           ...readable,
@@ -10509,6 +10523,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           'project_document',
           document.name,
           readable.localUri,
+          budget,
         ));
         backupProjectDocuments.push({
           ...readable,
@@ -10523,6 +10538,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             draft,
             `draft:${draft.id}`,
             assets,
+            budget,
           )
         : null;
       const backup = {
@@ -10553,11 +10569,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         randomBytes: length => Crypto.getRandomBytesAsync(length),
       });
       const serialized = JSON.stringify(archive);
-      if (isOversizedBackup(serialized.length)) {
-        throw new Error(
-          'The encrypted backup is larger than the supported 128 MB limit.',
-        );
-      }
+      assertBackupSerializedFits(serialized);
       await FileSystem.writeAsStringAsync(
         fileUri,
         serialized,
@@ -10566,7 +10578,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       if (!canShare) {
         Alert.alert(
-          'Complete backup sharing unavailable',
+          'Device backup sharing unavailable',
           'The encrypted backup was removed from this phone because the Share Sheet is unavailable.',
         );
 
@@ -10574,17 +10586,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
 
       await Sharing.shareAsync(fileUri, {
-        dialogTitle: 'Export Complete Vitruvius Backup',
+        dialogTitle: 'Export Limited Vitruvius Device Backup',
         mimeType: 'application/vnd.vitruvius.backup+json',
         UTI: 'public.data',
       });
       Alert.alert(
-        'Complete backup shared',
-        'The project records, photos, and documents are encrypted. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.',
+        'Backup share sheet closed',
+        `${DEVICE_BACKUP_SCOPE_NOTICE} Confirm that the file was saved in your chosen destination. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
       );
     } catch (error) {
       Alert.alert(
-        'Complete backup failed',
+        'Device backup failed',
         error instanceof Error
           ? error.message
           : 'The encrypted backup could not be created.',
@@ -10631,8 +10643,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       markProjectAreasAuthorityReady(true); markReferenceDocumentsAuthorityReady(true); markScheduleItemsAuthorityReady(true);
       setDraftSavedAt(restored.storedDraft?.savedAt || null); setSelectedWorkspaceProject(restored.activeProject);
       Alert.alert(
-        'Complete backup restored',
-        'Project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.',
+        'Device backup restored',
+        `${DEVICE_BACKUP_RESTORE_NOTICE} Included project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.`,
       );
       return true;
     } catch (error) {
@@ -10827,8 +10839,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       if (isOversizedBackup(file.size)) {
         Alert.alert(
-          'Complete backup too large',
-          'Choose a complete Vitruvius backup smaller than 128 MB.',
+          'Device backup too large',
+          'Choose an encrypted Vitruvius device backup smaller than 128 MB.',
         );
 
         return;
@@ -10842,8 +10854,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
         isOversizedBackup(fileInfo.size)
       ) {
         Alert.alert(
-          'Complete backup too large',
-          'Choose a complete Vitruvius backup smaller than 128 MB.',
+          'Device backup too large',
+          'Choose an encrypted Vitruvius device backup smaller than 128 MB.',
         );
 
         return;
@@ -10865,8 +10877,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
 
       Alert.alert(
-        'Restore this complete backup?',
-        'This replaces saved projects, updates, schedules, contacts, photos, documents, and the active draft on this device. Existing deletion records and queued deletions remain enforced.',
+        'Restore this limited device backup?',
+        `${DEVICE_BACKUP_RESTORE_NOTICE} This replaces saved projects, updates, schedules, contacts, photos, documents, and the active draft on this device. Existing deletion records and queued deletions remain enforced.`,
         [
           {
             text: 'Cancel',
@@ -10895,7 +10907,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   'Restore failed',
                   error instanceof Error
                     ? error.message
-                    : 'The complete backup could not be safely restored.',
+                    : 'The device backup could not be safely restored.',
                 );
               });
             },
