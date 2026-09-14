@@ -1,3 +1,4 @@
+-- Applied history version 20260914055920; generated with Supabase migration new.
 -- Revocation applies to the caller's organization AND project membership.
 -- This does not enable team access to owner-scoped project tables or routing.
 create or replace function public.vitruvius_has_project_permission(
