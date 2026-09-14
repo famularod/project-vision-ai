@@ -8,6 +8,9 @@ const POLICY = 'configured_app_owner_workspace/1.0' as const;
 const CONTEXT = 'ecos-owner-source-authority-context/2.1' as const;
 const DECISION = 'ecos-document-project-binding-decision/2.1' as const;
 const RECEIPT = 'ecos-document-project-binding-receipt/2.1' as const;
+const CONTEXT_V22 = 'ecos-owner-source-authority-context/2.2' as const;
+const DECISION_V22 = 'ecos-document-project-binding-decision/2.2' as const;
+const RECEIPT_V22 = 'ecos-document-project-binding-receipt/2.2' as const;
 const RESULT = 'ecos-document-project-binding-result/2.1' as const;
 const READ = 'ecos-document-project-binding-read/2.1' as const;
 const UUID =
@@ -117,7 +120,7 @@ const READ_KEYS = [
 ] as const;
 
 export interface ECOSOwnerSourceAuthorityContext {
-  schema_version: typeof CONTEXT;
+  schema_version: typeof CONTEXT | typeof CONTEXT_V22;
   publication_mode: 'shadow';
   authority_policy: typeof POLICY;
   organization_id: string;
@@ -143,7 +146,7 @@ export interface ECOSOwnerSourceAuthorityContext {
   retrieval_authorized: false;
 }
 export interface ECOSOwnerSourceAuthorityDecision {
-  schema_version: typeof DECISION;
+  schema_version: typeof DECISION | typeof DECISION_V22;
   publication_mode: 'shadow';
   decision_id: string;
   organization_id: string;
@@ -165,7 +168,7 @@ export interface ECOSOwnerSourceAuthorityDecision {
   source_generation: number;
 }
 export interface ECOSOwnerSourceAuthorityReceipt {
-  schema_version: typeof RECEIPT;
+  schema_version: typeof RECEIPT | typeof RECEIPT_V22;
   publication_mode: 'shadow';
   decision_json: string;
   decision_sha256: string;
@@ -412,7 +415,7 @@ export async function bindECOSOwnerSourceAuthorityContext(
     selected = projectIds(e.projectIds, false);
   const v = snapshot(raw, CONTEXT_KEYS);
   if (
-    v.schema_version !== CONTEXT || v.publication_mode !== 'shadow' ||
+    (v.schema_version !== CONTEXT && v.schema_version !== CONTEXT_V22) || v.publication_mode !== 'shadow' ||
     v.authority_policy !== POLICY || v.organization_id !== owner ||
     v.owner_id !== owner || v.review_project_id !== reviewProject ||
     v.document_id !== document || v.retrieval_authorized !== false
@@ -439,7 +442,7 @@ export async function bindECOSOwnerSourceAuthorityContext(
     });
   });
   const result: Readonly<ECOSOwnerSourceAuthorityContext> = Object.freeze({
-    schema_version: CONTEXT,
+    schema_version: v.schema_version,
     publication_mode: 'shadow',
     authority_policy: POLICY,
     organization_id: owner,
@@ -463,7 +466,9 @@ export async function bindECOSOwnerSourceAuthorityContext(
     retrieval_authorized: false,
   });
   await hash(result.document_metadata_json, result.document_metadata_sha256);
-  const m = parse(result.document_metadata_json, METADATA_KEYS, false, [
+  const metadataKeys = result.schema_version === CONTEXT_V22
+    ? METADATA_KEYS.filter(key => key !== 'updated_at') : METADATA_KEYS;
+  const m = parse(result.document_metadata_json, metadataKeys, false, [
     'sourcePageCount',
   ]);
   if (
@@ -510,14 +515,14 @@ function decisionWire(
     ids = projectIds(v.project_ids),
     previous = predecessor(v.expected_previous_decision_id);
   if (
-    v.schema_version !== DECISION || v.publication_mode !== 'shadow' ||
+    (v.schema_version !== DECISION && v.schema_version !== DECISION_V22) || v.publication_mode !== 'shadow' ||
     v.authority_policy !== POLICY ||
     v.review_confirmation !== 'exact_project_ids_confirmed' ||
     v.organization_id !== owner || v.reviewed_by !== owner ||
     !ids.includes(review) || previous === id
   ) throw new Error('Owner authority decision scope or protocol mismatch');
   return Object.freeze({
-    schema_version: DECISION,
+    schema_version: v.schema_version,
     publication_mode: 'shadow',
     decision_id: id,
     organization_id: owner,
@@ -555,7 +560,7 @@ export function prepareECOSOwnerSourceAuthorityDecision(
     16 * 1024,
   );
   const result = decisionWire({
-    schema_version: DECISION,
+    schema_version: context.schema_version === CONTEXT_V22 ? DECISION_V22 : DECISION,
     publication_mode: 'shadow',
     decision_id: v.decisionId,
     organization_id: context.organization_id,
@@ -606,7 +611,7 @@ async function receipt(
   await hash(raw, sha);
   const v = parse(raw, RECEIPT_KEYS, true);
   if (
-    v.schema_version !== RECEIPT || v.publication_mode !== 'shadow' ||
+    (v.schema_version !== RECEIPT && v.schema_version !== RECEIPT_V22) || v.publication_mode !== 'shadow' ||
     v.verification !== 'owner_reviewed_association_only' ||
     v.retrieval_authorized !== false
   ) throw new Error('Owner authority receipt protocol mismatch');
@@ -621,11 +626,14 @@ async function receipt(
   }
   await hash(decision_json, decision_sha256);
   const decision = decisionWire(parse(decision_json, DECISION_KEYS, true));
+  if ((v.schema_version === RECEIPT_V22) !== (decision.schema_version === DECISION_V22)) {
+    throw new Error('Owner authority receipt and decision versions differ');
+  }
   if (decision.expected_previous_decision_id !== previous) {
     throw new Error('Owner authority receipt changed decision predecessor');
   }
   return Object.freeze({
-    schema_version: RECEIPT,
+    schema_version: v.schema_version,
     publication_mode: 'shadow',
     decision_json,
     decision_sha256,
