@@ -56,6 +56,60 @@ describe('DAVE native voice transcription upload', () => {
     });
   });
 
+  it('retries a transient native connection loss once with the identical recording and context', async () => {
+    mockUploadAsync.mockRejectedValueOnce(new Error('Domain=NSURLErrorDomain Code=-1005 "lost connection"'));
+    await transcribe({ uri: 'file:///recording.m4a', projectId, projectName: '2375 Compliance Project', candidateLocations: ['Canopy A'], purpose: 'question' });
+    expect(mockUploadAsync).toHaveBeenCalledTimes(2);
+    expect(mockUploadAsync.mock.calls[1]).toEqual(mockUploadAsync.mock.calls[0]);
+    expect(mockParseResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds transient retries and reports only an allowlisted diagnostic, not native private details', async () => {
+    mockUploadAsync.mockRejectedValue(new Error('Domain=NSURLErrorDomain Code=-1001 https://private.example/?token=secret file:///private/recording.m4a'));
+    await expect(transcribe({ uri: 'file:///recording.m4a', projectId, projectName: '2375 Compliance Project', candidateLocations: [] }))
+      .rejects.toThrow('VOICE-TIMEOUT');
+    expect(mockUploadAsync).toHaveBeenCalledTimes(2);
+    expect(mockParseResponse).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [-1009, 'VOICE-OFFLINE'], [-999, 'VOICE-CANCELLED'], [-1202, 'VOICE-SECURITY'],
+  ])('does not automatically retry native error %s', async (code, diagnostic) => {
+    mockUploadAsync.mockRejectedValue(new Error(`Domain=NSURLErrorDomain Code=${code} private-url-and-token`));
+    try {
+      await transcribe({ uri: 'file:///recording.m4a', projectId, projectName: '2375 Compliance Project', candidateLocations: [] });
+      throw new Error('Expected failure');
+    } catch (error) {
+      expect((error as Error).message).toContain(diagnostic);
+      expect((error as Error).message).not.toContain('private-url-and-token');
+    }
+    expect(mockUploadAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not mislabel unknown local upload errors as an internet outage', async () => {
+    mockUploadAsync.mockRejectedValue(new Error('file:///private/recording.m4a could not be read'));
+    await expect(transcribe({ uri: 'file:///recording.m4a', projectId, projectName: '2375 Compliance Project', candidateLocations: [] }))
+      .rejects.toThrow('VOICE-UPLOAD');
+    expect(mockUploadAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start the retry after the sheet is closed or its project changes', async () => {
+    let current = true;
+    mockUploadAsync.mockImplementationOnce(async () => {
+      current = false;
+      throw new Error('Domain=NSURLErrorDomain Code=-1005');
+    });
+    await expect(transcribe({ uri: 'file:///recording.m4a', projectId, projectName: '2375 Compliance Project', candidateLocations: [], isRequestCurrent: () => current }))
+      .rejects.toThrow('VOICE-CANCELLED');
+    expect(mockUploadAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([401, 403, 409, 429, 502, 503])('does not automatically retry a completed HTTP %s response', async status => {
+    mockUploadAsync.mockResolvedValue({ status, body: '{}', headers: {} });
+    await expect(transcribe({ uri: 'file:///recording.m4a', projectId, projectName: '2375 Compliance Project', candidateLocations: [] })).rejects.toThrow();
+    expect(mockUploadAsync).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the native multipart uploader with the signed-in session', async () => {
     await transcribe({
       uri: 'file:///recording.m4a',

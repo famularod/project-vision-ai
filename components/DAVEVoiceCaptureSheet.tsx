@@ -111,6 +111,11 @@ export function DAVEVoiceCaptureSheet({
   const transcriptionOperationRef = useRef(0);
   const autoStartHandledRef = useRef(false);
 
+  useEffect(() => () => {
+    // A closed/unmounted sheet or different project must not start an upload retry.
+    transcriptionOperationRef.current += 1;
+  }, [visible, projectId]);
+
   useEffect(() => {
     if (!visible) {
       autoStartHandledRef.current = false;
@@ -223,6 +228,7 @@ export function DAVEVoiceCaptureSheet({
         projectName,
         candidateLocations,
         purpose: transcriptionPurpose,
+        isRequestCurrent: () => operation === transcriptionOperationRef.current,
       });
       if (operation !== transcriptionOperationRef.current) return;
       await removeRecording(uri);

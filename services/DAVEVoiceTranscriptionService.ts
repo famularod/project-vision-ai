@@ -22,12 +22,14 @@ export async function transcribeDAVECaptureMemoryAudio({
   projectName,
   candidateLocations,
   purpose = 'memory',
+  isRequestCurrent = () => true,
 }: {
   uri: string;
   projectId: string | null;
   projectName: string;
   candidateLocations: readonly string[];
   purpose?: 'memory' | 'question';
+  isRequestCurrent?: () => boolean;
 }): Promise<DAVEVoiceUnderstandingResponse> {
   const info = await FileSystem.getInfoAsync(uri);
   if (!info.exists) throw new Error('The recording is no longer available. Record it again.');
@@ -63,9 +65,7 @@ export async function transcribeDAVECaptureMemoryAudio({
       throw new Error('Voice transcription is unavailable until Supabase is configured.');
     }
 
-    let response: FileSystem.FileSystemUploadResult;
-    try {
-      response = await FileSystem.uploadAsync(
+    const response = await uploadDAVEVoiceWithRecovery(() => FileSystem.uploadAsync(
         `${projectUrl}/functions/v1/${DAVE_VOICE_FUNCTION_NAME}`,
         uri,
         {
@@ -85,10 +85,7 @@ export async function transcribeDAVECaptureMemoryAudio({
           },
           sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
         },
-      );
-    } catch {
-      throw new Error('Could not reach voice transcription. Check the connection and try again.');
-    }
+      ), isRequestCurrent);
 
     const responseBody = parseDAVEVoiceFunctionBody(response.body);
     if (response.status < 200 || response.status >= 300) {
@@ -123,6 +120,47 @@ export async function transcribeDAVECaptureMemoryAudio({
     throw new Error(daveVoiceTranscriptionErrorMessage(response?.status ?? 0, responseBody));
   }
   return parseDAVEVoiceUnderstandingResponse(data, submittedLocations);
+}
+
+async function uploadDAVEVoiceWithRecovery(
+  upload: () => Promise<FileSystem.FileSystemUploadResult>,
+  isRequestCurrent: () => boolean,
+): Promise<FileSystem.FileSystemUploadResult> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!isRequestCurrent()) throw new Error('Voice upload cancelled. (VOICE-CANCELLED)');
+    try {
+      return await upload();
+    } catch (error) {
+      const failure = classifyDAVEVoiceUploadFailure(error);
+      // The server keys voice operations by the audio bytes AND exact project/
+      // purpose context. Reuse this same upload; never create a new recording or
+      // broaden authorization to recover an ambiguous transport failure.
+      if (attempt === 0 && failure.retryable) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        continue;
+      }
+      throw new Error(failure.message);
+    }
+  }
+  throw new Error('The recording could not be uploaded. Retry this recording or type instead. (VOICE-UPLOAD)');
+}
+
+export function classifyDAVEVoiceUploadFailure(error: unknown): { retryable: boolean; message: string } {
+  // Native NSError descriptions may contain signed URLs, local paths and request
+  // headers. Inspect only the system domain/code; never display or log the raw error.
+  const message = error instanceof Error ? error.message : '';
+  const match = /\bDomain=NSURLErrorDomain\s+Code=(-?\d+)\b/.exec(message);
+  const code = match ? Number(match[1]) : null;
+  if (code === -1001) return { retryable: true, message: 'The voice upload timed out. Retry this recording or type instead. (VOICE-TIMEOUT)' };
+  if (code === -1005 || code === -1003 || code === -1004) {
+    return { retryable: true, message: 'The connection was interrupted while uploading. Retry this recording or type instead. (VOICE-CONNECTION)' };
+  }
+  if (code === -1009) return { retryable: false, message: 'This device is offline. Reconnect, then retry this recording or type instead. (VOICE-OFFLINE)' };
+  if (code === -999) return { retryable: false, message: 'The voice upload was interrupted. Keep Vitruvius open and retry this recording. (VOICE-CANCELLED)' };
+  if (code !== null && code <= -1200 && code >= -1206) {
+    return { retryable: false, message: 'A secure connection to voice transcription could not be verified. Do not bypass security warnings. (VOICE-SECURITY)' };
+  }
+  return { retryable: false, message: 'The recording could not be uploaded. Retry this recording or type instead. (VOICE-UPLOAD)' };
 }
 
 function parseDAVEVoiceFunctionBody(body: string): Record<string, unknown> | null {
