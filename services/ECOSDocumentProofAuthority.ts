@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { registerECOSAuthorizedProof } from './ECOSAuthorizedProofRegistry';
 import type { DAVEAskEvidence } from './DAVEAsk';
 import type {
   ReferenceDocument,
@@ -203,6 +204,7 @@ async function loadVerifiedProofAuthority({
   if (row.source_view_citation != null && !sourceViewCitation) {
     throw new ECOSDocumentProofAuthorityError('proof_response_invalid');
   }
+  registerECOSAuthorizedProof(proofDocument, claim);
   return Object.freeze({ document: proofDocument, sourceViewCitation });
 }
 
@@ -261,7 +263,6 @@ function baseDocumentMatchesClaim(
   const revision = clean(document.drawingRevision) || clean(document.webVersionGroupId);
   return revision === claim.revision &&
     positiveInteger(document.sourcePageCount) != null &&
-    positiveInteger(document.ecosVerifiedIndexCommittedPageCount) === positiveInteger(document.sourcePageCount) &&
     claim.pageNumber <= (positiveInteger(document.sourcePageCount) || 0);
 }
 

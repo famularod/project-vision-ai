@@ -8,6 +8,7 @@ import {
 } from '../../services/ECOSDocumentProofAuthority';
 import type { ReferenceDocument } from '../../types';
 import { buildProtectedSourceCitation } from '../fixtures/ecos-protected-source';
+import { evaluateECOSDocumentEvidenceBinding } from '../../services/ECOSDocumentEvidenceBinding';
 
 const OWNER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DOCUMENT_ID = 'web-document-edb4a270-4a4e-463f-90fc-e378dd23dd3c';
@@ -80,6 +81,36 @@ function protectedCitation() {
 }
 
 describe('ECOS document proof authority', () => {
+  it('opens one server-authorized private proof without inventing a published document receipt', async () => {
+    const privateDocument = { ...compactDocument, ecosVerifiedIndexCommitVersion: undefined,
+      ecosVerifiedIndexCommittedSha256: undefined, ecosVerifiedIndexCommittedPageCount: undefined };
+    const result = await loadAuthorizedECOSDocumentProof({
+      client: { rpc: jest.fn(async () => ({ data: [authorityRow()], error: null })) } as never,
+      document: privateDocument, claim,
+    });
+    const evidence = { sourceType: 'document' as const, recordId: DOCUMENT_ID, summary: 'Cited source', timelineEventId: null,
+      documentCitation: { ...claim, documentName: result.name, label: result.name },
+      documentRegion: { id: REGION_ID, ...authorityRow().region_bounds },
+    };
+    expect(evaluateECOSDocumentEvidenceBinding(evidence, result).exact).toBe(true);
+    expect(result.ecosVerifiedIndexCommittedPageCount).toBeUndefined();
+    expect(result.ecosVerifiedIndexCommittedSha256).toBeUndefined();
+    expect(evaluateECOSDocumentEvidenceBinding(evidence, JSON.parse(JSON.stringify(result))).exact).toBe(false);
+    expect(evaluateECOSDocumentEvidenceBinding({ ...evidence,
+      documentCitation: { ...evidence.documentCitation, regionId: 'other-region' } }, result).exact).toBe(false);
+    expect(evaluateECOSDocumentEvidenceBinding({ ...evidence,
+      documentCitation: { ...evidence.documentCitation, pageNumber: 7 } }, result).exact).toBe(false);
+    expect(evaluateECOSDocumentEvidenceBinding({ ...evidence,
+      documentRegion: { ...evidence.documentRegion, x: .1 } }, result).exact).toBe(false);
+  });
+
+  it('does not authorize private proof when the real authority returns no row', async () => {
+    await expect(loadAuthorizedECOSDocumentProof({
+      client: { rpc: jest.fn(async () => ({ data: [], error: null })) } as never,
+      document: { ...compactDocument, ecosVerifiedIndexCommittedPageCount: undefined }, claim,
+    })).rejects.toMatchObject({ code: 'proof_not_found' });
+  });
+
   it('hydrates only one exact assured page and region without returning evidence text', async () => {
     const rpc = jest.fn(async () => ({ data: [authorityRow()], error: null }));
     const result = await loadAuthorizedECOSDocumentProof({

@@ -169,7 +169,14 @@ export async function askECOSProjectQuestion({
       diagnostics?.traceId || null,
     );
   }
-  return parseECOSProjectQuestionAnswer(data);
+  const answer = parseECOSProjectQuestionAnswer(data);
+  if (answer.projectId !== requestBody.projectId || answer.question !== requestBody.question ||
+    answer.diagnostics.clientRequestId !== requestBody.clientRequestId ||
+    answer.diagnostics.clientSurface !== requestBody.clientSurface) {
+    throw new ECOSProjectQuestionError('response_identity_mismatch',
+      'ECOS received an answer for a different request. No answer was displayed. Please ask again.');
+  }
+  return answer;
 }
 
 export function parseECOSProjectQuestionAnswer(value: unknown): ECOSProjectQuestionAnswer {

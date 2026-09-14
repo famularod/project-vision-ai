@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import { DAVETypedCaptureSheet } from '../components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from '../components/DAVEVoiceCaptureSheet';
@@ -12,6 +12,7 @@ import type { ProjectRecord } from '../services/ProjectCoverPhotoService';
 import { getSupabaseClient } from '../services/SupabaseService';
 
 type QuestionState = Readonly<{
+  requestGeneration: number;
   projectName: string;
   question: string;
   answer: ECOSProjectQuestionAnswer | null;
@@ -34,16 +35,22 @@ export function useECOSProjectQuestionExperience({
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [typedOpen, setTypedOpen] = useState(false);
   const [result, setResult] = useState<QuestionState | null>(null);
+  const requestGeneration = useRef(0);
+  const dismissResult = useCallback(() => {
+    requestGeneration.current += 1;
+    setResult(null);
+  }, []);
+  useEffect(() => () => { requestGeneration.current += 1; }, []);
   const projectId = useMemo(() => projectRecords.find(project =>
     project.name.trim().toLowerCase() === projectName.trim().toLowerCase(),
   )?.id?.trim() || null, [projectName, projectRecords]);
 
   const open = useCallback(() => {
     setProjectName(contextualProjectName || '');
-    setResult(null);
+    dismissResult();
     setTypedOpen(false);
     setVoiceOpen(true);
-  }, [contextualProjectName]);
+  }, [contextualProjectName, dismissResult]);
 
   const ask = useCallback(async (question: string) => {
     const selectedProjectName = projectName.trim();
@@ -54,7 +61,8 @@ export function useECOSProjectQuestionExperience({
     }
     setVoiceOpen(false);
     setTypedOpen(false);
-    setResult({ projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null });
+    const generation = ++requestGeneration.current;
+    setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null });
     try {
       const answer = await askECOSProjectQuestion({
         client: getSupabaseClient(),
@@ -62,11 +70,13 @@ export function useECOSProjectQuestionExperience({
         projectName: selectedProjectName,
         question: cleanQuestion,
       });
-      setResult(current => current?.question === cleanQuestion
+      if (requestGeneration.current !== generation) return;
+      setResult(current => current?.requestGeneration === generation
         ? { ...current, answer, loading: false, error: null }
         : current);
     } catch (error) {
-      setResult(current => current?.question === cleanQuestion
+      if (requestGeneration.current !== generation) return;
+      setResult(current => current?.requestGeneration === generation
         ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.' }
         : current);
     }
@@ -86,7 +96,7 @@ export function useECOSProjectQuestionExperience({
       transcriptionPurpose="question"
       showWalkContext={false}
       onMemoryReady={answer => { void ask(answer.transcript); }}
-      onProjectChange={setProjectName}
+      onProjectChange={name => { dismissResult(); setProjectName(name); }}
       onTypeInstead={() => {
         if (!projectName.trim()) {
           Alert.alert('Choose a project', 'Select the project before typing a question.');
@@ -118,7 +128,7 @@ export function useECOSProjectQuestionExperience({
       error={result?.error || null}
       onOpenEvidence={evidence => {
         const answerProject = result?.projectName || projectName;
-        setResult(null);
+        dismissResult();
         onOpenEvidence(answerProject, evidence);
       }}
       onAskAnother={suggestedQuestion => {
@@ -126,10 +136,10 @@ export function useECOSProjectQuestionExperience({
           void ask(suggestedQuestion);
           return;
         }
-        setResult(null);
+        dismissResult();
         setVoiceOpen(true);
       }}
-      onClose={() => setResult(null)}
+      onClose={dismissResult}
     />
   </>;
 

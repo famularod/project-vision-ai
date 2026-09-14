@@ -213,11 +213,11 @@ describe('ECOS project question contract', () => {
   });
 
   it('sends the same versioned request contract used by the customer path', async () => {
-    const invoke = jest.fn().mockResolvedValue({
-      data: answerPayload(),
+    const invoke = jest.fn().mockImplementation(async (_name, { body }) => ({
+      data: { ...answerPayload(), diagnostics: { ...diagnostics(), clientRequestId: body.clientRequestId, clientSurface: body.clientSurface } },
       error: null,
       response: null,
-    });
+    }));
     await askECOSProjectQuestion({
       client: {
         auth: { getSession: jest.fn().mockResolvedValue({ data: { session: { access_token: 'token' } }, error: null }) },
@@ -237,6 +237,21 @@ describe('ECOS project question contract', () => {
         question: 'How thick is the north side concrete?',
       }),
     }));
+  });
+
+  it.each(['projectId', 'question', 'clientRequestId', 'clientSurface'])('rejects a successful response with a different %s', async field => {
+    const invoke = jest.fn().mockImplementation(async (_name, { body }) => {
+      const data = { ...answerPayload(), diagnostics: { ...diagnostics(), clientRequestId: body.clientRequestId, clientSurface: body.clientSurface } };
+      if (field === 'projectId') data.projectId = 'different-project';
+      if (field === 'question') data.question = 'A different question?';
+      if (field === 'clientRequestId') data.diagnostics.clientRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      if (field === 'clientSurface') data.diagnostics.clientSurface = body.clientSurface === 'web' ? 'iphone' : 'web';
+      return { data, error: null, response: null };
+    });
+    await expect(askECOSProjectQuestion({
+      client: { auth: { getSession: jest.fn().mockResolvedValue({ data: { session: { access_token: 'token' } }, error: null }) }, functions: { invoke } } as never,
+      projectId: 'project-2375', projectName: '2375 Compliance Project', question: 'How thick is the north side concrete?',
+    })).rejects.toMatchObject({ code: 'response_identity_mismatch' });
   });
 
   it.each([

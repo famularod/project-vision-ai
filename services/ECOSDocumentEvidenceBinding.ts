@@ -1,4 +1,5 @@
 import type { DAVEAskEvidence } from './DAVEAsk';
+import { hasECOSAuthorizedProof } from './ECOSAuthorizedProofRegistry';
 import type { ReferenceDocument } from '../types';
 import { canonicalReferenceCategory } from './AuthoritativeDocumentSystem';
 import { hasCompleteECOSDrawingVisualCoverage } from './ECOSDrawingVisualCoverage';
@@ -92,11 +93,11 @@ export function evaluateECOSDocumentEvidenceBinding(
 
   const sourcePageCount = positiveInteger(document.sourcePageCount);
   const committedPageCount = positiveInteger(document.ecosVerifiedIndexCommittedPageCount);
+  const authorizedExactProof = hasECOSAuthorizedProof(document, evidence);
   if (
     pageNumber == null ||
     sourcePageCount == null ||
-    committedPageCount == null ||
-    sourcePageCount !== committedPageCount ||
+    (!authorizedExactProof && (committedPageCount == null || sourcePageCount !== committedPageCount)) ||
     pageNumber > sourcePageCount ||
     pages.length !== 1
   ) {
@@ -167,8 +168,10 @@ function hasExactHostedRegionBinding({
   return Boolean(
     citation &&
     citationEvidenceVersion.startsWith('ecos-hosted-evidence/') &&
-    document.ecosVerifiedIndexCommitVersion === 'ecos-verified-index-commit/1.0' &&
-    canonicalSha256(document.ecosVerifiedIndexCommittedSha256) === citationSourceSha256 &&
+    (hasECOSAuthorizedProof(document, evidence) || (
+      document.ecosVerifiedIndexCommitVersion === 'ecos-verified-index-commit/1.0' &&
+      canonicalSha256(document.ecosVerifiedIndexCommittedSha256) === citationSourceSha256
+    )) &&
     clean(document.ecosHostedIndexEvidenceVersion) === citationEvidenceVersion &&
     page?.assurance?.accepted === true &&
     clean(page.assurance.evidenceVersion) === citationEvidenceVersion &&

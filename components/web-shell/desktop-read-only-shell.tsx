@@ -587,6 +587,7 @@ function DesktopPageData({
       : null;
     return (
       <DesktopAskECOSWorkspace
+        key={selectedProjectRecord?.id || selectedProject || 'no-project'}
         projectId={selectedProjectRecord?.id || null}
         projectName={selectedProjectRecord?.name || selectedProject}
         onAsk={auth.askProjectQuestion}
