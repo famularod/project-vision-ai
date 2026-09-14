@@ -1900,6 +1900,9 @@ function questionContextTokens(
   const attributeTermTokens = (requirement.attributeTerms || []).flatMap(
     (term) => normalizePolicyText(term).split(/\s+/).filter(Boolean),
   );
+  // "Square footage" requests an area, not a separate construction subject.
+  // Its synonym must not require the source to literally say "footage".
+  if (requirement.attribute === "area") attributeTermTokens.push("footage");
   const ignored = new Set([
     "a",
     "about",
