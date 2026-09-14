@@ -21,7 +21,6 @@ import {
   copyECOSOwnerRasterImageForSourceView,
   type ECOSOwnerRasterDownload,
   loadECOSOwnerRasterImages,
-  revalidateECOSOwnerRasterImages,
 } from "./ecos-owner-raster-images.ts";
 import type { ECOSV2OwnerRasterReadRPC } from "./ecos-v2-preview-rpc-transport.ts";
 
@@ -591,16 +590,12 @@ export async function resolveECOSOwnerDocumentSourceView(
           ...raster,
         })
       ) return result("changed");
-      phase = "raster_revalidate";
-      phaseTimer.next("raster_revalidate");
-      await revalidateECOSOwnerRasterImages(
-        images,
-        inventory,
-        indexes,
-        p.rasterRPC,
-        p.indexRPC,
-        { signal: controller.signal, budgetMs: remaining() },
-      );
+      // loadECOSOwnerRasterImages already rereads the exact raster head after
+      // download and verifies the complete current index, including its final
+      // epoch read. There has been no model call or asynchronous operation
+      // since it returned. Do not repeat the model-path's additional freshness
+      // pass here. Keep this comparison/copy/return section synchronous; adding
+      // an await would require a new final revalidation before releasing bytes.
       check();
       phase = "result";
       phaseTimer.next("result");
