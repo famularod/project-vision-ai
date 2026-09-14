@@ -50,6 +50,7 @@ export function ECOSDocumentEvidenceSheet({
   const [imageLayout, setImageLayout] = useState({ width: 0, height: 0 });
   const protectedPage = Boolean(imageUri && imageWidth > 0 && imageHeight > 0);
   const documentOpenMode = referenceDocumentOpenMode(document);
+  const proofReady = Boolean(binding?.exact && !loading && !error);
   const onImageLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     setImageLayout({ width, height });
@@ -70,7 +71,9 @@ export function ECOSDocumentEvidenceSheet({
           <View style={styles.header}>
             <View style={styles.main}>
               <Text style={styles.eyebrow}>
-                {hostedRegion ? 'ECOS SOURCE-BOUND PROOF' : 'ECOS VERIFIED SOURCE'}
+                {proofReady
+                  ? hostedRegion ? 'ECOS SOURCE-BOUND PROOF' : 'ECOS VERIFIED SOURCE'
+                  : 'ECOS SOURCE CHECK'}
               </Text>
               <Text style={styles.title}>Document Evidence</Text>
               <Text style={styles.subtitle}>{citation?.label || document?.name || 'Project document'}</Text>
@@ -117,7 +120,7 @@ export function ECOSDocumentEvidenceSheet({
                 <Text style={styles.excerpt}>{evidence.excerpt}</Text>
               </View>
             ) : null}
-            {binding?.exact ? (
+            {proofReady ? (
               <View style={styles.assuranceCard}>
                 <Ionicons name="shield-checkmark-outline" size={20} color={colors.primary} />
                 <Text style={styles.assuranceText}>
@@ -127,18 +130,19 @@ export function ECOSDocumentEvidenceSheet({
                 </Text>
               </View>
             ) : null}
-            {documentOpenMode === 'unavailable' ? (
+            {proofReady && documentOpenMode === 'unavailable' ? (
               <View style={styles.unavailableCard} accessibilityRole="text">
                 <Ionicons name="information-circle-outline" size={20} color={colors.mutedText} />
                 <Text style={styles.unavailableText}>
-                  The verified cited page is shown above. The original full document is not available from this device.
+                  {imageUri ? 'The verified cited page is shown above. ' : ''}
+                  The original full document is not available from this device.
                 </Text>
               </View>
-            ) : (
+            ) : proofReady ? (
               <TouchableOpacity
                 style={styles.primaryButton}
                 onPress={onOpenDocument}
-                disabled={!binding?.exact || loading}
+                disabled={!proofReady}
                 accessibilityRole="button"
               >
                 <Ionicons name="document-text-outline" size={20} color="#FFF" />
@@ -146,7 +150,7 @@ export function ECOSDocumentEvidenceSheet({
                   {documentOpenMode === 'google_drive' ? 'Open in Google Drive' : 'Open Full Document'}
                 </Text>
               </TouchableOpacity>
-            )}
+            ) : null}
           </ScrollView>
         </View>
       </View>

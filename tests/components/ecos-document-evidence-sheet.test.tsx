@@ -33,6 +33,27 @@ const common = {
 };
 
 describe('ECOS document evidence full-source action', () => {
+  it('does not claim verification or missing originals while still loading', () => {
+    const view = render(
+      <ECOSDocumentEvidenceSheet {...common} document={null} imageUri={null}
+        loading binding={null} onOpenDocument={jest.fn()} />,
+    );
+    expect(view.getByText('Preparing the cited page area…')).toBeTruthy();
+    expect(view.queryByText(/verified cited page is shown/i)).toBeNull();
+    expect(view.queryByText(/original full document is not available/i)).toBeNull();
+    expect(view.queryByText('ECOS VERIFIED SOURCE')).toBeNull();
+  });
+
+  it('does not claim a verified page or offer original access after a proof error', () => {
+    const view = render(
+      <ECOSDocumentEvidenceSheet {...common} document={document} imageUri={null}
+        error="Proof service is busy" onOpenDocument={jest.fn()} />,
+    );
+    expect(view.getByText('Proof service is busy')).toBeTruthy();
+    expect(view.queryByText(/verified cited page is shown/i)).toBeNull();
+    expect(view.queryByText(/ECOS matched this citation/i)).toBeNull();
+  });
+
   it('does not offer an action that cannot open a protected-crop-only source', () => {
     const onOpenDocument = jest.fn();
     const view = render(
