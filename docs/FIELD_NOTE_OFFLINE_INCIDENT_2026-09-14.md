@@ -1,5 +1,21 @@
 # Step 6: offline Field Note disappearance
 
+## Confirmed reconnect recovery
+
+The subsequent owner screenshot shows the original `BETA OFFLINE CHECK 0914`
+note in the iPad Field Notes inbox, marked `Sent to desktop`. A fresh read-only
+cloud query confirms the original ID `field-note-mu1acvg2-1357f9l`, open, revision
+1, original creation timestamp preserved, and exactly one matching marker for
+that owner. The original offline note survived and synchronized after reconnect
+and reopening, without recreating it or replacing the signed-in session.
+
+Screenshot: `42329BC1-B22D-4A88-88A0-024CC5FF2E3C_4_5005_c.jpeg`, SHA-256
+`19ac7d44691f1d8066441429b8fe3b8146d2a7df27bd92e269042d255c5087d2`.
+This passes this note's bounded recovery/one-current-cloud-copy check. It does
+not establish exactly-once transport execution, a visible desktop inbox check,
+three offline reopen cycles, iPhone recovery, or acceptance of the uninstalled
+repair. The earlier offline visibility failure remains a defect, not a pass.
+
 ## Recovery readback after Wi-Fi restoration
 
 At approximately 2026-09-14 13:54 UTC, both devices were reachable. A targeted
@@ -32,9 +48,9 @@ The iPad was unavailable for inspection. A read-only cloud lookup found no note
 matching the disposable test marker `BETA OFFLINE CHECK 0914`; different wording
 or a still-local note would not be found by that lookup.
 
-Do not uninstall, clear storage, restore over device data, or recreate the original
-note before checking whether it reappears after reconnecting. No original device
-data has been copied, restored, deleted or otherwise changed by this repair.
+The initial recovery instruction was not to uninstall, clear storage, restore
+over device data, or recreate the original note. A subsequent targeted read-only
+copy preserved the note as described above; no device data was overwritten.
 
 ## Confirmed local defects
 
