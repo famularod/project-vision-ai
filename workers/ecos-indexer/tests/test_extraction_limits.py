@@ -6,15 +6,20 @@ import pymupdf as fitz
 from ecos_indexer.document_structure import document_sheet_identity_map
 from ecos_indexer.extraction import (
     analyze_deterministic_label_blocks,
+    coalesce_low_confidence_regions,
     DocumentResourceRejected,
     VisualTileAnalysisFailed,
     coordinate_ocr_reason,
     dedupe_regions,
     deterministic_fact_regions,
     deterministic_label_block_regions,
+    dimension_candidate_text,
     dimension_ocr_regions,
+    exact_simple_measurement_keys,
+    incomplete_simple_foot_inch_measurement,
     extract_page,
     native_text_regions,
+    native_text_is_readable,
     ocr_data_regions,
     open_pdf,
     ocr_tile_rectangles,
@@ -23,8 +28,11 @@ from ecos_indexer.extraction import (
     public_region,
     region_from_box,
     standalone_structured_table_targeted_ocr,
+    structured_table_vector_segments,
+    targeted_measurement_corroboration_regions,
     title_block_ocr_regions,
     trusted_ocr_regions,
+    trailing_dash_foot_fragment,
     unrotate_ocr_box,
     visual_tile_render_dpi,
     unresolved_regions,
@@ -36,6 +44,38 @@ from ecos_indexer.sheet_mapping import (
 
 
 class ExtractionLimitTests(unittest.TestCase):
+    def test_vector_evidence_uses_displayed_page_coordinates_at_every_rotation(self) -> None:
+        for rotation in (0, 90, 180, 270):
+            with self.subTest(rotation=rotation), fitz.open() as document:
+                page = document.new_page(width=800, height=600)
+                start, end = fitz.Point(80, 120), fitz.Point(640, 120)
+                page.draw_line(start, end)
+                page.set_rotation(rotation)
+                expected_start = start * page.rotation_matrix
+                expected_end = end * page.rotation_matrix
+                actual = structured_table_vector_segments(page, page.rect.width, page.rect.height)
+                self.assertEqual(len(actual), 1)
+                self.assertAlmostEqual(actual[0]["x1"], expected_start.x / page.rect.width, places=5)
+                self.assertAlmostEqual(actual[0]["y1"], expected_start.y / page.rect.height, places=5)
+                self.assertAlmostEqual(actual[0]["x2"], expected_end.x / page.rect.width, places=5)
+                self.assertAlmostEqual(actual[0]["y2"], expected_end.y / page.rect.height, places=5)
+
+    def test_embedded_font_control_codes_are_not_high_confidence_text(self) -> None:
+        for text in ["CANOPY\x00B", "\x01\x02\x03", "AREA \ufffd SF", "ROOM\x85B"]:
+            self.assertFalse(native_text_is_readable(text))
+        for text in ["CANOPY B", "AREA: 5,248 SF", "室内 101", "WIDTH\t82'-0\""]:
+            self.assertTrue(native_text_is_readable(text))
+
+    def test_corrupt_native_line_is_rejected_not_silently_repaired(self) -> None:
+        from unittest.mock import Mock
+        page = Mock(rotation=0)
+        page.get_text.return_value = {"blocks": [{"type": 0, "lines": [
+            {"bbox": [10, 10, 80, 20], "spans": [{"text": "Canopy\x01B"}]},
+            {"bbox": [10, 30, 80, 40], "spans": [{"text": "Sheet WPB-5"}]},
+        ]}]}
+        regions = native_text_regions(page, 100, 100)
+        self.assertEqual([region["text"] for region in regions], ["Sheet WPB-5"])
+
     def test_large_drawing_visual_detector_uses_bounded_150_dpi_tiles(self) -> None:
         self.assertEqual(visual_tile_render_dpi(36 * 72, 24 * 72), 150)
 
@@ -900,6 +940,229 @@ class ExtractionLimitTests(unittest.TestCase):
 
         self.assertEqual(accepted, [])
         self.assertEqual([region["text"] for region in rejected], ["1' SCHEDULE", "4'-0"])
+
+    def test_clipped_single_foot_token_is_not_treated_as_exact_measurement(self) -> None:
+        for clipped in ("16'-", "16'\u2013", "16'\u2014", "16'=", "16'-."):
+            with self.subTest(clipped=clipped):
+                self.assertEqual(exact_simple_measurement_keys(clipped), set())
+                self.assertTrue(trailing_dash_foot_fragment(clipped))
+                self.assertFalse(dimension_candidate_text(clipped))
+
+    def test_complete_single_foot_tokens_remain_exact_measurements(self) -> None:
+        for complete in ("16'", "16' CLEAR", "16 FT"):
+            with self.subTest(complete=complete):
+                self.assertEqual(
+                    exact_simple_measurement_keys(complete),
+                    {"single-foot:16ft"},
+                )
+                self.assertTrue(dimension_candidate_text(complete))
+
+    def test_incomplete_dimension_with_inches_routes_to_visual_transcription_correction(self) -> None:
+        region = {
+            "id": "rotated-coordinate-clipped-dimension",
+            "text": "4'-0",
+            "x": 0.20,
+            "y": 0.12,
+            "width": 0.02,
+            "height": 0.01,
+            "confidence": 0.27,
+            "source": "fixed_visual_tile_coordinate_ocr",
+        }
+
+        clusters = coalesce_low_confidence_regions([region])
+
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(
+            clusters[0]["diagnosticCandidates"][0]["source"],
+            "fixed_visual_tile_measurement_transcription_correction",
+        )
+
+    def test_trailing_dash_fragments_never_become_evidence_or_visual_exceptions(self) -> None:
+        regions = [
+            {
+                "id": "trusted-but-clipped",
+                "text": "16'-",
+                "x": 0.20,
+                "y": 0.12,
+                "width": 0.02,
+                "height": 0.01,
+                "confidence": 0.63,
+                "source": "fixed_visual_tile_coordinate_ocr",
+            },
+            {
+                "id": "weak-and-clipped",
+                "text": "16'\u2014",
+                "x": 0.20,
+                "y": 0.12,
+                "width": 0.02,
+                "height": 0.01,
+                "confidence": 0.27,
+                "source": "fixed_visual_tile_coordinate_ocr",
+            },
+        ]
+
+        accepted, rejected = trusted_ocr_regions(regions)
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(rejected, [])
+
+    def test_targeted_measurement_retry_requires_dual_psm_coordinate_agreement(self) -> None:
+        document = fitz.open()
+        page = document.new_page(width=1000, height=600)
+        low_confidence = [{
+            "id": "weak-exact-dimension",
+            "text": '14\'-3 1/2"',
+            "x": 0.88,
+            "y": 0.12,
+            "width": 0.03,
+            "height": 0.01,
+            "confidence": 0.21,
+            "source": "fixed_visual_tile_coordinate_ocr",
+        }]
+        psm6 = [{
+            **low_confidence[0],
+            "id": "psm6-dimension",
+            "confidence": 0.84,
+            "source": "targeted_measurement_coordinate_ocr_psm6",
+        }]
+        psm11 = [{
+            **low_confidence[0],
+            "id": "psm11-dimension",
+            "confidence": 0.91,
+            "source": "targeted_measurement_coordinate_ocr_psm11",
+        }]
+        try:
+            with patch(
+                "ecos_indexer.extraction.ocr_regions_for_clip",
+                side_effect=[psm6, psm11],
+            ):
+                result = targeted_measurement_corroboration_regions(
+                    page, 1000, 600, low_confidence,
+                )
+        finally:
+            document.close()
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0]["source"],
+            "targeted_measurement_coordinate_ocr_dual_psm",
+        )
+        self.assertEqual(result[0]["ocrValidationStatus"], "dual_psm_targeted_corroborated")
+        self.assertEqual(len(result[0]["corroboratingEvidence"]), 2)
+
+    def test_targeted_measurement_retry_rejects_psm_value_disagreement(self) -> None:
+        document = fitz.open()
+        page = document.new_page(width=1000, height=600)
+        low_confidence = [{
+            "id": "weak-exact-dimension",
+            "text": '14\'-3 1/2"',
+            "x": 0.88,
+            "y": 0.12,
+            "width": 0.03,
+            "height": 0.01,
+            "confidence": 0.21,
+            "source": "fixed_visual_tile_coordinate_ocr",
+        }]
+        psm6 = [{**low_confidence[0], "text": '14\'-3 1/2"'}]
+        psm11 = [{**low_confidence[0], "text": '14\'-8 1/2"'}]
+        try:
+            with patch(
+                "ecos_indexer.extraction.ocr_regions_for_clip",
+                side_effect=[psm6, psm11],
+            ):
+                result = targeted_measurement_corroboration_regions(
+                    page, 1000, 600, low_confidence,
+                )
+        finally:
+            document.close()
+
+        self.assertEqual(result, [])
+
+    def test_exact_corroborated_measurement_suppresses_overlapping_incomplete_variant(self) -> None:
+        exact = {
+            "id": "targeted-exact",
+            "text": '1(CX002): 14\'-3 1/2"',
+            "x": 0.85,
+            "y": 0.12,
+            "width": 0.07,
+            "height": 0.01,
+            "confidence": 0.95,
+            "source": "targeted_measurement_coordinate_ocr_dual_psm",
+        }
+        incomplete = {
+            "id": "weak-incomplete",
+            "text": "14'-3",
+            "x": 0.88,
+            "y": 0.12,
+            "width": 0.02,
+            "height": 0.01,
+            "confidence": 0.21,
+            "source": "fixed_visual_tile_coordinate_ocr",
+        }
+
+        accepted, rejected = trusted_ocr_regions([exact, incomplete])
+
+        self.assertEqual([region["id"] for region in accepted], ["targeted-exact"])
+        self.assertEqual(rejected, [])
+
+    def test_different_exact_measurement_does_not_suppress_incomplete_variant(self) -> None:
+        exact = {
+            "id": "targeted-different",
+            "text": '1(CX002): 14\'-8 1/2"',
+            "x": 0.85,
+            "y": 0.12,
+            "width": 0.07,
+            "height": 0.01,
+            "confidence": 0.95,
+            "source": "targeted_measurement_coordinate_ocr_dual_psm",
+        }
+        incomplete = {
+            "id": "weak-incomplete",
+            "text": "14'-3",
+            "x": 0.88,
+            "y": 0.12,
+            "width": 0.02,
+            "height": 0.01,
+            "confidence": 0.21,
+            "source": "fixed_visual_tile_coordinate_ocr",
+        }
+
+        accepted, rejected = trusted_ocr_regions([exact, incomplete])
+
+        self.assertEqual([region["id"] for region in accepted], ["targeted-different"])
+        self.assertEqual([region["id"] for region in rejected], ["weak-incomplete"])
+
+    def test_grouped_dimension_candidates_use_ordinary_dual_model_review(self) -> None:
+        regions = [
+            {
+                "id": "rotated-coordinate-clipped-dimension",
+                "text": "14'-3",
+                "x": 0.88,
+                "y": 0.12,
+                "width": 0.014,
+                "height": 0.004,
+                "confidence": 0.22,
+                "source": "fixed_visual_tile_coordinate_ocr",
+            },
+            {
+                "id": "rotated-coordinate-complete-dimension",
+                "text": '14\'-3 1/2"',
+                "x": 0.88,
+                "y": 0.12,
+                "width": 0.028,
+                "height": 0.004,
+                "confidence": 0.22,
+                "source": "fixed_visual_tile_coordinate_ocr",
+            },
+        ]
+
+        clusters = coalesce_low_confidence_regions(regions)
+
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(
+            [candidate["source"] for candidate in clusters[0]["diagnosticCandidates"]],
+            ["fixed_visual_tile_coordinate_ocr", "fixed_visual_tile_coordinate_ocr"],
+        )
 
     def test_corrupted_zero_inch_does_not_reuse_different_exact_inches(self) -> None:
         trusted_exact = {

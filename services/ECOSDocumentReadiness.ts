@@ -128,6 +128,11 @@ export function buildECOSDocumentReadiness(
     fullVisualCoveragePageCount === sourcePageCount
   );
   const hasSearchableEvidence = searchablePageCount > 0;
+  const hasCompleteSearchableCoverage = sourcePageCount > 0 &&
+    searchablePageCount === sourcePageCount;
+  const hasTrustedSearchableCoverage = hasCompleteSearchableCoverage && (
+    pages.length > 0 || hasCommittedCloudDrawingIndex
+  );
   const canMakeCurrent = missingMetadata.length === 0 && (
     (hostedPreparationPassed && !document.isCurrent) || (
       hasSearchableEvidence &&
@@ -203,8 +208,12 @@ export function buildECOSDocumentReadiness(
       'Create or retry the searchable page index before making this source current.', false);
   }
   if (isDrawing && !hasCompleteDrawingVisualCoverage) {
+    if (document.isCurrent && hasTrustedSearchableCoverage) {
+      return readiness(base, 'ready_with_limitations', 'Ready with visual limitations',
+        `${searchablePageCount} of ${sourcePageCount} pages are searchable and available to Ask ECOS. High-resolution visual analysis is complete for ${fullVisualCoveragePageCount} of ${sourcePageCount} pages, so questions that depend only on unindexed visual details may remain limited.`, true);
+    }
     return readiness(base, 'pending', 'Preparing for ECOS',
-      `${fullVisualCoveragePageCount} of ${sourcePageCount || indexedPageCount} drawing pages have complete high-resolution visual coverage. ECOS will not use this drawing until every page is complete.`, false);
+      `${fullVisualCoveragePageCount} of ${sourcePageCount || indexedPageCount} drawing pages have complete high-resolution visual coverage. Searchable evidence remains unavailable until every source page is indexed.`, false);
   }
   if (!document.isCurrent) {
     return readiness(base, 'not_current', 'Indexed — not current',

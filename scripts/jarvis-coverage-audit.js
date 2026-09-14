@@ -100,9 +100,10 @@ const requiredScripts = {
   'test:production-hardening': 'node scripts/production-hardening-test.js',
   'test:production-operations-health': 'node scripts/production-operations-health-check-test.js',
   'test:native-release-generation': 'node scripts/native-release-generation-contract-test.js',
+  'test:ios-release-artifact': 'node scripts/ios-release-artifact-gate-test.js',
   'test:dependency-security': 'node scripts/dependency-security-contract-test.js',
   'test:release-evidence': 'node scripts/jarvis-release-evidence-test.js',
-  'test:release-hardening': 'node scripts/android-production-signing-gate-test.js && node scripts/native-release-generation-contract-test.js && node scripts/dependency-security-contract-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:release-evidence && npm run test:production-hardening && npm run test:production-operations-health',
+  'test:release-hardening': 'node scripts/android-production-signing-gate-test.js && node scripts/native-release-generation-contract-test.js && node scripts/ios-release-artifact-gate-test.js && node scripts/dependency-security-contract-test.js && node scripts/jarvis-release-gate-test.js && node scripts/jarvis-registry-bindings-test.js && npm run test:release-evidence && npm run test:production-hardening && npm run test:production-operations-health',
   'qa:release': 'npm run ecos:assurance',
 };
 for (const [name, expected] of Object.entries(requiredScripts)) {

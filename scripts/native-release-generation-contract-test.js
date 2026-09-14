@@ -55,6 +55,12 @@ for (const command of [
   );
 }
 
+assert(
+  require('../package.json').scripts['check:ios-release-artifact'] ===
+    'node scripts/ios-release-artifact-gate.js',
+  'Signed iOS releases must expose the post-build artifact gate that verifies embedded cloud configuration and native linkage.',
+);
+
 assert.equal(app.name, productMetadata.name);
 assert.equal(app.version, productMetadata.version);
 assert.equal(app.ios?.buildNumber, String(productMetadata.build));
@@ -77,8 +83,12 @@ assert.equal(
 const configuredPlugins = (app.plugins || []).map(plugin =>
   Array.isArray(plugin) ? plugin[0] : plugin,
 );
+const buildProperties = (app.plugins || []).find(
+  plugin => Array.isArray(plugin) && plugin[0] === 'expo-build-properties',
+)?.[1];
 for (const plugin of [
   './plugins/withDaveIosAppIcon',
+  'expo-build-properties',
   './plugins/withVitruviusAndroidSecurityPolicy',
   'expo-router',
 ]) {
@@ -87,6 +97,12 @@ for (const plugin of [
     `Clean native generation must include ${plugin}.`,
   );
 }
+
+assert.equal(
+  buildProperties?.ios?.usePrecompiledModules,
+  false,
+  'iOS release generation must build Expo modules from source so test-only framework dependencies cannot enter the customer app.',
+);
 
 for (const entry of ['/ios', '/android']) {
   assert(

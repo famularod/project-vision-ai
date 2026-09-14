@@ -50,6 +50,14 @@
     },
     "plugins": [
       "./plugins/withDaveIosAppIcon",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "usePrecompiledModules": false
+          }
+        }
+      ],
       "@react-native-community/datetimepicker",
       "expo-asset",
       [

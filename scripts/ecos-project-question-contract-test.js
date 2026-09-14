@@ -217,9 +217,11 @@ const checks = [
     drawingCoverage.includes('ECOS_DRAWING_REQUIRED_TILE_KEYS') &&
       drawingCoverage.includes('ECOS_DRAWING_REQUIRED_TILE_KEYS.every') &&
       documentCoverageSummary.includes('ECOS_DRAWING_REQUIRED_TILE_KEYS.every')],
-  ['incomplete visual indexing fails closed before Ask ECOS eligibility',
+  ['incomplete visual indexing preserves fully searchable current evidence with an explicit visual-only limitation',
     documentReadiness.includes("'Preparing for ECOS'") &&
-      documentReadiness.includes('ECOS will not use this drawing until every page is complete.')],
+      documentReadiness.includes("'Ready with visual limitations'") &&
+      documentReadiness.includes('questions that depend only on unindexed visual details may remain limited.') &&
+      !documentReadiness.includes('ECOS will not use this drawing until every page is complete.')],
   ['compact drawing readiness requires a database-verified source and page-count commit marker',
     documentReadiness.includes("ecosVerifiedIndexCommitVersion === 'ecos-verified-index-commit/1.0'") &&
       documentReadiness.includes('ecosVerifiedIndexCommittedSha256') &&

@@ -96,6 +96,9 @@ DENSE_TEXT_HEADING_PATTERN = re.compile(
     re.IGNORECASE,
 )
 OCR_TRUST_CONFIDENCE = 0.35
+VISUAL_MEASUREMENT_CORRECTION_SOURCE = (
+    "fixed_visual_tile_measurement_transcription_correction"
+)
 OUTLINED_TEXT_COMPACT_PATH_LIMIT_POINTS = 24.0
 OUTLINED_TEXT_MIN_COMPACT_PATHS = 48
 STRICT_SHEET_IDENTITY_PATTERN = re.compile(
@@ -124,7 +127,16 @@ RECTANGULAR_FOOT_MEASUREMENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SINGLE_FOOT_MEASUREMENT_PATTERN = re.compile(
-    r"(?<![\dA-Z])([+-]?)\s*(\d{1,3})\s*(?:['\u2019](?![A-Z0-9.*\u00d7])|FT\.?(?![A-Z])|FEET\b|FOOT\b)",
+    r"(?<![\dA-Z])([+-]?)\s*(\d{1,3})\s*(?:['\u2019](?![A-Z0-9.*\u00d7\-\u2013\u2014=])|FT\.?(?![A-Z])|FEET\b|FOOT\b)",
+    re.IGNORECASE,
+)
+INCOMPLETE_SIMPLE_FOOT_INCH_PATTERN = re.compile(
+    r"^\s*[+-]?\s*\d{1,3}\s*['\u2019]\s*[-\u2013\u2014=]\s*"
+    r"(?:[0-9OQ]{0,2}(?:\s+\d+\s*/\s*\d+)?\s*)?[\"\u201d]?\s*$",
+    re.IGNORECASE,
+)
+TRAILING_DASH_FOOT_FRAGMENT_PATTERN = re.compile(
+    r"^\s*[+-]?\s*\d{1,3}\s*['\u2019]\s*[-\u2013\u2014=]+[.\s]*$",
     re.IGNORECASE,
 )
 FOOT_INCH_CANDIDATE_PATTERN = re.compile(
@@ -181,6 +193,8 @@ STRUCTURED_TABLE_OCR_DPI = 300
 STRUCTURED_TABLE_CORROBORATION_DPI = 200
 STRUCTURED_TABLE_OCR_CONFIG = "--psm 6"
 STRUCTURED_TABLE_ANALYSIS_METHOD = "tesseract_coordinate_ocr_psm6_dual_dpi"
+TARGETED_MEASUREMENT_CORROBORATION_DPI = 600
+MAX_TARGETED_MEASUREMENT_CORROBORATION_REGIONS = 6
 STRUCTURED_TABLE_HEADING_PATTERN = re.compile(
     r"\b(?:PLANT\s+MATERIALS\s+LIST|HYDROZONE\s+DATA|MWELO\s+CALCULATIONS)\b",
     re.IGNORECASE,
@@ -267,6 +281,15 @@ def extract_page(
     # OCR work, can exceed the page deadline, and adds no independent proof.
     # ``ocr_reason`` remains diagnostic context for the page record.
     ocr_regions, low_confidence_regions = trusted_ocr_regions(raw_ocr_regions)
+    targeted_measurement_regions = targeted_measurement_corroboration_regions(
+        page,
+        page_width,
+        page_height,
+        low_confidence_regions,
+    )
+    if targeted_measurement_regions:
+        raw_ocr_regions.extend(targeted_measurement_regions)
+        ocr_regions, low_confidence_regions = trusted_ocr_regions(raw_ocr_regions)
     searchable_visual_region_ids = {
         str(region.get("id") or "") for region in ocr_regions
         if str(region.get("source") or "") == "fixed_visual_tile_coordinate_ocr"
@@ -1162,6 +1185,13 @@ def structured_table_vector_segments(
             try:
                 start = item[1]
                 end = item[2]
+                # PyMuPDF vector coordinates are in unrotated page space,
+                # while OCR and page.rect use the displayed page. Without
+                # this transform a rotated drawing's geometry is clamped
+                # onto the wrong edges before table/relationship detection.
+                if page.rotation:
+                    start = start * page.rotation_matrix
+                    end = end * page.rotation_matrix
                 x1 = max(0.0, min(1.0, float(start.x) / page_width))
                 y1 = max(0.0, min(1.0, float(start.y) / page_height))
                 x2 = max(0.0, min(1.0, float(end.x) / page_width))
@@ -1658,7 +1688,7 @@ def native_text_regions(page: fitz.Page, page_width: float, page_height: float) 
         for line_index, line in enumerate(block.get("lines") or []):
             spans = line.get("spans") or []
             text = "".join(str(span.get("text") or "") for span in spans).strip()
-            if not text:
+            if not text or not native_text_is_readable(text):
                 continue
             box = line.get("bbox") or block.get("bbox")
             if box and page.rotation:
@@ -1670,6 +1700,22 @@ def native_text_regions(page: fitz.Page, page_width: float, page_height: float) 
             if region:
                 result.append(region)
     return result
+
+
+def native_text_is_readable(text: str) -> bool:
+    """An embedded font without a valid character map is not trusted text.
+
+    Some drawing PDFs extract control codes instead of the visible glyphs.
+    Presence in the PDF does not justify 0.99 confidence for that byte stream.
+    Reject affected lines and let the existing page-bound OCR read the glyphs;
+    never guess a substitution alphabet or silently strip corrupt characters.
+    """
+    return not any(
+        (ord(character) < 32 and character not in "\t\r\n")
+        or 0x7F <= ord(character) <= 0x9F
+        or character == "\ufffd"
+        for character in text
+    )
 
 
 def title_block_ocr_regions(
@@ -1980,6 +2026,109 @@ def dimension_ocr_regions(
     ]
 
 
+def targeted_measurement_corroboration_regions(
+    page: fitz.Page,
+    page_width: float,
+    page_height: float,
+    low_confidence_regions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Re-read exact low-confidence dimensions with two OCR segmentations.
+
+    A drawing can contain clear but very small foot-inch text that the fixed
+    coverage pass reads with a low word confidence. Sending that same crop to
+    two generative providers made page readiness stochastic. This bounded
+    retry instead accepts a measurement only when PSM 6 and PSM 11 produce the
+    same strict foot-inch value at overlapping source coordinates.
+    """
+    eligible = [
+        region for region in low_confidence_regions
+        if strict_foot_inch_measurement_keys(str(region.get("text") or ""))
+    ]
+    clusters = coalesce_low_confidence_regions(eligible)[
+        :MAX_TARGETED_MEASUREMENT_CORROBORATION_REGIONS
+    ]
+    corroborated: list[dict[str, Any]] = []
+    for target_index, cluster in enumerate(clusters):
+        bounds = expanded_measurement_corroboration_bounds(cluster["bounds"])
+        clip = fitz.Rect(
+            float(page.rect.x0) + page_width * bounds["x"],
+            float(page.rect.y0) + page_height * bounds["y"],
+            float(page.rect.x0) + page_width * (bounds["x"] + bounds["width"]),
+            float(page.rect.y0) + page_height * (bounds["y"] + bounds["height"]),
+        )
+        passes: list[list[dict[str, Any]]] = []
+        for pass_name, config in (("psm6", "--psm 6"), ("psm11", "--psm 11")):
+            regions = ocr_regions_for_clip(
+                page,
+                clip,
+                page_width,
+                page_height,
+                dpi=TARGETED_MEASUREMENT_CORROBORATION_DPI,
+                prefix=f"targeted-measurement-{target_index}-{pass_name}",
+                source=f"targeted_measurement_coordinate_ocr_{pass_name}",
+                config=config,
+                minimum_confidence=0.0,
+            )
+            passes.append([
+                region for region in regions
+                if strict_foot_inch_measurement_keys(
+                    str(region.get("text") or "")
+                )
+            ])
+        if len(passes) != 2:
+            continue
+        primary, confirmation = passes
+        for primary_region in primary:
+            primary_keys = strict_foot_inch_measurement_keys(
+                str(primary_region.get("text") or "")
+            )
+            matches = [
+                region for region in confirmation
+                if primary_keys.intersection(
+                    strict_foot_inch_measurement_keys(
+                        str(region.get("text") or "")
+                    )
+                )
+                and region_contains_or_overlaps(primary_region, region)
+            ]
+            if not matches:
+                continue
+            confirmation_region = min(
+                matches,
+                key=lambda region: len(str(region.get("text") or "")),
+            )
+            corroborated.append({
+                **primary_region,
+                "id": f"targeted-measurement-corroborated-{target_index}-{len(corroborated)}",
+                "source": "targeted_measurement_coordinate_ocr_dual_psm",
+                "confidence": max(0.95, float(primary_region.get("confidence") or 0)),
+                "ocrValidationStatus": "dual_psm_targeted_corroborated",
+                "corroboratingEvidence": [
+                    public_region(primary_region),
+                    public_region(confirmation_region),
+                ],
+            })
+    return dedupe_regions(corroborated)
+
+
+def expanded_measurement_corroboration_bounds(
+    bounds: dict[str, Any],
+) -> dict[str, float]:
+    source = normalized_region_bounds(bounds)
+    width = min(0.20, max(0.08, source["width"] + 0.06))
+    height = min(0.12, max(0.05, source["height"] + 0.04))
+    center_x = source["x"] + source["width"] / 2
+    center_y = source["y"] + source["height"] / 2
+    x = min(1.0 - width, max(0.0, center_x - width / 2))
+    y = min(1.0 - height, max(0.0, center_y - height / 2))
+    return {
+        "x": round(x, 6),
+        "y": round(y, 6),
+        "width": round(width, 6),
+        "height": round(height, 6),
+    }
+
+
 def page_ocr_dpi(page: fitz.Page) -> int:
     longest_edge = max(1.0, float(page.rect.width), float(page.rect.height))
     fitted_dpi = round(OCR_TARGET_LONG_EDGE_PIXELS * 72.0 / longest_edge)
@@ -2224,10 +2373,17 @@ def trusted_ocr_regions(
     accepted: list[dict[str, Any]] = [
         region for region in regions
         if float(region.get("confidence") or 0) >= OCR_TRUST_CONFIDENCE
+        and not trailing_dash_foot_fragment(str(region.get("text") or ""))
     ]
     rejected: list[dict[str, Any]] = []
     for region in regions:
         confidence = float(region.get("confidence") or 0)
+        # A bare N'- / N'— token is only the clipped beginning of a
+        # foot-inch phrase. It is neither searchable evidence nor a useful
+        # visual candidate because the remaining value lies outside its
+        # bounded crop. Keep processing the page without inventing N feet.
+        if trailing_dash_foot_fragment(str(region.get("text") or "")):
+            continue
         if confidence >= OCR_TRUST_CONFIDENCE:
             continue
         text = str(region.get("text") or "").strip()
@@ -2280,6 +2436,8 @@ def dimension_candidate_text(text: str) -> bool:
     # every cover sheet. They are metadata, not construction measurements.
     if timestamp_like_text(normalized):
         return False
+    if trailing_dash_foot_fragment(normalized):
+        return False
     # A bare apostrophe followed by OCR punctuation or more digits (for
     # example ``@20'*4.7`` or ``60 '01%`` in a photometric diagram) is not a
     # bounded construction measurement.  The former broad candidate regex
@@ -2289,6 +2447,7 @@ def dimension_candidate_text(text: str) -> bool:
     return bool(
         exact_simple_measurement_keys(normalized)
         or corrupted_zero_inch_foot_measurements(normalized)
+        or incomplete_simple_foot_inch_measurement(normalized)
     )
 
 
@@ -2331,6 +2490,10 @@ def low_confidence_fact_is_already_supported(
     and fail closed.
     """
     candidate_text = str(candidate.get("text") or "")
+    if incomplete_measurement_is_supported_by_exact_region(
+        candidate, accepted_regions,
+    ):
+        return True
     candidate_keys = low_confidence_fact_keys(candidate_text)
     if not candidate_keys:
         return False
@@ -2359,6 +2522,34 @@ def low_confidence_fact_is_already_supported(
         canonical_candidate_keys != candidate_keys
         and canonical_candidate_keys.issubset(overlapping_keys)
     )
+
+
+def incomplete_measurement_is_supported_by_exact_region(
+    candidate: dict[str, Any],
+    accepted_regions: list[dict[str, Any]],
+) -> bool:
+    text = normalize_ocr_punctuation(str(candidate.get("text") or ""))
+    if (
+        not incomplete_simple_foot_inch_measurement(text)
+        or trailing_dash_foot_fragment(text)
+    ):
+        return False
+    candidate_digits = re.sub(r"\D", "", text)
+    if not candidate_digits:
+        return False
+    for accepted in accepted_regions:
+        if not region_contains_or_overlaps(candidate, accepted):
+            continue
+        accepted_text = normalize_ocr_punctuation(
+            str(accepted.get("text") or "")
+        )
+        for match in STRICT_FOOT_INCH_PATTERN.finditer(accepted_text):
+            exact_digits = "".join(
+                str(match.group(index) or "") for index in range(1, 5)
+            )
+            if exact_digits.startswith(candidate_digits):
+                return True
+    return False
 
 
 def low_confidence_fact_keys(text: str) -> set[str]:
@@ -2427,6 +2618,30 @@ def corrupted_zero_inch_foot_measurements(text: str) -> set[int]:
         int(match.group(1))
         for match in CORRUPTED_ZERO_INCH_FOOT_PATTERN.finditer(normalized)
     }
+
+
+def incomplete_simple_foot_inch_measurement(text: str) -> bool:
+    """Return whether OCR captured a bounded but incomplete foot-inch token.
+
+    A token such as ``16'—`` or ``4'-0`` cannot be accepted as the exact
+    single-foot value before the dash. It remains a visual exception and is
+    explicitly routed to the dual-provider transcription-correction contract.
+    Complete foot-inch measurements remain handled by the strict parser.
+    """
+    normalized = normalize_ocr_punctuation(text)
+    return bool(
+        INCOMPLETE_SIMPLE_FOOT_INCH_PATTERN.fullmatch(normalized)
+        and not STRICT_FOOT_INCH_PATTERN.fullmatch(normalized)
+    )
+
+
+def trailing_dash_foot_fragment(text: str) -> bool:
+    """Return whether OCR captured only the start of a foot-inch phrase."""
+    return bool(
+        TRAILING_DASH_FOOT_FRAGMENT_PATTERN.fullmatch(
+            normalize_ocr_punctuation(text)
+        )
+    )
 
 
 def strict_foot_inch_measurement_keys(text: str) -> set[str]:
@@ -3226,6 +3441,18 @@ def coalesce_low_confidence_regions(
                 break
             if changed:
                 break
+    # The provider's correction contract is intentionally one-candidate-only:
+    # it must transcribe one clipped token from one bounded tile. A grouped
+    # block with multiple OCR candidates instead uses the ordinary dual-model
+    # accept/dismiss contract, which can compare a complete candidate against
+    # incomplete variants without treating either as trusted evidence.
+    for cluster in clusters:
+        diagnostics = cluster["diagnosticCandidates"]
+        if (
+            len(diagnostics) == 1
+            and incomplete_simple_foot_inch_measurement(diagnostics[0]["text"])
+        ):
+            diagnostics[0]["source"] = VISUAL_MEASUREMENT_CORRECTION_SOURCE
     return clusters
 
 

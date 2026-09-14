@@ -173,19 +173,24 @@ describe('ECOS document readiness', () => {
     });
   });
 
-  it('uses the protected page-table summary when a Drive document omits local page details', () => {
+  it('uses the protected page-table summary and keeps complete searchable evidence available with an explicit visual limitation', () => {
     expect(buildECOSDocumentReadiness(drawing({
       isCurrent: true,
       extractedPages: [],
+      indexedContentSha256: HASH_A,
+      ecosVerifiedIndexCommitVersion: 'ecos-verified-index-commit/1.0',
+      ecosVerifiedIndexCommittedAt: '2026-08-08T04:00:00.000Z',
+      ecosVerifiedIndexCommittedSha256: HASH_A,
+      ecosVerifiedIndexCommittedPageCount: 2,
     }), {
       indexedPageCount: 2,
       fullVisualCoveragePageCount: 1,
       verifiedSheetPageCount: 1,
       conflictedSheetPageCount: 0,
     })).toMatchObject({
-      status: 'pending',
-      label: 'Preparing for ECOS',
-      eligibleForAnswers: false,
+      status: 'ready_with_limitations',
+      label: 'Ready with visual limitations',
+      eligibleForAnswers: true,
       canMakeCurrent: false,
       indexedPageCount: 2,
       fullVisualCoveragePageCount: 1,
@@ -193,6 +198,33 @@ describe('ECOS document readiness', () => {
       conflictedSheetPageCount: 0,
       limitations: ['1 drawing page does not have complete high-resolution visual tile coverage.'],
     });
+  });
+
+  it('does not describe a fully searchable current drawing as unavailable when only visual tiles are incomplete', () => {
+    const result = buildECOSDocumentReadiness(drawing({
+      isCurrent: true,
+      extractedPages: [],
+      indexedContentSha256: HASH_A,
+      ecosVerifiedIndexCommitVersion: 'ecos-verified-index-commit/1.0',
+      ecosVerifiedIndexCommittedAt: '2026-08-08T04:00:00.000Z',
+      ecosVerifiedIndexCommittedSha256: HASH_A,
+      ecosVerifiedIndexCommittedPageCount: 2,
+    }), {
+      indexedPageCount: 2,
+      fullVisualCoveragePageCount: 0,
+      verifiedSheetPageCount: 0,
+      conflictedSheetPageCount: 0,
+    });
+
+    expect(result).toMatchObject({
+      status: 'ready_with_limitations',
+      label: 'Ready with visual limitations',
+      eligibleForAnswers: true,
+      pageCoveragePercent: 100,
+    });
+    expect(result.detail).toContain('2 of 2 pages are searchable and available to Ask ECOS.');
+    expect(result.detail).toContain('questions that depend only on unindexed visual details may remain limited.');
+    expect(result.detail).not.toContain('ECOS will not use this drawing');
   });
 
   it('recognizes a transactionally committed cloud drawing index without inline page JSON', () => {
