@@ -60,7 +60,12 @@ const LOCAL_FIELD_NOTE_DATA_SOURCE: FieldNoteWorkspaceDataSource = Object.freeze
   update: (ownerKey: string, note: FieldNote) => localFieldNoteRepository.replace(ownerKey, note),
 });
 
-export function FieldNotesWorkspace({
+export function FieldNotesWorkspace(props: Parameters<typeof FieldNotesWorkspaceContent>[0]) {
+  // Owner changes discard drafts and callbacks as well as the displayed inbox.
+  return <FieldNotesWorkspaceContent key={props.ownerKey} {...props} />;
+}
+
+function FieldNotesWorkspaceContent({
   ownerKey,
   projects,
   projectRecords,
@@ -105,6 +110,7 @@ export function FieldNotesWorkspace({
   const [editActionText, setEditActionText] = useState('');
   const [editStatus, setEditStatus] = useState<FieldNoteStatus>('open');
   const consumedVoiceDraftRef = useRef<string | null>(null);
+  const noteOperationRef = useRef(0);
   const projectOptions = useMemo(() => {
     const records = projectRecords?.length
       ? projectRecords
@@ -118,23 +124,37 @@ export function FieldNotesWorkspace({
   }, [projectRecords, projects]);
 
   async function loadNotes() {
+    const operation = ++noteOperationRef.current;
+    const isCurrent = () => operation === noteOperationRef.current;
+    let localShown = false;
     setLoading(true);
     setNotice(null);
     try {
-      setNotes(await dataSource.list(ownerKey));
+      if (dataSource.listLocal) {
+        const local = await dataSource.listLocal(ownerKey);
+        if (!isCurrent()) return;
+        setNotes(local);
+        setLoading(false);
+        localShown = true;
+      }
+      const refreshed = await dataSource.list(ownerKey);
+      if (isCurrent()) setNotes(refreshed);
     } catch (error) {
-      setNotes([]);
+      if (!isCurrent()) return;
+      if (!localShown) setNotes([]);
       setNotice({
         tone: 'danger',
         text: error instanceof Error ? error.message : 'Field notes could not be loaded.',
       });
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }
 
   useEffect(() => {
+    setNotes([]);
     void loadNotes();
+    return () => { noteOperationRef.current += 1; };
     // Owner changes intentionally re-scope the entire local inbox.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataSource, ownerKey]);
@@ -145,8 +165,13 @@ export function FieldNotesWorkspace({
     if (dataSource.subscribe) {
       void dataSource.subscribe(
         ownerKey,
-        nextNotes => {
-          if (!disposed) setNotes(nextNotes);
+        async nextNotes => {
+          const operation = noteOperationRef.current;
+          // Notifications may carry an older snapshot than a just-completed save.
+          try {
+            const latest = dataSource.listLocal ? await dataSource.listLocal(ownerKey) : nextNotes;
+            if (!disposed && operation === noteOperationRef.current) setNotes(latest);
+          } catch { /* Keep the displayed local notes if a refresh cannot read. */ }
         },
         status => {
           if (disposed) return;
@@ -171,8 +196,10 @@ export function FieldNotesWorkspace({
     }
     const foregroundSubscription = AppState.addEventListener('change', state => {
       if (state !== 'active' || !dataSource.retryPending) return;
-      void dataSource.retryPending(ownerKey).then(nextNotes => {
-        if (!disposed) setNotes(nextNotes);
+      const operation = noteOperationRef.current;
+      void dataSource.retryPending(ownerKey).then(async nextNotes => {
+        const latest = dataSource.listLocal ? await dataSource.listLocal(ownerKey) : nextNotes;
+        if (!disposed && operation === noteOperationRef.current) setNotes(latest);
       }).catch(() => undefined);
     });
     return () => {
@@ -202,6 +229,7 @@ export function FieldNotesWorkspace({
 
   async function saveNote() {
     if (!text.trim() || saving) return;
+    const operation = ++noteOperationRef.current;
     setSaving(true);
     setNotice(null);
     try {
@@ -215,7 +243,11 @@ export function FieldNotesWorkspace({
         actionKind,
         actionText,
       });
-      const saved = await dataSource.save(ownerKey, note);
+      const saved = dataSource.saveLocal
+        ? await dataSource.saveLocal(ownerKey, note)
+        : await dataSource.save(ownerKey, note);
+      if (operation !== noteOperationRef.current) return;
+      setLoading(false);
       setNotes(current => [saved, ...current.filter(item => item.id !== saved.id)]);
       setText('');
       setSource('typed');
@@ -230,13 +262,21 @@ export function FieldNotesWorkspace({
           ? 'Field note saved and sent to the desktop inbox.'
           : 'Field note saved on this device. Vitruvius will send it to the desktop automatically.',
       });
+      if (dataSource.saveLocal && dataSource.retryPending) {
+        // Cloud work must not delay the verified device-save confirmation.
+        void dataSource.retryPending(ownerKey).then(async synced => {
+          const latest = dataSource.listLocal ? await dataSource.listLocal(ownerKey) : synced;
+          if (operation === noteOperationRef.current) setNotes(latest);
+        }).catch(() => undefined);
+      }
     } catch (error) {
+      if (operation !== noteOperationRef.current) return;
       setNotice({
         tone: 'danger',
         text: error instanceof Error ? error.message : 'Field note could not be saved.',
       });
     } finally {
-      setSaving(false);
+      if (operation === noteOperationRef.current) setSaving(false);
     }
   }
 

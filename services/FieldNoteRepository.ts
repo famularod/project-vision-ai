@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 
 import {
   localCorruptionRecoveryError,
@@ -176,8 +177,12 @@ export function markFieldNoteConflict(note: FieldNote, message: string): FieldNo
 }
 
 export function createFieldNoteRepository(storage: FieldNoteStorage = AsyncStorage) {
+  const exclusive = <T>(ownerKey: string, operation: () => Promise<T>) =>
+    runExclusiveLocalStorageMutation([fieldNoteStorageKey(ownerKey)], operation);
+  const read = async (ownerKey: string) => Object.freeze(await hydrateRecords(storage, ownerKey));
   async function list(ownerKey: string): Promise<readonly FieldNote[]> {
-    return Object.freeze(await hydrateRecords(storage, ownerKey));
+    // Hydration can quarantine/repair bytes, so it participates in the same lock.
+    return exclusive(ownerKey, () => read(ownerKey));
   }
 
   async function write(ownerKey: string, records: readonly FieldNote[]): Promise<void> {
@@ -192,17 +197,19 @@ export function createFieldNoteRepository(storage: FieldNoteStorage = AsyncStora
   return Object.freeze({
     list,
     async save(ownerKey: string, note: FieldNote): Promise<FieldNote> {
-      const normalized = normalizeFieldNote(note);
-      const records = [...await list(ownerKey)];
-      const existing = records.find(item => item.id === normalized.id);
-      if (existing) {
-        if (JSON.stringify(existing) !== JSON.stringify(normalized)) {
-          throw new Error('A different field note already uses this ID.');
+      return exclusive(ownerKey, async () => {
+        const normalized = normalizeFieldNote(note);
+        const records = [...await read(ownerKey)];
+        const existing = records.find(item => item.id === normalized.id);
+        if (existing) {
+          if (JSON.stringify(existing) !== JSON.stringify(normalized)) {
+            throw new Error('A different field note already uses this ID.');
+          }
+          return existing;
         }
-        return existing;
-      }
-      await write(ownerKey, [...records, normalized].sort(compareFieldNotes));
-      return normalized;
+        await write(ownerKey, [...records, normalized].sort(compareFieldNotes));
+        return normalized;
+      });
     },
     async updateStatus(
       ownerKey: string,
@@ -210,31 +217,59 @@ export function createFieldNoteRepository(storage: FieldNoteStorage = AsyncStora
       status: FieldNoteStatus,
       now?: string,
     ): Promise<FieldNote> {
-      const stableId = required(id, 'Field note ID');
-      const records = [...await list(ownerKey)];
-      const index = records.findIndex(item => item.id === stableId);
-      if (index < 0) throw new Error('Field note was not found.');
-      const updated = updateFieldNoteStatus(records[index], status, now);
-      records[index] = updated;
-      await write(ownerKey, records.sort(compareFieldNotes));
-      return updated;
+      return exclusive(ownerKey, async () => {
+        const stableId = required(id, 'Field note ID');
+        const records = [...await read(ownerKey)];
+        const index = records.findIndex(item => item.id === stableId);
+        if (index < 0) throw new Error('Field note was not found.');
+        const updated = updateFieldNoteStatus(records[index], status, now);
+        records[index] = updated;
+        await write(ownerKey, records.sort(compareFieldNotes));
+        return updated;
+      });
     },
     async replace(ownerKey: string, note: FieldNote): Promise<FieldNote> {
-      const normalized = normalizeFieldNote(note);
-      const records = [...await list(ownerKey)];
-      const index = records.findIndex(item => item.id === normalized.id);
-      if (index < 0) throw new Error('Field note was not found.');
-      records[index] = normalized;
-      await write(ownerKey, records.sort(compareFieldNotes));
-      return normalized;
+      return exclusive(ownerKey, async () => {
+        const normalized = normalizeFieldNote(note);
+        const records = [...await read(ownerKey)];
+        const index = records.findIndex(item => item.id === normalized.id);
+        if (index < 0) throw new Error('Field note was not found.');
+        records[index] = normalized;
+        await write(ownerKey, records.sort(compareFieldNotes));
+        return normalized;
+      });
+    },
+    async replaceIfUnchanged(ownerKey: string, expected: FieldNote, replacement: FieldNote): Promise<FieldNote> {
+      return exclusive(ownerKey, async () => {
+        const records = [...await read(ownerKey)];
+        const index = records.findIndex(item => item.id === expected.id);
+        if (index < 0) throw new Error('Field note was not found.');
+        if (JSON.stringify(records[index]) !== JSON.stringify(normalizeFieldNote(expected))) return records[index];
+        const next = normalizeFieldNote(replacement);
+        if (next.id !== expected.id) throw new Error('Field note identity changed during synchronization.');
+        records[index] = next;
+        await write(ownerKey, records.sort(compareFieldNotes));
+        return next;
+      });
+    },
+    async merge(ownerKey: string, mergeRecords: (current: readonly FieldNote[]) => readonly FieldNote[]): Promise<readonly FieldNote[]> {
+      return exclusive(ownerKey, async () => {
+        // Calculate against the latest durable notes INSIDE the mutation lock.
+        const normalized = mergeRecords(await read(ownerKey)).map(normalizeFieldNote).sort(compareFieldNotes);
+        if (new Set(normalized.map(note => note.id)).size !== normalized.length) throw new Error('Field notes contain duplicate IDs.');
+        await write(ownerKey, normalized);
+        return Object.freeze(normalized);
+      });
     },
     async replaceAll(ownerKey: string, records: readonly FieldNote[]): Promise<readonly FieldNote[]> {
-      const normalized = records.map(normalizeFieldNote).sort(compareFieldNotes);
-      if (new Set(normalized.map(note => note.id)).size !== normalized.length) {
-        throw new Error('Field notes contain duplicate IDs.');
-      }
-      await write(ownerKey, normalized);
-      return Object.freeze(normalized);
+      return exclusive(ownerKey, async () => {
+        const normalized = records.map(normalizeFieldNote).sort(compareFieldNotes);
+        if (new Set(normalized.map(note => note.id)).size !== normalized.length) {
+          throw new Error('Field notes contain duplicate IDs.');
+        }
+        await write(ownerKey, normalized);
+        return Object.freeze(normalized);
+      });
     },
   });
 }

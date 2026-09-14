@@ -16,6 +16,8 @@ import {
 import { getSupabaseClient } from './SupabaseService';
 
 export type FieldNoteWorkspaceDataSource = Readonly<{
+  listLocal?: (ownerKey: string) => Promise<readonly FieldNote[]>;
+  saveLocal?: (ownerKey: string, note: FieldNote) => Promise<FieldNote>;
   list: (ownerKey: string) => Promise<readonly FieldNote[]>;
   save: (ownerKey: string, note: FieldNote) => Promise<FieldNote>;
   update: (ownerKey: string, note: FieldNote) => Promise<FieldNote>;
@@ -36,23 +38,33 @@ export function createMobileFieldNoteDataSource({
   localRepository: LocalFieldNoteRepository;
   cloudGateway: FieldNoteCloudGateway;
 }>): FieldNoteWorkspaceDataSource {
+  const inFlightNotes = new Map<string, Promise<FieldNote>>();
   async function persistMerged(
     ownerKey: string,
     cloudNotes: readonly FieldNote[],
   ): Promise<readonly FieldNote[]> {
-    const localNotes = await localRepository.list(ownerKey);
-    const merged = mergeFieldNoteCollections(localNotes, cloudNotes);
-    return localRepository.replaceAll(ownerKey, merged);
+    return localRepository.merge(ownerKey, current => mergeFieldNoteCollections(current, cloudNotes));
   }
 
-  async function syncOne(ownerKey: string, note: FieldNote): Promise<FieldNote> {
+  function syncOne(ownerKey: string, note: FieldNote): Promise<FieldNote> {
+    const key = JSON.stringify([ownerKey, note.id]);
+    const existing = inFlightNotes.get(key);
+    if (existing) return existing;
+    const pending = synchronizeNote(ownerKey, note);
+    inFlightNotes.set(key, pending);
+    void pending.finally(() => {
+      if (inFlightNotes.get(key) === pending) inFlightNotes.delete(key);
+    }).catch(() => undefined);
+    return pending;
+  }
+
+  async function synchronizeNote(ownerKey: string, note: FieldNote): Promise<FieldNote> {
     const local = normalizeFieldNote(note);
     try {
       const cloud = local.revision > 0
         ? await cloudGateway.update(local, local.revision)
         : await cloudGateway.create(local);
-      await localRepository.replace(ownerKey, cloud);
-      return cloud;
+      return localRepository.replaceIfUnchanged(ownerKey, local, cloud);
     } catch (error) {
       if (error instanceof FieldNoteCloudError && error.code === 'conflict') {
         try {
@@ -60,20 +72,17 @@ export function createMobileFieldNoteDataSource({
           const rebased = merged.find(item => item.id === local.id);
           if (rebased?.syncState === 'pending' && rebased.revision > local.revision) {
             const cloud = await cloudGateway.update(rebased, rebased.revision);
-            await localRepository.replace(ownerKey, cloud);
-            return cloud;
+            return localRepository.replaceIfUnchanged(ownerKey, rebased, cloud);
           }
           if (rebased) return rebased;
         } catch {
           // Preserve the local version below if recovery cannot reach the cloud.
         }
         const conflicted = markFieldNoteConflict(local, error.message);
-        await localRepository.replace(ownerKey, conflicted);
-        return conflicted;
+        return localRepository.replaceIfUnchanged(ownerKey, local, conflicted);
       }
       const waiting = markFieldNoteWaiting(local, cloudWaitingMessage(error));
-      await localRepository.replace(ownerKey, waiting);
-      return waiting;
+      return localRepository.replaceIfUnchanged(ownerKey, local, waiting);
     }
   }
 
@@ -86,6 +95,8 @@ export function createMobileFieldNoteDataSource({
   }
 
   return Object.freeze({
+    listLocal: ownerKey => localRepository.list(ownerKey),
+    saveLocal: (ownerKey, note) => localRepository.save(ownerKey, note),
     async list(ownerKey) {
       let notes = await localRepository.list(ownerKey);
       try {
@@ -137,7 +148,8 @@ export function mergeFieldNoteCollections(
   for (const rawCloud of cloudNotes) {
     const cloud = normalizeFieldNote(rawCloud);
     const local = merged.get(cloud.id);
-    if (!local || local.syncState === 'synced') {
+    if (local && cloud.revision < local.revision) continue;
+    if (!local || (local.syncState === 'synced' && cloud.revision >= local.revision)) {
       merged.set(cloud.id, cloud);
       continue;
     }
