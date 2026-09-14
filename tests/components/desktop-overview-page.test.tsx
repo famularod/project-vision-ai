@@ -83,6 +83,52 @@ const updates: CloudProjectUpdate<ProjectUpdate>[] = [
 ];
 
 describe('DesktopOverviewPage', () => {
+  it('counts only active-parent updates and retains unmatched history without misattributing it', () => {
+    const historical = projectUpdate({id: 'historical', projectName: 'Project Alpha', areaName: '', updatedAt: '2026-09-14', notes: 'Historical task update'});
+    historical.updateData.scheduleItemId = 'superseded-task';
+    const ambiguous = projectUpdate({id: 'ambiguous', projectName: 'Shared Area', areaName: '', updatedAt: '2026-09-14', notes: 'Ambiguous legacy update'});
+    const exact = projectUpdate({id: 'exact', projectName: 'Shared Area', areaName: '', updatedAt: '2026-09-14', notes: 'Exact Beta task update'});
+    exact.updateData.scheduleItemId = openTask.id;
+    const allUpdates = [...updates, historical, ambiguous, exact];
+    const before = JSON.stringify(allUpdates);
+    const screen = render(<DesktopOverviewPage
+      projects={[{id: 'alpha', name: 'Project Alpha'}, {id: 'beta', name: 'Project Beta'}]}
+      selectedProject={null}
+      tasks={[{...overdueTask, locationName: 'Shared Area'}, {...openTask, locationName: 'Shared Area'}, completedTask]}
+      updates={allUpdates}
+    />);
+    expect(screen.getByText('4')).toBeTruthy();
+    expect(screen.getByText('2 additional field updates are retained in Field Activity but cannot be matched to the active projects.')).toBeTruthy();
+    expect(screen.queryByText('Historical task update')).toBeNull();
+    expect(screen.queryByText('Ambiguous legacy update')).toBeNull();
+    expect(screen.getByText('Exact Beta task update')).toBeTruthy();
+    expect(screen.getAllByText('2 updates')).toHaveLength(2);
+    expect(JSON.stringify(allUpdates)).toBe(before);
+  });
+
+  it('deduplicates update identity and scopes a project switch without changing the input', () => {
+    const props = {
+      projects: [{id: 'alpha', name: 'Project Alpha'}, {id: 'beta', name: 'Project Beta'}],
+      tasks: [overdueTask, completedTask, openTask],
+      updates: [...updates, updates[0]],
+    };
+    const screen = render(<DesktopOverviewPage {...props} selectedProject={null} />);
+    expect(screen.getAllByText('Panel framing started.')).toHaveLength(1);
+    expect(screen.getByText('2 updates')).toBeTruthy();
+    expect(screen.getByText('1 update')).toBeTruthy();
+    screen.rerender(<DesktopOverviewPage {...props} selectedProject="Project Beta" />);
+    expect(screen.queryByText('Panel framing started.')).toBeNull();
+    expect(screen.getByText('Updated Install handrails.')).toBeTruthy();
+    expect(screen.getByText('0 updates')).toBeTruthy();
+    expect(screen.getByText('1 update')).toBeTruthy();
+  });
+
+  it('does not count retained history as active updates when no projects exist', () => {
+    const screen = render(<DesktopOverviewPage projects={[]} selectedProject={null} tasks={[]} updates={updates} />);
+    expect(screen.getByText('No recent field activity')).toBeTruthy();
+    expect(screen.getByText('3 additional field updates are retained in Field Activity but cannot be matched to the active projects.')).toBeTruthy();
+  });
+
   it('renders current portfolio facts, priority work, projects, and recent activity', () => {
     const screen = render(
       <DesktopOverviewPage

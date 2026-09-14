@@ -8,7 +8,7 @@ import {
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
-import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
+import { projectUpdateBelongsToParentProject } from '../../services/DAVEProjectUpdateScope';
 import {
   buildVitruviusCommitmentControl,
   type VitruviusCommitmentControlItem,
@@ -22,7 +22,7 @@ export function DesktopOverviewPage({
   projects,
   selectedProject,
   tasks,
-  updates,
+  updates: availableUpdates,
 }: {
   projects: readonly CloudProject[];
   selectedProject: string | null;
@@ -31,6 +31,19 @@ export function DesktopOverviewPage({
 }) {
   const { width } = useWindowDimensions();
   const wide = width >= 1180;
+  // Match the native overview's active-parent scope. Keep unmatched historical
+  // records in the repository/Field Activity; never reassign or delete them.
+  const updates = Array.from(new Map(availableUpdates.filter(update =>
+    projects.some(project => (!selectedProject || project.name === selectedProject) &&
+      projectUpdateBelongsToParentProject({
+        update: update.updateData,
+        projectName: project.name,
+        scheduleItems: tasks,
+      }),
+    ),
+  ).map(update => [update.updateData.id, update])).values());
+  const matchedIds = new Set(updates.map(update => update.updateData.id));
+  const unmatchedCount = availableUpdates.filter(update => !matchedIds.has(update.updateData.id)).length;
   const completedTasks = tasks.filter(taskIsComplete);
   const openTasks = tasks.filter(task => !taskIsComplete(task));
   const commitmentControl = buildVitruviusCommitmentControl({
@@ -58,6 +71,12 @@ export function DesktopOverviewPage({
           <HealthMetric label="Field Updates" value={updates.length} />
         </View>
       </View>
+
+      {unmatchedCount > 0 ? (
+        <Text style={styles.activityDetail}>
+          {unmatchedCount} additional field updates are retained in Field Activity but cannot be matched to the active projects.
+        </Text>
+      ) : null}
 
       <View style={[styles.workspace, wide && styles.workspaceWide]}>
         <View style={[styles.primaryColumn, wide && styles.primaryColumnWide]}>
@@ -225,10 +244,11 @@ function OverviewProjectCard({
   const open = scheduleRollup.openCount;
   const overdue = projectTasks.filter(taskIsOverdue).length;
   const percent = scheduleRollup.percentComplete;
-  const projectScopes = scheduleProjectScopeNames(project.name, [...tasks]);
-  const projectUpdates = updates.filter(update => projectScopes.some(
-    scope => normalize(update.projectName) === normalize(scope),
-  )).length;
+  const projectUpdates = updates.filter(update => projectUpdateBelongsToParentProject({
+    update: update.updateData,
+    projectName: project.name,
+    scheduleItems: tasks,
+  })).length;
   const health = overdue ? 'At Risk' : open ? 'Active' : projectTasks.length ? 'Complete' : 'Needs Setup';
   const healthColor = overdue ? colors.warning : open ? desktopSurfaces.accent : projectTasks.length ? colors.success : colors.mutedText;
 
@@ -305,10 +325,6 @@ function compareUpdatesNewestFirst(
 function updateDate(value: string | null | undefined): number {
   const parsed = Date.parse(value || '');
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function normalize(value: string | null | undefined): string {
-  return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 function formatActivityDate(value: string | null | undefined): string {
