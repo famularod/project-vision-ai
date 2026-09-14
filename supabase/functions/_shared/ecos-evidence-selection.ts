@@ -8,12 +8,11 @@ import {
   ecosQuestionRequestsInstalledCondition,
 } from "./ecos-project-answer-policy.ts";
 import {
-  ecosNamedCanopyIdentities,
   ecosQuestionExplicitSheetReferences,
-  ecosQuestionNamedCanopyIdentity,
   ecosQuestionRequestsDrawingLocation,
   ecosSheetReferenceMatches,
 } from "./ecos-question-language.ts";
+import { ecosEvidenceIdentityCompatible } from "./ecos-evidence-identity.ts";
 
 export type ECOSEvidenceSelectionSource = Readonly<{
   id: string;
@@ -71,21 +70,9 @@ export function selectECOSEvidenceSources<
   const explicitSheetReferences = ecosQuestionExplicitSheetReferences(
     question,
   );
-  const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
-  const canopyBoundSources = requestedCanopyIdentity
-    ? rankedSources.filter((source) => {
-      if (source.sourceType !== "document") return true;
-      const titleCanopyIdentities = ecosNamedCanopyIdentities(source.title);
-      const evidenceCanopyIdentities = ecosNamedCanopyIdentities(
-        source.excerpt,
-      );
-      const authoritativeCanopyIdentities = titleCanopyIdentities.length > 0
-        ? titleCanopyIdentities
-        : evidenceCanopyIdentities;
-      return authoritativeCanopyIdentities.length === 0 ||
-        authoritativeCanopyIdentities.includes(requestedCanopyIdentity);
-    })
-    : rankedSources;
+  const canopyBoundSources = rankedSources.filter((source) =>
+    ecosEvidenceIdentityCompatible(question, source.title, source.excerpt)
+  );
   const selectionPool = explicitSheetReferences.length > 0
     ? canopyBoundSources.filter((source) =>
       source.sourceType === "document" &&

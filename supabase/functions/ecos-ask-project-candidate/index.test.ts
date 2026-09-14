@@ -1,6 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   assureAnswer,
+  sourceSetSupportsFact,
   canRecoverECOSDeterministicCanopyLightingAnswer,
   canRecoverECOSDeterministicCrossDisciplineLightingAnswer,
   canRecoverECOSDeterministicProgressAnswer,
@@ -13,6 +14,19 @@ import {
   resolveECOSAgentModelBridgeRoute,
   selectECOSDeterministicRecovery,
 } from "./index.ts";
+
+Deno.test("Assurance compares complete numeric values, not substrings", () => {
+  const source = documentSource({id: "room", title: "Room B dimensions", excerpt: "Room B area is 6,344 square feet; slab thickness is 6.0 inches.", page: 1, sheet: "A1", region: "measure"});
+  assertEquals(sourceSetSupportsFact("Room B area is 344 square feet", [source]), false);
+  assertEquals(sourceSetSupportsFact("Room B area is 64 square feet", [source]), false);
+  assertEquals(sourceSetSupportsFact("Room B area is 6344 square feet", [source]), true);
+  assertEquals(sourceSetSupportsFact("Room B slab thickness is 6 inches", [source]), true);
+  assertEquals(sourceSetSupportsFact("Room B area is 6 square feet", [source]), false);
+  assertEquals(sourceSetSupportsFact("Room B slab thickness is 6 feet", [source]), false);
+  assertEquals(sourceSetSupportsFact("Room B area is 6344 SF", [source]), true);
+  const other = {...source, id: "other", title: "Room A", excerpt: "Room A area is 5248 square feet"};
+  assertEquals(sourceSetSupportsFact("Room B area is 5248 square feet", [source, other]), false);
+});
 import { buildECOSDeterministicConflictAnswer } from "../_shared/ecos-agent-conflict-answer.ts";
 import { getECOSControlledConflictFixture } from "../_shared/ecos-agent-conflict-fixtures.ts";
 import { buildECOSDeterministicSynthesisAnswer } from "../_shared/ecos-agent-synthesis-answer.ts";
@@ -1440,6 +1454,54 @@ Deno.test("deterministic area calculation owns variable model wording", () => {
   assertEquals(first.assurance.status, "verified_with_limits");
   assertEquals(first.facts.length, 1);
 });
+
+for (const entity of ["Canopy", "Building", "Room", "Zone", "Unit"]) {
+  Deno.test(`complete Assurance rejects ${entity} cross-source value laundering`, () => {
+    const wrong = documentSource({
+      id: "wrong-entity",
+      title: `${entity} A drawing`,
+      excerpt: `${entity} A area: 6,344 square feet.`,
+      page: 4,
+      sheet: "A4",
+      region: "area-a",
+    });
+    const labelOnly = documentSource({
+      id: "label-only",
+      title: `${entity} B drawing`,
+      excerpt: `${entity} B plan. Area not recorded.`,
+      page: 5,
+      sheet: "A5",
+      region: "label-b",
+    });
+    for (const sources of [[wrong], [wrong, labelOnly], [labelOnly, wrong]]) {
+      const answer = assureAnswer({
+        proposed: {
+          shortAnswer: "6344 SF",
+          facts: [{
+            statement: `${entity} B has an area of 6,344 square feet.`,
+            classification: "fact",
+            sourceIds: sources.map((source) => source.id),
+          }],
+          limitations: [],
+          conflicts: [],
+          suggestedQuestions: [],
+        },
+        sources,
+        projectId: "project-2375",
+        projectName: "2375 Compliance Project",
+        question: `What is the square footage of ${entity} B?`,
+        model: "diagnostic",
+      });
+      assertEquals(answer.assurance.verifiedFactCount, 0);
+      assertEquals(
+        answer.supportingEvidence.some((source) =>
+          source.recordId === "wrong-entity"
+        ),
+        false,
+      );
+    }
+  });
+}
 
 Deno.test("complete Assurance keeps Canopy A, B, and C areas source-bound", () => {
   const sources = [

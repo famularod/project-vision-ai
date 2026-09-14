@@ -1,3 +1,5 @@
+import { ecosEvidenceIdentityCompatible, ecosStatementIdentitySupported } from "../_shared/ecos-evidence-identity.ts";
+import { ecosClaimMeasurementUnitsSupported } from "../_shared/ecos-evidence-measurements.ts";
 import {
   createClient,
   type SupabaseClient,
@@ -4418,6 +4420,11 @@ export function assureAnswer({
   question: string;
   model: string;
 }) {
+  // Recheck identity at the final boundary, including sources obtained by
+  // later agent tool calls. Retrieval ranking is not an authorization gate.
+  sources = sources.filter((source) =>
+    ecosEvidenceIdentityCompatible(question, source.title, source.excerpt)
+  );
   const sourcesById = new Map(sources.map((source) => [source.id, source]));
   const accepted: Array<ProposedFact & { id: string }> = [];
   const installedConditionRequested = ecosQuestionRequestsInstalledCondition(
@@ -5047,10 +5054,15 @@ function safeSuggestedQuestions(
     : [];
 }
 
-function sourceSetSupportsFact(
+export function sourceSetSupportsFact(
   statement: string,
   sources: readonly EvidenceSource[],
 ) {
+  sources = sources.filter((source) =>
+    ecosStatementIdentitySupported(statement, `${source.title} ${source.excerpt}`)
+  );
+  if (sources.length === 0) return false;
+  if (!ecosClaimMeasurementUnitsSupported(statement, sources.map((source) => source.excerpt))) return false;
   const combined = canonicalFactText(
     sources.flatMap((source) => [
       source.title,
@@ -5062,7 +5074,10 @@ function sourceSetSupportsFact(
   );
   const claim = canonicalFactText(statement);
   const claimNumbers = numericTokens(claim);
-  if (claimNumbers.some((token) => !combined.includes(token))) return false;
+  const evidenceNumbers = new Set(numericTokens(combined).map(canonicalNumericToken));
+  // Substrings are not measurements: 64 is not proved by 6,344, and 6.5 is
+  // not proved by 16.5. Preserve equivalent decimal/fraction formatting.
+  if (claimNumbers.some((token) => !evidenceNumbers.has(canonicalNumericToken(token)))) return false;
   const claimWords = meaningfulTokens(claim).filter((token) =>
     !/^[0-9.]+$/.test(token)
   );
@@ -5175,6 +5190,14 @@ function canonicalFactText(value: string) {
 
 function numericTokens(value: string) {
   return value.match(/\b\d+(?:\.\d+)?(?:\s*\/\s*\d+)?\b/g) || [];
+}
+
+function canonicalNumericToken(token: string): string {
+  const parts = token.replace(/\s/g, "").split("/").map(Number);
+  const value = parts.length === 2 ? parts[0] / parts[1] : parts[0];
+  return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER
+    ? String(value)
+    : token;
 }
 
 function normalizeProposedAnswer(value: unknown) {

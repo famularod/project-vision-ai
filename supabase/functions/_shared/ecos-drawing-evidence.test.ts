@@ -248,6 +248,113 @@ Deno.test("plan-footprint calculation rejects a different named canopy", () => {
   );
 });
 
+Deno.test("whole-canopy footprint rejects unlabeled component dimensions on a dense plan", () => {
+  const passages = buildECOSDrawingEvidencePassages({
+    pageText: "CANOPY B ANCHOR ROD PLAN",
+    regions: [
+      {
+        id: "component-horizontal",
+        text: "25'-0\"",
+        x: 0.42,
+        y: 0.70,
+        width: 0.12,
+        height: 0.01,
+        confidence: 0.99,
+        source: "embedded_text",
+        searchable: true,
+      },
+      {
+        id: "component-vertical",
+        text: "20'-0\"",
+        x: 0.20,
+        y: 0.42,
+        width: 0.01,
+        height: 0.12,
+        confidence: 0.99,
+        source: "embedded_text",
+        searchable: true,
+      },
+      {
+        id: "canopy-b-context",
+        text: "CANOPY B ANCHOR ROD PLAN",
+        x: 0.3,
+        y: 0.3,
+        width: 0.2,
+        height: 0.02,
+        confidence: 0.99,
+        source: "embedded_text",
+        searchable: true,
+      },
+    ],
+    question: "What is the square footage for canopy B?",
+    pageIdentity: "DRAWING PAGE CONTEXT: 08B — CANOPY 'B', Sheet WPR-4.",
+  });
+  assert(
+    !passages.some((passage) =>
+      passage.text.includes("ECOS VERIFIED PLAN-FOOTPRINT CALCULATION")
+    ),
+  );
+});
+
+Deno.test("whole-canopy footprint rejects an ambiguous extra overall dimension", () => {
+  const passages = buildECOSDrawingEvidencePassages({
+    pageText: "CANOPY C ANCHOR ROD PLAN",
+    regions: [
+      {
+        id: "horizontal-overall",
+        text: "82'-0\" OVERALL",
+        x: 0.40,
+        y: 0.70,
+        width: 0.20,
+        height: 0.01,
+        confidence: 0.99,
+        source: "rotated_coordinate_ocr",
+        searchable: true,
+      },
+      {
+        id: "second-horizontal-overall",
+        text: "30'-0\" OVERALL",
+        x: 0.40,
+        y: 0.60,
+        width: 0.20,
+        height: 0.01,
+        confidence: 0.99,
+        source: "rotated_coordinate_ocr",
+        searchable: true,
+      },
+      {
+        id: "vertical-overall",
+        text: "32'-0\" OVERALL",
+        x: 0.10,
+        y: 0.40,
+        width: 0.01,
+        height: 0.20,
+        confidence: 0.99,
+        source: "rotated_coordinate_ocr",
+        searchable: true,
+      },
+      {
+        id: "canopy-c-context",
+        text: "CANOPY C ANCHOR ROD PLAN",
+        x: 0.3,
+        y: 0.3,
+        width: 0.2,
+        height: 0.02,
+        confidence: 0.99,
+        source: "vision",
+        searchable: true,
+      },
+    ],
+    question: "What is the square footage for canopy C?",
+    pageIdentity: "DRAWING PAGE CONTEXT: 08C — CANOPY 'C', Sheet WPR-4.",
+  });
+  assert(
+    !passages.some((passage) =>
+      passage.text.includes("ECOS VERIFIED PLAN-FOOTPRINT CALCULATION")
+    ),
+  );
+});
+
 Deno.test("roof-covering area questions may use roof-covering dimensions", () => {
   const passages = buildECOSDrawingEvidencePassages({
     pageText: "CANOPY A ROOF COVERING PLAN",

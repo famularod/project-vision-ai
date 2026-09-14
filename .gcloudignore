@@ -1,0 +1,15 @@
+# Upload only the runtime build inputs, never local fixtures or credentials.
+**
+!deno.lock
+!supabase/
+!supabase/functions/
+!supabase/functions/_shared/
+!supabase/functions/_shared/*.ts
+!supabase/functions/ecos-ask-project-candidate/
+!supabase/functions/ecos-ask-project-candidate/*.ts
+!workers/
+!workers/ecos-agent-query-runtime/
+!workers/ecos-agent-query-runtime/main.ts
+!workers/ecos-agent-query-runtime/Dockerfile
+!workers/ecos-agent-query-runtime/cloudbuild.yaml
+**/*.test.ts

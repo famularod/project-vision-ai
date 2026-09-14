@@ -1,4 +1,5 @@
 import { type ECOSAgentTool } from "./ecos-read-only-agent.ts";
+import { ecosEvidenceIdentityCompatible } from "./ecos-evidence-identity.ts";
 import { ecosEvidenceQuestionContextScore } from "./ecos-project-answer-policy.ts";
 import {
   canonicalizeECOSQuestionLanguage,
@@ -156,6 +157,9 @@ export function createECOSAgentProjectToolRegistry<
       const queryTokens = ecosExpandedQuestionTokens(query);
       const rankedMatches = input.candidates.flatMap((source) => {
         if (requestedTypes && !requestedTypes.has(source.sourceType)) return [];
+        if (
+          !ecosEvidenceIdentityCompatible(query, source.title, source.excerpt)
+        ) return [];
         const haystack = `${source.title} ${source.excerpt}`;
         const contextScore = ecosEvidenceQuestionContextScore(query, haystack);
         const coverage = tokenCoverage(queryTokens, haystack);

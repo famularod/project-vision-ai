@@ -7,6 +7,7 @@ ENV DENO_DIR=/app/.deno_cache \
 
 USER root
 WORKDIR /app
+COPY deno.lock ./deno.lock
 COPY supabase/functions/_shared ./supabase/functions/_shared
 COPY supabase/functions/ecos-ask-project-candidate ./supabase/functions/ecos-ask-project-candidate
 COPY workers/ecos-agent-query-runtime/main.ts ./workers/ecos-agent-query-runtime/main.ts
@@ -14,10 +15,10 @@ COPY workers/ecos-agent-query-runtime/Dockerfile ./workers/ecos-agent-query-runt
 RUN mkdir -p /app/.deno_cache && chown -R deno:deno /app
 
 USER deno
-RUN deno cache --no-config --node-modules-dir=none workers/ecos-agent-query-runtime/main.ts
+RUN deno cache --frozen --lock=deno.lock --no-config --node-modules-dir=none workers/ecos-agent-query-runtime/main.ts
 
 USER root
-RUN LC_ALL=C find supabase/functions/_shared \
+RUN LC_ALL=C find deno.lock supabase/functions/_shared \
       supabase/functions/ecos-ask-project-candidate \
       workers/ecos-agent-query-runtime -type f \
       ! -name '*.test.ts' -print \

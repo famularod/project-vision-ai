@@ -7,6 +7,11 @@ import {
   ecosQuestionRetrievalVariants,
   ecosSheetReferenceMatches,
 } from "./ecos-question-language.ts";
+import {
+  ecosEvidenceIdentityCompatible,
+  ecosExplicitEntityIdentities,
+  ecosStatementIdentitySupported,
+} from "./ecos-evidence-identity.ts";
 
 export type ECOSProjectAnswerRequirement = Readonly<{
   kind: "general" | "measurement" | "quantity" | "presence";
@@ -284,6 +289,19 @@ export function ecosFactAnswersQuestion({
   statement: string;
   sourceExcerpts: readonly string[];
 }) {
+  // Identity-bearing claims must be supported by the same passage that
+  // supplies their values, not a label on one source plus a value on another.
+  if (!ecosEvidenceIdentityCompatible(question, "", statement)) return false;
+  const identityBoundExcerpts = sourceExcerpts.filter((excerpt) =>
+    ecosEvidenceIdentityCompatible(question, "", excerpt, true) &&
+    ecosStatementIdentitySupported(statement, excerpt)
+  );
+  if (
+    (ecosExplicitEntityIdentities(question).length > 0 ||
+      ecosExplicitEntityIdentities(statement).length > 0) &&
+    identityBoundExcerpts.length === 0
+  ) return false;
+  sourceExcerpts = identityBoundExcerpts;
   const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
   if (requestedCanopyIdentity) {
     const sourceCanopyIdentities = ecosNamedCanopyIdentities(
@@ -433,8 +451,10 @@ export function analyzeECOSQuestionEvidenceContext(
   const matchedLocationKindTokens = locationKindTokens.filter((token) =>
     contextTokenMatchesEvidence(token, normalizedEvidence)
   );
-  const subjectMatched = subjectTokens.length === 0 ||
-    matchedSubjectTokens.length / subjectTokens.length >= 0.5;
+  const subjectMatched =
+    ecosEvidenceIdentityCompatible(question, "", evidenceText, true) &&
+    (subjectTokens.length === 0 ||
+      matchedSubjectTokens.length / subjectTokens.length >= 0.5);
   const locationMatched = (
     locationDirectionTokens.length === 0 ||
     matchedLocationDirectionTokens.length > 0
@@ -836,8 +856,22 @@ export function buildECOSDrawingAreaFallback(
     return null;
   }
   const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
+  // This fallback produces one footprint, never a multi-entity comparison.
+  const requestedEntities = ecosExplicitEntityIdentities(question);
+  if (
+    new Set(requestedEntities.map((entity) => entity.kind)).size <
+      requestedEntities.length
+  ) return null;
   for (const source of sources) {
     if (source.sourceType !== "document") continue;
+    if (
+      !ecosEvidenceIdentityCompatible(
+        question,
+        source.title || "",
+        source.excerpt,
+        true,
+      )
+    ) continue;
     if (requestedCanopyIdentity) {
       const titleCanopyIdentities = ecosNamedCanopyIdentities(
         source.title || "",

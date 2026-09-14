@@ -11,6 +11,10 @@ import {
   ecosQuestionExplicitSheetReferences,
   ecosQuestionNamedCanopyIdentity,
 } from "./ecos-question-language.ts";
+import {
+  ecosEvidenceIdentityCompatible,
+  ecosExplicitEntityIdentities,
+} from "./ecos-evidence-identity.ts";
 
 export type ECOSDrawingRegionInput = Readonly<{
   id?: unknown;
@@ -585,6 +589,19 @@ function buildCalculatedAreaPassages(
     pageText,
     ...regions.map((region) => region.text),
   ]).join("\n");
+  const requestedEntities = ecosExplicitEntityIdentities(question);
+  if (
+    new Set(requestedEntities.map((entity) => entity.kind)).size <
+      requestedEntities.length
+  ) return [];
+  if (
+    !ecosEvidenceIdentityCompatible(
+      question,
+      pageIdentity,
+      pageContextText,
+      true,
+    )
+  ) return [];
   const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
   if (requestedCanopyIdentity) {
     const pageIdentityCanopies = ecosNamedCanopyIdentities(pageIdentity);
@@ -618,41 +635,55 @@ function buildCalculatedAreaPassages(
     !/\b(?:module|segment|bay|dimension\s+key)\b/i.test(region.text) &&
     !/\boverview\b/i.test(region.id)
   );
-  const dimensionRegions = explicitlyOverall.length >= 2
-    ? explicitlyOverall
-    : regions;
-  const dimensions = dimensionRegions.flatMap((region) =>
+  // A dense plan sheet can contain hundreds of valid component, bay, detail,
+  // schedule, and accessory dimensions. If OCR misses either outside
+  // dimension, choosing a convenient pair from every dimension on the page
+  // silently promotes a component rectangle to the footprint of the whole
+  // canopy. A calculated whole-plan area therefore requires both dimensions
+  // to be explicitly identified as OVERALL evidence. Missing or ambiguous
+  // outside dimensions must fail closed until the page is re-read.
+  if (explicitlyOverall.length < 2) return [];
+  const dimensions = explicitlyOverall.flatMap((region) =>
     parseFeetDimensions(region.text).map((dimension) => ({
       ...dimension,
       region,
     }))
   ).filter((dimension) => dimension.feet >= 3 && dimension.feet <= 2_000);
-  const uniqueDimensions = dimensions
-    .sort((left, right) => right.feet - left.feet)
-    .filter((dimension, index, all) =>
-      all.findIndex((other) =>
-        Math.abs(other.feet - dimension.feet) < 0.001
-      ) === index
-    );
-  if (uniqueDimensions.length < 2) return [];
-
-  const horizontal =
-    uniqueDimensions.find((dimension) =>
+  const axisFor = (dimension: DrawingDimension) => {
+    if (/\b(?:width|wide)\b/i.test(dimension.region.text)) return "horizontal";
+    if (/\b(?:length|long|depth)\b/i.test(dimension.region.text)) {
+      return "vertical";
+    }
+    if (
       dimension.region.width != null && dimension.region.height != null &&
       dimension.region.width >= dimension.region.height * 1.25
-    ) || uniqueDimensions[0];
-  const vertical =
-    uniqueDimensions.find((dimension) =>
-      dimension.region.id !== horizontal.region.id &&
+    ) return "horizontal";
+    if (
       dimension.region.width != null && dimension.region.height != null &&
       dimension.region.height >= dimension.region.width * 1.25
-    ) || uniqueDimensions.find((dimension) =>
-      dimension.region.id !== horizontal.region.id
-    );
-  if (
-    !horizontal || !vertical ||
-    Math.abs(horizontal.feet - vertical.feet) < 0.001
-  ) return [];
+    ) return "vertical";
+    return null;
+  };
+  const uniqueForAxis = (axis: "horizontal" | "vertical") =>
+    dimensions
+      .filter((dimension) => axisFor(dimension) === axis)
+      .sort((left, right) => right.feet - left.feet)
+      .filter((dimension, index, all) =>
+        all.findIndex((other) =>
+          Math.abs(other.feet - dimension.feet) < 0.001
+        ) === index
+      );
+  const horizontalDimensions = uniqueForAxis("horizontal");
+  const verticalDimensions = uniqueForAxis("vertical");
+  if (horizontalDimensions.length !== 1 || verticalDimensions.length !== 1) {
+    return [];
+  }
+  const [horizontal] = horizontalDimensions;
+  const [vertical] = verticalDimensions;
+  if (!horizontal || !vertical || horizontal.region.id === vertical.region.id) {
+    return [];
+  }
+  const uniqueDimensions = [horizontal, vertical];
 
   const area = roundedArea(horizontal.feet * vertical.feet);
   if (!Number.isFinite(area) || area <= 0) return [];
