@@ -9,6 +9,11 @@ const {
 } = require('./cloud-client-config-preflight');
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vitruvius-cloud-config-'));
+// @expo/env reads this switch from process.env, not the injected fixture.
+// Release builds may intentionally disable dotenv; do not let that ambient
+// setting disable this test's explicit temporary .env fixture.
+const originalNoDotenv = process.env.EXPO_NO_DOTENV;
+delete process.env.EXPO_NO_DOTENV;
 
 try {
   assert.deepEqual(
@@ -46,6 +51,8 @@ try {
     },
   );
 } finally {
+  if (originalNoDotenv === undefined) delete process.env.EXPO_NO_DOTENV;
+  else process.env.EXPO_NO_DOTENV = originalNoDotenv;
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
