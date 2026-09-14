@@ -276,6 +276,52 @@ describe('ECOS project question contract', () => {
   });
 });
 
+describe('server-owned Ask ECOS conversation transport', () => {
+  const conversationId = '66666666-6666-4666-8666-666666666666';
+  const priorTurnId = '77777777-7777-4777-8777-777777777777';
+  const turnId = '88888888-8888-4888-8888-888888888888';
+  const input = { projectId: 'project-2375', projectName: '2375 Compliance Project', question: 'And canopy C?', conversationId, priorTurnId };
+  function clientFor(change: (data: Record<string, any>) => void = () => {}) {
+    const invoke = jest.fn(async (_name, { body }) => {
+      const data: Record<string, any> = {
+        ...answerPayload(), question: body.question,
+        diagnostics: { ...diagnostics(), clientRequestId: body.clientRequestId, clientSurface: body.clientSurface },
+        conversation: { schemaVersion: 'ecos-agent-conversation-context/1.0', conversationId, turnId, priorTurnId: body.priorTurnId || null },
+      };
+      change(data);
+      return { data, error: null, response: null };
+    });
+    return { invoke, client: { auth: { getSession: async () => ({ data: { session: { access_token: 'test-token' } }, error: null }) }, functions: { invoke } } as never };
+  }
+  it('sends IDs on first and follow-up turns and retains the server receipt', async () => {
+    const { client, invoke } = clientFor();
+    const first = await askECOSProjectQuestion({ ...input, priorTurnId: undefined, client });
+    expect(first.conversation).toEqual({ conversationId, turnId, priorTurnId: null });
+    const answer = await askECOSProjectQuestion({ ...input, client });
+    expect(answer.conversation).toEqual({ conversationId, turnId, priorTurnId });
+    expect(invoke.mock.calls[1][1].body).toEqual(expect.objectContaining({ question: 'And canopy C?', conversationId, priorTurnId }));
+    expect(Object.keys(invoke.mock.calls[1][1].body).sort()).toEqual([
+      'clientRequestId', 'clientSurface', 'conversationId', 'priorTurnId', 'projectId', 'projectName', 'question', 'schemaVersion',
+    ]);
+  });
+  it.each(['missing', 'wrong-conversation', 'wrong-prior', 'invalid-turn', 'not-persisted'])('fails closed for %s conversation receipt', async kind => {
+    const { client } = clientFor(data => {
+      if (kind === 'missing') delete data.conversation;
+      if (kind === 'wrong-conversation') data.conversation.conversationId = priorTurnId;
+      if (kind === 'wrong-prior') data.conversation.priorTurnId = null;
+      if (kind === 'invalid-turn') data.conversation.turnId = 'not-an-id';
+      if (kind === 'not-persisted') data.diagnostics.persisted = false;
+    });
+    await expect(askECOSProjectQuestion({ ...input, client })).rejects.toMatchObject({ code: 'conversation_context_unavailable' });
+  });
+  it.each([{ conversationId: undefined }, { conversationId: 'bad' }, { priorTurnId: 'bad' }])('rejects malformed references before invoking the server: %j', override => {
+    const { client, invoke } = clientFor();
+    return expect(askECOSProjectQuestion({ ...input, ...override, client })).rejects.toMatchObject({ code: 'conversation_context_invalid' }).then(() => {
+      expect(invoke).not.toHaveBeenCalled();
+    });
+  });
+});
+
 function diagnostics() {
   return {
     schemaVersion: 'ecos-question-trace/1.0',

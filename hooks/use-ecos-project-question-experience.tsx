@@ -10,6 +10,8 @@ import {
 } from '../services/ECOSProjectQuestion';
 import type { ProjectRecord } from '../services/ProjectCoverPhotoService';
 import { getSupabaseClient } from '../services/SupabaseService';
+import { useNativeWorkspaceOwner } from '../components/native-workspace-owner';
+import { useECOSConversation } from './use-ecos-conversation';
 
 type QuestionState = Readonly<{
   requestGeneration: number;
@@ -44,6 +46,9 @@ export function useECOSProjectQuestionExperience({
   const projectId = useMemo(() => projectRecords.find(project =>
     project.name.trim().toLowerCase() === projectName.trim().toLowerCase(),
   )?.id?.trim() || null, [projectName, projectRecords]);
+  const ownerKey = useNativeWorkspaceOwner();
+  const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName]));
+  useEffect(() => { dismissResult(); }, [conversation, dismissResult]);
 
   const open = useCallback(() => {
     setProjectName(contextualProjectName || '');
@@ -62,6 +67,7 @@ export function useECOSProjectQuestionExperience({
     setVoiceOpen(false);
     setTypedOpen(false);
     const generation = ++requestGeneration.current;
+    const turn = conversation.begin();
     setResult({ requestGeneration: generation, projectName: selectedProjectName, question: cleanQuestion, answer: null, loading: true, error: null });
     try {
       const answer = await askECOSProjectQuestion({
@@ -69,18 +75,21 @@ export function useECOSProjectQuestionExperience({
         projectId,
         projectName: selectedProjectName,
         question: cleanQuestion,
+        ...turn.request,
       });
-      if (requestGeneration.current !== generation) return;
+      if (requestGeneration.current !== generation || !turn.isCurrent()) return;
+      turn.accept(answer.conversation);
       setResult(current => current?.requestGeneration === generation
         ? { ...current, answer, loading: false, error: null }
         : current);
     } catch (error) {
-      if (requestGeneration.current !== generation) return;
+      if (requestGeneration.current !== generation || !turn.isCurrent()) return;
+      turn.accept(null);
       setResult(current => current?.requestGeneration === generation
         ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.' }
         : current);
     }
-  }, [projectId, projectName]);
+  }, [projectId, projectName, conversation]);
 
   const sheets = <>
     <DAVEVoiceCaptureSheet

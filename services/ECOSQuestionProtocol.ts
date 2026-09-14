@@ -1,5 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
+import type { ECOSConversationRequest } from './ECOSConversation';
 
 export const ECOS_PROJECT_QUESTION_FUNCTION = 'ecos-ask-project' as const;
 export const ECOS_PROJECT_QUESTION_SCHEMA_VERSION = 'ecos-project-question/2.0' as const;
@@ -10,7 +11,7 @@ export const ECOS_EVIDENCE_DOSSIER_SCHEMA_VERSION = 'ecos-evidence-dossier/1.0' 
 
 export type ECOSQuestionClientSurface = 'web' | 'iphone' | 'ipad' | 'android' | 'unknown';
 
-export type ECOSProjectQuestionRequest = Readonly<{
+export type ECOSProjectQuestionRequest = ECOSConversationRequest & Readonly<{
   schemaVersion: typeof ECOS_PROJECT_QUESTION_SCHEMA_VERSION;
   clientRequestId: string;
   clientSurface: ECOSQuestionClientSurface;
@@ -36,12 +37,16 @@ export function buildECOSProjectQuestionRequest({
   question,
   clientRequestId = Crypto.randomUUID(),
   clientSurface = currentECOSQuestionClientSurface(),
+  conversationId,
+  priorTurnId,
 }: {
   projectId: string;
   projectName: string;
   question: string;
   clientRequestId?: string;
   clientSurface?: ECOSQuestionClientSurface;
+  conversationId?: string;
+  priorTurnId?: string;
 }): ECOSProjectQuestionRequest {
   return Object.freeze({
     schemaVersion: ECOS_PROJECT_QUESTION_SCHEMA_VERSION,
@@ -50,6 +55,8 @@ export function buildECOSProjectQuestionRequest({
     projectId,
     projectName,
     question,
+    ...(conversationId ? { conversationId } : {}),
+    ...(priorTurnId ? { priorTurnId } : {}),
   });
 }
 

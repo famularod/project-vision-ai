@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { parseECOSConversationReceipt, validECOSConversationRequest, type ECOSConversationReceipt, type ECOSConversationRequest } from './ECOSConversation';
 import type { DAVEAskEvidence } from './DAVEAsk';
 import { normalizeECOSSheetProvenance } from './ECOSSheetProvenance';
 import type { ReferenceDocumentRegionEvidence } from '../types';
@@ -49,6 +50,7 @@ export type ECOSProjectQuestionAnswer = Readonly<{
   generatedAt: string;
   model: string;
   diagnostics: ECOSQuestionDiagnostics;
+  conversation?: ECOSConversationReceipt;
 }>;
 
 export class ECOSProjectQuestionError extends Error {
@@ -100,7 +102,9 @@ export async function askECOSProjectQuestion({
   projectId,
   projectName,
   question,
-}: {
+  conversationId,
+  priorTurnId,
+}: ECOSConversationRequest & {
   client: SupabaseClient | null;
   projectId: string | null;
   projectName: string;
@@ -109,6 +113,9 @@ export async function askECOSProjectQuestion({
   const cleanQuestion = question.replace(/\s+/g, ' ').trim();
   const cleanProjectName = projectName.trim();
   const cleanProjectId = projectId?.trim() || '';
+  if (!validECOSConversationRequest({ conversationId, priorTurnId })) {
+    throw new ECOSProjectQuestionError('conversation_context_invalid', 'Start a new Ask ECOS conversation, then ask again.');
+  }
   if (!client) {
     throw new ECOSProjectQuestionError(
       'not_configured',
@@ -151,6 +158,8 @@ export async function askECOSProjectQuestion({
     projectId: cleanProjectId,
     projectName: cleanProjectName,
     question: cleanQuestion,
+    conversationId,
+    priorTurnId,
   });
   const { data, error, response } = await client.functions.invoke(ECOS_PROJECT_QUESTION_FUNCTION, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -170,6 +179,11 @@ export async function askECOSProjectQuestion({
     );
   }
   const answer = parseECOSProjectQuestionAnswer(data);
+  if (conversationId && (answer.conversation?.conversationId !== conversationId ||
+    answer.conversation.priorTurnId !== (priorTurnId || null) || answer.conversation.turnId === priorTurnId || !answer.diagnostics.persisted)) {
+    throw new ECOSProjectQuestionError('conversation_context_unavailable',
+      'ECOS could not verify this conversation. Start a new question with the full details.', answer.diagnostics.traceId);
+  }
   if (answer.projectId !== requestBody.projectId || answer.question !== requestBody.question ||
     answer.diagnostics.clientRequestId !== requestBody.clientRequestId ||
     answer.diagnostics.clientSurface !== requestBody.clientSurface) {
@@ -239,6 +253,7 @@ export function parseECOSProjectQuestionAnswer(value: unknown): ECOSProjectQuest
     generatedAt,
     model,
     diagnostics,
+    ...(record.conversation != null ? { conversation: parseECOSConversationReceipt(record.conversation) || undefined } : {}),
   });
 }
 
@@ -319,6 +334,9 @@ function projectQuestionErrorMessage(
   projectName: string,
   question: string,
 ) {
+  if (code.startsWith('conversation_') || code === 'prior_turn_id_invalid') {
+    return 'ECOS could not recover the prior question for this project. Please ask again using the full question.';
+  }
   if (code === 'proof_authority_permission_denied') {
     return 'Your sign-in is valid, but this account cannot verify the cited project proof.';
   }

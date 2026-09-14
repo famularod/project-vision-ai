@@ -1,6 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Link } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useECOSConversation } from '../../hooks/use-ecos-conversation';
+import type { ECOSConversationRequest } from '../../services/ECOSConversation';
 import {
   ActivityIndicator,
   Pressable,
@@ -24,17 +26,26 @@ export function DesktopAskECOSWorkspace({
   projectId,
   projectName,
   onAsk,
+  ownerKey,
 }: {
   projectId: string | null;
   projectName: string | null;
-  onAsk: (input: { projectId: string; projectName: string; question: string }) => Promise<ECOSProjectQuestionAnswer>;
+  ownerKey: string;
+  onAsk: (input: ECOSConversationRequest & { projectId: string; projectName: string; question: string }) => Promise<ECOSProjectQuestionAnswer>;
 }) {
   const { width } = useWindowDimensions();
   const compact = width < 820;
+  const conversation = useECOSConversation(JSON.stringify([ownerKey, projectId, projectName]));
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<ECOSProjectQuestionAnswer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    setQuestion('');
+    setAnswer(null);
+    setError(null);
+    setLoading(false);
+  }, [conversation]);
   const ready = Boolean(projectId && projectName && question.trim().length >= 3 && !loading);
   const insufficientEvidence = answer?.assurance.status === 'insufficient_evidence';
   const answerLabel = insufficientEvidence
@@ -50,12 +61,18 @@ export function DesktopAskECOSWorkspace({
     setAnswer(null);
     setError(null);
     setLoading(true);
+    const turn = conversation.begin();
     try {
-      setAnswer(await onAsk({ projectId, projectName, question: cleanQuestion }));
+      const nextAnswer = await onAsk({ projectId, projectName, question: cleanQuestion, ...turn.request });
+      if (!turn.isCurrent()) return;
+      turn.accept(nextAnswer.conversation);
+      setAnswer(nextAnswer);
     } catch (reason) {
+      if (!turn.isCurrent()) return;
+      turn.accept(null);
       setError(reason instanceof Error ? reason.message : 'Ask ECOS could not complete the question.');
     } finally {
-      setLoading(false);
+      if (turn.isCurrent()) setLoading(false);
     }
   };
 

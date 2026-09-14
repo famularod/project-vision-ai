@@ -1,11 +1,13 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { useECOSProjectQuestionExperience } from '../../hooks/use-ecos-project-question-experience';
 import { askECOSProjectQuestion } from '../../services/ECOSProjectQuestion';
+jest.mock('expo-crypto', () => ({ randomUUID: () => '55555555-5555-4555-8555-555555555555' }));
 
 jest.mock('../../components/DAVETypedCaptureSheet', () => ({ DAVETypedCaptureSheet: () => null }));
 jest.mock('../../components/DAVEVoiceCaptureSheet', () => ({ DAVEVoiceCaptureSheet: () => null }));
 jest.mock('../../components/ECOSProjectAnswerSheet', () => ({ ECOSProjectAnswerSheet: () => null }));
 jest.mock('../../services/SupabaseService', () => ({ getSupabaseClient: () => ({}) }));
+jest.mock('../../components/native-workspace-owner', () => ({ useNativeWorkspaceOwner: () => 'owner-one' }));
 jest.mock('../../services/ECOSProjectQuestion', () => ({ askECOSProjectQuestion: jest.fn() }));
 const askMock = jest.mocked(askECOSProjectQuestion);
 const question = 'What work remains?';
@@ -23,6 +25,22 @@ async function start(result: { current: ReturnType<typeof useECOSProjectQuestion
   await act(async () => { sheet(result, 0).onMemoryReady({ transcript: question }); });
 }
 beforeEach(() => askMock.mockReset());
+
+it('preserves the server turn through the mobile Ask Another Question flow', async () => {
+  const turnId = '11111111-1111-4111-8111-111111111111';
+  askMock.mockImplementation(async input => ({
+    answer: 'First answer', conversation: { conversationId: input.conversationId, turnId, priorTurnId: input.priorTurnId || null },
+  }) as never);
+  const { result } = renderHook(() => useECOSProjectQuestionExperience({
+    contextualProjectName: 'Project One', projectRecords: [{ id: 'one', name: 'Project One' }] as never,
+    candidateProjects: ['Project One'], onOpenEvidence: jest.fn(),
+  }));
+  await start(result);
+  await act(async () => { sheet(result, 2).onAskAnother(); });
+  await act(async () => { sheet(result, 0).onMemoryReady({ transcript: 'And canopy C?' }); });
+  expect(askMock.mock.calls[1][0]).toMatchObject({ question: 'And canopy C?', priorTurnId: turnId,
+    conversationId: askMock.mock.calls[0][0].conversationId, projectId: 'one' });
+});
 
 it.each(['answer', 'error'])('ignores a late prior-project %s for identical question wording', async kind => {
   const first = deferred(), second = deferred();
