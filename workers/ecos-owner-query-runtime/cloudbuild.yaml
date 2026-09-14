@@ -1,0 +1,169 @@
+# BUILD DEFINITION ONLY. No deployment, IAM, secrets, migration, traffic or job.
+# Source submission MUST use the explicit repository-root gcloud.ignore here.
+# The first step makes a distinct source-only context with .dockerignore at its
+# root. Building directly from repository root would not use the nested ignore.
+steps:
+  - name: gcr.io/cloud-builders/docker@sha256:3d00b6c1a9b862621c30fc74d4f2abfc62bcbdee631ed3febd31e7edbdf6252c
+    entrypoint: sh
+    env: ['OWNER_QUERY_IMAGE=${_IMAGE}']
+    args:
+      - -ceu
+      - |
+        case "$$OWNER_QUERY_IMAGE" in ''|*[!A-Za-z0-9_./:@-]*) exit 2 ;; esac
+        context=/workspace/owner-query-build-context
+        mkdir -p "$$context/supabase/functions/_shared" "$$context/workers/ecos-query-runtime" "$$context/workers/ecos-owner-query-runtime"
+        cp workers/ecos-owner-query-runtime/.dockerignore "$$context/.dockerignore"
+        cp workers/ecos-owner-query-runtime/Dockerfile workers/ecos-owner-query-runtime/main.ts "$$context/workers/ecos-owner-query-runtime/"
+        cp workers/ecos-query-runtime/deno.lock "$$context/workers/ecos-query-runtime/deno.lock"
+        find supabase/functions/_shared -maxdepth 1 -type f -name '*.ts' ! -name '*.test.ts' ! -name '*fixture*.ts' -exec cp '{}' "$$context/supabase/functions/_shared/" ';'
+        docker build --platform=linux/amd64 --file="$$context/workers/ecos-owner-query-runtime/Dockerfile" --tag="$$OWNER_QUERY_IMAGE" "$$context"
+  # OWNER_QUERY_OFFLINE_SMOKE: the image is published only after this step passes.
+  # No tests, fixtures, user data or credentials are copied into the image.
+  - name: gcr.io/cloud-builders/docker@sha256:3d00b6c1a9b862621c30fc74d4f2abfc62bcbdee631ed3febd31e7edbdf6252c
+    entrypoint: sh
+    timeout: 60s
+    env: ['OWNER_QUERY_IMAGE=${_IMAGE}']
+    args:
+      - -ceu
+      - |
+        printf '%s\n' 'owner_query_smoke_stage=watchdog_preflight'
+        command -v timeout >/dev/null
+        printf '%s\n' 'owner_query_smoke_stage=config_preflight'
+        case "$$OWNER_QUERY_IMAGE" in ''|*[!A-Za-z0-9_./:@-]*) exit 2 ;; esac
+        printf '%s\n' 'owner_query_smoke_stage=attempt_directory'
+        export OWNER_QUERY_SMOKE_DIR="$$(mktemp -d /workspace/owner-query-smoke.XXXXXX)"
+        export OWNER_QUERY_SMOKE_NAME="ecos-owner-query-$$(basename "$$OWNER_QUERY_SMOKE_DIR")"
+        cleanup() {
+          status=$$?
+          trap - EXIT HUP INT TERM
+          if [ "$$status" -eq 0 ]; then
+            export OWNER_QUERY_SMOKE_FAILED=false
+          else
+            export OWNER_QUERY_SMOKE_FAILED=true
+            printf '%s\n' 'owner_query_smoke_stage=failed'
+          fi
+          printf '%s\n' 'owner_query_smoke_stage=cleanup_begin'
+          # An exact-ID attempt is always made, even if create lost its reply.
+          # Cleanup has its own four-second bound, never an indefinite wait.
+          if timeout --signal=KILL 4s sh -seu <<'CLEANUP'
+        cid=''
+        if [ -s "$$OWNER_QUERY_SMOKE_DIR/container-id" ]; then
+          # Docker's cidfile has no newline; read sets cid but returns EOF=1.
+          IFS= read -r cid < "$$OWNER_QUERY_SMOKE_DIR/container-id" || [ -n "$$cid" ]
+        else
+          # Recover only this unique, labelled creation attempt, not a prefix.
+          cid=$$(docker container inspect --format '{{.Id}}' "$$OWNER_QUERY_SMOKE_NAME" 2>/dev/null) || exit 0
+        fi
+        case "$$cid" in ''|*[!a-f0-9]*) exit 1 ;; esac
+        [ "$${#cid}" -eq 64 ]
+        label=$$(docker container inspect --format '{{index .Config.Labels "ecos.owner-query-smoke"}}' "$$cid")
+        [ "$$label" = "$$OWNER_QUERY_SMOKE_NAME" ]
+        if [ "$$OWNER_QUERY_SMOKE_FAILED" = true ]; then
+          # Disabled, secret-free runtime only. Logs are bounded within the same
+          # four-second cleanup budget; failure to collect never skips removal.
+          printf '%s\n' 'owner_query_smoke_stage=startup_logs_begin'
+          timeout --signal=KILL 1s sh -ceu 'docker container logs --tail 32 "$$1" 2>&1 | head -c 8192' sh "$$cid" || printf '%s\n' 'owner_query_smoke_stage=startup_logs_unavailable'
+          printf '\n%s\n' 'owner_query_smoke_stage=startup_logs_end'
+        fi
+        printf '%s\n' 'owner_query_smoke_stage=exact_container_removal'
+        docker container rm --force "$$cid" >/dev/null
+        CLEANUP
+          then
+            printf '%s\n' 'owner_query_smoke_stage=cleanup_finished'
+          else
+            printf '%s\n' 'owner_query_smoke_stage=cleanup_failed'
+            status=1
+          fi
+          exit "$$status"
+        }
+        trap cleanup EXIT
+        trap 'exit 124' HUP INT TERM
+        # TERM at54s, KILL by55s, then <=4s cleanup; the whole Cloud Build step
+        # independently expires at60s. A timeout is failure, never a retry.
+        timeout --signal=TERM --kill-after=1s 54s sh -seu <<'SMOKE'
+        printf '%s\n' 'owner_query_smoke_stage=image_user'
+        [ "$$(docker image inspect --format '{{.Config.User}}' "$$OWNER_QUERY_IMAGE")" = deno ]
+        printf '%s\n' 'owner_query_smoke_stage=container_create'
+        docker container create --name "$$OWNER_QUERY_SMOKE_NAME" \
+          --label "ecos.owner-query-smoke=$$OWNER_QUERY_SMOKE_NAME" \
+          --cidfile "$$OWNER_QUERY_SMOKE_DIR/container-id" \
+          --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+          --cpus=1 --memory=2g --pids-limit=128 --stop-timeout=1 \
+          --env ECOS_OWNER_QUERY_ENABLED=false "$$OWNER_QUERY_IMAGE" >/dev/null
+        printf '%s\n' 'owner_query_smoke_stage=container_id'
+        cid=''
+        IFS= read -r cid < "$$OWNER_QUERY_SMOKE_DIR/container-id" || [ -n "$$cid" ]
+        case "$$cid" in ''|*[!a-f0-9]*) exit 1 ;; esac
+        [ "$${#cid}" -eq 64 ]
+        printf '%s\n' 'owner_query_smoke_stage=container_isolation'
+        [ "$$(docker container inspect --format '{{.Config.User}}' "$$cid")" = deno ]
+        [ "$$(docker container inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$$cid")" = true ]
+        printf '%s\n' 'owner_query_smoke_stage=container_start'
+        docker container start "$$cid" >/dev/null
+        # Startup observation only: no container restart or HTTP request retry.
+        # The sole server log contains public build identity, never credentials.
+        printf '%s\n' 'owner_query_smoke_stage=wait_for_listening'
+        while :; do
+          [ "$$(docker container inspect --format '{{.State.Running}}' "$$cid")" = true ]
+          if docker container logs "$$cid" 2>&1 | grep -q '"event":"owner_query_listening"'; then break; fi
+          sleep 0.1
+        done
+        printf '%s\n' 'owner_query_smoke_stage=filesystem_and_manifest'
+        digest=$$(docker container exec --user deno --workdir /app "$$cid" sh -ceu '
+          [ "$$(id -u)" -ne 0 ]
+          [ ! -w /app ]
+          [ ! -w /app/owner-runtime-source.sha256 ]
+          sha256sum -c /app/packaged-sources.sha256 >/dev/null
+          expected=$$(sha256sum /app/packaged-sources.sha256 | cut -d " " -f 1)
+          actual=$$(cat /app/owner-runtime-source.sha256)
+          [ "$$actual" = "$$expected" ]
+          printf "%s" "$$actual"
+        ')
+        case "$$digest" in ''|*[!a-f0-9]*) exit 1 ;; esac
+        [ "$${#digest}" -eq 64 ]
+        # Test code arrives only on stdin, with no app/user file permission.
+        printf '%s\n' 'owner_query_smoke_stage=disabled_http_probe'
+        docker container exec --interactive --user deno "$$cid" deno run \
+          --no-config --no-lock --no-npm --no-remote --no-prompt \
+          --allow-net=127.0.0.1:8080 --deny-env --deny-read --deny-write \
+          --deny-run --deny-ffi --deny-sys - "$$digest" <<'PROBE'
+        const expected = Deno.args[0];
+        if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error("Invalid smoke identity");
+        const check = (v) => { if (!v) throw new Error("Owner package smoke failed"); };
+        async function get(path, method, status) {
+          const r = await fetch("http://127.0.0.1:8080" + path, {
+            method, redirect: "error", signal: AbortSignal.timeout(10000),
+          });
+          check(r.status === status && r.headers.get("x-ecos-owner-packaged-source-sha256") === expected);
+          check(r.headers.get("cache-control") === "no-store");
+          const reader = r.body.getReader(); let bytes = 0, text = "";
+          const decoder = new TextDecoder("utf-8", { fatal: true });
+          try {
+            while (true) {
+              const next = await reader.read(); if (next.done) break;
+              bytes += next.value.byteLength; check(bytes <= 4096);
+              text += decoder.decode(next.value, { stream: true });
+            }
+            text += decoder.decode(); return JSON.parse(text);
+          } finally { try { await reader.cancel(); } catch {} reader.releaseLock(); }
+        }
+        const health = await get("/status", "GET", 200);
+        check(health.enabled === false && health.packagedSourceSha256 === expected);
+        check(health.service === "ecos-owner-preview" && health.protocol === "ecos-question-preview/2.2");
+        check(health.packageIdentity === "sha256_of_packaged_source_manifest");
+        for (const key of ["sourceReadiness", "modelReadiness", "hostedReadiness"]) check(health[key] === "not_assessed");
+        check(health.sourceViewEnabled === false && health.sourceViewReadiness === "not_assessed");
+        const disabled = await get("/question", "POST", 503);
+        check(disabled.error === "preview_not_enabled");
+        const sourceDisabled = await get("/source", "POST", 503);
+        check(sourceDisabled.error === "source_view_not_enabled" && sourceDisabled.source === null);
+        check((await get("/source?override=forbidden", "POST", 404)).error === "not_found");
+        check((await get("/other", "POST", 404)).error === "not_found");
+        check((await get("/question?override=forbidden", "POST", 404)).error === "not_found");
+        console.log(JSON.stringify({ event: "owner_query_offline_smoke_passed", packagedSourceSha256: expected,
+          enabled: false, remoteNetwork: false, sourceReadiness: "not_assessed", modelReadiness: "not_assessed" }));
+        PROBE
+        printf '%s\n' 'owner_query_smoke_stage=complete'
+        SMOKE
+images: ['${_IMAGE}']
+timeout: 1200s

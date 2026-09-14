@@ -1,0 +1,18 @@
+# Explicit repository-root upload allowlist; no .gitignore include, source PDFs,
+# .env/secrets, node_modules, caches, build output, fixtures or device state.
+**
+!supabase/
+!supabase/functions/
+!supabase/functions/_shared/
+!supabase/functions/_shared/*.ts
+!workers/
+!workers/ecos-query-runtime/
+!workers/ecos-query-runtime/deno.lock
+!workers/ecos-owner-query-runtime/
+!workers/ecos-owner-query-runtime/Dockerfile
+!workers/ecos-owner-query-runtime/.dockerignore
+!workers/ecos-owner-query-runtime/cloudbuild.yaml
+!workers/ecos-owner-query-runtime/gcloud.ignore
+!workers/ecos-owner-query-runtime/main.ts
+**/*.test.ts
+**/*fixture*.ts

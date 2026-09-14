@@ -1,0 +1,16 @@
+# Applied at the ROOT of the isolated build context prepared by cloudbuild.yaml.
+# A nested .dockerignore is not automatically the repository-root build ignore.
+**
+!.dockerignore
+!supabase/
+!supabase/functions/
+!supabase/functions/_shared/
+!supabase/functions/_shared/*.ts
+!workers/
+!workers/ecos-query-runtime/
+!workers/ecos-query-runtime/deno.lock
+!workers/ecos-owner-query-runtime/
+!workers/ecos-owner-query-runtime/Dockerfile
+!workers/ecos-owner-query-runtime/main.ts
+**/*.test.ts
+**/*fixture*.ts
