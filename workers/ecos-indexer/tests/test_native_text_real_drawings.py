@@ -29,14 +29,26 @@ class NativeTextRealDrawingTests(unittest.TestCase):
                     self.assertEqual(hashlib.file_digest(handle, "sha256").hexdigest(), expected_sha)
                 with fitz.open(path) as document:
                     rejected = 0
+                    unmapped_type3_pages = 0
                     retained = 0
                     for page in document:
+                        blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT).get("blocks", [])
                         raw_lines = ["".join(span.get("text", "") for span in line.get("spans", []))
-                            for block in page.get_text("dict").get("blocks", [])
+                            for block in blocks
                             for line in block.get("lines", [])]
                         rejected += sum(not native_text_is_readable(line) for line in raw_lines)
                         regions = native_text_regions(page, page.rect.width, page.rect.height)
                         retained += len(regions)
                         self.assertTrue(all(native_text_is_readable(region["text"]) for region in regions))
+                        fonts = page.get_fonts(full=True)
+                        if fonts and all(font[2] == "Type3" and document.xref_get_key(font[0], "ToUnicode")[0] == "null" for font in fonts):
+                            unmapped_type3_pages += 1
+                            rejected_ids = {f"native-{bi}-{li}"
+                                for bi, block in enumerate(blocks)
+                                for li, line in enumerate(block.get("lines", []))
+                                if any(str(span.get("font", "")).startswith("Type3") for span in line.get("spans", []))}
+                            self.assertTrue(rejected_ids.isdisjoint(r["id"] for r in regions),
+                                "Printable glyph IDs must not survive as trusted text")
                     self.assertGreater(rejected, 0, "Fixture must exercise the observed font failure")
-                    self.assertGreater(retained, 0, "Valid sheet labels must remain readable")
+                    self.assertGreater(unmapped_type3_pages, 0, "Fixture must exercise the observed unmapped-font failure")
+                    self.assertGreater(retained, 0, "Separately mapped sheet labels must remain readable")

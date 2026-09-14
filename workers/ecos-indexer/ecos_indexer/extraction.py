@@ -1681,12 +1681,23 @@ def analyze_structured_table_target(
 
 def native_text_regions(page: fitz.Page, page_width: float, page_height: float) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    font_eligibility: dict[str, bool] = {}
     payload = page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)
     for block_index, block in enumerate(payload.get("blocks") or []):
         if block.get("type") != 0:
             continue
         for line_index, line in enumerate(block.get("lines") or []):
             spans = line.get("spans") or []
+            # Unmapped Type3 glyph IDs can decode to perfectly printable but
+            # meaningless ASCII. Character filtering alone cannot detect this.
+            # Reject the whole mixed line, not just the suspect span: splicing
+            # could remove a subject identifier or change a measurement.
+            for span in spans:
+                font = str(span.get("font") or "")
+                if font not in font_eligibility:
+                    font_eligibility[font] = native_font_has_unicode_authority(page, font)
+            if any(not font_eligibility[str(span.get("font") or "")] for span in spans):
+                continue
             text = "".join(str(span.get("text") or "") for span in spans).strip()
             if not text or not native_text_is_readable(text):
                 continue
@@ -1700,6 +1711,26 @@ def native_text_regions(page: fitz.Page, page_width: float, page_height: float) 
             if region:
                 result.append(region)
     return result
+
+
+def native_font_has_unicode_authority(page: fitz.Page, font: str) -> bool:
+    """Require a Unicode mapping for custom Type3 glyph programs.
+
+    PyMuPDF exposes these unnamed fonts as ``Type3 (xref generation R)``.
+    Standard text fonts retain their normal extraction path. Missing or
+    unreadable Type3 maps use page-bound optical extraction instead.
+    """
+    if not font.startswith("Type3"):
+        return True
+    match = re.fullmatch(r"Type3 \((\d+) \d+ R\)", font)
+    if not match:
+        return False
+    try:
+        kind, reference = page.parent.xref_get_key(int(match[1]), "ToUnicode")
+        mapped = re.fullmatch(r"(\d+) \d+ R", reference) if kind == "xref" else None
+        return bool(mapped and page.parent.xref_stream(int(mapped[1])))
+    except (ValueError, RuntimeError):
+        return False
 
 
 def native_text_is_readable(text: str) -> bool:

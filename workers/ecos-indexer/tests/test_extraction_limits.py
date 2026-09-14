@@ -76,6 +76,28 @@ class ExtractionLimitTests(unittest.TestCase):
         regions = native_text_regions(page, 100, 100)
         self.assertEqual([region["text"] for region in regions], ["Sheet WPB-5"])
 
+    def test_unmapped_type3_ascii_is_not_trusted_and_mixed_line_is_not_spliced(self) -> None:
+        from unittest.mock import Mock
+        page = Mock(rotation=0)
+        page.parent.xref_get_key.return_value = ("null", "null")
+        page.get_text.return_value = {"blocks": [{"type": 0, "lines": [
+            {"bbox": [10, 10, 80, 20], "spans": [{"text": "LMNOPQRS", "font": "Type3 (198 0 R)"}]},
+            {"bbox": [10, 30, 80, 40], "spans": [{"text": "Canopy ", "font": "Helvetica"},
+                {"text": "B", "font": "Type3 (198 0 R)"}]},
+            {"bbox": [10, 50, 80, 60], "spans": [{"text": "Sheet WPB-5", "font": "Helvetica"}]},
+        ]}]}
+        self.assertEqual([r["text"] for r in native_text_regions(page, 100, 100)], ["Sheet WPB-5"])
+
+    def test_type3_with_real_unicode_stream_remains_eligible(self) -> None:
+        from unittest.mock import Mock
+        page = Mock(rotation=0)
+        page.parent.xref_get_key.return_value = ("xref", "199 0 R")
+        page.parent.xref_stream.return_value = b"begincmap endcmap"
+        page.get_text.return_value = {"blocks": [{"type": 0, "lines": [
+            {"bbox": [10, 10, 80, 20], "spans": [{"text": "Sheet WPB-5", "font": "Type3 (198 0 R)"}]},
+        ]}]}
+        self.assertEqual([r["text"] for r in native_text_regions(page, 100, 100)], ["Sheet WPB-5"])
+
     def test_large_drawing_visual_detector_uses_bounded_150_dpi_tiles(self) -> None:
         self.assertEqual(visual_tile_render_dpi(36 * 72, 24 * 72), 150)
 

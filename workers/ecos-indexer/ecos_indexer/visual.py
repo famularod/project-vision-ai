@@ -13,6 +13,7 @@ from typing import Any
 
 import pymupdf as fitz
 import requests
+from .measurement_correction import CORRECTION_SOURCE, AGREEMENT_KEYS, corrected_measurement_text
 
 
 VISUAL_SCHEMA_VERSION = "ecos-drawing-page-analysis/2.0"
@@ -283,6 +284,9 @@ def validated_visual_resolution(
 
     accepted_facts: list[dict[str, Any]] = []
     raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
+    correction = any(candidate.get("source") == CORRECTION_SOURCE for candidate in candidates)
+    if correction and raw_facts and (len(candidates) != 1 or len(raw_facts) != 1):
+        return VisualResolution(False, {}, {"category": "visual_correction_contract_invalid"})
     for raw_fact in raw_facts[:72]:
         fact = normalized_provider_fact(raw_fact, payload)
         if (
@@ -297,18 +301,19 @@ def validated_visual_resolution(
             and meaningful_bounds_overlap(candidate["bounds"], exception_bounds)
             and bounds_within(fact["bounds"], candidate["bounds"], tolerance=0.001)
             and meaningful_bounds_overlap(fact["bounds"], candidate["bounds"])
-            and fact_directly_corroborates_candidate(fact, candidate["text"])
+            and candidate_fact_text(fact, candidate, payload) is not None
         ]
         if not matched_indexes:
             continue
         for matched_index in matched_indexes:
-            canonical_candidate = candidates[matched_index]["text"]
+            canonical_candidate = candidate_fact_text(fact, candidates[matched_index], payload)
             accepted_facts.append({
                 **fact,
                 # The provider is allowed to help read the crop, but it is not
                 # allowed to append conclusions to the durable project fact.
-                # Persist only the exact low-confidence candidate that the
-                # bounded image independently corroborated.
+                # Ordinary candidates retain their exact text; the explicit
+                # correction contract retains the independently agreed
+                # transcription, never the damaged OCR or added conclusions.
                 "statement": canonical_candidate,
                 "evidenceText": canonical_candidate,
                 "subject": canonical_candidate[:240],
@@ -382,6 +387,8 @@ def validated_visual_resolution(
         "assuranceProvider": assurance_provider,
         "assuranceModel": str(payload.get("assuranceModel") or "").strip()[:160],
     }
+    if correction:
+        evidence["measurementCorrectionAgreement"] = {key: payload.get(key) for key in AGREEMENT_KEYS}
     return VisualResolution(True, evidence, {
         "category": "resolved",
         "acceptedFactCount": len(accepted_facts),
@@ -510,6 +517,7 @@ def validated_persisted_visual_evidence(
         or not str(evidence.get("model") or "").strip()
         or not str(evidence.get("assuranceProvider") or "").strip()
         or not str(evidence.get("assuranceModel") or "").strip()
+        or evidence.get("visionProvider") == evidence.get("assuranceProvider")
         or not visual_exception_is_fact_resolvable(exception)
     ):
         return None
@@ -520,6 +528,14 @@ def validated_persisted_visual_evidence(
     facts = evidence.get("facts")
     if not isinstance(facts, list) or not facts:
         return None
+    correction = any(candidate.get("source") == CORRECTION_SOURCE for candidate in candidates)
+    if correction and (
+        len(candidates) != 1 or len(facts) != 1
+        or evidence.get("exceptionFingerprint") != visual_exception_fingerprint(exception)
+        or not EVIDENCE_VERSION_PATTERN.fullmatch(str(evidence.get("evidenceVersion") or ""))
+    ):
+        return None
+    agreement = evidence.get("measurementCorrectionAgreement") if correction else evidence
     accepted: list[dict[str, Any]] = []
     for raw in facts[:72]:
         if not isinstance(raw, dict):
@@ -550,12 +566,12 @@ def validated_persisted_visual_evidence(
             and meaningful_bounds_overlap(candidate["bounds"], exception_bounds)
             and bounds_within(bounds, candidate["bounds"], tolerance=0.001)
             and meaningful_bounds_overlap(bounds, candidate["bounds"])
-            and fact_directly_corroborates_candidate(raw, candidate["text"])
+            and candidate_fact_text(raw, candidate, agreement) is not None
         ]
         if not matched_indexes:
             return None
         for matched_index in matched_indexes:
-            canonical_candidate = candidates[matched_index]["text"]
+            canonical_candidate = candidate_fact_text(raw, candidates[matched_index], agreement)
             accepted.append({
                 **raw,
                 "bounds": bounds,
@@ -622,6 +638,12 @@ def normalized_provider_fact(raw: Any, payload: dict[str, Any]) -> dict[str, Any
         "assuranceProvider": assurance_provider,
         "assuranceModel": assurance_model,
     }
+
+
+def candidate_fact_text(fact, candidate, agreement):
+    if candidate.get("source") == CORRECTION_SOURCE:
+        return corrected_measurement_text(fact, candidate, agreement)
+    return candidate["text"] if fact_directly_corroborates_candidate(fact, candidate["text"]) else None
 
 
 def fact_directly_corroborates_candidate(fact: dict[str, Any], candidate_text: str) -> bool:
