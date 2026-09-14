@@ -1,5 +1,28 @@
 # Step 6: offline Field Note disappearance
 
+## Recovery readback after Wi-Fi restoration
+
+At approximately 2026-09-14 13:54 UTC, both devices were reachable. A targeted
+read-only copy of the iPad owner's Field Notes storage found the original
+`BETA OFFLINE CHECK 0914` note, ID `field-note-mu1acvg2-1357f9l`, created at
+13:35:43.154 UTC, revision 0, pending. Ten records were present: nine synced and
+one pending. Thus the reported note survived in durable device storage; do not
+describe this particular incident as confirmed data loss.
+
+The pending record's saved error was `Sign in is required before Field Notes can
+synchronize.` This is a historical offline attempt result, not proof that the
+current signed-in session is invalid. A fresh read-only query by exact note ID
+still returned no cloud row. Foreground retry and visible recovery remain to be
+verified; do not sign out or replace the session merely because of that message.
+
+The untouched recovery copy and device-copy receipt are in the private research
+folder `research/field-note-recovery-nr1cgZ/` outside the app repository. Note-store
+SHA-256: `d227c6df4466ee2b17aaa6ad6a0d0e96d856657e7c0599d4bfd67e2549e352fd`.
+Only the exact owner Field Notes file was copied; no credentials or whole app
+container were copied. Device storage, installed apps and backend state were not
+modified. The independent refresh/concurrent-write defects remain valid findings
+but are not established as the cause of this original note's disappearance.
+
 ## Report and evidence boundary
 
 The owner reported that a Field Note disappeared after refreshing, and confirmed
