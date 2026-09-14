@@ -11,7 +11,7 @@ export function MobileDocumentECOSStatus({
   onMakeCurrent,
 }: Readonly<{
   document: ReferenceDocument | null;
-  onMakeCurrent: () => void;
+  onMakeCurrent?: () => void;
 }>) {
   if (!document) {
     return (
@@ -38,7 +38,7 @@ export function MobileDocumentECOSStatus({
           <Ionicons name="checkmark-circle" size={18} color={colors.success} />
           <Text style={styles.currentText}>Current for ECOS</Text>
         </View>
-      ) : readiness.canMakeCurrent ? (
+      ) : readiness.canMakeCurrent && onMakeCurrent ? (
         <Pressable
           style={({ pressed }) => [styles.makeCurrentButton, pressed && styles.pressed]}
           onPress={onMakeCurrent}
@@ -50,7 +50,9 @@ export function MobileDocumentECOSStatus({
         </Pressable>
       ) : (
         <Text style={styles.safetyText}>
-          Make Current becomes available only after ECOS preparation and Assurance checks are complete.
+          {onMakeCurrent
+            ? 'Make Current becomes available only after ECOS preparation and Assurance checks are complete.'
+            : 'Manage this shared document in the desktop Documents workspace.'}
         </Text>
       )}
     </View>

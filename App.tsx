@@ -142,6 +142,8 @@ import {
   UpdatesWideWorkspace,
 } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
+import { SharedReferenceDocumentCard } from './components/shared-reference-document-card';
+import { buildMobileDocumentWorkspace, type MobileDocumentWorkspaceEntry } from './services/MobileDocumentWorkspace';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
 import { ProjectDocumentCard } from './components/project-document-card';
@@ -13824,11 +13826,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
             <ProjectDocumentsScreen
               contentStyle={contentStyle}
               projectName={selectedWorkspaceProject}
-              documents={projectDocumentsForScopes(
-                workspaceScopeNames(selectedWorkspaceProject),
-                projectDocuments,
-              )}
+              documents={projectDocuments.filter(document => workspaceScopeNames(selectedWorkspaceProject)
+                .some(name => projectDocumentMatchesProject(document, name) ||
+                  projectRecords.some(project => project.name === name && project.id === document.projectId)))}
               referenceDocuments={referenceDocuments}
+              projectNames={workspaceScopeNames(selectedWorkspaceProject)}
+              projectIdentities={projectRecords}
+              onOpenReference={openReferenceDocument}
               projectAreas={selectedWorkspaceProjectAreas}
               updates={projectUpdatesForScopes(
                 activeSavedUpdates,
@@ -17792,6 +17796,9 @@ function ProjectDocumentsScreen({
   projectName,
   documents,
   referenceDocuments,
+  projectNames,
+  projectIdentities,
+  onOpenReference,
   projectAreas,
   updates,
   onBack,
@@ -17809,6 +17816,9 @@ function ProjectDocumentsScreen({
   projectName: string;
   documents: ProjectDocument[];
   referenceDocuments: ReferenceDocument[];
+  projectNames: string[];
+  projectIdentities: readonly { id?: string | null; name: string }[];
+  onOpenReference: (document: ReferenceDocument) => void;
   projectAreas: ProjectArea[];
   updates: ProjectUpdate[];
   onBack: () => void;
@@ -17826,8 +17836,9 @@ function ProjectDocumentsScreen({
   const [categoryFilter, setCategoryFilter] =
     useState<ProjectDocumentCategory | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
+  const workspaceDocuments = buildMobileDocumentWorkspace({ documents, referenceDocuments, projectNames, projectIdentities });
   const visibleDocuments = filterDAVEDocumentWorkspace({
-    documents,
+    documents: workspaceDocuments,
     category: categoryFilter,
   });
   const selectedDocument = resolveDAVEDocumentWorkspaceDocument(
@@ -17840,21 +17851,27 @@ function ProjectDocumentsScreen({
     if (resolvedId !== selectedDocumentId) setSelectedDocumentId(resolvedId);
   }, [selectedDocument?.id, selectedDocumentId]);
 
-  const renderDocument = ({ item }: { item: ProjectDocument }) => (
-    <ProjectDocumentCard
-      document={item}
-      sharedReferenceDocument={findSharedReferenceDocumentForProjectDocument(item, referenceDocuments)}
-      projectAreas={projectAreas}
-      updates={updates}
-      onOpen={() => onOpen(item)}
-      onUpdate={next => onUpdate(item.id, next)}
-      onSetCurrentSchedule={() => onSetCurrentSchedule(item.id)}
-      onMakeCurrentDocument={onMakeCurrentDocument}
-      onRetry={() => onRetry(item.id)}
-      onReplaceFile={() => onReplaceFile(item.id)}
-      onDelete={() => onDelete(item.id)}
-    />
-  );
+  const renderDocument = ({ item: entry }: { item: MobileDocumentWorkspaceEntry<ProjectDocument> }) => {
+    if (entry.kind === 'reference') {
+      return <SharedReferenceDocumentCard document={entry.reference} onOpen={onOpenReference} />;
+    }
+    const item = entry.attachment;
+    return (
+      <ProjectDocumentCard
+        document={item}
+        sharedReferenceDocument={findSharedReferenceDocumentForProjectDocument(item, referenceDocuments)}
+        projectAreas={projectAreas}
+        updates={updates}
+        onOpen={() => onOpen(item)}
+        onUpdate={next => onUpdate(item.id, next)}
+        onSetCurrentSchedule={() => onSetCurrentSchedule(item.id)}
+        onMakeCurrentDocument={onMakeCurrentDocument}
+        onRetry={() => onRetry(item.id)}
+        onReplaceFile={() => onReplaceFile(item.id)}
+        onDelete={() => onDelete(item.id)}
+      />
+    );
+  };
 
   const listHeader = (
     <ProjectDocumentsHeader
@@ -17868,7 +17885,7 @@ function ProjectDocumentsScreen({
       showActions={sizeClass !== 'wide'}
     />
   );
-  const emptyState = documents.length === 0 ? (
+  const emptyState = workspaceDocuments.length === 0 ? (
     <EmptyState
       title="No documents yet — upload your first document."
       text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, review, or saving."
@@ -17889,24 +17906,7 @@ function ProjectDocumentsScreen({
         masterHeader={listHeader}
         inspectorActions={<ProjectDocumentActions onUpload={onUpload} onTakePhoto={onTakePhoto} wide />}
         emptyState={emptyState}
-        inspector={selectedDocument ? (
-          <ProjectDocumentCard
-            document={selectedDocument}
-            sharedReferenceDocument={findSharedReferenceDocumentForProjectDocument(
-              selectedDocument,
-              referenceDocuments,
-            )}
-            projectAreas={projectAreas}
-            updates={updates}
-            onOpen={() => onOpen(selectedDocument)}
-            onUpdate={next => onUpdate(selectedDocument.id, next)}
-            onSetCurrentSchedule={() => onSetCurrentSchedule(selectedDocument.id)}
-            onMakeCurrentDocument={onMakeCurrentDocument}
-            onRetry={() => onRetry(selectedDocument.id)}
-            onReplaceFile={() => onReplaceFile(selectedDocument.id)}
-            onDelete={() => onDelete(selectedDocument.id)}
-          />
-        ) : emptyState}
+        inspector={selectedDocument ? renderDocument({ item: selectedDocument }) : emptyState}
       />
     );
   }
