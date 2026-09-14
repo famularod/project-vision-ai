@@ -18,6 +18,7 @@ from .visual_coverage import (
     valid_completed_visual_tile_proof,
 )
 from .structured_table_pipeline import validate_persisted_structured_table_analysis
+from .plan_dimensions import derive_verified_plan_dimensions
 VISUAL_COVERAGE_FAILURE_CODES = frozenset({
     "visual_coverage_missing",
     "visual_coverage_schema_mismatch",
@@ -56,6 +57,15 @@ def assure_page(
         expected_evidence_version=expected_evidence_version,
     ))
     regions = page_data.get("regions") if isinstance(page_data.get("regions"), list) else []
+    expected_dimensions, dimension_failures = derive_verified_plan_dimensions(
+        page_data.get("planDimensionAnalysis"), project_id=expected_project_id,
+        source_sha256=expected_source_sha256, page_number=expected_page_number,
+        evidence_version=expected_evidence_version,
+    )
+    failures.extend(dimension_failures)
+    actual_dimensions = [r for r in regions if r.get("factKind") == "plan_dimension_relationship"]
+    if actual_dimensions != expected_dimensions:
+        failures.append("plan_dimension_derivation_mismatch")
     structured_table_analysis = page_data.get("structuredTableAnalysis")
     structured_table_failures = validate_persisted_structured_table_analysis(
         structured_table_analysis,

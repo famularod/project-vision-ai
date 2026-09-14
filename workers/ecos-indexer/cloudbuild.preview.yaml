@@ -1,0 +1,11 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=Dockerfile.preview
+      - --build-arg=EXPECTED_WORKER_SHA=${_WORKER_SHA}
+      - --tag=${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
+timeout: 1200s

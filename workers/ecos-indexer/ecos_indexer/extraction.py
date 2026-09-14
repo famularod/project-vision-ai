@@ -17,6 +17,7 @@ from pytesseract import Output
 
 from . import EVIDENCE_VERSION
 from .sheet_mapping import StructuralSheetIdentity, map_sheet
+from .plan_dimensions import detect_plan_dimension_reads
 from .structured_table_pipeline import (
     StructuredTableInputRejected,
     StructuredTableResourceRejected,
@@ -115,15 +116,15 @@ AMBIGUOUS_PAGE_BOUND_ARCHITECTURAL_IDENTITY_PATTERN = re.compile(
     r"^A-\d{1,2}$", re.IGNORECASE,
 )
 STRICT_FOOT_INCH_PATTERN = re.compile(
-    r"(?<!\d)(\d{1,4})\s*['\u2019]\s*-\s*(\d{1,2})(?:\s+(\d+)\s*/\s*(\d+))?\s*[\"\u201d]",
+    r"(?<!\w)(\d{1,4})\s*['\u2019]\s*-\s*(\d{1,2})(?:\s+(\d+)\s*/\s*(\d+))?\s*[\"\u201d]",
     re.IGNORECASE,
 )
 CORRUPTED_ZERO_INCH_FOOT_PATTERN = re.compile(
-    r"(?<!\d)(\d{1,3})\s*['\u2019]\s*(?:[\u00b0\u00ba]\s*)?[-\u2013\u2014=]\s*[0OQ]\s*[\"\u201d]",
+    r"(?<!\w)(\d{1,3})\s*['\u2019]\s*(?:[\u00b0\u00ba]\s*)?[-\u2013\u2014=]\s*[0OQ]\s*[\"\u201d]",
     re.IGNORECASE,
 )
 RECTANGULAR_FOOT_MEASUREMENT_PATTERN = re.compile(
-    r"(?<!\d)(\d{1,3})\s*['\u2019]\s*[xX\u00d7]\s*(\d{1,3})\s*['\u2019](?!\w)",
+    r"(?<!\w)(\d{1,3})\s*['\u2019]\s*[xX\u00d7]\s*(\d{1,3})\s*['\u2019](?!\w)",
     re.IGNORECASE,
 )
 SINGLE_FOOT_MEASUREMENT_PATTERN = re.compile(
@@ -302,6 +303,10 @@ def extract_page(
         ]
         proof["searchableRegionCount"] = len(proof["searchableRegionIds"])
     base_regions = dedupe_regions([*native_regions, *ocr_regions])
+    plan_dimension_analysis, plan_dimension_targets = detect_plan_dimension_reads(
+        page, base_regions, ocr_regions_for_clip, project_id=project_id,
+        source_sha256=source_sha256, evidence_version=evidence_version,
+    )
     (
         structured_table_regions,
         structured_table_low_confidence,
@@ -434,6 +439,7 @@ def extract_page(
         low_confidence_regions=low_confidence_regions,
     )
     unresolved.extend(label_block_unresolved)
+    unresolved.extend(plan_dimension_targets)
     # The legacy helper is now a bounded OCR/geometry producer only. Once the
     # standalone evaluator has detected a table, its relationship-level gaps
     # are authoritative; retaining the producer's older row-count gap as well
@@ -469,6 +475,7 @@ def extract_page(
         # work, but they do not invalidate independently complete facts or an
         # otherwise usable page. Raw constituents stay non-searchable above.
         "structuredTableLimitations": structured_table_unresolved,
+        "planDimensionAnalysis": plan_dimension_analysis,
     }
     return {
         "native": {"regions": native_regions, "characterCount": len(native_text.strip())},
@@ -2244,6 +2251,7 @@ def ocr_regions_for_clip(
     light_stroke_filter_size: int | None = None,
     minimum_confidence: float = 0.35,
     image_rotation_degrees: int = 0,
+    timeout_seconds: float = 30,
 ) -> list[dict[str, Any]]:
     scale = dpi / 72.0
     pixmap = page.get_pixmap(
@@ -2258,7 +2266,8 @@ def ocr_regions_for_clip(
             image = image.filter(ImageFilter.MaxFilter(light_stroke_filter_size))
         if image_rotation_degrees:
             image = image.rotate(image_rotation_degrees, expand=True)
-        data = pytesseract.image_to_data(image, output_type=Output.DICT, config=config)
+        data = pytesseract.image_to_data(image, output_type=Output.DICT, config=config,
+            timeout=timeout_seconds)
         image_width, image_height = image.size
     return ocr_data_regions(
         data,

@@ -1,0 +1,9 @@
+FROM us-west1-docker.pkg.dev/vitruvius-project-intelligence/vitruvius-workers/ecos-hosted-indexer@sha256:8e0ad307f2e42e75c01a61da7671c19bc5ea45c0a2babb630d9c333c24619260
+
+# Reuse the exact installed dependencies and malware scanner, not a floating
+# base image or an unreviewed dependency upgrade.
+COPY requirements.txt /tmp/ecos-expected-requirements.txt
+RUN cmp /tmp/ecos-expected-requirements.txt /app/requirements.txt
+COPY ecos_indexer /app/ecos_indexer
+ARG EXPECTED_WORKER_SHA
+RUN python -c "from pathlib import Path; import hashlib,os; root=Path('/app'); files=sorted(root.glob('ecos_indexer/*.py')); actual=hashlib.sha256(b'\n'.join(p.relative_to(root).as_posix().encode()+b'\0'+hashlib.sha256(p.read_bytes()).hexdigest().encode() for p in files)).hexdigest(); assert actual == os.environ['EXPECTED_WORKER_SHA'], 'Worker package identity mismatch'; print('ECOS_WORKER_PACKAGE_SHA256='+actual)"

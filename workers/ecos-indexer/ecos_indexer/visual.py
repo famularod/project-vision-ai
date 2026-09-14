@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
+from urllib.parse import urlsplit
 
 import pymupdf as fitz
 import requests
@@ -60,6 +61,7 @@ class BoundedVisualResolver:
     def __init__(self) -> None:
         self.endpoint = os.getenv("ECOS_VISUAL_PROVIDER_URL", "").strip()
         self.token = os.getenv("ECOS_VISUAL_PROVIDER_TOKEN", "").strip()
+        self.measurement_endpoint = os.getenv("ECOS_VISUAL_MEASUREMENT_PROVIDER_URL", "").strip()
 
     @property
     def configured(self) -> bool:
@@ -96,12 +98,33 @@ class BoundedVisualResolver:
         tiles = [
             {
                 "bounds": tile,
-                "imageDataUrl": image_data_url(crop_page(page, tile, scale=3.0)),
+                "imageDataUrl": image_data_url(crop_page(page, tile, scale=visual_read_scale(page, tile))),
             }
             for tile in tile_bounds
         ]
+        try:
+            return self._request_resolution(exception, operation_identity, context, candidates, bounds, reason, overview, tiles)
+        except requests.Timeout:
+            # A timeout is an uncertain provider outcome, not evidence of an
+            # unreadable drawing. Keep the reserved operation for diagnosis;
+            # never retry a paid call automatically under a new identity.
+            return VisualResolution(False, {}, {"category": "visual_service_timeout", "outcomeUncertain": True})
+        except requests.RequestException:
+            return VisualResolution(False, {}, {"category": "visual_service_transport_failed", "outcomeUncertain": True})
+
+    def _request_resolution(self, exception, operation_identity, context, candidates, bounds, reason, overview, tiles):
+        endpoint = self.endpoint
+        if (self.measurement_endpoint and len(candidates) == 1
+            and candidates[0].get("source") == CORRECTION_SOURCE
+            and str(exception.get("regionKey", "")).startswith("low-confidence-ocr-plan-dimension-")):
+            current, selected = urlsplit(self.endpoint), urlsplit(self.measurement_endpoint)
+            if (selected.scheme != "https" or selected.netloc != current.netloc
+                or selected.path != "/functions/v1/ecos-analyze-drawing-page-preview"
+                or selected.query or selected.fragment or selected.username or selected.password):
+                return VisualResolution(False, {}, {"category": "visual_measurement_endpoint_invalid"})
+            endpoint = self.measurement_endpoint
         response = requests.post(
-            self.endpoint,
+            endpoint,
             headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
             json={
                 "schemaVersion": VISUAL_SCHEMA_VERSION,
@@ -126,10 +149,14 @@ class BoundedVisualResolver:
                 "tileBounds": bounds,
                 "tileImages": tiles,
             },
-            timeout=(10, 90),
+            # Longer than one provider's 90-second deadline, but below the
+            # hosted gateway's 150-second idle timeout. This does not make
+            # unbounded sequential provider retries acceptable.
+            timeout=(10, 120),
         )
         if response.status_code >= 500 or response.status_code == 429:
-            return VisualResolution(False, {}, {"category": "visual_service_temporarily_unavailable", "status": response.status_code})
+            return VisualResolution(False, {}, {"category": "visual_service_temporarily_unavailable", "status": response.status_code,
+                "error": bounded_error_code(response)})
         if response.status_code >= 400:
             return VisualResolution(False, {}, {
                 "category": "visual_service_request_rejected",
@@ -982,6 +1009,18 @@ def meaningful_bounds_overlap(
         right["width"] * right["height"],
     )
     return smaller_area > 0 and intersection_area / smaller_area >= minimum_ratio
+
+
+def visual_read_scale(page: fitz.Page, bounds: dict[str, Any]) -> float:
+    """Magnify tiny printed labels without allocating an unbounded page image.
+
+    A fixed 3x scale turns two-point drawing text into six-pixel glyphs.
+    Crop-local scaling preserves source coordinates; it never changes units
+    or supplies a physical measurement from pixels.
+    """
+    width = float(page.rect.width) * float(bounds["width"])
+    height = float(page.rect.height) * float(bounds["height"])
+    return min(24.0, 1536.0 / max(1.0, width, height))
 
 
 def crop_page(page: fitz.Page, bounds: dict[str, Any], *, scale: float = 3.0) -> bytes:

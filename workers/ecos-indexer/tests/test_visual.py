@@ -1,5 +1,6 @@
 import copy
 import unittest
+import requests
 from unittest.mock import Mock, patch
 
 from ecos_indexer.visual import (
@@ -67,6 +68,49 @@ def provider_payload(*, statement='The note specifies a 4" thick PCC walkway.',
 
 
 class VisualTileTests(unittest.TestCase):
+    @patch("ecos_indexer.visual.crop_page", return_value=b"png")
+    @patch("ecos_indexer.visual.requests.post")
+    def test_measurement_routing_never_sends_worker_credentials_to_another_host(self, post, _crop):
+        resolver = BoundedVisualResolver()
+        resolver.endpoint = "https://protected.example/functions/v1/ecos-analyze-drawing-page"
+        resolver.token = "unit-test-token"
+        target = exception(region_key="low-confidence-ocr-plan-dimension-test-horizontal", candidate='20\'-0"')
+        target["diagnosticCandidates"][0]["source"] = "fixed_visual_tile_measurement_transcription_correction"
+        for url in ("https://other.example/functions/v1/ecos-analyze-drawing-page-preview",
+                    "http://protected.example/functions/v1/ecos-analyze-drawing-page-preview",
+                    "https://protected.example/functions/v1/ecos-analyze-drawing-page-preview?token=x"):
+            resolver.measurement_endpoint = url
+            result = resolver.resolve(page=Mock(rect=Mock(width=792,height=612)), exception=target, context=PROVIDER_CONTEXT)
+            self.assertFalse(result.resolved)
+            self.assertEqual(result.internal_diagnostics["category"], "visual_measurement_endpoint_invalid")
+        post.assert_not_called()
+        resolver.measurement_endpoint = "https://protected.example/functions/v1/ecos-analyze-drawing-page-preview"
+        post.return_value = Mock(status_code=502)
+        post.return_value.json.return_value = {"error": "analysis_timeout"}
+        result = resolver.resolve(page=Mock(rect=Mock(width=792,height=612)), exception=target, context=PROVIDER_CONTEXT)
+        self.assertEqual(post.call_args.args[0], resolver.measurement_endpoint)
+        self.assertEqual(result.internal_diagnostics["error"], "analysis_timeout")
+
+    @patch("ecos_indexer.visual.crop_page", return_value=b"png")
+    @patch("ecos_indexer.visual.requests.post")
+    def test_transport_failure_is_uncertain_and_never_retried(self, post, _crop):
+        resolver = BoundedVisualResolver()
+        resolver.endpoint = "https://protected.example/visual"
+        resolver.token = "protected-token"
+        for error, category in (
+            (requests.ReadTimeout("private transport details"), "visual_service_timeout"),
+            (requests.ConnectionError("private transport details"), "visual_service_transport_failed"),
+        ):
+            post.reset_mock()
+            post.side_effect = error
+            result = resolver.resolve(page=Mock(rect=Mock(width=792, height=612)),
+                exception=exception(), context=PROVIDER_CONTEXT)
+            self.assertFalse(result.resolved)
+            self.assertEqual(result.evidence, {})
+            self.assertEqual(result.internal_diagnostics, {"category": category, "outcomeUncertain": True})
+            post.assert_called_once()
+            self.assertEqual(post.call_args.kwargs["timeout"], (10, 120))
+
     def test_provider_operation_identity_matches_exact_canonical_contract(self) -> None:
         identity = visual_provider_operation_identity(PROVIDER_CONTEXT, exception())
 
@@ -626,7 +670,7 @@ class VisualTileTests(unittest.TestCase):
         target = exception()
 
         resolved = resolver.resolve(
-            page=object(),
+            page=Mock(rect=Mock(width=792, height=612)),
             exception=target,
             context={**PROVIDER_CONTEXT, "documentName": "Protected drawing"},
         )

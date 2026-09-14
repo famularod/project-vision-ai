@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import math
 import os
@@ -28,6 +29,7 @@ from .extraction import (
 )
 from .gateway import SourceReconnectRequired, SourceRejected, SupabaseWorkerGateway
 from .models import HostedJob
+from .plan_dimensions import derive_verified_plan_dimensions
 from .security import SourceSecurityRejected, scan_pdf_source
 from .visual import (
     BoundedVisualResolver,
@@ -532,6 +534,20 @@ class HostedIndexerWorker:
                 **exception,
                 "workerResolutionDiagnostics": bounded_diagnostics,
             })
+        derived, dimension_failures = derive_verified_plan_dimensions(
+            result["final"].get("planDimensionAnalysis"), project_id=job.project_id,
+            source_sha256=job.source_sha256, page_number=page_number,
+            evidence_version=EVIDENCE_VERSION,
+        )
+        if derived:
+            result["final"]["regions"].extend(derived)
+            result["final"]["text"] = "\n".join(filter(None, [
+                result["final"].get("text"), *[r["text"] for r in derived],
+            ]))[:100000]
+        if dimension_failures:
+            unresolved.append({"regionKey": "plan-dimension-relationship-unverified",
+                "reason": ",".join(dimension_failures),
+                "bounds": {"x": 0, "y": 0, "width": 1, "height": 1}})
         return unresolved
 
     def fail(self, job: HostedJob, category: str, diagnostics: dict[str, Any], *, retryable: bool) -> None:
@@ -685,6 +701,14 @@ def append_visual_evidence(
     exception: dict[str, Any],
     evidence: dict[str, Any],
 ) -> None:
+    plan_analysis = result["final"].get("planDimensionAnalysis")
+    if isinstance(plan_analysis, dict) and any(
+        t.get("regionKey") == exception.get("regionKey")
+        for t in plan_analysis.get("targets", [])
+    ):
+        plan_analysis["reads"] = [
+            r for r in plan_analysis.get("reads", []) if r.get("regionKey") != exception["regionKey"]
+        ] + [{"regionKey": exception["regionKey"], "evidence": copy.deepcopy(evidence)}]
     for index, fact in enumerate(evidence.get("facts") or []):
         result["final"]["regions"].append({
             "id": f"visual-{exception['regionKey']}-{index + 1}",
