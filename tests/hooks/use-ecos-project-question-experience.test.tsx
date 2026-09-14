@@ -26,6 +26,63 @@ async function start(result: { current: ReturnType<typeof useECOSProjectQuestion
 }
 beforeEach(() => askMock.mockReset());
 
+it('retains the same answer and all sources through repeated document proof round trips', async () => {
+  const sources = ['A', 'B', 'C'].map(name => ({
+    sourceType: 'document', recordId: name, documentCitation: { documentId: name },
+  }));
+  const answer = { answer: 'Three distinct areas', supportingEvidence: sources };
+  askMock.mockResolvedValue(answer as never);
+  const onOpenEvidence = jest.fn();
+  const { result, rerender } = renderHook<ReturnType<typeof useECOSProjectQuestionExperience>, { documentEvidenceVisible: boolean }>(({ documentEvidenceVisible }) => useECOSProjectQuestionExperience({
+    contextualProjectName: 'Project One', projectRecords: [{ id: 'one', name: 'Project One' }] as never,
+    candidateProjects: ['Project One'], onOpenEvidence, documentEvidenceVisible,
+  }), { initialProps: { documentEvidenceVisible: false } });
+  await start(result);
+  for (const source of [...sources, sources[0]]) {
+    await act(async () => { sheet(result, 2).onOpenEvidence(source); });
+    await rerender({ documentEvidenceVisible: true });
+    expect(sheet(result, 2)).toMatchObject({ visible: false, question, answer });
+    await rerender({ documentEvidenceVisible: false });
+    expect(sheet(result, 2)).toMatchObject({ visible: true, question, answer });
+    expect(sheet(result, 2).answer).toBe(answer);
+    expect(onOpenEvidence).toHaveBeenLastCalledWith('Project One', source);
+  }
+  expect(askMock).toHaveBeenCalledTimes(1);
+  await act(async () => { sheet(result, 2).onClose(); });
+  await rerender({ documentEvidenceVisible: true });
+  await rerender({ documentEvidenceVisible: false });
+  expect(sheet(result, 2)).toMatchObject({ visible: false, answer: null });
+});
+
+it('does not resurrect an old answer after changing projects while proof is open', async () => {
+  askMock.mockResolvedValue({ answer: 'Project One answer' } as never);
+  const { result, rerender } = renderHook<ReturnType<typeof useECOSProjectQuestionExperience>, { documentEvidenceVisible: boolean }>(({ documentEvidenceVisible }) => useECOSProjectQuestionExperience({
+    contextualProjectName: 'Project One',
+    projectRecords: [{ id: 'one', name: 'Project One' }, { id: 'two', name: 'Project Two' }] as never,
+    candidateProjects: ['Project One', 'Project Two'], onOpenEvidence: jest.fn(), documentEvidenceVisible,
+  }), { initialProps: { documentEvidenceVisible: false } });
+  await start(result);
+  await act(async () => { sheet(result, 2).onOpenEvidence({ sourceType: 'document', documentCitation: { documentId: 'A' } }); });
+  await rerender({ documentEvidenceVisible: true });
+  await act(async () => { sheet(result, 0).onProjectChange('Project Two'); });
+  await rerender({ documentEvidenceVisible: false });
+  expect(sheet(result, 2)).toMatchObject({ visible: false, answer: null, projectName: 'Project Two' });
+});
+
+it('still dismisses the answer when navigating to a non-document record', async () => {
+  askMock.mockResolvedValue({ answer: 'Task answer' } as never);
+  const onOpenEvidence = jest.fn();
+  const { result } = renderHook(() => useECOSProjectQuestionExperience({
+    contextualProjectName: 'Project One', projectRecords: [{ id: 'one', name: 'Project One' }] as never,
+    candidateProjects: ['Project One'], onOpenEvidence,
+  }));
+  await start(result);
+  const evidence = { sourceType: 'task', recordId: 'task-one' };
+  await act(async () => { sheet(result, 2).onOpenEvidence(evidence); });
+  expect(sheet(result, 2)).toMatchObject({ visible: false, answer: null });
+  expect(onOpenEvidence).toHaveBeenCalledWith('Project One', evidence);
+});
+
 it('preserves the server turn through the mobile Ask Another Question flow', async () => {
   const turnId = '11111111-1111-4111-8111-111111111111';
   askMock.mockImplementation(async input => ({

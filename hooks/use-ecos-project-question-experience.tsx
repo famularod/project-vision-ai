@@ -27,11 +27,13 @@ export function useECOSProjectQuestionExperience({
   projectRecords,
   candidateProjects,
   onOpenEvidence,
+  documentEvidenceVisible = false,
 }: {
   contextualProjectName: string | null;
   projectRecords: readonly ProjectRecord[];
   candidateProjects: readonly string[];
   onOpenEvidence: (projectName: string, evidence: DAVEAskEvidence) => void;
+  documentEvidenceVisible?: boolean;
 }) {
   const [projectName, setProjectName] = useState('');
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -129,7 +131,7 @@ export function useECOSProjectQuestionExperience({
       onCancel={() => setTypedOpen(false)}
     />
     <ECOSProjectAnswerSheet
-      visible={Boolean(result)}
+      visible={Boolean(result) && !documentEvidenceVisible}
       projectName={result?.projectName || projectName}
       question={result?.question || ''}
       answer={result?.answer || null}
@@ -137,7 +139,9 @@ export function useECOSProjectQuestionExperience({
       error={result?.error || null}
       onOpenEvidence={evidence => {
         const answerProject = result?.projectName || projectName;
-        dismissResult();
+        // A document proof is a temporary child view, not dismissal of the answer.
+        // Keep the same result/turn so closing proof restores every source card.
+        if (evidence.sourceType !== 'document' || !evidence.documentCitation) dismissResult();
         onOpenEvidence(answerProject, evidence);
       }}
       onAskAnother={suggestedQuestion => {

@@ -13407,6 +13407,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   const ecosProjectQuestion = useECOSProjectQuestionExperience({
+    documentEvidenceVisible: Boolean(ecosDocumentEvidence.state),
     contextualProjectName: talkContextProjectForScreen(
       screen,
       selectedWorkspaceProject,
