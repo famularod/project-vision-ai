@@ -1,4 +1,5 @@
 -- Private claimed-worker batching. Search continues to require job.state=ready.
+-- Filename aligned to the version assigned by the hosted migration service.
 -- The ready transition independently verifies the complete exact inventory.
 create table public.ecos_claimed_shadow_embedding_runs (
   job_id uuid primary key references public.ecos_hosted_index_jobs(id) on delete cascade,
