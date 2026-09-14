@@ -9,6 +9,7 @@ import {
   ECOS_V2_PREVIEW_RPC_PROJECT_URL,
 } from "./ecos-v2-preview-rpc-transport.ts";
 import { createECOSOwnerRasterDownloadTransport } from "./ecos-owner-raster-images.ts";
+import { sourceDatabaseFailure } from "./ecos-source-diagnostics.ts";
 
 export interface ECOSOwnerSourceViewRuntimeConfig {
   enabled: boolean;
@@ -99,6 +100,8 @@ export function createECOSOwnerSourceViewRuntime(
               event: "ecos_owner_source_transport_failed",
               operation,
               status: response.status,
+              databaseFailure: allowedRPCs.includes(operation)
+                ? await sourceDatabaseFailure(response) : "not_database_rpc",
               elapsedMs: Math.round(performance.now() - started),
             });
           }

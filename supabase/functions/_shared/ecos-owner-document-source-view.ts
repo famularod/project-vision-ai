@@ -3,6 +3,7 @@
  * untrusted lookup data, not access grants or proof an answer was correct.
  * /2.0 job locators and model image URLs are deliberately unsupported. */
 import { copyECOSV2JSON } from "./ecos-v2-json-model.ts";
+import { sourcePhaseTimer } from "./ecos-source-diagnostics.ts";
 import {
   type ECOSLinkedOwnerProjectDocumentInventoryRPC,
   loadECOSLinkedOwnerProjectDocumentInventory,
@@ -367,6 +368,7 @@ export async function resolveECOSOwnerDocumentSourceView(
   const started = performance.now();
   // Diagnostics identify only our fixed operation, never input/source content.
   let phase = "input";
+  const phaseTimer = sourcePhaseTimer();
   let timer: ReturnType<typeof setTimeout> | undefined,
     onAbort: (() => void) | undefined,
     signal: AbortSignal | undefined;
@@ -418,6 +420,7 @@ export async function resolveECOSOwnerDocumentSourceView(
     const run = async () => {
       check();
       phase = "inventory";
+      phaseTimer.next("inventory");
       const { inventory } = await loadECOSLinkedOwnerProjectDocumentInventory(
         i.scope,
         p.inventoryRPC,
@@ -425,6 +428,7 @@ export async function resolveECOSOwnerDocumentSourceView(
       );
       check();
       phase = "indexes";
+      phaseTimer.next("indexes");
       const { resolved: indexes } =
         await loadECOSLinkedOwnerProjectDocumentIndexes(inventory, p.indexRPC, {
           signal: controller.signal,
@@ -467,6 +471,7 @@ export async function resolveECOSOwnerDocumentSourceView(
         indexedPage.head.page_sha256 !== i.locator.page_sha256
       ) return result("changed");
       phase = "page_observations";
+      phaseTimer.next("page_observations");
       const selected = await loadECOSOwnerIndexedPageObservations(
         inventory,
         indexes,
@@ -476,6 +481,7 @@ export async function resolveECOSOwnerDocumentSourceView(
       );
       check();
       phase = "observation_bundle";
+      phaseTimer.next("observation_bundle");
       const bundle = await buildECOSOwnerObservationBundle(
         inventory,
         indexes,
@@ -546,6 +552,7 @@ export async function resolveECOSOwnerDocumentSourceView(
         if (!matched) return result("changed");
       }
       phase = "raster_load";
+      phaseTimer.next("raster_load");
       const images = await loadECOSOwnerRasterImages(
         inventory,
         indexes,
@@ -585,6 +592,7 @@ export async function resolveECOSOwnerDocumentSourceView(
         })
       ) return result("changed");
       phase = "raster_revalidate";
+      phaseTimer.next("raster_revalidate");
       await revalidateECOSOwnerRasterImages(
         images,
         inventory,
@@ -595,6 +603,7 @@ export async function resolveECOSOwnerDocumentSourceView(
       );
       check();
       phase = "result";
+      phaseTimer.next("result");
       const copy = copyECOSOwnerRasterImageForSourceView(
         images,
         inventory,
@@ -627,6 +636,7 @@ export async function resolveECOSOwnerDocumentSourceView(
     } catch { /* Diagnostics never change source acceptance or rejection. */ }
     return fail();
   } finally {
+    phaseTimer.finish();
     if (timer !== undefined) clearTimeout(timer);
     if (signal && onAbort) {
       EventTarget.prototype.removeEventListener.call(signal, "abort", onAbort);
