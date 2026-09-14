@@ -1,4 +1,5 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
+import { ecosExplicitEntityIdentities } from "./ecos-evidence-identity.ts";
 import {
   buildECOSAgentConversationEnvelope,
   ECOS_AGENT_CONVERSATION_CONTEXT_CONTRACT,
@@ -15,6 +16,73 @@ const PRIOR = Object.freeze({
   question: "How many square feet is Canopy A?",
   effectiveQuestion: "How many square feet is Canopy A?",
   evidenceSnapshotId: "33333333-3333-4333-8333-333333333333",
+});
+
+for (
+  const [oldSubject, newSubject] of [
+    ["canopy B", "canopy C"],
+    ["building A", "building B"],
+    ["room 101", "room 102"],
+    ["RFI 12", "RFI 13"],
+    ["EF-1", "EF-2"],
+    ["phase 1", "phase 2"],
+  ]
+) {
+  for (const prefix of ["And", "Also", "What about", "How about"]) {
+    Deno.test(`subject-only follow-up replaces ${oldSubject} with ${newSubject} via ${prefix}`, () => {
+      const prior = {
+        ...PRIOR,
+        effectiveQuestion: `What is documented for ${oldSubject}?`,
+      };
+      const value = resolveECOSAgentConversationQuestion({
+        question: `${prefix} ${newSubject}?`,
+        projectId: PRIOR.projectId,
+        projectName: PRIOR.projectName,
+        priorTurn: prior,
+      });
+      assertEquals(
+        value.effectiveQuestion,
+        `What is documented for ${newSubject}?`,
+      );
+      assertEquals(
+        ecosExplicitEntityIdentities(value.effectiveQuestion),
+        ecosExplicitEntityIdentities(newSubject),
+      );
+    });
+  }
+}
+
+Deno.test("ambiguous or property-changing entity follow-ups require clarification rather than retaining both identities", () => {
+  for (
+    const question of [
+      "And canopy B lighting?",
+      "And canopies B and C?",
+      "And room 101?",
+    ]
+  ) {
+    assertThrows(
+      () =>
+        resolveECOSAgentConversationQuestion({
+          question,
+          projectId: PRIOR.projectId,
+          projectName: PRIOR.projectName,
+          priorTurn: PRIOR,
+        }),
+      Error,
+      "conversation_subject_change_requires_clarification",
+    );
+  }
+  assertThrows(
+    () =>
+      resolveECOSAgentConversationQuestion({
+        question: "And canopy C?",
+        projectId: PRIOR.projectId,
+        projectName: PRIOR.projectName,
+        priorTurn: { ...PRIOR, effectiveQuestion: "Compare canopy A and B." },
+      }),
+    Error,
+    "conversation_subject_change_requires_clarification",
+  );
 });
 
 Deno.test("conversation context resolves a same-project subject follow-up", () => {

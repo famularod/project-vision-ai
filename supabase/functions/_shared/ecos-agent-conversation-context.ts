@@ -1,3 +1,5 @@
+import { ecosExplicitEntityIdentities } from "./ecos-evidence-identity.ts";
+
 export const ECOS_AGENT_CONVERSATION_CONTEXT_CONTRACT =
   "ecos-agent-conversation-context/1.0";
 
@@ -59,12 +61,14 @@ export function resolveECOSAgentConversationQuestion(
 
 export function ecosConversationQuestionRequiresSafetyRefusal(value: string) {
   const normalized = normalize(value);
-  return /\b(?:ignore|disregard|override|bypass)\b[\s\S]{0,80}\b(?:rules?|instructions?|policy|policies|guardrails?)\b/.test(
-    normalized,
-  ) ||
-    /\b(?:reveal|disclose|expose|show)\b[\s\S]{0,80}\banother\s+projects?\b[\s\S]{0,40}\b(?:records?|data|documents?|files?)\b/.test(
+  return /\b(?:ignore|disregard|override|bypass)\b[\s\S]{0,80}\b(?:rules?|instructions?|policy|policies|guardrails?)\b/
+    .test(
       normalized,
-    );
+    ) ||
+    /\b(?:reveal|disclose|expose|show)\b[\s\S]{0,80}\banother\s+projects?\b[\s\S]{0,40}\b(?:records?|data|documents?|files?)\b/
+      .test(
+        normalized,
+      );
 }
 
 export function buildECOSAgentConversationEnvelope(
@@ -168,6 +172,47 @@ function resolution(
 }
 
 function sameProjectFollowUp(priorQuestion: string, question: string) {
+  const directSubject = /^(?:and|also|what\s+about|how\s+about)\s+(.+?)[?.!]*$/i
+    .exec(question)?.[1]?.trim();
+  const currentEntities = ecosExplicitEntityIdentities(question);
+  const priorEntities = ecosExplicitEntityIdentities(priorQuestion);
+  const changesExplicitSubject = currentEntities.some((current) =>
+    !priorEntities.some((prior) =>
+      prior.kind === current.kind && prior.id === current.id
+    )
+  );
+  if (changesExplicitSubject) {
+    // Resolve an explicit subject-only follow-up before retrieval. Flattening
+    // old and new questions together would authorize BOTH labels in the
+    // downstream identity filter. Unsupported/ambiguous changes must clarify.
+    const target = currentEntities.length === 1 ? currentEntities[0] : null;
+    const priorOfKind = target
+      ? priorEntities.filter((item) => item.kind === target.kind)
+      : [];
+    const newSpan = directSubject && target
+      ? soleEntitySpan(directSubject, target)
+      : null;
+    const oldSpan = priorOfKind.length === 1
+      ? soleEntitySpan(priorQuestion, priorOfKind[0])
+      : null;
+    if (
+      !target || !directSubject || !newSpan || !oldSpan ||
+      directSubject.slice(0, newSpan.start).replace(/[^\p{L}\p{N}]/gu, "") ||
+      directSubject.slice(newSpan.end).replace(/[^\p{L}\p{N}]/gu, "")
+    ) {
+      throw new Error("conversation_subject_change_requires_clarification");
+    }
+    const resolved = priorQuestion.slice(0, oldSpan.start) +
+      directSubject.slice(newSpan.start, newSpan.end) +
+      priorQuestion.slice(oldSpan.end);
+    const remaining = ecosExplicitEntityIdentities(resolved).filter((item) =>
+      item.kind === target.kind
+    );
+    if (remaining.length !== 1 || remaining[0].id !== target.id) {
+      throw new Error("conversation_subject_change_requires_clarification");
+    }
+    return resolved;
+  }
   const replacement = /^what\s+about\s+(.+?)[?.!]*$/i.exec(question)?.[1]
     ?.trim();
   if (replacement) {
@@ -185,6 +230,35 @@ function sameProjectFollowUp(priorQuestion: string, question: string) {
     `Current follow-up: ${JSON.stringify(question)}.`,
     "Resolve the reference from the previous question, but answer only from the currently selected project's authorized evidence.",
   ].join(" ");
+}
+
+/** Locate one labeled subject using the shared identity parser, not a canopy-specific rewrite. */
+function soleEntitySpan(
+  value: string,
+  entity: Readonly<{ kind: string; id: string }>,
+) {
+  const tokens = [...value.matchAll(/\S+/g)];
+  const candidates: { start: number; end: number }[] = [];
+  for (let start = 0; start < tokens.length; start += 1) {
+    for (
+      let width = 1;
+      width <= 4 && start + width <= tokens.length;
+      width += 1
+    ) {
+      const from = tokens[start].index!;
+      const last = tokens[start + width - 1];
+      const to = last.index! + last[0].replace(/[?.!,;:]+$/, "").length;
+      const identities = ecosExplicitEntityIdentities(value.slice(from, to));
+      if (
+        identities.length === 1 && identities[0].kind === entity.kind &&
+        identities[0].id === entity.id
+      ) {
+        candidates.push({ start: from, end: to });
+      }
+    }
+  }
+  return candidates.sort((a, b) => (a.end - a.start) - (b.end - b.start))[0] ||
+    null;
 }
 
 function switchProjectIdentifiers(
@@ -215,9 +289,10 @@ function projectSwitchScopeInstruction(currentProjectName: string) {
 function looksContextDependent(value: string) {
   const normalized = normalize(value);
   if (normalized.split(" ").filter(Boolean).length > 18) return false;
-  return /^(?:and\b|also\b|what about\b|now\b|same\b|use the new\b)/.test(
-    normalized,
-  ) ||
+  return /^(?:and\b|also\b|what about\b|how about\b|now\b|same\b|use the new\b)/
+    .test(
+      normalized,
+    ) ||
     /\b(?:that|this|it|those|them|they|same question|previous)\b/.test(
       normalized,
     );
