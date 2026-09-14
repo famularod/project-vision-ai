@@ -40,4 +40,3 @@ class NativeTextRealDrawingTests(unittest.TestCase):
                         self.assertTrue(all(native_text_is_readable(region["text"]) for region in regions))
                     self.assertGreater(rejected, 0, "Fixture must exercise the observed font failure")
                     self.assertGreater(retained, 0, "Valid sheet labels must remain readable")
-
