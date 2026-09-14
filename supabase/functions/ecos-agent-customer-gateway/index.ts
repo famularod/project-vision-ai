@@ -693,17 +693,23 @@ function requiredEnv(name: string) {
   return value;
 }
 
-export function serveECOSAgentCustomerGateway() {
+// Server deployment binding only. It cannot be supplied by a customer request.
+// Keeping the URL and package together in the deployed artifact makes rollback
+// independent of mutable, project-wide Edge Function secrets.
+export function serveECOSAgentCustomerGateway(deployment?: Readonly<{
+  agentRuntimeUrl: string;
+  expectedPackageSha256: string;
+}>) {
   const handler = createECOSAgentCustomerGatewayHandler({
     supabaseUrl: requiredEnv("SUPABASE_URL"),
     anonKey: requiredEnv("SUPABASE_ANON_KEY"),
     betaOwnerId: requiredEnv("ECOS_AGENT_BETA_OWNER_ID"),
-    agentRuntimeUrl: requiredEnv("ECOS_AGENT_RUNTIME_URL"),
+    agentRuntimeUrl: deployment?.agentRuntimeUrl ?? requiredEnv("ECOS_AGENT_RUNTIME_URL"),
     agentRuntimeGatewayToken: requiredEnv(
       "ECOS_AGENT_RUNTIME_GATEWAY_TOKEN",
     ),
     serviceWorkerToken: requiredEnv("ECOS_SERVICE_WORKER_TOKEN"),
-    expectedPackageSha256: requiredEnv(
+    expectedPackageSha256: deployment?.expectedPackageSha256 ?? requiredEnv(
       "ECOS_AGENT_EXPECTED_PACKAGE_SHA256",
     ),
     expectedModel: requiredEnv("ECOS_AGENT_EXPECTED_MODEL"),
