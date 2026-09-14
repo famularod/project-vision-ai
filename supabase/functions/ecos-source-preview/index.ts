@@ -12,9 +12,9 @@ export function createECOSOwnerSourceViewGatewayFromEnvironment(
   try {
     return createECOSOwnerSourceViewGateway({
       enabled: true,
-      sourceURL: "https://proof-4292042---ecos-owner-query-preview-vjn77z65la-uw.a.run.app/source",
+      sourceURL: "https://proof-cpu-b3914f1---ecos-owner-query-preview-vjn77z65la-uw.a.run.app/source",
       gatewayToken: read("ECOS_OWNER_QUERY_GATEWAY_TOKEN"),
-      packagedSourceSha256: "fa1ba27723e5111e8fdbedf40e50ee3b1a6059dd5daec7789cef3fb97e473768",
+      packagedSourceSha256: "54425112f70422f4975a46339cb6008c9104f54310dc812cf7bb944cc4c33374",
       googleIdentity: readECOSOwnerPrivateGatewayIdentity(read),
     });
   } catch {
