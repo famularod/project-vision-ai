@@ -3419,6 +3419,11 @@ def coalesce_low_confidence_regions(
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, int, int]] = set()
     for region in regions:
+        if word_is_covered_by_exact_ocr_line(region, regions):
+            # Original word/line observations remain in rejected OCR data.
+            # Require a visual read of the COMPLETE containing line, including
+            # every qualifier, rather than two dispositions for the same ink.
+            continue
         text = re.sub(r"\s+", " ", str(region.get("text") or "").strip())
         key = (
             text.lower(),
@@ -3494,6 +3499,35 @@ def coalesce_low_confidence_regions(
         ):
             diagnostics[0]["source"] = VISUAL_MEASUREMENT_CORRECTION_SOURCE
     return clusters
+
+
+def word_is_covered_by_exact_ocr_line(
+    word: dict[str, Any], regions: list[dict[str, Any]],
+) -> bool:
+    if (word.get("ocrKind") != "word" or not word.get("ocrPrefix")
+        or not word.get("source") or any(
+            not isinstance(word.get(key), int) or isinstance(word.get(key), bool)
+            or word[key] < 1
+            for key in ("ocrLineNumber", "ocrBlockNumber", "ocrParagraphNumber")
+        )):
+        return False
+    token = re.sub(r"\s+", " ", str(word.get("text") or "").strip())
+    if not token:
+        return False
+    w = normalized_region_bounds(word)
+    for line in regions:
+        if line.get("ocrKind") != "line" or any(word.get(k) != line.get(k) for k in
+            ("source", "ocrPrefix", "ocrLineNumber", "ocrBlockNumber", "ocrParagraphNumber")):
+            continue
+        phrase = re.sub(r"\s+", " ", str(line.get("text") or "").strip())
+        if len(phrase) < len(token) or not re.search(r"(?:^|\s)" + re.escape(token) + r"(?=\s|$)", phrase):
+            continue
+        b = normalized_region_bounds(line)
+        if (w["x"] >= b["x"] - .000002 and w["y"] >= b["y"] - .000002
+            and w["x"] + w["width"] <= b["x"] + b["width"] + .000002
+            and w["y"] + w["height"] <= b["y"] + b["height"] + .000002):
+            return True
+    return False
 
 
 def normalized_region_bounds(region: dict[str, Any]) -> dict[str, float]:

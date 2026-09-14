@@ -814,6 +814,24 @@ class ExtractionLimitTests(unittest.TestCase):
         self.assertEqual([region["text"] for region in accepted], ["LIGHTING"])
         self.assertEqual(rejected, [])
 
+    def test_word_and_its_exact_parent_line_need_one_complete_visual_read(self) -> None:
+        word = dict(text='100’—0"', x=.766061, y=.506667, width=.017879, height=.00549,
+            source="fixed_visual_tile_coordinate_ocr", confidence=.29, ocrKind="word",
+            ocrPrefix="same-tile", ocrLineNumber=1, ocrBlockNumber=2, ocrParagraphNumber=1)
+        line = {**word, "text": 'ELEVATION 100’—0"', "x": .737879, "width": .046061, "ocrKind": "line"}
+        clusters = coalesce_low_confidence_regions([word, line])
+        self.assertEqual([c["text"] for c in clusters[0]["diagnosticCandidates"]], [line["text"]])
+        # Never discard a conflicting reading, qualifier, distinct OCR line,
+        # or same value at a different physical location.
+        for changed in ({"text": '110’—0"'}, {"text": '100’—0" MAX'}, {"ocrPrefix": "other-tile"},
+                        {"ocrLineNumber": 2}, {"x": .79}):
+            self.assertEqual(sum(len(c["diagnosticCandidates"]) for c in coalesce_low_confidence_regions([{**word, **changed}, line])), 2)
+        for key in ("ocrLineNumber", "ocrBlockNumber", "ocrParagraphNumber"):
+            for invalid in (None, 0, True, "1"):
+                with self.subTest(key=key, invalid=invalid):
+                    observations = [{**word, key: invalid}, {**line, key: invalid}]
+                    self.assertEqual(sum(len(c["diagnosticCandidates"]) for c in coalesce_low_confidence_regions(observations)), 2)
+
     def test_unique_low_confidence_measurement_is_not_suppressed_by_nearby_fact(self) -> None:
         accepted_canopy = {
             "id": "ocr-word-canopy",
