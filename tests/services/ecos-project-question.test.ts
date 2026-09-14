@@ -257,7 +257,10 @@ describe('ECOS project question contract', () => {
   it.each([
     ['proof_source_unavailable', 503, 'ECOS found relevant evidence, but the protected cited page is not ready to open yet. The answer was not completed.'],
     ['proof_authority_unavailable', 503, 'The protected proof service is temporarily unavailable. The answer was not completed.'],
-    ['proof_authority_identity_mismatch', 409, 'A cited document changed while ECOS was preparing the answer. Refresh the project and ask again.'],
+    ['proof_authority_identity_mismatch', 409, 'ECOS could not match a cited reference to the current project document and page. The answer was not completed.'],
+    ['answer_provider_unavailable', 503, 'The AI answering service is temporarily unavailable. Your project information is unchanged. Please try again shortly.'],
+    ['answer_timed_out', 503, 'ECOS reached the time limit before it could finish checking the answer. Please try again; no answer has been verified.'],
+    ['answer_research_unavailable', 503, 'ECOS could not complete the project evidence search because a required service failed. This does not mean your documents are missing. Please try again shortly.'],
     ['proof_authority_response_invalid', 502, 'ECOS rejected an invalid proof response. The answer was not completed.'],
   ])('explains the protected proof failure %s accurately', async (code, status, message) => {
     const response = new Response(JSON.stringify({ error: code }), {

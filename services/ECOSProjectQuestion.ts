@@ -345,7 +345,7 @@ function projectQuestionErrorMessage(
     return 'Your sign-in is valid, but this account cannot verify the cited project proof.';
   }
   if (code === 'proof_authority_identity_mismatch') {
-    return 'A cited document changed while ECOS was preparing the answer. Refresh the project and ask again.';
+    return 'ECOS could not match a cited reference to the current project document and page. The answer was not completed.';
   }
   if (code === 'proof_source_unavailable') {
     return 'ECOS found relevant evidence, but the protected cited page is not ready to open yet. The answer was not completed.';
@@ -372,8 +372,17 @@ function projectQuestionErrorMessage(
   if (status === 429 || code === 'question_rate_limited') {
     return 'Ask ECOS has reached its short-term question limit. Wait a few minutes, then retry.';
   }
+  if (code === 'answer_provider_unavailable') {
+    return 'The AI answering service is temporarily unavailable. Your project information is unchanged. Please try again shortly.';
+  }
+  if (code === 'answer_timed_out') {
+    return 'ECOS reached the time limit before it could finish checking the answer. Please try again; no answer has been verified.';
+  }
+  if (code === 'answer_research_unavailable') {
+    return 'ECOS could not complete the project evidence search because a required service failed. This does not mean your documents are missing. Please try again shortly.';
+  }
   if (status === 502 || code === 'answer_provider_failed' || code === 'answer_invalid') {
-    return 'ECOS could not prepare a verified answer from the available evidence. Try again or ask a more specific question.';
+    return 'ECOS could not verify this answer. No verified answer is available from this attempt. Please try again.';
   }
   if (status === 503 || code === 'ai_operation_control_unavailable') {
     return 'Ask ECOS is temporarily unavailable. Try again shortly.';
