@@ -4,8 +4,27 @@ let handle: (r: Request) => Promise<Response>;
 const serve = Deno.serve;
 // Capture the real request handler without opening a listener.
 (Deno as unknown as { serve: unknown }).serve = (h: typeof handle) => { handle = h; };
-const { geminiThinkingLevel, privateStructuredFailureCode } = await import("./index.ts");
+const { geminiThinkingLevel, privateStructuredFailureCode, privateLabelReadContext, privateLabelWasRead } = await import("./index.ts");
 (Deno as unknown as { serve: unknown }).serve = serve;
+
+Deno.test("private first reader gets coordinates and pixels, not an OCR or document-name answer hint", () => {
+  const context = privateLabelReadContext({ x: .1, y: .2, width: .03, height: .01 }, [{
+    bounds: { x: .1, y: .2, width: .03, height: .01 }, imageDataUrl: "private-image",
+    readingImageDataUrl: "private-rotated-image",
+  }]);
+  if (JSON.stringify(context).includes("private-image") || Object.keys(context).sort().join() !== "sourcePageBounds,tileImages") throw Error("Unexpected model context");
+  if (!context.tileImages[0].hasClockwiseReadingAid) throw Error("Reading aid missing");
+});
+
+Deno.test("dismissing corrupted OCR cannot count as a completed private dimension read", () => {
+  const valid = { facts: [{}], acceptedCandidateIndexes: [0], dismissedCandidateIndexes: [],
+    acceptedCandidateIndexesValid: true, dismissedCandidateIndexesValid: true };
+  if (!privateLabelWasRead(valid)) throw Error("Valid read rejected");
+  for (const bad of [{ facts: [] }, { dismissedCandidateIndexes: [0] }, { acceptedCandidateIndexes: [] },
+    { acceptedCandidateIndexesValid: false }, { facts: [{},{}] }]) {
+    if (privateLabelWasRead({ ...valid, ...bad })) throw Error("Non-read accepted");
+  }
+});
 
 Deno.test("private single-label reasoning budget cannot inherit broad drawing settings", () => {
   const old = Deno.env.get("ECOS_GEMINI_DRAWING_THINKING_LEVEL");

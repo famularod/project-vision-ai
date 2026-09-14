@@ -123,6 +123,14 @@ class BoundedVisualResolver:
                 or selected.query or selected.fragment or selected.username or selected.password):
                 return VisualResolution(False, {}, {"category": "visual_measurement_endpoint_invalid"})
             endpoint = self.measurement_endpoint
+        # A lossless reading aid only for the isolated one-label service.
+        # Keep tile 0 and all proof coordinates in the original page orientation.
+        if (urlsplit(endpoint).path == "/functions/v1/ecos-analyze-drawing-page-preview"
+            and len(tiles) == 1 and len(candidates) == 1
+            and candidates[0].get("source") == CORRECTION_SOURCE
+            and str(exception.get("regionKey", "")).startswith("low-confidence-ocr-plan-dimension-")
+            and candidates[0]["bounds"]["height"] > candidates[0]["bounds"]["width"] * 2):
+            tiles = [{**tiles[0], "readingImageDataUrl": clockwise_reading_image(tiles[0]["imageDataUrl"])}]
         response = requests.post(
             endpoint,
             headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
@@ -1049,6 +1057,18 @@ def ImageFromPixmap(pixmap: fitz.Pixmap):
 
 def image_data_url(payload: bytes) -> str:
     return f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}"
+
+
+def clockwise_reading_image(original: str) -> str:
+    """Rotate pixels 90 degrees without resampling, adding or removing content."""
+    from PIL import Image
+    raw = base64.b64decode(original.split(",", 1)[1], validate=True)
+    with Image.open(io.BytesIO(raw)) as source:
+        if source.width * source.height > 1536 * 1536:
+            raise ValueError("reading_crop_too_large")
+        output = io.BytesIO()
+        source.transpose(Image.Transpose.ROTATE_270).save(output, format="PNG")
+        return image_data_url(output.getvalue())
 
 
 def visual_tile_bounds(bounds: dict[str, Any]) -> list[dict[str, float]]:

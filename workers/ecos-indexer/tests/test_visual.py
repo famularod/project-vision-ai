@@ -1,4 +1,6 @@
 import copy
+import base64
+import io
 import unittest
 import requests
 from unittest.mock import Mock, patch
@@ -14,6 +16,7 @@ from ecos_indexer.visual import (
     visual_exception_fingerprint,
     visual_provider_operation_identity,
     visual_tile_bounds,
+    clockwise_reading_image,
 )
 
 
@@ -68,6 +71,41 @@ def provider_payload(*, statement='The note specifies a 4" thick PCC walkway.',
 
 
 class VisualTileTests(unittest.TestCase):
+    @patch("ecos_indexer.visual.requests.post")
+    def test_only_private_vertical_measurement_gets_reading_aid_and_original_coordinates(self, post):
+        from PIL import Image
+        source = Image.new("RGB", (30, 90), "white")
+        stream = io.BytesIO()
+        source.save(stream, format="PNG")
+        resolver = BoundedVisualResolver()
+        resolver.endpoint = "https://protected.example/functions/v1/ecos-analyze-drawing-page"
+        resolver.token = "unit-test-token"
+        target = exception(region_key="low-confidence-ocr-plan-dimension-test-vertical")
+        target["diagnosticCandidates"][0].update(source="fixed_visual_tile_measurement_transcription_correction",
+            bounds={"x": .1, "y": .2, "width": .01, "height": .05})
+        post.return_value = Mock(status_code=502)
+        post.return_value.json.return_value = {"error": "analysis_timeout"}
+        with patch("ecos_indexer.visual.crop_page", return_value=stream.getvalue()):
+            resolver.resolve(page=Mock(rect=Mock(width=792,height=612)), exception=target, context=PROVIDER_CONTEXT)
+            self.assertNotIn("readingImageDataUrl", post.call_args.kwargs["json"]["tileImages"][0])
+            resolver.measurement_endpoint = "https://protected.example/functions/v1/ecos-analyze-drawing-page-preview"
+            resolver.resolve(page=Mock(rect=Mock(width=792,height=612)), exception=target, context=PROVIDER_CONTEXT)
+            payload = post.call_args.kwargs["json"]
+            self.assertEqual(payload["tileBounds"], BOUNDS)
+            self.assertEqual(payload["tileImages"][0]["bounds"], BOUNDS)
+            self.assertIn("readingImageDataUrl", payload["tileImages"][0])
+
+    def test_reading_rotation_is_lossless_and_keeps_every_pixel(self):
+        from PIL import Image
+        original = Image.new("RGB", (17, 53))
+        original.putdata([(i % 255, i // 255, 71) for i in range(17 * 53)])
+        stream = io.BytesIO()
+        original.save(stream, format="PNG")
+        result = clockwise_reading_image("data:image/png;base64," + base64.b64encode(stream.getvalue()).decode())
+        with Image.open(io.BytesIO(base64.b64decode(result.split(",", 1)[1]))) as rotated:
+            self.assertEqual(rotated.size, (53, 17))
+            self.assertEqual(rotated.transpose(Image.Transpose.ROTATE_90).tobytes(), original.tobytes())
+
     @patch("ecos_indexer.visual.crop_page", return_value=b"png")
     @patch("ecos_indexer.visual.requests.post")
     def test_measurement_routing_never_sends_worker_credentials_to_another_host(self, post, _crop):
