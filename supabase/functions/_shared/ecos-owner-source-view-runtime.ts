@@ -59,7 +59,11 @@ export function createECOSOwnerSourceViewRuntime(
   const handler = createECOSOwnerSourceViewHandler({
     enabled,
     budgetMs: 120000,
-    maxConcurrent: 1,
+    // One owner may inspect proof on desktop, phone and tablet concurrently.
+    // These are read-only, bounded source requests, never model questions.
+    // Hosted deployment retains one instance and must admit >= 3 requests.
+    maxConcurrent: 3,
+    maxConcurrentPerOwner: 3,
     authorize: createECOSV2OwnerPreviewAuthorizer({
       supabaseUrl: ECOS_V2_PREVIEW_RPC_PROJECT_URL,
       anonKey,

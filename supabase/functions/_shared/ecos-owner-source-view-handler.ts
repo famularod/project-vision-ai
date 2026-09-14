@@ -158,6 +158,7 @@ export interface ECOSOwnerSourceViewDependencies {
   ): Promise<unknown>;
   budgetMs?: number;
   maxConcurrent?: number;
+  maxConcurrentPerOwner?: number;
 }
 
 function scopeCopy(
@@ -199,7 +200,7 @@ export function createECOSOwnerSourceViewHandler(
   if (
     names.some((k) =>
       typeof k !== "string" ||
-      !["enabled", "authorize", "resolve", "budgetMs", "maxConcurrent"]
+      !["enabled", "authorize", "resolve", "budgetMs", "maxConcurrent", "maxConcurrentPerOwner"]
         .includes(k)
     ) ||
     ["enabled", "authorize", "resolve"].some((k) => !Object.hasOwn(d, k)) ||
@@ -212,14 +213,16 @@ export function createECOSOwnerSourceViewHandler(
     authorize = input.authorize,
     resolve = input.resolve;
   const budget = input.budgetMs ?? 30000,
-    maxConcurrent = input.maxConcurrent ?? 4;
+    maxConcurrent = input.maxConcurrent ?? 4,
+    maxConcurrentPerOwner = input.maxConcurrentPerOwner ?? 1;
   if (
     !Number.isSafeInteger(budget) || budget < 1 || budget > 120000 ||
     !Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1 ||
-    maxConcurrent > 4
+    maxConcurrent > 4 || !Number.isSafeInteger(maxConcurrentPerOwner) ||
+    maxConcurrentPerOwner < 1 || maxConcurrentPerOwner > maxConcurrent
   ) throw invalid();
   let active = 0;
-  const owners = new Set<string>();
+  const owners = new Map<string, number>();
   return async (request: Request): Promise<Response> => {
     const started = performance.now();
     // Fixed private stages only. Never log caller tokens, source locators,
@@ -278,7 +281,11 @@ export function createECOSOwnerSourceViewHandler(
       if (!released) {
         released = true;
         active--;
-        if (owner) owners.delete(owner);
+        if (owner) {
+          const count = (owners.get(owner) ?? 1) - 1;
+          if (count > 0) owners.set(owner, count);
+          else owners.delete(owner);
+        }
       }
     };
     const child = new AbortController(), deadline = performance.now() + budget;
@@ -324,9 +331,10 @@ export function createECOSOwnerSourceViewHandler(
       remaining();
       if (!grant) return error("project_access_denied", 403);
       const scope = scopeCopy(grant, body.projectId);
-      if (owners.has(scope.ownerId)) return error("source_view_busy", 429);
+      const ownerActive = owners.get(scope.ownerId) ?? 0;
+      if (ownerActive >= maxConcurrentPerOwner) return error("source_view_busy", 429);
       owner = scope.ownerId;
-      owners.add(owner);
+      owners.set(owner, ownerActive + 1);
       phase = "resolve_source";
       const value = await resolve(scope, body, child.signal, remaining());
       remaining();
