@@ -1,6 +1,6 @@
 {
   "name": "project-photo-update-tool",
-  "version": "1.0.196",
+  "version": "1.0.197",
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.11",
