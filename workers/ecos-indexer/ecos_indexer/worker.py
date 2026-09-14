@@ -144,7 +144,13 @@ class HostedIndexerWorker:
                     "p_source_sha256": actual_sha,
                     "p_source_page_count": document.page_count,
                 })
-                completed_pages = self.gateway.completed_pages(job)
+                reconcile_exceptions = job.mode == "shadow" and os.getenv(
+                    "ECOS_RECONCILE_SHADOW_VISUAL_EXCEPTIONS"
+                ) == "enabled"
+                completed_pages = (
+                    self.gateway.completed_pages(job, recheck_unresolved_exceptions=True)
+                    if reconcile_exceptions else self.gateway.completed_pages(job)
+                )
                 for page_number in range(1, document.page_count + 1):
                     if page_number in completed_pages:
                         continue
@@ -218,6 +224,10 @@ class HostedIndexerWorker:
                             on_visual_tile_checkpoint=checkpoint_visual_tile,
                         )
                         unresolved = self.resolve_visual_exceptions(job, page, page_number, result)
+                        if reconcile_exceptions:
+                            result["final"]["visualExceptionInventory"] = visual_exception_inventory(
+                                job, page_number, result["unresolved"],
+                            )
                         assurance = assure_page(
                             page_data=result["final"],
                             expected_project_id=job.project_id,
@@ -239,6 +249,11 @@ class HostedIndexerWorker:
                         "p_unresolved_region_count": len(unresolved),
                     })
                     self.drain_shadow_materializations(job, max_pages=1)
+                    if reconcile_exceptions and assurance["accepted"] and not unresolved:
+                        self.gateway.reconcile_shadow_visual_exceptions(
+                            job, page_number=page_number,
+                            inventory=result["final"]["visualExceptionInventory"],
+                        )
                     if unresolved:
                         raise VisualExceptionUnresolvedError(
                             page_number=page_number,
@@ -730,6 +745,17 @@ def append_visual_evidence(
             "evidenceVersion": evidence.get("evidenceVersion"),
             "exceptionFingerprint": evidence.get("exceptionFingerprint"),
         })
+
+
+def visual_exception_inventory(job: HostedJob, page_number: int, exceptions: list[dict[str, Any]]) -> dict[str, Any]:
+    items = [{"regionKey": item["regionKey"], "exceptionFingerprint": visual_exception_fingerprint(item)}
+             for item in exceptions]
+    if len(items) > 100 or len({i["regionKey"] for i in items}) != len(items):
+        raise ValueError("Visual exception inventory is ambiguous or over limit")
+    return {"schemaVersion": "ecos-visual-exception-inventory/1.0",
+        "sourceSha256": job.source_sha256, "pageNumber": page_number,
+        "evidenceVersion": EVIDENCE_VERSION,
+        "claimSha256": hashlib.sha256(job.claim_token.encode()).hexdigest(), "items": items}
 
 
 class PermanentIndexError(RuntimeError):

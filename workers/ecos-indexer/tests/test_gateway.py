@@ -473,5 +473,26 @@ class GatewayTests(unittest.TestCase):
         )
 
 
+    @patch("ecos_indexer.gateway.requests.get")
+    def test_assured_page_with_old_pending_exception_is_reprocessed(self, get):
+        page_response = Mock(content=b"[]")
+        page_response.json.return_value = [{"page_number": 4}, {"page_number": 8}]
+        pending_response = Mock(content=b"[]")
+        pending_response.json.return_value = [{"page_number": 8}]
+        get.side_effect = [page_response, pending_response]
+        self.assertEqual(SupabaseWorkerGateway().completed_pages(self.job(), recheck_unresolved_exceptions=True), {4})
+        self.assertEqual(get.call_args.kwargs["params"]["state"], "not.in.(resolved,cancelled)")
+
+    @patch("ecos_indexer.gateway.requests.get")
+    def test_incomplete_pending_inventory_does_not_skip_pages(self, get):
+        page_response = Mock(content=b"[]")
+        page_response.json.return_value = [{"page_number": 8}]
+        pending_response = Mock(content=b"[]")
+        pending_response.json.return_value = [{"page_number": 8}] * 1000
+        get.side_effect = [page_response, pending_response]
+        with self.assertRaises(ProtectedGatewayError):
+            SupabaseWorkerGateway().completed_pages(self.job(), recheck_unresolved_exceptions=True)
+
+
 if __name__ == "__main__":
     unittest.main()

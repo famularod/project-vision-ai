@@ -334,7 +334,7 @@ class SupabaseWorkerGateway:
                 raise SourceRejected("Managed source exceeds the hosted processing limit")
         return bytes(payload)
 
-    def completed_pages(self, job: HostedJob) -> set[int]:
+    def completed_pages(self, job: HostedJob, *, recheck_unresolved_exceptions: bool = False) -> set[int]:
         response = requests.get(
             f"{self.base_url}/rest/v1/ecos_hosted_index_pages",
             headers=self.headers,
@@ -347,7 +347,35 @@ class SupabaseWorkerGateway:
         )
         response.raise_for_status()
         rows = response.json() if response.content else []
-        return {int(row["page_number"]) for row in rows if isinstance(row, dict) and row.get("page_number")}
+        completed = {int(row["page_number"]) for row in rows if isinstance(row, dict) and row.get("page_number")}
+        if recheck_unresolved_exceptions:
+            if job.mode != "shadow":
+                raise ProtectedGatewayError("Exception reconciliation requires shadow mode")
+            response = requests.get(
+                f"{self.base_url}/rest/v1/ecos_hosted_visual_exceptions",
+                headers=self.headers, params={"job_id": f"eq.{job.job_id}",
+                    "state": "not.in.(resolved,cancelled)", "select": "page_number", "limit": "1000"},
+                timeout=(10, 60),
+            )
+            response.raise_for_status()
+            pending = response.json()
+            if not isinstance(pending, list) or len(pending) >= 1000:
+                raise ProtectedGatewayError("Pending exception inventory is incomplete")
+            for row in pending:
+                page = row.get("page_number") if isinstance(row, dict) else None
+                if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+                    raise ProtectedGatewayError("Pending exception page identity is invalid")
+                completed.discard(page)
+        return completed
+
+    def reconcile_shadow_visual_exceptions(self, job: HostedJob, *, page_number: int, inventory: dict[str, Any]) -> int:
+        count = self.rpc("ecos_reconcile_shadow_visual_exceptions_v2", {
+            "p_job_id": job.job_id, "p_claim_token": job.claim_token,
+            "p_page_number": page_number, "p_current_exceptions": inventory["items"],
+        })
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ProtectedGatewayError("Exception reconciliation returned an invalid count")
+        return count
 
     def page_checkpoint(self, job: HostedJob, *, page_number: int) -> dict[str, Any] | None:
         """Read an unfinished, source-bound page checkpoint for tile resume.

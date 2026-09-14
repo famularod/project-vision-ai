@@ -17,11 +17,27 @@ from ecos_indexer.worker import (
     bounded_visual_resolution_diagnostics,
     page_processing_deadline,
     reusable_resolved_visual_evidence,
+    visual_exception_inventory,
 )
 
 
 BOUNDS = {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4}
 PROVIDER_BOUNDS = {"x": 100, "y": 200, "width": 300, "height": 400}
+
+
+class ExceptionInventoryTests(unittest.TestCase):
+    def test_inventory_binds_claim_without_persisting_the_capability(self):
+        import hashlib
+        job = hosted_job()
+        exception = visual_exception()
+        inventory = visual_exception_inventory(job, 4, [exception])
+        self.assertEqual(inventory["sourceSha256"], job.source_sha256)
+        self.assertEqual(inventory["claimSha256"], hashlib.sha256(job.claim_token.encode()).hexdigest())
+        self.assertEqual(inventory["items"][0]["exceptionFingerprint"], visual_exception_fingerprint(exception))
+        self.assertNotIn(job.claim_token, str(inventory))
+        self.assertEqual(visual_exception_inventory(job, 4, [])["items"], [])
+        with self.assertRaises(ValueError):
+            visual_exception_inventory(job, 4, [exception, exception])
 
 
 def visual_exception(*, region_key="low-confidence-ocr-1", bounds=None, reason=None):
