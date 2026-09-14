@@ -3098,6 +3098,7 @@ async function loadMatchedPageNeighborhoods(
       : "";
     const sheetTitle = text(row.sheet_title) || text(row.title);
     const pageIdentity = [
+      documentById.get(documentId)?.name || "",
       sheetNumber ? `Sheet ${sheetNumber}` : `PDF page ${pageNumber}`,
       sheetTitle,
     ].filter(Boolean).join(" — ");
@@ -3309,7 +3310,7 @@ async function loadShadowPageIdentityRows(
   });
 }
 
-async function loadShadowPageRows(
+export async function loadShadowPageRows(
   _client: EdgeSupabaseClient,
   projectId: string,
   pageKeys: readonly string[],
@@ -3404,6 +3405,7 @@ async function loadShadowPageRows(
         : "";
       const sheetTitle = text(finalPage.sheetTitle) || text(finalPage.title);
       const pageIdentity = [
+        documentById.get(documentId)?.name || "",
         sheetNumber ? `Sheet ${sheetNumber}` : `PDF page ${pageNumber}`,
         sheetTitle,
       ].filter(Boolean).join(" — ");
