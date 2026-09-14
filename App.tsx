@@ -13921,7 +13921,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
           {screen === 'FieldNotes' && <NativeFieldNotesExperience
             contentStyle={contentStyle}
-            ownerKey={layer4Identity?.authenticatedUserId || layer4Identity?.authenticatedEmail || 'local-device'}
             projects={activeProjects}
             projectRecords={projectRecords}
             projectAreas={projectAreas}

@@ -22,22 +22,22 @@ import {
   type FieldNoteVoiceProjectRecord,
 } from '../services/FieldNoteVoiceContext';
 import { mobileFieldNoteDataSource } from '../services/FieldNoteMobileSync';
+import { useNativeWorkspaceOwner } from './native-workspace-owner';
 
 type VoiceProjectArea = Readonly<{ name: string; projectName?: string | null }>;
 
 export function NativeFieldNotesExperience({
   contentStyle,
-  ownerKey,
   projects,
   projectRecords,
   projectAreas,
 }: {
   contentStyle: StyleProp<ViewStyle>;
-  ownerKey: string;
   projects: readonly string[];
   projectRecords: readonly FieldNoteVoiceProjectRecord[];
   projectAreas: readonly VoiceProjectArea[];
 }) {
+  const ownerKey = useNativeWorkspaceOwner() ?? 'local-device';
   const [voiceContext, setVoiceContext] = useState<FieldNoteVoiceContext | null>(null);
   const [voiceDraft, setVoiceDraft] = useState<FieldNoteVoiceDraft | null>(null);
 

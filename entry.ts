@@ -11,6 +11,7 @@ import {
 
 import App from './App';
 import { PendingChangesRetryBoundary } from './components/pending-changes-retry-boundary';
+import { NativeWorkspaceOwnerContext } from './components/native-workspace-owner';
 import {
   createOwnerStorageSandbox,
   type OwnerStorageSandboxError,
@@ -23,7 +24,7 @@ import { ownerWorkspaceAuthDecision } from './services/OwnerWorkspaceAuthDecisio
 
 // Native keeps the established application entry and navigation controller.
 // Metro resolves entry.web.ts on the browser platform instead.
-function NativeRoot() {
+export function NativeRoot() {
   const sandbox = useMemo(
     () => createOwnerStorageSandbox({ storage: AsyncStorage }),
     [],
@@ -149,13 +150,14 @@ function NativeRoot() {
   }
 
   return createElement(
-    PendingChangesRetryBoundary,
-    {
+    NativeWorkspaceOwnerContext.Provider,
+    { value: state.ownerId },
+    createElement(PendingChangesRetryBoundary, {
       key: `owner-${state.ownerId || 'signed-out'}-${generation}`,
       children: createElement(App, {
         key: `app-${state.ownerId || 'signed-out'}-${generation}`,
       }),
-    },
+    }),
   );
 }
 
