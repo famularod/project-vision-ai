@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import { DesktopDocumentProofPreview } from '../../components/web-shell/desktop-document-proof-preview';
 import type { ECOSDesktopDocumentProofFocus } from '../../services/ECOSDesktopProofNavigation';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
@@ -107,6 +107,26 @@ describe('DesktopDocumentProofPreview customer path', () => {
       bounds: BOUNDS,
     });
     expect(view.queryByText('ASK ECOS PROOF UNAVAILABLE')).toBeNull();
+    fireEvent.press(view.getByText('View full cited page'));
+    expect(view.getByLabelText('Full verified drawing page 6').props.source.uri)
+      .toBe('data:image/png;base64,protected-page');
+    fireEvent.press(view.getByText('Original resolution'));
+    expect(view.getByLabelText('Full verified drawing page 6').props.style.width).toBe(4898);
+    expect(getArtifactUrl).not.toHaveBeenCalled();
+    expect(loadProofDocument).toHaveBeenCalledTimes(1);
+    fireEvent.press(view.getByText('Close full page'));
+    expect(view.queryByLabelText('Full verified drawing page 6')).toBeNull();
+    fireEvent.press(view.getByText('View full cited page'));
+    view.rerender(
+      <DesktopDocumentProofPreview
+        document={compactDocument}
+        focus={null}
+        projectIdentities={[{ id: PROJECT_ID, name: '2375 Compliance Project' }]}
+        loadProofDocument={loadProofDocument}
+        getArtifactUrl={getArtifactUrl}
+      />,
+    );
+    expect(view.queryByLabelText('Full verified drawing page 6')).toBeNull();
   });
 
   it('does not tell the user the document changed when the proof service is missing', async () => {
@@ -129,5 +149,6 @@ describe('DesktopDocumentProofPreview customer path', () => {
       'The protected proof service is temporarily unavailable. The project document was not reported as changed.',
     )).toBeTruthy();
     expect(view.queryByText('The cited source no longer matches this document.')).toBeNull();
+    expect(view.queryByText('View full cited page')).toBeNull();
   });
 });

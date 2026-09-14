@@ -3,10 +3,13 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
@@ -170,6 +173,13 @@ export function DesktopDocumentProofPreview({
     ? `${document.id}:${resolved.page?.pageNumber || focus?.pageNumber}:${resolved.region?.id || 'bounds'}:${protectedPage?.sha256 || document.cloudUpdatedAt || document.indexedAt || ''}`
     : '';
   const [preview, setPreview] = useState<PreviewState>(EMPTY_PREVIEW);
+  const [fullPageKey, setFullPageKey] = useState<string | null>(null);
+  const [originalResolution, setOriginalResolution] = useState(false);
+  const viewport = useWindowDimensions();
+  useEffect(() => {
+    setFullPageKey(null);
+    setOriginalResolution(false);
+  }, [authorityKey]);
 
   useEffect(() => {
     if (!resolved || !focus) {
@@ -358,6 +368,55 @@ export function DesktopDocumentProofPreview({
           <Text style={styles.openText}>Open the full cited page</Text>
         </Pressable>
       ) : null}
+      {protectedPage ? (
+        <>
+          <Pressable
+            style={styles.openButton}
+            accessibilityRole="button"
+            onPress={() => { setOriginalResolution(false); setFullPageKey(previewKey); }}
+          >
+            <Text style={styles.openText}>View full cited page</Text>
+          </Pressable>
+          <Modal
+            visible={fullPageKey === previewKey}
+            transparent
+            animationType="none"
+            onRequestClose={() => setFullPageKey(null)}
+          >
+            <View style={styles.pageOverlay}>
+              <View style={styles.pageDialog} accessibilityViewIsModal>
+                <Text accessibilityRole="header" style={styles.title}>
+                  {sheetNumber ? `Sheet ${sheetNumber} · ` : ''}Full cited PDF page {focus.pageNumber}
+                </Text>
+                <Text style={[styles.message, { flex: 0 }]}>
+                  Same verified source page, without the preview crop. Check every dimension used in a calculation.
+                </Text>
+                <View style={styles.header}>
+                  <Pressable style={styles.openButton} accessibilityRole="button" onPress={() => setOriginalResolution(value => !value)}>
+                    <Text style={styles.openText}>{originalResolution ? 'Fit page' : 'Original resolution'}</Text>
+                  </Pressable>
+                  <Pressable style={styles.openButton} accessibilityRole="button" onPress={() => setFullPageKey(null)}>
+                    <Text style={styles.openText}>Close full page</Text>
+                  </Pressable>
+                </View>
+                <ScrollView style={styles.pageScroll}>
+                  <ScrollView horizontal>
+                    <Image
+                      source={{ uri: protectedPage.dataUrl }}
+                      accessibilityLabel={`Full verified drawing page ${focus.pageNumber}`}
+                      resizeMode="contain"
+                      style={{
+                        width: originalResolution ? protectedPage.width : Math.min(protectedPage.width, Math.max(240, viewport.width - 80)),
+                        aspectRatio: protectedPage.width / protectedPage.height,
+                      }}
+                    />
+                  </ScrollView>
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+        </>
+      ) : null}
     </View>
   );
 }
@@ -397,6 +456,9 @@ function openDrawingPage(url: string, pageNumber: number) {
 }
 
 const styles = StyleSheet.create({
+  pageOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', padding: 24 },
+  pageDialog: { flex: 1, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, gap: 12 },
+  pageScroll: { flex: 1 },
   card: {
     borderWidth: 2,
     borderColor: desktopSurfaces.accent,
