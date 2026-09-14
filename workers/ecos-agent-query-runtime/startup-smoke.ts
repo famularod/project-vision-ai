@@ -4,7 +4,8 @@ const dockerfile = await Deno.readTextFile("/app/workers/ecos-agent-query-runtim
 const command = dockerfile.match(/^CMD (\[.*\])$/m)?.[1];
 if (!command) throw Error("Runtime CMD unavailable");
 const args: string[] = JSON.parse(command);
-if (!args.includes("--cached-only") || !args.includes("--no-prompt")) throw Error("Unbounded runtime CMD");
+if (!args.includes("--cached-only") || !args.includes("--no-prompt") ||
+    !args.includes("--frozen") || !args.includes("--lock=/app/deno.lock")) throw Error("Unbounded runtime CMD");
 const isolated = args.map((arg) => arg.startsWith("--allow-net=") ? "--allow-net=0.0.0.0:8080" : arg);
 const hash = (await Deno.readTextFile("/app/ecos-agent-runtime-source.sha256")).trim();
 const child = new Deno.Command("deno", { args: isolated, clearEnv: true,
