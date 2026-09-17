@@ -1328,9 +1328,12 @@ async function buildLivePIECoreIntelligenceForScope(
   input: PIECoreInput,
 ): Promise<PIECoreOutput> {
   const runtime = input.runtime || buildRuntime(input.runtimeContext || {});
+  const authorityRuntime = input.runtimeContext?.currentUpdate
+    ? buildRuntime({ ...input.runtimeContext, currentUpdate: null })
+    : runtime;
   const reportScope = coreReportScope(input, runtime);
   const liveRealityAuthority = await runPIERealityModelOrchestration({
-    runtime,
+    runtime: authorityRuntime,
     organizationId: input.organizationId,
     projectId: input.projectId,
     identityTrusted: input.identityTrusted,

@@ -690,7 +690,9 @@ export function mergeRealityObjects(
       ...historical.sourceEvidenceReferences,
       ...active.sourceEvidenceReferences,
     ]),
-    assertions: dedupeById([...historical.assertions, ...active.assertions]),
+    assertions: equalTimeConflict
+      ? markCrossSourceContradictions(historical.assertions, active.assertions)
+      : dedupeById([...historical.assertions, ...active.assertions]),
     relationships: dedupeById([...historical.relationships, ...active.relationships]),
     dependencies: dedupeById([...historical.dependencies, ...active.dependencies]),
     goals: dedupeById([...historical.goals, ...active.goals]),
@@ -736,6 +738,22 @@ export function mergeRealityObjects(
     previousStatus: existing.currentStatus,
     nextStatus: mergedStatus,
   });
+}
+
+function markCrossSourceContradictions(
+  left: PIERealityAssertion[],
+  right: PIERealityAssertion[],
+) {
+  const all = dedupeById([...left, ...right]);
+  return all.map(assertion => ({
+    ...assertion,
+    contradictingEvidenceIds: Array.from(new Set([
+      ...assertion.contradictingEvidenceIds,
+      ...all
+        .filter(other => other.id !== assertion.id && other.source !== assertion.source)
+        .flatMap(other => other.supportingEvidenceIds),
+    ])),
+  }));
 }
 
 export function updateRealityObjectState(
@@ -1463,9 +1481,10 @@ function buildRealityAssertion({
     statement: source.summary || source.name,
     classification,
     supportingEvidenceIds,
-    contradictingEvidenceIds: /contradict|conflict|disputed/i.test(`${source.name} ${source.summary || ''}`)
-      ? supportingEvidenceIds
-      : [],
+    // Words such as "conflict" in a note are not contradiction evidence.
+    // Contradictions are attached only after two independently sourced facts
+    // have actually been compared.
+    contradictingEvidenceIds: [],
     confidence: source.confidence || 'medium',
     source: source.evidenceType || source.type,
     createdAt: generatedAt,
@@ -1526,10 +1545,15 @@ function buildModelConflictRecords(
 ): PIERealityConflict[] {
   const contradicted = objects.filter(object => {
     const activeAssertions = currentRealityAssertions(object);
-    return object.currentStatus === 'contradicted' ||
-      activeAssertions.some(assertion => assertion.contradictingEvidenceIds.length > 0);
+    const evidenceSourceById = new Map(
+      object.sourceEvidenceReferences.map(link => [link.evidenceId, link.evidenceType]),
+    );
+    return activeAssertions.some(assertion => assertion.contradictingEvidenceIds.some(evidenceId =>
+      !assertion.supportingEvidenceIds.includes(evidenceId) &&
+      Boolean(evidenceSourceById.get(evidenceId)) &&
+      evidenceSourceById.get(evidenceId) !== assertion.source,
+    ));
   });
-  const duplicateCandidates = findDuplicateCandidates(objects);
   const identityCollisions = findSourceIdentityCollisions(objects);
   return [
     ...contradicted.map(object => {
@@ -1553,24 +1577,6 @@ function buildModelConflictRecords(
       resolutionExplanation: null,
     };
     }),
-    ...duplicateCandidates.map(([left, right]) => ({
-      id: `conflict-duplicate-${left.identity.id}-${right.identity.id}`,
-      organizationId,
-      projectId,
-      affectedObjectIds: [left.identity.id, right.identity.id],
-      affectedAssertionIds: [...left.assertions, ...right.assertions].map(assertion => assertion.id),
-      supportingEvidenceSideA: left.assertions.flatMap(assertion => assertion.supportingEvidenceIds),
-      supportingEvidenceSideB: right.assertions.flatMap(assertion => assertion.supportingEvidenceIds),
-      conflictType: 'duplicate_object_conflict' as const,
-      severity: 'medium' as const,
-      confidence: 'medium' as const,
-      status: 'open' as const,
-      resolutionOwner: left.owner || right.owner,
-      recommendedNextEvidence: [`Confirm whether ${left.name} and ${right.name} are the same object.`],
-      createdAt: generatedAt,
-      resolvedAt: null,
-      resolutionExplanation: null,
-    })),
     ...identityCollisions.map(([left, right, sourceIdentityKey]) => ({
       id: `conflict-identity-${[left.identity.id, right.identity.id].sort().join('-')}`,
       organizationId,

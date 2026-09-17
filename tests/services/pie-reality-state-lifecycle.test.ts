@@ -121,7 +121,7 @@ describe('Reality object current-state lifecycle', () => {
       generatedAt: '2026-07-18T11:01:00.000Z',
     });
 
-    expect(conflicted.status).toBe('conflicted');
+    expect(conflicted.status).toBe('authoritative');
     expect(resolved.objects[0].currentStatus).toBe('complete');
     expect(resolved.evidenceConflicts).toEqual([]);
     expect(resolved.status).toBe('authoritative');
@@ -170,7 +170,6 @@ describe('Reality object current-state lifecycle', () => {
       summary: 'Electrical rough-in is complete.',
       status: 'complete',
       evidenceId: 'field-electrical',
-      evidenceType: 'field_update',
       updatedAt: '2026-07-18T11:00:00.000Z',
     }, '2026-07-18T11:01:00.000Z');
     const late = createRealityObject({
@@ -206,12 +205,14 @@ describe('Reality object current-state lifecycle', () => {
     };
     const blocked = {
       ...base,
+      evidenceType: 'schedule',
       summary: 'Electrical rough-in is blocked.',
       status: 'blocked' as const,
       evidenceId: 'field-electrical-blocked',
     };
     const complete = {
       ...base,
+      evidenceType: 'field_update',
       summary: 'Electrical rough-in is complete.',
       status: 'complete' as const,
       evidenceId: 'field-electrical-complete',
