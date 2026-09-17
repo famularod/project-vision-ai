@@ -1,0 +1,41 @@
+# BUILD + OFFLINE IMAGE CHECKS ONLY. No Run Job, scheduler, IAM, secrets or deploy.
+# Before building, inspect the installed SDK file chooser with this custom
+# ignore file. `gcloud meta list-files-for-upload` does not accept --ignore-file
+# in the installed SDK. Submit a verified source-only archive or use the SAME
+# explicit ignore file with builds submit, plus an explicit reviewed _IMAGE tag.
+# Docker's separate .dockerignore is NOT the Cloud Build upload boundary.
+steps:
+  - name: gcr.io/cloud-builders/docker@sha256:3d00b6c1a9b862621c30fc74d4f2abfc62bcbdee631ed3febd31e7edbdf6252c
+    args: [build, --platform=linux/amd64, --file=workers/ecos-indexer/Dockerfile.owner-preview, '--tag=${_IMAGE}', workers/ecos-indexer]
+  - name: gcr.io/cloud-builders/docker@sha256:3d00b6c1a9b862621c30fc74d4f2abfc62bcbdee631ed3febd31e7edbdf6252c
+    args: [run, --rm, --network=none, --cpus=2, --memory=4g, --pids-limit=128, '${_IMAGE}']
+  - name: gcr.io/cloud-builders/docker@sha256:3d00b6c1a9b862621c30fc74d4f2abfc62bcbdee631ed3febd31e7edbdf6252c
+    args:
+      - run
+      - --rm
+      - --network=none
+      - --cpus=2
+      - --memory=4g
+      - --pids-limit=128
+      - --entrypoint=/usr/local/bin/python
+      - '${_IMAGE}'
+      - -I
+      - -B
+      - -c
+      - 'import sys; sys.path.insert(0, "/app"); from ecos_indexer.owner_worker_smoke import main; raise SystemExit(main())'
+  - name: gcr.io/cloud-builders/docker@sha256:3d00b6c1a9b862621c30fc74d4f2abfc62bcbdee631ed3febd31e7edbdf6252c
+    args:
+      - run
+      - --rm
+      - --network=none
+      - --cpus=2
+      - --memory=4g
+      - --pids-limit=128
+      - --entrypoint=/usr/local/bin/python
+      - '${_IMAGE}'
+      - -I
+      - -B
+      - -c
+      - 'import sys; sys.path.insert(0, "/app"); from ecos_indexer.owner_large_original_smoke import main; raise SystemExit(main())'
+images: ['${_IMAGE}']
+timeout: 1200s

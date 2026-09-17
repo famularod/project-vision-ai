@@ -1,0 +1,15 @@
+# Explicit --ignore-file, relative to repository-root upload context.
+# No include of the repository .gitignore and no credentials/originals/test output.
+**
+!workers/
+!workers/ecos-indexer/
+!workers/ecos-indexer/cloudbuild.owner-preview.yaml
+!workers/ecos-indexer/Dockerfile.owner-preview
+!workers/ecos-indexer/Dockerfile.owner-preview.dockerignore
+!workers/ecos-indexer/gcloud.owner-preview.ignore
+!workers/ecos-indexer/requirements.txt
+!workers/ecos-indexer/clamav-databases.sha256
+!workers/ecos-indexer/ecos-clamd.conf
+!workers/ecos-indexer/owner-entrypoint.sh
+!workers/ecos-indexer/ecos_indexer/
+!workers/ecos-indexer/ecos_indexer/*.py

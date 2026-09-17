@@ -1,0 +1,9 @@
+# Owner build context is source-only. Never copy local credentials, scratch
+# originals, caches, test outputs, or compiled host Python bytecode.
+**
+!requirements.txt
+!clamav-databases.sha256
+!ecos-clamd.conf
+!owner-entrypoint.sh
+!ecos_indexer/
+!ecos_indexer/*.py

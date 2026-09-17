@@ -1,0 +1,47 @@
+# Independent owner image. The legacy Dockerfile/entrypoint are unchanged.
+FROM clamav/clamav:1.5.4@sha256:0af8760cd96f9ab67d07977af36e155431581a9fe9f0ec8b256c9f855fda183e AS clamav-definitions
+FROM python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
+    ECOS_OWNER_PREVIEW_WORKER_ENABLED=false PATH=/usr/local/bin:/usr/bin:/bin
+
+# Verified snapshot: u3 entered security on July 31 at 19:40 UTC. The legacy
+# July-31-midnight snapshot only has u2 (CVE-2025-52886 remains vulnerable).
+# All dependencies come from these frozen archives; apt verifies signed indexes.
+RUN printf '%s\n' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260801T000000Z bookworm main' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260801T000000Z bookworm-updates main' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260801T000000Z bookworm-security main' \
+      > /etc/apt/sources.list \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+      ca-certificates=20230311+deb12u1 \
+      clamav=1.4.3+dfsg-1~deb12u2 \
+      clamav-daemon=1.4.3+dfsg-1~deb12u2 \
+      poppler-utils=22.12.0-2+deb12u3 libpoppler126=22.12.0-2+deb12u3 \
+      poppler-data=0.4.12-1 fonts-dejavu-core=2.37-6 fontconfig=2.14.1-4 \
+      tesseract-ocr=5.3.0-2 tesseract-ocr-eng=1:4.1.0-2 tesseract-ocr-osd=1:4.1.0-2 \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --require-hashes --only-binary=:all: --requirement requirements.txt
+COPY --from=clamav-definitions /var/lib/clamav/main.cvd /var/lib/clamav/main.cvd
+COPY --from=clamav-definitions /var/lib/clamav/daily.cvd /var/lib/clamav/daily.cvd
+COPY --from=clamav-definitions /var/lib/clamav/bytecode.cvd /var/lib/clamav/bytecode.cvd
+COPY clamav-databases.sha256 /usr/local/share/ecos/clamav-databases.sha256
+COPY ecos-clamd.conf /usr/local/share/ecos/ecos-clamd.conf
+RUN cd /var/lib/clamav \
+    && sha256sum --check --strict /usr/local/share/ecos/clamav-databases.sha256 \
+    && chmod 0444 /var/lib/clamav/*.cvd /usr/local/share/ecos/clamav-databases.sha256 /usr/local/share/ecos/ecos-clamd.conf \
+    && chmod 0555 /var/lib/clamav /usr/local/share/ecos
+COPY ecos_indexer ./ecos_indexer
+COPY owner-entrypoint.sh /usr/local/bin/ecos-owner-entrypoint
+# Build-time account creation must not depend on the restricted runtime PATH.
+RUN /usr/sbin/useradd --create-home --uid 10001 ecos \
+    && chmod 0555 /usr/local/bin/ecos-owner-entrypoint \
+    && chmod -R a-w /app/ecos_indexer
+USER ecos
+CMD ["/usr/local/bin/ecos-owner-entrypoint"]
