@@ -18,6 +18,8 @@ from pytesseract import Output
 from . import EVIDENCE_VERSION
 from .sheet_mapping import StructuralSheetIdentity, map_sheet
 from .plan_dimensions import detect_plan_dimension_reads
+from .labeled_counts import count_label_targets, reread_labeled_counts
+from .count_transcription import count_read_exceptions
 from .structured_table_pipeline import (
     StructuredTableInputRejected,
     StructuredTableResourceRejected,
@@ -282,15 +284,23 @@ def extract_page(
     # OCR work, can exceed the page deadline, and adds no independent proof.
     # ``ocr_reason`` remains diagnostic context for the page record.
     ocr_regions, low_confidence_regions = trusted_ocr_regions(raw_ocr_regions)
+    count_targets = count_label_targets(ocr_regions)
+    targeted_count_regions = reread_labeled_counts(page, count_targets, ocr_regions_for_clip)
     targeted_measurement_regions = targeted_measurement_corroboration_regions(
         page,
         page_width,
         page_height,
         low_confidence_regions,
+        max_regions=MAX_TARGETED_MEASUREMENT_CORROBORATION_REGIONS - len(count_targets),
     )
-    if targeted_measurement_regions:
-        raw_ocr_regions.extend(targeted_measurement_regions)
+    if targeted_measurement_regions or targeted_count_regions:
+        raw_ocr_regions.extend([*targeted_measurement_regions, *targeted_count_regions])
         ocr_regions, low_confidence_regions = trusted_ocr_regions(raw_ocr_regions)
+    # Two OCR renderings can agree on the same wrong digit. Keep these reads
+    # as diagnostics; the explicit count is published only after the separate
+    # dual-provider crop check below, even when OCR happens to agree.
+    ocr_regions = [{**r, 'searchable':False} if r.get('source')=='targeted_count_coordinate_ocr_dual_dpi'
+                   else r for r in ocr_regions]
     searchable_visual_region_ids = {
         str(region.get("id") or "") for region in ocr_regions
         if str(region.get("source") or "") == "fixed_visual_tile_coordinate_ocr"
@@ -440,6 +450,7 @@ def extract_page(
     )
     unresolved.extend(label_block_unresolved)
     unresolved.extend(plan_dimension_targets)
+    unresolved.extend(count_read_exceptions(count_targets))
     # The legacy helper is now a bounded OCR/geometry producer only. Once the
     # standalone evaluator has detected a table, its relationship-level gaps
     # are authoritative; retaining the producer's older row-count gap as well
@@ -2069,6 +2080,8 @@ def targeted_measurement_corroboration_regions(
     page_width: float,
     page_height: float,
     low_confidence_regions: list[dict[str, Any]],
+    *,
+    max_regions: int = MAX_TARGETED_MEASUREMENT_CORROBORATION_REGIONS,
 ) -> list[dict[str, Any]]:
     """Re-read exact low-confidence dimensions with two OCR segmentations.
 
@@ -2083,7 +2096,7 @@ def targeted_measurement_corroboration_regions(
         if strict_foot_inch_measurement_keys(str(region.get("text") or ""))
     ]
     clusters = coalesce_low_confidence_regions(eligible)[
-        :MAX_TARGETED_MEASUREMENT_CORROBORATION_REGIONS
+        :max(0, min(MAX_TARGETED_MEASUREMENT_CORROBORATION_REGIONS, max_regions))
     ]
     corroborated: list[dict[str, Any]] = []
     for target_index, cluster in enumerate(clusters):
@@ -3498,6 +3511,19 @@ def coalesce_low_confidence_regions(
             and incomplete_simple_foot_inch_measurement(diagnostics[0]["text"])
         ):
             diagnostics[0]["source"] = VISUAL_MEASUREMENT_CORRECTION_SOURCE
+            # OCR can omit the final inch digit/mark and truncate its box.
+            # Preserve that observation but read a narrowly padded full token;
+            # two independent visual readers still must agree on the complete
+            # phrase and the one-numeric-edit correction contract is unchanged.
+            original = dict(cluster["bounds"])
+            x = max(0.0, original["x"] - .002)
+            y = max(0.0, original["y"] - .001)
+            expanded = {"x":x,"y":y,
+                "width":min(1.0,original["x"]+original["width"]+.006)-x,
+                "height":min(1.0,original["y"]+original["height"]+.001)-y}
+            diagnostics[0]["originalOcrBounds"] = original
+            diagnostics[0]["bounds"] = expanded
+            cluster["bounds"] = expanded
     return clusters
 
 

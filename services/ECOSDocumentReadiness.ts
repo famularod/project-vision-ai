@@ -133,7 +133,7 @@ export function buildECOSDocumentReadiness(
   const hasTrustedSearchableCoverage = hasCompleteSearchableCoverage && (
     pages.length > 0 || hasCommittedCloudDrawingIndex
   );
-  const canMakeCurrent = missingMetadata.length === 0 && (
+  const canMakeCurrent = !stale && missingMetadata.length === 0 && (
     (hostedPreparationPassed && !document.isCurrent) || (
       hasSearchableEvidence &&
       hasCompleteDrawingVisualCoverage &&
@@ -161,6 +161,11 @@ export function buildECOSDocumentReadiness(
   if (missingMetadata.length > 0) {
     return readiness(base, 'needs_metadata', 'Needs Review',
       `Add ${humanList(missingMetadata)} before ECOS can use this source.`, false);
+  }
+  // A previous hosted Ready status must not bless replacement file bytes.
+  if (stale) {
+    return readiness(base, 'stale', 'Preparing for ECOS',
+      'The searchable index does not match the current source file.', false);
   }
   if (hostedPreparationPassed && !document.isCurrent) {
     return readiness(

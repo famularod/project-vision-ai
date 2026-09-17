@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 import pymupdf as fitz
 import requests
 from .measurement_correction import CORRECTION_SOURCE, AGREEMENT_KEYS, corrected_measurement_text
+from .count_transcription import COUNT_SOURCE, verified_count_text
+from .note_transcription import NOTE_SOURCE, verified_note_text
 
 
 VISUAL_SCHEMA_VERSION = "ecos-drawing-page-analysis/2.0"
@@ -115,8 +117,7 @@ class BoundedVisualResolver:
     def _request_resolution(self, exception, operation_identity, context, candidates, bounds, reason, overview, tiles):
         endpoint = self.endpoint
         if (self.measurement_endpoint and len(candidates) == 1
-            and candidates[0].get("source") == CORRECTION_SOURCE
-            and str(exception.get("regionKey", "")).startswith("low-confidence-ocr-plan-dimension-")):
+            and candidates[0].get("source") in (CORRECTION_SOURCE, COUNT_SOURCE, NOTE_SOURCE)):
             current, selected = urlsplit(self.endpoint), urlsplit(self.measurement_endpoint)
             if (selected.scheme != "https" or selected.netloc != current.netloc
                 or selected.path != "/functions/v1/ecos-analyze-drawing-page-preview"
@@ -319,7 +320,9 @@ def validated_visual_resolution(
 
     accepted_facts: list[dict[str, Any]] = []
     raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
-    correction = any(candidate.get("source") == CORRECTION_SOURCE for candidate in candidates)
+    if any(candidate.get('source') in (COUNT_SOURCE, NOTE_SOURCE) for candidate in candidates) and len(raw_facts) != 1:
+        return VisualResolution(False, {}, {'category':'required_count_label_not_read'})
+    correction = any(candidate.get("source") in (CORRECTION_SOURCE, COUNT_SOURCE, NOTE_SOURCE) for candidate in candidates)
     if correction and raw_facts and (len(candidates) != 1 or len(raw_facts) != 1):
         return VisualResolution(False, {}, {"category": "visual_correction_contract_invalid"})
     for raw_fact in raw_facts[:72]:
@@ -563,7 +566,7 @@ def validated_persisted_visual_evidence(
     facts = evidence.get("facts")
     if not isinstance(facts, list) or not facts:
         return None
-    correction = any(candidate.get("source") == CORRECTION_SOURCE for candidate in candidates)
+    correction = any(candidate.get("source") in (CORRECTION_SOURCE, COUNT_SOURCE, NOTE_SOURCE) for candidate in candidates)
     if correction and (
         len(candidates) != 1 or len(facts) != 1
         or evidence.get("exceptionFingerprint") != visual_exception_fingerprint(exception)
@@ -676,6 +679,10 @@ def normalized_provider_fact(raw: Any, payload: dict[str, Any]) -> dict[str, Any
 
 
 def candidate_fact_text(fact, candidate, agreement):
+    if candidate.get("source") == NOTE_SOURCE:
+        return verified_note_text(fact, candidate, agreement)
+    if candidate.get("source") == COUNT_SOURCE:
+        return verified_count_text(fact, candidate, agreement)
     if candidate.get("source") == CORRECTION_SOURCE:
         return corrected_measurement_text(fact, candidate, agreement)
     return candidate["text"] if fact_directly_corroborates_candidate(fact, candidate["text"]) else None

@@ -4,8 +4,20 @@ let handle: (r: Request) => Promise<Response>;
 const serve = Deno.serve;
 // Capture the real request handler without opening a listener.
 (Deno as unknown as { serve: unknown }).serve = (h: typeof handle) => { handle = h; };
-const { geminiThinkingLevel, privateStructuredFailureCode, privateLabelReadContext, privateLabelWasRead } = await import("./index.ts");
+const { geminiThinkingLevel, privateStructuredFailureCode, privateLabelReadContext, privateLabelWasRead, normalizePrivateCropRead } = await import("./index.ts");
 (Deno as unknown as { serve: unknown }).serve = serve;
+
+Deno.test('single-label proof uses untouched server crop coordinates and rejects incomplete reads', () => {
+  const tiles = [{bounds:{x:.25,y:.35,width:.02,height:.01},imageDataUrl:'test'}];
+  const read = {statement:'24\'-6"',evidenceText:'24\'-6"',confidence:.99};
+  const result = normalizePrivateCropRead({facts:[{...read,bounds:{x:900,y:1,width:1,height:1}}]},tiles);
+  if (JSON.stringify(result.facts[0].bounds) !== JSON.stringify({x:250,y:350,width:20,height:10})) throw Error('Source bounds changed');
+  for (const value of [{facts:[]},{facts:[read,read]},{facts:[{...read,confidence:.5}]},
+    {facts:[{...read,evidenceText:'different'}]},{facts:[{...read,statement:'',evidenceText:''}]}]) {
+    if (privateLabelWasRead(normalizePrivateCropRead(value,tiles))) throw Error('Incomplete crop accepted');
+  }
+  if (privateLabelWasRead(normalizePrivateCropRead({facts:[read]},[...tiles,...tiles]))) throw Error('Broad crop accepted');
+});
 
 Deno.test("private first reader gets coordinates and pixels, not an OCR or document-name answer hint", () => {
   const context = privateLabelReadContext({ x: .1, y: .2, width: .03, height: .01 }, [{

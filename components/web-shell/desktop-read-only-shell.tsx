@@ -92,6 +92,8 @@ import { DesktopOverviewPage } from './desktop-overview-page';
 import { DesktopSchedulePage } from './desktop-schedule-page';
 import { DesktopAskECOSWorkspace } from './desktop-ask-ecos';
 import { DesktopDocumentOnboarding } from './desktop-document-onboarding';
+import { mergeECOSDrawingIntakeSuggestion, reviewedECOSDrawingUpload, suggestECOSDrawingIntake } from '../../services/ECOSDocumentUploadIntake';
+import { validateECOSMobileDrawingControls } from '../../services/ECOSMobileDrawingOnboarding';
 import { DesktopDocumentProofPreview } from './desktop-document-proof-preview';
 import { desktopSurfaces } from './desktop-surface-palette';
 import { ProjectControlsEditor } from '../project-controls-editor';
@@ -3552,6 +3554,7 @@ function DocumentManagementWorkspace({
   const [drawingNumber, setDrawingNumber] = useState('');
   const [drawingRevision, setDrawingRevision] = useState('');
   const [drawingDiscipline, setDrawingDiscipline] = useState('');
+  const [lastIntakeSuggestion, setLastIntakeSuggestion] = useState(() => suggestECOSDrawingIntake(''));
   const [drawingStatus, setDrawingStatus] = useState<NonNullable<ReferenceDocument['drawingStatus']>>('For Review');
   const [drawingIssuedAt, setDrawingIssuedAt] = useState('');
   const [uploadProjects, setUploadProjects] = useState<string[]>(
@@ -3655,15 +3658,14 @@ function DocumentManagementWorkspace({
       if (uploadProjects.length === 0) {
         throw new Error('Choose at least one project before selecting the source file.');
       }
+      // Select first, then review. These suggestions never activate a revision
+      // or stand in for the worker's verified per-page sheet mapping.
       if (normalizedName(uploadCategory) === 'drawing') {
-        const missing = [
-          drawingNumber.trim() ? null : 'drawing number',
-          drawingRevision.trim() ? null : 'revision',
-          drawingStatus ? null : 'issue status',
-        ].filter(Boolean);
-        if (missing.length > 0) {
-          throw new Error(`Complete the ${missing.join(', ')} before selecting the drawing file.`);
-        }
+        const suggestion = suggestECOSDrawingIntake(file.name);
+        setDrawingNumber(current => mergeECOSDrawingIntakeSuggestion(current, lastIntakeSuggestion.drawingNumber, suggestion.drawingNumber));
+        setDrawingRevision(current => mergeECOSDrawingIntakeSuggestion(current, lastIntakeSuggestion.drawingRevision, suggestion.drawingRevision));
+        setDrawingDiscipline(current => mergeECOSDrawingIntakeSuggestion(current, lastIntakeSuggestion.drawingDiscipline, suggestion.drawingDiscipline));
+        setLastIntakeSuggestion(suggestion);
       }
       const bytes = linkedBytes ?? await file.arrayBuffer();
       const isDrawingUpload = normalizedName(uploadCategory) === 'drawing';
@@ -3772,15 +3774,39 @@ function DocumentManagementWorkspace({
     }
   }
 
+  function resetDrawingIntake() {
+    setDrawingNumber('');
+    setDrawingRevision('');
+    setDrawingDiscipline('');
+    setDrawingStatus('For Review');
+    setDrawingIssuedAt('');
+    setLastIntakeSuggestion(suggestECOSDrawingIntake(''));
+  }
+
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
     setUploading(true);
     setUploadProgress(0);
     setNotice(null);
     try {
+      let reviewedUpload = preparedUpload;
+      if (normalizedName(preparedUpload.document.category) === 'drawing') {
+        const controls = { drawingNumber, drawingRevision, drawingDiscipline,
+          drawingStatus, drawingIssuedAt, replacementDocumentId: replacementId || null };
+        const validation = validateECOSMobileDrawingControls(controls);
+        if (!validation.valid) throw new Error(validation.message || 'Review the drawing details.');
+        const replacement = documents.find(document => document.id === replacementId) || null;
+        reviewedUpload = {
+          ...preparedUpload,
+          document: {
+            ...reviewedECOSDrawingUpload(preparedUpload.document, controls),
+            webVersionGroupId: replacement?.webVersionGroupId || replacement?.drawingNumber?.trim() || replacement?.id || null,
+          },
+        };
+      }
       if (preparedUpload.document.sourceProvider === 'google_drive') {
         await auth.linkDocument(
-          preparedUpload,
+          reviewedUpload,
           preparedBytes,
           preparedFile,
           fraction => setUploadProgress(Math.round(fraction * 100)),
@@ -3794,6 +3820,7 @@ function DocumentManagementWorkspace({
         setPreparedFile(null);
         setUploadOpen(false);
         setReplacementId('');
+        resetDrawingIntake();
         return;
       }
       const uploadBytes = await recoverDAVEWebPreparedUploadBytes({
@@ -3803,7 +3830,7 @@ function DocumentManagementWorkspace({
       });
       if (uploadBytes !== preparedBytes) setPreparedBytes(uploadBytes);
       await auth.uploadDocument(
-        preparedUpload,
+        reviewedUpload,
         uploadBytes,
         preparedFile,
         fraction => setUploadProgress(Math.round(fraction * 100)),
@@ -3821,6 +3848,7 @@ function DocumentManagementWorkspace({
       setPreparedFile(null);
       setUploadOpen(false);
       setReplacementId('');
+      resetDrawingIntake();
     } catch (error) {
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
     } finally {
@@ -4232,7 +4260,7 @@ function DocumentManagementWorkspace({
           {normalizedName(uploadCategory) === 'drawing' ? (
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>Drawing control</Text>
-              <Text style={styles.sectionDetail}>Record the sheet identity and issue status so the field team can distinguish the current revision.</Text>
+              <Text style={styles.sectionDetail}>Choose the file first if you prefer. Confirm the suggested details before saving. For a multi-sheet set, enter its set identifier; Vitruvius identifies each sheet during preparation. Discipline can include multiple trades.</Text>
               <View style={styles.twoColumnFields}>
                 <LabeledTextField label="Drawing number" value={drawingNumber} onChangeText={setDrawingNumber} placeholder="A2.01" />
                 <LabeledTextField label="Revision" value={drawingRevision} onChangeText={setDrawingRevision} placeholder="3" />

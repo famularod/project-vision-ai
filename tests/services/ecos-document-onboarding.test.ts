@@ -25,6 +25,12 @@ function document(overrides: Partial<ReferenceDocument> = {}): ReferenceDocument
 }
 
 describe('ECOS document onboarding', () => {
+  it('never displays old Ready status for changed bytes, missing metadata or inactive revisions', () => {
+    expect(resolveECOSCustomerDocumentStatus(document({ ecosHostedIndexStatus: 'Ready for ECOS', contentSha256: 'b'.repeat(64), indexedContentSha256: 'a'.repeat(64) }))).toBe('Preparing');
+    expect(resolveECOSCustomerDocumentStatus(document({ ecosHostedIndexStatus: 'Ready for ECOS', drawingNumber: null }))).toBe('Needs Review');
+    expect(resolveECOSCustomerDocumentStatus(document({ ecosHostedIndexStatus: 'Ready for ECOS', isCurrent: false }))).toBe('Prepared');
+    expect(resolveECOSCustomerDocumentStatus(document({ ecosHostedIndexStatus: 'Ready with limitations', isCurrent: false }))).toBe('Prepared with limitations');
+  });
   it('uses exactly the approved customer status vocabulary', () => {
     expect(ECOS_CUSTOMER_DOCUMENT_STATUSES).toEqual([
       'Waiting',

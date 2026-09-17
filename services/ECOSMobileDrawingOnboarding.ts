@@ -1,4 +1,5 @@
 import type { ReferenceDocument } from '../types';
+import { suggestECOSDrawingIntake } from './ECOSDocumentUploadIntake';
 
 export type ECOSMobileDrawingControls = Readonly<{
   drawingNumber: string;
@@ -16,14 +17,12 @@ export type ECOSMobileDrawingControlValidation = Readonly<{
   message: string | null;
 }>;
 
-export function createECOSMobileDrawingControls(): ECOSMobileDrawingControls {
+export function createECOSMobileDrawingControls(fileName = ''): ECOSMobileDrawingControls {
   return Object.freeze({
-    drawingNumber: '',
-    drawingRevision: '',
-    drawingDiscipline: '',
     drawingStatus: 'For Review',
     drawingIssuedAt: '',
     replacementDocumentId: null,
+    ...suggestECOSDrawingIntake(fileName),
   });
 }
 

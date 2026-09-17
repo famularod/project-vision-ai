@@ -104,7 +104,7 @@ export function DocumentUploadDetailsSheet({
         <View style={styles.drawingCard} testID="mobile-drawing-control">
           <Text style={styles.drawingTitle}>Drawing Control</Text>
           <Text style={styles.help}>
-            Record the sheet identity and issue status before the file is uploaded. ECOS uses these exact details with the hosted index.
+            Confirm any details suggested from the filename. For a multi-sheet set, enter its set identifier; Vitruvius identifies each sheet during preparation. Discipline can include multiple trades.
           </Text>
 
           <Field

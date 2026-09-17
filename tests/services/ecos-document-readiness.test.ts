@@ -9,6 +9,15 @@ import type { ReferenceDocument } from '../../types';
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
 
+describe('replacement bytes invalidate preparation', () => {
+  it.each(['Ready for ECOS', 'Ready with limitations', 'Prepared', 'Prepared with limitations'] as const)(
+    'does not trust stale %s for answers or Make Current', ecosHostedIndexStatus => {
+      const result = buildECOSDocumentReadiness(drawing({ ecosHostedIndexStatus, isCurrent: true,
+        contentSha256: HASH_B, indexedContentSha256: HASH_A }));
+      expect(result).toMatchObject({ status: 'stale', eligibleForAnswers: false, canMakeCurrent: false });
+    });
+});
+
 function completedVisualCoverage(pageNumber: number) {
   const bounds = [
     { x: 0, y: 0, width: 1 / 3, height: 0.5 },

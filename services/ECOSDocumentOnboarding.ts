@@ -52,13 +52,17 @@ export function resolveECOSCustomerDocumentStatus(
   document: ReferenceDocument,
 ): ECOSCustomerDocumentStatus {
   const hostedStatus = document.ecosHostedIndexStatus;
+  const readiness = buildECOSDocumentReadiness(document);
+  if (readiness.status === 'stale' && document.contentSha256 && document.indexedContentSha256 &&
+      document.contentSha256.toLowerCase() !== document.indexedContentSha256.toLowerCase()) return 'Preparing';
+  if (readiness.status === 'needs_metadata') return 'Needs Review';
+  if (hostedStatus === 'Ready for ECOS' && !document.isCurrent) return 'Prepared';
+  if (hostedStatus === 'Ready with limitations' && !document.isCurrent) return 'Prepared with limitations';
   if (hostedStatus && ECOS_CUSTOMER_DOCUMENT_STATUSES.includes(hostedStatus)) {
     return hostedStatus;
   }
 
-  const readiness = buildECOSDocumentReadiness(document);
   if (
-    readiness.status === 'needs_metadata' ||
     readiness.status === 'failed' ||
     readiness.status === 'not_supported' ||
     readiness.status === 'ready_with_limitations'

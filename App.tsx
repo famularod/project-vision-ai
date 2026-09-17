@@ -7635,7 +7635,7 @@ useEffect(() => {
       attachToDraft: Boolean(options?.attachToDraft),
       areaId: options?.areaId || null,
       updateId: options?.updateId || null,
-      drawingControls: createECOSMobileDrawingControls(),
+      drawingControls: createECOSMobileDrawingControls(asset.name || ''),
     });
   }
 

@@ -1,3 +1,5 @@
+import { suggestECOSDrawingIntake } from './ECOSDocumentUploadIntake';
+
 export const PROJECT_DOCUMENT_CATEGORIES = [
   'Schedule',
   'Permit Card',
@@ -30,5 +32,7 @@ export function suggestProjectDocumentCategory(input: {
   if (/compliance|certification/.test(text)) return 'Compliance';
   if (/\brfi\b|field[ -]?decision/.test(text)) return 'RFI / Field Decision';
   if (/vendor|submittal|cut[ -]?sheet|product data/.test(text)) return 'Vendor Document';
+  const drawing = suggestECOSDrawingIntake(input.name || '');
+  if (drawing.drawingDiscipline || drawing.drawingNumber) return 'Drawing';
   return 'Other';
 }
