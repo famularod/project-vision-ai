@@ -22,6 +22,11 @@ export type FieldNoteWorkspaceDataSource = Readonly<{
   save: (ownerKey: string, note: FieldNote) => Promise<FieldNote>;
   update: (ownerKey: string, note: FieldNote) => Promise<FieldNote>;
   retryPending?: (ownerKey: string) => Promise<readonly FieldNote[]>;
+  resolveConflict?: (
+    ownerKey: string,
+    note: FieldNote,
+    resolution: 'keep_local' | 'use_cloud',
+  ) => Promise<FieldNote>;
   subscribe?: (
     ownerKey: string,
     onChange: (notes: readonly FieldNote[]) => void,
@@ -94,6 +99,34 @@ export function createMobileFieldNoteDataSource({
     return localRepository.list(ownerKey);
   }
 
+  async function resolveConflict(
+    ownerKey: string,
+    note: FieldNote,
+    resolution: 'keep_local' | 'use_cloud',
+  ): Promise<FieldNote> {
+    const local = normalizeFieldNote(note);
+    const current = (await localRepository.list(ownerKey)).find(item => item.id === local.id);
+    if (!current || current.syncState !== 'conflict') {
+      throw new Error('This field note no longer has a conflict to resolve.');
+    }
+    const cloud = (await cloudGateway.list()).find(item => item.id === current.id);
+    if (!cloud) {
+      throw new Error('The cloud version of this field note is no longer available.');
+    }
+    if (resolution === 'use_cloud') {
+      return localRepository.replace(ownerKey, cloud);
+    }
+    const rebased = rebaseLocalFieldNote(current, cloud);
+    await localRepository.replace(ownerKey, rebased);
+    try {
+      const updated = await cloudGateway.update(rebased, cloud.revision);
+      return localRepository.replaceIfUnchanged(ownerKey, rebased, updated);
+    } catch (error) {
+      const waiting = markFieldNoteWaiting(rebased, cloudWaitingMessage(error));
+      return localRepository.replaceIfUnchanged(ownerKey, rebased, waiting);
+    }
+  }
+
   return Object.freeze({
     listLocal: ownerKey => localRepository.list(ownerKey),
     saveLocal: (ownerKey, note) => localRepository.save(ownerKey, note),
@@ -121,6 +154,7 @@ export function createMobileFieldNoteDataSource({
     },
 
     retryPending,
+    resolveConflict,
 
     async subscribe(ownerKey, onChange, onStatus) {
       return cloudGateway.subscribe(async cloudNote => {
@@ -158,14 +192,13 @@ export function mergeFieldNoteCollections(
       continue;
     }
     if (cloud.revision > local.revision) {
-      if (local.revision === 0) {
-        merged.set(
-          cloud.id,
-          markFieldNoteConflict(
-            local,
-            'This field note ID already contains different information in the cloud.',
-          ),
-        );
+      if (local.revision === 0 && sameTimestampInstant(local.createdAt, cloud.createdAt)) {
+        merged.set(cloud.id, rebaseLocalFieldNote(local, cloud));
+      } else if (local.revision === 0) {
+        merged.set(cloud.id, markFieldNoteConflict(
+          local,
+          'This field note ID already contains different information in the cloud.',
+        ));
       } else if (local.status !== cloud.status) {
         merged.set(cloud.id, rebaseMobileStatusChange(local, cloud));
       } else {
@@ -177,8 +210,34 @@ export function mergeFieldNoteCollections(
   }
   return Object.freeze(
     [...merged.values()].sort((left, right) =>
-      right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id)),
+      Date.parse(right.createdAt) - Date.parse(left.createdAt) || left.id.localeCompare(right.id)),
   );
+}
+
+function rebaseLocalFieldNote(local: FieldNote, cloud: FieldNote): FieldNote {
+  const updatedAt = timestampAfter(local.updatedAt, cloud.updatedAt);
+  return normalizeFieldNote({
+    ...cloud,
+    originalText: local.originalText,
+    source: local.source,
+    projectId: local.projectId,
+    projectName: local.projectName,
+    locationName: local.locationName,
+    actionKind: local.actionKind,
+    actionText: local.actionText,
+    status: local.status,
+    updatedAt,
+    resolvedAt: local.status === 'resolved' ? local.resolvedAt || updatedAt : null,
+    archivedAt: local.status === 'archived' ? local.archivedAt || updatedAt : null,
+    revision: cloud.revision,
+    cloudUpdatedAt: cloud.cloudUpdatedAt,
+    syncState: 'pending',
+    syncError: null,
+  });
+}
+
+function sameTimestampInstant(left: string, right: string): boolean {
+  return new Date(left).toISOString() === new Date(right).toISOString();
 }
 
 function rebaseMobileStatusChange(local: FieldNote, cloud: FieldNote): FieldNote {

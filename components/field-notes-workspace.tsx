@@ -311,6 +311,32 @@ function FieldNotesWorkspaceContent({
     }
   }
 
+  async function resolveConflict(
+    note: FieldNote,
+    resolution: 'keep_local' | 'use_cloud',
+  ) {
+    if (saving || !dataSource.resolveConflict) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const updated = await dataSource.resolveConflict(ownerKey, note, resolution);
+      setNotes(current => current.map(item => item.id === updated.id ? updated : item));
+      setNotice({
+        tone: updated.syncState === 'synced' ? 'good' : 'info',
+        text: updated.syncState === 'synced'
+          ? 'Field note conflict resolved and synchronized.'
+          : 'Your choice is saved on this device and waiting to synchronize.',
+      });
+    } catch (error) {
+      setNotice({
+        tone: 'danger',
+        text: error instanceof Error ? error.message : 'The field note conflict could not be resolved.',
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function beginEdit(note: FieldNote) {
     setEditingNote(note);
     setEditText(note.originalText);
@@ -596,6 +622,9 @@ function FieldNotesWorkspaceContent({
             onStatusChange={status => { void changeStatus(note, status); }}
             onEdit={presentation === 'desktop_inbox' ? () => beginEdit(note) : undefined}
             showSyncState={presentation === 'mobile_capture'}
+            onResolveConflict={presentation === 'mobile_capture' && dataSource.resolveConflict
+              ? resolution => { void resolveConflict(note, resolution); }
+              : undefined}
             compact={compactMobileLayout}
           />
         ))}
@@ -745,6 +774,7 @@ function FieldNoteCard({
   onStatusChange,
   onEdit,
   showSyncState,
+  onResolveConflict,
   compact,
 }: {
   note: FieldNote;
@@ -752,6 +782,7 @@ function FieldNoteCard({
   onStatusChange: (status: FieldNoteStatus) => void;
   onEdit?: () => void;
   showSyncState: boolean;
+  onResolveConflict?: (resolution: 'keep_local' | 'use_cloud') => void;
   compact: boolean;
 }) {
   return (
@@ -791,6 +822,26 @@ function FieldNoteCard({
         </View>
       ) : null}
       <View style={styles.noteActions}>
+        {note.syncState === 'conflict' && onResolveConflict ? <>
+          <Pressable
+            style={({ pressed }) => [styles.notePrimaryAction, pressed && styles.pressed]}
+            onPress={() => onResolveConflict('keep_local')}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityLabel="Keep my version"
+          >
+            <Text style={styles.notePrimaryActionText}>Keep my version</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.noteSecondaryAction, pressed && styles.pressed]}
+            onPress={() => onResolveConflict('use_cloud')}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityLabel="Use cloud version"
+          >
+            <Text style={styles.noteSecondaryActionText}>Use cloud version</Text>
+          </Pressable>
+        </> : null}
         {onEdit ? (
           <Pressable
             style={({ pressed }) => [styles.notePrimaryAction, pressed && styles.pressed]}

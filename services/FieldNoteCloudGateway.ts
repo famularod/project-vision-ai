@@ -343,11 +343,15 @@ function fieldNoteComparableValue(note: FieldNote) {
     actionKind: note.actionKind,
     actionText: note.actionText,
     status: note.status,
-    createdAt: note.createdAt,
-    updatedAt: note.updatedAt,
-    resolvedAt: note.resolvedAt,
-    archivedAt: note.archivedAt,
+    createdAt: timestampInstant(note.createdAt),
+    updatedAt: timestampInstant(note.updatedAt),
+    resolvedAt: note.resolvedAt ? timestampInstant(note.resolvedAt) : null,
+    archivedAt: note.archivedAt ? timestampInstant(note.archivedAt) : null,
   };
+}
+
+function timestampInstant(value: string): string {
+  return new Date(value).toISOString();
 }
 
 function record(value: unknown): Record<string, unknown> {

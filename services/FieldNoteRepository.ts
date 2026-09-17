@@ -385,7 +385,8 @@ async function hydrateRecords(storage: FieldNoteStorage, ownerKey: string): Prom
 }
 
 function compareFieldNotes(left: FieldNote, right: FieldNote): number {
-  return right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id);
+  return Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+    left.id.localeCompare(right.id);
 }
 
 function normalizeSource(value: unknown): FieldNoteSource {
@@ -444,8 +445,9 @@ function boundedOptional(
 
 function validTimestamp(value: unknown, label: string): string {
   const timestamp = required(value, label);
-  if (Number.isNaN(Date.parse(timestamp))) throw new Error(`${label} is invalid.`);
-  return timestamp;
+  const instant = new Date(timestamp);
+  if (Number.isNaN(instant.getTime())) throw new Error(`${label} is invalid.`);
+  return instant.toISOString();
 }
 
 function optionalTimestamp(value: unknown, label: string): string | null {

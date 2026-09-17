@@ -4,6 +4,7 @@ import { FieldNotesWorkspace } from '../../components/field-notes-workspace';
 import {
   createFieldNote,
   localFieldNoteRepository,
+  markFieldNoteConflict,
   markFieldNoteSynced,
 } from '../../services/FieldNoteRepository';
 
@@ -159,5 +160,40 @@ describe('FieldNotesWorkspace', () => {
     expect(edited.revision).toBe(4);
     expect(edited.projectId).toBe('project-2321');
     expect(edited.originalText).toBe('Guardrails are required at the exposed parking edge.');
+  });
+
+  it('offers accessible mobile actions for an existing sync conflict', async () => {
+    const conflict = markFieldNoteConflict(createFieldNote({
+      id: 'conflict-note',
+      text: 'Keep this field observation.',
+      now: '2026-09-17T16:00:00.000Z',
+    }), 'Review required');
+    const resolved = markFieldNoteSynced(conflict, 2, '2026-09-17T16:01:00.000Z');
+    const resolveConflict = jest.fn(async () => resolved);
+    const dataSource = {
+      list: jest.fn(async () => [conflict]),
+      save: jest.fn(),
+      update: jest.fn(),
+      resolveConflict,
+    };
+    const screen = render(
+      <FieldNotesWorkspace
+        ownerKey="owner-a"
+        projects={[]}
+        dataSource={dataSource}
+        presentation="mobile_capture"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Keep this field observation.')).toBeTruthy());
+    const keep = screen.getByRole('button', { name: 'Keep my version' });
+    const useCloud = screen.getByRole('button', { name: 'Use cloud version' });
+    expect(keep).toBeTruthy();
+    expect(useCloud).toBeTruthy();
+    await act(async () => {
+      fireEvent.press(keep);
+      await Promise.resolve();
+    });
+    expect(resolveConflict).toHaveBeenCalledWith('owner-a', conflict, 'keep_local');
   });
 });
