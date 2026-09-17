@@ -89,6 +89,21 @@ function authorityInput(
   };
 }
 
+function authorityInputWithDraft(draftRevision: number): PIELiveAuthorityInput {
+  return {
+    ...authorityInput('project-1', undefined, true),
+    currentUpdate: {
+      id: 'draft-update',
+      projectName: 'Project One',
+      date: '2026-09-17T12:00:00.000Z',
+      photos: [],
+      notes: `draft ${draftRevision}`,
+      recipients: { contactIds: [] },
+      status: 'draft',
+    },
+  };
+}
+
 function coreResult(
   projectId = 'project-1',
   persistenceStatus: CoreResult['realityAuthority']['persistenceStatus'] =
@@ -449,6 +464,28 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
     expect(currentAuthority?.state).toBe('ready');
     expect(currentAuthority?.policy.highImpactAutomationAllowed).toBe(true);
     expect(currentAuthority?.policy.layer4DecisionCreationAllowed).toBe(true);
+  });
+
+  it('keeps device-data acknowledgement for the project session through draft edits', async () => {
+    buildCoreMock.mockResolvedValue(coreResult('project-1', 'queued_for_cloud'));
+    const screen = render(
+      <PIELiveAuthorityProvider input={authorityInputWithDraft(0)}>
+        <AuthorityProbe />
+      </PIELiveAuthorityProvider>,
+    );
+    await flushAsyncWork();
+    act(() => currentAuthority?.acknowledgeDegradedLocal());
+    expect(currentAuthority?.policy.reportGenerationAllowed).toBe(true);
+
+    for (let revision = 1; revision <= 20; revision += 1) {
+      await screen.rerender(
+        <PIELiveAuthorityProvider input={authorityInputWithDraft(revision)}>
+          <AuthorityProbe />
+        </PIELiveAuthorityProvider>,
+      );
+    }
+    expect(currentAuthority?.degradedLocalAcknowledged).toBe(true);
+    expect(currentAuthority?.policy.reportGenerationAllowed).toBe(true);
   });
 
   it('cancels an owned retry timer when the provider unmounts', async () => {
