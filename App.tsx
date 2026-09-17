@@ -6295,6 +6295,7 @@ useEffect(() => {
     );
     void cleanupProjectPhotoDirectory({
       directoryUri: PHOTO_STORAGE_DIR,
+      folderName: PHOTO_STORAGE_FOLDER,
       currentOwnerId: workspaceOwnerId,
       referencedUris,
       storage: AsyncStorage,

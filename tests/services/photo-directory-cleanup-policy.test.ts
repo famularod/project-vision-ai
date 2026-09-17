@@ -58,6 +58,7 @@ async function runCleanup(
 ) {
   await cleanupProjectPhotoDirectory({
     directoryUri: DIRECTORY,
+    folderName: 'project-photos',
     currentOwnerId: ownerId,
     referencedUris: new Set(),
     storage,
@@ -118,8 +119,11 @@ describe('project photo directory cleanup data-loss guard', () => {
   test('deletes only unreferenced files at least 14 days old', async () => {
     const old = `${DIRECTORY}old.jpg`;
     const young = `${DIRECTORY}young.jpg`;
-    const storage = memoryStorage();
+    // One real reference exists, so the "cannot prove anything" guard is not what keeps files.
+    const kept = `${DIRECTORY}kept.jpg`;
+    const storage = memoryStorage({ 'projectPhotoUpdates.v2': storedUpdate(kept) });
     const files = memoryFileSystem({
+      [kept]: NOW - 30 * 86_400_000,
       [old]: NOW - 14 * 86_400_000,
       [young]: NOW - 13 * 86_400_000,
     });
@@ -128,5 +132,76 @@ describe('project photo directory cleanup data-loss guard', () => {
 
     expect(files.values.has(old)).toBe(false);
     expect(files.values.has(young)).toBe(true);
+    expect(files.values.has(kept)).toBe(true);
+  });
+
+  const OLD_CONTAINER = 'file:///var/mobile/Containers/Data/Application/OLD-UUID/Documents/project-photos/';
+  const AGED = NOW - 20 * 86_400_000;
+
+  test('protects a photo whose saved URI carries an older app-container prefix', async () => {
+    const current = `${DIRECTORY}a.jpg`;
+    const orphan = `${DIRECTORY}orphan.jpg`;
+    const storage = memoryStorage({ 'projectPhotoUpdates.v2': storedUpdate(`${OLD_CONTAINER}a.jpg`) });
+    const files = memoryFileSystem({ [current]: AGED, [orphan]: AGED });
+    await runCleanup(storage, files, 'owner-a');
+    expect(files.values.has(current)).toBe(true);
+    expect(files.values.has(orphan)).toBe(false);
+  });
+
+  test('protects a percent-encoded reference and an encoded file name', async () => {
+    const current = `${DIRECTORY}site photo 1.jpg`;
+    const storage = memoryStorage({
+      'projectPhotoUpdates.v2': storedUpdate('file:%2F%2F%2Fold%2FDocuments%2Fproject-photos%2Fsite%20photo%201.jpg'),
+    });
+    const files = memoryFileSystem({ [current]: AGED });
+    await runCleanup(storage, files, 'owner-a');
+    expect(files.values.has(current)).toBe(true);
+  });
+
+  test('protects a reference nested inside a JSON string (owner-switch journal shape)', async () => {
+    const current = `${DIRECTORY}b.jpg`;
+    const orphan = `${DIRECTORY}orphan.jpg`;
+    const storage = memoryStorage({
+      journal: JSON.stringify({ sourceSnapshot: { 'projectPhotoUpdates.v2': storedUpdate(current) } }),
+    });
+    const files = memoryFileSystem({ [current]: AGED, [orphan]: AGED });
+    await runCleanup(storage, files, 'owner-a');
+    expect(files.values.has(current)).toBe(true);
+    expect(files.values.has(orphan)).toBe(false);
+  });
+
+  test('protects a doubly nested, backslash-escaped reference', async () => {
+    const current = `${DIRECTORY}c.jpg`;
+    const storage = memoryStorage({
+      journal: JSON.stringify({ outer: JSON.stringify({ inner: storedUpdate(current) }) }).replace(/\//g, '\\/'),
+    });
+    const files = memoryFileSystem({ [current]: AGED });
+    await runCleanup(storage, files, 'owner-a');
+    expect(files.values.has(current)).toBe(true);
+  });
+
+  test('deletes nothing when storage cannot be read', async () => {
+    const orphan = `${DIRECTORY}orphan.jpg`;
+    const storage = { ...memoryStorage(), multiGet: async () => { throw new Error('storage unavailable'); } };
+    const files = memoryFileSystem({ [orphan]: AGED });
+    await runCleanup(storage as ReturnType<typeof memoryStorage>, files, 'owner-a');
+    expect(files.values.has(orphan)).toBe(true);
+  });
+
+  test('deletes nothing when files exist but no reference to the folder can be found anywhere', async () => {
+    const orphan = `${DIRECTORY}orphan.jpg`;
+    const files = memoryFileSystem({ [orphan]: AGED });
+    await runCleanup(memoryStorage({ unrelated: '{"a":1}' }), files, 'owner-a');
+    expect(files.values.has(orphan)).toBe(true);
+  });
+
+  test('a reference passed in by the app under an old prefix also protects the current file', async () => {
+    const current = `${DIRECTORY}d.jpg`;
+    const files = memoryFileSystem({ [current]: AGED });
+    await cleanupProjectPhotoDirectory({
+      directoryUri: DIRECTORY, folderName: 'project-photos', currentOwnerId: 'owner-a',
+      referencedUris: new Set([`${OLD_CONTAINER}d.jpg`]), storage: memoryStorage(), fileSystem: files, now: () => NOW,
+    });
+    expect(files.values.has(current)).toBe(true);
   });
 });

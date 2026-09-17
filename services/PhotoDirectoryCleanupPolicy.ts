@@ -22,12 +22,17 @@ export const PROJECT_PHOTO_CLEANUP_MINIMUM_AGE_MS = 14 * 24 * 60 * 60 * 1_000;
 export function selectProjectPhotoUrisForCleanup({
   files,
   referencedUris,
+  referencedFileNames = new Set<string>(),
   currentOwnerId,
   hasStartupQuarantine,
   nowMs,
 }: Readonly<{
   files: readonly PhotoDirectoryCleanupFile[];
   referencedUris: ReadonlySet<string>;
+  /** Decoded file names referenced under ANY path prefix. iOS can change the
+   * app container path after an update or reinstall, so a saved URI may carry
+   * an old prefix while the file lives in the current folder. */
+  referencedFileNames?: ReadonlySet<string>;
   currentOwnerId: string | null;
   hasStartupQuarantine: boolean;
   nowMs: number;
@@ -36,26 +41,72 @@ export function selectProjectPhotoUrisForCleanup({
   return files
     .filter(file =>
       !referencedUris.has(file.uri) &&
+      !referencedFileNames.has(photoFileNameFromUri(file.uri)) &&
       file.modificationTimeMs !== null &&
       nowMs - file.modificationTimeMs >= PROJECT_PHOTO_CLEANUP_MINIMUM_AGE_MS,
     )
     .map(file => file.uri);
 }
 
-export function collectProjectPhotoReferences(
-  values: readonly (readonly [string, string | null])[],
-  directoryUri: string,
+/**
+ * Every file name referenced under `/<folderName>/` anywhere in the given
+ * texts, regardless of path prefix, JSON nesting depth, backslash escaping or
+ * percent-encoding. Deliberately a raw text scan: a reference hidden by a
+ * parsing difference would otherwise let a photo in use be deleted.
+ */
+export function collectProjectPhotoFileNames(
+  texts: readonly (string | null | undefined)[],
+  folderName: string,
 ): ReadonlySet<string> {
-  const references = new Set<string>();
-  values.forEach(([, raw]) => {
-    if (raw === null) return;
-    try {
-      collectUris(JSON.parse(raw), directoryUri, references, new Set());
-    } catch {
-      collectUrisFromRawText(raw, directoryUri, references);
-    }
+  const names = new Set<string>();
+  if (!folderName) return names;
+  const marker = `/${folderName}/`;
+  texts.forEach(raw => {
+    if (typeof raw !== 'string' || raw.length === 0) return;
+    textVariants(raw).forEach(text => {
+      let start = text.indexOf(marker);
+      while (start >= 0) {
+        let end = start + marker.length;
+        while (end < text.length && !/[\s"'\\/?#<>|]/.test(text[end])) end += 1;
+        const name = text.slice(start + marker.length, end);
+        if (name) {
+          names.add(name);
+          names.add(safeDecode(name));
+        }
+        start = text.indexOf(marker, end);
+      }
+    });
   });
-  return references;
+  return names;
+}
+
+function textVariants(raw: string): string[] {
+  const variants = new Set<string>([raw]);
+  // Nested JSON strings escape "/" and quotes once per nesting level.
+  let unescaped = raw;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const next = unescaped.replace(/\\+(["/])/g, '$1');
+    if (next === unescaped) break;
+    unescaped = next;
+    variants.add(unescaped);
+  }
+  Array.from(variants).forEach(text => {
+    if (/%2f/i.test(text)) variants.add(text.replace(/%2f/gi, '/'));
+  });
+  return Array.from(variants);
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function photoFileNameFromUri(uri: string): string {
+  const withoutQuery = uri.split(/[?#]/)[0];
+  return safeDecode(withoutQuery.slice(withoutQuery.lastIndexOf('/') + 1));
 }
 
 export function storageContainsStartupQuarantine(keys: readonly string[]): boolean {
@@ -72,6 +123,7 @@ export function storageContainsStartupQuarantine(keys: readonly string[]): boole
 
 export async function cleanupProjectPhotoDirectory({
   directoryUri,
+  folderName,
   currentOwnerId,
   referencedUris,
   storage,
@@ -79,19 +131,32 @@ export async function cleanupProjectPhotoDirectory({
   now = () => Date.now(),
 }: Readonly<{
   directoryUri: string | null;
+  /** Owned folder name, e.g. "project-photos". Used to recognise references
+   * that were saved under an older app-container path. */
+  folderName: string;
   currentOwnerId: string | null;
   referencedUris: ReadonlySet<string>;
   storage: PhotoDirectoryCleanupStorage;
   fileSystem: PhotoDirectoryCleanupFileSystem;
   now?: () => number;
 }>): Promise<readonly string[]> {
-  if (!directoryUri || !currentOwnerId) return [];
-  const keys = await storage.getAllKeys();
-  if (storageContainsStartupQuarantine(keys)) return [];
-  const storedValues = await storage.multiGet(keys);
-  const allReferencedUris = new Set(referencedUris);
-  collectProjectPhotoReferences(storedValues, directoryUri).forEach(uri =>
-    allReferencedUris.add(uri),
+  if (!directoryUri || !folderName || !currentOwnerId) return [];
+  let keys: readonly string[];
+  let storedValues: readonly (readonly [string, string | null])[];
+  try {
+    keys = await storage.getAllKeys();
+    if (storageContainsStartupQuarantine(keys)) return [];
+    storedValues = await storage.multiGet(keys);
+  } catch {
+    // Cannot prove what is referenced, so nothing may be deleted.
+    return [];
+  }
+  const referencedFileNames = new Set(collectProjectPhotoFileNames(
+    [...Array.from(referencedUris), ...storedValues.map(([, raw]) => raw)],
+    folderName,
+  ));
+  Array.from(referencedUris).forEach(uri =>
+    referencedFileNames.add(photoFileNameFromUri(uri)),
   );
   const info = await fileSystem.getInfoAsync(directoryUri);
   if (!info.exists) return [];
@@ -106,9 +171,13 @@ export async function cleanupProjectPhotoDirectory({
         : null,
     };
   }));
+  // Files exist but no reference to this folder was found anywhere: treat as
+  // "cannot prove" instead of "everything is unreferenced".
+  if (files.length > 0 && referencedFileNames.size === 0) return [];
   const deletions = selectProjectPhotoUrisForCleanup({
     files,
-    referencedUris: allReferencedUris,
+    referencedUris,
+    referencedFileNames,
     currentOwnerId,
     hasStartupQuarantine: false,
     nowMs: now(),
@@ -117,39 +186,4 @@ export async function cleanupProjectPhotoDirectory({
     fileSystem.deleteAsync(uri, { idempotent: true }),
   ));
   return deletions;
-}
-
-function collectUris(
-  value: unknown,
-  directoryUri: string,
-  output: Set<string>,
-  visited: Set<object>,
-) {
-  if (typeof value === 'string') {
-    if (value.startsWith(directoryUri)) output.add(value);
-    return;
-  }
-  if (!value || typeof value !== 'object' || visited.has(value)) return;
-  visited.add(value);
-  if (Array.isArray(value)) {
-    value.forEach(item => collectUris(item, directoryUri, output, visited));
-    return;
-  }
-  Object.values(value).forEach(item =>
-    collectUris(item, directoryUri, output, visited),
-  );
-}
-
-function collectUrisFromRawText(
-  raw: string,
-  directoryUri: string,
-  output: Set<string>,
-) {
-  let start = raw.indexOf(directoryUri);
-  while (start >= 0) {
-    let end = start + directoryUri.length;
-    while (end < raw.length && !/[\s"'\\]/.test(raw[end])) end += 1;
-    output.add(raw.slice(start, end));
-    start = raw.indexOf(directoryUri, end);
-  }
 }
