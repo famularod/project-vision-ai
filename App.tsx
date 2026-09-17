@@ -190,6 +190,7 @@ import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
 import { AppScreenScroll as ScreenScroll } from './components/app-screen-scroll';
 import { NativeFieldNotesExperience, OverviewFieldNotesCard } from './components/native-field-notes-experience';
+import { useNativeWorkspaceOwner } from './components/native-workspace-owner';
 import {
   DailyBriefSection,
   DAVEProjectNeedsVerificationLabel,
@@ -261,6 +262,7 @@ import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReference
 import { openGoogleDriveReferenceDocument } from './services/ReferenceDocumentBrowser';
 import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
+import { cleanupProjectPhotoDirectory } from './services/PhotoDirectoryCleanupPolicy';
 import {
   normalizeStartupArray,
   readStartupJson,
@@ -3037,41 +3039,6 @@ async function deleteStoredPhotos(photos: UpdatePhoto[]) {
   );
 }
 
-async function cleanupStoredPhotoDirectory(
-  referencedUpdates: ProjectUpdate[],
-) {
-  if (!PHOTO_STORAGE_DIR) return;
-
-  try {
-    const info = await FileSystem.getInfoAsync(PHOTO_STORAGE_DIR);
-
-    if (!info.exists) return;
-
-    const referencedUris = new Set(
-      referencedUpdates.flatMap(update =>
-        update.photos.map(photo => photo.uri),
-      ),
-    );
-
-    const filenames =
-      await FileSystem.readDirectoryAsync(PHOTO_STORAGE_DIR);
-
-    await Promise.all(
-      filenames.map(filename => {
-        const uri = `${PHOTO_STORAGE_DIR}${filename}`;
-
-        if (referencedUris.has(uri)) return Promise.resolve();
-
-        return FileSystem.deleteAsync(uri, {
-          idempotent: true,
-        }).catch(() => undefined);
-      }),
-    );
-  } catch {
-    // Best-effort maintenance; update flows should never fail because of cleanup.
-  }
-}
-
 async function photoFromAsset(
   asset: ImagePicker.ImagePickerAsset,
 ): Promise<UpdatePhoto> {
@@ -5158,6 +5125,7 @@ export default function App() {
 }
 
 function AppShell() {
+  const workspaceOwnerId = useNativeWorkspaceOwner();
   const insets = useSafeAreaInsets();
   const { width: appShellWidth } = useWindowDimensions();
   const appShellLayout = appShellLayoutForWidth(appShellWidth);
@@ -6320,8 +6288,19 @@ useEffect(() => {
 
     photoCleanupRan.current = true;
 
-    void cleanupStoredPhotoDirectory([draft, ...savedUpdates]);
-  }, [updatesLoaded, draftLoaded, draft, savedUpdates, startupHydrationReady]);
+    const referencedUris = new Set(
+      [draft, ...savedUpdates].flatMap(update =>
+        update.photos.map(photo => photo.uri),
+      ),
+    );
+    void cleanupProjectPhotoDirectory({
+      directoryUri: PHOTO_STORAGE_DIR,
+      currentOwnerId: workspaceOwnerId,
+      referencedUris,
+      storage: AsyncStorage,
+      fileSystem: FileSystem,
+    }).catch(() => undefined);
+  }, [updatesLoaded, draftLoaded, draft, savedUpdates, startupHydrationReady, workspaceOwnerId]);
 
   const hasQueuedSyncRetries = useMemo(
     () => savedUpdates.some(update => updateNeedsAutomaticSyncRetry(update)),
