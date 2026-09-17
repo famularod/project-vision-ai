@@ -13,12 +13,24 @@ export function ecosClaimMeasurementUnitsSupported(
 function measurementKeys(value: string): string[] {
   const text = value.replace(/[“”″]/g, '"').replace(/[‘’′]/g, "'")
     .normalize("NFKC").toLowerCase()
-    .replace(/(?<=\d),(?=\d{3}(?:\D|$))/g, "");
+    .replace(/(?<=\d),(?=\d{3}(?:\D|$))/g, "")
+    // Adjectival units (6-inch curb) carry the same unit as 6 inches.
+    // Do not strip numeric ranges, negative signs, or drawing identifiers.
+    .replace(/(\d)\s*[-–]\s*(?=(?:inch(?:es)?|feet|foot|ft|square\s+(?:feet|foot)|sf)\b)/g, "$1 ")
+    // Closing prose quotation marks are not inch/foot units. Restrict this
+    // to a quoted alphabetic label ending in a bare count; preserve actual
+    // measurements inside quotes, such as "6 inches" or "6\" thick".
+    .replace(/(["'])((?:[a-z][a-z ._-]*:\s*)[0-9]+(?:\.[0-9]+)?)\1/g, "$2");
   // Keep compound units before their linear counterparts. Word boundaries
   // prevent "in" inside "inspected" from becoming an inch measurement.
   const pattern =
     /(?<![\w.])([+-]?\d+(?:\.\d+)?(?:\s+\d+\s*\/\s*\d+|\s*\/\s*\d+)?)\s*(square\s+(?:feet|foot|meters?|metres?)|sq\.?\s*(?:ft\.?|m)|sqft|sf|ft2|m2|cubic\s+(?:feet|foot|yards?|meters?|metres?)|cu\.?\s*(?:ft\.?|yd\.?|m)|ft3|yd3|m3|inches|inch|in\.?|feet|foot|ft\.?|millimeters?|millimetres?|mm|centimeters?|centimetres?|cm|meters?|metres?|m|psi|psf|kpa|mpa|gpm|cfm|volts?|watts?|kw|amps?|lb|lbs|kg)(?!\w)|(?<![\w.])([+-]?\d+(?:\.\d+)?(?:\s+\d+\s*\/\s*\d+|\s*\/\s*\d+)?)\s*(["'])/g;
-  return [...text.matchAll(pattern)].map((match) => {
+  return [...text.matchAll(pattern)].filter((match) => {
+    // "in connection with" is a preposition, not an inch abbreviation.
+    // Keep every explicit unit and other ambiguous uses subject to the guard.
+    return match[2] !== "in" ||
+      !/^\s+(?:connection\s+with|association\s+with|relation\s+to|the\s+context\s+of)\b/.test(text.slice(match.index! + match[0].length));
+  }).map((match) => {
     const raw = (match[1] || match[3]).trim();
     const mixed = raw.match(/^([+-]?\d+)\s+(\d+)\s*\/\s*(\d+)$/);
     const fraction = raw.match(/^([+-]?\d+)\s*\/\s*(\d+)$/);

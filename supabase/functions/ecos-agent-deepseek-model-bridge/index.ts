@@ -5,6 +5,7 @@ type DeepSeekBridgeConfig = Readonly<{
   workerToken: string;
   deepSeekKey: string;
   fetchImplementation?: typeof fetch;
+  allowDrawingImages?: boolean;
 }>;
 
 export function createECOSAgentDeepSeekModelBridgeHandler(
@@ -16,6 +17,7 @@ export function createECOSAgentDeepSeekModelBridgeHandler(
     provider: "deepseek",
     providerKey: config.deepSeekKey,
     fetchImplementation: config.fetchImplementation,
+    allowDrawingImages: config.allowDrawingImages,
   });
 }
 
@@ -31,5 +33,6 @@ if (import.meta.main) {
     serviceRoleKey: required("SUPABASE_SERVICE_ROLE_KEY"),
     workerToken: required("ECOS_SERVICE_WORKER_TOKEN"),
     deepSeekKey: required("DEEPSEEK_API_KEY"),
+    allowDrawingImages: Deno.env.get("ECOS_DRAWING_IMAGE_RESEARCH") === "enabled",
   }));
 }

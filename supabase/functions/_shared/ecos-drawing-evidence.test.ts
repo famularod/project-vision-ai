@@ -141,12 +141,14 @@ Deno.test("plan calculation retains exact document identity when page heading om
     ["building 2", "BUILDING 2, Sheet S4", "ANCHOR ROD PLAN", true],
     ["building 3", "BUILDING 2, Sheet S4", "ANCHOR ROD PLAN", false],
   ] as const) {
+    for (const question of [`What is the square footage of ${asked}?`, `What are the recorded dimensions and sheet references for ${asked} footprint?`]) {
     const passages = buildECOSDrawingEvidencePassages({
       pageText: heading, regions: [{ ...regions[0], text: heading }, ...regions.slice(1)],
-      question: `What is the square footage of ${asked}?`, pageIdentity: title,
+      question, pageIdentity: title,
     });
     assertEquals(passages.some(p => p.text.includes("82'-0\" × 64'-0\" = 5,248 square feet")), expected,
       `${asked}: ${title}: ${heading}`);
+    }
   }
 });
 

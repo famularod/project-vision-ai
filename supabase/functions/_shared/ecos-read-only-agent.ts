@@ -33,6 +33,7 @@ export type ECOSAgentToolCall = Readonly<{
 }>;
 
 export type ECOSAgentModelTurn = Readonly<{
+  reportedModel?: string;
   outputItems: readonly Readonly<Record<string, unknown>>[];
   toolCalls: readonly ECOSAgentToolCall[];
   outputText: string | null;
@@ -61,6 +62,7 @@ export type ECOSAgentToolTrace = Readonly<{
   elapsedMs: number;
   outputBytes: number;
   outputSha256: string;
+  errorCode?: string;
 }>;
 
 export type ECOSAgentUsage = Readonly<{
@@ -89,6 +91,9 @@ export type ECOSAgentRunInput = Readonly<{
   instructions: string;
   inputItems: readonly unknown[];
   tools: readonly ECOSAgentTool[];
+  // Trusted server orchestration only. Executed through the same registry,
+  // deadline, output cap, evidence qualification, trace and tool-call budget.
+  initialResearchCall?: Readonly<{ name: string; arguments: Readonly<Record<string, unknown>> }>;
   outputSchemaName: string;
   outputSchema: Readonly<Record<string, unknown>>;
   validateOutputText?: (value: string) => boolean;
@@ -158,6 +163,7 @@ export async function runECOSReadOnlyAgent(
   let researchReminderUsed = false;
   let structuredOutputRepairAttempts = 0;
   let usage = emptyUsage();
+  let initialResearchPending = Boolean(input.initialResearchCall);
   const structuredOutputRepairReserved = Boolean(input.validateOutputText) &&
     limits.maxModelTurns >= 2;
 
@@ -175,7 +181,9 @@ export async function runECOSReadOnlyAgent(
       );
     }
 
-    const finalizationTurn = modelTurns === limits.maxModelTurns - 1 -
+    const initialResearchTurn = initialResearchPending;
+    initialResearchPending = false;
+    const finalizationTurn = !initialResearchTurn && modelTurns === limits.maxModelTurns - 1 -
         (structuredOutputRepairReserved ? 1 : 0);
     const structuredOutputRepairTurn = structuredOutputRepairAttempts > 0;
     input.onProgress?.({
@@ -187,7 +195,13 @@ export async function runECOSReadOnlyAgent(
     });
     let turn: ECOSAgentModelTurn;
     try {
-      turn = await runWithDeadline(
+      if (initialResearchTurn && input.initialResearchCall) {
+        const callId = "server-initial-research";
+        const name = input.initialResearchCall.name;
+        const argumentsJson = JSON.stringify(input.initialResearchCall.arguments);
+        turn = {outputItems:[{type:"function_call",call_id:callId,name,arguments:argumentsJson}],
+          toolCalls:[{callId,name,argumentsJson}],outputText:null,usage:null};
+      } else turn = await runWithDeadline(
         (signal) =>
           input.gateway.complete({
             instructions: structuredOutputRepairTurn
@@ -229,7 +243,7 @@ export async function runECOSReadOnlyAgent(
         usage,
       );
     }
-    modelTurns += 1;
+    if (!initialResearchTurn) modelTurns += 1;
     usage = mergeUsage(usage, turn.usage);
 
     if (turn.toolCalls.length === 0) {
@@ -267,7 +281,7 @@ export async function runECOSReadOnlyAgent(
           continue;
         }
         return failedResult(
-          "agent_research_required",
+          trace.some((entry) => entry.status === "failed") ? "agent_research_unavailable" : "agent_research_required",
           startedAt,
           modelTurns,
           toolCalls,
@@ -356,6 +370,7 @@ export async function runECOSReadOnlyAgent(
       const toolStartedAt = Date.now();
       const tool = tools.get(call.name);
       let status: ECOSAgentToolTrace["status"] = "rejected";
+      let toolErrorCode: string | undefined;
       let output = JSON.stringify({ ok: false, error: "tool_not_allowed" });
       const parsed = parseToolArguments(call.argumentsJson);
 
@@ -397,9 +412,10 @@ export async function runECOSReadOnlyAgent(
             }
           } catch (error) {
             status = "failed";
+            toolErrorCode = researchToolErrorCode(error);
             output = JSON.stringify({
               ok: false,
-              error: deadlineErrorCode(error, "tool_unavailable"),
+              error: toolErrorCode,
             });
           }
         }
@@ -414,6 +430,7 @@ export async function runECOSReadOnlyAgent(
         elapsedMs: Math.max(0, Date.now() - toolStartedAt),
         outputBytes,
         outputSha256,
+        ...(toolErrorCode ? {errorCode: toolErrorCode} : {}),
       }));
       transcript.push({
         type: "function_call_output",
@@ -441,6 +458,9 @@ export function createOpenAIResponsesAgentGateway(
     reasoningEffort?: "none" | "low" | "medium" | "high" | "max";
     endpoint?: string;
     fetchImpl?: typeof fetch;
+    maxAttempts?: 1 | 2;
+    requireReportedModel?: boolean;
+    requireFailureClassification?: boolean;
   }>,
 ): ECOSAgentModelGateway {
   const apiKey = input.apiKey.trim();
@@ -487,13 +507,22 @@ export function createOpenAIResponsesAgentGateway(
         signal: request.signal,
       };
       let response: Response | null = null;
-      for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+      const maxAttempts = input.maxAttempts ?? MAX_PROVIDER_ATTEMPTS;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         response = await fetchImpl(endpoint, requestInit);
         if (response.ok) break;
+        // Only the authenticated bridge can classify a provider outage. Its
+        // generic 502 can also mean invalid output, configuration or auth.
+        const failureClass = response.headers.get("x-ecos-provider-failure");
+        if ((input.requireFailureClassification || failureClass) && failureClass !== "availability") {
+          await response.body?.cancel().catch(() => undefined);
+          throw new Error("agent_provider_output_or_configuration_invalid");
+        }
         if (
-          attempt >= MAX_PROVIDER_ATTEMPTS ||
+          attempt >= maxAttempts ||
           !TRANSIENT_PROVIDER_STATUSES.has(response.status)
         ) {
+          await response.body?.cancel().catch(() => undefined);
           throw new Error(`agent_provider_http_${response.status}`);
         }
         await response.body?.cancel().catch(() => undefined);
@@ -503,6 +532,11 @@ export function createOpenAIResponsesAgentGateway(
       const body: unknown = await response.json();
       if (!isRecord(body) || !Array.isArray(body.output)) {
         throw new Error("agent_provider_output_invalid");
+      }
+      if (input.requireReportedModel && body.model !== model &&
+        !(model === "deepseek-v4-flash" &&
+          ["deepseek-flash", "deepseek-v4.1-flash"].includes(String(body.model)))) {
+        throw new Error("agent_provider_model_identity_invalid");
       }
       const outputItems = body.output.filter(isRecord);
       const toolCalls = outputItems.flatMap((item) => {
@@ -520,6 +554,7 @@ export function createOpenAIResponsesAgentGateway(
         }];
       });
       return Object.freeze({
+        reportedModel: typeof body.model === "string" ? body.model : undefined,
         outputItems: Object.freeze(outputItems),
         toolCalls: Object.freeze(toolCalls),
         outputText: extractOutputText(outputItems) || null,
@@ -754,12 +789,39 @@ async function runWithDeadline<T>(
   }
 }
 
+function researchToolErrorCode(error: unknown): string {
+  // Fixed classifications only: never record exception bodies or credentials.
+  const code = error instanceof Error && "code" in error ? error.code : null;
+  if (typeof code === "string" && ["proof_authority_unavailable", "proof_authority_permission_denied", "proof_authority_identity_mismatch", "proof_authority_response_invalid", "proof_source_unavailable"].includes(code)) return code;
+  return deadlineErrorCode(error, "tool_unavailable");
+}
+
 function deadlineErrorCode(error: unknown, fallback: string) {
   if (error instanceof DeadlineError) return "agent_deadline_exceeded";
   if (error instanceof DOMException && error.name === "AbortError") {
     return "agent_deadline_exceeded";
   }
+  // Preserve only fixed provider status codes for private diagnostics. Never
+  // copy provider bodies, arbitrary exception text, or tool errors outward.
+  if (fallback === "agent_provider_failed" && error instanceof Error &&
+    /^(?:agent_provider_http_(?:400|401|402|403|404|408|409|422|429|500|502|503|504)|agent_provider_(?:call_limit|spend_limit|unavailable_for_fallback))$/.test(error.message)) {
+    return error.message;
+  }
   return fallback;
+}
+
+/** A provider outage is not missing project evidence or a user sign-in error. */
+export function ecosAgentFailureResponse(errorCode: string) {
+  if (errorCode === "agent_research_unavailable") return {status:503,error:"answer_research_unavailable"} as const;
+  if (errorCode === "agent_deadline_exceeded" || errorCode === "agent_cancelled") {
+    return { status: 503, error: "answer_timed_out" } as const;
+  }
+  if (errorCode === "agent_provider_failed" ||
+    ["agent_provider_call_limit", "agent_provider_spend_limit", "agent_provider_unavailable_for_fallback"].includes(errorCode) ||
+    /^agent_provider_http_(400|401|402|403|404|408|409|422|429|500|502|503|504)$/.test(errorCode)) {
+    return { status: 503, error: "answer_provider_unavailable" } as const;
+  }
+  return { status: 502, error: "answer_invalid" } as const;
 }
 
 function failedResult(

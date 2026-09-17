@@ -1,8 +1,27 @@
 import { createECOSAgentModelBridgeHandler } from "./index.ts";
+import { imagePart } from "../_shared/ecos-drawing-media.fixture.ts";
 
 const serviceRoleKey = "service-role-test-secret";
 const workerToken = "worker_token_abcdefghijklmnopqrstuvwxyz012345";
 const openAIKey = "openai-test-secret";
+
+Deno.test("image opt-in never raises the text ceiling or permits external image URLs", async () => {
+  let calls = 0;
+  const handler = createECOSAgentModelBridgeHandler({
+    serviceRoleKey,workerToken,provider:"deepseek",providerKey:"deepseek-test-secret",allowDrawingImages:true,
+    fetchImplementation:async () => {calls++; return Response.json({});},
+  });
+  const plain = {...body("deepseek-v4-flash"),reasoning:{effort:"none"},
+    input:[{role:"user",content:[{type:"input_text",text:"x".repeat(800 * 1024)}]}]};
+  const external = {...body("deepseek-v4-flash"),reasoning:{effort:"none"},
+    input:[{role:"user",content:[{...imagePart(),image_url:"https://example.test/drawing.png"}]}]};
+  for (const payload of [plain,external]) {
+    const response = await handler(request(payload));
+    if (response.status === 200) throw new Error("invalid media request admitted");
+    await response.body?.cancel();
+  }
+  if (calls !== 0) throw new Error("provider called for invalid media request");
+});
 
 function body(model = "gpt-5.6-luna") {
   return {
@@ -48,6 +67,26 @@ function request(payload: unknown, headers: HeadersInit = {}) {
     body: JSON.stringify(payload),
   });
 }
+
+Deno.test("bridge distinguishes provider outage from auth, quota and invalid output for fallback", async () => {
+  for (const status of [400, 401, 402, 403, 429, 500, 502, 503, 504]) {
+    const handler = createECOSAgentModelBridgeHandler({ serviceRoleKey, workerToken,
+      provider: "openai", providerKey: openAIKey,
+      fetchImplementation: async (_input, init) => {
+        if (JSON.parse(String(init?.body)).service_tier !== "default") throw new Error("unbounded pricing tier");
+        return new Response("private provider detail", { status });
+      } });
+    const response = await handler(request(body()));
+    const expected = [429, 500, 502, 503, 504].includes(status) ? "availability" : "rejected";
+    if (response.headers.get("x-ecos-provider-failure") !== expected) throw new Error("wrong failure class");
+    if ((await response.text()).includes("private provider detail")) throw new Error("provider body exposed");
+  }
+  const invalid = createECOSAgentModelBridgeHandler({ serviceRoleKey, workerToken,
+    provider: "openai", providerKey: openAIKey, fetchImplementation: async () => Response.json({ invalid: true }) });
+  const response = await invalid(request(body()));
+  if (response.headers.get("x-ecos-provider-failure") !== "rejected") throw new Error("invalid output treated as outage");
+  await response.body?.cancel();
+});
 
 Deno.test("agent bridge forwards one bounded allowed model request", async () => {
   let calls = 0;

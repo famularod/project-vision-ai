@@ -10,6 +10,12 @@ const migration = await Deno.readTextFile(
   ),
 );
 
+Deno.test("cached answers bind the complete manifest including refreshed pages outside the shortlist", () => {
+  const fingerprint = source.slice(source.indexOf('const fingerprint = await sha256Hex('), source.indexOf('const providerInput = JSON.stringify('));
+  assert(fingerprint.includes('evidenceManifestSha256: manifestAfter.snapshotSha256'));
+  assert(fingerprint.includes('runtimeDeploymentIdentity'));
+});
+
 Deno.test("customer path loads structured evidence through the authorized project-scoped RPC", () => {
   assert(source.includes('client.rpc("ecos_load_project_question_records_v1"'));
   assert(

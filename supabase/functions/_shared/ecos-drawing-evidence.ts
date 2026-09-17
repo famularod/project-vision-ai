@@ -7,14 +7,17 @@ import {
   ecosEvidenceQuestionContextScore,
 } from "./ecos-project-answer-policy.ts";
 import {
+  ecosExpandedQuestionTokens,
   ecosNamedCanopyIdentities,
   ecosQuestionExplicitSheetReferences,
   ecosQuestionNamedCanopyIdentity,
+  ecosQuestionRequestsFootprintDimensions,
 } from "./ecos-question-language.ts";
 import {
   ecosEvidenceIdentityCompatible,
   ecosExplicitEntityIdentities,
 } from "./ecos-evidence-identity.ts";
+import { rankECOSDescriptiveResearchSources } from "./ecos-research-ranking.ts";
 
 export type ECOSDrawingRegionInput = Readonly<{
   id?: unknown;
@@ -79,6 +82,71 @@ type DrawingRegion = Readonly<{
  * sheet-wide location label may provide page context, but the measurement
  * cluster itself must still identify the requested construction subject.
  */
+export function buildECOSDrawingResearchPassages(input: {
+  regions: readonly ECOSDrawingRegionInput[];
+  question: string;
+  pageIdentity: string;
+}): ECOSDrawingEvidencePassage[] {
+  // Research may assemble separate parts of a descriptive question. This is
+  // not an answer or an assurance override; final facts still need the normal
+  // identity, relevance and authoritative protected-proof checks.
+  if (analyzeECOSProjectQuestion(input.question).kind !== "general") return [];
+  const terms = ecosExpandedQuestionTokens(input.question).filter((term) =>
+    !["planned", "plann", "shown", "feature", "change", "existing"].includes(term)
+  );
+  const regions = input.regions.map(normalizeRegion).filter((region): region is DrawingRegion =>
+    Boolean(region && region.id && region.x != null && region.y != null &&
+      region.width != null && region.width > 0 && region.height != null && region.height > 0 &&
+      region.x + region.width <= 1.000001 && region.y + region.height <= 1.000001 &&
+      ecosEvidenceIdentityCompatible(input.question, input.pageIdentity, region.text, true))
+  );
+  const matches = (region: DrawingRegion) => {
+    const words = ` ${normalizeText(region.text).replace(/[^a-z0-9]+/g, " ")} `;
+    return terms.filter((term) => words.includes(` ${term} `) || words.includes(` ${term}s `)).length;
+  };
+  const candidates = regions.filter((region) => matches(region) > 0)
+    .sort((left, right) => matches(right) - matches(left) || (right.confidence ?? 0) - (left.confidence ?? 0))
+    .map((anchor) => {
+      const nearby = regions.filter((region) =>
+        region.id !== anchor.id && regionsAreNear(anchor, region)
+      );
+      // A word-level OCR observation must not use another slot when its
+      // complete, overlapping original line is already available. Then prefer
+      // informative notes to isolated fragments, within the same local bounds
+      // and unchanged six-object ceiling. This is research selection only.
+      const words = (region: DrawingRegion) => normalizeText(region.text)
+        .replace(/[^a-z0-9]+/g, " ").trim();
+      const wordCount = (region: DrawingRegion) =>
+        Math.min(8, new Set(words(region).split(/\s+/).filter(Boolean)).size);
+      const context = [anchor, ...nearby.filter((region) => ![anchor, ...nearby].some((other) =>
+        other.id !== region.id && other.rawSource != null && other.rawSource === region.rawSource &&
+        words(other).length > words(region).length &&
+        ` ${words(other)} `.includes(` ${words(region)} `) &&
+        other.x! < region.x! + region.width! && region.x! < other.x! + other.width! &&
+        other.y! < region.y! + region.height! && region.y! < other.y! + other.height!
+      )).sort((left, right) =>
+        Number(wordCount(right) >= 3) - Number(wordCount(left) >= 3) ||
+        matches(right) - matches(left) || wordCount(right) - wordCount(left) ||
+        regionDistance(anchor, left) - regionDistance(anchor, right)
+      ).slice(0, 5)];
+      return {
+        ...anchor,
+        regionId: anchor.id,
+        text: unique([input.pageIdentity, ...context.map((region) => region.text)]).join("\n"),
+        score: matches(anchor),
+        contextRegionIds: Object.freeze(context.map((region) => region.id)),
+      };
+    });
+  // Apply coverage AFTER assembling the original local notes. Otherwise six
+  // repeated room/count labels can evict a requested appliance or access note.
+  return rankECOSDescriptiveResearchSources(input.question, candidates.map((passage) => ({
+    id: passage.regionId, sourceType: "document", title: input.pageIdentity,
+    excerpt: passage.text, score: passage.score, passage,
+    // This internal grouping token is not an emitted citation or authority.
+    documentCitation: { documentId: "local-page", pageNumber: 1, regionId: passage.regionId },
+  })), 6).map((entry) => entry.passage);
+}
+
 export function buildECOSDrawingEvidencePassages({
   pageText,
   regions,
@@ -137,7 +205,7 @@ export function buildECOSDrawingEvidencePassages({
     ? pageText
     : normalizedRegions.map((region) => region.text).join("\n");
   const requirement = analyzeECOSProjectQuestion(question);
-  const calculatedAreaPassages = requirement.attribute === "area"
+  const calculatedAreaPassages = (requirement.attribute === "area" || ecosQuestionRequestsFootprintDimensions(question))
     ? buildCalculatedAreaPassages(
       normalizedRegions,
       safePageText,
@@ -590,10 +658,18 @@ function buildCalculatedAreaPassages(
     ...regions.map((region) => region.text),
   ]).join("\n");
   const requestedEntities = ecosExplicitEntityIdentities(question);
-  if (
-    new Set(requestedEntities.map((entity) => entity.kind)).size <
-      requestedEntities.length
-  ) return [];
+  const repeatedKinds = [...new Set(requestedEntities.map((entity) => entity.kind))]
+    .filter((kind) => requestedEntities.filter((entity) => entity.kind === kind).length > 1);
+  // A comparison still needs one independently calculated passage per exact
+  // page. Never suppress every calculation just because the question names
+  // several subjects, and never label one page's dimensions as all subjects.
+  const pageEntities = ecosExplicitEntityIdentities(pageIdentity);
+  for (const kind of repeatedKinds) {
+    const namedOnPage = pageEntities.filter((entity) => entity.kind === kind);
+    if (namedOnPage.length !== 1 || !requestedEntities.some((entity) =>
+      entity.kind === kind && entity.id === namedOnPage[0].id
+    )) return [];
+  }
   if (
     !ecosEvidenceIdentityCompatible(
       question,
@@ -612,7 +688,12 @@ function buildCalculatedAreaPassages(
     if (!authoritativeCanopies.includes(requestedCanopyIdentity)) return [];
   }
   const pageContext = analyzeECOSQuestionEvidenceContext(
-    question,
+    ecosQuestionRequestsFootprintDimensions(question)
+      // These describe the requested answer format, not additional subjects
+      // that must be printed beside the outside plan dimensions. Explicit
+      // entity identities and conflicting labels were checked above.
+      ? question.replace(/\b(?:recorded|dimensions?|sheet\s+references?|footprint)\b/gi, " ")
+      : question,
     // The exact document/page identity was checked independently above.
     // Keep it through the second context check: a legitimate plan heading
     // need not repeat its document's entity label. Conflicting page labels
@@ -639,6 +720,11 @@ function buildCalculatedAreaPassages(
     !/\b(?:module|segment|bay|dimension\s+key)\b/i.test(region.text) &&
     !/\boverview\b/i.test(region.id)
   );
+  if (repeatedKinds.some((kind) => explicitlyOverall.some((region) =>
+    ecosExplicitEntityIdentities(region.text).some((entity) =>
+      entity.kind === kind && entity.id !== pageEntities.find((page) => page.kind === kind)?.id
+    )
+  ))) return [];
   // A dense plan sheet can contain hundreds of valid component, bay, detail,
   // schedule, and accessory dimensions. If OCR misses either outside
   // dimension, choosing a convenient pair from every dimension on the page
@@ -691,7 +777,9 @@ function buildCalculatedAreaPassages(
 
   const area = roundedArea(horizontal.feet * vertical.feet);
   if (!Number.isFinite(area) || area <= 0) return [];
-  const contextRegions = regions
+  // In a comparison the exact page identity carries the subject. Unrelated
+  // nearby labels must not contaminate the independently calculated passage.
+  const contextRegions = (repeatedKinds.length ? [] : regions)
     .filter((region) =>
       ecosEvidenceQuestionContextScore(question, region.text) > 0
     )
@@ -1014,6 +1102,8 @@ function objectValue(value: unknown): Record<string, unknown> {
 }
 
 function coordinate(value: unknown) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && value.trim() === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : null;
 }

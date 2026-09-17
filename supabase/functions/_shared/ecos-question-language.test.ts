@@ -17,6 +17,10 @@ import {
 } from "./ecos-question-language.ts";
 
 Deno.test("named canopy identity is preserved across punctuation and retrieval", () => {
+  for (const wording of ["canopies A, B and C", "canopies C, A & B", "canopy A and B and C"]) {
+    assertEquals([...ecosNamedCanopyIdentities(wording)].sort(), ["A", "B", "C"]);
+    assertEquals(ecosQuestionNamedCanopyIdentity(wording), null);
+  }
   assertEquals(ecosNamedCanopyIdentities("08A — CANOPY 'A'"), ["A"]);
   assertEquals(ecosNamedCanopyIdentities("08B — Canopy B"), ["B"]);
   assertEquals(

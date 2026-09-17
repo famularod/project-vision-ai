@@ -153,7 +153,7 @@ Deno.test("oversized DeepSeek tool evidence cannot authorize a factual answer", 
     limits: { maxModelTurns: 3, maxToolOutputBytes: 512 },
   });
   assertEquals(result.status, "failed");
-  assertEquals(result.errorCode, "agent_research_required");
+  assertEquals(result.errorCode, "agent_research_unavailable");
   assertEquals(result.successfulResearchCalls, 0);
   assertEquals(result.trace[0]?.status, "failed");
 });
@@ -197,7 +197,7 @@ Deno.test("failed and unauthorized DeepSeek tool calls cannot become evidence", 
     limits: { maxModelTurns: 3 },
   });
   assertEquals(result.status, "failed");
-  assertEquals(result.errorCode, "agent_research_required");
+  assertEquals(result.errorCode, "agent_research_unavailable");
   assertEquals(result.successfulResearchCalls, 0);
   assertEquals(result.trace.map((item) => item.status), [
     "failed",

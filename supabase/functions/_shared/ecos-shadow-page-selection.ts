@@ -11,7 +11,9 @@ import {
   ecosQuestionExplicitSheetReferences,
   ecosQuestionRequiredDocumentDisciplines,
   ecosSheetReferenceMatches,
+  ecosQuestionRequestsFootprintDimensions,
 } from "./ecos-question-language.ts";
+import { ecosExplicitEntityIdentities, ecosEvidenceIdentityCompatible } from "./ecos-evidence-identity.ts";
 
 export type ECOSShadowPageEvidenceRow = Readonly<{
   document_name?: unknown;
@@ -95,7 +97,8 @@ export function ecosHasDecisiveShadowPageEvidence(
       ? { id: value(row.region_id) }
       : undefined,
   }));
-  if (explicitSheets.length > 0 && requirement.kind === "general") {
+  const footprintDimensions = ecosQuestionRequestsFootprintDimensions(question);
+  if (explicitSheets.length > 0 && requirement.kind === "general" && !footprintDimensions) {
     return explicitSheets.every((reference) =>
       rows.some((row) =>
         ecosSheetReferenceMatches(value(row.sheet_number), reference) &&
@@ -103,7 +106,7 @@ export function ecosHasDecisiveShadowPageEvidence(
       )
     );
   }
-  if (requirement.kind === "measurement") {
+  if (requirement.kind === "measurement" || footprintDimensions) {
     const measurementSources = requirement.attribute === "area" &&
         requiredDisciplines.includes("architectural")
       ? sources.filter((source) =>
@@ -116,6 +119,28 @@ export function ecosHasDecisiveShadowPageEvidence(
         /\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:square\s+(?:feet|foot)|sq\.?\s*ft\.?|s\.?f\.?|sf)\b/i
           .test(source.excerpt)
       );
+    }
+    const entities = ecosExplicitEntityIdentities(question);
+    const kinds = new Set(entities.map((entity) => entity.kind));
+    if ((requirement.attribute === "area" || footprintDimensions) && entities.length > kinds.size) {
+      // Stop only after each named subject has its own unambiguous same-page
+      // calculation. A single useful page is not a completed comparison.
+      return kinds.size === 1 && entities.length <= 8 && entities.every((entity) => {
+        const scopedQuestion = `What is the square footage of ${entity.kind} ${entity.id}?`;
+        const scopedSources = measurementSources.filter((source) => {
+          const labels = ecosExplicitEntityIdentities(source.title).filter((label) => label.kind === entity.kind);
+          return labels.length === 1 && labels[0].id === entity.id &&
+            ecosEvidenceIdentityCompatible(scopedQuestion, source.title, source.excerpt, true);
+        });
+        return Boolean(buildECOSDrawingAreaFallback(scopedQuestion, scopedSources));
+      });
+    }
+    if (footprintDimensions) {
+      // A verified same-page outside-dimension pair is also sufficient for
+      // dimension research. This never promotes mere page context or mixed
+      // component dimensions, and does not change the customer's question.
+      return entities.length === 1 && Boolean(buildECOSDrawingAreaFallback(
+        `What is the square footage of ${entities[0].kind} ${entities[0].id}?`, measurementSources));
     }
     return Boolean(
       requirement.attribute === "area"

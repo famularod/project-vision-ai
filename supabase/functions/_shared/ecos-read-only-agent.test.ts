@@ -1,10 +1,12 @@
 import {
   createOpenAIResponsesAgentGateway,
+  ecosAgentFailureResponse,
   type ECOSAgentModelGateway,
   type ECOSAgentModelTurn,
   type ECOSAgentTool,
   runECOSReadOnlyAgent,
 } from "./ecos-read-only-agent.ts";
+import { parseECOSAgentExecutionLimits, ECOS_AGENT_LIMITS_CONTRACT } from "./ecos-agent-telemetry.ts";
 
 const OUTPUT_SCHEMA = {
   type: "object",
@@ -12,6 +14,24 @@ const OUTPUT_SCHEMA = {
   required: ["shortAnswer"],
   properties: { shortAnswer: { type: "string" } },
 };
+
+Deno.test("provider failures stay distinct from evidence and user authentication failures", async () => {
+  for (const status of [401, 402, 429, 502, 503, 504]) {
+    const code = `agent_provider_http_${status}`;
+    const result = await runECOSReadOnlyAgent({
+      gateway: { complete: () => { throw new Error(code); } },
+      instructions: "Use authorized evidence.", inputItems: [{ role: "user", content: "Q" }],
+      tools: [], outputSchemaName: "answer", outputSchema: OUTPUT_SCHEMA,
+    });
+    assertEquals(result.errorCode, code);
+    assertEquals(result.modelTurns, 0);
+    assertEquals(ecosAgentFailureResponse(code), {status:503,error:"answer_provider_unavailable"});
+  }
+  assertEquals(ecosAgentFailureResponse("agent_deadline_exceeded"), {status:503,error:"answer_timed_out"});
+  assertEquals(ecosAgentFailureResponse("agent_research_required"), {status:502,error:"answer_invalid"});
+  assertEquals(ecosAgentFailureResponse("agent_research_unavailable"), {status:503,error:"answer_research_unavailable"});
+  assertEquals(ecosAgentFailureResponse("private credential or document text"), {status:502,error:"answer_invalid"});
+});
 
 const SEARCH_TOOL: ECOSAgentTool = Object.freeze({
   name: "search_project_evidence",
@@ -27,6 +47,72 @@ const SEARCH_TOOL: ECOSAgentTool = Object.freeze({
   execute: (input) => ({
     matches: [{ id: "document:1", text: input.query }],
   }),
+});
+
+Deno.test("server first research uses the real tool and appears before the first model turn", async () => {
+  let searches=0;
+  const result=await runECOSReadOnlyAgent({
+    gateway:{complete:async request=>{
+      assertEquals(searches,1);
+      assertEquals(request.toolChoice,"auto");
+      const items=request.inputItems as Array<Record<string,unknown>>;
+      assertEquals(items[0].type,"function_call");
+      assertEquals(items[1].type,"function_call_output");
+      assertEquals(JSON.parse(String(items[1].output)).result.matches[0].text,"Complete original question");
+      return turn({outputText:'{"shortAnswer":"Supported answer."}'});
+    }},instructions:"Use evidence",inputItems:[],
+    initialResearchCall:{name:SEARCH_TOOL.name,arguments:{query:"Complete original question"}},
+    tools:[{...SEARCH_TOOL,execute:input=>{searches++;return SEARCH_TOOL.execute(input,{signal:new AbortController().signal});}}],
+    outputSchemaName:"answer",outputSchema:OUTPUT_SCHEMA,
+  });
+  assertEquals(result.status,"completed");
+  assertEquals(result.modelTurns,1);
+  assertEquals(result.toolCalls,1);
+  assertEquals(result.successfulResearchCalls,1);
+  assertEquals(result.trace[0].status,"completed");
+});
+
+Deno.test("server first research consumes the shared tool budget", async () => {
+  const result=await runECOSReadOnlyAgent({
+    gateway:queuedGateway([turn({toolCalls:[{callId:"later",name:SEARCH_TOOL.name,argumentsJson:'{"query":"another search"}'}]})]),
+    instructions:"Use evidence",inputItems:[],tools:[SEARCH_TOOL],
+    initialResearchCall:{name:SEARCH_TOOL.name,arguments:{query:"original"}},
+    outputSchemaName:"answer",outputSchema:OUTPUT_SCHEMA,limits:{maxToolCalls:1},
+  });
+  assertEquals(result.errorCode,"agent_tool_call_limit_reached");
+  assertEquals(result.toolCalls,1);
+});
+
+Deno.test("empty bootstrap research does not authorize an answer", async () => {
+  const result=await runECOSReadOnlyAgent({
+    gateway:{complete:async request=>{
+      assertEquals(request.toolChoice,"required");
+      throw new Error("stop_after_inspection");
+    }},instructions:"Use evidence",inputItems:[],
+    tools:[{...SEARCH_TOOL,execute:()=>({matches:[]}),qualifiesAsEvidence:()=>false}],
+    initialResearchCall:{name:SEARCH_TOOL.name,arguments:{query:"original"}},
+    outputSchemaName:"answer",outputSchema:OUTPUT_SCHEMA,
+  });
+  assertEquals(result.successfulResearchCalls,0);
+  assertEquals(result.status,"failed");
+});
+
+Deno.test("approved advanced profile executes eight rounds and sixteen research actions without clamping", async () => {
+  const limits = parseECOSAgentExecutionLimits({ schemaVersion: ECOS_AGENT_LIMITS_CONTRACT, maxModelTurns: 8, maxToolCalls: 16, maxElapsedMs: 75_000, maxToolElapsedMs: 15_000, maxToolOutputBytes: 48_000, maxOutputTokens: 4_000 });
+  let completed = 0;
+  const distribution = [3, 3, 2, 2, 2, 2, 2];
+  const result = await runECOSReadOnlyAgent({
+    gateway: { complete: async (request) => {
+      assertEquals(request.maxOutputTokens, 4_000);
+      const index = completed++;
+      return index < 7 ? turn({ toolCalls: Array.from({ length: distribution[index] }, (_, item) => ({ callId: `${index}-${item}`, name: SEARCH_TOOL.name, argumentsJson: JSON.stringify({ query: `distinct detail ${index}-${item}` }) })) }) : turn({ outputText: '{"shortAnswer":"Complete supported answer."}' });
+    } },
+    instructions: "Use authorized evidence.", inputItems: [], tools: [SEARCH_TOOL], outputSchemaName: "answer", outputSchema: OUTPUT_SCHEMA, limits,
+  });
+  assertEquals(result.status, "completed");
+  assertEquals(result.modelTurns, 8);
+  assertEquals(result.toolCalls, 16);
+  assertEquals(result.successfulResearchCalls, 16);
 });
 
 Deno.test("read-only agent researches before returning a structured answer", async () => {
@@ -445,6 +531,23 @@ Deno.test("inventory metadata alone cannot authorize an answer", async () => {
   });
   assertEquals(result.status, "failed");
   assertEquals(result.errorCode, "agent_research_required");
+});
+
+Deno.test("failed research is distinguished from empty evidence without leaking exception text", async () => {
+  for (const code of ["proof_authority_permission_denied", "secret-credential"]) {
+    const tool: ECOSAgentTool={...SEARCH_TOOL,execute:()=>{throw Object.assign(new Error("private document and credential"),{code});}};
+    const result=await runECOSReadOnlyAgent({
+      gateway:queuedGateway([
+        turn({outputItems:[{type:"function_call"}],toolCalls:[{callId:"failed",name:tool.name,argumentsJson:"{}"}]}),
+        turn({outputText:JSON.stringify({shortAnswer:"Unavailable"})}),
+      ]),
+      instructions:"Use tools",inputItems:[],tools:[tool],outputSchemaName:"answer",outputSchema:OUTPUT_SCHEMA,limits:{maxModelTurns:2},
+    });
+    assertEquals(result.errorCode,"agent_research_unavailable");
+    assertEquals(result.trace[0].errorCode,code === "secret-credential" ? "tool_unavailable" : code);
+    assertEquals(JSON.stringify(result).includes("private document"),false);
+    assertEquals(JSON.stringify(result).includes("secret-credential"),false);
+  }
 });
 
 Deno.test("read-only agent caches identical tool calls", async () => {

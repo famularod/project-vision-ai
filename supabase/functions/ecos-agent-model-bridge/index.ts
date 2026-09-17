@@ -1,3 +1,5 @@
+import { ECOS_DRAWING_REQUEST_BYTES, measureECOSDrawingMedia } from "../_shared/ecos-drawing-media-budget.ts";
+
 const MAX_REQUEST_BYTES = 768 * 1024;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const PROVIDER_TIMEOUT_MS = 35_000;
@@ -32,6 +34,7 @@ type BridgeConfig = Readonly<{
   provider: ProviderName;
   providerKey: string;
   fetchImplementation?: typeof fetch;
+  allowDrawingImages?: boolean;
 }>;
 
 /**
@@ -48,6 +51,8 @@ export function createECOSAgentModelBridgeHandler(config: BridgeConfig) {
     throw new Error("private_agent_model_configuration_unavailable");
   }
   const fetchImplementation = config.fetchImplementation || fetch;
+  const imageEnabled = config.provider === "deepseek" && config.allowDrawingImages === true;
+  const requestLimit = imageEnabled ? ECOS_DRAWING_REQUEST_BYTES : MAX_REQUEST_BYTES;
   return async (request: Request) => {
     const send = (body: unknown, status: number, extra?: HeadersInit) =>
       new Response(JSON.stringify(body), {
@@ -72,7 +77,7 @@ export function createECOSAgentModelBridgeHandler(config: BridgeConfig) {
       )
     ) return reject(request, send, 403);
     const declaredBytes = Number(request.headers.get("content-length") || "0");
-    if (Number.isFinite(declaredBytes) && declaredBytes > MAX_REQUEST_BYTES) {
+    if (Number.isFinite(declaredBytes) && declaredBytes > requestLimit) {
       return reject(request, send, 413);
     }
 
@@ -85,7 +90,7 @@ export function createECOSAgentModelBridgeHandler(config: BridgeConfig) {
     try {
       const requestBytes = await readBoundedBody(
         request.body,
-        MAX_REQUEST_BYTES,
+        requestLimit,
         controller.signal,
       );
       phase = "parse_request";
@@ -93,9 +98,15 @@ export function createECOSAgentModelBridgeHandler(config: BridgeConfig) {
         new TextDecoder("utf-8", { fatal: true }).decode(requestBytes),
       );
       validateProviderRequest(payload, providerConfig);
+      const media = measureECOSDrawingMedia(payload.input);
+      if ((media.images > 0 && !imageEnabled) ||
+        (media.images === 0 && requestBytes.length > MAX_REQUEST_BYTES) ||
+        encoder.encode(JSON.stringify({...payload, input: media.textInput})).length > MAX_REQUEST_BYTES) {
+        throw new Error("invalid_request");
+      }
       phase = "provider_request";
       const providerPayload = providerConfig.temperature === null
-        ? payload
+        ? { ...payload, service_tier: "default" }
         : { ...payload, temperature: providerConfig.temperature };
       const provider = await fetchImplementation(providerConfig.url, {
         method: "POST",
@@ -121,9 +132,12 @@ export function createECOSAgentModelBridgeHandler(config: BridgeConfig) {
         return send(
           { error: "agent_model_provider_unavailable" },
           provider.status === 429 ? 429 : 502,
-          retryAfter == null
-            ? undefined
-            : { "Retry-After": String(retryAfter) },
+          {
+            "x-ecos-provider-failure": !provider.redirected &&
+                [408, 429, 500, 502, 503, 504].includes(provider.status)
+              ? "availability" : "rejected",
+            ...(retryAfter == null ? {} : { "Retry-After": String(retryAfter) }),
+          },
         );
       }
       phase = "read_provider_response";
@@ -167,6 +181,11 @@ export function createECOSAgentModelBridgeHandler(config: BridgeConfig) {
       return send(
         { error: "agent_model_provider_unavailable" },
         controller.signal.aborted ? 504 : 502,
+        { "x-ecos-provider-failure":
+          !request.signal.aborted &&
+            (phase === "provider_request" || phase === "read_provider_response") &&
+            (controller.signal.aborted || error instanceof TypeError)
+            ? "availability" : "rejected" },
       );
     } finally {
       clearTimeout(timeout);

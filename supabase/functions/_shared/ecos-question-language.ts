@@ -2,6 +2,7 @@
  * Question-only normalization for retrieval and intent planning.
  * Stored evidence is never rewritten and this module cannot create facts.
  */
+import { ecosExplicitEntityIdentities } from "./ecos-evidence-identity.ts";
 const TOKEN_CORRECTIONS: Readonly<Record<string, string>> = Object.freeze({
   airflw: "airflow",
   asfault: "asphalt",
@@ -112,6 +113,14 @@ const QUESTION_STOP_WORDS = new Set([
 
 const QUESTION_SYNONYMS: Readonly<Record<string, readonly string[]>> = Object
   .freeze({
+    breakroom: ["break room"],
+    occupant: ["occupancy", "occ"],
+    restroom: ["rest room", "toilet"],
+    cabinetry: ["cabinet", "casework"],
+    cabinet: ["cabinetry", "casework"],
+    countertop: ["counter top", "counter"],
+    appliance: ["microwave", "refrigerator", "dishwasher", "range"],
+    accessible: ["accessibility", "ada", "clearance"],
     thick: ["thickness", "depth", "dimension", "size"],
     thickness: ["thick", "depth", "dimension", "size"],
     concrete: ["slab", "pcc", "cement", "footing", "foundation"],
@@ -251,17 +260,11 @@ export function canonicalizeECOSQuestionLanguage(value: string) {
  * evidence must never be relabeled as Canopy B or Canopy C evidence.
  */
 export function ecosNamedCanopyIdentities(value: string) {
-  const normalized = value
-    .replace(/\p{Cf}/gu, "")
-    .normalize("NFKC")
-    .toUpperCase();
-  return Object.freeze(
-    uniqueQuestionValues(
-      [...normalized.matchAll(
-        /\bCANOP(?:Y|IES)\s+['"\u2018\u2019\u201C\u201D]?([A-Z]|\d{1,3})['"\u2018\u2019\u201C\u201D]?\b/g,
-      )].map((match) => match[1]),
-    ),
-  );
+  // Use the same list-aware parser as retrieval and final evidence checks.
+  // A second singular-only regex reduced "canopies A, B and C" to A.
+  return Object.freeze(ecosExplicitEntityIdentities(value)
+    .filter((identity) => identity.kind === "canopy")
+    .map((identity) => identity.id));
 }
 
 export function ecosQuestionNamedCanopyIdentity(value: string) {
@@ -300,6 +303,13 @@ export function ecosQuestionRetrievalVariants(value: string) {
  * presence answer. Keeping these questions on aggregate page text loses the
  * coordinates needed to prove which detail the answer refers to.
  */
+export function ecosQuestionRequestsDrawingDescription(value: string) {
+  // Descriptive plan questions also need original page regions, not only
+  // measurement questions and requests that name a sheet number explicitly.
+  return /\b(?:shown|specified|planned|drawings?|plans?|arranged|reconfigured|configuration|layout)\b/i
+    .test(canonicalizeECOSQuestionLanguage(value));
+}
+
 export function ecosQuestionRequestsDrawingLocation(value: string) {
   const canonical = canonicalizeECOSQuestionLanguage(value);
   return /\b(?:which|what|where)\b[\s\S]{0,160}\b(?:sheets?|pages?|drawings?|plans?|details?|sections?)\b/i
@@ -423,6 +433,12 @@ export function ecosQuestionTokenVariants(token: string) {
  * excluding documents when the question has no clear discipline signal.
  * This inspects document identity only; it cannot create or verify facts.
  */
+/** Paired outside plan dimensions, not component size or field measurement. */
+export function ecosQuestionRequestsFootprintDimensions(question: string): boolean {
+  return /\b(?:dimensions?|length\s+and\s+width|width\s+and\s+length)\b/i.test(question) &&
+    /\b(?:footprint|overall\s+plan)\b/i.test(question);
+}
+
 export function ecosQuestionDocumentAffinity(
   question: string,
   documentDescriptor: string,

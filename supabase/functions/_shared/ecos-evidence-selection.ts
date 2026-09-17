@@ -9,10 +9,12 @@ import {
 } from "./ecos-project-answer-policy.ts";
 import {
   ecosQuestionExplicitSheetReferences,
+  ecosQuestionRequestsDrawingDescription,
   ecosQuestionRequestsDrawingLocation,
   ecosSheetReferenceMatches,
 } from "./ecos-question-language.ts";
 import { ecosEvidenceIdentityCompatible } from "./ecos-evidence-identity.ts";
+import { rankECOSDescriptiveResearchSources } from "./ecos-research-ranking.ts";
 
 export type ECOSEvidenceSelectionSource = Readonly<{
   id: string;
@@ -88,6 +90,15 @@ export function selectECOSEvidenceSources<
     explicitSheetReferences.length > 0 &&
     !ecosEvidenceCoversExplicitSheetReferences(question, selectionPool)
   ) return [];
+  // Context-rich code text is not a deterministic answer. Run descriptive
+  // coverage before context scores can preselect a generic page and bypass it.
+  // Existing exact-sheet, location and lighting-specific contracts remain intact.
+  if (explicitSheetReferences.length === 0 &&
+    analyzeECOSProjectQuestion(question).kind === 'general' &&
+    ecosQuestionRequestsDrawingDescription(question) && !ecosQuestionRequestsDrawingLocation(question) &&
+    !/\b(?:light|lights|lighting|fixture|fixtures|luminaire|luminaires|photometric|photometrics)\b/i.test(question)) {
+    return rankECOSDescriptiveResearchSources(question, selectionPool, limit);
+  }
   const selected: T[] = [];
   const selectedIds = new Set<string>();
   const selectedPageSources = new Map<string, T[]>();
@@ -145,6 +156,18 @@ export function selectECOSEvidenceSources<
     selectedIds.add(candidate.source.id);
     selected.push(candidate.source);
     if (selected.length >= limit) return selected;
+  }
+
+  // Apply descriptive coverage BEFORE the bounded source pool is truncated.
+  // Ranking only inside the agent tools cannot recover details discarded here.
+  // Keep explicit-sheet, location and deterministic proof selection unchanged.
+  if (
+    selected.length === 0 && explicitSheetReferences.length === 0 &&
+    analyzeECOSProjectQuestion(question).kind === "general" &&
+    ecosQuestionRequestsDrawingDescription(question) &&
+    !ecosQuestionRequestsDrawingLocation(question)
+  ) {
+    return rankECOSDescriptiveResearchSources(question, selectionPool, limit);
   }
 
   const orderedPages = [...selectedPageSources.entries()].sort(

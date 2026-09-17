@@ -27,6 +27,26 @@ const BODY = JSON.stringify({
   question: "How thick is the concrete on the north lot?",
 });
 
+Deno.test("backup requires sealed deployment opt-in, routing provenance and matching package", async () => {
+  for (const [enabled, provenance, matchedPackage, expected] of [
+    [false, true, true, 503], [true, false, true, 503],
+    [true, true, false, 503], [true, true, true, 200],
+  ] as const) {
+    const handler = createECOSAgentCustomerGatewayHandler(options({
+      allowTerraAvailabilityBackup: enabled,
+      fetchImpl: async (input: string | URL | Request) => {
+        if (String(input).endsWith("/auth/v1/user")) return json({ id: OWNER });
+        return json({ ...customerAnswer(), model: "gpt-5.6-terra",
+          ...(provenance ? { providerRouting: { contract: "ecos-provider-failover/1.0",
+            primaryModel: "deepseek-v4-flash", servingModel: "gpt-5.6-terra", reason: "provider_unavailable" } } : {}) },
+          200, { "x-ecos-agent-packaged-source-sha256": matchedPackage ? PACKAGE : "b".repeat(64) });
+      },
+    }));
+    const response = await handler(request());
+    assertEquals(response.status, expected); await response.body?.cancel();
+  }
+});
+
 Deno.test("authorized beta owner reaches the exact DeepSeek runtime", async () => {
   const calls: string[] = [];
   const handler = createECOSAgentCustomerGatewayHandler(options({

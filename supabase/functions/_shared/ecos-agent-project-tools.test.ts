@@ -75,6 +75,36 @@ const candidates: ECOSAgentProjectSource[] = [
   },
 ];
 
+Deno.test("observation confidence comes from metadata, never the opaque region name", async () => {
+  const source={id:"old-low-confidence-name",sourceType:"document" as const,title:"Room plan",excerpt:"OCC. LOAD: 80",updatedAt:null,score:1,
+    documentRegion:{source:"vision",confidence:.99}};
+  const registry=createECOSAgentProjectToolRegistry({candidates:[source],snapshotCapturedAt:"2026-09-15T00:00:00Z",
+    inventory:{sourceCounts:{document:1},unavailableChannels:[],limitations:[],candidateCount:1},
+    inspectDocumentProof:async()=>"available",searchCurrentDocuments:async()=>({sources:[],semanticAvailable:false,matchedPageCount:0})});
+  const result=await requiredTool(registry.tools,"open_project_evidence").execute({sourceIds:[source.id]},{signal:new AbortController().signal}) as {sources:Array<{observation:{confidence:number;method:string};documentProof:{status:string}}>};
+  if(result.sources[0].observation.confidence!==.99 || result.sources[0].observation.method!=="vision" || result.sources[0].documentProof.status!=="available") throw Error("observation_metadata_changed");
+});
+
+Deno.test("research results preserve unavailable text and expose proof readiness before composition", async () => {
+  const source = {id:"canopy:A",sourceType:"document" as const,title:"Canopy A",excerpt:"Canopy A area is 100 square feet",updatedAt:null,score:10};
+  let checks=0;
+  const registry = createECOSAgentProjectToolRegistry({
+    candidates:[source],snapshotCapturedAt:"2026-09-14T00:00:00Z",
+    inventory:{sourceCounts:{document:1},unavailableChannels:[],limitations:[],candidateCount:1},
+    inspectDocumentProof:async()=>{checks++;return "unavailable";},
+    searchCurrentDocuments:async()=>({sources:[source],semanticAvailable:false,matchedPageCount:1}),
+  });
+  const context={signal:new AbortController().signal};
+  for (const name of ["search_project_evidence","search_current_project_documents","open_project_evidence"]) {
+    const value=await requiredTool(registry.tools,name).execute({query:"Canopy A square footage",limit:8,sourceTypes:null,sourceIds:[source.id]},context) as {matches?:Array<{excerpt:string;documentProof:{status:string}}>;sources?:Array<{excerpt:string;documentProof:{status:string}}>};
+    const rows=value.matches || value.sources || [];
+    assertEquals(rows[0]?.excerpt,source.excerpt);
+    assertEquals(rows[0]?.documentProof.status,"unavailable");
+  }
+  assertEquals(checks,3);
+  assertEquals(registry.researchSources().length,1);
+});
+
 Deno.test("project tools expose inventory as metadata, not answer evidence", async () => {
   const registry = createRegistry();
   const tool = requiredTool(
@@ -87,6 +117,27 @@ Deno.test("project tools expose inventory as metadata, not answer evidence", asy
   });
   assertEquals((result as { candidateCount: number }).candidateCount, 3);
   assertEquals(registry.researchSources().length, 0);
+});
+
+Deno.test("rejected current-proof candidates cannot poison valid matches or become evidence", async () => {
+  const sources = ["valid", "stale"].map(id=>({id,sourceType:"document" as const,title:"Canopy A",excerpt:`PRIVATE ${id} dimensions`,updatedAt:null,score:10}));
+  const registry=createECOSAgentProjectToolRegistry({
+    candidates:sources,snapshotCapturedAt:"2026-09-14T00:00:00Z",
+    inventory:{sourceCounts:{document:2},unavailableChannels:[],limitations:[],candidateCount:2},
+    inspectDocumentProof:async source=>source.id === "stale" ? "rejected" : "available",
+    searchCurrentDocuments:async()=>({sources,semanticAvailable:false,matchedPageCount:2}),
+  });
+  for (const name of ["search_project_evidence","search_current_project_documents","open_project_evidence"]) {
+    const tool=requiredTool(registry.tools,name);
+    const value=await tool.execute({query:"Canopy A",limit:8,sourceTypes:null,sourceIds:["valid","stale"]},{signal:new AbortController().signal});
+    assertEquals(tool.qualifiesAsEvidence?.(value),true);
+    assertEquals(JSON.stringify(value).includes("PRIVATE stale"),false);
+    assertEquals(JSON.stringify(value).includes("PRIVATE valid"),true);
+    assertEquals(registry.researchSources().map(s=>s.id),["valid"]);
+  }
+  const open=requiredTool(registry.tools,"open_project_evidence");
+  const rejectedOnly=await open.execute({sourceIds:["stale"]},{signal:new AbortController().signal});
+  assertEquals(open.qualifiesAsEvidence?.(rejectedOnly),false);
 });
 
 Deno.test("snapshot search reranks authorized sources using the tool query", async () => {
@@ -107,7 +158,7 @@ Deno.test("snapshot search reranks authorized sources using the tool query", asy
   ]);
 });
 
-Deno.test("fresh document search is bounded to one call and makes results openable", async () => {
+Deno.test("fresh document search permits four targeted calls and rejects the fifth", async () => {
   let calls = 0;
   const documentSource: ECOSAgentProjectSource = {
     id: "document:page-7",
@@ -136,7 +187,12 @@ Deno.test("fresh document search is bounded to one call and makes results openab
       signal: new AbortController().signal,
     });
   }
-  assertEquals(calls, 1);
+  assertEquals(calls, 4);
+  const exhausted = await search.execute({ query: "another requested detail", limit: 8 }, {
+    signal: new AbortController().signal,
+  }) as { error: string };
+  assertEquals(exhausted.error, "document_search_budget_reached");
+  assertEquals(calls, 4);
   const open = requiredTool(registry.tools, "open_project_evidence");
   assertEquals(open.providesEvidence, true);
   const opened = await open.execute({ sourceIds: [documentSource.id] }, {
@@ -149,7 +205,7 @@ Deno.test("fresh document search is bounded to one call and makes results openab
   ]);
 });
 
-Deno.test("responsive snapshot evidence prevents a redundant fresh document search", async () => {
+Deno.test("a responsive snapshot match does not block researching missing detail", async () => {
   let calls = 0;
   const documentSource: ECOSAgentProjectSource = {
     id: "document:north-lot",
@@ -193,10 +249,12 @@ Deno.test("responsive snapshot evidence prevents a redundant fresh document sear
     error: string;
   };
   assertEquals(fresh, {
+    query: "north lot concrete thickness",
+    semanticAvailable: true,
+    matchedPageCount: 0,
     matches: [],
-    error: "responsive_snapshot_evidence_already_available",
   });
-  assertEquals(calls, 0);
+  assertEquals(calls, 1);
 });
 
 Deno.test("weak snapshot overlap still permits one broader fresh document search", async () => {

@@ -1,7 +1,14 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertRejects } from "jsr:@std/assert@1";
+import { bindECOSAnswerToAuthoritativeProof, ECOSAnswerProofAuthorityError } from "../_shared/ecos-answer-proof-authority.ts";
 import {
   assureAnswer,
+  requiresECOSVisualClaimReview,
+  ecosAgentInstructions,
+  excludeECOSRejectedProofSources,
+  selectECOSProofCheckedAssuranceSources,
+  selectECOSProposedResearchedSources,
   sourceSetSupportsFact,
+  ecosNarrativeReferencesSupported,
   canRecoverECOSDeterministicCanopyLightingAnswer,
   canRecoverECOSDeterministicCrossDisciplineLightingAnswer,
   canRecoverECOSDeterministicProgressAnswer,
@@ -14,6 +21,126 @@ import {
   resolveECOSAgentModelBridgeRoute,
   selectECOSDeterministicRecovery,
 } from "./index.ts";
+
+Deno.test("image-assisted answers stay quarantined before legacy assurance and fallback", () => {
+  assertEquals(requiresECOSVisualClaimReview([{name:"inspect_project_drawing_image",status:"completed"}]),true);
+  assertEquals(requiresECOSVisualClaimReview([{name:"inspect_project_drawing_image",status:"cached"}]),true);
+  assertEquals(requiresECOSVisualClaimReview([{name:"inspect_project_drawing_image",status:"failed"}]),false);
+  assertEquals(requiresECOSVisualClaimReview([{name:"read_project_drawing_page",status:"completed"}]),false);
+  assertEquals(requiresECOSVisualClaimReview([{name:"read_project_drawing_page",status:"completed"}],true),true);
+  assertEquals(requiresECOSVisualClaimReview([{name:"read_project_drawing_page",status:"failed"}],true),true);
+  assertEquals(requiresECOSVisualClaimReview([],true),true);
+});
+
+Deno.test("narrative fields cannot restore unverified sheets or measurements", () => {
+  const source = documentSource({id:"room-proof",title:"Room plan",excerpt:"OCC. LOAD: 80 NEW BREAK ROOM",page:8,sheet:"A-2.4",region:"count"});
+  assertEquals(ecosNarrativeReferencesSupported("Sheet A-2.4 labels the break room occupant load as 80.",[source]),true);
+  assertEquals(ecosNarrativeReferencesSupported("Sheet A-2.9 labels the break room occupant load as 80.",[source]),false);
+  assertEquals(ecosNarrativeReferencesSupported("The break room occupant load is 800.",[source]),false);
+  assertEquals(ecosNarrativeReferencesSupported("The break room area is 80 square feet.",[source]),false);
+  assertEquals(ecosNarrativeReferencesSupported("The retrieved excerpts do not establish every requested detail.",[source]),true);
+  const result = assureAnswer({question:"What is the break room occupant load?",sources:[source],projectId:"project-2375",projectName:"2375 Compliance Project",model:"test",proposed:{shortAnswer:"",facts:[{statement:"The break room occupant load is 80.",classification:"fact",sourceIds:[source.id]}],limitations:["Sheet A-2.9 provides a conflicting break room occupant load of 800."],conflicts:["Sheet A-2.4 says 80 while Sheet A-2.9 says 800."],suggestedQuestions:[]}});
+  assertEquals(result.facts.length,1);
+  assertEquals(result.conflicts,[]);
+  assertEquals(result.limitations.some(item=>item.includes("800") || item.includes("A-2.9")),false);
+  assertEquals(result.limitations.some(item=>item.includes("may be incomplete")),true);
+});
+
+Deno.test("assurance recognizes equivalent occupant label wording without changing numbers", () => {
+  const source = {id:"bounded-count",sourceType:"document",recordId:"plan",title:"Break room plan",excerpt:"OCC. LOAD: 80 NEW BREAK ROOM",score:1} as never;
+  assertEquals(sourceSetSupportsFact("The planned occupant load of the new employee breakroom is 80.",[source]),true);
+  assertEquals(sourceSetSupportsFact("The planned occupant load of the new employee breakroom is 800.",[source]),false);
+  assertEquals(sourceSetSupportsFact("The breakroom is 80 square feet.",[source]),false);
+  assertEquals(sourceSetSupportsFact('The planned occupant load of the new employee breakroom is 80 ("OCC. LOAD: 80").',[source]),true);
+  assertEquals(sourceSetSupportsFact("The drawing shows an occupant load of 80 in connection with the new break room.",[source]),true);
+});
+
+Deno.test("quoted labels and slash nouns do not reject matching drawing notes", () => {
+  const source={id:"access-note",sourceType:"document",recordId:"plan",title:"Drawing detail",excerpt:"ACCESSIBLE SEE PLUMBING PLANS STAINLESS STEEL SINK ALL CABINET (COUNTER)",score:1} as never;
+  assertEquals(sourceSetSupportsFact('The break-room sheet carries an "ACCESSIBLE" annotation associated with the cabinet/counter and sink notes.',[source]),true);
+  assertEquals(sourceSetSupportsFact('The cabinet/counter and sink are 80 feet wide.',[source]),false);
+  assertEquals(sourceSetSupportsFact('Room B cabinet/counter and sink are "ACCESSIBLE".',[source]),false);
+});
+
+Deno.test("final verification can select a researched unchecked source but never an unseen candidate", () => {
+  const sources=[{id:"researched",sourceType:"document"},{id:"unseen",sourceType:"document"},{id:"uncited",sourceType:"document"}];
+  assertEquals(selectECOSProposedResearchedSources(sources,["researched","uncited"],["researched","unseen"]),[sources[0]]);
+});
+
+Deno.test("a multi-source inference cannot survive loss of one cited source", () => {
+  const source={id:"known",sourceType:"document",recordId:"plan",title:"Room plan",excerpt:"CABINET MICROWAVE",score:1} as never;
+  const result=assureAnswer({proposed:{shortAnswer:"Conflict",facts:[{statement:"Two drawings conflict about the cabinet.",classification:"inference",sourceIds:["known","missing"]}],limitations:[],conflicts:[],suggestedQuestions:[]},
+    sources:[source],projectId:"project",projectName:"Project",question:"What cabinetry is shown?",model:"test"});
+  assertEquals(result.facts.length,0);
+  assertEquals(result.assurance.rejectedFactCount,1);
+});
+
+Deno.test("model instructions permit the same four targeted document searches as the tool", () => {
+  const instructions = ecosAgentInstructions();
+  assertEquals(instructions.includes("4 fresh current-document searches"), true);
+  assertEquals(instructions.includes("one fresh current-document search"), false);
+  assertEquals(instructions.includes("If two materially different searches remain incomplete"), false);
+  assertEquals(instructions.includes("Stop early when every requested part has support"), true);
+});
+
+Deno.test("advanced answers admit sixteen facts but reject seventeen", () => {
+  const fact = { statement: "A source-bound fact.", classification: "fact", sourceIds: ["source"] };
+  const answer = { shortAnswer: "Summary", facts: Array.from({ length: 16 }, () => fact), limitations: [], conflicts: [], suggestedQuestions: [] };
+  assertEquals(isECOSProposedAnswerSchemaValue(answer), true);
+  assertEquals(isECOSProposedAnswerSchemaValue({ ...answer, facts: [...answer.facts, fact] }), false);
+});
+
+Deno.test("complete assured multi-part answers are not clipped at 1560 characters", () => {
+  const materials = ["oak", "maple", "walnut", "pine", "cedar", "birch", "ash", "beech", "cherry", "teak", "fir", "spruce", "hemlock", "poplar", "mahogany", "bamboo"];
+  const sources = materials.map((material) => updateSource({ id: material, title: "Construction observation", excerpt: `The ${material} cabinetry was inspected and its finish was documented in the construction observation, including the doors, shelving, exposed edges and accessible hardware.` }));
+  const facts = sources.map((source) => ({ statement: source.excerpt, classification: "fact" as const, sourceIds: [source.id] }));
+  const result = assureAnswer({ question: "Summarize the recorded cabinetry construction observations.", sources, projectId: "project-2375", projectName: "2375 Compliance Project", model: "gpt-5.6-terra", proposed: { shortAnswer: "Cabinetry observations.", facts, limitations: [], conflicts: [], suggestedQuestions: [] } });
+  assertEquals(result.facts.length, 16);
+  assertEquals(result.answer.length > 1560, true);
+  for (const fact of facts) assertEquals(result.answer.includes(fact.statement), true);
+});
+
+Deno.test("quantity assurance rejects dated topic matches and lighting-presence fallbacks", () => {
+  const question = "How many light fixtures are in canopy C";
+  const statement = "Field updates dated 2026-07-07 for area Canopy C describe flooring material differences and installation of a gray CMU block wall on previously poured concrete footings; they contain no light fixture count.";
+  const field = updateSource({ id: "dated-flooring", title: "Canopy C field update", excerpt: statement });
+  const architectural = documentSource({ id: "arch", title: "Canopy C architectural", excerpt: "Canopy C NEW LIGHT FIXTURE. SEE ELECTRICAL.", sheet: "A-1.6", page: 13, region: "arch-light" });
+  const electrical = documentSource({ id: "elec", title: "Canopy C electrical", excerpt: "Canopy C EXTERIOR STORAGE LIGHTING PLAN.", sheet: "E-1", page: 1, region: "elec-light" });
+  for (const sources of [[field], [field, architectural, electrical]]) {
+    const result = assureAnswer({
+      question, sources, projectId: "project-2375", projectName: "2375 Compliance Project", model: "gpt-5.6-terra",
+      proposed: { shortAnswer: statement, facts: [{ statement, classification: "fact", sourceIds: [field.id] }], limitations: [], conflicts: [], suggestedQuestions: [] },
+    });
+    assertEquals(result.assurance.status, "insufficient_evidence");
+    assertEquals(result.facts.length, 0);
+  }
+});
+
+Deno.test("quantity assurance retains a supported count without a presence fallback replacing it", () => {
+  const statement = "Canopy C has 12 light fixtures.";
+  const source = documentSource({ id: "count", title: "Canopy C electrical", excerpt: statement, sheet: "E-1", page: 1, region: "count" });
+  const architectural = documentSource({ id: "arch", title: "Canopy C architectural", excerpt: "Canopy C NEW LIGHT FIXTURE. SEE ELECTRICAL.", sheet: "A-1.6", page: 13, region: "arch-light" });
+  const electrical = documentSource({ id: "elec", title: "Canopy C electrical", excerpt: "Canopy C EXTERIOR STORAGE LIGHTING PLAN.", sheet: "E-1", page: 1, region: "elec-light" });
+  const result = assureAnswer({
+    question: "How many light fixtures are in canopy C", sources: [source, architectural, electrical], projectId: "project-2375", projectName: "2375 Compliance Project", model: "gpt-5.6-terra",
+    proposed: { shortAnswer: statement, facts: [{ statement, classification: "fact", sourceIds: [source.id] }], limitations: [], conflicts: [], suggestedQuestions: [] },
+  });
+  assertEquals(result.facts[0]?.statement, statement);
+});
+
+Deno.test("original evidence merge cannot restore a rejected proof source", () => {
+  const initial=[{id:"current",excerpt:"current proof"},{id:"stale",excerpt:"stale proof"}];
+  const researched=[{id:"current",excerpt:"current proof"}];
+  assertEquals(excludeECOSRejectedProofSources([...initial,...researched],["stale"]).map(s=>s.id),["current","current"]);
+  assertEquals(excludeECOSRejectedProofSources(initial,[]),initial);
+});
+
+Deno.test("real assurance cannot promote unexamined document candidates to proof", () => {
+  const sources=[{id:"verified",sourceType:"document"},{id:"unchecked",sourceType:"document"},{id:"schedule",sourceType:"schedule"}];
+  assertEquals(selectECOSProofCheckedAssuranceSources(sources,["verified"]).map(s=>s.id),["verified","schedule"]);
+  assertEquals(selectECOSProofCheckedAssuranceSources(sources,[]).map(s=>s.id),["schedule"]);
+  assertEquals(selectECOSProofCheckedAssuranceSources(sources,undefined),sources);
+});
 
 Deno.test("Assurance compares complete numeric values, not substrings", () => {
   const source = documentSource({id: "room", title: "Room B dimensions", excerpt: "Room B area is 6,344 square feet; slab thickness is 6.0 inches.", page: 1, sheet: "A1", region: "measure"});
@@ -550,6 +677,32 @@ Deno.test("agent output validation enforces the exact required answer shape", ()
     }),
     false,
   );
+});
+
+for (const question of [
+  "What is the square footage of canopies A, B and C?",
+  "What is the square footage for Canopy A, for Canopy B, and Canopy C?",
+]) Deno.test(`multi-subject proof contract: ${question}`, async () => {
+  const projectId = "72e941d8-8114-4082-a976-ae5b2b5daba9";
+  const sources = [["A", "6344"], ["B", "5248"], ["C", "2624"]].map(([id, area]) => {
+    const source = documentSource({id: `canopy-${id}`, title: `Canopy ${id}`, excerpt: `Canopy ${id} area is ${area} square feet.`, page: 4, sheet: `WP${id}-4`, region: `region-${id}`});
+    return {...source, documentCitation: {...source.documentCitation, projectId, sourceSha256: "a".repeat(64), evidenceVersion: "ecos-hosted-evidence/1.3"}};
+  });
+  const neighbor = {...sources[0], id: "page-context", excerpt: "Canopy A area and square footage drawing context.", documentRegion: undefined};
+  const answer = assureAnswer({
+    proposed: {shortAnswer: "", facts: sources.map(source => ({statement: source.excerpt, classification: "fact" as const, sourceIds: [source.id]})), limitations: [], conflicts: [], suggestedQuestions: []},
+    sources: [...sources, neighbor], projectId, projectName: "Project", question, model: "test-only",
+  });
+  assertEquals(answer.facts.length, 3);
+  const rebound = await bindECOSAnswerToAuthoritativeProof({rpc: async (_name, p) => ({data: [{document_id:p.p_document_id,project_id:p.p_project_id,source_sha256:p.p_source_sha256,evidence_version:p.p_evidence_version,source_revision:p.p_revision,page_number:p.p_page_number,sheet_number:p.p_sheet_number,region_id:p.p_region_id,region_bounds:{x:0,y:0,width:1,height:1},source_view_citation:{locator:{source_id:p.p_document_id}}}],error:null})}, answer);
+  assertEquals(rebound.supportingEvidence.length, 3);
+  assertEquals(rebound.facts.map(fact => fact.sourceIds), sources.map(source => [source.id]));
+  // Indexed text with a valid identity is not proof that its page can open.
+  // Never turn an unavailable mandatory proof into a successful full answer.
+  const missingProof = await assertRejects(() => bindECOSAnswerToAuthoritativeProof({
+    rpc: async (_name, p) => ({data: [{document_id:p.p_document_id,project_id:p.p_project_id,source_sha256:p.p_source_sha256,evidence_version:p.p_evidence_version,source_revision:p.p_revision,page_number:p.p_page_number,sheet_number:p.p_sheet_number,region_id:p.p_region_id,region_bounds:{x:0,y:0,width:1,height:1},source_view_citation:p.p_region_id === "region-C" ? null : {locator:{source_id:p.p_document_id}}}],error:null}),
+  }, answer), ECOSAnswerProofAuthorityError);
+  assertEquals(missingProof.code, "proof_source_unavailable");
 });
 
 function documentSource(input: {

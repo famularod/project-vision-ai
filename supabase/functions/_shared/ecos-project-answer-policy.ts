@@ -12,6 +12,7 @@ import {
   ecosExplicitEntityIdentities,
   ecosStatementIdentitySupported,
 } from "./ecos-evidence-identity.ts";
+import { ecosQuantityClaimSupported, ecosRequestedItemCounts } from "./ecos-quantity-evidence.ts";
 
 export type ECOSProjectAnswerRequirement = Readonly<{
   kind: "general" | "measurement" | "quantity" | "presence";
@@ -126,7 +127,6 @@ const MEASUREMENT_VALUE_PATTERN =
   /(?:^|\s|\b)\d+(?:,\d{3})*(?:\.\d+)?(?:\s+\d+\s*\/\s*\d+|\s*\/\s*\d+)?\s*(?:"|'|inches?|inch|in\.?|feet|foot|ft\.?|square\s+(?:feet|foot)|sq\.?\s*ft\.?|sf|millimeters?|mm|centimeters?|cm|meters?|m|yards?|yds?|yd|gauge|ga\.?|fc|cfm|cubic\s+feet\s+per\s+minute)(?=$|\s|[-),.;:])/i;
 const FEET_AND_INCHES_PATTERN =
   /\b\d+\s*'\s*(?:-\s*)?\d+(?:\s+\d+\s*\/\s*\d+|\s*\/\s*\d+)?\s*"/i;
-const NUMERIC_QUANTITY_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d+)?\b/;
 const QUESTION_CONTEXT_VARIANTS: Readonly<Record<string, readonly string[]>> =
   Object.freeze({
     concrete: Object.freeze(["pcc", "slab", "cement", "paving", "walkway"]),
@@ -336,14 +336,10 @@ export function ecosFactAnswersQuestion({
       );
   }
   if (requirement.kind === "quantity") {
-    if (!containsECOSQuantityValue(normalizedStatement, question)) return false;
-    const sourceText = normalizePolicyText(sourceExcerpts.join(" "));
-    if (!containsECOSQuantityValue(sourceText, question)) return false;
-    const sourceContext = analyzeECOSQuestionEvidenceContext(
-      question,
-      sourceText,
+    return sourceExcerpts.some((source) =>
+      ecosQuantityClaimSupported(question, statement, source) &&
+      analyzeECOSQuestionEvidenceContext(question, source).locationMatched
     );
-    return sourceContext.subjectMatched && sourceContext.locationMatched;
   }
   if (!containsECOSRequestedMeasurementValue(question, normalizedStatement)) {
     return false;
@@ -407,6 +403,11 @@ export function ecosFactAnswersQuestionOrRetrievalVariant(args: {
   statement: string;
   sourceExcerpts: readonly string[];
 }) {
+  // Search phrases can omit "how many". They cannot downgrade the original
+  // count requirement to a general topic match during answer acceptance.
+  if (analyzeECOSProjectQuestion(args.question).kind === "quantity") {
+    return ecosFactAnswersQuestion(args);
+  }
   return uniquePolicyValues([
     args.question,
     ...ecosQuestionRetrievalVariants(args.question),
@@ -556,13 +557,7 @@ export function containsECOSRequestedMeasurementValue(
 }
 
 export function containsECOSQuantityValue(value: string, question = "") {
-  const questionNumbers = new Set(
-    normalizePolicyText(question).match(/\b\d+(?:\.\d+)?\b/g) || [],
-  );
-  return (normalizePolicyText(value).match(/\b\d+(?:\.\d+)?\b/g) || [])
-    .some((token) =>
-      !questionNumbers.has(token) && NUMERIC_QUANTITY_PATTERN.test(token)
-    );
+  return ecosRequestedItemCounts(question, value).length > 0;
 }
 
 /**
@@ -857,6 +852,7 @@ export function buildECOSDrawingAreaFallback(
   }
   const requestedCanopyIdentity = ecosQuestionNamedCanopyIdentity(question);
   // This fallback produces one footprint, never a multi-entity comparison.
+  if (/\bcanopies\b/i.test(question) && !requestedCanopyIdentity) return null;
   const requestedEntities = ecosExplicitEntityIdentities(question);
   if (
     new Set(requestedEntities.map((entity) => entity.kind)).size <
@@ -1329,7 +1325,7 @@ export function buildECOSCrossDisciplineLightingFallback(
       .test(
         normalizedQuestion,
       );
-  if (!asksForLightingSources) return null;
+  if (!asksForLightingSources || analyzeECOSProjectQuestion(question).kind === "quantity") return null;
   const civil = sources
     .filter((source) =>
       source.sourceType === "document" &&
@@ -1449,6 +1445,9 @@ export function buildECOSCanopyLightingFallback(
       normalizedQuestion,
     )
   ) return null;
+  // A drawing referral establishes where lighting is documented, not how
+  // many fixtures exist. It must not replace a requested count.
+  if (analyzeECOSProjectQuestion(question).kind === "quantity") return null;
   const architectural =
     sources.filter((source) =>
       source.sourceType === "document" &&
@@ -1560,6 +1559,8 @@ export function buildECOSDrawingQuantityFallback(
       if (!match) continue;
       const qualifier = index === 2 ? match[2] : match[1];
       const count = index === 2 ? match[1] : match[2];
+      if (requirement.kind === "quantity" &&
+        !ecosQuantityClaimSupported(question, `${count} ${subject}`, evidenceText)) continue;
       const qualifierScore = qualifier === "provided"
         ? 5
         : qualifier === "total"

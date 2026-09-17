@@ -6,6 +6,8 @@ import {
   type ECOSAgentToolTrace,
   type ECOSAgentUsage,
 } from "./ecos-read-only-agent.ts";
+import type { createECOSProviderFailover } from "./ecos-provider-failover.ts";
+export type ECOSProviderFailoverTelemetry = ReturnType<ReturnType<typeof createECOSProviderFailover>["snapshot"]>;
 
 export const ECOS_AGENT_TELEMETRY_CONTRACT = "ecos-agent-telemetry/1.0";
 export const ECOS_AGENT_LIMITS_CONTRACT = "ecos-agent-limits/1.0";
@@ -33,6 +35,7 @@ export type ECOSAgentTelemetry = Readonly<{
   toolTrace: readonly ECOSAgentToolTrace[];
   estimatedCostUsd: number | null;
   limits: ECOSAgentExecutionLimits;
+  providerFailover?: ECOSProviderFailoverTelemetry;
 }>;
 
 export const DEFAULT_ECOS_AGENT_EXECUTION_LIMITS: ECOSAgentExecutionLimits =
@@ -47,12 +50,14 @@ export const DEFAULT_ECOS_AGENT_EXECUTION_LIMITS: ECOSAgentExecutionLimits =
 
 const LIMIT_BOUNDS = Object.freeze(
   {
-    maxModelTurns: [1, 12],
-    maxToolCalls: [1, 32],
-    maxElapsedMs: [5_000, 300_000],
-    maxToolElapsedMs: [1_000, 60_000],
-    maxToolOutputBytes: [1_024, 262_144],
-    maxOutputTokens: [128, 8_192],
+    // Reject policies the runner cannot honor, instead of reporting a larger
+    // configured budget while silently executing a smaller one.
+    maxModelTurns: [1, 8],
+    maxToolCalls: [1, 16],
+    maxElapsedMs: [5_000, 120_000],
+    maxToolElapsedMs: [1_000, 30_000],
+    maxToolOutputBytes: [1_024, 96_000],
+    maxOutputTokens: [256, 8_000],
   } as const,
 );
 
@@ -92,15 +97,16 @@ export function buildECOSAgentTelemetry(
     usage: ECOSAgentUsage;
     toolTrace: readonly ECOSAgentToolTrace[];
     limits: ECOSAgentExecutionLimits;
+    providerFailover?: ECOSProviderFailoverTelemetry;
   }>,
 ): ECOSAgentTelemetry {
   const model = cleanCode(input.model, 120);
   const profile = ecosAgentModelProfile(model);
-  const estimatedCostUsd = estimateECOSAgentUsageCostUsd(model, input.usage);
+  const estimatedCostUsd = input.providerFailover?.reservedCostUsd ?? estimateECOSAgentUsageCostUsd(model, input.usage);
   return Object.freeze({
     schemaVersion: ECOS_AGENT_TELEMETRY_CONTRACT,
     model,
-    pricingVerifiedOn: profile?.pricingVerifiedOn || null,
+    pricingVerifiedOn: input.providerFailover ? "2026-09-14" : profile?.pricingVerifiedOn || null,
     route: cleanCode(input.route, 120) || "private_read_only_v1",
     originatingClientSurface: normalizedSurface(input.originatingClientSurface),
     modelTurns: boundedCount(input.modelTurns, 12),
@@ -115,6 +121,7 @@ export function buildECOSAgentTelemetry(
       ? null
       : Number(estimatedCostUsd.toFixed(9)),
     limits: Object.freeze({ ...input.limits }),
+    ...(input.providerFailover ? { providerFailover: input.providerFailover } : {}),
   });
 }
 

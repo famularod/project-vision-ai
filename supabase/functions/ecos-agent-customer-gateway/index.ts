@@ -28,6 +28,7 @@ type GatewayOptions = Readonly<{
   serviceWorkerToken: string;
   expectedPackageSha256: string;
   expectedModel: string;
+  allowTerraAvailabilityBackup?: boolean;
   wifProviderResource: string;
   wifServiceAccount: string;
   serverlessAudience: string;
@@ -202,7 +203,14 @@ export function createECOSAgentCustomerGatewayHandler(options: GatewayOptions) {
       }
       if (agentResponse.ok) {
         const answer = parseJsonBytes(responseBytes);
-        if (answer?.model !== configuration.expectedModel) {
+        const routingValue = answer?.providerRouting;
+        const routing = routingValue && typeof routingValue === "object" && !Array.isArray(routingValue)
+          ? routingValue as Record<string, unknown> : null;
+        const approvedBackup = configuration.allowTerraAvailabilityBackup === true &&
+          answer?.model === "gpt-5.6-terra" && routing?.contract === "ecos-provider-failover/1.0" &&
+          routing.primaryModel === configuration.expectedModel &&
+          routing.servingModel === answer.model && routing.reason === "provider_unavailable";
+        if (answer?.model !== configuration.expectedModel && !approvedBackup) {
           return json(
             { error: "agent_model_identity_mismatch" },
             503,
@@ -699,6 +707,7 @@ function requiredEnv(name: string) {
 export function serveECOSAgentCustomerGateway(deployment?: Readonly<{
   agentRuntimeUrl: string;
   expectedPackageSha256: string;
+  allowTerraAvailabilityBackup?: boolean;
 }>) {
   const handler = createECOSAgentCustomerGatewayHandler({
     supabaseUrl: requiredEnv("SUPABASE_URL"),
@@ -713,6 +722,7 @@ export function serveECOSAgentCustomerGateway(deployment?: Readonly<{
       "ECOS_AGENT_EXPECTED_PACKAGE_SHA256",
     ),
     expectedModel: requiredEnv("ECOS_AGENT_EXPECTED_MODEL"),
+    allowTerraAvailabilityBackup: deployment?.allowTerraAvailabilityBackup === true,
     wifProviderResource: requiredEnv("ECOS_AGENT_WIF_PROVIDER_RESOURCE"),
     wifServiceAccount: requiredEnv("ECOS_AGENT_WIF_SERVICE_ACCOUNT"),
     serverlessAudience: requiredEnv("ECOS_AGENT_SERVERLESS_AUDIENCE"),

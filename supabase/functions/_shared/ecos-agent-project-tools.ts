@@ -1,10 +1,14 @@
 import { type ECOSAgentTool } from "./ecos-read-only-agent.ts";
+import { rankECOSDescriptiveResearchSources } from "./ecos-research-ranking.ts";
+import { hasCompleteECOSDocumentProofClaim, type ECOSDocumentProofReadiness } from "./ecos-answer-proof-authority.ts";
 import { ecosEvidenceIdentityCompatible } from "./ecos-evidence-identity.ts";
 import { ecosEvidenceQuestionContextScore } from "./ecos-project-answer-policy.ts";
 import {
   canonicalizeECOSQuestionLanguage,
   ecosExpandedQuestionTokens,
 } from "./ecos-question-language.ts";
+
+export const ECOS_MAX_FRESH_DOCUMENT_SEARCHES = 4;
 
 export type ECOSAgentProjectSource = Readonly<{
   id: string;
@@ -14,6 +18,7 @@ export type ECOSAgentProjectSource = Readonly<{
   updatedAt: string | null;
   score: number;
   documentCitation?: Readonly<Record<string, unknown>>;
+  documentRegion?: Readonly<Record<string, unknown>>;
   documentProvenance?: Readonly<Record<string, unknown>>;
   documentLimitations?: readonly string[];
   scheduleData?: Readonly<{
@@ -52,6 +57,8 @@ export type ECOSAgentProjectToolRegistry<
 > = Readonly<{
   tools: readonly ECOSAgentTool[];
   researchSources: () => readonly TSource[];
+  rejectedProofSourceIds: () => readonly string[];
+  verifiedProofSourceIds: () => readonly string[];
 }>;
 
 export function createECOSAgentProjectToolRegistry<
@@ -66,6 +73,11 @@ export function createECOSAgentProjectToolRegistry<
       candidateCount: number;
     }>;
     snapshotCapturedAt: string;
+    inspectDocumentProof?: (source: TSource, signal: AbortSignal) => Promise<ECOSDocumentProofReadiness>;
+    readCurrentDrawingPage?: (source: TSource, pageNumber: number, question: string,
+      signal: AbortSignal) => Promise<readonly TSource[]>;
+    inspectCurrentDrawingImage?: (source: TSource, question: string, signal: AbortSignal) =>
+      Promise<Awaited<ReturnType<ReturnType<typeof import("./ecos-drawing-visual-reader.ts").createECOSDrawingVisualReader>>>>;
     searchCurrentDocuments: (
       query: string,
       signal: AbortSignal,
@@ -82,8 +94,9 @@ export function createECOSAgentProjectToolRegistry<
     input.candidates.map((source) => [source.id, source]),
   );
   const researchSourcesById = new Map<string, TSource>();
+  const rejectedProofIds = new Set<string>();
+  const verifiedProofIds = new Set<string>();
   let snapshotSearchCalls = 0;
-  let snapshotSearchReturnedMatches = false;
   let documentSearchCalls = 0;
   const rememberSources = (sources: readonly TSource[]) => {
     sources.forEach((source) => {
@@ -91,6 +104,23 @@ export function createECOSAgentProjectToolRegistry<
       candidatesById.set(source.id, source);
     });
     return sources;
+  };
+  const describeSources = async (sources: readonly TSource[], signal: AbortSignal) => {
+    const results: ReturnType<typeof agentEvidenceSource>[] = [];
+    // Sequential by design: at most twelve distinct authenticated checks per
+    // question, with no unbounded RPC fan-out from model-selected source ids.
+    for (const source of sources) {
+      signal.throwIfAborted();
+      const readiness = source.sourceType === "document" && input.inspectDocumentProof
+        ? await input.inspectDocumentProof(source, signal) : "not_checked";
+      if (readiness === "available") verifiedProofIds.add(source.id);
+      if (readiness === "rejected") {
+        rejectedProofIds.add(source.id);
+        researchSourcesById.delete(source.id);
+      }
+      results.push(agentEvidenceSource(source, readiness));
+    }
+    return results;
   };
 
   const inventoryTool: ECOSAgentTool = Object.freeze({
@@ -121,7 +151,7 @@ export function createECOSAgentProjectToolRegistry<
     providesEvidence: true,
     qualifiesAsEvidence: (value) =>
       isRecord(value) && Array.isArray(value.matches) &&
-      value.matches.length > 0,
+      value.matches.some(isUsableResearchMatch),
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -139,7 +169,7 @@ export function createECOSAgentProjectToolRegistry<
         limit: { type: ["integer", "null"], minimum: 1, maximum: 12 },
       },
     },
-    execute: (toolInput) => {
+    execute: async (toolInput, context) => {
       const query = clean(toolInput.query, 500);
       if (query.length < 2) return { matches: [], error: "query_required" };
       snapshotSearchCalls += 1;
@@ -169,20 +199,12 @@ export function createECOSAgentProjectToolRegistry<
       }).sort((left, right) =>
         right.score - left.score ||
         compareDates(right.source.updatedAt, left.source.updatedAt)
-      ).slice(0, limit);
-      const rankedSources = rankedMatches.map(({ source }) => source);
-      if (
-        rankedMatches.some(({ source, contextScore, coverage }) =>
-          source.sourceType === "document" &&
-          (contextScore >= 2 || coverage >= 0.5)
-        )
-      ) {
-        snapshotSearchReturnedMatches = true;
-      }
+      );
+      const rankedSources = rankECOSDescriptiveResearchSources(query, rankedMatches.map(({ source }) => source), limit);
       rememberSources(rankedSources);
       return {
         query,
-        matches: rankedSources.map(agentEvidenceSource),
+        matches: await describeSources(rankedSources, context.signal),
       };
     },
   });
@@ -310,7 +332,7 @@ export function createECOSAgentProjectToolRegistry<
           requestedLimit,
           appliedLimit,
         },
-        matches: matches.map(agentEvidenceSource),
+        matches: matches.map(source => agentEvidenceSource(source)),
       };
     },
   });
@@ -318,12 +340,12 @@ export function createECOSAgentProjectToolRegistry<
   const documentSearchTool: ECOSAgentTool = Object.freeze({
     name: "search_current_project_documents",
     description:
-      "Run one fresh authorized semantic, lexical, metadata, and exact-page search across all current project documents. Use it only when snapshot search found no responsive document evidence. Results contain exact evidence ids that may be cited.",
+      `Run a fresh authorized semantic, lexical, metadata, and exact-page search across all current project documents. Up to ${ECOS_MAX_FRESH_DOCUMENT_SEARCHES} searches are available: target a missing requested detail or unresolved conflict on each follow-up, rather than repeating the same broad query. Use it when snapshot results are incomplete for any requested subject or lack openable proof. One matching source does not prove complete coverage. Results contain exact evidence ids and proof readiness.`,
     progressStage: "searching",
     providesEvidence: true,
     qualifiesAsEvidence: (value) =>
       isRecord(value) && Array.isArray(value.matches) &&
-      value.matches.length > 0,
+      value.matches.some(isUsableResearchMatch),
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -336,14 +358,8 @@ export function createECOSAgentProjectToolRegistry<
     execute: async (toolInput, context) => {
       const query = clean(toolInput.query, 500);
       if (query.length < 2) return { matches: [], error: "query_required" };
-      if (snapshotSearchReturnedMatches) {
-        return {
-          matches: [],
-          error: "responsive_snapshot_evidence_already_available",
-        };
-      }
       documentSearchCalls += 1;
-      if (documentSearchCalls > 1) {
+      if (documentSearchCalls > ECOS_MAX_FRESH_DOCUMENT_SEARCHES) {
         return { matches: [], error: "document_search_budget_reached" };
       }
       if (context.signal.aborted) {
@@ -355,12 +371,12 @@ export function createECOSAgentProjectToolRegistry<
         context.signal,
       );
       const limit = boundedInteger(toolInput.limit, 1, 12, 8);
-      const matches = rememberSources(search.sources.slice(0, limit));
+      const matches = rememberSources(rankECOSDescriptiveResearchSources(normalizedQuery, search.sources, limit));
       return {
         query,
         semanticAvailable: search.semanticAvailable,
         matchedPageCount: search.matchedPageCount,
-        matches: matches.map(agentEvidenceSource),
+        matches: await describeSources(matches, context.signal),
       };
     },
   });
@@ -480,7 +496,7 @@ export function createECOSAgentProjectToolRegistry<
           requestedLimit,
           appliedLimit,
         },
-        matches: matches.map(agentEvidenceSource),
+        matches: matches.map(source => agentEvidenceSource(source)),
       };
     },
   });
@@ -506,7 +522,7 @@ export function createECOSAgentProjectToolRegistry<
         },
       },
     },
-    execute: (toolInput) => {
+    execute: async (toolInput, context) => {
       const sourceIds = Array.isArray(toolInput.sourceIds)
         ? unique(
           toolInput.sourceIds.map((value) => clean(value, 500)).filter(Boolean),
@@ -520,13 +536,137 @@ export function createECOSAgentProjectToolRegistry<
         throw new Error("evidence_source_not_found");
       }
       rememberSources(openedSources);
+      const sources = await describeSources(openedSources, context.signal);
       return {
         requestedSourceCount: sourceIds.length,
-        openedSourceCount: openedSources.length,
+        openedSourceCount: sources.filter(isUsableResearchMatch).length,
         missingSourceIds: sourceIds.filter((sourceId) =>
           !candidatesById.has(sourceId)
         ),
-        sources: openedSources.map(agentEvidenceSource),
+        sources,
+      };
+    },
+  });
+
+  const drawingPageTool: ECOSAgentTool = Object.freeze({
+    name: "read_project_drawing_page",
+    description: input.inspectCurrentDrawingImage
+      ? "Read an exact PDF page of an already researched current drawing, including its original image when an exact authorized reference is available. Use a returned sourceId and one-based PDF page number (not a sheet label). Image observations need separate claim review. Prepared text and image inspection each use one existing fresh-document read."
+      : "Read prepared text from an exact PDF page of an already researched current drawing. Use a returned sourceId and a one-based PDF page number (not a sheet label). This reads the stored page index, not the original image. Use for missing details on a known page or a referenced PDF page. It shares the fresh-document research budget.",
+    progressStage: "reading",
+    providesEvidence: true,
+    qualifiesAsEvidence: value => isRecord(value) && Array.isArray(value.sources) && value.sources.some(isUsableResearchMatch),
+    inputSchema: { type: "object", additionalProperties: false,
+      required: ["sourceId", "pageNumber", "question"],
+      properties: { sourceId: {type: "string"}, pageNumber: {type: "integer", minimum: 1},
+        question: {type: "string", minLength: 2, maxLength: 500} } },
+    execute: async (args, context) => {
+      context.signal.throwIfAborted();
+      const source = researchSourcesById.get(clean(args.sourceId, 500));
+      const page = args.pageNumber;
+      const question = clean(args.question, 500);
+      if (!source || source.sourceType !== "document" || rejectedProofIds.has(source.id)) {
+        return { sources: [], error: "researched_drawing_required" };
+      }
+      if (typeof page !== "number" || !Number.isSafeInteger(page) || page < 1 || question.length < 2) {
+        return { sources: [], error: "exact_pdf_page_and_question_required" };
+      }
+      if (!input.readCurrentDrawingPage) return { sources: [], error: "drawing_page_reader_unavailable" };
+      documentSearchCalls += 1;
+      if (documentSearchCalls > ECOS_MAX_FRESH_DOCUMENT_SEARCHES) return { sources: [], error: "document_search_budget_reached" };
+      const loaded = await input.readCurrentDrawingPage(source, page, question, context.signal);
+      context.signal.throwIfAborted();
+      // Defense in depth against a callback accidentally returning a different
+      // document/revision/project. New page regions still need exact proof checks.
+      const identity = source.documentCitation;
+      const exact = loaded.filter(candidate => candidate.sourceType === "document" &&
+        candidate.documentCitation?.pageNumber === page && identity &&
+        ["projectId", "documentId", "sourceSha256", "evidenceVersion", "revision"].every(key =>
+          identity[key] != null && candidate.documentCitation?.[key] === identity[key]));
+      rememberSources(exact);
+      const described = await describeSources(exact, context.signal);
+      // In the opt-in image runtime, opening a known drawing page must not
+      // silently stop at OCR. Use an exact returned source, never the original
+      // source's old page or a page inferred from a sheet label.
+      const imageSource = exact.find(candidate => researchSourcesById.has(candidate.id) &&
+        !rejectedProofIds.has(candidate.id) && hasCompleteECOSDocumentProofClaim(candidate));
+      const visualResearch = input.inspectCurrentDrawingImage && imageSource
+        ? await drawingImageTool.execute({sourceId:imageSource.id,question},context)
+        : null;
+      return { mode: visualResearch ? "prepared_text_and_visual_research" : "prepared_text_only", pageNumber: page,
+        sources: described, ...(visualResearch ? {visualResearch} : {}),
+        limitation: "This is bounded prepared page text, not a full visual reading. Empty results do not establish that a detail is absent from the drawing." };
+    },
+  });
+
+  const drawingImageTool: ECOSAgentTool = Object.freeze({
+    name: "inspect_project_drawing_image",
+    description: "Inspect original pixels of an already researched exact current drawing page. Returns unverified observations only, not answer evidence. A missing or unreadable detail is not proof of absence from the page or document.",
+    progressStage: "reading",
+    providesEvidence: false,
+    qualifiesAsEvidence: () => false,
+    inputSchema: {type:"object",additionalProperties:false,required:["sourceId","question"],
+      properties:{sourceId:{type:"string"},question:{type:"string",minLength:2,maxLength:500}}},
+    execute: async (args, context) => {
+      context.signal.throwIfAborted();
+      let source = researchSourcesById.get(clean(args.sourceId,500));
+      const question = clean(args.question,500);
+      if (!source || source.sourceType !== "document" || rejectedProofIds.has(source.id)) {
+        return {error:"researched_drawing_required",answerEvidenceEligible:false};
+      }
+      if (question.length < 2 || !input.inspectCurrentDrawingImage) {
+        return {error:"drawing_image_reader_unavailable",answerEvidenceEligible:false};
+      }
+      if (!hasCompleteECOSDocumentProofClaim(source)) {
+        const original = source;
+        const identity = original.documentCitation;
+        const page = identity?.pageNumber;
+        const exactReference = (candidate: TSource) =>
+          candidate.id !== original.id && candidate.sourceType === "document" &&
+          !rejectedProofIds.has(candidate.id) &&
+          hasCompleteECOSDocumentProofClaim(candidate) && identity &&
+          ["projectId", "documentId", "sourceSha256", "evidenceVersion", "revision", "pageNumber"].every(key =>
+            identity[key] != null && candidate.documentCitation?.[key] === identity[key]);
+        // Reuse an exact reference already in the authorized snapshot before
+        // doing another read. Never attach its region to the original excerpt.
+        let recovered = [...candidatesById.values()].find(exactReference);
+        if (!recovered && input.readCurrentDrawingPage && typeof page === "number" &&
+          Number.isSafeInteger(page) && page > 0 && identity &&
+          ["projectId", "documentId", "sourceSha256", "evidenceVersion", "revision"].every(key => identity[key] != null)) {
+          // Recovery plus inspection needs two of the existing four reads.
+          // Reserve capacity before starting; no model-driven retry loop.
+          if (documentSearchCalls + 2 > ECOS_MAX_FRESH_DOCUMENT_SEARCHES) {
+            return {error:"document_search_budget_reached",answerEvidenceEligible:false};
+          }
+          documentSearchCalls++;
+          const loaded = await input.readCurrentDrawingPage(original,page,question,context.signal);
+          context.signal.throwIfAborted();
+          recovered = loaded.find(exactReference);
+        }
+        if (recovered) source = recovered;
+        else
+        return {error:"exact_drawing_reference_required",answerEvidenceEligible:false,
+          instruction:"Read prepared evidence for this exact document/page to obtain a source with a current region reference, then inspect that source. Do not infer missing project information from this reference limitation."};
+      }
+      documentSearchCalls++;
+      if (documentSearchCalls > ECOS_MAX_FRESH_DOCUMENT_SEARCHES) {
+        return {error:"document_search_budget_reached",answerEvidenceEligible:false};
+      }
+      const result = await input.inspectCurrentDrawingImage(source,question,context.signal);
+      context.signal.throwIfAborted();
+      const citation = source.documentCitation;
+      if (!citation || !["projectId","documentId","sourceSha256","revision","pageNumber"].every(key =>
+        citation[key] != null && result.source[key as keyof typeof result.source] === citation[key])) {
+        throw new Error("drawing_visual_source_identity_invalid");
+      }
+      // Remember only the source actually inspected, after the authenticated
+      // image callback succeeds. Its own source id must be cited downstream.
+      rememberSources([source]);
+      return {
+        mode:result.mode,sourceId:source.id,pageNumber:result.source.pageNumber,
+        observations:result.observations,limitations:result.limitations,views:result.views,
+        coverage:result.coverage,answerEvidenceEligible:false,semanticVerified:false,
+        instruction:"Unverified visual research only. These observations require separate claim review and final source binding before they can support an answer.",
       };
     },
   });
@@ -539,12 +679,28 @@ export function createECOSAgentProjectToolRegistry<
       progressListTool,
       documentSearchTool,
       openTool,
+      ...(input.readCurrentDrawingPage ? [drawingPageTool] : []),
+      ...(input.inspectCurrentDrawingImage ? [drawingImageTool] : []),
     ]),
     researchSources: () => Object.freeze([...researchSourcesById.values()]),
+    rejectedProofSourceIds: () => Object.freeze([...rejectedProofIds]),
+    verifiedProofSourceIds: () => Object.freeze([...verifiedProofIds]),
   });
 }
 
-function agentEvidenceSource(source: ECOSAgentProjectSource) {
+function isUsableResearchMatch(value: unknown): boolean {
+  return isRecord(value) && !(isRecord(value.documentProof) && value.documentProof.status === "rejected");
+}
+
+function agentEvidenceSource(source: ECOSAgentProjectSource, proofReadiness: ECOSDocumentProofReadiness = "not_checked") {
+  if (proofReadiness === "rejected") return {
+    id: source.id,
+    sourceType: source.sourceType,
+    documentProof: {
+      status: "rejected",
+      limitation: "This retrieved reference has no matching current proof record. Its content is withheld and cannot support an answer. Search another source; report incomplete coverage if needed, not that the project information does not exist.",
+    },
+  };
   return {
     id: source.id,
     sourceType: source.sourceType,
@@ -552,6 +708,19 @@ function agentEvidenceSource(source: ECOSAgentProjectSource) {
     excerpt: source.excerpt,
     updatedAt: source.updatedAt,
     citation: source.documentCitation || null,
+    observation: source.sourceType === "document" ? {
+      method: typeof source.documentRegion?.source === "string" ? source.documentRegion.source.slice(0,80) : null,
+      confidence: typeof source.documentRegion?.confidence === "number" &&
+          Number.isFinite(source.documentRegion.confidence) && source.documentRegion.confidence >= 0 && source.documentRegion.confidence <= 1
+        ? source.documentRegion.confidence : null,
+      limitation: "Observation metadata is not answer verification. Identifiers are opaque; their wording does not establish confidence, content, or approval.",
+    } : null,
+    documentProof: source.sourceType === "document" ? {
+      status: proofReadiness,
+      limitation: proofReadiness === "unavailable"
+        ? "Indexed content exists, but exact protected proof is unavailable. Seek another supporting source or explain this limitation; do not claim the information is absent."
+        : proofReadiness === "not_checked" ? "Proof availability has not been checked; final authoritative verification is still required." : "Current authority returned a protected page locator; final binding and device opening are still required.",
+    } : null,
     sheetProvenance: source.documentProvenance || null,
     limitations: source.documentLimitations || [],
     schedule: source.scheduleData || null,

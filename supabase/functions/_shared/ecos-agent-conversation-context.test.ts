@@ -18,6 +18,38 @@ const PRIOR = Object.freeze({
   evidenceSnapshotId: "33333333-3333-4333-8333-333333333333",
 });
 
+Deno.test("each-subject follow-ups retain the prior labeled subjects across entity kinds", () => {
+  for (const [priorQuestion, question] of [
+    ["what is the square footage for canopy A, canopy B and Canopy C?", "What are the recorded dimensions and sheet references for each canopy footprint?"],
+    ["What is the area of room 101 and room 102?", "What is the recorded height for each room?"],
+    ["What is the status of RFI 12 and RFI 13?", "Who is responsible for each RFI?"],
+  ]) {
+    const value = resolveECOSAgentConversationQuestion({
+      question, projectId: PRIOR.projectId, projectName: PRIOR.projectName,
+      priorTurn: {...PRIOR, question: priorQuestion, effectiveQuestion: priorQuestion},
+    });
+    assertEquals(value.status, "resolved_follow_up");
+    assertEquals(ecosExplicitEntityIdentities(value.effectiveQuestion), ecosExplicitEntityIdentities(priorQuestion));
+    assertEquals(value.effectiveQuestion.includes("Previous user question"), false);
+    assertEquals(value.effectiveQuestion.toLowerCase().includes("square footage"), false);
+    assertEquals(value.effectiveQuestion.toLowerCase().includes("each "), false);
+    assertEquals(value.effectiveQuestion.split(" for ")[0], question.split(" for ")[0]);
+  }
+});
+
+Deno.test("each-subject matching does not inherit a different topic or override explicit identities", () => {
+  for (const question of ["What is the height of each room?", "What is the area of each canopy B footprint?"]) {
+    const value = resolveECOSAgentConversationQuestion({question, projectId: PRIOR.projectId,
+      projectName: PRIOR.projectName, priorTurn: PRIOR});
+    assertEquals(value.status, "standalone");
+    assertEquals(value.effectiveQuestion, question);
+  }
+  assertThrows(() => resolveECOSAgentConversationQuestion({
+    question: "What are the dimensions of each canopy?", projectId: "project-2321",
+    projectName: "2321 Compliance Project", priorTurn: PRIOR,
+  }), Error, "conversation_project_switch_not_explicit");
+});
+
 for (
   const [oldSubject, newSubject] of [
     ["canopy B", "canopy C"],

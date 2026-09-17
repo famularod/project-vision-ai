@@ -34,7 +34,7 @@ export function resolveECOSAgentConversationQuestion(
   const prior = input.priorTurn;
   if (
     !prior || ecosConversationQuestionRequiresSafetyRefusal(question) ||
-    !looksContextDependent(question)
+    !looksContextDependent(question, prior.effectiveQuestion || prior.question)
   ) {
     return resolution("standalone", question, prior);
   }
@@ -172,6 +172,16 @@ function resolution(
 }
 
 function sameProjectFollowUp(priorQuestion: string, question: string) {
+  const eachKind = referencedEachKind(question, priorQuestion);
+  if (eachKind) {
+    const subjects = ecosExplicitEntityIdentities(priorQuestion)
+      .filter(({kind}) => kind === eachKind).map(({kind,id}) => `${kind} ${id}`);
+    const replacement = subjects.length < 2 ? subjects[0]
+      : `${subjects.slice(0,-1).join(", ")}${subjects.length > 2 ? "," : ""} and ${subjects.at(-1)}`;
+    // Replace only the reference. Previous attributes (area, status, etc.)
+    // must not become requirements of a new dimensions/height/owner question.
+    return question.replace(/\beach\s+(?:of\s+the\s+)?[a-z]+\b/i, replacement);
+  }
   const directSubject = /^(?:and|also|what\s+about|how\s+about)\s+(.+?)[?.!]*$/i
     .exec(question)?.[1]?.trim();
   const currentEntities = ecosExplicitEntityIdentities(question);
@@ -286,9 +296,14 @@ function projectSwitchScopeInstruction(currentProjectName: string) {
   ].join(" ");
 }
 
-function looksContextDependent(value: string) {
+function looksContextDependent(value: string, priorQuestion: string) {
   const normalized = normalize(value);
   if (normalized.split(" ").filter(Boolean).length > 18) return false;
+  // A distributive reference such as "each room" refers to the labeled
+  // rooms from the previous question. Do not carry subjects into a new
+  // topic or an explicitly labeled new question. This is context only:
+  // all facts and proof must still be researched under current authority.
+  if (referencedEachKind(value, priorQuestion)) return true;
   return /^(?:and\b|also\b|what about\b|how about\b|now\b|same\b|use the new\b)/
     .test(
       normalized,
@@ -296,6 +311,13 @@ function looksContextDependent(value: string) {
     /\b(?:that|this|it|those|them|they|same question|previous)\b/.test(
       normalized,
     );
+}
+
+function referencedEachKind(value: string, priorQuestion: string): string | null {
+  const eachKind = /\beach\s+(?:of\s+the\s+)?([a-z]+)\b/.exec(normalize(value))?.[1];
+  return eachKind && ecosExplicitEntityIdentities(value).length === 0 &&
+      ecosExplicitEntityIdentities(priorQuestion).some(({kind}) => kind === eachKind)
+    ? eachKind : null;
 }
 
 function explicitlyRequestsProjectSwitch(value: string) {

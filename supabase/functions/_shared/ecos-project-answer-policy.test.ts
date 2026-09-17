@@ -178,6 +178,9 @@ Deno.test("calculated canopy area is bound to the requested canopy document", ()
         "ECOS VERIFIED PLAN-FOOTPRINT CALCULATION: 82'-0\" × 32'-0\" = 2,624 square feet.",
     },
   ] as const;
+  for (const question of ["What is the square footage of all three canopies?", "What is the square footage of each canopy A, B and C?", "Compare the square footage of canopies C, B and A"]) {
+    assertEquals(buildECOSDrawingAreaFallback(question, sources), null);
+  }
   for (
     const [identity, expectedArea, expectedSourceId] of [
       ["A", "6,344", "document:canopy-a:plan-dimensions"],
