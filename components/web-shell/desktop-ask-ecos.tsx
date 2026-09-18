@@ -12,7 +12,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
+import { ECOS_AI_READ_LABEL, type ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
 import { buildECOSDesktopDocumentProofParams } from '../../services/ECOSDesktopProofNavigation';
 import { ecosEvidenceProofTierLabel } from '../../services/DAVEAsk';
 import { useECOSAskProgress } from '../../hooks/use-ecos-ask-progress';
@@ -200,6 +200,18 @@ export function DesktopAskECOSWorkspace({
               </View>
             ) : null}
 
+            {answer.aiReadStatements.length > 0 ? (
+              <View style={styles.limitationsCard} accessibilityLabel={ECOS_AI_READ_LABEL}>
+                <Text style={styles.sectionTitle}>{ECOS_AI_READ_LABEL}</Text>
+                <Text style={styles.listText}>ECOS read these on the drawings but could not confirm them to the standard above. Check the page before relying on them.</Text>
+                {answer.aiReadStatements.map(item => (
+                  <Text key={item.statement} style={styles.aiReadText}>
+                    • {item.statement}{item.pageLabels.length > 0 ? ` (${item.pageLabels.join('; ')})` : ''}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
+
             {answer.limitations.length > 0 ? (
               <View style={styles.limitationsCard}>
                 <Text style={styles.sectionTitle}>
@@ -323,6 +335,7 @@ const styles = StyleSheet.create({
   limitationsCard: { borderRadius: 14, backgroundColor: '#EDF1F6', padding: 16 },
   sectionTitle: { color: desktopSurfaces.text, fontSize: 15, fontWeight: '900' },
   listText: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 20, marginTop: 6 },
+  aiReadText: { color: desktopSurfaces.text, fontSize: 13, lineHeight: 20, marginTop: 6 },
   assuranceCard: { flexDirection: 'row', gap: 10, borderRadius: 14, backgroundColor: '#EAF4FF', padding: 16 },
   assuranceText: { color: desktopSurfaces.text, fontSize: 13, lineHeight: 20, marginTop: 4 },
   proofTitle: { color: desktopSurfaces.text, fontSize: 20, fontWeight: '900' },

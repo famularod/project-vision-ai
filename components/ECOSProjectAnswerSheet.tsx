@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { ecosEvidenceProofTierLabel, type DAVEAskEvidence } from '../services/DAVEAsk';
 import { useECOSAskProgress } from '../hooks/use-ecos-ask-progress';
+import { ECOS_AI_READ_LABEL } from '../services/ECOSProjectQuestion';
 import type { ECOSProjectQuestionAnswer } from '../services/ECOSProjectQuestion';
 import { colors, spacing } from '../theme';
 
@@ -175,6 +176,20 @@ export function ECOSProjectAnswerSheet({
                   </View>
                 ) : null}
 
+                {answer.aiReadStatements.length > 0 ? (
+                  <View style={styles.aiReadCard} accessibilityLabel={ECOS_AI_READ_LABEL}>
+                    <Text style={styles.warningTitle}>{ECOS_AI_READ_LABEL}</Text>
+                    <Text style={styles.limitationText}>
+                      ECOS read these on the drawings but could not confirm them to the standard above. Check the page before relying on them.
+                    </Text>
+                    {answer.aiReadStatements.map(item => (
+                      <Text key={item.statement} style={styles.aiReadText}>
+                        • {item.statement}{item.pageLabels.length > 0 ? ` (${item.pageLabels.join('; ')})` : ''}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+
                 {answer.limitations.length > 0 ? (
                   <View style={styles.limitationsCard}>
                     <Text style={styles.warningTitle}>
@@ -282,6 +297,8 @@ const styles = StyleSheet.create({
   warningTitle: { color: colors.text, fontSize: 14, fontWeight: '900' },
   warningText: { color: colors.text, fontSize: 13, lineHeight: 19, marginTop: 6 },
   limitationText: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: 6 },
+  aiReadCard: { borderRadius: 15, backgroundColor: colors.surfaceMuted, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
+  aiReadText: { color: colors.text, fontSize: 13, lineHeight: 19, marginTop: 6 },
   assuranceCard: { flexDirection: 'row', gap: spacing.sm, borderRadius: 16, backgroundColor: colors.primarySoft, padding: spacing.md },
   assuranceTitle: { color: colors.text, fontSize: 14, fontWeight: '900' },
   assuranceText: { color: colors.text, fontSize: 13, lineHeight: 19, marginTop: 4 },

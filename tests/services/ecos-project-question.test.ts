@@ -373,3 +373,23 @@ function answerPayload() {
     diagnostics: diagnostics(),
   };
 }
+
+describe('AI-read second tier', () => {
+  it('parses aiReadStatements separately from verified facts and tolerates its absence', () => {
+    const { parseECOSProjectQuestionAnswer, ECOS_PROJECT_QUESTION_SCHEMA_VERSION } = require('../../services/ECOSProjectQuestion');
+    const base = {
+      schemaVersion: ECOS_PROJECT_QUESTION_SCHEMA_VERSION, projectId: 'p', projectName: 'P', question: 'q', answer: 'a', confidence: 'low',
+      facts: [], limitations: [], conflicts: [], suggestedQuestions: [], supportingEvidence: [],
+      assurance: { status: 'insufficient_evidence', checkedSourceCount: 0, verifiedFactCount: 0, rejectedFactCount: 0, message: 'm' },
+      generatedAt: '2026-09-18T00:00:00.000Z', model: 'deepseek-v4-flash',
+      diagnostics: { schemaVersion: 'ecos-question-trace/1.0', traceId: '11111111-1111-4111-8111-111111111111', clientRequestId: '22222222-2222-4222-8222-222222222222', clientSurface: 'web', evidenceSnapshotId: null, evidenceDossierId: null, replayed: false, persisted: true },
+    };
+    expect(parseECOSProjectQuestionAnswer(base).aiReadStatements).toEqual([]);
+    const parsed = parseECOSProjectQuestionAnswer({ ...base, aiReadStatements: [
+      { statement: 'Cabinets are PL-1 white melamine.', pageLabels: ['Architectural, Sheet A-2.10'] },
+      { statement: '', pageLabels: [] },
+    ] });
+    expect(parsed.aiReadStatements).toEqual([{ statement: 'Cabinets are PL-1 white melamine.', pageLabels: ['Architectural, Sheet A-2.10'] }]);
+    expect(parsed.facts).toEqual([]);
+  });
+});

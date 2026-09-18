@@ -46,6 +46,8 @@ export type ECOSProjectQuestionAnswer = Readonly<{
   conflicts: readonly string[];
   suggestedQuestions: readonly string[];
   supportingEvidence: readonly DAVEAskEvidence[];
+  /** Second tier: statements the AI read from the pages that did not pass verification. Never merged into facts. */
+  aiReadStatements: readonly ECOSAIReadStatement[];
   assurance: ECOSProjectQuestionAssurance;
   generatedAt: string;
   model: string;
@@ -245,6 +247,7 @@ export function parseECOSProjectQuestionAnswer(value: unknown): ECOSProjectQuest
     facts: Object.freeze(facts),
     limitations: Object.freeze(textArray(record.limitations)),
     conflicts: Object.freeze(textArray(record.conflicts)),
+    aiReadStatements: Object.freeze(parseAIReadStatements(record.aiReadStatements)),
     suggestedQuestions: Object.freeze(textArray(record.suggestedQuestions).slice(0, 3)),
     supportingEvidence: Object.freeze(supportingEvidence),
     assurance: Object.freeze({
@@ -259,6 +262,17 @@ export function parseECOSProjectQuestionAnswer(value: unknown): ECOSProjectQuest
     diagnostics,
     ...(record.conversation != null ? { conversation: parseECOSConversationReceipt(record.conversation) || undefined } : {}),
   });
+}
+
+export type ECOSAIReadStatement = Readonly<{ statement: string; pageLabels: readonly string[] }>;
+export const ECOS_AI_READ_LABEL = 'Read by AI, not yet verified';
+
+function parseAIReadStatements(value: unknown): ECOSAIReadStatement[] {
+  return arrayValue(value)
+    .map(objectValue)
+    .map(item => ({ statement: requiredText(item.statement), pageLabels: textArray(item.pageLabels).slice(0, 4) }))
+    .filter(item => item.statement.length > 0)
+    .slice(0, 12);
 }
 
 function parseEvidence(value: unknown): DAVEAskEvidence {

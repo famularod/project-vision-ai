@@ -12,6 +12,7 @@ const insufficientAnswer: ECOSProjectQuestionAnswer = {
   facts: [],
   limitations: ['The indexed evidence did not contain a readable numeric thickness value with a unit.'],
   conflicts: [],
+  aiReadStatements: [],
   suggestedQuestions: ['Which indexed drawing sheet or detail should be opened for manual review?'],
   supportingEvidence: [{
     sourceType: 'document',
