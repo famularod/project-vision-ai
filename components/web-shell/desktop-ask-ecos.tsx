@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
 import { buildECOSDesktopDocumentProofParams } from '../../services/ECOSDesktopProofNavigation';
+import { ecosEvidenceProofTierLabel } from '../../services/DAVEAsk';
 import { desktopSurfaces } from './desktop-surface-palette';
 
 const EXAMPLE_QUESTIONS = Object.freeze([
@@ -240,8 +241,13 @@ export function DesktopAskECOSWorkspace({
                       <Text style={styles.proofLabel}>{evidence.summary}</Text>
                     </View>
                     {evidence.excerpt ? <Text style={styles.proofExcerpt}>{evidence.excerpt}</Text> : null}
+                    {ecosEvidenceProofTierLabel(evidence) ? (
+                      <Text style={styles.proofTier}>{ecosEvidenceProofTierLabel(evidence)}</Text>
+                    ) : null}
                     <Text style={styles.openSourceText}>
-                      {evidence.sourceType === 'document' ? 'Open exact proof →' : 'Open source →'}
+                      {evidence.sourceType === 'document'
+                        ? evidence.proofTier === 'page_text' ? 'Open page →' : 'Open exact proof →'
+                        : 'Open source →'}
                     </Text>
                   </Pressable>
                 </Link>
@@ -321,6 +327,7 @@ const styles = StyleSheet.create({
   proofHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   proofLabel: { flex: 1, color: desktopSurfaces.text, fontSize: 13, lineHeight: 18, fontWeight: '900' },
   proofExcerpt: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 18, marginTop: 8 },
+  proofTier: { color: desktopSurfaces.accent, fontSize: 11, lineHeight: 16, marginTop: 6, fontWeight: '900' },
   openSourceText: { color: desktopSurfaces.accent, fontSize: 12, fontWeight: '900', marginTop: 8 },
   followUpButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderRadius: 13, borderWidth: 1, borderColor: '#B8CEE7', backgroundColor: '#FFFFFF', paddingHorizontal: 13 },
   followUpText: { flex: 1, color: desktopSurfaces.text, fontSize: 12, lineHeight: 17, fontWeight: '800' },

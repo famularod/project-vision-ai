@@ -267,14 +267,24 @@ describe('ECOS document proof authority', () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
-  it('rejects a proof claim without an exact region before the RPC', async () => {
+  it('rejects the reserved page-text region id as an exact region claim before the RPC', async () => {
     const rpc = jest.fn();
     await expect(loadAuthorizedECOSDocumentProof({
       client: { rpc } as any,
       document: compactDocument,
-      claim: { ...claim, regionId: null },
+      claim: { ...claim, regionId: 'page' },
     })).rejects.toBeInstanceOf(ECOSDocumentProofAuthorityError);
     expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('ECO-04: a null-region claim is a page-text claim and must come back without a region', async () => {
+    const rpc = jest.fn(async () => ({ data: [authorityRow()], error: null }));
+    await expect(loadAuthorizedECOSDocumentProof({
+      client: { rpc } as any,
+      document: compactDocument,
+      claim: { ...claim, regionId: null },
+    })).rejects.toMatchObject({ code: 'proof_response_invalid' });
+    expect(rpc).toHaveBeenCalledWith('dave_verify_current_ecos_document_proof', expect.objectContaining({ p_region_id: null }));
   });
 });
 

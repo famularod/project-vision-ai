@@ -43,7 +43,15 @@ export type DAVEAskEvidence = {
   documentRegion?: ReferenceDocumentRegion | null;
   documentProvenance?: ReferenceDocumentSheetProvenance | null;
   excerpt?: string | null;
+  /** 'page_text': the proof is the whole page, not an exact spot on it (shown as "Verified from page text"). */
+  proofTier?: 'exact_region' | 'page_text' | null;
 };
+
+export const ECOS_PAGE_TEXT_PROOF_LABEL = 'Verified from page text';
+
+export function ecosEvidenceProofTierLabel(evidence: Pick<DAVEAskEvidence, 'sourceType' | 'proofTier'>): string | null {
+  return evidence.sourceType === 'document' && evidence.proofTier === 'page_text' ? ECOS_PAGE_TEXT_PROOF_LABEL : null;
+}
 
 export type DAVEAskTimelineReference = {
   id: string;

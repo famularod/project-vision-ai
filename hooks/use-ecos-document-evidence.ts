@@ -92,7 +92,7 @@ export function useECOSDocumentEvidence({
           imageUri: protectedPage.dataUrl,
           imageWidth: protectedPage.width,
           imageHeight: protectedPage.height,
-          imageBounds: normalizedImageBounds(evidence.documentRegion),
+          imageBounds: evidence.proofTier === 'page_text' ? null : normalizedImageBounds(evidence.documentRegion),
           binding: proofBinding,
           loading: false,
           error: null,
@@ -110,7 +110,7 @@ export function useECOSDocumentEvidence({
       }
       const isPdf = readable.mimeType === 'application/pdf' || readable.originalFileName.toLowerCase().endsWith('.pdf');
       let imageUri: string | null = null;
-      if (isPdf && evidence.documentRegion && citation.pageNumber && isDavePdfExcerptRenderingAvailable()) {
+      if (isPdf && evidence.documentRegion && evidence.proofTier !== 'page_text' && citation.pageNumber && isDavePdfExcerptRenderingAvailable()) {
         imageUri = (await renderPdfExcerpt(
           readable.uri,
           citation.pageNumber,

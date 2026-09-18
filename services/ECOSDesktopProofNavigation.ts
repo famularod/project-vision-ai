@@ -35,6 +35,8 @@ export type ECOSDesktopDocumentProofFocus = Readonly<{
   regionId: string | null;
   sheetNumber: string | null;
   bounds: ECOSDesktopProofBounds | null;
+  /** ECO-04: the answer was verified from page text, not an exact region. */
+  pageText?: boolean;
 }>;
 
 export type ECOSDesktopProofBounds = Readonly<{
@@ -80,6 +82,13 @@ export function buildECOSDesktopDocumentProofParams(
   params.proofRevision = revision;
   params.proofPage = String(pageNumber);
 
+  if (evidence.proofTier === 'page_text' && !cleanIdentifier(citation?.regionId)) {
+    // Page-text proof opens the page itself; there is no exact spot to mark.
+    params.proofTier = 'page_text';
+    const pageTextSheet = cleanIdentifier(citation?.sheetNumber);
+    if (pageTextSheet) params.proofSheet = pageTextSheet;
+    return Object.freeze(params);
+  }
   const citationRegionId = cleanIdentifier(citation?.regionId);
   const evidenceRegionId = cleanIdentifier(evidence.documentRegion?.id);
   const regionIdsAgree = !citationRegionId || !evidenceRegionId || citationRegionId === evidenceRegionId;
@@ -137,6 +146,9 @@ export function parseECOSDesktopDocumentProofFocus(
     regionId: cleanIdentifier(firstParam(params.proofRegion)),
     sheetNumber: cleanIdentifier(firstParam(params.proofSheet)),
     bounds: parsedBounds,
+    ...(firstParam(params.proofTier) === 'page_text' && !cleanIdentifier(firstParam(params.proofRegion))
+      ? { pageText: true }
+      : {}),
   });
 }
 
@@ -230,12 +242,20 @@ function desktopFocusEvidence(
       regionId: focus.regionId,
       label: document?.name || 'Project document',
     },
+    ...(focus.pageText && !focus.regionId ? { proofTier: 'page_text' as const } : {}),
     documentRegion: focus.regionId && focus.bounds ? {
       id: focus.regionId,
       x: focus.bounds.x,
       y: focus.bounds.y,
       width: focus.bounds.width,
       height: focus.bounds.height,
+      source: null,
+    } : focus.pageText && !focus.regionId ? {
+      id: 'page',
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
       source: null,
     } : null,
   };

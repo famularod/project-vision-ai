@@ -10,7 +10,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import type { DAVEAskEvidence } from '../services/DAVEAsk';
+import { ecosEvidenceProofTierLabel, type DAVEAskEvidence } from '../services/DAVEAsk';
 import type { ECOSProjectQuestionAnswer } from '../services/ECOSProjectQuestion';
 import { colors, spacing } from '../theme';
 
@@ -157,6 +157,9 @@ export function ECOSProjectAnswerSheet({
                         <View style={styles.main}>
                           <Text style={styles.evidenceTitle}>{evidence.summary}</Text>
                           {evidence.excerpt ? <Text style={styles.evidenceExcerpt} numberOfLines={4}>{evidence.excerpt}</Text> : null}
+                          {ecosEvidenceProofTierLabel(evidence) ? (
+                            <Text style={styles.evidenceTier}>{ecosEvidenceProofTierLabel(evidence)}</Text>
+                          ) : null}
                         </View>
                         <Ionicons name="chevron-forward" size={19} color={colors.primary} />
                       </Pressable>
@@ -270,6 +273,7 @@ const styles = StyleSheet.create({
   evidenceIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center' },
   evidenceTitle: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '800' },
   evidenceExcerpt: { color: colors.mutedText, fontSize: 12, lineHeight: 17, marginTop: 3 },
+  evidenceTier: { color: colors.primary, fontSize: 11, lineHeight: 15, marginTop: 4, fontWeight: '800' },
   pressed: { opacity: 0.72 },
   warningCard: { borderRadius: 15, backgroundColor: '#FFF7E8', borderWidth: 1, borderColor: '#F4C76D', padding: spacing.md },
   limitationsCard: { borderRadius: 15, backgroundColor: colors.surfaceMuted, padding: spacing.md },

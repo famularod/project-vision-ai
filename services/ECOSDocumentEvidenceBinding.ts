@@ -12,6 +12,7 @@ export type ECOSProjectIdentity = Readonly<{
 export type ECOSDocumentEvidenceBindingReason =
   | 'exact'
   | 'exact_hosted_region'
+  | 'exact_hosted_page'
   | 'missing_citation'
   | 'document_unavailable'
   | 'document_not_current'
@@ -27,7 +28,7 @@ export type ECOSDocumentEvidenceBindingReason =
 export type ECOSDocumentEvidenceBinding = Readonly<{
   exact: boolean;
   reason: ECOSDocumentEvidenceBindingReason;
-  proofMode: 'stored_visual_coverage' | 'hosted_cited_region' | null;
+  proofMode: 'stored_visual_coverage' | 'hosted_cited_region' | 'hosted_cited_page' | null;
   message: string | null;
 }>;
 
@@ -144,7 +145,40 @@ export function evaluateECOSDocumentEvidenceBinding(
     return exact('exact_hosted_region', 'hosted_cited_region');
   }
 
+  if (hasHostedPageTextBinding({ evidence, document, citationEvidenceVersion, pageNumber })) {
+    return exact('exact_hosted_page', 'hosted_cited_page');
+  }
+
   return unavailable('visual_coverage_mismatch');
+}
+
+/** ECO-04 page-text tier: the server bound the answer to the whole current
+ * page (no region). Only a proof the authority RPC returned for this exact
+ * null-region claim in this session can open it. */
+function hasHostedPageTextBinding({
+  evidence,
+  document,
+  citationEvidenceVersion,
+  pageNumber,
+}: {
+  evidence: DAVEAskEvidence;
+  document: ReferenceDocument;
+  citationEvidenceVersion: string;
+  pageNumber: number;
+}) {
+  const citation = evidence.documentCitation;
+  const page = (document.extractedPages ?? []).find(item => item.pageNumber === pageNumber);
+  return Boolean(
+    citation &&
+    evidence.proofTier === 'page_text' &&
+    !clean(citation.regionId) &&
+    clean(evidence.documentRegion?.id) === 'page' &&
+    citationEvidenceVersion.startsWith('ecos-hosted-evidence/') &&
+    hasECOSAuthorizedProof(document, evidence) &&
+    clean(document.ecosHostedIndexEvidenceVersion) === citationEvidenceVersion &&
+    page?.assurance?.accepted === true &&
+    clean(page.assurance.evidenceVersion) === citationEvidenceVersion,
+  );
 }
 
 function hasExactHostedRegionBinding({
@@ -192,7 +226,7 @@ function sameBounds(left: unknown, right: unknown) {
 }
 
 function exact(
-  reason: Extract<ECOSDocumentEvidenceBindingReason, 'exact' | 'exact_hosted_region'>,
+  reason: Extract<ECOSDocumentEvidenceBindingReason, 'exact' | 'exact_hosted_region' | 'exact_hosted_page'>,
   proofMode: NonNullable<ECOSDocumentEvidenceBinding['proofMode']>,
 ): ECOSDocumentEvidenceBinding {
   return Object.freeze({ exact: true, reason, proofMode, message: null });
@@ -200,7 +234,7 @@ function exact(
 
 function unavailable(reason: Exclude<
   ECOSDocumentEvidenceBindingReason,
-  'exact' | 'exact_hosted_region'
+  'exact' | 'exact_hosted_region' | 'exact_hosted_page'
 >): ECOSDocumentEvidenceBinding {
   const message = reason === 'document_unavailable'
     ? 'The cited current document is no longer available on this device.'

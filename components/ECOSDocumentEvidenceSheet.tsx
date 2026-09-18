@@ -47,6 +47,7 @@ export function ECOSDocumentEvidenceSheet({
 }) {
   const citation = evidence?.documentCitation;
   const hostedRegion = binding?.proofMode === 'hosted_cited_region';
+  const hostedPageText = binding?.proofMode === 'hosted_cited_page';
   const [imageLayout, setImageLayout] = useState({ width: 0, height: 0 });
   const protectedPage = Boolean(imageUri && imageWidth > 0 && imageHeight > 0);
   const documentOpenMode = referenceDocumentOpenMode(document);
@@ -72,7 +73,7 @@ export function ECOSDocumentEvidenceSheet({
             <View style={styles.main}>
               <Text style={styles.eyebrow}>
                 {proofReady
-                  ? hostedRegion ? 'ECOS SOURCE-BOUND PROOF' : 'ECOS VERIFIED SOURCE'
+                  ? hostedPageText ? 'VERIFIED FROM PAGE TEXT' : hostedRegion ? 'ECOS SOURCE-BOUND PROOF' : 'ECOS VERIFIED SOURCE'
                   : 'ECOS SOURCE CHECK'}
               </Text>
               <Text style={styles.title}>Document Evidence</Text>

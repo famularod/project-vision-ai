@@ -12,6 +12,7 @@ import {
   ECOS_PROJECT_QUESTION_SCHEMA_VERSION,
   parseECOSProjectQuestionAnswer,
 } from '../../services/ECOSProjectQuestion';
+import { ecosEvidenceProofTierLabel } from '../../services/DAVEAsk';
 import type { ReferenceDocument } from '../../types';
 import { buildProtectedSourceCitation } from '../fixtures/ecos-protected-source';
 
@@ -147,6 +148,86 @@ describe('Ask ECOS answer-to-visible-proof customer contract', () => {
     });
   });
 
+  it('ECO-04: opens a page-text proof as the whole current page, labelled "Verified from page text"', async () => {
+    const answer = parseECOSProjectQuestionAnswer(pageTextAnswer());
+    const evidence = answer.supportingEvidence[0];
+    expect(evidence.proofTier).toBe('page_text');
+    expect(evidence.documentCitation?.regionId).toBeNull();
+    expect(evidence.documentRegion).toMatchObject({ id: 'page', x: 0, y: 0, width: 1, height: 1 });
+    expect(ecosEvidenceProofTierLabel(evidence)).toBe('Verified from page text');
+    expect(answer.assurance.status).toBe('verified_with_limits');
+
+    const claim = ecosDocumentProofClaimFromEvidence(evidence);
+    expect(claim).toMatchObject({ pageNumber: 6, regionId: null });
+    const sourceViewCitation = buildProtectedSourceCitation({
+      ownerId: OWNER_ID,
+      projectId: PROJECT_ID,
+      documentId: DOCUMENT_ID,
+      sourceSha256: SOURCE_SHA,
+      rasterSha256: RASTER_SHA,
+      rasterByteCount: 33,
+      rasterWidth: 2,
+      rasterHeight: 3,
+    });
+    const rpc = jest.fn(async () => ({
+      data: [{
+        document_id: DOCUMENT_ID,
+        project_id: PROJECT_ID,
+        source_sha256: SOURCE_SHA,
+        evidence_version: EVIDENCE_VERSION,
+        source_revision: '1',
+        page_number: 6,
+        sheet_number: 'C6',
+        region_id: null,
+        region_bounds: { x: 0, y: 0, width: 1, height: 1 },
+        source_view_citation: sourceViewCitation,
+      }],
+      error: null,
+    }));
+    const proof = await loadAuthorizedECOSDocumentProofBundle({
+      client: { rpc } as any,
+      document: currentCivilDrawing,
+      claim: claim!,
+      loadProtectedPage: jest.fn(async () => ({
+        dataUrl: 'data:image/png;base64,protected-current-page',
+        width: 2,
+        height: 3,
+        sha256: RASTER_SHA,
+      })),
+    });
+    expect(rpc).toHaveBeenCalledWith('dave_verify_current_ecos_document_proof', expect.objectContaining({
+      p_page_number: 6,
+      p_region_id: null,
+    }));
+    expect(evaluateECOSDocumentEvidenceBinding(
+      evidence,
+      proof.document,
+      [{ id: PROJECT_ID, name: '2375 Compliance Project' }],
+    )).toMatchObject({ exact: true, reason: 'exact_hosted_page', proofMode: 'hosted_cited_page' });
+
+    // Desktop: the page opens with no region box to mark.
+    const params = buildECOSDesktopDocumentProofParams(evidence, '2375 Compliance Project');
+    expect(params.proofTier).toBe('page_text');
+    expect(params.proofRegion).toBeUndefined();
+    expect(params.proofX).toBeUndefined();
+    const focus = parseECOSDesktopDocumentProofFocus(params);
+    expect(focus).toMatchObject({ pageNumber: 6, regionId: null, pageText: true });
+    expect(resolveECOSDesktopDocumentProof(
+      [proof.document],
+      focus!,
+      [{ id: PROJECT_ID, name: '2375 Compliance Project' }],
+    )).toMatchObject({ match: 'page_only', bounds: null, binding: { reason: 'exact_hosted_page' } });
+  });
+
+  it('ECO-04: a page-text label cannot ride on a region-less citation the server did not bind', () => {
+    const raw = pageTextAnswer();
+    raw.supportingEvidence[0].documentRegion = null;
+    const evidence = parseECOSProjectQuestionAnswer(raw).supportingEvidence[0];
+    expect(evidence.proofTier).toBeNull();
+    expect(ecosEvidenceProofTierLabel(evidence)).toBeNull();
+    expect(ecosDocumentProofClaimFromEvidence(evidence)).toBeNull();
+  });
+
   it('fails closed after the current document bytes drift from the answered source', () => {
     const evidence = parseECOSProjectQuestionAnswer(realConcreteAnswer()).supportingEvidence[0];
     const binding = evaluateECOSDocumentEvidenceBinding(
@@ -189,6 +270,32 @@ describe('Ask ECOS answer-to-visible-proof customer contract', () => {
     )).toMatchObject({ exact: false, reason: 'visual_coverage_mismatch' });
   });
 });
+
+function pageTextAnswer() {
+  const base = realConcreteAnswer();
+  const evidence = base.supportingEvidence[0];
+  return {
+    ...base,
+    question: 'What does the general note say about paving?',
+    answer: 'General note 4 requires 6.0” PCC paving.',
+    limitations: ['Verified from page text: Civil drawing, Sheet C6, PDF page 6. The exact spot on the page is not marked.'],
+    assurance: { ...base.assurance, status: 'verified_with_limits' },
+    supportingEvidence: [{
+      ...evidence,
+      proofTier: 'page_text',
+      documentCitation: { ...evidence.documentCitation, regionId: null },
+      documentRegion: {
+        id: 'page',
+        text: '6.0” THICK 6.0” PCC PAVING',
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        rawSource: 'hosted_proof_authority_page',
+      } as typeof evidence.documentRegion | null,
+    }],
+  };
+}
 
 function realConcreteAnswer() {
   return {

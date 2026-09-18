@@ -75,9 +75,12 @@ export function ecosDocumentProofClaimFromEvidence(
   const revision = boundedClean(citation.revision, 200);
   const pageNumber = positiveInteger(citation.pageNumber);
   const regionId = boundedClean(citation.regionId, 512);
+  // ECO-04 page-text tier: no region id; the whole current page is the proof.
+  const pageTextClaim = !regionId && evidence.proofTier === 'page_text' &&
+    boundedClean(evidence.documentRegion?.id, 16) === 'page';
   if (
     !documentId || !projectId || !sourceSha256 || !evidenceVersion || !revision ||
-    pageNumber == null || !regionId
+    pageNumber == null || (!regionId && !pageTextClaim)
   ) {
     return null;
   }
@@ -89,7 +92,7 @@ export function ecosDocumentProofClaimFromEvidence(
     revision,
     pageNumber,
     sheetNumber: boundedClean(citation.sheetNumber, 64) || null,
-    regionId,
+    regionId: regionId || null,
   });
 }
 
@@ -274,7 +277,7 @@ function validProofClaim(claim: ECOSDocumentProofClaim) {
     boundedClean(claim.revision, 200) === claim.revision &&
     positiveInteger(claim.pageNumber) === claim.pageNumber &&
     (claim.sheetNumber == null || boundedClean(claim.sheetNumber, 64) === claim.sheetNumber) &&
-    boundedClean(claim.regionId, 512) === claim.regionId && Boolean(claim.regionId);
+    (claim.regionId == null || (boundedClean(claim.regionId, 512) === claim.regionId && claim.regionId !== 'page'));
 }
 
 function normalizeAuthorityRow(value: unknown): ECOSDocumentProofAuthorityRow | null {

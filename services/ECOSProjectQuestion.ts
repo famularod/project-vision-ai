@@ -312,6 +312,9 @@ function parseEvidence(value: unknown): DAVEAskEvidence {
       label: requiredText(citation.label),
     } : null,
     documentProvenance: hasCitation ? provenance.provenance : null,
+    proofTier: hasCitation && item.proofTier === 'page_text' && hasRegion && requiredText(region.id) === 'page'
+      ? 'page_text'
+      : hasRegion ? 'exact_region' : null,
     documentRegion: hasRegion ? {
       id: requiredText(region.id),
       label: requiredText(region.label) || null,
