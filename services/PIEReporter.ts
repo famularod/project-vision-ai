@@ -674,8 +674,10 @@ function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
 
 export function buildConstructionUnderstanding(
   input: PIEReportDraftInput,
-  evidence: PIEReportSourceEvidence[] = collectReportEvidence(input),
+  rawEvidence: PIEReportSourceEvidence[] = collectReportEvidence(input),
 ): PIEConstructionUnderstanding {
+  // "2375 compliance project" and "2375 Compliance Project" are one project.
+  const evidence = withCanonicalProjectNames(input, rawEvidence);
   const imageReferences = buildReportImageReferences(
     selectedUpdates(input, selectedProjectsFromInput(input)),
     selectedProjectsFromInput(input),
@@ -2439,6 +2441,43 @@ function projectAreaFromPhotos(update: ProjectUpdate) {
   return uniqueAreas.size === 1
     ? Array.from(uniqueAreas.values())[0]
     : '';
+}
+
+/**
+ * Records can carry the same project name in different letter case (a typed
+ * update, an imported schedule). Pick one spelling per project: the selected
+ * project's display name when it matches, otherwise the most common spelling.
+ */
+function withCanonicalProjectNames(
+  input: PIEReportDraftInput,
+  evidence: PIEReportSourceEvidence[],
+): PIEReportSourceEvidence[] {
+  const counts = new Map<string, Map<string, number>>();
+  evidence.forEach(item => {
+    const key = normalizeName(item.projectName);
+    if (!key) return;
+    const spellings = counts.get(key) || new Map<string, number>();
+    const spelling = item.projectName.trim();
+    spellings.set(spelling, (spellings.get(spelling) || 0) + 1);
+    counts.set(key, spellings);
+  });
+  const canonical = new Map<string, string>();
+  counts.forEach((spellings, key) => {
+    const selected = (input.selectedProjectNames || [])
+      .map(name => name.trim())
+      .find(name => normalizeName(name) === key);
+    if (selected) {
+      canonical.set(key, selected);
+      return;
+    }
+    const best = Array.from(spellings.entries()).sort((a, b) => b[1] - a[1])[0];
+    canonical.set(key, best[0]);
+  });
+  return evidence.map(item => {
+    const name = canonical.get(normalizeName(item.projectName));
+    if (!name || name === item.projectName) return item;
+    return { ...item, projectName: name };
+  });
 }
 
 function locationTitle(projectName: string, areaName: string) {

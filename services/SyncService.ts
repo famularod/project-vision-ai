@@ -4681,6 +4681,8 @@ export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends Projec
 ): Promise<TUpdate> {
   const photos = await Promise.all(update.photos.map(async photo => {
     if (await hasUsablePhotoUri(photo)) return photo;
+    const relocated = await relocateLocalPhotoUri(photo);
+    if (relocated) return { ...photo, uri: relocated };
     const cloudStoragePath =
       photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
     const signed = await createPhotoSignedUrl(
@@ -5065,6 +5067,28 @@ export function recoveredSignedPhotoUriIsFresh(
     ? new Date(photo.cloudSignedUrlExpiresAt).getTime()
     : Number.NaN;
   return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+/**
+ * iOS gives the app a new data folder on every install, so a photo saved as
+ * file:///…/Application/<old id>/Documents/project-photos/x.jpg stops loading
+ * even though the file is still there under the current folder.
+ */
+export async function relocateLocalPhotoUri(photo: UpdatePhoto): Promise<string | null> {
+  const uri = photo.uri;
+  const base = FileSystem.documentDirectory;
+  if (!uri || !base || /^https?:\/\//i.test(uri)) return null;
+  const match = /\/Documents\/(.+)$/.exec(decodeURIComponent(uri));
+  if (!match) return null;
+  const candidate = `${base}${match[1]}`;
+  if (candidate === uri) return null;
+  try {
+    const info = await FileSystem.getInfoAsync(candidate);
+    const size = info.exists && 'size' in info && typeof info.size === 'number' ? info.size : null;
+    return info.exists && !info.isDirectory && size !== 0 ? candidate : null;
+  } catch {
+    return null;
+  }
 }
 
 async function hasUsablePhotoUri(photo: UpdatePhoto) {

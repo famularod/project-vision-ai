@@ -1863,12 +1863,20 @@ function ReportPhotoReferencePreview({
 }) {
   const resolverRef = useRef(onResolvePhotoPreview);
   resolverRef.current = onResolvePhotoPreview;
+  // A stored local path can point at a file that is gone (older install
+  // folder, photo taken on another device). When the direct file fails to
+  // load, ask the resolver, which recovers the photo from the project files.
+  const [directFailed, setDirectFailed] = useState(false);
   const [resolvedUri, setResolvedUri] = useState<string | null>(directUri);
   const [resolutionFinished, setResolutionFinished] = useState(Boolean(directUri));
 
   useEffect(() => {
+    setDirectFailed(false);
+  }, [directUri, photoId]);
+
+  useEffect(() => {
     let active = true;
-    if (directUri) {
+    if (directUri && !directFailed) {
       setResolvedUri(directUri);
       setResolutionFinished(true);
       return () => {
@@ -1887,7 +1895,7 @@ function ReportPhotoReferencePreview({
     void resolverRef.current(photoId)
       .then(uri => {
         if (!active) return;
-        setResolvedUri(uri);
+        setResolvedUri(uri && uri !== directUri ? uri : null);
         setResolutionFinished(true);
       })
       .catch(() => {
@@ -1898,7 +1906,7 @@ function ReportPhotoReferencePreview({
     return () => {
       active = false;
     };
-  }, [directUri, photoId]);
+  }, [directUri, directFailed, photoId]);
 
   if (resolvedUri) {
     return (
@@ -1907,6 +1915,9 @@ function ReportPhotoReferencePreview({
         style={styles.reportEvidenceImage}
         resizeMode="cover"
         accessibilityLabel={`Photo ${imageNumber} from ${areaName}`}
+        onError={() => {
+          if (resolvedUri === directUri) setDirectFailed(true);
+        }}
       />
     );
   }
