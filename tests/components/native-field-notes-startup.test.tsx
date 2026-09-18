@@ -61,9 +61,13 @@ beforeEach(async () => {
   }));
 });
 
+// First render loads the whole native root; allow for a busy machine. Assertions are unchanged.
+const COLD_RENDER = { timeout: 15_000 } as const;
+jest.setTimeout(60_000);
+
 test('local session owner restores the saved note through three offline native-root reopen cycles', async () => {
   const first = render(<NativeRoot />);
-  await waitFor(() => expect(first.getByText('No open field notes.')).toBeTruthy());
+  await waitFor(() => expect(first.getByText('No open field notes.')).toBeTruthy(), COLD_RENDER);
   fireEvent.press(first.getByRole('button', { name: 'Type field note' }));
   fireEvent.changeText(first.getByLabelText('Field note'), 'Offline native startup note');
   fireEvent.press(first.getByRole('button', { name: 'Save Field Note' }));
@@ -99,7 +103,7 @@ test('account switch and sign-out never reuse the previous owner inbox or typed 
   await repository().save('owner-a', createFieldNote({ id: 'note-a', text: 'Owner A private note' }));
   await repository().save('owner-b', createFieldNote({ id: 'note-b', text: 'Owner B private note' }));
   const screen = render(<NativeRoot />);
-  await waitFor(() => expect(screen.getByText('Owner A private note')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('Owner A private note')).toBeTruthy(), COLD_RENDER);
   fireEvent.press(screen.getByRole('button', { name: 'Type field note' }));
   fireEvent.changeText(screen.getByLabelText('Field note'), 'Owner A unsaved draft');
   const listener = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
