@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { ecosEvidenceProofTierLabel, type DAVEAskEvidence } from '../services/DAVEAsk';
+import { useECOSAskProgress } from '../hooks/use-ecos-ask-progress';
 import type { ECOSProjectQuestionAnswer } from '../services/ECOSProjectQuestion';
 import { colors, spacing } from '../theme';
 
@@ -37,6 +38,7 @@ export function ECOSProjectAnswerSheet({
 }) {
   const { width } = useWindowDimensions();
   const tablet = width >= 700;
+  const progress = useECOSAskProgress(loading);
   const insufficientEvidence = answer?.assurance.status === 'insufficient_evidence';
   const answerLabel = insufficientEvidence
     ? 'COULD NOT VERIFY'
@@ -80,12 +82,11 @@ export function ECOSProjectAnswerSheet({
             </View>
 
             {loading ? (
-              <View style={styles.loadingCard} accessibilityRole="progressbar">
+              <View style={styles.loadingCard} accessibilityRole="progressbar" accessibilityLabel={`${progress.stage.title} ${progress.elapsedLabel}`}>
                 <ActivityIndicator size="large" color={colors.primary} />
-                <Text style={styles.loadingTitle}>ECOS is checking project evidence…</Text>
-                <Text style={styles.loadingText}>
-                  Reviewing current tasks, field updates, and indexed documents. ECOS Assurance will verify the sources before the answer appears.
-                </Text>
+                <Text style={styles.loadingTitle}>{progress.stage.title}</Text>
+                <Text style={styles.loadingText}>{progress.stage.detail}</Text>
+                <Text style={styles.loadingElapsed}>{progress.elapsedLabel}</Text>
               </View>
             ) : null}
 
@@ -254,6 +255,7 @@ const styles = StyleSheet.create({
   loadingCard: { minHeight: 230, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   loadingTitle: { color: colors.text, fontSize: 18, fontWeight: '900', marginTop: spacing.md, textAlign: 'center' },
   loadingText: { color: colors.mutedText, fontSize: 14, lineHeight: 21, marginTop: spacing.sm, textAlign: 'center', maxWidth: 520 },
+  loadingElapsed: { color: colors.mutedText, fontSize: 12, lineHeight: 16, marginTop: spacing.sm, fontVariant: ['tabular-nums'] },
   errorCard: { flexDirection: 'row', gap: spacing.sm, borderRadius: 16, borderWidth: 1, borderColor: '#F1AAA4', backgroundColor: '#FFF1F0', padding: spacing.md },
   errorTitle: { color: colors.danger, fontSize: 16, fontWeight: '900' },
   errorText: { color: colors.danger, fontSize: 14, lineHeight: 20, marginTop: 4 },

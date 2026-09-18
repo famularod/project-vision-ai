@@ -15,6 +15,7 @@ import {
 import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
 import { buildECOSDesktopDocumentProofParams } from '../../services/ECOSDesktopProofNavigation';
 import { ecosEvidenceProofTierLabel } from '../../services/DAVEAsk';
+import { useECOSAskProgress } from '../../hooks/use-ecos-ask-progress';
 import { desktopSurfaces } from './desktop-surface-palette';
 
 const EXAMPLE_QUESTIONS = Object.freeze([
@@ -41,6 +42,7 @@ export function DesktopAskECOSWorkspace({
   const [answer, setAnswer] = useState<ECOSProjectQuestionAnswer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const progress = useECOSAskProgress(loading);
   useEffect(() => {
     setQuestion('');
     setAnswer(null);
@@ -146,10 +148,11 @@ export function DesktopAskECOSWorkspace({
       )}
 
       {loading ? (
-        <View style={styles.loadingCard} accessibilityRole="progressbar">
+        <View style={styles.loadingCard} accessibilityRole="progressbar" accessibilityLabel={`${progress.stage.title} ${progress.elapsedLabel}`}>
           <ActivityIndicator size="large" color={desktopSurfaces.accent} />
-          <Text style={styles.loadingTitle}>ECOS is reviewing current project evidence…</Text>
-          <Text style={styles.loadingText}>ECOS Assurance will independently check the citations before the answer appears.</Text>
+          <Text style={styles.loadingTitle}>{progress.stage.title}</Text>
+          <Text style={styles.loadingText}>{progress.stage.detail}</Text>
+          <Text style={styles.loadingElapsed}>{progress.elapsedLabel}</Text>
         </View>
       ) : null}
 
@@ -298,6 +301,7 @@ const styles = StyleSheet.create({
   loadingCard: { minHeight: 210, borderRadius: 18, borderWidth: 1, borderColor: '#C5D8EE', backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', padding: 28 },
   loadingTitle: { color: desktopSurfaces.text, fontSize: 19, fontWeight: '900', marginTop: 14 },
   loadingText: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, marginTop: 6, textAlign: 'center' },
+  loadingElapsed: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 16, marginTop: 8, fontVariant: ['tabular-nums'] },
   errorCard: { flexDirection: 'row', gap: 10, borderRadius: 14, borderWidth: 1, borderColor: '#F0A7A0', backgroundColor: '#FFF0EF', padding: 16 },
   errorText: { flex: 1, color: '#B42318', fontSize: 14, lineHeight: 20, fontWeight: '700' },
   answerLayout: { flexDirection: 'row', alignItems: 'flex-start', gap: 18 },

@@ -221,8 +221,10 @@ describe('Ask ECOS answer-to-visible-proof customer contract', () => {
 
   it('ECO-04: a page-text label cannot ride on a region-less citation the server did not bind', () => {
     const raw = pageTextAnswer();
-    raw.supportingEvidence[0].documentRegion = null;
-    const evidence = parseECOSProjectQuestionAnswer(raw).supportingEvidence[0];
+    const evidence = parseECOSProjectQuestionAnswer({
+      ...raw,
+      supportingEvidence: [{ ...raw.supportingEvidence[0], documentRegion: null }],
+    }).supportingEvidence[0];
     expect(evidence.proofTier).toBeNull();
     expect(ecosEvidenceProofTierLabel(evidence)).toBeNull();
     expect(ecosDocumentProofClaimFromEvidence(evidence)).toBeNull();
@@ -292,7 +294,7 @@ function pageTextAnswer() {
         width: 1,
         height: 1,
         rawSource: 'hosted_proof_authority_page',
-      } as typeof evidence.documentRegion | null,
+      },
     }],
   };
 }
