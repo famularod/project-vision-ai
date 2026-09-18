@@ -27,7 +27,7 @@ describe('report authority conflict regression', () => {
       organizationId: 'org-1',
       projectId: 'project-1',
       projectName: '2375 Compliance Project',
-      type: 'field_update',
+      type: 'issue',
       areaName: 'Area 1',
       name: 'Coordination note',
       summary: 'Resolved conflict with plumber.',

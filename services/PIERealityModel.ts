@@ -1548,11 +1548,14 @@ function buildModelConflictRecords(
     const evidenceSourceById = new Map(
       object.sourceEvidenceReferences.map(link => [link.evidenceId, link.evidenceType]),
     );
-    return activeAssertions.some(assertion => assertion.contradictingEvidenceIds.some(evidenceId =>
-      !assertion.supportingEvidenceIds.includes(evidenceId) &&
-      Boolean(evidenceSourceById.get(evidenceId)) &&
-      evidenceSourceById.get(evidenceId) !== assertion.source,
-    ));
+    // An explicit contradicted status (set by a real equal-time disagreement
+    // between sources, or reported as such) is still a genuine conflict.
+    return object.currentStatus === 'contradicted' ||
+      activeAssertions.some(assertion => assertion.contradictingEvidenceIds.some(evidenceId =>
+        !assertion.supportingEvidenceIds.includes(evidenceId) &&
+        Boolean(evidenceSourceById.get(evidenceId)) &&
+        evidenceSourceById.get(evidenceId) !== assertion.source,
+      ));
   });
   const identityCollisions = findSourceIdentityCollisions(objects);
   return [

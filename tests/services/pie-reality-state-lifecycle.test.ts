@@ -121,7 +121,7 @@ describe('Reality object current-state lifecycle', () => {
       generatedAt: '2026-07-18T11:01:00.000Z',
     });
 
-    expect(conflicted.status).toBe('authoritative');
+    expect(conflicted.status).toBe('conflicted');
     expect(resolved.objects[0].currentStatus).toBe('complete');
     expect(resolved.evidenceConflicts).toEqual([]);
     expect(resolved.status).toBe('authoritative');
