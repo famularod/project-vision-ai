@@ -139,7 +139,8 @@ export async function runPIERealityModelOrchestration(
     : removedOrInvalidatedEvidence.length
       ? removedOrInvalidatedEvidence
     : [];
-  let synchronization: PIERealityModelSynchronizationResult;
+  let synchronization!: PIERealityModelSynchronizationResult;
+  let queuedAfterCloudFailure = false;
   let persistenceStatus: PIERealityPersistenceStatus = input.cloudAvailable
     ? 'queued_for_cloud'
     : 'degraded_local_only';
@@ -157,7 +158,12 @@ export async function runPIERealityModelOrchestration(
     // can monopolize the React Native JS thread for seconds. Reuse the already
     // authoritative model without changing timestamps or writing storage.
     synchronization = unchangedRealitySynchronization(previousModel);
-    if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
+    if (!input.cloudAvailable) {
+      // No cloud copy is expected for this workspace (signed out / local only),
+      // so the device model IS the authority. Nothing is degraded.
+      persistenceStatus = 'authoritative_local';
+      diagnostics.push('No cloud workspace is expected; the device Reality Model is authoritative.');
+    } else if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
       persistenceStatus = 'degraded_local_only';
       diagnostics.push('Identity is local or untrusted; Reality Model is authoritative locally only.');
     } else if (input.cloudAvailable && hasFreshCloudAuthority()) {
@@ -182,7 +188,12 @@ export async function runPIERealityModelOrchestration(
       sourceEvidenceCutoffAt: generatedAt,
       reason: 'Live Reality Model orchestration synchronized qualified evidence.',
     });
-    if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
+    if (!input.cloudAvailable) {
+      // No cloud copy is expected for this workspace (signed out / local only),
+      // so the device model IS the authority. Nothing is degraded.
+      persistenceStatus = 'authoritative_local';
+      diagnostics.push('No cloud workspace is expected; the device Reality Model is authoritative.');
+    } else if (!input.identityTrusted || organizationId.startsWith('local-unverified')) {
       persistenceStatus = 'degraded_local_only';
       diagnostics.push('Identity is local or untrusted; Reality Model is authoritative locally only.');
     } else if (input.cloudAvailable && hasFreshCloudAuthority()) {
@@ -204,6 +215,30 @@ export async function runPIERealityModelOrchestration(
     if (error instanceof PIEEvidenceDeltaStorageCorruptionError) {
       throw error;
     }
+    if (input.cloudAvailable && input.identityTrusted) {
+      // The cloud write failed (weak signal, outage). The field work is still
+      // real: keep the freshly synchronized model on this device, report it as
+      // queued for the cloud, and do not record the evidence as processed so
+      // the next refresh tries the cloud again.
+      try {
+        synchronization = await synchronizeAuthoritativeRealityModel({
+          organizationId,
+          projectId,
+          qualifiedEvidence: syncInputEvidence.length ? syncInputEvidence : qualifiedEvidence.slice(0, 0),
+          repository: { ...repository, saveSynchronized: async model => model },
+          previousModel,
+          generatedAt,
+          sourceEvidenceCutoffAt: generatedAt,
+          reason: 'Cloud persistence failed; Reality Model retained on this device and queued for cloud.',
+        });
+        persistenceStatus = 'queued_for_cloud';
+        diagnostics.push('Cloud persistence failed; the Reality Model is kept on this device and queued for the cloud.');
+        queuedAfterCloudFailure = true;
+      } catch {
+        queuedAfterCloudFailure = false;
+      }
+    }
+    if (!queuedAfterCloudFailure) {
     if (!previousModel) {
       throw error;
     }
@@ -220,6 +255,7 @@ export async function runPIERealityModelOrchestration(
       conflicts: previousModel.evidenceConflicts,
     };
     persistenceStatus = 'persistence_failed';
+    }
   }
 
   if (

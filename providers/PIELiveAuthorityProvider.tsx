@@ -536,10 +536,17 @@ export function PIELiveAuthorityProvider({
     void runRefresh('project_changed');
   }, [runRefresh]);
 
+  // The acknowledgement means "I know this project is showing data saved on
+  // this device". It belongs to the project for this app session. Keying it to
+  // the evidence generation revoked it on every draft keystroke and every sync.
+  const degradedAcknowledgementScope = [
+    input.organizationId || '',
+    input.projectId || safeProjectId(input.projectName),
+  ].join('|');
   const acknowledgeDegradedLocal = useCallback(() => {
     if (state !== 'degraded_local_only' && state !== 'queued_for_cloud') return;
-    setAcknowledgedDegradedGeneration(authorityGeneration);
-  }, [authorityGeneration, state]);
+    setAcknowledgedDegradedGeneration(degradedAcknowledgementScope);
+  }, [degradedAcknowledgementScope, state]);
 
   const authorityResolution = resolvePIELiveAuthorityState({
     hydrated: readyForAuthority,
@@ -573,7 +580,7 @@ export function PIELiveAuthorityProvider({
     // change create a new generation and restart the acknowledgement loop.
     const degradedLocalAcknowledged =
       localAuthorityExpected ||
-      acknowledgedDegradedGeneration === authorityGeneration;
+      acknowledgedDegradedGeneration === degradedAcknowledgementScope;
     const policy = policyForCore(
       nextState,
       currentCore,
@@ -640,6 +647,7 @@ export function PIELiveAuthorityProvider({
     authorityResolution.state,
     acknowledgeDegradedLocal,
     acknowledgedDegradedGeneration,
+    degradedAcknowledgementScope,
     authorityGeneration,
     cachedGenerationCore,
     core,

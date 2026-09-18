@@ -484,6 +484,13 @@ describe('PIELiveAuthorityProvider freshness and retry state machine', () => {
         </PIELiveAuthorityProvider>,
       );
     }
+    // The acknowledgement itself must survive every edit immediately.
+    expect(currentAuthority?.degradedLocalAcknowledged).toBe(true);
+    // Report permission returns as soon as the debounced rebuild for the last edit settles.
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+    await flushAsyncWork();
     expect(currentAuthority?.degradedLocalAcknowledged).toBe(true);
     expect(currentAuthority?.policy.reportGenerationAllowed).toBe(true);
   });
