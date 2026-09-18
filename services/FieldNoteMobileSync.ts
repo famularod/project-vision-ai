@@ -193,7 +193,17 @@ export function mergeFieldNoteCollections(
     }
     if (cloud.revision > local.revision) {
       if (local.revision === 0 && sameTimestampInstant(local.createdAt, cloud.createdAt)) {
-        merged.set(cloud.id, rebaseLocalFieldNote(local, cloud));
+        // Same note. At cloud revision 1 nothing but our own create has
+        // happened, so every local field is the newest. At a later revision
+        // the desktop has edited the note since; keep its content and carry
+        // over only the mobile status change (mobile cannot edit text).
+        if (cloud.revision <= 1) {
+          merged.set(cloud.id, rebaseLocalFieldNote(local, cloud));
+        } else if (local.status !== cloud.status) {
+          merged.set(cloud.id, rebaseMobileStatusChange(local, cloud));
+        } else {
+          merged.set(cloud.id, cloud);
+        }
       } else if (local.revision === 0) {
         merged.set(cloud.id, markFieldNoteConflict(
           local,

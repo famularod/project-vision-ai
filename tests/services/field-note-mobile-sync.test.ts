@@ -239,6 +239,48 @@ describe('Field Note mobile synchronization', () => {
     expect(cloud.row()?.createdAt).toContain('+00:00');
   });
 
+  it('keeps a desktop text edit when mobile only changed status before its first acknowledgement', () => {
+    const created = createFieldNote({
+      id: 'desktop-edited-note',
+      text: 'Original wording',
+      now: '2026-09-17T16:00:00.000Z',
+    });
+    const local = updateFieldNoteStatus(created, 'resolved', '2026-09-17T16:01:00.000Z');
+    const cloud = markFieldNoteSynced(
+      { ...created, originalText: 'Desktop corrected wording', updatedAt: '2026-09-17T16:02:00.000Z' },
+      2,
+      '2026-09-17T16:02:00.000Z',
+    );
+
+    const [merged] = mergeFieldNoteCollections([local], [cloud]);
+
+    expect(merged).toMatchObject({
+      originalText: 'Desktop corrected wording',
+      status: 'resolved',
+      revision: 2,
+      syncState: 'pending',
+    });
+  });
+
+  it('adopts the cloud note when a revision-zero local copy has the same status as a later cloud revision', () => {
+    const created = createFieldNote({
+      id: 'desktop-edited-same-status',
+      text: 'Original wording',
+      now: '2026-09-17T16:00:00.000Z',
+    });
+    const cloud = markFieldNoteSynced(
+      { ...created, originalText: 'Desktop corrected wording', updatedAt: '2026-09-17T16:02:00.000Z' },
+      2,
+      '2026-09-17T16:02:00.000Z',
+    );
+
+    const [merged] = mergeFieldNoteCollections([created], [cloud]);
+
+    expect(merged).toMatchObject({
+      originalText: 'Desktop corrected wording', revision: 2, syncState: 'synced',
+    });
+  });
+
   it('keeps a true same-id collision with a different createdAt in conflict', () => {
     const local = createFieldNote({
       id: 'collision-note',
