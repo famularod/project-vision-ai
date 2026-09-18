@@ -480,6 +480,46 @@ function validBoundedRegion(region) {
     Boolean(text(region?.id));
 }
 
+// The code that answers a customer question lives in the runtime repository
+// (Cloud Run agent runtime behind the customer gateway), not in this app repo,
+// whose ecos-ask-project function is superseded. Release evidence is bound to
+// the answering code, so a change there invalidates a stale live run.
+const RUNTIME_CONTRACT_FILES = Object.freeze([
+  'supabase/functions/ecos-ask-project/index.ts',
+  'supabase/functions/ecos-agent-customer-gateway/index.ts',
+  'supabase/functions/ecos-ask-project-candidate/index.ts',
+  'workers/ecos-agent-query-runtime/main.ts',
+]);
+const RUNTIME_SHARED_DIR = 'supabase/functions/_shared';
+
+function runtimeRepoRoot() {
+  const configured = text(process.env.ECOS_RUNTIME_REPO);
+  const resolved = configured ? path.resolve(repoRoot, configured) : path.resolve(repoRoot, '..', 'runtime');
+  if (!fs.existsSync(path.join(resolved, RUNTIME_CONTRACT_FILES[1]))) {
+    throw new Error(
+      `The Ask ECOS runtime repository was not found at ${resolved}. ` +
+      'Set ECOS_RUNTIME_REPO to the runtime checkout; release evidence must bind to the answering code.',
+    );
+  }
+  return resolved;
+}
+
+function runtimeContractFiles(root = runtimeRepoRoot()) {
+  const shared = fs.readdirSync(path.join(root, RUNTIME_SHARED_DIR))
+    .filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts'))
+    .sort()
+    .map(name => `${RUNTIME_SHARED_DIR}/${name}`);
+  return [...RUNTIME_CONTRACT_FILES, ...shared];
+}
+
+/** The package fingerprint the customer gateway pins for the deployed runtime. */
+function deployedRuntimePackageSha256(root = runtimeRepoRoot()) {
+  const shim = fs.readFileSync(path.join(root, RUNTIME_CONTRACT_FILES[0]), 'utf8');
+  const match = /expectedPackageSha256:\s*["']([a-f0-9]{64})["']/i.exec(shim);
+  if (!match) throw new Error('The runtime ecos-ask-project shim does not pin an expectedPackageSha256.');
+  return match[1];
+}
+
 function acceptanceContractHash(selectedDefinitionPath = definitionPath) {
   const hash = crypto.createHash('sha256');
   for (const relativePath of CONTRACT_FILES) {
@@ -487,6 +527,13 @@ function acceptanceContractHash(selectedDefinitionPath = definitionPath) {
     hash.update(relativePath);
     hash.update('\0');
     hash.update(fs.readFileSync(absolutePath));
+    hash.update('\0');
+  }
+  const runtimeRoot = runtimeRepoRoot();
+  for (const relativePath of runtimeContractFiles(runtimeRoot)) {
+    hash.update(`runtime:${relativePath}`);
+    hash.update('\0');
+    hash.update(fs.readFileSync(path.join(runtimeRoot, relativePath)));
     hash.update('\0');
   }
   const absoluteDefinitionPath = path.resolve(selectedDefinitionPath);
@@ -507,6 +554,9 @@ function validateLiveAcceptanceResult(result, definition, now = new Date()) {
   if (result?.definitionSchemaVersion !== definition.schemaVersion) failures.push('Definition schema changed after the live run.');
   if (normalize(result?.projectName) !== normalize(definition.projectName)) failures.push('Live result is for the wrong project.');
   if (result?.acceptanceContractSha256 !== acceptanceContractHash()) failures.push('Ask ECOS code or acceptance cases changed after the live run.');
+  if (result?.runtimePackageSha256 !== deployedRuntimePackageSha256()) {
+    failures.push('The deployed Ask ECOS runtime package changed after the live run.');
+  }
   const completedAt = Date.parse(result?.completedAt || '');
   const maximumAgeMs = Number(definition.evidenceMaximumAgeHours) * 60 * 60 * 1000;
   if (!Number.isFinite(completedAt)) failures.push('Live result has no valid completion time.');
@@ -597,6 +647,10 @@ function configuredRepositoryPath(environmentName, fallbackPath) {
 
 module.exports = {
   CONTRACT_FILES,
+  RUNTIME_CONTRACT_FILES,
+  deployedRuntimePackageSha256,
+  runtimeContractFiles,
+  runtimeRepoRoot,
   LIVE_RESULT_SCHEMA_VERSION,
   REQUIRED_VISUAL_TILE_BOUNDS,
   REQUIRED_VISUAL_TILE_KEYS,

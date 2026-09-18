@@ -7,6 +7,7 @@ const {
   VISUAL_COVERAGE_SCHEMA_VERSION,
   VISUAL_EVIDENCE_VERSION,
   acceptanceContractHash,
+  deployedRuntimePackageSha256,
   evaluateAcceptanceCase,
   loadAcceptanceDefinition,
   normalizeAssuredShadowPageRow,
@@ -224,6 +225,7 @@ const validLiveResult = {
   schemaVersion: LIVE_RESULT_SCHEMA_VERSION,
   definitionSchemaVersion: definition.schemaVersion,
   acceptanceContractSha256: acceptanceContractHash(),
+  runtimePackageSha256: deployedRuntimePackageSha256(),
   completedAt: '2026-08-06T12:30:00.000Z',
   projectName: definition.projectName,
   indexMode: 'live',
@@ -441,6 +443,35 @@ void (async () => {
   assert.equal(hostedReadiness.passed, true, hostedReadiness.failures.join('\n'));
   assert.equal(hostedReadiness.checkedPages, 1);
   assert.equal(hostedReadiness.checkedDocuments[0].indexMode, 'hosted-live');
+
+  // REL-01 closure: a one-line change to the answering runtime (not this
+  // repository) must invalidate a previously recorded live run.
+  {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    const { runtimeContractFiles, runtimeRepoRoot } = require('./ecos-ask-live-acceptance-lib');
+    const source = runtimeRepoRoot();
+    const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'ecos-runtime-copy-'));
+    for (const relativePath of runtimeContractFiles(source)) {
+      fs.mkdirSync(path.dirname(path.join(copy, relativePath)), { recursive: true });
+      fs.copyFileSync(path.join(source, relativePath), path.join(copy, relativePath));
+    }
+    const before = acceptanceContractHash();
+    const previousEnv = process.env.ECOS_RUNTIME_REPO;
+    process.env.ECOS_RUNTIME_REPO = copy;
+    try {
+      assert.equal(acceptanceContractHash(), before, 'An identical runtime copy must hash the same');
+      const candidate = path.join(copy, 'supabase/functions/ecos-ask-project-candidate/index.ts');
+      fs.appendFileSync(candidate, '\n// one-line change\n');
+      assert.notEqual(acceptanceContractHash(), before, 'A runtime change must change the contract hash');
+      const stale = validateLiveAcceptanceResult(validLiveResult, definition, now);
+      assert(stale.some(item => item.includes('changed after the live run')), 'Stale evidence must be rejected');
+    } finally {
+      if (previousEnv === undefined) delete process.env.ECOS_RUNTIME_REPO; else process.env.ECOS_RUNTIME_REPO = previousEnv;
+      fs.rmSync(copy, { recursive: true, force: true });
+    }
+  }
 
   console.log(`Ask ECOS live acceptance contracts PASS (${definition.cases.length} real-world cases; 100% required).`);
 })().catch(error => {

@@ -8,6 +8,7 @@ const { createClient } = require('@supabase/supabase-js');
 const {
   LIVE_RESULT_SCHEMA_VERSION,
   acceptanceContractHash,
+  deployedRuntimePackageSha256,
   evaluateAcceptanceCase,
   loadAcceptanceDefinition,
   normalizeAssuredShadowPageRow,
@@ -115,6 +116,7 @@ async function main() {
     schemaVersion: LIVE_RESULT_SCHEMA_VERSION,
     definitionSchemaVersion: definition.schemaVersion,
     acceptanceContractSha256: contractHash,
+    runtimePackageSha256: deployedRuntimePackageSha256(),
     startedAt,
     completedAt: new Date().toISOString(),
     productionHost: new URL(supabaseUrl).host,
