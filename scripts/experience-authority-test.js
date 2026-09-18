@@ -20,8 +20,9 @@ assert(app.includes('surface: authoritySurfaceForMode(authorityMode)'), 'App mus
 assert(home.includes('liveAuthority.projectTruth.briefing.nextActions'), 'Home must prefer provider-backed Project Truth actions.');
 assert(reports.includes('liveAuthority.policy.reportGenerationAllowed'), 'Reports must enforce report authority state.');
 assert(
-  reports.includes('Current project data is still loading. Refresh before approving.'),
-  'Reports must show a concise authority-block reason.',
+  reports.includes('authorityState: liveAuthority.state') &&
+    !reports.includes('Current project data is still loading. Refresh before approving.'),
+  'Reports must derive the approval reason from the real authority state, and must not claim data is loading when it is not.',
 );
 assert(
   reports.includes('evaluateReportApprovalPolicy({') &&

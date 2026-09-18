@@ -1,11 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   StyleProp,
   ViewStyle,
 } from 'react-native';
 import {
   Image,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -88,7 +89,10 @@ import {
   shouldApplyCommunicationOutcome,
   type ReportCommunicationOutcome,
 } from '../services/ReportCommunication';
-import { evaluateReportApprovalPolicy } from '../services/ReportApprovalPolicy';
+import {
+  evaluateReportApprovalPolicy,
+  type ReportApprovalPolicy,
+} from '../services/ReportApprovalPolicy';
 import { buildDailyReportAuthorityScope } from '../services/ReportAuthorityScope';
 import {
   selectStableReportDraft,
@@ -98,6 +102,8 @@ import {
   buildAutomaticReportDrawingReferences,
   type ReportDrawingReference,
 } from '../services/ReportDrawingReferences';
+
+const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
 export function ReportsScreen({
   contentStyle,
@@ -358,19 +364,37 @@ export function ReportsScreen({
     effectiveReportDraft.title,
     effectiveReportDraft.body,
   ].join('|');
+  // Review acknowledgements belong to one exact set of report facts. When the
+  // facts change, the reviewer has to look again.
+  const [reviewAcknowledgement, setReviewAcknowledgement] = useState<{
+    fingerprint: string;
+    ids: readonly string[];
+  }>({ fingerprint: '', ids: [] });
+  const acknowledgedReviewIds = reviewAcknowledgement.fingerprint === reportSourceFingerprint
+    ? reviewAcknowledgement.ids
+    : EMPTY_REVIEW_IDS;
+  const acknowledgeReviewItems = useCallback((ids: readonly string[]) => {
+    setReviewAcknowledgement(current => ({
+      fingerprint: reportSourceFingerprint,
+      ids: Array.from(new Set([
+        ...(current.fingerprint === reportSourceFingerprint ? current.ids : []),
+        ...ids,
+      ])),
+    }));
+  }, [reportSourceFingerprint]);
   const reportApprovalPolicy = useMemo(
     () => evaluateReportApprovalPolicy({
       report: effectiveReportDraft,
       reportGenerationAllowed,
+      authorityState: liveAuthority.state,
+      acknowledgedItemIds: acknowledgedReviewIds,
     }),
-    [effectiveReportDraft, reportGenerationAllowed],
+    [effectiveReportDraft, reportGenerationAllowed, liveAuthority.state, acknowledgedReviewIds],
   );
   const reportFactsAreCurrent = !reportEdits ||
     reportEdits.sourceFingerprint === reportSourceFingerprint;
   const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent;
-  const reportApprovalMessage = !reportGenerationAllowed
-    ? 'Current project data is still loading. Refresh before approving.'
-    : !reportFactsAreCurrent
+  const reportApprovalMessage = !reportFactsAreCurrent
       ? 'Project facts changed after you edited this report. Refresh the report before approval.'
       : reportApprovalPolicy.message;
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
@@ -620,6 +644,8 @@ export function ReportsScreen({
       commitmentControl={commitmentControl}
       reportApproved={reportApproved}
       reportApprovalAllowed={reportApprovalAllowed}
+      approvalPolicy={reportApprovalPolicy}
+      onAcknowledgeReviewItems={acknowledgeReviewItems}
     />
   );
 
@@ -642,33 +668,39 @@ export function ReportsScreen({
   );
 }
 
-function BeforeYouSharePanel({
+export function BeforeYouSharePanel({
   reportDraft,
   commitmentControl,
   reportApproved,
   reportApprovalAllowed,
+  approvalPolicy,
+  onAcknowledgeReviewItems,
 }: {
   reportDraft: PIEReportDraft;
   commitmentControl: VitruviusCommitmentControl;
   reportApproved: boolean;
   reportApprovalAllowed: boolean;
+  approvalPolicy: ReportApprovalPolicy;
+  onAcknowledgeReviewItems: (ids: readonly string[]) => void;
 }) {
-  const warnings = buildPMReportReviewWarnings(reportDraft.reviewFlags);
-  const visibleWarnings = warnings.length > 0
-    ? warnings
-    : !reportApprovalAllowed
-      ? ['Correct the highlighted project details before approval.']
-      : [];
+  const blockingItems = approvalPolicy.items.filter(item => item.kind === 'blocking');
+  const advisoryItems = approvalPolicy.items.filter(item => item.kind === 'advisory');
+  const pending = new Set(approvalPolicy.pendingAdvisoryIds);
+  const blockingWarnings = buildPMReportReviewWarnings(blockingItems.map(item => item.text));
   const reviewState = reportApproved && reportApprovalAllowed
     ? 'Approved'
-    : visibleWarnings.length > 0
-      ? 'Needs Changes'
-      : 'Ready to Review';
+    : approvalPolicy.waitingForProjectData
+      ? 'Loading Project Data'
+      : blockingItems.length > 0
+        ? 'Needs Changes'
+        : pending.size > 0
+          ? 'Needs Your Review'
+          : 'Ready to Review';
   const reviewMessage = reportApproved && reportApprovalAllowed
     ? 'This report is approved and ready to share.'
-    : visibleWarnings.length > 0
-      ? 'Update the items below, then review the report again.'
-      : 'Read the report and approve it when it matches the current project status.';
+    : reportApprovalAllowed
+      ? 'Read the report and approve it when it matches the current project status.'
+      : approvalPolicy.message;
 
   return (
     <ScreenCard style={styles.experienceCard}>
@@ -696,13 +728,13 @@ function BeforeYouSharePanel({
         {reviewMessage}
       </Text>
 
-      {visibleWarnings.length > 0 ? (
+      {blockingWarnings.length > 0 ? (
         <View style={styles.reviewFlagsPanel}>
           <Text style={styles.reportPreviewLabel}>
             Fix before approval
           </Text>
 
-          {visibleWarnings.slice(0, 3).map((warning, index) => (
+          {blockingWarnings.map((warning, index) => (
             <Text
               key={`${index}-${warning}`}
               style={styles.reviewFlagText}
@@ -710,10 +742,47 @@ function BeforeYouSharePanel({
               • {warning}
             </Text>
           ))}
-          {visibleWarnings.length > 3 ? (
-            <Text style={styles.reportListText}>
-              {visibleWarnings.length - 3} more {visibleWarnings.length - 3 === 1 ? 'item is' : 'items are'} highlighted in the report.
-            </Text>
+        </View>
+      ) : null}
+
+      {!reportApproved && advisoryItems.length > 0 ? (
+        <View style={styles.reviewFlagsPanel}>
+          <Text style={styles.reportPreviewLabel}>
+            Review before approval
+          </Text>
+
+          {advisoryItems.map(item => {
+            const reviewed = !pending.has(item.id);
+            return (
+              <View key={item.id} style={styles.managementActionRow}>
+                <Text style={styles.reviewFlagText}>
+                  {reviewed ? '✓ ' : '• '}{item.text}
+                </Text>
+                {reviewed ? null : (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Mark reviewed: ${item.text}`}
+                    onPress={() => onAcknowledgeReviewItems([item.id])}
+                    style={styles.reviewAcknowledgeButton}
+                  >
+                    <Text style={styles.reviewAcknowledgeText}>Mark reviewed</Text>
+                  </Pressable>
+                )}
+              </View>
+            );
+          })}
+
+          {pending.size > 1 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`I reviewed all ${pending.size} items`}
+              onPress={() => onAcknowledgeReviewItems(Array.from(pending))}
+              style={styles.reviewAcknowledgeButton}
+            >
+              <Text style={styles.reviewAcknowledgeText}>
+                I reviewed all {pending.size} items
+              </Text>
+            </Pressable>
           ) : null}
         </View>
       ) : null}
@@ -1060,7 +1129,7 @@ function PIEReporterPreview({
         <Text style={styles.approvalBoundaryText}>
           {reportApprovalAllowed
             ? 'Copy, Email, and Text unlock after approval. No report is sent automatically.'
-            : `${approvalMessage} Correct the highlighted project details, then refresh the report.`}
+            : approvalMessage}
         </Text>
       ) : null}
 
@@ -3904,6 +3973,21 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
 
+  reviewAcknowledgeButton: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    marginTop: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  reviewAcknowledgeText: {
+    color: colors.primary,
+    fontWeight: '700',
+    fontSize: 15,
+  },
   reviewFlagText: {
     color: colors.text,
     fontSize: 13,

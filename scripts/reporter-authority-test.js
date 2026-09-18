@@ -42,7 +42,8 @@ assert(
 );
 assert(
   !reports.includes('isReportableShareWarning') &&
-    reports.includes('buildPMReportReviewWarnings(reportDraft.reviewFlags)') &&
+    reports.includes('buildPMReportReviewWarnings(') &&
+    reports.includes('Review before approval') &&
     reports.includes('Fix before approval'),
   'Report safeguards must remain visible as concise, actionable PM warnings before sharing.',
 );
