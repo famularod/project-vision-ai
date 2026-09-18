@@ -317,3 +317,22 @@ function record(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown>
     : null;
 }
+
+describe('backup preflight with full project records (BAK-01)', () => {
+  it('accepts a backup without projectRecords and passes records through when present', () => {
+    const legacy = preflightAppBackup(validBackup(), validators);
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) expect(legacy.data.projectRecords).toBeNull();
+
+    const withRecords = { ...validBackup(), projectRecords: [{ id: 'uuid-1', name: 'Site A' }] };
+    const result = preflightAppBackup(withRecords, { ...validators, projectRecord: value => Boolean(value && typeof value === 'object' && 'name' in (value as object)) });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.projectRecords).toEqual([{ id: 'uuid-1', name: 'Site A' }]);
+  });
+
+  it('rejects malformed projectRecords', () => {
+    const bad = { ...validBackup(), projectRecords: [{ id: 'uuid-1' }] };
+    const result = preflightAppBackup(bad, { ...validators, projectRecord: value => Boolean(value && typeof value === 'object' && 'name' in (value as object)) });
+    expect(result).toMatchObject({ ok: false, field: 'projectRecords[0]' });
+  });
+});

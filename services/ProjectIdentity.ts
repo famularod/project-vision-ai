@@ -125,11 +125,18 @@ function normalizeProjectDisplayName(value: string): string {
 export function restoreProjectRecords<T extends { name: string }>(
   previous: readonly T[],
   restoredNames: readonly string[],
+  restoredRecords: readonly T[] | null = null,
 ): (T | { name: string })[] {
-  const previousByKey = new Map(
-    previous.map(record => [record.name.trim().toLowerCase(), record]),
-  );
-  return restoredNames.map(name =>
-    previousByKey.get(name.trim().toLowerCase()) ?? { name },
-  );
+  const key = (name: string) => name.trim().toLowerCase();
+  const previousByKey = new Map(previous.map(record => [key(record.name), record]));
+  // A backup that carries full project records (id, cover photo, project
+  // data) restores them; a record already on this device wins when it has
+  // the same identity so a stale backup cannot overwrite newer local data.
+  const restoredByKey = new Map((restoredRecords || []).map(record => [key(record.name), record]));
+  return restoredNames.map(name => {
+    const local = previousByKey.get(key(name));
+    const fromBackup = restoredByKey.get(key(name));
+    if (local && fromBackup) return { ...fromBackup, ...local };
+    return local ?? fromBackup ?? { name };
+  });
 }

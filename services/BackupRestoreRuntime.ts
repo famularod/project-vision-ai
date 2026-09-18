@@ -82,6 +82,8 @@ export function buildDeletionSafeRestoreState<
   data: Readonly<{
     savedUpdates: TUpdate[];
     projects: string[];
+    /** Full project records when the backup carries them (backup payload >= 2026-09). */
+    projectRecords?: readonly TProjectRecord[] | null;
     archivedProjects: string[];
     contactBook: TContactBook;
     projectAreas: TProjectArea[];
@@ -96,6 +98,7 @@ export function buildDeletionSafeRestoreState<
   rebuildProjectRecords: (
     current: readonly TProjectRecord[],
     names: readonly string[],
+    restored: readonly TProjectRecord[] | null,
   ) => TProjectRecord[];
   referenceDocumentBelongsToProject: (document: TReferenceDocument, projectName: string) => boolean;
   projectDocumentBelongsToProject: (document: TProjectDocument, projectName: string) => boolean;
@@ -141,7 +144,11 @@ export function buildDeletionSafeRestoreState<
     !archivedProjects.some(archived => normalizedKey(archived) === normalizedKey(name)),
   ) || projects[0] || '';
   const draft = storedDraft?.draft || createEmptyDraft(activeProject);
-  const projectRecords = rebuildProjectRecords(currentProjectRecords, projects);
+  const projectRecords = rebuildProjectRecords(
+    currentProjectRecords,
+    projects,
+    data.projectRecords ?? null,
+  );
   return {
     projects,
     projectRecords,
@@ -196,6 +203,8 @@ export class BackupRestoreRecoveryRequiredError extends Error {
 export type BackupPreflightValidators = Readonly<{
   savedUpdate: (value: unknown) => boolean;
   projectName: (value: unknown) => boolean;
+  /** Optional: full project records are validated only when the backup carries them. */
+  projectRecord?: (value: unknown) => boolean;
   contactBook: (value: unknown) => boolean;
   projectArea: (value: unknown) => boolean;
   referenceDocument: (value: unknown) => boolean;
@@ -210,6 +219,7 @@ export type StrictAppBackupPayload = Readonly<{
   exportedAt: string;
   savedUpdates: unknown[];
   projects: unknown[];
+  projectRecords: unknown[] | null;
   archivedProjects: unknown[];
   contacts: unknown;
   projectAreas: unknown[];
@@ -267,6 +277,14 @@ export function preflightAppBackup(
       return invalid(`${field}[${badIndex}]`, `${field} contains an invalid record at position ${badIndex + 1}.`);
     }
   }
+  if (value.projectRecords !== undefined && value.projectRecords !== null) {
+    if (!Array.isArray(value.projectRecords)) return invalid('projectRecords', 'projectRecords must be an array.');
+    const validator = validators.projectRecord;
+    const badIndex = validator ? value.projectRecords.findIndex(item => !validator(item)) : -1;
+    if (badIndex >= 0) {
+      return invalid(`projectRecords[${badIndex}]`, `projectRecords contains an invalid record at position ${badIndex + 1}.`);
+    }
+  }
   for (const field of ['projects', 'archivedProjects'] as const) {
     const duplicate = duplicateString(value[field] as unknown[]);
     if (duplicate) return invalid(field, `${field} contains the duplicate project name "${duplicate}".`);
@@ -299,6 +317,7 @@ export function preflightAppBackup(
       exportedAt: value.exportedAt as string,
       savedUpdates: value.savedUpdates as unknown[],
       projects: value.projects as unknown[],
+      projectRecords: Array.isArray(value.projectRecords) ? value.projectRecords as unknown[] : null,
       archivedProjects: value.archivedProjects as unknown[],
       contacts: value.contacts,
       projectAreas: value.projectAreas as unknown[],

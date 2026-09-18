@@ -477,6 +477,7 @@ import {
   coverPhotoForProject,
   hydrateProjectCoverPhotoCache,
   mergeProjectRecords,
+  normalizeProjectRecord,
   normalizeProjectRecords,
   projectRecordFromCloud,
   removeCachedProjectCoverPhoto,
@@ -852,6 +853,7 @@ type Phase2AttentionItem = {
 };
 type RestoredAppData = {
   savedUpdates: ProjectUpdate[]; projects: string[]; archivedProjects: string[];
+  projectRecords: ProjectRecord[] | null;
   contactBook: ContactBook; projectAreas: ProjectArea[];
   referenceDocuments: ReferenceDocument[]; projectDocuments: ProjectDocument[];
   scheduleItems: ScheduleItem[];
@@ -2835,6 +2837,7 @@ function normalizeStoredDraft(value: unknown): StoredDraft | null {
 function normalizeBackupData(value: unknown) {
   const preflight = preflightAppBackup(value, {
     savedUpdate: isStartupDeviceSavedUpdateRecord, projectName: isStartupProjectName,
+    projectRecord: value => normalizeProjectRecord(value) !== null,
     contactBook: isStartupContactBook, projectArea: isStartupProjectAreaRecord,
     referenceDocument: isStartupReferenceDocumentRecord,
     projectDocument: isStartupStandaloneProjectDocumentRecord, scheduleItem: isStartupScheduleItemRecord,
@@ -2855,6 +2858,7 @@ function normalizeBackupData(value: unknown) {
     data: {
       savedUpdates: data.savedUpdates.map(item => normalizeUpdate(item as Partial<ProjectUpdate>)),
       projects: normalizeStringList(data.projects), archivedProjects: normalizeStringList(data.archivedProjects),
+      projectRecords: data.projectRecords ? normalizeProjectRecords(data.projectRecords) : null,
       contactBook: normalizeContacts(data.contacts), projectAreas: normalizeProjectAreas(data.projectAreas),
       referenceDocuments: normalizeReferenceDocuments(data.referenceDocuments),
       projectDocuments: normalizeProjectDocuments(data.projectDocuments), scheduleItems: normalizeScheduleItems(data.scheduleItems),
@@ -10526,6 +10530,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
         exportedAt: new Date().toISOString(),
         savedUpdates: backupUpdates,
         projects,
+        // Full records (id, cover photo, project data) so a restore on a new
+        // phone keeps project identity instead of rebuilding name-only rows.
+        // Cover photo local cache paths are device-specific; the cover is
+        // fetched again from its remotePath after restore.
+        projectRecords: projectRecords.map(record => ({
+          ...record,
+          coverPhoto: record.coverPhoto ? { ...record.coverPhoto, localUri: null } : record.coverPhoto ?? null,
+        })),
         archivedProjects,
         contacts: contactBook,
         projectAreas,

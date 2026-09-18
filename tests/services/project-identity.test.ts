@@ -85,3 +85,24 @@ describe('restoreProjectRecords (audit P1-41)', () => {
     expect(restoreProjectRecords([], ['Fresh Site'])).toEqual([{ name: 'Fresh Site' }]);
   });
 });
+
+describe('restoreProjectRecords with full backup records (BAK-01)', () => {
+  it('restores id, cover photo and project data from the backup on a fresh device', () => {
+    const backup = [
+      { id: 'uuid-2375', name: '2375 Compliance Project', coverPhoto: { remotePath: 'covers/2375.jpg', updatedAt: '2026-08-01T00:00:00.000Z' }, data: { building: '2375' } },
+    ];
+    const restored = restoreProjectRecords([], ['2375 Compliance Project'], backup);
+    expect(restored[0]).toEqual(backup[0]);
+  });
+
+  it('keeps the local record when the device already has one', () => {
+    const local = [{ id: 'uuid-local', name: 'Kept Site', data: { note: 'newer' } }];
+    const backup = [{ id: 'uuid-old', name: 'kept site', data: { note: 'older' }, coverPhoto: { updatedAt: 'x' } }];
+    const restored = restoreProjectRecords(local, ['Kept Site'], backup);
+    expect(restored[0]).toMatchObject({ id: 'uuid-local', data: { note: 'newer' }, coverPhoto: { updatedAt: 'x' } });
+  });
+
+  it('still works for older backups that carry names only', () => {
+    expect(restoreProjectRecords([], ['Fresh Site'], null)).toEqual([{ name: 'Fresh Site' }]);
+  });
+});

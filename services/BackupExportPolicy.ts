@@ -1,7 +1,7 @@
 // This is the current device-export capability, not a disaster-recovery claim.
 // Field Notes use an owner-scoped repository outside the legacy restore journal.
 export const DEVICE_BACKUP_SCOPE_NOTICE =
-  'Limited device backup: includes the exported project records, photos, documents, and confirmed Core memories. Field Notes are not included. This is not a complete account or cloud backup. Keep unsynced Field Notes on this device; do not uninstall the app or clear its data.';
+  'Limited device backup: includes projects (with cover photos and project data), field updates, photos, documents, schedules, contacts, work areas, and confirmed Core memories. Field Notes are not included. Also not included: report history, Vitruvius reasoning records, walk sessions, and unsent sync items. This is not a complete account or cloud backup. Keep unsynced Field Notes on this device; do not uninstall the app or clear its data.';
 export const DEVICE_BACKUP_RESTORE_NOTICE =
   'Only the data included in this device backup can be restored. Field Notes are not included and existing Field Notes will not be replaced. This does not restore the entire cloud account.';
 export const MAX_DEVICE_BACKUP_BYTES = 128 * 1024 * 1024;
