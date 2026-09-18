@@ -106,3 +106,21 @@ describe('MobileDocumentECOSStatus', () => {
     expect(onMakeCurrent).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('MobileDocumentECOSStatus retry', () => {
+  it('offers Try again only when preparation stopped', () => {
+    const stopped = render(
+      <MobileDocumentECOSStatus
+        document={{ ...BASE_DOCUMENT, ecosHostedIndexStatus: 'Temporarily Unavailable' }}
+      />,
+    );
+    expect(stopped.getByLabelText('Try preparing this document again')).toBeTruthy();
+
+    const preparing = render(
+      <MobileDocumentECOSStatus
+        document={{ ...BASE_DOCUMENT, ecosHostedIndexStatus: 'Preparing' }}
+      />,
+    );
+    expect(preparing.queryByLabelText('Try preparing this document again')).toBeNull();
+  });
+});

@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { buildECOSDocumentReadiness } from '../services/ECOSDocumentReadiness';
@@ -27,11 +28,13 @@ export function MobileDocumentECOSStatus({
   const status = resolveECOSCustomerDocumentStatus(document);
   const readiness = buildECOSDocumentReadiness(document);
   const progress = boundedProgress(document.ecosHostedIndexProgressPercent);
+  const canRetry = status === 'Temporarily Unavailable';
 
   return (
     <View style={styles.card} testID="mobile-document-ecos-status">
       <StatusHeading label={status} progress={progress} />
       <Text style={styles.detail}>{customerDetail(document, readiness.detail)}</Text>
+      {canRetry ? <RetryPreparationButton documentId={document.id} /> : null}
 
       {document.isCurrent ? (
         <View style={styles.currentRow} accessibilityLabel="Current for ECOS">
@@ -55,6 +58,43 @@ export function MobileDocumentECOSStatus({
             : 'Manage this shared document in the desktop Documents workspace.'}
         </Text>
       )}
+    </View>
+  );
+}
+
+function RetryPreparationButton({ documentId }: Readonly<{ documentId: string }>) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  return (
+    <View>
+      <Pressable
+        style={({ pressed }) => [styles.retryButton, (pressed || busy) && styles.pressed]}
+        disabled={busy}
+        onPress={async () => {
+          setBusy(true);
+          try {
+            const [{ retryECOSHostedPreparation }, { getSupabaseClient }] = await Promise.all([
+              import('../services/ECOSHostedIndexerRetry'),
+              import('../services/SupabaseService'),
+            ]);
+            const result = await retryECOSHostedPreparation({
+              client: getSupabaseClient(),
+              documentId,
+            });
+            setMessage(result.message);
+          } catch {
+            setMessage('Vitruvius could not request a retry. Try again shortly.');
+          } finally {
+            setBusy(false);
+          }
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Try preparing this document again"
+      >
+        <Ionicons name="refresh-outline" size={18} color={colors.primary} />
+        <Text style={styles.retryText}>{busy ? 'Requesting…' : 'Try again'}</Text>
+      </Pressable>
+      {message ? <Text style={styles.safetyText}>{message}</Text> : null}
     </View>
   );
 }
@@ -163,4 +203,17 @@ const styles = StyleSheet.create({
   },
   makeCurrentText: { color: colors.surface, fontSize: 14, fontWeight: '900' },
   pressed: { opacity: 0.72 },
+  retryButton: {
+    minHeight: 44,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  retryText: { color: colors.primary, fontSize: 14, fontWeight: '900' },
 });
