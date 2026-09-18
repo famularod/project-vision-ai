@@ -91,7 +91,7 @@ function customerDetail(document: ReferenceDocument, fallback: string) {
     return 'Reconnect the source file from the desktop Documents workspace so preparation can continue.';
   }
   if (document.ecosHostedIndexStatus === 'Temporarily Unavailable') {
-    return 'The drawing is safe. Hosted preparation will resume automatically when capacity is available.';
+    return 'The drawing is safe. Preparation stopped before it finished. It may retry on its own; if it stays here for a day, upload the document again.';
   }
   if (document.ecosHostedIndexStatus === 'Needs Review') {
     return 'Review the highlighted drawing details before ECOS can use this revision.';

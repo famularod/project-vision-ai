@@ -414,6 +414,13 @@ class HostedIndexerWorker:
             job, page_number=page_number,
         )
         for exception in result["unresolved"]:
+            if not visual_exception_is_fact_resolvable(exception):
+                # page-overview / low-text-page / title-block have no fact a
+                # vision provider could return, so an open exception here would
+                # burn every retry and block the other pages from publishing.
+                # Record the limitation on the page and let assurance decide.
+                record_page_limitation(result, exception)
+                continue
             exception_fingerprint = visual_exception_fingerprint(exception)
             reusable_evidence = reusable_resolved_visual_evidence(
                 exception,
@@ -587,6 +594,23 @@ class HostedIndexerWorker:
 
 class RetryableIndexError(RuntimeError):
     pass
+
+
+def record_page_limitation(result: dict[str, Any], exception: dict[str, Any]) -> None:
+    final = result.setdefault("final", {})
+    limitations = final.get("pageLimitations")
+    if not isinstance(limitations, list):
+        limitations = []
+        final["pageLimitations"] = limitations
+    region_key = str(exception.get("regionKey") or "").strip()
+    if any(item.get("regionKey") == region_key for item in limitations if isinstance(item, dict)):
+        return
+    limitations.append({
+        "regionKey": region_key,
+        "bounds": exception.get("bounds") or {},
+        "reason": str(exception.get("reason") or "")[:500],
+        "kind": "not_fact_resolvable",
+    })
 
 
 class VisualExceptionUnresolvedError(RetryableIndexError):

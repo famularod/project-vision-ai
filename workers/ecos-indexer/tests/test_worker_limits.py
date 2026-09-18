@@ -356,10 +356,17 @@ class WorkerLimitTests(unittest.TestCase):
 
                 unresolved = worker.resolve_visual_exceptions(hosted_job(), object(), 4, result)
 
-                self.assertEqual([exception], unresolved)
+                # Nothing a provider could resolve: the page records a
+                # limitation instead of an open exception that would burn
+                # every retry and block the rest of the document.
+                self.assertEqual([], unresolved)
                 self.assertEqual([], worker.gateway.reserve_calls)
                 self.assertEqual([], worker.visual.resolve_calls)
-                self.assertEqual(1, len(worker.gateway.upsert_calls))
+                self.assertEqual([], worker.gateway.upsert_calls)
+                self.assertEqual(
+                    [region_key],
+                    [item["regionKey"] for item in result["final"]["pageLimitations"]],
+                )
 
     def test_page_without_visual_exceptions_avoids_retry_lookup(self) -> None:
         worker = HostedIndexerWorker.__new__(HostedIndexerWorker)

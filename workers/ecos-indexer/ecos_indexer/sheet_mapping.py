@@ -239,10 +239,15 @@ def map_sheet(
         and abs(winner.score - runner_up.score) < 0.75
         and not (winner.exact_identity_evidence and not runner_up.exact_identity_evidence)
     )
-    verified = winner_has_title_evidence and not conflicted
+    # Coordinate-text identity has no structural provenance that assurance can
+    # validate, so it is never reported as "verified": a clean title block used
+    # to fail the whole document with sheet_provenance_invalid. The strongest
+    # candidate is kept as ``sheetNumberCandidate`` for review tooling only.
+    strong_candidate = winner_has_title_evidence and not conflicted
     return {
-        "sheetNumber": winner.sheet_number if verified else None,
-        "sheetMappingStatus": "verified" if verified else "conflicted" if conflicted else "unverified",
+        "sheetNumber": None,
+        "sheetNumberCandidate": winner.sheet_number if strong_candidate else None,
+        "sheetMappingStatus": "conflicted" if conflicted else "unverified",
         "sheetMappingConfidence": winner.confidence,
         "sheetMappingSource": "coordinate_text",
         "sheetMappingEvidence": [],

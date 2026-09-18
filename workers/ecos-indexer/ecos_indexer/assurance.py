@@ -98,10 +98,11 @@ def assure_page(
     mapping_status = page_data.get("sheetMappingStatus")
     if mapping_status not in {"verified", "conflicted", "unverified"}:
         failures.append("invalid_sheet_mapping_status")
-    elif mapping_status == "conflicted":
-        # A visually plausible fact cannot resolve competing sheet identities.
-        # Keep the page fail-closed until the mapping itself is deterministically
-        # verified; otherwise Ask ECOS could cite correct text to the wrong sheet.
+    elif mapping_status == "conflicted" and str(page_data.get("sheetNumber") or "").strip():
+        # Competing sheet identities with a sheet number still attached could
+        # let Ask ECOS cite correct text to the wrong sheet. A conflicted page
+        # that names no sheet is published as sheet-unknown instead of failing
+        # the whole document (IDX-02).
         failures.append("sheet_mapping_conflicted")
     elif mapping_status == "verified" and not valid_verified_sheet_provenance(
         page_data,

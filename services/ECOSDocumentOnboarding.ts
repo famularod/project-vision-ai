@@ -45,7 +45,7 @@ const STATUS_MESSAGES: Record<ECOSCustomerDocumentStatus, string> = {
   'Ready with limitations': 'Ready for questions using verified evidence, with listed limitations that still need review.',
   'Needs Review': 'Check only the highlighted details before ECOS uses this document.',
   'Reconnect Files': 'Reconnect access to this source file so Vitruvius can continue.',
-  'Temporarily Unavailable': 'Preparation is paused and will resume automatically.',
+  'Temporarily Unavailable': 'Preparation stopped before it finished. It may retry on its own; if it stays here, upload the document again.',
 };
 
 export function resolveECOSCustomerDocumentStatus(

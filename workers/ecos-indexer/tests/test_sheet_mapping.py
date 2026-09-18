@@ -8,6 +8,9 @@ from ecos_indexer.sheet_mapping import (
 
 
 class SheetMappingTests(unittest.TestCase):
+    # Coordinate-text identity is reported as the strongest candidate, never as
+    # "verified": assurance accepts verified only with structural provenance.
+
     def test_prefers_repeated_title_block_identity(self) -> None:
         regions = [
             {"id": "body", "text": "REFER TO DETAIL A2.01", "x": 0.1, "y": 0.1},
@@ -19,8 +22,9 @@ class SheetMappingTests(unittest.TestCase):
 
         result = map_sheet(regions, 1000, 800)
 
-        self.assertEqual(result["sheetMappingStatus"], "verified")
-        self.assertEqual(result["sheetNumber"], "C6")
+        self.assertEqual(result["sheetMappingStatus"], "unverified")
+        self.assertIsNone(result["sheetNumber"])
+        self.assertEqual(result["sheetNumberCandidate"], "C6")
         self.assertGreaterEqual(result["sheetMappingConfidence"], 0.9)
 
     def test_conflicting_title_block_candidates_fail_closed(self) -> None:
@@ -50,8 +54,9 @@ class SheetMappingTests(unittest.TestCase):
 
         result = map_sheet(regions, 1000, 800)
 
-        self.assertEqual(result["sheetMappingStatus"], "verified")
-        self.assertEqual(result["sheetNumber"], "E-2.1")
+        self.assertEqual(result["sheetMappingStatus"], "unverified")
+        self.assertIsNone(result["sheetNumber"])
+        self.assertEqual(result["sheetNumberCandidate"], "E-2.1")
 
     def test_body_detail_without_title_evidence_is_not_verified(self) -> None:
         regions = [
@@ -73,8 +78,9 @@ class SheetMappingTests(unittest.TestCase):
 
         result = map_sheet(regions, 1000, 800)
 
-        self.assertEqual(result["sheetMappingStatus"], "verified")
-        self.assertEqual(result["sheetNumber"], "X-E-2.4")
+        self.assertEqual(result["sheetMappingStatus"], "unverified")
+        self.assertIsNone(result["sheetNumber"])
+        self.assertEqual(result["sheetNumberCandidate"], "X-E-2.4")
 
     def test_rejects_sheet_count_footer_as_page_identity(self) -> None:
         regions = [
@@ -101,8 +107,9 @@ class SheetMappingTests(unittest.TestCase):
 
         result = map_sheet(regions, 1000, 800)
 
-        self.assertEqual(result["sheetMappingStatus"], "verified")
-        self.assertEqual(result["sheetNumber"], "C5")
+        self.assertEqual(result["sheetMappingStatus"], "unverified")
+        self.assertIsNone(result["sheetNumber"])
+        self.assertEqual(result["sheetNumberCandidate"], "C5")
 
     def test_title_block_text_without_label_proximity_is_not_identity(self) -> None:
         regions = [
@@ -129,8 +136,9 @@ class SheetMappingTests(unittest.TestCase):
 
         result = map_sheet(regions, 1000, 800)
 
-        self.assertEqual(result["sheetMappingStatus"], "verified")
-        self.assertEqual(result["sheetNumber"], "E-2.1")
+        self.assertEqual(result["sheetMappingStatus"], "unverified")
+        self.assertIsNone(result["sheetNumber"])
+        self.assertEqual(result["sheetNumberCandidate"], "E-2.1")
 
     def test_pdf_bookmark_identity_outranks_conflicting_outline_ocr(self) -> None:
         regions = [
@@ -345,8 +353,9 @@ class SheetMappingTests(unittest.TestCase):
 
         result = map_sheet(regions, 1000, 800)
 
-        self.assertEqual(result["sheetMappingStatus"], "verified")
-        self.assertEqual(result["sheetNumber"], "C7")
+        self.assertEqual(result["sheetMappingStatus"], "unverified")
+        self.assertIsNone(result["sheetNumber"])
+        self.assertEqual(result["sheetNumberCandidate"], "C7")
 
     def test_date_above_sheet_label_cannot_become_page_identity(self) -> None:
         regions = [
@@ -389,8 +398,9 @@ class SheetMappingTests(unittest.TestCase):
 
         result = map_sheet(regions, 1000, 800)
 
-        self.assertEqual(result["sheetMappingStatus"], "verified")
-        self.assertEqual(result["sheetNumber"], "A-2.2A")
+        self.assertEqual(result["sheetMappingStatus"], "unverified")
+        self.assertIsNone(result["sheetNumber"])
+        self.assertEqual(result["sheetNumberCandidate"], "A-2.2A")
 
     def test_distant_body_identifier_does_not_bind_to_sheet_label(self) -> None:
         regions = [

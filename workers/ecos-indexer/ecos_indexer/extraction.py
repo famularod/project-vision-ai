@@ -75,6 +75,7 @@ PAGE_BOUND_SHEET_VALUE_Y0 = 0.945
 PAGE_BOUND_SHEET_VALUE_Y1 = 0.985
 OCR_TILE_PIXELS = 4096
 OCR_TILE_OVERLAP_PIXELS = 96
+COUNT_READ_EXCEPTIONS_ENABLED = os.getenv("ECOS_COUNT_READ_EXCEPTIONS", "disabled") == "enabled"
 MAX_OCR_TILES = max(1, min(256, int(os.getenv("ECOS_MAX_OCR_TILES_PER_PAGE", "128"))))
 MAX_SOURCE_PAGES = max(1, min(10000, int(os.getenv("ECOS_MAX_SOURCE_PAGES", "500"))))
 MAX_PAGE_DIMENSION_POINTS = max(1440, min(100000, int(os.getenv("ECOS_MAX_PAGE_DIMENSION_POINTS", "20000"))))
@@ -450,7 +451,11 @@ def extract_page(
     )
     unresolved.extend(label_block_unresolved)
     unresolved.extend(plan_dimension_targets)
-    unresolved.extend(count_read_exceptions(count_targets))
+    if COUNT_READ_EXCEPTIONS_ENABLED:
+        # QTY / COUNT labels are common on schedules and legends; the count
+        # reader only runs for shadow jobs, so under live publication these
+        # exceptions could never resolve and blocked the page (IDX-03).
+        unresolved.extend(count_read_exceptions(count_targets))
     # The legacy helper is now a bounded OCR/geometry producer only. Once the
     # standalone evaluator has detected a table, its relationship-level gaps
     # are authoritative; retaining the producer's older row-count gap as well

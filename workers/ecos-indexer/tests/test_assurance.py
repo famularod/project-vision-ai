@@ -186,6 +186,51 @@ class AssuranceTests(unittest.TestCase):
         self.assertIn("sheet_mapping_conflicted", result["failureCodes"])
         self.assertFalse(result["checks"]["sheetMappingUsable"])
 
+    def test_accepts_conflicted_mapping_that_names_no_sheet(self) -> None:
+        page = page_fixture()
+        page["sheetMappingStatus"] = "conflicted"
+        page["sheetNumber"] = None
+        page["pageLimitations"] = [{"regionKey": "title-block", "kind": "not_fact_resolvable"}]
+
+        result = assure_page(
+            page_data=page,
+            expected_project_id=PROJECT_ID,
+            expected_page_number=6,
+            expected_source_sha256=SOURCE_SHA,
+            expected_evidence_version=EVIDENCE_VERSION,
+            unresolved_region_count=0,
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("sheet_mapping_conflicted", result["failureCodes"])
+
+    def test_clean_coordinate_text_title_block_no_longer_fails_the_page(self) -> None:
+        from ecos_indexer.sheet_mapping import map_sheet
+
+        mapping = map_sheet([
+            {"id": "body", "text": "REFER TO DETAIL A2.01", "x": 0.1, "y": 0.1},
+            {"id": "title-label", "text": "SHEET NO.", "x": 0.86, "y": 0.78,
+             "source": "title_block_ocr"},
+            {"id": "title-number", "text": "C 6", "x": 0.91, "y": 0.84,
+             "source": "title_block_ocr"},
+        ], 1000, 800)
+        page = page_fixture()
+        for key in ("sheetNumber", "sheetMappingStatus", "sheetMappingSource",
+                    "sheetMappingEvidence", "sheetMappingCandidates", "sheetNumberCandidate"):
+            page[key] = mapping.get(key)
+
+        result = assure_page(
+            page_data=page,
+            expected_project_id=PROJECT_ID,
+            expected_page_number=6,
+            expected_source_sha256=SOURCE_SHA,
+            expected_evidence_version=EVIDENCE_VERSION,
+            unresolved_region_count=0,
+        )
+
+        self.assertEqual(mapping["sheetNumberCandidate"], "C6")
+        self.assertTrue(result["accepted"], result["failureCodes"])
+
     def test_allows_unverified_nonconflicting_page_identity_for_page_citation(self) -> None:
         page = page_fixture()
         page["sheetMappingStatus"] = "unverified"
