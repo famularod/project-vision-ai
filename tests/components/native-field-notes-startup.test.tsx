@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeRoot } from '../../entry';
 import { createFieldNote, createFieldNoteRepository, markFieldNoteSynced, type FieldNote } from '../../services/FieldNoteRepository';
 import { createMobileFieldNoteDataSource, mobileFieldNoteDataSource } from '../../services/FieldNoteMobileSync';
-import { getCurrentSessionUser, subscribeToAuthStateChange } from '../../services/SupabaseService';
+import { getCurrentSessionUser, signIn, subscribeToAuthStateChange } from '../../services/SupabaseService';
 
 jest.mock('expo', () => ({ registerRootComponent: jest.fn() }));
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -23,6 +23,8 @@ jest.mock('../../services/SupabaseService', () => ({
   getCurrentSessionUser: jest.fn(),
   subscribeToAuthStateChange: jest.fn(() => () => undefined),
   getSupabaseClient: jest.fn(() => null),
+  signIn: jest.fn(),
+  isSupabaseConfigured: jest.fn(() => true),
 }));
 jest.mock('../../services/FieldNoteMobileSync', () => ({
   ...jest.requireActual('../../services/FieldNoteMobileSync'),
@@ -45,6 +47,7 @@ jest.mock('../../App', () => {
 
 const session = jest.mocked(getCurrentSessionUser);
 const subscribe = jest.mocked(subscribeToAuthStateChange);
+const signInMock = jest.mocked(signIn);
 const repository = () => createFieldNoteRepository(AsyncStorage);
 const hangingCloud = () => ({
   list: jest.fn(() => new Promise<readonly FieldNote[]>(() => undefined)),
@@ -112,9 +115,42 @@ test('account switch and sign-out never reuse the previous owner inbox or typed 
   expect(screen.queryByText('Owner A private note')).toBeNull();
   expect(screen.queryByDisplayValue('Owner A unsaved draft')).toBeNull();
   await act(async () => listener('SIGNED_OUT', null));
-  await waitFor(() => expect(screen.getByText('No open field notes.')).toBeTruthy());
+  // Signed out means the sign-in screen: no workspace, nobody's notes, and
+  // nothing can be created that would later be discarded at sign-in.
+  await waitFor(() => expect(screen.getByText('Sign in to Vitruvius')).toBeTruthy());
+  expect(screen.queryByText('Field Notes')).toBeNull();
   expect(screen.queryByText('Owner B private note')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Type field note' })).toBeNull();
+  // Saved work is untouched and returns when the owner signs back in.
   expect((await repository().list('owner-a'))[0].id).toBe('note-a');
+  await act(async () => listener('SIGNED_IN', { user: { id: 'owner-a' } } as never));
+  await waitFor(() => expect(screen.getByText('Owner A private note')).toBeTruthy());
+});
+
+test('a signed-out launch shows only the sign-in screen and signs in through the auth service', async () => {
+  session.mockResolvedValue({ ok: true, data: null } as Awaited<ReturnType<typeof getCurrentSessionUser>>);
+  const screen = render(<NativeRoot />);
+  await waitFor(() => expect(screen.getByText('Sign in to Vitruvius')).toBeTruthy(), COLD_RENDER);
+  expect(screen.queryByText('Field Notes')).toBeNull();
+
+  fireEvent.press(screen.getByRole('button', { name: 'Sign in' }));
+  await waitFor(() => expect(screen.getByText('Enter your email and password.')).toBeTruthy());
+  expect(signInMock).not.toHaveBeenCalled();
+
+  signInMock.mockResolvedValueOnce({ ok: false, error: 'Invalid login credentials' } as never);
+  fireEvent.changeText(screen.getByLabelText('Email'), ' owner@example.com ');
+  fireEvent.changeText(screen.getByLabelText('Password'), 'wrong');
+  fireEvent.press(screen.getByRole('button', { name: 'Sign in' }));
+  await waitFor(() => expect(screen.getByText('That email or password was not accepted.')).toBeTruthy());
+  expect(signInMock).toHaveBeenCalledWith({ email: 'owner@example.com', password: 'wrong' });
+
+  signInMock.mockResolvedValueOnce({ ok: true, data: { user: { id: 'owner-a' } } } as never);
+  fireEvent.changeText(screen.getByLabelText('Password'), 'right');
+  fireEvent.press(screen.getByRole('button', { name: 'Sign in' }));
+  const listener = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+  await act(async () => listener('SIGNED_IN', { user: { id: 'owner-a' } } as never));
+  await waitFor(() => expect(screen.getByText('No open field notes.')).toBeTruthy());
+  expect(screen.queryByText('Sign in to Vitruvius')).toBeNull();
 });
 
 test('unresolved session never mounts a guessed owner inbox', async () => {

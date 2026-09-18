@@ -12,6 +12,7 @@ import {
 import App from './App';
 import { PendingChangesRetryBoundary } from './components/pending-changes-retry-boundary';
 import { NativeWorkspaceOwnerContext } from './components/native-workspace-owner';
+import { NativeSignInGate } from './components/native-sign-in-gate';
 import {
   createOwnerStorageSandbox,
   type OwnerStorageSandboxError,
@@ -147,6 +148,13 @@ export function NativeRoot() {
         createElement(Text, { style: ownerBoundaryStyles.buttonText }, 'Retry'),
       ),
     );
+  }
+
+  // Work is only created inside a signed-in owner workspace. A signed-out
+  // workspace used to accept projects and updates that the next sign-in then
+  // discarded; the owner chose to require sign-in instead.
+  if (!state.ownerId) {
+    return createElement(NativeSignInGate, { key: `sign-in-${generation}` });
   }
 
   return createElement(
