@@ -1515,7 +1515,7 @@ function formatActionItem(item: PIEReportActionItem) {
     return ensureSentence(item.action);
   }
 
-  return `${item.owner} – Please ${lowercaseFirst(item.action)}.`;
+  return `${item.owner} – Please ${lowercaseFirst(item.action).replace(/[\s.,;:]+$/, '')}.`;
 }
 
 function buildExecutiveSummaryBullets(
@@ -2608,6 +2608,9 @@ function stripTerminalPunctuation(value: string) {
 function lowercaseFirst(value: string) {
   const text = value.trim();
   if (!text) return text;
+
+  // Leave ALL-CAPS schedule names and acronyms alone ("INSTALL", "RFI").
+  if (/^[A-Z][A-Z0-9]/.test(text)) return text;
 
   return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }

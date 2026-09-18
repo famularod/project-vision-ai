@@ -1,5 +1,6 @@
 import type { PIEReportDraft } from './domains/reporting';
 import type { PIELiveAuthorityStateName } from './PIELiveAuthorityStateMachine';
+import { plainReportReviewFlag } from './ReportReviewPlainLanguage';
 
 export type ReportReviewItem = Readonly<{
   /** Stable for the same text, so an acknowledgement survives re-renders. */
@@ -64,11 +65,19 @@ export function evaluateReportApprovalPolicy({
   if (report.needsReview && flags.length === 0) {
     flags.push('This report still requires review before sharing.');
   }
-  const items: ReportReviewItem[] = flags.map(text => ({
-    id: reviewItemId(text),
-    text,
-    kind: BLOCKING_FLAG.test(text) ? 'blocking' : 'advisory',
-  }));
+  // A flag blocks on its original wording; the reviewer reads the plain one.
+  const items: Array<{ -readonly [K in keyof ReportReviewItem]: ReportReviewItem[K] }> = [];
+  flags.forEach(flag => {
+    const text = plainReportReviewFlag(flag);
+    const id = reviewItemId(text);
+    const kind = BLOCKING_FLAG.test(flag) || BLOCKING_FLAG.test(text) ? 'blocking' : 'advisory';
+    const existing = items.find(item => item.id === id);
+    if (existing) {
+      if (kind === 'blocking') existing.kind = 'blocking';
+      return;
+    }
+    items.push({ id, text, kind });
+  });
 
   const waitingForProjectData = authorityState === 'loading';
   const untrustedConnection =

@@ -1797,9 +1797,8 @@ function ReportWorkArea({
   onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
 }) {
   const [open, setOpen] = useState(true);
-  const title = area.projectName !== area.title
-    ? `${area.projectName} — ${area.title}`
-    : area.title;
+  // The project name is already the heading above this group of areas.
+  const title = area.title;
   const bullets = area.bullets
     .map(bullet => ({ ...bullet, text: toPMReportLanguage(bullet.text) }))
     .filter(bullet => Boolean(bullet.text));

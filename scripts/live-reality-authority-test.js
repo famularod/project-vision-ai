@@ -137,7 +137,8 @@ function actor() {
     identityTrusted: true,
   });
   assert.strictEqual(first.model.version, 1);
-  assert.strictEqual(first.persistenceStatus, 'degraded_local_only');
+  // No cloud configured: local work is authoritative on this device (PIE-03), not degraded.
+  assert.strictEqual(first.persistenceStatus, 'authoritative_local');
   assert(first.snapshotId.includes('v1'));
 
   const writesBeforeUnchangedRefresh = storageWrites.length;

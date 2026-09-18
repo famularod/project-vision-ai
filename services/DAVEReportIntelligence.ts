@@ -934,7 +934,7 @@ function reportableCurrentState(value: string) {
 }
 
 export function toPMReportLanguage(value: string) {
-  return reportableCurrentState(value)
+  return reportableCurrentState(stripProjectWalkBoilerplate(value))
     .replace(/correlated across multiple source types/gi, 'matched to the task')
     .replace(/source-backed/gi, 'recorded')
     .replace(/field evidence/gi, 'field update')
@@ -945,6 +945,22 @@ export function toPMReportLanguage(value: string) {
     .replace(/\binferences?\b/gi, 'assessments')
     .replace(/\bverification\b/gi, 'review')
     .replace(/\bverify\b/gi, 'confirm')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+const PROJECT_WALK_FIELD_LABELS =
+  'Person or company|Commitment|Due date|Decision|Owner request|Inspection change|Schedule change|Issue|Risk|Follow-up|General note|Field note';
+
+/** A Project Walk update stores drafting headers in its notes; a report reader only needs the note itself. */
+export function stripProjectWalkBoilerplate(value: string) {
+  if (!/Project Walk draft/i.test(value)) return value;
+  return value
+    .replace(/Project Walk draft\s*[—–-]\s*review before sending\s*/gi, '')
+    .replace(/Prepared from \d+ confirmed field memor(?:y|ies)\.\s*/gi, '')
+    .replace(new RegExp(`Confirmed area:\\s*[\\s\\S]*?(?=\\bArea:)`, 'gi'), '')
+    .replace(new RegExp(`\\bArea:\\s*[\\s\\S]*?(?=\\b(?:${PROJECT_WALK_FIELD_LABELS}):)`, 'gi'), '')
+    .replace(/\b(?:General note|Field note):\s*/gi, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
