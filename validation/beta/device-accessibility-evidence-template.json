@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "releaseCandidate": {
+    "version": null,
+    "build": null,
+    "sourceRevision": null
+  },
+  "recordedAt": null,
+  "tester": null,
+  "overallStatus": "pending",
+  "evidenceClassification": {
+    "installedDeviceMetadata": [],
+    "automatedSourceChecks": [],
+    "actualDeviceBehavior": [],
+    "humanBlocked": []
+  },
+  "platforms": {
+    "iphone": {
+      "status": "pending",
+      "deviceOrBrowser": null,
+      "operatingSystem": null,
+      "installedVersion": null,
+      "installedBuild": null,
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "cloud_sync_and_cross_device_consistency": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [],
+      "behaviorEvidenceRefs": []
+    },
+    "ipad": {
+      "status": "pending",
+      "deviceOrBrowser": null,
+      "operatingSystem": null,
+      "installedVersion": null,
+      "installedBuild": null,
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "cloud_sync_and_cross_device_consistency": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [],
+      "behaviorEvidenceRefs": []
+    },
+    "web": {
+      "status": "pending",
+      "deviceOrBrowser": null,
+      "operatingSystem": null,
+      "installedVersion": null,
+      "installedBuild": null,
+      "journeys": {
+        "sign_in_and_session_recovery": "pending",
+        "cloud_sync_and_cross_device_consistency": "pending",
+        "create_and_edit_task": "pending",
+        "guided_voice_or_text_capture": "pending",
+        "field_note_capture_and_desktop_review": "pending",
+        "document_add_and_background_resume": "pending",
+        "ask_ecos_and_open_exact_proof": "pending",
+        "report_review": "pending"
+      },
+      "candidateMetadataEvidenceRefs": [],
+      "behaviorEvidenceRefs": []
+    }
+  },
+  "accessibility": {
+    "iphone": {
+      "checks": {
+        "voice_over": "pending",
+        "dynamic_type": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending",
+        "touch_targets": "pending"
+      },
+      "evidenceRefs": []
+    },
+    "ipad": {
+      "checks": {
+        "voice_over": "pending",
+        "dynamic_type": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending",
+        "touch_targets": "pending"
+      },
+      "evidenceRefs": []
+    },
+    "web": {
+      "checks": {
+        "keyboard_navigation": "pending",
+        "screen_reader": "pending",
+        "zoom_200_percent": "pending",
+        "reduced_motion": "pending",
+        "contrast": "pending",
+        "focus_order": "pending"
+      },
+      "evidenceRefs": []
+    }
+  },
+  "offlineAndRecovery": {
+    "scenarios": {
+      "offline_create_and_reconnect": "pending",
+      "background_foreground_resume": "pending",
+      "duplicate_write_prevention": "pending",
+      "sync_conflict_is_visible": "pending",
+      "restart_with_pending_work": "pending",
+      "zero_pending_after_sync": "pending",
+      "same_records_on_iphone_ipad_and_web": "pending",
+      "repeated_clean_sync_after_reopen": "pending",
+      "offline_edit_reconnects_exactly_once": "pending",
+      "no_duplicate_lost_or_stale_records": "pending",
+      "connection_status_matches_sync_health": "pending"
+    },
+    "evidenceRefs": []
+  },
+  "defects": [],
+  "notes": []
+}

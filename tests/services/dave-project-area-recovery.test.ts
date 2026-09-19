@@ -1,4 +1,5 @@
 import {
+  daveProjectAreasNeedingCloudUpload,
   mergeDAVEProjectAreaRecord,
   mergeDAVEProjectAreaRecoveryRecords,
 } from '../../services/DAVEProjectAreaRecovery';
@@ -77,5 +78,37 @@ describe('DAVE project area recovery', () => {
 
     expect(mergeDAVEProjectAreaRecord(newerLegacyCopy, ownedCloudCopy).projectName)
       .toBe('Project A');
+  });
+
+  it('uploads only missing or materially newer local GPS records', () => {
+    const remote = area({
+      projectName: 'Project A',
+      locationCapturedAt: '2026-07-18T10:00:00.000Z',
+      updatedAt: '2026-07-18T10:00:00.000Z',
+    });
+    const localStalePlaceholder = area({
+      projectName: null,
+      updatedAt: '2026-07-17T10:00:00.000Z',
+    });
+    const localOnly = area({ id: 'area-2', name: 'North Lot' });
+
+    expect(daveProjectAreasNeedingCloudUpload({
+      local: [localStalePlaceholder, localOnly],
+      cloud: [remote, area({ id: 'cloud-only' })],
+    })).toEqual([localOnly]);
+
+    const renamed = area({
+      name: 'Canopy A renamed',
+      updatedAt: '2026-07-19T10:00:00.000Z',
+    });
+    expect(daveProjectAreasNeedingCloudUpload({
+      local: [renamed],
+      cloud: [remote],
+    })).toEqual([expect.objectContaining({
+      name: 'Canopy A renamed',
+      latitude: remote.latitude,
+      longitude: remote.longitude,
+      locationCapturedAt: remote.locationCapturedAt,
+    })]);
   });
 });

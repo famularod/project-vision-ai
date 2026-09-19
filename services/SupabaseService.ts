@@ -58,6 +58,15 @@ import {
   type DAVEOperationalRealtimeEntity,
   type DAVEOperationalRealtimeStatus,
 } from './DAVEOperationalRefresh';
+import {
+  compactECOSDocumentIndexForCloud,
+  compactECOSReferenceDocumentsForOperationalRead,
+} from './ECOSDocumentIndexPersistence';
+import { replaceECOSDocumentCloudIndex } from './ECOSDocumentCloudIndex';
+import {
+  enqueueECOSHostedIndex,
+  loadECOSHostedIndexStatuses,
+} from './ECOSHostedIndexer';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
@@ -214,6 +223,7 @@ export type DeleteProjectParams = {
 
 export type CloudProjectUpdate<TUpdate = JsonValue> = {
   id: string;
+  projectId?: string | null;
   projectName: string;
   areaName: string;
   idempotencyKey?: string | null;
@@ -225,6 +235,7 @@ export type CloudProjectUpdate<TUpdate = JsonValue> = {
 
 export type SaveProjectUpdateParams<TUpdate> = {
   id: string;
+  projectId: string;
   projectName: string;
   areaName?: string | null;
   idempotencyKey?: string | null;
@@ -238,6 +249,7 @@ export type DeleteProjectUpdateParams = {
 
 export type ProjectUpdateSyncMetadata<TUpdate = JsonValue> = {
   id: string;
+  projectId: string | null;
   updatedAt: string | null;
   projectName: string | null;
   areaName: string | null;
@@ -1301,6 +1313,7 @@ export async function countCloudProjects(): Promise<SupabaseServiceResult<number
 
 export async function saveProjectUpdate<TUpdate>({
   id,
+  projectId,
   projectName,
   areaName,
   idempotencyKey,
@@ -1317,16 +1330,50 @@ export async function saveProjectUpdate<TUpdate>({
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
+  const canonicalProjectId = exactOperationalProjectId(projectId);
+  if (!canonicalProjectId) {
+    return errorResult(
+      'The field update is missing its exact cloud project identity.',
+      409,
+      'operational_project_identity_required',
+    );
+  }
+  const updateRecord = toRecord(updateData);
+  if (Object.keys(updateRecord).length === 0) {
+    return errorResult(
+      'The field update payload must be a protected record.',
+      400,
+      'operational_payload_invalid',
+    );
+  }
+  const embeddedProjectId = updateRecord.projectId;
+  if (
+    embeddedProjectId !== undefined &&
+    embeddedProjectId !== null &&
+    embeddedProjectId !== canonicalProjectId
+  ) {
+    return errorResult(
+      'The field update project identity does not match its protected record.',
+      409,
+      'operational_project_identity_mismatch',
+    );
+  }
+  const boundUpdateData = {
+    ...updateRecord,
+    projectId: canonicalProjectId,
+  } as TUpdate;
+
   const stableIdempotencyKey =
     sanitizeIdempotencyKey(idempotencyKey) ||
     extractProjectUpdateIdempotencyKey(updateData) ||
     id;
   const payload = {
     id,
+    project_id: canonicalProjectId,
     project_name: projectName || 'Unassigned Project',
     area_name: areaName || '',
     idempotency_key: stableIdempotencyKey,
-    update_data: updateData,
+    update_data: boundUpdateData,
     updated_at: updatedAt,
     owner_id: owner.data,
   };
@@ -1388,9 +1435,11 @@ export async function deleteProjectUpdate({
 export async function archiveProjectUpdate({
   id,
   archivedAt,
+  projectId,
 }: {
   id: string;
   archivedAt: string;
+  projectId?: string | null;
 }): Promise<SupabaseServiceResult<null>> {
   const metadata = await getProjectUpdateSyncMetadata<Record<string, unknown>>(id);
   if (!metadata.ok || metadata.stubbed) {
@@ -1398,12 +1447,19 @@ export async function archiveProjectUpdate({
   }
   if (!metadata.data?.updateData) return okResult(null, metadata.status);
   const updateData = metadata.data.updateData;
+  const boundProjectId = exactOperationalProjectId(
+    projectId || metadata.data.projectId || toRecord(updateData).projectId,
+  );
+  if (!boundProjectId) {
+    return errorResult('Field update archive requires an exact cloud project identity.');
+  }
   const projectName = typeof updateData.projectName === 'string'
     ? updateData.projectName
     : metadata.data.projectName || '';
   if (!projectName.trim()) return errorResult('Field update archive requires a project name.');
   const result = await saveProjectUpdate({
     id,
+    projectId: boundProjectId,
     projectName,
     areaName: typeof updateData.selectedAreaName === 'string'
       ? updateData.selectedAreaName
@@ -1466,7 +1522,7 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
 
   const { data, error, status } = await client
     .from(PROJECT_UPDATES_TABLE)
-    .select('id, updated_at, project_name, area_name, update_data')
+    .select('id, project_id, updated_at, project_name, area_name, update_data')
     .eq('owner_id', owner.data)
     .eq('id', id)
     .maybeSingle();
@@ -1485,6 +1541,7 @@ export async function getProjectUpdateSyncMetadata<TUpdate>(
   return okResult(
     {
       id: String(row.id || id),
+      projectId: typeof row.project_id === 'string' ? row.project_id : null,
       updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
       projectName: typeof row.project_name === 'string' ? row.project_name : null,
       areaName: typeof row.area_name === 'string' ? row.area_name : null,
@@ -1521,14 +1578,28 @@ export async function upsertScheduleItem(
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
+  const canonicalProjectId = exactOperationalProjectId(item.projectId);
+  if (!canonicalProjectId) {
+    return errorResult(
+      'The task is missing its exact cloud project identity.',
+      409,
+      'operational_project_identity_required',
+    );
+  }
+  const boundItem: ScheduleItem = {
+    ...item,
+    projectId: canonicalProjectId,
+  };
+
   const { data, error, status } = await client
     .from(SCHEDULE_ITEMS_TABLE)
     .upsert({
       id: item.id,
       owner_id: owner.data,
+      project_id: canonicalProjectId,
       project_name: item.projectName,
       task_name: item.taskName,
-      item_data: toJsonValue(item),
+      item_data: toJsonValue(boundItem),
       updated_at: new Date().toISOString(),
     })
     .select('id, item_data')
@@ -1541,7 +1612,7 @@ export async function upsertScheduleItem(
     status,
   };
   const acknowledged = await confirmScheduleItemCloudAcknowledgement(
-    item,
+    boundItem,
     data,
     async () => {
       const confirmation = await client
@@ -1569,14 +1640,15 @@ export async function upsertScheduleItem(
     );
   }
 
-  return okResult(item, status);
+  return okResult(boundItem, status);
 }
 
 export async function upsertReferenceDocument(
   document: ReferenceDocument,
 ): Promise<SupabaseServiceResult<ReferenceDocument>> {
-  const { cloudUpdatedAt: _cloudUpdatedAt, ...documentData } = document;
-  return upsertJsonRecord<ReferenceDocument>({
+  const compactDocument = compactECOSDocumentIndexForCloud(document);
+  const { cloudUpdatedAt: _cloudUpdatedAt, ...documentData } = compactDocument;
+  const result = await upsertJsonRecord<ReferenceDocument>({
     table: REFERENCE_DOCUMENTS_TABLE,
     ownerScoped: true,
     payload: {
@@ -1588,6 +1660,12 @@ export async function upsertReferenceDocument(
     },
     data: document,
   });
+  const client = getSupabaseClient();
+  if (result.ok && client) {
+    await replaceECOSDocumentCloudIndex({ client, document });
+    await enqueueECOSHostedIndex({ client, documentId: document.id });
+  }
+  return result;
 }
 
 export async function listProjectAreas(): Promise<SupabaseServiceResult<ProjectArea[]>> {
@@ -1605,11 +1683,66 @@ export async function listScheduleItems(): Promise<SupabaseServiceResult<Schedul
 }
 
 export async function listReferenceDocuments(): Promise<SupabaseServiceResult<ReferenceDocument[]>> {
-  return listOwnedJsonRecords<ReferenceDocument>({
-    table: REFERENCE_DOCUMENTS_TABLE,
-    jsonColumn: 'document_data',
-    includeCloudUpdatedAt: true,
-  });
+  const client = getSupabaseClient();
+  if (!client) return notConfiguredResult<ReferenceDocument[]>();
+  const owner = await requireAuthenticatedOwnerId(client);
+  if (!owner.ok || !owner.data) {
+    return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
+
+  // Document rows can contain multi-megabyte page indexes. Mobile and desktop
+  // must share the bounded metadata RPC so routine sync never downloads those
+  // indexes merely to compare names, versions, and storage authority.
+  const { data, error, status } = await client.rpc(
+    'dave_list_reference_document_metadata',
+  );
+  if (error || !Array.isArray(data)) {
+    return errorResult(
+      error?.message || 'Authorized reference document metadata could not be loaded.',
+      status,
+      error?.code,
+    );
+  }
+  const documents = data
+    .map(value => {
+      const row = toRecord(value);
+      const documentData = toRecord(row.document_data);
+      if (Object.keys(documentData).length === 0) return null;
+      const record = bindDAVECloudDatabaseIdentity(documentData, row.id);
+      return {
+        ...record,
+        cloudUpdatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+      } as ReferenceDocument;
+    })
+    .filter((value): value is ReferenceDocument => Boolean(value));
+  const compactDocuments = compactECOSReferenceDocumentsForOperationalRead(documents);
+  let statuses: Awaited<ReturnType<typeof loadECOSHostedIndexStatuses>> = [];
+  try {
+    statuses = await loadECOSHostedIndexStatuses({
+      client,
+      documentIds: compactDocuments.map(document => document.id),
+    });
+  } catch {
+    // Hosted preparation status is supplemental. Never hide the document library
+    // when the status service is temporarily unavailable.
+  }
+  if (statuses.length === 0) {
+    return okResult(compactDocuments, status);
+  }
+  const statusByDocument = new Map(statuses.map(status => [status.documentId, status]));
+  return okResult(compactDocuments.map(document => {
+    const hosted = statusByDocument.get(document.id);
+    return hosted ? {
+      ...document,
+      ecosHostedIndexStatus: hosted.customerStatus,
+      ecosHostedIndexProgressPercent: hosted.progressPercent,
+      ecosHostedIndexCustomerMessage: hosted.customerMessage,
+      ecosHostedIndexLimitationCount: hosted.limitationCount,
+      ecosHostedIndexSupportReference: hosted.supportReference,
+      ecosHostedIndexEvidenceVersion: hosted.committedEvidenceVersion,
+      ecosHostedIndexUpdatedAt: hosted.updatedAt,
+    } : document;
+  }), status);
 }
 
 export async function upsertDAVESyncTombstone(
@@ -2968,10 +3101,12 @@ async function listOwnedJsonRecords<T>({
   table,
   jsonColumn,
   includeCloudUpdatedAt = false,
+  pageSize,
 }: {
   table: string;
   jsonColumn: string;
   includeCloudUpdatedAt?: boolean;
+  pageSize?: number;
 }): Promise<SupabaseServiceResult<T[]>> {
   const client = getSupabaseClient();
   if (!client) return notConfiguredResult<T[]>();
@@ -2981,14 +3116,16 @@ async function listOwnedJsonRecords<T>({
     return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
   }
 
-  const result = await paginateSupabaseCollection(async ({ from, to, includeExactCount }) =>
-    client
-      .from(table)
-      .select(`id, updated_at, ${jsonColumn}`, { count: includeExactCount ? 'exact' : undefined })
-      .eq('owner_id', owner.data)
-      .order('updated_at', { ascending: false })
-      .order('id', { ascending: true })
-      .range(from, to),
+  const result = await paginateSupabaseCollection(
+    async ({ from, to, includeExactCount }) =>
+      client
+        .from(table)
+        .select(`id, updated_at, ${jsonColumn}`, { count: includeExactCount ? 'exact' : undefined })
+        .eq('owner_id', owner.data)
+        .order('updated_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(from, to),
+    pageSize,
   );
 
   if (!result.ok) return tableAwareListResult<T>(result.error, result.status);
@@ -3160,6 +3297,7 @@ function normalizeProjectUpdate<TUpdate>(
 
   return {
     id: String(row.id || ''),
+    projectId: typeof row.project_id === 'string' ? row.project_id : null,
     projectName:
       typeof row.project_name === 'string'
         ? row.project_name
@@ -3172,6 +3310,13 @@ function normalizeProjectUpdate<TUpdate>(
     updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
     ownerId: typeof row.owner_id === 'string' ? row.owner_id : null,
   };
+}
+
+function exactOperationalProjectId(value: unknown): string | null {
+  if (typeof value !== 'string' || value !== value.trim()) return null;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    ? value
+    : null;
 }
 
 function normalizeStorageCleanupIntent(

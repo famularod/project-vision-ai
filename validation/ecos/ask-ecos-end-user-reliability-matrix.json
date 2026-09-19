@@ -1,0 +1,146 @@
+{
+  "schemaVersion": "ecos-end-user-reliability-matrix/2.0",
+  "canonicalSuites": [
+    "validation/ecos/ask-ecos-real-world-cases.json",
+    "validation/ecos/ask-ecos-2321-real-world-cases.json"
+  ],
+  "requiredClientSurfaces": ["web", "iphone", "ipad"],
+  "releaseDecisionPath": {
+    "mode": "customer_path_only",
+    "functionSlug": "ecos-ask-project",
+    "requestTransport": "supabase_functions_invoke",
+    "invocationMode": "app_ui",
+    "appInvocationBoundary": "services/ECOSProjectQuestion.askECOSProjectQuestion",
+    "authentication": "signed_in_user",
+    "publicationMode": "live",
+    "validationMode": null,
+    "serviceWorkerTokenAllowed": false,
+    "privateDiagnosticResultsCanRelease": false
+  },
+  "stagedExecution": {
+    "canonicalFirstPassCaseCount": 34,
+    "repairBeforeRepeatOnFailure": true,
+    "languageFirstPassAttemptCount": 30,
+    "repeatOnlyAfterPerfectFirstPass": true,
+    "repeatCycleCountAfterFirstPass": 2
+  },
+  "requiredGradeDimensions": ["delivery", "answer", "citation", "proof", "safety"],
+  "repeatCount": 3,
+  "requiredPassRate": 1,
+  "requireUniqueTracePerAttempt": true,
+  "requirePersistedDiagnostics": true,
+  "requireOpenableCitations": true,
+  "maximumP95LatencyMs": 60000,
+  "families": [
+    {
+      "id": "2375-concrete-thickness-natural-language",
+      "projectName": "2375 Compliance Project",
+      "canonicalCaseId": "north-lot-pcc-design-thickness",
+      "tags": ["user_reported", "synonym", "conversational"],
+      "variants": [
+        "What is the thickness of the new cement on the north lot?",
+        "How deep is the new concrete paving behind 2375?",
+        "Hey ECOS, what concrete depth is called out for the north side?"
+      ]
+    },
+    {
+      "id": "2375-concrete-thickness-noisy-input",
+      "projectName": "2375 Compliance Project",
+      "canonicalCaseId": "north-lot-pcc-design-thickness",
+      "tags": ["typo", "speech_like", "construction_vocabulary"],
+      "variants": [
+        "how thik is teh cement paving on the noth side",
+        "whats the p c c thickness at the back lot 2375",
+        "How many inches of concrete do the plans call for up north?"
+      ]
+    },
+    {
+      "id": "2375-installed-versus-design-limit",
+      "projectName": "2375 Compliance Project",
+      "canonicalCaseId": "north-lot-installed-thickness-limit",
+      "tags": ["safe_refusal", "installed_condition", "conversational"],
+      "variants": [
+        "Was the concrete behind 2375 actually poured six inches thick?",
+        "Can the plans prove how thick the crew really placed the north-lot slab?",
+        "What was the as-built depth of the new cement on the back side?"
+      ]
+    },
+    {
+      "id": "2375-canopy-a-area",
+      "projectName": "2375 Compliance Project",
+      "canonicalCaseId": "canopy-a-plan-footprint",
+      "tags": ["user_reported", "synonym", "calculation"],
+      "variants": [
+        "How many square feet is Canopy A?",
+        "What is the sq ft of canopy A on the plan?",
+        "How big is Canopy A using the overall plan dimensions?"
+      ]
+    },
+    {
+      "id": "2375-canopy-lighting",
+      "projectName": "2375 Compliance Project",
+      "canonicalCaseId": "canopy-lighting-presence",
+      "tags": ["synonym", "field_wording", "drawing_fact"],
+      "variants": [
+        "Are there lights under the north-side canopies?",
+        "Do the electrical plans show fixtures in the 2375 canopies?",
+        "Is canopy lighting part of the current drawings?"
+      ]
+    },
+    {
+      "id": "2375-photometric-values",
+      "projectName": "2375 Compliance Project",
+      "canonicalCaseId": "site-photometric-statistics",
+      "tags": ["synonym", "trade_vocabulary", "multi_value"],
+      "variants": [
+        "What are the site lighting high, low, and average foot-candle readings?",
+        "Give me the average max and minimum light levels on the photometric sheet.",
+        "What does the lighting calc say for avg maximum and minimum fc?"
+      ]
+    },
+    {
+      "id": "2375-cross-discipline-lighting",
+      "projectName": "2375 Compliance Project",
+      "canonicalCaseId": "cross-discipline-area-lighting",
+      "tags": ["cross_document", "cross_discipline", "recommendation"],
+      "variants": [
+        "Which plans should the field use to confirm north-lot area lighting?",
+        "The civil sheet points lighting elsewhere. Where is it actually shown?",
+        "Check civil and electrical and tell me what drawings control the outside lights."
+      ]
+    },
+    {
+      "id": "2321-canopy-slab-thickness",
+      "projectName": "2321 Compliance Project",
+      "canonicalCaseId": "2321-canopy-foundation-slab",
+      "tags": ["synonym", "construction_vocabulary", "drawing_fact"],
+      "variants": [
+        "How thick is the concrete pad under the new 2321 storage canopy?",
+        "What slab depth does structural call for at the hazmat canopy?",
+        "How many inches is the reinforced canopy slab supposed to be?"
+      ]
+    },
+    {
+      "id": "2321-exhaust-fan-airflow",
+      "projectName": "2321 Compliance Project",
+      "canonicalCaseId": "2321-restroom-exhaust-fan",
+      "tags": ["abbreviation", "trade_vocabulary", "multi_value"],
+      "variants": [
+        "How much air does EF-1 move and what rooms does it exhaust?",
+        "Give me the cfm and room coverage for exhaust fan one.",
+        "What airflow is scheduled for the restroom exaust fan at 2321?"
+      ]
+    },
+    {
+      "id": "2321-installed-tree-negative-control",
+      "projectName": "2321 Compliance Project",
+      "canonicalCaseId": "2321-installed-tree-count-negative-control",
+      "tags": ["safe_refusal", "installed_condition", "drawing_fact"],
+      "variants": [
+        "Are all 78 trees really installed at 2321?",
+        "Do the landscape plans prove the crew planted every required tree?",
+        "How many of the planned trees can ECOS confirm are in the ground?"
+      ]
+    }
+  ]
+}

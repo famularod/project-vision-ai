@@ -105,6 +105,7 @@ type SharedProjectDocumentSource = Readonly<{
   drawingDiscipline?: string | null;
   drawingStatus?: ReferenceDocument['drawingStatus'];
   drawingIssuedAt?: string | null;
+  webVersionGroupId?: string | null;
 }>;
 
 type DownloadableProjectDocumentSource = Readonly<{
@@ -182,8 +183,9 @@ export function buildSharedReferenceDocument({
     mimeType: document.mimeType || null,
     category: referenceCategoryForProjectDocument(document.category),
     notes: document.note || '',
-    // A schedule becomes authoritative only through the explicit
-    // "Make Current" workflow. Uploading bytes alone must not supersede it.
+    // An uploaded document becomes authoritative only through the explicit
+    // "Make Current" workflow. Uploading bytes alone must not supersede the
+    // current schedule or drawing revision.
     isCurrent: false,
     importedAt: document.importedAt,
     projectId: document.projectId,
@@ -196,7 +198,7 @@ export function buildSharedReferenceDocument({
     updatedAt,
     cloudUpdatedAt: null,
     webFileFingerprint: null,
-    webVersionGroupId: null,
+    webVersionGroupId: document.webVersionGroupId || null,
     webContentReview: null,
     webReport: null,
     drawingNumber: document.drawingNumber || null,
@@ -204,6 +206,47 @@ export function buildSharedReferenceDocument({
     drawingDiscipline: document.drawingDiscipline || null,
     drawingStatus: document.drawingStatus || null,
     drawingIssuedAt: document.drawingIssuedAt || null,
+  });
+}
+
+/**
+ * Mirrors later mobile metadata edits into the shared ECOS authority record.
+ * Hosted extraction, evidence, readiness, and current-version fields are
+ * intentionally inherited from the existing shared record.
+ */
+export function synchronizeSharedReferenceDocumentMetadata({
+  document,
+  sharedDocument,
+  projectName,
+  updatedAt = new Date().toISOString(),
+}: Readonly<{
+  document: SharedProjectDocumentSource;
+  sharedDocument: ReferenceDocument;
+  projectName: string | null;
+  updatedAt?: string;
+}>): ReferenceDocument {
+  return Object.freeze({
+    ...sharedDocument,
+    name: document.name.replace(/\.[^/.]+$/, '') || document.name,
+    originalFileName: document.name,
+    mimeType: document.mimeType || null,
+    category: referenceCategoryForProjectDocument(document.category),
+    notes: document.note || '',
+    projectId: document.projectId,
+    projectName: projectName || sharedDocument.projectName || null,
+    projectNames: projectName
+      ? [projectName]
+      : sharedDocument.projectNames || [],
+    storagePath: document.storagePath || sharedDocument.storagePath || null,
+    sizeBytes: document.sizeBytes || sharedDocument.sizeBytes || null,
+    webVersionGroupId:
+      document.webVersionGroupId || sharedDocument.webVersionGroupId || null,
+    drawingNumber: document.drawingNumber || null,
+    drawingRevision: document.drawingRevision || null,
+    drawingDiscipline: document.drawingDiscipline || null,
+    drawingStatus: document.drawingStatus || null,
+    drawingIssuedAt: document.drawingIssuedAt || null,
+    updatedAt,
   });
 }
 

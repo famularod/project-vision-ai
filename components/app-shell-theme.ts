@@ -1680,6 +1680,43 @@ export const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
+  overviewFieldNotesCard: {
+    marginTop: 10,
+    minHeight: 78,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(32,83,158,0.16)',
+    backgroundColor: 'rgba(255,255,255,0.78)',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+
+  overviewFieldNotesIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    backgroundColor: '#EAF4FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  overviewFieldNotesTitle: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '800',
+  },
+
+  overviewFieldNotesText: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+
   overviewHealthCard: {
     marginTop: 10,
     marginBottom: 20,

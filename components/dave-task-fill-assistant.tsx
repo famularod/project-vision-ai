@@ -64,6 +64,23 @@ const FIELD_LABELS: Record<DAVETaskFillFieldName, string> = {
   nextAction: 'Next action',
 };
 
+const GUIDED_VOICE_LABELS: Record<DAVETaskFillFieldName, readonly string[]> = {
+  taskName: ['task or milestone', 'task title', 'task'],
+  itemType: ['project item type', 'item type'],
+  projectName: ['project'],
+  locationName: ['area / location', 'area or location', 'location', 'area'],
+  startDate: ['start date'],
+  finishDate: ['finish / due date', 'finish or due date', 'finish date', 'due date'],
+  milestone: ['milestone'],
+  owner: ['owner'],
+  contractor: ['trade / contractor', 'trade or contractor', 'contractor', 'trade'],
+  percentComplete: ['percent complete', 'percentage complete', 'percent'],
+  status: ['status'],
+  priority: ['priority'],
+  notes: ['notes', 'note'],
+  nextAction: ['next action'],
+};
+
 const GUIDED_FIELD_NAMES: readonly DAVETaskFillFieldName[] = [
   'taskName',
   'itemType',
@@ -208,8 +225,19 @@ export function DAVETaskFillAssistant({
     setGuidedError(null);
   }
 
-  function saveGuidedAnswer() {
-    const result = guidedPatchForAnswer(currentGuidedField, guidedAnswer, {
+  function applyGuidedAnswer(rawAnswer: string, advance: boolean) {
+    const answer = normalizeDAVETaskGuidedVoiceAnswer(currentGuidedField, rawAnswer);
+    if (guidedAnswerRequestsSkip(answer)) {
+      if (currentGuidedQuestion.required) {
+        setGuidedAnswer('');
+        setGuidedError(`${FIELD_LABELS[currentGuidedField]} is required and cannot be skipped.`);
+        return false;
+      }
+      skipGuidedAnswer();
+      return true;
+    }
+    setGuidedAnswer(answer);
+    const result = guidedPatchForAnswer(currentGuidedField, answer, {
       projectNames: candidateProjects,
       locationNames: candidateLocations,
       ownerNames,
@@ -220,7 +248,7 @@ export function DAVETaskFillAssistant({
     });
     if (result.error) {
       setGuidedError(result.error);
-      return;
+      return false;
     }
     if (Object.keys(result.patch).length > 0) onApply(result.patch);
     setGuidedSkipped(previous => {
@@ -228,11 +256,19 @@ export function DAVETaskFillAssistant({
       next.delete(currentGuidedField);
       return next;
     });
-    goToGuidedQuestion(guidedIndex + 1);
+    if (advance) goToGuidedQuestion(guidedIndex + 1);
+    return true;
+  }
+
+  function saveGuidedAnswer() {
+    applyGuidedAnswer(guidedAnswer, true);
   }
 
   function skipGuidedAnswer() {
     if (currentGuidedQuestion.required) return;
+    onApply({ [currentGuidedField]: '' } as DAVETaskFillPatch);
+    setGuidedAnswer('');
+    setGuidedError(null);
     setGuidedSkipped(previous => new Set(previous).add(currentGuidedField));
     goToGuidedQuestion(guidedIndex + 1);
   }
@@ -345,6 +381,10 @@ export function DAVETaskFillAssistant({
                   {currentGuidedQuestion.required ? 'Required' : 'Optional'}
                 </Text>
               </View>
+              <View style={styles.guidedReadyBanner} accessible accessibilityLabel={`ECOS is ready for ${FIELD_LABELS[currentGuidedField]}`}>
+                <Ionicons name="mic-outline" size={18} color={colors.primary} />
+                <Text style={styles.guidedReadyText}>ECOS is ready for: {FIELD_LABELS[currentGuidedField]}</Text>
+              </View>
               <Text style={styles.guidedQuestion}>{currentGuidedQuestion.question}</Text>
               <Text style={styles.guidedFieldLabel}>{FIELD_LABELS[currentGuidedField]}</Text>
               {guidedOptions.length > 0 ? (
@@ -394,7 +434,7 @@ export function DAVETaskFillAssistant({
                 accessibilityLabel={`Record answer for ${FIELD_LABELS[currentGuidedField]}`}
               >
                 <Ionicons name="mic-outline" size={18} color={colors.primary} />
-                <Text style={styles.secondaryButtonText}>Record Answer</Text>
+                <Text style={styles.secondaryButtonText}>Record {FIELD_LABELS[currentGuidedField]}</Text>
               </TouchableOpacity>
               <View style={styles.guidedNavigation}>
                 {guidedIndex > 0 ? (
@@ -414,7 +454,7 @@ export function DAVETaskFillAssistant({
                     accessibilityRole="button"
                     accessibilityLabel={`Skip optional ${FIELD_LABELS[currentGuidedField]}`}
                   >
-                    <Text style={styles.secondaryButtonText}>Not Applicable</Text>
+                    <Text style={styles.secondaryButtonText}>Skip</Text>
                   </TouchableOpacity>
                 ) : null}
                 <TouchableOpacity
@@ -615,14 +655,16 @@ export function DAVETaskFillAssistant({
         title={voicePurpose === 'guided' ? `Answer: ${FIELD_LABELS[currentGuidedField]}` : 'Record Task Instruction'}
         prompt={voicePurpose === 'guided' ? currentGuidedQuestion.question : 'Describe the task fields to fill'}
         guidance={voicePurpose === 'guided'
-          ? 'Give one clear answer. You can edit the transcript before saving it.'
+          ? `Say “${FIELD_LABELS[currentGuidedField]},” then the answer, or say only the answer. For an optional field, say “skip” to leave it blank. Tap Stop & Continue when finished.`
           : 'Include only what you want to add or change. You can edit the transcript before review.'}
-        continueLabel="Use Transcript"
+        continueLabel={voicePurpose === 'guided' ? 'Retry Answer' : 'Use Transcript'}
+        captureLabel={voicePurpose === 'guided' ? FIELD_LABELS[currentGuidedField] : undefined}
+        autoStartRecording={voicePurpose === 'guided'}
+        autoSubmitOnStop={voicePurpose === 'guided'}
         showWalkContext={false}
         onMemoryReady={result => {
           if (voicePurpose === 'guided') {
-            setGuidedAnswer(result.transcript.trim());
-            setGuidedError(null);
+            applyGuidedAnswer(result.transcript, true);
           } else {
             editInstruction(appendDAVETaskFillInstruction(instruction, result.transcript));
           }
@@ -639,6 +681,66 @@ export function DAVETaskFillAssistant({
 function guidedValue(values: DAVETaskFillValues, fieldName: DAVETaskFillFieldName): string {
   const value = values[fieldName];
   return value === null || value === undefined ? '' : String(value);
+}
+
+export function normalizeDAVETaskGuidedVoiceAnswer(
+  fieldName: DAVETaskFillFieldName,
+  rawAnswer: string,
+): string {
+  const answer = rawAnswer.trim();
+  const promptPhrases = fieldName === 'taskName'
+    ? [
+        'the name of this task should be',
+        'the name of the task should be',
+        'this task should be called',
+        'the task should be called',
+        'task name should be',
+        'name this task',
+      ]
+    : fieldName === 'itemType'
+      ? [
+          'the project item type should be',
+          'project item type should be',
+          'the item type should be',
+        ]
+      : [];
+  for (const phrase of promptPhrases) {
+    const escapedPhrase = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const promptedAnswer = answer.match(new RegExp(
+      `^${escapedPhrase}\\s*(?:[:=,;–—-]\\s*)?(.+)$`,
+      'i',
+    ));
+    if (promptedAnswer) return cleanGuidedTitleAnswer(fieldName, promptedAnswer[1]);
+  }
+  for (const label of GUIDED_VOICE_LABELS[fieldName]) {
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const labeledAnswer = answer.match(new RegExp(
+      `^${escapedLabel}\\s*(?:(?:is|equals|should be|dash|hyphen)\\s+|[:=,;–—-]\\s*)(.*)$`,
+      'i',
+    ));
+    if (labeledAnswer) return cleanGuidedTitleAnswer(fieldName, labeledAnswer[1]);
+  }
+  return answer;
+}
+
+function cleanGuidedTitleAnswer(fieldName: DAVETaskFillFieldName, value: string): string {
+  const answer = value.trim();
+  if (fieldName !== 'taskName') return answer;
+  return answer.replace(/[.!?]+$/g, '').trim();
+}
+
+export function guidedAnswerRequestsSkip(rawAnswer: string): boolean {
+  const answer = rawAnswer.trim().toLocaleLowerCase().replace(/[.!]+$/g, '').trim();
+  return [
+    'skip',
+    'skip it',
+    'not applicable',
+    'n/a',
+    'none',
+    'leave blank',
+    'leave it blank',
+    'blank',
+  ].includes(answer);
 }
 
 function guidedOptionsForField(
@@ -791,6 +893,8 @@ const styles = StyleSheet.create({
   guidedCard: { gap: spacing.sm },
   guidedProgressRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   guidedStep: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  guidedReadyBanner: { alignItems: 'center', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: radius.md, borderWidth: 2, flexDirection: 'row', gap: spacing.xs, justifyContent: 'center', minHeight: 48, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
+  guidedReadyText: { color: colors.primary, flexShrink: 1, fontSize: 15, fontWeight: '800', lineHeight: 20, textAlign: 'center' },
   requiredTag: { backgroundColor: colors.primarySoft, borderRadius: 999, color: colors.primary, fontSize: 12, fontWeight: '800', overflow: 'hidden', paddingHorizontal: spacing.sm, paddingVertical: 4 },
   optionalTag: { backgroundColor: colors.surfaceMuted, borderRadius: 999, color: colors.mutedText, fontSize: 12, fontWeight: '800', overflow: 'hidden', paddingHorizontal: spacing.sm, paddingVertical: 4 },
   guidedQuestion: { color: colors.text, fontSize: 20, fontWeight: '800', lineHeight: 27 },

@@ -41,12 +41,14 @@ assert(
     !bottomNav.includes('label="Projects"') &&
     !bottomNav.includes('label="Updates"') &&
     bottomNav.includes('label="Tasks"') &&
+    bottomNav.includes("primaryAssistantLabel = showAskECOS ? 'Ask ECOS' : 'Project actions'") &&
+    bottomNav.includes('onPress={openPrimaryAssistant}') &&
     bottomNav.includes('label="Reports"') &&
     !bottomNav.includes('label="Settings"') &&
     !bottomNav.includes('label="Capture"') &&
     !bottomNav.includes('label="Share"') &&
     (bottomNav.match(/<TabButton/g) || []).length === 3,
-  'Live bottom tabs must expose Overview, Tasks, and Reports while Settings remains reachable from Overview.',
+  'Live bottom actions must expose Overview, Tasks, one audience-gated Ask ECOS action, and Reports while Settings remains reachable from Overview.',
 );
 
 [

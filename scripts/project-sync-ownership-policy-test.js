@@ -189,5 +189,25 @@ assert(
   !/ownerId\??:/.test(saveProjectUpdateParams),
   'project update sync must not accept a caller-controlled owner id',
 );
+includes(
+  saveProjectUpdateParams,
+  'projectId: string;',
+  'field-update writes must require an immutable cloud project id',
+);
+includes(
+  service,
+  'project_id: canonicalProjectId',
+  'operational writes must bind the protected top-level project id',
+);
+includes(
+  service,
+  'projectId: canonicalProjectId',
+  'operational writes must bind the same project id inside JSON evidence',
+);
+includes(
+  service,
+  "'operational_project_identity_mismatch'",
+  'field-update writes must fail closed when the two project identities disagree',
+);
 
 console.log('Project sync ownership policy tests passed.');

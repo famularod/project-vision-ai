@@ -18,7 +18,14 @@ export function hasMatchingQueuedScheduleItemRevision(
   item: ScheduleItem,
   queue: readonly SyncQueueItem[],
 ): boolean {
-  return queue.some(queueItem => {
+  return Boolean(matchingQueuedScheduleItemRevision(item, queue));
+}
+
+function matchingQueuedScheduleItemRevision(
+  item: ScheduleItem,
+  queue: readonly SyncQueueItem[],
+): SyncQueueItem | null {
+  return queue.find(queueItem => {
     if (
       queueItem.entity !== 'schedule_item' ||
       queueItem.operation === 'delete'
@@ -46,7 +53,7 @@ export function hasMatchingQueuedScheduleItemRevision(
       JSON.stringify(queuedItem[field as keyof ScheduleItem]) ===
         JSON.stringify(item[field as keyof ScheduleItem])
     ));
-  });
+  }) ?? null;
 }
 
 export function scheduleItemRevisionForCloudRefresh(
@@ -54,9 +61,22 @@ export function scheduleItemRevisionForCloudRefresh(
   cloudItem: ScheduleItem,
   queue: readonly SyncQueueItem[],
 ): ScheduleItem {
-  return hasMatchingQueuedScheduleItemRevision(localItem, queue)
-    ? localItem
-    : cloudItem;
+  const queuedRevision = matchingQueuedScheduleItemRevision(localItem, queue);
+  if (!queuedRevision) return cloudItem;
+
+  const payload = queuedRevision.payload as ScheduleItemQueuePayload;
+  if (!Array.isArray(payload.changedFields)) return localItem;
+
+  return payload.changedFields.reduce<ScheduleItem>((rebased, field) => {
+    if (
+      typeof field === 'string' &&
+      Object.prototype.hasOwnProperty.call(localItem, field)
+    ) {
+      (rebased as Record<string, unknown>)[field] =
+        (localItem as unknown as Record<string, unknown>)[field];
+    }
+    return rebased;
+  }, { ...cloudItem });
 }
 
 function isScheduleItemRecord(value: unknown): value is ScheduleItem {

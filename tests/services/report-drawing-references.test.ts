@@ -28,6 +28,8 @@ function drawing(current: boolean, confidence: number): ReferenceDocument {
     projectName: '2321 Compliance Project',
     drawingNumber: 'A-101',
     drawingRevision: current ? '2' : '1',
+    drawingStatus: current ? 'For Construction' : 'Superseded',
+    extractionStatus: 'complete',
     extractedPages: [{
       pageNumber: 1,
       sheetNumber: 'A-101',

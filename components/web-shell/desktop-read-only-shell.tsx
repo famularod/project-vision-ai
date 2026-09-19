@@ -1,6 +1,6 @@
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useEffect, useMemo, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -29,7 +29,10 @@ import {
   DAVEWebTaskMutationError,
 } from '../../services/DAVEWebSupabaseClient';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
-import { groupDAVEWebDocuments } from '../../services/DAVEWebDocumentManagement';
+import {
+  daveWebDocumentDeletionIsProtected,
+  groupDAVEWebDocuments,
+} from '../../services/DAVEWebDocumentManagement';
 import {
   buildDAVEWebScheduleItem,
   createDAVEWebTaskId,
@@ -38,6 +41,7 @@ import {
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
 import {
+  buildDAVEProjectScheduleRollup,
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
@@ -68,6 +72,8 @@ import {
   daveWebReportSourceIsCurrent,
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
+  prepareDAVEWebLinkedDocument,
+  recoverDAVEWebPreparedUploadBytes,
   reportRecordFromDocument,
   validateDAVEWebBackup,
   type DAVEWebBackup,
@@ -78,14 +84,19 @@ import {
 } from '../../services/DAVEWebOperations';
 import { colors, spacing } from '../../theme';
 import { daysUntilDate } from '../../utils/date';
-import { PRODUCT_BRAND } from '../../product-brand';
+import { PRODUCT_BRAND, PRODUCT_RELEASE } from '../../product-brand';
 import { VitruviusBrandLockup } from '../vitruvius-brand-lockup';
 import { useDesktopAuth } from './desktop-auth-provider';
 import { DesktopConnectionStatus } from './desktop-connection-status';
 import { DesktopOverviewPage } from './desktop-overview-page';
 import { DesktopSchedulePage } from './desktop-schedule-page';
+import { DesktopAskECOSWorkspace } from './desktop-ask-ecos';
+import { DesktopDocumentOnboarding } from './desktop-document-onboarding';
+import { DesktopDocumentProofPreview } from './desktop-document-proof-preview';
 import { desktopSurfaces } from './desktop-surface-palette';
 import { ProjectControlsEditor } from '../project-controls-editor';
+import { FieldNotesWorkspace } from '../field-notes-workspace';
+import { desktopFieldNoteDataSource } from '../../services/FieldNoteDesktopDataSource';
 import { ScheduleTaskAreaSummaryPanel } from '../schedule-workspace-layout';
 import { buildVitruviusPortfolioImpact } from '../../services/VitruviusProjectControls';
 import { applyProjectControlTemplateToControls } from '../../services/ProjectControlTemplates';
@@ -97,6 +108,32 @@ import {
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
+import {
+  ECOSDocumentExtractionCancelledError,
+  extractECOSWebDocument,
+  type ECOSDocumentAnalysisProgress,
+} from '../../services/ECOSWebDocumentExtraction';
+import { buildECOSDocumentReadiness } from '../../services/ECOSDocumentReadiness';
+import { resolveECOSCustomerDocumentStatus } from '../../services/ECOSDocumentOnboarding';
+import type { ECOSDocumentCoverageSummary } from '../../services/ECOSDocumentCoverageSummary';
+import { buildECOSDocumentReindexPlan } from '../../services/ECOSDocumentReindexPlan';
+import { hasCompleteECOSDrawingVisualCoverage } from '../../services/ECOSDrawingVisualCoverage';
+import {
+  parseECOSDesktopDocumentProofFocus,
+  type ECOSDesktopDocumentProofFocus,
+} from '../../services/ECOSDesktopProofNavigation';
+import type { ECOSProjectIdentity } from '../../services/ECOSDocumentEvidenceBinding';
+import {
+  disconnectGoogleDriveSession,
+  downloadLinkedGoogleDriveDocument,
+  GOOGLE_DRIVE_LINK_MAX_BYTES,
+  GoogleDriveDocumentError,
+  googleDriveSessionIsAuthorized,
+  googleDriveWebConfiguration,
+  pickGoogleDrivePdf,
+  type GoogleDriveDownloadSession,
+  type GoogleDriveLinkedSource,
+} from '../../services/GoogleDriveWebProvider';
 import {
   desktopNavigationItems,
   desktopRouteIsActive,
@@ -127,6 +164,16 @@ const PAGE_COPY: Record<DesktopReadOnlyPage, ReadOnlyPageCopy> = {
     eyebrow: 'PROJECT CONTROL',
     title: 'Tasks',
     description: 'Plan and manage project work by project and area, with completed work kept in its own view.',
+  },
+  'field-notes': {
+    eyebrow: 'FIELD MEMORY',
+    title: 'Field Notes',
+    description: 'Quickly capture observations and reminders that are not yet part of a project or task.',
+  },
+  'ask-ecos': {
+    eyebrow: 'PROJECT INTELLIGENCE',
+    title: 'Ask ECOS',
+    description: 'Ask a project question and receive a concise answer tied to exact current evidence.',
   },
   schedule: {
     eyebrow: 'PLANNING',
@@ -264,7 +311,21 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
   const auth = useDesktopAuth();
   const pathname = usePathname();
   const router = useRouter();
-  const params = useLocalSearchParams<{ project?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    project?: string | string[];
+    proofDocument?: string | string[];
+    proofProjectId?: string | string[];
+    proofSourceSha256?: string | string[];
+    proofEvidenceVersion?: string | string[];
+    proofRevision?: string | string[];
+    proofPage?: string | string[];
+    proofRegion?: string | string[];
+    proofSheet?: string | string[];
+    proofX?: string | string[];
+    proofY?: string | string[];
+    proofWidth?: string | string[];
+    proofHeight?: string | string[];
+  }>();
   const { width } = useWindowDimensions();
   const { usesSidebar, compactContent } = desktopWorkspaceLayout(width);
   const snapshot = auth.snapshot!;
@@ -276,6 +337,23 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
   const selectedProject = requestedProject && projectNames.includes(requestedProject)
     ? requestedProject
     : null;
+  const proofFocus = useMemo(
+    () => parseECOSDesktopDocumentProofFocus(params),
+    [
+      params.proofDocument,
+      params.proofProjectId,
+      params.proofSourceSha256,
+      params.proofEvidenceVersion,
+      params.proofRevision,
+      params.proofHeight,
+      params.proofPage,
+      params.proofRegion,
+      params.proofSheet,
+      params.proofWidth,
+      params.proofX,
+      params.proofY,
+    ],
+  );
   const copy = PAGE_COPY[page];
   const [displayName, setDisplayName] = useState(() =>
     readVitruviusDesktopDisplayName(),
@@ -297,7 +375,21 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
   };
 
   const selectProject = (projectName: string | null) => {
-    router.setParams(projectName ? { project: projectName } : { project: undefined });
+    router.setParams({
+      project: projectName || undefined,
+      proofDocument: undefined,
+      proofProjectId: undefined,
+      proofSourceSha256: undefined,
+      proofEvidenceVersion: undefined,
+      proofRevision: undefined,
+      proofPage: undefined,
+      proofRegion: undefined,
+      proofSheet: undefined,
+      proofX: undefined,
+      proofY: undefined,
+      proofWidth: undefined,
+      proofHeight: undefined,
+    });
   };
 
   return (
@@ -391,6 +483,7 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
           key={desktopWorkspaceScopeKey(page, selectedProject)}
           page={page}
           selectedProject={selectedProject}
+          proofFocus={proofFocus}
           displayName={displayName}
           onSaveDisplayName={saveDisplayName}
         />
@@ -402,11 +495,13 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
 function DesktopPageData({
   page,
   selectedProject,
+  proofFocus,
   displayName,
   onSaveDisplayName,
 }: {
   page: DesktopReadOnlyPage;
   selectedProject: string | null;
+  proofFocus: ECOSDesktopDocumentProofFocus | null;
   displayName: string;
   onSaveDisplayName: (value: string) => string;
 }) {
@@ -431,6 +526,11 @@ function DesktopPageData({
       )
     : snapshot.projectUpdates;
   const documents = snapshot.referenceDocuments.filter(document => documentMatchesProjectScope(document, selectedScopes));
+  const projectIdentities = snapshot.projects.flatMap(project => {
+    const id = project.id?.trim() || '';
+    const name = project.name?.trim() || '';
+    return id && name ? [{ id, name }] : [];
+  });
   const photos = updates.flatMap(update => update.updateData.photos.map(photo => ({ update, photo })));
   if (page === 'overview') {
     return (
@@ -464,6 +564,36 @@ function DesktopPageData({
     );
   }
 
+  if (page === 'field-notes') {
+    return (
+      <FieldNotesWorkspace
+        ownerKey={auth.userEmail || 'authorized-desktop-user'}
+        projects={snapshot.projects.map(project => project.name)}
+        projectRecords={snapshot.projects.map(project => ({
+          id: project.id?.trim() || null,
+          name: project.name,
+        }))}
+        initialProjectName={selectedProject}
+        scopeProjectName={selectedProject}
+        dataSource={desktopFieldNoteDataSource}
+        presentation="desktop_inbox"
+      />
+    );
+  }
+
+  if (page === 'ask-ecos') {
+    const selectedProjectRecord = selectedProject
+      ? snapshot.projects.find(project => matchesProject(project.name, selectedProject)) || null
+      : null;
+    return (
+      <DesktopAskECOSWorkspace
+        projectId={selectedProjectRecord?.id || null}
+        projectName={selectedProjectRecord?.name || selectedProject}
+        onAsk={auth.askProjectQuestion}
+      />
+    );
+  }
+
   if (page === 'schedule') {
     return (
       <DesktopSchedulePage
@@ -487,8 +617,11 @@ function DesktopPageData({
       <Section title={`${documents.length} document${documents.length === 1 ? '' : 's'}`} detail="Upload, classify, version, and safely remove project documents from the shared record.">
         <DocumentManagementWorkspace
           documents={documents}
+          tasks={snapshot.scheduleItems}
           projects={snapshot.projects.map(project => project.name)}
+          projectIdentities={projectIdentities}
           selectedProject={selectedProject}
+          proofFocus={proofFocus}
         />
       </Section>
     );
@@ -654,6 +787,10 @@ function ProjectPortfolioCard({
 }) {
   const router = useRouter();
   const projectTasks = scheduleTasksForParentProject(project.name, [...tasks]);
+  const scheduleRollup = buildDAVEProjectScheduleRollup({
+    projectName: project.name,
+    items: [...tasks],
+  });
   const projectScopes = scheduleProjectScopeNames(project.name, [...tasks]);
   const projectUpdates = updates
     .filter(update =>
@@ -665,8 +802,8 @@ function ProjectPortfolioCard({
     )
     .sort(compareCloudUpdatesNewestFirst);
   const projectDocuments = documents.filter(document => documentMatchesProjectScope(document, projectScopes));
-  const completed = projectTasks.filter(taskIsComplete).length;
-  const open = projectTasks.length - completed;
+  const completed = scheduleRollup.completedCount;
+  const open = scheduleRollup.openCount;
   const overdue = projectTasks.filter(taskIsOverdue).length;
   const dueSoon = projectTasks.filter(task => {
     if (taskIsComplete(task)) return false;
@@ -674,7 +811,7 @@ function ProjectPortfolioCard({
     return days !== null && days >= 0 && days <= 7;
   }).length;
   const areaCount = uniqueOptions(projectTasks.map(task => task.locationName)).length;
-  const percent = projectTasks.length ? Math.round((completed / projectTasks.length) * 100) : 0;
+  const percent = scheduleRollup.percentComplete;
   const health = overdue ? 'At Risk' : open ? 'Active' : projectTasks.length ? 'Complete' : 'Needs Setup';
   const healthTone: 'good' | 'attention' | 'danger' | 'neutral' = overdue
     ? 'danger'
@@ -947,8 +1084,11 @@ function TaskEditingWorkspace({
     setPending(true);
     setNotice(null);
     try {
+      const selectedProjectId = editingTask?.projectId || auth.snapshot?.projects.find(project =>
+        matchesProject(project.name, draft.projectName),
+      )?.id || null;
       const item = buildDAVEWebScheduleItem({
-        draft,
+        draft: { ...draft, projectId: selectedProjectId },
         current: editingTask,
         id: editingTask?.id ?? createDAVEWebTaskId(),
         now: new Date().toISOString(),
@@ -1848,14 +1988,18 @@ function TaskEditor({
   };
 
   const updatePercentComplete = (value: string) => {
+    const normalizedValue = value.replace(/[^0-9]/g, '').slice(0, 3);
     setDraft(previous => {
-      const percentComplete = Number(value);
+      if (!normalizedValue) {
+        return { ...previous, percentComplete: '' };
+      }
+      const percentComplete = Number(normalizedValue);
       if (!Number.isFinite(percentComplete)) {
-        return { ...previous, percentComplete: value };
+        return { ...previous, percentComplete: normalizedValue };
       }
       return {
         ...previous,
-        percentComplete: value,
+        percentComplete: normalizedValue,
         status: previous.status === 'Waiting' && percentComplete < 100
           ? 'Waiting'
           : automaticTaskStatus(percentComplete),
@@ -2214,16 +2358,39 @@ function LabeledTextField({
   return (
     <View style={styles.fieldGroup}>
       <Text style={styles.fieldLabel}>{label} {optional ? <Text style={styles.optionalLabel}>(optional)</Text> : null}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor="#8A909C"
-        keyboardType={numeric ? 'number-pad' : 'default'}
-        inputMode={numeric ? 'numeric' : 'text'}
-        style={styles.input}
-        accessibilityLabel={label}
-      />
+      {numeric ? createElement('input', {
+        value,
+        onChange: (event: { currentTarget: { value: string } }) => onChangeText(event.currentTarget.value),
+        placeholder,
+        type: 'text',
+        inputMode: 'numeric',
+        pattern: '[0-9]*',
+        maxLength: 3,
+        'aria-label': label,
+        'data-testid': 'stable-web-numeric-input',
+        style: {
+          minHeight: 48,
+          border: `1px solid ${desktopSurfaces.border}`,
+          borderRadius: 12,
+          background: desktopSurfaces.input,
+          color: desktopSurfaces.text,
+          fontSize: 16,
+          padding: '0 16px',
+          fontFamily: 'inherit',
+          width: '100%',
+          boxSizing: 'border-box',
+          outlineColor: desktopSurfaces.accent,
+        },
+      }) : (
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor="#8A909C"
+          style={styles.input}
+          accessibilityLabel={label}
+        />
+      )}
     </View>
   );
 }
@@ -3332,21 +3499,48 @@ function SignedPhotoPreview({
 
 type DocumentStatusFilter = 'all' | 'current' | 'prior' | 'other';
 
+type DocumentReindexBatchProgress = Readonly<{
+  running: boolean;
+  total: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  currentDocumentName: string | null;
+  currentDocumentProgress: number;
+  currentDocumentStatus: string | null;
+  failures: readonly string[];
+}>;
+
+type DocumentCoverageSummaryState = Readonly<{
+  documentId: string;
+  status: 'idle' | 'loading' | 'ready' | 'failed';
+  summary: ECOSDocumentCoverageSummary | null;
+}>;
+
 function DocumentManagementWorkspace({
   documents,
+  tasks,
   projects,
+  projectIdentities,
   selectedProject,
+  proofFocus,
 }: {
   documents: readonly DAVEWebReferenceDocument[];
+  tasks: readonly DAVEWebScheduleItem[];
   projects: readonly string[];
+  projectIdentities: readonly ECOSProjectIdentity[];
   selectedProject: string | null;
+  proofFocus: ECOSDesktopDocumentProofFocus | null;
 }) {
   const auth = useDesktopAuth();
-  const { width } = useWindowDimensions();
+  const router = useRouter();
+  const { width, height } = useWindowDimensions();
   const compactWorkspace = width < 1120;
+  const documentPaneHeight = Math.max(520, height - 260);
   const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [driveSelecting, setDriveSelecting] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<DocumentStatusFilter>('all');
@@ -3367,6 +3561,12 @@ function DocumentManagementWorkspace({
   const [preparedFile, setPreparedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  const [reindexProgress, setReindexProgress] = useState<DocumentReindexBatchProgress | null>(null);
+  const driveConfiguration = useMemo(() => googleDriveWebConfiguration(), []);
+  const reindexPlan = useMemo(
+    () => selectedProject ? buildECOSDocumentReindexPlan(documents, selectedProject) : [],
+    [documents, selectedProject],
+  );
   const groups = useMemo(() => groupDAVEWebDocuments(documents), [documents]);
   const categoryOptions = useMemo(
     () => uniqueOptions(documents.map(document => document.category)),
@@ -3387,15 +3587,46 @@ function DocumentManagementWorkspace({
   const selectedDocument = selectedDocumentId
     ? documents.find(document => document.id === selectedDocumentId) ?? null
     : null;
+  const preparedFromDrive = preparedUpload?.document.sourceProvider === 'google_drive';
   const deleteCandidate = deleteCandidateId
     ? documents.find(document => document.id === deleteCandidateId) ?? null
     : null;
-  const protectedCurrentSchedule = Boolean(
-    deleteCandidate?.isCurrent && scheduleDocumentIsScheduleLike(deleteCandidate),
+  const protectedCurrentDocument = Boolean(
+    deleteCandidate && daveWebDocumentDeletionIsProtected(deleteCandidate),
+  );
+  const currentEvidenceDocument = Boolean(
+    deleteCandidate?.isCurrent && !protectedCurrentDocument,
   );
   const linkedTasksAreRevisionSafe = Boolean(
     deleteCandidate?.linkedScheduleItems.every(item => Boolean(item.cloudUpdatedAt)),
   );
+
+  const clearDocumentProofRoute = () => {
+    router.setParams({
+      proofDocument: undefined,
+      proofProjectId: undefined,
+      proofSourceSha256: undefined,
+      proofEvidenceVersion: undefined,
+      proofRevision: undefined,
+      proofPage: undefined,
+      proofRegion: undefined,
+      proofSheet: undefined,
+      proofX: undefined,
+      proofY: undefined,
+      proofWidth: undefined,
+      proofHeight: undefined,
+    });
+  };
+
+  const selectDocument = (document: DAVEWebReferenceDocument) => {
+    if (proofFocus && proofFocus.documentId !== document.id) clearDocumentProofRoute();
+    setSelectedDocumentId(document.id);
+  };
+
+  const closeSelectedDocument = () => {
+    if (proofFocus) clearDocumentProofRoute();
+    setSelectedDocumentId(null);
+  };
 
   useEffect(() => {
     if (selectedDocumentId && !documents.some(document => document.id === selectedDocumentId)) {
@@ -3403,31 +3634,103 @@ function DocumentManagementWorkspace({
     }
   }, [documents, selectedDocumentId]);
 
-  async function chooseUploadFile(file: File | null) {
+  useEffect(() => {
+    if (!proofFocus || !documents.some(document => document.id === proofFocus.documentId)) return;
+    setSearchQuery('');
+    setStatusFilter('all');
+    setCategoryFilter('all');
+    setSelectedDocumentId(proofFocus.documentId);
+  }, [documents, proofFocus?.documentId, proofFocus?.pageNumber, proofFocus?.regionId]);
+
+  async function chooseUploadFile(
+    file: File | null,
+    linkedSource: GoogleDriveLinkedSource | null = null,
+    linkedBytes: ArrayBuffer | null = null,
+  ) {
     if (!file) return;
     setNotice(null);
     try {
-      const bytes = await file.arrayBuffer();
-      const textReadable = /(?:csv|json|text|tab-separated|plain)/i.test(file.type) || /\.(?:csv|json|tsv|txt)$/i.test(file.name);
-      const contents = textReadable ? await file.text() : null;
+      if (uploadProjects.length === 0) {
+        throw new Error('Choose at least one project before selecting the source file.');
+      }
+      if (normalizedName(uploadCategory) === 'drawing') {
+        const missing = [
+          drawingNumber.trim() ? null : 'drawing number',
+          drawingRevision.trim() ? null : 'revision',
+          drawingStatus ? null : 'issue status',
+        ].filter(Boolean);
+        if (missing.length > 0) {
+          throw new Error(`Complete the ${missing.join(', ')} before selecting the drawing file.`);
+        }
+      }
+      const bytes = linkedBytes ?? await file.arrayBuffer();
+      const isDrawingUpload = normalizedName(uploadCategory) === 'drawing';
+      const candidateAreaNames = uniqueOptions(tasks
+        .filter(task => uploadProjects.some(project =>
+          normalizedName(task.scheduleProjectName || task.projectName) === normalizedName(project),
+        ))
+        .map(task => task.locationName));
+      // Drawing preparation belongs to the hosted worker. File selection must
+      // stay fast and must not make the browser page the indexing engine.
+      const extraction = isDrawingUpload
+        ? null
+        : await extractECOSWebDocument({ file, bytes, candidateAreaNames });
+      const contents = extraction?.extractedText || null;
       const fingerprint = await fingerprintBytes(bytes);
       const replacement = documents.find(document => document.id === replacementId) || null;
-      const prepared = prepareDAVEWebDocumentUpload({
+      const preparationInput = {
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
         sizeBytes: file.size,
         contents,
+        extractedPages: extraction?.extractedPages || [],
         category: uploadCategory,
         projectNames: uploadProjects,
         projects,
         fingerprint,
-        versionGroupId: replacement?.webVersionGroupId || replacement?.id || null,
-      });
+        versionGroupId:
+          replacement?.webVersionGroupId || replacement?.drawingNumber?.trim() || replacement?.id || null,
+      };
+      const prepared = linkedSource
+        ? prepareDAVEWebLinkedDocument({
+            ...preparationInput,
+            externalSource: linkedSource,
+            maximumBytes: GOOGLE_DRIVE_LINK_MAX_BYTES,
+          })
+        : prepareDAVEWebDocumentUpload(preparationInput);
+      const preparedWithIntelligence = {
+        ...prepared,
+        document: isDrawingUpload
+          ? {
+              ...prepared.document,
+              extractionStatus: 'pending' as const,
+              extractionMethod: null,
+              extractedText: null,
+              extractedPages: [],
+              sourcePageCount: null,
+              searchablePageCount: 0,
+              indexedContentSha256: null,
+            }
+          : {
+              ...prepared.document,
+              ...extraction,
+              indexedContentSha256: fingerprint,
+            },
+        reviewMessage: isDrawingUpload
+          ? `${prepared.reviewMessage} Vitruvius will prepare and verify every drawing page in the background after upload.`
+          : extraction?.extractionStatus === 'complete'
+            ? `${prepared.reviewMessage} ${extraction.extractedPages?.length || 0} page${extraction.extractedPages?.length === 1 ? '' : 's'} indexed for ECOS answers and citations.`
+            : extraction?.extractionStatus === 'partial'
+              ? `${prepared.reviewMessage} Document indexing completed with limitations.`
+              : extraction?.extractionStatus === 'not_supported'
+                ? `${prepared.reviewMessage} This file type will be stored, but ECOS cannot search it.`
+                : `${prepared.reviewMessage} ECOS indexing did not finish; retry indexing before making this document current.`,
+      };
       setPreparedUpload(normalizedName(uploadCategory) === 'drawing'
         ? {
-            ...prepared,
+            ...preparedWithIntelligence,
             document: {
-              ...prepared.document,
+              ...preparedWithIntelligence.document,
               drawingNumber: drawingNumber.trim() || null,
               drawingRevision: drawingRevision.trim() || null,
               drawingDiscipline: drawingDiscipline.trim() || null,
@@ -3435,7 +3738,7 @@ function DocumentManagementWorkspace({
               drawingIssuedAt: drawingIssuedAt.trim() || null,
             },
           }
-        : prepared);
+        : preparedWithIntelligence);
       setPreparedBytes(bytes);
       setPreparedFile(file);
     } catch (error) {
@@ -3446,15 +3749,60 @@ function DocumentManagementWorkspace({
     }
   }
 
+  async function chooseGoogleDriveFile() {
+    if (driveSelecting || uploading) return;
+    setDriveSelecting(true);
+    setNotice(null);
+    try {
+      const picked = await pickGoogleDrivePdf();
+      await chooseUploadFile(picked.file, picked.source, picked.bytes);
+    } catch (error) {
+      if (error instanceof GoogleDriveDocumentError && error.code === 'cancelled') return;
+      setPreparedUpload(null);
+      setPreparedBytes(null);
+      setPreparedFile(null);
+      setNotice({
+        tone: 'danger',
+        text: error instanceof Error ? error.message : 'The Google Drive file could not be selected.',
+      });
+    } finally {
+      setDriveSelecting(false);
+    }
+  }
+
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
     setUploading(true);
     setUploadProgress(0);
     setNotice(null);
     try {
+      if (preparedUpload.document.sourceProvider === 'google_drive') {
+        await auth.linkDocument(
+          preparedUpload,
+          preparedBytes,
+          preparedFile,
+          fraction => setUploadProgress(Math.round(fraction * 100)),
+        );
+        setNotice({
+          tone: 'good',
+          text: 'Google Drive document linked. The original remains in Drive, and Vitruvius saved a protected processing copy so ECOS can finish in the background.',
+        });
+        setPreparedUpload(null);
+        setPreparedBytes(null);
+        setPreparedFile(null);
+        setUploadOpen(false);
+        setReplacementId('');
+        return;
+      }
+      const uploadBytes = await recoverDAVEWebPreparedUploadBytes({
+        bytes: preparedBytes,
+        file: preparedFile,
+        expectedSizeBytes: preparedUpload.document.sizeBytes || preparedFile.size,
+      });
+      if (uploadBytes !== preparedBytes) setPreparedBytes(uploadBytes);
       await auth.uploadDocument(
         preparedUpload,
-        preparedBytes,
+        uploadBytes,
         preparedFile,
         fraction => setUploadProgress(Math.round(fraction * 100)),
       );
@@ -3462,7 +3810,9 @@ function DocumentManagementWorkspace({
         tone: 'good',
         text: preparedUpload.scheduleItems.length > 0
           ? `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.`
-          : 'Document uploaded and classified in the shared project record.',
+          : normalizedName(preparedUpload.document.category) === 'drawing'
+            ? 'Drawing uploaded. Vitruvius is preparing it in the background; it will remain unavailable to Ask ECOS until preparation passes and you make this exact revision current.'
+            : 'Document uploaded and classified in the shared project record.',
       });
       setPreparedUpload(null);
       setPreparedBytes(null);
@@ -3478,12 +3828,273 @@ function DocumentManagementWorkspace({
   }
 
   async function makeCurrent(document: DAVEWebReferenceDocument) {
-    if (uploading || document.linkedScheduleItems.length === 0) return;
+    if (uploading) return;
+    const isSchedule = scheduleDocumentIsScheduleLike(document);
+    const readiness = buildECOSDocumentReadiness(document);
+    if (isSchedule && document.linkedScheduleItems.length === 0) {
+      setNotice({ tone: 'danger', text: 'Review and save the imported schedule tasks before making this schedule current.' });
+      return;
+    }
+    if (!isSchedule && !readiness.canMakeCurrent) {
+      setNotice({ tone: 'danger', text: readiness.detail });
+      return;
+    }
     setUploading(true);
     setNotice(null);
     try {
-      await auth.setCurrentSchedule(document);
-      setNotice({ tone: 'good', text: `“${document.name}” is now the current schedule. The prior schedule remains available as history.` });
+      if (isSchedule) await auth.setCurrentSchedule(document);
+      else await auth.setCurrentDocument(document);
+      setNotice({
+        tone: 'good',
+        text: isSchedule
+          ? `“${document.name}” is now the current schedule. The prior schedule remains available as history.`
+          : `“${document.name}” is now current. Vitruvius will use it only after the hosted index confirms this exact source, project, and revision. Prior revisions remain available as history.`,
+      });
+    } catch (error) {
+      setNotice({ tone: 'danger', text: documentMutationMessage(error) });
+      await auth.refreshSnapshot();
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function performDocumentReindex(
+    document: DAVEWebReferenceDocument,
+    driveSession: GoogleDriveDownloadSession | null = null,
+    onProgress?: (fraction: number) => void,
+    onAnalysisProgress?: (progress: ECOSDocumentAnalysisProgress) => void,
+  ) {
+    const storagePath = document.storagePath?.trim() || '';
+    const linkedFromDrive = document.sourceProvider === 'google_drive' && Boolean(document.externalSource);
+    if (!storagePath && !linkedFromDrive) {
+      throw new Error('The protected source file is unavailable. Upload the original file again.');
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000);
+    let indexJobId: string | null = null;
+    try {
+      let file: File;
+      let bytes: ArrayBuffer;
+      let refreshedDriveSource: GoogleDriveLinkedSource | null = null;
+      if (document.sourceProvider === 'google_drive' && document.externalSource) {
+        const picked = driveSession
+          ? await driveSession.download(document.externalSource)
+          : await downloadLinkedGoogleDriveDocument(document.externalSource);
+        file = picked.file;
+        bytes = picked.bytes;
+        refreshedDriveSource = picked.source;
+      } else {
+        const url = await auth.getArtifactUrl('project-documents', storagePath);
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) throw new Error(`The protected source returned HTTP ${response.status}.`);
+        const blob = await response.blob();
+        file = new File([blob], document.originalFileName, {
+          type: document.mimeType || blob.type || 'application/octet-stream',
+        });
+        bytes = await blob.arrayBuffer();
+      }
+      const fingerprint = await fingerprintBytes(bytes);
+      const drawingIndexJob = normalizedName(document.category) === 'drawing'
+        ? await auth.beginOrResumeDocumentIndexJob({
+            documentId: document.id,
+            sourceSha256: fingerprint,
+            sourcePageCount: Math.max(1, document.sourcePageCount || document.extractedPages?.length || 1),
+          })
+        : null;
+      indexJobId = drawingIndexJob?.id || null;
+      const projectNames = [document.projectName || '', ...(document.projectNames || [])]
+        .map(normalizedName)
+        .filter(Boolean);
+      const candidateAreaNames = uniqueOptions(tasks
+        .filter(task => projectNames.includes(normalizedName(task.scheduleProjectName || task.projectName)))
+        .map(task => task.locationName));
+      const extraction = await extractECOSWebDocument({
+        file,
+        bytes,
+        candidateAreaNames,
+        onProgress,
+        onAnalysisProgress,
+        resumePages: drawingIndexJob?.completedPages || [],
+        onPageExtracted: drawingIndexJob
+          ? page => auth.checkpointDocumentIndexPage({ jobId: drawingIndexJob.id, page })
+          : undefined,
+        analyzeDrawingPage: normalizedName(document.category) === 'drawing'
+          ? input => auth.analyzeDrawingPage({
+              ...input,
+              documentName: document.name || file.name,
+              discipline: document.drawingDiscipline?.trim() || null,
+            })
+          : undefined,
+      });
+      if (extraction.extractionStatus !== 'complete' && extraction.extractionStatus !== 'partial') {
+        throw new Error(extraction.extractionLimitations?.[0] || 'ECOS could not create a searchable index from this file.');
+      }
+      const drawingVisualCoverageComplete = !drawingIndexJob || (
+        (extraction.extractedPages?.length || 0) >= Math.max(1, extraction.sourcePageCount || 0) &&
+        (extraction.extractedPages ?? []).every(hasCompleteECOSDrawingVisualCoverage)
+      );
+      if (drawingIndexJob) {
+        if (!drawingVisualCoverageComplete) {
+          throw new Error(
+            extraction.extractionLimitations?.find(message => message.includes('visual coverage remains incomplete')) ||
+            'One or more drawing pages still require high-resolution visual analysis.',
+          );
+        }
+        await auth.setDocumentIndexJobStatus({ jobId: drawingIndexJob.id, status: 'ready' });
+        // Save only compact source/readiness metadata before the transactional
+        // commit. The verified page checkpoints stay in dedicated tables, so
+        // a large drawing never has to cross the network as one record.
+        await auth.updateDocument({
+          ...document,
+          ...(refreshedDriveSource ? { externalSource: refreshedDriveSource } : {}),
+          ...extraction,
+          extractedText: null,
+          extractedPages: [],
+          extractionStatus: 'pending',
+          searchablePageCount: 0,
+          webFileFingerprint: fingerprint,
+          indexedContentSha256: fingerprint,
+        });
+        await auth.commitDocumentIndexJob({
+          jobId: drawingIndexJob.id,
+          extractionMethod: extraction.extractionMethod,
+        });
+      } else {
+        await auth.updateDocument({
+          ...document,
+          ...(refreshedDriveSource ? { externalSource: refreshedDriveSource } : {}),
+          ...extraction,
+          webFileFingerprint: fingerprint,
+          indexedContentSha256: fingerprint,
+        });
+      }
+    } catch (error) {
+      if (indexJobId) {
+        await auth.setDocumentIndexJobStatus({
+          jobId: indexJobId,
+          status: 'failed',
+          failureMessage: error instanceof Error ? error.message : 'The index update did not finish.',
+        }).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function reindexDocument(document: DAVEWebReferenceDocument) {
+    if (uploading) return;
+    setUploading(true);
+    setNotice(null);
+    setReindexProgress(null);
+    try {
+      await performDocumentReindex(document);
+      setNotice({ tone: 'good', text: `“${document.name}” completed the manual legacy browser re-index fallback.` });
+    } catch (error) {
+      setNotice({ tone: 'danger', text: documentReindexMessage(error) });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function requestHostedDocumentPreparation(requestedPlan: readonly DAVEWebReferenceDocument[] = reindexPlan) {
+    if (uploading || requestedPlan.length === 0) return;
+    const plan = [...requestedPlan];
+    let succeeded = 0;
+    let failed = 0;
+    let cancelled = false;
+    const failures: string[] = [];
+    setUploading(true);
+    setNotice(null);
+    setReindexProgress({
+      running: true,
+      total: plan.length,
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      currentDocumentName: plan[0]?.name || null,
+      currentDocumentProgress: 0,
+      currentDocumentStatus: 'Requesting background preparation.',
+      failures: [],
+    });
+    try {
+      for (let index = 0; index < plan.length; index += 1) {
+        const document = plan[index];
+        setReindexProgress({
+          running: true,
+          total: plan.length,
+          processed: index,
+          succeeded,
+          failed,
+          currentDocumentName: document.name,
+          currentDocumentProgress: 0,
+          currentDocumentStatus: 'Requesting background preparation.',
+          failures: [...failures],
+        });
+        try {
+          await auth.enqueueDocumentPreparation(document.id);
+          succeeded += 1;
+        } catch (error) {
+          if (error instanceof ECOSDocumentExtractionCancelledError) {
+            cancelled = true;
+            break;
+          }
+          failed += 1;
+          failures.push(`${document.name}: ${documentReindexMessage(error)}`);
+        }
+        setReindexProgress({
+          running: true,
+          total: plan.length,
+          processed: index + 1,
+          succeeded,
+          failed,
+          currentDocumentName: plan[index + 1]?.name || null,
+          currentDocumentProgress: 0,
+          currentDocumentStatus: plan[index + 1] ? 'Requesting background preparation.' : null,
+          failures: [...failures],
+        });
+      }
+      if (!cancelled) {
+        setNotice(failed === 0
+          ? { tone: 'good', text: `Background preparation was requested for ${succeeded} project document${succeeded === 1 ? '' : 's'}. You can leave this page.` }
+          : {
+              tone: 'danger',
+              text: 'Some documents are temporarily unavailable. Completed work was saved, and Vitruvius will continue unfinished preparation automatically.',
+            });
+      }
+    } catch (error) {
+      setNotice({ tone: 'danger', text: documentReindexMessage(error) });
+    } finally {
+      setReindexProgress(current => current ? {
+        ...current,
+        running: false,
+        processed: succeeded + failed,
+        succeeded,
+        failed,
+        currentDocumentName: null,
+        currentDocumentProgress: 1,
+        currentDocumentStatus: null,
+        failures: [...failures],
+      } : null);
+      setUploading(false);
+    }
+  }
+
+  async function saveDocumentDetails(
+    document: DAVEWebReferenceDocument,
+    next: Partial<ReferenceDocument>,
+  ) {
+    if (uploading) return;
+    setUploading(true);
+    setNotice(null);
+    try {
+      await auth.updateDocument({ ...document, ...next } as DAVEWebReferenceDocument);
+      setNotice({
+        tone: 'good',
+        text: document.isCurrent
+          ? `“${document.name}” document details were updated. The current ECOS source now uses the revised information.`
+          : `“${document.name}” document details were updated. Review ECOS readiness before making it current.`,
+      });
     } catch (error) {
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
       await auth.refreshSnapshot();
@@ -3493,7 +4104,7 @@ function DocumentManagementWorkspace({
   }
 
   async function confirmDelete(deleteLinkedTasks: boolean) {
-    if (!deleteCandidate || protectedCurrentSchedule || deleting) return;
+    if (!deleteCandidate || protectedCurrentDocument || deleting) return;
     setDeleting(true);
     setNotice(null);
     try {
@@ -3505,7 +4116,9 @@ function DocumentManagementWorkspace({
         tone: 'good',
         text: taskCount > 0
           ? `Document and ${taskCount} linked task${taskCount === 1 ? '' : 's'} deleted and protected from returning.`
-          : 'Document deleted and protected from returning on another device.',
+          : deleteCandidate.sourceProvider === 'google_drive'
+            ? 'Document removed from Vitruvius and protected from returning on another device. The original Google Drive file was not deleted.'
+            : 'Document and its managed ECOS index were deleted and protected from returning on another device.',
       });
     } catch (error) {
       setNotice({ tone: 'danger', text: documentMutationMessage(error) });
@@ -3522,19 +4135,30 @@ function DocumentManagementWorkspace({
         { icon: 'time-outline', label: 'Prior Versions', value: groups.priorScheduleVersions.length, tone: 'neutral' },
         { icon: 'checkbox-outline', label: 'Linked Tasks', value: documents.reduce((total, document) => total + document.linkedScheduleItems.length, 0) },
       ]} />
-      <View style={styles.taskActionRow}>
-        <Pressable
-          style={({ pressed }) => [styles.primaryButton, styles.addTaskButton, pressed && styles.buttonPressed]}
-          onPress={() => setUploadOpen(current => !current)}
-          accessibilityRole="button"
-        >
-          <View style={styles.buttonLabelRow}>
-            <Ionicons name={uploadOpen ? 'close-circle-outline' : 'cloud-upload-outline'} size={20} color={desktopSurfaces.onAccent} />
-            <Text style={styles.primaryButtonText}>{uploadOpen ? 'Close Upload' : 'Upload Document'}</Text>
-          </View>
-        </Pressable>
-        <Text style={styles.taskSyncHint}>Files up to 50 MB are saved in protected project storage. Large files resume after interruption.</Text>
-      </View>
+      <DesktopDocumentOnboarding
+        documents={documents}
+        uploadOpen={uploadOpen}
+        preparationPendingCount={reindexPlan.length}
+        progress={reindexProgress ? {
+          running: reindexProgress.running,
+          total: reindexProgress.total,
+          processed: reindexProgress.processed,
+          failed: reindexProgress.failed,
+          currentDocumentName: reindexProgress.currentDocumentName,
+          currentDocumentProgress: reindexProgress.currentDocumentProgress,
+        } : null}
+        disabled={uploading}
+        onAddDocuments={() => setUploadOpen(true)}
+        onCloseAddDocuments={() => setUploadOpen(false)}
+        onReviewExceptions={() => {
+          const exception = documents.find(document => {
+            const status = resolveECOSCustomerDocumentStatus(document);
+            return status === 'Needs Review' || status === 'Reconnect Files';
+          });
+          if (exception) setSelectedDocumentId(exception.id);
+        }}
+        onContinuePreparation={() => { void requestHostedDocumentPreparation(); }}
+      />
 
       {uploadOpen ? (
         <View style={styles.editorCard}>
@@ -3623,15 +4247,44 @@ function DocumentManagementWorkspace({
               <LabeledTextField label="Issue date" value={drawingIssuedAt} onChangeText={setDrawingIssuedAt} placeholder="YYYY-MM-DD" />
             </View>
           ) : null}
-          <WebFilePicker
-            label="Choose file"
-            accept=".pdf,.csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx"
-            onFile={file => { void chooseUploadFile(file); }}
-          />
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>File source</Text>
+            <Text style={styles.sectionDetail}>Choose one source. Google Drive keeps the original PDF in Drive; Vitruvius saves a protected processing copy so ECOS can continue after you leave this page.</Text>
+            <View style={styles.optionRow}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.secondaryButton,
+                  pressed && styles.buttonPressed,
+                  (!driveConfiguration.configured || driveSelecting || uploading || normalizedName(uploadCategory) === 'schedules') && styles.buttonDisabled,
+                ]}
+                onPress={() => { void chooseGoogleDriveFile(); }}
+                disabled={!driveConfiguration.configured || driveSelecting || uploading || normalizedName(uploadCategory) === 'schedules'}
+                accessibilityRole="button"
+                accessibilityLabel="Choose a PDF from Google Drive"
+              >
+                <View style={styles.buttonLabelRow}>
+                  {driveSelecting ? <ActivityIndicator color={desktopSurfaces.accent} /> : <Ionicons name="logo-google" size={18} color={desktopSurfaces.accent} />}
+                  <Text style={styles.secondaryButtonText}>{driveSelecting ? 'Connecting to Drive…' : 'Link from Google Drive'}</Text>
+                </View>
+              </Pressable>
+            </View>
+            {!driveConfiguration.configured ? (
+              <Text style={styles.errorText}>Google Drive is temporarily unavailable. Upload a copy from this computer, or contact Vitruvius Support.</Text>
+            ) : normalizedName(uploadCategory) === 'schedules' ? (
+              <Text style={styles.dataMeta}>Schedule imports continue to use protected upload so their task review and rollback controls remain intact.</Text>
+            ) : null}
+            <Text style={styles.fieldLabel}>Or upload a copy to Vitruvius</Text>
+            <WebFilePicker
+              label="Choose file from this computer"
+              accept=".pdf,.csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
+              onFile={file => { void chooseUploadFile(file); }}
+            />
+          </View>
           {preparedUpload ? (
             <View style={styles.uploadReview}>
-              <Text style={styles.cardTitle}>Review before upload</Text>
+              <Text style={styles.cardTitle}>{preparedFromDrive ? 'Review before linking' : 'Review before upload'}</Text>
               <Text style={styles.dataDetail}>{preparedUpload.document.originalFileName} · {preparedUpload.document.category} · {formatFileSize(preparedUpload.document.sizeBytes || 0)}</Text>
+              {preparedFromDrive ? <Text style={styles.dataMeta}>Source: Google Drive · Original file stays in Drive</Text> : null}
               <Text style={preparedUpload.extractionStatus === 'needs_manual_review' ? styles.errorText : styles.dataMeta}>{preparedUpload.reviewMessage}</Text>
               {preparedUpload.scheduleItems.length > 0 ? (
                 <View style={styles.list}>
@@ -3690,10 +4343,10 @@ function DocumentManagementWorkspace({
                   <View style={styles.buttonLabelRow}>
                     <ActivityIndicator color={desktopSurfaces.onAccent} />
                     <Text style={styles.primaryButtonText}>
-                      Uploading {uploadProgress ?? 0}%
+                      {preparedFromDrive ? 'Linking document…' : `Uploading ${uploadProgress ?? 0}%`}
                     </Text>
                   </View>
-                ) : <Text style={styles.primaryButtonText}>Upload Reviewed Document</Text>}
+                ) : <Text style={styles.primaryButtonText}>{preparedFromDrive ? 'Link Reviewed Document' : 'Upload Reviewed Document'}</Text>}
               </Pressable>
             </View>
           ) : null}
@@ -3711,11 +4364,17 @@ function DocumentManagementWorkspace({
           <View style={styles.dataGrow}>
             <Text style={styles.deleteConfirmTitle}>Delete “{deleteCandidate.name}”?</Text>
             <Text style={styles.dataDetail}>Imported {formatDateTime(deleteCandidate.importedAt)}.</Text>
-            {protectedCurrentSchedule ? (
-              <Text style={styles.errorText}>This is the current schedule and is protected. Keep it; obsolete prior versions can be deleted below.</Text>
+            {protectedCurrentDocument ? (
+              <Text style={styles.errorText}>This is the current project schedule and is protected. Make a replacement schedule current before deleting this version.</Text>
             ) : (
               <Text style={styles.dataMeta}>
+                {currentEvidenceDocument
+                  ? 'This document is currently used by ECOS. Deleting it removes its searchable index and citations immediately. '
+                  : ''}
                 A permanent cloud deletion marker prevents this document from returning on another signed-in device.
+                {deleteCandidate.sourceProvider === 'google_drive'
+                  ? ' The original Google Drive file will not be deleted.'
+                  : ' Its Vitruvius-managed file and ECOS index will be queued for cleanup.'}
                 {deleteCandidate.linkedScheduleItems.length > 0
                   ? ` This import has ${deleteCandidate.linkedScheduleItems.length} linked task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}.`
                   : ' No linked imported tasks were found.'}
@@ -3732,9 +4391,9 @@ function DocumentManagementWorkspace({
               disabled={deleting}
               accessibilityRole="button"
             >
-              <Text style={styles.secondaryButtonText}>{protectedCurrentSchedule ? 'Keep Current Schedule' : 'Cancel'}</Text>
+              <Text style={styles.secondaryButtonText}>{protectedCurrentDocument ? 'Keep Current Document' : 'Cancel'}</Text>
             </Pressable>
-            {!protectedCurrentSchedule ? (
+            {!protectedCurrentDocument ? (
               <Pressable
                 style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
                 onPress={() => { void confirmDelete(false); }}
@@ -3746,7 +4405,7 @@ function DocumentManagementWorkspace({
                 </Text>
               </Pressable>
             ) : null}
-            {!protectedCurrentSchedule && deleteCandidate.linkedScheduleItems.length > 0 && linkedTasksAreRevisionSafe ? (
+            {!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length > 0 && linkedTasksAreRevisionSafe ? (
               <Pressable
                 style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
                 onPress={() => { void confirmDelete(true); }}
@@ -3778,7 +4437,7 @@ function DocumentManagementWorkspace({
             accessibilitySubject="documents"
             options={[
               { value: 'all', label: 'All statuses' },
-              { value: 'current', label: 'Current schedule' },
+              { value: 'current', label: 'Current documents' },
               { value: 'prior', label: 'Prior schedules' },
               { value: 'other', label: 'Other documents' },
             ]}
@@ -3813,7 +4472,11 @@ function DocumentManagementWorkspace({
       </Text>
 
       <View style={styles.taskWorkspaceBody}>
-        <View style={styles.taskListPane}>
+        <View style={[
+          styles.taskListPane,
+          !compactWorkspace && styles.documentListPaneIndependent,
+          !compactWorkspace && { maxHeight: documentPaneHeight },
+        ]}>
           <View style={styles.documentGroups}>
             <DocumentGroup
               title="Current schedule"
@@ -3821,7 +4484,7 @@ function DocumentManagementWorkspace({
               documents={visibleGroups.currentSchedule}
               emptyText="No current schedule matches this view."
               selectedDocumentId={selectedDocumentId}
-              onSelect={document => setSelectedDocumentId(document.id)}
+              onSelect={selectDocument}
             />
             <DocumentGroup
               title={`Prior schedule versions (${visibleGroups.priorScheduleVersions.length})`}
@@ -3829,7 +4492,7 @@ function DocumentManagementWorkspace({
               documents={visibleGroups.priorScheduleVersions}
               emptyText="No prior schedule versions match this view."
               selectedDocumentId={selectedDocumentId}
-              onSelect={document => setSelectedDocumentId(document.id)}
+              onSelect={selectDocument}
               onDelete={openDeleteCandidate}
               onMakeCurrent={document => { void makeCurrent(document); }}
             />
@@ -3839,26 +4502,37 @@ function DocumentManagementWorkspace({
               documents={visibleGroups.otherDocuments}
               emptyText="No other documents match this view."
               selectedDocumentId={selectedDocumentId}
-              onSelect={document => setSelectedDocumentId(document.id)}
+              onSelect={selectDocument}
               onDelete={openDeleteCandidate}
+              onMakeCurrent={document => { void makeCurrent(document); }}
             />
           </View>
         </View>
-        <View style={[styles.taskInspectorPane, compactWorkspace && styles.taskInspectorPaneCompact]}>
+        <View style={[
+          styles.taskInspectorPane,
+          compactWorkspace && styles.taskInspectorPaneCompact,
+          !compactWorkspace && styles.documentInspectorPaneIndependent,
+          !compactWorkspace && { maxHeight: documentPaneHeight },
+        ]}>
           {selectedDocument ? (
             <DocumentDetailsPanel
               document={selectedDocument}
-              onClose={() => setSelectedDocumentId(null)}
+              projects={projects}
+              projectIdentities={projectIdentities}
+              proofFocus={proofFocus?.documentId === selectedDocument.id ? proofFocus : null}
+              onClose={closeSelectedDocument}
               onDelete={
-                selectedDocument.isCurrent && scheduleDocumentIsScheduleLike(selectedDocument)
+                daveWebDocumentDeletionIsProtected(selectedDocument)
                   ? undefined
                   : openDeleteCandidate
               }
               onMakeCurrent={
-                scheduleDocumentIsScheduleLike(selectedDocument) && !selectedDocument.isCurrent
+                !selectedDocument.isCurrent
                   ? document => { void makeCurrent(document); }
                   : undefined
               }
+              onReindex={document => { void reindexDocument(document); }}
+              onSaveDetails={(document, next) => { void saveDocumentDetails(document, next); }}
               pending={uploading}
             />
           ) : (
@@ -3973,7 +4647,7 @@ function DocumentList({
               <View style={styles.documentListStatus}>
                 <StatusBadge
                   label={documentStatusLabel(document)}
-                  tone={document.isCurrent && scheduleDocumentIsScheduleLike(document) ? 'good' : 'neutral'}
+                  tone={document.isCurrent ? 'good' : 'neutral'}
                 />
                 <Ionicons name="chevron-forward" size={18} color={colors.mutedText} />
               </View>
@@ -3983,16 +4657,24 @@ function DocumentList({
             <View style={styles.taskCardActions}>
               {onMakeCurrent ? (
                 <Pressable
-                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed, document.linkedScheduleItems.length === 0 && styles.buttonDisabled]}
+                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed, !documentCanBeMadeCurrent(document) && styles.buttonDisabled]}
                   onPress={() => onMakeCurrent(document)}
-                  disabled={document.linkedScheduleItems.length === 0}
+                  disabled={!documentCanBeMadeCurrent(document)}
                   accessibilityRole="button"
                 >
-                  <Text style={styles.secondaryButtonText}>{document.linkedScheduleItems.length > 0 ? 'Make Current Schedule' : 'Task Review Required'}</Text>
+                  <Text style={styles.secondaryButtonText}>{documentMakeCurrentLabel(document)}</Text>
                 </Pressable>
               ) : null}
               <Pressable style={({ pressed }) => [styles.taskDetailsButton, pressed && styles.buttonPressed]} onPress={() => onSelect(document)}>
                 <Text style={styles.taskDetailsButtonText}>View details</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
+                onPress={() => onDelete(document)}
+                accessibilityRole="button"
+                accessibilityLabel={`Delete ${document.name}`}
+              >
+                <Text style={styles.deleteText}>Delete</Text>
               </Pressable>
             </View>
           ) : null}
@@ -4005,18 +4687,89 @@ function DocumentList({
 
 function DocumentDetailsPanel({
   document,
+  projects,
+  projectIdentities,
+  proofFocus,
   onClose,
   onDelete,
   onMakeCurrent,
+  onReindex,
+  onSaveDetails,
   pending,
 }: {
   document: DAVEWebReferenceDocument;
+  projects: readonly string[];
+  projectIdentities: readonly ECOSProjectIdentity[];
+  proofFocus: ECOSDesktopDocumentProofFocus | null;
   onClose: () => void;
   onDelete?: (document: DAVEWebReferenceDocument) => void;
   onMakeCurrent?: (document: DAVEWebReferenceDocument) => void;
+  onReindex?: (document: DAVEWebReferenceDocument) => void;
+  onSaveDetails?: (document: DAVEWebReferenceDocument, next: Partial<ReferenceDocument>) => void;
   pending: boolean;
 }) {
+  const auth = useDesktopAuth();
   const isSchedule = scheduleDocumentIsScheduleLike(document);
+  const isDrawing = normalizedName(document.category) === 'drawing';
+  const hasLocalPageDetails = (document.extractedPages ?? []).length > 0;
+  const [coverageSummaryState, setCoverageSummaryState] = useState<DocumentCoverageSummaryState>({
+    documentId: document.id,
+    status: isDrawing && !hasLocalPageDetails ? 'loading' : 'idle',
+    summary: null,
+  });
+
+  useEffect(() => {
+    if (!isDrawing || hasLocalPageDetails) {
+      setCoverageSummaryState({ documentId: document.id, status: 'idle', summary: null });
+      return;
+    }
+    let active = true;
+    setCoverageSummaryState({ documentId: document.id, status: 'loading', summary: null });
+    void auth.loadDocumentCoverageSummary(document.id, document.cloudUpdatedAt || document.indexedAt || null)
+      .then(summary => {
+        if (!active) return;
+        setCoverageSummaryState({ documentId: document.id, status: 'ready', summary });
+      })
+      .catch(() => {
+        if (!active) return;
+        setCoverageSummaryState({ documentId: document.id, status: 'failed', summary: null });
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    auth.loadDocumentCoverageSummary,
+    document.cloudUpdatedAt,
+    document.id,
+    document.indexedAt,
+    hasLocalPageDetails,
+    isDrawing,
+  ]);
+
+  const activeCoverageState = coverageSummaryState.documentId === document.id
+    ? coverageSummaryState
+    : { documentId: document.id, status: 'loading' as const, summary: null };
+  const cloudSummary = activeCoverageState.status === 'ready'
+    ? activeCoverageState.summary
+    : null;
+  const deletionProtected = daveWebDocumentDeletionIsProtected(document);
+  const readiness = buildECOSDocumentReadiness(document, cloudSummary);
+  const coverageMetricStatus = hasLocalPageDetails ? 'ready' : activeCoverageState.status;
+  const visualCoverageValue = documentCoverageFactValue({
+    status: coverageMetricStatus,
+    count: readiness.fullVisualCoveragePageCount,
+    total: readiness.indexedPageCount,
+  });
+  const verifiedSheetMappingValue = documentCoverageFactValue({
+    status: coverageMetricStatus,
+    count: readiness.verifiedSheetPageCount,
+    total: readiness.indexedPageCount,
+  });
+  const sheetMappingConflictValue = documentCoverageConflictValue({
+    status: coverageMetricStatus,
+    count: readiness.conflictedSheetPageCount,
+    total: readiness.indexedPageCount,
+  });
   const projectLabel = documentProjectLabel(document);
   const sizeLabel = document.sizeBytes ? formatFileSize(document.sizeBytes) : 'Not recorded';
 
@@ -4030,15 +4783,68 @@ function DocumentDetailsPanel({
       <View style={styles.taskDetailsBadges}>
         <StatusBadge
           label={documentStatusLabel(document)}
-          tone={document.isCurrent && isSchedule ? 'good' : 'neutral'}
+          tone={document.isCurrent ? 'good' : 'neutral'}
         />
         <StatusBadge label={document.category} tone="neutral" />
       </View>
+      <DesktopDocumentProofPreview
+        document={document}
+        focus={proofFocus}
+        projectIdentities={projectIdentities}
+        getArtifactUrl={auth.getArtifactUrl}
+      />
       <View style={styles.taskDetailsFacts}>
         <TaskDetailFact label="Projects" value={projectLabel} />
+        <TaskDetailFact label="Source" value={document.sourceProvider === 'google_drive' ? 'Google Drive' : 'Protected Vitruvius storage'} />
         <TaskDetailFact label="Imported" value={formatDateTime(document.importedAt)} />
         <TaskDetailFact label="Linked Tasks" value={String(document.linkedScheduleItems.length)} />
         <TaskDetailFact label="File Size" value={sizeLabel} />
+        <TaskDetailFact
+          label="ECOS Index"
+          value={document.ecosHostedIndexStatus === 'Preparing'
+            ? `Preparing · ${Math.max(0, Math.min(100, Math.round(document.ecosHostedIndexProgressPercent || 0)))}%`
+            : document.ecosHostedIndexStatus || readiness.label}
+        />
+        <TaskDetailFact
+          label="Searchable Pages"
+          value={`${readiness.searchablePageCount} of ${readiness.sourcePageCount || readiness.indexedPageCount} · ${readiness.pageCoveragePercent}%`}
+        />
+        {normalizedName(document.category) === 'drawing' ? (
+          <>
+            <TaskDetailFact
+              label="High-Resolution Visual Coverage"
+              value={visualCoverageValue}
+            />
+            <TaskDetailFact
+              label="Drawing Analysis"
+              value={document.documentVisualIndexVersion === 'ecos-visual-index/3.0'
+                ? 'Current'
+                : 'Update required'}
+            />
+            <TaskDetailFact
+              label="Verified Sheet Mapping"
+              value={verifiedSheetMappingValue}
+            />
+            <TaskDetailFact
+              label="Sheet Mapping Conflicts"
+              value={sheetMappingConflictValue}
+            />
+          </>
+        ) : null}
+        <TaskDetailFact
+          label="Index Confidence"
+          value={readiness.averageConfidence == null ? 'Not available' : `${Math.round(readiness.averageConfidence * 100)}%`}
+        />
+        <TaskDetailFact
+          label="Extraction"
+          value={document.extractionMethod?.replaceAll('_', ' ') || 'Not available'}
+        />
+        {document.sourceProvider === 'google_drive' && document.externalSource ? (
+          <>
+            <TaskDetailFact label="Drive Revision" value={document.externalSource.revisionId || 'Not reported'} />
+            <TaskDetailFact label="Drive Modified" value={document.externalSource.modifiedTime ? formatDateTime(document.externalSource.modifiedTime) : 'Not reported'} />
+          </>
+        ) : null}
         {normalizedName(document.category) === 'drawing' ? (
           <>
             <TaskDetailFact label="Drawing Number" value={document.drawingNumber || 'Not recorded'} />
@@ -4057,36 +4863,70 @@ function DocumentDetailsPanel({
       ) : null}
       {document.webContentReview ? (
         <View style={styles.taskDetailsSection}>
-          <Text style={styles.taskDetailsSectionTitle}>Upload review</Text>
+          <Text style={styles.taskDetailsSectionTitle}>{document.sourceProvider === 'google_drive' ? 'Link review' : 'Upload review'}</Text>
           <Text style={styles.taskDetailsSectionText}>{document.webContentReview}</Text>
         </View>
+      ) : null}
+      <View style={styles.taskDetailsSection}>
+        <Text style={styles.taskDetailsSectionTitle}>ECOS readiness</Text>
+        <Text style={styles.taskDetailsSectionText}>{readiness.detail}</Text>
+        {readiness.missingMetadata.map(item => (
+          <Text key={item} style={styles.taskDetailsSectionText}>• Missing {item}</Text>
+        ))}
+        {readiness.limitations.map(item => (
+          <Text key={item} style={styles.taskDetailsSectionText}>• {item}</Text>
+        ))}
+      </View>
+      {(!document.isCurrent || !isSchedule) && onSaveDetails ? (
+        <DocumentECOSDetailsEditor
+          document={document}
+          projects={projects}
+          pending={pending}
+          onSave={next => onSaveDetails(document, next)}
+        />
       ) : null}
       <View style={styles.taskDetailsSection}>
         <Text style={styles.taskDetailsSectionTitle}>File actions</Text>
         <DocumentArtifactActions document={document} />
       </View>
       <View style={styles.taskInspectorActions}>
+        {onReindex ? (
+          <Pressable
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.buttonPressed,
+              pending && styles.buttonDisabled,
+            ]}
+            onPress={() => onReindex(document)}
+            disabled={pending}
+            accessibilityRole="button"
+          >
+            <Text style={styles.secondaryButtonText}>Legacy browser re-index (manual fallback)</Text>
+          </Pressable>
+        ) : null}
         {onMakeCurrent ? (
           <Pressable
             style={({ pressed }) => [
               styles.primaryButton,
               styles.taskInspectorEditButton,
               pressed && styles.buttonPressed,
-              (pending || document.linkedScheduleItems.length === 0) && styles.buttonDisabled,
+              (pending || !documentCanBeMadeCurrent(document)) && styles.buttonDisabled,
             ]}
             onPress={() => onMakeCurrent(document)}
-            disabled={pending || document.linkedScheduleItems.length === 0}
+            disabled={pending || !documentCanBeMadeCurrent(document)}
             accessibilityRole="button"
           >
             <Text style={styles.primaryButtonText}>
-              {document.linkedScheduleItems.length > 0 ? 'Make Current Schedule' : 'Task Review Required'}
+              {documentMakeCurrentLabel(document)}
             </Text>
           </Pressable>
         ) : null}
-        {document.isCurrent && isSchedule ? (
+        {deletionProtected ? (
           <View style={styles.documentProtectedNotice}>
             <Ionicons name="lock-closed-outline" size={18} color={colors.success} />
-            <Text style={styles.documentProtectedText}>Current schedule · protected from deletion</Text>
+            <Text style={styles.documentProtectedText}>
+              Current schedule · protected from deletion
+            </Text>
           </View>
         ) : null}
         {onDelete ? (
@@ -4103,27 +4943,205 @@ function DocumentDetailsPanel({
   );
 }
 
+function documentCoverageFactValue({
+  status,
+  count,
+  total,
+}: {
+  status: DocumentCoverageSummaryState['status'];
+  count: number;
+  total: number;
+}) {
+  if (status === 'loading') return 'Loading page analysis…';
+  if (status === 'failed') return 'Temporarily unavailable';
+  if (total <= 0) return 'Index summary missing — re-index required';
+  return `${count} of ${total} pages`;
+}
+
+function documentCoverageConflictValue({
+  status,
+  count,
+  total,
+}: {
+  status: DocumentCoverageSummaryState['status'];
+  count: number;
+  total: number;
+}) {
+  if (status === 'loading') return 'Loading page analysis…';
+  if (status === 'failed') return 'Temporarily unavailable';
+  if (total <= 0) return 'Index summary missing — re-index required';
+  return String(count);
+}
+
+function DocumentECOSDetailsEditor({
+  document,
+  projects,
+  pending,
+  onSave,
+}: {
+  document: DAVEWebReferenceDocument;
+  projects: readonly string[];
+  pending: boolean;
+  onSave: (next: Partial<ReferenceDocument>) => void;
+}) {
+  const initialProjects = [document.projectName || '', ...(document.projectNames || [])]
+    .map(value => value.trim())
+    .filter(Boolean);
+  const [editing, setEditing] = useState(false);
+  const [category, setCategory] = useState(document.category);
+  const [selectedProjects, setSelectedProjects] = useState<string[]>(initialProjects);
+  const [number, setNumber] = useState(document.drawingNumber || '');
+  const [revision, setRevision] = useState(document.drawingRevision || '');
+  const [discipline, setDiscipline] = useState(document.drawingDiscipline || '');
+  const [issueStatus, setIssueStatus] = useState<NonNullable<ReferenceDocument['drawingStatus']>>(
+    document.drawingStatus || 'For Review',
+  );
+  const [issueDate, setIssueDate] = useState(document.drawingIssuedAt || '');
+
+  useEffect(() => {
+    setEditing(false);
+    setCategory(document.category);
+    setSelectedProjects([document.projectName || '', ...(document.projectNames || [])]
+      .map(value => value.trim())
+      .filter(Boolean));
+    setNumber(document.drawingNumber || '');
+    setRevision(document.drawingRevision || '');
+    setDiscipline(document.drawingDiscipline || '');
+    setIssueStatus(document.drawingStatus || 'For Review');
+    setIssueDate(document.drawingIssuedAt || '');
+  }, [document.cloudUpdatedAt, document.id]);
+
+  if (!editing) {
+    return (
+      <Pressable
+        style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+        onPress={() => setEditing(true)}
+        accessibilityRole="button"
+        accessibilityLabel={`Edit project document details for ${document.name}`}
+      >
+        <Text style={styles.secondaryButtonText}>Edit Project Document Details</Text>
+      </Pressable>
+    );
+  }
+
+  const drawing = normalizedName(category) === 'drawing';
+  const canSave = selectedProjects.length > 0 && (!drawing || (
+    Boolean(number.trim()) && Boolean(revision.trim()) && Boolean(issueStatus)
+  ));
+  return (
+    <View style={styles.editorCard}>
+      <Text style={styles.taskDetailsSectionTitle}>ECOS document details</Text>
+      <Text style={styles.sectionDetail}>These fields control project scope, revision authority, and whether ECOS may use this source.</Text>
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Category</Text>
+        <OptionButtons<string>
+          options={DAVE_WEB_DOCUMENT_CATEGORIES}
+          value={category}
+          onChange={setCategory}
+        />
+      </View>
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Projects</Text>
+        <View style={styles.optionRow}>
+          {projects.map(project => {
+            const selected = selectedProjects.some(value => normalizedName(value) === normalizedName(project));
+            return (
+              <Pressable
+                key={project}
+                style={({ pressed }) => [styles.smallChoice, selected && styles.choiceActive, pressed && styles.buttonPressed]}
+                onPress={() => setSelectedProjects(current => selected
+                  ? current.filter(value => normalizedName(value) !== normalizedName(project))
+                  : [...current, project])}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: selected }}
+              >
+                <Text style={[styles.choiceText, selected && styles.choiceTextActive]}>{selected ? '✓ ' : ''}{project}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {selectedProjects.length === 0 ? <Text style={styles.errorText}>Choose at least one project.</Text> : null}
+      </View>
+      {drawing ? (
+        <View style={styles.fieldGroup}>
+          <LabeledTextField label="Drawing number" value={number} onChangeText={setNumber} placeholder="A2.01" />
+          <LabeledTextField label="Revision" value={revision} onChangeText={setRevision} placeholder="3" />
+          <LabeledTextField label="Discipline" value={discipline} onChangeText={setDiscipline} placeholder="Architectural" />
+          <Text style={styles.fieldLabel}>Issue status</Text>
+          <OptionButtons<NonNullable<ReferenceDocument['drawingStatus']>>
+            options={['Draft', 'For Review', 'For Construction', 'As-Built', 'Superseded']}
+            value={issueStatus}
+            onChange={setIssueStatus}
+          />
+          <LabeledTextField label="Issue date" value={issueDate} onChangeText={setIssueDate} placeholder="YYYY-MM-DD" />
+        </View>
+      ) : null}
+      <View style={styles.inlineButtons}>
+        <Pressable
+          style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+          onPress={() => setEditing(false)}
+          disabled={pending}
+          accessibilityRole="button"
+        >
+          <Text style={styles.secondaryButtonText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (!canSave || pending) && styles.buttonDisabled]}
+          onPress={() => onSave({
+            category,
+            projectName: selectedProjects[0] || null,
+            projectNames: selectedProjects,
+            drawingNumber: drawing ? number.trim() || null : null,
+            drawingRevision: drawing ? revision.trim() || null : null,
+            drawingDiscipline: drawing ? discipline.trim() || null : null,
+            drawingStatus: drawing ? issueStatus : null,
+            drawingIssuedAt: drawing ? issueDate.trim() || null : null,
+          })}
+          disabled={!canSave || pending}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>{pending ? 'Saving…' : 'Save Document Details'}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function DocumentArtifactActions({ document }: { document: DAVEWebReferenceDocument }) {
   const auth = useDesktopAuth();
   const [pendingAction, setPendingAction] = useState<'open' | 'download' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const storagePath = document.storagePath?.trim() || '';
+  const driveSource = document.sourceProvider === 'google_drive' ? document.externalSource : null;
 
   const access = async (action: 'open' | 'download') => {
-    if (!storagePath || pendingAction) return;
+    if ((!storagePath && !driveSource) || pendingAction) return;
     setPendingAction(action);
     setError(null);
     try {
-      const url = await auth.getArtifactUrl('project-documents', storagePath);
-      openSignedArtifact(url, action === 'download' ? document.originalFileName || document.name : null);
-    } catch {
-      setError('The protected document is temporarily unavailable. Refresh and try again.');
+      if (driveSource) {
+        if (action === 'open' && driveSource.webViewLink) {
+          openSignedArtifact(driveSource.webViewLink, null);
+        } else {
+          const picked = await downloadLinkedGoogleDriveDocument(driveSource);
+          const objectUrl = URL.createObjectURL(new Blob([picked.bytes], { type: picked.source.mimeType }));
+          openSignedArtifact(objectUrl, document.originalFileName || document.name);
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+        }
+      } else {
+        const url = await auth.getArtifactUrl('project-documents', storagePath);
+        openSignedArtifact(url, action === 'download' ? document.originalFileName || document.name : null);
+      }
+    } catch (error) {
+      setError(error instanceof Error
+        ? error.message
+        : 'The document is temporarily unavailable. Refresh and try again.');
     } finally {
       setPendingAction(null);
     }
   };
 
-  if (!storagePath) {
+  if (!storagePath && !driveSource) {
     return (
       <View style={styles.artifactUnavailable}>
         <Ionicons name="cloud-offline-outline" size={17} color={colors.mutedText} />
@@ -4142,7 +5160,7 @@ function DocumentArtifactActions({ document }: { document: DAVEWebReferenceDocum
           accessibilityRole="button"
           accessibilityLabel={`Open ${document.name}`}
         >
-          <Text style={styles.secondaryButtonText}>{pendingAction === 'open' ? 'Opening…' : 'Open'}</Text>
+          <Text style={styles.secondaryButtonText}>{pendingAction === 'open' ? 'Opening…' : driveSource ? 'Open in Drive' : 'Open'}</Text>
         </Pressable>
         <Pressable
           style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
@@ -4832,6 +5850,11 @@ function SettingsWorkspace({
   const freshness = presentDAVEWebFreshness(auth.freshness);
   const [displayNameDraft, setDisplayNameDraft] = useState(displayName);
   const [displayNameNotice, setDisplayNameNotice] = useState('');
+  const [driveDisconnectPending, setDriveDisconnectPending] = useState(false);
+  const [driveConnectionState, setDriveConnectionState] = useState<
+    'connected' | 'disconnected' | 'uncertain'
+  >(() => googleDriveSessionIsAuthorized() ? 'connected' : 'disconnected');
+  const [driveConnectionNotice, setDriveConnectionNotice] = useState('');
 
   useEffect(() => {
     setDisplayNameDraft(displayName);
@@ -4845,6 +5868,16 @@ function SettingsWorkspace({
         ? `Overview will greet you as ${saved}.`
         : 'The Overview will use a general greeting.',
     );
+  };
+
+  const disconnectDrive = async () => {
+    if (driveDisconnectPending) return;
+    setDriveDisconnectPending(true);
+    setDriveConnectionNotice('');
+    const result = await disconnectGoogleDriveSession();
+    setDriveConnectionState(result.status === 'local_disconnect' ? 'uncertain' : 'disconnected');
+    setDriveConnectionNotice(result.message);
+    setDriveDisconnectPending(false);
   };
 
   return (
@@ -4949,6 +5982,66 @@ function SettingsWorkspace({
           </View>
         </View>
       </View>
+
+      <Section
+        title="Connected document sources"
+        detail="Vitruvius uses a temporary, in-memory Google Drive permission only for files you choose. Disconnecting does not delete the files or the project records already created from them."
+      >
+        <View style={styles.dataCard}>
+          <View style={styles.dataHealthHeading}>
+            <View style={styles.dataHealthIcon}>
+              <Ionicons name="logo-google" size={22} color={desktopSurfaces.accent} />
+            </View>
+            <View style={styles.dataGrow}>
+              <Text style={styles.cardTitle}>Google Drive</Text>
+              <Text style={styles.dataDetail}>
+                {driveConnectionState === 'connected'
+                  ? 'A temporary Google Drive connection is active in this browser tab.'
+                  : driveConnectionState === 'uncertain'
+                    ? 'This browser no longer holds the Drive credential, but Google did not confirm remote revocation.'
+                    : 'No active Google Drive connection is stored in this browser tab.'}
+              </Text>
+            </View>
+            <StatusBadge
+              label={driveConnectionState === 'connected' ? 'Connected' : driveConnectionState === 'uncertain' ? 'Review Google account' : 'Disconnected'}
+              tone={driveConnectionState === 'connected' ? 'good' : driveConnectionState === 'uncertain' ? 'attention' : 'neutral'}
+            />
+          </View>
+          <Pressable
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              styles.syncButton,
+              pressed && styles.buttonPressed,
+              driveDisconnectPending && styles.buttonDisabled,
+            ]}
+            onPress={() => { void disconnectDrive(); }}
+            disabled={driveDisconnectPending}
+            accessibilityRole="button"
+            accessibilityLabel="Disconnect Google Drive from Vitruvius"
+          >
+            <View style={styles.buttonLabelRow}>
+              {driveDisconnectPending ? (
+                <ActivityIndicator size="small" color={desktopSurfaces.accent} />
+              ) : (
+                <Ionicons name="unlink-outline" size={18} color={desktopSurfaces.accent} />
+              )}
+              <Text style={styles.secondaryButtonText}>
+                {driveDisconnectPending ? 'Disconnecting…' : 'Disconnect Google Drive'}
+              </Text>
+            </View>
+          </Pressable>
+        </View>
+        {driveConnectionNotice ? (
+          <View
+            style={driveConnectionState === 'uncertain' ? styles.errorBanner : styles.successBanner}
+            accessibilityRole="alert"
+          >
+            <Text style={driveConnectionState === 'uncertain' ? styles.errorText : styles.successText}>
+              {driveConnectionNotice}
+            </Text>
+          </View>
+        ) : null}
+      </Section>
 
       <OperationsWorkspace snapshot={snapshot} />
     </View>
@@ -5191,6 +6284,21 @@ function documentMutationMessage(error: unknown): string {
   return 'The document could not be deleted. Refresh the workspace and try again.';
 }
 
+function documentReindexMessage(error: unknown): string {
+  if (error instanceof GoogleDriveDocumentError) {
+    if (error.code === 'cancelled') return 'No source file was selected.';
+    if (error.code === 'permission_denied' || error.code === 'not_found') {
+      return 'Reconnect this source file so Vitruvius can continue preparing it.';
+    }
+    if (error.code === 'too_large' || error.code === 'unsupported') return error.message;
+    return 'This source file is temporarily unavailable. Vitruvius will retry unfinished preparation.';
+  }
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'Document preparation is taking longer than expected. Vitruvius saved completed work and will continue automatically.';
+  }
+  return 'Document preparation is temporarily unavailable. Vitruvius saved completed work and will continue automatically.';
+}
+
 function taskPhotoMutationMessage(error: unknown): string {
   if (error instanceof DAVEWebDocumentMutationError) return error.message;
   return 'The task photo could not be saved. Refresh the workspace and try again.';
@@ -5249,7 +6357,7 @@ function DesktopSidebar({
           />
         ))}
       </View>
-      <Text style={styles.pilotNote}>{PRODUCT_BRAND.name} · {PRODUCT_BRAND.subtitle}</Text>
+      <DesktopReleaseLabel />
     </View>
   );
 }
@@ -5275,11 +6383,28 @@ function DesktopTopNavigation({ pathname, selectedProject }: { pathname: string;
         showSubtitle={false}
         testID="desktop-top-brand-lockup"
       />
+      <DesktopReleaseLabel compact />
       <View style={styles.topNavigationLinks} role="navigation">
         {desktopNavigationItems.map(item => (
           <DesktopNavigationLink key={item.href} pathname={pathname} item={item} selectedProject={selectedProject} compact />
         ))}
       </View>
+    </View>
+  );
+}
+
+function DesktopReleaseLabel({ compact = false }: { compact?: boolean }) {
+  return (
+    <View
+      style={compact ? styles.topReleaseSummary : styles.sidebarReleaseSummary}
+      accessibilityRole="text"
+      accessibilityLabel={`${PRODUCT_BRAND.name} version ${PRODUCT_RELEASE.version}, build ${PRODUCT_RELEASE.build}`}
+      testID={compact ? 'desktop-top-release' : 'desktop-sidebar-release'}
+    >
+      <Text style={styles.pilotNote}>{PRODUCT_BRAND.name} · {PRODUCT_BRAND.subtitle}</Text>
+      <Text style={styles.releaseNote}>
+        Version {PRODUCT_RELEASE.version} · Build {PRODUCT_RELEASE.build}
+      </Text>
     </View>
   );
 }
@@ -5367,15 +6492,37 @@ function documentProjectLabel(document: DAVEWebReferenceDocument): string {
 }
 
 function documentStatusKind(document: DAVEWebReferenceDocument): Exclude<DocumentStatusFilter, 'all'> {
-  if (!scheduleDocumentIsScheduleLike(document)) return 'other';
-  return document.isCurrent ? 'current' : 'prior';
+  if (document.isCurrent) return 'current';
+  return scheduleDocumentIsScheduleLike(document) ? 'prior' : 'other';
 }
 
 function documentStatusLabel(document: DAVEWebReferenceDocument): string {
+  if (!scheduleDocumentIsScheduleLike(document)) {
+    return buildECOSDocumentReadiness(document).label;
+  }
   const kind = documentStatusKind(document);
   if (kind === 'current') return 'Current';
   if (kind === 'prior') return 'Prior version';
-  return 'Document';
+  return buildECOSDocumentReadiness(document).label;
+}
+
+function documentCanBeMadeCurrent(document: DAVEWebReferenceDocument) {
+  return scheduleDocumentIsScheduleLike(document)
+    ? document.linkedScheduleItems.length > 0
+    : buildECOSDocumentReadiness(document).canMakeCurrent;
+}
+
+function documentMakeCurrentLabel(document: DAVEWebReferenceDocument) {
+  if (scheduleDocumentIsScheduleLike(document)) {
+    return document.linkedScheduleItems.length > 0 ? 'Make Current Schedule' : 'Task Review Required';
+  }
+  const readiness = buildECOSDocumentReadiness(document);
+  if (readiness.status === 'needs_metadata') return 'Complete Document Details';
+  if (readiness.status === 'failed' || readiness.status === 'pending' || readiness.status === 'stale') {
+    return 'Re-index Required';
+  }
+  if (readiness.status === 'not_supported') return 'Not Searchable';
+  return 'Make Current for ECOS';
 }
 
 function documentSearchText(document: DAVEWebReferenceDocument): string {
@@ -5685,7 +6832,10 @@ const styles = StyleSheet.create({
   navigationIconCountBadge: { position: 'absolute', top: -3, right: -6, minWidth: 20, height: 20, borderRadius: 10, backgroundColor: desktopSurfaces.accent, borderWidth: 2, borderColor: desktopSurfaces.sidebar, paddingHorizontal: 3, alignItems: 'center', justifyContent: 'center' },
   navigationIconCountText: { color: desktopSurfaces.onAccent, fontSize: 10, lineHeight: 12, fontWeight: '900' },
   navigationLabelActive: { color: desktopSurfaces.accent },
-  pilotNote: { color: desktopSurfaces.sidebarMuted, fontSize: 12, lineHeight: 17, marginTop: 'auto', paddingHorizontal: spacing.xs },
+  sidebarReleaseSummary: { marginTop: 'auto', paddingHorizontal: spacing.xs, gap: 2 },
+  topReleaseSummary: { alignSelf: 'flex-start', paddingHorizontal: spacing.xs, gap: 2 },
+  pilotNote: { color: desktopSurfaces.sidebarMuted, fontSize: 12, lineHeight: 17 },
+  releaseNote: { color: desktopSurfaces.sidebarMuted, fontSize: 11, lineHeight: 16, fontWeight: '700' },
   topNavigation: { backgroundColor: desktopSurfaces.sidebar, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 14, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
   topNavigationLinks: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, alignItems: 'center' },
   topRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.lg, borderLeftWidth: 5, borderLeftColor: desktopSurfaces.accent, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.header, paddingHorizontal: spacing.xl, paddingVertical: spacing.lg },
@@ -5811,6 +6961,18 @@ const styles = StyleSheet.create({
   photoAnalysisHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
   photoAnalysisObservation: { borderRadius: 10, backgroundColor: desktopSurfaces.cardMuted, color: '#3F4C5B', fontSize: 13, lineHeight: 20, padding: spacing.sm },
   documentGroups: { gap: spacing.xl },
+  documentListPaneIndependent: {
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    paddingRight: spacing.xs,
+  } as any,
+  documentInspectorPaneIndependent: {
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    position: 'relative',
+    top: 0,
+    paddingRight: spacing.xs,
+  } as any,
   documentGroup: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.sectionStrong, padding: spacing.lg, gap: spacing.sm },
   documentGroupHeading: { gap: 3 },
   documentGroupTitle: { color: '#1B1F27', fontSize: 18, lineHeight: 24, fontWeight: '900' },
@@ -5998,6 +7160,8 @@ const styles = StyleSheet.create({
   reportActionButton: { width: '100%' },
   reportInput: { minHeight: 520, paddingTop: spacing.md, textAlignVertical: 'top', fontFamily: 'monospace' },
   uploadReview: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.md },
+  reindexProgressCard: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.sm },
+  reindexProgressHeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   inlineButtons: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: spacing.sm },
   inlineButtonsLeft: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', gap: spacing.md },
   saveTaskButton: { minWidth: 190 },

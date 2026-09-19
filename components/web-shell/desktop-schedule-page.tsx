@@ -250,6 +250,9 @@ export function DesktopSchedulePage({
       );
       const now = new Date().toISOString();
       const draft: DAVEWebTaskDraft = {
+        projectId: editingTask?.projectId ??
+          projectTasks.find(task => Boolean(task.projectId))?.projectId ??
+          null,
         itemType: 'Task',
         taskName: editor.taskName,
         projectName: editor.projectName,
@@ -693,9 +696,12 @@ function GanttWorkspace({
       </View>
       <View style={styles.scheduleControlBar}>
         <ScheduleControl
-          label={`Critical path (${criticalIds.size})`}
+          label={analytics.criticalPath.available
+            ? `Critical path (${criticalIds.size})`
+            : 'Critical path (not calculated)'}
           selected={showCriticalPath}
           onPress={() => setShowCriticalPath(value => !value)}
+          disabled={!analytics.criticalPath.available}
         />
         <ScheduleControl
           label={`Baselines (${analytics.baselineVariance.filter(
@@ -734,7 +740,19 @@ function GanttWorkspace({
             </Text>
           </View>
         </View>
-      ) : null}
+      ) : analytics.criticalPath.available ? null : (
+        <View style={styles.criticalPathNotice}>
+          <Ionicons name="git-branch-outline" size={19} color={desktopSurfaces.accentText} />
+          <View style={styles.criticalPathWarningCopy}>
+            <Text style={styles.criticalPathNoticeTitle}>
+              Critical path not calculated
+            </Text>
+            <Text style={styles.criticalPathNoticeText}>
+              Add finish-to-start relationships between schedule tasks to calculate a critical path.
+            </Text>
+          </View>
+        </View>
+      )}
 
       {model.rows.length === 0 ? (
         <View style={styles.emptyState}>
@@ -1079,17 +1097,24 @@ function ScheduleControl({
   label,
   selected,
   onPress,
+  disabled = false,
 }: {
   label: string;
   selected: boolean;
   onPress: () => void;
+  disabled?: boolean;
 }) {
   return (
     <Pressable
-      style={[styles.scheduleControl, selected && styles.scheduleControlSelected]}
+      style={[
+        styles.scheduleControl,
+        selected && styles.scheduleControlSelected,
+        disabled && styles.scheduleControlDisabled,
+      ]}
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="checkbox"
-      accessibilityState={{ checked: selected }}
+      accessibilityState={{ checked: selected, disabled }}
     >
       <Ionicons
         name={selected ? 'checkbox' : 'square-outline'}
@@ -1934,6 +1959,7 @@ const styles = StyleSheet.create({
   scheduleControlBar: { minHeight: 54, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.toolbar, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   scheduleControl: { minHeight: 36, borderRadius: 999, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: 5 },
   scheduleControlSelected: { borderColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.accent },
+  scheduleControlDisabled: { opacity: 0.58 },
   scheduleControlText: { color: desktopSurfaces.accentText, fontSize: 11, lineHeight: 16, fontWeight: '900' },
   scheduleControlTextSelected: { color: desktopSurfaces.onAccent },
   controlSummary: { marginLeft: 'auto', minHeight: 32, borderRadius: 9, backgroundColor: desktopSurfaces.cardGreen, paddingHorizontal: spacing.sm, alignItems: 'center', justifyContent: 'center' },
@@ -1943,6 +1969,9 @@ const styles = StyleSheet.create({
   criticalPathWarningCopy: { flex: 1, minWidth: 0 },
   criticalPathWarningTitle: { color: '#8B2B24', fontSize: 13, lineHeight: 18, fontWeight: '900' },
   criticalPathWarningText: { color: '#8B2B24', fontSize: 11, lineHeight: 16, marginTop: 1 },
+  criticalPathNotice: { minHeight: 58, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  criticalPathNoticeTitle: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 18, fontWeight: '900' },
+  criticalPathNoticeText: { color: desktopSurfaces.textMuted, fontSize: 11, lineHeight: 16, marginTop: 1 },
   ganttSplit: { flexDirection: 'row', alignItems: 'stretch' },
   ganttActivityPane: { width: 390, flexShrink: 0, borderRightWidth: 1, borderRightColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card },
   ganttActivityHeader: { height: 44, backgroundColor: desktopSurfaces.dataHeader, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

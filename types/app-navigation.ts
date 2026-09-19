@@ -11,6 +11,7 @@ export type AppScreen =
   | 'Diagnostics'
   | 'ProjectDocuments'
   | 'Schedule'
+  | 'FieldNotes'
   | 'Admin';
 
 export const APP_SCREEN_PATHS = {
@@ -26,6 +27,7 @@ export const APP_SCREEN_PATHS = {
   Diagnostics: '/settings/diagnostics',
   ProjectDocuments: '/projects/documents',
   Schedule: '/tasks',
+  FieldNotes: '/field-notes',
   Admin: '/settings',
 } as const satisfies Record<AppScreen, string>;
 

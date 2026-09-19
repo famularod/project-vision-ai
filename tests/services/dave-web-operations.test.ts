@@ -6,12 +6,90 @@ import {
   createDAVEWebBackup,
   daveWebReportSourceIsCurrent,
   formatDAVEWebReport,
+  prepareDAVEWebLinkedDocument,
   prepareDAVEWebDocumentUpload,
+  recoverDAVEWebPreparedUploadBytes,
   validateDAVEWebBackup,
 } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 
 describe('DAVE web phase 4 operations', () => {
+  it('prepares a large Google Drive drawing without applying the 50 MB Supabase upload limit', () => {
+    const sizeBytes = 140 * 1024 * 1024;
+    const prepared = prepareDAVEWebLinkedDocument({
+      fileName: 'Architectural.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes,
+      contents: 'A1.01 FLOOR PLAN',
+      category: 'Drawing',
+      projectNames: ['2375 Compliance Project'],
+      projects: ['2375 Compliance Project'],
+      fingerprint: 'a'.repeat(64),
+      maximumBytes: 250 * 1024 * 1024,
+      externalSource: {
+        provider: 'google_drive',
+        fileId: 'drive-file-1',
+        name: 'Architectural.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes,
+        modifiedTime: '2026-08-04T12:00:00.000Z',
+        revisionId: 'revision-3',
+        md5Checksum: 'drive-md5',
+        resourceKey: null,
+        webViewLink: 'https://drive.google.com/file/d/drive-file-1/view',
+      },
+    });
+
+    expect(prepared.document).toMatchObject({
+      sourceProvider: 'google_drive',
+      sizeBytes,
+      externalSource: { fileId: 'drive-file-1', revisionId: 'revision-3' },
+    });
+    expect(prepared.document).not.toHaveProperty('storagePath');
+    expect(prepared.reviewMessage).toMatch(/original PDF will remain in Google Drive/i);
+  });
+
+  it('keeps schedule task imports on the protected upload workflow', () => {
+    expect(() => prepareDAVEWebLinkedDocument({
+      fileName: 'schedule.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 100,
+      contents: 'schedule',
+      category: 'Schedules',
+      projectNames: ['2375 Compliance Project'],
+      projects: ['2375 Compliance Project'],
+      fingerprint: 'b'.repeat(64),
+      maximumBytes: 250 * 1024 * 1024,
+      externalSource: {
+        provider: 'google_drive',
+        fileId: 'drive-schedule',
+        name: 'schedule.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 100,
+        modifiedTime: null,
+        revisionId: null,
+        md5Checksum: null,
+        resourceKey: null,
+        webViewLink: null,
+      },
+    })).toThrow(/schedule imports/i);
+  });
+
+  it('recovers a reviewed 4.4 MB file when PDF extraction detached its upload buffer', async () => {
+    const expectedSizeBytes = Math.round(4.4 * 1024 * 1024);
+    const file = new Blob([new Uint8Array(expectedSizeBytes)], {
+      type: 'application/pdf',
+    });
+
+    const recovered = await recoverDAVEWebPreparedUploadBytes({
+      bytes: new ArrayBuffer(0),
+      file,
+      expectedSizeBytes,
+    });
+
+    expect(recovered.byteLength).toBe(expectedSizeBytes);
+  });
+
   it('parses a reviewed schedule file and binds immutable document/task provenance', () => {
     const prepared = prepareDAVEWebDocumentUpload({
       fileName: 'lookahead.csv',
@@ -51,6 +129,75 @@ describe('DAVE web phase 4 operations', () => {
     expect(prepared.document.isCurrent).toBe(false);
     expect(prepared.scheduleItems).toEqual([]);
     expect(prepared.document.contentSha256).toBe(fingerprint);
+  });
+
+  it('imports only positioned Microsoft Project leaf activities from a web PDF', () => {
+    const extractedPages = [microsoftProjectSchedulePage([
+      ['1', 'PLZ CORP CAMPUS COMPLIANCE', 0, '417 days', 'Wed 9/3/25', 'Wed 4/7/27', '79%'],
+      ['2', 'PLZ 2321 THIRD STREET CAMPUS', 1, '417 days', 'Wed 9/3/25', 'Wed 4/7/27', '72%'],
+      ['3', 'PHASE 2 - NORTH LOT & DRIVEWAY', 2, '20 days', 'Mon 6/22/26', 'Fri 7/17/26', '0%'],
+      ['4', 'PLACE CONCRETE PAVING (NORTH LOT)', 3, '2 days', 'Thu 7/2/26', 'Fri 7/3/26', '50%'],
+      ['5', 'PLZ 2375 THIRD STREET CAMPUS', 1, '30 days', 'Mon 6/22/26', 'Fri 7/31/26', '0%'],
+      ['6', 'CANOPY B', 2, '10 days', 'Mon 6/22/26', 'Fri 7/3/26', '0%'],
+      ['7', 'FORM COLUMN CONCRETE BASES', 3, '1 day', 'Thu 7/2/26', 'Thu 7/2/26', '100%'],
+    ])];
+    const prepared = prepareDAVEWebDocumentUpload({
+      fileName: 'PLZ 2321 & 2375 MASTER CONSTRUCTION SCHEDULE.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 536_000,
+      contents: [
+        'ID Task Name',
+        'Duration Start',
+        'Finish',
+        '% Actual Start Actual Finish',
+        'Qtr 1, 2026',
+        'Jan Feb Mar Apr',
+        'Task Summary Inactive Milestone Duration-only',
+        'Project: PLZ 2321 & 2375 MAST',
+        'Date: Mon 8/31/26',
+        'Page 1',
+      ].join('\n'),
+      extractedPages,
+      category: 'Schedules',
+      projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
+      projects: ['2375 Compliance Project', '2321 Compliance Project'],
+      fingerprint: 'c'.repeat(64),
+      now: '2026-08-31T12:00:00.000Z',
+    });
+
+    expect(prepared.extractionStatus).toBe('ready');
+    expect(prepared.scheduleItems).toHaveLength(2);
+    expect(prepared.scheduleItems.map(item => item.taskName)).toEqual([
+      'PLACE CONCRETE PAVING (NORTH LOT)',
+      'FORM COLUMN CONCRETE BASES',
+    ]);
+    expect(prepared.scheduleItems.map(item => item.scheduleProjectName)).toEqual([
+      '2321 Compliance Project',
+      '2375 Compliance Project',
+    ]);
+    expect(prepared.scheduleItems.map(item => item.projectName)).toEqual([
+      '2321 Compliance Project',
+      '2375 Compliance Project',
+    ]);
+    expect(prepared.scheduleItems.map(item => item.taskName)).not.toEqual(
+      expect.arrayContaining(['ID Task Name', 'Duration Start', 'Qtr 1, 2026', 'Page 1']),
+    );
+  });
+
+  it('fails a readable PDF schedule closed when positioned activity rows are unavailable', () => {
+    const prepared = prepareDAVEWebDocumentUpload({
+      fileName: 'fragmented-schedule.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 120,
+      contents: 'ID Task Name\nDuration Start\nFinish\nQtr 1, 2026\nPage 1\n7/2/2026',
+      category: 'Schedules',
+      projectName: '2375 Compliance Project',
+      projects: ['2375 Compliance Project'],
+      fingerprint: 'd'.repeat(64),
+    });
+
+    expect(prepared.extractionStatus).toBe('needs_manual_review');
+    expect(prepared.scheduleItems).toEqual([]);
   });
 
   it('stores one shared schedule for multiple projects while preserving each task project', () => {
@@ -208,6 +355,79 @@ describe('DAVE web phase 4 operations', () => {
     expect(buildDAVEWebReportSource(changedIntelligence, 'Alpha Project').fingerprint).not.toBe(baseFingerprint);
   });
 });
+
+function microsoftProjectSchedulePage(
+  rows: Array<[string, string, number, string, string, string, string]>,
+) {
+  const regions: any[] = [];
+  const addRegion = (text: string, x: number, y: number, width = 0.04) => {
+    regions.push({
+      id: `region-${regions.length + 1}`,
+      text,
+      label: text,
+      x,
+      y,
+      width,
+      height: 0.01,
+      source: 'embedded_text',
+      confidence: 1,
+    });
+  };
+  [
+    ['ID', 0.03],
+    ['Task Name', 0.05],
+    ['Duration', 0.31],
+    ['Start', 0.36],
+    ['Finish', 0.41],
+    ['%', 0.46],
+    ['Actual Start', 0.49],
+    ['Actual Finish', 0.55],
+    ['Qtr 1, 2026', 0.61],
+  ].forEach(([text, x]) => addRegion(String(text), Number(x), 0.02));
+
+  rows.forEach(([id, taskName, indent, duration, start, finish, percentComplete], index) => {
+    const y = 0.05 + index * 0.02;
+    const taskX = 0.05 + indent * 0.007;
+    regions.push({
+      id: `activity-${id}`,
+      text: `${id} ${taskName}`,
+      label: `${id} ${taskName}`,
+      x: 0.03,
+      y,
+      width: 0.26,
+      height: 0.01,
+      source: 'embedded_text',
+      confidence: 1,
+      constituentEvidence: [{
+        id: `activity-${id}-id`,
+        text: id,
+        source: 'embedded_text',
+        confidence: 1,
+        bounds: { x: 0.03, y, width: 0.012, height: 0.01 },
+      }, {
+        id: `activity-${id}-task`,
+        text: taskName,
+        source: 'embedded_text',
+        confidence: 1,
+        bounds: { x: taskX, y, width: 0.29 - taskX, height: 0.01 },
+      }],
+    });
+    addRegion(duration, 0.31, y);
+    addRegion(start, 0.36, y);
+    addRegion(finish, 0.41, y);
+    addRegion(percentComplete, 0.46, y, 0.025);
+  });
+  addRegion('Task Summary Inactive Milestone', 0.12, 0.82, 0.3);
+  addRegion('Project: PLZ 2321 & 2375 MAST', 0.03, 0.86, 0.3);
+  addRegion('Date: Mon 8/31/26', 0.03, 0.88, 0.16);
+  addRegion('Page 1', 0.49, 0.9, 0.05);
+
+  return {
+    pageNumber: 1,
+    text: regions.map(region => region.text).join('\n'),
+    regions,
+  };
+}
 
 function snapshotWithPhoto({
   gpsLatitude,

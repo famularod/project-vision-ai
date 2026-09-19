@@ -268,6 +268,11 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     ],
     scheduleItems,
     captureMemories,
+    referenceDocuments: referenceDocuments.map(document => ({
+      ...document,
+      projectId: document.projectId || input.projectId,
+      projectName: document.projectName || input.projectName,
+    })),
     now: generatedAt,
     projectTimeZone,
   });

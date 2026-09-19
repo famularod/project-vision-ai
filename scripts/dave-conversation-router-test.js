@@ -115,8 +115,9 @@ assert(app.includes('showWalkContext={false}'), 'Global Talk must not masquerade
 assert(app.includes('<DAVEConversationAnswerSheet'), 'Questions must show an answer in the live app.');
 assert(app.includes('<DAVECaptureConfirmationSheet'), 'Remembered information must keep confirmation before save.');
 assert(app.includes('<DAVETaskActionConfirmationSheet'), 'Task changes must keep confirmation before save.');
-assert(tabs.includes('accessibilityLabel="Talk to project assistant"'));
-assert(tabs.includes('<Text style={styles.talkText}>Talk</Text>'));
+assert(tabs.includes("const primaryAssistantLabel = showAskECOS ? 'Ask ECOS' : 'Project actions'"));
+assert(tabs.includes('accessibilityLabel={primaryAssistantLabel}'));
+assert(tabs.includes('<Text style={styles.talkText}>{primaryAssistantLabel}</Text>'));
 assert(voiceSheet.includes("title = 'Capture Memory'") && voiceSheet.includes('showWalkContext = true'),
   'Voice capture defaults must preserve the existing Project Walk experience.');
 assert(typedSheet.includes("title = 'Capture Memory'"),

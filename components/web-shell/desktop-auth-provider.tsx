@@ -27,6 +27,12 @@ import type {
   DAVEWebPreparedUpload,
   DAVEWebReportRecord,
 } from '../../services/DAVEWebOperations';
+import type { ECOSProjectQuestionAnswer } from '../../services/ECOSProjectQuestion';
+import type { ECOSDrawingPageAnalysisInput } from '../../services/ECOSDrawingPageAnalysis';
+import type { ECOSDrawingPageAnalysisResult } from '../../services/ECOSDrawingPageAnalysis';
+import type { ECOSDocumentIndexJob } from '../../services/ECOSDocumentIndexJobs';
+import type { ECOSDocumentCoverageSummary } from '../../services/ECOSDocumentCoverageSummary';
+import type { ReferenceDocumentExtractedPage } from '../../types';
 import {
   initialDAVEWebFreshnessState,
   recordDAVEWebRefreshFailure,
@@ -58,6 +64,10 @@ type DesktopAuthContextValue = Readonly<{
   signInWithPassword: (email: string, password: string) => Promise<boolean>;
   signOutOfDesktop: () => Promise<void>;
   refreshSnapshot: () => Promise<boolean>;
+  loadDocumentCoverageSummary: (
+    documentId: string,
+    documentRevision?: string | null,
+  ) => Promise<ECOSDocumentCoverageSummary>;
   getArtifactUrl: (
     bucket: DAVEWebStorageBucket,
     path: string,
@@ -80,7 +90,16 @@ type DesktopAuthContextValue = Readonly<{
     file?: Blob,
     onProgress?: (fraction: number) => void,
   ) => Promise<void>;
+  linkDocument: (
+    prepared: DAVEWebPreparedUpload,
+    bytes: ArrayBuffer,
+    file?: Blob,
+    onProgress?: (fraction: number) => void,
+  ) => Promise<void>;
   setCurrentSchedule: (document: DAVEWebReferenceDocument) => Promise<void>;
+  setCurrentDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
+  updateDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
+  enqueueDocumentPreparation: (documentId: string) => Promise<void>;
   saveReport: (input: {
     id: string;
     projectName: string | null;
@@ -88,6 +107,30 @@ type DesktopAuthContextValue = Readonly<{
     expectedCloudUpdatedAt?: string | null;
   }) => Promise<string>;
   restoreMissingTasks: (items: readonly DAVEWebScheduleItem[]) => Promise<number>;
+  askProjectQuestion: (input: {
+    projectId: string;
+    projectName: string;
+    question: string;
+  }) => Promise<ECOSProjectQuestionAnswer>;
+  analyzeDrawingPage: (input: ECOSDrawingPageAnalysisInput) => Promise<ECOSDrawingPageAnalysisResult>;
+  beginOrResumeDocumentIndexJob: (input: {
+    documentId: string;
+    sourceSha256: string;
+    sourcePageCount: number;
+  }) => Promise<ECOSDocumentIndexJob>;
+  checkpointDocumentIndexPage: (input: {
+    jobId: string;
+    page: ReferenceDocumentExtractedPage;
+  }) => Promise<void>;
+  setDocumentIndexJobStatus: (input: {
+    jobId: string;
+    status: 'running' | 'ready' | 'committed' | 'failed' | 'cancelled';
+    failureMessage?: string | null;
+  }) => Promise<void>;
+  commitDocumentIndexJob: (input: {
+    jobId: string;
+    extractionMethod?: string | null;
+  }) => Promise<Readonly<{ indexedPages: number; indexedChunks: number }>>;
 }>;
 
 const DesktopAuthContext = createContext<DesktopAuthContextValue | null>(null);
@@ -441,24 +484,61 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const applyAcknowledgedTask = useCallback((
+    item: DAVEWebScheduleItem,
+    cloudUpdatedAt: string,
+  ) => {
+    if (!mountedRef.current) return;
+    const current = snapshotRef.current;
+    if (!current) return;
+    const existingIndex = current.scheduleItems.findIndex(candidate => candidate.id === item.id);
+    const existing = existingIndex >= 0 ? current.scheduleItems[existingIndex] : null;
+    if (existing && cloudRevisionIsAfter(existing.cloudUpdatedAt, cloudUpdatedAt)) return;
+
+    const acknowledgedItem = Object.freeze({ ...item, cloudUpdatedAt });
+    const scheduleItems = [...current.scheduleItems];
+    if (existingIndex >= 0) scheduleItems[existingIndex] = acknowledgedItem;
+    else scheduleItems.unshift(acknowledgedItem);
+    const nextSnapshot = Object.freeze({
+      ...current,
+      scheduleItems: Object.freeze(scheduleItems),
+      refreshedAt: new Date().toISOString(),
+    });
+    snapshotRef.current = nextSnapshot;
+    lastSuccessfulRefreshAtRef.current = nextSnapshot.refreshedAt;
+    setSnapshot(nextSnapshot);
+  }, []);
+
+  const loadDocumentCoverageSummary = useCallback((
+    documentId: string,
+    documentRevision?: string | null,
+  ) => daveWebSupabaseGateway.loadAuthorizedDocumentCoverageSummary(
+    documentId,
+    documentRevision,
+  ), []);
+
   const createTask = useCallback(async (item: DAVEWebScheduleItem) => {
-    await daveWebSupabaseGateway.createAuthorizedScheduleItem(
+    const acknowledgedAt = await daveWebSupabaseGateway.createAuthorizedScheduleItem(
       scheduleItemForCloud(item),
     );
+    applyAcknowledgedTask(item, acknowledgedAt);
     const collections = ['schedule_items'] as const;
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
-  }, [announceMutation, refreshSnapshotInBackground]);
+    applyAcknowledgedTask(item, acknowledgedAt);
+  }, [announceMutation, applyAcknowledgedTask, refreshSnapshotInBackground]);
 
   const updateTask = useCallback(async (item: DAVEWebScheduleItem) => {
-    await daveWebSupabaseGateway.updateAuthorizedScheduleItem(
+    const acknowledgedAt = await daveWebSupabaseGateway.updateAuthorizedScheduleItem(
       scheduleItemForCloud(item),
       item.cloudUpdatedAt,
     );
+    applyAcknowledgedTask(item, acknowledgedAt);
     const collections = ['schedule_items'] as const;
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
-  }, [announceMutation, refreshSnapshotInBackground]);
+    applyAcknowledgedTask(item, acknowledgedAt);
+  }, [announceMutation, applyAcknowledgedTask, refreshSnapshotInBackground]);
 
   const updateTasks = useCallback(async (items: readonly DAVEWebScheduleItem[]) => {
     let updated = 0;
@@ -543,6 +623,26 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     await refreshSnapshotInBackground(collections);
   }, [announceMutation, refreshSnapshotInBackground]);
 
+  const linkDocument = useCallback(async (
+    prepared: DAVEWebPreparedUpload,
+    bytes: ArrayBuffer,
+    file?: Blob,
+    onProgress?: (fraction: number) => void,
+  ) => {
+    if (prepared.scheduleItems.length > 0) {
+      throw new Error('Google Drive linking does not import schedule tasks in this first release.');
+    }
+    await daveWebSupabaseGateway.saveAuthorizedLinkedReferenceDocument({
+      document: prepared.document,
+      bytes,
+      file,
+      onProgress,
+    });
+    const collections = ['reference_documents'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
+
   const setCurrentSchedule = useCallback(async (document: DAVEWebReferenceDocument) => {
     const scheduleDocuments = (snapshot?.referenceDocuments || []).filter(item =>
       item.category === 'Schedules' || item.category === 'Schedule',
@@ -552,6 +652,28 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments]);
+
+  const setCurrentDocument = useCallback(async (document: DAVEWebReferenceDocument) => {
+    const documents = snapshot?.referenceDocuments || [];
+    await daveWebSupabaseGateway.setAuthorizedCurrentDocument(document, documents);
+    const collections = ['reference_documents'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments]);
+
+  const updateDocument = useCallback(async (document: DAVEWebReferenceDocument) => {
+    await daveWebSupabaseGateway.updateAuthorizedReferenceDocument(document);
+    const collections = ['reference_documents'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
+
+  const enqueueDocumentPreparation = useCallback(async (documentId: string) => {
+    await daveWebSupabaseGateway.enqueueAuthorizedDocumentPreparation(documentId);
+    const collections = ['reference_documents'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+  }, [announceMutation, refreshSnapshotInBackground]);
 
   const saveReport = useCallback(async (input: {
     id: string;
@@ -583,6 +705,39 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     return restored;
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.scheduleItems]);
 
+  const askProjectQuestion = useCallback((input: {
+    projectId: string;
+    projectName: string;
+    question: string;
+  }) => daveWebSupabaseGateway.askAuthorizedProjectQuestion(input), []);
+
+  const analyzeDrawingPage = useCallback((input: ECOSDrawingPageAnalysisInput) =>
+    daveWebSupabaseGateway.analyzeAuthorizedDrawingPage(input), []);
+  const beginOrResumeDocumentIndexJob = useCallback((input: {
+    documentId: string;
+    sourceSha256: string;
+    sourcePageCount: number;
+  }) => daveWebSupabaseGateway.beginOrResumeAuthorizedDocumentIndexJob(input), []);
+  const checkpointDocumentIndexPage = useCallback((input: {
+    jobId: string;
+    page: ReferenceDocumentExtractedPage;
+  }) => daveWebSupabaseGateway.checkpointAuthorizedDocumentIndexPage(input), []);
+  const setDocumentIndexJobStatus = useCallback((input: {
+    jobId: string;
+    status: 'running' | 'ready' | 'committed' | 'failed' | 'cancelled';
+    failureMessage?: string | null;
+  }) => daveWebSupabaseGateway.setAuthorizedDocumentIndexJobStatus(input), []);
+  const commitDocumentIndexJob = useCallback(async (input: {
+    jobId: string;
+    extractionMethod?: string | null;
+  }) => {
+    const result = await daveWebSupabaseGateway.commitAuthorizedDocumentIndexJob(input);
+    const collections = ['reference_documents'] as const;
+    announceMutation(collections);
+    await refreshSnapshotInBackground(collections);
+    return result;
+  }, [announceMutation, refreshSnapshotInBackground]);
+
   const value = useMemo<DesktopAuthContextValue>(() => ({
     phase,
     userEmail,
@@ -593,6 +748,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     signInWithPassword,
     signOutOfDesktop,
     refreshSnapshot,
+    loadDocumentCoverageSummary,
     getArtifactUrl,
     createTask,
     updateTask,
@@ -601,9 +757,19 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     uploadTaskPhoto,
     deleteDocument,
     uploadDocument,
+    linkDocument,
     setCurrentSchedule,
+    setCurrentDocument,
+    updateDocument,
+    enqueueDocumentPreparation,
     saveReport,
     restoreMissingTasks,
+    askProjectQuestion,
+    analyzeDrawingPage,
+    beginOrResumeDocumentIndexJob,
+    checkpointDocumentIndexPage,
+    setDocumentIndexJobStatus,
+    commitDocumentIndexJob,
   }), [
     createTask,
     deleteDocument,
@@ -613,15 +779,26 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     message,
     phase,
     refreshSnapshot,
+    loadDocumentCoverageSummary,
     sessionExpiresAt,
     signInWithPassword,
     signOutOfDesktop,
     snapshot,
     uploadTaskPhoto,
     uploadDocument,
+    linkDocument,
     setCurrentSchedule,
+    setCurrentDocument,
+    updateDocument,
+    enqueueDocumentPreparation,
     saveReport,
     restoreMissingTasks,
+    askProjectQuestion,
+    analyzeDrawingPage,
+    beginOrResumeDocumentIndexJob,
+    checkpointDocumentIndexPage,
+    setDocumentIndexJobStatus,
+    commitDocumentIndexJob,
     updateTask,
     updateTasks,
     userEmail,
@@ -634,6 +811,17 @@ export function useDesktopAuth(): DesktopAuthContextValue {
   const value = useContext(DesktopAuthContext);
   if (!value) throw new Error('useDesktopAuth must be used inside DesktopAuthProvider.');
   return value;
+}
+
+function cloudRevisionIsAfter(
+  candidate: string | null | undefined,
+  baseline: string,
+): boolean {
+  const candidateTime = candidate ? Date.parse(candidate) : Number.NaN;
+  const baselineTime = Date.parse(baseline);
+  return Number.isFinite(candidateTime) &&
+    Number.isFinite(baselineTime) &&
+    candidateTime > baselineTime;
 }
 
 function isDAVEOperationalCollectionName(

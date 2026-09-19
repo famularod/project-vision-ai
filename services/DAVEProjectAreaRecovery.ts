@@ -58,6 +58,40 @@ export function mergeDAVEProjectAreaRecoveryRecords({
   return [...merged.values()];
 }
 
+/**
+ * Full sync is a reconciliation pass, not permission to rewrite every GPS
+ * record returned by the recovery merge. Only return device records whose
+ * authoritative merged value is absent from, or materially different from,
+ * the current cloud copy.
+ */
+export function daveProjectAreasNeedingCloudUpload({
+  local,
+  cloud,
+  deletedIds = [],
+}: {
+  local: readonly ProjectArea[];
+  cloud: readonly ProjectArea[];
+  deletedIds?: readonly string[];
+}): ProjectArea[] {
+  const deleted = new Set(deletedIds.map(normalizedId).filter(Boolean));
+  const cloudById = new Map(
+    cloud
+      .map(record => [normalizedId(record.id), record] as const)
+      .filter(([id]) => Boolean(id) && !deleted.has(id)),
+  );
+
+  return local.flatMap(record => {
+    const id = normalizedId(record.id);
+    if (!id || deleted.has(id)) return [];
+    const remote = cloudById.get(id);
+    if (!remote) return [record];
+    const authoritative = mergeDAVEProjectAreaRecord(remote, record);
+    return stableMeaning(authoritative) === stableMeaning(remote)
+      ? []
+      : [authoritative];
+  });
+}
+
 function compareGpsAuthority(left: ProjectArea, right: ProjectArea) {
   const leftCaptured = Boolean(validTimestamp(left.locationCapturedAt));
   const rightCaptured = Boolean(validTimestamp(right.locationCapturedAt));
@@ -93,4 +127,22 @@ function normalizedId(value: string) {
 
 function normalizeOptionalName(value: string | null | undefined) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function stableMeaning(value: ProjectArea) {
+  return JSON.stringify(sortRecord({
+    ...value,
+    projectName: normalizeOptionalName(value.projectName),
+  }));
+}
+
+function sortRecord(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortRecord);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortRecord(entry)]),
+  );
 }

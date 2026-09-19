@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "ecos-live-failure-adjudication/1.0",
+  "purpose": "Classify every failed case from the first complete 34-question customer-path pass before repairing or repeating the test.",
+  "sourceResults": [
+    {
+      "path": "validation/output/ecos-step7-live-2375-v411-20260909.json",
+      "sha256": "0370717df5d06219f9ef41682e11227c62d59e754a651a810d587ded2bbb691f",
+      "total": 15,
+      "passed": 12,
+      "failed": 3
+    },
+    {
+      "path": "validation/output/ecos-step7-live-2321-v411-20260909.json",
+      "sha256": "034ac3a4714e4b41cb8cc86c32a4bbd44636e60e1774560f585612697247be84",
+      "total": 19,
+      "passed": 9,
+      "failed": 10
+    }
+  ],
+  "summary": {
+    "failedCases": 13,
+    "evaluatorDefects": 8,
+    "productDefects": 4,
+    "proofCoverageDefects": 1
+  },
+  "adjudications": [
+    {
+      "caseId": "pcc-walkway-thickness",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "The answer and cited C6 evidence distinguish the 4-inch walkway from the 6-inch paving. The proof matcher rejected duplicated OCR wording rather than the construction fact.",
+      "repair": "Grade normalized quantities, units, subjects, and relationships instead of requiring one OCR word order."
+    },
+    {
+      "caseId": "electrical-sheet-e-2-1-purpose",
+      "classification": "product_defect",
+      "answerDisposition": "incorrect_retrieval",
+      "reason": "The response used page 9, an enlarged power plan, instead of the requested verified Sheet E-2.1 lighting plan on page 7.",
+      "repair": "Promote exact verified sheet identity ahead of general same-document semantic matches."
+    },
+    {
+      "caseId": "infiltration-chamber-detail-location",
+      "classification": "proof_coverage_defect",
+      "answerDisposition": "correct_but_not_fully_proven",
+      "reason": "The C6-to-C8 answer is correct, but the C8 citation did not include a valid bounded drawing region for the claimed detail.",
+      "repair": "Materialize a bounded C8 detail region and require it before passing proof coverage."
+    },
+    {
+      "caseId": "2321-canopy-foundation-slab",
+      "classification": "product_defect",
+      "answerDisposition": "incorrect_retrieval",
+      "reason": "Civil pages were retrieved while structural Sheet SB-1.1 containing the 6-inch reinforced slab requirement was missed.",
+      "repair": "Normalize hazardous-material wording and preserve structural discipline affinity."
+    },
+    {
+      "caseId": "2321-plumbing-fixture-unit-totals",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "The response correctly reports 35 and 30 fixture units from PB-1.2. The evaluator incorrectly required the project number to appear inside each proof excerpt.",
+      "repair": "Keep project identity as citation metadata and grade the requested labels and values independently."
+    },
+    {
+      "caseId": "2321-panel-replacement-capacities",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "The answer correctly reports 125-amp/30-pole and 225-amp/42-pole panels. The evaluator accepted only the abbreviation A.",
+      "repair": "Normalize amp, amps, ampere, and A as equivalent electrical units."
+    },
+    {
+      "caseId": "2321-site-photometric-statistics",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "The answer and E-2.7 proof contain the requested average, maximum, and minimum values. The evaluator over-required the exact drawing-title phrase.",
+      "repair": "Grade numeric facts and verified sheet identity without requiring unrelated title text inside the excerpt."
+    },
+    {
+      "caseId": "2321-tree-requirement-and-provision",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "The response says 71 trees required and 78 provided. The evaluator rejected the equivalent noun-first word order.",
+      "repair": "Use order-independent subject, quantity, and required/provided relationship grading."
+    },
+    {
+      "caseId": "2321-irrigation-hydrozones",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "The response correctly gives high 0, medium 146, and low 9,470 square feet. The evaluator required water zone rather than the synonymous hydrozone wording.",
+      "repair": "Normalize hydrozone and water-zone terminology and square-foot unit variants."
+    },
+    {
+      "caseId": "2321-plant-material-quantities",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "All four species and quantities are correct. The evaluator incorrectly required each count to precede the species inside raw proof text.",
+      "repair": "Grade each species-count pair independent of word order."
+    },
+    {
+      "caseId": "2321-cross-discipline-canopy-size-and-slab",
+      "classification": "product_defect",
+      "answerDisposition": "incomplete_retrieval",
+      "reason": "Only structural evidence was returned; the architectural A-1.5A area evidence was omitted, so the compound answer safely failed closed.",
+      "repair": "Detect multi-fact questions, suppress single-fact early exit, and require coverage from both requested disciplines."
+    },
+    {
+      "caseId": "2321-cross-sheet-hazmat-plan-set",
+      "classification": "evaluator_defect",
+      "answerDisposition": "correct",
+      "reason": "The response identifies A-1.5 and A-1.5A and explains their complementary uses. The evaluator required the literal words together or both.",
+      "repair": "Grade the presence and complementary roles of both verified sheets rather than a connective word."
+    },
+    {
+      "caseId": "2321-measured-airflow-negative-control",
+      "classification": "product_defect",
+      "answerDisposition": "unsafe_scope_confusion",
+      "reason": "The response supplied the 100 CFM design value but did not clearly state that current evidence does not verify a measured field air-balance result.",
+      "repair": "Require an explicit design-versus-measured limitation for installed-condition and field-measurement questions."
+    }
+  ]
+}

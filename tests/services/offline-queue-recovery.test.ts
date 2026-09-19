@@ -237,6 +237,38 @@ describe('offline queue corruption recovery', () => {
     await expect(getOfflineQueue()).resolves.toEqual([]);
   });
 
+  it('drains active work before scanning unrelated legacy quarantines', async () => {
+    const activeProject = queueItem('active-project-first');
+    const archivedUpdate = archiveQueueItem('legacy-archive-later');
+    const quarantineKey = addLegacyArchiveQuarantine(
+      '2026-07-20T12:00:30.000Z',
+      [archivedUpdate],
+    );
+    mockStorageValues.set(ACTIVE_QUEUE_KEY, JSON.stringify([activeProject]));
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+      errors: [],
+    });
+    expect(mockCreateProject).toHaveBeenCalledTimes(1);
+    expect(mockArchiveProjectUpdate).not.toHaveBeenCalled();
+    expect(mockStorageValues.get(quarantineKey)).toBe(
+      JSON.stringify([archivedUpdate]),
+    );
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+      errors: [],
+    });
+    expect(mockArchiveProjectUpdate).toHaveBeenCalledTimes(1);
+    await expect(getOfflineQueueRecoveryState()).resolves.toMatchObject({
+      recoveryAvailable: false,
+      unresolvedQuarantineKeys: [],
+    });
+  });
+
   it('keeps an archive-only row quarantined when its archive time is missing', async () => {
     const archive = archiveQueueItem('archive-missing-time');
     const invalidArchive = {

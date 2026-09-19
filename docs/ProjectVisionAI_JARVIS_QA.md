@@ -453,6 +453,18 @@ JARVIS should validate that PIE remains useful and local:
 
 Before TestFlight release, JARVIS QA should confirm:
 
+- Customers are never instructed to create or fund Gemini, OpenAI, Google
+  Cloud, or Supabase accounts for Vitruvius processing.
+- Customers are never asked to enter provider API keys or purchase separate
+  processing credits.
+- Normal user-facing screens do not expose provider names, model names,
+  provider quotas, prepaid-credit status, internal index versions, or raw
+  provider errors.
+- Vitruvius owns production service credentials, capacity, retry behavior, and
+  provider billing behind one product boundary.
+- Google Drive onboarding asks the customer only to authorize and select files;
+  missing Vitruvius-owned configuration is reported as a service availability
+  issue, not as customer setup work.
 - Sprint scope aligns to the PIE Product Operating Plan.
 - The change improves PIE, evidence capture, or output clarity.
 - The user is not forced into unnecessary options.

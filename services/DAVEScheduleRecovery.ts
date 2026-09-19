@@ -97,6 +97,44 @@ export function recoverDAVEScheduleRecords({
 }
 
 /**
+ * Select only local task revisions that would actually change cloud truth.
+ * Recovery may return cloud-only rows so another device can hydrate them; it
+ * must never cause those same rows to be written back during Full Sync.
+ */
+export function daveScheduleItemsNeedingCloudUpload({
+  local,
+  cloud,
+  deletedIds = [],
+}: {
+  local: readonly ScheduleItem[];
+  cloud: readonly ScheduleItem[];
+  deletedIds?: readonly string[];
+}): ScheduleItem[] {
+  const deleted = new Set(deletedIds.map(normalized).filter(Boolean));
+  const cloudById = new Map(
+    cloud
+      .map(record => [normalized(record.id), record] as const)
+      .filter(([id]) => Boolean(id) && !deleted.has(id)),
+  );
+
+  return local.flatMap(record => {
+    const id = normalized(record.id);
+    if (!id || deleted.has(id)) return [];
+    const remote = cloudById.get(id);
+    if (!remote) return [record];
+    const authoritative = recoverDAVEScheduleRecords({
+      local: [record],
+      cloud: [remote],
+      allowCloudOnly: true,
+    }).find(candidate => normalized(candidate.id) === id);
+    if (!authoritative) return [];
+    return stableMeaning(authoritative) === stableMeaning(remote)
+      ? []
+      : [authoritative];
+  });
+}
+
+/**
  * A task note and PM progress can be changed independently on different
  * devices. The shared row has one `updatedAt`, so choosing the entire newest
  * row would let a note-only edit roll back newer progress. Keep the newest
@@ -122,6 +160,21 @@ function mergeScheduleRevisions(
     completionVerification: progressSource.completionVerification,
     projectControls: mergeScheduleProjectControls(local, cloud, base),
   };
+}
+
+function stableMeaning(value: ScheduleItem) {
+  return JSON.stringify(sortRecord(value));
+}
+
+function sortRecord(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortRecord);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortRecord(entry)]),
+  );
 }
 
 function mergeScheduleProjectControls(

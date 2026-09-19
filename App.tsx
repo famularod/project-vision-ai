@@ -54,6 +54,7 @@ import {
   accountDisplayNameForUser,
   getCurrentUser,
   getCurrentSessionAccessToken,
+  getSupabaseClient,
   listArchivedProjects,
   listProjectAreas,
   listProjects,
@@ -143,6 +144,7 @@ import {
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
+import { ProjectDocumentCard } from './components/project-document-card';
 import { mergeDAVEProjectAreaRecoveryRecords } from './services/DAVEProjectAreaRecovery';
 import {
   explicitProjectAreaOwner,
@@ -173,6 +175,9 @@ import { UpdateDeleteControl } from './components/update-delete-control';
 import { HoldToDeleteButton } from './components/hold-to-delete-button';
 import { MoreOptionRow, ProjectActionSheet } from './components/project-action-sheet';
 import { DAVEConversationAnswerSheet } from './components/DAVEConversationAnswerSheet';
+import { ECOSDocumentEvidenceSheet } from './components/ECOSDocumentEvidenceSheet';
+import { extractECOSMobileDocument } from './services/ECOSMobileDocumentExtraction';
+import { loadECOSTalkReferenceDocuments } from './services/ECOSTalkDocumentContext';
 import {
   DAVETaskActionConfirmationSheet,
   type DAVETaskActionCandidate,
@@ -181,6 +186,8 @@ import { DAVECaptureConfirmationSheet } from './components/DAVECaptureConfirmati
 import { DAVECaptureMemoryDetailSheet } from './components/DAVECaptureMemoryDetailSheet';
 import { DAVETypedCaptureSheet } from './components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from './components/DAVEVoiceCaptureSheet';
+import { AppScreenScroll as ScreenScroll } from './components/app-screen-scroll';
+import { NativeFieldNotesExperience, OverviewFieldNotesCard } from './components/native-field-notes-experience';
 import {
   DailyBriefSection,
   DAVEProjectNeedsVerificationLabel,
@@ -236,9 +243,18 @@ import {
   resolveReferenceDocumentUri,
 } from './services/ReferenceDocumentRepository';
 import {
-  markAuthoritativeDocumentCurrent,
-  unmarkAuthoritativeDocumentCurrent,
+  canonicalReferenceCategory,
+  referenceDocumentAppliesToProject,
 } from './services/AuthoritativeDocumentSystem';
+import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
+import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
+import { activateECOSCurrentReferenceDocument } from './services/ECOSHostedIndexer';
+import {
+  createECOSMobileDrawingControls,
+  mobileDrawingMetadataForUpload,
+  type ECOSMobileDrawingControls,
+  validateECOSMobileDrawingControls,
+} from './services/ECOSMobileDrawingOnboarding';
 import { restoreReferenceDocumentBytesFromCloud } from './services/ExpoReferenceDocumentByteRestore';
 import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocumentByteRestore';
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
@@ -282,6 +298,7 @@ import { buildProjectDeletionFileCleanupIntents, createProjectDeletionLocalFileC
 import { PROJECT_UPDATE_DELETION_JOURNAL_STORAGE_KEY } from './services/ProjectUpdateDeletionJournal';
 import {
   FileSizePreflightError,
+  hashExpoFileSha256,
   MAX_PROJECT_DOCUMENT_FILE_BYTES,
   preflightExpoFileRead,
   prepareExpoFileUploadPayload,
@@ -313,6 +330,7 @@ import {
   PROJECT_DOCUMENT_REIMPORT_REQUIRED_MESSAGE,
   recoverStaleUploadingDocuments,
   requireOwnedProjectDocumentAccess,
+  synchronizeSharedReferenceDocumentMetadata,
 } from './services/ProjectDocumentLifecycle';
 import {
   fieldUpdateLifecycleLabel,
@@ -366,7 +384,8 @@ import {
   buildStableAttentionItemId,
   dedupeAttentionItemsById,
 } from './services/PIEAttentionIdentity';
-import { buildDAVEProjectTruth } from './services/DAVEProjectTruth';
+import { buildECOSTalkProjectIntelligence } from './services/ECOSTalkProjectIntelligence';
+import { talkContextProjectForScreen } from './services/ECOSTalkProjectContext';
 import { selectActionableDailyBriefItems } from './services/DAVEDailyBrief';
 import { parseDAVEAssertions } from './services/DAVEAssertionParser';
 import {
@@ -412,7 +431,7 @@ import {
   resolveDAVEAskEvidenceNavigation,
   type DAVEAskConversationEntry,
 } from './services/DAVEAskConversation';
-import type { DAVEAskAnswer, DAVEAskEvidence } from './services/DAVEAsk';
+import { type DAVEAskAnswer, type DAVEAskEvidence } from './services/DAVEAsk';
 import type { DAVEVoiceUnderstandingResponse } from './services/DAVEVoiceUnderstanding';
 import {
   buildDAVEProjectWalkContext,
@@ -569,6 +588,8 @@ import {
 import type { AppScreen } from './types/app-navigation';
 import { useAndroidHardwareBack, useAppNavigation } from './hooks/use-app-navigation';
 import { useReportSelection } from './hooks/use-report-selection';
+import { useECOSDocumentEvidence } from './hooks/use-ecos-document-evidence';
+import { useECOSProjectQuestionExperience } from './hooks/use-ecos-project-question-experience';
 import { countLabel, pluralWord } from './utils/pluralization';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -757,6 +778,7 @@ type ProjectDocument = {
   drawingDiscipline?: string | null;
   drawingStatus?: ReferenceDocument['drawingStatus'];
   drawingIssuedAt?: string | null;
+  webVersionGroupId?: string | null;
 };
 type FieldUpdateDocument = ProjectDocument;
 type FieldUpdateWorkflowTimestamps = {
@@ -838,7 +860,9 @@ const ARCHIVED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.archivedProjects.v2';
 const CONTACTS_STORAGE_KEY = 'projectPhotoUpdate.contacts.v2';
 const DRAFT_STORAGE_KEY = 'projectPhotoUpdate.activeDraft.v2';
 const PROJECT_AREAS_STORAGE_KEY = 'projectPhotoUpdate.projectAreas.v1';
-const REFERENCE_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.referenceDocuments.v1';
+// v1 may contain full page/region indexes from legacy builds. Leave those
+// bytes untouched for recovery, but never parse them during mobile startup.
+const REFERENCE_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.referenceDocumentMetadata.v2';
 const PROJECT_DOCUMENTS_STORAGE_KEY = 'projectPhotoUpdate.projectDocuments.v1';
 const SCHEDULE_ITEMS_STORAGE_KEY = 'projectPhotoUpdate.scheduleItems.v1';
 const DISPLAY_NAME_STORAGE_KEY = 'projectPhotoUpdate.displayName.v1';
@@ -1652,6 +1676,7 @@ function normalizeProjectDocument(
         ? value.drawingStatus
         : null,
     drawingIssuedAt: optionalString(value.drawingIssuedAt),
+    webVersionGroupId: optionalString(value.webVersionGroupId),
   };
 }
 
@@ -5216,7 +5241,12 @@ function AppShell() {
 
   const [referenceDocuments, setReferenceDocuments] =
     useState<ReferenceDocument[]>([]);
-
+  const ecosDocumentEvidence = useECOSDocumentEvidence({
+    documents: referenceDocuments,
+    projectIdentities: projectRecords,
+    ensureDocument: ensureVerifiedReferenceDocumentBytes,
+    openDocument: openReferenceDocument,
+  });
   const [projectDocuments, setProjectDocuments] =
     useState<ProjectDocument[]>([]);
 
@@ -5224,6 +5254,7 @@ function AppShell() {
     useState<ScheduleItem[]>([]);
   const projectAreasCurrentRef = useRef(projectAreas);
   const referenceDocumentsCurrentRef = useRef(referenceDocuments);
+  const currentReferenceActivationIdsRef = useRef(new Set<string>());
   const projectDocumentsCurrentRef = useRef(projectDocuments);
   const scheduleItemsCurrentRef = useRef(scheduleItems);
   const projectsCurrentRef = useRef(projects);
@@ -5266,6 +5297,7 @@ function AppShell() {
     attachToDraft: boolean;
     areaId: string | null;
     updateId: string | null;
+    drawingControls: ECOSMobileDrawingControls;
   } | null>(null);
   const [incomingScheduleImportBatch, setIncomingScheduleImportBatch] = useState<PIEScheduleImportBatch | null>(null);
 
@@ -6182,7 +6214,7 @@ useEffect(() => {
   useJsonStoragePersistence({
     enabled: startupHydrationReady && referenceDocumentsLoaded,
     storageKey: REFERENCE_DOCUMENTS_STORAGE_KEY,
-    value: referenceDocuments,
+    value: compactECOSReferenceDocumentsForOperationalRead(referenceDocuments),
     label: 'reference documents',
   });
   useJsonStoragePersistence({
@@ -7457,6 +7489,7 @@ useEffect(() => {
     areaId?: string | null;
     updateId?: string | null;
     category?: ProjectDocumentCategory;
+    drawingMetadata?: ReturnType<typeof mobileDrawingMetadataForUpload>;
   }) {
     const now = new Date().toISOString();
     const id = uid();
@@ -7504,6 +7537,7 @@ useEffect(() => {
       importedAt: now,
       status: 'local',
       uploadAttemptCount: 0,
+      ...(context?.category === 'Drawing' ? context.drawingMetadata : null),
     }) as ProjectDocument;
   }
 
@@ -7580,11 +7614,23 @@ useEffect(() => {
       attachToDraft: Boolean(options?.attachToDraft),
       areaId: options?.areaId || null,
       updateId: options?.updateId || null,
+      drawingControls: createECOSMobileDrawingControls(),
     });
   }
 
   function setDocumentUploadCategory(category: ProjectDocumentCategory) {
-    setDocumentUploadRequest(current => current ? { ...current, category } : current);
+    setDocumentUploadRequest(current => current ? {
+      ...current,
+      category,
+      drawingControls: {
+        ...current.drawingControls,
+        replacementDocumentId: null,
+      },
+    } : current);
+  }
+
+  function setDocumentUploadDrawingControls(drawingControls: ECOSMobileDrawingControls) {
+    setDocumentUploadRequest(current => current ? { ...current, drawingControls } : current);
   }
 
   function toggleDocumentUploadProject(projectName: string) {
@@ -7599,7 +7645,16 @@ useEffect(() => {
         nextSelected.add(projectName);
       }
 
-      return { ...prev, selected: nextSelected };
+      return {
+        ...prev,
+        selected: nextSelected,
+        drawingControls: {
+          ...prev.drawingControls,
+          // A replacement family is project-specific. Any scope change must
+          // require an explicit fresh choice rather than carrying stale intent.
+          replacementDocumentId: null,
+        },
+      };
     });
   }
 
@@ -7617,13 +7672,35 @@ useEffect(() => {
       attachToDraft,
       areaId,
       updateId,
+      drawingControls,
     } = documentUploadRequest;
+
+    const drawingValidation = category === 'Drawing'
+      ? validateECOSMobileDrawingControls(drawingControls)
+      : null;
+    if (drawingValidation && !drawingValidation.valid) {
+      Alert.alert('Complete drawing details', drawingValidation.message || 'Add the required drawing details.');
+      return;
+    }
 
     // Same picked file, one ProjectDocument record per selected project -
     // each project keeps its own independent upload/retry/status lifecycle,
     // matching how documents already work everywhere else in this screen.
     try {
       const selectedProjectNames = Array.from(selected);
+      const replacementDocument = category === 'Drawing' &&
+        selectedProjectNames.length === 1 &&
+        drawingControls.replacementDocumentId
+        ? referenceDocumentsCurrentRef.current.find(document =>
+            document.id === drawingControls.replacementDocumentId &&
+            canonicalReferenceCategory(document) === 'drawing' &&
+            (referenceDocumentAppliesToProject(document, selectedProjectNames[0]) ||
+              document.projectId === authorityProjectId(selectedProjectNames[0])),
+          ) || null
+        : null;
+      const drawingMetadata = category === 'Drawing'
+        ? mobileDrawingMetadataForUpload(drawingControls, replacementDocument)
+        : undefined;
       if (category === 'Schedule' && !attachToDraft) {
         const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
         if (batch) {
@@ -7640,6 +7717,7 @@ useEffect(() => {
           areaId: attachToDraft ? areaId : null,
           updateId: attachToDraft ? updateId : null,
           category,
+          drawingMetadata,
         });
         const duplicate = duplicateProjectDocumentForAsset(
           projectDocuments, document.projectId, {
@@ -9734,7 +9812,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     const email = photoAuthEmail.trim();
     if (!email || !photoAuthPassword) {
-      setPhotoAuthMessage('Enter the Supabase account email and password.');
+      setPhotoAuthMessage('Enter your Vitruvius account email and password.');
       return;
     }
 
@@ -9779,7 +9857,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     const email = photoAuthEmail.trim();
     if (!email || !photoAuthPassword) {
-      setPhotoAuthMessage('Enter an email and password for the development Supabase account.');
+      setPhotoAuthMessage('Enter an email and password for the development Vitruvius account.');
       return;
     }
 
@@ -9806,7 +9884,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         setPhotoAuthMessage(
           tokenLookup?.missingReason === 'auth_loading'
             ? PIE_STATUS_COPY.preparingSecureAnalysis
-            : 'Development account was created, but Supabase did not return a signed-in session. If email confirmation is enabled, confirm the email and sign in.',
+            : 'The development account was created, but the Vitruvius session is not ready. If email confirmation is enabled, confirm the email and sign in.',
         );
         return;
       }
@@ -10846,34 +10924,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
         to: targetUri,
       });
 
-      let extractedText: string | null = null;
-      let extractionStatus: ReferenceDocument['extractionStatus'] = 'not_supported';
-      try {
-        if (
-          (asset.mimeType === 'application/pdf' || originalFileName.toLowerCase().endsWith('.pdf')) &&
-          isDavePdfTextExtractionAvailable()
-        ) {
-          extractionStatus = 'pending';
-          const extracted = await withScheduleImportTimeout(
-            extractTextFromPdf(targetUri),
-            20_000,
-            `Text extraction timed out for ${originalFileName}.`,
-          );
-          extractedText = extracted.text.trim() || null;
-          extractionStatus = extractedText ? 'complete' : 'failed';
-        } else if (asset.mimeType?.startsWith('image/') && isDaveTextRecognitionAvailable()) {
-          extractionStatus = 'pending';
-          const recognized = await withScheduleImportTimeout(
-            recognizeTextFromImage(targetUri),
-            20_000,
-            `Text recognition timed out for ${originalFileName}.`,
-          );
-          extractedText = recognized.text.trim() || null;
-          extractionStatus = extractedText ? 'complete' : 'failed';
-        }
-      } catch {
-        extractionStatus = 'failed';
-      }
+      const integrity = await hashExpoFileSha256({
+        uri: targetUri,
+        maxBytes: MAX_PROJECT_DOCUMENT_FILE_BYTES,
+      });
+
+      const extraction = await extractECOSMobileDocument({
+        uri: targetUri,
+        mimeType: asset.mimeType,
+        fileName: originalFileName,
+      });
 
       const nextDocument = normalizeReferenceDocument({
         id: uid(),
@@ -10885,11 +10945,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         notes: '',
         isCurrent: false,
         importedAt: new Date().toISOString(),
-        extractedText,
-        extractionStatus,
-        extractedPages: extractedText
-          ? [{ pageNumber: 1, text: extractedText, regions: [] }]
-          : [],
+        sizeBytes: integrity.sizeBytes,
+        contentSha256: integrity.sha256,
+        ...extraction,
+        indexedContentSha256: integrity.sha256,
       });
 
       markReferenceDocumentsAuthorityReady(true);
@@ -10902,7 +10961,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       Alert.alert(
         'Document imported',
-        extractionStatus === 'complete'
+        extraction.extractionStatus === 'complete' || extraction.extractionStatus === 'partial'
           ? `${nextDocument.name} was saved and its searchable text was indexed. Mark the correct revision Current before Core uses it.`
           : `${nextDocument.name} was saved. Mark the correct revision Current before Core uses it.`,
       );
@@ -10930,28 +10989,79 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   function markReferenceDocumentCurrent(documentId: string) {
-    const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
-    if (!target) return;
-    const updatedAt = new Date().toISOString();
-    const result = target.isCurrent
-      ? unmarkAuthoritativeDocumentCurrent(
-          referenceDocumentsCurrentRef.current,
-          documentId,
-          updatedAt,
-        )
-      : markAuthoritativeDocumentCurrent(
-          referenceDocumentsCurrentRef.current,
-          documentId,
-          updatedAt,
+    void (async () => {
+      const target = referenceDocumentsCurrentRef.current.find(document => document.id === documentId);
+      if (!target || target.isCurrent || currentReferenceActivationIdsRef.current.has(documentId)) {
+        return;
+      }
+      const readiness = buildECOSDocumentReadiness(target);
+      if (!readiness.canMakeCurrent) {
+        Alert.alert('Document is not ready for ECOS', readiness.detail);
+        return;
+      }
+      const client = getSupabaseClient();
+      if (!client || !target.cloudUpdatedAt) {
+        Alert.alert(
+          'Refresh required',
+          'Sign in and refresh the project documents before changing the current revision.',
         );
-    const updated = result.documents;
+        return;
+      }
 
-    markReferenceDocumentsAuthorityReady(true);
-    referenceDocumentsCurrentRef.current = updated;
-    setReferenceDocuments(updated);
-    void Promise.all(updated
-      .filter(document => result.changedDocumentIds.includes(document.id))
-      .map(document => queueReferenceDocumentRecord(document)));
+      currentReferenceActivationIdsRef.current.add(documentId);
+      try {
+        const activation = await activateECOSCurrentReferenceDocument({
+          client,
+          documentId,
+          expectedUpdatedAt: target.cloudUpdatedAt,
+        });
+        if (activation.status !== 'activated') {
+          Alert.alert(
+            activation.status === 'not_prepared'
+              ? 'Document is not ready for ECOS'
+              : 'Current revision was not changed',
+            activation.message || 'Refresh the project documents and try again.',
+          );
+          return;
+        }
+
+        const documentsResult = await listReferenceDocuments();
+        if (
+          !documentsResult.ok ||
+          documentsResult.stubbed ||
+          !Array.isArray(documentsResult.data)
+        ) {
+          Alert.alert(
+            'Current revision changed',
+            'The shared record was updated, but this device could not refresh it yet. Refresh Project Documents before making another change.',
+          );
+          return;
+        }
+
+        const cloudDocuments = normalizeReferenceDocuments(documentsResult.data);
+        const deletedIds = deletedDAVERecordIds(
+          operationalSyncTombstonesRef.current,
+          'reference_document',
+        );
+        const mergedDocuments = reconcileCurrentScheduleDocuments(
+          mergeDAVEReferenceDocumentRecoveryRecords({
+            local: referenceDocumentsCurrentRef.current,
+            cloud: cloudDocuments,
+            deletedIds,
+          }),
+        );
+        markReferenceDocumentsAuthorityReady(true);
+        referenceDocumentsCurrentRef.current = mergedDocuments;
+        setReferenceDocuments(mergedDocuments);
+      } catch {
+        Alert.alert(
+          'Current revision was not changed',
+          'Vitruvius could not verify the shared revision change. Try again shortly.',
+        );
+      } finally {
+        currentReferenceActivationIdsRef.current.delete(documentId);
+      }
+    })();
   }
 
   async function ensureVerifiedReferenceDocumentBytes(
@@ -11126,13 +11236,46 @@ Note: This update was opened through Outlook because PLZ email security may reje
     documentId: string,
     next: Partial<ProjectDocument>,
   ) {
-    updateDocumentEverywhere(documentId, document =>
+    const changedDocument = updateDocumentEverywhere(documentId, document =>
       normalizeProjectDocument({
         ...document,
         ...next,
         updatedAt: new Date().toISOString(),
       }) as ProjectDocument,
     );
+    if (!changedDocument) return;
+
+    void persistProjectDocumentsImmediately(projectDocumentsCurrentRef.current)
+      .catch(error => reportStoragePersistenceFailure({
+        storageKey: PROJECT_DOCUMENTS_STORAGE_KEY,
+        label: 'project document metadata',
+        error,
+      }));
+
+    const sharedDocument = findSharedReferenceDocumentForProjectDocument(
+      changedDocument,
+      referenceDocumentsCurrentRef.current,
+    );
+    if (!sharedDocument) return;
+
+    const projectName = projectsCurrentRef.current.find(
+      name => authorityProjectId(name) === changedDocument.projectId,
+    ) || null;
+    const synchronizedDocument = normalizeReferenceDocument(
+      synchronizeSharedReferenceDocumentMetadata({
+        document: changedDocument,
+        sharedDocument,
+        projectName,
+        updatedAt: changedDocument.updatedAt,
+      }),
+    );
+    const updatedReferences = referenceDocumentsCurrentRef.current.map(document =>
+      document.id === synchronizedDocument.id ? synchronizedDocument : document,
+    );
+    markReferenceDocumentsAuthorityReady(true);
+    referenceDocumentsCurrentRef.current = updatedReferences;
+    setReferenceDocuments(updatedReferences);
+    void queueReferenceDocumentRecord(synchronizedDocument);
   }
 
   async function makeProjectScheduleDocumentCurrent(documentId: string) {
@@ -12927,36 +13070,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }));
   }, [authoritativeScheduleItems, talkProjectName]);
 
-  function projectIntelligenceForTalk(projectName: string, taskId: string | null = null) {
-    const scopeNames = scheduleProjectScopeNames(
-      projectName,
-      authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
-    );
-    const updates = projectUpdatesForScopes(
-      activeSavedUpdates,
-      scopeNames,
-      authoritativeScheduleItems,
-    )
-      .map(update => ({ ...update, projectName }));
-    const documents = projectDocumentsForScopes(scopeNames, projectDocuments)
-      .map(document => ({ ...document, projectId: authorityProjectId(projectName) }));
-    const projectScheduleItems = scheduleTasksForParentProject(
-      projectName,
-      authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
-    ).map(item => ({ ...item, projectName }));
-    const scopedScheduleItems = taskId
-      ? projectScheduleItems.filter(item => item.id === taskId)
-      : projectScheduleItems;
-
-    return buildDAVEProjectTruth({
+  function projectIntelligenceForTalk(projectName: string, taskId: string | null = null,
+    talkReferenceDocuments: readonly ReferenceDocument[] = referenceDocuments) {
+    return buildECOSTalkProjectIntelligence({
       projectId: authorityProjectId(projectName),
       projectName,
-      updates,
-      scheduleItems: scopedScheduleItems,
-      projectDocuments: documents,
-      referenceDocuments,
+      taskId,
+      updates: activeSavedUpdates,
+      scheduleItems: authoritativeScheduleItems,
+      projectDocuments,
+      referenceDocuments: talkReferenceDocuments,
       captureMemories,
-    }).intelligence;
+    });
   }
 
   function openTalk() {
@@ -13009,6 +13134,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
     projectName: string,
     citation: DAVEAskEvidence,
   ) {
+    if (citation.sourceType === 'document' && citation.documentCitation) {
+      setTalkAnswer(null);
+      void ecosDocumentEvidence.openEvidence(citation);
+      return;
+    }
     const intelligence = projectIntelligenceForTalk(projectName);
     const destination = resolveDAVEAskEvidenceNavigation(intelligence, citation);
     setTalkAnswer(null);
@@ -13116,12 +13246,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const taskContextId = mentionedProject && mentionedProject !== talkProjectName
       ? null
       : talkTaskId;
-    const intelligence = projectIntelligenceForTalk(projectName, taskContextId);
-    const initialRoute = routeDAVEConversation({
-      transcript,
-      intelligence,
-      interface: voiceResult ? 'voice' : 'text',
-    });
     const projectId = authorityProjectId(projectName);
     let history: DAVEAskConversationEntry[];
     try {
@@ -13137,6 +13261,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
       transcript,
       history,
       projectId,
+    });
+    const talkDocuments = await loadECOSTalkReferenceDocuments({
+      client: getSupabaseClient(),
+      documents: referenceDocuments,
+      question: context.status === 'resolved_follow_up' ? context.effectiveQuestion : transcript,
+      projectName,
+    });
+    const intelligence = projectIntelligenceForTalk(projectName, taskContextId, talkDocuments);
+    const initialRoute = routeDAVEConversation({
+      transcript,
+      intelligence,
+      interface: voiceResult ? 'voice' : 'text',
     });
     const route = initialRoute;
     const contextualAnswer = context.status === 'resolved_follow_up'
@@ -13241,6 +13377,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
     ]);
   }
 
+  const ecosProjectQuestion = useECOSProjectQuestionExperience({
+    contextualProjectName: talkContextProjectForScreen(
+      screen,
+      selectedWorkspaceProject,
+      selectedReportProjectNames[0] || null,
+    ),
+    projectRecords,
+    candidateProjects: reportAvailableProjectNames,
+    onOpenEvidence: (projectName, evidence) => {
+      if (evidence.sourceType === 'document' && evidence.documentCitation) {
+        void ecosDocumentEvidence.openEvidence(evidence);
+        return;
+      }
+      openTalkSupportingEvidence(projectName, evidence);
+    },
+  });
   const projectStatusReady = startupHydrationReady;
   const authorityMode = authorityModeForScreen(screen);
 
@@ -13387,6 +13539,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           currentScreen={screen}
           onScreenChange={setScreen}
           onTalk={openTalk}
+          onAskECOS={ecosProjectQuestion.open}
           taskProjects={scheduleWorkspaceProjectOptions(activeProjects, authoritativeScheduleItems)}
           selectedTaskProject={scheduleProjectFilter}
           onTaskProjectChange={projectName => {
@@ -13435,6 +13588,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 setUpdatesProjectFilter(null);
                 setScreen('SavedUpdates');
               }}
+              onOpenFieldNotes={() => setScreen('FieldNotes')}
               onSettings={() => setScreen('Admin')}
             />
           )}
@@ -13659,6 +13813,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 workspaceScopeNames(selectedWorkspaceProject),
                 projectDocuments,
               )}
+              referenceDocuments={referenceDocuments}
               projectAreas={selectedWorkspaceProjectAreas}
               updates={projectUpdatesForScopes(
                 activeSavedUpdates,
@@ -13675,6 +13830,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onOpen={openProjectDocument}
               onUpdate={updateProjectDocument}
               onSetCurrentSchedule={makeProjectScheduleDocumentCurrent}
+              onMakeCurrentDocument={markReferenceDocumentCurrent}
               onRetry={documentId => {
                 void retryProjectDocumentUpload(documentId);
               }}
@@ -13731,6 +13887,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
               currentUserEmail={layer4Identity?.authenticatedEmail || ''}
             />
           )}
+
+          {screen === 'FieldNotes' && <NativeFieldNotesExperience
+            contentStyle={contentStyle}
+            ownerKey={layer4Identity?.authenticatedUserId || layer4Identity?.authenticatedEmail || 'local-device'}
+            projects={activeProjects}
+            projectRecords={projectRecords}
+            projectAreas={projectAreas}
+          />}
 
           {screen === 'Diagnostics' && (
             <ScreenScroll contentStyle={contentStyle}>
@@ -14042,11 +14206,34 @@ Note: This update was opened through Outlook because PLZ email security may reje
             selectedProjects={documentUploadRequest?.selected ?? EMPTY_SELECTED_PROJECTS}
             categories={PROJECT_DOCUMENT_CATEGORIES}
             selectedCategory={documentUploadRequest?.category || 'Other'}
+            drawingControls={documentUploadRequest?.drawingControls}
+            replacementDocuments={
+              documentUploadRequest?.category === 'Drawing' &&
+              documentUploadRequest.selected.size === 1
+                ? referenceDocuments
+                    .filter(document => {
+                      const projectName = Array.from(documentUploadRequest.selected)[0];
+                      return document.isCurrent &&
+                        canonicalReferenceCategory(document) === 'drawing' &&
+                        (referenceDocumentAppliesToProject(document, projectName) ||
+                          document.projectId === authorityProjectId(projectName));
+                    })
+                    .map(document => ({
+                      id: document.id,
+                      name: document.name,
+                      revision: document.drawingRevision || null,
+                      isCurrent: document.isCurrent,
+                    }))
+                : []
+            }
             onCategoryChange={setDocumentUploadCategory}
+            onDrawingControlsChange={setDocumentUploadDrawingControls}
             onToggleProject={toggleDocumentUploadProject}
             onConfirm={confirmDocumentProjectSelection}
             onClose={cancelDocumentProjectSelection}
           />
+
+          {ecosProjectQuestion.sheets}
 
           <DAVEVoiceCaptureSheet
             visible={talkVoiceOpen}
@@ -14128,6 +14315,18 @@ Note: This update was opened through Outlook because PLZ email security may reje
             onClose={() => setTalkAnswer(null)}
           />
 
+          <ECOSDocumentEvidenceSheet
+            visible={Boolean(ecosDocumentEvidence.state)}
+            evidence={ecosDocumentEvidence.state?.evidence || null}
+            document={ecosDocumentEvidence.state?.document || null}
+            imageUri={ecosDocumentEvidence.state?.imageUri || null}
+            binding={ecosDocumentEvidence.state?.binding || null}
+            loading={ecosDocumentEvidence.state?.loading || false}
+            error={ecosDocumentEvidence.state?.error || null}
+            onOpenDocument={ecosDocumentEvidence.openFullDocument}
+            onClose={ecosDocumentEvidence.close}
+          />
+
           <DAVETaskActionConfirmationSheet
             visible={Boolean(talkTaskAction)}
             projectName={talkTaskAction?.projectName || talkProjectName}
@@ -14156,26 +14355,6 @@ function authorityProjectId(projectName: string) {
     .replace(/^-|-$/g, '');
 
   return `project-${normalized || 'unassigned'}`;
-}
-
-function talkContextProjectForScreen(
-  screen: Screen,
-  workspaceProject: string,
-  reportProject: string | null,
-): string | null {
-  if (screen === 'Reports') return reportProject;
-
-  if (
-    screen === 'ProjectWorkspace' ||
-    screen === 'ProjectDocuments' ||
-    screen === 'UpdateDetail' ||
-    screen === 'AddPhotos' ||
-    screen === 'BuildUpdate'
-  ) {
-    return workspaceProject;
-  }
-
-  return null;
 }
 
 type PIELiveAuthorityMode =
@@ -14230,24 +14409,6 @@ function createDecisionSnapshotFromJudgment({
   });
 }
 
-function ScreenScroll({
-  children,
-  contentStyle,
-}: {
-  children: ReactNode;
-  contentStyle: StyleProp<ViewStyle>;
-}) {
-  return (
-    <ScrollView
-      style={styles.appFrame}
-      contentContainerStyle={contentStyle}
-      keyboardShouldPersistTaps="handled"
-    >
-      {children}
-    </ScrollView>
-  );
-}
-
 function HomeScreen({
   contentStyle,
   projects,
@@ -14268,6 +14429,7 @@ function HomeScreen({
   onReopenProject,
   onOpenDueToday,
   onOpenAllActivity,
+  onOpenFieldNotes,
   onSettings,
 }: {
   contentStyle: StyleProp<ViewStyle>;
@@ -14289,6 +14451,7 @@ function HomeScreen({
   onReopenProject: (projectName: string) => void;
   onOpenDueToday: () => void;
   onOpenAllActivity: () => void;
+  onOpenFieldNotes: () => void;
   onSettings: () => void;
 }) {
   const [showAddProject, setShowAddProject] = useState(false);
@@ -14415,6 +14578,8 @@ function HomeScreen({
           <Ionicons name="settings-outline" size={21} color={colors.primary} />
         </TouchableOpacity>
       </View>
+
+      <OverviewFieldNotesCard onPress={onOpenFieldNotes} />
 
       {unfinishedDraft ? (
         <View style={styles.draftRecoveryCard}>
@@ -17608,6 +17773,7 @@ function ProjectDocumentsScreen({
   contentStyle,
   projectName,
   documents,
+  referenceDocuments,
   projectAreas,
   updates,
   onBack,
@@ -17616,6 +17782,7 @@ function ProjectDocumentsScreen({
   onOpen,
   onUpdate,
   onSetCurrentSchedule,
+  onMakeCurrentDocument,
   onRetry,
   onReplaceFile,
   onDelete,
@@ -17623,6 +17790,7 @@ function ProjectDocumentsScreen({
   contentStyle: StyleProp<ViewStyle>;
   projectName: string;
   documents: ProjectDocument[];
+  referenceDocuments: ReferenceDocument[];
   projectAreas: ProjectArea[];
   updates: ProjectUpdate[];
   onBack: () => void;
@@ -17631,6 +17799,7 @@ function ProjectDocumentsScreen({
   onOpen: (document: ProjectDocument) => void;
   onUpdate: (documentId: string, next: Partial<ProjectDocument>) => void;
   onSetCurrentSchedule: (documentId: string) => void;
+  onMakeCurrentDocument: (documentId: string) => void;
   onRetry: (documentId: string) => void;
   onReplaceFile: (documentId: string) => void;
   onDelete: (documentId: string) => void;
@@ -17656,11 +17825,13 @@ function ProjectDocumentsScreen({
   const renderDocument = ({ item }: { item: ProjectDocument }) => (
     <ProjectDocumentCard
       document={item}
+      sharedReferenceDocument={findSharedReferenceDocumentForProjectDocument(item, referenceDocuments)}
       projectAreas={projectAreas}
       updates={updates}
       onOpen={() => onOpen(item)}
       onUpdate={next => onUpdate(item.id, next)}
       onSetCurrentSchedule={() => onSetCurrentSchedule(item.id)}
+      onMakeCurrentDocument={onMakeCurrentDocument}
       onRetry={() => onRetry(item.id)}
       onReplaceFile={() => onReplaceFile(item.id)}
       onDelete={() => onDelete(item.id)}
@@ -17703,11 +17874,16 @@ function ProjectDocumentsScreen({
         inspector={selectedDocument ? (
           <ProjectDocumentCard
             document={selectedDocument}
+            sharedReferenceDocument={findSharedReferenceDocumentForProjectDocument(
+              selectedDocument,
+              referenceDocuments,
+            )}
             projectAreas={projectAreas}
             updates={updates}
             onOpen={() => onOpen(selectedDocument)}
             onUpdate={next => onUpdate(selectedDocument.id, next)}
             onSetCurrentSchedule={() => onSetCurrentSchedule(selectedDocument.id)}
+            onMakeCurrentDocument={onMakeCurrentDocument}
             onRetry={() => onRetry(selectedDocument.id)}
             onReplaceFile={() => onReplaceFile(selectedDocument.id)}
             onDelete={() => onDelete(selectedDocument.id)}
@@ -17729,345 +17905,6 @@ function ProjectDocumentsScreen({
       ListHeaderComponent={listHeader}
       ListEmptyComponent={emptyState}
     />
-  );
-}
-
-function ProjectDocumentCard({
-  document,
-  projectAreas,
-  updates,
-  onOpen,
-  onUpdate,
-  onSetCurrentSchedule,
-  onRetry,
-  onReplaceFile,
-  onDelete,
-}: {
-  document: ProjectDocument;
-  projectAreas: ProjectArea[];
-  updates: ProjectUpdate[];
-  onOpen: () => void;
-  onUpdate: (next: Partial<ProjectDocument>) => void;
-  onSetCurrentSchedule: () => void;
-  onRetry: () => void;
-  onReplaceFile: () => void;
-  onDelete: () => void;
-}) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const selectedUpdate = updates.find(update => update.id === document.updateId);
-  const selectedArea = projectAreas.find(area => area.id === document.areaId);
-
-  return (
-    <View style={styles.photoCard}>
-      <View style={styles.photoHeader}>
-        <View style={styles.rowIconBubble}>
-          <Ionicons
-            name={document.mimeType?.includes('image') ? 'image-outline' : 'document-text-outline'}
-            size={20}
-            color={colors.primary}
-          />
-        </View>
-        <View style={styles.rowMain}>
-          <Text style={styles.photoTitle}>{document.name}</Text>
-          <Text style={styles.rowSub}>
-            {document.category} · {projectDocumentStatusDetail(document)}
-          </Text>
-          {document.category === 'Schedule' && document.isCurrent ? (
-            <View style={[styles.statusPill, styles.documentCurrentBadge]}>
-              <Text style={[styles.statusPillText, { color: colors.success }]}>Current Schedule</Text>
-            </View>
-          ) : null}
-          {selectedArea ? (
-            <Text style={styles.locationDetailText}>Area: {selectedArea.name}</Text>
-          ) : null}
-          {selectedUpdate ? (
-            <Text style={styles.locationDetailText}>
-              Update: {formatDisplayDate(selectedUpdate.date)}
-            </Text>
-          ) : null}
-          {document.note ? (
-            <Text style={styles.locationDetailText}>{document.note}</Text>
-          ) : null}
-          {document.category === 'Drawing' ? (
-            <Text style={styles.locationDetailText}>
-              {[
-                document.drawingNumber ? `Drawing ${document.drawingNumber}` : null,
-                document.drawingRevision ? `Rev ${document.drawingRevision}` : null,
-                document.drawingDiscipline,
-                document.drawingStatus,
-              ].filter(Boolean).join(' · ') || 'Drawing details not assigned'}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-
-      <View style={styles.photoControlRow}>
-        <TouchableOpacity style={styles.photoControlButton} onPress={onOpen}>
-          <Ionicons name="cloud-download-outline" size={17} color={colors.primary} />
-          <Text style={styles.photoControlText}>Download & Open</Text>
-        </TouchableOpacity>
-        {(document.status === 'failed' || document.status === 'local') ? (
-          <TouchableOpacity style={styles.photoControlButton} onPress={onRetry}>
-            <Ionicons name="refresh-outline" size={17} color={colors.primary} />
-            <Text style={styles.photoControlText}>Retry Upload</Text>
-          </TouchableOpacity>
-        ) : null}
-        {document.status === 'failed' ? (
-          <TouchableOpacity
-            style={styles.photoControlButton}
-            onPress={onReplaceFile}
-          >
-            <Ionicons
-              name="document-attach-outline"
-              size={17}
-              color={colors.primary}
-            />
-            <Text style={styles.photoControlText}>Choose File Again</Text>
-          </TouchableOpacity>
-        ) : null}
-        <TouchableOpacity
-          style={styles.photoControlButton}
-          onPress={() => setDetailsOpen(prev => !prev)}
-        >
-          <Ionicons name="options-outline" size={17} color={colors.primary} />
-          <Text style={styles.photoControlText}>Edit</Text>
-        </TouchableOpacity>
-      </View>
-
-      {document.category === 'Schedule' ? (
-        <TouchableOpacity
-          style={[
-            styles.photoControlButton,
-            styles.documentCurrentControl,
-            document.isCurrent && { backgroundColor: colors.successSoft, borderColor: colors.success },
-          ]}
-          onPress={onSetCurrentSchedule}
-          disabled={document.isCurrent}
-        >
-          <Ionicons
-            name={document.isCurrent ? 'checkmark-circle' : 'calendar-outline'}
-            size={18}
-            color={document.isCurrent ? colors.success : colors.primary}
-          />
-          <Text
-            style={[
-              styles.photoControlText,
-              document.isCurrent && { color: colors.success },
-            ]}
-          >
-            {document.isCurrent ? 'Current Schedule' : 'Make Current Schedule'}
-          </Text>
-        </TouchableOpacity>
-      ) : null}
-
-      {detailsOpen ? (
-        <View style={styles.phase4DetailBlock}>
-          <Text style={styles.label}>Rename</Text>
-          <TextInput
-            style={styles.input}
-            value={document.name}
-            onChangeText={name => onUpdate({ name })}
-            placeholder="Document name"
-            placeholderTextColor={colors.muted}
-          />
-
-          <Text style={styles.label}>Category</Text>
-          <View style={styles.areaChipWrap}>
-            {PROJECT_DOCUMENT_CATEGORIES.map(category => {
-              const selected = document.category === category;
-
-              return (
-                <TouchableOpacity
-                  key={category}
-                  style={[
-                    styles.areaChip,
-                    selected && styles.areaChipSelected,
-                  ]}
-                  onPress={() => onUpdate({ category })}
-                >
-                  <Text
-                    style={[
-                      styles.areaChipText,
-                      selected && styles.areaChipTextSelected,
-                    ]}
-                  >
-                    {category}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {document.category === 'Drawing' ? (
-            <View style={styles.phase4DetailBlock}>
-              <Text style={styles.panelTitle}>Drawing Control</Text>
-              <Text style={styles.bodyText}>
-                Record the sheet identity and issue status so the field team can tell which drawing is authoritative.
-              </Text>
-
-              <Text style={styles.label}>Drawing Number</Text>
-              <TextInput
-                style={styles.input}
-                value={document.drawingNumber || ''}
-                onChangeText={drawingNumber => onUpdate({ drawingNumber })}
-                placeholder="Example: A-201"
-                placeholderTextColor={colors.muted}
-                autoCapitalize="characters"
-              />
-
-              <Text style={styles.label}>Revision</Text>
-              <TextInput
-                style={styles.input}
-                value={document.drawingRevision || ''}
-                onChangeText={drawingRevision => onUpdate({ drawingRevision })}
-                placeholder="Example: 3"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Discipline</Text>
-              <TextInput
-                style={styles.input}
-                value={document.drawingDiscipline || ''}
-                onChangeText={drawingDiscipline => onUpdate({ drawingDiscipline })}
-                placeholder="Architectural, Civil, Structural, MEP…"
-                placeholderTextColor={colors.muted}
-              />
-
-              <Text style={styles.label}>Issue Status</Text>
-              <View style={styles.areaChipWrap}>
-                {(['Draft', 'For Review', 'For Construction', 'As-Built', 'Superseded'] as const).map(status => {
-                  const selected = document.drawingStatus === status;
-                  return (
-                    <TouchableOpacity
-                      key={status}
-                      style={[styles.areaChip, selected && styles.areaChipSelected]}
-                      onPress={() => onUpdate({ drawingStatus: status })}
-                    >
-                      <Text style={[styles.areaChipText, selected && styles.areaChipTextSelected]}>
-                        {status}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              <Text style={styles.label}>Issue Date</Text>
-              <TextInput
-                style={styles.input}
-                value={document.drawingIssuedAt || ''}
-                onChangeText={drawingIssuedAt => onUpdate({ drawingIssuedAt })}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.muted}
-                keyboardType="numbers-and-punctuation"
-              />
-            </View>
-          ) : null}
-
-          <Text style={styles.label}>Attach to Area</Text>
-          <View style={styles.areaChipWrap}>
-            <TouchableOpacity
-              style={[
-                styles.areaChip,
-                !document.areaId && styles.areaChipSelected,
-              ]}
-              onPress={() => onUpdate({ areaId: null })}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  !document.areaId && styles.areaChipTextSelected,
-                ]}
-              >
-                No Area
-              </Text>
-            </TouchableOpacity>
-            {projectAreas.map(area => {
-              const selected = document.areaId === area.id;
-
-              return (
-                <TouchableOpacity
-                  key={area.id}
-                  style={[
-                    styles.areaChip,
-                    selected && styles.areaChipSelected,
-                  ]}
-                  onPress={() => onUpdate({ areaId: area.id })}
-                >
-                  <Text
-                    style={[
-                      styles.areaChipText,
-                      selected && styles.areaChipTextSelected,
-                    ]}
-                  >
-                    {area.name}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          <Text style={styles.label}>Attach to Update</Text>
-          <View style={styles.areaChipWrap}>
-            <TouchableOpacity
-              style={[
-                styles.areaChip,
-                !document.updateId && styles.areaChipSelected,
-              ]}
-              onPress={() => onUpdate({ updateId: null })}
-            >
-              <Text
-                style={[
-                  styles.areaChipText,
-                  !document.updateId && styles.areaChipTextSelected,
-                ]}
-              >
-                No Update
-              </Text>
-            </TouchableOpacity>
-            {updates.slice(0, 8).map(update => {
-              const selected = document.updateId === update.id;
-
-              return (
-                <TouchableOpacity
-                  key={update.id}
-                  style={[
-                    styles.areaChip,
-                    selected && styles.areaChipSelected,
-                  ]}
-                  onPress={() => onUpdate({ updateId: update.id })}
-                >
-                  <Text
-                    style={[
-                      styles.areaChipText,
-                      selected && styles.areaChipTextSelected,
-                    ]}
-                  >
-                    {formatDisplayDate(update.date)}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          <Text style={styles.label}>Note</Text>
-          <TextInput
-            style={[styles.input, styles.notesInput]}
-            value={document.note || ''}
-            onChangeText={note => onUpdate({ note })}
-            placeholder="Add note"
-            placeholderTextColor={colors.muted}
-            multiline
-          />
-
-          <TouchableOpacity style={styles.photoControlButton} onPress={onDelete}>
-            <Ionicons name="trash-outline" size={17} color={colors.danger} />
-            <Text style={[styles.photoControlText, { color: colors.danger }]}>
-              Delete
-            </Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
-    </View>
   );
 }
 

@@ -10,6 +10,7 @@ web-build/
 coverage/
 /build/
 expo-env.d.ts
+/public/pdf.worker.min.mjs
 
 # Native
 .kotlin/
@@ -37,6 +38,11 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Python test/runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # generated native folders
 /ios
@@ -104,3 +110,15 @@ pie_current_diff_stat.txt
 
 # Local agent/editor settings (P2-14)
 .claude/settings.local.json
+
+# Large local artifacts and scratch input (checkpoint 2026-09-18).
+# These are regenerable outputs or source material, not source code, and
+# would permanently bloat repo history. Small fixture sets under
+# validation/{ecos,beta,jarvis,scenarios,expected} remain tracked because
+# acceptance scripts read them.
+/tmp/pdfs/
+/validation/local-vision-benchmark/
+/validation/builds/
+/validation/multimodal/
+/validation/output/
+/validation/renderings/

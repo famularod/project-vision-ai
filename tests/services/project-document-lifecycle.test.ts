@@ -12,6 +12,7 @@ import {
   referenceCategoryForProjectDocument,
   recoverStaleUploadingDocuments,
   requireOwnedProjectDocumentAccess,
+  synchronizeSharedReferenceDocumentMetadata,
 } from '../../services/ProjectDocumentLifecycle';
 import type { OwnedLocalFileStoreDependencies } from '../../services/OwnedLocalFileStore';
 
@@ -106,6 +107,7 @@ describe('shared project-document metadata', () => {
         drawingDiscipline: 'Architectural',
         drawingStatus: 'For Construction',
         drawingIssuedAt: '2026-07-17',
+        webVersionGroupId: 'drawing-family-a2.01',
         importedAt: NOW,
       },
       projectName: '2375 Compliance Project',
@@ -128,7 +130,73 @@ describe('shared project-document metadata', () => {
       drawingDiscipline: 'Architectural',
       drawingStatus: 'For Construction',
       drawingIssuedAt: '2026-07-17',
+      webVersionGroupId: 'drawing-family-a2.01',
     });
+  });
+
+  it('synchronizes later mobile edits without erasing hosted proof or current state', () => {
+    const original = {
+      ...buildSharedReferenceDocument({
+        document: {
+          id: 'drawing-1',
+          projectId: 'project-2375',
+          name: 'site-plan.pdf',
+          category: 'Drawing' as const,
+          drawingNumber: 'C5',
+          drawingRevision: '1',
+          drawingStatus: 'For Review' as const,
+          importedAt: NOW,
+        },
+        projectName: '2375 Compliance Project',
+        contentSha256: 'c'.repeat(64),
+        updatedAt: NOW,
+      }),
+      isCurrent: true,
+      extractionStatus: 'complete' as const,
+      extractedPages: [{
+        pageNumber: 1,
+        text: 'verified evidence',
+        regions: [],
+      }],
+      ecosHostedIndexStatus: 'Ready for ECOS' as const,
+      documentIntelligenceVersion: 'ecos-document-intelligence/2.0' as const,
+      documentVisualIndexVersion: 'ecos-visual-index/3.0' as const,
+    };
+
+    const synchronized = synchronizeSharedReferenceDocumentMetadata({
+      sharedDocument: original,
+      document: {
+        id: 'drawing-1',
+        projectId: 'project-2375',
+        name: 'renamed-site-plan.pdf',
+        category: 'Drawing',
+        drawingNumber: 'C5',
+        drawingRevision: '2',
+        drawingDiscipline: 'Civil',
+        drawingStatus: 'For Construction',
+        drawingIssuedAt: '2026-08-09',
+        webVersionGroupId: 'drawing-family-c5',
+        importedAt: NOW,
+      },
+      projectName: '2375 Compliance Project',
+      updatedAt: '2026-08-09T09:00:00.000Z',
+    });
+
+    expect(synchronized).toMatchObject({
+      name: 'renamed-site-plan',
+      originalFileName: 'renamed-site-plan.pdf',
+      drawingRevision: '2',
+      drawingDiscipline: 'Civil',
+      drawingStatus: 'For Construction',
+      drawingIssuedAt: '2026-08-09',
+      webVersionGroupId: 'drawing-family-c5',
+      isCurrent: true,
+      extractionStatus: 'complete',
+      ecosHostedIndexStatus: 'Ready for ECOS',
+      documentIntelligenceVersion: 'ecos-document-intelligence/2.0',
+      documentVisualIndexVersion: 'ecos-visual-index/3.0',
+    });
+    expect(synchronized.extractedPages).toEqual(original.extractedPages);
   });
 
   it('does not make an uploaded schedule current without PM confirmation', () => {

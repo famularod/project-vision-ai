@@ -1,4 +1,8 @@
-import type { ReferenceDocument, ScheduleItem } from '../types';
+import type {
+  ReferenceDocument,
+  ReferenceDocumentExtractedPage,
+  ScheduleItem,
+} from '../types';
 import type {
   DAVEWebReadOnlySnapshot,
   DAVEWebReferenceDocument,
@@ -17,12 +21,36 @@ import {
   dedupeScheduleImportItems,
   type PIEScheduleImportBatch,
 } from './PIEScheduleImportBatch';
-import { normalizeScheduleImport } from './PIEScheduleIntelligence';
+import {
+  normalizeMicrosoftProjectWebPdfPages,
+  normalizeScheduleImport,
+} from './PIEScheduleIntelligence';
 import { scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
+import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
 
 export const DAVE_WEB_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
+
+export async function recoverDAVEWebPreparedUploadBytes({
+  bytes,
+  file,
+  expectedSizeBytes,
+}: {
+  bytes: ArrayBuffer;
+  file: Blob;
+  expectedSizeBytes: number;
+}): Promise<ArrayBuffer> {
+  if (bytes.byteLength === expectedSizeBytes && expectedSizeBytes > 0) return bytes;
+
+  const recovered = await file.arrayBuffer();
+  if (recovered.byteLength !== expectedSizeBytes || recovered.byteLength <= 0) {
+    throw new Error(
+      'The selected document changed after review. Choose the file again before uploading.',
+    );
+  }
+  return recovered;
+}
 
 export const DAVE_WEB_DOCUMENT_CATEGORIES = Object.freeze([
   'Schedules',
@@ -76,6 +104,8 @@ export type DAVEWebReportSource = Readonly<{
 export type DAVEWebDocumentExtension = Readonly<{
   storagePath?: string | null;
   sizeBytes?: number | null;
+  sourceProvider?: 'supabase_storage' | 'google_drive' | null;
+  externalSource?: GoogleDriveLinkedSource | null;
   webFileFingerprint?: string | null;
   webVersionGroupId?: string | null;
   webContentReview?: string | null;
@@ -87,6 +117,24 @@ export type DAVEWebPreparedUpload = Readonly<{
   scheduleItems: readonly ScheduleItem[];
   reviewMessage: string;
   extractionStatus: 'not_applicable' | 'ready' | 'needs_manual_review';
+}>;
+
+type DAVEWebDocumentPreparationInput = Readonly<{
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  contents: string | null;
+  extractedPages?: readonly ReferenceDocumentExtractedPage[];
+  category: string;
+  projectName?: string;
+  projectNames?: readonly string[];
+  projects: readonly string[];
+  fingerprint: string;
+  versionGroupId?: string | null;
+  now?: string;
+  sourceProvider?: 'supabase_storage' | 'google_drive';
+  externalSource?: GoogleDriveLinkedSource | null;
+  maximumBytes?: number;
 }>;
 
 export type DAVEWebTruthDiagnostics = Readonly<{
@@ -121,6 +169,7 @@ export function prepareDAVEWebDocumentUpload({
   mimeType,
   sizeBytes,
   contents,
+  extractedPages = [],
   category,
   projectName,
   projectNames,
@@ -128,19 +177,10 @@ export function prepareDAVEWebDocumentUpload({
   fingerprint,
   versionGroupId,
   now = new Date().toISOString(),
-}: {
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  contents: string | null;
-  category: string;
-  projectName?: string;
-  projectNames?: readonly string[];
-  projects: readonly string[];
-  fingerprint: string;
-  versionGroupId?: string | null;
-  now?: string;
-}): DAVEWebPreparedUpload {
+  sourceProvider = 'supabase_storage',
+  externalSource = null,
+  maximumBytes = DAVE_WEB_MAX_DOCUMENT_BYTES,
+}: DAVEWebDocumentPreparationInput): DAVEWebPreparedUpload {
   const cleanName = fileName.trim();
   const selectedProjectNames = uniqueNames([
     ...(projectNames ?? []),
@@ -149,8 +189,10 @@ export function prepareDAVEWebDocumentUpload({
   if (!cleanName) throw new Error('Choose a named document before continuing.');
   if (selectedProjectNames.length === 0) throw new Error('Choose at least one project for this document.');
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) throw new Error('The selected document is empty.');
-  if (sizeBytes > DAVE_WEB_MAX_DOCUMENT_BYTES) {
-    throw new Error('The selected document is larger than 50 MB. Optimize or split it, then retry.');
+  if (sizeBytes > maximumBytes) {
+    throw new Error(sourceProvider === 'google_drive'
+      ? 'The selected Google Drive PDF is larger than 250 MB. Optimize or split it, then retry.'
+      : 'The selected document is larger than 50 MB. Optimize or split it, then retry.');
   }
 
   const documentId = createDAVEWebId('web-document');
@@ -170,6 +212,8 @@ export function prepareDAVEWebDocumentUpload({
     projectNames: selectedProjectNames,
     importBatchId: scheduleLike ? createDAVEWebId('schedule-batch') : null,
     sizeBytes,
+    sourceProvider,
+    externalSource,
     contentSha256: canonicalSha256(fingerprint),
     webFileFingerprint: fingerprint,
     webVersionGroupId: versionGroupId || documentId,
@@ -180,13 +224,15 @@ export function prepareDAVEWebDocumentUpload({
     return Object.freeze({
       document,
       scheduleItems: Object.freeze([]),
-      reviewMessage: 'The document is ready to upload with the selected project and classification.',
+      reviewMessage: sourceProvider === 'google_drive'
+        ? 'The document is ready to link. The original PDF will remain in Google Drive; Vitruvius will save its reference and ECOS search index.'
+        : 'The document is ready to upload with the selected project and classification.',
       extractionStatus: 'not_applicable',
     });
   }
 
   const readableContents = contents?.trim() || '';
-  if (!readableContents || /pdf/i.test(mimeType) || /\.pdf$/i.test(cleanName)) {
+  if (!readableContents) {
     return Object.freeze({
       document,
       scheduleItems: Object.freeze([]),
@@ -195,16 +241,31 @@ export function prepareDAVEWebDocumentUpload({
     });
   }
 
-  const normalizedImport = normalizeScheduleImport({
-    contents: readableContents,
-    sourceName: cleanName,
-    mimeType,
-    projects: selectedProjectNames.length > 0 ? [...selectedProjectNames] : [...projects],
-    projectAreas: [],
-    now: new Date(now),
-  });
+  const scheduleProjects = selectedProjectNames.length > 0
+    ? [...selectedProjectNames]
+    : [...projects];
+  const pdfSchedule = mimeType.toLowerCase().includes('pdf') || cleanName.toLowerCase().endsWith('.pdf');
+  const positionedPdfItems = pdfSchedule && extractedPages.length > 0
+    ? normalizeMicrosoftProjectWebPdfPages({
+        pages: extractedPages,
+        sourceName: cleanName,
+        projects: scheduleProjects,
+        projectAreas: [],
+        now: new Date(now),
+      })
+    : [];
+  const normalizedImport = pdfSchedule
+    ? null
+    : normalizeScheduleImport({
+        contents: readableContents,
+        sourceName: cleanName,
+        mimeType,
+        projects: scheduleProjects,
+        projectAreas: [],
+        now: new Date(now),
+      });
   const items = dedupeScheduleImportItems(
-    normalizedImport.items.map(item => ({
+    (pdfSchedule ? positionedPdfItems : normalizedImport?.items || []).map(item => ({
       ...item,
       scheduleProjectName: item.scheduleProjectName || item.projectName || selectedProjectNames[0],
       projectName: item.projectName || selectedProjectNames[0],
@@ -225,7 +286,8 @@ export function prepareDAVEWebDocumentUpload({
     kind: 'schedule_file',
     sourceCount: 1,
     sourceLabel: cleanName,
-    message: normalizedImport.message,
+    message: normalizedImport?.message ||
+      `${items.length} Microsoft Project PDF activities reconstructed from positioned schedule rows.`,
     items,
     documents: [document],
   });
@@ -234,6 +296,23 @@ export function prepareDAVEWebDocumentUpload({
     scheduleItems: Object.freeze(batch.items),
     reviewMessage: `${batch.items.length} schedule ${batch.items.length === 1 ? 'activity' : 'activities'} extracted for ${selectedProjectNames.length} selected project${selectedProjectNames.length === 1 ? '' : 's'}. Review each task's project, dates, area, status, and percent complete before upload.`,
     extractionStatus: 'ready',
+  });
+}
+
+export function prepareDAVEWebLinkedDocument(
+  input: Omit<
+    DAVEWebDocumentPreparationInput,
+    'sourceProvider' | 'externalSource' | 'maximumBytes'
+  > & Readonly<{ externalSource: GoogleDriveLinkedSource; maximumBytes: number }>,
+): DAVEWebPreparedUpload {
+  if (normalized(input.category) === 'schedules') {
+    throw new Error('Google Drive linking currently supports drawings and reference documents. Continue using protected upload for schedule imports.');
+  }
+  return prepareDAVEWebDocumentUpload({
+    ...input,
+    sourceProvider: 'google_drive',
+    externalSource: input.externalSource,
+    maximumBytes: input.maximumBytes,
   });
 }
 

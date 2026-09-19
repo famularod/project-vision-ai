@@ -20,6 +20,12 @@ export function groupDAVEWebDocuments(
   });
 }
 
+export function daveWebDocumentDeletionIsProtected(
+  document: DAVEWebReferenceDocument,
+): boolean {
+  return Boolean(document.isCurrent && scheduleDocumentIsScheduleLike(document));
+}
+
 function compareDocumentRecency(
   left: DAVEWebReferenceDocument,
   right: DAVEWebReferenceDocument,

@@ -199,12 +199,43 @@ describe('DAVESyncTombstones durability (audit P1-28)', () => {
     jest.useFakeTimers();
 
     const resultPromise = loadDAVEOperationalTombstones();
-    jest.advanceTimersByTime(1_500);
+    jest.advanceTimersByTime(8_000);
     await Promise.resolve();
     const result = await resultPromise;
 
     expect(result.cloudAuthoritative).toBe(false);
     expect(result.tombstones.map(item => item.recordId)).toEqual(['known-delete']);
+    expect(mockUpsertTombstone).not.toHaveBeenCalled();
+
+    mockListTombstones.mockResolvedValue(cloudOk([{
+      entityType: 'project_update',
+      recordId: 'recovered-cloud-delete',
+      deletedAt: '2026-07-23T00:00:00.000Z',
+    }]));
+    const recovered = await loadDAVEOperationalTombstones();
+    expect(recovered.cloudAuthoritative).toBe(true);
+    expect(recovered.tombstones.map(item => item.recordId).sort())
+      .toEqual(['known-delete', 'recovered-cloud-delete']);
+  });
+
+  it('accepts a healthy authoritative refresh that completes after the former short timeout', async () => {
+    jest.useFakeTimers();
+    mockListTombstones.mockImplementation(() => new Promise(resolve => {
+      setTimeout(() => resolve(cloudOk([{
+        entityType: 'project_update',
+        recordId: 'archived-update',
+        deletedAt: '2026-07-22T00:00:00.000Z',
+      }])), 2_000);
+    }));
+
+    const resultPromise = loadDAVEOperationalTombstones();
+    jest.advanceTimersByTime(2_000);
+    await Promise.resolve();
+    const result = await resultPromise;
+
+    expect(result.cloudAuthoritative).toBe(true);
+    expect(result.cloudError).toBeNull();
+    expect(result.tombstones.map(item => item.recordId)).toEqual(['archived-update']);
     expect(mockUpsertTombstone).not.toHaveBeenCalled();
   });
 });

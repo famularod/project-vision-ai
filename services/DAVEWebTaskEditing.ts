@@ -26,6 +26,8 @@ export type DAVEWebScheduleItem = ScheduleItem & Readonly<{
 }>;
 
 export type DAVEWebTaskDraft = Readonly<{
+  /** Immutable cloud project authority required by operational-row writes. */
+  projectId?: string | null;
   itemType: ProjectItemType;
   taskName: string;
   projectName: string;
@@ -124,9 +126,16 @@ export function buildDAVEWebScheduleItem({
         createdAt: now,
         id: `activity-${now}-${current?.activity?.length ?? 0}`,
       });
+  const projectId = current?.projectId?.trim() || draft.projectId?.trim() || null;
+  if (!projectId) {
+    throw new DAVEWebTaskValidationError(
+      'Choose a current cloud project before saving this task.',
+    );
+  }
 
   const item: DAVEWebScheduleItem = {
     id: requiredText(id, 'Task identity'),
+    projectId,
     itemType: draft.itemType,
     scheduleProjectName: projectName,
     projectTimeZone: current?.projectTimeZone ?? null,
@@ -179,6 +188,9 @@ export function buildDAVEWebScheduleItem({
     importedAt: current?.importedAt ?? null,
     importBatchId: current?.importBatchId ?? null,
     sourceDocumentId: current?.sourceDocumentId ?? null,
+    sourceActivityId: current?.sourceActivityId ?? null,
+    sourceWbsCode: current?.sourceWbsCode ?? null,
+    sourceRowNumber: current?.sourceRowNumber ?? null,
     completionVerification: progressChanged ? null : current?.completionVerification ?? null,
     createdAt: current?.createdAt || now,
     updatedAt: now,

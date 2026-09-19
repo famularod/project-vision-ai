@@ -6,6 +6,16 @@ const path = require('path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
+const receiptSourcePath = path.join(root, 'services/DAVEProjectUpdateCloudReceipt.ts');
+const receiptCompiled = ts.transpileModule(fs.readFileSync(receiptSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const receiptModule = { exports: {} };
+new Function('module', 'exports', receiptCompiled)(receiptModule, receiptModule.exports);
+
 const sourcePath = path.join(root, 'services/DAVECloudRecovery.ts');
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
   compilerOptions: {
@@ -14,7 +24,15 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
   },
 }).outputText;
 const moduleUnderTest = { exports: {} };
-new Function('module', 'exports', compiled)(moduleUnderTest, moduleUnderTest.exports);
+const localRequire = specifier => {
+  if (specifier === './DAVEProjectUpdateCloudReceipt') return receiptModule.exports;
+  return require(specifier);
+};
+new Function('module', 'exports', 'require', compiled)(
+  moduleUnderTest,
+  moduleUnderTest.exports,
+  localRequire,
+);
 
 const {
   mergeDAVECloudRecoveryRecords,

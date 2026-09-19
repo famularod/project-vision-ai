@@ -47,6 +47,7 @@ import {
   resetAuthStorageAvailabilityForTests,
   supabaseSecureAuthStorage,
 } from '../../services/SupabaseAuthStorage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEY = 'sb-project-auth-token';
 
@@ -96,6 +97,13 @@ describe('supabaseSecureAuthStorage', () => {
     expect(await supabaseSecureAuthStorage.getItem(KEY)).toBe('legacy-session');
     expect(mockAsyncState.has(KEY)).toBe(false);
     expect(await supabaseSecureAuthStorage.getItem(KEY)).toBe('legacy-session');
+  });
+
+  it('treats a malformed non-string legacy value as no session', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(undefined);
+
+    expect(await supabaseSecureAuthStorage.getItem(KEY)).toBeNull();
+    expect(mockSecureState.size).toBe(0);
   });
 
   it('removeItem clears secure chunks, meta, and any legacy copy', async () => {

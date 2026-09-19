@@ -4,6 +4,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 const shell = read('components/web-shell/desktop-read-only-shell.tsx');
+const documentOnboarding = read('components/web-shell/desktop-document-onboarding.tsx');
 const provider = read('components/web-shell/desktop-auth-provider.tsx');
 const gateway = read('services/DAVEWebSupabaseClient.ts');
 const editing = read('services/DAVEWebTaskEditing.ts');
@@ -23,7 +24,11 @@ for (const action of [
 ]) {
   assert(gateway.includes(action), `The desktop task gateway must implement ${action}.`);
 }
-assert(gateway.includes('requireAuthorizedOwner(client)'), 'Every task mutation must pass the server owner gate.');
+assert(
+  gateway.includes('requireAuthorizedOwnerCached()') &&
+    gateway.includes('requireAuthorizedOwner(client!).then'),
+  'Every task mutation must pass the cached server owner gate.',
+);
 assert(gateway.includes(".eq('owner_id', ownerId)"), 'Task updates and checks must be explicitly owner-scoped.');
 assert(gateway.includes(".eq('updated_at', expectedCloudUpdatedAt)"), 'Task updates must reject stale cloud revisions.');
 assert(gateway.includes(".from('dave_sync_tombstones')"), 'Task deletion must use the shared durable deletion journal.');
@@ -55,13 +60,16 @@ assert(shell.includes("const label = isComplete ? 'Completed' : task.status;"), 
 assert(shell.includes("isNotStarted ? 'notStarted' : 'inProgress'"), 'Not-started work must be visually distinct from work in progress.');
 assert(shell.includes('taskStatusBadge: { minWidth: 116'), 'Task status pills must be large enough to scan quickly.');
 assert(shell.includes('Delete Document Only') && shell.includes('Delete Document +'), 'Document deletion must distinguish keeping or deleting linked tasks.');
-assert(shell.includes('This is the current schedule and is protected'), 'The current schedule must be protected from accidental deletion.');
+assert(shell.includes('Current schedule · protected from deletion'), 'The current schedule must be protected from accidental deletion.');
 assert(shell.includes('Prior schedule versions ('), 'Schedule history must be separated from the authoritative current schedule.');
 assert(shell.includes('groupDAVEWebDocuments'), 'Document management must use the tested schedule-version grouping contract.');
 assert(
-  shell.includes('setUploadOpen(current => !current)') &&
-    shell.includes("'Upload Document'"),
-  'Document upload must be directly accessible from the web document workspace.',
+  shell.includes('<DesktopDocumentOnboarding') &&
+    shell.includes('onAddDocuments={() => setUploadOpen(true)}') &&
+    shell.includes('onCloseAddDocuments={() => setUploadOpen(false)}') &&
+    documentOnboarding.includes('accessibilityLabel="Add Project Documents"') &&
+    documentOnboarding.includes('>Add Project Documents</Text>'),
+  'Document upload and linking must be directly accessible from the web document workspace.',
 );
 assert(shell.includes('Make Current Schedule'), 'Reviewed schedule versions must expose an explicit current-schedule action.');
 assert(shell.includes('Approve Report'), 'Authoritative reports must require an explicit approval action.');

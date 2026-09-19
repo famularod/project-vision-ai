@@ -246,6 +246,30 @@ assert.strictEqual(
   'Duration should remain structured schedule data without being copied into Notes.',
 );
 
+const fragmentedMicrosoftProjectPdfImport = normalizeScheduleImport({
+  contents: Array.from({ length: 6 }, () => [
+    'ID Task Name',
+    'Duration Start',
+    'Finish',
+    '% Actual Start Actual Finish',
+    'Qtr 1, 2026 Qtr 2, 2026 Qtr 3, 2026',
+    '1 PLZ CORP CAMPUS COMPLIANCE',
+    '417 days Wed 9/3/25 Wed 4/7/27 79% Wed 9/3/25 NA',
+    'Task Summary Inactive Milestone Duration-only Start-only External Milestone',
+    'Project: PLZ 2321 & 2375 MASTER CONSTRUCTION SCHEDULE',
+    'Date: Mon 8/31/26 Page 1',
+  ].join('\n')).join('\n'),
+  sourceName: 'fragmented-microsoft-project.pdf',
+  mimeType: 'application/pdf',
+  projects: ['2321 Compliance Project', '2375 Compliance Project'],
+  now: new Date('2026-08-31T12:00:00-07:00'),
+});
+assert.strictEqual(
+  fragmentedMicrosoftProjectPdfImport.items.length,
+  0,
+  'Unpositioned PDF headers, timeline labels, legends, and text fragments must fail closed instead of becoming tasks.',
+);
+
 for (const noteHeader of ['Comments', 'Remarks']) {
   const labeledNoteImport = normalizeScheduleImport({
     contents: [
@@ -352,7 +376,8 @@ assert(
 assert(
   nativeSource.includes('downsampleImage(at: imageUrl, maximumDimension: 1_600)') &&
     nativeSource.includes('CGImageSourceCreateThumbnailAtIndex') &&
-    nativeSource.includes('request.recognitionLevel = .fast'),
+    nativeSource.includes('recognizeLines(in: preparedImage, level: .fast)') &&
+    nativeSource.includes('request.recognitionLevel = level'),
   'Screenshot OCR should downsample before decoding and use the responsive recognition path.',
 );
 

@@ -47,6 +47,10 @@ describe('project document cloud byte restore adapter', () => {
       path.resolve(__dirname, '../../App.tsx'),
       'utf8',
     );
+    const documentCard = fs.readFileSync(
+      path.resolve(__dirname, '../../components/project-document-card.tsx'),
+      'utf8',
+    );
     const durableAdd = app.indexOf('await addProjectDocumentDurably(document);');
     const upload = app.indexOf(
       'await retryProjectDocumentUpload(document.id, document);',
@@ -58,6 +62,6 @@ describe('project document cloud byte restore adapter', () => {
     expect(app).toContain('await queueReferenceDocumentRecord(sharedDocument);');
     expect(app).toContain('findSharedReferenceDocumentForProjectDocument');
     expect(app).toContain('await ensureVerifiedReferenceDocumentBytes(sharedDocument)');
-    expect(app).toContain('Download & Open');
+    expect(documentCard).toContain('Download & Open');
   });
 });

@@ -21,11 +21,11 @@ assert.equal(
   undefined,
   'Unused @expo/ngrok must not restore its vulnerable development tunnel chain.',
 );
-assert.equal(packageJson.overrides?.['brace-expansion'], '5.0.8');
+assert.equal(packageJson.overrides?.['brace-expansion'], '5.0.9');
 assert.equal(packageJson.overrides?.xcode?.uuid, '11.1.1');
 assert.equal(
   packageLock.packages?.['node_modules/brace-expansion']?.version,
-  '5.0.8',
+  '5.0.9',
 );
 assert.equal(
   packageLock.packages?.['node_modules/uuid']?.version,

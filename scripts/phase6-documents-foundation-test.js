@@ -18,7 +18,11 @@ const documentUploadDetails = fs.readFileSync(
   path.join(root, 'components/document-upload-details-sheet.tsx'),
   'utf8',
 );
-const documentRuntimeSource = `${app}\n${projectDocumentsHeader}\n${documentClassification}\n${documentUploadDetails}`;
+const projectDocumentCard = fs.readFileSync(
+  path.join(root, 'components/project-document-card.tsx'),
+  'utf8',
+);
+const documentRuntimeSource = `${app}\n${projectDocumentsHeader}\n${documentClassification}\n${documentUploadDetails}\n${projectDocumentCard}`;
 const fileSizePreflight = fs.readFileSync(
   path.join(root, 'services/FileSizePreflight.ts'),
   'utf8',

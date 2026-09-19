@@ -1,5 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { buildPIEScheduleDependencyNetwork } from './PIEScheduleDependencyNetwork';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { parseVitruviusScheduleDate } from './VitruviusGanttModel';
 import {
   normalizeScheduleDependencies,
@@ -20,6 +21,7 @@ export type VitruviusCriticalPathItem = Readonly<{
 }>;
 
 export type VitruviusCriticalPathAnalysis = Readonly<{
+  available: boolean;
   safe: boolean;
   items: readonly VitruviusCriticalPathItem[];
   criticalItemIds: ReadonlySet<string>;
@@ -71,6 +73,8 @@ export function analyzeVitruviusCriticalPath(
   const results: VitruviusCriticalPathItem[] = [];
   const issues: string[] = [];
   const projectDurationDays: Record<string, number> = {};
+  const sourceItemsById = new Map(sourceItems.map(item => [item.id, item]));
+  let calculatedProjectCount = 0;
 
   groups.forEach((items, projectName) => {
     const itemIds = new Set(items.map(item => item.id));
@@ -88,6 +92,8 @@ export function analyzeVitruviusCriticalPath(
     if (network.cycles.length > 0 || network.nodes.some(
       node => node.unresolvedPredecessors.length > 0,
     )) return;
+    if (network.edges.length === 0) return;
+    calculatedProjectCount += 1;
 
     const dependencies = new Map<string, ReturnType<typeof normalizeScheduleDependencies>>();
     const successors = new Map<string, Array<{ itemId: string; lagDays: number }>>();
@@ -173,10 +179,16 @@ export function analyzeVitruviusCriticalPath(
   });
 
   return Object.freeze({
+    available: calculatedProjectCount > 0,
     safe: issues.length === 0,
     items: Object.freeze(results),
     criticalItemIds: new Set(
-      results.filter(item => item.critical).map(item => item.itemId),
+      results
+        .filter(item => {
+          const sourceItem = sourceItemsById.get(item.itemId);
+          return item.critical && sourceItem && !scheduleProgressIsComplete(sourceItem);
+        })
+        .map(item => item.itemId),
     ),
     projectDurationDays: Object.freeze(projectDurationDays),
     issues: Object.freeze(issues),

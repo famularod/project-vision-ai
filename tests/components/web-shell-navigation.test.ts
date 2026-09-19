@@ -1,5 +1,6 @@
 import {
   desktopNavigationItems,
+  desktopNavigationItemsForAudience,
   desktopRouteIsActive,
   desktopWorkspaceLayout,
   desktopWorkspaceScopeKey,
@@ -11,6 +12,8 @@ describe('desktop read-only navigation', () => {
       '/',
       '/projects',
       '/tasks',
+      '/field-notes',
+      '/ask',
       '/schedule',
       '/evidence',
       '/photos',
@@ -26,6 +29,8 @@ describe('desktop read-only navigation', () => {
       'home-outline',
       'business-outline',
       'checkbox-outline',
+      'document-text-outline',
+      'chatbubble-ellipses-outline',
       'calendar-outline',
       'pulse-outline',
       'images-outline',
@@ -37,8 +42,16 @@ describe('desktop read-only navigation', () => {
 
   test('uses consistent PM-facing navigation labels', () => {
     expect(desktopNavigationItems.find(item => item.page === 'tasks')?.label).toBe('Tasks');
+    expect(desktopNavigationItems.find(item => item.page === 'field-notes')?.label).toBe('Field Notes');
+    expect(desktopNavigationItems.find(item => item.page === 'ask-ecos')?.label).toBe('Ask ECOS');
     expect(desktopNavigationItems.find(item => item.page === 'schedule')?.label).toBe('Schedule');
     expect(desktopNavigationItems.find(item => item.page === 'evidence')?.label).toBe('Field Activity');
+  });
+
+  test('hides Ask ECOS from the fail-closed first outside-pilot navigation', () => {
+    const items = desktopNavigationItemsForAudience('outside_pilot');
+    expect(items.some(item => item.page === 'ask-ecos')).toBe(false);
+    expect(desktopNavigationItemsForAudience('owner_internal')).toBe(desktopNavigationItems);
   });
 
   test('marks only the overview route active at the root', () => {

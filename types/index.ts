@@ -129,6 +129,8 @@ export type RecipientSelection = {
 
 export type ProjectUpdate = {
   id: string;
+  /** Immutable cloud project identity. Display names are never write authority. */
+  projectId?: string | null;
   projectName: string;
   date: string;
   photos: UpdatePhoto[];
@@ -261,15 +263,96 @@ export type ReferenceDocument = {
   drawingIssuedAt?: string | null;
   /** Searchable text extracted from the immutable source bytes. */
   extractedText?: string | null;
-  extractionStatus?: 'pending' | 'complete' | 'failed' | 'not_supported' | null;
+  extractionStatus?:
+    | 'pending'
+    | 'complete'
+    | 'partial'
+    | 'needs_ocr'
+    | 'failed'
+    | 'not_supported'
+    | null;
+  extractionMethod?: 'embedded_text' | 'local_ocr' | 'embedded_text_and_ocr' | null;
+  extractionLimitations?: string[];
+  documentIntelligenceVersion?:
+    | 'ecos-document-intelligence/1.0'
+    | 'ecos-document-intelligence/1.1'
+    | 'ecos-document-intelligence/1.2'
+    | 'ecos-document-intelligence/1.3'
+    | 'ecos-document-intelligence/1.4'
+    | 'ecos-document-intelligence/1.5'
+    | 'ecos-document-intelligence/2.0'
+    | null;
+  /** Visual extraction/assurance pipeline version, independent of page-index schema. */
+  documentVisualIndexVersion?: 'ecos-visual-index/3.0' | null;
+  /** Database-issued proof that the current source passed the exact transactional index gate. */
+  ecosVerifiedIndexCommitVersion?: 'ecos-verified-index-commit/1.0' | null;
+  ecosVerifiedIndexCommittedAt?: string | null;
+  ecosVerifiedIndexCommittedSha256?: string | null;
+  ecosVerifiedIndexCommittedPageCount?: number | null;
+  indexedAt?: string | null;
+  /** Total source pages discovered before page limits or OCR limits were applied. */
+  sourcePageCount?: number | null;
+  /** Source pages containing searchable text or trustworthy OCR regions. */
+  searchablePageCount?: number | null;
+  /** Pages whose searchable content required OCR. */
+  ocrPageCount?: number | null;
+  /** Average confidence across indexed text regions, from 0 through 1. */
+  extractionAverageConfidence?: number | null;
+  /** Source hash that the current index was created from. */
+  indexedContentSha256?: string | null;
   /** Optional page/region index used for exact citations and automatic report excerpts. */
   extractedPages?: ReferenceDocumentExtractedPage[];
+  /** Customer-safe status mirrored from the Vitruvius-operated background indexer. */
+  ecosHostedIndexStatus?:
+    | 'Waiting'
+    | 'Preparing'
+    | 'Prepared'
+    | 'Prepared with limitations'
+    | 'Ready for ECOS'
+    | 'Ready with limitations'
+    | 'Needs Review'
+    | 'Reconnect Files'
+    | 'Temporarily Unavailable'
+    | null;
+  ecosHostedIndexProgressPercent?: number | null;
+  /** Customer-safe explanation returned by the hosted preparation boundary. */
+  ecosHostedIndexCustomerMessage?: string | null;
+  /** Number of accepted pages whose Assurance result retained review limitations. */
+  ecosHostedIndexLimitationCount?: number | null;
+  ecosHostedIndexSupportReference?: string | null;
+  ecosHostedIndexEvidenceVersion?: string | null;
+  ecosHostedIndexUpdatedAt?: string | null;
+};
+
+export type ReferenceDocumentRegionEvidence = {
+  id?: string | null;
+  text?: string | null;
+  source?: string | null;
+  confidence?: number | null;
+  bounds?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
+  ocrKind?: string | null;
+  ocrPrefix?: string | null;
+  ocrRotationDegrees?: number | null;
+  ocrBlockNumber?: number | null;
+  ocrParagraphNumber?: number | null;
+  ocrLineNumber?: number | null;
+  ocrOrder?: number | null;
 };
 
 export type ReferenceDocumentRegion = {
   id: string;
   label?: string | null;
   text?: string | null;
+  /** Structured, provider-verified evidence fields used by hybrid retrieval. */
+  factKind?: 'drawing_fact' | 'sheet_identity' | null;
+  subject?: string | null;
+  location?: string | null;
+  evidenceText?: string | null;
   areaNames?: string[];
   /** Normalized page coordinates from 0 through 1. */
   x: number;
@@ -277,11 +360,123 @@ export type ReferenceDocumentRegion = {
   width: number;
   height: number;
   confidence?: number | null;
+  /** Canonical consumer source. Deterministic label blocks are OCR-derived. */
+  source?: 'embedded_text' | 'ocr' | 'vision' | null;
+  /** Exact persisted producer source, retained for Assurance and diagnostics. */
+  rawSource?: string | null;
+  reconstructionMethod?: string | null;
+  evidenceSources?: string[];
+  constituentEvidence?: ReferenceDocumentRegionEvidence[];
+  corroboratingEvidence?: ReferenceDocumentRegionEvidence[];
+};
+
+export type ReferenceDocumentSheetMappingSource =
+  | 'pdf_bookmark'
+  | 'native_title_band'
+  | 'pdf_annotation_title_band'
+  | 'coordinate_text';
+
+export type ReferenceDocumentSheetMappingEvidence = {
+  id: string;
+  pageNumber: number;
+  source: 'pdf_bookmark' | 'embedded_text' | 'pdf_annotation';
+  annotationSubtype?: 'Square' | null;
+  text: string;
+  normalizedBounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
+};
+
+export type ReferenceDocumentStructuralIdentity = {
+  sheetNumber: string;
+  source: 'pdf_bookmark' | 'native_title_band' | 'pdf_annotation_title_band';
+  evidence: ReferenceDocumentSheetMappingEvidence[];
+};
+
+/**
+ * Bounded page-level Assurance proof retained with exact sheet provenance.
+ * Provider diagnostics may contain more fields, but only these stable fields
+ * cross the operational document boundary.
+ */
+export type ReferenceDocumentPageAssurance = {
+  accepted: boolean;
+  method?: string | null;
+  schemaVersion?: string | null;
+  evidenceVersion?: string | null;
+  assuranceProvider?: string | null;
+  assuranceModel?: string | null;
+  confidence?: number | null;
+  checks?: {
+    sheetMappingUsable?: boolean;
+  } | null;
+  failureCodes: string[];
+};
+
+export type ReferenceDocumentSheetProvenance = {
+  sheetNumber: string | null;
+  sheetMappingStatus: 'verified' | 'conflicted' | 'unverified';
+  sheetMappingSource: ReferenceDocumentSheetMappingSource | null;
+  sheetMappingEvidence: ReferenceDocumentSheetMappingEvidence[];
+  documentStructuralIdentity: ReferenceDocumentStructuralIdentity | null;
+  assurance: ReferenceDocumentPageAssurance | null;
 };
 
 export type ReferenceDocumentExtractedPage = {
   pageNumber: number;
   sheetNumber?: string | null;
+  sheetTitle?: string | null;
+  sheetMappingStatus?: 'verified' | 'conflicted' | 'unverified' | null;
+  sheetMappingConfidence?: number | null;
+  /** Exact page-bound producer provenance; never inferred from page order. */
+  sheetMappingSource?: ReferenceDocumentSheetMappingSource | null;
+  sheetMappingEvidence?: ReferenceDocumentSheetMappingEvidence[];
+  documentStructuralIdentity?: ReferenceDocumentStructuralIdentity | null;
+  assurance?: ReferenceDocumentPageAssurance | null;
+  sheetMappingCandidates?: Array<{
+    sheetNumber: string;
+    score: number;
+    confidence: number;
+    evidenceRegionIds: string[];
+  }>;
+  visualCoverage?: {
+    schemaVersion?: string;
+    evidenceVersion?: string;
+    sourceSha256?: string;
+    pageNumber?: number;
+    overviewAnalyzed: boolean;
+    requestedDeepReadRegionCount: number;
+    completedDeepReadRegionCount: number;
+    coverageComplete: boolean;
+    /** Stable tile identifiers let an interrupted drawing pass resume only missing work. */
+    completedDeepReadRegionKeys?: string[];
+    /** Exact page/source/version-bound proof for each completed fixed tile. */
+    completedDeepReadRegionProofs?: Array<{
+      tileKey: string;
+      bounds: { x: number; y: number; width: number; height: number };
+      state: 'completed';
+      pageNumber: number;
+      sourceSha256: string;
+      evidenceVersion: string;
+      renderMethod: string;
+      analysisMethod: string;
+      renderDpi: number;
+      renderPixelWidth: number;
+      renderPixelHeight: number;
+      renderSha256: string;
+      analysisInputSha256: string;
+      analysisSha256: string;
+      analysisRegionCount: number;
+      analysisRegionIds: string[];
+      searchableRegionCount: number;
+      searchableRegionIds: string[];
+      analysisDurationMs?: number;
+    }>;
+    /** Provider error codes retained for operator-visible retry diagnostics. */
+    failureCodes?: string[];
+  } | null;
   title?: string | null;
   text?: string | null;
   regions?: ReferenceDocumentRegion[];
@@ -289,6 +484,12 @@ export type ReferenceDocumentExtractedPage = {
 
 export type ReferenceDocumentCitation = {
   documentId: string;
+  /** Immutable project authority carried by hosted Ask ECOS proof. */
+  projectId?: string | null;
+  /** SHA-256 of the exact source bytes used to create the answer. */
+  sourceSha256?: string | null;
+  /** Hosted evidence contract version used to bind the cited page. */
+  evidenceVersion?: string | null;
   documentName: string;
   revision: string | null;
   pageNumber: number | null;
@@ -494,6 +695,8 @@ export type DAVECompletionVerification = {
 
 export type ScheduleItem = {
   id: string;
+  /** Immutable cloud project identity. Display names are never write authority. */
+  projectId?: string | null;
   /** PM-facing work type. Legacy schedule rows default to Task. */
   itemType?: ProjectItemType;
   scheduleProjectName?: string | null;

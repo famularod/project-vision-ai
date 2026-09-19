@@ -39,7 +39,11 @@ export type DAVESyncTombstoneSyncResult = {
   uploadFailures?: number;
 };
 
-const DAVE_OPERATIONAL_TOMBSTONE_REFRESH_TIMEOUT_MS = 1_500;
+// A real owner can accumulate hundreds of durable deletion markers. Physical
+// device evidence showed the paginated, owner-scoped read regularly completes
+// after 1.5 seconds even on healthy Wi-Fi. Keep the operation bounded, but do
+// not classify that normal latency as a failed authority refresh.
+const DAVE_OPERATIONAL_TOMBSTONE_REFRESH_TIMEOUT_MS = 8_000;
 export const DAVE_SYNC_TOMBSTONE_UPLOAD_BATCH_SIZE = 100;
 
 export function parseDAVESyncTombstones(value: unknown): DAVESyncTombstone[] {
@@ -279,6 +283,11 @@ export async function loadDAVEOperationalTombstones(): Promise<DAVESyncTombstone
       }),
     ]);
   } catch {
+    // A transport can remain pending forever after this bounded caller has
+    // timed out. Do not keep handing that same dead request to every future
+    // sync attempt; its completion handler remains safe if it eventually
+    // settles, while the next caller is allowed to start a fresh read.
+    if (operationalRefreshInFlight === refresh) operationalRefreshInFlight = null;
     return {
       tombstones: await loadDAVESyncTombstones(),
       cloudAuthoritative: false,

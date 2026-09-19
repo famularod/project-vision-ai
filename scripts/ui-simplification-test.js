@@ -24,15 +24,21 @@ assert(bottomNav.includes('label="Overview"'), 'bottom nav should start with Ove
 assert(!bottomNav.includes('label="Projects"'), 'Projects should not duplicate the parent-project Overview workflow');
 assert(!bottomNav.includes('label="Updates"'), 'Field Activity should be reached from Overview, not a primary tab');
 assert(bottomNav.includes('label="Tasks"'), 'bottom nav should include Tasks');
+assert(
+  bottomNav.includes("primaryAssistantLabel = showAskECOS ? 'Ask ECOS' : 'Project actions'") &&
+    bottomNav.includes('onPress={openPrimaryAssistant}'),
+  'bottom nav should expose one audience-gated Ask ECOS action through the unified path',
+);
 assert(bottomNav.includes('label="Reports"'), 'bottom nav should include Reports');
 assert(!bottomNav.includes('label="Settings"'), 'Settings should be reached from the Overview gear');
 assert(!bottomNav.includes('label="Capture"'), 'Capture must not be a bottom tab');
 assert(!bottomNav.includes('label="Share"'), 'Share must not be a bottom tab');
 assert(!bottomNav.includes('label="Review"'), 'Review must not be a bottom tab');
 assert(!bottomNav.includes('label="More"'), 'More should not be a primary bottom tab');
-assert((bottomNav.match(/<TabButton/g) || []).length === 3, 'bottom nav should have three distinct primary tabs');
+assert((bottomNav.match(/<TabButton/g) || []).length === 3, 'bottom nav should have three navigation tabs plus one assistant action');
 assert(bottomNav.indexOf('label="Overview"') < bottomNav.indexOf('label="Tasks"'), 'Overview should precede Tasks');
-assert(bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('label="Reports"'), 'Tasks should precede Reports');
+assert(bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('onPress={openPrimaryAssistant}'), 'Tasks should precede the assistant action');
+assert(bottomNav.indexOf('onPress={openPrimaryAssistant}') < bottomNav.indexOf('label="Reports"'), 'the assistant action should precede Reports');
 assert(app.includes('accessibilityLabel="Open Settings"'), 'Overview should expose Settings from a gear button');
 
 assert(home.includes('function HomeScreen'), 'Overview must render from the live HomeScreen implementation');

@@ -44,6 +44,7 @@ export function DAVEVoiceCaptureSheet({
   visible,
   projectId,
   projectName,
+  contextLabel,
   candidateProjects = [],
   candidateTasks = [],
   selectedTaskId = null,
@@ -55,6 +56,10 @@ export function DAVEVoiceCaptureSheet({
   continueLabel = 'Review Memory',
   operationLabel,
   operationGuidance,
+  captureLabel,
+  transcriptionPurpose = 'memory',
+  autoStartRecording = false,
+  autoSubmitOnStop = false,
   showWalkContext = true,
   onMemoryReady,
   onProjectChange,
@@ -66,6 +71,7 @@ export function DAVEVoiceCaptureSheet({
   visible: boolean;
   projectId: string | null;
   projectName: string;
+  contextLabel?: string;
   candidateProjects?: readonly string[];
   candidateTasks?: readonly DAVEVoiceTaskOption[];
   selectedTaskId?: string | null;
@@ -77,6 +83,10 @@ export function DAVEVoiceCaptureSheet({
   continueLabel?: string;
   operationLabel?: string;
   operationGuidance?: string;
+  captureLabel?: string;
+  transcriptionPurpose?: 'memory' | 'question';
+  autoStartRecording?: boolean;
+  autoSubmitOnStop?: boolean;
   showWalkContext?: boolean;
   onMemoryReady: (result: DAVEVoiceUnderstandingResponse) => void;
   onProjectChange?: (projectName: string) => void;
@@ -99,9 +109,13 @@ export function DAVEVoiceCaptureSheet({
   const recordingActiveRef = useRef(false);
   const recordingDurationRef = useRef(0);
   const transcriptionOperationRef = useRef(0);
+  const autoStartHandledRef = useRef(false);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      autoStartHandledRef.current = false;
+      return;
+    }
     setError(null);
     setIsTranscribing(false);
     setTaskPickerOpen(false);
@@ -158,6 +172,17 @@ export function DAVEVoiceCaptureSheet({
     }
   }
 
+  useEffect(() => {
+    if (!visible || !projectName || !autoStartRecording || autoStartHandledRef.current) return;
+    const timeout = setTimeout(() => {
+      autoStartHandledRef.current = true;
+      void startRecording();
+    }, 250);
+    return () => clearTimeout(timeout);
+    // Guided capture intentionally starts once when a new field sheet opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStartRecording, projectName, visible]);
+
   async function stopRecording() {
     if (!recorderState.isRecording) return;
     const stoppedDuration = preserveDAVERecordingDuration(
@@ -175,15 +200,16 @@ export function DAVEVoiceCaptureSheet({
       setRecordingUri(uri);
       setRecordingDuration(stoppedDuration);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      if (autoSubmitOnStop) await transcribeRecording(uri, stoppedDuration);
     } catch {
       recordingActiveRef.current = false;
       setError('The recording could not finish. Try again.');
     }
   }
 
-  async function transcribe() {
-    if (!recordingUri || isTranscribing) return;
-    if (!daveRecordingIsLongEnough(recordingDuration)) {
+  async function transcribeRecording(uri: string, duration: number) {
+    if (isTranscribing) return;
+    if (!daveRecordingIsLongEnough(duration)) {
       setError(`The recording is too short. Speak for at least ${DAVE_MIN_RECORDING_DURATION_MS / 1_000} second, then try again.`);
       return;
     }
@@ -192,13 +218,14 @@ export function DAVEVoiceCaptureSheet({
     setIsTranscribing(true);
     try {
       const result = await transcribeDAVECaptureMemoryAudio({
-        uri: recordingUri,
+        uri,
         projectId,
         projectName,
         candidateLocations,
+        purpose: transcriptionPurpose,
       });
       if (operation !== transcriptionOperationRef.current) return;
-      await removeRecording(recordingUri);
+      await removeRecording(uri);
       setRecordingUri(null);
       onMemoryReady(result);
     } catch (reason) {
@@ -207,6 +234,11 @@ export function DAVEVoiceCaptureSheet({
     } finally {
       if (operation === transcriptionOperationRef.current) setIsTranscribing(false);
     }
+  }
+
+  async function transcribe() {
+    if (!recordingUri) return;
+    await transcribeRecording(recordingUri, recordingDuration);
   }
 
   async function cancel() {
@@ -244,6 +276,22 @@ export function DAVEVoiceCaptureSheet({
   }
 
   const elapsed = recorderState.isRecording ? recorderState.durationMillis : recordingDuration;
+  const captureState = isTranscribing
+    ? 'processing'
+    : recorderState.isRecording
+      ? 'listening'
+      : recordingUri
+        ? 'captured'
+        : 'ready';
+  const captureStatus = captureLabel
+    ? captureState === 'processing'
+      ? `ECOS is processing: ${captureLabel}`
+      : captureState === 'listening'
+        ? `ECOS is listening for: ${captureLabel}`
+        : captureState === 'captured'
+          ? `Answer recorded for: ${captureLabel}`
+          : `ECOS is ready for: ${captureLabel}`
+    : null;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={() => { void cancel(); }}>
@@ -263,7 +311,7 @@ export function DAVEVoiceCaptureSheet({
           <View style={styles.header}>
             <View style={styles.main}>
               <Text style={styles.title}>{title}</Text>
-              <Text style={styles.subtitle}>{projectName || 'Choose a project'}</Text>
+              <Text style={styles.subtitle}>{contextLabel || projectName || 'Choose a project'}</Text>
             </View>
             <TouchableOpacity style={styles.closeButton} onPress={() => { void cancel(); }} accessibilityLabel="Cancel memory capture">
               <Ionicons name="close" size={22} color={colors.text} />
@@ -408,6 +456,44 @@ export function DAVEVoiceCaptureSheet({
             </View>
           ) : null}
 
+          {captureStatus ? (
+            <View
+              style={[
+                styles.captureStatus,
+                captureState === 'listening' && styles.captureStatusListening,
+                captureState === 'processing' && styles.captureStatusProcessing,
+                captureState === 'captured' && styles.captureStatusCaptured,
+              ]}
+              accessibilityLiveRegion="polite"
+              accessible
+              accessibilityLabel={captureStatus}
+            >
+              <Ionicons
+                name={captureState === 'processing'
+                  ? 'hourglass-outline'
+                  : captureState === 'captured'
+                    ? 'checkmark-circle-outline'
+                    : 'mic-outline'}
+                size={21}
+                color={captureState === 'listening'
+                  ? colors.danger
+                  : captureState === 'processing'
+                    ? colors.warning
+                    : captureState === 'captured'
+                      ? colors.success
+                      : colors.primary}
+              />
+              <Text style={[
+                styles.captureStatusText,
+                captureState === 'listening' && styles.captureStatusTextListening,
+                captureState === 'processing' && styles.captureStatusTextProcessing,
+                captureState === 'captured' && styles.captureStatusTextCaptured,
+              ]}>
+                {captureStatus}
+              </Text>
+            </View>
+          ) : null}
+
           <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? 'Recording ready' : prompt}</Text>
           <Text style={styles.guidance}>{guidance}</Text>
 
@@ -432,7 +518,7 @@ export function DAVEVoiceCaptureSheet({
           {recorderState.isRecording ? (
             <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">
               <Ionicons name="stop" size={21} color="#FFF" />
-              <Text style={styles.primaryText}>Stop Recording</Text>
+              <Text style={styles.primaryText}>{autoSubmitOnStop ? 'Stop & Continue' : 'Stop Recording'}</Text>
             </TouchableOpacity>
           ) : recordingUri ? (
             <>
@@ -538,6 +624,14 @@ const styles = StyleSheet.create({
   taskOptionName: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '700', flexShrink: 1 },
   taskOptionDetail: { color: colors.mutedText, fontSize: 12, lineHeight: 17, marginTop: 2 },
   taskEmpty: { color: colors.mutedText, fontSize: 14, lineHeight: 20, padding: spacing.md, textAlign: 'center' },
+  captureStatus: { alignItems: 'center', alignSelf: 'stretch', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: 14, borderWidth: 2, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', marginBottom: spacing.md, minHeight: 54, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  captureStatusListening: { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
+  captureStatusProcessing: { backgroundColor: colors.warningSoft, borderColor: colors.warning },
+  captureStatusCaptured: { backgroundColor: colors.successSoft, borderColor: colors.success },
+  captureStatusText: { color: colors.primary, flexShrink: 1, fontSize: 16, fontWeight: '800', lineHeight: 21, textAlign: 'center' },
+  captureStatusTextListening: { color: colors.danger },
+  captureStatusTextProcessing: { color: colors.warning },
+  captureStatusTextCaptured: { color: colors.success },
   prompt: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
   guidance: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 5, textAlign: 'center' },
   walkCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.primarySoft, padding: spacing.md, marginTop: spacing.lg },

@@ -7,6 +7,7 @@ import {
 } from '../../services/DAVEWebTaskEditing';
 
 const BASE_DRAFT: DAVEWebTaskDraft = {
+  projectId: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
   itemType: 'Task',
   taskName: 'Install handrails',
   projectName: '2375 Compliance Project',
@@ -82,6 +83,7 @@ describe('DAVE desktop task editing model', () => {
 
     expect(updated.importBatchId).toBe('batch-1');
     expect(updated.sourceDocumentId).toBe('document-1');
+    expect(updated.projectId).toBe('607c7eed-5dea-4a5a-8b52-0f165c71c4b5');
     expect(updated.scheduleProjectName).toBe('2375 Compliance Project');
     expect(updated.projectName).toBe('Canopy C');
     expect(updated.completionVerification).toBeNull();
@@ -137,6 +139,26 @@ describe('DAVE desktop task editing model', () => {
     });
 
     expect(scheduleItemForCloud({ ...task, cloudUpdatedAt: 'cloud-revision' })).not.toHaveProperty('cloudUpdatedAt');
+  });
+
+  test('retains immutable project authority when editing an existing task', () => {
+    const current = buildDAVEWebScheduleItem({
+      draft: BASE_DRAFT,
+      id: 'task-project-authority',
+      now: '2026-08-21T16:50:40.000Z',
+      actor: 'pm@example.com',
+    });
+
+    const updated = buildDAVEWebScheduleItem({
+      draft: { ...BASE_DRAFT, projectId: null, percentComplete: 25 },
+      current: { ...current, cloudUpdatedAt: '2026-08-21T16:50:52.076657Z' },
+      id: current.id,
+      now: '2026-08-21T17:00:00.000Z',
+      actor: 'pm@example.com',
+    });
+
+    expect(updated.projectId).toBe('607c7eed-5dea-4a5a-8b52-0f165c71c4b5');
+    expect(updated.percentComplete).toBe(25);
   });
 
   test('persists project item type, next action, and append-only activity', () => {

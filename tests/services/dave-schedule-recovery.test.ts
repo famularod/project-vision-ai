@@ -1,4 +1,7 @@
-import { recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
+import {
+  daveScheduleItemsNeedingCloudUpload,
+  recoverDAVEScheduleRecords,
+} from '../../services/DAVEScheduleRecovery';
 import { emptyProjectControls } from '../../services/VitruviusProjectControls';
 import type { ScheduleItem } from '../../types';
 
@@ -28,6 +31,29 @@ function scheduleItem(overrides: Partial<ScheduleItem> = {}): ScheduleItem {
 }
 
 describe('DAVE schedule cloud recovery', () => {
+  it('does not replay identical or cloud-only tasks during Full Sync', () => {
+    const current = scheduleItem();
+    const localOnly = scheduleItem({ id: 'task-2', taskName: 'LOCAL TASK' });
+
+    expect(daveScheduleItemsNeedingCloudUpload({
+      local: [current, localOnly],
+      cloud: [current, scheduleItem({ id: 'cloud-only' })],
+    })).toEqual([localOnly]);
+  });
+
+  it('uploads a genuinely newer local task revision', () => {
+    const cloud = scheduleItem();
+    const local = scheduleItem({
+      notes: 'New offline note.',
+      updatedAt: '2026-07-27T20:00:00.000Z',
+    });
+
+    expect(daveScheduleItemsNeedingCloudUpload({
+      local: [local],
+      cloud: [cloud],
+    })).toEqual([expect.objectContaining({ notes: 'New offline note.' })]);
+  });
+
   it('applies a newer cloud note without replacing newer unrelated local progress', () => {
     const local = scheduleItem({
       status: 'In Progress',

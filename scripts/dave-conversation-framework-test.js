@@ -17,7 +17,7 @@ for (const next of ['listening', 'understanding', 'confirming', 'saving', 'follo
 }
 assert.strictEqual(state.state, 'idle');
 assert.strictEqual(state.revision, 6);
-assert.throws(() => framework.transitionConversation(state, 'saving'), /Invalid DAVE conversation transition/);
+assert.throws(() => framework.transitionConversation(state, 'saving'), /Invalid ECOS conversation transition/);
 
 let cancelled = framework.transitionConversation(framework.transitionConversation(state, 'listening'), 'cancelled');
 cancelled = framework.recoverConversation(cancelled);
@@ -29,4 +29,4 @@ failed = framework.recoverConversation(failed);
 assert.strictEqual(failed.state, 'idle');
 
 assert(Object.isFrozen(framework.DAVE_CONVERSATION_TRANSITIONS));
-console.log('DAVE Conversation Framework tests passed.');
+console.log('ECOS Conversation Framework tests passed.');

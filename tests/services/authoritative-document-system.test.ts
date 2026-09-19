@@ -61,6 +61,8 @@ describe('authoritative document system', () => {
       projectName: 'Project A',
       drawingNumber: 'A-101',
       drawingRevision: '2',
+      drawingStatus: 'For Construction',
+      extractionStatus: 'complete',
       extractedPages: [{
         pageNumber: 3,
         sheetNumber: 'A-101',
@@ -85,6 +87,35 @@ describe('authoritative document system', () => {
       documents: [current],
       projectName: 'Project A',
       areaName: 'South Lot',
+    })).toBeNull();
+  });
+
+  it('does not render proof from a superseded drawing', () => {
+    const current = document('drawing', {
+      isCurrent: true,
+      projectName: 'Project A',
+      drawingNumber: 'A-101',
+      drawingRevision: '2',
+      drawingStatus: 'Superseded',
+      extractionStatus: 'complete',
+      extractedPages: [{
+        pageNumber: 1,
+        regions: [{
+          id: 'north-lot',
+          label: 'North Lot',
+          areaNames: ['North Lot'],
+          x: 0.1,
+          y: 0.1,
+          width: 0.2,
+          height: 0.2,
+          confidence: 0.99,
+        }],
+      }],
+    });
+    expect(selectAutomaticDrawingExcerpt({
+      documents: [current],
+      projectName: 'Project A',
+      areaName: 'North Lot',
     })).toBeNull();
   });
 

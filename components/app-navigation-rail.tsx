@@ -8,6 +8,11 @@ import { PRODUCT_BRAND } from '../product-brand';
 import { isOverviewPrimaryNavigationActive } from './app-primary-navigation';
 import { AppProjectSwitcher } from './app-project-switcher';
 import { VitruviusBrandLockup } from './vitruvius-brand-lockup';
+import {
+  vitruviusAudienceCanAccessAskEcos,
+  type VitruviusAskEcosPilotControl,
+  type VitruviusBetaAudience,
+} from '../services/VitruviusBetaAuthorization';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -16,6 +21,9 @@ export function AppNavigationRail({
   expanded,
   onChange,
   onTalk,
+  onAskECOS,
+  audience = 'owner_internal',
+  askEcosPilotControl = null,
   taskProjects = [],
   selectedTaskProject = null,
   onTaskProjectChange,
@@ -31,6 +39,9 @@ export function AppNavigationRail({
   expanded: boolean;
   onChange: (screen: AppScreen) => void;
   onTalk: () => void;
+  onAskECOS?: () => void;
+  audience?: VitruviusBetaAudience;
+  askEcosPilotControl?: VitruviusAskEcosPilotControl | null;
   taskProjects?: string[];
   selectedTaskProject?: string | null;
   onTaskProjectChange?: (projectName: string | null) => void;
@@ -42,6 +53,9 @@ export function AppNavigationRail({
   selectedDocumentProject?: string | null;
   onDocumentProjectChange?: (projectName: string | null) => void;
 }) {
+  const showAskECOS = vitruviusAudienceCanAccessAskEcos(audience, askEcosPilotControl);
+  const primaryAssistantLabel = showAskECOS ? 'Ask ECOS' : 'Project actions';
+  const openPrimaryAssistant = showAskECOS ? (onAskECOS || onTalk) : onTalk;
   return (
     <SafeAreaView
       style={[styles.rail, expanded ? styles.railExpanded : styles.railMedium]}
@@ -80,6 +94,13 @@ export function AppNavigationRail({
           expanded={expanded}
           onPress={() => onChange('ProjectDocuments')}
         />
+        <RailButton
+          label="Field Notes"
+          icon="document-text-outline"
+          active={current === 'FieldNotes'}
+          expanded={expanded}
+          onPress={() => onChange('FieldNotes')}
+        />
         <Pressable
           style={({ pressed }) => [
             styles.railButton,
@@ -87,22 +108,22 @@ export function AppNavigationRail({
             styles.talkButton,
             pressed && styles.buttonPressed,
           ]}
-          onPress={onTalk}
+          onPress={openPrimaryAssistant}
           accessibilityRole="button"
-          accessibilityLabel="Talk to project assistant"
+          accessibilityLabel={primaryAssistantLabel}
         >
           <View
             testID="app-nav-talk-icon-slot"
             style={[styles.talkIcon, expanded && styles.talkIconExpanded]}
           >
             <Ionicons
-              name="mic"
+              name={showAskECOS ? 'chatbubble-ellipses-outline' : 'mic'}
               size={expanded ? 30 : 27}
               color={colors.surface}
             />
           </View>
           <Text style={[styles.talkText, expanded && styles.talkTextExpanded]}>
-            Talk
+            {primaryAssistantLabel}
           </Text>
         </Pressable>
         <RailButton
@@ -153,6 +174,7 @@ function RailButton({
   label,
   badgeCount,
   onPress,
+  role = 'tab',
 }: {
   active: boolean;
   expanded: boolean;
@@ -160,6 +182,7 @@ function RailButton({
   label: string;
   badgeCount?: number;
   onPress: () => void;
+  role?: 'tab' | 'button';
 }) {
   return (
     <Pressable
@@ -170,8 +193,8 @@ function RailButton({
         pressed && styles.buttonPressed,
       ]}
       onPress={onPress}
-      accessibilityRole="tab"
-      accessibilityState={{ selected: active }}
+      accessibilityRole={role}
+      accessibilityState={role === 'tab' ? { selected: active } : undefined}
       accessibilityLabel={badgeCount === undefined
         ? label
         : `${label}, ${badgeCount} document${badgeCount === 1 ? '' : 's'}`}

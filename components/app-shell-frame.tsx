@@ -18,12 +18,19 @@ import {
   AppShellLayoutProvider,
 } from './app-shell-layout';
 import { VitruviusBrandLockup } from './vitruvius-brand-lockup';
+import type {
+  VitruviusAskEcosPilotControl,
+  VitruviusBetaAudience,
+} from '../services/VitruviusBetaAuthorization';
 
 export function AppShellFrame({
   children,
   currentScreen,
   onScreenChange,
   onTalk,
+  onAskECOS,
+  audience = 'owner_internal',
+  askEcosPilotControl = null,
   taskProjects,
   selectedTaskProject,
   onTaskProjectChange,
@@ -39,6 +46,9 @@ export function AppShellFrame({
   currentScreen: AppScreen;
   onScreenChange: (screen: AppScreen) => void;
   onTalk: () => void;
+  onAskECOS?: () => void;
+  audience?: VitruviusBetaAudience;
+  askEcosPilotControl?: VitruviusAskEcosPilotControl | null;
   taskProjects?: string[];
   selectedTaskProject?: string | null;
   onTaskProjectChange?: (projectName: string | null) => void;
@@ -91,6 +101,9 @@ export function AppShellFrame({
                 expanded={layout.expandedRail}
                 onChange={onScreenChange}
                 onTalk={onTalk}
+                onAskECOS={onAskECOS}
+                audience={audience}
+                askEcosPilotControl={askEcosPilotControl}
                 taskProjects={taskProjects}
                 selectedTaskProject={selectedTaskProject}
                 onTaskProjectChange={onTaskProjectChange}
@@ -114,6 +127,9 @@ export function AppShellFrame({
                 current={currentScreen}
                 onChange={onScreenChange}
                 onTalk={onTalk}
+                onAskECOS={onAskECOS}
+                audience={audience}
+                askEcosPilotControl={askEcosPilotControl}
               />
             ) : null}
           </View>

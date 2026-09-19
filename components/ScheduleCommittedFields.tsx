@@ -90,10 +90,13 @@ export function ScheduleCommittedPercentField({
   const committedValueRef = useRef(value);
 
   useEffect(() => {
-    if (!focusedRef.current) {
-      committedValueRef.current = value;
-      setDraftValue(String(value));
-    }
+    // Percentage changes are staged immediately on every non-empty edit, so
+    // the parent value is the current authority even while the input remains
+    // focused. Keeping an older focused draft here made the task card show a
+    // newly received value (for example 95%) while the inspector still showed
+    // the previous value (for example 80%).
+    committedValueRef.current = value;
+    setDraftValue(String(value));
   }, [value]);
 
   function commitDraft() {

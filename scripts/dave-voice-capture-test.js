@@ -11,6 +11,7 @@ const taskFillAssistant = read('components/dave-task-fill-assistant.tsx');
 const sheetLayout = read('components/dave-voice-capture-layout.ts');
 const service = read('services/DAVEVoiceTranscriptionService.ts');
 const understandingSource = read('services/DAVEVoiceUnderstanding.ts');
+const talkProjectIntelligence = read('services/ECOSTalkProjectIntelligence.ts');
 const edge = read('supabase/functions/dave-transcribe-memory/index.ts');
 const appConfig = JSON.parse(read('app.json'));
 
@@ -41,6 +42,11 @@ assert(sheet.includes('requestRecordingPermissionsAsync'), 'Recording must reque
 assert(sheet.includes('Record Again'), 'Voice capture must support re-recording.');
 assert(sheet.includes('Replay Recording'), 'Voice capture must support replay.');
 assert(sheet.includes('Type Instead'), 'Voice capture must preserve typed fallback.');
+assert(sheet.includes('ECOS is ready for:') && sheet.includes('ECOS is listening for:'), 'Guided voice capture must show which field is ready and actively listening.');
+assert(sheet.includes('autoStartRecording'), 'Guided field capture must be able to begin listening as soon as its recording sheet opens.');
+assert(sheet.includes('autoSubmitOnStop') && sheet.includes('Stop & Continue'), 'Guided field capture must transcribe and advance from one stop action.');
+assert(taskFillAssistant.includes('normalizeDAVETaskGuidedVoiceAnswer'), 'Guided capture must accept a spoken field header without saving that header as the answer.');
+assert(taskFillAssistant.includes('guidedAnswerRequestsSkip') && taskFillAssistant.includes("onApply({ [currentGuidedField]: '' }"), 'Skipping an optional guided field must clear any prefilled value before continuing.');
 assert(
   sheet.includes('containerStyle={[') && sheet.includes('styles.sheetContainer,'),
   'Voice capture must preserve the full-height phone modal layout container.',
@@ -68,7 +74,11 @@ assert(sheet.includes('operationLabel') && sheet.includes('operationGuidance'), 
 assert(app.includes('operationLabel="Create a task"'), 'Live Talk must offer the guided Create a task operation.');
 assert(app.includes('onOperation={openGuidedTaskFromTalk}'), 'The Talk operation must open the live guided task flow.');
 assert(app.includes('initialAddGuided={scheduleAddGuided}'), 'Talk-created tasks must start the existing task editor in guided mode.');
-assert(app.includes('projectIntelligenceForTalk(projectName, taskContextId)'), 'Questions must narrow intelligence to the selected task when applicable.');
+assert(
+  app.includes('projectIntelligenceForTalk(projectName, taskContextId, talkDocuments)') &&
+    talkProjectIntelligence.includes('? projectScheduleItems.filter(item => item.id === taskId)'),
+  'Questions must narrow intelligence to the selected task when applicable.',
+);
 assert(sheet.includes('deleteAsync'), 'Temporary recordings must be cleaned up.');
 assert(service.includes("functions.invoke('dave-transcribe-memory'"), 'Client must invoke the dedicated transcription function.');
 assert(service.includes('FileSystem.uploadAsync'), 'Native Talk must upload recordings with the native multipart uploader.');

@@ -6251,29 +6251,29 @@ if (
   hasAll(bottomNav, [
     /label=["']Overview["']/,
     /label=["']Tasks["']/,
-    'Talk',
+    "primaryAssistantLabel = showAskECOS ? 'Ask ECOS' : 'Project actions'",
     /label=["']Reports["']/,
     "onPress={() => onChange('Home')}",
     "onPress={() => onChange('Schedule')}",
-    'onPress={onTalk}',
+    'onPress={openPrimaryAssistant}',
     "onPress={() => onChange('Reports')}",
   ]) &&
   !hasAny(bottomNav, [/label=["']More["']/]) &&
   (bottomNav.match(/<TabButton/g) || []).length === 3 &&
   bottomNav.indexOf('label="Overview"') < bottomNav.indexOf('label="Tasks"') &&
-  bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('onPress={onTalk}') &&
-  bottomNav.indexOf('onPress={onTalk}') < bottomNav.indexOf('label="Reports"')
+  bottomNav.indexOf('label="Tasks"') < bottomNav.indexOf('onPress={openPrimaryAssistant}') &&
+  bottomNav.indexOf('onPress={openPrimaryAssistant}') < bottomNav.indexOf('label="Reports"')
 ) {
   pass(
     'Bottom navigation',
-    'The live workflow labels Overview, Tasks, Talk, and Reports are present in the correct order.',
+    'The live workflow has Overview, Tasks, one audience-gated Ask ECOS action, and Reports in the correct order.',
     'components/app-bottom-tabs.tsx',
   );
 } else {
   fail(
     'Bottom navigation',
     'One or more required workflow bottom nav labels are missing or out of order.',
-    'Ensure the live bottom navigation exposes Overview, Tasks, Talk, and Reports in workflow order.',
+    'Ensure the live bottom navigation exposes Overview, Tasks, one audience-gated Ask ECOS action, and Reports in workflow order.',
     'components/app-bottom-tabs.tsx',
   );
 }

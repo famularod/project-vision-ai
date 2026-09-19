@@ -45,6 +45,10 @@ Vitruvius should:
 
 ## 4. Core product principles
 
+- Customers should never need their own Gemini, OpenAI, Google Cloud, or
+  Supabase account, and they should never enter an API key or purchase separate
+  processing credits. Vitruvius owns, secures, operates, and pays for its
+  required service integrations as part of the Vitruvius product.
 - Complete common field workflows in under 60 seconds when practical.
 - Give every screen one clear purpose and one primary action.
 - Never ask for information Vitruvius can determine reliably.

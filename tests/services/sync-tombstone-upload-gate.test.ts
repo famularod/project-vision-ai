@@ -43,6 +43,23 @@ const mockUpsertScheduleItem = jest.fn(
     error?: string;
   }> => Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
+const mockListProjects = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({
+    ok: true,
+    configured: true,
+    stubbed: false,
+    data: [
+      {
+        id: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
+        name: '2321 Compliance Project',
+      },
+      {
+        id: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+        name: '2375 Compliance Project',
+      },
+    ],
+  }),
+);
 const mockListReferenceDocuments = jest.fn((..._args: unknown[]) =>
   Promise.resolve({
     ok: true,
@@ -82,6 +99,31 @@ const mockRemoveProtectedStorageObject = jest.fn((..._args: unknown[]) =>
 const mockRecordDAVEStorageCleanupAttempt = jest.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, configured: true, stubbed: false }),
 );
+const mockGetProjectUpdateSyncMetadata = jest.fn((id: string) =>
+  Promise.resolve({
+    ok: true,
+    configured: true,
+    stubbed: false,
+    data: {
+      id,
+      projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+      updatedAt: '2026-08-15T08:00:00.000Z',
+      projectName: '2375 Compliance Project',
+      areaName: 'Canopy A',
+      updateData: { id, note: `Cloud receipt ${id}` },
+    } as {
+      id: string;
+      projectId: string;
+      updatedAt: string;
+      projectName: string;
+      areaName: string;
+      updateData: { id: string; note: string };
+    } | null,
+  }),
+);
+const mockSaveProjectUpdate = jest.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, configured: true, stubbed: false }),
+);
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -106,6 +148,7 @@ jest.mock('../../services/SupabaseService', () => ({
     configured: true,
     message: 'Configured.',
   }),
+  listProjects: (...args: unknown[]) => mockListProjects(...args),
   listDAVESyncTombstones: (...args: unknown[]) =>
     mockListDAVESyncTombstones(...args),
   upsertDAVESyncTombstone: (...args: unknown[]) =>
@@ -126,6 +169,9 @@ jest.mock('../../services/SupabaseService', () => ({
     mockRemoveProtectedStorageObject(...args),
   recordDAVEStorageCleanupAttempt: (...args: unknown[]) =>
     mockRecordDAVEStorageCleanupAttempt(...args),
+  getProjectUpdateSyncMetadata: (id: string) =>
+    mockGetProjectUpdateSyncMetadata(id),
+  saveProjectUpdate: (...args: unknown[]) => mockSaveProjectUpdate(...args),
 }));
 
 jest.mock('../../services/ProjectUpdateDeletionJournal', () => ({
@@ -144,6 +190,7 @@ jest.mock('../../services/ReferenceDocumentRepository', () => ({
     mockPrepareReferenceDocumentForCloud(document),
 }));
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   enqueuePendingChange,
   getOfflineQueue,
@@ -157,6 +204,7 @@ import {
 
 const QUEUE_KEY = 'projectVisionAI.syncQueue.v1';
 const TOMBSTONE_KEY = '@dave/sync-tombstones/v1';
+const DELETED_PROJECTS_KEY = 'projectPhotoUpdate.deletedProjects.v1';
 
 function scheduleQueueItem(id: string) {
   return {
@@ -181,6 +229,7 @@ function scheduleQueueItem(id: string) {
 beforeEach(() => {
   mockStorage.clear();
   mockQueueWrites.length = 0;
+  (AsyncStorage.getItem as jest.Mock).mockClear();
   mockCloudTombstonesResult = {
     ok: true,
     configured: true,
@@ -188,6 +237,7 @@ beforeEach(() => {
     data: [],
   };
   mockListDAVESyncTombstones.mockClear();
+  mockListProjects.mockClear();
   mockUpsertDAVESyncTombstone.mockClear();
   mockListScheduleItems.mockClear();
   mockUpsertScheduleItem.mockReset();
@@ -215,6 +265,28 @@ beforeEach(() => {
   });
   mockConfirmProjectUpdateCloudDeletion.mockReset();
   mockConfirmProjectUpdateCloudDeletion.mockResolvedValue(undefined);
+  mockGetProjectUpdateSyncMetadata.mockReset();
+  mockGetProjectUpdateSyncMetadata.mockImplementation((id: string) =>
+    Promise.resolve({
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: {
+        id,
+        projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+        updatedAt: '2026-08-15T08:00:00.000Z',
+        projectName: '2375 Compliance Project',
+        areaName: 'Canopy A',
+        updateData: { id, note: `Cloud receipt ${id}` },
+      },
+    }),
+  );
+  mockSaveProjectUpdate.mockReset();
+  mockSaveProjectUpdate.mockResolvedValue({
+    ok: true,
+    configured: true,
+    stubbed: false,
+  });
 });
 
 describe('offline upload deletion barriers', () => {
@@ -242,8 +314,14 @@ describe('offline upload deletion barriers', () => {
     });
 
     expect(mockListDAVESyncTombstones).toHaveBeenCalledTimes(1);
+    expect(mockListProjects).toHaveBeenCalledTimes(1);
     expect(mockUpsertDAVESyncTombstone).not.toHaveBeenCalled();
     expect(mockUpsertScheduleItem).toHaveBeenCalledTimes(1);
+    expect(mockUpsertScheduleItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+      }),
+    );
   });
 
   it('uploads the newest task first and reads task authority once for the batch', async () => {
@@ -330,6 +408,154 @@ describe('offline upload deletion barriers', () => {
     });
     expect(mockListReferenceDocuments).toHaveBeenCalledTimes(1);
     expect(mockUpsertReferenceDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears a large stale field-update queue from exact cloud receipts with bounded concurrency', async () => {
+    let activeReads = 0;
+    let maximumActiveReads = 0;
+    mockGetProjectUpdateSyncMetadata.mockImplementation(async (id: string) => {
+      activeReads += 1;
+      maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      activeReads -= 1;
+      return {
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: {
+          id,
+          projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+          updatedAt: '2026-08-15T08:00:00.000Z',
+          projectName: '2375 Compliance Project',
+          areaName: 'Canopy A',
+          updateData: { id, note: `Cloud receipt ${id}` },
+        },
+      };
+    });
+    const queue = Array.from({ length: 24 }, (_value, index) => {
+      const id = `already-cloud-synced-${index}`;
+      return {
+        id: `project-update-${id}`,
+        entity: 'project_update' as const,
+        operation: 'update' as const,
+        payload: {
+          id,
+          projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9',
+          projectName: '2375 Compliance Project',
+          selectedAreaName: 'Canopy A',
+          updateData: { id, note: `Cloud receipt ${id}` },
+          pendingPhotoAssetIds: [],
+        },
+        createdAt: '2026-08-15T08:00:00.000Z',
+        changedAt: '2026-08-15T08:00:00.000Z',
+        retryCount: 0,
+        lastError: null,
+        autoUpload: false,
+      };
+    });
+    mockStorage.set(QUEUE_KEY, JSON.stringify(queue));
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 24,
+      queued: 0,
+      conflicts: 0,
+      errors: [],
+    });
+    expect(mockGetProjectUpdateSyncMetadata).toHaveBeenCalledTimes(24);
+    expect(maximumActiveReads).toBe(8);
+    expect(mockListDAVESyncTombstones).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('supersedes an id-less legacy field update only when its project is locally deleted and absent from cloud authority', async () => {
+    mockStorage.set(DELETED_PROJECTS_KEY, JSON.stringify(['Fire Pump House']));
+    mockGetProjectUpdateSyncMetadata.mockResolvedValue({
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: null,
+    });
+    const updateId = 'legacy-fire-pump-update';
+    await enqueuePendingChange({
+      id: `project-update-${updateId}`,
+      entity: 'project_update',
+      operation: 'update',
+      payload: {
+        id: updateId,
+        projectId: null,
+        projectName: 'Fire Pump House',
+        selectedAreaName: 'Pump House',
+        updateData: {
+          id: updateId,
+          projectName: 'Fire Pump House',
+          notes: 'Preserved local field evidence.',
+        },
+        pendingPhotoAssetIds: [],
+      },
+      changedAt: '2026-08-15T21:06:08.482Z',
+      autoUpload: false,
+    });
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 0,
+      queued: 0,
+      errors: [],
+      itemOutcomes: {
+        [`project-update-${updateId}`]: 'superseded',
+      },
+    });
+    expect(mockSaveProjectUpdate).not.toHaveBeenCalled();
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('does not let a legacy deletion name suppress a recreated cloud project', async () => {
+    mockStorage.set(DELETED_PROJECTS_KEY, JSON.stringify(['Fire Pump House']));
+    mockListProjects.mockResolvedValueOnce({
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: [{
+        id: '8a17078f-05bb-4ed3-9e07-39ce71d5989d',
+        name: 'Fire Pump House',
+      }],
+    });
+    mockGetProjectUpdateSyncMetadata.mockResolvedValue({
+      ok: true,
+      configured: true,
+      stubbed: false,
+      data: null,
+    });
+    const updateId = 'recreated-fire-pump-update';
+    await enqueuePendingChange({
+      id: `project-update-${updateId}`,
+      entity: 'project_update',
+      operation: 'update',
+      payload: {
+        id: updateId,
+        projectId: null,
+        projectName: 'Fire Pump House',
+        updateData: {
+          id: updateId,
+          projectName: 'Fire Pump House',
+          notes: 'Current project evidence.',
+        },
+        pendingPhotoAssetIds: [],
+      },
+      changedAt: '2026-08-15T21:10:00.000Z',
+      autoUpload: false,
+    });
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({
+      uploaded: 1,
+      queued: 0,
+      errors: [],
+      itemOutcomes: {
+        [`project-update-${updateId}`]: 'uploaded',
+      },
+    });
+    expect(AsyncStorage.getItem).not.toHaveBeenCalledWith(
+      DELETED_PROJECTS_KEY,
+    );
   });
 
   it('confirms a task save without waiting for unrelated field-update retries', async () => {
@@ -556,6 +782,60 @@ describe('offline upload deletion barriers', () => {
           'mobile/schedule-import-document-local/local-schedule.pdf',
         contentSha256: 'a'.repeat(64),
         sizeBytes: 1024,
+      }),
+    );
+  });
+
+  it('uploads the exact shared 2321 and 2375 schedule without inventing one primary project', async () => {
+    const document: ReferenceDocument = {
+      id: 'mrv3pyi1-9o6xn6mt',
+      name: 'PLZ 2321 & 2375 MASTER CONSTRUCTION SCHEDULE UPDATE 3-WEEK LOOKAHEAD 7202026',
+      originalFileName: 'PLZ-2321-2375-MASTER-CONSTRUCTION-SCHEDULE.pdf',
+      uri: 'file:///owned/project-documents/shared-master-schedule.pdf',
+      mimeType: 'application/pdf',
+      category: 'Schedules',
+      notes: 'Schedule uploaded for task extraction and project manager review.',
+      isCurrent: true,
+      importedAt: '2026-07-21T20:23:54.601Z',
+      updatedAt: '2026-07-21T20:23:54.601Z',
+      projectId: null,
+      projectName: null,
+      projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
+      storagePath: null,
+    };
+    mockPrepareReferenceDocumentForCloud.mockResolvedValueOnce({
+      ...document,
+      storagePath: 'mobile/mrv3pyi1-9o6xn6mt/shared-master-schedule.pdf',
+      contentSha256: 'b'.repeat(64),
+      sizeBytes: 160_768,
+    });
+
+    const result = await runScheduleImportCloudSync({
+      scheduleItems: [],
+      referenceDocuments: [document],
+    });
+
+    expect(result).toMatchObject({
+      fullySynced: true,
+      uploaded: 1,
+      queued: 0,
+      errors: [],
+    });
+    expect(mockPrepareReferenceDocumentForCloud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: document.id,
+        projectId: null,
+        projectName: null,
+        projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
+      }),
+    );
+    expect(mockUpsertReferenceDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: document.id,
+        projectId: null,
+        projectName: null,
+        projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
+        storagePath: 'mobile/mrv3pyi1-9o6xn6mt/shared-master-schedule.pdf',
       }),
     );
   });
@@ -1347,7 +1627,10 @@ describe('offline upload deletion barriers', () => {
 
     await expect(
       resolveScheduleItemSyncConflict(conflict.id, 'keep_local'),
-    ).resolves.toEqual(localTask);
+    ).resolves.toEqual({
+      ...localTask,
+      projectId: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
+    });
     expect(mockUpsertScheduleItem).toHaveBeenCalledWith(
       expect.objectContaining({
         id: localTask.id,

@@ -25,6 +25,7 @@ const MAX_LAYER_TIMEOUT_MS = 30 * 60_000;
 
 const layers = [
   layer('Release configuration', 'check', 5),
+  layer('Ask ECOS live real-world acceptance', 'check:ecos-ask:live-evidence', 2),
   layer('Dependency security contract', 'test:dependency-security', 2),
   layer('Protected cleanup and operations monitoring', 'test:production-operations-health', 2),
   layer('Reproducible native release generation', 'test:native-release-generation', 2),
@@ -66,22 +67,74 @@ function classifyLayerResult(result) {
   return { status: 'pass', timedOut: false };
 }
 
-function readGitValue(args) {
-  const result = spawnSync('git', args, {
-    cwd: repoRoot,
+function readGitResult(args, options = {}) {
+  const runGit = options.runGit || spawnSync;
+  const cwd = options.cwd || repoRoot;
+  const result = runGit('git', args, {
+    cwd,
     encoding: 'utf8',
-    timeout: 10_000,
+    timeout: 30_000,
+    maxBuffer: 16 * 1024 * 1024,
   });
-  return result.status === 0 ? String(result.stdout || '').trim() : null;
+  if (result.status === 0 && !result.error) {
+    return { value: String(result.stdout || '').trim(), error: null };
+  }
+  return {
+    value: null,
+    error: result.error?.message
+      || String(result.stderr || '').trim()
+      || `git ${args.join(' ')} exited with ${String(result.status)}`,
+  };
 }
 
-function repositorySnapshot() {
-  const status = readGitValue(['status', '--porcelain', '--untracked-files=all']);
+function repositorySnapshot(options = {}) {
+  const commitResult = readGitResult(['rev-parse', 'HEAD'], options);
+  const branchResult = readGitResult(['branch', '--show-current'], options);
+  // `all` can emit tens of thousands of paths and overflow a child-process buffer.
+  // `normal` still reports every tracked change plus one entry for each untracked
+  // file or directory, which is the release-relevant truth this count represents.
+  const statusResult = readGitResult(
+    ['status', '--porcelain=v1', '--untracked-files=normal'],
+    options,
+  );
+  const status = statusResult.value;
+  const inspectionErrors = [
+    commitResult.error ? `commit: ${commitResult.error}` : null,
+    statusResult.error ? `status: ${statusResult.error}` : null,
+  ].filter(Boolean);
   return {
-    commit: readGitValue(['rev-parse', 'HEAD']),
-    branch: readGitValue(['branch', '--show-current']),
+    commit: commitResult.value,
+    branch: branchResult.value,
     dirty: status === null ? null : status.length > 0,
-    dirtyEntryCount: status ? status.split(/\r?\n/).filter(Boolean).length : 0,
+    dirtyEntryCount: status === null
+      ? null
+      : status.split(/\r?\n/).filter(Boolean).length,
+    dirtyEntryMode: 'porcelain_v1_untracked_files_or_directories',
+    inspectionStatus: status === null || commitResult.value === null ? 'failed' : 'complete',
+    inspectionError: inspectionErrors.length > 0 ? inspectionErrors.join('; ') : null,
+  };
+}
+
+function repositoryCandidateResult(repository) {
+  const inspected = repository.inspectionStatus === 'complete'
+    && typeof repository.dirty === 'boolean'
+    && Number.isInteger(repository.dirtyEntryCount)
+    && /^[0-9a-f]{40,64}$/i.test(String(repository.commit || ''));
+  const clean = inspected && repository.dirty === false;
+  return {
+    label: 'Exact repository candidate identity',
+    script: 'internal:repository-candidate',
+    status: clean ? 'pass' : 'fail',
+    durationMs: 0,
+    timeoutMs: 0,
+    timedOut: false,
+    exitCode: clean ? 0 : 1,
+    signal: null,
+    error: clean
+      ? null
+      : inspected
+        ? `Working tree has ${repository.dirtyEntryCount} dirty status entries.`
+        : `Working-tree inspection failed: ${repository.inspectionError || 'unknown Git error'}`,
   };
 }
 
@@ -92,9 +145,14 @@ function buildReleaseManifest({
   environment,
   results,
 }) {
-  const failed = results.filter(result => result.status === 'fail');
-  const warnings = results.filter(result => result.status === 'warn');
-  const androidSigning = results.find(
+  const manifestResults = results.some(
+    result => result.script === 'internal:repository-candidate',
+  )
+    ? results
+    : [repositoryCandidateResult(repository), ...results];
+  const failed = manifestResults.filter(result => result.status === 'fail');
+  const warnings = manifestResults.filter(result => result.status === 'warn');
+  const androidSigning = manifestResults.find(
     result => result.script === 'check:android-production-signing',
   );
   const automatedGate = failed.length > 0
@@ -113,7 +171,7 @@ function buildReleaseManifest({
     environment,
     summary: {
       automatedGate,
-      passedLayers: results.filter(result => result.status === 'pass').length,
+      passedLayers: manifestResults.filter(result => result.status === 'pass').length,
       warningLayers: warnings.length,
       failedLayers: failed.length,
       releaseCertification: failed.length > 0
@@ -123,7 +181,7 @@ function buildReleaseManifest({
         ? 'configuration_passed_artifact_signature_unverified'
         : 'not_certified',
     },
-    layers: results,
+    layers: manifestResults,
     evidence: {
       deviceValidation: {
         status: 'required',
@@ -171,6 +229,17 @@ function runReleaseGate(env = process.env) {
   console.log('ECOS Assurance Automated Release Gate');
   console.log(`Started: ${startedAt}`);
   console.log('This gate runs automated evidence. It does not certify physical-device behavior.');
+  if (repository.dirty === false) {
+    console.log('Repository candidate: clean working tree.');
+  } else if (repository.dirty === true) {
+    console.log(
+      `Repository candidate: BLOCKED by ${repository.dirtyEntryCount} dirty status entries.`,
+    );
+  } else {
+    console.log(
+      `Repository candidate: BLOCKED because Git inspection failed (${repository.inspectionError || 'unknown error'}).`,
+    );
+  }
   console.log('');
 
   for (const configuredLayer of layers) {
@@ -203,8 +272,6 @@ function runReleaseGate(env = process.env) {
     });
   }
 
-  const failed = results.filter(result => result.status === 'fail');
-  const warnings = results.filter(result => result.status === 'warn');
   const manifest = buildReleaseManifest({
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -226,7 +293,7 @@ function runReleaseGate(env = process.env) {
   writeManifest(manifest);
 
   console.log('\nECOS Assurance Automated Gate Summary');
-  results.forEach(result => {
+  manifest.layers.forEach(result => {
     console.log(
       `${result.status.toUpperCase()} ${result.label} (${(result.durationMs / 1000).toFixed(1)}s)`,
     );
@@ -236,19 +303,23 @@ function runReleaseGate(env = process.env) {
   console.log('');
   console.log(
     `Automated Gate: ${
-      failed.length > 0
+      manifest.summary.failedLayers > 0
         ? 'FAIL'
-        : warnings.length > 0
+        : manifest.summary.warningLayers > 0
           ? 'PASS WITH WARNINGS'
           : 'PASS'
     }`,
   );
   console.log(`Machine-readable manifest: ${path.relative(repoRoot, manifestPath)}`);
-  console.log('Release Certification: DEVICE VALIDATION REQUIRED');
+  console.log(
+    `Release Certification: ${manifest.summary.releaseCertification === 'not_certified'
+      ? 'NOT CERTIFIED'
+      : 'DEVICE VALIDATION REQUIRED'}`,
+  );
   console.log('Not certified by this automated run:');
   manifest.manualValidationRequired.forEach(item => console.log(`- ${item}`));
 
-  if (failed.length > 0) process.exitCode = 1;
+  if (manifest.summary.failedLayers > 0) process.exitCode = 1;
   return manifest;
 }
 
@@ -262,5 +333,7 @@ module.exports = {
   boundedLayerTimeoutMs,
   buildReleaseManifest,
   classifyLayerResult,
+  repositoryCandidateResult,
+  repositorySnapshot,
   runReleaseGate,
 };

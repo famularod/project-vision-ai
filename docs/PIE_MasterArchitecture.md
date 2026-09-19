@@ -2111,6 +2111,15 @@ JARVIS QA should protect the product mission: fast, clear, readable, useful, and
 
 ## 14. Development Principles
 
+- Customers should never need their own Gemini, OpenAI, Google Cloud, or
+  Supabase account, and they should never enter an API key or purchase separate
+  processing credits.
+- Vitruvius owns provider selection, service credentials, processing capacity,
+  retries, usage controls, and provider billing. These remain server-side
+  operational concerns and must not become customer setup steps.
+- Customer-facing status describes the outcome and next useful action. Provider
+  names, quotas, model names, index versions, API errors, and account-funding
+  instructions belong only in protected support diagnostics.
 - Evidence before conclusions.
 - Never invent facts.
 - Unknown is better than wrong.
@@ -2129,6 +2138,25 @@ JARVIS QA should protect the product mission: fast, clear, readable, useful, and
 - No external AI calls should be added to local PIE behavior unless explicitly requested.
 - No schema changes should be made unless the sprint explicitly requires them.
 - Existing capture, reports, sync, storage, and project behavior must be preserved unless a change is requested.
+
+### Public customer service boundary
+
+The public product must present one Vitruvius service boundary:
+
+```text
+Customer -> Vitruvius account -> Project documents -> ECOS preparation -> Fact-backed answer
+```
+
+The implementation may use multiple providers behind that boundary, but the
+customer must not create, configure, fund, or troubleshoot those provider
+accounts. A provider outage or depleted internal capacity is a Vitruvius
+operations event. Vitruvius preserves completed work, retries safely, gives the
+customer a plain-language status, and provides support or a recovery path.
+
+Google Drive is a connected document source, not a customer-provisioned ECOS
+provider. Customers may authorize only the files they select. Vitruvius owns the
+production OAuth application, picker configuration, secure token handling, and
+renewal behavior.
 
 ## 15. Five-Year Vision
 

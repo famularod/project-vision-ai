@@ -102,8 +102,8 @@ describe('DesktopOverviewPage', () => {
     expect(screen.getAllByText('3')).toHaveLength(2);
     expect(screen.getByText('Install panels')).toBeTruthy();
     expect(screen.getByText('Panel framing started.')).toBeTruthy();
-    expect(screen.getByText('1 of 2 tasks complete')).toBeTruthy();
-    expect(screen.getByText('0 of 1 tasks complete')).toBeTruthy();
+    expect(screen.getByText('63% complete · 1 of 2 tasks complete')).toBeTruthy();
+    expect(screen.getByText('0% complete · 0 of 1 tasks complete')).toBeTruthy();
   });
 });
 

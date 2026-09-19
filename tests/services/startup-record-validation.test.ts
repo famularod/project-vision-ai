@@ -80,8 +80,19 @@ describe('startup record validation', () => {
     })).toBe(true);
 
     expect(isStartupSavedUpdateRecord({
+      id: 'cloud-recovered-update',
+      projectName: 'Project',
+      photos: [{ uri: '', cloudStoragePath: 'owner/project/update/photo.jpg' }],
+      recipients: { contactIds: [] },
+    })).toBe(true);
+
+    expect(isStartupSavedUpdateRecord({
       id: 'update-1',
       photos: [{ caption: 'missing durable photo URI' }],
+    })).toBe(false);
+    expect(isStartupSavedUpdateRecord({
+      id: 'update-1',
+      photos: [{ uri: 42, cloudStoragePath: 'owner/project/update/photo.jpg' }],
     })).toBe(false);
     expect(isStartupSavedUpdateRecord({
       id: 'update-1',

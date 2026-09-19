@@ -239,6 +239,9 @@ async function rasterizePdfExcerpt(
   if (!response.ok) throw new Error(`Drawing download failed (${response.status}).`);
   const bytes = await response.arrayBuffer();
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  if (typeof window !== 'undefined') {
+    pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+  }
   const pdf = await pdfjs.getDocument({
     data: new Uint8Array(bytes),
   }).promise;

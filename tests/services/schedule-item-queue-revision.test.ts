@@ -77,6 +77,35 @@ describe('schedule item queue revision', () => {
       updatedAt: '2026-07-27T10:06:00.000Z',
     };
     expect(scheduleItemRevisionForCloudRefresh(task, cloud, [])).toBe(cloud);
-    expect(scheduleItemRevisionForCloudRefresh(task, cloud, [queued(task)])).toBe(task);
+    expect(scheduleItemRevisionForCloudRefresh(task, cloud, [queued(task)])).toMatchObject({
+      owner: 'Updated owner',
+      percentComplete: task.percentComplete,
+      status: task.status,
+      updatedAt: task.updatedAt,
+    });
+  });
+
+  it('accepts a desktop percentage while preserving an unrelated queued mobile note', () => {
+    const local = {
+      ...task,
+      notes: 'Pending mobile note',
+    };
+    const cloud = {
+      ...task,
+      percentComplete: 25,
+      progressConfirmedAt: '2026-08-21T12:31:25.761Z',
+      updatedAt: '2026-08-21T12:31:28.669Z',
+    };
+
+    expect(scheduleItemRevisionForCloudRefresh(
+      local,
+      cloud,
+      [queued(local, ['notes'])],
+    )).toMatchObject({
+      notes: 'Pending mobile note',
+      percentComplete: 25,
+      progressConfirmedAt: '2026-08-21T12:31:25.761Z',
+      updatedAt: '2026-08-21T12:31:28.669Z',
+    });
   });
 });

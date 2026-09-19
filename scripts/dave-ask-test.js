@@ -61,7 +61,11 @@ const intelligence = buildProjectIntelligence({
           status: 'analysis_complete',
           updatedAt: '2026-07-11T10:01:00.000Z',
           comparisonConfidence: 'high',
+          comparability: 'strong',
           priorEvidenceId: 'baseline-evidence',
+          assessmentDisposition: 'finding',
+          provenance: 'visual_only',
+          userReview: 'confirmed',
           findings: [{
             findingType: 'added',
             description: 'A tan case appears in the foreground near the laptop.',

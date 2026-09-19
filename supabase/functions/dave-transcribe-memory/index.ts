@@ -78,6 +78,7 @@ Deno.serve(async request => {
       return json({ error: 'project_id_required' }, 400, corsHeaders);
     }
     const candidateLocations = parseCandidateLocations(form?.get('candidateLocations'));
+    const purpose = form?.get('purpose') === 'question' ? 'question' : 'memory';
     const audioBytes = new Uint8Array(await audio.arrayBuffer());
     const payloadFingerprint = await sha256Hex(concatBytes(
       audioBytes,
@@ -85,6 +86,7 @@ Deno.serve(async request => {
         projectId,
         projectName,
         candidateLocations,
+        purpose,
         schemaVersion: SCHEMA_VERSION,
       })),
     ));
@@ -133,7 +135,9 @@ Deno.serve(async request => {
     providerForm.append('language', 'en');
     providerForm.append(
       'prompt',
-      'Construction project field note. Preserve names, companies, locations, dates, commitments, decisions, issues, requests, schedule changes, and follow-ups exactly as spoken. Do not add facts.',
+      purpose === 'question'
+        ? 'Construction project question. Transcribe the question exactly as spoken. Preserve project names, locations, drawing references, measurements, quantities, units, and trade terms. Do not answer the question or add facts.'
+        : 'Construction project field note. Preserve names, companies, locations, dates, commitments, decisions, issues, requests, schedule changes, and follow-ups exactly as spoken. Do not add facts.',
     );
 
     const providerResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -163,16 +167,19 @@ Deno.serve(async request => {
       return json({ error: 'transcription_empty' }, 502, corsHeaders);
     }
 
-    const understanding = await understandMemory({
-      transcript,
-      projectName,
-      candidateLocations,
-    });
+    const understanding = purpose === 'question'
+      ? unavailableUnderstanding()
+      : await understandMemory({
+          transcript,
+          projectName,
+          candidateLocations,
+        });
 
     console.log(JSON.stringify({
       event: 'dave_voice_transcription_succeeded',
       transcriptionModel: TRANSCRIPTION_MODEL,
       understandingStatus: understanding.status,
+      purpose,
       audioBytes: audio.size,
       audioType: audio.type || null,
     }));

@@ -22,6 +22,7 @@ jest.mock('../../services/DAVEWebSupabaseClient', () => {
       subscribeToAuthorizedOperationalChanges: jest.fn(),
       runAuthorizedMaintenance: jest.fn(),
       createAuthorizedScheduleItem: jest.fn(),
+      updateAuthorizedScheduleItem: jest.fn(),
       signOut: jest.fn(),
     },
   };
@@ -39,11 +40,25 @@ function Harness() {
       <Text testID="snapshot">{auth.snapshot?.refreshedAt || 'none'}</Text>
       <Text testID="freshness">{auth.freshness.status}</Text>
       <Text testID="message">{auth.message || 'none'}</Text>
+      <Text testID="task-percent">{auth.snapshot?.scheduleItems[0]?.percentComplete ?? 'none'}</Text>
       <Pressable testID="refresh" onPress={() => { void auth.refreshSnapshot(); }}>
         <Text>Refresh</Text>
       </Pressable>
       <Pressable testID="create-task" onPress={() => { void auth.createTask({} as never); }}>
         <Text>Create task</Text>
+      </Pressable>
+      <Pressable
+        testID="update-task"
+        onPress={() => {
+          void auth.updateTask({
+            ...(auth.snapshot?.scheduleItems[0] || {}),
+            id: 'task-1',
+            percentComplete: 25,
+            cloudUpdatedAt: '2026-08-21T15:00:00.000Z',
+          } as never);
+        }}
+      >
+        <Text>Update task</Text>
       </Pressable>
     </View>
   );
@@ -71,6 +86,9 @@ describe('DesktopAuthProvider refresh continuity', () => {
     mockedGateway.subscribeToAuthStateChange.mockReturnValue(() => undefined);
     mockedGateway.runAuthorizedMaintenance.mockResolvedValue(undefined);
     mockedGateway.createAuthorizedScheduleItem.mockResolvedValue(recentRefreshAt);
+    mockedGateway.updateAuthorizedScheduleItem.mockResolvedValue(
+      '2026-08-21T15:01:00.000Z',
+    );
     mockedLoadSnapshot.mockResolvedValueOnce({
       projects: [],
       scheduleItems: [],
@@ -210,4 +228,43 @@ describe('DesktopAuthProvider refresh continuity', () => {
       expect(mockedLoadSnapshot).toHaveBeenLastCalledWith(['schedule_items']);
     });
   });
+
+  it('keeps the acknowledged percentage visible when a concurrent refresh returns the stale card value', async () => {
+    mockedLoadSnapshot.mockReset();
+    const staleSnapshot = {
+      projects: [],
+      scheduleItems: [{
+        id: 'task-1',
+        percentComplete: 20,
+        cloudUpdatedAt: '2026-08-21T15:00:00.000Z',
+      }],
+      projectUpdates: [],
+      referenceDocuments: [],
+      refreshedAt: '2026-08-21T15:00:01.000Z',
+    } as never;
+    mockedLoadSnapshot
+      .mockResolvedValueOnce(staleSnapshot)
+      .mockResolvedValueOnce(staleSnapshot);
+
+    const screen = render(
+      <DesktopAuthProvider>
+        <Harness />
+      </DesktopAuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('task-percent').props.children).toBe(20);
+    });
+    fireEvent.press(screen.getByTestId('update-task'));
+
+    await waitFor(() => {
+      expect(mockedGateway.updateAuthorizedScheduleItem).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('task-percent').props.children).toBe(25);
+    });
+  });
 });
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));

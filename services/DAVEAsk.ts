@@ -6,6 +6,12 @@ import {
 } from './DAVECommunicationCenter';
 import type { DAVEProjectIntelligence } from './DAVEIntelligence';
 import type { DAVEProjectTimelineEvent } from './DAVEProjectTimeline';
+import type {
+  ReferenceDocumentCitation,
+  ReferenceDocumentRegion,
+  ReferenceDocumentSheetProvenance,
+} from '../types';
+import { answerECOSDocumentQuestion } from './ECOSDocumentIntelligence';
 
 export type DAVEAskIntent =
   | 'summarize_project'
@@ -33,6 +39,10 @@ export type DAVEAskEvidence = {
   recordId: string;
   summary: string;
   timelineEventId: string | null;
+  documentCitation?: ReferenceDocumentCitation | null;
+  documentRegion?: ReferenceDocumentRegion | null;
+  documentProvenance?: ReferenceDocumentSheetProvenance | null;
+  excerpt?: string | null;
 };
 
 export type DAVEAskTimelineReference = {
@@ -68,10 +78,95 @@ const UNKNOWN_ANSWER = "I don't have enough current project information to answe
 
 export function askDAVE(request: DAVEAskRequest): DAVEAskAnswer {
   const intent = routeDAVEAskIntent(request.question);
-  if (intent === 'unknown') return unknownAnswer(request.intelligence);
+  const documentAnswer = answerECOSDocumentQuestion({
+    question: request.question,
+    documents: request.intelligence.referenceDocuments ?? [],
+    projectId: request.intelligence.projectId,
+    projectName: request.intelligence.projectName,
+  });
+  if (intent === 'unknown') {
+    return documentAnswer
+      ? answerFromDocumentEvidence(documentAnswer)
+      : unknownAnswer(request.intelligence);
+  }
   const intelligence = request.intelligence;
   const result = answerForIntent(intent, intelligence);
-  return withEvidenceQuality(result, intelligence);
+  const assured = withEvidenceQuality(result, intelligence);
+  return documentAnswer
+    ? combineStructuredAndDocumentAnswer(assured, answerFromDocumentEvidence(documentAnswer))
+    : assured;
+}
+
+function answerFromDocumentEvidence(
+  result: NonNullable<ReturnType<typeof answerECOSDocumentQuestion>>,
+): DAVEAskAnswer {
+  const supportingEvidence: DAVEAskEvidence[] = result.evidence.map(item => ({
+    sourceType: 'document',
+    recordId: item.document.id,
+    summary: `${item.citation.label}: ${item.excerpt}`,
+    timelineEventId: null,
+    documentCitation: item.citation,
+    documentRegion: item.region,
+    documentProvenance: item.provenance,
+    excerpt: item.excerpt,
+  }));
+  return {
+    answer: result.answer,
+    confidence: result.confidence,
+    limitations: result.limitations,
+    supportingEvidence,
+    timelineReferences: [],
+    recommendedNextAction: result.confidence === 'low'
+      ? 'Open the cited document and confirm the source page.'
+      : null,
+    navigationTargets: supportingEvidence.map(item => ({
+      target: 'project_documents',
+      sourceRecordId: item.recordId,
+      timelineEventId: null,
+    })),
+  };
+}
+
+function combineStructuredAndDocumentAnswer(
+  structured: DAVEAskAnswer,
+  document: DAVEAskAnswer,
+): DAVEAskAnswer {
+  const supportingEvidence = [...structured.supportingEvidence, ...document.supportingEvidence]
+    .filter((item, index, all) => all.findIndex(other =>
+      other.sourceType === item.sourceType &&
+      other.recordId === item.recordId &&
+      other.summary === item.summary,
+    ) === index);
+  const navigationTargets = [...structured.navigationTargets, ...document.navigationTargets]
+    .filter((item, index, all) => all.findIndex(other =>
+      other.target === item.target &&
+      other.sourceRecordId === item.sourceRecordId &&
+      other.timelineEventId === item.timelineEventId,
+    ) === index);
+  return {
+    answer: `${structured.answer}\n\n${document.answer}`,
+    confidence: lowerConfidence(structured.confidence, document.confidence),
+    limitations: uniqueStrings([...structured.limitations, ...document.limitations]),
+    supportingEvidence,
+    timelineReferences: uniqueTimelineReferencesFromAnswers([
+      ...structured.timelineReferences,
+      ...document.timelineReferences,
+    ]),
+    recommendedNextAction: structured.recommendedNextAction || document.recommendedNextAction,
+    navigationTargets,
+  };
+}
+
+function lowerConfidence(
+  left: DAVEAskAnswer['confidence'],
+  right: DAVEAskAnswer['confidence'],
+): DAVEAskAnswer['confidence'] {
+  const order: DAVEAskAnswer['confidence'][] = ['low', 'medium', 'high'];
+  return order[Math.min(order.indexOf(left), order.indexOf(right))]!;
+}
+
+function uniqueTimelineReferencesFromAnswers(items: DAVEAskTimelineReference[]) {
+  return items.filter((item, index, all) => all.findIndex(other => other.id === item.id) === index);
 }
 
 export const answerDAVEQuestion = askDAVE;
@@ -326,14 +421,26 @@ function whatChanged(intelligence: DAVEProjectIntelligence): DAVEAskAnswer {
       ['No qualified recent change event is available.'],
     );
   }
-  const observations = items.filter(item => item.evidenceClass === 'observation').map(item => item.text);
+  const supplementalPhotoEvents = intelligence.timeline
+    .filter(item => item.eventType === 'qualified_photo_observation')
+    .slice(0, 2);
+  const observations = uniqueStrings([
+    ...items.filter(item => item.evidenceClass === 'observation').map(item => item.text),
+    ...supplementalPhotoEvents.map(item => item.summary),
+  ]);
   const facts = items.filter(item => item.evidenceClass === 'fact').map(item => item.text);
-  const events = timelineForRecordIds(intelligence, items.map(item => item.sourceRecordId));
+  const events = uniqueEvents([
+    ...timelineForRecordIds(intelligence, items.map(item => item.sourceRecordId)),
+    ...supplementalPhotoEvents,
+  ]);
   return answerFromEvents(
     sectionedAnswer(facts, observations, [], []),
     intelligence,
     events,
-    items.map(item => evidenceFromDailyItem(intelligence, item)),
+    [
+      ...items.map(item => evidenceFromDailyItem(intelligence, item)),
+      ...supplementalPhotoEvents.flatMap(item => item.evidence),
+    ],
     null,
     items.flatMap(item => item.limitations),
   );
@@ -688,6 +795,11 @@ function uniqueTimelineReferences(events: DAVEProjectTimelineEvent[]): DAVEAskTi
     eventType: item.eventType,
     title: item.title,
   }));
+}
+
+function uniqueEvents(events: DAVEProjectTimelineEvent[]) {
+  const seen = new Set<string>();
+  return events.filter(item => !seen.has(item.id) && Boolean(seen.add(item.id)));
 }
 
 function navigationTargets(

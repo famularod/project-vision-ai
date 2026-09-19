@@ -93,7 +93,8 @@ assert(
     sync.includes('photoAttempt.failedPhotoIds') &&
     sync.includes("return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS") &&
     sync.indexOf('return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS') <
-      sync.indexOf('const remoteMetadata = await getProjectUpdateSyncMetadata(payload.id)') &&
+      sync.indexOf('const remoteMetadata = await loadProjectUpdateSyncMetadata(payload.id, context)') &&
+    sync.includes('projectUpdateMetadataPromises?: Map<') &&
     (
       sync.includes('if (result === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS)') ||
       sync.includes('if (resultCode === PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS)')
@@ -167,6 +168,25 @@ async function testConcurrentEnqueuePreservesBothItems() {
   const supabaseMock = {
     getSupabaseConfigurationStatus() {
       return { configured: true, message: 'Configured.' };
+    },
+    async listProjects() {
+      const names = [
+        'Hospital',
+        'Project A',
+        'Project B',
+        'Project C',
+        'Project D',
+        'Project Delete',
+      ];
+      return {
+        ok: true,
+        configured: true,
+        stubbed: false,
+        data: names.map((name, index) => ({
+          id: `11111111-1111-4111-8111-${String(index + 1).padStart(12, '0')}`,
+          name,
+        })),
+      };
     },
     async getProjectUpdateSyncMetadata() {
       supabaseCalls.metadataReads += 1;

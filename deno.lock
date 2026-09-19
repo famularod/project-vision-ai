@@ -1,56 +1,86 @@
 {
   "version": "5",
+  "specifiers": {
+    "jsr:@std/assert@1": "1.0.18",
+    "jsr:@std/assert@1.0.18": "1.0.18",
+    "jsr:@std/internal@^1.0.12": "1.0.14"
+  },
+  "jsr": {
+    "@std/assert@1.0.18": {
+      "integrity": "270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/internal@1.0.14": {
+      "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    }
+  },
   "remote": {
     "https://esm.sh/@supabase/supabase-js@2.108.2": "7fbe17c4ef67b80d388cef1f0a0c7ecb28b2b1c3c4110875925a4bc82ff28e13"
   },
   "workspace": {
     "packageJson": {
       "dependencies": [
-        "npm:@expo/metro-runtime@~6.1.2",
-        "npm:@expo/ngrok@^4.1.3",
+        "npm:@expo/metro-runtime@~57.0.11",
         "npm:@expo/vector-icons@^15.0.3",
         "npm:@noble/ciphers@1.3.0",
         "npm:@noble/hashes@1.8.0",
         "npm:@react-native-async-storage/async-storage@2.2.0",
-        "npm:@react-native-community/datetimepicker@8.4.4",
+        "npm:@react-native-community/datetimepicker@9.1.0",
+        "npm:@react-native/jest-preset@0.86.2",
         "npm:@supabase/supabase-js@^2.108.2",
         "npm:@testing-library/react-native@13.3.3",
         "npm:@types/jest@29.5.14",
-        "npm:@types/react@~19.1.10",
+        "npm:@types/node@^24.13.3",
+        "npm:@types/react@~19.2.4",
         "npm:base64-js@1.5.1",
-        "npm:expo-asset@~12.0.13",
-        "npm:expo-audio@~1.1.1",
-        "npm:expo-clipboard@~8.0.8",
-        "npm:expo-constants@~18.0.13",
-        "npm:expo-contacts@~15.0.11",
-        "npm:expo-crypto@~15.0.9",
-        "npm:expo-dev-client@~6.0.21",
-        "npm:expo-document-picker@~14.0.8",
-        "npm:expo-file-system@~19.0.23",
-        "npm:expo-font@~14.0.12",
-        "npm:expo-image-picker@~17.0.11",
-        "npm:expo-linear-gradient@~15.0.8",
-        "npm:expo-linking@~8.0.12",
-        "npm:expo-location@~19.0.8",
-        "npm:expo-mail-composer@~15.0.8",
-        "npm:expo-router@~6.0.24",
-        "npm:expo-secure-store@~15.0.8",
-        "npm:expo-sharing@~14.0.8",
-        "npm:expo-sms@~14.0.8",
-        "npm:expo-status-bar@~3.0.8",
-        "npm:expo@~54.0.36",
-        "npm:jest-expo@~54.0.17",
+        "npm:docx@^9.7.1",
+        "npm:expo-asset@~57.0.12",
+        "npm:expo-audio@~57.0.4",
+        "npm:expo-clipboard@~57.0.1",
+        "npm:expo-constants@~57.0.12",
+        "npm:expo-contacts@~57.0.4",
+        "npm:expo-crypto@~57.0.1",
+        "npm:expo-dev-client@~57.0.14",
+        "npm:expo-document-picker@~57.0.1",
+        "npm:expo-file-system@~57.0.2",
+        "npm:expo-font@~57.0.1",
+        "npm:expo-image-manipulator@~57.0.12",
+        "npm:expo-image-picker@~57.0.12",
+        "npm:expo-linear-gradient@~57.0.1",
+        "npm:expo-linking@~57.0.7",
+        "npm:expo-location@~57.0.12",
+        "npm:expo-mail-composer@~57.0.1",
+        "npm:expo-router@~57.0.15",
+        "npm:expo-secure-store@~57.0.1",
+        "npm:expo-sharing@~57.0.14",
+        "npm:expo-sms@~57.0.1",
+        "npm:expo-status-bar@~57.0.1",
+        "npm:expo@~57.0.15",
+        "npm:heic-to@^1.5.2",
+        "npm:jest-expo@~57.0.4",
         "npm:jest@29.7",
-        "npm:react-dom@19.1.0",
-        "npm:react-native-safe-area-context@5.6",
-        "npm:react-native-screens@4.16",
+        "npm:pdfjs-dist@^6.2.108",
+        "npm:react-dom@19.2.3",
+        "npm:react-native-safe-area-context@5.7",
+        "npm:react-native-screens@4.26",
         "npm:react-native-url-polyfill@3",
         "npm:react-native-web@0.21",
-        "npm:react-native@0.81.5",
-        "npm:react-test-renderer@19.1.0",
-        "npm:react@19.1.0",
-        "npm:typescript@~5.9.2"
-      ]
+        "npm:react-native@0.86.2",
+        "npm:react-test-renderer@19.2.3",
+        "npm:react@19.2.3",
+        "npm:tesseract.js@^6.0.1",
+        "npm:tus-js-client@^4.3.1",
+        "npm:typescript@~6.0.3",
+        "npm:ws@^8.21.1"
+      ],
+      "overrides": {
+        "brace-expansion": "5.0.9",
+        "xcode": {
+          "uuid": "11.1.1"
+        }
+      }
     }
   }
 }

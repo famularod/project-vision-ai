@@ -38,7 +38,11 @@ function hasValidOptionalStringFields(
 }
 
 function isStartupPhotoRecord(value: unknown): boolean {
-  if (!isRecord(value) || !isNonEmptyString(value.uri)) return false;
+  if (!isRecord(value)) return false;
+  if (!isOptionalString(value.uri)) return false;
+  if (!isNonEmptyString(value.uri) && !isNonEmptyString(value.cloudStoragePath)) {
+    return false;
+  }
   return hasValidOptionalStringFields(value, [
     'id',
     'caption',

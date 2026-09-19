@@ -32,7 +32,7 @@ assert(webEntry.includes("import 'expo-router/entry'"), 'Web must use the URL-ad
 assert(appConfig.platforms.includes('web'), 'Web must be an explicit application platform.');
 assert(appConfig.name === 'Vitruvius', 'The installed application name must use the approved Vitruvius brand.');
 assert(appConfig.icon === './assets/icon-vitruvius.png', 'Native builds must use the Vitruvius application icon.');
-assert(appConfig.web?.favicon === './assets/icon-vitruvius.png', 'Desktop web installs must use the Vitruvius favicon.');
+assert(appConfig.web?.favicon === './assets/favicon.png', 'Desktop web installs must use the Vitruvius favicon.');
 assert(rootLayout.includes('expo-router/head'), 'The static web shell must define installable page metadata.');
 assert(rootLayout.includes('apple-mobile-web-app-title'), 'Safari web-app installs must receive the Vitruvius application title.');
 assert(appConfig.web?.bundler === 'metro', 'Web must use Metro for shared Expo module resolution.');
@@ -41,7 +41,7 @@ assert(appConfig.plugins.includes('expo-router'), 'Expo Router must be configure
 for (const dependency of ['expo-router', 'react-dom', 'react-native-web', '@expo/metro-runtime']) {
   assert(packageJson.dependencies[dependency], `${dependency} must be a direct SDK-compatible dependency.`);
 }
-for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'app/tasks.tsx', 'app/evidence.tsx', 'app/photos.tsx', 'app/documents.tsx', 'app/reports.tsx', 'app/settings.tsx', 'app/+not-found.tsx']) {
+for (const route of ['app/_layout.tsx', 'app/index.tsx', 'app/projects.tsx', 'app/tasks.tsx', 'app/field-notes.tsx', 'app/evidence.tsx', 'app/photos.tsx', 'app/documents.tsx', 'app/reports.tsx', 'app/settings.tsx', 'app/+not-found.tsx']) {
   assert(exists(route), `${route} must exist.`);
 }
 assert(
@@ -83,8 +83,10 @@ for (const forbiddenMutation of ['createProject(', 'updateProject(', 'deleteProj
 }
 assert(!webSupabaseClient.includes(".from('projects').update("), 'The browser gateway must not expose project editing.');
 assert(!webSupabaseClient.includes(".from('projects').delete("), 'The browser gateway must not expose project deletion.');
-assert(webSupabaseClient.includes("client.storage.from('project-documents')"), 'The reviewed browser workflow must upload only to protected project document storage.');
-assert(webSupabaseClient.includes('bytes.byteLength > 50 * 1024 * 1024'), 'Browser uploads must enforce the live backend 50 MB boundary before storage writes.');
+assert(webSupabaseClient.includes("client.storage.from('project-documents')"), 'Reviewed browser uploads must use protected project document storage.');
+assert(webSupabaseClient.includes('bytes.byteLength > DAVE_WEB_MAX_DOCUMENT_BYTES'), 'Browser uploads must enforce the live backend 50 MB boundary before storage writes.');
+assert(webSupabaseClient.includes('saveAuthorizedLinkedReferenceDocument'), 'Google Drive references must use their own metadata-only save path.');
+assert(webSupabaseClient.includes("document.sourceProvider === 'google_drive'"), 'Google Drive operational rows must omit their duplicated page index.');
 assert(webSupabaseClient.includes('uploadWebFileResumably'), 'Large browser uploads must use the resumable storage path.');
 assert(webSupabaseClient.includes('webFileFingerprint'), 'Browser uploads must check the content fingerprint before creating a duplicate document.');
 assert(!webSupabaseClient.includes('expo-file-system'), 'The browser Supabase gateway must not import native file support.');

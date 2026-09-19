@@ -30,6 +30,7 @@ import { partitionProjectUpdatesByDeletedTask } from './DAVEDeletedTaskEvidence'
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { normalizeProjectControls } from './VitruviusProjectControls';
 import type { DAVEOperationalCollectionName } from './DAVEOperationalRefresh';
+import { isGoogleDriveLinkedSource } from './GoogleDriveWebProvider';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
@@ -319,6 +320,12 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
     projectNames: readStringArray(data.projectNames),
     importBatchId: readString(data.importBatchId),
     storagePath: readString(data.storagePath),
+    sourceProvider: data.sourceProvider === 'google_drive'
+      ? 'google_drive'
+      : data.sourceProvider === 'supabase_storage' ? 'supabase_storage' : null,
+    externalSource: isGoogleDriveLinkedSource(data.externalSource)
+      ? data.externalSource
+      : null,
     sizeBytes: typeof data.sizeBytes === 'number' && Number.isFinite(data.sizeBytes)
       ? Math.max(0, data.sizeBytes)
       : null,

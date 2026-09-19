@@ -30,14 +30,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getStoredJson, setStoredJson } from './StorageService';
 import {
   deletedDAVERecordIds,
-  refreshDAVESyncTombstonesFromCloud,
+  loadDAVEOperationalTombstones,
   removeDAVETombstonedRecords,
   synchronizeDAVESyncTombstones,
   type DAVESyncTombstoneSyncResult,
 } from './DAVESyncTombstones';
-import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
-import { recoverDAVEScheduleRecords } from './DAVEScheduleRecovery';
-import { mergeDAVEReferenceDocumentRecoveryRecords } from './DAVECloudRecovery';
+import {
+  daveProjectAreasNeedingCloudUpload,
+  mergeDAVEProjectAreaRecoveryRecords,
+} from './DAVEProjectAreaRecovery';
+import {
+  daveScheduleItemsNeedingCloudUpload,
+  recoverDAVEScheduleRecords,
+} from './DAVEScheduleRecovery';
+import {
+  daveReferenceDocumentsNeedingCloudUpload,
+  mergeDAVEReferenceDocumentRecoveryRecords,
+} from './DAVECloudRecovery';
 import {
   confirmProjectUpdateCloudDeletion,
   hasProjectUpdateDeletionIntent,
@@ -48,8 +57,20 @@ import { startGuardedBackgroundTask } from './BackgroundTaskGuard';
 import { createPendingChangesRetryController } from './PendingChangesRetryController';
 import { runDAVECloudMaintenanceIfDue } from './DAVECloudMaintenanceBudget';
 import { prepareReferenceDocumentForCloud } from './ReferenceDocumentRepository';
+import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
+import {
+  daveProjectUpdateMatchesCloudReceipt,
+  daveProjectUpdatesNeedingCloudUpload,
+  daveProjectUpdatesSemanticallyMatch,
+} from './DAVEProjectUpdateCloudReceipt';
+import {
+  buildOperationalProjectIdentityAuthority,
+  resolveOperationalProjectIdentity,
+  resolveOperationalReferenceDocumentScope,
+  type OperationalProjectIdentityAuthority,
+} from './OperationalProjectIdentity';
 import {
   createBoundedTaskRunner,
   mapWithBoundedConcurrency,
@@ -485,6 +506,7 @@ type ProjectDeletePayload = {
 
 type ProjectUpdateRecordPayload<TUpdate = unknown> = {
   id: string;
+  projectId?: string | null;
   projectName?: string;
   selectedAreaName?: string | null;
   updateData?: TUpdate;
@@ -538,6 +560,8 @@ const SYNC_QUEUE_ARCHIVE_RECOVERY_INDEX_KEY =
   `${SYNC_QUEUE_STORAGE_KEY}.archive-recovery-index.v1`;
 const SYNC_CONFLICTS_STORAGE_KEY = 'projectVisionAI.syncConflicts.v1';
 const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
+const LEGACY_DELETED_PROJECTS_STORAGE_KEY =
+  'projectPhotoUpdate.deletedProjects.v1';
 const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
 
 let offlineQueueMutationTail: Promise<void> = Promise.resolve();
@@ -1600,7 +1624,7 @@ export async function queueReferenceDocumentRecord(
     id: referenceDocumentQueueItemId(document.id),
     entity: 'reference_document',
     operation: 'update',
-    payload: { id: document.id, documentData: document },
+    payload: { id: document.id, documentData: compactECOSDocumentIndexForCloud(document) },
     changedAt,
     autoUpload,
   });
@@ -2122,6 +2146,7 @@ export async function removeOperationalRecordFromSyncQueue(
 
 export async function queueProjectUpdateRecord<TUpdate extends {
   id: string;
+  projectId?: string | null;
   projectName?: string;
   selectedAreaName?: string | null;
   photos?: Array<{ id: string }>;
@@ -2173,6 +2198,7 @@ export async function queueProjectUpdateArchive(
 
 async function persistProjectUpdateRecord<TUpdate extends {
   id: string;
+  projectId?: string | null;
   projectName?: string;
   selectedAreaName?: string | null;
 }>(
@@ -2188,6 +2214,7 @@ async function persistProjectUpdateRecord<TUpdate extends {
     operation: 'update',
     payload: {
       id: update.id,
+      projectId: update.projectId,
       projectName: update.projectName,
       selectedAreaName: update.selectedAreaName,
       updateData: update,
@@ -2378,8 +2405,18 @@ export async function uploadPendingChanges(): Promise<SyncUploadResult> {
 
 async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   const configuration = getSupabaseConfigurationStatus();
-  const archiveRecovery = await stageMisclassifiedArchiveOnlyQuarantines();
-  const queue = await getOfflineQueue();
+  const initialQueue = await getOfflineQueue();
+  // Active user work is always the first recovery authority. Some older
+  // devices retain hundreds of forensic quarantine snapshots; scanning every
+  // one before touching the live queue can indefinitely postpone items that
+  // are already safely present in the cloud. Only inspect legacy quarantine
+  // history after the active queue has drained.
+  const archiveRecovery = initialQueue.length === 0
+    ? await stageMisclassifiedArchiveOnlyQuarantines()
+    : { eligibleQuarantines: [] };
+  const queue = initialQueue.length === 0
+    ? await getOfflineQueue()
+    : initialQueue;
   const orderedQueue = pendingUploadOrder(queue);
   const {
     taskPriorityBatch,
@@ -2394,29 +2431,6 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       conflicts: (await getSyncConflicts()).length,
       errors: [configuration.message],
     };
-  }
-
-  const operationalQueueItems = uploadBatch.filter(item =>
-    queueEntityUsesDAVESyncTombstones(item.entity),
-  );
-  let operationalTombstoneGate: DAVESyncTombstoneSyncResult | null = null;
-  if (operationalQueueItems.length > 0) {
-    try {
-      // Routine task/area/document saves only need the authoritative deletion
-      // inventory before writing. synchronizeDAVESyncTombstones() also
-      // re-uploads the entire durable deletion journal; large long-lived
-      // workspaces can contain hundreds of markers, which previously blocked
-      // the current task save before its queue item was even attempted.
-      operationalTombstoneGate = await refreshDAVESyncTombstonesFromCloud();
-    } catch (error) {
-      operationalTombstoneGate = {
-        tombstones: [],
-        cloudAuthoritative: false,
-        cloudError: error instanceof Error
-          ? error.message
-          : 'Deletion history could not be verified.',
-      };
-    }
   }
 
   const resolvedIds = new Set<string>();
@@ -2435,10 +2449,49 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     reference_document: 0,
   };
 
+  // Exact cloud receipts are read concurrently within a small fixed bound.
+  // This turns a large stale mobile queue into one short reconciliation pass
+  // without weakening the per-record semantic receipt checks below.
+  await preloadProjectUpdateCloudReceipts(uploadBatch, uploadContext);
+  for (const item of uploadBatch) {
+    if (!await projectUpdateAlreadyHasCloudReceipt(item, uploadContext)) continue;
+    itemOutcomes[item.id] = 'uploaded';
+    uploaded += 1;
+    uploadedByEntity[item.entity] += 1;
+    resolvedIds.add(item.id);
+  }
+
+  const operationalQueueItems = uploadBatch.filter(item => (
+    !resolvedIds.has(item.id) &&
+    queueEntityUsesDAVESyncTombstones(item.entity)
+  ));
+  let operationalTombstoneGate: DAVESyncTombstoneSyncResult | null = null;
+  if (operationalQueueItems.length > 0) {
+    try {
+      // Routine task/area/document saves only need the authoritative deletion
+      // inventory before writing. synchronizeDAVESyncTombstones() also
+      // re-uploads the entire durable deletion journal; large long-lived
+      // workspaces can contain hundreds of markers, which previously blocked
+      // the current task save before its queue item was even attempted.
+      operationalTombstoneGate = await loadDAVEOperationalTombstones();
+    } catch (error) {
+      operationalTombstoneGate = {
+        tombstones: [],
+        cloudAuthoritative: false,
+        cloudError: error instanceof Error
+          ? error.message
+          : 'Deletion history could not be verified.',
+      };
+    }
+  }
+
   // A user-confirmed task edit is the interactive critical path. Finish and
   // durably reconcile task rows as one bounded batch; unrelated historical
   // field-update retries must not keep the Save button waiting.
   for (const item of uploadBatch) {
+    if (resolvedIds.has(item.id)) continue;
+    let attemptedItem = item;
+
     if (
       operationalTombstoneGate &&
       queueItemMatchesDAVESyncTombstone(
@@ -2472,7 +2525,31 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       continue;
     }
 
-    const result = await uploadQueueItem(item, uploadContext);
+    const prepared = await prepareQueueItemProjectIdentity(item, uploadContext);
+    if (typeof prepared === 'string') {
+      if (await projectUpdateBelongsToLegacyDeletedProject(item, uploadContext)) {
+        // Old installs could record the deleted project name before project
+        // tombstones existed. If the protected cloud project inventory also
+        // confirms that no active project has that name, the queued child is
+        // obsolete. Remove only the retry row; its local update/photo record
+        // remains preserved in the normal project-update store.
+        itemOutcomes[item.id] = 'superseded';
+        resolvedIds.add(item.id);
+        continue;
+      }
+      const sanitizedResult = sanitizeUserFacingSyncMessage(prepared);
+      itemOutcomes[item.id] = 'failed';
+      retriedItemsById.set(item.id, {
+        ...item,
+        retryCount: item.retryCount + 1,
+        lastError: sanitizedResult,
+      });
+      errors.push(formatQueueItemFailure(item, sanitizedResult));
+      continue;
+    }
+    attemptedItem = prepared;
+    attemptedItemsById.set(item.id, attemptedItem);
+    const result = await uploadQueueItem(attemptedItem, uploadContext);
     const resultCode = typeof result === 'string' ? result : result.outcome;
 
     if (resultCode === 'uploaded') {
@@ -2504,11 +2581,11 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     itemOutcomes[item.id] = 'failed';
 
     retriedItemsById.set(item.id, {
-      ...item,
-      retryCount: item.retryCount + 1,
+      ...attemptedItem,
+      retryCount: attemptedItem.retryCount + 1,
       lastError: sanitizedResult,
     });
-    errors.push(formatQueueItemFailure(item, sanitizedResult));
+    errors.push(formatQueueItemFailure(attemptedItem, sanitizedResult));
   }
 
   // Reconcile against the queue as it stands right now, not the snapshot
@@ -2560,6 +2637,59 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     conflicts: (await getSyncConflicts()).length,
     errors,
   };
+}
+
+async function projectUpdateBelongsToLegacyDeletedProject(
+  item: SyncQueueItem,
+  context: QueueUploadContext,
+): Promise<boolean> {
+  if (
+    item.entity !== 'project_update' ||
+    item.operation !== 'update' ||
+    !context.projectIdentityAuthority
+  ) return false;
+
+  const payload = item.payload as ProjectUpdateRecordPayload<Record<string, unknown>>;
+  if (payload.archiveOnly || !isRecord(payload.updateData)) return false;
+  const payloadProjectId = typeof payload.projectId === 'string'
+    ? payload.projectId.trim()
+    : '';
+  const updateProjectId = typeof payload.updateData.projectId === 'string'
+    ? payload.updateData.projectId.trim()
+    : '';
+  // An explicit project UUID must never be reclassified by a name-only legacy
+  // marker. That path requires normal exact-identity review.
+  if (payloadProjectId || updateProjectId) return false;
+
+  const payloadName = normalizedProjectArchiveName(payload.projectName);
+  const updateName = normalizedProjectArchiveName(payload.updateData.projectName);
+  const projectName = payloadName || updateName;
+  if (!projectName || (payloadName && updateName && payloadName !== updateName)) {
+    return false;
+  }
+  // A current authorized project with this name always outranks the local
+  // legacy deletion marker, including a legitimately recreated project.
+  if ((context.projectIdentityAuthority.byNormalizedName.get(projectName) || []).length > 0) {
+    return false;
+  }
+
+  context.legacyDeletedProjectNamesPromise ??=
+    loadLegacyDeletedProjectNames();
+  return (await context.legacyDeletedProjectNamesPromise).has(projectName);
+}
+
+async function loadLegacyDeletedProjectNames(): Promise<ReadonlySet<string>> {
+  const rawValue = await AsyncStorage.getItem(LEGACY_DELETED_PROJECTS_STORAGE_KEY);
+  if (!rawValue) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(rawValue);
+    if (!Array.isArray(parsed) || !parsed.every(value => typeof value === 'string')) {
+      return new Set();
+    }
+    return new Set(parsed.map(normalizedProjectArchiveName).filter(Boolean));
+  } catch {
+    return new Set();
+  }
 }
 
 function queueEntityUsesDAVESyncTombstones(
@@ -2864,7 +2994,13 @@ export async function synchronizeLocalData(
     syncableReferenceDocuments.length;
 
   progress('Reconciling current tasks, GPS, and documents');
-  const [cloudAreasBeforeUpload, cloudSchedulesBeforeUpload, cloudDocumentsBeforeUpload] = await Promise.all([
+  const [
+    cloudUpdatesBeforeUpload,
+    cloudAreasBeforeUpload,
+    cloudSchedulesBeforeUpload,
+    cloudDocumentsBeforeUpload,
+  ] = await Promise.all([
+    listProjectUpdates<ProjectUpdate>(),
     listProjectAreas(),
     listScheduleItems(),
     listReferenceDocuments(),
@@ -2874,11 +3010,28 @@ export async function synchronizeLocalData(
   const deletedDocumentIds = deletedDAVERecordIds(tombstoneSync.tombstones, 'reference_document');
 
   if (
+    cloudUpdatesBeforeUpload.ok &&
+    !cloudUpdatesBeforeUpload.stubbed &&
+    Array.isArray(cloudUpdatesBeforeUpload.data)
+  ) {
+    syncableUpdates = daveProjectUpdatesNeedingCloudUpload({
+      local: syncableUpdates,
+      cloud: cloudUpdatesBeforeUpload.data,
+    });
+  } else {
+    // A full sync is reconciliation, not permission to replay every historical
+    // field update. If cloud receipts cannot be read, keep local records and
+    // let the already-durable queue retry independently.
+    syncableUpdates = [];
+    errors.push('Cloud field updates could not be checked before upload. Local updates were preserved and will retry.');
+  }
+
+  if (
     cloudAreasBeforeUpload.ok &&
     !cloudAreasBeforeUpload.stubbed &&
     Array.isArray(cloudAreasBeforeUpload.data)
   ) {
-    syncableProjectAreas = mergeDAVEProjectAreaRecoveryRecords({
+    syncableProjectAreas = daveProjectAreasNeedingCloudUpload({
       local: syncableProjectAreas,
       cloud: cloudAreasBeforeUpload.data,
       deletedIds: deletedAreaIds,
@@ -2895,11 +3048,10 @@ export async function synchronizeLocalData(
     !cloudSchedulesBeforeUpload.stubbed &&
     Array.isArray(cloudSchedulesBeforeUpload.data)
   ) {
-    syncableScheduleItems = recoverDAVEScheduleRecords({
+    syncableScheduleItems = daveScheduleItemsNeedingCloudUpload({
       local: syncableScheduleItems,
       cloud: cloudSchedulesBeforeUpload.data,
       deletedIds: deletedScheduleIds,
-      allowCloudOnly: true,
     });
   } else {
     // Uploading a stale local snapshot before a successful read can erase a
@@ -2913,7 +3065,7 @@ export async function synchronizeLocalData(
     !cloudDocumentsBeforeUpload.stubbed &&
     Array.isArray(cloudDocumentsBeforeUpload.data)
   ) {
-    syncableReferenceDocuments = mergeDAVEReferenceDocumentRecoveryRecords({
+    syncableReferenceDocuments = daveReferenceDocumentsNeedingCloudUpload({
       local: syncableReferenceDocuments,
       cloud: cloudDocumentsBeforeUpload.data,
       deletedIds: deletedDocumentIds,
@@ -2939,8 +3091,17 @@ export async function synchronizeLocalData(
   errors.push(...queuedUpload.errors);
 
   const cloudProjects = await listProjects();
+  const cloudProjectRecords = cloudProjects.ok && !cloudProjects.stubbed && Array.isArray(cloudProjects.data)
+    ? [...cloudProjects.data]
+    : [];
+  if (!cloudProjects.ok || cloudProjects.stubbed || !Array.isArray(cloudProjects.data)) {
+    errors.push(
+      cloudProjects.error || cloudProjects.message ||
+      'Cloud projects could not be checked before operational records were uploaded.',
+    );
+  }
   const existingProjectNames = new Set(
-    cloudProjects.data?.map(project => project.name.toLowerCase()) ?? [],
+    cloudProjectRecords.map(project => project.name.toLowerCase()),
   );
 
   for (const projectName of syncableProjects) {
@@ -2948,6 +3109,11 @@ export async function synchronizeLocalData(
 
     if (!normalizedName) {
       progress('Empty project skipped');
+      continue;
+    }
+
+    if (!cloudProjects.ok || cloudProjects.stubbed) {
+      progress(`Project preserved for retry: ${normalizedName}`);
       continue;
     }
 
@@ -2961,6 +3127,7 @@ export async function synchronizeLocalData(
     if (result.ok && !result.stubbed) {
       details.projectsUploaded += 1;
       existingProjectNames.add(normalizedName.toLowerCase());
+      if (result.data) cloudProjectRecords.push(result.data);
     } else {
       errors.push(`Project “${normalizedName}” could not sync.`);
     }
@@ -3003,8 +3170,21 @@ export async function synchronizeLocalData(
     progress(`GPS area synced: ${area.name}`);
   }
 
+  const operationalProjectAuthority = buildOperationalProjectIdentityAuthority(
+    cloudProjectRecords,
+  );
+
   for (const item of syncableScheduleItems) {
-    const result = await upsertScheduleItem(item);
+    const binding = resolveOperationalProjectIdentity(item, operationalProjectAuthority);
+    if (!binding.ok) {
+      errors.push(`Schedule task “${item.taskName}” could not sync. ${binding.error}`);
+      progress(`Schedule preserved: ${item.taskName}`);
+      continue;
+    }
+    const result = await upsertScheduleItem({
+      ...item,
+      projectId: binding.identity.id,
+    });
 
     if (result.ok && !result.stubbed) {
       details.schedulesUploaded += 1;
@@ -3016,7 +3196,42 @@ export async function synchronizeLocalData(
   }
 
   for (const document of syncableReferenceDocuments) {
-    const result = await upsertReferenceDocument(document);
+    const binding = resolveOperationalReferenceDocumentScope(
+      document,
+      operationalProjectAuthority,
+    );
+    if (!binding.ok) {
+      errors.push(`Document “${document.name}” could not sync. ${binding.error}`);
+      progress(`Document preserved: ${document.name}`);
+      continue;
+    }
+    let authoritativeDocument: ReferenceDocument = {
+      ...document,
+      projectId: binding.scope.projectId,
+      projectName: binding.scope.projectName,
+      projectNames: [...binding.scope.projectNames],
+    };
+    if (!authoritativeDocument.storagePath && authoritativeDocument.uri?.trim()) {
+      try {
+        authoritativeDocument = await prepareReferenceDocumentForCloud(
+          authoritativeDocument,
+        );
+      } catch {
+        errors.push(
+          `Document “${document.name}” could not sync. The protected file is not available on this device and was preserved for retry.`,
+        );
+        progress(`Document preserved: ${document.name}`);
+        continue;
+      }
+      if (!authoritativeDocument.storagePath) {
+        errors.push(
+          `Document “${document.name}” could not sync. The protected file upload did not complete and was preserved for retry.`,
+        );
+        progress(`Document preserved: ${document.name}`);
+        continue;
+      }
+    }
+    const result = await upsertReferenceDocument(authoritativeDocument);
 
     if (result.ok && !result.stubbed) {
       details.documentsUploaded += 1;
@@ -3405,13 +3620,47 @@ type ReferenceDocumentUploadSuccess = {
 };
 
 type QueueUploadContext = {
+  projectsAuthorityPromise?: ReturnType<typeof listProjects>;
+  projectIdentityAuthority?: OperationalProjectIdentityAuthority;
   projectAreasAuthorityPromise?: ReturnType<typeof listProjectAreas>;
   projectAreasById?: Map<string, ProjectArea>;
   scheduleItemsAuthorityPromise?: ReturnType<typeof listScheduleItems>;
   scheduleItemsById?: Map<string, ScheduleItem>;
   referenceDocumentsAuthorityPromise?: ReturnType<typeof listReferenceDocuments>;
   referenceDocumentsById?: Map<string, ReferenceDocument>;
+  projectUpdateMetadataPromises?: Map<
+    string,
+    ReturnType<typeof getProjectUpdateSyncMetadata>
+  >;
+  legacyDeletedProjectNamesPromise?: Promise<ReadonlySet<string>>;
 };
+
+const PROJECT_UPDATE_RECEIPT_PREFETCH_CONCURRENCY = 8;
+
+function projectUpdateCanUseCloudReceipt(item: SyncQueueItem): boolean {
+  if (item.entity !== 'project_update' || item.operation !== 'update') return false;
+  const payload = item.payload as ProjectUpdateRecordPayload;
+  if (payload.archiveOnly || !payload.updateData) return false;
+  const pendingPhotoAssetIds = Array.isArray(payload.pendingPhotoAssetIds)
+    ? payload.pendingPhotoAssetIds
+    : [];
+  return uniquePhotoAssetIds(pendingPhotoAssetIds).length === 0;
+}
+
+async function preloadProjectUpdateCloudReceipts(
+  items: readonly SyncQueueItem[],
+  context: QueueUploadContext,
+): Promise<void> {
+  const updateIds = [...new Set(items.flatMap(item => {
+    if (!projectUpdateCanUseCloudReceipt(item)) return [];
+    return [(item.payload as ProjectUpdateRecordPayload).id];
+  }))];
+  await mapWithBoundedConcurrency(
+    updateIds,
+    PROJECT_UPDATE_RECEIPT_PREFETCH_CONCURRENCY,
+    updateId => loadProjectUpdateSyncMetadata(updateId, context).then(() => undefined),
+  );
+}
 
 function pendingUploadOrder(queue: readonly SyncQueueItem[]): SyncQueueItem[] {
   return queue
@@ -3438,6 +3687,116 @@ function pendingUploadOrder(queue: readonly SyncQueueItem[]): SyncQueueItem[] {
     .map(entry => entry.item);
 }
 
+async function prepareQueueItemProjectIdentity(
+  item: SyncQueueItem,
+  context: QueueUploadContext,
+): Promise<SyncQueueItem | string> {
+  if (
+    item.operation === 'delete' ||
+    (
+      item.entity !== 'project_update' &&
+      item.entity !== 'schedule_item' &&
+      item.entity !== 'reference_document'
+    )
+  ) {
+    return item;
+  }
+
+  if (item.entity === 'project_update') {
+    const payload = item.payload as ProjectUpdateRecordPayload;
+    if (payload.archiveOnly && !payload.projectId) return item;
+  }
+  if (item.entity === 'reference_document') {
+    const payload = item.payload as ReferenceDocumentRecordPayload;
+    if (
+      !payload.documentData.projectId &&
+      !payload.documentData.projectName &&
+      !payload.documentData.projectNames?.some(name => name.trim())
+    ) {
+      return item;
+    }
+  }
+
+  const authority = await loadOperationalProjectIdentityAuthority(context);
+  if (typeof authority === 'string') return authority;
+
+  let nextPayload: SyncQueueItem['payload'] | null = null;
+  if (item.entity === 'project_update') {
+    const payload = item.payload as ProjectUpdateRecordPayload<Record<string, unknown>>;
+    if (!payload.updateData) return item;
+    const resolved = resolveOperationalProjectIdentity(
+      {
+        projectId: payload.projectId || payload.updateData.projectId as string | null | undefined,
+        projectName: payload.projectName || payload.updateData.projectName as string | null | undefined,
+      },
+      authority,
+    );
+    if (!resolved.ok) return resolved.error;
+    nextPayload = {
+      ...payload,
+      projectId: resolved.identity.id,
+      projectName: payload.projectName || resolved.identity.name,
+      updateData: {
+        ...payload.updateData,
+        projectId: resolved.identity.id,
+      },
+    };
+  } else if (item.entity === 'schedule_item') {
+    const payload = item.payload as ScheduleItemRecordPayload;
+    const resolved = resolveOperationalProjectIdentity(payload.itemData, authority);
+    if (!resolved.ok) return resolved.error;
+    nextPayload = {
+      ...payload,
+      itemData: {
+        ...payload.itemData,
+        projectId: resolved.identity.id,
+      },
+    };
+  } else {
+    const payload = item.payload as ReferenceDocumentRecordPayload;
+    const resolved = resolveOperationalReferenceDocumentScope(
+      payload.documentData,
+      authority,
+    );
+    if (!resolved.ok) return resolved.error;
+    nextPayload = {
+      ...payload,
+      documentData: {
+        ...payload.documentData,
+        projectId: resolved.scope.projectId,
+        projectName: resolved.scope.projectName,
+        projectNames: [...resolved.scope.projectNames],
+      },
+    };
+  }
+
+  if (JSON.stringify(nextPayload) === JSON.stringify(item.payload)) return item;
+  const preparedItem: SyncQueueItem = { ...item, payload: nextPayload };
+  const persisted = await mutateOfflineQueue(queue => {
+    const currentIndex = queue.findIndex(current => sameQueueRevision(current, item));
+    if (currentIndex < 0) {
+      return { nextQueue: queue, result: null, persist: false };
+    }
+    const nextQueue = [...queue];
+    nextQueue[currentIndex] = preparedItem;
+    return { nextQueue, result: preparedItem };
+  });
+  return persisted || 'The saved item changed while its cloud project identity was being prepared.';
+}
+
+async function loadOperationalProjectIdentityAuthority(
+  context: QueueUploadContext,
+): Promise<OperationalProjectIdentityAuthority | string> {
+  if (context.projectIdentityAuthority) return context.projectIdentityAuthority;
+  context.projectsAuthorityPromise ??= listProjects();
+  const result = await context.projectsAuthorityPromise;
+  if (!result.ok || result.stubbed || !Array.isArray(result.data)) {
+    return result.error || result.message || 'Cloud projects could not be checked before upload.';
+  }
+  context.projectIdentityAuthority = buildOperationalProjectIdentityAuthority(result.data);
+  return context.projectIdentityAuthority;
+}
+
 async function uploadQueueItem(
   item: SyncQueueItem,
   context: QueueUploadContext,
@@ -3447,7 +3806,7 @@ async function uploadQueueItem(
   }
 
   if (item.entity === 'project_update') {
-    return uploadProjectUpdateQueueItem(item);
+    return uploadProjectUpdateQueueItem(item, context);
   }
 
   if (item.entity === 'project_area') {
@@ -3562,12 +3921,25 @@ async function uploadQueueItem(
       cloud.data.map(candidate => [candidate.id, candidate]),
     );
     const remote = context.referenceDocumentsById.get(payload.id);
-    let authoritative = remote
+    const merged = remote
       ? mergeDAVEReferenceDocumentRecoveryRecords({
           local: [payload.documentData],
           cloud: [remote],
         }).find(candidate => candidate.id === payload.id) || payload.documentData
       : payload.documentData;
+    const pending = remote
+      ? daveReferenceDocumentsNeedingCloudUpload({
+          local: [payload.documentData],
+          cloud: [remote],
+        }).find(candidate => candidate.id === payload.id)
+      : payload.documentData;
+    if (remote && !pending) {
+      return {
+        outcome: 'uploaded',
+        referenceDocument: merged,
+      };
+    }
+    let authoritative = pending || merged;
     const hasLocalFile = Boolean(authoritative.uri?.trim());
     if (!authoritative.storagePath && hasLocalFile) {
       try {
@@ -3578,12 +3950,6 @@ async function uploadQueueItem(
       if (!authoritative.storagePath) {
         return 'The document file is still waiting for protected cloud storage.';
       }
-    }
-    if (remote && JSON.stringify(authoritative) === JSON.stringify(remote)) {
-      return {
-        outcome: 'uploaded',
-        referenceDocument: authoritative,
-      };
     }
     const result = await upsertReferenceDocument(authoritative);
     if (result.ok && !result.stubbed) {
@@ -3631,6 +3997,7 @@ async function uploadProjectQueueItem(
 
 async function uploadProjectUpdateQueueItem(
   item: SyncQueueItem,
+  context: QueueUploadContext,
 ): Promise<'uploaded' | 'conflict' | string> {
   if (item.operation === 'delete') {
     const deletePayload = item.payload as ProjectUpdateDeletePayload;
@@ -3678,6 +4045,7 @@ async function uploadProjectUpdateQueueItem(
     const result = await archiveProjectUpdate({
       id: payload.id,
       archivedAt: payload.archivedAt || item.changedAt,
+      projectId: payload.projectId,
     });
     return result.ok && !result.stubbed
       ? 'uploaded'
@@ -3690,7 +4058,7 @@ async function uploadProjectUpdateQueueItem(
   if (uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
     return PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS;
   }
-  const remoteMetadata = await getProjectUpdateSyncMetadata(payload.id);
+  const remoteMetadata = await loadProjectUpdateSyncMetadata(payload.id, context);
 
   if (!remoteMetadata.ok && remoteMetadata.error) {
     return `Project update database select failed: ${remoteMetadata.error}`;
@@ -3723,6 +4091,7 @@ async function uploadProjectUpdateQueueItem(
 
   const result = await saveProjectUpdate({
     id: payload.id,
+    projectId: payload.projectId || '',
     projectName: payload.projectName || 'Unassigned Project',
     areaName: payload.selectedAreaName || '',
     idempotencyKey: projectUpdateIdempotencyKey(payload.updateData, payload.id),
@@ -3735,6 +4104,39 @@ async function uploadProjectUpdateQueueItem(
   return result.error
     ? `Project update database upsert failed: ${result.error}`
     : result.message || 'Project update sync is waiting for Supabase.';
+}
+
+async function projectUpdateAlreadyHasCloudReceipt(
+  item: SyncQueueItem,
+  context: QueueUploadContext,
+): Promise<boolean> {
+  if (!projectUpdateCanUseCloudReceipt(item)) return false;
+  const payload = item.payload as ProjectUpdateRecordPayload;
+
+  const remote = await loadProjectUpdateSyncMetadata(payload.id, context);
+  if (
+    !remote.ok ||
+    remote.stubbed ||
+    !remote.data?.updateData ||
+    !daveProjectUpdateMatchesCloudReceipt(payload.updateData, remote.data.updateData)
+  ) {
+    return false;
+  }
+
+  await clearConflictsForLocalRecord('project_update', payload.id);
+  return true;
+}
+
+function loadProjectUpdateSyncMetadata(
+  updateId: string,
+  context: QueueUploadContext,
+): ReturnType<typeof getProjectUpdateSyncMetadata> {
+  context.projectUpdateMetadataPromises ??= new Map();
+  const existing = context.projectUpdateMetadataPromises.get(updateId);
+  if (existing) return existing;
+  const pending = getProjectUpdateSyncMetadata(updateId);
+  context.projectUpdateMetadataPromises.set(updateId, pending);
+  return pending;
 }
 
 async function markProjectUpdateCloudDeletionSucceeded(
@@ -3864,41 +4266,7 @@ function extractProjectUpdateData(value: unknown): unknown {
 }
 
 function projectUpdatePayloadsMatch(left: unknown, right: unknown): boolean {
-  return JSON.stringify(normalizeProjectUpdateForConflict(left)) ===
-    JSON.stringify(normalizeProjectUpdateForConflict(right));
-}
-
-function normalizeProjectUpdateForConflict(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(normalizeProjectUpdateForConflict);
-  }
-
-  if (!isRecord(value)) return value;
-
-  const ignoredKeys = new Set([
-    'status',
-    'syncDiagnostics',
-    'sendAttempts',
-    'lastSendAttemptAt',
-    'stableSendId',
-    'idempotencyKey',
-  ]);
-  const normalized: Record<string, unknown> = {};
-
-  for (const key of Object.keys(value).sort()) {
-    if (ignoredKeys.has(key)) continue;
-
-    if (key === 'workflowTimestamps' && isRecord(value[key])) {
-      const timestamps = { ...value[key] };
-      delete timestamps.sendResolvedAt;
-      normalized[key] = normalizeProjectUpdateForConflict(timestamps);
-      continue;
-    }
-
-    normalized[key] = normalizeProjectUpdateForConflict(value[key]);
-  }
-
-  return normalized;
+  return daveProjectUpdatesSemanticallyMatch(left, right);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

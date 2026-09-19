@@ -1,6 +1,10 @@
 import { fireEvent, render } from '@testing-library/react-native';
 
 import { ScheduleTaskEditorModal } from '../../components/schedule-task-editor-modal';
+import {
+  guidedAnswerRequestsSkip,
+  normalizeDAVETaskGuidedVoiceAnswer,
+} from '../../components/dave-task-fill-assistant';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('../../components/DAVEVoiceCaptureSheet', () => {
@@ -9,16 +13,20 @@ jest.mock('../../components/DAVEVoiceCaptureSheet', () => {
     DAVEVoiceCaptureSheet: ({
       visible,
       onMemoryReady,
+      captureLabel,
     }: {
       visible: boolean;
       onMemoryReady: (result: Record<string, unknown>) => void;
+      captureLabel?: string;
     }) => visible ? (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Complete mock task recording"
         onPress={() => onMemoryReady({
           schemaVersion: 'dave-voice-understanding/1.0',
-          transcript: 'Task: Inspect storefront; area: East Lobby; percent: 50%;',
+          transcript: captureLabel === 'Task'
+            ? 'Task - Field Test 149'
+            : 'Task: Inspect storefront; area: East Lobby; percent: 50%;',
           transcriptionModel: 'mock-transcriber',
           understanding: {
             status: 'unavailable',
@@ -42,6 +50,22 @@ jest.mock('@react-native-community/datetimepicker', () => {
 });
 
 describe('ScheduleTaskEditorModal', () => {
+  it('accepts either a spoken field header or an answer by itself', () => {
+    expect(normalizeDAVETaskGuidedVoiceAnswer('taskName', 'Task - Field Test 149'))
+      .toBe('Field Test 149');
+    expect(normalizeDAVETaskGuidedVoiceAnswer('itemType', 'Project item type: Task'))
+      .toBe('Task');
+    expect(normalizeDAVETaskGuidedVoiceAnswer('taskName', 'Field Test 149'))
+      .toBe('Field Test 149');
+    expect(normalizeDAVETaskGuidedVoiceAnswer(
+      'taskName',
+      'The name of this task should be Step 1 of Verification for Build 149.',
+    )).toBe('Step 1 of Verification for Build 149');
+    expect(normalizeDAVETaskGuidedVoiceAnswer('taskName', 'The Name of the Rose'))
+      .toBe('The Name of the Rose');
+    expect(guidedAnswerRequestsSkip('Leave it blank.')).toBe(true);
+  });
+
   it('uses native calendar controls for both task dates', async () => {
     const screen = await render(
       <ScheduleTaskEditorModal
@@ -392,5 +416,61 @@ describe('ScheduleTaskEditorModal', () => {
       owner: 'David',
       nextAction: 'Confirm delivery date',
     }));
+  });
+
+  it('applies a guided voice answer and advances to the next field automatically', async () => {
+    const screen = await render(
+      <ScheduleTaskEditorModal
+        visible
+        initiallyGuided
+        projects={['Project A']}
+        projectAreas={[]}
+        scheduleItems={[]}
+        initialProjectName="Project A"
+        onClose={jest.fn()}
+        onSubmit={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText('ECOS is ready for: Task')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Record answer for Task' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Complete mock task recording' }));
+
+    expect(screen.getByText('Question 2 of 14')).toBeTruthy();
+    expect(screen.getByText('ECOS is ready for: Item type')).toBeTruthy();
+    expect(screen.getByLabelText('Task or milestone').props.value).toBe('Field Test 149');
+  });
+
+  it('clears a prefilled optional area when the user skips it', async () => {
+    const screen = await render(
+      <ScheduleTaskEditorModal
+        visible
+        initiallyGuided
+        projects={['Project A']}
+        projectAreas={[{
+          id: 'area-a',
+          name: 'Prefilled Yard',
+          projectName: 'Project A',
+          latitude: 34,
+          longitude: -118,
+          radiusFeet: 250,
+        }]}
+        scheduleItems={[]}
+        initialProjectName="Project A"
+        onClose={jest.fn()}
+        onSubmit={jest.fn()}
+      />,
+    );
+
+    fireEvent.changeText(screen.getByLabelText('Answer Task'), 'Field Test 149');
+    fireEvent.press(screen.getByRole('button', { name: 'Save Task answer and continue' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Save Item type answer and continue' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Save Project answer and continue' }));
+    expect(screen.getByLabelText('Answer Area / location').props.value).toBe('Prefilled Yard');
+
+    fireEvent.press(screen.getByRole('button', { name: 'Skip optional Area / location' }));
+
+    expect(screen.getByText('Question 5 of 14')).toBeTruthy();
+    expect(screen.getByLabelText('Location').props.value).toBe('');
   });
 });

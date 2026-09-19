@@ -268,6 +268,10 @@ includes(sync, 'const staged = await stageProjectUpdateForSync(update)', 'field 
 assert(!app.includes('async function runFieldUpdateCloudSync'), 'App must not own a second field-update sync engine');
 assert(!app.includes('void stageProjectUpdateForSync(saved)'), 'draft saves must not leave newly staged updates waiting without a background flush');
 includes(sync, 'details.updatesUploaded = stagedUpdateUpload.uploadedByEntity?.project_update || 0', 'Settings sync must report uploads from the durable queue');
+includes(sync, 'prepareQueueItemProjectIdentity(item, uploadContext)', 'legacy queued tasks and updates must be upgraded before cloud writes');
+includes(sync, 'resolveOperationalProjectIdentity(payload.itemData, authority)', 'queued tasks must resolve exact active project authority');
+includes(sync, 'sameQueueRevision(current, item)', 'project-id queue migration must use compare-and-swap against the exact saved revision');
+includes(sync, 'projectId: resolved.identity.id', 'the migrated queue payload must retain the exact project id for retry');
 assert.strictEqual(
   (sync.match(/saveProjectUpdate\(\{/g) || []).length,
   1,

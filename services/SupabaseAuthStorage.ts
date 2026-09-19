@@ -154,7 +154,10 @@ async function secureRemoveUnlocked(key: string): Promise<void> {
 
 async function migrateLegacyValueUnlocked(key: string): Promise<string | null> {
   const legacy = await AsyncStorage.getItem(key);
-  if (legacy === null) return null;
+  // The native adapter promises string|null, but a malformed implementation
+  // or test double can return undefined. Treat every non-string as absent so
+  // invalid bytes can never enter secure session storage.
+  if (typeof legacy !== 'string') return null;
   await secureWriteUnlocked(key, legacy);
   // Only remove the insecure copy once the secure write round-trips.
   const verified = await secureReadUnlocked(key);

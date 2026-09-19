@@ -2,6 +2,11 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { colors } from '../theme';
 import type { AppScreen } from '../types/app-navigation';
+import {
+  vitruviusAudienceCanAccessAskEcos,
+  type VitruviusAskEcosPilotControl,
+  type VitruviusBetaAudience,
+} from '../services/VitruviusBetaAuthorization';
 import { isOverviewPrimaryNavigationActive } from './app-primary-navigation';
 
 type IconName = keyof typeof Ionicons.glyphMap;
@@ -10,11 +15,20 @@ export function AppBottomTabs({
   current,
   onChange,
   onTalk,
+  onAskECOS,
+  audience = 'owner_internal',
+  askEcosPilotControl = null,
 }: {
   current: AppScreen;
   onChange: (screen: AppScreen) => void;
   onTalk: () => void;
+  onAskECOS?: () => void;
+  audience?: VitruviusBetaAudience;
+  askEcosPilotControl?: VitruviusAskEcosPilotControl | null;
 }) {
+  const showAskECOS = vitruviusAudienceCanAccessAskEcos(audience, askEcosPilotControl);
+  const primaryAssistantLabel = showAskECOS ? 'Ask ECOS' : 'Project actions';
+  const openPrimaryAssistant = showAskECOS ? (onAskECOS || onTalk) : onTalk;
   return (
     <View style={styles.bottomTabs} testID="app-bottom-tabs">
       <TabButton
@@ -33,14 +47,18 @@ export function AppBottomTabs({
 
       <TouchableOpacity
         style={styles.talkButton}
-        onPress={onTalk}
+        onPress={openPrimaryAssistant}
         accessibilityRole="button"
-        accessibilityLabel="Talk to project assistant"
+        accessibilityLabel={primaryAssistantLabel}
       >
         <View style={styles.talkIcon}>
-          <Ionicons name="mic" size={21} color="#FFFFFF" />
+          <Ionicons
+            name={showAskECOS ? 'chatbubble-ellipses-outline' : 'mic'}
+            size={21}
+            color="#FFFFFF"
+          />
         </View>
-        <Text style={styles.talkText}>Talk</Text>
+        <Text style={styles.talkText}>{primaryAssistantLabel}</Text>
       </TouchableOpacity>
 
       <TabButton
@@ -58,18 +76,20 @@ function TabButton({
   icon,
   active,
   onPress,
+  role = 'tab',
 }: {
   label: string;
   icon: IconName;
   active: boolean;
   onPress: () => void;
+  role?: 'tab' | 'button';
 }) {
   return (
     <TouchableOpacity
       style={styles.tabButton}
       onPress={onPress}
-      accessibilityRole="tab"
-      accessibilityState={{ selected: active }}
+      accessibilityRole={role}
+      accessibilityState={role === 'tab' ? { selected: active } : undefined}
       accessibilityLabel={label}
     >
       <Ionicons

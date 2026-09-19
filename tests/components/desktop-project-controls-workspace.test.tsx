@@ -1,10 +1,15 @@
-import { render } from '@testing-library/react-native';
+import { render, waitFor } from '@testing-library/react-native';
 
 import { DesktopReadOnlyShell } from '../../components/web-shell/desktop-read-only-shell';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
 jest.mock('expo-linear-gradient', () => {
   const React = require('react');
   const { View } = require('react-native');
@@ -25,6 +30,13 @@ jest.mock('../../services/VitruviusDesktopPreferences', () => ({
   formatVitruviusDesktopGreeting: () => 'Good morning, David',
   readVitruviusDesktopDisplayName: () => 'David',
   writeVitruviusDesktopDisplayName: (value: string) => value.trim(),
+}));
+jest.mock('../../services/FieldNoteDesktopDataSource', () => ({
+  desktopFieldNoteDataSource: {
+    list: jest.fn(async () => []),
+    save: jest.fn(),
+    update: jest.fn(),
+  },
 }));
 
 const assignedTask: DAVEWebScheduleItem = {
@@ -76,9 +88,18 @@ const assignedTask: DAVEWebScheduleItem = {
   cloudUpdatedAt: '2026-07-26T12:00:01.000Z',
 };
 
+const completedShortTask: DAVEWebScheduleItem = {
+  ...assignedTask,
+  id: 'task-completed-short',
+  taskName: 'Complete closeout item',
+  durationDays: 1,
+  percentComplete: 100,
+  status: 'Complete',
+};
+
 const snapshot: DAVEWebReadOnlySnapshot = {
   projects: [{ id: 'project-1', name: '2321 Compliance Project' }],
-  scheduleItems: [assignedTask],
+  scheduleItems: [assignedTask, completedShortTask],
   projectUpdates: [],
   referenceDocuments: [],
   refreshedAt: '2026-07-26T12:00:01.000Z',
@@ -137,5 +158,26 @@ describe('desktop project controls workspace', () => {
     expect(screen.queryByText('$12,500')).toBeNull();
     expect(screen.getByText('Task Delay Estimates')).toBeTruthy();
     expect(screen.getByText('4 days total')).toBeTruthy();
+  });
+
+  it('uses the same duration-weighted project progress as the mobile overview', () => {
+    const screen = render(<DesktopReadOnlyShell page="projects" />);
+
+    expect(screen.getByText('20% complete')).toBeTruthy();
+    expect(screen.getByText('1 of 2 tasks')).toBeTruthy();
+    expect(screen.queryByText('50% complete')).toBeNull();
+  });
+
+  it('provides a project-optional Field Notes inbox without creating a task', async () => {
+    const screen = render(<DesktopReadOnlyShell page="field-notes" />);
+
+    expect(screen.getByText('Field Notes review desk')).toBeTruthy();
+    expect(screen.getByText('Field Notes inbox')).toBeTruthy();
+    expect(screen.getByText('Review and edit')).toBeTruthy();
+    expect(screen.queryByText('Capture a field note')).toBeNull();
+    expect(screen.getByText(
+      'Notes captured on iPhone and iPad arrive here for review and editing.',
+    )).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('No open field notes.')).toBeTruthy());
   });
 });

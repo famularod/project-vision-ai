@@ -63,8 +63,8 @@ export function referenceDocumentRevisionFamily(
   const category = canonicalReferenceCategory(document);
   if (category === 'schedule') return 'schedule';
   if (category === 'drawing') {
-    return compact(document.drawingNumber) ||
-      compact(document.webVersionGroupId) ||
+    return compact(document.webVersionGroupId) ||
+      compact(document.drawingNumber) ||
       normalizedDocumentStem(document) ||
       'drawing';
   }
@@ -173,7 +173,10 @@ export function selectAutomaticDrawingExcerpt(args: {
   const drawings = currentAuthoritativeDocumentsForProject(
     args.documents,
     args.projectName,
-  ).filter(document => canonicalReferenceCategory(document) === 'drawing');
+  ).filter(document =>
+    canonicalReferenceCategory(document) === 'drawing' &&
+    drawingIndexIsEligibleForExcerpt(document),
+  );
 
   const candidates = drawings.flatMap(document =>
     (document.extractedPages || []).flatMap(page =>
@@ -212,4 +215,23 @@ export function selectAutomaticDrawingExcerpt(args: {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function drawingIndexIsEligibleForExcerpt(document: ReferenceDocument) {
+  const sourceHash = canonicalSha256(document.contentSha256);
+  const indexedHash = canonicalSha256(document.indexedContentSha256);
+  return Boolean(
+    compact(document.drawingNumber) &&
+    compact(document.drawingRevision) &&
+    document.drawingStatus &&
+    document.drawingStatus !== 'Superseded' &&
+    (document.extractionStatus === 'complete' || document.extractionStatus === 'partial') &&
+    (document.extractedPages ?? []).length > 0 &&
+    (!sourceHash || !indexedHash || sourceHash === indexedHash),
+  );
+}
+
+function canonicalSha256(value: unknown) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }

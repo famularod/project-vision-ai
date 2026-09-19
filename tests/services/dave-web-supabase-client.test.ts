@@ -5,7 +5,14 @@ import {
   DAVEWebDocumentMutationError,
   DAVEWebTaskMutationError,
 } from '../../services/DAVEWebSupabaseClient';
+import { ECOS_DRAWING_REQUIRED_TILE_KEYS } from '../../services/ECOSDrawingVisualCoverage';
 import type { ScheduleItem } from '../../types';
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
 
 function queryWithRows(rows: unknown[]) {
   const query: Record<string, jest.Mock> = {};
@@ -26,6 +33,7 @@ function cleanupQueryWithRows(rows: unknown[] = []) {
 }
 
 function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
+  let referenceDocumentRows: unknown[] = [];
   const queries = new Map([
     ['projects', queryWithRows([{ id: 'p1' }])],
     ['schedule_items', queryWithRows([])],
@@ -36,7 +44,15 @@ function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
   const cleanupQuery = cleanupQueryWithRows();
   const from = jest.fn((table: string) =>
     table === 'dave_storage_cleanup_intents' ? cleanupQuery : queries.get(table));
-  const rpc = jest.fn(async () => ({ data: authorized, error: null, status: 200 }));
+  const rpc: jest.Mock = jest.fn(async (name: string) => {
+    if (name === 'dave_is_app_owner') {
+      return { data: authorized, error: null, status: 200 };
+    }
+    if (name === 'dave_list_reference_document_metadata') {
+      return { data: referenceDocumentRows, error: null, status: 200 };
+    }
+    return { data: null, error: null, status: 200 };
+  });
   const auth = {
     getUser: jest.fn(async () => ({ data: { user: { id: 'owner-1' } }, error: null })),
     getSession: jest.fn(async () => ({ data: { session: null }, error: null })),
@@ -56,12 +72,124 @@ function clientFixture({ authorized = true }: { authorized?: boolean } = {}) {
     rpc,
     queries,
     cleanupQuery,
+    setReferenceDocumentRows(rows: unknown[]) {
+      referenceDocumentRows = rows;
+    },
     createSignedUrl,
     storageFrom,
   };
 }
 
 describe('DAVE browser Supabase gateway', () => {
+  test('lets the SIGNED_IN auth event own authorization invalidation after password sign-in', async () => {
+    const fixture = clientFixture();
+    fixture.auth.signInWithPassword.mockResolvedValue({
+      data: {
+        session: {
+          access_token: 'access-token',
+          refresh_token: 'refresh-token',
+          expires_in: 3600,
+          token_type: 'bearer',
+          user: { id: 'owner-1' },
+        },
+      },
+      error: null,
+    });
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await gateway.loadAuthorizedRows();
+    await expect(gateway.signIn('owner@example.com', 'password')).resolves.toMatchObject({
+      ok: true,
+    });
+    await gateway.loadAuthorizedRows();
+
+    expect(fixture.auth.signInWithPassword).toHaveBeenCalledWith({
+      email: 'owner@example.com',
+      password: 'password',
+    });
+    expect(fixture.rpc.mock.calls.filter(([name]) => name === 'dave_is_app_owner')).toHaveLength(1);
+  });
+
+  test('saves a Google Drive reference with a protected processing copy', async () => {
+    const duplicateRead = queryWithRows([]);
+    const documentInsert = mutationQuery({ data: null, error: null });
+    let referenceDocumentCalls = 0;
+    const from = jest.fn((table: string) => {
+      if (table !== 'reference_documents') throw new Error(`Unexpected table ${table}`);
+      referenceDocumentCalls += 1;
+      return referenceDocumentCalls === 1 ? duplicateRead : documentInsert;
+    });
+    const rpc = jest.fn(async (name: string) => name === 'dave_is_app_owner'
+      ? { data: true, error: null, status: 200 }
+      : { data: { indexed_pages: 1, indexed_chunks: 1 }, error: null, status: 200 });
+    const auth = {
+      getUser: jest.fn(async () => ({ data: { user: { id: 'owner-1' } }, error: null })),
+      getSession: jest.fn(async () => ({ data: { session: null }, error: null })),
+      onAuthStateChange: jest.fn(() => ({ data: { subscription: { unsubscribe: jest.fn() } } })),
+      signInWithPassword: jest.fn(),
+      signOut: jest.fn(async () => ({ error: null })),
+    };
+    const upload = jest.fn(async () => ({ data: { path: 'owner-1/drive/drive-drawing-1/A101.pdf' }, error: null }));
+    const remove = jest.fn(async () => ({ data: [], error: null }));
+    const storageFrom = jest.fn(() => ({ upload, remove }));
+    const gateway = createDAVEWebSupabaseGateway({ auth, from, rpc, storage: { from: storageFrom } } as any);
+
+    await gateway.saveAuthorizedLinkedReferenceDocument({
+      bytes: new Uint8Array([1, 2, 3, 4]).buffer as ArrayBuffer,
+      document: {
+        id: 'drive-drawing-1',
+        name: 'A101',
+        originalFileName: 'A101.pdf',
+        uri: '',
+        mimeType: 'application/pdf',
+        category: 'Drawing',
+        notes: '',
+        isCurrent: false,
+        importedAt: '2026-08-04T12:00:00.000Z',
+        sourceProvider: 'google_drive',
+        externalSource: {
+          provider: 'google_drive',
+          fileId: 'drive-file-1',
+          name: 'A101.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 4,
+          modifiedTime: '2026-08-04T11:00:00.000Z',
+          revisionId: 'revision-1',
+          md5Checksum: 'drive-md5',
+          resourceKey: null,
+          webViewLink: 'https://drive.google.com/file/d/drive-file-1/view',
+        },
+        sizeBytes: 4,
+        webFileFingerprint: 'a'.repeat(64),
+        contentSha256: 'a'.repeat(64),
+        extractedText: null,
+        extractionStatus: 'pending',
+        extractedPages: [],
+      },
+    });
+
+    expect(storageFrom).toHaveBeenCalledWith('project-documents');
+    expect(upload).toHaveBeenCalledWith(
+      'owner-1/drive/drive-drawing-1/A101.pdf',
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ contentType: 'application/pdf', upsert: false }),
+    );
+    expect(documentInsert.insert).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'drive-drawing-1',
+      document_data: expect.objectContaining({
+        sourceProvider: 'google_drive',
+        externalSource: expect.objectContaining({ fileId: 'drive-file-1' }),
+        extractedText: null,
+        extractedPages: [],
+        storagePath: 'owner-1/drive/drive-drawing-1/A101.pdf',
+      }),
+    }));
+    expect(rpc).not.toHaveBeenCalledWith('ecos_replace_document_index', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('ecos_enqueue_hosted_index', {
+      p_document_id: 'drive-drawing-1',
+    });
+  });
+
   test('checks the server owner function before reading any table', async () => {
     const fixture = clientFixture({ authorized: false });
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
@@ -71,22 +199,44 @@ describe('DAVE browser Supabase gateway', () => {
     expect(fixture.from).not.toHaveBeenCalled();
   });
 
-  test('applies the authenticated owner id to every read collection', async () => {
+  test('loads reference document metadata through the bounded owner RPC', async () => {
     const fixture = clientFixture();
+    fixture.setReferenceDocumentRows([{
+      id: 'document-1',
+      owner_id: 'owner-1',
+      name: 'A101',
+      document_data: { id: 'document-1', name: 'A101' },
+    }]);
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
 
-    await gateway.loadAuthorizedRows();
+    const rows = await gateway.loadAuthorizedRows();
 
     expect(fixture.from.mock.calls.map(call => call[0])).toEqual([
       'projects',
       'schedule_items',
       'project_updates',
-      'reference_documents',
       'dave_sync_tombstones',
     ]);
-    for (const query of fixture.queries.values()) {
+    for (const [table, query] of fixture.queries) {
+      if (table === 'reference_documents') continue;
       expect(query.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
     }
+    expect(fixture.rpc).toHaveBeenCalledWith('dave_list_reference_document_metadata');
+    expect(rows.referenceDocuments).toEqual([
+      expect.objectContaining({ id: 'document-1', name: 'A101' }),
+    ]);
+  });
+
+  test('fails closed when bounded reference document metadata cannot be loaded', async () => {
+    const fixture = clientFixture();
+    fixture.rpc.mockImplementation(async (name: string) => name === 'dave_is_app_owner'
+      ? { data: true, error: null, status: 200 }
+      : { data: null, error: { message: 'statement timeout' }, status: 500 });
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await expect(gateway.loadAuthorizedRows()).rejects.toThrow(
+      'Authorized reference document metadata could not be loaded.',
+    );
   });
 
   test('reuses cached collections for a targeted realtime refresh', async () => {
@@ -105,6 +255,54 @@ describe('DAVE browser Supabase gateway', () => {
     expect(targeted.syncTombstones).toBe(initial.syncTombstones);
   });
 
+  test('loads and caches a bounded page summary for the selected drawing', async () => {
+    const fixture = clientFixture();
+    const pageQuery = queryWithRows([
+      {
+        page_number: 1,
+        sheet_number: 'C1',
+        sheet_mapping_status: 'verified',
+        visual_coverage: {
+          overviewAnalyzed: true,
+          requestedDeepReadRegionCount: 6,
+          completedDeepReadRegionCount: 6,
+          coverageComplete: true,
+          completedDeepReadRegionKeys: [...ECOS_DRAWING_REQUIRED_TILE_KEYS],
+        },
+      },
+      {
+        page_number: 2,
+        sheet_number: null,
+        sheet_mapping_status: 'conflicted',
+        visual_coverage: {
+          overviewAnalyzed: true,
+          requestedDeepReadRegionCount: 6,
+          completedDeepReadRegionCount: 1,
+          coverageComplete: false,
+        },
+      },
+    ]);
+    fixture.queries.set('ecos_document_pages', pageQuery);
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    const first = await gateway.loadAuthorizedDocumentCoverageSummary('drawing-1', 'revision-1');
+    const second = await gateway.loadAuthorizedDocumentCoverageSummary('drawing-1', 'revision-1');
+
+    expect(first).toEqual({
+      indexedPageCount: 2,
+      fullVisualCoveragePageCount: 1,
+      verifiedSheetPageCount: 1,
+      conflictedSheetPageCount: 1,
+    });
+    expect(second).toBe(first);
+    expect(fixture.from.mock.calls.filter(call => call[0] === 'ecos_document_pages')).toHaveLength(1);
+    expect(pageQuery.select).toHaveBeenCalledWith(
+      'page_number,sheet_number,sheet_mapping_status,visual_coverage',
+    );
+    expect(pageQuery.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
+    expect(pageQuery.eq).toHaveBeenCalledWith('document_id', 'drawing-1');
+  });
+
   test('reuses the owner authorization check during its short session cache window', async () => {
     const fixture = clientFixture();
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
@@ -116,8 +314,38 @@ describe('DAVE browser Supabase gateway', () => {
     );
 
     expect(fixture.auth.getUser).toHaveBeenCalledTimes(1);
-    expect(fixture.rpc).toHaveBeenCalledTimes(1);
+    expect(fixture.rpc).toHaveBeenCalledTimes(2);
     expect(fixture.rpc).toHaveBeenCalledWith('dave_is_app_owner');
+    expect(fixture.rpc).toHaveBeenCalledWith('dave_list_reference_document_metadata');
+  });
+
+  test('authorizes and owner-filters the desktop Field Notes inbox', async () => {
+    const fixture = clientFixture();
+    const fieldNotesQuery = queryWithRows([{
+      owner_id: 'owner-1',
+      id: 'field-note-1',
+      original_text: 'Review the exposed parking edge.',
+      source: 'voice',
+      project_id: null,
+      project_name: null,
+      location_name: 'North Lot',
+      action_kind: 'safety_candidate',
+      action_text: 'Confirm whether a guardrail is required',
+      status: 'open',
+      revision: 1,
+      created_at: '2026-08-03T15:00:00.000Z',
+      updated_at: '2026-08-03T15:00:00.000Z',
+      resolved_at: null,
+      archived_at: null,
+    }]);
+    fixture.queries.set('field_notes', fieldNotesQuery);
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    const notes = await gateway.fieldNotes.list();
+
+    expect(notes).toHaveLength(1);
+    expect(fixture.rpc).toHaveBeenCalledWith('dave_is_app_owner');
+    expect(fieldNotesQuery.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
   });
 
   test('applies a realtime task row without issuing a duplicate targeted table read', async () => {
@@ -215,11 +443,11 @@ describe('DAVE browser Supabase gateway', () => {
         }],
       },
     }]));
-    fixture.queries.set('reference_documents', queryWithRows([{
+    fixture.setReferenceDocumentRows([{
       document_data: {
         storagePath: 'project-documents/project-1/document-1/schedule.pdf',
       },
-    }]));
+    }]);
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
 
     await gateway.loadAuthorizedRows();
@@ -331,8 +559,11 @@ describe('DAVE browser Supabase gateway', () => {
     expect(query.insert).toHaveBeenCalledWith(expect.objectContaining({
       id: 'task-1',
       owner_id: 'owner-1',
+      project_id: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
       project_name: '2375 Compliance Project',
-      item_data: SCHEDULE_ITEM,
+      item_data: expect.objectContaining({
+        projectId: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
+      }),
     }));
   });
 
@@ -352,8 +583,50 @@ describe('DAVE browser Supabase gateway', () => {
 
     await gateway.updateAuthorizedScheduleItem(SCHEDULE_ITEM, '2026-07-19T18:00:01.000Z');
 
+    expect(scheduleQuery.update).toHaveBeenCalledWith(expect.objectContaining({
+      project_id: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
+      item_data: expect.objectContaining({
+        projectId: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
+      }),
+    }));
     expect(scheduleQuery.eq).toHaveBeenCalledWith('owner_id', 'owner-1');
     expect(scheduleQuery.eq).toHaveBeenCalledWith('updated_at', '2026-07-19T18:00:01.000Z');
+  });
+
+  test('shows the acknowledged desktop percentage instead of the stale cached percentage', async () => {
+    const fixture = clientFixture();
+    fixture.queries.set('schedule_items', queryWithRows([{
+      id: SCHEDULE_ITEM.id,
+      owner_id: 'owner-1',
+      project_name: SCHEDULE_ITEM.projectName,
+      task_name: SCHEDULE_ITEM.taskName,
+      item_data: { ...SCHEDULE_ITEM, percentComplete: 20 },
+      updated_at: '2026-07-19T18:00:01.000Z',
+    }]));
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+    await gateway.loadAuthorizedRows();
+
+    fixture.queries.set('dave_sync_tombstones', mutationQuery({ data: null, error: null }));
+    fixture.queries.set('schedule_items', mutationQuery({
+      data: { updated_at: '2026-07-19T18:00:02.000Z' },
+      error: null,
+    }));
+    await gateway.updateAuthorizedScheduleItem(
+      { ...SCHEDULE_ITEM, percentComplete: 25 },
+      '2026-07-19T18:00:01.000Z',
+    );
+    fixture.from.mockClear();
+
+    const rows = await gateway.loadAuthorizedRows(['schedule_items']);
+
+    expect(fixture.from).not.toHaveBeenCalled();
+    expect(rows.scheduleItems).toEqual([
+      expect.objectContaining({
+        id: SCHEDULE_ITEM.id,
+        updated_at: '2026-07-19T18:00:02.000Z',
+        item_data: expect.objectContaining({ percentComplete: 25 }),
+      }),
+    ]);
   });
 
   test('returns an explicit conflict when a stale task revision no longer matches', async () => {
@@ -522,68 +795,56 @@ describe('DAVE browser Supabase gateway', () => {
     expect(storage.remove).toHaveBeenCalled();
   });
 
-  test('restores the previous current-schedule state after a mid-sequence write failure', async () => {
+  test('changes a current schedule through one atomic server activation', async () => {
     const previousA = referenceDocument('schedule-a', true, 'revision-a');
     const previousB = referenceDocument('schedule-b', true, 'revision-b');
     const selected = referenceDocument('schedule-c', false, 'revision-c');
-    const preflight = mutationQuery({
-      data: [
-        { id: previousA.id, updated_at: 'revision-a' },
-        { id: previousB.id, updated_at: 'revision-b' },
-        { id: selected.id, updated_at: 'revision-c' },
-      ],
-      error: null,
-    });
-    const deactivateA = mutationQuery({ data: { updated_at: 'revision-a-new' }, error: null });
-    const deactivateB = mutationQuery({ data: null, error: { message: 'fault: second write' } });
-    const restoreA = mutationQuery({ data: { updated_at: 'revision-a-restored' }, error: null });
-    const queries = [preflight, deactivateA, deactivateB, restoreA];
-    const fixture = mutationClient(() => queries.shift()!);
+    const fixture = mutationClient(() => mutationQuery({ data: null, error: null }));
+    fixture.rpc
+      .mockResolvedValueOnce({ data: true, error: null, status: 200 })
+      .mockResolvedValueOnce({
+        data: {
+          document_id: selected.id,
+          updated_at: '2026-08-09T07:30:00.000Z',
+          changed_count: 3,
+        },
+        error: null,
+        status: 200,
+      });
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
 
-    await expect(
-      gateway.setAuthorizedCurrentSchedule(selected, [previousA, previousB, selected]),
-    ).rejects.toMatchObject<Partial<DAVEWebDocumentMutationError>>({
-      code: 'write_failed',
-      message: expect.stringMatching(/previous schedule selection was restored/i),
-    });
+    await expect(gateway.setAuthorizedCurrentSchedule(
+      selected,
+      [previousA, previousB, selected],
+    )).resolves.toBeUndefined();
 
-    expect(deactivateA.update).toHaveBeenCalledWith(expect.objectContaining({
-      document_data: expect.objectContaining({ id: 'schedule-a', isCurrent: false }),
-    }));
-    expect(restoreA.update).toHaveBeenCalledWith(expect.objectContaining({
-      document_data: expect.objectContaining({ id: 'schedule-a', isCurrent: true }),
-    }));
-    expect(restoreA.eq).toHaveBeenCalledWith('updated_at', 'revision-a-new');
+    expect(fixture.rpc).toHaveBeenCalledWith('ecos_activate_current_reference_document', {
+      p_document_id: selected.id,
+      p_expected_updated_at: 'revision-c',
+    });
+    expect(fixture.from).not.toHaveBeenCalledWith('reference_documents');
   });
 
-  test('reports an honest recovery failure when current-schedule rollback also fails', async () => {
+  test('fails closed when ECOS has not prepared the drawing revision', async () => {
     const previousA = referenceDocument('schedule-a', true, 'revision-a');
-    const previousB = referenceDocument('schedule-b', true, 'revision-b');
     const selected = referenceDocument('schedule-c', false, 'revision-c');
-    const preflight = mutationQuery({
-      data: [
-        { id: previousA.id, updated_at: 'revision-a' },
-        { id: previousB.id, updated_at: 'revision-b' },
-        { id: selected.id, updated_at: 'revision-c' },
-      ],
-      error: null,
-    });
-    const deactivateA = mutationQuery({ data: { updated_at: 'revision-a-new' }, error: null });
-    const deactivateB = mutationQuery({ data: null, error: { message: 'fault: second write' } });
-    const failedRestoreA = mutationQuery({ data: null, error: { message: 'fault: rollback' } });
-    const queries = [preflight, deactivateA, deactivateB, failedRestoreA];
-    const fixture = mutationClient(() => queries.shift()!);
+    const fixture = mutationClient(() => mutationQuery({ data: null, error: null }));
+    fixture.rpc
+      .mockResolvedValueOnce({ data: true, error: null, status: 200 })
+      .mockResolvedValueOnce({
+        data: null,
+        error: { code: 'P0001', message: 'ecos_target_not_prepared' },
+        status: 400,
+      });
     const gateway = createDAVEWebSupabaseGateway(fixture.client);
 
     await expect(
-      gateway.setAuthorizedCurrentSchedule(selected, [previousA, previousB, selected]),
+      gateway.setAuthorizedCurrentDocument(selected, [previousA, selected]),
     ).rejects.toMatchObject<Partial<DAVEWebDocumentMutationError>>({
       code: 'write_failed',
-      message: expect.stringMatching(/automatic recovery could not be confirmed/i),
+      message: expect.stringMatching(/finish background preparation/i),
     });
-
-    expect(failedRestoreA.update).toHaveBeenCalled();
+    expect(fixture.from).not.toHaveBeenCalledWith('reference_documents');
   });
 
   test('uploads a task photo and creates a task-linked field update', async () => {
@@ -662,6 +923,7 @@ describe('DAVE browser Supabase gateway', () => {
 
 const SCHEDULE_ITEM: ScheduleItem = {
   id: 'task-1',
+  projectId: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
   scheduleProjectName: '2375 Compliance Project',
   projectName: '2375 Compliance Project',
   locationName: 'Canopy C',
@@ -718,7 +980,7 @@ function mutationQuery(result: { data: unknown; error: unknown }) {
 
 function mutationClient(queryForTable: (table: string) => Record<string, any>) {
   const from = jest.fn(queryForTable);
-  const rpc = jest.fn(async () => ({ data: true, error: null, status: 200 }));
+  const rpc: jest.Mock = jest.fn(async () => ({ data: true, error: null, status: 200 }));
   const auth = {
     getUser: jest.fn(async () => ({ data: { user: { id: 'owner-1' } }, error: null })),
     getSession: jest.fn(async () => ({ data: { session: null }, error: null })),

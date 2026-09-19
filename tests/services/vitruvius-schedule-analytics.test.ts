@@ -52,6 +52,55 @@ describe('VitruviusScheduleAnalytics', () => {
     });
   });
 
+  test('does not invent a critical path when tasks have no relationships', () => {
+    const analysis = analyzeVitruviusCriticalPath([
+      item('short', { durationDays: 2 }),
+      item('long', { durationDays: 20 }),
+    ]);
+
+    expect(analysis.safe).toBe(true);
+    expect(analysis.available).toBe(false);
+    expect(analysis.criticalItemIds.size).toBe(0);
+    expect(analysis.items).toEqual([]);
+  });
+
+  test('keeps completed path history out of the active critical warning set', () => {
+    const analysis = analyzeVitruviusCriticalPath([
+      item('complete', {
+        durationDays: 3,
+        status: 'Complete',
+        percentComplete: 100,
+      }),
+      item('open', {
+        durationDays: 2,
+        dependencies: [{ predecessorItemId: 'complete', type: 'FS' }],
+      }),
+    ]);
+
+    expect(analysis.available).toBe(true);
+    expect(analysis.items.find(candidate => candidate.itemId === 'complete')).toMatchObject({
+      critical: true,
+    });
+    expect([...analysis.criticalItemIds]).toEqual(['open']);
+  });
+
+  test('reports no active critical warnings when the entire path is complete', () => {
+    const analysis = analyzeVitruviusCriticalPath([
+      item('complete-a', {
+        status: 'Complete',
+        percentComplete: 100,
+      }),
+      item('complete-b', {
+        status: 'Complete',
+        percentComplete: 100,
+        dependencies: [{ predecessorItemId: 'complete-a', type: 'FS' }],
+      }),
+    ]);
+
+    expect(analysis.available).toBe(true);
+    expect(analysis.criticalItemIds.size).toBe(0);
+  });
+
   test('does not claim a critical path when the network is unsafe', () => {
     const analysis = analyzeVitruviusCriticalPath([
       item('a', { dependencies: [{ predecessorItemId: 'b', type: 'FS' }] }),
@@ -59,6 +108,7 @@ describe('VitruviusScheduleAnalytics', () => {
     ]);
 
     expect(analysis.safe).toBe(false);
+    expect(analysis.available).toBe(false);
     expect(analysis.criticalItemIds.size).toBe(0);
     expect(analysis.issues[0]).toMatch(/dependency cycle/i);
   });

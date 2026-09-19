@@ -16,7 +16,7 @@ import {
   scheduleTaskIsComplete,
   type DAVEProjectScheduleHealth,
 } from './dave-project-schedule-rollup';
-import type { ScheduleItem } from '../types';
+import type { ReferenceDocument, ScheduleItem } from '../types';
 import { daysUntilDate, parseFlexibleDate } from '../utils/date';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import type { ProjectTimeZone } from './ProjectDateTime';
@@ -29,6 +29,8 @@ export type BuildProjectIntelligenceInput = {
   documents: DAVEDailyBriefDocument[];
   scheduleItems: DAVEDailyBriefScheduleItem[];
   captureMemories?: readonly DAVEConfirmedCaptureMemory[];
+  /** Current, project-scoped source documents available to ECOS retrieval. */
+  referenceDocuments?: readonly ReferenceDocument[];
   now?: string;
   projectTimeZone?: ProjectTimeZone | string;
   staleAfterDays?: number;
@@ -37,6 +39,7 @@ export type BuildProjectIntelligenceInput = {
 export type DAVEProjectIntelligence = {
   schemaVersion: 'dave-intelligence/1.0';
   projectId: string;
+  projectName: string;
   generatedAt: string;
   projectReality: DAVEProjectReality;
   timeline: DAVEProjectTimelineEvent[];
@@ -45,6 +48,7 @@ export type DAVEProjectIntelligence = {
   commitments: DAVEProjectCommitment[];
   evidenceQuality: DAVEProjectEvidenceQuality;
   scheduleSummary: DAVEProjectScheduleSummary;
+  referenceDocuments: readonly ReferenceDocument[];
 };
 
 export type DAVEProjectScheduleTaskSummary = {
@@ -96,6 +100,7 @@ export function buildProjectIntelligence(input: BuildProjectIntelligenceInput): 
   return deepFreeze({
     schemaVersion: 'dave-intelligence/1.0',
     projectId: projectReality.projectId,
+    projectName: input.projectName,
     generatedAt: projectReality.generatedAt,
     projectReality,
     timeline,
@@ -104,6 +109,7 @@ export function buildProjectIntelligence(input: BuildProjectIntelligenceInput): 
     commitments,
     evidenceQuality,
     scheduleSummary,
+    referenceDocuments: input.referenceDocuments ?? [],
   });
 }
 

@@ -7,12 +7,14 @@ import {
 import type {
   ProjectUpdate,
   ReferenceDocument,
+  ReferenceDocumentExtractedPage,
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
-import type {
-  DAVEWebDocumentExtension,
-  DAVEWebReportRecord,
+import {
+  DAVE_WEB_MAX_DOCUMENT_BYTES,
+  type DAVEWebDocumentExtension,
+  type DAVEWebReportRecord,
 } from './DAVEWebOperations';
 import { supabaseSecureAuthStorage } from './SupabaseAuthStorage.web';
 import { paginateSupabaseCollection } from './SupabaseCollectionPagination';
@@ -23,11 +25,45 @@ import {
   type DAVEOperationalRealtimePayload,
   type DAVEOperationalRealtimeStatus,
 } from './DAVEOperationalRefresh';
+import { createFieldNoteCloudGateway } from './FieldNoteCloudGateway';
 
 export const DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
+export const DAVE_WEB_DOCUMENT_COVERAGE_CACHE_TTL_MS = 5 * 60_000;
 import { RESUMABLE_UPLOAD_THRESHOLD_BYTES } from './StorageUploadPolicy';
 import { uploadWebFileResumably } from './ResumableWebStorageUpload';
 import { MAX_PHOTO_SOURCE_BYTES } from './PhotoPairPreparation';
+import {
+  compactECOSDocumentIndexForCloud,
+  compactECOSDocumentMetadataForCloud,
+} from './ECOSDocumentIndexPersistence';
+import {
+  canonicalReferenceCategory,
+} from './AuthoritativeDocumentSystem';
+import { replaceECOSDocumentCloudIndex } from './ECOSDocumentCloudIndex';
+import {
+  GOOGLE_DRIVE_LINK_MAX_BYTES,
+  isGoogleDriveLinkedSource,
+} from './GoogleDriveWebProvider';
+import {
+  activateECOSCurrentReferenceDocument,
+  enqueueECOSHostedIndex,
+  loadECOSHostedIndexStatuses,
+} from './ECOSHostedIndexer';
+import { askECOSProjectQuestion } from './ECOSProjectQuestion';
+import {
+  analyzeECOSDrawingPage,
+  type ECOSDrawingPageAnalysisInput,
+} from './ECOSDrawingPageAnalysis';
+import {
+  beginOrResumeECOSDocumentIndexJob,
+  checkpointECOSDocumentIndexPage,
+  commitECOSDocumentIndexJob,
+  setECOSDocumentIndexJobStatus,
+} from './ECOSDocumentIndexJobs';
+import {
+  summarizeECOSDocumentCoverageRows,
+  type ECOSDocumentCoverageSummary,
+} from './ECOSDocumentCoverageSummary';
 
 export type DAVEWebRawRows = Readonly<{
   projects: readonly unknown[];
@@ -97,6 +133,13 @@ export type DAVEWebDocumentUploadInput = Readonly<{
   onProgress?: (fraction: number) => void;
 }>;
 
+export type DAVEWebLinkedDocumentInput = Readonly<{
+  document: ReferenceDocument & DAVEWebDocumentExtension;
+  bytes: ArrayBuffer;
+  file?: Blob;
+  onProgress?: (fraction: number) => void;
+}>;
+
 export type DAVEWebTaskPhotoUploadInput = Readonly<{
   task: ScheduleItem;
   bytes: ArrayBuffer;
@@ -133,7 +176,31 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
   let cachedAuthorizedRows: DAVEWebRawRows | null = null;
   let authorizationCache: Readonly<{ ownerId: string; expiresAt: number }> | null = null;
   let authorizationInFlight: Promise<string> | null = null;
+  const documentCoverageSummaryCache = new Map<string, Readonly<{
+    expiresAt: number;
+    summary: ECOSDocumentCoverageSummary;
+  }>>();
   const realtimeSatisfiedCollections = new Set<DAVEOperationalCollectionName>();
+
+  function cacheAcknowledgedScheduleItem(
+    item: ScheduleItem,
+    ownerId: string,
+    cloudUpdatedAt: string,
+  ) {
+    if (cachedRowsOwnerId !== ownerId || !cachedAuthorizedRows) return;
+    const acknowledgedRow = scheduleItemRow(item, ownerId, cloudUpdatedAt);
+    const existingIndex = cachedAuthorizedRows.scheduleItems.findIndex(
+      value => readRawString(value, 'id') === item.id,
+    );
+    const scheduleItems = [...cachedAuthorizedRows.scheduleItems];
+    if (existingIndex >= 0) scheduleItems[existingIndex] = acknowledgedRow;
+    else scheduleItems.unshift(acknowledgedRow);
+    cachedAuthorizedRows = Object.freeze({
+      ...cachedAuthorizedRows,
+      scheduleItems: Object.freeze(scheduleItems),
+    });
+    realtimeSatisfiedCollections.add('schedule_items');
+  }
 
   function invalidateAuthorization() {
     authorizationCache = null;
@@ -163,12 +230,99 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     }
   }
 
+  const fieldNotes = createFieldNoteCloudGateway(
+    client,
+    requireAuthorizedOwnerCached,
+  );
+
   return Object.freeze({
+    fieldNotes,
+    async beginOrResumeAuthorizedDocumentIndexJob(input: {
+      documentId: string;
+      sourceSha256: string;
+      sourcePageCount: number;
+    }) {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      return beginOrResumeECOSDocumentIndexJob({ client, ownerId, ...input });
+    },
+    async checkpointAuthorizedDocumentIndexPage(input: {
+      jobId: string;
+      page: ReferenceDocumentExtractedPage;
+    }) {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      return checkpointECOSDocumentIndexPage({ client, ownerId, ...input });
+    },
+    async setAuthorizedDocumentIndexJobStatus(input: {
+      jobId: string;
+      status: 'running' | 'ready' | 'committed' | 'failed' | 'cancelled';
+      failureMessage?: string | null;
+    }) {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      return setECOSDocumentIndexJobStatus({ client, ownerId, ...input });
+    },
+    async commitAuthorizedDocumentIndexJob(input: {
+      jobId: string;
+      extractionMethod?: string | null;
+    }) {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      await requireAuthorizedOwnerCached();
+      return commitECOSDocumentIndexJob({ client, ...input });
+    },
+    async analyzeAuthorizedDrawingPage(input: ECOSDrawingPageAnalysisInput) {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      await requireAuthorizedOwnerCached();
+      return analyzeECOSDrawingPage({ client, input });
+    },
+    async askAuthorizedProjectQuestion(input: {
+      projectId: string;
+      projectName: string;
+      question: string;
+    }) {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      await requireAuthorizedOwnerCached();
+      return askECOSProjectQuestion({ client, ...input });
+    },
     async getSessionStatus(): Promise<DAVEWebSessionStatus> {
       if (!client) return { configured: false, session: null };
       const { data, error } = await client.auth.getSession();
       if (error) throw new Error('The desktop session could not be checked.');
       return { configured: true, session: data.session ?? null };
+    },
+
+    async authorizeLocalAcceptanceBridge(input: {
+      port: number;
+      nonce: string;
+    }): Promise<void> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      if (typeof __DEV__ === 'undefined' || !__DEV__) {
+        throw new Error('The protected validation handoff is available only in a local development session.');
+      }
+      if (!Number.isInteger(input.port) || input.port < 1024 || input.port > 65535) {
+        throw new Error('The local validation port is invalid.');
+      }
+      if (!/^[a-f0-9]{64}$/.test(input.nonce)) {
+        throw new Error('The local validation request is invalid.');
+      }
+      await requireAuthorizedOwnerCached();
+      const { data, error } = await client.auth.getSession();
+      const accessToken = data.session?.access_token;
+      if (error || !accessToken) {
+        throw new Error('Sign in to Vitruvius in this browser tab, then retry the validation authorization.');
+      }
+      const response = await fetch(`http://127.0.0.1:${input.port}/authorize`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ nonce: input.nonce }),
+      });
+      if (!response.ok) {
+        throw new Error('The protected local validation handoff was rejected.');
+      }
     },
 
     subscribeToAuthStateChange(
@@ -221,7 +375,6 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (!client) return { ok: false, session: null };
       const { data, error } = await client.auth.signInWithPassword({ email, password });
       if (error || !data.session) return { ok: false, session: null };
-      invalidateAuthorization();
       return { ok: true, session: data.session };
     },
 
@@ -232,6 +385,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       invalidateAuthorization();
       cachedRowsOwnerId = null;
       cachedAuthorizedRows = null;
+      documentCoverageSummaryCache.clear();
       artifactPathOwnerId = null;
       authorizedPhotoPaths = new Set<string>();
       authorizedDocumentPaths = new Set<string>();
@@ -263,24 +417,64 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           ? readOwnerRows(client, 'project_updates', userId, query => query.order('created_at', { ascending: false }))
           : Promise.resolve(cachedRows?.projectUpdates ?? []),
         shouldRead('reference_documents')
-          ? readOwnerRows(client, 'reference_documents', userId, query => query.order('updated_at', { ascending: false }))
+          ? readAuthorizedReferenceDocumentMetadata(client)
           : Promise.resolve(cachedRows?.referenceDocuments ?? []),
         shouldRead('sync_tombstones')
           ? readOwnerRows(client, 'dave_sync_tombstones', userId, query => query.order('deleted_at', { ascending: false }))
           : Promise.resolve(cachedRows?.syncTombstones ?? []),
       ]);
+      const shouldReadReferenceDocuments = shouldRead('reference_documents');
+      let hostedStatuses: Awaited<ReturnType<typeof loadECOSHostedIndexStatuses>> = [];
+      if (shouldReadReferenceDocuments && referenceDocuments.length > 0) {
+        try {
+          hostedStatuses = await loadECOSHostedIndexStatuses({
+            client,
+            documentIds: referenceDocuments.map(value => {
+              const row = isRecord(value) ? value : {};
+              const data = isRecord(row.document_data) ? row.document_data : {};
+              return typeof data.id === 'string' ? data.id : typeof row.id === 'string' ? row.id : '';
+            }),
+          });
+        } catch {
+          // A background-status outage must not prevent the signed-in user from
+          // opening their projects, tasks, and document library.
+        }
+      }
+      const statusByDocumentId = new Map(hostedStatuses.map(status => [status.documentId, status]));
+      const referenceDocumentsWithHostedStatus = hostedStatuses.length === 0
+        ? referenceDocuments
+        : referenceDocuments.map(value => {
+        if (!isRecord(value)) return value;
+        const data = isRecord(value.document_data) ? value.document_data : {};
+        const documentId = typeof data.id === 'string' ? data.id : typeof value.id === 'string' ? value.id : '';
+        const hosted = statusByDocumentId.get(documentId);
+        if (!hosted) return value;
+        return {
+          ...value,
+          document_data: {
+            ...data,
+            ecosHostedIndexStatus: hosted.customerStatus,
+            ecosHostedIndexProgressPercent: hosted.progressPercent,
+            ecosHostedIndexCustomerMessage: hosted.customerMessage,
+            ecosHostedIndexLimitationCount: hosted.limitationCount,
+            ecosHostedIndexSupportReference: hosted.supportReference,
+            ecosHostedIndexEvidenceVersion: hosted.committedEvidenceVersion,
+            ecosHostedIndexUpdatedAt: hosted.updatedAt,
+          },
+        };
+        });
       const nextRows = Object.freeze({
         projects,
         scheduleItems,
         projectUpdates,
-        referenceDocuments,
+        referenceDocuments: referenceDocumentsWithHostedStatus,
         syncTombstones,
       });
       cachedRowsOwnerId = userId;
       cachedAuthorizedRows = nextRows;
       artifactPathOwnerId = userId;
       authorizedPhotoPaths = collectOwnerPhotoStoragePaths(projectUpdates);
-      authorizedDocumentPaths = collectOwnerDocumentStoragePaths(referenceDocuments);
+      authorizedDocumentPaths = collectOwnerDocumentStoragePaths(referenceDocumentsWithHostedStatus);
       if (requestedCollections) {
         requestedCollections.forEach(collection =>
           realtimeSatisfiedCollections.delete(collection));
@@ -289,6 +483,38 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       }
 
       return nextRows;
+    },
+
+    async loadAuthorizedDocumentCoverageSummary(
+      documentId: string,
+      documentRevision: string | null = null,
+    ): Promise<ECOSDocumentCoverageSummary> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const normalizedDocumentId = documentId.trim();
+      if (!normalizedDocumentId) throw new Error('Choose a document before loading its ECOS coverage.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      const cacheKey = `${ownerId}:${normalizedDocumentId}:${documentRevision?.trim() || 'current'}`;
+      const cached = documentCoverageSummaryCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.summary;
+      const result = await paginateSupabaseCollection<unknown>(async ({ from, to }) => {
+        const page = await client
+          .from('ecos_document_pages')
+          .select('page_number,sheet_number,sheet_mapping_status,visual_coverage')
+          .eq('owner_id', ownerId)
+          .eq('document_id', normalizedDocumentId)
+          .order('page_number', { ascending: true })
+          .range(from, to);
+        return page;
+      });
+      if (!result.ok) {
+        throw new Error('ECOS page coverage could not be loaded for this document.');
+      }
+      const summary = summarizeECOSDocumentCoverageRows(result.rows);
+      documentCoverageSummaryCache.set(cacheKey, {
+        expiresAt: Date.now() + DAVE_WEB_DOCUMENT_COVERAGE_CACHE_TTL_MS,
+        summary,
+      });
+      return summary;
     },
 
     async runAuthorizedMaintenance(): Promise<void> {
@@ -358,7 +584,9 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           'The task could not be created. Refresh the workspace and try again.',
         );
       }
-      return readCloudTimestamp(data) ?? cloudUpdatedAt;
+      const acknowledgedAt = readCloudTimestamp(data) ?? cloudUpdatedAt;
+      cacheAcknowledgedScheduleItem(item, ownerId, acknowledgedAt);
+      return acknowledgedAt;
     },
 
     async updateAuthorizedScheduleItem(
@@ -392,7 +620,9 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         );
       }
       if (!data) throw staleTaskError();
-      return readCloudTimestamp(data) ?? cloudUpdatedAt;
+      const acknowledgedAt = readCloudTimestamp(data) ?? cloudUpdatedAt;
+      cacheAcknowledgedScheduleItem(item, ownerId, acknowledgedAt);
+      return acknowledgedAt;
     },
 
     async deleteAuthorizedScheduleItem(
@@ -457,10 +687,16 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     }: DAVEWebDocumentUploadInput): Promise<string> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwnerCached();
-      if (bytes.byteLength <= 0 || bytes.byteLength > 50 * 1024 * 1024) {
+      if (bytes.byteLength <= 0) {
         throw new DAVEWebDocumentMutationError(
           'write_failed',
-          'The document must be between 1 byte and 50 MB.',
+          'The selected document data is no longer available. Choose the file again, then retry.',
+        );
+      }
+      if (bytes.byteLength > DAVE_WEB_MAX_DOCUMENT_BYTES) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The selected document is larger than 50 MB. Optimize or split it, then retry.',
         );
       }
 
@@ -532,8 +768,13 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
         .from('reference_documents')
         .insert(referenceDocumentRow(uploadedDocument, ownerId, cloudUpdatedAt));
       if (documentError) {
-        await storage.remove([storagePath]);
-        throw new DAVEWebDocumentMutationError('write_failed', 'The document record could not be saved. The uploaded file was removed.');
+        const { error: cleanupError } = await storage.remove([storagePath]);
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          cleanupError
+            ? 'The document record could not be saved, and cleanup of the temporary cloud copy could not be confirmed. The original file on your computer was not changed. Refresh before retrying.'
+            : 'The document record could not be saved. The temporary cloud copy was removed; the original file on your computer was not changed.',
+        );
       }
 
       if (scheduleItems.length > 0) {
@@ -568,6 +809,146 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           );
         }
       }
+      if (canonicalReferenceCategory(uploadedDocument) !== 'drawing') {
+        await replaceECOSDocumentCloudIndex({
+          client,
+          document: uploadedDocument,
+        });
+      }
+      await enqueueECOSHostedIndex({ client, documentId: uploadedDocument.id });
+      return cloudUpdatedAt;
+    },
+
+    async saveAuthorizedLinkedReferenceDocument({
+      document,
+      bytes,
+      file,
+      onProgress,
+    }: DAVEWebLinkedDocumentInput): Promise<string> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      if (
+        document.sourceProvider !== 'google_drive' ||
+        !isGoogleDriveLinkedSource(document.externalSource)
+      ) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The Google Drive reference is incomplete. Select the file again.',
+        );
+      }
+      const hostedDrawingPreparation = canonicalReferenceCategory(document) === 'drawing';
+      if (!hostedDrawingPreparation && !document.extractedPages?.length) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'ECOS could not create a page index for this Google Drive PDF. Nothing was linked.',
+        );
+      }
+      if (bytes.byteLength <= 0 || bytes.byteLength !== document.externalSource.sizeBytes) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The selected Google Drive file changed after review. Choose it again before saving.',
+        );
+      }
+      if (bytes.byteLength > GOOGLE_DRIVE_LINK_MAX_BYTES) {
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'This PDF is too large for protected background preparation. Optimize or split it, then retry.',
+        );
+      }
+
+      if (document.webFileFingerprint) {
+        const existingRows = await readOwnerRows(
+          client,
+          'reference_documents',
+          ownerId,
+          query => query.order('updated_at', { ascending: false }),
+        );
+        const duplicate = existingRows.some(value => {
+          const row = isRecord(value) ? value : {};
+          const data = isRecord(row.document_data) ? row.document_data : {};
+          return data.webFileFingerprint === document.webFileFingerprint;
+        });
+        if (duplicate) {
+          throw new DAVEWebDocumentMutationError(
+            'conflict',
+            'This exact file is already in the project document library.',
+          );
+        }
+      }
+
+      const storagePath = `${ownerId}/drive/${safePathSegment(document.id)}/${safePathSegment(document.originalFileName)}`;
+      const storage = client.storage.from('project-documents');
+      const contentType = document.mimeType || 'application/pdf';
+      try {
+        if (bytes.byteLength > RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
+          const session = await client.auth.getSession();
+          const accessToken = session.data.session?.access_token;
+          if (!SUPABASE_URL || !accessToken) {
+            throw new Error('secure_upload_session_unavailable');
+          }
+          await uploadWebFileResumably({
+            projectUrl: SUPABASE_URL,
+            accessToken,
+            bucket: 'project-documents',
+            path: storagePath,
+            file: file ?? new Blob([bytes], { type: contentType }),
+            contentSha256: document.contentSha256 || '',
+            contentType,
+            upsert: false,
+            onProgress,
+          });
+        } else {
+          onProgress?.(0);
+          const { error: uploadError } = await storage.upload(storagePath, bytes, {
+            contentType,
+            upsert: false,
+          });
+          if (uploadError) throw uploadError;
+          onProgress?.(1);
+        }
+      } catch {
+        await storage.remove([storagePath]);
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'Vitruvius could not save the protected processing copy. The original file in Drive was not changed.',
+        );
+      }
+
+      const cloudUpdatedAt = new Date().toISOString();
+      const linkedDocument = { ...document, storagePath };
+      const { error: documentError } = await client
+        .from('reference_documents')
+        .insert(referenceDocumentRow(linkedDocument, ownerId, cloudUpdatedAt));
+      if (documentError) {
+        await storage.remove([storagePath]);
+        throw new DAVEWebDocumentMutationError(
+          'write_failed',
+          'The Google Drive document reference could not be saved. Its temporary processing copy was removed; the original file in Drive was not changed.',
+        );
+      }
+
+      if (!hostedDrawingPreparation) {
+        const indexResult = await replaceECOSDocumentCloudIndex({
+          client,
+          document: linkedDocument,
+        });
+        if (indexResult.status !== 'saved') {
+          const visibilityRecovered = await compensateFailedLinkedDocumentImport({
+            client,
+            ownerId,
+            documentId: document.id,
+            cloudUpdatedAt,
+          });
+          const cleanup = await storage.remove([storagePath]);
+          throw new DAVEWebDocumentMutationError(
+            'write_failed',
+            visibilityRecovered && !cleanup.error
+              ? `The Google Drive file was not linked because the ECOS search index could not be verified. ${indexResult.message || 'Try again shortly.'}`
+              : 'The ECOS search index could not be verified, and automatic cleanup could not be confirmed. Refresh before retrying.',
+          );
+        }
+      }
+      await enqueueECOSHostedIndex({ client, documentId: linkedDocument.id });
       return cloudUpdatedAt;
     },
 
@@ -679,72 +1060,61 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
     ): Promise<void> {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       const ownerId = await requireAuthorizedOwnerCached();
-      const candidates = scheduleDocuments.filter(document => document.id && document.cloudUpdatedAt);
-      if (!selected.cloudUpdatedAt || !candidates.some(document => document.id === selected.id)) throw staleDocumentError();
+      await setAuthorizedCurrentReferenceDocument({
+        client,
+        ownerId,
+        selected,
+        documents: scheduleDocuments,
+        subject: 'schedule',
+      });
+    },
 
-      const { data: currentRows, error: currentError } = await client
+    async setAuthorizedCurrentDocument(
+      selected: DAVEWebRevisionedReferenceDocument,
+      documents: readonly DAVEWebRevisionedReferenceDocument[],
+    ): Promise<void> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      const ownerId = await requireAuthorizedOwnerCached();
+      await setAuthorizedCurrentReferenceDocument({
+        client,
+        ownerId,
+        selected,
+        documents,
+        subject: 'document',
+      });
+    },
+
+    async updateAuthorizedReferenceDocument(
+      document: DAVEWebRevisionedReferenceDocument,
+    ): Promise<string> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      if (!document.cloudUpdatedAt) throw staleDocumentError();
+      const ownerId = await requireAuthorizedOwnerCached();
+      const updatedAt = new Date().toISOString();
+      const { data, error } = await client
         .from('reference_documents')
-        .select('id,updated_at')
+        .update(referenceDocumentRow(document, ownerId, updatedAt))
         .eq('owner_id', ownerId)
-        .in('id', candidates.map(document => document.id));
-      if (currentError) throw staleDocumentError();
-      const revisions = new Map((currentRows || []).map((row: any) => [row.id, readCloudTimestamp(row)]));
-      if (candidates.some(document => revisions.get(document.id) !== document.cloudUpdatedAt)) throw staleDocumentError();
+        .eq('id', document.id)
+        .eq('updated_at', document.cloudUpdatedAt)
+        .select('updated_at')
+        .maybeSingle();
+      if (error || !data) throw staleDocumentError();
+      if (canonicalReferenceCategory(document) !== 'drawing') {
+        await replaceECOSDocumentCloudIndex({ client, document });
+      }
+      await enqueueECOSHostedIndex({ client, documentId: document.id });
+      return readCloudTimestamp(data) || updatedAt;
+    },
 
-      const mutationPlan = [
-        ...candidates
-          .filter(document => document.id !== selected.id && document.isCurrent)
-          .map(document => ({ document, isCurrent: false })),
-        ...(selected.isCurrent ? [] : [{ document: selected, isCurrent: true }]),
-      ];
-      const applied: Array<{
-        document: ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null };
-        revision: string;
-      }> = [];
-
-      try {
-        for (const change of mutationPlan) {
-          const revision = await writeAuthorizedCurrentScheduleState({
-            client,
-            ownerId,
-            document: change.document,
-            isCurrent: change.isCurrent,
-            expectedCloudUpdatedAt: change.document.cloudUpdatedAt!,
-          });
-          applied.push({ document: change.document, revision });
-        }
-      } catch {
-        if (applied.length === 0) {
-          throw new DAVEWebDocumentMutationError(
-            'conflict',
-            'The current schedule could not be changed because the shared record changed first. No schedule selection was changed. Refresh and try again.',
-          );
-        }
-
-        let rollbackConfirmed = true;
-        for (const change of [...applied].reverse()) {
-          try {
-            await writeAuthorizedCurrentScheduleState({
-              client,
-              ownerId,
-              document: change.document,
-              isCurrent: change.document.isCurrent,
-              expectedCloudUpdatedAt: change.revision,
-            });
-          } catch {
-            rollbackConfirmed = false;
-          }
-        }
-
-        if (!rollbackConfirmed) {
-          throw new DAVEWebDocumentMutationError(
-            'write_failed',
-            'The current schedule change stopped mid-save, and automatic recovery could not be confirmed. Refresh before making another schedule change.',
-          );
-        }
+    async enqueueAuthorizedDocumentPreparation(documentId: string): Promise<void> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      await requireAuthorizedOwnerCached();
+      const result = await enqueueECOSHostedIndex({ client, documentId });
+      if (result.status !== 'queued') {
         throw new DAVEWebDocumentMutationError(
           'write_failed',
-          'The current schedule could not be changed. The previous schedule selection was restored. Refresh and try again.',
+          result.message || 'Vitruvius could not confirm background document preparation.',
         );
       }
     },
@@ -1162,33 +1532,97 @@ async function compensateFailedDocumentImport({
   });
 }
 
-async function writeAuthorizedCurrentScheduleState({
+async function compensateFailedLinkedDocumentImport({
   client,
   ownerId,
-  document,
-  isCurrent,
-  expectedCloudUpdatedAt,
+  documentId,
+  cloudUpdatedAt,
 }: {
   client: SupabaseClient;
   ownerId: string;
-  document: DAVEWebRevisionedReferenceDocument;
-  isCurrent: boolean;
-  expectedCloudUpdatedAt: string;
-}): Promise<string> {
-  const updatedAt = new Date().toISOString();
-  const { data, error } = await client
-    .from('reference_documents')
-    .update(referenceDocumentRow({
-      ...document,
-      isCurrent,
-    }, ownerId, updatedAt))
-    .eq('owner_id', ownerId)
-    .eq('id', document.id)
-    .eq('updated_at', expectedCloudUpdatedAt)
-    .select('updated_at')
-    .maybeSingle();
-  if (error || !data) throw staleDocumentError();
-  return readCloudTimestamp(data) ?? updatedAt;
+  documentId: string;
+  cloudUpdatedAt: string;
+}): Promise<boolean> {
+  const deletedAt = new Date().toISOString();
+  let tombstoneSaved = false;
+  let documentRowRemoved = false;
+  try {
+    const { error } = await client
+      .from('dave_sync_tombstones')
+      .upsert(
+        {
+          owner_id: ownerId,
+          entity_type: 'reference_document',
+          record_id: documentId,
+          deleted_at: deletedAt,
+        },
+        { onConflict: 'owner_id,entity_type,record_id' },
+      );
+    tombstoneSaved = !error;
+  } catch {
+    tombstoneSaved = false;
+  }
+  try {
+    const { data, error } = await client
+      .from('reference_documents')
+      .delete()
+      .eq('owner_id', ownerId)
+      .eq('id', documentId)
+      .eq('updated_at', cloudUpdatedAt)
+      .select('id')
+      .maybeSingle();
+    documentRowRemoved = !error && Boolean(data);
+  } catch {
+    documentRowRemoved = false;
+  }
+  return tombstoneSaved || documentRowRemoved;
+}
+
+async function setAuthorizedCurrentReferenceDocument({
+  client,
+  ownerId,
+  selected,
+  documents,
+  subject,
+}: {
+  client: SupabaseClient;
+  ownerId: string;
+  selected: DAVEWebRevisionedReferenceDocument;
+  documents: readonly DAVEWebRevisionedReferenceDocument[];
+  subject: 'schedule' | 'document';
+}): Promise<void> {
+  if (
+    !selected.cloudUpdatedAt ||
+    !documents.some(document => document.id === selected.id && document.cloudUpdatedAt === selected.cloudUpdatedAt)
+  ) {
+    throw staleDocumentError();
+  }
+  // Owner authorization remains the web pilot boundary. The actual family
+  // mutation is one authenticated database transaction, which prevents two
+  // clients from independently leaving two revisions current.
+  if (!ownerId) throw staleDocumentError();
+  const result = await activateECOSCurrentReferenceDocument({
+    client,
+    documentId: selected.id,
+    expectedUpdatedAt: selected.cloudUpdatedAt,
+  });
+  if (result.status === 'activated') return;
+  if (result.status === 'not_prepared') {
+    throw new DAVEWebDocumentMutationError(
+      'write_failed',
+      result.message || `This ${subject} must finish ECOS preparation before it can be made current.`,
+    );
+  }
+  if (result.status === 'conflict') {
+    throw new DAVEWebDocumentMutationError(
+      'conflict',
+      result.message || `The current ${subject} could not be changed because the shared record changed first. Refresh and try again.`,
+    );
+  }
+  throw new DAVEWebDocumentMutationError(
+    'write_failed',
+    result.message || `The current ${subject} could not be changed. Try again shortly.`,
+  );
 }
 
 async function requireAuthorizedOwner(client: SupabaseClient): Promise<string> {
@@ -1207,6 +1641,7 @@ function scheduleItemRow(item: ScheduleItem, ownerId: string, updatedAt: string)
   return {
     id: item.id,
     owner_id: ownerId,
+    project_id: item.projectId,
     project_name: item.projectName,
     task_name: item.taskName,
     item_data: item,
@@ -1219,7 +1654,10 @@ function referenceDocumentRow(
   ownerId: string,
   updatedAt: string,
 ) {
-  const { cloudUpdatedAt: _cloudUpdatedAt, linkedScheduleItems: _linkedScheduleItems, ...documentData } = document as any;
+  const compactDocument = document.sourceProvider === 'google_drive'
+    ? compactECOSDocumentMetadataForCloud(document)
+    : compactECOSDocumentIndexForCloud(document);
+  const { cloudUpdatedAt: _cloudUpdatedAt, linkedScheduleItems: _linkedScheduleItems, ...documentData } = compactDocument as any;
   return {
     id: document.id,
     owner_id: ownerId,
@@ -1366,4 +1804,14 @@ async function readOwnerRows(
 
   if (!result.ok) throw new Error(`Authorized ${table.replace(/_/g, ' ')} could not be loaded.`);
   return Object.freeze([...result.rows]);
+}
+
+async function readAuthorizedReferenceDocumentMetadata(
+  client: SupabaseClient,
+): Promise<readonly unknown[]> {
+  const { data, error } = await client.rpc('dave_list_reference_document_metadata');
+  if (error || !Array.isArray(data)) {
+    throw new Error('Authorized reference document metadata could not be loaded.');
+  }
+  return Object.freeze([...data]);
 }

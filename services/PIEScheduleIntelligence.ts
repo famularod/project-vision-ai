@@ -1,5 +1,6 @@
 import type {
   ProjectArea,
+  ReferenceDocumentExtractedPage,
   ScheduleItem,
   SchedulePriority,
   ScheduleStatus,
@@ -835,6 +836,244 @@ function scheduleProjectNameFromGanttRoot(value: string) {
     : normalized;
 }
 
+type MicrosoftProjectPdfCell = Readonly<{
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}>;
+
+type MicrosoftProjectPdfRow = Readonly<{
+  activityId: string;
+  taskName: string;
+  taskX: number;
+  duration: string;
+  start: string;
+  finish: string;
+  percentComplete: string;
+  actualStart: string;
+  actualFinish: string;
+}>;
+
+function normalizedMicrosoftProjectPdfCellText(value: unknown) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function microsoftProjectPdfPageCells(page: ReferenceDocumentExtractedPage) {
+  return (page.regions || []).flatMap((region): MicrosoftProjectPdfCell[] => {
+    if (region.source !== 'embedded_text') return [];
+    const constituents = (region.constituentEvidence || []).flatMap(evidence => {
+      const text = normalizedMicrosoftProjectPdfCellText(evidence.text);
+      const bounds = evidence.bounds;
+      if (!text || !bounds) return [];
+      if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) return [];
+      return [{ text, ...bounds }];
+    });
+    if (constituents.length > 0) return constituents;
+    const text = normalizedMicrosoftProjectPdfCellText(region.text || region.label);
+    return text ? [{
+      text,
+      x: region.x,
+      y: region.y,
+      width: region.width,
+      height: region.height,
+    }] : [];
+  });
+}
+
+function microsoftProjectPdfRowsByPosition(cells: readonly MicrosoftProjectPdfCell[]) {
+  const rows: Array<{ y: number; cells: MicrosoftProjectPdfCell[] }> = [];
+  [...cells]
+    .sort((left, right) => left.y - right.y || left.x - right.x)
+    .forEach(candidate => {
+      const row = rows.find(existing => Math.abs(existing.y - candidate.y) <= 0.006);
+      if (row) row.cells.push(candidate);
+      else rows.push({ y: candidate.y, cells: [candidate] });
+    });
+  return rows.map(row => row.cells.sort((left, right) => left.x - right.x));
+}
+
+function microsoftProjectPdfHeaderColumns(cells: readonly MicrosoftProjectPdfCell[]) {
+  const exact = (value: string) => cells.find(cell =>
+    normalizedMicrosoftProjectPdfCellText(cell.text).toLowerCase() === value
+  );
+  const id = exact('id');
+  const task = exact('task name');
+  const duration = exact('duration');
+  const start = exact('start');
+  const finish = exact('finish');
+  const percent = exact('%') || exact('% complete') || exact('percent complete');
+  const actualStart = exact('actual start');
+  const actualFinish = exact('actual finish');
+  if (!id || !task || !duration || !start || !finish || !percent) return null;
+  return { id, task, duration, start, finish, percent, actualStart, actualFinish };
+}
+
+function microsoftProjectPdfColumnCell(
+  cells: readonly MicrosoftProjectPdfCell[],
+  minimumX: number,
+  maximumX: number,
+  pattern: RegExp,
+) {
+  return cells.find(cell =>
+    cell.x >= minimumX && cell.x < maximumX && pattern.test(cell.text)
+  ) || null;
+}
+
+function microsoftProjectPdfTsvValue(value: string) {
+  return value.replace(/[\t\r\n]+/g, ' ').trim();
+}
+
+/**
+ * Reconstructs only genuine Microsoft Project activity rows from the exact
+ * positioned text retained by the web PDF indexer. Timeline labels, repeated
+ * headers, legends, footers, and page numbers never satisfy this row contract.
+ */
+export function buildMicrosoftProjectPdfTsvFromExtractedPages(
+  pages: readonly ReferenceDocumentExtractedPage[],
+) {
+  const datePattern = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\s*\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4})$/i;
+  const durationPattern = /^\d+(?:\.\d+)?\s*(?:days?|hours?|hrs?|weeks?|wks?)$/i;
+  const percentPattern = /^\d{1,3}%(?:\s|$)/;
+  const parsedRows: MicrosoftProjectPdfRow[] = [];
+
+  pages.forEach(page => {
+    const positionedRows = microsoftProjectPdfRowsByPosition(microsoftProjectPdfPageCells(page));
+    const header = positionedRows
+      .map(microsoftProjectPdfHeaderColumns)
+      .find((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+    if (!header) return;
+
+    positionedRows.forEach(cells => {
+      const activityIdCell = cells.find(cell =>
+        /^\d+$/.test(cell.text) &&
+        cell.x < header.task.x &&
+        Math.abs(cell.x - header.id.x) <= 0.03
+      );
+      if (!activityIdCell) return;
+
+      const taskCells = cells.filter(cell =>
+        cell !== activityIdCell &&
+        !/^\d+$/.test(cell.text) &&
+        cell.x >= header.task.x - 0.012 &&
+        cell.x < header.duration.x - 0.008
+      );
+      const taskName = normalizedMicrosoftProjectPdfCellText(
+        taskCells.map(cell => cell.text).join(' '),
+      );
+      const duration = microsoftProjectPdfColumnCell(
+        cells,
+        header.duration.x - 0.012,
+        header.start.x - 0.008,
+        durationPattern,
+      );
+      const start = microsoftProjectPdfColumnCell(
+        cells,
+        header.start.x - 0.012,
+        header.finish.x - 0.008,
+        datePattern,
+      );
+      const finish = microsoftProjectPdfColumnCell(
+        cells,
+        header.finish.x - 0.012,
+        header.percent.x - 0.008,
+        datePattern,
+      );
+      const percentMaximumX = header.actualStart?.x ?? header.percent.x + 0.05;
+      const percentComplete = microsoftProjectPdfColumnCell(
+        cells,
+        header.percent.x - 0.012,
+        percentMaximumX - 0.004,
+        percentPattern,
+      );
+      if (!taskName || !/[a-z]/i.test(taskName) || !duration || !start || !finish || !percentComplete) {
+        return;
+      }
+
+      const actualStart = header.actualStart
+        ? microsoftProjectPdfColumnCell(
+            cells,
+            header.actualStart.x - 0.012,
+            (header.actualFinish?.x ?? header.actualStart.x + 0.06) - 0.006,
+            datePattern,
+          )
+        : null;
+      const actualFinish = header.actualFinish
+        ? microsoftProjectPdfColumnCell(
+            cells,
+            header.actualFinish.x - 0.012,
+            0.72,
+            datePattern,
+          )
+        : null;
+      parsedRows.push({
+        activityId: activityIdCell.text,
+        taskName,
+        taskX: taskCells[0]?.x ?? header.task.x,
+        duration: duration.text,
+        start: start.text,
+        finish: finish.text,
+        percentComplete: percentComplete.text.match(percentPattern)?.[0]?.trim() || '',
+        actualStart: actualStart?.text || '',
+        actualFinish: actualFinish?.text || '',
+      });
+    });
+  });
+
+  const rowsByActivityId = [...new Map(parsedRows.map(row => [row.activityId, row])).values()];
+  const indentPositions: number[] = [];
+  rowsByActivityId
+    .map(row => row.taskX)
+    .sort((left, right) => left - right)
+    .forEach(position => {
+      if (!indentPositions.some(existing => Math.abs(existing - position) <= 0.0035)) {
+        indentPositions.push(position);
+      }
+    });
+  if (rowsByActivityId.length === 0 || indentPositions.length === 0) return '';
+
+  return [
+    'ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete\tActual Start\tActual Finish',
+    ...rowsByActivityId.map(row => {
+      const indent = indentPositions.reduce((best, position, index) =>
+        Math.abs(position - row.taskX) < Math.abs(indentPositions[best] - row.taskX)
+          ? index
+          : best
+      , 0);
+      return [
+        row.activityId,
+        row.taskName,
+        String(indent),
+        row.duration,
+        row.start,
+        row.finish,
+        row.percentComplete,
+        row.actualStart,
+        row.actualFinish,
+      ].map(microsoftProjectPdfTsvValue).join('\t');
+    }),
+  ].join('\n');
+}
+
+export function normalizeMicrosoftProjectWebPdfPages({
+  pages,
+  sourceName,
+  projects = [],
+  projectAreas = [],
+  now = new Date(),
+}: {
+  pages: readonly ReferenceDocumentExtractedPage[];
+  sourceName: string;
+  projects?: string[];
+  projectAreas?: ProjectArea[];
+  now?: Date;
+}) {
+  const contents = buildMicrosoftProjectPdfTsvFromExtractedPages(pages);
+  if (!contents) return [] as ScheduleItem[];
+  return normalizeMicrosoftProjectPdfRows({ contents, sourceName, projects, projectAreas, now });
+}
+
 export function normalizeMicrosoftProjectPdfRows({
   contents,
   sourceName,
@@ -898,7 +1137,8 @@ export function normalizeMicrosoftProjectPdfRows({
     const directProject = bestScheduleProjectMatch(row.taskName, projects);
     const directArea = bestScheduleAreaMatch(row.taskName, projectAreas);
     const hasChildren = (rows[index + 1]?.indent ?? -1) > row.indent;
-    const directScheduleProject = row.indent === 0 && hasChildren
+    const isCodedProjectRoot = /^(?:plz\s+)?\d{3,}\b.*\b(?:campus|project|site)\b/i.test(row.taskName);
+    const directScheduleProject = hasChildren && (row.indent === 0 || isCodedProjectRoot)
       ? scheduleProjectNameFromGanttRoot(row.taskName)
       : '';
     const startsNamedBranch = Boolean(
@@ -1119,7 +1359,7 @@ export function normalizeScheduleImport({
     });
   }
 
-  const normalizedTasks = dataRecords
+  const normalizedTaskCandidates = dataRecords
     .map(record => {
       const { cells } = record;
       const rowText = cells.join(' ');
@@ -1201,6 +1441,13 @@ export function normalizeScheduleImport({
       return scheduleItemFromNormalizedTask(baseTask, sourceName, importedAt);
     })
     .filter((item): item is ScheduleItem => Boolean(item));
+  // Unstructured PDF text is often emitted as one visual fragment per line.
+  // A header, quarter label, legend, or page footer must never become a task.
+  // Positioned Microsoft Project rows use the dedicated parser above; this
+  // fallback accepts only rows that retained an actual schedule date.
+  const normalizedTasks = format.format === 'pdf'
+    ? normalizedTaskCandidates.filter(item => Boolean(item.startDate || item.finishDate))
+    : normalizedTaskCandidates;
   const intelligence = buildScheduleIntelligence({
     scheduleItems: normalizedTasks,
     projectName: '',

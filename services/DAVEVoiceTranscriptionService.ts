@@ -21,11 +21,13 @@ export async function transcribeDAVECaptureMemoryAudio({
   projectId,
   projectName,
   candidateLocations,
+  purpose = 'memory',
 }: {
   uri: string;
   projectId: string | null;
   projectName: string;
   candidateLocations: readonly string[];
+  purpose?: 'memory' | 'question';
 }): Promise<DAVEVoiceUnderstandingResponse> {
   const info = await FileSystem.getInfoAsync(uri);
   if (!info.exists) throw new Error('The recording is no longer available. Record it again.');
@@ -75,6 +77,7 @@ export async function transcribeDAVECaptureMemoryAudio({
             projectName: submittedProjectName,
             projectId: submittedProjectId,
             candidateLocations: JSON.stringify(submittedLocations),
+            purpose,
           },
           headers: {
             apikey: publishableKey,
@@ -106,6 +109,7 @@ export async function transcribeDAVECaptureMemoryAudio({
   formData.append('projectName', submittedProjectName);
   formData.append('projectId', submittedProjectId);
   formData.append('candidateLocations', JSON.stringify(submittedLocations));
+  formData.append('purpose', purpose);
 
   const { data, error, response } = await client.functions.invoke('dave-transcribe-memory', {
     headers: { Authorization: `Bearer ${token.accessToken}` },

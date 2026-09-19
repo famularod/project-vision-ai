@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-na
 
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
 import {
+  buildDAVEProjectScheduleRollup,
   scheduleTaskIsComplete,
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
@@ -216,10 +217,14 @@ function OverviewProjectCard({
   updates: readonly CloudProjectUpdate<ProjectUpdate>[];
 }) {
   const projectTasks = scheduleTasksForParentProject(project.name, [...tasks]);
-  const complete = projectTasks.filter(taskIsComplete).length;
-  const open = projectTasks.length - complete;
+  const scheduleRollup = buildDAVEProjectScheduleRollup({
+    projectName: project.name,
+    items: [...tasks],
+  });
+  const complete = scheduleRollup.completedCount;
+  const open = scheduleRollup.openCount;
   const overdue = projectTasks.filter(taskIsOverdue).length;
-  const percent = projectTasks.length ? Math.round((complete / projectTasks.length) * 100) : 0;
+  const percent = scheduleRollup.percentComplete;
   const projectScopes = scheduleProjectScopeNames(project.name, [...tasks]);
   const projectUpdates = updates.filter(update => projectScopes.some(
     scope => normalize(update.projectName) === normalize(scope),
@@ -240,7 +245,9 @@ function OverviewProjectCard({
           </View>
           <Ionicons name="chevron-forward" size={20} color={colors.tertiaryText} />
         </View>
-        <Text style={styles.projectProgress}>{complete} of {projectTasks.length} tasks complete</Text>
+        <Text style={styles.projectProgress}>
+          {percent}% complete · {complete} of {projectTasks.length} tasks complete
+        </Text>
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${percent}%` }]} />
         </View>

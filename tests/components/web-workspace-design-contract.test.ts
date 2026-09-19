@@ -11,6 +11,10 @@ describe('Vitruvius web workspace design contract', () => {
     path.join(root, 'components/web-shell/desktop-surface-palette.ts'),
     'utf8',
   );
+  const documentOnboarding = fs.readFileSync(
+    path.join(root, 'components/web-shell/desktop-document-onboarding.tsx'),
+    'utf8',
+  );
 
   it('uses the shared summary pattern on operational pages', () => {
     expect(shell).toContain('function WorkspaceSummary');
@@ -23,9 +27,33 @@ describe('Vitruvius web workspace design contract', () => {
 
   it('keeps the existing task and document controls available', () => {
     expect(shell).toContain('>Add Task</Text>');
-    expect(shell).toContain("uploadOpen ? 'Close Upload' : 'Upload Document'");
+    expect(documentOnboarding).toContain('Add Project Documents');
+    expect(shell).toContain('onAddDocuments={() => setUploadOpen(true)}');
     expect(shell).toContain("'Make Current Schedule'");
     expect(shell).toContain('>Delete</Text>');
+  });
+
+  it('offers metadata-only Google Drive linking without replacing protected uploads', () => {
+    expect(shell).toContain("'Link from Google Drive'");
+    expect(shell).toContain('Original file stays in Drive');
+    expect(shell).toContain("preparedFromDrive ? 'Link Reviewed Document' : 'Upload Reviewed Document'");
+    expect(shell).toContain('Choose file from this computer');
+    expect(shell).toContain("document.sourceProvider === 'google_drive'");
+  });
+
+  it('offers background document preparation with customer-safe progress and retry behavior', () => {
+    expect(shell).toContain('buildECOSDocumentReindexPlan(documents, selectedProject)');
+    expect(shell).toContain('requestHostedDocumentPreparation');
+    expect(shell).toContain('manual legacy browser re-index fallback');
+    expect(shell).not.toContain('createGoogleDriveDownloadSession()');
+    expect(documentOnboarding).toContain('Continue preparation');
+    expect(documentOnboarding).toContain('Preparing project documents');
+    expect(documentOnboarding).toContain('You can leave this page');
+    expect(documentOnboarding).toContain('saved completed work and will retry unfinished preparation');
+    expect(shell).toContain('beginOrResumeDocumentIndexJob');
+    expect(shell).toContain('checkpointDocumentIndexPage');
+    expect(shell).toContain('Vitruvius will continue unfinished preparation automatically.');
+    expect(shell).not.toContain("${failures.join(' ')}");
   });
 
   it('provides a searchable document library with a persistent inspector', () => {
@@ -37,6 +65,23 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain("label=\"Category\"");
     expect(shell).toContain('Current schedule · protected from deletion');
     expect(shell).toContain('styles.documentListCard');
+    expect(shell).toContain('styles.documentListPaneIndependent');
+    expect(shell).toContain('styles.documentInspectorPaneIndependent');
+    expect(shell).toContain('accessibilityLabel={`Delete ${document.name}`}');
+    expect(shell).toContain('The original Google Drive file will not be deleted.');
+    expect(shell).toContain('loadDocumentCoverageSummary');
+    expect(shell).toContain("'Loading page analysis…'");
+    expect(shell).toContain("'Index summary missing — re-index required'");
+    expect(shell).not.toContain('`${readiness.fullVisualCoveragePageCount} of ${readiness.indexedPageCount} pages`');
+  });
+
+  it('allows current project documents to edit and persist drawing metadata', () => {
+    expect(shell).toContain('{(!document.isCurrent || !isSchedule) && onSaveDetails ? (');
+    expect(shell).toContain('>Edit Project Document Details</Text>');
+    expect(shell).toContain('label="Discipline" value={discipline} onChangeText={setDiscipline}');
+    expect(shell).toContain('drawingDiscipline: drawing ? discipline.trim() || null : null');
+    expect(shell).toContain('The current ECOS source now uses the revised information.');
+    expect(shell).not.toContain('{!document.isCurrent && onSaveDetails ? (');
   });
 
   it('provides a searchable task workspace with persistent task details', () => {
@@ -142,6 +187,14 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain("workspaceSummary: { flexDirection: 'row', flexWrap: 'wrap'");
   });
 
+  it('shows the canonical version and build on wide and compact web navigation', () => {
+    expect(shell).toContain("import { PRODUCT_BRAND, PRODUCT_RELEASE } from '../../product-brand'");
+    expect(shell).toContain("testID={compact ? 'desktop-top-release' : 'desktop-sidebar-release'}");
+    expect(shell).toContain('Version {PRODUCT_RELEASE.version} · Build {PRODUCT_RELEASE.build}');
+    expect(shell).toContain('<DesktopReleaseLabel />');
+    expect(shell).toContain('<DesktopReleaseLabel compact />');
+  });
+
   it('keeps implementation details out of the everyday workspace', () => {
     expect(shell).not.toContain('Live cloud refresh · 12-second backup check');
     expect(shell).not.toContain('Cloud data last confirmed');
@@ -163,7 +216,7 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain('accessibilityLabel={`${label}, custom value`}');
     expect(shell).toContain("'aria-label': label");
     expect(shell).toContain("if (kind === 'prior') return 'Prior version'");
-    expect(shell).toContain("return 'Document'");
+    expect(shell).toContain('return buildECOSDocumentReadiness(document).label');
   });
 
   it('uses the Option A Cool Blueprint surface hierarchy', () => {

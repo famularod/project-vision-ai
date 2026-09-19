@@ -177,6 +177,45 @@ describe('DesktopSchedulePage', () => {
     expect(screen.getByText(/Correct the dependency network/)).toBeTruthy();
   });
 
+  test('explains that relationships are required instead of flagging standalone work', () => {
+    const completedLongTask = scheduleItem('completed-long-task', {
+      taskName: 'Completed long task',
+      durationDays: 30,
+      status: 'Complete',
+      percentComplete: 100,
+      dependencies: [],
+    });
+    const screen = render(
+      <DesktopSchedulePage
+        tasks={[completedLongTask]}
+        projects={['2321 Compliance Project']}
+        selectedProject="2321 Compliance Project"
+      />,
+    );
+
+    fireEvent.press(screen.getByText('Gantt'));
+
+    expect(screen.getByText('Critical path (not calculated)')).toBeDisabled();
+    expect(screen.getByText('Critical path not calculated')).toBeTruthy();
+    expect(screen.getByText(/Add finish-to-start relationships/)).toBeTruthy();
+    expect(screen.queryByText('CRITICAL')).toBeNull();
+  });
+
+  test('does not identify a completed predecessor as an active critical item', () => {
+    const screen = render(
+      <DesktopSchedulePage
+        tasks={[predecessor, task]}
+        projects={['2321 Compliance Project']}
+        selectedProject="2321 Compliance Project"
+      />,
+    );
+
+    fireEvent.press(screen.getByText('Gantt'));
+
+    expect(screen.getByText('Critical path (1)')).toBeTruthy();
+    expect(screen.getAllByText('CRITICAL')).toHaveLength(1);
+  });
+
   test('captures current task dates as the baseline without duplicate entry', () => {
     const screen = render(
       <DesktopSchedulePage
@@ -280,6 +319,7 @@ function scheduleItem(
 ): DAVEWebScheduleItem {
   return {
     id,
+    projectId: '607c7eed-5dea-4a5a-8b52-0f165c71c4b5',
     itemType: 'Task',
     scheduleProjectName: '2321 Compliance Project',
     projectName: '2321 Compliance Project',

@@ -132,7 +132,8 @@ describe('AppShellFrame', () => {
 
     expect(screen.getByText('Large text document workspace')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Documents' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Talk to project assistant' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Field Notes' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Ask ECOS' })).toBeTruthy();
     expect(screen.queryByTestId('app-bottom-tabs')).toBeNull();
   });
 
@@ -179,7 +180,7 @@ describe('AppShellFrame', () => {
       screen.getByRole('tab', { name: 'Tasks' }).props.accessibilityState,
     ).toEqual({ selected: true });
     expect(StyleSheet.flatten(
-      screen.getByRole('button', { name: 'Talk to project assistant' }).props.style,
+      screen.getByRole('button', { name: 'Ask ECOS' }).props.style,
     ).backgroundColor).toBe('transparent');
     expect(
       StyleSheet.flatten(screen.getByTestId('app-nav-overview-icon-slot').props.style).width,
@@ -192,11 +193,13 @@ describe('AppShellFrame', () => {
     ).toBeTruthy();
 
     await fireEvent.press(screen.getByRole('tab', { name: 'Reports' }));
+    await fireEvent.press(screen.getByRole('tab', { name: 'Field Notes' }));
     await fireEvent.press(
-      screen.getByRole('button', { name: 'Talk to project assistant' }),
+      screen.getByRole('button', { name: 'Ask ECOS' }),
     );
 
     expect(onScreenChange).toHaveBeenCalledWith('Reports');
+    expect(onScreenChange).toHaveBeenCalledWith('FieldNotes');
     expect(onTalk).toHaveBeenCalledTimes(1);
   });
 

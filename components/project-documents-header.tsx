@@ -39,7 +39,7 @@ export function ProjectDocumentsHeader<T extends string>({
       <ScreenCard style={styles.statusCard}>
         <Text accessibilityRole="header" style={styles.statusTitle}>Document Status</Text>
         <Text selectable style={styles.statusText}>
-          New files are saved on this device first, then synced to the shared project record. Existing cloud files can be downloaded and opened on any authorized device.
+          Add the project files once, then leave this page if needed. Vitruvius prepares them in the background and asks you to review only uncertain details.
         </Text>
       </ScreenCard>
 
@@ -80,7 +80,7 @@ export function ProjectDocumentActions({
       testID="project-document-actions"
     >
       <DocumentAction
-        label="Add Document"
+        label="Add Project Documents"
         icon="document-attach-outline"
         primary
         wide={wide}

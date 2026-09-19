@@ -1,4 +1,7 @@
-import { groupDAVEWebDocuments } from '../../services/DAVEWebDocumentManagement';
+import {
+  daveWebDocumentDeletionIsProtected,
+  groupDAVEWebDocuments,
+} from '../../services/DAVEWebDocumentManagement';
 import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 
 describe('Vitruvius desktop document management', () => {
@@ -19,6 +22,14 @@ describe('Vitruvius desktop document management', () => {
     const oldest = document({ id: 'oldest', name: 'Schedule 1', category: 'Schedules', importedAt: '2026-07-01T12:00:00.000Z' });
 
     expect(groupDAVEWebDocuments([oldest, newest]).priorScheduleVersions.map(item => item.id)).toEqual(['newest', 'oldest']);
+  });
+
+  test('protects only the current schedule while allowing current drawings to be removed', () => {
+    const schedule = document({ id: 'schedule', category: 'Schedules', isCurrent: true });
+    const drawing = document({ id: 'drawing', category: 'Drawing', isCurrent: true });
+
+    expect(daveWebDocumentDeletionIsProtected(schedule)).toBe(true);
+    expect(daveWebDocumentDeletionIsProtected(drawing)).toBe(false);
   });
 });
 

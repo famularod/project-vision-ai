@@ -65,8 +65,15 @@ export function DAVEConversationAnswerSheet({
                   accessibilityLabel={`Open supporting ${citation.sourceType}: ${citation.summary}`}
                 >
                   <View style={styles.main}>
-                    <Text style={styles.evidenceSummary}>{citation.summary}</Text>
-                    <Text style={styles.evidenceType}>{citation.sourceType}</Text>
+                    <Text style={styles.evidenceSummary}>
+                      {citation.documentCitation?.label || citation.summary}
+                    </Text>
+                    {citation.documentCitation && citation.excerpt ? (
+                      <Text style={styles.evidenceExcerpt} numberOfLines={3}>{citation.excerpt}</Text>
+                    ) : null}
+                    <Text style={styles.evidenceType}>
+                      {citation.documentCitation ? 'Verified document source' : citation.sourceType}
+                    </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.mutedText} />
                 </TouchableOpacity>
@@ -107,6 +114,7 @@ const styles = StyleSheet.create({
   evidenceList: { marginTop: spacing.lg, gap: spacing.xs },
   evidenceButton: { minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   evidenceSummary: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '700' },
+  evidenceExcerpt: { color: colors.text, fontSize: 13, lineHeight: 18, marginTop: 4 },
   evidenceType: { color: colors.mutedText, fontSize: 12, marginTop: 2, textTransform: 'capitalize' },
   primaryButton: { minHeight: 54, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
   primaryText: { color: '#FFF', fontSize: 16, fontWeight: '800' },

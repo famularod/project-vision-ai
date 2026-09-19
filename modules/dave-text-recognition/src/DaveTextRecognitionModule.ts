@@ -4,6 +4,28 @@ export type DaveRecognizedText = {
   text: string;
   lines: string[];
   averageConfidence: number;
+  regions: DaveExtractedTextRegion[];
+};
+
+export type DaveExtractedTextRegion = {
+  id: string;
+  label: string;
+  text: string;
+  areaNames: string[];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence: number;
+  source: 'embedded_text' | 'ocr';
+};
+
+export type DaveExtractedPdfPage = {
+  pageNumber: number;
+  sheetNumber: string | null;
+  title: string | null;
+  text: string | null;
+  regions: DaveExtractedTextRegion[];
 };
 
 export type DaveExtractedPdfText = {
@@ -11,6 +33,9 @@ export type DaveExtractedPdfText = {
   format: 'microsoft_project_tsv' | 'plain_text';
   pageCount: number;
   pagesRead: number;
+  pages: DaveExtractedPdfPage[];
+  extractionMethod: 'embedded_text' | 'local_ocr' | 'embedded_text_and_ocr' | null;
+  limitations: string[];
 };
 
 export type DaveRenderedPdfExcerpt = {

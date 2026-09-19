@@ -473,3 +473,8 @@ describe('DAVE browser read-only repository', () => {
     expect(snapshot.scheduleItems.filter(item => item.id.startsWith('manual-'))).toHaveLength(2);
   });
 });
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
