@@ -192,6 +192,12 @@ def expected_visual_subtile_pixel_bounds(
 def pixel_bounds_match(value: Any, expected: tuple[int, int, int, int]) -> bool:
     if not isinstance(value, dict):
         return False
+    # isinstance(True, int) is True in Python, so booleans must be rejected
+    # explicitly or True would pass as a coordinate and compare equal to 1.
+    # Ported from the owner-source indexer (wip/owner-source-service-2026-09-17).
+    values = [value.get(key) for key in ("x", "y", "width", "height")]
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in values):
+        return False
     left, top, right, bottom = expected
     return (
         value.get("x") == left

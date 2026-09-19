@@ -23,9 +23,13 @@ class HostedJob:
     def from_record(cls, value: dict[str, Any]) -> "HostedJob":
         return cls(
             job_id=required_text(value, "job_id"),
-            organization_id=required_text(value, "organization_id"),
-            project_id=required_text(value, "project_id"),
-            document_id=required_text(value, "document_id"),
+            # Identity fields reach storage paths and request headers, so they
+            # are bounded and restricted to printable ASCII rather than accepting
+            # any non-empty string. Ported from the owner-source indexer
+            # (wip/owner-source-service-2026-09-17), where this was tightened.
+            organization_id=required_exact_ascii_identity(value, "organization_id", 500),
+            project_id=required_exact_ascii_identity(value, "project_id", 500),
+            document_id=required_exact_ascii_identity(value, "document_id", 200),
             source_provider=required_text(value, "source_provider"),
             source_locator=value.get("source_locator") if isinstance(value.get("source_locator"), dict) else {},
             source_sha256=required_text(value, "source_sha256").lower(),
@@ -41,6 +45,29 @@ def required_text(value: dict[str, Any], key: str) -> str:
     result = optional_text(value.get(key))
     if not result:
         raise ValueError(f"Missing required worker field: {key}")
+    return result
+
+
+def required_exact_ascii_identity(
+    value: dict[str, Any],
+    key: str,
+    maximum_bytes: int,
+) -> str:
+    """An identity field used verbatim in storage paths and headers.
+
+    Unlike required_text this does not strip: a value that needs stripping is
+    not the exact identity it claims to be. Rejects control characters, any
+    byte above ASCII 0x7E, an all-space value, and anything longer than the
+    column's bound.
+    """
+    result = value.get(key)
+    if (
+        not isinstance(result, str)
+        or not 1 <= len(result) <= maximum_bytes
+        or not all(" " <= character <= "~" for character in result)
+        or not any("!" <= character <= "~" for character in result)
+    ):
+        raise ValueError(f"Invalid exact worker identity field: {key}")
     return result
 
 
