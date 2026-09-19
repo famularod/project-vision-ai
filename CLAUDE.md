@@ -24,7 +24,17 @@ branding, installed-app names, permission copy, and product icons should say
 Vitruvius.
 
 - Repo: `https://github.com/famularod/project-vision-ai`
-- Local path: `/Users/davidfamularo/Downloads/project-photo-update-tool`
+- Local path: `/Users/davidfamularo/Projects/vitruvius/app` (canonical as of
+  2026-09-19; the repo lives inside the `~/Projects/vitruvius` workspace, whose
+  sibling folders `supabase/`, `validation/`, `research/` and `handoff/` are
+  referenced by relative paths from `app/scripts/` — do not move `app` alone)
+- **Read first, before this file:** `../CLAUDE.md` and `../handoff/STATUS.md`.
+  The workspace-level agreement is stricter than this one and takes precedence:
+  commits land through `../handoff/runner.sh`, deploys go out as private canary
+  tags, and each change gets a scorecard run. `STATUS.md` is the running log of
+  what is live; it is the current truth, not this file.
+- Older copies of this project (`~/Downloads/project-photo-update-tool` and
+  several `build-181-sealed-*` folders) are historical. Do not work in them.
 - Backend: Supabase (Postgres, Storage, Edge Functions)
 - Testing: physical iOS device is the release authority. Normal field builds
   are signed local Release builds with an embedded JavaScript bundle, so the
@@ -36,7 +46,8 @@ Vitruvius.
 
 ## Architecture gotchas (read this before assuming anything)
 
-- **The live app is a 23,511-line `App.tsx` monolith (2026-07-17).** A parallel
+- **The live app is a 20,924-line `App.tsx` monolith (2026-09-19; was 23,511 on
+  2026-07-17 — the no-growth ratchet below is working, keep enforcing it).** A parallel
   `screens/`, `components/`, `hooks/` directory structure exists but is
   **mostly disconnected** from the live app unless explicitly wired into
   `App.tsx`'s navigation. Before touching a file in `screens/` or
@@ -109,19 +120,24 @@ still read as one considered product, not a patchwork.
 2. **Propose before implementing.** Give David the plan, flag any real
    decision points (don't silently pick one), and wait for explicit
    go-ahead.
-3. **Implement on a new branch off `v0.8-architecture-refactor`.** Never
-   commit directly to that branch or to `main`.
-4. **Run `npm run qa:release`** before calling release work done. The gate
-   includes the production-secret guard, Expo dependency validation,
-   TypeScript, 10 Jest suites (20 tests as of 2026-07-17), DAVE stages 1–8,
-   UI/reporter contracts, and JARVIS contracts. Use `npm run check` as the
+3. **Implement on a new branch off `repair/batch-3-reports`.** Never commit
+   directly to that branch. (Decided 2026-09-19: the former base branch
+   `v0.8-architecture-refactor` no longer exists on the remote. There is also
+   no `main` on this remote; `origin/HEAD` points at
+   `fix/build191-ios-source-modules`.)
+4. **Run `npm run qa:release`** before calling release work done. Note that
+   `qa:release` now resolves to `npm run ecos:assurance`, so the July-era
+   description of its contents is unreliable — read the script rather than
+   trusting a summary. Test counts have grown a great deal (636 tests recorded
+   in `handoff/STATUS.md` on 2026-09-19, versus 20 on 2026-07-17); treat any
+   hard-coded count in this file as stale on sight. Use `npm run check` as the
    faster minimum gate during implementation, not as the final release gate.
 5. **Summarize the diff** before committing — what changed, what was
    deliberately left untouched, any tech debt noticed along the way.
 6. **David live-tests on his physical device** before merge, unless the fix
    is unreachable without deploying (e.g. a Supabase migration or edge
    function) — in that case, deploy first, then test.
-7. **Open a PR via `gh`** targeting `v0.8-architecture-refactor`. Merge only
+7. **Open a PR via `gh`** targeting `repair/batch-3-reports`. Merge only
    after David confirms the live test passed.
 
 ### When it's safe to move faster
@@ -143,10 +159,16 @@ database or deploying — same as every migration today.
 ### Applying SQL / exact-text changes
 Chat-based copy/paste has corrupted long SQL blocks before (dropped
 characters, garbled table names). Prefer applying migrations directly via
-`supabase db push` (CLI is linked and authenticated) over asking David to
-paste SQL into the dashboard by hand. If a manual paste is unavoidable, write
-it to a file first and have David `cat` it from the terminal rather than
-relaying it through chat.
+`supabase db push` over asking David to paste SQL into the dashboard by hand.
+If a manual paste is unavoidable, write it to a file first and have David
+`cat` it from the terminal rather than relaying it through chat.
+
+**CLI status, corrected 2026-09-19:** the CLI is *not* linked in this
+workspace — there is no `supabase/config.toml` in `app/` or at the workspace
+root, so `supabase db push` will fail until someone runs `supabase link`.
+Homebrew installation is also broken (outdated Command Line Tools), so the CLI
+runs via npm instead: `npx supabase <command>`, verified at version 2.117.0.
+The `npx` prefix is required every time; nothing is installed globally.
 
 ### Communication style
 - Plain, sequential, numbered steps for anything David needs to do manually
