@@ -37,6 +37,7 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Dimensions } from 'react-native';
 import { NativeRoot } from '../entry';
+import { normalizeScheduleItem } from '../App';
 import { getCurrentSessionUser } from '../services/SupabaseService';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -341,5 +342,51 @@ describe('native app boots', () => {
     const fatal = consoleErrors.filter(message => FATAL.test(message));
     if (fatal.length) report(tree, 'FATAL REACT ERRORS DURING BOOT');
     expect(fatal).toEqual([]);
+  });
+});
+
+/**
+ * These live here rather than in their own file because importing App.tsx
+ * requires the whole native-module mock set above, and duplicating it would
+ * rot. The behaviour under test is not about booting.
+ *
+ * Found 2026-09-20 from a device reporting 148 schedule tasks needing retry
+ * forever. normalizeScheduleItem rebuilds every record from an explicit field
+ * list, and projectId was missing from it. Sync resolved a cloud project
+ * identity and uploaded it, the stored row came back carrying it, and
+ * normalization silently dropped it again — so the local copy never matched
+ * the stored row, every record was re-queued on every sync, and the count
+ * could never reach zero.
+ */
+describe('normalizeScheduleItem preserves the cloud project identity', () => {
+  const minimal = { id: 'task-1', projectName: 'Alpha', taskName: 'Install panels' };
+
+  it('keeps a projectId that arrived from the cloud', () => {
+    const normalized = normalizeScheduleItem({
+      ...minimal,
+      projectId: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f',
+    } as never);
+
+    expect(normalized.projectId).toBe('9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f');
+  });
+
+  it('survives a round trip through normalization', () => {
+    // The download path normalizes what it reads back, so one pass losing the
+    // identity is what re-queued the record; assert the fixed point.
+    const once = normalizeScheduleItem({
+      ...minimal,
+      projectId: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f',
+    } as never);
+
+    expect(normalizeScheduleItem(once).projectId).toBe(once.projectId);
+  });
+
+  it('omits the key entirely when there is no identity, rather than nulling it', () => {
+    // The record comparisons drop undefined but keep null, so null would fail
+    // to match a stored row that simply has no projectId key.
+    const normalized = normalizeScheduleItem(minimal as never);
+
+    expect(normalized.projectId).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(normalized))).not.toHaveProperty('projectId');
   });
 });
