@@ -3099,6 +3099,14 @@ export async function synchronizeLocalData(
       cloudProjects.error || cloudProjects.message ||
       'Cloud projects could not be checked before operational records were uploaded.',
     );
+    // Schedule items and reference documents both resolve their project
+    // through the identity authority built from this read. If the read failed
+    // the authority is empty, so every one of them would fail to bind and add
+    // its own error — turning a single upstream failure into one error per
+    // record. Skip the phase instead, the same way the collection reads above
+    // preserve the phone and retry later.
+    syncableScheduleItems = [];
+    syncableReferenceDocuments = [];
   }
   const existingProjectNames = new Set(
     cloudProjectRecords.map(project => project.name.toLowerCase()),
