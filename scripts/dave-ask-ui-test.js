@@ -127,24 +127,12 @@ const timelineReference = firstAnswer.timelineReferences[0];
 const timelineDestination = resolveDAVEAskTimelineNavigation(intelligence, timelineReference.id);
 assert(timelineDestination && timelineDestination.target === 'update_detail');
 
-const component = fs.readFileSync(path.join(root, 'components/DAVEAskExperience.tsx'), 'utf8');
+// DAVEAskExperience.tsx was deleted on 2026-09-20: unreachable from either
+// entry point, and this script's own assertion below says it 'must remain
+// hidden until its answers are dependable'. Assertions describing its
+// contents are gone; the guard that it stays out of the workspace remains.
 const conversation = fs.readFileSync(path.join(root, 'services/DAVEAskConversation.ts'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'App.tsx'), 'utf8');
-for (const marker of [
-  'Ask Vitruvius',
-  'Current project questions',
-  'Ask me about this project.',
-  'Examples are listed above.',
-  'Ask a follow-up...',
-  'Next step',
-  'View source details',
-  'Answer confidence',
-  'Project records',
-  'Related activity',
-  'Important notes',
-]) {
-  assert(component.includes(marker), `Ask DAVE experience must include ${marker}`);
-}
 for (const question of [
   'How is this project doing?',
   'What needs attention?',
@@ -153,24 +141,6 @@ for (const question of [
   'What should I do next?',
 ]) {
   assert(conversation.includes(question), `Suggested question must remain directly answerable: ${question}`);
-}
-for (const developerFacingLabel of ['Supporting Evidence', 'Timeline References', 'Evidence Used', 'Evidence Missing', 'Supporting Records']) {
-  assert(!component.includes(`>${developerFacingLabel}<`), `${developerFacingLabel} must not lead the PM-facing answer.`);
-}
-assert(component.includes('resolveDAVEConversationContext'));
-assert(component.includes('answerDAVEConversationContext'));
-assert(component.includes("context.status === 'ambiguous_follow_up'"));
-assert(component.includes('One detail needed'));
-assert(component.includes('history.map(entry =>'));
-assert(component.includes('createDAVEAskHistoryPersistence'));
-assert(component.includes('historyPersistence.read(intelligence.projectId)'));
-assert(component.includes('historyPersistence.append(intelligence.projectId, entry)'));
-assert(!component.includes('AsyncStorage.setItem(storageKey'),
-  'Inline Ask history writes must use the ordered retrying persistence helper.');
-assert(!component.includes('<Modal') && !component.includes('position: \'absolute\''),
-  'Ask DAVE must remain inline and must not use a modal or floating overlay.');
-for (const forbidden of ['buildProjectIntelligence(', 'projectRealitySourceRecords', '.updates', '.documents', '.scheduleItems']) {
-  assert(!component.includes(forbidden), `Ask DAVE UI must not access or rebuild raw intelligence via ${forbidden}.`);
 }
 
 const workspaceStart = app.indexOf('function ProjectWorkspaceScreen');

@@ -10,7 +10,8 @@ const read = relativePath => fs.readFileSync(path.join(rootDir, relativePath), '
 const provider = read('providers/PIELiveAuthorityProvider.tsx');
 const app = read('App.tsx');
 const reports = read('screens/ReportsScreen.tsx');
-const piePanel = read('components/PIEPanel.tsx');
+// PIEPanel.tsx was deleted on 2026-09-20: unreachable from either entry point,
+// with no runtime or test reference. Assertions about its contents are gone.
 
 assert(provider.includes('buildLivePIECoreIntelligence'), 'Provider must call buildLivePIECoreIntelligence.');
 assert(provider.includes('buildRuntime'), 'Provider must build shared Runtime input.');
@@ -75,7 +76,5 @@ assert(
   'Project Workspace must consume provider Project Truth intelligence directly.',
 );
 assert(reports.includes('const runtime = liveAuthority.runtime;'), 'Review must consume provider Runtime directly.');
-assert(piePanel.includes('useOptionalPIELiveAuthority'), 'PIEPanel must consume optional provider authority.');
-assert(piePanel.includes('liveAuthority?.runtime || fallbackRuntime'), 'PIEPanel must prefer provider Runtime when available.');
 
 console.log('PASS live provider routing');

@@ -12,7 +12,8 @@ const app = read('App.tsx');
 const home = app;
 const reports = read('screens/ReportsScreen.tsx');
 const capture = app;
-const piePanel = read('components/PIEPanel.tsx');
+// PIEPanel.tsx was deleted on 2026-09-20: unreachable from either entry point,
+// with no runtime or test reference. Assertions about its contents are gone.
 
 assert(provider.includes('attention: PIECoreOutput'), 'Provider must expose Attention output.');
 assert(provider.includes('attention: currentCore?.attention || null'), 'Provider value must include current scope attention.');
@@ -33,6 +34,5 @@ assert(
   capture.includes('liveAuthority.core?.photoRepeatGuidance.find'),
   'Capture must consume qualified repeat-photo guidance from provider authority.',
 );
-assert(piePanel.includes('liveAuthority?.runtime || fallbackRuntime'), 'Shared PIEPanel must prefer provider Runtime.');
 
 console.log('PASS attention authority routing');
