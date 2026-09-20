@@ -381,6 +381,33 @@ describe('normalizeScheduleItem preserves the cloud project identity', () => {
     expect(normalizeScheduleItem(once).projectId).toBe(once.projectId);
   });
 
+  it('carries through fields this build does not manage', () => {
+    // The stored rows carry importer provenance that no current code writes.
+    // Dropping it meant the local copy could never match the stored row, so
+    // the saved-revision check failed and the record re-queued forever.
+    const normalized = normalizeScheduleItem({
+      ...minimal,
+      sourceContentSha256: 'abc123',
+      sourceImportKey: 'import-key-1',
+      sourceVersionGroupId: 'group-1',
+    } as never) as Record<string, unknown>;
+
+    expect(normalized.sourceContentSha256).toBe('abc123');
+    expect(normalized.sourceImportKey).toBe('import-key-1');
+    expect(normalized.sourceVersionGroupId).toBe('group-1');
+  });
+
+  it('still normalizes managed fields rather than trusting the input', () => {
+    const normalized = normalizeScheduleItem({
+      ...minimal,
+      taskName: 'Install panels',
+      projectName: 42,
+    } as never);
+
+    expect(normalized.projectName).toBe('');
+    expect(normalized.taskName).toBe('Install panels');
+  });
+
   it('omits the key entirely when there is no identity, rather than nulling it', () => {
     // The record comparisons drop undefined but keep null, so null would fail
     // to match a stored row that simply has no projectId key.

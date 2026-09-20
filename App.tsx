@@ -2695,13 +2695,20 @@ export function normalizeScheduleItem(
 ): ScheduleItem {
   const progress = reconcileScheduleProgress(value.status, value.percentComplete);
   return {
+    // Carry through any field this build does not manage, BEFORE the managed
+    // fields below override it. This rebuilds the record from an explicit
+    // list, so every unlisted field was silently destroyed on each pass —
+    // including provenance written by the schedule importer
+    // (sourceContentSha256, sourceImportKey, sourceVersionGroupId) and, until
+    // it was listed, projectId.
+    //
+    // The consequence was not just data loss. The stored row keeps those
+    // fields, the local copy can never contain them, so the saved-revision
+    // check can never match and the record is re-queued on every sync,
+    // forever. Enumerating the missing fields one at a time only fixes the
+    // instances found so far; preserving unknown fields fixes the class.
+    ...value,
     id: typeof value.id === 'string' ? value.id : uid(),
-    // The cloud project identity must survive normalization. This rebuilds the
-    // record from an explicit field list, so omitting projectId silently
-    // discarded it on every download: sync resolved an identity and uploaded
-    // it, the row came back carrying it, normalization dropped it again, and
-    // the local copy therefore never matched the stored row. Those records
-    // were re-queued on every sync and could never drain.
     // undefined rather than null when absent: the record comparisons drop
     // undefined but keep null, so null here would not match a stored row that
     // simply has no projectId key, and those records would keep re-queueing.
