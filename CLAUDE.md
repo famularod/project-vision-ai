@@ -40,19 +40,64 @@ Vitruvius.
   are signed local Release builds with an embedded JavaScript bundle, so the
   phone does not need Metro or the laptop after installation. A simulator may
   be used for bounded diagnostics, but it does not replace the device pass.
+- **`tests/app-shell-smoke.test.tsx` is the boot test. Do not delete it, and do
+  not let it rot.** Until 2026-09-20 *no test rendered `App.tsx`* — the one test
+  touching the entry point mocked App away, App.tsx was outside the coverage
+  denominator, `web:export` never bundles it, and Maestro is not in the gate. A
+  runtime crash anywhere in 20,924 lines of native shell passed all 19 layers,
+  which is precisely why the July device kills were only ever found on a phone.
+  Five cases in ~1.4 s: signed-in reaches the tab bar, every tab selects, a
+  signed-out cold start shows the **sign-in gate** rather than "ECOS could not
+  finish starting", a tablet width boots to the navigation rail, and booting logs
+  no hook-order or infinite-update error.
+  - It renders `NativeRoot`, **not `App` directly**: `App` needs the workspace
+    owner boundary that `NativeRoot` installs, so rendering `App` alone throws
+    "Native local data requires the workspace owner boundary" and proves nothing.
+  - **Window width decides which app you get.** `App.tsx` reads
+    `useWindowDimensions`, and jest's default window is wide, so the app renders
+    the tablet rail and there is no bottom tab bar. Pin the width with
+    `Dimensions.set` in any test that asserts on navigation. Five attempts were
+    lost to this.
+  - It needs `--forceExit`: the shell leaves timers or subscriptions running
+    after unmount. That leak is real and still uninvestigated; on a device it
+    reads as background battery drain, not a crash.
+- **Coverage counts the native shell as of 2026-09-20.** It previously measured
+  `services` and `components` only, so the reported percentage excluded the
+  least-tested code in the repo. Real numbers with the shell included:
+  statements 55.03%, branches 45.60%, functions 58.32%, lines 57.34%. Three of the
+  four old floors were only being met by the exclusion. Floors now sit just under
+  the measured truth so the ratchet rises from a real baseline.
 - David is a beginner developer / product owner. Explain terminal steps
   explicitly and in order. Don't assume familiarity with git, SQL, or
   Supabase's dashboard.
 
 ## Architecture gotchas (read this before assuming anything)
 
-- **The live app is a 20,924-line `App.tsx` monolith (2026-09-19; was 23,511 on
-  2026-07-17 — the no-growth ratchet below is working, keep enforcing it).** A parallel
-  `screens/`, `components/`, `hooks/` directory structure exists but is
-  **mostly disconnected** from the live app unless explicitly wired into
-  `App.tsx`'s navigation. Before touching a file in `screens/` or
-  `components/`, confirm it's actually imported and rendered from `App.tsx` —
-  don't assume a file's existence means it's reachable by the user.
+- **THIS REPO CONTAINS TWO DISJOINT APPLICATIONS. Read this before anything
+  else.** Verified by building the real import graph on 2026-09-20:
+  - **Native:** `index.ts` → `entry.ts` → `App.tsx`. **345 modules.**
+  - **Web/desktop:** `index.ts` → `entry.web.ts` → the expo-router routes in
+    `app/`. **142 modules.**
+  - **`App.tsx` is not in the web graph at all.** Overlap is 96 modules.
+
+  Every `app/` route is a ~5-line shim into a second, independent
+  implementation: `app/reports.tsx` renders `DesktopReadOnlyShell page="reports"`
+  while native reports are `screens/ReportsScreen.tsx` via `App.tsx`. Same for
+  settings, projects, photos, schedule, tasks, field-notes, documents, evidence.
+  There are **31 web-only files** and **three separate Ask ECOS UIs**.
+
+  Consequences you must plan for: **every feature ships twice**, in two
+  codebases, with no shared screen layer; a fix to the phone does nothing for
+  the desktop; and the two surfaces carry separate build numbers (204 iOS /
+  199 desktop). Nothing in this repo made that obvious before 2026-09-20.
+- **The native app is a 20,924-line `App.tsx` monolith** (2026-09-19; was 23,511
+  on 2026-07-17 — the no-growth ratchet below is working, keep enforcing it).
+- **CORRECTED 2026-09-20: `screens/`, `components/` and `hooks/` are NOT "mostly
+  disconnected".** That warning was true in July and is false now. **390 of 401
+  app-bundle files are reachable** from one entry point or the other; only 11 were
+  not, and 7 of those were deleted. `scripts/service-dependency-audit.js --assert`
+  is the gate that keeps it that way, now ratcheted at 1. Do still check
+  reachability before assuming a file ships — but expect it to.
 - **`App.tsx` has a no-growth ratchet.** New features must ship in a module
   with only a small wiring block in `App.tsx`. Any PR touching `App.tsx`
   should leave it no larger than it started unless the PR explicitly records
@@ -125,13 +170,31 @@ still read as one considered product, not a patchwork.
    `v0.8-architecture-refactor` no longer exists on the remote. There is also
    no `main` on this remote; `origin/HEAD` points at
    `fix/build191-ios-source-modules`.)
-4. **Run `npm run qa:release`** before calling release work done. Note that
-   `qa:release` now resolves to `npm run ecos:assurance`, so the July-era
-   description of its contents is unreliable — read the script rather than
-   trusting a summary. Test counts have grown a great deal (636 tests recorded
-   in `handoff/STATUS.md` on 2026-09-19, versus 20 on 2026-07-17); treat any
-   hard-coded count in this file as stale on sight. Use `npm run check` as the
-   faster minimum gate during implementation, not as the final release gate.
+4. **Run `npm run qa:release`** before calling release work done. It resolves to
+   `npm run ecos:assurance` → `scripts/jarvis-release-gate.js`: **19 layers, 155
+   leaf commands, 113 scripts, exactly one Jest invocation.** Facts established
+   2026-09-20, all previously wrong in this file:
+   - **The app's Jest suite is ~1,952 tests across 273 files**, not the "10 suites
+     (20 tests)" this file claimed. The "636 tests" in `STATUS.md` is the *v12
+     runtime's Deno* count, a different repository. Treat any hard-coded count
+     here as stale on sight.
+   - **Four of the 19 layers are substring greps over source text (~1,200
+     assertions), not behavioural tests.** Two have been renamed to say so.
+     `jarvis-qa.js` prints its own `Runtime behavior: NOT EVALUATED`. A
+     source-string contract proves wording, not behaviour — useful, but never
+     read it as proof the workflow runs.
+   - **Until 2026-09-20 `qa:release` could not pass from a clean checkout at
+     all.** Layer 2 needed a gitignored evidence file under 24 hours old, so the
+     chain died at step two of nineteen and `test:behavior` never ran. A
+     deterministic test failure and an act() warning sat unnoticed as a result.
+     Absent evidence now WARNs; stale or invalid evidence still fails; set
+     `VIC_RELEASE_TARGET` or `VIC_REQUIRE_ECOS_ASK_LIVE_EVIDENCE=1` to require it
+     for real certification.
+   - **A WARN is not a pass.** Android production signing and Ask ECOS live
+     evidence both warn by default. A warning means that thing is *not certified*
+     by that run.
+   Use `npm run check` as the faster minimum gate during implementation, not as
+   the final release gate.
 5. **Summarize the diff** before committing — what changed, what was
    deliberately left untouched, any tech debt noticed along the way.
 6. **David live-tests on his physical device** before merge, unless the fix

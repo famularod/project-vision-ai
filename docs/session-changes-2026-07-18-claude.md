@@ -7,6 +7,36 @@
 
 ---
 
+
+> ## CORRECTION, added 2026-09-20 — the "ROOT CAUSE" row below is wrong
+>
+> Row 6 credits `5eb2ffcb` (the follow-through fixpoint fix) as the root cause of
+> the device kills. **It cannot have been.** `services/DAVEFollowThroughPlanner.ts`
+> is imported by nothing but its own test. Pickaxe across the whole history shows
+> shipped code last imported it around Build 48-130, and `App.tsx` has **never**
+> imported it. `5eb2ffcb` changed only that file plus a new test — nothing in any
+> bundle. A module that does not run cannot burn CPU or write to disk.
+>
+> Independently confirmed: `scripts/dave-follow-through-test.js` (since deleted)
+> ended with *"the retired reminder panel stays out of the live app"* and asserted
+> `!app.includes('planDAVEFollowThrough')`. Follow-through was **deliberately
+> retired**, not accidentally unwired.
+>
+> The likely real fix is `c9e4a0ca`, whose own message reads "idempotent
+> auth-failure stamping stops CPU/disk-write kills" and which changes `App.tsx`.
+> `6cb61485` (startup hydration oscillation, 134 lines of `App.tsx`) and
+> `a13f421a` (every-launch photo re-upload) are also live candidates. All three
+> touch code that ships; the fixpoint fix did not.
+>
+> **So the root cause is UNPROVEN.** The crashes stopped, but attribution to a
+> specific mechanism was never established, and this document asserted it as fact.
+> The loop diagnostic named `App.tsx:18878`, which is consistent with an App.tsx
+> cause and not with the planner.
+>
+> Both the planner and its "device-crash regression" test were deleted on
+> 2026-09-20: a regression test guarding a device crash in code that does not run
+> reads as protection and is worse than no test.
+
 ## 1. Landed pre-existing work in progress
 
 **`8cf410cb`** — Committed 37 files of uncommitted stabilization work found in the working tree (verified typecheck + tests first). Covers audit findings P1-19 (PlainDate/Instant timezone safety), P1-20 (schedule import provenance), P1-47 (conflict-safe reality history resend), P1-48 (cloud pagination), P1-11/P1-26 (shared photo-analysis contract).
