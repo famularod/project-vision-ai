@@ -3,7 +3,9 @@ name: Mobile validation
 on:
   pull_request:
   push:
-    branches: [main, v0.8-architecture-refactor]
+    # Updated 2026-09-20: neither main nor v0.8-architecture-refactor exists on
+    # this remote, so the push trigger never fired and only pull_request did.
+    branches: [repair/batch-3-reports, fix/build191-ios-source-modules]
 
 permissions:
   contents: read

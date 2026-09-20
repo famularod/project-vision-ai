@@ -132,7 +132,12 @@ for (const service of result.unreachableServices) {
 }
 
 if (process.argv.includes('--assert')) {
-  const maximumUnreachableServices = 3;
+  // Tightened 3 -> 1 on 2026-09-20 after deleting DAVEFollowThroughPlanner.
+  // Only ProjectIdentityMigration remains unreachable, and it is kept
+  // deliberately (a data migration that has never run). A ratchet with slack
+  // lets dead services regrow silently, which is how 11 unreachable files
+  // accumulated unnoticed.
+  const maximumUnreachableServices = 1;
   if (result.unreachableServiceCount > maximumUnreachableServices) {
     console.error(
       `FAIL unreachable service count grew beyond ${maximumUnreachableServices}.`,
