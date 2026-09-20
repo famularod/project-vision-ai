@@ -435,4 +435,47 @@ describe('a failed projects read does not cascade into one error per record', ()
     expect(result.errors.filter(error => error.includes('Document'))).toEqual([]);
     expect(result.errors).toContain('Cloud projects unavailable.');
   });
+
+  it('shows why a task write was refused instead of a bare could-not-sync', async () => {
+    // The refusal reason is computed and was being discarded, so a permission
+    // refusal, a rejected value and a missing table all reached the field as
+    // the same unactionable sentence — and returned identically every sync.
+    mockLists.projects.mockResolvedValue(okResult([
+      { id: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', name: 'Alpha' },
+    ]));
+    mockWrites.schedule.mockResolvedValue(
+      failedResult('new row violates row-level security policy'),
+    );
+
+    const result = await synchronizeLocalData({
+      projects: [],
+      savedUpdates: [],
+      projectAreas: [],
+      scheduleItems: [scheduleTask('task-1')],
+      referenceDocuments: [],
+    });
+
+    expect(result.errors).toContain(
+      'Schedule task “Task task-1” could not sync. new row violates row-level security policy',
+    );
+  });
+
+  it('names a missing cloud table rather than leaving the reason blank', async () => {
+    mockLists.projects.mockResolvedValue(okResult([
+      { id: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', name: 'Alpha' },
+    ]));
+    mockWrites.schedule.mockResolvedValue(missingTableStub(''));
+
+    const result = await synchronizeLocalData({
+      projects: [],
+      savedUpdates: [],
+      projectAreas: [],
+      scheduleItems: [scheduleTask('task-1')],
+      referenceDocuments: [],
+    });
+
+    expect(result.errors).toContain(
+      'Schedule task “Task task-1” could not sync. The cloud table is not available yet.',
+    );
+  });
 });

@@ -260,6 +260,23 @@ export function allCollectionsFailed(message: string): CloudCollectionErrors {
   };
 }
 
+/**
+ * A failed cloud write already carries its reason. Dropping it leaves the field
+ * with a bare "could not sync." and nothing to act on — a permission refusal, a
+ * rejected value and a missing table all read identically, and the same count
+ * returns every sync with no way to tell what to do about it. Always append
+ * what the write actually said.
+ */
+export function cloudWriteFailureReason(result: {
+  error?: string;
+  message?: string;
+  stubbed?: boolean;
+}): string {
+  const reason = (result.error || result.message || '').trim();
+  if (reason) return ` ${reason}`;
+  return result.stubbed ? ' The cloud table is not available yet.' : '';
+}
+
 export type MissingSyncPhoto = {
   updateId: string;
   photoId: string;
@@ -3137,7 +3154,9 @@ export async function synchronizeLocalData(
       existingProjectNames.add(normalizedName.toLowerCase());
       if (result.data) cloudProjectRecords.push(result.data);
     } else {
-      errors.push(`Project “${normalizedName}” could not sync.`);
+      errors.push(
+        `Project “${normalizedName}” could not sync.${cloudWriteFailureReason(result)}`,
+      );
     }
 
     progress(`Project synced: ${normalizedName}`);
@@ -3172,7 +3191,9 @@ export async function synchronizeLocalData(
     if (result.ok && !result.stubbed) {
       details.areasUploaded += 1;
     } else {
-      errors.push(`GPS area “${area.name}” could not sync.`);
+      errors.push(
+        `GPS area “${area.name}” could not sync.${cloudWriteFailureReason(result)}`,
+      );
     }
 
     progress(`GPS area synced: ${area.name}`);
@@ -3197,7 +3218,9 @@ export async function synchronizeLocalData(
     if (result.ok && !result.stubbed) {
       details.schedulesUploaded += 1;
     } else {
-      errors.push(`Schedule task “${item.taskName}” could not sync.`);
+      errors.push(
+        `Schedule task “${item.taskName}” could not sync.${cloudWriteFailureReason(result)}`,
+      );
     }
 
     progress(`Schedule synced: ${item.taskName}`);
@@ -3244,7 +3267,9 @@ export async function synchronizeLocalData(
     if (result.ok && !result.stubbed) {
       details.documentsUploaded += 1;
     } else {
-      errors.push(`Document “${document.name}” could not sync.`);
+      errors.push(
+        `Document “${document.name}” could not sync.${cloudWriteFailureReason(result)}`,
+      );
     }
 
     progress(`Document synced: ${document.name}`);
