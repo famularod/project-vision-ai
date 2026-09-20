@@ -9,10 +9,48 @@ const { createClient } = require('../node_modules/@supabase/supabase-js');
 const projectRef = 'xdytqlpsqsseoeuxgzre';
 const supabaseUrl = `https://${projectRef}.supabase.co`;
 const documentName = '01 - PLZ CORP - 2375 THIRD STREET - ARCHITECTURAL';
-const defaultPdf = '/Users/davidfamularo/Downloads/01 - PLZ CORP - 2375 THIRD STREET - ARCHITECTURAL.pdf';
+// Paths were hardcoded to one machine's Downloads folder and to binaries inside
+// a codex-runtimes cache that is no longer maintained (Codex was stopped
+// 2026-09-17). Resolve them instead: explicit argument, then environment, then
+// PATH, then the legacy cache if it happens to still be there. Fail with the
+// name of the variable to set rather than an ENOENT on someone else's home
+// directory.
+const legacyPopplerDir =
+  path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override');
+
+function resolveExecutable(name, envVar) {
+  const fromEnv = process.env[envVar];
+  if (fromEnv) {
+    if (!fs.existsSync(fromEnv)) {
+      throw new Error(`${envVar} is set to ${fromEnv}, which does not exist`);
+    }
+    return fromEnv;
+  }
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch { /* keep looking */ }
+  }
+  const legacy = path.join(legacyPopplerDir, name);
+  if (fs.existsSync(legacy)) return legacy;
+  throw new Error(
+    `${name} not found on PATH. Install poppler (brew install poppler) or set ${envVar}.`,
+  );
+}
+
+const defaultPdf = process.env.ECOS_GEMINI_COMPARISON_PDF ||
+  path.join(os.homedir(), 'Downloads', `${documentName}.pdf`);
 const sourcePath = path.resolve(process.argv[2] || defaultPdf);
-const pdfInfo = '/Users/davidfamularo/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/pdfinfo';
-const pdfToPpm = '/Users/davidfamularo/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/pdftoppm';
+if (!fs.existsSync(sourcePath)) {
+  throw new Error(
+    `Source PDF not found at ${sourcePath}. Pass it as the first argument or set ECOS_GEMINI_COMPARISON_PDF.`,
+  );
+}
+const pdfInfo = resolveExecutable('pdfinfo', 'ECOS_PDFINFO_PATH');
+const pdfToPpm = resolveExecutable('pdftoppm', 'ECOS_PDFTOPPM_PATH');
 const outputPath = path.resolve(
   process.env.ECOS_GEMINI_COMPARISON_OUTPUT || 'validation/output/ecos-gemini-drawing-comparison.json',
 );
