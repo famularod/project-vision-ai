@@ -176,7 +176,14 @@ const piePredictiveEngine = readFile('services/PIEPredictiveEngine.ts');
 const pieLearningEngine = readFile('services/PIELearningEngine.ts');
 const attentionEngine = readFile('services/PIEAttentionEngine.ts');
 const experienceEngine = readFile('services/PIEExperienceEngine.ts');
-const piePanel = readFile('components/PIEPanel.tsx');
+// components/PIEPanel.tsx was deleted 2026-09-20: unreachable from either entry
+// point, with no runtime or test reference. Kept as an empty string rather than
+// removed, because this file concatenates it into several combined sources
+// (e.g. `app + runtime + piePanel`); an empty contribution keeps those intact
+// while the one check that asserted on the panel alone has been dropped.
+// Nothing may CITE the path either — the 'QA evidence integrity' check below
+// exists to catch exactly that.
+const piePanel = '';
 const syncService = readFile('services/SyncService.ts');
 const productOperatingPlan = readFile('docs/PIE_ProductOperatingPlan.md');
 const ecosCognitiveFrameworkDoc = readFile('docs/ECOS_CognitiveFramework.md');
@@ -1023,10 +1030,10 @@ if (
     'verificationQueue: DAVEVerificationRequest[]',
     'briefing: DAVEPMBriefing',
   ]) &&
-  hasAll(piePanel, [
-    'useOptionalPIELiveAuthority',
-    'liveAuthority?.runtime || fallbackRuntime',
-  ])
+  // The PIEPanel clause was removed with the file. The live authority contract is
+  // still asserted above via providers/PIELiveAuthorityProvider.tsx and App.tsx,
+  // which are the surfaces that actually ship.
+  true
 ) {
   pass(
     'Shared Live PIE Authority Provider',
@@ -6429,7 +6436,7 @@ if (
   pass(
     'PIE schedule path',
     'Schedule items are stored in app state and flow into Runtime-backed PIE surfaces.',
-    'App.tsx, services/PIERuntime.ts, components/PIEPanel.tsx',
+    'App.tsx, services/PIERuntime.ts',
   );
 } else {
   warn(
@@ -7527,7 +7534,11 @@ if (
     'See Image',
     'See Images',
     'return ensureSentence(item.action);',
-    '${item.owner} – Please ${lowercaseFirst(item.action)}',
+    // Assert the stable format (owner, en dash, 'Please'), not the whole
+    // expression: 9ce28cd added .replace(/[\s.,;:]+$/, '') inside this template
+    // and the previous token — the entire interpolation — silently stopped
+    // matching. A contract that pins implementation detail breaks on improvement.
+    '${item.owner} – Please ',
   ]) &&
   !hasAny(pieReporter, ['as an AI', 'AI says', 'based on the data', 'Owner needed'])
 ) {

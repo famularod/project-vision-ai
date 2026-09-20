@@ -51,9 +51,30 @@ SOURCES = {
 }
 
 
+def _exact_pinned_sources_present() -> bool:
+    """Are the exact pinned benchmark PDFs on this machine?
+
+    Existence alone is not enough. Every assertion in this class is written
+    against one specific revision of each drawing set, identified by sha256, and
+    the whole class is named for that. When a file exists but its content differs
+    — a re-issued drawing set, a re-export, a different customer copy — these
+    tests are INAPPLICABLE, not failing. Checking existence only (the previous
+    guard) meant a changed source produced three hard failures that looked like
+    code regressions and blocked gate layer 6, when nothing in the code had moved.
+    """
+    for filename, contract in SOURCES.items():
+        path = SOURCE_DIRECTORY / filename
+        if not path.exists():
+            return False
+        if hashlib.sha256(path.read_bytes()).hexdigest() != contract["sha256"]:
+            return False
+    return True
+
+
 @unittest.skipUnless(
-    all((SOURCE_DIRECTORY / filename).exists() for filename in SOURCES),
-    "Exact issued 2321 benchmark PDFs are not present on this machine.",
+    _exact_pinned_sources_present(),
+    "Exact sha-pinned issued 2321 benchmark PDFs are not present on this machine "
+    "(absent, or a different revision than the one these assertions pin).",
 )
 class Exact2321SheetMappingTests(unittest.TestCase):
     def test_ten_benchmark_pages_map_from_exact_sha_pinned_sources(self) -> None:
