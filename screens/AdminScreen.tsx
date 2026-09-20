@@ -29,7 +29,10 @@ import {
   SecondaryButton,
 } from '../components/ProjectDetailsCard';
 import { getAIConfigurationStatus } from '../services/AIClientBoundaryService';
-import { DEVICE_BACKUP_SCOPE_NOTICE } from '../services/BackupExportPolicy';
+import {
+  DEVICE_BACKUP_SCOPE_NOTICE,
+  DEVICE_RECORDS_ONLY_SCOPE_NOTICE,
+} from '../services/BackupExportPolicy';
 import {
   createCaptureMemory,
   type DAVECaptureMemory,
@@ -153,7 +156,7 @@ export function AdminScreen({
   onDisplayNameChange: (value: string) => void;
   onBack: () => void;
   onDiagnostics: () => void;
-  onBackup: (passphrase: string) => void;
+  onBackup: (passphrase: string, includeFiles?: boolean) => void;
   onRestore: (passphrase: string) => void;
   onAddArea: (name: string) => boolean;
   onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
@@ -463,6 +466,12 @@ export function AdminScreen({
                 title="Export Limited Device Backup"
                 detail="Encrypt the included local data and files; excludes Field Notes and a full cloud-account restore"
                 onPress={() => onBackup(backupPassphrase)}
+              />
+              <SettingsActionRow
+                icon="document-text-outline"
+                title="Export Records Only (No Files)"
+                detail={DEVICE_RECORDS_ONLY_SCOPE_NOTICE}
+                onPress={() => onBackup(backupPassphrase, false)}
               />
               <SettingsActionRow
                 icon="cloud-upload-outline"

@@ -10418,10 +10418,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
     assetPrefix: string,
     assets: CompleteBackupPlainAsset[],
     budget: BackupAssetBudget,
+    includeFiles: boolean,
   ): Promise<ProjectUpdate> {
     const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
     const photos = [];
     for (const photo of hydrated.photos) {
+      // Records-only keeps the photo's metadata but carries no bytes and no
+      // asset id, so a restore never looks for a file this archive never had.
+      if (!includeFiles) {
+        photos.push({ ...photo, uri: '' });
+        continue;
+      }
       const assetId = `photo:${assetPrefix}:${photo.id}`;
       assets.push(await readCompleteBackupAsset(
         assetId,
@@ -10446,7 +10453,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     } as ProjectUpdate;
   }
 
-  async function exportBackup(passphrase: string) {
+  async function exportBackup(passphrase: string, includeFiles = true) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
         'Passphrase required',
@@ -10463,8 +10470,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
 
-    const fileUri =
-      `${targetDirectory}vitruvius-device-backup-${isoToday()}.vitruvius-backup`;
+    const fileUri = `${targetDirectory}vitruvius-device-${
+      includeFiles ? 'backup' : 'records'
+    }-${isoToday()}.vitruvius-backup`;
 
     try {
       const assets: CompleteBackupPlainAsset[] = [];
@@ -10476,10 +10484,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
           `update:${update.id}`,
           assets,
           budget,
+          includeFiles,
         ));
       }
       const backupReferenceDocuments = [];
       for (const document of referenceDocuments) {
+        // Records-only does not read or verify file bytes at all, so a
+        // document whose local file is missing cannot fail the export.
+        if (!includeFiles) {
+          backupReferenceDocuments.push({ ...document, uri: '' });
+          continue;
+        }
         const readable = await ensureVerifiedReferenceDocumentBytes(document);
         const assetId = `reference_document:${document.id}`;
         assets.push(await readCompleteBackupAsset(
@@ -10497,6 +10512,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
       const backupProjectDocuments = [];
       for (const document of projectDocuments) {
+        if (!includeFiles) {
+          backupProjectDocuments.push({
+            ...document,
+            localUri: null,
+            ownedFileId: null,
+            ownedFileManifest: null,
+          });
+          continue;
+        }
         const readable = await ensureVerifiedProjectDocumentBytes(document);
         if (!readable.localUri) {
           throw new Error(`The document "${document.name}" is unavailable.`);
@@ -10523,6 +10547,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             `draft:${draft.id}`,
             assets,
             budget,
+            includeFiles,
           )
         : null;
       const backup = {
@@ -10708,6 +10733,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
         if (!isRecord(photo)) {
           throw new Error('A restored photo record is invalid.');
         }
+        // A records-only archive carries no file bytes by design. Restore the
+        // photo's details and leave it without a local file, rather than
+        // failing the whole restore over a file the archive never claimed.
+        if (!photo._backupAssetId) {
+          photo.uri = '';
+          continue;
+        }
         const asset = requireAsset(photo._backupAssetId);
         photo.uri = await writeRestoredBackupFile(
           directory,
@@ -10736,6 +10768,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         if (!isRecord(document)) {
           throw new Error('A restored reference document record is invalid.');
         }
+        if (!document._backupAssetId) {
+          document.uri = '';
+          continue;
+        }
         const asset = requireAsset(document._backupAssetId);
         document.uri = await writeRestoredBackupFile(
           referenceDirectory,
@@ -10752,6 +10788,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       for (const document of state.projectDocuments) {
         if (!isRecord(document)) {
           throw new Error('A restored project document record is invalid.');
+        }
+        if (!document._backupAssetId) {
+          document.localUri = null;
+          document.ownedFileId = null;
+          document.ownedFileManifest = null;
+          continue;
         }
         const asset = requireAsset(document._backupAssetId);
         const temporaryUri = await writeRestoredBackupFile(
@@ -13942,8 +13984,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onDisplayNameChange={setDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
-              onBackup={passphrase => {
-                void exportBackup(passphrase);
+              onBackup={(passphrase, includeFiles = true) => {
+                void exportBackup(passphrase, includeFiles);
               }}
               onRestore={passphrase => {
                 void restoreBackup(passphrase);
