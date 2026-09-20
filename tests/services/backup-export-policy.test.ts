@@ -44,6 +44,25 @@ describe('device backup limits and truthful coverage', () => {
     })).rejects.toThrow('disk unavailable');
   });
 
+  test('says how far over the limit it went and names the way out', () => {
+    // The bare limit message does not say whether the backup missed by one
+    // photo or by three hundred, so there is no way to judge whether deleting
+    // anything would help, and it never mentions the export that still works.
+    const budget = createBackupAssetBudget();
+    let thrown = '';
+    try {
+      budget.reserve('a', 90 * 1024 * 1024);
+      budget.reserve('b', 90 * 1024 * 1024);
+    } catch (error) {
+      thrown = (error as Error).message;
+    }
+
+    expect(thrown).toContain('128 MB archive limit');
+    expect(thrown).toContain('file 2');
+    expect(thrown).toMatch(/about \d+ MB of encoded files/);
+    expect(thrown).toContain('Export Records Only');
+  });
+
   test('rejects duplicate asset identities', () => {
     const budget = createBackupAssetBudget();
     budget.reserve('one', 1);

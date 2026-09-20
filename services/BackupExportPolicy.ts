@@ -18,6 +18,29 @@ export const MAX_DEVICE_BACKUP_BYTES = 128 * 1024 * 1024;
 export const DEVICE_BACKUP_SIZE_ERROR =
   'This device backup cannot fit within the 128 MB archive limit. Encrypted file encoding adds size; no partial backup will be shared. Keep the original files and device data.';
 
+function megabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/**
+ * Say how far over the limit the backup went, and name the way out.
+ *
+ * The bare limit message tells the owner only that the backup failed. It does
+ * not say whether it missed by one photo or by three hundred, so there is no
+ * way to judge whether deleting something would help — and it does not mention
+ * the records-only export, which is the one that still completes.
+ */
+export function deviceBackupSizeError(reservedBytes: number, fileCount: number): string {
+  return (
+    `This device backup cannot fit within the ${megabytes(MAX_DEVICE_BACKUP_BYTES)} archive limit. ` +
+    `It passed the limit at file ${fileCount} with about ${megabytes(reservedBytes)} of encoded files, ` +
+    'and files after that one were not measured, so the full backup is larger still. ' +
+    'Encrypted file encoding adds size; no partial backup will be shared. ' +
+    'Use Export Records Only to protect projects, tasks and field records — it carries no photos or documents. ' +
+    'Keep the original files and device data.'
+  );
+}
+
 /** A lower bound, not a promise that encryption or the final JSON will fit.
  * Reserve from file metadata BEFORE reading bytes. Still check the actual read
  * and the final UTF-8 JSON size, because metadata can drift and JSON adds overhead.
@@ -34,7 +57,7 @@ export function createBackupAssetBudget(limit = MAX_DEVICE_BACKUP_BYTES) {
       }
       const encoded = 4 * Math.ceil(size / 3);
       if (!Number.isSafeInteger(encoded) || encodedBytes + encoded >= limit) {
-        throw new Error(DEVICE_BACKUP_SIZE_ERROR);
+        throw new Error(deviceBackupSizeError(encodedBytes + encoded, sizes.size + 1));
       }
       sizes.set(id, size);
       encodedBytes += encoded;
