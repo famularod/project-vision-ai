@@ -1,5 +1,6 @@
 import {
   confirmScheduleItemCloudAcknowledgement,
+  describeScheduleItemAcknowledgementMismatch,
   scheduleItemCloudAcknowledgementMatches,
 } from '../../services/ScheduleItemCloudAcknowledgement';
 import type { ScheduleItem } from '../../types';
@@ -73,5 +74,46 @@ describe('schedule item cloud acknowledgement', () => {
         item_data: { ...task, updatedAt: '2026-07-27T10:04:00.000Z' },
       }),
     )).resolves.toBe(false);
+  });
+});
+
+describe('describeScheduleItemAcknowledgementMismatch', () => {
+  it('names a field the cloud did not keep', () => {
+    const { notes: _notes, ...withoutNotes } = task;
+
+    expect(describeScheduleItemAcknowledgementMismatch(task, {
+      id: task.id,
+      item_data: withoutNotes,
+    })).toBe('dropped by the cloud: notes');
+  });
+
+  it('names a field only the cloud copy carries', () => {
+    expect(describeScheduleItemAcknowledgementMismatch(task, {
+      id: task.id,
+      item_data: { ...task, legacyField: 'x' },
+    })).toBe('only in the cloud copy: legacyField');
+  });
+
+  it('names a field whose value changed, without disclosing either value', () => {
+    const description = describeScheduleItemAcknowledgementMismatch(task, {
+      id: task.id,
+      item_data: { ...task, percentComplete: 99 },
+    });
+
+    expect(description).toBe('different value: percentComplete');
+    expect(description).not.toContain('99');
+    expect(description).not.toContain(String(task.percentComplete));
+  });
+
+  it('reports an absent row rather than a field list', () => {
+    expect(describeScheduleItemAcknowledgementMismatch(task, null))
+      .toBe('the cloud returned no row');
+  });
+
+  it('reports a mismatched record id', () => {
+    expect(describeScheduleItemAcknowledgementMismatch(task, {
+      id: 'someone-else',
+      item_data: task,
+    })).toBe('the cloud returned a different record id');
   });
 });

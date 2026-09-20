@@ -36,6 +36,50 @@ export async function confirmScheduleItemCloudAcknowledgement(
   );
 }
 
+/**
+ * Name the fields that disagree, so an acknowledgement failure is actionable.
+ *
+ * Without this the field sees only "the cloud did not confirm the exact saved
+ * task revision", which is true of a stale row, a dropped field and a value
+ * that does not survive the round trip alike — and every one of them returns
+ * the identical count on every sync with nothing to act on.
+ *
+ * Field NAMES only. Values are project data and are never included.
+ */
+export function describeScheduleItemAcknowledgementMismatch(
+  expected: ScheduleItem,
+  row: unknown,
+): string {
+  if (!row || typeof row !== 'object') return 'the cloud returned no row';
+  const record = row as Record<string, unknown>;
+  if (record.id !== expected.id) return 'the cloud returned a different record id';
+
+  const stored = canonicalValue(record.item_data);
+  const sent = canonicalValue(expected);
+  if (!stored || typeof stored !== 'object') return 'the stored record is not an object';
+
+  const storedRecord = stored as Record<string, unknown>;
+  const sentRecord = sent as Record<string, unknown>;
+  const keys = [...new Set([...Object.keys(storedRecord), ...Object.keys(sentRecord)])].sort();
+
+  const missing: string[] = [];
+  const added: string[] = [];
+  const changed: string[] = [];
+  for (const key of keys) {
+    const inStored = key in storedRecord;
+    const inSent = key in sentRecord;
+    if (inSent && !inStored) missing.push(key);
+    else if (inStored && !inSent) added.push(key);
+    else if (JSON.stringify(storedRecord[key]) !== JSON.stringify(sentRecord[key])) changed.push(key);
+  }
+
+  const parts: string[] = [];
+  if (missing.length) parts.push(`dropped by the cloud: ${missing.join(', ')}`);
+  if (added.length) parts.push(`only in the cloud copy: ${added.join(', ')}`);
+  if (changed.length) parts.push(`different value: ${changed.join(', ')}`);
+  return parts.length ? parts.join('; ') : 'the records match field by field but not as a whole';
+}
+
 function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalValue(value));
 }
