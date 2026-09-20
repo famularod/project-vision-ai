@@ -22,10 +22,15 @@ it('carries the prior server turn when the user types a follow-up in the normal 
   const onAsk = jest.fn(async input => answer(input));
   const screen = render(<DesktopAskECOSWorkspace ownerKey="owner" projectId="project-one" projectName="Project One" onAsk={onAsk} />);
   fireEvent.changeText(screen.getByLabelText('Project question for ECOS'), 'What is the square footage of canopy B?');
-  fireEvent.press(screen.getByText('Ask ECOS'));
+  await act(async () => { fireEvent.press(screen.getByText('Ask ECOS')); });
   await screen.findByText('Test answer, not project accuracy evidence.');
   fireEvent.changeText(screen.getByLabelText('Project question for ECOS'), 'And canopy C?');
-  fireEvent.press(screen.getByText('Ask ECOS'));
+  // Both presses are wrapped: onAsk resolves asynchronously and the component
+  // then sets state, so waiting only on the mock call count leaves that update
+  // outside act(). The strict Jest gate treats an act() warning as a failure,
+  // which is right — an unwrapped update means the test asserted on a tree that
+  // React had not finished committing.
+  await act(async () => { fireEvent.press(screen.getByText('Ask ECOS')); });
   await waitFor(() => expect(onAsk).toHaveBeenCalledTimes(2));
   expect(onAsk.mock.calls[1][0]).toEqual({ projectId: 'project-one', projectName: 'Project One',
     question: 'And canopy C?', conversationId: onAsk.mock.calls[0][0].conversationId, priorTurnId: turnId });
