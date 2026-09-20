@@ -513,14 +513,6 @@ export type ReferenceDocumentCitation = {
   label: string;
 };
 
-export type ProjectStats = {
-  updates: number;
-  photos: number;
-  openActions: number;
-  overdueActions: number;
-  dueThisWeek: number;
-  lastUpdate?: string;
-};
 
 export type ScheduleStatus =
   | 'Not Started'
@@ -765,13 +757,6 @@ export type ScheduleItem = {
   updatedAt?: string | null;
 };
 
-export const EMPTY_PROJECT_STATS: ProjectStats = {
-  updates: 0,
-  photos: 0,
-  openActions: 0,
-  overdueActions: 0,
-  dueThisWeek: 0,
-};
 
 export const REFERENCE_DOCUMENT_CATEGORIES = [
   'Site Plans',
