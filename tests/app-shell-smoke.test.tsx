@@ -37,7 +37,7 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Dimensions } from 'react-native';
 import { NativeRoot } from '../entry';
-import { normalizeScheduleItem } from '../App';
+import { normalizeProjectArea, normalizeScheduleItem, normalizeUpdate } from '../App';
 import { scheduleItemCloudAcknowledgementMatches } from '../services/ScheduleItemCloudAcknowledgement';
 import { getCurrentSessionUser } from '../services/SupabaseService';
 
@@ -359,6 +359,41 @@ describe('native app boots', () => {
  * the stored row, every record was re-queued on every sync, and the count
  * could never reach zero.
  */
+describe('field updates and work areas also keep unmanaged fields', () => {
+  // Schedule items surfaced this loudly because their upload verifies the
+  // stored revision. These two have no such check, so a destroyed field is
+  // silently written back over the good cloud copy instead.
+  it('a field update keeps a field this build does not manage', () => {
+    const normalized = normalizeUpdate({
+      id: 'update-1',
+      projectName: 'Alpha',
+      legacyProvenanceKey: 'written-by-another-surface',
+    } as never) as Record<string, unknown>;
+
+    expect(normalized.legacyProvenanceKey).toBe('written-by-another-surface');
+    expect(normalized.id).toBe('update-1');
+  });
+
+  it('a work area keeps a field this build does not manage', () => {
+    const normalized = normalizeProjectArea({
+      id: 'area-1',
+      name: 'North Lot',
+      legacyProvenanceKey: 'written-by-another-surface',
+    } as never) as Record<string, unknown>;
+
+    expect(normalized.legacyProvenanceKey).toBe('written-by-another-surface');
+    expect(normalized.name).toBe('North Lot');
+  });
+
+  it('still sanitizes managed fields rather than trusting the input', () => {
+    const area = normalizeProjectArea({ id: 'area-1', name: '   ' } as never);
+    expect(area.name).toBe('New Area');
+
+    const update = normalizeUpdate({ id: 'update-1', date: 42 } as never);
+    expect(typeof update.date).toBe('string');
+  });
+});
+
 describe('normalizeScheduleItem preserves the cloud project identity', () => {
   const minimal = { id: 'task-1', projectName: 'Alpha', taskName: 'Install panels' };
 

@@ -1995,7 +1995,7 @@ function parseStoredDeletedUpdateTombstone(value: unknown): DeletedUpdateTombsto
   return tombstone;
 }
 
-function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
+export function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
   const updateId = typeof update.id === 'string' ? update.id : uid();
   const projectName =
     typeof update.projectName === 'string'
@@ -2003,6 +2003,15 @@ function normalizeUpdate(update: Partial<ProjectUpdate>): ProjectUpdate {
       : DEFAULT_PROJECTS[0];
 
   return {
+    // Same reasoning as normalizeScheduleItem: this rebuilds the record from
+    // an explicit field list, so any field written by another surface or an
+    // earlier build was destroyed here. For schedule items that surfaced
+    // loudly, because their upload verifies the stored revision and refused
+    // the write. Field updates have no such check, so a dropped field is
+    // silently uploaded back over the good cloud copy instead — quieter, and
+    // worse. Managed fields below still override, and photo internals such as
+    // _backupAssetId are handled by normalizePhoto, not here.
+    ...update,
     id: updateId,
     projectName,
     date: typeof update.date === 'string' ? update.date : isoToday(),
@@ -2340,8 +2349,10 @@ function normalizeStringList(value: unknown) {
     : [];
 }
 
-function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
+export function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
   return {
+    // Carry through fields this build does not manage; see normalizeUpdate.
+    ...value,
     id: typeof value.id === 'string' ? value.id : uid(),
     name:
       typeof value.name === 'string' && value.name.trim()
