@@ -38,6 +38,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Dimensions } from 'react-native';
 import { NativeRoot } from '../entry';
 import { normalizeScheduleItem } from '../App';
+import { scheduleItemCloudAcknowledgementMatches } from '../services/ScheduleItemCloudAcknowledgement';
 import { getCurrentSessionUser } from '../services/SupabaseService';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -406,6 +407,31 @@ describe('normalizeScheduleItem preserves the cloud project identity', () => {
 
     expect(normalized.projectName).toBe('');
     expect(normalized.taskName).toBe('Install panels');
+  });
+
+  it('a record normalized from a stored row still matches that stored row', () => {
+    // The end-to-end chain that failed on the device, in one assertion.
+    // A stored row carries importer provenance; the download normalizes it;
+    // the next upload compares the normalized copy against that same stored
+    // row. If normalization drops anything, this can never match — which is
+    // exactly the state 148 tasks were stuck in, reporting
+    // cloud_acknowledgement_missing on every sync.
+    const stored = {
+      ...normalizeScheduleItem({
+        ...minimal,
+        projectId: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f',
+      } as never),
+      sourceContentSha256: 'abc123',
+      sourceImportKey: 'import-key-1',
+      sourceVersionGroupId: 'group-1',
+    };
+
+    const afterDownload = normalizeScheduleItem(stored as never);
+
+    expect(scheduleItemCloudAcknowledgementMatches(afterDownload, {
+      id: stored.id,
+      item_data: stored,
+    })).toBe(true);
   });
 
   it('omits the key entirely when there is no identity, rather than nulling it', () => {
