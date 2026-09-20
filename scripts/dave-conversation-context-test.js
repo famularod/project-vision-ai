@@ -111,10 +111,10 @@ const stale = resolveDAVEConversationContext({
 });
 assert.strictEqual(stale.status, 'ambiguous_follow_up', 'stale history must not silently control a new conversation');
 
-const askExperience = fs.readFileSync(path.join(root, 'components/DAVEAskExperience.tsx'), 'utf8');
-assert(askExperience.includes('resolveDAVEConversationContext'));
-assert(askExperience.includes('Follow-up understood as:'));
-assert(askExperience.includes('One detail needed'));
+// DAVEAskExperience.tsx was deleted on 2026-09-20: unreachable from either
+// entry point, and this script's own assertion below says it 'must remain
+// hidden until its answers are dependable'. Assertions describing its
+// contents are gone; the guard that it stays out of the workspace remains.
 const answerSheet = fs.readFileSync(path.join(root, 'components/DAVEConversationAnswerSheet.tsx'), 'utf8');
 assert(answerSheet.includes('Supporting records'));
 assert(answerSheet.includes('onOpenEvidence(citation)'));
