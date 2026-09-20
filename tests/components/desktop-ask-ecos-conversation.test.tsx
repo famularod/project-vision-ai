@@ -4,9 +4,16 @@ import { DesktopAskECOSWorkspace } from '../../components/web-shell/desktop-ask-
 jest.mock('expo-router', () => ({ Link: ({ children }: { children: React.ReactNode }) => children }));
 jest.mock('expo-crypto', () => ({ randomUUID: () => '55555555-5555-4555-8555-555555555555' }));
 const turnId = '11111111-1111-4111-8111-111111111111';
+// aiReadStatements is required by ECOSProjectQuestionAnswer and normalized by
+// parseAIReadStatements for every real answer, so the desktop panel reads it
+// unguarded. This fixture omitted it and the `as never` cast hid that from the
+// compiler, so the panel threw on undefined.length and unmounted — a red suite
+// nobody saw, because qa:release cannot run (its Ask ECOS evidence layer needs a
+// gitignored file under 24h old). Keep every required field present here; the
+// cast cannot be relied on to catch the next addition.
 const answer = (request: any) => ({
   answer: 'Test answer, not project accuracy evidence.', facts: [], limitations: [], conflicts: [],
-  confidence: 'low', supportingEvidence: [], suggestedQuestions: [],
+  confidence: 'low', supportingEvidence: [], suggestedQuestions: [], aiReadStatements: [],
   assurance: { status: 'insufficient_evidence', message: 'Test only' },
   conversation: { conversationId: request.conversationId, turnId, priorTurnId: request.priorTurnId || null },
 }) as never;
