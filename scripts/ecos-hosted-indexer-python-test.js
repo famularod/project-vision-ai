@@ -21,12 +21,25 @@ const inspect = (command, args) => spawnSync(command, args, {
 });
 
 const selectBootstrapPython = () => {
+  // An explicit override always wins. After that, prefer the interpreter this
+  // project already provisions — research/tooling/indexer-venv is the venv the
+  // repo's own scripts create and run the 330+ indexer tests through — before
+  // falling back to bare names on PATH. Without this, the layer failed on any
+  // machine where python3.12 is installed but not on the release runner's PATH,
+  // which is the normal case for a pyenv or ~/.local install, and made
+  // qa:release unpassable for an environment reason rather than a code one.
+  const workspacePython = path.resolve(
+    root, '..', 'research/tooling/indexer-venv/bin/python',
+  );
   const candidates = [
     process.env.ECOS_INDEXER_TEST_PYTHON,
+    fs.existsSync(workspacePython) ? workspacePython : null,
     'python3.12',
     'python3.13',
     'python3.11',
     'python3',
+    path.join(os.homedir(), '.local/bin/python3.12'),
+    '/opt/homebrew/bin/python3.12',
   ].filter(Boolean);
 
   for (const candidate of candidates) {
