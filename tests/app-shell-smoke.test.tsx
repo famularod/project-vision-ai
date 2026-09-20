@@ -195,6 +195,35 @@ beforeEach(() => { consoleErrors.length = 0; setWindow(PHONE); });
 jest.setTimeout(240_000);
 const COLD = { timeout: 90_000 } as const;
 
+
+type RenderedNode = { type?: unknown; children?: unknown };
+
+/**
+ * Structural size of a rendered tree.
+ *
+ * JSON.stringify is unusable here: toJSON() embeds React context objects whose
+ * Provider closes a cycle, so stringifying throws "Converting circular
+ * structure to JSON". Walk the children instead — depth and node count are what
+ * the assertions actually want.
+ */
+function countNodes(node: unknown): number {
+  if (node === null || node === undefined) return 0;
+  if (Array.isArray(node)) return node.reduce<number>((n, child) => n + countNodes(child), 0);
+  if (typeof node !== 'object') return 1;
+  const children = (node as RenderedNode).children;
+  return 1 + countNodes(children);
+}
+
+/** A stable fingerprint of a tree's shape, safe against circular props. */
+function shapeOf(node: unknown, depth = 0): string {
+  if (node === null || node === undefined) return '';
+  if (Array.isArray(node)) return node.map(child => shapeOf(child, depth)).join('');
+  if (typeof node !== 'object') return depth < 8 ? `t${depth};` : '';
+  const type = String((node as RenderedNode).type ?? '?');
+  const inner = depth < 8 ? shapeOf((node as RenderedNode).children, depth + 1) : '';
+  return `${type}(${inner})`;
+}
+
 type SessionResult = Awaited<ReturnType<typeof getCurrentSessionUser>>;
 
 // The shell picks its layout from window width (App.tsx:5134
@@ -223,7 +252,7 @@ function report(tree: ReturnType<typeof render>, what: string) {
     originalError(`  [${index}] ${message.replace(/\s+/g, ' ').slice(0, 300)}`);
   });
   const json = tree.toJSON();
-  originalError(json ? JSON.stringify(json).slice(0, 900) : '(null tree)');
+  originalError(json ? `${countNodes(json)} nodes: ${shapeOf(json).slice(0, 600)}` : '(null tree)');
 }
 
 const FATAL = /Rendered (more|fewer) hooks|Maximum update depth|Cannot read propert|is not a function/i;
@@ -242,18 +271,32 @@ describe('native app boots', () => {
     }
   });
 
-  it('every bottom tab can be selected without unmounting the shell', async () => {
+  it('every bottom tab renders a distinct, non-empty screen', async () => {
     signedIn();
     const tree = render(<NativeRoot />);
     await waitFor(() => {
       expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy();
     }, COLD);
-    // Labels from components/app-bottom-tabs.tsx. The assistant button is
-    // excluded: it opens a sheet rather than changing screens.
+
+    // Asserting the tab bar survives only proves the chrome did not crash — a
+    // screen that renders blank passes that. App.tsx carries no testIDs and
+    // asserting on copy would break on every wording change, so instead: each
+    // screen must produce a substantial tree, and the three must differ from one
+    // another. That catches a blank or crashed screen without coupling the test
+    // to product text.
+    const rendered = new Map<string, string>();
     for (const label of ['Overview', 'Tasks', 'Reports'] as const) {
       await act(async () => { fireEvent.press(tree.getByLabelText(label)); });
       expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy();
+      const root = tree.toJSON();
+      // The tab bar alone is a few dozen nodes; a real screen is hundreds. This
+      // floor only has to separate "rendered something" from "rendered nothing".
+      expect(countNodes(root)).toBeGreaterThan(60);
+      rendered.set(label, shapeOf(root));
     }
+    // The assistant button is excluded throughout: it opens a sheet rather than
+    // changing screens.
+    expect(new Set(rendered.values()).size).toBe(rendered.size);
   });
 
   it('a signed-out cold start shows the sign-in gate, not a startup error', async () => {
