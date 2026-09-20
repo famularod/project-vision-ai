@@ -376,3 +376,106 @@ describe('downloadCloudChanges collection failure propagation', () => {
     expect(result.configured).toBe(false);
   });
 });
+
+describe('a failed projects read does not cascade into one error per record', () => {
+  function scheduleTask(id: string) {
+    return {
+      id,
+      projectName: 'Alpha',
+      scheduleProjectName: 'Alpha',
+      locationName: 'North Lot',
+      taskName: `Task ${id}`,
+      startDate: '2026-08-15',
+      finishDate: '2026-08-16',
+      milestone: '',
+      owner: '',
+      contractor: '',
+      percentComplete: 0,
+      priority: 'Medium' as const,
+      status: 'Not Started' as const,
+      notes: '',
+      createdAt: '2026-08-15T12:00:00.000Z',
+      updatedAt: '2026-08-15T12:00:00.000Z',
+    };
+  }
+
+  it('reports the read once instead of once per task and document', async () => {
+    // Schedule items and reference documents both resolve their project
+    // through the identity authority built from listProjects. When that read
+    // fails the authority is empty, so without a guard every record fails to
+    // bind and contributes its own error — one upstream failure presented to
+    // the field as N problems, none of which the owner can act on.
+    const document = {
+      id: 'document-1',
+      name: 'Current Drawing',
+      originalFileName: 'drawing.pdf',
+      uri: 'file:///device/drawing.pdf',
+      storagePath: 'owner/drawings/drawing.pdf',
+      category: 'Drawings',
+      notes: '',
+      isCurrent: true,
+      importedAt: '2026-08-15T12:00:00.000Z',
+      updatedAt: '2026-08-15T12:00:00.000Z',
+      projectId: 'project-alpha',
+      projectName: 'Alpha',
+    };
+    mockLists.projects.mockResolvedValue(failedResult('Cloud projects unavailable.'));
+
+    const result = await synchronizeLocalData({
+      projects: [],
+      savedUpdates: [],
+      projectAreas: [],
+      scheduleItems: [scheduleTask('task-1'), scheduleTask('task-2'), scheduleTask('task-3')],
+      referenceDocuments: [document],
+    });
+
+    expect(mockWrites.schedule).not.toHaveBeenCalled();
+    expect(mockWrites.document).not.toHaveBeenCalled();
+    expect(result.errors.filter(error => error.includes('Schedule task'))).toEqual([]);
+    expect(result.errors.filter(error => error.includes('Document'))).toEqual([]);
+    expect(result.errors).toContain('Cloud projects unavailable.');
+  });
+
+  it('shows why a task write was refused instead of a bare could-not-sync', async () => {
+    // The refusal reason is computed and was being discarded, so a permission
+    // refusal, a rejected value and a missing table all reached the field as
+    // the same unactionable sentence — and returned identically every sync.
+    mockLists.projects.mockResolvedValue(okResult([
+      { id: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', name: 'Alpha' },
+    ]));
+    mockWrites.schedule.mockResolvedValue(
+      failedResult('new row violates row-level security policy'),
+    );
+
+    const result = await synchronizeLocalData({
+      projects: [],
+      savedUpdates: [],
+      projectAreas: [],
+      scheduleItems: [scheduleTask('task-1')],
+      referenceDocuments: [],
+    });
+
+    expect(result.errors).toContain(
+      'Schedule task “Task task-1” could not sync. new row violates row-level security policy',
+    );
+  });
+
+  it('names a missing cloud table rather than leaving the reason blank', async () => {
+    mockLists.projects.mockResolvedValue(okResult([
+      { id: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', name: 'Alpha' },
+    ]));
+    mockWrites.schedule.mockResolvedValue(missingTableStub(''));
+
+    const result = await synchronizeLocalData({
+      projects: [],
+      savedUpdates: [],
+      projectAreas: [],
+      scheduleItems: [scheduleTask('task-1')],
+      referenceDocuments: [],
+    });
+
+    expect(result.errors).toContain(
+      'Schedule task “Task task-1” could not sync. The cloud table is not available yet.',
+    );
+  });
+});

@@ -37,6 +37,8 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Dimensions } from 'react-native';
 import { NativeRoot } from '../entry';
+import { normalizeScheduleItem } from '../App';
+import { scheduleItemCloudAcknowledgementMatches } from '../services/ScheduleItemCloudAcknowledgement';
 import { getCurrentSessionUser } from '../services/SupabaseService';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -341,5 +343,103 @@ describe('native app boots', () => {
     const fatal = consoleErrors.filter(message => FATAL.test(message));
     if (fatal.length) report(tree, 'FATAL REACT ERRORS DURING BOOT');
     expect(fatal).toEqual([]);
+  });
+});
+
+/**
+ * These live here rather than in their own file because importing App.tsx
+ * requires the whole native-module mock set above, and duplicating it would
+ * rot. The behaviour under test is not about booting.
+ *
+ * Found 2026-09-20 from a device reporting 148 schedule tasks needing retry
+ * forever. normalizeScheduleItem rebuilds every record from an explicit field
+ * list, and projectId was missing from it. Sync resolved a cloud project
+ * identity and uploaded it, the stored row came back carrying it, and
+ * normalization silently dropped it again — so the local copy never matched
+ * the stored row, every record was re-queued on every sync, and the count
+ * could never reach zero.
+ */
+describe('normalizeScheduleItem preserves the cloud project identity', () => {
+  const minimal = { id: 'task-1', projectName: 'Alpha', taskName: 'Install panels' };
+
+  it('keeps a projectId that arrived from the cloud', () => {
+    const normalized = normalizeScheduleItem({
+      ...minimal,
+      projectId: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f',
+    } as never);
+
+    expect(normalized.projectId).toBe('9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f');
+  });
+
+  it('survives a round trip through normalization', () => {
+    // The download path normalizes what it reads back, so one pass losing the
+    // identity is what re-queued the record; assert the fixed point.
+    const once = normalizeScheduleItem({
+      ...minimal,
+      projectId: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f',
+    } as never);
+
+    expect(normalizeScheduleItem(once).projectId).toBe(once.projectId);
+  });
+
+  it('carries through fields this build does not manage', () => {
+    // The stored rows carry importer provenance that no current code writes.
+    // Dropping it meant the local copy could never match the stored row, so
+    // the saved-revision check failed and the record re-queued forever.
+    const normalized = normalizeScheduleItem({
+      ...minimal,
+      sourceContentSha256: 'abc123',
+      sourceImportKey: 'import-key-1',
+      sourceVersionGroupId: 'group-1',
+    } as never) as Record<string, unknown>;
+
+    expect(normalized.sourceContentSha256).toBe('abc123');
+    expect(normalized.sourceImportKey).toBe('import-key-1');
+    expect(normalized.sourceVersionGroupId).toBe('group-1');
+  });
+
+  it('still normalizes managed fields rather than trusting the input', () => {
+    const normalized = normalizeScheduleItem({
+      ...minimal,
+      taskName: 'Install panels',
+      projectName: 42,
+    } as never);
+
+    expect(normalized.projectName).toBe('');
+    expect(normalized.taskName).toBe('Install panels');
+  });
+
+  it('a record normalized from a stored row still matches that stored row', () => {
+    // The end-to-end chain that failed on the device, in one assertion.
+    // A stored row carries importer provenance; the download normalizes it;
+    // the next upload compares the normalized copy against that same stored
+    // row. If normalization drops anything, this can never match — which is
+    // exactly the state 148 tasks were stuck in, reporting
+    // cloud_acknowledgement_missing on every sync.
+    const stored = {
+      ...normalizeScheduleItem({
+        ...minimal,
+        projectId: '9f8c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f',
+      } as never),
+      sourceContentSha256: 'abc123',
+      sourceImportKey: 'import-key-1',
+      sourceVersionGroupId: 'group-1',
+    };
+
+    const afterDownload = normalizeScheduleItem(stored as never);
+
+    expect(scheduleItemCloudAcknowledgementMatches(afterDownload, {
+      id: stored.id,
+      item_data: stored,
+    })).toBe(true);
+  });
+
+  it('omits the key entirely when there is no identity, rather than nulling it', () => {
+    // The record comparisons drop undefined but keep null, so null would fail
+    // to match a stored row that simply has no projectId key.
+    const normalized = normalizeScheduleItem(minimal as never);
+
+    expect(normalized.projectId).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(normalized))).not.toHaveProperty('projectId');
   });
 });

@@ -2689,13 +2689,30 @@ function photoAttachmentLabel(count: number) {
   return `${count} Photos Attached`;
 }
 
-function normalizeScheduleItem(
+export function normalizeScheduleItem(
   value: Partial<ScheduleItem>,
   options?: { preserveEditedNotes?: boolean },
 ): ScheduleItem {
   const progress = reconcileScheduleProgress(value.status, value.percentComplete);
   return {
+    // Carry through any field this build does not manage, BEFORE the managed
+    // fields below override it. This rebuilds the record from an explicit
+    // list, so every unlisted field was silently destroyed on each pass —
+    // including provenance written by the schedule importer
+    // (sourceContentSha256, sourceImportKey, sourceVersionGroupId) and, until
+    // it was listed, projectId.
+    //
+    // The consequence was not just data loss. The stored row keeps those
+    // fields, the local copy can never contain them, so the saved-revision
+    // check can never match and the record is re-queued on every sync,
+    // forever. Enumerating the missing fields one at a time only fixes the
+    // instances found so far; preserving unknown fields fixes the class.
+    ...value,
     id: typeof value.id === 'string' ? value.id : uid(),
+    // undefined rather than null when absent: the record comparisons drop
+    // undefined but keep null, so null here would not match a stored row that
+    // simply has no projectId key, and those records would keep re-queueing.
+    projectId: typeof value.projectId === 'string' ? value.projectId : undefined,
     itemType: normalizeProjectItemType(value.itemType),
     scheduleProjectName: optionalString(value.scheduleProjectName),
     projectTimeZone: projectTimeZoneOrDefault(value.projectTimeZone),
@@ -10418,10 +10435,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
     assetPrefix: string,
     assets: CompleteBackupPlainAsset[],
     budget: BackupAssetBudget,
+    includeFiles: boolean,
   ): Promise<ProjectUpdate> {
     const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
     const photos = [];
     for (const photo of hydrated.photos) {
+      // Records-only keeps the photo's metadata but carries no bytes and no
+      // asset id, so a restore never looks for a file this archive never had.
+      if (!includeFiles) {
+        photos.push({ ...photo, uri: '' });
+        continue;
+      }
       const assetId = `photo:${assetPrefix}:${photo.id}`;
       assets.push(await readCompleteBackupAsset(
         assetId,
@@ -10446,7 +10470,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     } as ProjectUpdate;
   }
 
-  async function exportBackup(passphrase: string) {
+  async function exportBackup(passphrase: string, includeFiles = true) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
         'Passphrase required',
@@ -10463,8 +10487,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
 
-    const fileUri =
-      `${targetDirectory}vitruvius-device-backup-${isoToday()}.vitruvius-backup`;
+    const fileUri = `${targetDirectory}vitruvius-device-${
+      includeFiles ? 'backup' : 'records'
+    }-${isoToday()}.vitruvius-backup`;
 
     try {
       const assets: CompleteBackupPlainAsset[] = [];
@@ -10476,10 +10501,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
           `update:${update.id}`,
           assets,
           budget,
+          includeFiles,
         ));
       }
       const backupReferenceDocuments = [];
       for (const document of referenceDocuments) {
+        // Records-only does not read or verify file bytes at all, so a
+        // document whose local file is missing cannot fail the export.
+        if (!includeFiles) {
+          backupReferenceDocuments.push({ ...document, uri: '' });
+          continue;
+        }
         const readable = await ensureVerifiedReferenceDocumentBytes(document);
         const assetId = `reference_document:${document.id}`;
         assets.push(await readCompleteBackupAsset(
@@ -10497,6 +10529,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
       const backupProjectDocuments = [];
       for (const document of projectDocuments) {
+        if (!includeFiles) {
+          backupProjectDocuments.push({
+            ...document,
+            localUri: null,
+            ownedFileId: null,
+            ownedFileManifest: null,
+          });
+          continue;
+        }
         const readable = await ensureVerifiedProjectDocumentBytes(document);
         if (!readable.localUri) {
           throw new Error(`The document "${document.name}" is unavailable.`);
@@ -10523,6 +10564,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             `draft:${draft.id}`,
             assets,
             budget,
+            includeFiles,
           )
         : null;
       const backup = {
@@ -10708,6 +10750,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
         if (!isRecord(photo)) {
           throw new Error('A restored photo record is invalid.');
         }
+        // A records-only archive carries no file bytes by design. Restore the
+        // photo's details and leave it without a local file, rather than
+        // failing the whole restore over a file the archive never claimed.
+        if (!photo._backupAssetId) {
+          photo.uri = '';
+          continue;
+        }
         const asset = requireAsset(photo._backupAssetId);
         photo.uri = await writeRestoredBackupFile(
           directory,
@@ -10736,6 +10785,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         if (!isRecord(document)) {
           throw new Error('A restored reference document record is invalid.');
         }
+        if (!document._backupAssetId) {
+          document.uri = '';
+          continue;
+        }
         const asset = requireAsset(document._backupAssetId);
         document.uri = await writeRestoredBackupFile(
           referenceDirectory,
@@ -10752,6 +10805,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       for (const document of state.projectDocuments) {
         if (!isRecord(document)) {
           throw new Error('A restored project document record is invalid.');
+        }
+        if (!document._backupAssetId) {
+          document.localUri = null;
+          document.ownedFileId = null;
+          document.ownedFileManifest = null;
+          continue;
         }
         const asset = requireAsset(document._backupAssetId);
         const temporaryUri = await writeRestoredBackupFile(
@@ -13942,8 +14001,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onDisplayNameChange={setDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
-              onBackup={passphrase => {
-                void exportBackup(passphrase);
+              onBackup={(passphrase, includeFiles = true) => {
+                void exportBackup(passphrase, includeFiles);
               }}
               onRestore={passphrase => {
                 void restoreBackup(passphrase);

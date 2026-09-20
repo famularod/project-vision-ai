@@ -19,7 +19,10 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
-import { confirmScheduleItemCloudAcknowledgement } from './ScheduleItemCloudAcknowledgement';
+import {
+  confirmScheduleItemCloudAcknowledgement,
+  describeScheduleItemAcknowledgementMismatch,
+} from './ScheduleItemCloudAcknowledgement';
 import type {
   PIEActor,
   PIEActualOutcomeRecord,
@@ -1610,6 +1613,7 @@ export async function upsertScheduleItem(
   const confirmationRead = {
     errorMessage: null as string | null,
     status,
+    row: null as unknown,
   };
   const acknowledged = await confirmScheduleItemCloudAcknowledgement(
     boundItem,
@@ -1623,6 +1627,7 @@ export async function upsertScheduleItem(
         .maybeSingle();
       confirmationRead.errorMessage = confirmation.error?.message || null;
       confirmationRead.status = confirmation.status;
+      confirmationRead.row = confirmation.data;
       return confirmation.data;
     },
   );
@@ -1633,8 +1638,15 @@ export async function upsertScheduleItem(
     );
   }
   if (!acknowledged) {
+    // Name the disagreeing fields. The bare sentence is true of a stale row, a
+    // dropped field and a value that cannot survive the round trip alike, and
+    // leaves nothing to act on. Field names only, never values.
     return errorResult(
-      'The cloud did not confirm the exact saved task revision.',
+      'The cloud did not confirm the exact saved task revision — ' +
+        describeScheduleItemAcknowledgementMismatch(
+          boundItem,
+          confirmationRead.row ?? data,
+        ),
       409,
       'cloud_acknowledgement_missing',
     );
