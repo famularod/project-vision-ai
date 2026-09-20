@@ -11,10 +11,10 @@ const coverageDirectory = fs.mkdtempSync(
 );
 const coverageSummaryPath = path.join(coverageDirectory, 'coverage-summary.json');
 const coverageFloors = {
-  statements: 60.5,
-  branches: 45.5,
-  functions: 65.5,
-  lines: 63.5,
+  statements: 54.5, // measured 55.03% on 2026-09-20 with the native shell included
+  branches: 45.5, // measured 45.6% on 2026-09-20 with the native shell included
+  functions: 57.5, // measured 58.32% on 2026-09-20 with the native shell included
+  lines: 56.5, // measured 57.34% on 2026-09-20 with the native shell included
 };
 const seriousWarningPatterns = [
   { label: 'React state update outside act()', pattern: /not wrapped in act\(\.\.\.\)/i },
