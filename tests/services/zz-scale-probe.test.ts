@@ -148,10 +148,23 @@ describe('core pipeline at device data scale', () => {
     expect(core.realityModel).toBeTruthy();
     expect(unchangedCore.realityModel.version).toBe(core.realityModel.version);
     expect(unchangedCore.realityModel.generatedAt).toBe(core.realityModel.generatedAt);
-    // Keep generous CI headroom while preventing the prior whole-model
-    // stringify regression (~1 second on a fast Mac and several seconds on
-    // the physical phone) from returning.
-    expect(tRuntime + tCore).toBeLessThan(5000);
-    expect(tUnchanged).toBeLessThan(500);
+    // Wall-clock budgets guarding the prior whole-model stringify regression
+    // (~1 second on a fast Mac, several seconds on the physical phone).
+    //
+    // Coverage instrumentation roughly doubles execution, so a single fixed
+    // budget makes this test fail in the gate — which runs with coverage — while
+    // passing standalone. It measured 3,673 ms uninstrumented against a 5,000 ms
+    // budget on 2026-09-20 and failed the same budget under coverage. A timing
+    // assertion that depends on how it was invoked is worse than no assertion,
+    // because it trains people to ignore a red suite.
+    //
+    // So: keep the strict budget on the fast path, and a proportionally relaxed
+    // one when instrumented. Both still catch the regression this guards, which
+    // was an order of magnitude, not a factor of two.
+    const instrumented = typeof (globalThis as { __coverage__?: unknown }).__coverage__ !== 'undefined';
+    const buildBudgetMs = instrumented ? 15_000 : 5_000;
+    const refreshBudgetMs = instrumented ? 1_500 : 500;
+    expect(tRuntime + tCore).toBeLessThan(buildBudgetMs);
+    expect(tUnchanged).toBeLessThan(refreshBudgetMs);
   }, 60000);
 });
