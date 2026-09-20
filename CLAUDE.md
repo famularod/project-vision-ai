@@ -58,9 +58,19 @@ Vitruvius.
     the tablet rail and there is no bottom tab bar. Pin the width with
     `Dimensions.set` in any test that asserts on navigation. Five attempts were
     lost to this.
-  - It needs `--forceExit`: the shell leaves timers or subscriptions running
-    after unmount. That leak is real and still uninvestigated; on a device it
-    reads as background battery drain, not a crash.
+  - **RETRACTED 2026-09-20: there is no handle leak, and it does not need
+    `--forceExit`.** I claimed the shell left timers running after unmount and
+    that this would read as background battery drain on a device. That was wrong.
+    Measured: the smoke test exits cleanly in 4-12 s in all four jest modes, and
+    the **full 1,953-test suite exits in 10 s with no `--forceExit`**, with zero
+    "did not exit" lines. What actually happened: in the attempts where the test
+    FAILED, `waitFor` timed out at 90 s and left the shell half-booted with
+    hydration still pending, which is what produced the one real "Jest did not
+    exit". Every later `Force exiting Jest: Have you considered
+    --detectOpenHandles` line was just jest reporting that I had passed
+    `--forceExit` — I read it as confirmation of a leak it never claimed. Keep
+    this entry: mistaking jest's own force-exit notice for a product defect is an
+    easy error to repeat.
 - **Coverage counts the native shell as of 2026-09-20.** It previously measured
   `services` and `components` only, so the reported percentage excluded the
   least-tested code in the repo. Real numbers with the shell included:
