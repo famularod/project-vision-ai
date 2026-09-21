@@ -231,6 +231,11 @@ import type {
   ProjectItemType,
 } from './types';
 import {
+  DEFAULT_PROJECT_AREAS,
+  normalizeProjectArea,
+} from './services/ProjectAreaRecord';
+import { optionalString, uid } from './services/RecordValues';
+import {
   normalizeProjectItemActivity,
   normalizeProjectItemType,
   projectItemWorkflowIsClosed,
@@ -1128,95 +1133,6 @@ const STATUS_ICON_COLOR_MAP: Record<
 };
 // Placeholder coordinates: stand in each area and use "Use Current Location"
 // in Manage Areas to replace these with real worksite GPS points.
-const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
-  {
-    id: 'area-building-2321',
-    name: 'Building 2321',
-    building: '2321',
-    latitude: 37.3349,
-    longitude: -122.009,
-    radiusFeet: 250,
-  },
-  {
-    id: 'area-building-2375',
-    name: 'Building 2375',
-    building: '2375',
-    latitude: 37.3354,
-    longitude: -122.0084,
-    radiusFeet: 250,
-  },
-  {
-    id: 'area-canopy-a',
-    name: 'Canopy A',
-    latitude: 37.335,
-    longitude: -122.0078,
-    radiusFeet: 175,
-  },
-  {
-    id: 'area-canopy-b',
-    name: 'Canopy B',
-    latitude: 37.3346,
-    longitude: -122.0074,
-    radiusFeet: 175,
-  },
-  {
-    id: 'area-canopy-c',
-    name: 'Canopy C',
-    latitude: 37.3342,
-    longitude: -122.007,
-    radiusFeet: 175,
-  },
-  {
-    id: 'area-h2-room',
-    name: 'H2 Room',
-    building: 'H2',
-    latitude: 37.3339,
-    longitude: -122.0082,
-    radiusFeet: 150,
-  },
-  {
-    id: 'area-pump-house',
-    name: 'Pump House',
-    latitude: 37.3335,
-    longitude: -122.0087,
-    radiusFeet: 175,
-  },
-  {
-    id: 'area-tank-farm',
-    name: 'Tank Farm',
-    latitude: 37.3331,
-    longitude: -122.0092,
-    radiusFeet: 300,
-  },
-  {
-    id: 'area-wastewater',
-    name: 'Wastewater Area',
-    latitude: 37.3328,
-    longitude: -122.0079,
-    radiusFeet: 250,
-  },
-  {
-    id: 'area-north-lot',
-    name: 'North Lot',
-    latitude: 37.336,
-    longitude: -122.0088,
-    radiusFeet: 400,
-  },
-  {
-    id: 'area-east-driveway',
-    name: 'East Driveway',
-    latitude: 37.3347,
-    longitude: -122.0065,
-    radiusFeet: 300,
-  },
-  {
-    id: 'area-other',
-    name: 'Other',
-    latitude: 37.3349,
-    longitude: -122.008,
-    radiusFeet: 100,
-  },
-];
 const CATEGORIES: PhotoCategory[] = [
   'Open Issue',
   'Safety Concern',
@@ -1253,8 +1169,6 @@ const SCHEDULE_PRIORITIES: SchedulePriority[] = [
   'Medium',
   'High',
 ];
-const uid = () =>
-  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 function canonicalProjectNameSet(projectNames: readonly string[]) {
   return [...new Set(projectNames
     .map(name => name.trim().toLowerCase().replace(/\s+/g, ' '))
@@ -1505,11 +1419,6 @@ function optionalNumber(value: unknown) {
     : null;
 }
 
-function optionalString(value: unknown) {
-  return typeof value === 'string' && value.trim()
-    ? value
-    : null;
-}
 
 function optionalBoolean(value: unknown) {
   return typeof value === 'boolean' ? value : false;
@@ -2349,40 +2258,6 @@ function normalizeStringList(value: unknown) {
     : [];
 }
 
-export function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
-  return {
-    // Carry through fields this build does not manage; see normalizeUpdate.
-    ...value,
-    id: typeof value.id === 'string' ? value.id : uid(),
-    name:
-      typeof value.name === 'string' && value.name.trim()
-        ? value.name.trim()
-        : 'New Area',
-    projectName: optionalString(value.projectName)?.trim() || null,
-    building:
-      typeof value.building === 'string' && value.building.trim()
-        ? value.building.trim()
-        : undefined,
-    latitude:
-      typeof value.latitude === 'number' &&
-      Number.isFinite(value.latitude)
-        ? value.latitude
-        : DEFAULT_PROJECT_AREAS[0].latitude,
-    longitude:
-      typeof value.longitude === 'number' &&
-      Number.isFinite(value.longitude)
-        ? value.longitude
-        : DEFAULT_PROJECT_AREAS[0].longitude,
-    radiusFeet:
-      typeof value.radiusFeet === 'number' &&
-      Number.isFinite(value.radiusFeet) &&
-      value.radiusFeet > 0
-        ? value.radiusFeet
-        : 250,
-    locationCapturedAt: optionalString(value.locationCapturedAt),
-    updatedAt: optionalString(value.updatedAt),
-  };
-}
 
 function hasSavedAreaLocation(area: ProjectArea) {
   return Boolean(area.locationCapturedAt);
