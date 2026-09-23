@@ -7,6 +7,10 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const definitionPath = path.join(root, 'validation/ecos/2375-architectural-pilot.json');
 const definition = JSON.parse(fs.readFileSync(definitionPath, 'utf8'));
+const extension = JSON.parse(fs.readFileSync(
+  path.join(root, 'validation/ecos/2375-architectural-pilot-cases-11-50.json'),
+  'utf8',
+));
 const sheetMap = JSON.parse(fs.readFileSync(
   path.join(root, 'validation/ecos/2375-architectural-sheet-map.json'),
   'utf8',
@@ -17,7 +21,9 @@ if (definition.schemaVersion !== 'ecos-architectural-pilot/1.0') problems.push('
 if (definition.projectName !== '2375 Compliance Project') problems.push('Pilot project is not fixed to 2375.');
 if (definition.discipline !== 'architectural') problems.push('Pilot discipline is not architectural.');
 if (definition.targetQuestionCount !== 50) problems.push('Pilot target must remain 50 questions.');
-if (!Array.isArray(definition.cases) || definition.cases.length < 10) problems.push('Initial pilot requires at least 10 cases.');
+if (!Array.isArray(definition.cases) || definition.cases.length !== 10) problems.push('Core pilot must contain cases 1 through 10.');
+if (extension.schemaVersion !== 'ecos-architectural-pilot-cases/1.0') problems.push('Unexpected extension schema version.');
+if (!Array.isArray(extension.cases) || extension.cases.length !== 40) problems.push('Pilot extension must contain cases 11 through 50.');
 if (sheetMap.schemaVersion !== 'ecos-canonical-sheet-map/1.0') problems.push('Unexpected sheet-map schema version.');
 if (sheetMap.documentSha256 !== definition.source.sha256) problems.push('Sheet map is bound to a different source.');
 if (sheetMap.pageCount !== definition.source.pageCount || sheetMap.sheets?.length !== definition.source.pageCount) {
@@ -32,22 +38,47 @@ for (let page = 1; page <= definition.source.pageCount; page += 1) {
   if (!sheetByPage.has(page)) problems.push(`PDF page ${page} is missing from the canonical sheet map.`);
 }
 
+const cases = [...(definition.cases || []), ...(extension.cases || [])];
+if (cases.length !== definition.targetQuestionCount) {
+  problems.push(`Pilot defines ${cases.length} cases instead of ${definition.targetQuestionCount}.`);
+}
+const unanswerableCount = cases.filter((testCase) => testCase.answerType === 'unanswerable').length;
+if (unanswerableCount !== 5) problems.push(`Pilot must contain exactly 5 unanswerable cases; found ${unanswerableCount}.`);
+
 const ids = new Set();
-for (const [index, testCase] of (definition.cases || []).entries()) {
+const questions = new Set();
+for (const [index, testCase] of cases.entries()) {
   const label = `case ${index + 1}`;
   if (!testCase.id || ids.has(testCase.id)) problems.push(`${label} has a missing or duplicate id.`);
   ids.add(testCase.id);
   if (!testCase.question || !testCase.expectedAnswer) problems.push(`${label} is missing its question or verified answer.`);
-  if (!/^A-\d/.test(testCase.sheetNumber || '')) problems.push(`${label} is not bound to an architectural sheet.`);
-  if (!Number.isInteger(testCase.pdfPage) || testCase.pdfPage < 1 || testCase.pdfPage > definition.source.pageCount) {
-    problems.push(`${label} has an invalid PDF page.`);
-  }
+  const normalizedQuestion = String(testCase.question || '').trim().toLowerCase();
+  if (questions.has(normalizedQuestion)) problems.push(`${label} duplicates another question.`);
+  questions.add(normalizedQuestion);
   if (!testCase.evidenceLabel) problems.push(`${label} is missing an evidence-region label.`);
-  if (sheetByPage.get(testCase.pdfPage) !== testCase.sheetNumber) {
-    problems.push(`${label} cites ${testCase.sheetNumber} on PDF page ${testCase.pdfPage}, but the canonical map says ${sheetByPage.get(testCase.pdfPage)}.`);
-  }
   if (!['printed', 'visual_location', 'calculated', 'unanswerable'].includes(testCase.answerType)) {
     problems.push(`${label} has an invalid answer type.`);
+  }
+  if (testCase.answerType === 'unanswerable') {
+    if (testCase.sheetNumber !== null || testCase.pdfPage !== null) {
+      problems.push(`${label} is unanswerable but cites a sheet or page.`);
+    }
+    if (testCase.evidenceBounds !== undefined) problems.push(`${label} is unanswerable but defines evidence bounds.`);
+  } else {
+    if (!/^A-\d/.test(testCase.sheetNumber || '')) problems.push(`${label} is not bound to an architectural sheet.`);
+    if (!Number.isInteger(testCase.pdfPage) || testCase.pdfPage < 1 || testCase.pdfPage > definition.source.pageCount) {
+      problems.push(`${label} has an invalid PDF page.`);
+    }
+    if (sheetByPage.get(testCase.pdfPage) !== testCase.sheetNumber) {
+      problems.push(`${label} cites ${testCase.sheetNumber} on PDF page ${testCase.pdfPage}, but the canonical map says ${sheetByPage.get(testCase.pdfPage)}.`);
+    }
+    const bounds = testCase.evidenceBounds;
+    if (!bounds || !['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key]))) {
+      problems.push(`${label} is answerable but lacks numeric evidence bounds.`);
+    } else if (bounds.x < 0 || bounds.y < 0 || bounds.width <= 0 || bounds.height <= 0 ||
+      bounds.x + bounds.width > 1 || bounds.y + bounds.height > 1) {
+      problems.push(`${label} has evidence bounds outside the normalized page.`);
+    }
   }
   for (const pattern of testCase.requiredAnswerPatterns || []) {
     let regex;
@@ -78,4 +109,4 @@ if (problems.length) {
   process.exit(1);
 }
 
-console.log(`2375 architectural pilot contract passed: ${definition.cases.length}/${definition.targetQuestionCount} verified questions defined.`);
+console.log(`2375 architectural pilot contract passed: ${cases.length}/${definition.targetQuestionCount} verified questions defined (${unanswerableCount} safe-unanswerable cases).`);

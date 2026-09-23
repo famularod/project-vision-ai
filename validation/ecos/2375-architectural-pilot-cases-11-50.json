@@ -1,0 +1,752 @@
+{
+  "schemaVersion": "ecos-architectural-pilot-cases/1.0",
+  "cases": [
+    {
+      "id": "arch-011-breakroom-occupant-load",
+      "question": "What occupant load is printed for the employee breakroom, and what seating basis is stated?",
+      "expectedAnswer": "The employee breakroom is labeled with an occupant load of 200 based on non-fixed seating.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "New Break Room Addition Floor Plan",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "occupant load",
+        "200",
+        "non[- ]fixed seating"
+      ],
+      "evidenceBounds": {
+        "x": 0.4,
+        "y": 0.12,
+        "width": 0.22,
+        "height": 0.24
+      }
+    },
+    {
+      "id": "arch-012-breakroom-sheet-content",
+      "question": "Which four principal breakroom drawings are presented on Sheet A-2.10?",
+      "expectedAnswer": "Sheet A-2.10 presents the breakroom cabinetry elevation, addition floor plan, addition roof plan, and addition ceiling plan.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Drawing titles",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "cabinetry elevation",
+        "floor plan",
+        "roof plan",
+        "ceiling plan"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.04,
+        "width": 0.7,
+        "height": 0.88
+      }
+    },
+    {
+      "id": "arch-013-breakroom-cabinet-faces",
+      "question": "What finish is specified for the breakroom cabinet faces?",
+      "expectedAnswer": "The cabinet faces are specified as plastic laminate PL-1.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Break Room Cabinetry Elevation",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "plastic laminate",
+        "PL-1",
+        "cabinet faces"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.07,
+        "width": 0.36,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "arch-014-breakroom-countertop-finish",
+      "question": "What finish is specified for the breakroom countertop and backsplash?",
+      "expectedAnswer": "The breakroom countertop and backsplash are specified as plastic laminate PL-2.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Break Room Cabinetry Elevation",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "countertop",
+        "backsplash|splash",
+        "plastic laminate",
+        "PL-2"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.07,
+        "width": 0.36,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "arch-015-breakroom-cabinet-interiors",
+      "question": "What material is specified for the breakroom cabinet interiors and shelves?",
+      "expectedAnswer": "The cabinet interiors and shelves are specified as white melamine.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Break Room Cabinetry Elevation",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "white melamine",
+        "interior",
+        "shelves"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.07,
+        "width": 0.36,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "arch-016-breakroom-shelves",
+      "question": "Are the breakroom cabinet shelves fixed or adjustable?",
+      "expectedAnswer": "The breakroom cabinet shelves are labeled adjustable, typical.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Break Room Cabinetry Elevation",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "adjustable",
+        "shelves"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.07,
+        "width": 0.36,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "arch-017-breakroom-microwaves",
+      "question": "Who provides the breakroom microwaves, and what cabinet accommodation is required?",
+      "expectedAnswer": "The microwaves are by others, and the cabinetry provides an opening at the back of the cubby for power cords.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Break Room Cabinetry Elevation",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "microwaves",
+        "by others",
+        "opening",
+        "power cords"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.07,
+        "width": 0.36,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "arch-018-breakroom-sink",
+      "question": "What sink is shown at the breakroom counter, and where are its requirements coordinated?",
+      "expectedAnswer": "A stainless-steel sink is shown, with coordination directed to the plumbing plans.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Break Room Cabinetry Elevation",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "stainless[- ]steel sink",
+        "plumbing plans"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.07,
+        "width": 0.36,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "arch-019-breakroom-refrigerator",
+      "question": "Is a refrigerator shown in the new employee breakroom?",
+      "expectedAnswer": "Yes. A refrigerator is shown adjacent to the breakroom cabinetry on the addition floor plan.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "New Break Room Addition Floor Plan",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "yes",
+        "refrigerator",
+        "floor plan"
+      ],
+      "evidenceBounds": {
+        "x": 0.4,
+        "y": 0.07,
+        "width": 0.3,
+        "height": 0.35
+      }
+    },
+    {
+      "id": "arch-020-breakroom-accessible-counter",
+      "question": "What minimum clear width is dimensioned at the ADA-accessible breakroom counter section?",
+      "expectedAnswer": "The ADA-accessible counter section is dimensioned with a 3-foot-0-inch minimum clear width.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Break Room Cabinetry Elevation",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "ADA",
+        "3.*0",
+        "minimum|clear"
+      ],
+      "evidenceBounds": {
+        "x": 0.03,
+        "y": 0.07,
+        "width": 0.36,
+        "height": 0.3
+      }
+    },
+    {
+      "id": "arch-021-breakroom-egress-signs",
+      "question": "Which tactile egress sign messages are illustrated on Sheet A-2.10?",
+      "expectedAnswer": "The table illustrates Exit, Exit Route, Exit Ramp Down, Exit Stair Down, and Exterior Area for Assisted Rescue signs, with braille indicated.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Tactile Egress Signage Table",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "Exit Route",
+        "Exit Ramp Down",
+        "Exit Stair Down",
+        "Assisted Rescue",
+        "braille"
+      ],
+      "evidenceBounds": {
+        "x": 0.7,
+        "y": 0.28,
+        "width": 0.18,
+        "height": 0.24
+      }
+    },
+    {
+      "id": "arch-022-breakroom-led-fixtures",
+      "question": "What new ceiling light fixture type is identified in the Sheet A-2.10 symbols legend?",
+      "expectedAnswer": "The symbols legend identifies a new 2-foot by 4-foot LED light fixture.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Symbols Legend",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "2.*4",
+        "LED",
+        "light fixture"
+      ],
+      "evidenceBounds": {
+        "x": 0.7,
+        "y": 0.12,
+        "width": 0.18,
+        "height": 0.22
+      }
+    },
+    {
+      "id": "arch-023-breakroom-surface-lighting",
+      "question": "Does Sheet A-2.10 identify a new surface-mounted light fixture?",
+      "expectedAnswer": "Yes. The symbols legend identifies a new surface-mounted light fixture.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Symbols Legend",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "yes",
+        "surface[- ]mounted",
+        "light fixture"
+      ],
+      "evidenceBounds": {
+        "x": 0.7,
+        "y": 0.12,
+        "width": 0.18,
+        "height": 0.22
+      }
+    },
+    {
+      "id": "arch-024-breakroom-roof-parapet",
+      "question": "What new perimeter roof feature is called out on the breakroom roof plan?",
+      "expectedAnswer": "The breakroom roof plan calls out a new roof parapet.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Keynotes - New Roof Plan",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "new roof parapet"
+      ],
+      "evidenceBounds": {
+        "x": 0.7,
+        "y": 0.67,
+        "width": 0.18,
+        "height": 0.22
+      }
+    },
+    {
+      "id": "arch-025-breakroom-roof-drainage",
+      "question": "What drainage elements are required at the new breakroom roof?",
+      "expectedAnswer": "The roof plan calls for a new interior roof drain and overflow scupper drain coordinated with the plumbing plans.",
+      "sheetNumber": "A-2.10",
+      "pdfPage": 43,
+      "evidenceLabel": "Keynotes - New Roof Plan",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "interior roof drain",
+        "overflow scupper",
+        "plumbing"
+      ],
+      "evidenceBounds": {
+        "x": 0.7,
+        "y": 0.67,
+        "width": 0.18,
+        "height": 0.22
+      }
+    },
+    {
+      "id": "arch-026-lab-sink-eyewash",
+      "question": "What happens to the existing sink and eye-wash station in the laboratory renovation?",
+      "expectedAnswer": "The existing sink and eye-wash station are to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 4",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "sink",
+        "eye[- ]wash",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-027-lab-upper-cabinets",
+      "question": "What happens to the existing upper cabinets in Labs 141 and 142?",
+      "expectedAnswer": "The existing upper cabinets are to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 6",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "upper cabinets",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-028-lab-fume-hood",
+      "question": "What happens to the existing fume hood in the lab renovation?",
+      "expectedAnswer": "The existing fume hood is to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 7",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "fume hood",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-029-lab-wall-ac",
+      "question": "What happens to the existing wall air-conditioning unit?",
+      "expectedAnswer": "The existing wall air-conditioning unit is to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 8",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "wall.*air|wall.*AC",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-030-lab-door-frame",
+      "question": "How is the existing door and frame at the lab handled?",
+      "expectedAnswer": "The existing door and frame remain, and the door is closed and locked in position permanently.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 9",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "door and frame",
+        "remain",
+        "closed",
+        "locked",
+        "permanent"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-031-lab-refrigerator",
+      "question": "What happens to the existing under-counter refrigerator?",
+      "expectedAnswer": "The existing under-counter refrigerator is to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 11",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "under[- ]counter refrigerator",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-032-lab-power-bar",
+      "question": "What happens to the existing raised solid-surface power-bar backsplash?",
+      "expectedAnswer": "The existing raised solid-surface power-bar backsplash is to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 14",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "raised solid[- ]surface",
+        "power[- ]bar",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-033-lab-wall-panel-finish",
+      "question": "What finish is required on the new wall panel at the laboratory cabinetry?",
+      "expectedAnswer": "The new wall panel receives plastic laminate matching the existing finish.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 18",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "new wall panel",
+        "plastic laminate",
+        "match",
+        "existing"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-034-lab-counter-edge",
+      "question": "What repair is required where the existing solid-surface counter edge is exposed?",
+      "expectedAnswer": "The contractor must repair and finish the existing solid-surface edge exposed during demolition and match the existing counter-edge treatment.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 20",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "repair",
+        "finish",
+        "solid[- ]surface",
+        "edge",
+        "match"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.28
+      }
+    },
+    {
+      "id": "arch-035-lab-plan-types",
+      "question": "What two floor-plan conditions are compared on Sheet A-2.11?",
+      "expectedAnswer": "Sheet A-2.11 compares a New Floor Plan with a Demo Floor Plan for existing Lab 141 and Lab 142.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Plan titles",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "New Floor Plan",
+        "Demo Floor Plan",
+        "Lab 141",
+        "Lab 142"
+      ],
+      "evidenceBounds": {
+        "x": 0.04,
+        "y": 0.06,
+        "width": 0.63,
+        "height": 0.31
+      }
+    },
+    {
+      "id": "arch-036-lab-microwave-cubby",
+      "question": "What specialized casework section is shown at the far right of Sheet A-2.11?",
+      "expectedAnswer": "A microwave cubby casework section is shown at the far right of Sheet A-2.11.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Microwave Cubby Casework Section",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "microwave cubby",
+        "casework section"
+      ],
+      "evidenceBounds": {
+        "x": 0.73,
+        "y": 0.38,
+        "width": 0.15,
+        "height": 0.45
+      }
+    },
+    {
+      "id": "arch-037-lab-drawer-interior",
+      "question": "What interior finish is called out for the drawer unit in the lab casework sections?",
+      "expectedAnswer": "The drawer unit interior is called out as white melamine.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Casework Sections 1 and 2",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "drawer unit",
+        "white melamine",
+        "interior"
+      ],
+      "evidenceBounds": {
+        "x": 0.04,
+        "y": 0.42,
+        "width": 0.36,
+        "height": 0.42
+      }
+    },
+    {
+      "id": "arch-038-lab-toe-kick",
+      "question": "What base condition is shown at the lab casework sections?",
+      "expectedAnswer": "The lab casework sections show an integral toe kick.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Casework Sections 1 and 2",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "integral toe kick"
+      ],
+      "evidenceBounds": {
+        "x": 0.04,
+        "y": 0.42,
+        "width": 0.36,
+        "height": 0.42
+      }
+    },
+    {
+      "id": "arch-039-lab-adjustable-shelves",
+      "question": "What shelf type is shown in the lab casework sections?",
+      "expectedAnswer": "The lab casework sections identify adjustable laminate shelves.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Casework Sections",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "adjustable",
+        "laminate",
+        "shelves"
+      ],
+      "evidenceBounds": {
+        "x": 0.04,
+        "y": 0.42,
+        "width": 0.6,
+        "height": 0.42
+      }
+    },
+    {
+      "id": "arch-040-lab-electrical-coordination",
+      "question": "How are electrical outlets coordinated at the laboratory casework?",
+      "expectedAnswer": "The casework notes direct electrical outlets to the electrical plans and require reconnection where indicated.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynotes and Microwave Cubby Section",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "electrical outlets",
+        "electrical plans",
+        "reconnect"
+      ],
+      "evidenceBounds": {
+        "x": 0.65,
+        "y": 0.05,
+        "width": 0.23,
+        "height": 0.7
+      }
+    },
+    {
+      "id": "arch-041-mezzanine-sheet-title",
+      "question": "What is the title and sheet number of the enlarged new laboratory mezzanine plan?",
+      "expectedAnswer": "The drawing is Sheet A-2.12, titled Enlarged Mezzanine Floor Plans.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "Title block",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "A-2.12",
+        "Enlarged Mezzanine Floor Plans"
+      ],
+      "evidenceBounds": {
+        "x": 0.86,
+        "y": 0.72,
+        "width": 0.13,
+        "height": 0.27
+      }
+    },
+    {
+      "id": "arch-042-mezzanine-concrete-wall",
+      "question": "What happens to the existing concrete tilt-up wall on the mezzanine plan?",
+      "expectedAnswer": "The existing concrete tilt-up wall is to remain.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "Wall Legend",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "existing concrete tilt[- ]up wall",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.69,
+        "y": 0.21,
+        "width": 0.18,
+        "height": 0.15
+      }
+    },
+    {
+      "id": "arch-043-mezzanine-partition-wall",
+      "question": "What happens to the existing partition wall identified in the wall legend?",
+      "expectedAnswer": "The existing partition wall is to remain.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "Wall Legend",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "existing partition wall",
+        "remain"
+      ],
+      "evidenceBounds": {
+        "x": 0.69,
+        "y": 0.21,
+        "width": 0.18,
+        "height": 0.15
+      }
+    },
+    {
+      "id": "arch-044-mezzanine-new-wall",
+      "question": "What new partition-wall type is identified for Labs 201 and 202?",
+      "expectedAnswer": "The wall legend identifies a new non-bearing, non-rated partition wall.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "Wall Legend",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "new non[- ]bearing",
+        "non[- ]rated",
+        "partition wall"
+      ],
+      "evidenceBounds": {
+        "x": 0.69,
+        "y": 0.21,
+        "width": 0.18,
+        "height": 0.15
+      }
+    },
+    {
+      "id": "arch-045-mezzanine-stair-detail",
+      "question": "Which sheets are referenced for the new stair details?",
+      "expectedAnswer": "The new floor-plan keynotes direct the new stair details to Sheets A-3.2 and A-3.3.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "Keynotes - New Floor Plan",
+      "answerType": "printed",
+      "requiredAnswerPatterns": [
+        "A-3.2",
+        "A-3.3",
+        "stair"
+      ],
+      "evidenceBounds": {
+        "x": 0.69,
+        "y": 0.04,
+        "width": 0.18,
+        "height": 0.16
+      }
+    },
+    {
+      "id": "arch-046-unanswerable-installed-drywall",
+      "question": "How many sheets of drywall were actually installed in Labs 201 and 202?",
+      "expectedAnswer": "The architectural drawings do not verify the number of drywall sheets actually installed in the field.",
+      "sheetNumber": null,
+      "pdfPage": null,
+      "evidenceLabel": "No supporting architectural evidence",
+      "answerType": "unanswerable",
+      "requiredAnswerPatterns": ["do not|cannot", "verify", "actually installed|field"]
+    },
+    {
+      "id": "arch-047-unanswerable-progress",
+      "question": "What percentage of the Lab 201 construction is complete today?",
+      "expectedAnswer": "The architectural drawings do not provide or verify current field completion percentages.",
+      "sheetNumber": null,
+      "pdfPage": null,
+      "evidenceLabel": "No supporting architectural evidence",
+      "answerType": "unanswerable",
+      "requiredAnswerPatterns": ["do not|cannot", "current|today", "completion|complete", "percent"]
+    },
+    {
+      "id": "arch-048-unanswerable-serial-number",
+      "question": "What is the serial number of the refrigerator installed in the employee breakroom?",
+      "expectedAnswer": "The architectural drawings show a refrigerator location but do not provide or verify the installed refrigerator serial number.",
+      "sheetNumber": null,
+      "pdfPage": null,
+      "evidenceLabel": "No supporting architectural evidence",
+      "answerType": "unanswerable",
+      "requiredAnswerPatterns": ["do not|cannot", "serial number", "installed"]
+    },
+    {
+      "id": "arch-049-unanswerable-completion-date",
+      "question": "On what date was the employee breakroom construction completed?",
+      "expectedAnswer": "The architectural drawings do not state or verify the actual construction completion date.",
+      "sheetNumber": null,
+      "pdfPage": null,
+      "evidenceLabel": "No supporting architectural evidence",
+      "answerType": "unanswerable",
+      "requiredAnswerPatterns": ["do not|cannot", "actual", "completion date"]
+    },
+    {
+      "id": "arch-050-unanswerable-cost",
+      "question": "What was the final installed cost of the Lab 141 and 142 cabinet work?",
+      "expectedAnswer": "The architectural drawings do not provide or verify the final installed cost of the laboratory cabinet work.",
+      "sheetNumber": null,
+      "pdfPage": null,
+      "evidenceLabel": "No supporting architectural evidence",
+      "answerType": "unanswerable",
+      "requiredAnswerPatterns": ["do not|cannot", "final installed cost"]
+    }
+  ]
+}

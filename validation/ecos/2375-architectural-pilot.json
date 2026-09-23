@@ -37,6 +37,7 @@
       "sheetNumber": "A-2.11",
       "pdfPage": 44,
       "evidenceLabel": "Keynote 2",
+      "evidenceBounds": { "x": 0.65, "y": 0.05, "width": 0.23, "height": 0.28 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["solid[- ]surface", "countertop", "cabinets?", "remain"]
     },
@@ -47,6 +48,7 @@
       "sheetNumber": "A-2.11",
       "pdfPage": 44,
       "evidenceLabel": "Keynote 3",
+      "evidenceBounds": { "x": 0.65, "y": 0.05, "width": 0.23, "height": 0.28 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["workstation", "removed", "protect", "reuse"]
     },
@@ -57,6 +59,7 @@
       "sheetNumber": "A-2.11",
       "pdfPage": 44,
       "evidenceLabel": "Keynotes 12 and 13",
+      "evidenceBounds": { "x": 0.65, "y": 0.05, "width": 0.23, "height": 0.28 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["new base cabinets", "hatched", "existing solid[- ]surface countertop", "reattach|reused?"]
     },
@@ -67,6 +70,7 @@
       "sheetNumber": "A-2.11",
       "pdfPage": 44,
       "evidenceLabel": "Keynote 15",
+      "evidenceBounds": { "x": 0.65, "y": 0.05, "width": 0.23, "height": 0.28 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["plastic[- ]laminate", "match", "existing"]
     },
@@ -77,6 +81,7 @@
       "sheetNumber": "A-2.11",
       "pdfPage": 44,
       "evidenceLabel": "Keynote 17",
+      "evidenceBounds": { "x": 0.65, "y": 0.05, "width": 0.23, "height": 0.28 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["accessible", "knee space", "plastic laminate", "match"]
     },
@@ -87,6 +92,7 @@
       "sheetNumber": "A-2.11",
       "pdfPage": 44,
       "evidenceLabel": "Keynotes 4, 6, and 7",
+      "evidenceBounds": { "x": 0.65, "y": 0.05, "width": 0.23, "height": 0.28 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["sink", "eye[- ]wash", "upper cabinets", "fume hood", "remain"]
     },
@@ -97,6 +103,7 @@
       "sheetNumber": "A-2.12",
       "pdfPage": 45,
       "evidenceLabel": "New Lab Mezzanine Floor Plan",
+      "evidenceBounds": { "x": 0.32, "y": 0.03, "width": 0.34, "height": 0.34 },
       "answerType": "visual_location",
       "requiredAnswerPatterns": ["Lab 200", "west|left", "Lab 201", "southeast|lower[- ]right", "Lab 202", "northeast|upper[- ]right"]
     },
@@ -107,6 +114,7 @@
       "sheetNumber": "A-2.12",
       "pdfPage": 45,
       "evidenceLabel": "New Lab Mezzanine Floor Plan",
+      "evidenceBounds": { "x": 0.32, "y": 0.03, "width": 0.34, "height": 0.34 },
       "answerType": "visual_location",
       "requiredAnswerPatterns": ["New Stair 3", "north|east|upper", "Lab 202", "adjacent"]
     },
@@ -117,6 +125,7 @@
       "sheetNumber": "A-2.12",
       "pdfPage": 45,
       "evidenceLabel": "Wall Legend",
+      "evidenceBounds": { "x": 0.69, "y": 0.21, "width": 0.18, "height": 0.15 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["existing concrete", "partition wall", "remain", "new non[- ]bearing", "non[- ]rated"]
     },
@@ -127,6 +136,7 @@
       "sheetNumber": "A-2.12",
       "pdfPage": 45,
       "evidenceLabel": "Symbols Legend and Keynotes - Reflected Ceiling Plan",
+      "evidenceBounds": { "x": 0.69, "y": 0.21, "width": 0.18, "height": 0.25 },
       "answerType": "printed",
       "requiredAnswerPatterns": ["2.*4", "LED", "surface[- ]mounted", "emergency|night[- ]light"]
     }
