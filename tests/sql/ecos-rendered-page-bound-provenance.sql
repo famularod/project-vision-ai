@@ -97,6 +97,9 @@ begin
   if public.ecos_sheet_provenance_payload(page_data, '{"accepted":true,"checks":{"sheetMappingUsable":false}}', true) is not null then
     raise exception 'unusable sheet Assurance accepted';
   end if;
+  if public.ecos_sheet_provenance_payload(page_data, '{"accepted":"true","checks":{"sheetMappingUsable":"true"}}', true) is not null then
+    raise exception 'untyped Assurance accepted';
+  end if;
 
   legacy := page_data || jsonb_build_object(
     'sheetMappingStatus', 'unverified',

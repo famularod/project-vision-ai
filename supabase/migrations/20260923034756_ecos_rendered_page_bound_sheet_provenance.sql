@@ -201,8 +201,8 @@ begin
     return null;
   end if;
   if p_require_assurance and (
-    assurance_data->>'accepted' is distinct from 'true'
-    or assurance_data#>>'{checks,sheetMappingUsable}' is distinct from 'true'
+    assurance_data->'accepted' is distinct from 'true'::jsonb
+    or assurance_data#>'{checks,sheetMappingUsable}' is distinct from 'true'::jsonb
   ) then
     return null;
   end if;
