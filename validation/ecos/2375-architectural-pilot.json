@@ -1,0 +1,134 @@
+{
+  "schemaVersion": "ecos-architectural-pilot/1.0",
+  "status": "initial_verified_set",
+  "projectName": "2375 Compliance Project",
+  "discipline": "architectural",
+  "targetQuestionCount": 50,
+  "source": {
+    "fileName": "01 - PLZ CORP - 2375 THIRD STREET - ARCHITECTURAL.pdf",
+    "sha256": "75118aa5adf2696692db1413898f505bcda27128fe96977e68f217bd88e9e41e",
+    "pageCount": 68,
+    "current": true
+  },
+  "successCriteria": {
+    "projectAndFileSelection": 1,
+    "sheetRetrieval": 0.97,
+    "regionRetrieval": 0.95,
+    "factualPrecision": 0.9,
+    "citationAccuracy": 0.95,
+    "safeUnanswerableHandling": 1,
+    "maximumMedianResponseSeconds": 30,
+    "requiredConsecutivePassingRuns": 3
+  },
+  "evidencePolicy": {
+    "allowedDocumentSha256": [
+      "75118aa5adf2696692db1413898f505bcda27128fe96977e68f217bd88e9e41e"
+    ],
+    "allowFieldUpdates": false,
+    "allowScheduleItems": false,
+    "allowPhotos": false,
+    "allowOtherDisciplines": false
+  },
+  "cases": [
+    {
+      "id": "arch-001-existing-counter-cabinets",
+      "question": "In existing Labs 141 and 142, which countertops and cabinets are intended to remain?",
+      "expectedAnswer": "The existing solid-surface countertops and cabinets identified by Keynote 2 are to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 2",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["solid[- ]surface", "countertop", "cabinets?", "remain"]
+    },
+    {
+      "id": "arch-002-workstation-counter-reuse",
+      "question": "What must happen to the existing solid-surface workstation counter during the Lab 141 and 142 renovation?",
+      "expectedAnswer": "The existing solid-surface workstation counter is to be removed, protected from damage, and retained for reuse.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 3",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["workstation", "removed", "protect", "reuse"]
+    },
+    {
+      "id": "arch-003-new-base-cabinets-countertop",
+      "question": "How will the existing countertop be supported where new base cabinets are installed in Labs 141 and 142?",
+      "expectedAnswer": "New base cabinets are installed in the hatched areas, and the existing solid-surface countertop is reattached and reused on the new cabinets.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynotes 12 and 13",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["new base cabinets", "hatched", "existing solid[- ]surface countertop", "reattach|reused?"]
+    },
+    {
+      "id": "arch-004-base-cabinet-finish",
+      "question": "What finish is required for the new base cabinets in Labs 141 and 142?",
+      "expectedAnswer": "The new base cabinets receive a plastic-laminate finish matching the existing cabinets.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 15",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["plastic[- ]laminate", "match", "existing"]
+    },
+    {
+      "id": "arch-005-accessible-workstation",
+      "question": "What accessibility accommodation is required at the new laboratory workstation?",
+      "expectedAnswer": "The workstation provides accessible knee space, with exposed surfaces finished in plastic laminate matching the base-cabinet face color.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynote 17",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["accessible", "knee space", "plastic laminate", "match"]
+    },
+    {
+      "id": "arch-006-existing-lab-components",
+      "question": "Which existing laboratory components are specifically shown to remain in the Lab 141 and 142 work area?",
+      "expectedAnswer": "The existing sink and eye-wash station, upper cabinets, and fume hood are shown to remain.",
+      "sheetNumber": "A-2.11",
+      "pdfPage": 44,
+      "evidenceLabel": "Keynotes 4, 6, and 7",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["sink", "eye[- ]wash", "upper cabinets", "fume hood", "remain"]
+    },
+    {
+      "id": "arch-007-mezzanine-lab-arrangement",
+      "question": "How are Labs 200, 201, and 202 arranged on the new laboratory mezzanine plan?",
+      "expectedAnswer": "Existing Lab 200 is on the west or left side; New Lab 201 is on the southeast or lower-right side; and New Lab 202 is on the northeast or upper-right side.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "New Lab Mezzanine Floor Plan",
+      "answerType": "visual_location",
+      "requiredAnswerPatterns": ["Lab 200", "west|left", "Lab 201", "southeast|lower[- ]right", "Lab 202", "northeast|upper[- ]right"]
+    },
+    {
+      "id": "arch-008-stair-3-location",
+      "question": "Where is New Stair 3 located relative to New Lab 202?",
+      "expectedAnswer": "New Stair 3 is along the north or east side of the mezzanine, immediately adjacent to the upper portion of New Lab 202.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "New Lab Mezzanine Floor Plan",
+      "answerType": "visual_location",
+      "requiredAnswerPatterns": ["New Stair 3", "north|east|upper", "Lab 202", "adjacent"]
+    },
+    {
+      "id": "arch-009-mezzanine-wall-types",
+      "question": "What wall types are identified on the new Lab 201 and 202 mezzanine floor plan?",
+      "expectedAnswer": "The wall legend identifies existing concrete tilt-up walls, existing partition walls to remain, and new non-bearing, non-rated partition walls.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "Wall Legend",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["existing concrete", "partition wall", "remain", "new non[- ]bearing", "non[- ]rated"]
+    },
+    {
+      "id": "arch-010-mezzanine-lighting",
+      "question": "What new lighting fixtures are identified in the Lab 201 and 202 mezzanine reflected ceiling plan?",
+      "expectedAnswer": "The reflected ceiling plan identifies new 2-foot by 4-foot suspended ceiling-grid LED fixtures and new surface-mounted LED fixtures, with emergency and night-light designations as noted in the legend.",
+      "sheetNumber": "A-2.12",
+      "pdfPage": 45,
+      "evidenceLabel": "Symbols Legend and Keynotes - Reflected Ceiling Plan",
+      "answerType": "printed",
+      "requiredAnswerPatterns": ["2.*4", "LED", "surface[- ]mounted", "emergency|night[- ]light"]
+    }
+  ]
+}
