@@ -168,6 +168,7 @@
     "gate:ecos-customer-proof": "node scripts/ecos-customer-path-proof-gate.js",
     "test:ecos-ask:acceptance-contract": "node scripts/ecos-ask-live-acceptance-test.js && node scripts/ecos-ask-2321-live-acceptance-test.js",
     "test:ecos-ask:2321-acceptance-contract": "node scripts/ecos-ask-2321-live-acceptance-test.js",
+    "test:ecos-ask:2375-architectural-pilot": "node scripts/ecos-2375-architectural-pilot-test.js",
     "test:ecos-ask:live": "node scripts/ecos-ask-live-acceptance.js",
     "test:ecos-ask:2321-live": "node scripts/ecos-ask-2321-live-acceptance.js",
     "test:ecos-gemini:contracts": "node scripts/ecos-gemini-drawing-comparison-test.js",
