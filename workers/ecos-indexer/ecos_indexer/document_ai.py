@@ -36,7 +36,7 @@ MIN_CONFIDENCE = 0.5
 MAX_TILES_PER_PAGE = 40
 BLANK_DARK_FRACTION = 0.002
 ENDPOINT = "https://us-documentai.googleapis.com/v1/{processor}:process"
-METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-account/token"
+METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 
 
 class DocumentAIUnavailable(RuntimeError):
