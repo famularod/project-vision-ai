@@ -20,6 +20,7 @@ from .sheet_mapping import StructuralSheetIdentity, map_sheet
 from .plan_dimensions import detect_plan_dimension_reads
 from .labeled_counts import count_label_targets, reread_labeled_counts
 from .shx_text import shx_comment_regions
+from .document_ai import client_from_environment as document_ai_client_from_environment, document_ai_regions
 from .count_transcription import count_read_exceptions
 from .structured_table_pipeline import (
     StructuredTableInputRejected,
@@ -242,6 +243,15 @@ def open_pdf(pdf_bytes: bytes) -> fitz.Document:
     return document
 
 
+_DOCUMENT_AI_CLIENT: list = []
+
+
+def _document_ai_client():
+    if not _DOCUMENT_AI_CLIENT:
+        _DOCUMENT_AI_CLIENT.append(document_ai_client_from_environment())
+    return _DOCUMENT_AI_CLIENT[0]
+
+
 def extract_page(
     page: fitz.Page,
     source_sha256: str,
@@ -319,7 +329,12 @@ def extract_page(
             if region_id in searchable_visual_region_ids
         ]
         proof["searchableRegionCount"] = len(proof["searchableRegionIds"])
-    base_regions = dedupe_regions([*native_regions, *ocr_regions])
+    # Google Document AI lines, added beside today's reading where no exact PDF
+    # text (native or AutoCAD comment) already sits (owner decision 27 Sep).
+    document_ai_found, document_ai_record = document_ai_regions(
+        page, page_width, page_height, native_regions, _document_ai_client(),
+    )
+    base_regions = dedupe_regions([*native_regions, *ocr_regions, *document_ai_found])
     plan_dimension_analysis, plan_dimension_targets = detect_plan_dimension_reads(
         page, base_regions, ocr_regions_for_clip, project_id=project_id,
         source_sha256=source_sha256, evidence_version=evidence_version,
@@ -498,6 +513,9 @@ def extract_page(
         # otherwise usable page. Raw constituents stay non-searchable above.
         "structuredTableLimitations": structured_table_unresolved,
         "planDimensionAnalysis": plan_dimension_analysis,
+        # What the added Google reader did on this page (off/complete/partial/failed,
+        # tile and line counts). A failed tile is recorded here, never hidden.
+        "documentAiReading": document_ai_record,
     }
     return {
         "native": {"regions": native_regions, "characterCount": len(native_text.strip())},
