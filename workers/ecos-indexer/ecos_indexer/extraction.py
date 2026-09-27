@@ -19,6 +19,7 @@ from . import EVIDENCE_VERSION
 from .sheet_mapping import StructuralSheetIdentity, map_sheet
 from .plan_dimensions import detect_plan_dimension_reads
 from .labeled_counts import count_label_targets, reread_labeled_counts
+from .shx_text import shx_comment_regions
 from .count_transcription import count_read_exceptions
 from .structured_table_pipeline import (
     StructuredTableInputRejected,
@@ -255,7 +256,12 @@ def extract_page(
     page_height = float(page.rect.height)
     if min(page_width, page_height) <= 0 or max(page_width, page_height) > MAX_PAGE_DIMENSION_POINTS:
         raise DocumentResourceRejected("pdf_page_dimensions_outside_limit")
-    native_regions = native_text_regions(page, page_width, page_height)
+    # The PDF's own text, plus the text AutoCAD stores as "SHX Text" comments
+    # over its stroke-drawn lettering (exact typed text; see shx_text.py).
+    native_regions = [
+        *native_text_regions(page, page_width, page_height),
+        *shx_comment_regions(page, page_width, page_height),
+    ]
     native_text = "\n".join(region["text"] for region in native_regions)
     geometry = deterministic_geometry(page)
     # An exact page-bound structural identity is faster and more reliable than
@@ -3680,7 +3686,7 @@ def public_region(region: dict[str, Any]) -> dict[str, Any]:
         "constituentEvidence", "corroboratingEvidence",
         "structuredRelationshipId", "structuredTableBlockId",
         "structuredTableRelationshipType", "structuredTableRowKey",
-        "searchable",
+        "searchable", "textOrigin",
     }
     result = {key: value for key, value in region.items() if key in keys and value is not None}
     # Persistence is deliberately stricter than the in-memory convention.
