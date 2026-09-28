@@ -59,14 +59,24 @@ for (const marker of [
     `Complete backup archive must preserve ${marker}.`,
   );
 }
+const backupWorkflow = read('services/DeviceBackupWorkflow.ts');
 for (const marker of [
   'createCompleteBackupArchive',
-  'decryptCompleteBackupArchive',
   'ensureVerifiedReferenceDocumentBytes',
-  'readCompleteBackupAsset',
+  'describeBackupAssetSource',
+  'exportBackupInParts',
+  'openSelectedBackup',
   'materializeCompleteBackupState',
 ]) {
   assert(app.includes(marker), `Live backup workflow must use ${marker}.`);
+}
+for (const marker of [
+  'decryptCompleteBackupArchive',
+  'createCompleteBackupParts',
+  'validateBackupPartSet',
+  'assertAllTaken',
+]) {
+  assert(backupWorkflow.includes(marker), `Device backup workflow must preserve ${marker}.`);
 }
 assert(
   app.includes('${DEVICE_BACKUP_SCOPE_NOTICE}') &&

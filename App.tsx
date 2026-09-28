@@ -361,19 +361,19 @@ import * as MailComposer from 'expo-mail-composer';
 import * as Sharing from 'expo-sharing';
 import * as SMS from 'expo-sms';
 import {
-  fromByteArray,
-  toByteArray,
-} from 'base64-js';
-import {
   createCompleteBackupArchive,
-  decryptCompleteBackupArchive,
   COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH,
-  type CompleteBackupPlainAsset,
 } from './services/CompleteBackupArchive';
+import { type CompleteBackupAssetSource } from './services/CompleteBackupArchiveParts';
 import {
-  createBackupAssetBudget, readBudgetedBackupBytes, assertBackupSerializedFits,
+  decryptedBytesAssetProvider, describeBackupAssetSource, exportBackupInParts,
+  materializeCompleteBackupState, multiPartBackupNotice, openSelectedBackup, stagedAssetProvider,
+} from './services/DeviceBackupWorkflow';
+import { expoBackupFileIO } from './services/ExpoBackupFileIO';
+import {
+  assertBackupSerializedFits,
   DEVICE_BACKUP_SCOPE_NOTICE, DEVICE_BACKUP_RESTORE_NOTICE,
-  MAX_DEVICE_BACKUP_BYTES, type BackupAssetBudget,
+  MAX_DEVICE_BACKUP_BYTES,
 } from './services/BackupExportPolicy';
 import {
   analyzeProjectPhotoWithVision,
@@ -10291,36 +10291,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
   }
 
-  async function readCompleteBackupAsset(
-    id: string,
-    kind: CompleteBackupPlainAsset['kind'],
-    relativePath: string,
-    uri: string,
-    budget: BackupAssetBudget,
-  ): Promise<CompleteBackupPlainAsset> {
-    const info = await FileSystem.getInfoAsync(uri);
-    if (!info.exists) {
-      throw new Error(`The required ${kind.replace('_', ' ')} file is unavailable.`);
-    }
-    const bytes = await readBudgetedBackupBytes(id, info.size, budget, async () => {
-      const base64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      return toByteArray(base64);
-    });
-    return {
-      id,
-      kind,
-      relativePath: sanitizeFilename(relativePath),
-      bytes,
-    };
-  }
-
   async function prepareUpdateForCompleteBackup(
     update: ProjectUpdate,
     assetPrefix: string,
-    assets: CompleteBackupPlainAsset[],
-    budget: BackupAssetBudget,
+    sources: CompleteBackupAssetSource[],
     includeFiles: boolean,
   ): Promise<ProjectUpdate> {
     const hydrated = await hydrateRecoveredProjectUpdatePhotos(update);
@@ -10333,17 +10307,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
         continue;
       }
       const assetId = `photo:${assetPrefix}:${photo.id}`;
-      assets.push(await readCompleteBackupAsset(
-        assetId,
-        'photo',
-        photo.fileName || filenameFromUri(
+      sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+        id: assetId,
+        kind: 'photo',
+        relativePath: sanitizeFilename(photo.fileName || filenameFromUri(
           photo.uri,
-          assets.length,
+          sources.length,
           photo.mimeType || 'image/jpeg',
-        ),
-        photo.uri,
-        budget,
-      ));
+        )),
+        uri: photo.uri,
+      }));
       photos.push({
         ...photo,
         uri: '',
@@ -10372,21 +10345,27 @@ Note: This update was opened through Outlook because PLZ email security may reje
       );
       return;
     }
+    if (!(await Sharing.isAvailableAsync())) {
+      Alert.alert(
+        'Device backup sharing unavailable',
+        'The Share Sheet is unavailable on this device, so no backup was written.',
+      );
+      return;
+    }
 
-    const fileUri = `${targetDirectory}vitruvius-device-${
-      includeFiles ? 'backup' : 'records'
-    }-${isoToday()}.vitruvius-backup`;
+    const fileStem = `vitruvius-device-${includeFiles ? 'backup' : 'records'}-${isoToday()}`;
+    const fileUri = `${targetDirectory}${fileStem}.vitruvius-backup`;
 
     try {
-      const assets: CompleteBackupPlainAsset[] = [];
-      const budget = createBackupAssetBudget();
+      // Files are described here and read one backup part at a time later,
+      // so the full backup never holds every photo in memory at once.
+      const sources: CompleteBackupAssetSource[] = [];
       const backupUpdates = [];
       for (const update of savedUpdates) {
         backupUpdates.push(await prepareUpdateForCompleteBackup(
           update,
           `update:${update.id}`,
-          assets,
-          budget,
+          sources,
           includeFiles,
         ));
       }
@@ -10400,13 +10379,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
         }
         const readable = await ensureVerifiedReferenceDocumentBytes(document);
         const assetId = `reference_document:${document.id}`;
-        assets.push(await readCompleteBackupAsset(
-          assetId,
-          'reference_document',
-          document.originalFileName,
-          readable.uri,
-          budget,
-        ));
+        sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+          id: assetId,
+          kind: 'reference_document',
+          relativePath: sanitizeFilename(document.originalFileName),
+          uri: readable.uri,
+        }));
         backupReferenceDocuments.push({
           ...readable,
           uri: '',
@@ -10429,13 +10407,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
           throw new Error(`The document "${document.name}" is unavailable.`);
         }
         const assetId = `project_document:${document.id}`;
-        assets.push(await readCompleteBackupAsset(
-          assetId,
-          'project_document',
-          document.name,
-          readable.localUri,
-          budget,
-        ));
+        sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+          id: assetId,
+          kind: 'project_document',
+          relativePath: sanitizeFilename(document.name),
+          uri: readable.localUri,
+        }));
         backupProjectDocuments.push({
           ...readable,
           localUri: null,
@@ -10448,8 +10425,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ? await prepareUpdateForCompleteBackup(
             draft,
             `draft:${draft.id}`,
-            assets,
-            budget,
+            sources,
             includeFiles,
           )
         : null;
@@ -10480,39 +10456,66 @@ Note: This update was opened through Outlook because PLZ email security may reje
             }
           : null,
       };
-      const archive = await createCompleteBackupArchive({
-        state: backup,
-        assets,
-        passphrase,
-        createdAt: new Date().toISOString(),
-      }, {
-        randomBytes: length => Crypto.getRandomBytesAsync(length),
-      });
-      const serialized = JSON.stringify(archive);
-      assertBackupSerializedFits(serialized);
-      await FileSystem.writeAsStringAsync(
-        fileUri,
-        serialized,
-      );
-      const canShare = await Sharing.isAvailableAsync();
+      const randomBytes = (length: number) => Crypto.getRandomBytesAsync(length);
 
-      if (!canShare) {
+      if (!includeFiles) {
+        // Records-only carries no files, so it stays the single archive it
+        // has always been.
+        const archive = await createCompleteBackupArchive({
+          state: backup,
+          assets: [],
+          passphrase,
+          createdAt: new Date().toISOString(),
+        }, { randomBytes });
+        const serialized = JSON.stringify(archive);
+        assertBackupSerializedFits(serialized);
+        await FileSystem.writeAsStringAsync(fileUri, serialized);
+        await Sharing.shareAsync(fileUri, {
+          dialogTitle: 'Export Limited Vitruvius Device Backup',
+          mimeType: 'application/vnd.vitruvius.backup+json',
+          UTI: 'public.data',
+        });
         Alert.alert(
-          'Device backup sharing unavailable',
-          'The encrypted backup was removed from this phone because the Share Sheet is unavailable.',
+          'Backup share sheet closed',
+          `${DEVICE_BACKUP_SCOPE_NOTICE} Confirm that the file was saved in your chosen destination. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
         );
-
         return;
       }
 
-      await Sharing.shareAsync(fileUri, {
-        dialogTitle: 'Export Limited Vitruvius Device Backup',
-        mimeType: 'application/vnd.vitruvius.backup+json',
-        UTI: 'public.data',
+      const exported = await exportBackupInParts({
+        state: backup,
+        sources,
+        passphrase,
+        createdAt: new Date().toISOString(),
+        backupId: uid(),
+        directory: targetDirectory,
+        fileStem,
+      }, {
+        io: expoBackupFileIO,
+        randomBytes,
+        confirmPartCount: partCount => new Promise(resolve => Alert.alert(
+          `Backup needs ${partCount} files`,
+          multiPartBackupNotice(partCount),
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Continue', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        )),
+        share: (uri, partNumber, partCount) => Sharing.shareAsync(uri, {
+          dialogTitle: partCount === 1
+            ? 'Export Limited Vitruvius Device Backup'
+            : `Save backup part ${partNumber} of ${partCount}`,
+          mimeType: 'application/vnd.vitruvius.backup+json',
+          UTI: 'public.data',
+        }),
       });
+      if (exported.status === 'cancelled') return;
       Alert.alert(
         'Backup share sheet closed',
-        `${DEVICE_BACKUP_SCOPE_NOTICE} Confirm that the file was saved in your chosen destination. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
+        `${DEVICE_BACKUP_SCOPE_NOTICE} Confirm that the file was saved in your chosen destination${
+          exported.partCount > 1 ? `: all ${exported.partCount} parts, in one place` : ''
+        }. Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
       );
     } catch (error) {
       Alert.alert(
@@ -10584,169 +10587,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function writeRestoredBackupFile(
-    directory: string,
-    fileName: string,
-    bytes: Uint8Array,
-    createdUris: string[],
-  ) {
-    const uri = `${directory}${uid()}-${sanitizeFilename(fileName)}`;
-    await FileSystem.writeAsStringAsync(uri, fromByteArray(bytes), {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    createdUris.push(uri);
-    return uri;
-  }
-
-  async function materializeCompleteBackupState(
-    stateInput: unknown,
-    decryptedAssets: ReadonlyMap<string, Uint8Array>,
-    manifestAssets: readonly Readonly<{
-      id: string;
-      relativePath: string;
-    }>[],
-  ) {
-    const state = JSON.parse(JSON.stringify(stateInput)) as Record<string, unknown>;
-    const createdUris: string[] = [];
-    const usedAssetIds = new Set<string>();
-    const assetNames = new Map(
-      manifestAssets.map(asset => [asset.id, asset.relativePath]),
-    );
-    const requireAsset = (assetId: unknown) => {
-      if (typeof assetId !== 'string' || !assetId.trim()) {
-        throw new Error('A restored media record is missing its encrypted media id.');
-      }
-      const bytes = decryptedAssets.get(assetId);
-      if (!bytes) {
-        throw new Error(`Encrypted media "${assetId}" is missing.`);
-      }
-      if (usedAssetIds.has(assetId)) {
-        throw new Error(`Encrypted media "${assetId}" is referenced more than once.`);
-      }
-      usedAssetIds.add(assetId);
-      return {
-        bytes,
-        fileName: assetNames.get(assetId) || 'restored-file.bin',
-      };
-    };
-    const materializeUpdatePhotos = async (update: unknown) => {
-      if (!isRecord(update) || !Array.isArray(update.photos)) return;
-      const directory = await ensurePhotoStorageDirectory();
-      for (const photo of update.photos) {
-        if (!isRecord(photo)) {
-          throw new Error('A restored photo record is invalid.');
-        }
-        // A records-only archive carries no file bytes by design. Restore the
-        // photo's details and leave it without a local file, rather than
-        // failing the whole restore over a file the archive never claimed.
-        if (!photo._backupAssetId) {
-          photo.uri = '';
-          continue;
-        }
-        const asset = requireAsset(photo._backupAssetId);
-        photo.uri = await writeRestoredBackupFile(
-          directory,
-          asset.fileName,
-          asset.bytes,
-          createdUris,
-        );
-        delete photo._backupAssetId;
-      }
-    };
-
-    try {
-      if (!Array.isArray(state.savedUpdates) ||
-          !Array.isArray(state.referenceDocuments) ||
-          !Array.isArray(state.projectDocuments)) {
-        throw new Error('The encrypted application state is incomplete.');
-      }
-      for (const update of state.savedUpdates) {
-        await materializeUpdatePhotos(update);
-      }
-      if (isRecord(state.activeDraft)) {
-        await materializeUpdatePhotos(state.activeDraft.draft);
-      }
-      const referenceDirectory = await ensureReferenceDocumentsDirectory();
-      for (const document of state.referenceDocuments) {
-        if (!isRecord(document)) {
-          throw new Error('A restored reference document record is invalid.');
-        }
-        if (!document._backupAssetId) {
-          document.uri = '';
-          continue;
-        }
-        const asset = requireAsset(document._backupAssetId);
-        document.uri = await writeRestoredBackupFile(
-          referenceDirectory,
-          asset.fileName,
-          asset.bytes,
-          createdUris,
-        );
-        document.sizeBytes = asset.bytes.byteLength;
-        delete document._backupAssetId;
-      }
-      if (!OWNED_PROJECT_DOCUMENTS_DIR || !FileSystem.cacheDirectory) {
-        throw new Error('Verified project document storage is unavailable.');
-      }
-      for (const document of state.projectDocuments) {
-        if (!isRecord(document)) {
-          throw new Error('A restored project document record is invalid.');
-        }
-        if (!document._backupAssetId) {
-          document.localUri = null;
-          document.ownedFileId = null;
-          document.ownedFileManifest = null;
-          continue;
-        }
-        const asset = requireAsset(document._backupAssetId);
-        const temporaryUri = await writeRestoredBackupFile(
-          FileSystem.cacheDirectory,
-          asset.fileName,
-          asset.bytes,
-          createdUris,
-        );
-        const mimeType = typeof document.mimeType === 'string'
-          ? document.mimeType
-          : 'application/octet-stream';
-        const owned = await importProjectDocumentIntoOwnedStorage({
-          sourceUri: temporaryUri,
-          ownedRoot: OWNED_PROJECT_DOCUMENTS_DIR,
-          fileName: typeof document.name === 'string'
-            ? document.name
-            : asset.fileName,
-          mimeType,
-          reportedSizeBytes: asset.bytes.byteLength,
-        });
-        createdUris.push(owned.localUri);
-        await FileSystem.deleteAsync(temporaryUri, { idempotent: true });
-        createdUris.splice(createdUris.indexOf(temporaryUri), 1);
-        document.localUri = owned.localUri;
-        document.ownedFileId = owned.fileId;
-        document.ownedFileManifest = owned.manifest;
-        document.sizeBytes = owned.record.sizeBytes;
-        delete document._backupAssetId;
-      }
-      if (usedAssetIds.size !== decryptedAssets.size) {
-        throw new Error('The backup contains unreferenced encrypted media.');
-      }
-      return {
-        state,
-        cleanup: async () => {
-          await Promise.all(createdUris.map(uri =>
-            FileSystem.deleteAsync(uri, { idempotent: true })
-              .catch(() => undefined),
-          ));
-        },
-      };
-    } catch (error) {
-      await Promise.all(createdUris.map(uri =>
-        FileSystem.deleteAsync(uri, { idempotent: true })
-          .catch(() => undefined),
-      ));
-      throw error;
-    }
-  }
-
   async function restoreBackup(passphrase: string) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
@@ -10756,16 +10596,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return;
     }
     try {
+      // A large backup is several part files; select every part at once.
       const result = await DocumentPicker.getDocumentAsync({
         type: ['application/vnd.vitruvius.backup+json', 'application/json', '*/*'],
         copyToCacheDirectory: true,
+        multiple: true,
       });
 
       if (result.canceled) return;
 
-      const file = result.assets[0];
-
-      if (!file) {
+      if (result.assets.length === 0) {
         Alert.alert(
           'Restore failed',
           'No complete Vitruvius backup was selected.',
@@ -10774,34 +10614,28 @@ Note: This update was opened through Outlook because PLZ email security may reje
         return;
       }
 
-      if (isOversizedBackup(file.size)) {
-        Alert.alert(
-          'Device backup too large',
-          'Choose an encrypted Vitruvius device backup smaller than 128 MB.',
-        );
+      for (const file of result.assets) {
+        const fileInfo = await FileSystem.getInfoAsync(file.uri);
+        if (isOversizedBackup(file.size) || (
+          fileInfo.exists &&
+          'size' in fileInfo &&
+          isOversizedBackup(fileInfo.size)
+        )) {
+          Alert.alert(
+            'Device backup too large',
+            'Choose an encrypted Vitruvius device backup, or backup part, smaller than 128 MB.',
+          );
 
-        return;
+          return;
+        }
       }
 
-      const fileInfo = await FileSystem.getInfoAsync(file.uri);
-
-      if (
-        fileInfo.exists &&
-        'size' in fileInfo &&
-        isOversizedBackup(fileInfo.size)
-      ) {
-        Alert.alert(
-          'Device backup too large',
-          'Choose an encrypted Vitruvius device backup smaller than 128 MB.',
-        );
-
-        return;
-      }
-
-      const contents = await FileSystem.readAsStringAsync(file.uri);
-      const parsed: unknown = JSON.parse(contents);
-      const decrypted = await decryptCompleteBackupArchive(parsed, passphrase);
-      const preflight = normalizeBackupData(decrypted.state);
+      const opened = await openSelectedBackup(
+        result.assets.map(file => file.uri),
+        passphrase,
+        expoBackupFileIO,
+      );
+      const preflight = normalizeBackupData(opened.state);
 
       if (!preflight.ok) {
         Alert.alert(
@@ -10826,19 +10660,42 @@ Note: This update was opened through Outlook because PLZ email security may reje
             style: 'destructive',
             onPress: () => {
               void (async () => {
-                const materialized = await materializeCompleteBackupState(
-                  decrypted.state,
-                  decrypted.assets,
-                  decrypted.manifest.assets,
-                );
-                const normalized = normalizeBackupData(materialized.state);
-                if (!normalized.ok) {
-                  await materialized.cleanup();
-                  Alert.alert('Restore failed', normalized.message);
-                  return;
+                if (!FileSystem.cacheDirectory) {
+                  throw new Error('A temporary app folder for the restore could not be found.');
                 }
-                const committed = await applyRestoredData(normalized.data);
-                if (!committed) await materialized.cleanup();
+                // Parts are decrypted one at a time into a staging folder;
+                // nothing on the device is replaced until every part verified.
+                const staged = opened.kind === 'parts'
+                  ? await opened.stageAssets(`${FileSystem.cacheDirectory}backup-restore-${uid()}/`)
+                  : null;
+                try {
+                  const materialized = await materializeCompleteBackupState(
+                    opened.state,
+                    opened.kind === 'single'
+                      ? decryptedBytesAssetProvider(opened.decrypted, expoBackupFileIO)
+                      : stagedAssetProvider(staged!, expoBackupFileIO),
+                    {
+                      io: expoBackupFileIO,
+                      newId: uid,
+                      sanitizeFilename,
+                      photoDirectory: ensurePhotoStorageDirectory,
+                      referenceDocumentsDirectory: ensureReferenceDocumentsDirectory,
+                      ownedProjectDocumentsRoot: OWNED_PROJECT_DOCUMENTS_DIR,
+                      cacheDirectory: FileSystem.cacheDirectory,
+                      importProjectDocument: importProjectDocumentIntoOwnedStorage,
+                    },
+                  );
+                  const normalized = normalizeBackupData(materialized.state);
+                  if (!normalized.ok) {
+                    await materialized.cleanup();
+                    Alert.alert('Restore failed', normalized.message);
+                    return;
+                  }
+                  const committed = await applyRestoredData(normalized.data);
+                  if (!committed) await materialized.cleanup();
+                } finally {
+                  await staged?.cleanup();
+                }
               })().catch(error => {
                 Alert.alert(
                   'Restore failed',
