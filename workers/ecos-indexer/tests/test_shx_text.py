@@ -49,6 +49,27 @@ class ShxCommentTextTests(unittest.TestCase):
         self.assertAlmostEqual(joined["x"], first.rect.x0 / page.rect.width, places=6)
         doc.close()
 
+    def test_vertical_labels_are_not_joined_into_one_made_up_string(self):
+        # Two rotated labels whose tall boxes sit 88 pt apart on the same band.
+        doc, page = page_with_comments([
+            ((100, 100, 112, 260), "EAST PROPERTY LINE", SHX_COMMENT_TITLE),
+            ((200, 100, 212, 260), "10' UTILITY EASEMENT", SHX_COMMENT_TITLE),
+        ])
+        texts = [r["text"] for r in shx_comment_regions(page, page.rect.width, page.rect.height)]
+        self.assertIn("EAST PROPERTY LINE", texts)
+        self.assertIn("10' UTILITY EASEMENT", texts)
+        self.assertNotIn("EAST PROPERTY LINE 10' UTILITY EASEMENT", texts)
+        doc.close()
+
+    def test_a_large_title_is_not_joined_to_small_text_beside_it(self):
+        doc, page = page_with_comments([
+            ((100, 100, 300, 130), "SITE PLAN", SHX_COMMENT_TITLE),
+            ((310, 110, 380, 120), "SCALE: 1\"=20'", SHX_COMMENT_TITLE),
+        ])
+        texts = [r["text"] for r in shx_comment_regions(page, page.rect.width, page.rect.height)]
+        self.assertNotIn("SITE PLAN SCALE: 1\"=20'", texts)
+        doc.close()
+
     def test_words_on_different_lines_are_not_joined(self):
         doc, page = page_with_comments([
             ((100, 100, 160, 112), "FOOTING", SHX_COMMENT_TITLE),

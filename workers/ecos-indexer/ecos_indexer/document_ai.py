@@ -35,6 +35,9 @@ RENDER_DPI = 300
 MIN_CONFIDENCE = 0.5
 MAX_TILES_PER_PAGE = 40
 BLANK_DARK_FRACTION = 0.002
+# A line whose box reaches this close to an inner tile edge was cut off by the
+# tile; the neighbouring tile, whose core owns it, reads it whole.
+TILE_EDGE_POINTS = 2.0
 ENDPOINT = "https://us-documentai.googleapis.com/v1/{processor}:process"
 METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 
@@ -114,10 +117,34 @@ def page_tiles(width: float, height: float) -> list[fitz.Rect]:
             for y in starts(height) for x in starts(width)]
 
 
-def tile_core(tile: fitz.Rect, width: float, height: float) -> fitz.Rect:
-    half = OVERLAP_POINTS / 2
-    return fitz.Rect(tile.x0 + (half if tile.x0 > 0 else 0), tile.y0 + (half if tile.y0 > 0 else 0),
-                     tile.x1 - (half if tile.x1 < width else 0), tile.y1 - (half if tile.y1 < height else 0))
+def tile_cores(width: float, height: float) -> dict[tuple[float, float], fitz.Rect]:
+    """Each tile's core: every overlap between neighbouring tiles is split at
+    its middle, so each point of the page belongs to exactly one tile.
+
+    (27 Sep review) The earlier core trimmed only OVERLAP_POINTS / 2 from each
+    inner edge while the real overlap is 2-6 inches (tiles are spread evenly),
+    so cores overlapped by up to 5.5 inches and a label cut off at one tile's
+    edge was published beside the whole reading from its neighbour.
+    """
+    def bounds(total: float) -> list[tuple[float, float, float]]:
+        spans = sorted({(round(t.x0, 3), round(t.x1, 3)) for t in page_tiles(total, TILE_POINTS)}) \
+            if total > 0 else []
+        out = []
+        for i, (a, b) in enumerate(spans):
+            lo = 0.0 if i == 0 else (a + spans[i - 1][1]) / 2
+            hi = total if i == len(spans) - 1 else (spans[i + 1][0] + b) / 2
+            out.append((a, lo, hi))
+        return out
+    xs, ys = bounds(width), bounds(height)
+    return {(x0, y0): fitz.Rect(xlo, ylo, xhi, yhi) for (y0, ylo, yhi) in ys for (x0, xlo, xhi) in xs}
+
+
+def cut_by_tile_edge(tile: fitz.Rect, width: float, height: float,
+                     x0: float, y0: float, x1: float, y1: float) -> bool:
+    """True when the line's box touches an inner tile edge (not a page edge)."""
+    e = TILE_EDGE_POINTS
+    return ((tile.x0 > 0 and x0 <= tile.x0 + e) or (tile.x1 < width and x1 >= tile.x1 - e)
+            or (tile.y0 > 0 and y0 <= tile.y0 + e) or (tile.y1 < height and y1 >= tile.y1 - e))
 
 
 def is_blank(page: fitz.Page, tile: fitz.Rect) -> bool:
@@ -161,19 +188,23 @@ def document_ai_regions(page: fitz.Page, page_width: float, page_height: float,
             return tile, None
 
     regions: list[dict[str, Any]] = []
-    failed = dropped_exact = dropped_low = 0
+    cores = tile_cores(page_width, page_height)
+    failed = dropped_exact = dropped_low = dropped_edge = 0
     with ThreadPoolExecutor(max(1, workers)) as pool:
         results = list(pool.map(read, images))
     for tile, lines in results:
         if lines is None:
             failed += 1
             continue
-        core = tile_core(tile, page_width, page_height)
+        core = cores[(round(tile.x0, 3), round(tile.y0, 3))]
         for text, x0, y0, x1, y1, confidence in lines:
             ax0, ay0 = tile.x0 + x0 * tile.width, tile.y0 + y0 * tile.height
             ax1, ay1 = tile.x0 + x1 * tile.width, tile.y0 + y1 * tile.height
             cx, cy = (ax0 + ax1) / 2, (ay0 + ay1) / 2
             if not core.contains(fitz.Point(cx, cy)) or ax1 <= ax0 or ay1 <= ay0:
+                continue
+            if cut_by_tile_edge(tile, page_width, page_height, ax0, ay0, ax1, ay1):
+                dropped_edge += 1
                 continue
             if confidence < MIN_CONFIDENCE:
                 dropped_low += 1
@@ -190,4 +221,5 @@ def document_ai_regions(page: fitz.Page, page_width: float, page_height: float,
             })
     status = "complete" if not failed else ("failed" if failed == len(images) else "partial")
     return regions, {"status": status, "tiles": len(images), "failedTiles": failed, "lines": len(regions),
-                     "droppedOverExactText": dropped_exact, "droppedLowConfidence": dropped_low}
+                     "droppedOverExactText": dropped_exact, "droppedLowConfidence": dropped_low,
+                     "droppedAtTileEdge": dropped_edge}
