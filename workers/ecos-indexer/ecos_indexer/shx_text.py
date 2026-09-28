@@ -86,6 +86,13 @@ def shx_comment_regions(page: fitz.Page, page_width: float, page_height: float) 
     # Comments that sit on one printed line (centres within 0.4 of the text
     # height, gaps under 1.5 heights) are also joined, so a quote spanning
     # several text objects ("SITE AREA:" + "6.62 ACRES") is found as printed.
+    # (27 Sep review) Only horizontal text of similar size is joined: a
+    # rotated or vertical label has a tall box, and using its height as the
+    # tolerance merged unrelated labels 88 pt apart into one made-up "exact"
+    # string.
+    def horizontal(rect: fitz.Rect, text: str) -> bool:
+        return len(text) <= 2 or rect.width >= rect.height
+
     items.sort(key=lambda it: ((it[0].y0 + it[0].y1) / 2, it[0].x0))
     used: set[int] = set()
     line_number = 0
@@ -93,6 +100,8 @@ def shx_comment_regions(page: fitz.Page, page_width: float, page_height: float) 
         if k in used:
             continue
         used.add(k)
+        if not horizontal(rect, text):
+            continue
         line = [(rect, text)]
         centre, height, right = (rect.y0 + rect.y1) / 2, rect.height, rect.x1
         for j in range(k + 1, len(items)):
@@ -101,6 +110,9 @@ def shx_comment_regions(page: fitz.Page, page_width: float, page_height: float) 
             if other_centre - centre > 0.4 * height:
                 break
             if j in used or abs(other_centre - centre) > 0.4 * height:
+                continue
+            if not horizontal(other, other_text) or \
+                    max(other.height, height) > 1.5 * min(other.height, height):
                 continue
             if 0 <= other.x0 - right <= 1.5 * height or (other.x0 < right < other.x1):
                 line.append((other, other_text))
