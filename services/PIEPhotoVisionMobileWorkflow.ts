@@ -650,7 +650,7 @@ export async function analyzeProjectPhotoWithVision({
     executedStages.push('edge_function_invoked');
 
     if (error) {
-      return failedRetryState('Photo intelligence could not finish. It will retry when cloud sync runs.', {
+      return failedRetryState('Photo intelligence could not finish. Tap Retry analysis to try again.', {
         baselineEvidence,
         currentEvidence,
         requestId,

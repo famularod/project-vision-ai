@@ -2212,8 +2212,15 @@ function selectedUpdates(
     ...(input.savedUpdates || []),
   ];
 
+  // A note logged from a sub-project's schedule task is saved under the
+  // sub-project name and names its parent in scheduleProjectName; the report
+  // for the parent must still carry it.
   return updates.filter(update =>
-    selectedProjects.includes(normalizeName(update.projectName)),
+    selectedProjects.includes(normalizeName(update.projectName)) ||
+    Boolean(
+      update.scheduleProjectName?.trim() &&
+      selectedProjects.includes(normalizeName(update.scheduleProjectName)),
+    ),
   );
 }
 

@@ -257,8 +257,13 @@ export function scheduleProjectScopeNames(
 export function scheduleOverviewProjectNames(
   activeProjects: string[],
   items: ScheduleItem[],
+  // An archived project stays archived even when its schedule tasks still
+  // name it as their parent; without this it came back as an active card.
+  archivedProjects: readonly string[] = [],
 ) {
-  const parentProjects = scheduleParentProjectNames(items);
+  const archivedKeys = new Set(archivedProjects.map(name => name.trim().toLowerCase()));
+  const parentProjects = scheduleParentProjectNames(items)
+    .filter(name => !archivedKeys.has(name.trim().toLowerCase()));
   const parentKeys = new Set(parentProjects.map(name => name.toLowerCase()));
   const childKeys = new Set(
     items
