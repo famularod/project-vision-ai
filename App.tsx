@@ -84,6 +84,7 @@ import {
   legacyNonProjectShellNamesPresent,
   LEGACY_NON_PROJECT_SHELL_NAMES,
 } from './services/CrossDeviceVisibility';
+import { isReservedLegacyProjectName, RESERVED_LEGACY_PROJECT_NAME_MESSAGE } from './services/ReservedProjectNames';
 import { AdminScreen, SignInModal } from './screens/AdminScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
 import {
@@ -8947,6 +8948,10 @@ function addProject(projectName: string) {
       'Enter a project name first.',
     );
 
+    return false;
+  }
+  if (isReservedLegacyProjectName(trimmed)) {
+    Alert.alert('Name not available', RESERVED_LEGACY_PROJECT_NAME_MESSAGE);
     return false;
   }
 
