@@ -1152,7 +1152,10 @@ function findPriorComparablePhoto(
       const candidateHasArea = Boolean(
         candidateAreaIdentity.idKey || candidateAreaIdentity.nameKey,
       );
-      const isAreaFallbackCandidate = currentHasArea && !candidateHasArea;
+      // A match is area-confirmed only when both photos carry an area. A
+      // current photo taken before the PM picked an area confirms nothing, so
+      // whatever it pairs with is an area-unconfirmed fallback.
+      const isAreaFallbackCandidate = !currentHasArea || !candidateHasArea;
 
       if (
         currentHasArea &&
@@ -1198,11 +1201,11 @@ function findPriorComparablePhoto(
           candidateUpdate,
           candidatePhoto,
         }),
-        reason: isAreaFallbackCandidate
-          ? 'most recent valid earlier photo from same project; prior photo has no area set, matched as area-unconfirmed fallback (no same-area candidate was available)'
-          : currentKey.normalizedAreaKey
-            ? 'most recent valid earlier photo from same project and area'
-            : 'most recent valid earlier photo from same project',
+        reason: !currentHasArea
+          ? 'most recent valid earlier photo from same project; current photo has no area set, matched as area-unconfirmed fallback'
+          : isAreaFallbackCandidate
+            ? 'most recent valid earlier photo from same project; prior photo has no area set, matched as area-unconfirmed fallback (no same-area candidate was available)'
+            : 'most recent valid earlier photo from same project and area',
       };
       if (candidateRecord.continuityScore > 0) {
         candidateRecord.reason = `${candidateRecord.reason}; preferred for ${daveVisualContinuityReason(candidateRecord.continuityScore)}`;
@@ -1273,6 +1276,24 @@ export function buildPIEPriorPhotoMatchKey(
     updateId: update.id || null,
     photoId: photo?.id || null,
   };
+}
+
+// After the PM picks an area, a stored result is stale when it depended on the
+// old area: no prior was found for lack of one, or the prior it compared
+// against was chosen while this photo had no area or a different one.
+export function photoNeedsPriorRecheckAfterAreaChange(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+): boolean {
+  const diagnostics = photo.photoIntelligence?.diagnostics;
+  if (!diagnostics) return false;
+  if (
+    diagnostics.noPriorReason === 'missing_area_key' ||
+    diagnostics.noPriorReason === 'no_same_area'
+  ) return true;
+  if (!diagnostics.selectedPriorPhotoId) return false;
+  const areaKey = buildPIEPriorPhotoMatchKey(update, photo).normalizedAreaKey;
+  return !diagnostics.currentAreaKey || diagnostics.currentAreaKey !== areaKey;
 }
 
 function comparePriorCandidateTime(

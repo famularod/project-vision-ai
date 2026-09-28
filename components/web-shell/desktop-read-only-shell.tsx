@@ -60,6 +60,7 @@ import {
   type DAVEWebTaskRenderGroup,
 } from '../../services/DAVEWebTaskPagination';
 import { buildDAVETaskAreaSummary } from '../../services/DAVETaskAreaSummary';
+import { analysisComparedPriorPhoto } from '../../services/PhotoAnalysisPriorPhoto';
 import { presentDAVEWebFreshness } from '../../services/DAVEWebFreshness';
 import {
   buildDAVEWebReportDraft,
@@ -3257,6 +3258,7 @@ function PhotoDetailsPanel({
 }) {
   const { update, photo } = item;
   const intelligence = photo.photoIntelligence;
+  const priorIsAnalysisPrior = Boolean(priorItem && analysisComparedPriorPhoto(item, [priorItem]));
   return (
     <View style={styles.taskDetailsPanel}>
       <WorkspaceInspectorHeader
@@ -3279,9 +3281,11 @@ function PhotoDetailsPanel({
       <View style={styles.photoComparisonContext}>
         <Text style={styles.taskDetailsSectionTitle}>Chronological context</Text>
         <Text style={styles.photoComparisonExplanation}>
-          {priorItem
-            ? 'An earlier photo from the same project and area is shown below. The order comes from recorded capture times; no visual change is assumed.'
-            : 'No earlier photo from the same project and area is in this workspace. This photo is shown as a baseline, not a comparison.'}
+          {priorIsAnalysisPrior
+            ? 'The earlier photo chosen for the recorded analysis is shown below. The order comes from recorded capture times; no visual change is assumed.'
+            : priorItem
+              ? 'An earlier photo from the same project and area is shown below. The order comes from recorded capture times; no visual change is assumed.'
+              : 'No earlier photo from the same project and area is in this workspace. This photo is shown as a baseline, not a comparison.'}
         </Text>
         <ComparisonPhoto label="Selected photo" item={item} />
         {priorItem ? <ComparisonPhoto label="Earlier photo" item={priorItem} /> : null}
@@ -6671,6 +6675,11 @@ function priorComparablePhotoFor(
   selected: PhotoWorkspaceItem,
   photos: readonly PhotoWorkspaceItem[],
 ): PhotoWorkspaceItem | null {
+  // Show the photo the recorded analysis compared against when it is loaded;
+  // area name and capture time only pick a stand-in when it is not.
+  const analysisPrior = analysisComparedPriorPhoto(selected, photos);
+  if (analysisPrior) return analysisPrior;
+
   const selectedTime = Date.parse(photoCaptureTime(selected));
   const projectKey = normalizedName(selected.update.projectName);
   const areaKey = normalizedName(photoAreaValue(selected));
