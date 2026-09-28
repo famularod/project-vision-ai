@@ -34,7 +34,10 @@ import {
   type CompleteBackupArchiveDependencies,
   type CompleteBackupPlainAsset,
 } from './CompleteBackupArchive';
-import { MAX_DEVICE_BACKUP_BYTES } from './BackupExportPolicy';
+import {
+  MAX_DEVICE_BACKUP_BYTES,
+  createBackupAssetBudget,
+} from './BackupExportPolicy';
 
 export const BACKUP_PART_ENVELOPE_VERSION = 1 as const;
 
@@ -44,6 +47,13 @@ export const BACKUP_PART_ENVELOPE_VERSION = 1 as const;
  * a part that overshoots is a failed backup.
  */
 export const DEFAULT_PART_ASSET_BUDGET_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Room kept inside one part for the encrypted records, the manifest and JSON
+ * overhead. A single file whose encoded size leaves less than this cannot be
+ * carried by any part, so it is refused before anything is shared.
+ */
+export const PART_OVERHEAD_RESERVE_BYTES = 8 * 1024 * 1024;
 
 /** A file the backup will carry, described before its bytes are loaded. */
 export type CompleteBackupAssetSource = Readonly<{
@@ -132,6 +142,42 @@ export function countBackupParts(
   return splitBackupAssetsIntoParts(sources, budgetBytes).length;
 }
 
+function megabytes(bytes: number): number {
+  return Math.max(1, Math.round(bytes / (1024 * 1024)));
+}
+
+/**
+ * Refuse, before any bytes are read or any part is shared, a backup that some
+ * part could not hold: one file too large for a part on its own, or two files
+ * claiming the same identity. Failing here matters because parts leave the
+ * phone one at a time — a failure after part 1 was shared leaves an incomplete
+ * set the owner may believe is a backup.
+ */
+export function assertBackupAssetsFitParts(
+  sources: readonly CompleteBackupAssetSource[],
+  partCeilingBytes: number = MAX_DEVICE_BACKUP_BYTES,
+): void {
+  const seen = new Set<string>();
+  for (const source of sources) {
+    assertTrustworthySize(source);
+    if (!source.id || seen.has(source.id)) {
+      throw new CompleteBackupPartsError(
+        'duplicate_asset',
+        'Two files in this backup share one identity. No partial backup will be written.',
+      );
+    }
+    seen.add(source.id);
+    if (encodedSize(source.sizeBytes) > partCeilingBytes - PART_OVERHEAD_RESERVE_BYTES) {
+      throw new CompleteBackupPartsError(
+        'asset_too_large',
+        `The file "${source.relativePath}" is about ${megabytes(source.sizeBytes)} MB, ` +
+        `too large for one ${megabytes(partCeilingBytes)} MB backup part on this phone. ` +
+        'Nothing was shared. Use Export Records Only to protect your records, and keep the original file.',
+      );
+    }
+  }
+}
+
 /**
  * Build the parts, handing each one to `onPart` as it is finished so the
  * caller can write it out and let it go. Returns how many parts were written.
@@ -148,6 +194,7 @@ export async function createCompleteBackupParts(
   dependencies: CompleteBackupArchiveDependencies,
   onPart: (part: CompleteBackupPart) => Promise<void>,
 ): Promise<number> {
+  assertBackupAssetsFitParts(input.assets);
   const groups = splitBackupAssetsIntoParts(
     input.assets,
     input.partAssetBudgetBytes ?? DEFAULT_PART_ASSET_BUDGET_BYTES,
@@ -155,7 +202,12 @@ export async function createCompleteBackupParts(
 
   for (let index = 0; index < groups.length; index += 1) {
     const loaded: CompleteBackupPlainAsset[] = [];
+    // The single-file budget, applied per part: every part must itself fit the
+    // device ceiling, and it reserves each file from its declared size before
+    // the bytes are read.
+    const partBudget = createBackupAssetBudget();
     for (const source of groups[index]) {
+      partBudget.reserve(source.id, source.sizeBytes);
       const bytes = await source.read();
       if (bytes.byteLength !== source.sizeBytes) {
         // Same discipline as the single-file budget: a file that changed while
@@ -212,30 +264,22 @@ export function isCompleteBackupPart(value: unknown): value is CompleteBackupPar
   );
 }
 
+export type BackupPartHeader = Readonly<{
+  backupId: string;
+  partIndex: number;
+  partCount: number;
+}>;
+
 /**
- * Restore from a set of parts. Refuses anything other than exactly one
- * complete backup: mixed backups, missing parts, duplicates, or a set whose
- * declared count disagrees.
+ * Refuses anything other than exactly one complete backup: mixed backups,
+ * missing parts, duplicates, or a set whose declared count disagrees. Works on
+ * headers alone, so a restore can check the whole set before decrypting any of
+ * it and without holding every part in memory.
  */
-export async function readCompleteBackupParts(
-  files: readonly unknown[],
-  passphrase: string,
-): Promise<{ state: unknown; assets: Map<string, Uint8Array> }> {
-  if (files.length === 0) {
+export function validateBackupPartSet(parts: readonly BackupPartHeader[]): void {
+  if (parts.length === 0) {
     throw new CompleteBackupPartsError('no_parts', 'No backup parts were selected.');
   }
-
-  const parts: CompleteBackupPart[] = [];
-  for (const file of files) {
-    if (!isCompleteBackupPart(file)) {
-      throw new CompleteBackupPartsError(
-        'part_unreadable',
-        'One of the selected files is not a Vitruvius backup part.',
-      );
-    }
-    parts.push(file);
-  }
-
   if (new Set(parts.map(part => part.backupId)).size !== 1) {
     throw new CompleteBackupPartsError(
       'mixed_backups',
@@ -269,6 +313,33 @@ export async function readCompleteBackupParts(
       } missing (part ${missing.join(', ')}). Nothing was restored.`,
     );
   }
+}
+
+/**
+ * Restore from a set of parts. Refuses anything other than exactly one
+ * complete backup: mixed backups, missing parts, duplicates, or a set whose
+ * declared count disagrees.
+ */
+export async function readCompleteBackupParts(
+  files: readonly unknown[],
+  passphrase: string,
+): Promise<{ state: unknown; assets: Map<string, Uint8Array> }> {
+  if (files.length === 0) {
+    throw new CompleteBackupPartsError('no_parts', 'No backup parts were selected.');
+  }
+
+  const parts: CompleteBackupPart[] = [];
+  for (const file of files) {
+    if (!isCompleteBackupPart(file)) {
+      throw new CompleteBackupPartsError(
+        'part_unreadable',
+        'One of the selected files is not a Vitruvius backup part.',
+      );
+    }
+    parts.push(file);
+  }
+
+  validateBackupPartSet(parts);
 
   const ordered = [...parts].sort((left, right) => left.partIndex - right.partIndex);
   const assets = new Map<string, Uint8Array>();

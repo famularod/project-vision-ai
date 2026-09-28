@@ -447,7 +447,7 @@ export function AdminScreen({
                 </Text>
               ) : null}
               <Text style={styles.actionSummary}>
-                {DEVICE_BACKUP_SCOPE_NOTICE} Archives must fit within 128 MB after encryption and encoding. Use a passphrase of at least 12 characters. Vitruvius cannot recover a forgotten passphrase.
+                {DEVICE_BACKUP_SCOPE_NOTICE} A large backup is saved as several files of up to 128 MB each; save every part, because a restore needs all of them. Use a passphrase of at least 12 characters. Vitruvius cannot recover a forgotten passphrase.
               </Text>
               <TextInput
                 style={styles.modalInput}
