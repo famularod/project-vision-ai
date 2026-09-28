@@ -3,6 +3,7 @@ import {
   scheduleImportItemHasCoreFacts,
   scheduleImportItemIsReady,
   scheduleImportReviewFields,
+  scheduleOverviewProjectNames,
 } from '../../services/PIEScheduleImportBatch';
 
 function scheduleItem(overrides: Partial<ScheduleItem> = {}): ScheduleItem {
@@ -89,5 +90,22 @@ describe('schedule import batch date safety', () => {
 
     expect(scheduleImportReviewFields(item)).toContain('date');
     expect(scheduleImportItemHasCoreFacts(item)).toBe(false);
+  });
+});
+
+describe('overview project list and archived projects', () => {
+  const tasks = [
+    scheduleItem({ id: 't1', scheduleProjectName: 'Archived Job', projectName: 'Archived Job' }),
+    scheduleItem({ id: 't2', scheduleProjectName: 'Active Job', projectName: 'Active Job' }),
+  ];
+
+  it('does not bring an archived project back because its tasks name it', () => {
+    expect(scheduleOverviewProjectNames(['Active Job'], tasks, ['archived job']))
+      .toEqual(['Active Job']);
+  });
+
+  it('still lists schedule parents that are not archived', () => {
+    expect(scheduleOverviewProjectNames(['Active Job'], tasks))
+      .toEqual(expect.arrayContaining(['Archived Job', 'Active Job']));
   });
 });

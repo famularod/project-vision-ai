@@ -13115,8 +13115,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
     () => scheduleOverviewProjectNames(
       activeProjects,
       authoritativeScheduleItems as unknown as import('./types').ScheduleItem[],
+      archivedProjects,
     ),
-    [activeProjects, authoritativeScheduleItems],
+    [activeProjects, authoritativeScheduleItems, archivedProjects],
   );
   const {
     reportType,
@@ -14555,6 +14556,7 @@ function HomeScreen({
   const scopedProjects = scheduleOverviewProjectNames(
     projects,
     scheduleItems as unknown as import('./types').ScheduleItem[],
+    archivedProjects,
   );
   const overviewRows = buildOverviewProjectRows(
     scopedProjects,
