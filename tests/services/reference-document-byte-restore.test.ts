@@ -82,6 +82,16 @@ describe('verified reference-document byte restore', () => {
     expect(dependencies.downloadBytes).not.toHaveBeenCalled();
   });
 
+  it('says why a download failed', async () => {
+    const dependencies = fixture({
+      downloadBytes: jest.fn(async () => { throw new TypeError('result.data.arrayBuffer is not a function'); }),
+    });
+    await expect(restoreVerifiedReferenceDocumentBytes(input(), dependencies)).rejects.toMatchObject({
+      code: 'download_failed',
+      message: 'The reference document could not be downloaded from protected storage (result.data.arrayBuffer is not a function).',
+    });
+  });
+
   it('does not write bytes that fail the download integrity check', async () => {
     const dependencies = fixture({
       downloadBytes: jest.fn(async () => new Uint8Array([9])),

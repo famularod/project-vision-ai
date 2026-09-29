@@ -366,11 +366,12 @@ import {
 } from './services/CompleteBackupArchive';
 import { type CompleteBackupAssetSource } from './services/CompleteBackupArchiveParts';
 import {
-  decryptedBytesAssetProvider, describeBackupAssetSource, exportBackupInParts, measureBackupAssetSource,
+  decryptedBytesAssetProvider, exportBackupInParts, measureBackupAssetSource,
   materializeCompleteBackupState, multiPartBackupNotice, openSelectedBackup, stagedAssetProvider,
-  type UnavailableBackupPhoto,
+  type UnavailableBackupDocument, type UnavailableBackupPhoto,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   assertBackupSerializedFits,
   DEVICE_BACKUP_SCOPE_NOTICE, DEVICE_BACKUP_RESTORE_NOTICE,
@@ -879,6 +880,7 @@ const DELETED_UPDATES_STORAGE_KEY = 'projectPhotoUpdate.deletedUpdates.v1';
 const PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.projects.v2';
 const DELETED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.deletedProjects.v1';
 const ARCHIVED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.archivedProjects.v2';
+const BACKUP_KEEP_AWAKE_TAG = 'vitruvius-device-backup';
 const CONTACTS_STORAGE_KEY = 'projectPhotoUpdate.contacts.v2';
 const DRAFT_STORAGE_KEY = 'projectPhotoUpdate.activeDraft.v2';
 const PROJECT_AREAS_STORAGE_KEY = 'projectPhotoUpdate.projectAreas.v1';
@@ -10340,7 +10342,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
     { cancelable: true, onDismiss: () => resolve(false) },
   ));
 
-  async function exportBackup(passphrase: string, includeFiles = true) {
+  // Backup and restore each take minutes on the phone: keep the screen on so
+  // the app is not suspended part-way.
+  const withBackupKeepAwake = async <T,>(work: () => Promise<T>): Promise<T> => {
+    await activateKeepAwakeAsync(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined);
+    try { return await work(); } finally { await deactivateKeepAwake(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined); }
+  };
+
+  async function exportBackup(passphrase: string, includeFiles = true, onProgress?: (message: string) => void) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
         'Passphrase required',
@@ -10368,6 +10377,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const fileUri = `${targetDirectory}${fileStem}.vitruvius-backup`;
 
     try {
+      // Encrypting a part takes minutes on the phone: keep the screen on so
+      // the app is not suspended before its save screen can open.
+      if (includeFiles) await activateKeepAwakeAsync(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined);
+      onProgress?.('Checking photos and documents for the backup…');
       // Files are described here and read one backup part at a time later,
       // so the full backup never holds every photo in memory at once.
       const sources: CompleteBackupAssetSource[] = [];
@@ -10382,57 +10395,52 @@ Note: This update was opened through Outlook because PLZ email security may reje
           unavailablePhotos,
         ));
       }
+      // A document whose file cannot be read now is kept as a record without
+      // its file, like records-only, and only with the owner's agreement,
+      // which is asked before anything is written.
+      const unavailableDocuments: UnavailableBackupDocument[] = [];
+      const leaveOut = (name: string, error?: unknown) => {
+        unavailableDocuments.push({ name, reason: error instanceof Error && error.message ? error.message : 'Its file could not be found on this device.' });
+        return null;
+      };
       const backupReferenceDocuments = [];
       for (const document of referenceDocuments) {
-        // Records-only does not read or verify file bytes at all, so a
-        // document whose local file is missing cannot fail the export.
-        if (!includeFiles) {
-          backupReferenceDocuments.push({ ...document, uri: '' });
-          continue;
-        }
-        const readable = await ensureVerifiedReferenceDocumentBytes(document);
         const assetId = `reference_document:${document.id}`;
-        sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+        const inDriveOnly = document.sourceProvider === 'google_drive' && !document.storagePath;
+        const readable = includeFiles ? await ensureVerifiedReferenceDocumentBytes(document).catch(error => leaveOut(document.name, inDriveOnly
+          ? new Error('Its file is kept in Google Drive, not in Vitruvius storage, so this phone cannot copy it.') : error)) : null;
+        const source = readable ? await measureBackupAssetSource(expoBackupFileIO, {
           id: assetId,
           kind: 'reference_document',
           relativePath: sanitizeFilename(document.originalFileName),
           uri: readable.uri,
-        }));
-        backupReferenceDocuments.push({
-          ...readable,
-          uri: '',
-          _backupAssetId: assetId,
-        });
+        }) : null;
+        if (!source) {
+          if (readable) leaveOut(document.name);
+          backupReferenceDocuments.push({ ...(readable ?? document), uri: '' });
+          continue;
+        }
+        sources.push(source);
+        backupReferenceDocuments.push({ ...readable, uri: '', _backupAssetId: assetId });
       }
       const backupProjectDocuments = [];
       for (const document of projectDocuments) {
-        if (!includeFiles) {
-          backupProjectDocuments.push({
-            ...document,
-            localUri: null,
-            ownedFileId: null,
-            ownedFileManifest: null,
-          });
-          continue;
-        }
-        const readable = await ensureVerifiedProjectDocumentBytes(document);
-        if (!readable.localUri) {
-          throw new Error(`The document "${document.name}" is unavailable.`);
-        }
         const assetId = `project_document:${document.id}`;
-        sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+        const readable = includeFiles ? await ensureVerifiedProjectDocumentBytes(document).catch(error => leaveOut(document.name, error)) : null;
+        const source = readable?.localUri ? await measureBackupAssetSource(expoBackupFileIO, {
           id: assetId,
           kind: 'project_document',
           relativePath: sanitizeFilename(document.name),
           uri: readable.localUri,
-        }));
-        backupProjectDocuments.push({
-          ...readable,
-          localUri: null,
-          ownedFileId: null,
-          ownedFileManifest: null,
-          _backupAssetId: assetId,
-        });
+        }) : null;
+        const withoutFile = { localUri: null, ownedFileId: null, ownedFileManifest: null };
+        if (!source) {
+          if (readable) leaveOut(document.name);
+          backupProjectDocuments.push({ ...(readable ?? document), ...withoutFile });
+          continue;
+        }
+        sources.push(source);
+        backupProjectDocuments.push({ ...readable, ...withoutFile, _backupAssetId: assetId });
       }
       const backupDraft = hasMeaningfulDraft(draft)
         ? await prepareUpdateForCompleteBackup(
@@ -10505,10 +10513,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
         directory: targetDirectory,
         fileStem,
         unavailablePhotos,
+        unavailableDocuments,
       }, {
         io: expoBackupFileIO,
         randomBytes,
-        confirmUnavailablePhotos: notice => askToContinue('Some photos are unavailable', notice, 'Back up without them'),
+        confirmUnavailableFiles: notice => askToContinue('Some files are unavailable', notice, 'Back up without them'),
+        onProgress,
         confirmPartCount: partCount => askToContinue(`Backup needs ${partCount} files`, multiPartBackupNotice(partCount), 'Continue'),
         share: (uri, partNumber, partCount) => Sharing.shareAsync(uri, {
           dialogTitle: partCount === 1
@@ -10518,14 +10528,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
           UTI: 'public.data',
         }),
       });
+      onProgress?.(exported.status === 'cancelled' ? 'Backup cancelled. Nothing was saved.' : `Backup finished: ${exported.partCount} file(s) shared.`);
       if (exported.status === 'cancelled') return;
       Alert.alert(
         'Backup share sheet closed',
         `${DEVICE_BACKUP_SCOPE_NOTICE} Confirm that the file was saved in your chosen destination${
           exported.partCount > 1 ? `: all ${exported.partCount} parts, in one place` : ''
-        }.${unavailablePhotos.length ? ` ${unavailablePhotos.length} unavailable photo(s) were left out.` : ''} Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
+        }.${unavailablePhotos.length + unavailableDocuments.length ? ` ${unavailablePhotos.length + unavailableDocuments.length} unavailable file(s) were left out.` : ''} Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
       );
     } catch (error) {
+      onProgress?.('Backup did not finish.');
       Alert.alert(
         'Device backup failed',
         error instanceof Error
@@ -10534,6 +10546,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       );
     } finally {
       await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
+      if (includeFiles) await deactivateKeepAwake(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined);
     }
   }
 
@@ -10595,7 +10608,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function restoreBackup(passphrase: string) {
+  async function restoreBackup(passphrase: string, onProgress?: (message: string) => void) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
         'Passphrase required',
@@ -10638,11 +10651,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
         }
       }
 
-      const opened = await openSelectedBackup(
+      const opened = await withBackupKeepAwake(() => openSelectedBackup(
         result.assets.map(file => file.uri),
         passphrase,
         expoBackupFileIO,
-      );
+        onProgress,
+      ));
       const preflight = normalizeBackupData(opened.state);
 
       if (!preflight.ok) {
@@ -10662,12 +10676,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {
             text: 'Cancel',
             style: 'cancel',
+            onPress: () => onProgress?.('Restore cancelled. Nothing was changed.'),
           },
           {
             text: 'Restore',
             style: 'destructive',
             onPress: () => {
-              void (async () => {
+              void withBackupKeepAwake(async () => {
                 if (!FileSystem.cacheDirectory) {
                   throw new Error('A temporary app folder for the restore could not be found.');
                 }
@@ -10701,10 +10716,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   }
                   const committed = await applyRestoredData(normalized.data);
                   if (!committed) await materialized.cleanup();
+                  onProgress?.(committed ? 'Restore finished.' : 'Restore did not finish.');
                 } finally {
                   await staged?.cleanup();
                 }
-              })().catch(error => {
+              }).catch(error => {
+                onProgress?.('Restore did not finish.');
                 Alert.alert(
                   'Restore failed',
                   error instanceof Error
@@ -10958,8 +10975,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         dialogTitle: document.name,
         mimeType: document.mimeType || undefined,
       });
-    } catch {
-      Alert.alert('Open failed', 'This reference document could not be opened right now.');
+    } catch (error) {
+      Alert.alert('Open failed', error instanceof Error && error.message
+        ? error.message
+        : 'This reference document could not be opened right now.');
     }
   }
 
@@ -13752,11 +13771,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onDisplayNameChange={setDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
-              onBackup={(passphrase, includeFiles = true) => {
-                void exportBackup(passphrase, includeFiles);
+              onBackup={(passphrase, includeFiles = true, onProgress) => {
+                void exportBackup(passphrase, includeFiles, onProgress);
               }}
-              onRestore={passphrase => {
-                void restoreBackup(passphrase);
+              onRestore={(passphrase, onProgress) => {
+                void restoreBackup(passphrase, onProgress);
               }}
               onAddArea={addProjectArea}
               onUpdateArea={updateProjectArea}

@@ -54,9 +54,20 @@ export type DecryptedCompleteBackup = Readonly<{
   manifest: CompleteAppBackupManifest;
 }>;
 
+/**
+ * SHA-256 of bytes as lowercase hex. The phone passes its native digest: in
+ * JavaScript on the phone, hashing one 128 MB part and its ~170 MB envelope
+ * took minutes (field test 28 Sep 2026). Both give the same hex, so archives
+ * are identical whichever one wrote or reads them.
+ */
+export type BackupSha256 = (bytes: Uint8Array) => Promise<string>;
+
 export type CompleteBackupArchiveDependencies = Readonly<{
   randomBytes: (length: number) => Uint8Array | Promise<Uint8Array>;
+  sha256Hex?: BackupSha256;
 }>;
+
+const javaScriptSha256Hex: BackupSha256 = async bytes => sha256Hex(bytes);
 
 export class CompleteBackupArchiveError extends Error {
   readonly code:
@@ -85,6 +96,7 @@ export async function createCompleteBackupArchive(
   dependencies: CompleteBackupArchiveDependencies,
 ): Promise<CompleteBackupArchive> {
   const passphrase = requireBackupPassphrase(input.passphrase);
+  const hashBytes = dependencies.sha256Hex ?? javaScriptSha256Hex;
   const salt = await dependencies.randomBytes(KDF_SALT_BYTES);
   assertRandomLength(salt, KDF_SALT_BYTES, 'backup salt');
   const key = await deriveBackupKey(passphrase, salt);
@@ -113,7 +125,7 @@ export async function createCompleteBackupArchive(
       kind: asset.kind,
       relativePath: requireRelativePath(asset.relativePath),
       sizeBytes: asset.bytes.byteLength,
-      sha256: sha256Hex(asset.bytes),
+      sha256: await hashBytes(asset.bytes),
     });
     encryptedAssets.push(Object.freeze({
       id,
@@ -156,15 +168,17 @@ export async function createCompleteBackupArchive(
     ...unsigned,
     encryption: Object.freeze(unsigned.encryption),
     encryptedAssets: Object.freeze(encryptedAssets),
-    envelopeSha256: sha256Hex(utf8ToBytes(canonicalJson(unsigned))),
+    envelopeSha256: await hashBytes(utf8ToBytes(canonicalJson(unsigned))),
   });
 }
 
 export async function decryptCompleteBackupArchive(
   rawArchive: unknown,
   passphraseInput: string,
+  dependencies: Readonly<{ sha256Hex?: BackupSha256 }> = {},
 ): Promise<DecryptedCompleteBackup> {
   const passphrase = requireBackupPassphrase(passphraseInput);
+  const hashBytes = dependencies.sha256Hex ?? javaScriptSha256Hex;
   const archive = parseArchive(rawArchive);
   const unsigned = {
     archiveVersion: archive.archiveVersion,
@@ -174,7 +188,7 @@ export async function decryptCompleteBackupArchive(
   };
   if (
     archive.envelopeSha256 !==
-    sha256Hex(utf8ToBytes(canonicalJson(unsigned)))
+    await hashBytes(utf8ToBytes(canonicalJson(unsigned)))
   ) {
     throw new CompleteBackupArchiveError(
       'invalid_archive',
@@ -253,7 +267,7 @@ export async function decryptCompleteBackupArchive(
     }
     if (
       bytes.byteLength !== asset.sizeBytes ||
-      sha256Hex(bytes) !== asset.sha256
+      await hashBytes(bytes) !== asset.sha256
     ) {
       throw new CompleteBackupArchiveError(
         'asset_mismatch',

@@ -63,13 +63,16 @@ const backupWorkflow = read('services/DeviceBackupWorkflow.ts');
 for (const marker of [
   'createCompleteBackupArchive',
   'ensureVerifiedReferenceDocumentBytes',
-  'describeBackupAssetSource',
+  'measureBackupAssetSource',
   'exportBackupInParts',
   'openSelectedBackup',
   'materializeCompleteBackupState',
-  // A photo on neither the device nor the cloud is left out only with the
+  // A photo or document whose file cannot be read is left out only with the
   // owner's agreement (field test 28 Sep 2026).
-  'confirmUnavailablePhotos',
+  'confirmUnavailableFiles',
+  // A part takes minutes on the phone: the screen stays on (field test 28 Sep 2026).
+  'activateKeepAwakeAsync(BACKUP_KEEP_AWAKE_TAG)',
+  'void withBackupKeepAwake(async () => {',
 ]) {
   assert(app.includes(marker), `Live backup workflow must use ${marker}.`);
 }
@@ -78,7 +81,7 @@ for (const marker of [
   'createCompleteBackupParts',
   'validateBackupPartSet',
   'assertAllTaken',
-  'unavailablePhotosNotice',
+  'unavailableFilesNotice',
 ]) {
   assert(backupWorkflow.includes(marker), `Device backup workflow must preserve ${marker}.`);
 }

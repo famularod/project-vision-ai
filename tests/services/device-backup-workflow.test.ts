@@ -17,6 +17,7 @@ import {
   multiPartBackupNotice,
   openSelectedBackup,
   stagedAssetProvider,
+  unavailableFilesNotice,
   unavailablePhotosNotice,
   type BackupFileIO,
   type MaterializeBackupDependencies,
@@ -155,6 +156,39 @@ async function exportToShared(budget: number, confirm = true) {
 }
 
 describe('exportBackupInParts', () => {
+  // Field test, 28 Sep 2026: after "Continue" nothing showed for minutes,
+  // then the parts arrived. The owner is now told before each part, and the
+  // device's native hash is used when it has one.
+  it('says which part is being prepared before each one, and hashes with the device hash', async () => {
+    const fs = memoryFileSystem();
+    const sources = await sourcesFor(fs.io, fs.files);
+    const hashed: number[] = [];
+    const { createHash } = jest.requireActual('crypto') as typeof import('crypto');
+    const io: BackupFileIO = {
+      ...fs.io,
+      sha256Hex: async bytes => { hashed.push(bytes.byteLength); return createHash('sha256').update(bytes).digest('hex'); },
+    };
+    const events: string[] = [];
+    await exportBackupInParts({
+      state: STATE_TEMPLATE(), sources, passphrase: PASSPHRASE, createdAt: '2026-09-28T00:00:00.000Z',
+      backupId: 'backup-1', directory: 'file:///cache/', fileStem: 'stem', partAssetBudgetBytes: 900,
+    }, {
+      io, randomBytes: deterministicRandom(), confirmPartCount: async () => true,
+      onProgress: message => events.push(message),
+      share: async (_uri, partNumber) => { events.push(`shared ${partNumber}`); },
+    });
+    expect(events.map(event => event.startsWith('Encrypting backup part') ? event.slice(0, 33) : event)).toEqual([
+      'Encrypting backup part 1 of 3. Ea', 'shared 1',
+      'Encrypting backup part 2 of 3. Ea', 'shared 2',
+      'Encrypting backup part 3 of 3. Ea', 'shared 3',
+    ]);
+    expect(events[0]).toContain('keep Vitruvius open');
+    // Each part hashes its one 600-byte photo, then its envelope.
+    expect(hashed.filter(size => size === 600)).toHaveLength(3);
+    expect(hashed.filter(size => size > 600)).toHaveLength(3);
+  });
+
+
   it('asks once with the part count, then shares every part and leaves no file behind', async () => {
     const { fs, result, shared, confirmations } = await exportToShared(900);
 
@@ -301,7 +335,7 @@ describe('photos that are unavailable', () => {
       randomBytes: deterministicRandom(),
       confirmPartCount: async count => { partQuestions.push(count); return true; },
       ...(answer === undefined ? {} : {
-        confirmUnavailablePhotos: async (notice: string) => { asked.push(notice); return answer; },
+        confirmUnavailableFiles: async (notice: string) => { asked.push(notice); return answer; },
       }),
       share: async uri => { shared.push(uri); },
     });
@@ -332,6 +366,65 @@ describe('photos that are unavailable', () => {
     expect(shared).toEqual([]);
   });
 
+  // Field test, 28 Sep 2026 (Build 211): a cloud document that could not be
+  // downloaded then stopped the backup, again without naming it.
+  it('names each unavailable document and its reason, after the photos', () => {
+    const notice = unavailableFilesNotice(
+      [{ projectName: '2321', updateDate: '2026-09-14' }],
+      [{ name: 'MASTER SCHEDULE 8312026', reason: 'The reference document could not be downloaded from protected storage (offline).' }],
+    );
+    expect(notice.indexOf('1 photo is not on this device')).toBe(0);
+    expect(notice).toContain('1 document could not be read on this device, so this backup will leave its file out.');
+    expect(notice).toContain('copies stored in the cloud are not affected');
+    expect(notice).toContain('The reference document could not be downloaded from protected storage (offline). (1):\nMASTER SCHEDULE 8312026');
+  });
+
+  it('shortens a native error to its first line', () => {
+    const notice = unavailableFilesNotice([], [{
+      name: 'LOOKAHEAD',
+      reason: "FunctionCallException: Calling the 'digest' function has failed (at ExpoModulesCore/SyncFunctionDefinition.swift:94) → Caused by: ArgumentCastException: The 3rd argument cannot be cast",
+    }, { name: 'Long', reason: 'x'.repeat(400) }]);
+    expect(notice).toContain("FunctionCallException: Calling the 'digest' function has failed (at ExpoModulesCore/SyncFunctionDefinition.swift:94) (1):\nLOOKAHEAD");
+    expect(notice).not.toContain('Caused by');
+    expect(notice).toContain(`${'x'.repeat(159)}… (1):\nLong`);
+  });
+
+  it('groups documents by reason, rarest first, so no reason is hidden', () => {
+    const drive = 'Its file is kept in Google Drive, not in Vitruvius storage, so this phone cannot copy it.';
+    const documents = [
+      ...Array.from({ length: 20 }, (_, index) => ({ name: `Drive ${index + 1}`, reason: drive })),
+      { name: 'Schedule', reason: 'The reference document could not be downloaded from protected storage (offline).' },
+      { name: 'Permit', reason: 'This older cloud document does not include the checksum needed for safe recovery.' },
+      { name: 'Survey', reason: 'This older cloud document does not include the checksum needed for safe recovery.' },
+    ];
+    const notice = unavailableFilesNotice([], documents);
+    expect(notice.startsWith('23 documents could not be read')).toBe(true);
+    const download = notice.indexOf('protected storage (offline). (1):\nSchedule');
+    const checksum = notice.indexOf('safe recovery. (2):\nPermit\nSurvey');
+    const inDrive = notice.indexOf(`${drive} (20):\nDrive 1\nDrive 2\nDrive 3\nand 17 more`);
+    expect(download).toBeGreaterThan(0);
+    expect(checksum).toBeGreaterThan(download);
+    expect(inDrive).toBeGreaterThan(checksum);
+    expect(notice).not.toContain('Drive 4');
+  });
+
+  it('asks once about unavailable documents alone, and writes nothing if the owner cancels', async () => {
+    const fs = memoryFileSystem();
+    const sources = await sourcesFor(fs.io, fs.files);
+    const asked: string[] = [];
+    const share = jest.fn();
+    await expect(exportBackupInParts({
+      state: STATE_TEMPLATE(), sources, passphrase: PASSPHRASE, createdAt: '2026-09-28T00:00:00.000Z',
+      backupId: 'backup-1', directory: 'file:///cache/', fileStem: 'stem', partAssetBudgetBytes: 900,
+      unavailableDocuments: [{ name: 'Lookahead', reason: 'offline' }],
+    }, {
+      io: fs.io, randomBytes: deterministicRandom(), confirmPartCount: async () => true, share,
+      confirmUnavailableFiles: async notice => { asked.push(notice); return false; },
+    })).resolves.toEqual({ status: 'cancelled', partCount: 0 });
+    expect(asked).toEqual([expect.stringContaining('offline (1):\nLookahead')]);
+    expect(share).not.toHaveBeenCalled();
+  });
+
   it('restores a left-out photo as a record with no file, next to the photos that were carried', async () => {
     const fs = memoryFileSystem();
     const sources = await sourcesFor(fs.io, fs.files);
@@ -344,7 +437,7 @@ describe('photos that are unavailable', () => {
       unavailablePhotos: [{ projectName: '2321', updateDate: '2026-09-14' }],
     }, {
       io: fs.io, randomBytes: deterministicRandom(), confirmPartCount: async () => true,
-      confirmUnavailablePhotos: async () => true,
+      confirmUnavailableFiles: async () => true,
       share: async uri => { shared.push({ text: await fs.io.readText(uri) }); },
     });
     const picked = await pickShared(shared);
@@ -399,6 +492,21 @@ describe('restore from parts', () => {
       );
     });
     expect([...fs.files.keys()].some(key => key.startsWith('file:///cache/staging/'))).toBe(false);
+  });
+
+  it('tells the owner each restore step, in order', async () => {
+    const { shared } = await exportToShared(900);
+    const { fs, uris } = await pickShared(shared);
+    const events: string[] = [];
+    const opened = await openSelectedBackup(uris, PASSPHRASE, fs.io, message => events.push(message));
+    if (opened.kind !== 'parts') throw new Error('expected parts');
+    const staged = await opened.stageAssets('file:///cache/staging/');
+    await staged.cleanup();
+    expect(events.map(event => event.split('.')[0])).toEqual([
+      'Checking backup file 1 of 3', 'Checking backup file 2 of 3', 'Checking backup file 3 of 3',
+      'Decrypting the backup records',
+      'Restoring backup part 1 of 3', 'Restoring backup part 2 of 3', 'Restoring backup part 3 of 3',
+    ]);
   });
 
   it('refuses an incomplete set and names the missing part', async () => {

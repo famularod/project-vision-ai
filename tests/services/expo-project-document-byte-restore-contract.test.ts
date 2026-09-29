@@ -17,7 +17,13 @@ describe('project document cloud byte restore adapter', () => {
   test('verifies downloaded and written bytes through the shared fail-closed restore', () => {
     expect(source).toContain('restoreVerifiedReferenceDocumentBytes');
     expect(source).toContain('readBytes: uri => new File(uri).bytes()');
-    expect(source).toContain('Crypto.CryptoDigestAlgorithm.SHA256');
+    // SHA-256 through the shared helper, which hands the native digest a
+    // TypedArray (field test 28 Sep 2026: an ArrayBuffer fails on the phone).
+    expect(source).toContain('sha256: sha256Hex,');
+    const hashing = fs.readFileSync(path.resolve(__dirname, '../../services/ExpoSha256.ts'), 'utf8');
+    expect(hashing).toContain('Crypto.CryptoDigestAlgorithm.SHA256');
+    expect(hashing).toContain('Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, digestInput)');
+    expect(hashing).not.toMatch(/digest\([^)]*\.buffer\)/);
     expect(source).toContain('if (file.exists) file.delete()');
   });
 

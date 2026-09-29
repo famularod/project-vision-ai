@@ -30,6 +30,7 @@
 import {
   createCompleteBackupArchive,
   decryptCompleteBackupArchive,
+  type BackupSha256,
   type CompleteBackupArchive,
   type CompleteBackupArchiveDependencies,
   type CompleteBackupPlainAsset,
@@ -193,6 +194,7 @@ export async function createCompleteBackupParts(
   }>,
   dependencies: CompleteBackupArchiveDependencies,
   onPart: (part: CompleteBackupPart) => Promise<void>,
+  onPartStart?: (partNumber: number, partCount: number) => void,
 ): Promise<number> {
   assertBackupAssetsFitParts(input.assets);
   const groups = splitBackupAssetsIntoParts(
@@ -201,6 +203,7 @@ export async function createCompleteBackupParts(
   );
 
   for (let index = 0; index < groups.length; index += 1) {
+    onPartStart?.(index + 1, groups.length);
     const loaded: CompleteBackupPlainAsset[] = [];
     // The single-file budget, applied per part: every part must itself fit the
     // device ceiling, and it reserves each file from its declared size before
@@ -323,6 +326,7 @@ export function validateBackupPartSet(parts: readonly BackupPartHeader[]): void 
 export async function readCompleteBackupParts(
   files: readonly unknown[],
   passphrase: string,
+  dependencies: Readonly<{ sha256Hex?: BackupSha256 }> = {},
 ): Promise<{ state: unknown; assets: Map<string, Uint8Array> }> {
   if (files.length === 0) {
     throw new CompleteBackupPartsError('no_parts', 'No backup parts were selected.');
@@ -346,7 +350,7 @@ export async function readCompleteBackupParts(
   let state: unknown = null;
 
   for (const part of ordered) {
-    const decrypted = await decryptCompleteBackupArchive(part.archive, passphrase);
+    const decrypted = await decryptCompleteBackupArchive(part.archive, passphrase, dependencies);
     if (part.partIndex === 0) state = decrypted.state;
     decrypted.assets.forEach((bytes, id) => {
       if (assets.has(id)) {
