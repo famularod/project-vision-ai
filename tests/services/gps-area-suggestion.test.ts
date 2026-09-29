@@ -936,3 +936,48 @@ describe('GPS confirmation drives confidence and conflicts', () => {
     expect(fused.conflicts.map(item => item.id)).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
   });
 });
+
+// Review pass 19: GPS can contradict only its own update's area.
+describe('the GPS/update area conflict', () => {
+  const now = new Date('2026-09-29T17:05:00.000Z');
+  const P = '2321 Compliance Project';
+  const mk = (id: string, time: string, extra: Record<string, unknown>) => ({
+    id, projectName: P, date: '2026-09-29', notes: '', photos: [], recipients: { contactIds: [] },
+    locationCapturedAt: time, ...extra,
+  });
+  const fixAt = (feetNorth: number) => ({
+    gpsLatitude: north(feetNorth).latitude, gpsLongitude: north(feetNorth).longitude, gpsAccuracy: 5,
+  });
+  const ids = (updates: unknown[], areas: ProjectArea[]) =>
+    buildFusedEvidence({ projectName: P, updates: updates as never, projectAreas: areas, now }).conflicts.map(item => item.id);
+  const MISMATCH = 'pie-evidence-conflict-gps-update-area-mismatch';
+
+  it('is not raised against a later update without GPS, renamed area or not', () => {
+    const building = area('x', 0, 175, { name: 'Building 1', projectName: P });
+    const older = mk('a', '2026-09-29T16:00:00.000Z', { selectedAreaName: 'Bldg 1', selectedAreaId: 'x', ...fixAt(10) });
+    const newer = mk('b', '2026-09-29T17:00:00.000Z', { selectedAreaName: 'Building 1', selectedAreaId: 'x' });
+    expect(ids([newer, older], [building])).not.toContain(MISMATCH);
+
+    const northLot = area('north', 0, 175, { name: 'North Lot', projectName: P });
+    const pumpHouse = mk('c', '2026-09-29T17:00:00.000Z', { selectedAreaName: 'Pump House' });
+    const walked = mk('d', '2026-09-29T16:00:00.000Z', { selectedAreaName: 'North Lot', selectedAreaId: 'north', ...fixAt(10) });
+    expect(ids([pumpHouse, walked], [northLot])).not.toContain(MISMATCH);
+  });
+
+  it('is still raised when an update’s own fix is confidently in another area', () => {
+    const northLot = area('north', 0, 175, { name: 'North Lot', projectName: P });
+    const southLot = area('south', 2_000, 175, { name: 'South Lot', projectName: P });
+    const wrong = mk('e', '2026-09-29T17:00:00.000Z', { selectedAreaName: 'North Lot', selectedAreaId: 'north', ...fixAt(2_000) });
+    expect(ids([wrong], [northLot, southLot])).toContain(MISMATCH);
+  });
+});
+
+describe('photo evidence quality', () => {
+  it('counts GPS as confirming photo context only when GPS confirms the area', () => {
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const path = jest.requireActual('path') as typeof import('path');
+    const core = fs.readFileSync(path.resolve(__dirname, '../../services/PIECoreIntelligence.ts'), 'utf8');
+    expect(core).toContain('gpsConfirmed: fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.gpsConfirmsRecommendedArea !== false,');
+    expect(core).not.toContain('gpsConfirmed: fused.gpsEvidence.gpsAvailable,');
+  });
+});

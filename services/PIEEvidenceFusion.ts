@@ -179,6 +179,8 @@ export type PIEGPSEvidence = {
   withinMappedArea: boolean | null;
   /** The fix is confidently inside the recommended area (GPS review pass 17). */
   gpsConfirmsRecommendedArea?: boolean;
+  /** The update the latest GPS reading belongs to (GPS review pass 19). */
+  sourceUpdateId?: string | null;
   correctionStatus: 'accepted' | 'corrected' | 'needs-verification' | 'not-available';
   supportsProjectWalk: boolean;
   confidenceScore: number;
@@ -678,6 +680,7 @@ export function extractGPSEvidence({
       accuracy: update.gpsAccuracy ?? null,
       capturedAt: update.locationCapturedAt || update.date || null,
       sourceId: update.id,
+      updateId: update.id,
       sourceType: 'typed-update' as const,
     }));
   const photoGps = photoEvidence.map(photo => ({
@@ -689,6 +692,7 @@ export function extractGPSEvidence({
     accuracy: photo.gpsAccuracy,
     capturedAt: photo.timestamp,
     sourceId: photo.id,
+    updateId: photo.updateId,
     sourceType: 'photo' as const,
   }));
   const candidates = [...photoGps, ...updateGps]
@@ -797,6 +801,7 @@ export function extractGPSEvidence({
     distanceFromNearestAreaFeet: nearest?.distanceFeet ?? null,
     withinMappedArea: latestFix ? insideMappedArea : null,
     gpsConfirmsRecommendedArea: gpsConfirmsArea,
+    sourceUpdateId: latest?.updateId ?? null,
     correctionStatus,
     supportsProjectWalk: Boolean(recommendedProject || recommendedArea),
     confidenceScore,
@@ -1150,8 +1155,13 @@ export function findEvidenceConflicts(
   const gpsArea = evidence.gpsEvidence.gpsConfirmsRecommendedArea === false
     ? null
     : namedArea(evidence.gpsEvidence.recommendedArea);
-  const recentUpdateArea = namedArea(evidence.userUpdateEvidence[0]?.areaName);
-  if (gpsArea && recentUpdateArea && !sameArea(gpsArea, recentUpdateArea)) {
+  // Only an update's own GPS can contradict its area: the latest reading may
+  // belong to an older update, under an area since renamed (pass 19).
+  const recentUpdate = evidence.userUpdateEvidence[0];
+  const sameUpdate = evidence.gpsEvidence.sourceUpdateId === undefined ||
+    evidence.gpsEvidence.sourceUpdateId === recentUpdate?.id;
+  const recentUpdateArea = namedArea(recentUpdate?.areaName);
+  if (gpsArea && recentUpdateArea && sameUpdate && !sameArea(gpsArea, recentUpdateArea)) {
     conflicts.push(conflict({
       evidence,
       id: 'gps-update-area-mismatch',
