@@ -13,9 +13,11 @@ import {
   describeBackupAssetSource,
   exportBackupInParts,
   materializeCompleteBackupState,
+  measureBackupAssetSource,
   multiPartBackupNotice,
   openSelectedBackup,
   stagedAssetProvider,
+  unavailablePhotosNotice,
   type BackupFileIO,
   type MaterializeBackupDependencies,
 } from '../../services/DeviceBackupWorkflow';
@@ -240,6 +242,123 @@ describe('exportBackupInParts', () => {
       relativePath: 'x.pdf',
       uri: 'file:///missing.pdf',
     })).rejects.toThrow('The required project document file is unavailable.');
+  });
+});
+
+// Field test, 28 Sep 2026: one photo on neither the iPhone nor the cloud made
+// the whole backup fail ("The required photo file is unavailable."). A missing
+// photo is now left out with the owner's agreement, and the notice says which
+// updates it belongs to.
+describe('photos that are unavailable', () => {
+  it('measures a missing file as absent instead of failing', async () => {
+    const fs = memoryFileSystem();
+    await expect(measureBackupAssetSource(fs.io, {
+      id: 'photo:x', kind: 'photo', relativePath: 'x.jpg', uri: 'file:///gone.jpg',
+    })).resolves.toBeNull();
+  });
+
+  it('names the project and update dates, one line per project', () => {
+    const notice = unavailablePhotosNotice([
+      { projectName: '2321 Compliance Project', updateDate: '2026-09-14' },
+      { projectName: '2321 Compliance Project', updateDate: '2026-09-12' },
+      { projectName: '2321 Compliance Project', updateDate: '2026-09-14' },
+      { projectName: '2375 Pilot', updateDate: '2026-08-03T10:00:00.000Z' },
+    ]);
+    expect(notice).toContain('4 photos are not on this device');
+    expect(notice).toContain('leave them out');
+    expect(notice).toContain('2321 Compliance Project: 3 photos, from updates dated 2026-09-12, 2026-09-14');
+    expect(notice).toContain('2375 Pilot: 1 photo, from updates dated 2026-08-03');
+  });
+
+  it('keeps a long list of dates short', () => {
+    const missing = Array.from({ length: 8 }, (_, index) => ({
+      projectName: '2321', updateDate: `2026-09-0${index + 1}`,
+    }));
+    const notice = unavailablePhotosNotice(missing);
+    expect(notice).toContain('2026-09-05 and 3 more');
+    expect(notice).not.toContain('2026-09-06');
+    expect(unavailablePhotosNotice([missing[0]])).toContain('1 photo is not on this device');
+  });
+
+  async function exportWithUnavailable(answer: boolean | undefined) {
+    const fs = memoryFileSystem();
+    const sources = await sourcesFor(fs.io, fs.files);
+    const shared: string[] = [];
+    const asked: string[] = [];
+    const partQuestions: number[] = [];
+    const run = exportBackupInParts({
+      state: STATE_TEMPLATE(),
+      sources,
+      passphrase: PASSPHRASE,
+      createdAt: '2026-09-28T00:00:00.000Z',
+      backupId: 'backup-1',
+      directory: 'file:///cache/',
+      fileStem: 'stem',
+      partAssetBudgetBytes: 900,
+      unavailablePhotos: [{ projectName: '2321', updateDate: '2026-09-14' }],
+    }, {
+      io: fs.io,
+      randomBytes: deterministicRandom(),
+      confirmPartCount: async count => { partQuestions.push(count); return true; },
+      ...(answer === undefined ? {} : {
+        confirmUnavailablePhotos: async (notice: string) => { asked.push(notice); return answer; },
+      }),
+      share: async uri => { shared.push(uri); },
+    });
+    return { fs, run, shared, asked, partQuestions };
+  }
+
+  it('asks about unavailable photos first, and writes nothing if the owner cancels', async () => {
+    const { fs, run, shared, asked, partQuestions } = await exportWithUnavailable(false);
+    await expect(run).resolves.toEqual({ status: 'cancelled', partCount: 0 });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('2321: 1 photo');
+    expect(partQuestions).toEqual([]);
+    expect(shared).toEqual([]);
+    expect([...fs.files.keys()].some(key => key.startsWith('file:///cache/'))).toBe(false);
+  });
+
+  it('backs up everything else when the owner agrees', async () => {
+    const { run, shared, asked, partQuestions } = await exportWithUnavailable(true);
+    await expect(run).resolves.toEqual({ status: 'shared', partCount: 3 });
+    expect(asked).toHaveLength(1);
+    expect(partQuestions).toEqual([3]);
+    expect(shared).toHaveLength(3);
+  });
+
+  it('refuses to leave photos out silently when no one can be asked', async () => {
+    const { run, shared } = await exportWithUnavailable(undefined);
+    await expect(run).rejects.toThrow('1 photo is not on this device');
+    expect(shared).toEqual([]);
+  });
+
+  it('restores a left-out photo as a record with no file, next to the photos that were carried', async () => {
+    const fs = memoryFileSystem();
+    const sources = await sourcesFor(fs.io, fs.files);
+    const state = STATE_TEMPLATE();
+    state.savedUpdates[0].photos.push({ id: 'p4', uri: '' } as any);
+    const shared: { text: string }[] = [];
+    await exportBackupInParts({
+      state, sources, passphrase: PASSPHRASE, createdAt: '2026-09-28T00:00:00.000Z',
+      backupId: 'backup-1', directory: 'file:///cache/', fileStem: 'stem', partAssetBudgetBytes: 900,
+      unavailablePhotos: [{ projectName: '2321', updateDate: '2026-09-14' }],
+    }, {
+      io: fs.io, randomBytes: deterministicRandom(), confirmPartCount: async () => true,
+      confirmUnavailablePhotos: async () => true,
+      share: async uri => { shared.push({ text: await fs.io.readText(uri) }); },
+    });
+    const picked = await pickShared(shared);
+    const opened = await openSelectedBackup(picked.uris, PASSPHRASE, picked.fs.io);
+    if (opened.kind !== 'parts') throw new Error('expected parts');
+    const staged = await opened.stageAssets('file:///cache/staging/');
+    const materialized = await materializeCompleteBackupState(
+      opened.state, stagedAssetProvider(staged, picked.fs.io), materializeDependencies(picked.fs.io),
+    );
+    await staged.cleanup();
+    const photos = (materialized.state.savedUpdates as any[])[0].photos;
+    expect(photos).toHaveLength(4);
+    expect(photos.slice(0, 3).every((photo: any) => photo.uri.startsWith('file:///restored-photos/'))).toBe(true);
+    expect(photos[3]).toEqual({ id: 'p4', uri: '' });
   });
 });
 
