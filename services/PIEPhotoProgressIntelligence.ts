@@ -403,13 +403,14 @@ function duplicateKey(photo: UpdatePhoto, update: ProjectUpdate) {
   ].filter(Boolean).join('|');
 }
 
-function inferViewpoint(photo: UpdatePhoto, update: ProjectUpdate, subject: string, areaName: string | null) {
-  // A library photo never takes the update's place (GPS review pass 8).
-  const { gpsLatitude, gpsLongitude } = photoGpsOrUpdate(photo, update);
-  const gps = gpsLatitude !== null && gpsLongitude !== null
-    ? `${gpsLatitude.toFixed(4)},${gpsLongitude.toFixed(4)}`
-    : 'no-gps';
-  return `${slug(update.projectName)}:${slug(areaName)}:${slug(subject)}:${gps}`;
+/**
+ * GPS review pass 9: GPS is not part of the viewpoint. Rounded to about
+ * 10 m, a fix's own error split one spot into several sequences once fixes
+ * landed (before, every photo lacked GPS). Area and subject scope the
+ * viewpoint; the old "no-gps" suffix keeps existing sequence ids.
+ */
+export function inferViewpoint(update: Pick<ProjectUpdate, 'projectName'>, subject: string, areaName: string | null) {
+  return `${slug(update.projectName)}:${slug(areaName)}:${slug(subject)}:no-gps`;
 }
 
 function metadataReliability(photo: UpdatePhoto, update: ProjectUpdate): ProjectConfidenceLevel {
@@ -482,7 +483,7 @@ function flattenPhotos(input: PIEPhotoProgressIntelligenceInput): PIEPhotoIntell
           gpsLongitude: photoGpsOrUpdate(photo, update).gpsLongitude,
           gpsAccuracy: photoGpsOrUpdate(photo, update).gpsAccuracy,
           cameraDirection: inferCameraDirection(text),
-          viewpointKey: inferViewpoint(photo, update, subject, areaName),
+          viewpointKey: inferViewpoint(update, subject, areaName),
           metadataReliability: metadataReliability(photo, update),
           imageQuality: imageQualityFromText(text),
           sourceSignature: stableHash(photoSignature(photo, update)),

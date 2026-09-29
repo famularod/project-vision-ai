@@ -69,7 +69,7 @@ export function applyFixToDraft<TPhoto extends DraftGpsFields, TDraft extends Fi
   return {
     ...draft,
     ...gpsFields,
-    photos: draft.photos.map(photo => withDraftGps(photo, gpsFields, input.now)),
+    photos: draft.photos.map(photo => withDraftGps(photo, gpsFields)),
     areaStatus:
       draft.areaStatus === 'confirmed' || selectedArea
         ? 'confirmed'

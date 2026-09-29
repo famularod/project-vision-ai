@@ -255,11 +255,9 @@ describe('photos added while the draft fix is pending', () => {
     locationCapturedAt: '2026-09-29T15:00:00Z',
   };
 
-  const soon = Date.parse('2026-09-29T15:01:00Z');
-
   it('take the draft’s fix when they have none, keeping their own capture time', () => {
     const bare = { id: 'p1', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: '2026-09-29T14:59:00Z' };
-    expect(withDraftGps(bare, fix, soon)).toEqual({
+    expect(withDraftGps(bare, fix)).toEqual({
       id: 'p1',
       gpsLatitude: 37.1,
       gpsLongitude: -121.9,
@@ -268,8 +266,8 @@ describe('photos added while the draft fix is pending', () => {
       locationCapturedAt: '2026-09-29T14:59:00Z',
     });
     const own = { id: 'p2', gpsLatitude: 37.5, gpsLongitude: -121.5 };
-    expect(withDraftGps(own, fix, soon)).toBe(own);
-    expect(withDraftGps(bare, { gpsLatitude: null, gpsLongitude: null }, soon)).toBe(bare);
+    expect(withDraftGps(own, fix)).toBe(own);
+    expect(withDraftGps(bare, { gpsLatitude: null, gpsLongitude: null })).toBe(bare);
   });
 });
 
@@ -363,9 +361,12 @@ describe('GPS wiring in the app', () => {
     expect(app).toContain('photos.push(asLibraryPhoto(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current)));');
     expect(app).toContain('...withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),');
     expect(app.match(/const baseDraft = draftRef\.current;/g)).toHaveLength(2);
-    expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev, Date\.now\(\)\)\)\]/g)).toHaveLength(2);
+    expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev\)\)\]/g)).toHaveLength(2);
     expect(app).toContain('...newPhotoGps(sourceDraft, Date.now()),');
     expect(app).toMatch(/\.\.\.newPhotoGps\(sourceDraft, Date\.now\(\)\),\n\s+locationCapturedAt: new Date\(\)\.toISOString\(\),/);
+    // Review pass 9: a camera photo long after the draft's fix takes a new one.
+    expect(app).toMatch(/async function takePhoto[\s\S]*?refreshStaleDraftFix\(\);\n\s+void \(async \(\) => \{\n\s+await waitForDraftLocationCapture\(\);/);
+    expect(app).toContain('if (freshDraftGps(openDraft, Date.now()) || draftFixTracker.pendingDraftId() === openDraft.id) return;');
     expect(app).toContain('photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),');
     expect(app).toContain('...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),');
   });

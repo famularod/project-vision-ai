@@ -14,12 +14,15 @@ import { applyFixToDraft } from '../../services/DraftFix';
 import {
   asLibraryPhoto,
   DRAFT_FIX_MAX_AGE_MS,
+  fixCoversPhoto,
   newPhotoGps,
   photoGpsOrUpdate,
   withDraftGps,
   withDraftLocation,
 } from '../../services/DraftPhotoGps';
 import { overviewFixMaxAgeMs } from '../../services/GpsPrecision';
+import { analyzeProjectLocationIntelligence } from '../../services/LocationIntelligenceService';
+import { inferViewpoint } from '../../services/PIEPhotoProgressIntelligence';
 import { createRecentLocationFix } from '../../services/RecentLocationFix';
 import type { AreaSuggestion, ProjectArea } from '../../types';
 
@@ -218,7 +221,7 @@ describe('photo GPS', () => {
   it('never gives a library photo the draft’s fix, in storage or in reports', () => {
     const picked = asLibraryPhoto({ id: 'p1', ...fix });
     expect(picked).toMatchObject({ pickedFromLibrary: true, gpsLatitude: null, gpsLongitude: null, gpsAccuracy: null });
-    expect(withDraftGps(picked, fix, fixedAt)).toBe(picked);
+    expect(withDraftGps(picked, fix)).toBe(picked);
     const moved = withDraftLocation(picked, { ...fix, selectedAreaId: 'lot', selectedAreaName: 'North Lot' });
     expect(moved).toMatchObject({ selectedAreaId: 'lot', selectedAreaName: 'North Lot', gpsLatitude: null });
     // Pass 8: derived views used to fall back to the update's GPS.
@@ -228,7 +231,7 @@ describe('photo GPS', () => {
 
   it('gives a camera photo the draft’s area and location but keeps its own capture time', () => {
     const camera = { id: 'p2', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: '2026-09-29T15:10:00Z' };
-    expect(withDraftGps(camera, fix, fixedAt)).toMatchObject({ gpsLatitude: 37.1, locationCapturedAt: '2026-09-29T15:10:00Z' });
+    expect(withDraftGps(camera, fix)).toMatchObject({ gpsLatitude: 37.1, locationCapturedAt: '2026-09-29T15:10:00Z' });
     expect(withDraftLocation(camera, { ...fix, selectedAreaId: 'lot', selectedAreaName: 'North Lot' }))
       .toMatchObject({ gpsLatitude: 37.1, selectedAreaId: 'lot', locationCapturedAt: '2026-09-29T15:10:00Z' });
     // A photo with no time of its own (older data) takes the fix's.
@@ -237,12 +240,28 @@ describe('photo GPS', () => {
       .toBe('2026-09-29T15:00:00Z');
   });
 
-  // Pass 8: a resumed draft must not put an old place on a new photo.
-  it('uses only a recent draft fix for a new photo', () => {
+  // Passes 8-9: a fix stands for a photo only within 30 minutes of the
+  // photo's own time, wherever photo GPS is written or read.
+  it('uses the draft’s fix only for photos taken within 30 minutes of it', () => {
+    const later = (ms: number) => new Date(fixedAt + ms).toISOString();
+    expect(fixCoversPhoto(later(DRAFT_FIX_MAX_AGE_MS), fix.locationCapturedAt)).toBe(true);
+    expect(fixCoversPhoto(later(DRAFT_FIX_MAX_AGE_MS + 1), fix.locationCapturedAt)).toBe(false);
+    expect(fixCoversPhoto(later(-5_000), fix.locationCapturedAt)).toBe(true);
+    // Older records without a time keep the previous behaviour.
+    expect(fixCoversPhoto(null, fix.locationCapturedAt)).toBe(true);
+    expect(fixCoversPhoto(later(0), null)).toBe(true);
+
     expect(newPhotoGps(fix, fixedAt + DRAFT_FIX_MAX_AGE_MS).gpsLatitude).toBe(37.1);
     expect(newPhotoGps(fix, fixedAt + DRAFT_FIX_MAX_AGE_MS + 1).gpsLatitude).toBeNull();
-    expect(withDraftGps({ id: 'p4', gpsLatitude: null }, fix, fixedAt + 24 * 3600_000).gpsLatitude).toBeNull();
-    expect(newPhotoGps({ ...fix, locationCapturedAt: null }, fixedAt).gpsLatitude).toBeNull();
+
+    const twoHoursLater = { id: 'p4', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: later(2 * 3600_000) };
+    expect(withDraftGps(twoHoursLater, fix).gpsLatitude).toBeNull();
+    // An area change does not bring the old fix back, and drops the old distance.
+    expect(withDraftLocation({ ...twoHoursLater, distanceFromSelectedAreaFeet: 90 }, {
+      ...fix, selectedAreaId: 'lot', selectedAreaName: 'North Lot',
+    })).toMatchObject({ selectedAreaId: 'lot', gpsLatitude: null, distanceFromSelectedAreaFeet: null });
+    // Reports do not place it at the old fix either.
+    expect(photoGpsOrUpdate(twoHoursLater, fix).gpsLatitude).toBeNull();
   });
 });
 
@@ -322,5 +341,40 @@ describe('a shared home-screen fix', () => {
     clock = 16_000 + 59_000;
     expect(recent.fresh()).toEqual({ fix: { accuracy: 5 } });
     expect(takeFix).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Review pass 9.
+describe('photos and the project’s location', () => {
+  it('does not let a library photo added last displace the update’s fix', () => {
+    const update = {
+      id: 'u1',
+      projectName: '2321 Compliance Project',
+      date: '2026-09-29',
+      notes: '',
+      recipients: { contactIds: [] },
+      selectedAreaName: 'North Lot',
+      gpsLatitude: 37.1,
+      gpsLongitude: -121.9,
+      gpsAccuracy: 5,
+      locationCapturedAt: '2026-09-29T15:00:00.000Z',
+      photos: [{
+        id: 'p1', uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '',
+        actionDueDate: '', actionStatus: 'Open', pickedFromLibrary: true,
+        gpsLatitude: null, gpsLongitude: null, locationCapturedAt: '2026-09-29T15:20:00.000Z',
+      }],
+    };
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project',
+      updates: [update as never],
+      scheduleItems: [],
+    });
+    expect(summary.gpsStatus).toBe('Captured, accuracy ±16 ft');
+  });
+
+  it('groups photos of one spot into one sequence whatever each fix said', () => {
+    expect(inferViewpoint({ projectName: '2321' }, 'Canopy', 'North Lot'))
+      .toBe(inferViewpoint({ projectName: '2321' }, 'Canopy', 'North Lot'));
+    expect(inferViewpoint({ projectName: '2321' }, 'Canopy', 'North Lot')).toMatch(/:no-gps$/);
   });
 });

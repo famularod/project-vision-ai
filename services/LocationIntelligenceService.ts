@@ -256,6 +256,9 @@ function photoLocationCandidate(
   photo: UpdatePhoto,
   update: ProjectUpdate,
 ): LocationCandidate | null {
+  // A library photo says nothing about where you are; added last, it
+  // displaced the update's fix as the latest location (GPS review pass 9).
+  if (photo.pickedFromLibrary) return null;
   const hasArea = Boolean(
     photo.selectedAreaId ||
       photo.selectedAreaName?.trim() ||

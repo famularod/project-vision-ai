@@ -250,7 +250,7 @@ import {
   PRECISE_LOCATION_OFF_TITLE,
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
-import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
+import { asLibraryPhoto, freshDraftGps, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
 import { applyFixToDraft, draftLocationFields } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
@@ -6895,6 +6895,15 @@ useEffect(() => {
     draftLocationCaptureRef.current = captureDraftLocation(openDraft);
   }
 
+  // A camera photo taken more than 30 minutes after the draft's fix (a long
+  // walk, a resumed draft) takes a new fix; it fills the photo when it lands
+  // (review pass 9).
+  function refreshStaleDraftFix() {
+    const openDraft = draftRef.current;
+    if (freshDraftGps(openDraft, Date.now()) || draftFixTracker.pendingDraftId() === openDraft.id) return;
+    draftLocationCaptureRef.current = captureDraftLocation(openDraft);
+  }
+
   async function waitForDraftLocationCapture() {
     const pending = draftLocationCaptureRef.current;
     if (!pending) return;
@@ -9423,7 +9432,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev, Date.now()))],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -9509,7 +9518,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev, Date.now()))],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -9520,6 +9529,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               new Date().toISOString(),
           },
         }));
+        refreshStaleDraftFix();
         void (async () => {
           await waitForDraftLocationCapture();
           await analyzeAddedPhotos(nextDraft, photos);
