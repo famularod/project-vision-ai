@@ -578,19 +578,75 @@ describe('GPS evidence against the update’s area', () => {
   });
 });
 
-// Review pass 13.
-describe('the "Unassigned / Unknown Area" placeholder in GPS evidence', () => {
-  it('is never a recommended area', () => {
-    const lot = area('lot', 0, 175, { name: 'North Lot' });
-    const draftLike = {
-      id: 'draft-1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
-      recipients: { contactIds: [] }, selectedAreaName: UNASSIGNED_AREA_NAME,
-      gpsLatitude: north(170).latitude, gpsLongitude: north(170).longitude, gpsAccuracy: 10,
-      locationCapturedAt: '2026-09-29T15:00:00Z',
+// Review passes 13-14.
+describe('placeholders and GPS evidence', () => {
+  const lot = area('lot', 0, 175, { name: 'North Lot' });
+  const placeholderDraft = (feetNorth: number) => ({
+    id: 'draft-1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
+    recipients: { contactIds: [] }, selectedAreaName: UNASSIGNED_AREA_NAME,
+    gpsLatitude: north(feetNorth).latitude, gpsLongitude: north(feetNorth).longitude, gpsAccuracy: 10,
+    locationCapturedAt: '2026-09-29T15:00:00Z',
+  });
+
+  it('recommends the area a fix is confidently inside', () => {
+    const gps = extractGPSEvidence({ projectName: '2321 Compliance Project', updates: [placeholderDraft(50) as never], projectAreas: [lot] });
+    expect(gps.recommendedArea).toBe('North Lot');
+  });
+
+  // Pass 14: with a fix, history and far areas are not "GPS suggests".
+  it('recommends nothing for a fix outside every area, whatever the history says', () => {
+    const photoInPumpHouse = {
+      id: 'ph1', projectName: '2321 Compliance Project', areaName: 'Pump House', gpsLatitude: null,
+      gpsLongitude: null, gpsAccuracy: null, timestamp: '2026-09-20T15:00:00Z',
     };
     const gps = extractGPSEvidence({
-      projectName: '2321 Compliance Project', updates: [draftLike as never], projectAreas: [lot],
+      projectName: '2321 Compliance Project',
+      updates: [placeholderDraft(600) as never],
+      photoEvidence: [photoInPumpHouse as never],
+      scheduleEvidence: [{ areaName: 'Unassigned area', projectName: '2321 Compliance Project' } as never],
+      projectAreas: [lot],
     });
-    expect(gps.recommendedArea).toBe('North Lot');
+    expect(gps.recommendedArea).toBeNull();
+  });
+
+  it('still uses history when there is no fix', () => {
+    const gps = extractGPSEvidence({
+      projectName: '2321 Compliance Project',
+      scheduleEvidence: [
+        { areaName: 'Unassigned area', projectName: '2321 Compliance Project' } as never,
+        { areaName: 'Unassigned area', projectName: '2321 Compliance Project' } as never,
+        { areaName: 'Roof', projectName: '2321 Compliance Project' } as never,
+      ],
+      projectAreas: [lot],
+    });
+    expect(gps.recommendedArea).toBe('Roof');
+  });
+
+  it('raises no GPS area conflict with a placeholder on either side', () => {
+    const conflicts = (gpsArea: string | null, updateArea: string) => findEvidenceConflicts({
+      scheduleReconciliation: { warnings: [] }, scheduleEvidence: [], issueEvidence: [], photoEvidence: [],
+      gpsEvidence: { recommendedArea: gpsArea }, userUpdateEvidence: [{ areaName: updateArea }],
+      projectName: '2321 Compliance Project',
+    } as never).map(item => item.id);
+    expect(conflicts('Unassigned area', 'Roof')).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
+    expect(conflicts(UNASSIGNED_AREA_NAME, 'Roof')).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
+    expect(conflicts('North Lot', 'Roof')).toContain('pie-evidence-conflict-gps-update-area-mismatch');
+  });
+
+  it('never asks "are you at Unassigned / Unknown Area?"', () => {
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project',
+      updates: [{
+        ...placeholderDraft(50),
+        photos: [{
+          id: 'p1', uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '',
+          actionDueDate: '', actionStatus: 'Open', gpsLatitude: null, gpsLongitude: null,
+          locationCapturedAt: '2026-09-29T16:00:00Z',
+        }],
+      } as never],
+      scheduleItems: [],
+    });
+    expect(summary.currentArea).not.toBe(UNASSIGNED_AREA_NAME);
+    expect(summary.confirmationPrompt ?? '').not.toContain(UNASSIGNED_AREA_NAME);
   });
 });

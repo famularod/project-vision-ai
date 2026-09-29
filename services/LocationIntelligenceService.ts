@@ -1,4 +1,5 @@
 import { formatGpsAccuracy } from './GpsPrecision';
+import { namedAreaOrNull } from './DraftAreaPresentation';
 import { DRAFT_FIX_MAX_AGE_MS, photoGpsOrUpdate } from './DraftPhotoGps';
 import type {
   ProjectArea,
@@ -268,7 +269,11 @@ function fixIsCurrent(update: ProjectUpdate, orderAt: string | null): boolean {
 }
 
 function updateLocationCandidate(update: ProjectUpdate): LocationCandidate | null {
-  const hasArea = Boolean(update.selectedAreaId || update.selectedAreaName?.trim());
+  // A placeholder names no area (GPS review pass 14: a draft whose fix
+  // stopped being current asked "I believe you're at Unassigned / Unknown
+  // Area").
+  const areaName = namedAreaOrNull(update.selectedAreaName);
+  const hasArea = Boolean(update.selectedAreaId || areaName);
   const hasGps = hasGpsCoordinates(update);
 
   if (!hasArea && !hasGps) return null;
@@ -277,7 +282,7 @@ function updateLocationCandidate(update: ProjectUpdate): LocationCandidate | nul
 
   return {
     areaId: update.selectedAreaId ?? null,
-    areaName: update.selectedAreaName?.trim() || null,
+    areaName,
     gpsLatitude: current ? update.gpsLatitude ?? null : null,
     gpsLongitude: current ? update.gpsLongitude ?? null : null,
     gpsAccuracy: current ? update.gpsAccuracy ?? null : null,
@@ -298,22 +303,15 @@ function photoLocationCandidate(
   // it, added last displaced the fix as the latest location (GPS review
   // passes 9 and 11). Without a fix, the update's area still counts (pass 10).
   if (!hasGpsCoordinates(photo) && hasGpsCoordinates(update)) return null;
-  const hasArea = Boolean(
-    photo.selectedAreaId ||
-      photo.selectedAreaName?.trim() ||
-      update.selectedAreaId ||
-      update.selectedAreaName?.trim(),
-  );
+  const areaName = namedAreaOrNull(photo.selectedAreaName) || namedAreaOrNull(update.selectedAreaName);
+  const hasArea = Boolean(photo.selectedAreaId || update.selectedAreaId || areaName);
   const hasGps = hasGpsCoordinates(photo);
 
   if (!hasArea && !hasGps) return null;
 
   return {
     areaId: photo.selectedAreaId ?? update.selectedAreaId ?? null,
-    areaName:
-      photo.selectedAreaName?.trim() ||
-      update.selectedAreaName?.trim() ||
-      null,
+    areaName,
     // A library photo never takes the update's place (GPS review pass 8).
     ...photoGpsOrUpdate(photo, update),
     locationCapturedAt:

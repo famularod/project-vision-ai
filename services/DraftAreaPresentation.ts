@@ -11,6 +11,22 @@
 import type { AreaSuggestion, ProjectArea } from '../types';
 
 export const UNASSIGNED_AREA_NAME = 'Unassigned / Unknown Area';
+/** The schedule's name for a task without a location (PIEEvidenceFusion). */
+export const UNASSIGNED_SCHEDULE_AREA_NAME = 'Unassigned area';
+
+/**
+ * An area name, or null for none and for the placeholders that name no area
+ * (GPS review passes 12-14: they became recommended areas, sides of the GPS
+ * area conflict, and "I believe you're at Unassigned / Unknown Area").
+ */
+export function namedAreaOrNull(value: string | null | undefined): string | null {
+  const name = value?.trim() || '';
+  if (!name) return null;
+  const key = name.toLowerCase();
+  return key === UNASSIGNED_AREA_NAME.toLowerCase() || key === UNASSIGNED_SCHEDULE_AREA_NAME.toLowerCase()
+    ? null
+    : name;
+}
 
 export type DraftAreaStatus = 'confirmed' | 'suggested' | 'unknown';
 

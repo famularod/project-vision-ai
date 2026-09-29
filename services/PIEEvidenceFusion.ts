@@ -28,7 +28,7 @@ import {
 } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { findProjectAreaSuggestions } from './AreaSuggestion';
-import { UNASSIGNED_AREA_NAME } from './DraftAreaPresentation';
+import { namedAreaOrNull as namedArea } from './DraftAreaPresentation';
 import {
   classifyDAVEBlocker,
   classifyDAVEIssue,
@@ -681,7 +681,7 @@ export function extractGPSEvidence({
   const areaCandidate =
     latest?.areaName ||
     mostCommon(photoEvidence.map(photo => namedArea(photo.areaName) ?? '')) ||
-    mostCommon(scheduleEvidence.map(item => item.areaName)) ||
+    mostCommon(scheduleEvidence.map(item => namedArea(item.areaName) ?? '')) ||
     null;
   const nearest = latest &&
     typeof latest.latitude === 'number' &&
@@ -696,9 +696,13 @@ export function extractGPSEvidence({
         { diagnose: false },
       )[0] ?? null
     : null;
-  const recommendedArea = nearest?.withinRadius
-    ? nearest.area.name
-    : areaCandidate || nearest?.area.name || null;
+  // With a fix, only an area the fix supports: one it is confidently inside,
+  // else the fix's own named area. Photo and schedule history, or a far
+  // nearest area, are not "GPS suggests" (GPS review pass 14). Without a
+  // fix, the history fallback stays.
+  const recommendedArea = latest
+    ? nearest?.withinRadius ? nearest.area.name : namedArea(latest.areaName)
+    : areaCandidate;
   const recommendedProject =
     projectName ||
     latest?.projectName ||
@@ -1084,12 +1088,10 @@ export function findEvidenceConflicts(
     }));
   }
 
-  const gpsArea = evidence.gpsEvidence.recommendedArea;
-  const recentUpdateArea = evidence.userUpdateEvidence[0]?.areaName;
-  // "Unassigned / Unknown Area" names no area, so GPS cannot contradict it
-  // (GPS review pass 12; reachable once fixes were kept).
-  const updateNamesArea = Boolean(recentUpdateArea) && !sameArea(recentUpdateArea || '', UNASSIGNED_AREA_NAME);
-  if (gpsArea && recentUpdateArea && updateNamesArea && !sameArea(gpsArea, recentUpdateArea)) {
+  // A placeholder names no area on either side (GPS review passes 12-14).
+  const gpsArea = namedArea(evidence.gpsEvidence.recommendedArea);
+  const recentUpdateArea = namedArea(evidence.userUpdateEvidence[0]?.areaName);
+  if (gpsArea && recentUpdateArea && !sameArea(gpsArea, recentUpdateArea)) {
     conflicts.push(conflict({
       evidence,
       id: 'gps-update-area-mismatch',
@@ -1645,16 +1647,6 @@ function matchesProject(projectName: string | null | undefined, value: string | 
   if (!projectName || projectName === 'Unassigned Project') return true;
 
   return normalizedKey(projectName) === normalizedKey(value || '');
-}
-
-/**
- * An area name, or null for none and for the "Unassigned / Unknown Area"
- * placeholder, which names no area (GPS review passes 12-13: it became a
- * recommended area and a side of the GPS area conflict).
- */
-function namedArea(value: string | null | undefined): string | null {
-  const name = trimOrNull(value ?? '');
-  return name && !sameArea(name, UNASSIGNED_AREA_NAME) ? name : null;
 }
 
 function sameArea(left: string | null | undefined, right: string | null | undefined) {
