@@ -74,6 +74,7 @@ import {
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
   prepareDAVEWebLinkedDocument,
+  prepareDAVEWebReportEmailBody,
   recoverDAVEWebPreparedUploadBytes,
   reportRecordFromDocument,
   validateDAVEWebBackup,
@@ -5526,12 +5527,18 @@ function ReportWorkspace({
   const prepareApprovedReportEmail = () => {
     if (reportStatus !== 'approved' || typeof window === 'undefined') return;
     const subject = encodeURIComponent(reportTitle.trim());
-    const body = encodeURIComponent(reportBody.trim().slice(0, 12_000));
+    const emailBody = prepareDAVEWebReportEmailBody(reportBody);
+    const body = encodeURIComponent(emailBody.text);
     window.open(`mailto:?subject=${subject}&body=${body}`, '_blank', 'noopener,noreferrer');
-    setNotice({
-      tone: 'good',
-      text: 'An email draft was opened. Review the recipients and content before sending.',
-    });
+    setNotice(emailBody.shortened
+      ? {
+        tone: 'danger',
+        text: 'An email draft was opened with a shortened report: the full text did not fit an email draft. Review it, and share the full report from Vitruvius if needed.',
+      }
+      : {
+        tone: 'good',
+        text: 'An email draft was opened. Review the recipients and content before sending.',
+      });
   };
 
   const reportFactsAreCurrent = daveWebReportSourceIsCurrent(

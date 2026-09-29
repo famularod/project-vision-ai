@@ -455,6 +455,27 @@ function cappedReportItems(
     : visible;
 }
 
+export const DAVE_WEB_REPORT_EMAIL_LIMIT = 12_000;
+export const DAVE_WEB_REPORT_EMAIL_SHORTENED =
+  '[Report shortened to fit an email draft. The full report is in Vitruvius.]';
+
+/**
+ * The body for a mailto: draft, which has a practical length limit. A report
+ * over the limit used to be cut mid-sentence with no word to anyone (code
+ * review 27 Sep 2026); it is now cut at a line break, marked, and reported.
+ */
+export function prepareDAVEWebReportEmailBody(
+  body: string,
+  limit = DAVE_WEB_REPORT_EMAIL_LIMIT,
+): Readonly<{ text: string; shortened: boolean }> {
+  const trimmed = body.trim();
+  if (trimmed.length <= limit) return { text: trimmed, shortened: false };
+  const room = limit - DAVE_WEB_REPORT_EMAIL_SHORTENED.length - 2;
+  const lastBreak = trimmed.lastIndexOf('\n', room);
+  const cut = trimmed.slice(0, lastBreak > room / 2 ? lastBreak : room).trimEnd();
+  return { text: `${cut}\n\n${DAVE_WEB_REPORT_EMAIL_SHORTENED}`, shortened: true };
+}
+
 export function formatDAVEWebReport(
   briefing: DAVEReportBriefing,
   audience: DAVEWebReportAudience = 'project_manager',
