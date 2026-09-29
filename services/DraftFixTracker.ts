@@ -8,7 +8,9 @@
  * (pass 6). A save drops any pending fix, so a fix landing during the write
  * cannot make the saved draft look edited (pass 3), and reports whether it
  * dropped one for the draft being saved, which alone may take a new fix if
- * it stays open (pass 5).
+ * it stays open (pass 5). A save starts a new generation only while a fix
+ * is pending: with none, nothing can land, and a failed save must not
+ * supersede the open draft's location notice (pass 24).
  */
 export type DraftFixTracker = Readonly<{
   /** Starts a fix for a draft; returns its generation. */
@@ -39,7 +41,7 @@ export function createDraftFixTracker(): DraftFixTracker {
     },
     beginSave: draftId => {
       const dropped = pending === draftId;
-      current += 1;
+      if (pending !== null) current += 1;
       pending = null;
       return dropped;
     },

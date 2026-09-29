@@ -401,8 +401,12 @@ describe('GPS wiring in the app', () => {
     // Pass 23: the notice is decided from every area, and belongs to its capture generation.
     expect(app).toContain('const candidates = findProjectAreaSuggestions(snapshot, targetAreas);');
     expect(app).toContain('const suggestion = candidates.find(item => item.withinRadius) ?? candidates[0] ?? null;');
-    expect(app).toMatch(/const noticeAfterFix = draftLocationNoticeAfterFix\(\{\n\s+preciseLocationOff: snapshot\.preciseLocationOff,\n\s+accuracyMeters: snapshot\.accuracy,\n\s+suggestions: candidates,\n\s+\}\);\n\s+setDraftLocationNotice\(noticeAfterFix \? \{ draftId: target\.draftId, generation, \.\.\.noticeAfterFix \} : null\);/);
-    expect(app).toMatch(/locationNotice=\{currentDraftLocationNotice\(\{\n\s+notice: draftLocationNotice,\n\s+draftId: draft\.id,\n\s+generation: draftFixTracker\.generation\(\),\n\s+\}\)\}/);
+    // Pass 24: only the capture's own outcome is kept; where the fix places you is derived at render.
+    expect(app).toMatch(/setDraftLocationNotice\(\n\s+snapshot\.preciseLocationOff \? \{ draftId: target\.draftId, generation, kind: 'precise-off' \} : null,\n\s+\);/);
+    expect(app).toMatch(/const draftLocationNoticeView = currentDraftLocationNoticeView\(\{\n\s+notice: draftLocationNotice,\n\s+generation: draftFixTracker\.generation\(\),\n\s+draft,\n\s+areas: draftProjectAreas,\n\s+\}\);/);
+    expect(app).toContain('locationNotice={draftLocationNoticeView}');
+    expect(app).not.toContain('draftLocationNoticeAfterFix');
+    expect(app).not.toContain('draftPlacementNotice');
     expect(app).toMatch(/correctionPenalty: walkCorrectionMemory\?\.correctionPenalty,\n\s+locationNotice,\n\s+\}\);/);
     expect(app).toMatch(/\{areaView\.locationNotice \? \(\n\s+<Text style=\{styles\.locationDetailText\}>\{areaView\.locationNotice\}<\/Text>/);
     expect(app).toContain('{!areaView.locationNotice && areaView.confidenceScore < 60 ? (');

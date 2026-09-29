@@ -260,10 +260,10 @@ import {
   homeDetectionDecision,
 } from './services/AreaSuggestion';
 import {
-  currentDraftLocationNotice,
+  currentDraftLocationNoticeView,
   draftAreaPresentation,
-  draftLocationNoticeAfterFix,
   type DraftLocationNotice,
+  type DraftLocationNoticeDetail,
 } from './services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
 import { optionalString, uid } from './services/RecordValues';
@@ -6693,6 +6693,12 @@ useEffect(() => {
     draft,
     areas: draftProjectAreas,
   });
+  const draftLocationNoticeView = currentDraftLocationNoticeView({
+    notice: draftLocationNotice,
+    generation: draftFixTracker.generation(),
+    draft,
+    areas: draftProjectAreas,
+  });
 
   const selectedWorkspaceProjectAreas = useMemo(
     () => projectAreasForProject({
@@ -6820,12 +6826,11 @@ useEffect(() => {
       setDraftAreaSuggestionEntry(
         reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null,
       );
-      const noticeAfterFix = draftLocationNoticeAfterFix({
-        preciseLocationOff: snapshot.preciseLocationOff,
-        accuracyMeters: snapshot.accuracy,
-        suggestions: candidates,
-      });
-      setDraftLocationNotice(noticeAfterFix ? { draftId: target.draftId, generation, ...noticeAfterFix } : null);
+      // Where the fix places you is derived at render from the draft's own
+      // fix (review pass 24); only Precise Location off is kept here.
+      setDraftLocationNotice(
+        snapshot.preciseLocationOff ? { draftId: target.draftId, generation, kind: 'precise-off' } : null,
+      );
 
       handedToDraft = true;
       setDraft(prev => {
@@ -13487,11 +13492,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
-              locationNotice={currentDraftLocationNotice({
-                notice: draftLocationNotice,
-                draftId: draft.id,
-                generation: draftFixTracker.generation(),
-              })}
+              locationNotice={draftLocationNoticeView}
               recipientCount={
                 currentContacts.length
               }
@@ -15081,7 +15082,7 @@ function AddPhotosScreen({
   projectAreas: ProjectArea[];
   selectedArea: ProjectArea | null;
   areaSuggestion: AreaSuggestion | null;
-  locationNotice: DraftLocationNotice | null;
+  locationNotice: DraftLocationNoticeDetail | null;
   recipientCount: number;
   contacts: ProjectContact[];
   draftSavedAt: string | null;

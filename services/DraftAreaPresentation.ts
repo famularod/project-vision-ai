@@ -9,6 +9,7 @@
  * accepted; "auto-detected" means the accepted suggestion.
  */
 import type { AreaSuggestion, ProjectArea } from '../types';
+import { findProjectAreaSuggestions } from './AreaSuggestion';
 import { formatGpsAccuracy, isConfidentlyOutsideArea, PRECISE_LOCATION_OFF_TITLE } from './GpsPrecision';
 
 export const UNASSIGNED_AREA_NAME = 'Unassigned / Unknown Area';
@@ -62,18 +63,23 @@ export type DraftLocationNoticeDetail = Readonly<{
   /** The area GPS may place you in ('unconfirmed'), or the nearest ('no-area'). */
   areaName?: string | null;
   accuracyMeters?: number | null;
-  distanceFeet?: number | null;
+  /** How far outside the nearest area's circle the fix is ('no-area'; pass 24: not the distance to its centre). */
+  distanceOutsideFeet?: number | null;
 }>;
 
-/**
- * The notice, the draft whose fix produced it, and the capture generation:
- * a later capture, or a save (which starts a new generation), supersedes
- * it (pass 23: "Capturing GPS..." stayed on an update whose fix landed
- * after its save began, and showed again when that update was reopened).
- */
-export type DraftLocationNotice = DraftLocationNoticeDetail & Readonly<{ draftId: string; generation: number }>;
+/** A capture's own outcome, kept as state; where the fix places you is derived at render. */
+export type DraftCaptureNoticeKind = 'capturing' | 'denied' | 'failed' | 'precise-off';
 
-/** The notice that belongs to this draft's latest capture, if any. */
+/**
+ * A capture's outcome, the draft whose fix it is, and the capture
+ * generation: a later capture supersedes it, as does a save that dropped a
+ * pending fix (pass 23: "Capturing GPS..." stayed on an update whose fix
+ * landed after its save began, and showed again when that update was
+ * reopened).
+ */
+export type DraftLocationNotice = Readonly<{ draftId: string; generation: number; kind: DraftCaptureNoticeKind }>;
+
+/** The capture outcome that belongs to this draft's latest capture, if any. */
 export function currentDraftLocationNotice(input: Readonly<{
   notice: DraftLocationNotice | null;
   draftId: string;
@@ -84,15 +90,14 @@ export function currentDraftLocationNotice(input: Readonly<{
 }
 
 /**
- * The notice once a fix has landed. `suggestions` is every area of the
- * project with a saved point, nearest centre first (findProjectAreaSuggestions).
+ * What a fix says about the project's areas. `suggestions` is every area
+ * with a saved point, nearest centre first (findProjectAreaSuggestions).
+ * Null when one confidently contains you: that is the suggestion.
  */
-export function draftLocationNoticeAfterFix(input: Readonly<{
-  preciseLocationOff?: boolean;
+export function draftPlacementNotice(input: Readonly<{
   accuracyMeters: number | null | undefined;
   suggestions: readonly AreaSuggestion[];
 }>): DraftLocationNoticeDetail | null {
-  if (input.preciseLocationOff) return { kind: 'precise-off' };
   if (input.suggestions.some(item => item.withinRadius)) return null;
   if (input.suggestions.length === 0) return { kind: 'no-mapped-areas' };
   const accuracyMeters = input.accuracyMeters ?? null;
@@ -103,7 +108,41 @@ export function draftLocationNoticeAfterFix(input: Readonly<{
   }));
   if (possible) return { kind: 'unconfirmed', areaName: possible.area.name, accuracyMeters };
   const nearest = input.suggestions[0];
-  return { kind: 'no-area', areaName: nearest.area.name, distanceFeet: nearest.distanceFeet, accuracyMeters };
+  return {
+    kind: 'no-area',
+    areaName: nearest.area.name,
+    distanceOutsideFeet: Math.max(0, nearest.distanceFeet - nearest.area.radiusFeet),
+    accuracyMeters,
+  };
+}
+
+/**
+ * The notice Add Photos shows for a draft: its latest capture's outcome
+ * (capturing, denied, failed, Precise Location off), else what the draft's
+ * own fix says about the project's areas as they are now. Derived at
+ * render, like the suggestion: areas arrive, change and go after the
+ * capture, and a failed save must not hide it (pass 24).
+ */
+export function currentDraftLocationNoticeView(input: Readonly<{
+  notice: DraftLocationNotice | null;
+  generation: number;
+  draft: Readonly<{
+    id: string;
+    gpsLatitude?: number | null;
+    gpsLongitude?: number | null;
+    gpsAccuracy?: number | null;
+  }>;
+  areas: readonly ProjectArea[];
+}>): DraftLocationNoticeDetail | null {
+  const { draft } = input;
+  const stored = currentDraftLocationNotice({ notice: input.notice, draftId: draft.id, generation: input.generation });
+  if (stored) return stored;
+  if (typeof draft.gpsLatitude !== 'number' || typeof draft.gpsLongitude !== 'number') return null;
+  const fix = { latitude: draft.gpsLatitude, longitude: draft.gpsLongitude, accuracy: draft.gpsAccuracy ?? null };
+  return draftPlacementNotice({
+    accuracyMeters: fix.accuracy,
+    suggestions: findProjectAreaSuggestions(fix, input.areas, { diagnose: false }),
+  });
 }
 
 /** Add Photos has no re-fix, so this does not say "try again" (pass 23). */
@@ -123,15 +162,13 @@ export function draftLocationNoticeText(notice: DraftLocationNoticeDetail): stri
     case 'precise-off':
       return PRECISE_LOCATION_OFF_DRAFT_MESSAGE;
     case 'no-mapped-areas':
-      return 'None of this project’s work areas has a saved GPS point yet, so GPS cannot suggest one. Choose the project area.';
+      return 'This project has no work area with a saved GPS point yet, so GPS cannot suggest one. Choose the project area.';
     case 'unconfirmed':
       return `${gps} may place you in ${notice.areaName} but cannot confirm it. Choose the project area.`;
-    case 'no-area': {
-      const nearest = notice.areaName && typeof notice.distanceFeet === 'number'
-        ? `; the nearest is ${notice.areaName}, ${formatFeet(notice.distanceFeet)} away`
-        : '';
-      return `${gps} places you outside every saved work area${nearest}. Choose the project area.`;
-    }
+    case 'no-area':
+      return notice.areaName && typeof notice.distanceOutsideFeet === 'number'
+        ? `${gps} places you about ${formatFeet(notice.distanceOutsideFeet)} outside the nearest saved work area, ${notice.areaName}. Choose the project area.`
+        : `${gps} places you outside every saved work area. Choose the project area.`;
   }
 }
 

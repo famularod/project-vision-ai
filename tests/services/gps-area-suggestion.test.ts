@@ -11,8 +11,9 @@ import {
 } from '../../services/AreaSuggestion';
 import {
   currentDraftLocationNotice,
+  currentDraftLocationNoticeView,
   draftAreaPresentation,
-  draftLocationNoticeAfterFix,
+  draftPlacementNotice,
   UNASSIGNED_AREA_NAME,
 } from '../../services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from '../../services/DraftFixTracker';
@@ -205,6 +206,11 @@ describe('fix bookkeeping', () => {
     tracker.start('d1');
     expect(tracker.beginSave('d1')).toBe(true);
     expect(tracker.beginSave('d1')).toBe(false);
+    // Pass 24: with nothing pending a save keeps the generation, so a failed
+    // save does not supersede the open draft's capture outcome.
+    const settled = tracker.generation();
+    expect(tracker.beginSave('d1')).toBe(false);
+    expect(tracker.generation()).toBe(settled);
   });
 
   it('keeps a fix pending until it is settled by its own generation (pass 6)', () => {
@@ -1066,8 +1072,9 @@ describe('the Add Photos location notice', () => {
     expect(text({ kind: 'no-mapped-areas' })).toContain('saved GPS point yet');
     expect(text({ kind: 'unconfirmed', areaName: 'North Lot', accuracyMeters: 60 }))
       .toBe('GPS (±197 ft) may place you in North Lot but cannot confirm it. Choose the project area.');
-    expect(text({ kind: 'no-area', areaName: 'North Lot', distanceFeet: 320.4, accuracyMeters: 5 }))
-      .toBe('GPS (±16 ft) places you outside every saved work area; the nearest is North Lot, 320 ft away. Choose the project area.');
+    // Pass 24: the distance outside the area's circle, not to its centre.
+    expect(text({ kind: 'no-area', areaName: 'North Lot', distanceOutsideFeet: 144.6, accuracyMeters: 5 }))
+      .toBe('GPS (±16 ft) places you about 145 ft outside the nearest saved work area, North Lot. Choose the project area.');
   });
 
   it('is hidden by a suggestion, and placement notices by a named area (a mapped pick or a task’s location)', () => {
@@ -1080,29 +1087,48 @@ describe('the Add Photos location notice', () => {
     expect(text({ kind: 'denied' }, { selectedAreaName: 'Room 204', areaStatus: 'confirmed' })).toContain('denied');
   });
 
-  it('after a fix: Precise Location off; nothing with a containing area; else what the fix allows', () => {
+  it('what the fix says about the areas: nothing with a containing area; else only what it allows', () => {
     const areas = [lot, area('far', 5_000, 175, { name: 'Far Lot' })];
     const fix = (feetNorth: number, accuracy: number) => findProjectAreaSuggestions({ ...north(feetNorth), accuracy }, areas);
-    expect(draftLocationNoticeAfterFix({ preciseLocationOff: true, accuracyMeters: 5, suggestions: fix(50, 5) })).toEqual({ kind: 'precise-off' });
-    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: fix(50, 5) })).toBeNull();
-    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: [] })).toEqual({ kind: 'no-mapped-areas' });
+    expect(draftPlacementNotice({ accuracyMeters: 5, suggestions: fix(50, 5) })).toBeNull();
+    expect(draftPlacementNotice({ accuracyMeters: 5, suggestions: [] })).toEqual({ kind: 'no-mapped-areas' });
     // 10 ft from the centre under a deck at ±60 m: maybe inside, not confirmed.
-    expect(draftLocationNoticeAfterFix({ accuracyMeters: 60, suggestions: fix(40, 60) }))
+    expect(draftPlacementNotice({ accuracyMeters: 60, suggestions: fix(40, 60) }))
       .toMatchObject({ kind: 'unconfirmed', areaName: 'North Lot', accuracyMeters: 60 });
     // 180 ft from the centre at ±16 ft: near the edge, not ruled out.
-    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: fix(-130, 5) }))
+    expect(draftPlacementNotice({ accuracyMeters: 5, suggestions: fix(-130, 5) }))
       .toMatchObject({ kind: 'unconfirmed', areaName: 'North Lot' });
-    // 400 ft away at ±16 ft: confidently outside every area.
-    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: fix(-350, 5) }))
-      .toMatchObject({ kind: 'no-area', areaName: 'North Lot' });
+    // 400 ft from the centre of a 175 ft area at ±16 ft: about 225 ft outside it (pass 24: not "400 ft away").
+    const outside = draftPlacementNotice({ accuracyMeters: 5, suggestions: fix(-350, 5) });
+    expect(outside).toMatchObject({ kind: 'no-area', areaName: 'North Lot' });
+    expect(Math.abs((outside?.distanceOutsideFeet ?? 0) - 225)).toBeLessThan(1);
   });
 
-  it('belongs to its draft and its capture; a later capture or a save supersedes it', () => {
+  it('a capture outcome belongs to its draft and its capture; a later capture supersedes it', () => {
     const notice = { draftId: 'd1', generation: 3, kind: 'capturing' as const };
     expect(currentDraftLocationNotice({ notice, draftId: 'd1', generation: 3 })).toBe(notice);
     expect(currentDraftLocationNotice({ notice, draftId: 'd2', generation: 3 })).toBeNull();
     expect(currentDraftLocationNotice({ notice, draftId: 'd1', generation: 4 })).toBeNull();
     expect(currentDraftLocationNotice({ notice: null, draftId: 'd1', generation: 3 })).toBeNull();
+  });
+
+  // Pass 24: the placement is read from the draft's fix and the areas as they are now.
+  it('shows the latest capture’s outcome, else what the draft’s own fix says about the areas as they are now', () => {
+    const at = (feetNorth: number) => ({
+      id: 'd1', gpsLatitude: north(feetNorth).latitude, gpsLongitude: north(feetNorth).longitude, gpsAccuracy: 5,
+    });
+    const show = (input: Partial<Parameters<typeof currentDraftLocationNoticeView>[0]>) =>
+      currentDraftLocationNoticeView({ notice: null, generation: 1, draft: at(-350), areas: [lot], ...input });
+    // A capture in progress or refused wins, even over a fix that has landed.
+    expect(show({ notice: { draftId: 'd1', generation: 1, kind: 'capturing' } })?.kind).toBe('capturing');
+    expect(show({ notice: { draftId: 'd1', generation: 1, kind: 'precise-off' }, draft: at(50) })?.kind).toBe('precise-off');
+    // A superseded or another draft's outcome is ignored, and the fix speaks.
+    expect(show({ notice: { draftId: 'd1', generation: 1, kind: 'capturing' }, generation: 2 })?.kind).toBe('no-area');
+    expect(show({ notice: { draftId: 'd2', generation: 1, kind: 'denied' } })?.kind).toBe('no-area');
+    // Live: a point saved after the capture changes the answer; no fix, no notice.
+    expect(show({ areas: [] })?.kind).toBe('no-mapped-areas');
+    expect(show({ areas: [lot, area('yard', -350, 100, { name: 'Yard' })] })).toBeNull();
+    expect(show({ draft: { id: 'd1', gpsLatitude: null, gpsLongitude: null } })).toBeNull();
   });
 });
 
