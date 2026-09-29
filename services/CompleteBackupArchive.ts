@@ -175,7 +175,16 @@ export async function createCompleteBackupArchive(
 export async function decryptCompleteBackupArchive(
   rawArchive: unknown,
   passphraseInput: string,
-  dependencies: Readonly<{ sha256Hex?: BackupSha256 }> = {},
+  dependencies: Readonly<{
+    sha256Hex?: BackupSha256;
+    /**
+     * Verify the whole envelope but decrypt only the records. Restore reads a
+     * part's records to preview them and decrypts its files later when it
+     * stages them; on the phone, decrypting a 128 MB part twice cost about a
+     * minute (field test 28 Sep 2026). `assets` is then empty.
+     */
+    stateOnly?: boolean;
+  }> = {},
 ): Promise<DecryptedCompleteBackup> {
   const passphrase = requireBackupPassphrase(passphraseInput);
   const hashBytes = dependencies.sha256Hex ?? javaScriptSha256Hex;
@@ -242,6 +251,9 @@ export async function decryptCompleteBackupArchive(
       'invalid_archive',
       'The encrypted media index does not match the backup manifest.',
     );
+  }
+  if (dependencies.stateOnly) {
+    return Object.freeze({ state, assets: new Map<string, Uint8Array>(), manifest: archive.manifest });
   }
   const assets = new Map<string, Uint8Array>();
   for (const asset of archive.manifest.assets) {

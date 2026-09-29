@@ -183,4 +183,28 @@ describe('CompleteBackupArchive', () => {
     await expect(decryptCompleteBackupArchive(changed, 'correct horse battery staple', { sha256Hex: nativeSha256 }))
       .rejects.toMatchObject({ code: 'invalid_archive' });
   });
+
+  // Field test, 28 Sep 2026: restore decrypted part 1 in full to preview its
+  // records, then again to stage its files.
+  test('a records-only read returns the state, no files, and still checks the envelope and passphrase', async () => {
+    const archive = await createCompleteBackupArchive({
+      state: { version: 1, savedUpdates: [{ id: 'update-1' }] },
+      passphrase: 'correct horse battery staple',
+      createdAt: '2026-09-28T00:00:00.000Z',
+      assets: [{ id: 'photo-1', kind: 'photo', relativePath: 'p.jpg', bytes: Uint8Array.from([1, 2, 3]) }],
+    }, { randomBytes: deterministicRandom() });
+    const copy = () => JSON.parse(JSON.stringify(archive));
+
+    const read = await decryptCompleteBackupArchive(copy(), 'correct horse battery staple', { stateOnly: true });
+    expect(read.state).toEqual({ version: 1, savedUpdates: [{ id: 'update-1' }] });
+    expect(read.assets.size).toBe(0);
+    expect(read.manifest.assets.map(asset => asset.id)).toEqual(['photo-1']);
+
+    await expect(decryptCompleteBackupArchive(copy(), 'a different passphrase', { stateOnly: true }))
+      .rejects.toMatchObject({ code: 'wrong_passphrase_or_tampered' });
+    const changed = copy();
+    changed.encryptedAssets[0].encrypted.ciphertextBase64 = 'AAAA';
+    await expect(decryptCompleteBackupArchive(changed, 'correct horse battery staple', { stateOnly: true }))
+      .rejects.toMatchObject({ code: 'invalid_archive' });
+  });
 });

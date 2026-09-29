@@ -335,7 +335,8 @@ export async function openSelectedBackup(
   validateBackupPartSet(headers);
   const ordered = [...headers].sort((left, right) => left.partIndex - right.partIndex);
   onProgress?.('Decrypting the backup records. Keep Vitruvius open.');
-  const { state } = await decryptCompleteBackupArchive(firstPart, passphrase, { sha256Hex: io.sha256Hex });
+  // Records only: this part's files are decrypted and verified when staged.
+  const { state } = await decryptCompleteBackupArchive(firstPart, passphrase, { sha256Hex: io.sha256Hex, stateOnly: true });
 
   return {
     kind: 'parts',
