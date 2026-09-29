@@ -346,6 +346,16 @@ describe('photos that are unavailable', () => {
     expect(notice).toContain('MASTER SCHEDULE 8312026: The reference document could not be downloaded from protected storage (offline).');
   });
 
+  it('shortens a native error to its first line', () => {
+    const notice = unavailableFilesNotice([], [{
+      name: 'LOOKAHEAD',
+      reason: "FunctionCallException: Calling the 'digest' function has failed (at ExpoModulesCore/SyncFunctionDefinition.swift:94) → Caused by: ArgumentCastException: The 3rd argument cannot be cast",
+    }, { name: 'Long', reason: 'x'.repeat(400) }]);
+    expect(notice).toContain("LOOKAHEAD: FunctionCallException: Calling the 'digest' function has failed (at ExpoModulesCore/SyncFunctionDefinition.swift:94)\n");
+    expect(notice).not.toContain('Caused by');
+    expect(notice).toContain(`Long: ${'x'.repeat(159)}…`);
+  });
+
   it('keeps a long list of documents short', () => {
     const documents = Array.from({ length: 7 }, (_, index) => ({ name: `Doc ${index + 1}`, reason: 'missing' }));
     const notice = unavailableFilesNotice([], documents);

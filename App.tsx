@@ -10393,7 +10393,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const backupReferenceDocuments = [];
       for (const document of referenceDocuments) {
         const assetId = `reference_document:${document.id}`;
-        const readable = includeFiles ? await ensureVerifiedReferenceDocumentBytes(document).catch(error => leaveOut(document.name, error)) : null;
+        const inDriveOnly = document.sourceProvider === 'google_drive' && !document.storagePath;
+        const readable = includeFiles ? await ensureVerifiedReferenceDocumentBytes(document).catch(error => leaveOut(document.name, inDriveOnly
+          ? new Error('Its file is kept in Google Drive, not in Vitruvius storage, so this phone cannot copy it.') : error)) : null;
         const source = readable ? await measureBackupAssetSource(expoBackupFileIO, {
           id: assetId,
           kind: 'reference_document',

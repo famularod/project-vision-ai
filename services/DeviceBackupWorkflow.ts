@@ -90,6 +90,15 @@ export type UnavailableBackupDocument = Readonly<{ name: string; reason: string 
 
 const NOTICE_DATES_PER_PROJECT = 5;
 const NOTICE_DOCUMENTS = 5;
+const NOTICE_REASON_CHARACTERS = 160;
+
+/** A reason short enough to read in an alert; native errors carry long cause chains. */
+function shortReason(reason: string): string {
+  const firstLine = reason.split(/\s*(?:\n|→)\s*/)[0].trim() || reason.trim();
+  return firstLine.length > NOTICE_REASON_CHARACTERS
+    ? `${firstLine.slice(0, NOTICE_REASON_CHARACTERS - 1).trimEnd()}…`
+    : firstLine;
+}
 
 export function unavailablePhotosNotice(missing: readonly UnavailableBackupPhoto[]): string {
   const byProject = new Map<string, Map<string, number>>();
@@ -124,7 +133,7 @@ export function unavailableFilesNotice(
   const sections = photos.length > 0 ? [unavailablePhotosNotice(photos)] : [];
   if (documents.length > 0) {
     const n = documents.length;
-    const shown = documents.slice(0, NOTICE_DOCUMENTS).map(document => `${document.name}: ${document.reason}`);
+    const shown = documents.slice(0, NOTICE_DOCUMENTS).map(document => `${document.name}: ${shortReason(document.reason)}`);
     const more = n > NOTICE_DOCUMENTS ? `\nand ${n - NOTICE_DOCUMENTS} more` : '';
     sections.push(
       `${n} ${n === 1 ? 'document' : 'documents'} could not be read on this device, so this backup ` +

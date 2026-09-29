@@ -1,6 +1,6 @@
 import { Directory, File, Paths } from 'expo-file-system';
-import * as Crypto from 'expo-crypto';
 import { blobToBytes } from './BlobBytes';
+import { sha256Hex } from './ExpoSha256';
 import { downloadPhoto } from './SupabaseService';
 import {
   restoreVerifiedReferenceDocumentBytes,
@@ -45,17 +45,7 @@ export function restoreReferenceDocumentBytesFromCloud(
       const file = new File(uri);
       if (file.exists) file.delete();
     },
-    sha256: async bytes => {
-      const digestInput = new Uint8Array(bytes.byteLength);
-      digestInput.set(bytes);
-      const digest = await Crypto.digest(
-        Crypto.CryptoDigestAlgorithm.SHA256,
-        digestInput.buffer,
-      );
-      return [...new Uint8Array(digest)]
-        .map(value => value.toString(16).padStart(2, '0'))
-        .join('');
-    },
+    sha256: sha256Hex,
   });
 }
 
