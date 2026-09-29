@@ -156,7 +156,7 @@ export function AdminScreen({
   onDisplayNameChange: (value: string) => void;
   onBack: () => void;
   onDiagnostics: () => void;
-  onBackup: (passphrase: string, includeFiles?: boolean) => void;
+  onBackup: (passphrase: string, includeFiles?: boolean, onProgress?: (message: string) => void) => void;
   onRestore: (passphrase: string) => void;
   onAddArea: (name: string) => boolean;
   onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
@@ -465,7 +465,7 @@ export function AdminScreen({
                 icon="download-outline"
                 title="Export Limited Device Backup"
                 detail="Encrypt the included local data and files; excludes Field Notes and a full cloud-account restore"
-                onPress={() => onBackup(backupPassphrase)}
+                onPress={() => onBackup(backupPassphrase, true, setAdminActionSummary)}
               />
               <SettingsActionRow
                 icon="document-text-outline"

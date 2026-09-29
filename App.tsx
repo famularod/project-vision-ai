@@ -371,6 +371,7 @@ import {
   type UnavailableBackupDocument, type UnavailableBackupPhoto,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   assertBackupSerializedFits,
   DEVICE_BACKUP_SCOPE_NOTICE, DEVICE_BACKUP_RESTORE_NOTICE,
@@ -879,6 +880,7 @@ const DELETED_UPDATES_STORAGE_KEY = 'projectPhotoUpdate.deletedUpdates.v1';
 const PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.projects.v2';
 const DELETED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.deletedProjects.v1';
 const ARCHIVED_PROJECTS_STORAGE_KEY = 'projectPhotoUpdate.archivedProjects.v2';
+const BACKUP_KEEP_AWAKE_TAG = 'vitruvius-device-backup';
 const CONTACTS_STORAGE_KEY = 'projectPhotoUpdate.contacts.v2';
 const DRAFT_STORAGE_KEY = 'projectPhotoUpdate.activeDraft.v2';
 const PROJECT_AREAS_STORAGE_KEY = 'projectPhotoUpdate.projectAreas.v1';
@@ -10340,7 +10342,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     { cancelable: true, onDismiss: () => resolve(false) },
   ));
 
-  async function exportBackup(passphrase: string, includeFiles = true) {
+  async function exportBackup(passphrase: string, includeFiles = true, onProgress?: (message: string) => void) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
         'Passphrase required',
@@ -10368,6 +10370,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const fileUri = `${targetDirectory}${fileStem}.vitruvius-backup`;
 
     try {
+      // Encrypting a part takes minutes on the phone: keep the screen on so
+      // the app is not suspended before its save screen can open.
+      if (includeFiles) await activateKeepAwakeAsync(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined);
+      onProgress?.('Checking photos and documents for the backup…');
       // Files are described here and read one backup part at a time later,
       // so the full backup never holds every photo in memory at once.
       const sources: CompleteBackupAssetSource[] = [];
@@ -10505,6 +10511,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         io: expoBackupFileIO,
         randomBytes,
         confirmUnavailableFiles: notice => askToContinue('Some files are unavailable', notice, 'Back up without them'),
+        onProgress,
         confirmPartCount: partCount => askToContinue(`Backup needs ${partCount} files`, multiPartBackupNotice(partCount), 'Continue'),
         share: (uri, partNumber, partCount) => Sharing.shareAsync(uri, {
           dialogTitle: partCount === 1
@@ -10514,6 +10521,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           UTI: 'public.data',
         }),
       });
+      onProgress?.(exported.status === 'cancelled' ? 'Backup cancelled. Nothing was saved.' : `Backup finished: ${exported.partCount} file(s) shared.`);
       if (exported.status === 'cancelled') return;
       Alert.alert(
         'Backup share sheet closed',
@@ -10522,6 +10530,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         }.${unavailablePhotos.length + unavailableDocuments.length ? ` ${unavailablePhotos.length + unavailableDocuments.length} unavailable file(s) were left out.` : ''} Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
       );
     } catch (error) {
+      onProgress?.('Backup did not finish.');
       Alert.alert(
         'Device backup failed',
         error instanceof Error
@@ -10530,6 +10539,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       );
     } finally {
       await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
+      if (includeFiles) await deactivateKeepAwake(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined);
     }
   }
 
@@ -13750,8 +13760,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onDisplayNameChange={setDisplayName}
               onBack={() => setScreen('Home')}
               onDiagnostics={() => setScreen('Diagnostics')}
-              onBackup={(passphrase, includeFiles = true) => {
-                void exportBackup(passphrase, includeFiles);
+              onBackup={(passphrase, includeFiles = true, onProgress) => {
+                void exportBackup(passphrase, includeFiles, onProgress);
               }}
               onRestore={passphrase => {
                 void restoreBackup(passphrase);

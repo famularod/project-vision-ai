@@ -17,6 +17,7 @@
  */
 import {
   decryptCompleteBackupArchive,
+  type BackupSha256,
   type CompleteBackupArchiveDependencies,
   type CompleteBackupPlainAsset,
   type DecryptedCompleteBackup,
@@ -42,6 +43,8 @@ export type BackupFileIO = Readonly<{
   move: (from: string, to: string) => Promise<void>;
   remove: (uri: string) => Promise<void>;
   makeDirectory: (uri: string) => Promise<void>;
+  /** The platform's native SHA-256, when it has one; JavaScript otherwise. */
+  sha256Hex?: BackupSha256;
 }>;
 
 type BackupAssetInput = Readonly<{
@@ -89,7 +92,7 @@ export type UnavailableBackupPhoto = Readonly<{ projectName: string; updateDate:
 export type UnavailableBackupDocument = Readonly<{ name: string; reason: string }>;
 
 const NOTICE_DATES_PER_PROJECT = 5;
-const NOTICE_DOCUMENTS = 5;
+const NOTICE_DOCUMENTS_PER_REASON = 3;
 const NOTICE_REASON_CHARACTERS = 160;
 
 /** A reason short enough to read in an alert; native errors carry long cause chains. */
@@ -132,13 +135,25 @@ export function unavailableFilesNotice(
 ): string {
   const sections = photos.length > 0 ? [unavailablePhotosNotice(photos)] : [];
   if (documents.length > 0) {
+    // Grouped by reason, rarest first, so an unexpected failure is never
+    // hidden behind a long list of expected ones (field test 28 Sep 2026:
+    // 18 of 23 names were cut off behind five Google Drive ones).
+    const byReason = new Map<string, string[]>();
+    for (const document of documents) {
+      const reason = shortReason(document.reason);
+      byReason.set(reason, [...(byReason.get(reason) ?? []), document.name]);
+    }
+    const groups = [...byReason].sort((a, b) => a[1].length - b[1].length).map(([reason, names]) => {
+      const more = names.length > NOTICE_DOCUMENTS_PER_REASON
+        ? `\nand ${names.length - NOTICE_DOCUMENTS_PER_REASON} more`
+        : '';
+      return `${reason} (${names.length}):\n${names.slice(0, NOTICE_DOCUMENTS_PER_REASON).join('\n')}${more}`;
+    });
     const n = documents.length;
-    const shown = documents.slice(0, NOTICE_DOCUMENTS).map(document => `${document.name}: ${shortReason(document.reason)}`);
-    const more = n > NOTICE_DOCUMENTS ? `\nand ${n - NOTICE_DOCUMENTS} more` : '';
     sections.push(
       `${n} ${n === 1 ? 'document' : 'documents'} could not be read on this device, so this backup ` +
       `will leave ${n === 1 ? 'its file' : 'their files'} out. The document records are kept, ` +
-      `and copies stored in the cloud are not affected.\n\n${shown.join('\n')}${more}`,
+      `and copies stored in the cloud are not affected.\n\n${groups.join('\n\n')}`,
     );
   }
   return sections.join('\n\n');
@@ -148,6 +163,13 @@ export function backupPartFileName(stem: string, partIndex: number, partCount: n
   return partCount === 1
     ? `${stem}.vitruvius-backup`
     : `${stem}-part-${partIndex + 1}-of-${partCount}.vitruvius-backup`;
+}
+
+export function backupPartProgress(partNumber: number, partCount: number): string {
+  return partCount === 1
+    ? 'Encrypting the backup. This can take a few minutes; keep Vitruvius open.'
+    : `Encrypting backup part ${partNumber} of ${partCount}. Each part can take a few minutes; ` +
+      'keep Vitruvius open. A save screen opens when each part is ready.';
 }
 
 export function multiPartBackupNotice(partCount: number): string {
@@ -187,6 +209,12 @@ export async function exportBackupInParts(
     confirmPartCount: (partCount: number) => Promise<boolean>;
     /** Required when any file is unavailable; it is asked before anything else. */
     confirmUnavailableFiles?: (notice: string) => Promise<boolean>;
+    /**
+     * Told before each part is built. On the phone a part takes minutes
+     * (field test 28 Sep 2026), and a silent screen looked like nothing
+     * happened.
+     */
+    onProgress?: (message: string) => void;
   }>,
 ): Promise<BackupPartsExportResult> {
   const photos = input.unavailablePhotos ?? [];
@@ -211,7 +239,7 @@ export async function exportBackupInParts(
     createdAt: input.createdAt,
     backupId: input.backupId,
     partAssetBudgetBytes: input.partAssetBudgetBytes,
-  }, { randomBytes: dependencies.randomBytes }, async part => {
+  }, { randomBytes: dependencies.randomBytes, sha256Hex: dependencies.io.sha256Hex }, async part => {
     const serialized = JSON.stringify(part);
     assertBackupSerializedFits(serialized);
     const uri = `${input.directory}${backupPartFileName(
@@ -225,7 +253,7 @@ export async function exportBackupInParts(
     } finally {
       await dependencies.io.remove(uri).catch(() => undefined);
     }
-  });
+  }, (partNumber, count) => dependencies.onProgress?.(backupPartProgress(partNumber, count)));
 
   return { status: 'shared', partCount };
 }
@@ -281,7 +309,7 @@ export async function openSelectedBackup(
     const parsed = parseBackupFile(await io.readText(uri));
     if (!isCompleteBackupPart(parsed)) {
       if (uris.length === 1) {
-        const decrypted = await decryptCompleteBackupArchive(parsed, passphrase);
+        const decrypted = await decryptCompleteBackupArchive(parsed, passphrase, { sha256Hex: io.sha256Hex });
         return { kind: 'single', state: decrypted.state, decrypted };
       }
       throw new CompleteBackupPartsError(
@@ -303,7 +331,7 @@ export async function openSelectedBackup(
 
   validateBackupPartSet(headers);
   const ordered = [...headers].sort((left, right) => left.partIndex - right.partIndex);
-  const { state } = await decryptCompleteBackupArchive(firstPart, passphrase);
+  const { state } = await decryptCompleteBackupArchive(firstPart, passphrase, { sha256Hex: io.sha256Hex });
 
   return {
     kind: 'parts',
@@ -338,7 +366,7 @@ async function stageBackupPartAssets(
           'A backup part changed after it was selected. Nothing was restored.',
         );
       }
-      const decrypted = await decryptCompleteBackupArchive(parsed.archive, passphrase);
+      const decrypted = await decryptCompleteBackupArchive(parsed.archive, passphrase, { sha256Hex: io.sha256Hex });
       const names = new Map(decrypted.manifest.assets.map(asset => [asset.id, asset.relativePath]));
       let fileNumber = 0;
       for (const [id, bytes] of decrypted.assets) {

@@ -70,6 +70,8 @@ for (const marker of [
   // A photo or document whose file cannot be read is left out only with the
   // owner's agreement (field test 28 Sep 2026).
   'confirmUnavailableFiles',
+  // A part takes minutes on the phone: the screen stays on (field test 28 Sep 2026).
+  'activateKeepAwakeAsync(BACKUP_KEEP_AWAKE_TAG)',
 ]) {
   assert(app.includes(marker), `Live backup workflow must use ${marker}.`);
 }

@@ -35,9 +35,19 @@ describe('sha256Hex', () => {
     await expect(sha256Hex(view)).resolves.toBe(createHash('sha256').update(Buffer.from([1, 2, 3])).digest('hex'));
   });
 
-  it('is what both document downloads verify with', () => {
+  it('passes a whole-buffer array as is, without a copy', async () => {
+    const bytes = new Uint8Array([5, 6, 7]);
+    (Crypto.digest as jest.Mock).mockClear();
+    await sha256Hex(bytes);
+    expect((Crypto.digest as jest.Mock).mock.calls[0][1]).toBe(bytes);
+  });
+
+  it('is what both document downloads and the device backup use', () => {
     const fs = jest.requireActual('fs') as typeof import('fs');
     const path = jest.requireActual('path') as typeof import('path');
+    const backupIO = fs.readFileSync(path.resolve(__dirname, '../../services/ExpoBackupFileIO.ts'), 'utf8');
+    expect(backupIO).toContain("import { sha256Hex } from './ExpoSha256';");
+    expect(backupIO).toContain('  sha256Hex,');
     for (const file of ['ExpoReferenceDocumentByteRestore.ts', 'ExpoProjectDocumentByteRestore.ts']) {
       const source = fs.readFileSync(path.resolve(__dirname, '../../services', file), 'utf8');
       expect(source).toContain('sha256: sha256Hex,');

@@ -22,7 +22,8 @@ describe('project document cloud byte restore adapter', () => {
     expect(source).toContain('sha256: sha256Hex,');
     const hashing = fs.readFileSync(path.resolve(__dirname, '../../services/ExpoSha256.ts'), 'utf8');
     expect(hashing).toContain('Crypto.CryptoDigestAlgorithm.SHA256');
-    expect(hashing).not.toContain('.buffer');
+    expect(hashing).toContain('Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, digestInput)');
+    expect(hashing).not.toMatch(/digest\([^)]*\.buffer\)/);
     expect(source).toContain('if (file.exists) file.delete()');
   });
 

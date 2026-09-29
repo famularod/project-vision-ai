@@ -136,4 +136,51 @@ describe('CompleteBackupArchive', () => {
       code: 'passphrase_too_short',
     });
   });
+
+  // Field test, 28 Sep 2026: hashing in JavaScript on the phone took minutes
+  // per part. The phone now passes its native SHA-256. An archive must be the
+  // same whichever implementation wrote or reads it.
+  test('a native SHA-256 writes the same hashes, is used for media and envelope, and is read either way', async () => {
+    const { createHash } = jest.requireActual('crypto') as typeof import('crypto');
+    const hashed: number[] = [];
+    const nativeSha256 = async (bytes: Uint8Array) => {
+      hashed.push(bytes.byteLength);
+      return createHash('sha256').update(bytes).digest('hex');
+    };
+    const input = {
+      state: { version: 1, savedUpdates: [{ id: 'update-1' }] },
+      passphrase: 'correct horse battery staple',
+      createdAt: '2026-09-28T00:00:00.000Z',
+      assets: [{ id: 'photo-1', kind: 'photo' as const, relativePath: 'photo-1.jpg', bytes: new Uint8Array(4096).fill(7) }],
+    };
+    const withNative = await createCompleteBackupArchive(input, { randomBytes: deterministicRandom(), sha256Hex: nativeSha256 });
+    const withJavaScript = await createCompleteBackupArchive(input, { randomBytes: deterministicRandom() });
+
+    expect(withNative.manifest.assets[0].sha256).toBe(withJavaScript.manifest.assets[0].sha256);
+    expect(withNative.envelopeSha256).toBe(withJavaScript.envelopeSha256);
+    expect(hashed[0]).toBe(4096);
+    expect(hashed[1]).toBeGreaterThan(4096);
+
+    const readByJavaScript = await decryptCompleteBackupArchive(JSON.parse(JSON.stringify(withNative)), input.passphrase);
+    expect(Array.from(readByJavaScript.assets.get('photo-1') ?? []).every(value => value === 7)).toBe(true);
+    hashed.length = 0;
+    const readByNative = await decryptCompleteBackupArchive(
+      JSON.parse(JSON.stringify(withJavaScript)), input.passphrase, { sha256Hex: nativeSha256 },
+    );
+    expect(readByNative.assets.get('photo-1')?.byteLength).toBe(4096);
+    expect(hashed).toHaveLength(2);
+  });
+
+  test('a native SHA-256 still catches a changed envelope', async () => {
+    const { createHash } = jest.requireActual('crypto') as typeof import('crypto');
+    const nativeSha256 = async (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+    const archive = await createCompleteBackupArchive({
+      state: { version: 1 }, passphrase: 'correct horse battery staple', createdAt: '2026-09-28T00:00:00.000Z',
+      assets: [{ id: 'photo-1', kind: 'photo', relativePath: 'p.jpg', bytes: Uint8Array.from([1, 2, 3]) }],
+    }, { randomBytes: deterministicRandom(), sha256Hex: nativeSha256 });
+    const changed = JSON.parse(JSON.stringify(archive));
+    changed.manifest.createdAt = '2026-09-29T00:00:00.000Z';
+    await expect(decryptCompleteBackupArchive(changed, 'correct horse battery staple', { sha256Hex: nativeSha256 }))
+      .rejects.toMatchObject({ code: 'invalid_archive' });
+  });
 });

@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { fromByteArray, toByteArray } from 'base64-js';
 import type { BackupFileIO } from './DeviceBackupWorkflow';
+import { sha256Hex } from './ExpoSha256';
 
 /** The device file system behind the backup workflow. */
 export const expoBackupFileIO: BackupFileIO = Object.freeze({
@@ -27,4 +28,6 @@ export const expoBackupFileIO: BackupFileIO = Object.freeze({
   move: (from: string, to: string) => FileSystem.moveAsync({ from, to }),
   remove: (uri: string) => FileSystem.deleteAsync(uri, { idempotent: true }),
   makeDirectory: (uri: string) => FileSystem.makeDirectoryAsync(uri, { intermediates: true }),
+  // Native: in JavaScript on the phone, one part's hashes took minutes.
+  sha256Hex,
 });
