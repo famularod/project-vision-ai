@@ -165,4 +165,24 @@ describe('photos uploaded under a legacy project name', () => {
     expect(result.foundAtPath).toBe('3-hour-fire-wall/update-f/photo-1-lot.jpg');
     expect(upload).not.toHaveBeenCalled();
   });
+
+  // Review pass 2, 28 Sep 2026: a pass whose lookup is inconclusive must not
+  // write the empty pinned path back over the path the photo was found at.
+  it('keeps a path found this session through an inconclusive lookup', async () => {
+    let connectionDown = false;
+    signedUrl.mockImplementation(async (path: string) => {
+      if (connectionDown) return { ok: false, status: 503, error: 'Service unavailable' };
+      return path.startsWith('2321-north-side-lot/') ? { ok: true, data: `https://signed.example/${path}` } : NOT_FOUND;
+    });
+    const update = julyUpdate('update-g', '2321-compliance-project/update-g/photo-1-lot.jpg');
+    expect((await uploadLocalPhotoWithDiagnostics(update, update.photos[0])).foundAtPath)
+      .toBe('2321-north-side-lot/update-g/photo-1-lot.jpg');
+
+    connectionDown = true;
+    signedUrl.mockImplementation(async (path: string) => path.startsWith('2321-compliance-project/')
+      ? NOT_FOUND
+      : { ok: false, status: 503, error: 'Service unavailable' });
+    expect((await uploadLocalPhotoWithDiagnostics(update, update.photos[0])).foundAtPath)
+      .toBe('2321-north-side-lot/update-g/photo-1-lot.jpg');
+  });
 });

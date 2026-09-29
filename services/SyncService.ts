@@ -4796,7 +4796,9 @@ async function findPhotoUnderLegacyProjectPath(
       legacyPhotoPathsFound.set(searchKey, candidate);
       return { path: candidate, lookup: found };
     }
-    if (!cloudPhotoLookupConfirmedMissing(found, true)) return null;
+    // A path found earlier this session is kept through a bad connection, so
+    // an inconclusive pass cannot write the empty pinned path back.
+    if (!cloudPhotoLookupConfirmedMissing(found, true)) return known ? { path: known, lookup: found } : null;
   }
   if (known) {
     legacyPhotoPathsFound.delete(searchKey);

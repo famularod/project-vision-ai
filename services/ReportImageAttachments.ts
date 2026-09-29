@@ -12,6 +12,9 @@ import type { PIEReportDraft } from './PIEReporter';
 export type ReportCitedImage = Readonly<{ imageNumber: number; photoId: string }>;
 
 export const REPORT_EMAIL_IMAGE_LIMIT = 20;
+/** Said when the composer refused the attachments and the text went alone. */
+export const REPORT_IMAGES_NOT_ATTACHED =
+  'The report images could not be attached on this device; they are in Vitruvius.';
 export const REPORT_TEXT_IMAGE_LIMIT = 10;
 
 /** Each cited image once, in image-number order. */
