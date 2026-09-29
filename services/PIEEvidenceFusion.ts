@@ -144,6 +144,8 @@ export type PIEPhotoEvidence = {
   id: string;
   updateId: string;
   projectName: string;
+  /** The saved area the name refers to, when known (GPS review pass 18). */
+  areaId?: string | null;
   areaName: string | null;
   caption: string | null;
   category: UpdatePhoto['category'];
@@ -584,8 +586,11 @@ export function extractPhotoEvidence({
       update.photos.map(photo => {
         const caption = trimOrNull(photo.caption);
         const actionRequired = trimOrNull(photo.actionRequired);
-        const areaName = trimOrNull(photo.selectedAreaName ?? '') ||
+        const photoAreaName = trimOrNull(photo.selectedAreaName ?? '');
+        const areaName = photoAreaName ||
           trimOrNull(update.selectedAreaName ?? '');
+        // The id of the area the name came from (GPS review pass 18).
+        const areaId = (photoAreaName ? photo.selectedAreaId : update.selectedAreaId) ?? null;
         const photoAssertionText = `${caption || ''} ${actionRequired || ''}`;
         const hasGps =
           typeof photo.gpsLatitude === 'number' &&
@@ -612,6 +617,7 @@ export function extractPhotoEvidence({
         return {
           id: photo.id,
           updateId: update.id,
+          areaId,
           projectName: update.projectName,
           areaName,
           caption,
@@ -676,7 +682,7 @@ export function extractGPSEvidence({
     }));
   const photoGps = photoEvidence.map(photo => ({
     projectName: photo.projectName,
-    areaId: null as string | null,
+    areaId: photo.areaId ?? null,
     areaName: namedArea(photo.areaName),
     latitude: photo.gpsLatitude,
     longitude: photo.gpsLongitude,
@@ -729,8 +735,11 @@ export function extractGPSEvidence({
     : namedFixArea && latestFix && !isConfidentlyOutsideArea(latestFix, namedFixArea)
       ? namedFixArea
       : containing?.withinRadius ? containing.area : null;
+  // When GPS supports the update's own area, it keeps the update's name for
+  // it: an area renamed since is still the same area (pass 18).
+  const supportsNamedArea = Boolean(supportingArea && namedFixArea && supportingArea.id === namedFixArea.id);
   const recommendedArea = latest
-    ? namedAreaUnmapped ? latestName : supportingArea?.name ?? null
+    ? namedAreaUnmapped || supportsNamedArea ? latestName : supportingArea?.name ?? null
     : areaCandidate;
   // GPS confirms an area only when the fix is confidently inside it; "not
   // ruled out" names the area without claiming GPS support (pass 17: a
@@ -754,11 +763,13 @@ export function extractGPSEvidence({
   // Inside some saved area of this project, confidently: a fact about the
   // fix, whatever the update named (pass 11).
   const insideMappedArea = Boolean(containing?.withinRadius);
+  // With a fix, confidence counts only GPS confirming the recommended area
+  // (pass 18: inside some other area still scored "high").
   const confidenceScore = gpsConfidenceScore({
     gpsAvailable,
     hasSelectedArea: latest ? gpsConfirmsArea : Boolean(areaCandidate),
-    hasNearestArea: insideMappedArea,
-    withinMappedArea: insideMappedArea,
+    hasNearestArea: gpsConfirmsArea,
+    withinMappedArea: gpsConfirmsArea,
     hasScheduleArea: scheduleEvidence.some(item => item.areaName !== 'Unassigned area'),
   });
   const confidence = confidenceFromScore(confidenceScore);
@@ -767,7 +778,7 @@ export function extractGPSEvidence({
       ? 'not-available'
       : confidenceScore < 70
         ? 'needs-verification'
-        : gpsConfirmsArea && supportingArea && latestName && !sameArea(supportingArea.name, latestName)
+        : gpsConfirmsArea && supportingArea && namedFixArea && supportingArea.id !== namedFixArea.id
           ? 'corrected'
           : 'accepted';
 
@@ -1134,8 +1145,11 @@ export function findEvidenceConflicts(
     }));
   }
 
-  // A placeholder names no area on either side (GPS review passes 12-14).
-  const gpsArea = namedArea(evidence.gpsEvidence.recommendedArea);
+  // A placeholder names no area on either side (GPS review passes 12-14),
+  // and GPS contradicts an update only with an area it confirms (pass 18).
+  const gpsArea = evidence.gpsEvidence.gpsConfirmsRecommendedArea === false
+    ? null
+    : namedArea(evidence.gpsEvidence.recommendedArea);
   const recentUpdateArea = namedArea(evidence.userUpdateEvidence[0]?.areaName);
   if (gpsArea && recentUpdateArea && !sameArea(gpsArea, recentUpdateArea)) {
     conflicts.push(conflict({

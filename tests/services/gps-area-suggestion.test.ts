@@ -867,3 +867,72 @@ describe('naming an area versus GPS confirming it', () => {
     expect(summary.needsConfirmation).toBe(true);
   });
 });
+
+// Review pass 18.
+describe('GPS confirmation drives confidence and conflicts', () => {
+  const now = new Date('2026-09-29T15:05:00.000Z');
+  const P = '2321 Compliance Project';
+  const upd = (id: string, feetNorth: number | null, extra: Record<string, unknown> = {}) => ({
+    id, projectName: P, date: '2026-09-29', notes: '', photos: [], recipients: { contactIds: [] },
+    ...(feetNorth === null ? {} : {
+      gpsLatitude: north(feetNorth).latitude, gpsLongitude: north(feetNorth).longitude, gpsAccuracy: 5,
+      locationCapturedAt: '2026-09-29T15:00:00.000Z',
+    }),
+    ...extra,
+  });
+
+  it('does not score "high" when the fix is inside another area but does not confirm the named one', () => {
+    const room = area('room', 0, 30, { name: 'Room 101', projectName: P });
+    const building = area('building', 0, 400, { name: 'Building A', projectName: P });
+    const fused = buildFusedEvidence({
+      projectName: P, updates: [upd('u1', 20, { selectedAreaName: 'Room 101', selectedAreaId: 'room' }) as never],
+      projectAreas: [room, building], now,
+    });
+    expect(fused.gpsEvidence.recommendedArea).toBe('Room 101');
+    expect(fused.gpsEvidence.withinMappedArea).toBe(true);
+    expect(fused.gpsEvidence.gpsConfirmsRecommendedArea).toBe(false);
+    expect(fused.gpsEvidence.confidenceScore).toBeLessThan(70);
+  });
+
+  it('raises no area conflict from an area GPS cannot judge', () => {
+    const building = area('building', 0, 400, { name: 'Building A', projectName: P });
+    const fused = buildFusedEvidence({
+      projectName: P,
+      updates: [
+        upd('today', null, { selectedAreaName: 'Building A', date: '2026-09-29', locationCapturedAt: '2026-09-29T15:04:00.000Z' }) as never,
+        upd('yesterday', 20, { selectedAreaName: 'Level 2 East', date: '2026-09-28', locationCapturedAt: '2026-09-28T15:00:00.000Z' }) as never,
+      ],
+      projectAreas: [building], now,
+    });
+    expect(fused.conflicts.map(item => item.id)).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
+  });
+
+  it('matches the update’s area by id through its photos, and keeps its name after a rename', () => {
+    const levelA = area('level-a', 3_000, 100, { name: 'Level 2', projectName: P });
+    const levelB = area('level-b', 0, 100, { name: 'Level 2', projectName: P });
+    const photo = {
+      id: 'p1', uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '', actionDueDate: '',
+      actionStatus: 'Open', gpsLatitude: north(10).latitude, gpsLongitude: north(10).longitude, gpsAccuracy: 5,
+      locationCapturedAt: '2026-09-29T15:03:00.000Z',
+    };
+    const withPhoto = buildFusedEvidence({
+      projectName: P,
+      updates: [upd('u1', 10, { selectedAreaName: 'Level 2', selectedAreaId: 'level-b', photos: [photo] }) as never],
+      projectAreas: [levelA, levelB], now,
+    });
+    expect(withPhoto.gpsEvidence.gpsConfirmsRecommendedArea).toBe(true);
+    // Matched by id, it is the update's own area, not a "correction" to the
+    // other "Level 2".
+    expect(withPhoto.gpsEvidence.correctionStatus).toBe('accepted');
+
+    const renamed = area('north', 0, 175, { name: 'North Parking', projectName: P });
+    const fused = buildFusedEvidence({
+      projectName: P,
+      updates: [upd('u2', 10, { selectedAreaName: 'North Lot', selectedAreaId: 'north' }) as never],
+      projectAreas: [renamed], now,
+    });
+    expect(fused.gpsEvidence.recommendedArea).toBe('North Lot');
+    expect(fused.gpsEvidence.correctionStatus).not.toBe('corrected');
+    expect(fused.conflicts.map(item => item.id)).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
+  });
+});

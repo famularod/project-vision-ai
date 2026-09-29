@@ -1817,7 +1817,8 @@ function buildRuntimeEvidenceTimelineEvents(
     confidence: photo.confidence,
   }));
 
-  const gpsEvents = fused.gpsEvidence.gpsAvailable
+  // A "GPS confirmed" event only when GPS confirmed the area (GPS review pass 18).
+  const gpsEvents = fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.gpsConfirmsRecommendedArea !== false
     ? [{
         id: 'timeline-gps-confirmed',
         type: 'GPS_confirmed' as const,
