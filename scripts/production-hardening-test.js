@@ -72,6 +72,7 @@ for (const marker of [
   'confirmUnavailableFiles',
   // A part takes minutes on the phone: the screen stays on (field test 28 Sep 2026).
   'activateKeepAwakeAsync(BACKUP_KEEP_AWAKE_TAG)',
+  'void withBackupKeepAwake(async () => {',
 ]) {
   assert(app.includes(marker), `Live backup workflow must use ${marker}.`);
 }

@@ -10342,6 +10342,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
     { cancelable: true, onDismiss: () => resolve(false) },
   ));
 
+  // Backup and restore each take minutes on the phone: keep the screen on so
+  // the app is not suspended part-way.
+  const withBackupKeepAwake = async <T,>(work: () => Promise<T>): Promise<T> => {
+    await activateKeepAwakeAsync(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined);
+    try { return await work(); } finally { await deactivateKeepAwake(BACKUP_KEEP_AWAKE_TAG).catch(() => undefined); }
+  };
+
   async function exportBackup(passphrase: string, includeFiles = true, onProgress?: (message: string) => void) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
@@ -10601,7 +10608,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function restoreBackup(passphrase: string) {
+  async function restoreBackup(passphrase: string, onProgress?: (message: string) => void) {
     if (passphrase.trim().length < COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH) {
       Alert.alert(
         'Passphrase required',
@@ -10644,11 +10651,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
         }
       }
 
-      const opened = await openSelectedBackup(
+      const opened = await withBackupKeepAwake(() => openSelectedBackup(
         result.assets.map(file => file.uri),
         passphrase,
         expoBackupFileIO,
-      );
+        onProgress,
+      ));
       const preflight = normalizeBackupData(opened.state);
 
       if (!preflight.ok) {
@@ -10668,12 +10676,13 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {
             text: 'Cancel',
             style: 'cancel',
+            onPress: () => onProgress?.('Restore cancelled. Nothing was changed.'),
           },
           {
             text: 'Restore',
             style: 'destructive',
             onPress: () => {
-              void (async () => {
+              void withBackupKeepAwake(async () => {
                 if (!FileSystem.cacheDirectory) {
                   throw new Error('A temporary app folder for the restore could not be found.');
                 }
@@ -10707,10 +10716,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   }
                   const committed = await applyRestoredData(normalized.data);
                   if (!committed) await materialized.cleanup();
+                  onProgress?.(committed ? 'Restore finished.' : 'Restore did not finish.');
                 } finally {
                   await staged?.cleanup();
                 }
-              })().catch(error => {
+              }).catch(error => {
+                onProgress?.('Restore did not finish.');
                 Alert.alert(
                   'Restore failed',
                   error instanceof Error
@@ -13763,8 +13774,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onBackup={(passphrase, includeFiles = true, onProgress) => {
                 void exportBackup(passphrase, includeFiles, onProgress);
               }}
-              onRestore={passphrase => {
-                void restoreBackup(passphrase);
+              onRestore={(passphrase, onProgress) => {
+                void restoreBackup(passphrase, onProgress);
               }}
               onAddArea={addProjectArea}
               onUpdateArea={updateProjectArea}

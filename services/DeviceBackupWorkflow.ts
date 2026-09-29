@@ -298,6 +298,8 @@ export async function openSelectedBackup(
   uris: readonly string[],
   passphrase: string,
   io: BackupFileIO,
+  /** Restore takes minutes on the phone, like the export; the owner is told each step. */
+  onProgress?: (message: string) => void,
 ): Promise<OpenedBackup> {
   if (uris.length === 0) {
     throw new CompleteBackupPartsError('no_parts', 'No backup was selected.');
@@ -305,7 +307,8 @@ export async function openSelectedBackup(
 
   const headers: { uri: string; backupId: string; partIndex: number; partCount: number }[] = [];
   let firstPart: unknown = null;
-  for (const uri of uris) {
+  for (const [index, uri] of uris.entries()) {
+    onProgress?.(`Checking backup file ${index + 1} of ${uris.length}. Keep Vitruvius open.`);
     const parsed = parseBackupFile(await io.readText(uri));
     if (!isCompleteBackupPart(parsed)) {
       if (uris.length === 1) {
@@ -331,13 +334,14 @@ export async function openSelectedBackup(
 
   validateBackupPartSet(headers);
   const ordered = [...headers].sort((left, right) => left.partIndex - right.partIndex);
+  onProgress?.('Decrypting the backup records. Keep Vitruvius open.');
   const { state } = await decryptCompleteBackupArchive(firstPart, passphrase, { sha256Hex: io.sha256Hex });
 
   return {
     kind: 'parts',
     state,
     partCount: ordered.length,
-    stageAssets: stagingDirectory => stageBackupPartAssets(ordered, passphrase, io, stagingDirectory),
+    stageAssets: stagingDirectory => stageBackupPartAssets(ordered, passphrase, io, stagingDirectory, onProgress),
   };
 }
 
@@ -346,6 +350,7 @@ async function stageBackupPartAssets(
   passphrase: string,
   io: BackupFileIO,
   stagingDirectory: string,
+  onProgress?: (message: string) => void,
 ): Promise<StagedBackupAssets> {
   const staged = new Map<string, StagedBackupAsset>();
   const cleanup = async () => {
@@ -355,6 +360,7 @@ async function stageBackupPartAssets(
   try {
     await io.makeDirectory(stagingDirectory);
     for (const expected of ordered) {
+      onProgress?.(`Restoring backup part ${expected.partIndex + 1} of ${ordered.length}. Each part can take a few minutes; keep Vitruvius open.`);
       const parsed = parseBackupFile(await io.readText(expected.uri));
       if (
         !isCompleteBackupPart(parsed) ||

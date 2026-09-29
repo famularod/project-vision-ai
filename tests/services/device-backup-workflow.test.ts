@@ -494,6 +494,21 @@ describe('restore from parts', () => {
     expect([...fs.files.keys()].some(key => key.startsWith('file:///cache/staging/'))).toBe(false);
   });
 
+  it('tells the owner each restore step, in order', async () => {
+    const { shared } = await exportToShared(900);
+    const { fs, uris } = await pickShared(shared);
+    const events: string[] = [];
+    const opened = await openSelectedBackup(uris, PASSPHRASE, fs.io, message => events.push(message));
+    if (opened.kind !== 'parts') throw new Error('expected parts');
+    const staged = await opened.stageAssets('file:///cache/staging/');
+    await staged.cleanup();
+    expect(events.map(event => event.split('.')[0])).toEqual([
+      'Checking backup file 1 of 3', 'Checking backup file 2 of 3', 'Checking backup file 3 of 3',
+      'Decrypting the backup records',
+      'Restoring backup part 1 of 3', 'Restoring backup part 2 of 3', 'Restoring backup part 3 of 3',
+    ]);
+  });
+
   it('refuses an incomplete set and names the missing part', async () => {
     const { shared } = await exportToShared(900);
     const { fs, uris } = await pickShared([shared[0], shared[2]]);

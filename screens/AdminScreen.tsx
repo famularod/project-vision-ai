@@ -157,7 +157,7 @@ export function AdminScreen({
   onBack: () => void;
   onDiagnostics: () => void;
   onBackup: (passphrase: string, includeFiles?: boolean, onProgress?: (message: string) => void) => void;
-  onRestore: (passphrase: string) => void;
+  onRestore: (passphrase: string, onProgress?: (message: string) => void) => void;
   onAddArea: (name: string) => boolean;
   onUpdateArea: (areaId: string, next: Partial<ProjectArea>) => void;
   onDeleteArea: (areaId: string) => void;
@@ -477,7 +477,7 @@ export function AdminScreen({
                 icon="cloud-upload-outline"
                 title="Restore Device Backup"
                 detail="Verify and restore included data only; existing Field Notes are not replaced"
-                onPress={() => onRestore(backupPassphrase)}
+                onPress={() => onRestore(backupPassphrase, setAdminActionSummary)}
                 last
               />
             </>
