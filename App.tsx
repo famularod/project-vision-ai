@@ -380,6 +380,7 @@ import {
 import {
   analyzeProjectPhotoWithVision,
   buildAnalyzingPhotoIntelligenceState,
+  photoNeedsPriorRecheckAfterAreaChange,
   type PIEPhotoIntelligenceDisplayState,
 } from './services/PIEPhotoVisionMobileWorkflow';
 import { createPhotoAnalysisCoordinator } from './services/PhotoAnalysisCoordinator';
@@ -6826,10 +6827,8 @@ useEffect(() => {
   }
 
   async function recheckPhotosAfterAreaChange(updateSnapshot: ProjectUpdate) {
-    const photosNeedingRecheck = updateSnapshot.photos.filter(photo => {
-      const reason = photo.photoIntelligence?.diagnostics?.noPriorReason;
-      return reason === 'missing_area_key' || reason === 'no_same_area';
-    });
+    const photosNeedingRecheck = updateSnapshot.photos.filter(photo =>
+      photoNeedsPriorRecheckAfterAreaChange(updateSnapshot, photo));
 
     for (const photo of photosNeedingRecheck) {
       await analyzePhotoWithAuthHydrationRetry({
