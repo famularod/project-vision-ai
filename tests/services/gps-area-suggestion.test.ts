@@ -11,7 +11,7 @@ import {
 import { draftAreaPresentation, UNASSIGNED_AREA_NAME } from '../../services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from '../../services/DraftFixTracker';
 import { applyFixToDraft, areaChangeLocationFields } from '../../services/DraftFix';
-import { extractGPSEvidence, findEvidenceConflicts } from '../../services/PIEEvidenceFusion';
+import { buildFusedEvidence, extractGPSEvidence, findEvidenceConflicts } from '../../services/PIEEvidenceFusion';
 import {
   asLibraryPhoto,
   DRAFT_FIX_MAX_AGE_MS,
@@ -419,6 +419,10 @@ describe('photos and the project’s location', () => {
 describe('late photos and the project’s location', () => {
   const summaryWithPhotoAt = (photoTime: string) => analyzeProjectLocationIntelligence({
     now: new Date(Date.parse(photoTime) + 60_000),
+    projectAreas: [{
+      id: 'north', name: 'North Lot', projectName: '2321 Compliance Project', radiusFeet: 175,
+      latitude: 37.1, longitude: -121.9, locationCapturedAt: '2026-09-20T15:00:00Z',
+    }],
     projectName: '2321 Compliance Project',
     updates: [{
       id: 'u1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '',
@@ -655,7 +659,7 @@ describe('placeholders and GPS evidence', () => {
 
 // Review pass 15: the location summary with fixes that land.
 describe('the project location summary', () => {
-  const lot = area('lot', 0, 175, { name: 'North Lot' });
+  const lot = area('lot', 0, 175, { name: 'North Lot', projectName: '2321 Compliance Project' });
   const now = new Date('2026-09-29T15:05:00.000Z');
   const draft = (feetNorth: number, extra: Record<string, unknown> = {}) => ({
     id: 'd1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
@@ -748,5 +752,58 @@ describe('GPS evidence confidence', () => {
     expect(gps.recommendedArea).toBeNull();
     expect(gps.confidenceScore).toBeLessThan(70);
     expect(gps.correctionStatus).not.toBe('corrected');
+  });
+});
+
+// Review pass 16.
+describe('areas and projects', () => {
+  const now = new Date('2026-09-29T15:05:00.000Z');
+  const canopyB = area('canopy-b', 0, 175, { name: 'Canopy B', projectName: '2375 Compliance Project' });
+  const canopyA = area('canopy-a', 400, 175, { name: 'Canopy A', projectName: '2321 Compliance Project' });
+  const draft2321 = {
+    id: 'd1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
+    recipients: { contactIds: [] }, selectedAreaName: UNASSIGNED_AREA_NAME,
+    gpsLatitude: ORIGIN.latitude, gpsLongitude: ORIGIN.longitude, gpsAccuracy: 5,
+    locationCapturedAt: '2026-09-29T15:00:00.000Z',
+  };
+
+  it('never names another project’s area as this project’s current area', () => {
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project', updates: [], currentUpdate: draft2321 as never,
+      scheduleItems: [], projectAreas: [canopyB, canopyA], now,
+    });
+    expect(summary.currentArea).toBeNull();
+  });
+
+  it('never says GPS supports another project’s area', () => {
+    const fused = buildFusedEvidence({
+      projectName: '2321 Compliance Project', updates: [draft2321 as never],
+      projectAreas: [canopyB, canopyA], now,
+    });
+    expect(fused.gpsEvidence.recommendedArea).toBeNull();
+    // The same fix in 2375's own evidence is Canopy B.
+    const other = buildFusedEvidence({
+      projectName: '2375 Compliance Project',
+      updates: [{ ...draft2321, projectName: '2375 Compliance Project' } as never],
+      projectAreas: [canopyB, canopyA], now,
+    });
+    expect(other.gpsEvidence.recommendedArea).toBe('Canopy B');
+  });
+
+  it('does not say GPS supports a named area the fix is far outside', () => {
+    const northLot = area('north', 0, 175, { name: 'North Lot' });
+    const office = {
+      ...draft2321, selectedAreaName: 'North Lot',
+      gpsLatitude: north(23_000).latitude, gpsLongitude: north(23_000).longitude,
+    };
+    const gps = extractGPSEvidence({ projectName: '2321 Compliance Project', updates: [office as never], projectAreas: [northLot] });
+    expect(gps.recommendedArea).toBeNull();
+    expect(gps.confidenceScore).toBeLessThan(70);
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project', updates: [office as never], scheduleItems: [],
+      projectAreas: [{ ...northLot, projectName: '2321 Compliance Project' }], now,
+    });
+    expect(summary.presenceStatus).toBe('off-site');
+    expect(summary.needsConfirmation).toBe(true);
   });
 });

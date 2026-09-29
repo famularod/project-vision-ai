@@ -1,4 +1,5 @@
-import { distanceBetweenCoordinatesFeet, findProjectAreaSuggestions, hasSavedAreaLocation } from './AreaSuggestion';
+import { distanceBetweenCoordinatesFeet, findClosestProjectArea, hasSavedAreaLocation } from './AreaSuggestion';
+import { projectAreasForProject } from './DAVEProjectAreaScope';
 import { formatGpsAccuracy, gpsAccuracyFeet } from './GpsPrecision';
 import { namedAreaOrNull } from './DraftAreaPresentation';
 import { DRAFT_FIX_MAX_AGE_MS } from './DraftPhotoGps';
@@ -92,10 +93,20 @@ export function analyzeProjectLocationIntelligence({
     currentUpdate,
   });
   const projectScheduleItems = relatedScheduleItems(projectName, scheduleItems);
+  // This project's areas only (GPS review pass 16: another project's area on
+  // a shared site became the current area).
+  const scopedAreas = projectAreasForProject({
+    projectAreas,
+    projectName,
+    // Every project's tasks and updates, as the draft passes: ownership of a
+    // legacy area is inferred from who uses it.
+    scheduleItems,
+    updates: currentUpdate ? [currentUpdate, ...updates] : updates,
+  });
   const candidates = locationCandidates({
     updates: projectUpdates,
     currentUpdate: currentUpdate ?? null,
-    projectAreas,
+    projectAreas: scopedAreas,
     now,
   });
   const latestCandidate = candidates[0] ?? null;
@@ -106,7 +117,7 @@ export function analyzeProjectLocationIntelligence({
     ? latestCandidate.areaName
     : scheduleArea;
   const matchedArea = findMatchedArea({
-    projectAreas,
+    projectAreas: scopedAreas,
     areaId: latestCandidate?.areaId ?? null,
     areaName: currentArea,
   });
@@ -122,12 +133,15 @@ export function analyzeProjectLocationIntelligence({
     fix: latestCandidate?.fix ?? null,
     matchedArea,
   });
+  // A fix adds confidence only when it supports the current area (pass 16:
+  // a fix far from the named area still scored +22).
+  const gpsSupportsArea = presenceStatus === 'on-site';
   const confidenceScore = locationConfidenceScore({
     projectName,
     currentArea,
     scheduleArea,
     buildingName,
-    gpsCaptured,
+    gpsCaptured: gpsSupportsArea,
     areaHasGps,
     latestCandidate,
     now,
@@ -262,17 +276,22 @@ function updateLocationCandidate(
   now: Date,
 ): LocationCandidate | null {
   const fix = currentFix(update, now);
-  const namedArea =
-    namedAreaOrNull(update.selectedAreaName) ||
-    update.photos.map(photo => namedAreaOrNull(photo.selectedAreaName)).find(Boolean) ||
-    null;
+  const updateArea = namedAreaOrNull(update.selectedAreaName);
+  const photoWithArea = updateArea
+    ? null
+    : update.photos.find(photo => namedAreaOrNull(photo.selectedAreaName)) ?? null;
+  const namedArea = updateArea || namedAreaOrNull(photoWithArea?.selectedAreaName) || null;
   const fixArea = !namedArea && fix ? areaContainingFix(fix, projectAreas) : null;
   const areaName = namedArea || fixArea?.name || null;
 
   if (!areaName && !fix) return null;
 
   return {
-    areaId: namedArea ? update.selectedAreaId ?? null : fixArea?.id ?? null,
+    areaId: updateArea
+      ? update.selectedAreaId ?? null
+      : photoWithArea
+        ? photoWithArea.selectedAreaId ?? null
+        : fixArea?.id ?? null,
     areaName,
     fix,
     activityAt:
@@ -313,10 +332,10 @@ function currentFix(update: ProjectUpdate, now: Date): LocationFixEvidence | nul
 /** A fix a little ahead of the clock (another device's time) still counts. */
 const DRAFT_FIX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
-/** The saved area a fix is confidently inside, by the nearest centre (as fusion and home detection). */
+/** The project's saved area a fix is confidently inside (the draft's and fusion's rule; pass 16). */
 function areaContainingFix(fix: LocationFixEvidence, projectAreas: ProjectArea[]): ProjectArea | null {
-  const nearest = findProjectAreaSuggestions(fix, projectAreas, { diagnose: false })[0];
-  return nearest?.withinRadius ? nearest.area : null;
+  const containing = findClosestProjectArea(fix, projectAreas, { diagnose: false });
+  return containing?.withinRadius ? containing.area : null;
 }
 
 function latestTime(values: Array<string | null | undefined>): string | null {

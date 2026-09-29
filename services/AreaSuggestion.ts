@@ -78,14 +78,16 @@ export function findProjectAreaSuggestions(
 /**
  * The nearest area that confidently contains you, else the nearest area: a
  * small area close by must not hide a larger one you are inside (review
- * pass 3). For one project's areas; home-screen detection across projects
- * gates on the nearest centre instead (review pass 4).
+ * pass 3). For one project's areas (the draft, the location summary and
+ * fusion scope them; pass 16); home-screen detection across projects gates
+ * on the nearest centre instead (review pass 4).
  */
 export function findClosestProjectArea(
   currentLocation: GpsFix | null,
   projectAreas: readonly ProjectArea[],
+  options: Readonly<{ diagnose?: boolean }> = {},
 ): AreaSuggestion | null {
-  const suggestions = findProjectAreaSuggestions(currentLocation, projectAreas);
+  const suggestions = findProjectAreaSuggestions(currentLocation, projectAreas, options);
   return suggestions.find(suggestion => suggestion.withinRadius) || suggestions[0] || null;
 }
 
