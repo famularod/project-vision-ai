@@ -98,15 +98,20 @@ export async function loadDAVEWebReadOnlySnapshot(
 }
 
 function portfolioProjects(
-  projects: readonly CloudProject[],
+  allProjects: readonly CloudProject[],
   scheduleItems: readonly ScheduleItem[],
 ): CloudProject[] {
+  // Archived projects are read only so their names stay out: a task that
+  // still names an archived parent must not bring it back (native parity,
+  // PR #73; code review 27 Sep 2026).
+  const projects = allProjects.filter(project => !project.archived);
   const projectByName = new Map(
     projects.map(project => [normalized(project.name), project]),
   );
   return scheduleOverviewProjectNames(
     projects.map(project => project.name),
     [...scheduleItems],
+    allProjects.filter(project => project.archived).map(project => project.name),
   ).map(name => projectByName.get(normalized(name)) ?? {
     id: null,
     name,

@@ -415,7 +415,9 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
 
       const [projects, scheduleItems, projectUpdates, referenceDocuments, syncTombstones] = await Promise.all([
         shouldRead('projects')
-          ? readOwnerRows(client, 'projects', userId, query => query.eq('archived', false).order('created_at', { ascending: false }))
+          // Archived rows too: the snapshot needs their names to keep them
+          // out of the portfolio (DAVEWebReadOnlyRepository.portfolioProjects).
+          ? readOwnerRows(client, 'projects', userId, query => query.order('created_at', { ascending: false }))
           : Promise.resolve(cachedRows?.projects ?? []),
         shouldRead('schedule_items')
           ? readOwnerRows(client, 'schedule_items', userId, query => query.order('updated_at', { ascending: false }))
@@ -1338,15 +1340,14 @@ function applyDAVEWebRealtimeRows(
   const property = collection ? webRowsProperty(collection) : null;
   const id = readRawString(candidate, 'id');
   if (!collection || !property || !id) return null;
-  const removeProject = entity === 'project' && candidate.archived === true;
-  const nextCollection = removeProject
-    ? removeRealtimeRow(rows[property], id, value => readRawString(value, 'id'))
-    : mergeRealtimeRows(
-        rows[property],
-        candidate,
-        payload.eventType,
-        value => readRawString(value, 'id'),
-      );
+  // An archived project row is kept with its flag, so the portfolio still
+  // knows the name to keep out.
+  const nextCollection = mergeRealtimeRows(
+    rows[property],
+    candidate,
+    payload.eventType,
+    value => readRawString(value, 'id'),
+  );
   return Object.freeze({
     rows: Object.freeze({ ...rows, [property]: nextCollection }),
     collections: Object.freeze([collection]),
