@@ -1,5 +1,5 @@
 import { formatGpsAccuracy } from './GpsPrecision';
-import { photoGpsOrUpdate } from './DraftPhotoGps';
+import { DRAFT_FIX_MAX_AGE_MS, photoGpsOrUpdate } from './DraftPhotoGps';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -236,18 +236,35 @@ function locationCandidates(updates: ProjectUpdate[]): LocationCandidate[] {
 }
 
 /**
- * An update with a fix stands for its photos without GPS of their own, which
- * are not candidates themselves; it is as recent as the latest of them, so a
- * late photo keeps its update ahead of an earlier one (GPS review pass 12).
+ * An update with a fix stands for its camera photos without GPS of their
+ * own, which are not candidates themselves; it is as recent as the latest of
+ * them, so a late photo keeps its update ahead of an earlier one (GPS review
+ * pass 12). Library photos are not activity at a place (pass 13).
  */
 function updateOrderAt(update: ProjectUpdate): string | null {
   if (!hasGpsCoordinates(update)) return null;
-  const times = [update.locationCapturedAt, ...update.photos.map(photo => photo.locationCapturedAt)]
-    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)));
+  const times = [
+    update.locationCapturedAt,
+    ...update.photos.filter(photo => !photo.pickedFromLibrary).map(photo => photo.locationCapturedAt),
+  ].filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)));
   return times.reduce<string | null>(
     (latest, value) => (latest === null || Date.parse(value) > Date.parse(latest) ? value : latest),
     null,
   );
+}
+
+/**
+ * Whether an update's fix still stands for where you are at its latest
+ * activity: within 30 minutes of it, the window a fix covers a photo
+ * (DRAFT_FIX_MAX_AGE_MS). Later, the update still gives its area, but its
+ * fix is not claimed as your current GPS, so an old update reopened today
+ * asks to confirm, as before fixes were kept (GPS review pass 13).
+ */
+function fixIsCurrent(update: ProjectUpdate, orderAt: string | null): boolean {
+  const fixedAt = Date.parse(update.locationCapturedAt ?? '');
+  const lastAt = Date.parse(orderAt ?? '');
+  if (!Number.isFinite(fixedAt) || !Number.isFinite(lastAt)) return true;
+  return lastAt - fixedAt <= DRAFT_FIX_MAX_AGE_MS;
 }
 
 function updateLocationCandidate(update: ProjectUpdate): LocationCandidate | null {
@@ -255,17 +272,19 @@ function updateLocationCandidate(update: ProjectUpdate): LocationCandidate | nul
   const hasGps = hasGpsCoordinates(update);
 
   if (!hasArea && !hasGps) return null;
+  const orderAt = updateOrderAt(update);
+  const current = fixIsCurrent(update, orderAt);
 
   return {
     areaId: update.selectedAreaId ?? null,
     areaName: update.selectedAreaName?.trim() || null,
-    gpsLatitude: update.gpsLatitude ?? null,
-    gpsLongitude: update.gpsLongitude ?? null,
-    gpsAccuracy: update.gpsAccuracy ?? null,
-    distanceFromSelectedAreaFeet: update.distanceFromSelectedAreaFeet ?? null,
+    gpsLatitude: current ? update.gpsLatitude ?? null : null,
+    gpsLongitude: current ? update.gpsLongitude ?? null : null,
+    gpsAccuracy: current ? update.gpsAccuracy ?? null : null,
+    distanceFromSelectedAreaFeet: current ? update.distanceFromSelectedAreaFeet ?? null : null,
     locationCapturedAt: update.locationCapturedAt ?? null,
     occurredAt: update.date,
-    orderAt: updateOrderAt(update),
+    orderAt,
     source: update.id.startsWith('draft-') ? 'current-draft' : 'typed-update',
   };
 }

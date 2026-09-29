@@ -652,7 +652,7 @@ export function extractGPSEvidence({
     .filter(update => matchesProject(projectName, update.projectName))
     .map(update => ({
       projectName: update.projectName,
-      areaName: trimOrNull(update.selectedAreaName ?? ''),
+      areaName: namedArea(update.selectedAreaName),
       latitude: update.gpsLatitude ?? null,
       longitude: update.gpsLongitude ?? null,
       accuracy: update.gpsAccuracy ?? null,
@@ -662,7 +662,7 @@ export function extractGPSEvidence({
     }));
   const photoGps = photoEvidence.map(photo => ({
     projectName: photo.projectName,
-    areaName: photo.areaName,
+    areaName: namedArea(photo.areaName),
     latitude: photo.gpsLatitude,
     longitude: photo.gpsLongitude,
     accuracy: photo.gpsAccuracy,
@@ -680,7 +680,7 @@ export function extractGPSEvidence({
   const latest = candidates[0] ?? null;
   const areaCandidate =
     latest?.areaName ||
-    mostCommon(photoEvidence.map(photo => photo.areaName)) ||
+    mostCommon(photoEvidence.map(photo => namedArea(photo.areaName) ?? '')) ||
     mostCommon(scheduleEvidence.map(item => item.areaName)) ||
     null;
   const nearest = latest &&
@@ -1645,6 +1645,16 @@ function matchesProject(projectName: string | null | undefined, value: string | 
   if (!projectName || projectName === 'Unassigned Project') return true;
 
   return normalizedKey(projectName) === normalizedKey(value || '');
+}
+
+/**
+ * An area name, or null for none and for the "Unassigned / Unknown Area"
+ * placeholder, which names no area (GPS review passes 12-13: it became a
+ * recommended area and a side of the GPS area conflict).
+ */
+function namedArea(value: string | null | undefined): string | null {
+  const name = trimOrNull(value ?? '');
+  return name && !sameArea(name, UNASSIGNED_AREA_NAME) ? name : null;
 }
 
 function sameArea(left: string | null | undefined, right: string | null | undefined) {

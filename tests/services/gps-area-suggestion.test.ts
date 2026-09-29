@@ -416,22 +416,58 @@ describe('photos and the project’s location', () => {
 
 // Review pass 11 (the desktop flag test is in dave-web-read-only-repository.test.ts).
 describe('late photos and the project’s location', () => {
-  it('does not let a camera photo taken after the fix stopped covering it lower confidence', () => {
-    const update = {
+  const summaryWithPhotoAt = (photoTime: string) => analyzeProjectLocationIntelligence({
+    projectName: '2321 Compliance Project',
+    updates: [{
       id: 'u1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '',
       recipients: { contactIds: [] }, selectedAreaName: 'North Lot',
       gpsLatitude: 37.1, gpsLongitude: -121.9, gpsAccuracy: 5, locationCapturedAt: '2026-09-29T15:00:00.000Z',
       photos: [{
         id: 'p1', uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '',
-        actionDueDate: '', actionStatus: 'Open', gpsLatitude: null, gpsLongitude: null,
-        locationCapturedAt: '2026-09-29T15:45:00.000Z',
+        actionDueDate: '', actionStatus: 'Open', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: photoTime,
       }],
-    };
-    const summary = analyzeProjectLocationIntelligence({
-      projectName: '2321 Compliance Project', updates: [update as never], scheduleItems: [],
-    });
+    } as never],
+    scheduleItems: [],
+  });
+
+  // Pass 11: a photo without GPS of its own is not location evidence.
+  it('keeps the fix as current while the update’s activity is within 30 minutes of it', () => {
+    const summary = summaryWithPhotoAt('2026-09-29T15:20:00.000Z');
     expect(summary.gpsStatus).toBe('Captured, accuracy ±16 ft');
     expect(summary.needsConfirmation).toBe(false);
+  });
+
+  // Pass 13: later, the update still gives its area, but its fix is not
+  // claimed as your current GPS.
+  it('keeps the area but not the fix as current after 30 minutes', () => {
+    const summary = summaryWithPhotoAt('2026-09-29T15:45:00.000Z');
+    expect(summary.currentArea).toBe('North Lot');
+    expect(summary.gpsStatus).not.toMatch(/^Captured/);
+  });
+
+  it('does not show yesterday’s fix as current when an old update is reopened today', () => {
+    const photo = (id: string, time: string, extra: Record<string, unknown> = {}) => ({
+      id, uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '', actionDueDate: '',
+      actionStatus: 'Open', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: time, ...extra,
+    });
+    const yesterday = {
+      id: 'u-old', projectName: '2321 Compliance Project', date: '2026-09-28', notes: '',
+      recipients: { contactIds: [] }, selectedAreaName: 'North Lot',
+      gpsLatitude: 37.1, gpsLongitude: -121.9, gpsAccuracy: 5, locationCapturedAt: '2026-09-28T16:00:00.000Z',
+      photos: [photo('p-lib', '2026-09-29T18:00:00.000Z', { pickedFromLibrary: true })],
+    };
+    const today = {
+      id: 'u-today', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '',
+      recipients: { contactIds: [] }, selectedAreaName: 'South Lot',
+      gpsLatitude: 37.2, gpsLongitude: -121.8, gpsAccuracy: 5, locationCapturedAt: '2026-09-29T17:00:00.000Z',
+      photos: [],
+    };
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project', updates: [yesterday as never, today as never], scheduleItems: [],
+    });
+    // A library photo is not activity: today's update, with its current fix, is latest.
+    expect(summary.currentArea).toBe('South Lot');
+    expect(summary.gpsStatus).toBe('Captured, accuracy ±16 ft');
   });
 });
 
@@ -539,5 +575,22 @@ describe('GPS evidence against the update’s area', () => {
     findProjectAreaSuggestions({ ...ORIGIN, accuracy: 5 }, unmapped);
     expect(warn).toHaveBeenCalledTimes(typeof __DEV__ !== 'undefined' && __DEV__ ? 1 : 0);
     warn.mockRestore();
+  });
+});
+
+// Review pass 13.
+describe('the "Unassigned / Unknown Area" placeholder in GPS evidence', () => {
+  it('is never a recommended area', () => {
+    const lot = area('lot', 0, 175, { name: 'North Lot' });
+    const draftLike = {
+      id: 'draft-1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
+      recipients: { contactIds: [] }, selectedAreaName: UNASSIGNED_AREA_NAME,
+      gpsLatitude: north(170).latitude, gpsLongitude: north(170).longitude, gpsAccuracy: 10,
+      locationCapturedAt: '2026-09-29T15:00:00Z',
+    };
+    const gps = extractGPSEvidence({
+      projectName: '2321 Compliance Project', updates: [draftLike as never], projectAreas: [lot],
+    });
+    expect(gps.recommendedArea).toBe('North Lot');
   });
 });
