@@ -390,7 +390,9 @@ describe('GPS prompts in the app', () => {
     // Review pass 5: a rejected suggestion never reads as the current area,
     // and "suggested" shows only while a suggestion is pending.
     expect(app).not.toContain('areaSuggestion?.area.name ||');
-    expect(app).toContain("status={update.areaStatus === 'suggested' && !pendingSuggestion");
+    // Review pass 6: "Area auto-detected" only for the accepted suggestion.
+    expect(app).toContain('status={areaRowStatus}');
+    expect(app).toMatch(/const areaRowStatus: ProjectUpdate\['areaStatus'\] = suggestionIsShown\n\s+\? 'confirmed'/);
     expect(app).toContain('if (areaId && !area) return;');
   });
 
@@ -399,6 +401,9 @@ describe('GPS prompts in the app', () => {
     expect(app.match(/recaptureDroppedDraftLocation\(draftSnapshot\.id, droppedPendingFix\);/g)).toHaveLength(2);
     expect(app).toContain('const droppedPendingFix = draftLocationCapturePendingIdRef.current === draftSnapshot.id;');
     expect(app).toContain("if (!droppedPendingFix || openDraft.id !== savedDraftId || typeof openDraft.gpsLatitude === 'number') return;");
+    // Review pass 6: pending until the fix is written into the draft.
+    expect(app).toMatch(/handedToDraft = true;\n\s+setDraft\(prev => \{\n\s+settle\(\);/);
+    expect(app).toContain('if (!handedToDraft) settle();');
     expect(app).toContain('const suggestion = findProjectAreaSuggestions(snapshot, projectAreas)[0] || null;');
   });
 

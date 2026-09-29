@@ -6911,6 +6911,9 @@ useEffect(() => {
     draftLocationCaptureGenerationRef.current = generation;
     const target = createDraftLocationCaptureTarget(targetDraft, generation);
     draftLocationCapturePendingIdRef.current = target.draftId;
+    // Pending until the fix is written into the draft, which React does at
+    // its next render, not when the fix arrives (review pass 6).
+    let handedToDraft = false;
     const settle = () => {
       if (draftLocationCaptureGenerationRef.current === generation) {
         draftLocationCapturePendingIdRef.current = null;
@@ -6956,7 +6959,9 @@ useEffect(() => {
           : 'GPS saved. Choose an area to confirm the work location.',
       );
 
+      handedToDraft = true;
       setDraft(prev => {
+        settle();
         if (!isDraftLocationCaptureTargetCurrent(
           target,
           prev,
@@ -7002,7 +7007,7 @@ useEffect(() => {
       );
       return null;
     } finally {
-      settle();
+      if (!handedToDraft) settle();
     }
   }
 
@@ -15295,6 +15300,13 @@ function AddPhotosScreen({
   // No mapped area chosen yet: the suggestion is named until accepted
   // (review pass 4: it showed only as "Unassigned / Unknown Area").
   const pendingSuggestion = !selectedArea && areaSuggestion ? areaSuggestion : null;
+  // "Area auto-detected" only for the GPS suggestion itself; a manual pick or
+  // a task's location is a selected area (review pass 6).
+  const areaRowStatus: ProjectUpdate['areaStatus'] = suggestionIsShown
+    ? 'confirmed'
+    : pendingSuggestion && update.areaStatus === 'suggested'
+      ? 'suggested'
+      : 'unknown';
   const locationSource = suggestionIsShown
     ? areaSuggestion?.withinRadius ? 'exact-gps-area' : 'gps-radius'
     : pendingSuggestion
@@ -15428,9 +15440,7 @@ function AddPhotosScreen({
           areaName={pendingSuggestion && update.areaStatus === 'suggested' && areaName === 'Unassigned / Unknown Area'
             ? pendingSuggestion.area.name
             : areaName}
-          status={update.areaStatus === 'suggested' && !pendingSuggestion
-            ? 'unknown'
-            : update.areaStatus || (areaSuggestion ? 'suggested' : 'unknown')}
+          status={areaRowStatus}
           onChange={() => setAreaSheetOpen(true)}
         />
         <RecipientSummaryRow
