@@ -7,6 +7,8 @@ import {
   daveWebReportSourceIsCurrent,
   formatDAVEWebReport,
   prepareDAVEWebLinkedDocument,
+  prepareDAVEWebReportEmailBody,
+  DAVE_WEB_REPORT_EMAIL_SHORTENED,
   prepareDAVEWebDocumentUpload,
   recoverDAVEWebPreparedUploadBytes,
   validateDAVEWebBackup,
@@ -534,3 +536,21 @@ function task(id: string, status: 'Complete' | 'In Progress', percentComplete: n
     cloudUpdatedAt: '2026-07-20T12:00:00.000Z',
   };
 }
+
+// Code review, 27 Sep 2026: the desktop cut a long report at 12,000
+// characters mid-sentence and said nothing.
+describe('desktop report email body', () => {
+  it('leaves a report that fits unchanged', () => {
+    expect(prepareDAVEWebReportEmailBody('  Short report.\n')).toEqual({ text: 'Short report.', shortened: false });
+  });
+
+  it('cuts a long report at a line break, marks it, and says so', () => {
+    const lines = Array.from({ length: 400 }, (_, index) => `Line ${index}: ${'x'.repeat(40)}`);
+    const result = prepareDAVEWebReportEmailBody(lines.join('\n'), 2_000);
+    expect(result.shortened).toBe(true);
+    expect(result.text.length).toBeLessThanOrEqual(2_000);
+    expect(result.text.endsWith(`\n\n${DAVE_WEB_REPORT_EMAIL_SHORTENED}`)).toBe(true);
+    const kept = result.text.slice(0, -(DAVE_WEB_REPORT_EMAIL_SHORTENED.length + 2)).split('\n');
+    expect(kept.every(line => /^Line \d+: x{40}$/.test(line))).toBe(true);
+  });
+});

@@ -448,6 +448,40 @@ describe('DAVE browser Supabase gateway', () => {
     ]);
   });
 
+  // An archive event while the desktop is open keeps the row with its flag,
+  // so the portfolio can keep that name out even if tasks still name it.
+  test('keeps an archived project row from a realtime event instead of dropping it', async () => {
+    const fixture = clientFixture();
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const realtimeChannel: { on: jest.Mock; subscribe: jest.Mock } = {
+      on: jest.fn(),
+      subscribe: jest.fn(),
+    };
+    realtimeChannel.on.mockImplementation(
+      (_kind: string, configuration: { table: string }, handler: (payload: unknown) => void) => {
+        handlers.set(configuration.table, handler);
+        return realtimeChannel;
+      },
+    );
+    realtimeChannel.subscribe.mockImplementation(() => realtimeChannel);
+    fixture.client.channel = jest.fn(() => realtimeChannel);
+    fixture.client.removeChannel = jest.fn().mockResolvedValue('ok');
+    const gateway = createDAVEWebSupabaseGateway(fixture.client);
+
+    await gateway.loadAuthorizedRows();
+    await gateway.subscribeToAuthorizedOperationalChanges({ onChange: jest.fn() });
+    handlers.get('projects')?.({
+      eventType: 'UPDATE',
+      new: { id: 'project-closed', name: 'Old Tank Farm', archived: true },
+      old: {},
+    });
+
+    const rows = await gateway.loadAuthorizedRows(['projects']);
+    expect(rows.projects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'project-closed', archived: true }),
+    ]));
+  });
+
   test('runs storage cleanup and deletion-audit purge only when maintenance is requested', async () => {
     const fixture = clientFixture();
     const gateway = createDAVEWebSupabaseGateway(fixture.client);

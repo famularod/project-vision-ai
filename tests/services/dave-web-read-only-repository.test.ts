@@ -18,6 +18,31 @@ describe('DAVE browser read-only repository', () => {
     jest.clearAllMocks();
   });
 
+  // Code review, 27 Sep 2026: an archived project that still had schedule
+  // tasks came back on the desktop Overview and Reports picker, because the
+  // web read only unarchived projects and then rebuilt names from the tasks.
+  // Native was fixed on PR #73; the desktop now reads the archived names too.
+  test('keeps an archived project off the desktop even when its tasks remain', async () => {
+    mockedLoadRows.mockResolvedValue({
+      projects: [
+        { id: 'active', name: '2321 Compliance Project', archived: false },
+        { id: 'closed', name: 'Old Tank Farm', archived: true },
+      ],
+      scheduleItems: [
+        { id: 'closed-task', item_data: { id: 'closed-task', projectName: 'Old Tank Farm', taskName: 'Demo', status: 'Complete', percentComplete: 100, progressSource: 'project_manager' } },
+        { id: 'open-task', item_data: { id: 'open-task', projectName: '2321 Compliance Project', taskName: 'Pour', status: 'In Progress', percentComplete: 40, progressSource: 'project_manager' } },
+      ],
+      projectUpdates: [],
+      referenceDocuments: [],
+      syncTombstones: [],
+    } as never);
+
+    const snapshot = await loadDAVEWebReadOnlySnapshot();
+
+    expect(snapshot.projects.map(project => project.name)).toEqual(['2321 Compliance Project']);
+    expect(snapshot.projects.every(project => project.archived === false)).toBe(true);
+  });
+
   test('preserves saved report provenance needed to verify freshness and lineage after reload', () => {
     expect(normalizeWebReport({
       status: 'approved',
