@@ -446,7 +446,10 @@ export function ReportsScreen({
 
   // Approval covers the exact text and cited photos; a rebuild that leaves
   // them unchanged keeps it, and the owner's edits are kept either way.
-  const approvalTextKey = reportApprovalTextKey(effectiveReportDraft);
+  const approvalTextKey = reportApprovalTextKey(
+    effectiveReportDraft,
+    drawingReferences.map(reference => reference.id),
+  );
   useEffect(() => {
     setReportApproved(false);
   }, [approvalTextKey]);

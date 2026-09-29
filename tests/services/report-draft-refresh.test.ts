@@ -129,11 +129,18 @@ describe('what a report approval covers', () => {
     expect(reportApprovalTextKey(withImages(base, ['p2']))).not.toBe(reportApprovalTextKey(base));
   });
 
+  it('changes when the Word report would embed a different drawing', () => {
+    const base = withImages(reportDraft('a', []), ['p1']);
+    expect(reportApprovalTextKey(base, ['drawing-2', 'drawing-1'])).toBe(reportApprovalTextKey(base, ['drawing-1', 'drawing-2']));
+    expect(reportApprovalTextKey(base, ['drawing-1', 'drawing-3'])).not.toBe(reportApprovalTextKey(base, ['drawing-1', 'drawing-2']));
+    expect(reportApprovalTextKey(base, [])).not.toBe(reportApprovalTextKey(base, ['drawing-1']));
+  });
+
   it('is what the Reports screen keys approval and state on, not the draft id', () => {
     const fs = jest.requireActual('fs') as typeof import('fs');
     const path = jest.requireActual('path') as typeof import('path');
     const screen = fs.readFileSync(path.resolve(__dirname, '../../screens/ReportsScreen.tsx'), 'utf8');
-    expect(screen).toContain('const approvalTextKey = reportApprovalTextKey(effectiveReportDraft);');
+    expect(screen).toContain('const approvalTextKey = reportApprovalTextKey(\n    effectiveReportDraft,\n    drawingReferences.map(reference => reference.id),\n  );');
     expect(screen).not.toContain('}, [pieReportDraft.id]);');
     const identity = screen.slice(screen.indexOf('const reportStateIdentityKey = ['), screen.indexOf("].join('|');", screen.indexOf('const reportStateIdentityKey = [')));
     expect(identity).not.toContain('pieReportDraft.id');

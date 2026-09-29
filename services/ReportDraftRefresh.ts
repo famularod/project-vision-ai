@@ -49,10 +49,12 @@ export function selectStableReportDraft({
  */
 export function reportApprovalTextKey(
   draft: Pick<PIEReportDraft, 'title' | 'body' | 'locationGroups'>,
+  /** The drawing excerpts the Word report embeds (independent review 28 Sep 2026). */
+  drawingReferenceIds: readonly string[] = [],
 ): string {
   const citedPhotoIds = draft.locationGroups
     .flatMap(group => group.workAreas.flatMap(area => area.imageReferences))
     .map(reference => `${reference.imageNumber}:${reference.photoId}`)
     .sort();
-  return JSON.stringify([draft.title, draft.body, citedPhotoIds]);
+  return JSON.stringify([draft.title, draft.body, citedPhotoIds, [...drawingReferenceIds].sort()]);
 }
