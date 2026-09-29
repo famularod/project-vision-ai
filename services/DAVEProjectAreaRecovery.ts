@@ -37,7 +37,7 @@ export function mergeDAVEProjectAreaRecord(
     latitude: gpsWinner.latitude,
     longitude: gpsWinner.longitude,
     locationCapturedAt,
-    ...areaPointPrecisionFields({ ...gpsWinner, locationCapturedAt }),
+    ...pointPrecision(gpsWinner, gpsWinner === candidate ? current : candidate, locationCapturedAt),
     updatedAt: latestTimestamp(current.updatedAt, candidate.updatedAt),
   };
 }
@@ -97,10 +97,34 @@ export function daveProjectAreasNeedingCloudUpload({
     const remote = cloudById.get(id);
     if (!remote) return [record];
     const authoritative = mergeDAVEProjectAreaRecord(remote, record);
-    return stableMeaning(authoritative) === stableMeaning(remote)
+    // A cloud copy carrying another point's precision (written by an older
+    // build) is compared as the merge would keep it, or builds that disagree
+    // about those keys upload it back and forth (review pass 2).
+    return stableMeaning(authoritative) === stableMeaning(withOwnPointPrecision(remote))
       ? []
       : [authoritative];
   });
+}
+
+/**
+ * The winning point's precision; if that copy lost it (an older build's
+ * merge drops what it does not manage), the other copy's precision for the
+ * same capture.
+ */
+function pointPrecision(
+  gpsWinner: ProjectArea,
+  other: ProjectArea,
+  locationCapturedAt: string | null,
+) {
+  const own = areaPointPrecisionFields({ ...gpsWinner, locationCapturedAt });
+  return own.locationAccuracyMeters !== undefined
+    ? own
+    : areaPointPrecisionFields({ ...other, locationCapturedAt });
+}
+
+function withOwnPointPrecision(area: ProjectArea): ProjectArea {
+  const { locationAccuracyMeters: _meters, locationAccuracyCapturedAt: _capturedAt, ...rest } = area;
+  return { ...rest, ...areaPointPrecisionFields(area) };
 }
 
 function compareGpsAuthority(left: ProjectArea, right: ProjectArea) {

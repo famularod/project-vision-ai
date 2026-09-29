@@ -6,12 +6,13 @@
  * precision a fix can take several seconds, so bursts of changes (startup,
  * a cloud refresh, typing an area radius) kept detection in "checking" and
  * New Update fell back to the project picker. One fix now serves for
- * `maxAgeMs`, and callers during a pending fix share it. A failed fix is
- * not kept.
+ * `maxAgeMs`, and callers during a pending fix share it. A failed fix, or
+ * none (location not allowed), is not kept, so allowing location in
+ * Settings takes effect on the next check (review pass 2).
  */
 export type RecentLocationFix<T> = Readonly<{
   /** The last fix if it is at most `maxAgeMs` old, else null. */
-  fresh: () => { fix: T | null } | null;
+  fresh: () => { fix: T } | null;
   /** The fresh fix, or one shared request for a new one. */
   get: () => Promise<T | null>;
 }>;
@@ -21,7 +22,7 @@ export function createRecentLocationFix<T>(
   maxAgeMs: number,
   now: () => number = Date.now,
 ): RecentLocationFix<T> {
-  let last: { fix: T | null; at: number } | null = null;
+  let last: { fix: T; at: number } | null = null;
   let pending: Promise<T | null> | null = null;
 
   const fresh = () => (last && now() - last.at <= maxAgeMs ? { fix: last.fix } : null);
@@ -33,7 +34,7 @@ export function createRecentLocationFix<T>(
       if (recent) return Promise.resolve(recent.fix);
       if (!pending) {
         const request = takeFix().then(fix => {
-          last = { fix, at: now() };
+          last = fix === null ? null : { fix, at: now() };
           return fix;
         });
         pending = request;

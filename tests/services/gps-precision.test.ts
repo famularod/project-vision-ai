@@ -17,7 +17,10 @@ import {
   isConfidentlyInsideArea,
 } from '../../services/GpsPrecision';
 import { analyzeProjectLocationIntelligence } from '../../services/LocationIntelligenceService';
-import { mergeDAVEProjectAreaRecord } from '../../services/DAVEProjectAreaRecovery';
+import {
+  daveProjectAreasNeedingCloudUpload,
+  mergeDAVEProjectAreaRecord,
+} from '../../services/DAVEProjectAreaRecovery';
 import { normalizeProjectArea } from '../../services/ProjectAreaRecord';
 import { createRecentLocationFix } from '../../services/RecentLocationFix';
 import type { ProjectUpdate } from '../../types';
@@ -184,6 +187,39 @@ describe('area sync merge', () => {
     expect(merged).not.toHaveProperty('locationAccuracyMeters');
     expect(areaPointPrecisionLabel(merged)).toBe('GPS saved, precision not recorded');
   });
+
+  // Review pass 2: an older build's merge drops the precision keys, so its
+  // rename reaches the cloud with the same point and no precision.
+  it('keeps the precision when the other copy has the same point without it', () => {
+    const renamedByOlderBuild = {
+      ...pointA,
+      name: 'North Lot East',
+      updatedAt: '2026-09-29T17:10:00Z',
+      locationAccuracyMeters: undefined,
+      locationAccuracyCapturedAt: undefined,
+    };
+    for (const merged of [
+      mergeDAVEProjectAreaRecord(pointA, renamedByOlderBuild),
+      mergeDAVEProjectAreaRecord(renamedByOlderBuild, pointA),
+    ]) {
+      expect(merged.name).toBe('North Lot East');
+      expect(areaPointPrecisionLabel(merged)).toBe('GPS saved ±13 ft');
+    }
+  });
+
+  // Review pass 2: an older build moved the point but kept the old precision
+  // keys. The new build must not upload the same record on every sync.
+  it('does not re-upload a cloud copy only because it carries another point’s precision', () => {
+    const movedByOlderBuild = {
+      ...pointA,
+      latitude: 37.3,
+      locationCapturedAt: '2026-09-29T18:00:00Z',
+      updatedAt: '2026-09-29T18:00:00Z',
+    };
+    const localAfterMerge = mergeDAVEProjectAreaRecord(pointA, movedByOlderBuild);
+    expect(localAfterMerge).not.toHaveProperty('locationAccuracyMeters');
+    expect(daveProjectAreasNeedingCloudUpload({ local: [localAfterMerge], cloud: [movedByOlderBuild] })).toEqual([]);
+  });
 });
 
 describe('a recent location fix', () => {
@@ -206,6 +242,14 @@ describe('a recent location fix', () => {
     expect(recent.fresh()).toBeNull();
     await recent.get();
     expect(takeFix).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not keep "no fix", so allowing location takes effect at once', async () => {
+    const takeFix = jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ at: 1 });
+    const recent = createRecentLocationFix(takeFix, 60_000, () => 0);
+    await expect(recent.get()).resolves.toBeNull();
+    expect(recent.fresh()).toBeNull();
+    await expect(recent.get()).resolves.toEqual({ at: 1 });
   });
 
   it('does not keep a failed fix', async () => {
@@ -247,8 +291,32 @@ describe('GPS prompts in the app', () => {
   });
 
   it('gives photos added before a slow fix that fix, and shares one fix for home-screen detection', () => {
-    expect(app).toContain("photos: prev.photos.map(photo => typeof photo.gpsLatitude === 'number' ? photo : {");
+    expect(app).toContain("typeof photo.gpsLatitude === 'number' ? photo : { ...photo, ...gpsFields }),");
     expect(app).toContain('overviewLocationFixRef.current.fresh()');
+  });
+
+  // Review pass 2: a draft was started and its fix requested in one handler,
+  // before draftRef rendered, so the fix was checked against the previous
+  // draft and always discarded.
+  it('captures GPS for the draft just started, against its own project’s areas', () => {
+    expect(app).not.toContain('captureDraftLocation();');
+    expect(app.match(/draftRef\.current = nextDraft;\n\s+setDraft\(nextDraft\);/g)).toHaveLength(2);
+    expect(app.match(/captureDraftLocation\(nextDraft\)/g)).toHaveLength(2);
+    expect(app).toContain('const target = createDraftLocationCaptureTarget(targetDraft, generation);');
+    expect(app).toContain('projectName: targetDraft.projectName,');
+  });
+
+  it('builds new photos from the draft as it is when the camera or picker returns', () => {
+    expect(app).not.toContain('withDraftPhotoContext(await photoFromAsset(asset), draft)');
+    expect(app.match(/withDraftPhotoContext\(await photoFromAsset\(asset\), draftRef\.current\)/g)).toHaveLength(2);
+    expect(app.match(/const baseDraft = draftRef\.current;/g)).toHaveLength(2);
+  });
+
+  it('keeps the draft’s own area when the fix lands, and says "saved" only for an area that still exists', () => {
+    expect(app).toContain('...gpsFields,');
+    expect(app).toContain("prev.areaStatus === 'confirmed' || selectedArea");
+    expect(app).toContain('if (!updateProjectArea(areaId, areaPointFromFix(snapshot))) return;');
+    expect(app).toContain('formatGpsAccuracy(areaPointAccuracyMeters(area))');
   });
 
   it('decides an area suggestion with the unit-safe rule', () => {

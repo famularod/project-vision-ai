@@ -236,6 +236,7 @@ import {
   normalizeProjectArea,
 } from './services/ProjectAreaRecord';
 import {
+  areaPointAccuracyMeters,
   areaPointFromFix,
   areaPointImpreciseMessage,
   areaPointPrecisionLabel,
@@ -6872,10 +6873,19 @@ useEffect(() => {
     }
   }
 
-  async function captureDraftLocation() {
+  // Review pass 2, 29 Sep 2026: callers start a draft and capture in one
+  // handler, before draftRef renders, so the target was the previous draft
+  // and every fix was discarded. They now pass the draft they started.
+  async function captureDraftLocation(targetDraft: ProjectUpdate = draftRef.current) {
     const generation = draftLocationCaptureGenerationRef.current + 1;
     draftLocationCaptureGenerationRef.current = generation;
-    const target = createDraftLocationCaptureTarget(draftRef.current, generation);
+    const target = createDraftLocationCaptureTarget(targetDraft, generation);
+    const targetAreas = projectAreasForProject({
+      projectAreas,
+      projectName: targetDraft.projectName,
+      scheduleItems,
+      updates: activeSavedUpdates,
+    });
     const targetIsCurrent = () => isDraftLocationCaptureTargetCurrent(
       target,
       draftRef.current,
@@ -6897,7 +6907,7 @@ useEffect(() => {
 
       const suggestion = findClosestProjectArea(
         snapshot,
-        draftProjectAreas,
+        targetAreas,
       );
 
       const reliableSuggestion = suggestion?.withinRadius ? suggestion : null;
@@ -6905,9 +6915,7 @@ useEffect(() => {
       setLocationStatus(
         reliableSuggestion
           ? `Suggested area: ${reliableSuggestion.area.name}`
-          : snapshot.preciseLocationOff
-            ? `${PRECISE_LOCATION_OFF_TITLE}. Choose Project Area manually.`
-            : 'GPS saved. Choose an area to confirm the work location.',
+          : 'GPS saved. Choose an area to confirm the work location.',
       );
 
       setDraft(prev => {
@@ -6919,28 +6927,25 @@ useEffect(() => {
           return prev;
         }
         const selectedArea =
-          draftProjectAreas.find(area => area.id === prev.selectedAreaId) ||
+          targetAreas.find(area => area.id === prev.selectedAreaId) ||
           null;
-        const locationFields = locationFieldsFromSnapshot(
-          snapshot,
-          selectedArea,
-        );
+        // GPS only: the draft keeps the area it has, such as a task's named
+        // location that is not a mapped area (review pass 2).
+        const {
+          selectedAreaId: _areaId,
+          selectedAreaName: _areaName,
+          ...gpsFields
+        } = locationFieldsFromSnapshot(snapshot, selectedArea);
 
         return {
           ...prev,
-          ...locationFields,
+          ...gpsFields,
           // Photos added before a slow fix landed took the draft's empty GPS
           // (review, 29 Sep 2026: High fixes can take several seconds).
-          photos: prev.photos.map(photo => typeof photo.gpsLatitude === 'number' ? photo : {
-            ...photo,
-            gpsLatitude: locationFields.gpsLatitude,
-            gpsLongitude: locationFields.gpsLongitude,
-            gpsAccuracy: locationFields.gpsAccuracy,
-            distanceFromSelectedAreaFeet: locationFields.distanceFromSelectedAreaFeet,
-            locationCapturedAt: locationFields.locationCapturedAt,
-          }),
+          photos: prev.photos.map(photo =>
+            typeof photo.gpsLatitude === 'number' ? photo : { ...photo, ...gpsFields }),
           areaStatus:
-            selectedArea
+            prev.areaStatus === 'confirmed' || selectedArea
               ? 'confirmed'
               : reliableSuggestion
                 ? 'suggested'
@@ -8314,10 +8319,12 @@ useEffect(() => {
   }
 
   function beginDraftForProject(projectName: string) {
-    setDraft(createDraft(projectName));
+    const nextDraft = createDraft(projectName);
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
     setSelectedWorkspaceProject(projectName);
     setScreen('AddPhotos');
-    draftLocationCaptureRef.current = captureDraftLocation();
+    draftLocationCaptureRef.current = captureDraftLocation(nextDraft);
   }
 
   function createNewUpdate(projectName?: string) {
@@ -8393,7 +8400,7 @@ useEffect(() => {
     ) || null;
 
     function proceed() {
-      setDraft({
+      const nextDraft: ProjectUpdate = {
         ...createDraft(taskProjectName),
         scheduleItemId: scheduleItem.id,
         scheduleTaskName: scheduleItem.taskName,
@@ -8401,10 +8408,12 @@ useEffect(() => {
         selectedAreaId: area?.id || null,
         selectedAreaName: area?.name || scheduleItem.locationName || 'Unassigned / Unknown Area',
         areaStatus: area || scheduleItem.locationName ? 'confirmed' : 'unknown',
-      });
+      };
+      draftRef.current = nextDraft;
+      setDraft(nextDraft);
       setSelectedWorkspaceProject(parentProjectName);
       setScreen('AddPhotos');
-      draftLocationCaptureRef.current = captureDraftLocation();
+      draftLocationCaptureRef.current = captureDraftLocation(nextDraft);
     }
 
     if (!hasDraftContent(draft)) {
@@ -9154,11 +9163,11 @@ function addProject(projectName: string) {
   function updateProjectArea(
     areaId: string,
     next: Partial<ProjectArea>,
-  ) {
+  ): boolean {
     // The latest copy: Save GPS calls this after a fix that takes seconds
     // (review, 29 Sep 2026).
     const current = projectAreasCurrentRef.current.find(area => area.id === areaId);
-    if (!current) return;
+    if (!current) return false;
     const updated = normalizeProjectArea({
       ...current,
       ...next,
@@ -9169,6 +9178,7 @@ function addProject(projectName: string) {
     void queueProjectAreaRecord(updated).catch(() => {
       Alert.alert('Area saved on this device', 'Automatic cloud sync could not be queued. Use Sync Now when connected.');
     });
+    return true;
   }
 
   function deleteProjectArea(areaId: string) {
@@ -9250,7 +9260,7 @@ function addProject(projectName: string) {
       }
 
       const save = () => {
-        updateProjectArea(areaId, areaPointFromFix(snapshot));
+        if (!updateProjectArea(areaId, areaPointFromFix(snapshot))) return;
         Alert.alert('Area location saved', areaPointSavedMessage(snapshot.accuracy));
       };
       if (!isAreaPointImprecise(snapshot.accuracy)) {
@@ -9457,19 +9467,22 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       try {
         for (const asset of result.assets) {
-          photos.push(withDraftPhotoContext(await photoFromAsset(asset), draft));
+          photos.push(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current));
         }
 
+        // The draft as it is now, not when the button was tapped: a GPS fix
+        // may have landed while the camera or picker was open (review pass 2).
+        const baseDraft = draftRef.current;
         const nextDraft = {
-          ...draft,
-          photos: [...draft.photos, ...photos],
+          ...baseDraft,
+          photos: [...baseDraft.photos, ...photos],
           workflowTimestamps: {
-            ...(draft.workflowTimestamps || {}),
+            ...(baseDraft.workflowTimestamps || {}),
             cameraActionStartedAt:
-              draft.workflowTimestamps?.cameraActionStartedAt ||
+              baseDraft.workflowTimestamps?.cameraActionStartedAt ||
               cameraActionStartedAt,
             firstPhotoAddedAt:
-              draft.workflowTimestamps?.firstPhotoAddedAt ||
+              baseDraft.workflowTimestamps?.firstPhotoAddedAt ||
               new Date().toISOString(),
           },
         };
@@ -9538,21 +9551,24 @@ Note: This update was opened through Outlook because PLZ email security may reje
       try {
         for (const asset of result.assets) {
           photos.push({
-            ...withDraftPhotoContext(await photoFromAsset(asset), draft),
+            ...withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),
             continuityAnchor: continuityAnchor || null,
           });
         }
 
+        // The draft as it is now, not when the button was tapped: a GPS fix
+        // may have landed while the camera or picker was open (review pass 2).
+        const baseDraft = draftRef.current;
         const nextDraft = {
-          ...draft,
-          photos: [...draft.photos, ...photos],
+          ...baseDraft,
+          photos: [...baseDraft.photos, ...photos],
           workflowTimestamps: {
-            ...(draft.workflowTimestamps || {}),
+            ...(baseDraft.workflowTimestamps || {}),
             cameraActionStartedAt:
-              draft.workflowTimestamps?.cameraActionStartedAt ||
+              baseDraft.workflowTimestamps?.cameraActionStartedAt ||
               cameraActionStartedAt,
             firstPhotoAddedAt:
-              draft.workflowTimestamps?.firstPhotoAddedAt ||
+              baseDraft.workflowTimestamps?.firstPhotoAddedAt ||
               new Date().toISOString(),
           },
         };
@@ -18238,7 +18254,7 @@ function AreaDetailModal({
                 </Text>
                 <Text style={styles.rowSub}>
                   Saved {formatSavedTime(area.locationCapturedAt || null)}
-                  {` · ${formatGpsAccuracy(area.locationAccuracyMeters) ?? 'precision not recorded'}`}
+                  {` · ${formatGpsAccuracy(areaPointAccuracyMeters(area)) ?? 'precision not recorded'}`}
                 </Text>
               </>
             ) : (
