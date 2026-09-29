@@ -31,16 +31,22 @@ jest.mock('../../services/SupabaseService', () => ({
   getSupabaseClient: jest.fn(),
   getCurrentSessionAccessToken: jest.fn(),
   createPhotoSignedUrl: jest.fn(),
+  verifyDAVEAppOwner: jest.fn(),
+  uploadPhoto: jest.fn(),
 }));
 
-import { createPhotoSignedUrl } from '../../services/SupabaseService';
+import * as FileSystem from 'expo-file-system/legacy';
+import { createPhotoSignedUrl, uploadPhoto, verifyDAVEAppOwner } from '../../services/SupabaseService';
 import {
   hydrateRecoveredProjectUpdatePhotos,
   legacyProjectPhotoStoragePaths,
+  uploadLocalPhotoWithDiagnostics,
 } from '../../services/SyncService';
 import type { ProjectUpdate } from '../../types';
 
 const signedUrl = createPhotoSignedUrl as jest.Mock;
+const ownerCheck = verifyDAVEAppOwner as jest.Mock;
+const upload = uploadPhoto as jest.Mock;
 const NOT_FOUND = { ok: false, status: 400, error: 'Object not found', message: 'Object not found' };
 
 function julyUpdate(id: string, pinnedPath: string | null): ProjectUpdate {
@@ -59,7 +65,12 @@ function julyUpdate(id: string, pinnedPath: string | null): ProjectUpdate {
 }
 
 describe('photos uploaded under a legacy project name', () => {
-  beforeEach(() => signedUrl.mockReset());
+  beforeEach(() => {
+    signedUrl.mockReset();
+    upload.mockReset();
+    ownerCheck.mockReset().mockResolvedValue({ ok: true, data: true });
+    (FileSystem.getInfoAsync as jest.Mock).mockReset().mockResolvedValue({ exists: false });
+  });
 
   it('lists the same file under each legacy project name, and nothing without an update folder', () => {
     const paths = legacyProjectPhotoStoragePaths('2321-compliance-project/update-7/photo-1-lot.jpg');
@@ -67,6 +78,9 @@ describe('photos uploaded under a legacy project name', () => {
     expect(paths).toContain('building-2321-east-driveway/update-7/photo-1-lot.jpg');
     expect(paths).not.toContain('2321-compliance-project/update-7/photo-1-lot.jpg');
     expect(paths.every(path => path.endsWith('/update-7/photo-1-lot.jpg'))).toBe(true);
+    // Only migrated work-container names; legacy shell names were never renamed.
+    expect(paths).not.toContain('tank-farm/update-7/photo-1-lot.jpg');
+    expect(paths).toHaveLength(7);
     expect(legacyProjectPhotoStoragePaths('only/two')).toEqual([]);
   });
 
@@ -104,5 +118,51 @@ describe('photos uploaded under a legacy project name', () => {
     expect(first.photos[0].cloudStoragePath).toBe('2321-compliance-project/update-c/photo-1-lot.jpg');
     expect(callsAfterFirst).toBeGreaterThan(5);
     expect(signedUrl.mock.calls.length).toBe(callsAfterFirst + 1);
+  });
+
+  // Independent review, 28 Sep 2026: a signed-out "not found" must not be
+  // remembered as a real miss, and a photo still on the phone must be
+  // uploaded to its own path without any legacy search.
+  it('does not search or remember while the owner is not verified', async () => {
+    signedUrl.mockImplementation(async (path: string) => path.startsWith('2321-north-side-lot/')
+      ? { ok: true, data: `https://signed.example/${path}` }
+      : NOT_FOUND);
+    ownerCheck.mockResolvedValue({ ok: true, data: false });
+
+    const signedOut = await hydrateRecoveredProjectUpdatePhotos(julyUpdate('update-d', null));
+    expect(signedOut.photos[0].cloudRecoveryStatus).toBe('unavailable');
+    expect(signedUrl).toHaveBeenCalledTimes(1);
+
+    ownerCheck.mockResolvedValue({ ok: true, data: true });
+    const signedIn = await hydrateRecoveredProjectUpdatePhotos(julyUpdate('update-d', null));
+    expect(signedIn.photos[0].cloudStoragePath).toBe('2321-north-side-lot/update-d/photo-1-lot.jpg');
+  });
+
+  it('uploads a photo that is on the phone to its own path, with no legacy search', async () => {
+    signedUrl.mockResolvedValue(NOT_FOUND);
+    (FileSystem.getInfoAsync as jest.Mock).mockResolvedValue({ exists: true, isDirectory: false, size: 2048 });
+    upload.mockResolvedValue({ ok: true, data: { path: 'x' } });
+    const update = julyUpdate('update-e', null);
+    update.photos[0].uri = 'file:///app/Documents/project-photos/lot.jpg';
+
+    const result = await uploadLocalPhotoWithDiagnostics(update, update.photos[0]);
+
+    expect(result.result).toBe('uploaded');
+    expect(signedUrl).toHaveBeenCalledTimes(1);
+    expect(ownerCheck).not.toHaveBeenCalled();
+    expect(upload).toHaveBeenCalledWith(expect.objectContaining({ path: '2321-compliance-project/update-e/photo-1-lot.jpg' }));
+  });
+
+  it('reports where a photo not on the phone was found, so sync records that path', async () => {
+    signedUrl.mockImplementation(async (path: string) => path.startsWith('3-hour-fire-wall/')
+      ? { ok: true, data: `https://signed.example/${path}` }
+      : NOT_FOUND);
+    const update = julyUpdate('update-f', '2321-compliance-project/update-f/photo-1-lot.jpg');
+
+    const result = await uploadLocalPhotoWithDiagnostics(update, update.photos[0]);
+
+    expect(result.result).toBe('skipped');
+    expect(result.foundAtPath).toBe('3-hour-fire-wall/update-f/photo-1-lot.jpg');
+    expect(upload).not.toHaveBeenCalled();
   });
 });
