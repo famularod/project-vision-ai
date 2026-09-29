@@ -22,6 +22,7 @@ import {
   mergeDAVEProjectAreaRecord,
 } from '../../services/DAVEProjectAreaRecovery';
 import { normalizeProjectArea } from '../../services/ProjectAreaRecord';
+import { withDraftGps } from '../../services/DraftPhotoGps';
 import { createRecentLocationFix } from '../../services/RecentLocationFix';
 import type { ProjectUpdate } from '../../types';
 
@@ -220,6 +221,47 @@ describe('area sync merge', () => {
     expect(localAfterMerge).not.toHaveProperty('locationAccuracyMeters');
     expect(daveProjectAreasNeedingCloudUpload({ local: [localAfterMerge], cloud: [movedByOlderBuild] })).toEqual([]);
   });
+
+  // Review pass 3: an older build's rename drops the precision keys in the
+  // cloud; re-adding them alone would alternate with that build forever.
+  it('does not upload only to restore precision an older build dropped', () => {
+    const cloudAfterOlderRename = {
+      ...pointA,
+      name: 'North Lot East',
+      updatedAt: '2026-09-29T17:10:00Z',
+      locationAccuracyMeters: undefined,
+      locationAccuracyCapturedAt: undefined,
+    };
+    const local = { ...pointA, name: 'North Lot East', updatedAt: '2026-09-29T17:10:00Z' };
+    expect(daveProjectAreasNeedingCloudUpload({ local: [local], cloud: [cloudAfterOlderRename] })).toEqual([]);
+
+    const newPoint = normalizeProjectArea({
+      ...local,
+      updatedAt: '2026-09-29T18:00:00Z',
+      ...areaPointFromFix({ latitude: 37.4, longitude: -121.6, accuracy: 3, capturedAt: '2026-09-29T18:00:00Z' }),
+    });
+    const [upload] = daveProjectAreasNeedingCloudUpload({ local: [newPoint], cloud: [cloudAfterOlderRename] });
+    expect(upload.latitude).toBe(37.4);
+    expect(upload.locationAccuracyMeters).toBe(3);
+  });
+});
+
+describe('photos added while the draft fix is pending', () => {
+  const fix = {
+    gpsLatitude: 37.1,
+    gpsLongitude: -121.9,
+    gpsAccuracy: 4,
+    distanceFromSelectedAreaFeet: 30,
+    locationCapturedAt: '2026-09-29T15:00:00Z',
+  };
+
+  it('take the draft’s fix when they have none, and keep their own otherwise', () => {
+    const bare = { id: 'p1', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: '2026-09-29T14:59:00Z' };
+    expect(withDraftGps(bare, fix)).toEqual({ id: 'p1', ...fix });
+    const own = { id: 'p2', gpsLatitude: 37.5, gpsLongitude: -121.5 };
+    expect(withDraftGps(own, fix)).toBe(own);
+    expect(withDraftGps(bare, { gpsLatitude: null, gpsLongitude: null })).toBe(bare);
+  });
 });
 
 describe('a recent location fix', () => {
@@ -291,7 +333,7 @@ describe('GPS prompts in the app', () => {
   });
 
   it('gives photos added before a slow fix that fix, and shares one fix for home-screen detection', () => {
-    expect(app).toContain("typeof photo.gpsLatitude === 'number' ? photo : { ...photo, ...gpsFields }),");
+    expect(app).toContain('withDraftGps(photo, gpsFields)');
     expect(app).toContain('overviewLocationFixRef.current.fresh()');
   });
 
@@ -317,6 +359,24 @@ describe('GPS prompts in the app', () => {
     expect(app).toContain("prev.areaStatus === 'confirmed' || selectedArea");
     expect(app).toContain('if (!updateProjectArea(areaId, areaPointFromFix(snapshot))) return;');
     expect(app).toContain('formatGpsAccuracy(areaPointAccuracyMeters(area))');
+  });
+
+  // Review pass 3.
+  it('shows a suggestion only on the draft whose fix produced it', () => {
+    expect(app).toContain('draftAreaSuggestionEntry?.draftId === draft.id ? draftAreaSuggestionEntry.suggestion : null');
+    expect(app).toContain('reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null');
+    expect(app).not.toContain('setDraftAreaSuggestion(');
+  });
+
+  it('suggests the nearest area that contains you, and gives new photos the draft’s fix', () => {
+    expect(app).toContain('return suggestions.find(suggestion => suggestion.withinRadius) || suggestions[0] || null;');
+    expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev\)\)\]/g)).toHaveLength(2);
+    expect(app).toContain('photos: prev.photos.map(photo => withDraftGps(photo, gpsFields)),');
+  });
+
+  it('drops a pending fix when a save starts, and gives a GPS reason only for an accepted suggestion', () => {
+    expect(app).toMatch(/setFieldUpdateSaving\(true\);\n(?:\s*\/\/.*\n)*\s*draftLocationCaptureGenerationRef\.current \+= 1;/);
+    expect(app).toContain('const suggestionIsShown = Boolean(areaSuggestion && selectedArea?.id === areaSuggestion.area.id);');
   });
 
   it('decides an area suggestion with the unit-safe rule', () => {

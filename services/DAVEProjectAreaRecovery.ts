@@ -100,7 +100,13 @@ export function daveProjectAreasNeedingCloudUpload({
     // A cloud copy carrying another point's precision (written by an older
     // build) is compared as the merge would keep it, or builds that disagree
     // about those keys upload it back and forth (review pass 2).
-    return stableMeaning(authoritative) === stableMeaning(withOwnPointPrecision(remote))
+    const comparableRemote = withOwnPointPrecision(remote);
+    if (stableMeaning(authoritative) === stableMeaning(comparableRemote)) return [];
+    // Restoring precision alone is not uploaded: a build that does not manage
+    // it drops it again on its next merge, and the two would alternate
+    // forever (review pass 3). The next saved point carries it.
+    return comparableRemote.locationAccuracyMeters === undefined &&
+      stableMeaning(withoutPointPrecision(authoritative)) === stableMeaning(comparableRemote)
       ? []
       : [authoritative];
   });
@@ -122,9 +128,13 @@ function pointPrecision(
     : areaPointPrecisionFields({ ...other, locationCapturedAt });
 }
 
-function withOwnPointPrecision(area: ProjectArea): ProjectArea {
+function withoutPointPrecision(area: ProjectArea): ProjectArea {
   const { locationAccuracyMeters: _meters, locationAccuracyCapturedAt: _capturedAt, ...rest } = area;
-  return { ...rest, ...areaPointPrecisionFields(area) };
+  return rest;
+}
+
+function withOwnPointPrecision(area: ProjectArea): ProjectArea {
+  return { ...withoutPointPrecision(area), ...areaPointPrecisionFields(area) };
 }
 
 function compareGpsAuthority(left: ProjectArea, right: ProjectArea) {

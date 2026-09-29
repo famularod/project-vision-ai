@@ -249,6 +249,7 @@ import {
   PRECISE_LOCATION_OFF_TITLE,
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
+import { withDraftGps } from './services/DraftPhotoGps';
 import { optionalString, uid } from './services/RecordValues';
 import {
   normalizeProjectItemActivity,
@@ -2353,11 +2354,14 @@ function distanceBetweenCoordinatesFeet(
   );
 }
 
+// The nearest area that confidently contains you, else the nearest area: a
+// small area close by must not hide a larger one you are inside (review pass 3).
 function findClosestProjectArea(
   currentLocation: LocationSnapshot | null,
   projectAreas: ProjectArea[],
 ): AreaSuggestion | null {
-  return findProjectAreaSuggestions(currentLocation, projectAreas)[0] || null;
+  const suggestions = findProjectAreaSuggestions(currentLocation, projectAreas);
+  return suggestions.find(suggestion => suggestion.withinRadius) || suggestions[0] || null;
 }
 
 function findProjectAreaSuggestions(
@@ -5309,8 +5313,11 @@ function AppShell() {
     startupHydration.failures,
   );
 
-  const [draftAreaSuggestion, setDraftAreaSuggestion] =
-    useState<AreaSuggestion | null>(null);
+  // A suggestion belongs to the draft whose fix produced it (review pass 3).
+  const [draftAreaSuggestionEntry, setDraftAreaSuggestionEntry] =
+    useState<{ draftId: string; suggestion: AreaSuggestion } | null>(null);
+  const draftAreaSuggestion =
+    draftAreaSuggestionEntry?.draftId === draft.id ? draftAreaSuggestionEntry.suggestion : null;
 
   const [locationStatus, setLocationStatus] =
     useState<string | null>(null);
@@ -6898,7 +6905,7 @@ useEffect(() => {
       if (!targetIsCurrent()) return null;
 
       if (!snapshot) {
-        setDraftAreaSuggestion(null);
+        setDraftAreaSuggestionEntry(null);
         setLocationStatus(
           'Location permission denied. Choose Project Area manually.',
         );
@@ -6911,7 +6918,9 @@ useEffect(() => {
       );
 
       const reliableSuggestion = suggestion?.withinRadius ? suggestion : null;
-      setDraftAreaSuggestion(reliableSuggestion);
+      setDraftAreaSuggestionEntry(
+        reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null,
+      );
       setLocationStatus(
         reliableSuggestion
           ? `Suggested area: ${reliableSuggestion.area.name}`
@@ -6942,8 +6951,7 @@ useEffect(() => {
           ...gpsFields,
           // Photos added before a slow fix landed took the draft's empty GPS
           // (review, 29 Sep 2026: High fixes can take several seconds).
-          photos: prev.photos.map(photo =>
-            typeof photo.gpsLatitude === 'number' ? photo : { ...photo, ...gpsFields }),
+          photos: prev.photos.map(photo => withDraftGps(photo, gpsFields)),
           areaStatus:
             prev.areaStatus === 'confirmed' || selectedArea
               ? 'confirmed'
@@ -6959,7 +6967,7 @@ useEffect(() => {
       };
     } catch {
       if (!targetIsCurrent()) return null;
-      setDraftAreaSuggestion(null);
+      setDraftAreaSuggestionEntry(null);
       setLocationStatus(
         'GPS could not be captured. Choose Project Area manually.',
       );
@@ -7908,6 +7916,9 @@ useEffect(() => {
 
     fieldUpdateSaveInFlightRef.current = true;
     setFieldUpdateSaving(true);
+    // A fix landing during the write would make the saved draft look edited
+    // and keep it open (review pass 3); this draft's pending fix is dropped.
+    draftLocationCaptureGenerationRef.current += 1;
     const now = new Date().toISOString();
     const pieSummary = summarizePIEStatusForUpdate(draftSnapshot);
     const idempotencyKey = draftSnapshot.idempotencyKey ||
@@ -9488,7 +9499,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -9574,7 +9585,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -15230,18 +15241,19 @@ function AddPhotosScreen({
     update.selectedAreaName ||
     areaSuggestion?.area.name ||
     'Unassigned / Unknown Area';
-  const locationSource = areaSuggestion?.withinRadius
-    ? 'exact-gps-area'
-    : areaSuggestion
-      ? 'gps-radius'
-      : selectedArea
-        ? 'user-selection'
-        : scheduleRecommendation
-          ? 'schedule'
-          : 'last-active-area';
+  // The reason describes the area shown, which is the suggestion only once
+  // accepted (review pass 3: a new draft showed "Unassigned" with a GPS reason).
+  const suggestionIsShown = Boolean(areaSuggestion && selectedArea?.id === areaSuggestion.area.id);
+  const locationSource = suggestionIsShown
+    ? areaSuggestion?.withinRadius ? 'exact-gps-area' : 'gps-radius'
+    : selectedArea
+      ? 'user-selection'
+      : scheduleRecommendation
+        ? 'schedule'
+        : 'last-active-area';
   const confidenceScore = Math.max(
     0,
-    (areaSuggestion?.withinRadius ? 90 : areaSuggestion ? 70 : selectedArea ? 80 : 45) -
+    (suggestionIsShown ? (areaSuggestion?.withinRadius ? 90 : 70) : selectedArea ? 80 : 45) -
       (walkCorrectionMemory?.correctionPenalty || 0),
   );
   const repeatPhotoGuidance =
