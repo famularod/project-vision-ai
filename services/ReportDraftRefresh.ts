@@ -39,3 +39,20 @@ export function selectStableReportDraft({
 
   return { draft: fallbackDraft, cache: null };
 }
+
+/**
+ * What an approval covers: the exact title and text, and the photos the text
+ * cites. The draft's id is a build timestamp and changes on every background
+ * rebuild (a sync, a new photo), so it must not decide whether the owner's
+ * edits or approval survive (code review 27 Sep 2026: both were wiped on
+ * every rebuild, although the screen said edits were saved).
+ */
+export function reportApprovalTextKey(
+  draft: Pick<PIEReportDraft, 'title' | 'body' | 'locationGroups'>,
+): string {
+  const citedPhotoIds = draft.locationGroups
+    .flatMap(group => group.workAreas.flatMap(area => area.imageReferences))
+    .map(reference => `${reference.imageNumber}:${reference.photoId}`)
+    .sort();
+  return JSON.stringify([draft.title, draft.body, citedPhotoIds]);
+}

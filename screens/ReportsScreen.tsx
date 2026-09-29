@@ -95,6 +95,7 @@ import {
 } from '../services/ReportApprovalPolicy';
 import { buildDailyReportAuthorityScope } from '../services/ReportAuthorityScope';
 import {
+  reportApprovalTextKey,
   selectStableReportDraft,
   type StableReportDraftCache,
 } from '../services/ReportDraftRefresh';
@@ -353,8 +354,9 @@ export function ReportsScreen({
       : pieReportDraft,
     [pieReportDraft, reportEdits],
   );
+  // The scope the owner is looking at. Not pieReportDraft.id: that is a build
+  // timestamp, and every background rebuild used to wipe edits and approval.
   const reportStateIdentityKey = [
-    pieReportDraft.id,
     reportType,
     reportFormat,
     ...selectedProjectNames.map(name => reportProjectKey(name)),
@@ -395,7 +397,7 @@ export function ReportsScreen({
     reportEdits.sourceFingerprint === reportSourceFingerprint;
   const reportApprovalAllowed = reportApprovalPolicy.allowed && reportFactsAreCurrent;
   const reportApprovalMessage = !reportFactsAreCurrent
-      ? 'Project facts changed after you edited this report. Refresh the report before approval.'
+      ? 'Project facts changed after you edited this report. Discard your edits to use the current report before approval.'
       : reportApprovalPolicy.message;
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
   const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
@@ -442,11 +444,12 @@ export function ReportsScreen({
     };
   }, [reportSnapshotScopeKey]);
 
+  // Approval covers the exact text and cited photos; a rebuild that leaves
+  // them unchanged keeps it, and the owner's edits are kept either way.
+  const approvalTextKey = reportApprovalTextKey(effectiveReportDraft);
   useEffect(() => {
-    setReportEdits(null);
-    setReportEditing(false);
     setReportApproved(false);
-  }, [pieReportDraft.id]);
+  }, [approvalTextKey]);
 
   useEffect(() => {
     if (reportApprovalAllowed) return;
@@ -601,6 +604,11 @@ export function ReportsScreen({
             onResolveDrawingPreview={onResolveDrawingPreview}
             onResolvePhotoPreview={onResolvePhotoPreview}
             onApproveReport={markReportApproved}
+            onDiscardEdits={() => {
+              setReportEdits(null);
+              setReportEditing(false);
+              setReportApproved(false);
+            }}
             onEditReport={() => {
               setReportEditing(true);
               setReportApproved(false);
@@ -832,6 +840,7 @@ function PIEReporterPreview({
   onResolveDrawingPreview,
   onResolvePhotoPreview,
   onApproveReport,
+  onDiscardEdits,
   onEditReport,
   onTitleChange,
   onBodyChange,
@@ -864,6 +873,7 @@ function PIEReporterPreview({
   ) => Promise<string | null>;
   onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
   onApproveReport: () => void;
+  onDiscardEdits: () => void;
   onEditReport: () => void;
   onTitleChange: (title: string) => void;
   onBodyChange: (body: string) => void;
@@ -1131,6 +1141,12 @@ function PIEReporterPreview({
             ? 'Copy, Email, and Text unlock after approval. No report is sent automatically.'
             : approvalMessage}
         </Text>
+      ) : null}
+
+      {hasManualEdits && !reportEditing ? (
+        <TouchableOpacity onPress={onDiscardEdits} accessibilityRole="button" accessibilityLabel="Discard report edits">
+          <Text style={styles.reportActionText}>Discard edits and use the current report</Text>
+        </TouchableOpacity>
       ) : null}
 
       {communicationPending ? (
