@@ -424,12 +424,18 @@ Deno.serve(async req => {
     failureReason: normalizePhotoVisionProviderFailureReason(finalResult.error),
     jarvis,
   };
+  // Only a successful comparison is kept for 24-hour replay. A provider
+  // failure or degraded result is finished as failed, so "Retry analysis"
+  // (same photos, same idempotency key) runs the model again instead of
+  // replaying the failure. Both result writes above are upserts.
   const operationFinished = await finishAIOperation(
     userClient,
     operationRequestId,
-    'completed',
-    responsePayload,
-    null,
+    finalResult.status === 'succeeded' ? 'completed' : 'failed',
+    finalResult.status === 'succeeded' ? responsePayload : null,
+    finalResult.status === 'succeeded'
+      ? null
+      : normalizePhotoVisionProviderFailureReason(finalResult.error) || finalResult.status,
   );
   if (!operationFinished) {
     return respond({ error: 'ai_operation_finalize_failed' }, 503);
