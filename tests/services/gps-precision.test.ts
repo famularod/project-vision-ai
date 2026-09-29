@@ -364,9 +364,9 @@ describe('GPS wiring in the app', () => {
     expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev\)\)\]/g)).toHaveLength(2);
     expect(app).toContain('...newPhotoGps(sourceDraft, Date.now()),');
     expect(app).toMatch(/\.\.\.newPhotoGps\(sourceDraft, Date\.now\(\)\),\n\s+locationCapturedAt: new Date\(\)\.toISOString\(\),/);
-    // Review pass 9: a camera photo long after the draft's fix takes a new one.
-    expect(app).toMatch(/async function takePhoto[\s\S]*?refreshStaleDraftFix\(\);\n\s+void \(async \(\) => \{\n\s+await waitForDraftLocationCapture\(\);/);
-    expect(app).toContain('if (freshDraftGps(openDraft, Date.now()) || draftFixTracker.pendingDraftId() === openDraft.id) return;');
+    // Review pass 10: no new fix mid-update (it changed the suggestion and
+    // could stamp older photos).
+    expect(app).not.toContain('refreshStaleDraftFix');
     expect(app).toContain('photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),');
     expect(app).toContain('...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),');
   });

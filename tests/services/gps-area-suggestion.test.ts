@@ -234,10 +234,16 @@ describe('photo GPS', () => {
     expect(withDraftGps(camera, fix)).toMatchObject({ gpsLatitude: 37.1, locationCapturedAt: '2026-09-29T15:10:00Z' });
     expect(withDraftLocation(camera, { ...fix, selectedAreaId: 'lot', selectedAreaName: 'North Lot' }))
       .toMatchObject({ gpsLatitude: 37.1, selectedAreaId: 'lot', locationCapturedAt: '2026-09-29T15:10:00Z' });
-    // A photo with no time of its own (older data) takes the fix's.
-    const olderPhoto: { id: string; locationCapturedAt?: string | null } = { id: 'p3' };
-    expect(withDraftLocation(olderPhoto, { ...fix, selectedAreaId: null, selectedAreaName: null }).locationCapturedAt)
-      .toBe('2026-09-29T15:00:00Z');
+    // Pass 10: a photo with no time of its own (older data) takes the area,
+    // not the fix; with no fix at all it keeps its own GPS.
+    const olderPhoto: { id: string; gpsLatitude?: number | null; locationCapturedAt?: string | null } = { id: 'p3' };
+    expect(withDraftLocation(olderPhoto, { ...fix, selectedAreaId: 'lot', selectedAreaName: 'North Lot' }))
+      .toEqual({ id: 'p3', selectedAreaId: 'lot', selectedAreaName: 'North Lot', distanceFromSelectedAreaFeet: null });
+    expect(withDraftGps(olderPhoto, fix)).toBe(olderPhoto);
+    const ownGps = { id: 'p5', gpsLatitude: 36.5, gpsLongitude: -121.5, locationCapturedAt: '2026-09-29T15:10:00Z' };
+    expect(withDraftLocation(ownGps, {
+      gpsLatitude: null, gpsLongitude: null, locationCapturedAt: null, selectedAreaId: 'lot', selectedAreaName: 'North Lot',
+    })).toMatchObject({ gpsLatitude: 36.5, selectedAreaId: 'lot' });
   });
 
   // Passes 8-9: a fix stands for a photo only within 30 minutes of the
@@ -247,9 +253,13 @@ describe('photo GPS', () => {
     expect(fixCoversPhoto(later(DRAFT_FIX_MAX_AGE_MS), fix.locationCapturedAt)).toBe(true);
     expect(fixCoversPhoto(later(DRAFT_FIX_MAX_AGE_MS + 1), fix.locationCapturedAt)).toBe(false);
     expect(fixCoversPhoto(later(-5_000), fix.locationCapturedAt)).toBe(true);
-    // Older records without a time keep the previous behaviour.
-    expect(fixCoversPhoto(null, fix.locationCapturedAt)).toBe(true);
-    expect(fixCoversPhoto(later(0), null)).toBe(true);
+    // Pass 10: writing GPS needs both times; reading older records without
+    // a time keeps the previous behaviour.
+    expect(fixCoversPhoto(null, fix.locationCapturedAt)).toBe(false);
+    expect(fixCoversPhoto(later(0), null)).toBe(false);
+    expect(photoGpsOrUpdate({ gpsLatitude: null }, fix).gpsLatitude).toBe(37.1);
+    expect(photoGpsOrUpdate({ gpsLatitude: null, locationCapturedAt: later(0) }, { ...fix, locationCapturedAt: null }).gpsLatitude)
+      .toBe(37.1);
 
     expect(newPhotoGps(fix, fixedAt + DRAFT_FIX_MAX_AGE_MS).gpsLatitude).toBe(37.1);
     expect(newPhotoGps(fix, fixedAt + DRAFT_FIX_MAX_AGE_MS + 1).gpsLatitude).toBeNull();
@@ -370,6 +380,30 @@ describe('photos and the project’s location', () => {
       scheduleItems: [],
     });
     expect(summary.gpsStatus).toBe('Captured, accuracy ±16 ft');
+  });
+
+  // Pass 10: without a fix, a library-only update still gives its area.
+  it('keeps the area of a later library-only update that has no fix', () => {
+    const photoAt = (id: string, time: string, extra: Record<string, unknown> = {}) => ({
+      id, uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '',
+      actionDueDate: '', actionStatus: 'Open', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: time, ...extra,
+    });
+    const morning = {
+      id: 'u1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '',
+      recipients: { contactIds: [] }, selectedAreaName: 'Area A',
+      photos: [photoAt('p1', '2026-09-29T17:00:00.000Z')],
+    };
+    const later = {
+      id: 'u2', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '',
+      recipients: { contactIds: [] }, selectedAreaName: 'Area B',
+      photos: [photoAt('p2', '2026-09-29T18:00:00.000Z', { pickedFromLibrary: true })],
+    };
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project',
+      updates: [morning as never, later as never],
+      scheduleItems: [],
+    });
+    expect(summary.currentArea).toBe('Area B');
   });
 
   it('groups photos of one spot into one sequence whatever each fix said', () => {

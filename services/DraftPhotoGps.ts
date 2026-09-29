@@ -6,6 +6,9 @@
  * without GPS takes the draft's fix only if the fix stands for where the
  * photo was taken: within 30 minutes of the photo's own time (pass 8-9; a
  * draft resumed later must not put an old place on a new photo). A photo
+ * taken later than that keeps no GPS of its own: the app does not take a new
+ * fix mid-update (pass 10 removed that; it changed the area suggestion and
+ * could stamp older photos). A photo
  * keeps its own capture time; the fix's time is not the photo's (pass 8:
  * prior-photo ordering reads it). A photo chosen from the library was taken
  * at an unknown place, so it never takes the draft's fix (pass 7).
@@ -38,7 +41,9 @@ const NO_GPS: PhotoGpsFields = {
 
 /**
  * Whether a fix taken at `fixTime` stands for a photo taken at `photoTime`.
- * A missing time on either side (older records) counts as covered, as before.
+ * Writing GPS needs both times (pass 10: an older photo with no time must
+ * not take today's fix); reading treats a missing time as covered, so older
+ * records show what they showed before (see photoGpsOrUpdate).
  */
 export function fixCoversPhoto(
   photoTime: string | null | undefined,
@@ -46,8 +51,12 @@ export function fixCoversPhoto(
 ): boolean {
   const fixedAt = Date.parse(fixTime ?? '');
   const takenAt = Date.parse(photoTime ?? '');
-  if (!Number.isFinite(fixedAt) || !Number.isFinite(takenAt)) return true;
+  if (!Number.isFinite(fixedAt) || !Number.isFinite(takenAt)) return false;
   return Math.abs(takenAt - fixedAt) <= DRAFT_FIX_MAX_AGE_MS;
+}
+
+function hasTime(value: string | null | undefined): boolean {
+  return Number.isFinite(Date.parse(value ?? ''));
 }
 
 function draftGps(draft: DraftGpsFields): PhotoGpsFields | null {
@@ -99,7 +108,8 @@ export function withDraftLocation<TPhoto extends DraftGpsFields & Readonly<{
   const area = { selectedAreaId: fields.selectedAreaId, selectedAreaName: fields.selectedAreaName };
   if (photo.pickedFromLibrary) return { ...photo, ...area };
   if (!fixCoversPhoto(photo.locationCapturedAt, fields.locationCapturedAt)) {
-    // Its distance was to the previous area.
+    // No fix, or not this photo's: the area only; its distance was to the
+    // previous area, and its own GPS stays.
     return { ...photo, ...area, distanceFromSelectedAreaFeet: null };
   }
   return {
@@ -126,9 +136,9 @@ export function photoGpsOrUpdate(
       distanceFromSelectedAreaFeet: photo.distanceFromSelectedAreaFeet ?? null,
     };
   }
-  if (photo.pickedFromLibrary || !fixCoversPhoto(photo.locationCapturedAt, update.locationCapturedAt)) {
-    return { ...NO_GPS };
-  }
+  const covered = !hasTime(photo.locationCapturedAt) || !hasTime(update.locationCapturedAt) ||
+    fixCoversPhoto(photo.locationCapturedAt, update.locationCapturedAt);
+  if (photo.pickedFromLibrary || !covered) return { ...NO_GPS };
   return {
     gpsLatitude: typeof update.gpsLatitude === 'number' ? update.gpsLatitude : null,
     gpsLongitude: typeof update.gpsLongitude === 'number' ? update.gpsLongitude : null,
