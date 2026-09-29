@@ -3,6 +3,7 @@
  * behaviour (pass 7 showed source-text checks let real regressions through).
  */
 import {
+  homeDetectionDecision,
   currentDraftAreaSuggestion,
   distanceBetweenCoordinatesFeet,
   findClosestProjectArea,
@@ -979,5 +980,62 @@ describe('photo evidence quality', () => {
     const core = fs.readFileSync(path.resolve(__dirname, '../../services/PIECoreIntelligence.ts'), 'utf8');
     expect(core).toContain('gpsConfirmed: fused.gpsEvidence.gpsAvailable && fused.gpsEvidence.gpsConfirmsRecommendedArea !== false,');
     expect(core).not.toContain('gpsConfirmed: fused.gpsEvidence.gpsAvailable,');
+  });
+});
+
+// Review pass 20.
+describe('home-screen detection', () => {
+  const a1 = area('a1', 0, 175, { name: 'A1', projectName: '2321' });
+  const a2 = area('a2', 250, 100, { name: 'A2', projectName: '2321' });
+  const other = area('o1', 250, 100, { name: 'Other', projectName: '2375' });
+  const decide = (feetNorth: number, areas: ProjectArea[]) => {
+    const fix = { ...north(feetNorth), accuracy: 5 };
+    const inside = findProjectAreaSuggestions(fix, areas).filter(item => item.withinRadius);
+    const projects = [...new Set(inside.map(item => item.area.projectName ?? null))];
+    return homeDetectionDecision({
+      nearest: findProjectAreaSuggestions(fix, areas)[0] ?? null,
+      clearProjectName: projects.length === 1 ? projects[0] : null,
+      ambiguous: projects.length > 1,
+      hasCandidates: inside.length > 0,
+      projectForArea: item => item.projectName ?? null,
+    });
+  };
+
+  it('detects the project when a nearer centre is an adjacent area of the same project', () => {
+    expect(decide(130, [a1, a2])).toEqual({ status: 'detected', projectName: '2321' });
+  });
+
+  it('stays uncertain when a nearer centre belongs to another project', () => {
+    expect(decide(130, [a1, other])).toEqual({ status: 'unmatched', projectName: null });
+  });
+
+  it('is unmatched outside every area, and multiple when inside two projects', () => {
+    expect(decide(2_000, [a1, a2])).toEqual({ status: 'unmatched', projectName: null });
+    const overlap = area('o2', 0, 175, { name: 'Overlap', projectName: '2375' });
+    expect(decide(0, [a1, overlap]).status).toBe('multiple');
+  });
+});
+
+describe('the conflict finds the update the GPS came from', () => {
+  it('compares against that update even when an empty draft is newest', () => {
+    const now = new Date('2026-09-29T17:05:00.000Z');
+    const P = '2321 Compliance Project';
+    const northLot = area('north', 0, 175, { name: 'North Lot', projectName: P });
+    const southLot = area('south', 2_000, 175, { name: 'South Lot', projectName: P });
+    const saved = {
+      id: 'saved', projectName: P, date: '2026-09-29', notes: '', photos: [], recipients: { contactIds: [] },
+      selectedAreaName: 'North Lot', selectedAreaId: 'north', locationCapturedAt: '2026-09-29T17:00:00.000Z',
+      gpsLatitude: north(2_000).latitude, gpsLongitude: north(2_000).longitude, gpsAccuracy: 5,
+    };
+    const emptyDraft = {
+      id: 'draft', projectName: P, date: '2026-09-29', notes: '', photos: [], recipients: { contactIds: [] },
+      selectedAreaName: UNASSIGNED_AREA_NAME,
+    };
+    const fused = buildFusedEvidence({
+      projectName: P, updates: [saved as never], currentUpdate: emptyDraft as never,
+      projectAreas: [northLot, southLot], now,
+    });
+    const conflict = fused.conflicts.find(item => item.id === 'pie-evidence-conflict-gps-update-area-mismatch');
+    expect(conflict?.summary).toBe('GPS suggests South Lot, but the update with that GPS references North Lot.');
   });
 });

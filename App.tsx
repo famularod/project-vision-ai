@@ -258,6 +258,7 @@ import {
   findClosestProjectArea,
   findProjectAreaSuggestions,
   hasSavedAreaLocation,
+  homeDetectionDecision,
 } from './services/AreaSuggestion';
 import { draftAreaPresentation } from './services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
@@ -6609,7 +6610,7 @@ useEffect(() => {
       try {
         const snapshot = recentFix ? recentFix.fix : await overviewLocationFixRef.current.get();
         // Nearest centre, across every project: a nearer area of another
-        // project must still make this uncertain (review pass 4).
+        // project keeps this uncertain (review passes 4 and 20).
         const suggestion = findProjectAreaSuggestions(snapshot, projectAreas)[0] || null;
 
         if (!mounted) return;
@@ -6628,21 +6629,15 @@ useEffect(() => {
           scheduleItems,
         );
 
-        if (!suggestion?.withinRadius || gpsCandidates.topCandidates.length === 0) {
-          setDetectedProjectName(null);
-          setProjectDetectionStatus('unmatched');
-          return;
-        }
-
-        if (gpsCandidates.ambiguous) {
-          setDetectedProjectName(null);
-          setProjectDetectionStatus('multiple');
-          return;
-        }
-
-        const projectName = gpsCandidates.clearProjectName;
-        setDetectedProjectName(projectName);
-        setProjectDetectionStatus(projectName ? 'detected' : 'unmatched');
+        const decision = homeDetectionDecision({
+          nearest: suggestion,
+          clearProjectName: gpsCandidates.clearProjectName,
+          ambiguous: gpsCandidates.ambiguous,
+          hasCandidates: gpsCandidates.topCandidates.length > 0,
+          projectForArea: area => resolveProjectForDetectedArea(area, savedUpdates, activeProjects, scheduleItems),
+        });
+        setDetectedProjectName(decision.projectName);
+        setProjectDetectionStatus(decision.status);
       } catch {
         if (!mounted) return;
 

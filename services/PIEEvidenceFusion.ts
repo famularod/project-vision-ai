@@ -1155,18 +1155,19 @@ export function findEvidenceConflicts(
   const gpsArea = evidence.gpsEvidence.gpsConfirmsRecommendedArea === false
     ? null
     : namedArea(evidence.gpsEvidence.recommendedArea);
-  // Only an update's own GPS can contradict its area: the latest reading may
-  // belong to an older update, under an area since renamed (pass 19).
-  const recentUpdate = evidence.userUpdateEvidence[0];
-  const sameUpdate = evidence.gpsEvidence.sourceUpdateId === undefined ||
-    evidence.gpsEvidence.sourceUpdateId === recentUpdate?.id;
-  const recentUpdateArea = namedArea(recentUpdate?.areaName);
-  if (gpsArea && recentUpdateArea && sameUpdate && !sameArea(gpsArea, recentUpdateArea)) {
+  // Only an update's own GPS can contradict its area: the GPS reading is
+  // compared with the update it came from, found by id (passes 19-20: the
+  // newest update is often the open, empty draft), else the newest update.
+  const sourceUpdate = evidence.gpsEvidence.sourceUpdateId === undefined
+    ? evidence.userUpdateEvidence[0]
+    : evidence.userUpdateEvidence.find(update => update.id === evidence.gpsEvidence.sourceUpdateId);
+  const sourceUpdateArea = namedArea(sourceUpdate?.areaName);
+  if (gpsArea && sourceUpdateArea && !sameArea(gpsArea, sourceUpdateArea)) {
     conflicts.push(conflict({
       evidence,
       id: 'gps-update-area-mismatch',
       title: 'GPS area differs from update area',
-      summary: `GPS suggests ${gpsArea}, but the latest update references ${recentUpdateArea}.`,
+      summary: `GPS suggests ${gpsArea}, but the update with that GPS references ${sourceUpdateArea}.`,
       sources: ['gps', 'typed-update', 'project-area'],
       severity: 'medium',
       suggestedAction: 'Confirm the current project area before saving the next update.',

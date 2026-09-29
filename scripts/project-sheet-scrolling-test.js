@@ -75,9 +75,13 @@ assert(
   'Select Project must keep every project reachable through its scrollable project list.',
 );
 
+// The 'multiple' status is decided in services/AreaSuggestion.ts
+// (homeDetectionDecision, GPS review pass 20); App.tsx applies it.
+const homeDetectionSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'AreaSuggestion.ts'), 'utf8');
 assert(
   app.includes('resolveProjectForDetectedArea(') &&
-    app.includes("setProjectDetectionStatus('multiple')") &&
+    app.includes('setProjectDetectionStatus(decision.status)') &&
+    homeDetectionSource.includes("status: 'multiple'") &&
     app.includes("projectDetectionStatus === 'detected' ? detectedProjectName : null") &&
     app.includes("setScreen('SelectProject')"),
   'GPS ambiguity must avoid an arbitrary project default and fall back to the complete project list.',

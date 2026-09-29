@@ -91,6 +91,33 @@ export function findClosestProjectArea(
   return suggestions.find(suggestion => suggestion.withinRadius) || suggestions[0] || null;
 }
 
+export type HomeDetectionStatus = 'unmatched' | 'multiple' | 'detected';
+
+/**
+ * Home-screen project detection from one fix, across every project's areas.
+ * The clear winner comes from the areas you are confidently inside; a nearer
+ * area centre you are not confidently inside keeps the result uncertain only
+ * when it belongs to another project (review passes 4 and 20: an adjacent
+ * area of the same project made you "unmatched" while you stood in a mapped
+ * area).
+ */
+export function homeDetectionDecision(input: Readonly<{
+  nearest: AreaSuggestion | null;
+  clearProjectName: string | null;
+  ambiguous: boolean;
+  hasCandidates: boolean;
+  projectForArea: (area: ProjectArea) => string | null;
+}>): Readonly<{ status: HomeDetectionStatus; projectName: string | null }> {
+  if (!input.hasCandidates || !input.nearest) return { status: 'unmatched', projectName: null };
+  if (input.ambiguous) return { status: 'multiple', projectName: null };
+  const projectName = input.clearProjectName;
+  if (!projectName) return { status: 'unmatched', projectName: null };
+  if (!input.nearest.withinRadius && input.projectForArea(input.nearest.area) !== projectName) {
+    return { status: 'unmatched', projectName: null };
+  }
+  return { status: 'detected', projectName };
+}
+
 /** A suggestion, and the draft whose fix produced it (review pass 3). */
 export type DraftAreaSuggestionEntry = Readonly<{ draftId: string; suggestion: AreaSuggestion }>;
 

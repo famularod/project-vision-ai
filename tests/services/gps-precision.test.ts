@@ -393,7 +393,8 @@ describe('GPS wiring in the app', () => {
   });
 
   it('gates home-screen detection on the nearest centre across projects, with a shared fix', () => {
-    expect(app).toMatch(/const suggestion = findProjectAreaSuggestions\(snapshot, projectAreas\)\[0\] \|\| null;\n(?:.*\n){0,24}\s+if \(!suggestion\?\.withinRadius \|\| gpsCandidates\.topCandidates\.length === 0\)/);
+    expect(app).toMatch(/const suggestion = findProjectAreaSuggestions\(snapshot, projectAreas\)\[0\] \|\| null;\n(?:.*\n){0,24}\s+const decision = homeDetectionDecision\(\{\n\s+nearest: suggestion,/);
+    expect(app).toContain('setProjectDetectionStatus(decision.status);');
     expect(app).not.toContain('findClosestProjectArea(snapshot, projectAreas)');
     expect(app).toContain('overviewLocationFixRef.current.fresh()');
     expect(app).toContain('maxAgeFor: fix => overviewFixMaxAgeMs(fix.accuracy),');

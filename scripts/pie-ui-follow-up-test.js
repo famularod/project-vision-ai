@@ -82,17 +82,21 @@ assert(
   'Internal diagnostics must distinguish failure categories without exposing them in the PM UI.',
 );
 
+// Home detection's decision moved to services/AreaSuggestion.ts
+// (homeDetectionDecision, GPS review pass 20); App.tsx applies it.
+const homeDetectionSource = fs.readFileSync(path.join(root, 'services', 'AreaSuggestion.ts'), 'utf8');
 assert(
   app.includes("setProjectDetectionStatus('denied')") &&
-    app.includes("setProjectDetectionStatus('multiple')") &&
-    app.includes("setProjectDetectionStatus('unmatched')") &&
-    app.includes("setProjectDetectionStatus(projectName ? 'detected' : 'unmatched')"),
+    app.includes('setProjectDetectionStatus(decision.status)') &&
+    homeDetectionSource.includes("status: 'multiple'") &&
+    homeDetectionSource.includes("status: 'unmatched'") &&
+    homeDetectionSource.includes("status: 'detected'"),
   'GPS defaulting must distinguish denied, multiple, unmatched, and detected states.',
 );
 assert(
   app.includes("projectDetectionStatus === 'detected' ? detectedProjectName : null") &&
-    app.includes("setProjectDetectionStatus('multiple')") &&
-    app.includes('setDetectedProjectName(null)'),
+    homeDetectionSource.includes("if (input.ambiguous) return { status: 'multiple', projectName: null };") &&
+    app.includes('setDetectedProjectName(decision.projectName)'),
   'A clear GPS match may seed a new update, while an ambiguous match must require project selection.',
 );
 assert(
@@ -100,8 +104,8 @@ assert(
     app.includes('topCandidates') &&
     app.includes('slice(0, 3)') &&
     app.includes('GPS_CLEAR_WINNER_DISTANCE_FEET') &&
-    app.includes('gpsCandidates.ambiguous') &&
-    app.includes('gpsCandidates.topCandidates.length === 0'),
+    app.includes('ambiguous: gpsCandidates.ambiguous') &&
+    app.includes('hasCandidates: gpsCandidates.topCandidates.length > 0'),
   'Multiple similar GPS matches must preserve only the narrowed top-2-to-3 candidate set.',
 );
 // The area-suggestion rules moved to services/AreaSuggestion.ts in the GPS
