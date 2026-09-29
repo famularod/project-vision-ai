@@ -1,4 +1,5 @@
 import { formatGpsAccuracy } from './GpsPrecision';
+import { photoGpsOrUpdate } from './DraftPhotoGps';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -271,13 +272,8 @@ function photoLocationCandidate(
       photo.selectedAreaName?.trim() ||
       update.selectedAreaName?.trim() ||
       null,
-    gpsLatitude: photo.gpsLatitude ?? update.gpsLatitude ?? null,
-    gpsLongitude: photo.gpsLongitude ?? update.gpsLongitude ?? null,
-    gpsAccuracy: photo.gpsAccuracy ?? update.gpsAccuracy ?? null,
-    distanceFromSelectedAreaFeet:
-      photo.distanceFromSelectedAreaFeet ??
-      update.distanceFromSelectedAreaFeet ??
-      null,
+    // A library photo never takes the update's place (GPS review pass 8).
+    ...photoGpsOrUpdate(photo, update),
     locationCapturedAt:
       photo.locationCapturedAt ?? update.locationCapturedAt ?? null,
     occurredAt: update.date,

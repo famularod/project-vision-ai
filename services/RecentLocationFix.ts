@@ -22,16 +22,16 @@ export function createRecentLocationFix<T>(
   maxAgeMs: number,
   options: Readonly<{
     now?: () => number;
-    /** Whether a fix is good enough to reuse; a poor one serves only its caller (review pass 7). */
-    keep?: (fix: T) => boolean;
+    /** How long this fix may be reused, if not `maxAgeMs` (passes 7-8: shorter for a poor fix). */
+    maxAgeFor?: (fix: T) => number;
   }> = {},
 ): RecentLocationFix<T> {
   const now = options.now ?? Date.now;
-  const keep = options.keep ?? (() => true);
-  let last: { fix: T; at: number } | null = null;
+  const maxAgeFor = options.maxAgeFor ?? (() => maxAgeMs);
+  let last: { fix: T; at: number; maxAge: number } | null = null;
   let pending: Promise<T | null> | null = null;
 
-  const fresh = () => (last && now() - last.at <= maxAgeMs ? { fix: last.fix } : null);
+  const fresh = () => (last && now() - last.at <= last.maxAge ? { fix: last.fix } : null);
 
   return {
     fresh,
@@ -40,7 +40,7 @@ export function createRecentLocationFix<T>(
       if (recent) return Promise.resolve(recent.fix);
       if (!pending) {
         const request = takeFix().then(fix => {
-          last = fix === null || !keep(fix) ? null : { fix, at: now() };
+          last = fix === null ? null : { fix, at: now(), maxAge: maxAgeFor(fix) };
           return fix;
         });
         pending = request;

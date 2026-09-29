@@ -10,7 +10,16 @@ import {
 } from '../../services/AreaSuggestion';
 import { draftAreaPresentation, UNASSIGNED_AREA_NAME } from '../../services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from '../../services/DraftFixTracker';
-import { asLibraryPhoto, withDraftGps, withDraftLocation } from '../../services/DraftPhotoGps';
+import { applyFixToDraft } from '../../services/DraftFix';
+import {
+  asLibraryPhoto,
+  DRAFT_FIX_MAX_AGE_MS,
+  newPhotoGps,
+  photoGpsOrUpdate,
+  withDraftGps,
+  withDraftLocation,
+} from '../../services/DraftPhotoGps';
+import { overviewFixMaxAgeMs } from '../../services/GpsPrecision';
 import { createRecentLocationFix } from '../../services/RecentLocationFix';
 import type { AreaSuggestion, ProjectArea } from '../../types';
 
@@ -203,39 +212,115 @@ describe('photo GPS', () => {
     gpsLatitude: 37.1, gpsLongitude: -121.9, gpsAccuracy: 4, distanceFromSelectedAreaFeet: 30,
     locationCapturedAt: '2026-09-29T15:00:00Z',
   };
+  const fixedAt = Date.parse(fix.locationCapturedAt);
 
-  // Review pass 7: a library photo was taken at an unknown place and time.
-  it('never gives a library photo the draft’s fix', () => {
+  // Review pass 7: a library photo was taken at an unknown place.
+  it('never gives a library photo the draft’s fix, in storage or in reports', () => {
     const picked = asLibraryPhoto({ id: 'p1', ...fix });
     expect(picked).toMatchObject({ pickedFromLibrary: true, gpsLatitude: null, gpsLongitude: null, gpsAccuracy: null });
-    expect(withDraftGps(picked, fix)).toBe(picked);
+    expect(withDraftGps(picked, fix, fixedAt)).toBe(picked);
     const moved = withDraftLocation(picked, { ...fix, selectedAreaId: 'lot', selectedAreaName: 'North Lot' });
     expect(moved).toMatchObject({ selectedAreaId: 'lot', selectedAreaName: 'North Lot', gpsLatitude: null });
+    // Pass 8: derived views used to fall back to the update's GPS.
+    expect(photoGpsOrUpdate(picked, fix)).toMatchObject({ gpsLatitude: null, gpsLongitude: null });
+    expect(photoGpsOrUpdate({ gpsLatitude: null }, fix)).toMatchObject({ gpsLatitude: 37.1, gpsLongitude: -121.9 });
   });
 
-  it('gives a camera photo the draft’s area and location', () => {
-    const camera = { id: 'p2', gpsLatitude: null, gpsLongitude: null };
-    expect(withDraftGps(camera, fix)).toMatchObject(fix);
+  it('gives a camera photo the draft’s area and location but keeps its own capture time', () => {
+    const camera = { id: 'p2', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: '2026-09-29T15:10:00Z' };
+    expect(withDraftGps(camera, fix, fixedAt)).toMatchObject({ gpsLatitude: 37.1, locationCapturedAt: '2026-09-29T15:10:00Z' });
     expect(withDraftLocation(camera, { ...fix, selectedAreaId: 'lot', selectedAreaName: 'North Lot' }))
-      .toMatchObject({ ...fix, selectedAreaId: 'lot' });
+      .toMatchObject({ gpsLatitude: 37.1, selectedAreaId: 'lot', locationCapturedAt: '2026-09-29T15:10:00Z' });
+    // A photo with no time of its own (older data) takes the fix's.
+    const olderPhoto: { id: string; locationCapturedAt?: string | null } = { id: 'p3' };
+    expect(withDraftLocation(olderPhoto, { ...fix, selectedAreaId: null, selectedAreaName: null }).locationCapturedAt)
+      .toBe('2026-09-29T15:00:00Z');
+  });
+
+  // Pass 8: a resumed draft must not put an old place on a new photo.
+  it('uses only a recent draft fix for a new photo', () => {
+    expect(newPhotoGps(fix, fixedAt + DRAFT_FIX_MAX_AGE_MS).gpsLatitude).toBe(37.1);
+    expect(newPhotoGps(fix, fixedAt + DRAFT_FIX_MAX_AGE_MS + 1).gpsLatitude).toBeNull();
+    expect(withDraftGps({ id: 'p4', gpsLatitude: null }, fix, fixedAt + 24 * 3600_000).gpsLatitude).toBeNull();
+    expect(newPhotoGps({ ...fix, locationCapturedAt: null }, fixedAt).gpsLatitude).toBeNull();
+  });
+});
+
+// The pass-2 fix: a landed fix is written into its draft, GPS only.
+describe('a landed fix written into its draft', () => {
+  const lot = area('lot', 50, 175, { name: 'North Lot' });
+  const fixAt = '2026-09-29T15:00:00.000Z';
+  const now = Date.parse(fixAt) + 5_000;
+  const fix = { ...ORIGIN, accuracy: 5, capturedAt: fixAt };
+  const suggestion: AreaSuggestion = { area: lot, distanceFeet: 50, withinRadius: true };
+  const photo = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, gpsLatitude: null as number | null, gpsLongitude: null as number | null, locationCapturedAt: '2026-09-29T14:59:59Z', ...extra,
+  });
+
+  it('marks a new draft suggested, fills photos without GPS, and keeps the placeholder area', () => {
+    const draft = {
+      id: 'd1', selectedAreaId: null, selectedAreaName: UNASSIGNED_AREA_NAME, areaStatus: 'unknown' as const,
+      photos: [photo('p1'), photo('p2', { pickedFromLibrary: true }), photo('p3', { gpsLatitude: 36.9, gpsLongitude: -122.1 })],
+    };
+    const next = applyFixToDraft({ draft, fix, areas: [lot], reliableSuggestion: suggestion, now });
+    expect(next).toMatchObject({
+      selectedAreaId: null,
+      selectedAreaName: UNASSIGNED_AREA_NAME,
+      areaStatus: 'suggested',
+      gpsLatitude: ORIGIN.latitude,
+      gpsAccuracy: 5,
+      locationCapturedAt: fixAt,
+      distanceFromSelectedAreaFeet: null,
+    });
+    expect(next.photos[0]).toMatchObject({ gpsLatitude: ORIGIN.latitude, locationCapturedAt: '2026-09-29T14:59:59Z' });
+    expect(next.photos[1].gpsLatitude).toBeNull();
+    expect(next.photos[2].gpsLatitude).toBe(36.9);
+  });
+
+  it('keeps a task’s named location and its confirmed status', () => {
+    const draft = {
+      id: 'd2', selectedAreaId: null, selectedAreaName: 'Building 3', areaStatus: 'confirmed' as const, photos: [],
+    };
+    const next = applyFixToDraft({ draft, fix, areas: [lot], reliableSuggestion: suggestion, now });
+    expect(next).toMatchObject({ selectedAreaName: 'Building 3', areaStatus: 'confirmed' });
+  });
+
+  it('measures the distance to a selected mapped area and confirms it', () => {
+    const draft = { id: 'd3', selectedAreaId: 'lot', selectedAreaName: 'North Lot', areaStatus: 'unknown' as const, photos: [] };
+    const next = applyFixToDraft({ draft, fix, areas: [lot], reliableSuggestion: null, now });
+    expect(next.areaStatus).toBe('confirmed');
+    expect(next.distanceFromSelectedAreaFeet).toBeCloseTo(50, 0);
+    expect(next.selectedAreaId).toBe('lot');
+  });
+
+  it('leaves the status alone when nothing is suggested', () => {
+    const draft = { id: 'd4', selectedAreaId: null, selectedAreaName: null, areaStatus: 'unknown' as const, photos: [] };
+    expect(applyFixToDraft({ draft, fix, areas: [lot], reliableSuggestion: null, now }).areaStatus).toBe('unknown');
   });
 });
 
 describe('a shared home-screen fix', () => {
-  // Review pass 7: a poor fix served only its caller, not the next minute.
-  it('reuses only a fix good enough to place you in an area', async () => {
+  // Passes 7-8: a poor fix is reused briefly, not for a minute and not never.
+  it('reuses a precise fix for a minute and a poor one for 15 s', async () => {
+    expect(overviewFixMaxAgeMs(5)).toBe(60_000);
+    expect(overviewFixMaxAgeMs(60)).toBe(15_000);
+    expect(overviewFixMaxAgeMs(null)).toBe(15_000);
+    let clock = 0;
     const takeFix = jest.fn()
-      .mockResolvedValueOnce({ accuracy: 200 })
+      .mockResolvedValueOnce({ accuracy: 60 })
       .mockResolvedValueOnce({ accuracy: 5 });
     const recent = createRecentLocationFix<{ accuracy: number }>(takeFix, 60_000, {
-      now: () => 0,
-      keep: fix => fix.accuracy <= 20,
+      now: () => clock,
+      maxAgeFor: fix => overviewFixMaxAgeMs(fix.accuracy),
     });
     await recent.get();
+    clock = 14_000;
+    expect(recent.fresh()).toEqual({ fix: { accuracy: 60 } });
+    clock = 16_000;
     expect(recent.fresh()).toBeNull();
     await recent.get();
+    clock = 16_000 + 59_000;
     expect(recent.fresh()).toEqual({ fix: { accuracy: 5 } });
-    await recent.get();
     expect(takeFix).toHaveBeenCalledTimes(2);
   });
 });

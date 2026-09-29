@@ -52,6 +52,15 @@ export function isAreaPointImprecise(accuracyMeters: number | null | undefined):
   return feet === null || feet > AREA_POINT_ACCURACY_LIMIT_FEET;
 }
 
+/**
+ * How long home-screen detection reuses a fix: a minute for a precise one,
+ * 15 s for a poor one, so data changes do not restart multi-second fixes
+ * (pass 1) and a poor fix does not decide for a whole minute (passes 7-8).
+ */
+export function overviewFixMaxAgeMs(accuracyMeters: number | null | undefined): number {
+  return isAreaPointImprecise(accuracyMeters) ? 15_000 : 60_000;
+}
+
 type AreaPointPrecision = Pick<ProjectArea, 'locationAccuracyMeters' | 'locationAccuracyCapturedAt'>;
 
 /** The fields "Save GPS" writes onto an area. */

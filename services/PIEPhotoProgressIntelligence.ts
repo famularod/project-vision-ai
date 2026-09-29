@@ -14,6 +14,7 @@ import type {
 } from './PIERealityModel';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
+import { photoGpsOrUpdate } from './DraftPhotoGps';
 
 export type PIEPhotoComparability =
   | 'strong_match'
@@ -403,12 +404,11 @@ function duplicateKey(photo: UpdatePhoto, update: ProjectUpdate) {
 }
 
 function inferViewpoint(photo: UpdatePhoto, update: ProjectUpdate, subject: string, areaName: string | null) {
-  const gps =
-    typeof photo.gpsLatitude === 'number' && typeof photo.gpsLongitude === 'number'
-      ? `${photo.gpsLatitude.toFixed(4)},${photo.gpsLongitude.toFixed(4)}`
-      : typeof update.gpsLatitude === 'number' && typeof update.gpsLongitude === 'number'
-        ? `${update.gpsLatitude.toFixed(4)},${update.gpsLongitude.toFixed(4)}`
-        : 'no-gps';
+  // A library photo never takes the update's place (GPS review pass 8).
+  const { gpsLatitude, gpsLongitude } = photoGpsOrUpdate(photo, update);
+  const gps = gpsLatitude !== null && gpsLongitude !== null
+    ? `${gpsLatitude.toFixed(4)},${gpsLongitude.toFixed(4)}`
+    : 'no-gps';
   return `${slug(update.projectName)}:${slug(areaName)}:${slug(subject)}:${gps}`;
 }
 
@@ -416,7 +416,7 @@ function metadataReliability(photo: UpdatePhoto, update: ProjectUpdate): Project
   let score = 0;
   if (photoCapturedAt(update, photo)) score += 25;
   if (photo.selectedAreaName || update.selectedAreaName) score += 25;
-  if (typeof photo.gpsLatitude === 'number' || typeof update.gpsLatitude === 'number') score += 20;
+  if (photoGpsOrUpdate(photo, update).gpsLatitude !== null) score += 20;
   if (photo.caption?.trim()) score += 20;
   if (photo.fileName || photo.mimeType) score += 10;
   return confidenceFromScore(score);
@@ -478,24 +478,9 @@ function flattenPhotos(input: PIEPhotoProgressIntelligenceInput): PIEPhotoIntell
           actionStatus: photo.actionStatus,
           actionOwner: trimOrNull(photo.actionOwner),
           actionRequired: trimOrNull(photo.actionRequired),
-          gpsLatitude:
-            typeof photo.gpsLatitude === 'number'
-              ? photo.gpsLatitude
-              : typeof update.gpsLatitude === 'number'
-                ? update.gpsLatitude
-                : null,
-          gpsLongitude:
-            typeof photo.gpsLongitude === 'number'
-              ? photo.gpsLongitude
-              : typeof update.gpsLongitude === 'number'
-                ? update.gpsLongitude
-                : null,
-          gpsAccuracy:
-            typeof photo.gpsAccuracy === 'number'
-              ? photo.gpsAccuracy
-              : typeof update.gpsAccuracy === 'number'
-                ? update.gpsAccuracy
-                : null,
+          gpsLatitude: photoGpsOrUpdate(photo, update).gpsLatitude,
+          gpsLongitude: photoGpsOrUpdate(photo, update).gpsLongitude,
+          gpsAccuracy: photoGpsOrUpdate(photo, update).gpsAccuracy,
           cameraDirection: inferCameraDirection(text),
           viewpointKey: inferViewpoint(photo, update, subject, areaName),
           metadataReliability: metadataReliability(photo, update),

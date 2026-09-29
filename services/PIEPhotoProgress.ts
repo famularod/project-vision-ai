@@ -3,6 +3,7 @@ import type {
   UpdatePhoto,
 } from '../types';
 import type { ProjectConfidenceLevel } from './ProjectIntelligenceEngine';
+import { photoGpsOrUpdate } from './DraftPhotoGps';
 import {
   photoDisplayResultCanBeReviewed,
 } from './PhotoAssessment';
@@ -201,18 +202,9 @@ function flattenPhotos(updates: ProjectUpdate[], projectName?: string | null) {
           caption,
           category: photo.category,
           actionStatus: photo.actionStatus,
-          gpsLatitude:
-            typeof photo.gpsLatitude === 'number'
-              ? photo.gpsLatitude
-              : typeof update.gpsLatitude === 'number'
-                ? update.gpsLatitude
-                : null,
-          gpsLongitude:
-            typeof photo.gpsLongitude === 'number'
-              ? photo.gpsLongitude
-              : typeof update.gpsLongitude === 'number'
-                ? update.gpsLongitude
-                : null,
+          // A library photo never takes the update's place (GPS review pass 8).
+          gpsLatitude: photoGpsOrUpdate(photo, update).gpsLatitude,
+          gpsLongitude: photoGpsOrUpdate(photo, update).gpsLongitude,
           photoIntelligence: photo.photoIntelligence ?? null,
         };
       }),

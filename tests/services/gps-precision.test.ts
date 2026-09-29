@@ -255,12 +255,21 @@ describe('photos added while the draft fix is pending', () => {
     locationCapturedAt: '2026-09-29T15:00:00Z',
   };
 
-  it('take the draft’s fix when they have none, and keep their own otherwise', () => {
+  const soon = Date.parse('2026-09-29T15:01:00Z');
+
+  it('take the draft’s fix when they have none, keeping their own capture time', () => {
     const bare = { id: 'p1', gpsLatitude: null, gpsLongitude: null, locationCapturedAt: '2026-09-29T14:59:00Z' };
-    expect(withDraftGps(bare, fix)).toEqual({ id: 'p1', ...fix });
+    expect(withDraftGps(bare, fix, soon)).toEqual({
+      id: 'p1',
+      gpsLatitude: 37.1,
+      gpsLongitude: -121.9,
+      gpsAccuracy: 4,
+      distanceFromSelectedAreaFeet: 30,
+      locationCapturedAt: '2026-09-29T14:59:00Z',
+    });
     const own = { id: 'p2', gpsLatitude: 37.5, gpsLongitude: -121.5 };
-    expect(withDraftGps(own, fix)).toBe(own);
-    expect(withDraftGps(bare, { gpsLatitude: null, gpsLongitude: null })).toBe(bare);
+    expect(withDraftGps(own, fix, soon)).toBe(own);
+    expect(withDraftGps(bare, { gpsLatitude: null, gpsLongitude: null }, soon)).toBe(bare);
   });
 });
 
@@ -342,12 +351,10 @@ describe('GPS wiring in the app', () => {
     expect(app).toContain('projectName: targetDraft.projectName,');
   });
 
-  it('writes the landed fix as GPS only, keeping the draft’s area and filling photos without GPS', () => {
+  it('writes the landed fix through applyFixToDraft, only for the current target', () => {
     expect(app).toMatch(/handedToDraft = true;\n\s+setDraft\(prev => \{\n\s+settle\(\);/);
     expect(app).toContain('if (!handedToDraft) settle();');
-    expect(app).toContain('...gpsFields,');
-    expect(app).toContain('photos: prev.photos.map(photo => withDraftGps(photo, gpsFields)),');
-    expect(app).toContain("prev.areaStatus === 'confirmed' || selectedArea");
+    expect(app).toMatch(/draftFixTracker\.generation\(\),\n\s+\)\) \{\n\s+return prev;\n\s+\}\n\s+return applyFixToDraft\(\{\n\s+draft: prev,\n\s+fix: snapshot,\n\s+areas: targetAreas,\n\s+reliableSuggestion,/);
     expect(app).toContain('reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null');
   });
 
@@ -356,7 +363,9 @@ describe('GPS wiring in the app', () => {
     expect(app).toContain('photos.push(asLibraryPhoto(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current)));');
     expect(app).toContain('...withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),');
     expect(app.match(/const baseDraft = draftRef\.current;/g)).toHaveLength(2);
-    expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev\)\)\]/g)).toHaveLength(2);
+    expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev, Date\.now\(\)\)\)\]/g)).toHaveLength(2);
+    expect(app).toContain('...newPhotoGps(sourceDraft, Date.now()),');
+    expect(app).toMatch(/\.\.\.newPhotoGps\(sourceDraft, Date\.now\(\)\),\n\s+locationCapturedAt: new Date\(\)\.toISOString\(\),/);
     expect(app).toContain('photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),');
     expect(app).toContain('...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),');
   });
@@ -382,7 +391,7 @@ describe('GPS wiring in the app', () => {
     expect(app).toMatch(/const suggestion = findProjectAreaSuggestions\(snapshot, projectAreas\)\[0\] \|\| null;\n(?:.*\n){0,24}\s+if \(!suggestion\?\.withinRadius \|\| gpsCandidates\.topCandidates\.length === 0\)/);
     expect(app).not.toContain('findClosestProjectArea(snapshot, projectAreas)');
     expect(app).toContain('overviewLocationFixRef.current.fresh()');
-    expect(app).toContain('keep: fix => fix !== null && !isAreaPointImprecise(fix.accuracy),');
+    expect(app).toContain('maxAgeFor: fix => overviewFixMaxAgeMs(fix.accuracy),');
     expect(app).toContain('clearWinnerMarginFeet(');
   });
 

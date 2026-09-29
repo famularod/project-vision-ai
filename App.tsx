@@ -245,11 +245,13 @@ import {
   formatGpsAccuracy,
   isAreaPointImprecise,
   isConfidentlyInsideArea,
+  overviewFixMaxAgeMs,
   PRECISE_LOCATION_OFF_MESSAGE,
   PRECISE_LOCATION_OFF_TITLE,
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
-import { asLibraryPhoto, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
+import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
+import { applyFixToDraft, draftLocationFields } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
   distanceBetweenCoordinatesFeet,
@@ -2389,26 +2391,6 @@ function formatFeet(value: number | null | undefined) {
   }
 
   return `${Math.round(value).toLocaleString('en-US')} ft`;
-}
-
-function locationFieldsFromSnapshot(
-  snapshot: LocationSnapshot,
-  selectedArea?: ProjectArea | null,
-) {
-  const distance =
-    selectedArea && hasSavedAreaLocation(selectedArea)
-      ? distanceBetweenCoordinatesFeet(snapshot, selectedArea)
-      : null;
-
-  return {
-    selectedAreaId: selectedArea?.id || null,
-    selectedAreaName: selectedArea?.name || null,
-    gpsLatitude: snapshot.latitude,
-    gpsLongitude: snapshot.longitude,
-    gpsAccuracy: snapshot.accuracy,
-    distanceFromSelectedAreaFeet: distance,
-    locationCapturedAt: snapshot.capturedAt,
-  };
 }
 
 // High (iOS nearest ten meters), not Balanced (hundred meters): areas are
@@ -5121,7 +5103,7 @@ function AppShell() {
   // One fix serves home-screen detection for a minute, so data changes do
   // not restart a multi-second fix (review, 29 Sep 2026).
   const overviewLocationFixRef = useRef(createRecentLocationFix(() => getCurrentLocationSnapshot(), 60_000, {
-    keep: fix => fix !== null && !isAreaPointImprecise(fix.accuracy),
+    maxAgeFor: fix => overviewFixMaxAgeMs(fix.accuracy),
   }));
   const referenceDocumentsCurrentRef = useRef(referenceDocuments);
   const currentReferenceActivationIdsRef = useRef(new Set<string>());
@@ -6779,7 +6761,7 @@ useEffect(() => {
           : null);
 
       const locationFields = baseSnapshot
-        ? locationFieldsFromSnapshot(baseSnapshot, area)
+        ? draftLocationFields(baseSnapshot, area)
         : {
             selectedAreaId: area?.id || null,
             selectedAreaName: area?.name || null,
@@ -6879,30 +6861,13 @@ useEffect(() => {
         )) {
           return prev;
         }
-        const selectedArea =
-          targetAreas.find(area => area.id === prev.selectedAreaId) ||
-          null;
-        // GPS only: the draft keeps the area it has, such as a task's named
-        // location that is not a mapped area (review pass 2).
-        const {
-          selectedAreaId: _areaId,
-          selectedAreaName: _areaName,
-          ...gpsFields
-        } = locationFieldsFromSnapshot(snapshot, selectedArea);
-
-        return {
-          ...prev,
-          ...gpsFields,
-          // Photos added before a slow fix landed took the draft's empty GPS
-          // (review, 29 Sep 2026: High fixes can take several seconds).
-          photos: prev.photos.map(photo => withDraftGps(photo, gpsFields)),
-          areaStatus:
-            prev.areaStatus === 'confirmed' || selectedArea
-              ? 'confirmed'
-              : reliableSuggestion
-                ? 'suggested'
-                : prev.areaStatus,
-        };
+        return applyFixToDraft({
+          draft: prev,
+          fix: snapshot,
+          areas: targetAreas,
+          reliableSuggestion,
+          now: Date.now(),
+        });
       });
 
       return {
@@ -9458,7 +9423,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev, Date.now()))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -9544,7 +9509,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         };
         setDraft(prev => ({
           ...prev,
-          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev))],
+          photos: [...prev.photos, ...photos.map(photo => withDraftGps(photo, prev, Date.now()))],
           workflowTimestamps: {
             ...(prev.workflowTimestamps || {}),
             cameraActionStartedAt:
@@ -9588,15 +9553,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
     photo: UpdatePhoto,
     sourceDraft: ProjectUpdate,
   ): UpdatePhoto {
+    // The draft's fix only if recent; the photo's own time, not the fix's
+    // (GPS review pass 8: prior-photo ordering reads it).
     return {
       ...photo,
       selectedAreaId: sourceDraft.selectedAreaId ?? null,
       selectedAreaName: sourceDraft.selectedAreaName ?? null,
-      gpsLatitude: sourceDraft.gpsLatitude ?? null,
-      gpsLongitude: sourceDraft.gpsLongitude ?? null,
-      gpsAccuracy: sourceDraft.gpsAccuracy ?? null,
-      distanceFromSelectedAreaFeet: sourceDraft.distanceFromSelectedAreaFeet ?? null,
-      locationCapturedAt: sourceDraft.locationCapturedAt || new Date().toISOString(),
+      ...newPhotoGps(sourceDraft, Date.now()),
+      locationCapturedAt: new Date().toISOString(),
       photoIntelligence: buildAnalyzingPhotoIntelligenceState(),
     };
   }

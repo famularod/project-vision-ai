@@ -7,6 +7,7 @@ import type {
   UpdatePhoto,
 } from '../types';
 import { scheduleHasAuthoritativeProgressJudgment } from './PIEScheduleReconciliation';
+import { photoGpsOrUpdate } from './DraftPhotoGps';
 import type { DAVEConfirmedCaptureMemory } from './DAVECaptureMemory';
 import {
   buildProjectIntelligence,
@@ -369,7 +370,8 @@ function buildEvidenceLedger(
     }));
     for (const photo of update.photos) {
       records.push(photoRecord(update, photo));
-      if (hasGps(photo, update)) {
+      const gps = photoGpsOrUpdate(photo, update);
+      if (gps.gpsLatitude !== null && gps.gpsLongitude !== null) {
         records.push(record({
           id: `gps:${photo.id}`,
           kind: 'gps',
@@ -377,7 +379,7 @@ function buildEvidenceLedger(
           projectName: update.projectName,
           areaName: clean(photo.selectedAreaName) || areaName,
           taskId: clean(update.scheduleItemId),
-          text: `${photo.gpsLatitude ?? update.gpsLatitude},${photo.gpsLongitude ?? update.gpsLongitude}`,
+          text: `${gps.gpsLatitude},${gps.gpsLongitude}`,
           capturedAt: photo.locationCapturedAt || update.locationCapturedAt || update.date,
           summary: `GPS evidence captured${clean(photo.selectedAreaName) || areaName ? ` for ${clean(photo.selectedAreaName) || areaName}` : ''}.`,
           connected: Boolean(clean(photo.selectedAreaName) || areaName),
@@ -919,13 +921,6 @@ function photoIntelligenceText(photo: UpdatePhoto) {
     value.possibleProgress,
     ...(value.possibleConcerns ?? []),
   ].filter(Boolean).join(' ') : '';
-}
-
-function hasGps(photo: UpdatePhoto, update: ProjectUpdate) {
-  return (
-    (typeof photo.gpsLatitude === 'number' && typeof photo.gpsLongitude === 'number') ||
-    (typeof update.gpsLatitude === 'number' && typeof update.gpsLongitude === 'number')
-  );
 }
 
 function extractEntityKeys(value: string) {
