@@ -11,7 +11,12 @@ import {
 import { draftAreaPresentation, UNASSIGNED_AREA_NAME } from '../../services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from '../../services/DraftFixTracker';
 import { applyFixToDraft, areaChangeLocationFields } from '../../services/DraftFix';
-import { buildFusedEvidence, extractGPSEvidence, findEvidenceConflicts } from '../../services/PIEEvidenceFusion';
+import {
+  buildFusedEvidence,
+  buildIntelligentSummary,
+  extractGPSEvidence,
+  findEvidenceConflicts,
+} from '../../services/PIEEvidenceFusion';
 import {
   asLibraryPhoto,
   DRAFT_FIX_MAX_AGE_MS,
@@ -802,6 +807,61 @@ describe('areas and projects', () => {
     const summary = analyzeProjectLocationIntelligence({
       projectName: '2321 Compliance Project', updates: [office as never], scheduleItems: [],
       projectAreas: [{ ...northLot, projectName: '2321 Compliance Project' }], now,
+    });
+    expect(summary.presenceStatus).toBe('off-site');
+    expect(summary.needsConfirmation).toBe(true);
+  });
+});
+
+// Review pass 17.
+describe('naming an area versus GPS confirming it', () => {
+  const now = new Date('2026-09-29T15:05:00.000Z');
+  const lot = area('north', 0, 175, { name: 'North Lot', projectName: '2321 Compliance Project' });
+  const update = (feetNorth: number, accuracy: number, areaName: string) => ({
+    id: 'u1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
+    recipients: { contactIds: [] }, selectedAreaName: areaName,
+    gpsLatitude: north(feetNorth).latitude, gpsLongitude: north(feetNorth).longitude, gpsAccuracy: accuracy,
+    locationCapturedAt: '2026-09-29T15:00:00.000Z',
+  });
+
+  it('does not claim GPS support from a fix too imprecise to place you', () => {
+    const fused = buildFusedEvidence({
+      projectName: '2321 Compliance Project', updates: [update(2_000, 1_500, 'North Lot') as never], projectAreas: [lot], now,
+    });
+    expect(fused.gpsEvidence.recommendedArea).toBe('North Lot');
+    expect(fused.gpsEvidence.withinMappedArea).toBe(false);
+    expect(fused.gpsEvidence.gpsConfirmsRecommendedArea).toBe(false);
+    // A fix that supports nothing scores as GPS available and nothing more.
+    expect(fused.gpsEvidence.confidenceScore).toBe(45);
+    const summary = buildIntelligentSummary(fused);
+    expect(summary.gpsLocationConfidence).toBe('GPS does not confirm North Lot.');
+  });
+
+  it('says GPS supports an area only when the fix is confidently inside it', () => {
+    const fused = buildFusedEvidence({
+      projectName: '2321 Compliance Project', updates: [update(40, 5, 'North Lot') as never], projectAreas: [lot], now,
+    });
+    expect(fused.gpsEvidence.gpsConfirmsRecommendedArea).toBe(true);
+    expect(buildIntelligentSummary(fused).gpsLocationConfidence).toMatch(/^GPS supports North Lot with \d+% confidence\.$/);
+  });
+
+  it('never contradicts a named area that has no saved point', () => {
+    const fused = buildFusedEvidence({
+      projectName: '2321 Compliance Project', updates: [update(40, 5, 'Level 2 East') as never], projectAreas: [lot], now,
+    });
+    expect(fused.gpsEvidence.recommendedArea).toBe('Level 2 East');
+    expect(fused.gpsEvidence.correctionStatus).not.toBe('corrected');
+    expect(fused.conflicts.map(item => item.id)).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
+  });
+
+  it('asks to confirm a named area that a current fix places you off, even with a schedule', () => {
+    const task = {
+      id: 't1', projectName: '2321 Compliance Project', taskName: 'Pour', milestone: '', locationName: 'North Lot',
+      startDate: '', finishDate: '', status: 'In Progress', percentComplete: 10,
+    };
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project', updates: [update(23_000, 5, 'North Lot') as never],
+      scheduleItems: [task as never], projectAreas: [lot], now,
     });
     expect(summary.presenceStatus).toBe('off-site');
     expect(summary.needsConfirmation).toBe(true);

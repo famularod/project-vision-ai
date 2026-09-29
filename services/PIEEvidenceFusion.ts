@@ -33,7 +33,7 @@ import {
   findProjectAreaSuggestions,
   hasSavedAreaLocation,
 } from './AreaSuggestion';
-import { gpsAccuracyFeet } from './GpsPrecision';
+import { gpsAccuracyFeet, isConfidentlyInsideArea } from './GpsPrecision';
 import { projectAreasForProject } from './DAVEProjectAreaScope';
 import { namedAreaOrNull as namedArea } from './DraftAreaPresentation';
 import {
@@ -175,6 +175,8 @@ export type PIEGPSEvidence = {
   nearestMappedArea: string | null;
   distanceFromNearestAreaFeet: number | null;
   withinMappedArea: boolean | null;
+  /** The fix is confidently inside the recommended area (GPS review pass 17). */
+  gpsConfirmsRecommendedArea?: boolean;
   correctionStatus: 'accepted' | 'corrected' | 'needs-verification' | 'not-available';
   supportsProjectWalk: boolean;
   confidenceScore: number;
@@ -663,6 +665,7 @@ export function extractGPSEvidence({
     .filter(update => matchesProject(projectName, update.projectName))
     .map(update => ({
       projectName: update.projectName,
+      areaId: update.selectedAreaId ?? null,
       areaName: namedArea(update.selectedAreaName),
       latitude: update.gpsLatitude ?? null,
       longitude: update.gpsLongitude ?? null,
@@ -673,6 +676,7 @@ export function extractGPSEvidence({
     }));
   const photoGps = photoEvidence.map(photo => ({
     projectName: photo.projectName,
+    areaId: null as string | null,
     areaName: namedArea(photo.areaName),
     latitude: photo.gpsLatitude,
     longitude: photo.gpsLongitude,
@@ -712,14 +716,33 @@ export function extractGPSEvidence({
   // room inside a building, a fix near the edge); else the area the fix is
   // confidently inside; else none. Not the named area far away, not photo or
   // schedule history (passes 14-16). Without a fix, the history fallback stays.
-  const namedFixArea = latestFix && namedArea(latest?.areaName)
-    ? projectAreas.find(area => hasSavedAreaLocation(area) && sameArea(area.name, namedArea(latest?.areaName)))
+  const latestName = namedArea(latest?.areaName);
+  const namedFixArea = latestFix && latestName
+    ? (latest?.areaId ? projectAreas.find(area => area.id === latest.areaId) : undefined) ??
+      projectAreas.find(area => sameArea(area.name, latestName))
     : undefined;
-  const supportingArea =
-    namedFixArea && latestFix && !isConfidentlyOutsideArea(latestFix, namedFixArea)
+  // A named area without a saved point cannot be judged by GPS: it stands
+  // as named and is never "contradicted" (GPS review pass 17).
+  const namedAreaUnmapped = Boolean(latestFix && latestName && !(namedFixArea && hasSavedAreaLocation(namedFixArea)));
+  const supportingArea = namedAreaUnmapped
+    ? null
+    : namedFixArea && latestFix && !isConfidentlyOutsideArea(latestFix, namedFixArea)
       ? namedFixArea
       : containing?.withinRadius ? containing.area : null;
-  const recommendedArea = latest ? supportingArea?.name ?? null : areaCandidate;
+  const recommendedArea = latest
+    ? namedAreaUnmapped ? latestName : supportingArea?.name ?? null
+    : areaCandidate;
+  // GPS confirms an area only when the fix is confidently inside it; "not
+  // ruled out" names the area without claiming GPS support (pass 17: a
+  // ±1,500 m fix read "GPS supports North Lot with 100%").
+  const gpsConfirmsArea = Boolean(
+    latestFix && supportingArea &&
+    isConfidentlyInsideArea({
+      distanceFeet: distanceBetweenCoordinatesFeet(latestFix, supportingArea),
+      accuracyMeters: latestFix.accuracy,
+      radiusFeet: supportingArea.radiusFeet,
+    }),
+  );
   const recommendedProject =
     projectName ||
     latest?.projectName ||
@@ -728,12 +751,14 @@ export function extractGPSEvidence({
   const gpsAvailable = Boolean(latest);
   // With a fix, only the area GPS supports counts toward confidence, as for
   // the recommendation (GPS review pass 15).
-  const supportedArea = latest ? recommendedArea : areaCandidate;
+  // Inside some saved area of this project, confidently: a fact about the
+  // fix, whatever the update named (pass 11).
+  const insideMappedArea = Boolean(containing?.withinRadius);
   const confidenceScore = gpsConfidenceScore({
     gpsAvailable,
-    hasSelectedArea: Boolean(supportedArea),
-    hasNearestArea: Boolean(supportingArea),
-    withinMappedArea: Boolean(supportingArea),
+    hasSelectedArea: latest ? gpsConfirmsArea : Boolean(areaCandidate),
+    hasNearestArea: insideMappedArea,
+    withinMappedArea: insideMappedArea,
     hasScheduleArea: scheduleEvidence.some(item => item.areaName !== 'Unassigned area'),
   });
   const confidence = confidenceFromScore(confidenceScore);
@@ -742,7 +767,7 @@ export function extractGPSEvidence({
       ? 'not-available'
       : confidenceScore < 70
         ? 'needs-verification'
-        : supportingArea && namedArea(latest?.areaName) && !sameArea(supportingArea.name, namedArea(latest?.areaName))
+        : gpsConfirmsArea && supportingArea && latestName && !sameArea(supportingArea.name, latestName)
           ? 'corrected'
           : 'accepted';
 
@@ -759,7 +784,8 @@ export function extractGPSEvidence({
     accuracy: latest?.accuracy ?? null,
     nearestMappedArea: nearest?.area.name ?? null,
     distanceFromNearestAreaFeet: nearest?.distanceFeet ?? null,
-    withinMappedArea: latestFix ? Boolean(supportingArea) : null,
+    withinMappedArea: latestFix ? insideMappedArea : null,
+    gpsConfirmsRecommendedArea: gpsConfirmsArea,
     correctionStatus,
     supportsProjectWalk: Boolean(recommendedProject || recommendedArea),
     confidenceScore,
@@ -1179,9 +1205,11 @@ export function buildIntelligentSummary(
         ? 'No photo evidence is available.'
         : `${summary.photoCount} photo${summary.photoCount === 1 ? '' : 's'} available; ${summary.captionedPhotoCount} captioned and ${summary.photoActionCount} action-linked.`,
     gpsLocationConfidence: fusedEvidence.gpsEvidence.gpsAvailable
-      ? fusedEvidence.gpsEvidence.recommendedArea
+      ? fusedEvidence.gpsEvidence.gpsConfirmsRecommendedArea && fusedEvidence.gpsEvidence.recommendedArea
         ? `GPS supports ${fusedEvidence.gpsEvidence.recommendedArea} with ${fusedEvidence.gpsEvidence.confidenceScore}% confidence.`
-        : 'The latest GPS fix is not inside a saved area.'
+        : fusedEvidence.gpsEvidence.recommendedArea
+          ? `GPS does not confirm ${fusedEvidence.gpsEvidence.recommendedArea}.`
+          : 'The latest GPS fix is not inside a saved area.'
       : 'GPS is unavailable; project, area, schedule, or last activity context is being used.',
     userUpdateSummary:
       summary.userUpdateCount === 0

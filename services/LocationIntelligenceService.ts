@@ -162,7 +162,9 @@ export function analyzeProjectLocationIntelligence({
   });
   // Only a named area can be confirmed (pass 15: "I believe you're at GPS
   // captured").
-  const needsConfirmation = confidence !== 'high' && Boolean(currentArea);
+  // An off-site fix contradicts the named area, however high the rest
+  // scores (pass 17).
+  const needsConfirmation = Boolean(currentArea) && (confidence !== 'high' || presenceStatus === 'off-site');
 
   return {
     projectName,
