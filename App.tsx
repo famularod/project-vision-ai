@@ -373,7 +373,7 @@ import {
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
 import {
-  REPORT_EMAIL_IMAGE_LIMIT, REPORT_TEXT_IMAGE_LIMIT, resolveReportImageAttachments,
+  REPORT_EMAIL_IMAGE_LIMIT, REPORT_IMAGES_NOT_ATTACHED, REPORT_TEXT_IMAGE_LIMIT, resolveReportImageAttachments,
 } from './services/ReportImageAttachments';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
@@ -5334,6 +5334,7 @@ function AppShell() {
   const startupCompletionLogged = useRef(false);
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
+  const queuedHydrationRerunRequested = useRef(false);
   const fieldUpdateSaveInFlightRef = useRef(false);
   const updateDeletionInFlightRef = useRef(false);
   const backupRestoreInFlightRef = useRef(false);
@@ -8264,6 +8265,10 @@ useEffect(() => {
       });
     } finally {
       queuedHydrationInFlight.current = false;
+      if (queuedHydrationRerunRequested.current) {
+        queuedHydrationRerunRequested.current = false;
+        startAutomaticSyncBackgroundTask('late_photo_analysis', hydrateQueuedUpdates);
+      }
     }
   }
 
@@ -9685,12 +9690,25 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     setDraft(prev => applyToUpdate(prev));
     setSavedUpdates(prev => prev.map(applyToUpdate));
-    // A result that arrives after the update already synced would otherwise
-    // stay on this phone, and the desktop would show "Analyzing" for good
-    // (code review 27 Sep 2026). Send the update again; the cloud row is
-    // upserted by id, so this overwrites it.
+    // A result that arrives after the update synced, or while it syncs, would
+    // otherwise stay on this phone and the desktop would show "Analyzing" for
+    // good (code review 27 Sep 2026). Queue the update with the result and ask
+    // for a sync pass; one already running is followed by one more, so a
+    // second result a few seconds later is not left behind (review 28 Sep).
+    // Every pass uploads the update's single queue record, so the newest wins.
     const saved = savedUpdatesRef.current.find(update => update.id === updateId);
-    if (saved?.status === 'sent' && result.status !== 'analyzing') void retryQueuedUpdate(applyToUpdate(saved));
+    if (saved && result.status !== 'analyzing' && (saved.status === 'sent' || saved.status === 'queued')) {
+      upsertSavedUpdateUnlessDeleted({ ...applyToUpdate(saved), status: 'queued' });
+      requestQueuedUpdateSync();
+    }
+  }
+
+  function requestQueuedUpdateSync() {
+    if (queuedHydrationInFlight.current) {
+      queuedHydrationRerunRequested.current = true;
+      return;
+    }
+    startAutomaticSyncBackgroundTask('late_photo_analysis', hydrateQueuedUpdates);
   }
 
   function requestPhotoIntelligenceSignIn(update: ProjectUpdate, photo: UpdatePhoto) {
@@ -10105,11 +10123,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     // The text cites "See Image N"; the images go with it (review 27 Sep 2026).
     const images = await reportImageFiles(report, REPORT_EMAIL_IMAGE_LIMIT);
-    const result = await MailComposer.composeAsync({
+    const compose = (attachments: string[], note: string) => MailComposer.composeAsync({
       subject: report.subject || report.title,
-      body: report.body + images.note,
-      attachments: images.photos.map(photo => photo.uri),
+      body: report.body + note,
+      attachments,
     });
+    // An unreadable attachment makes the composer throw; send the text anyway.
+    const result = await compose(images.photos.map(photo => photo.uri), images.note)
+      .catch(() => compose([], `\n\n${REPORT_IMAGES_NOT_ATTACHED}`));
     return mailComposerOutcome(result.status);
   }
 
@@ -10140,9 +10161,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     const images = await reportImageFiles(report, REPORT_TEXT_IMAGE_LIMIT);
-    const { result } = await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}${images.note}`, {
-      attachments: await buildSmsAttachments(images.photos),
-    });
+    const reportText = `${report.title}\n\n${report.body}`;
+    const { result } = await buildSmsAttachments(images.photos)
+      .then(attachments => SMS.sendSMSAsync([], `${reportText}${images.note}`, { attachments }))
+      .catch(() => SMS.sendSMSAsync([], `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`));
     return smsComposerOutcome(result);
   }
 
