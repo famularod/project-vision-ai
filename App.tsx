@@ -8192,7 +8192,12 @@ useEffect(() => {
       // of 2 consecutive runs and be dropped (review pass 3, 28 Sep 2026).
       do {
         queuedHydrationRerunRequested.current = false;
-        await hydrateQueuedUpdatesPass();
+        try {
+          await hydrateQueuedUpdatesPass();
+        } catch (error) {
+          // A failed pass still owes a requested rerun (review pass 4).
+          if (!queuedHydrationRerunRequested.current) throw error;
+        }
       } while (queuedHydrationRerunRequested.current);
     } finally {
       queuedHydrationInFlight.current = false;
@@ -10145,15 +10150,16 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   async function reportImageFiles(report: PIEReportDraft, limit: number) {
-    const hydratedByUpdate = new Map<string, Promise<ProjectUpdate>>();
     return resolveReportImageAttachments({
       report,
       limit,
       findPhoto: async photoId => {
         const update = activeSavedUpdates.find(candidate => candidate.photos.some(photo => photo.id === photoId));
         if (!update) return null;
-        if (!hydratedByUpdate.has(update.id)) hydratedByUpdate.set(update.id, hydrateRecoveredProjectUpdatePhotos(update));
-        return (await hydratedByUpdate.get(update.id)!).photos.find(photo => photo.id === photoId) ?? null;
+        // Only the cited photo is fetched, not every cloud-only photo of its
+        // update (review pass 4).
+        const cited = update.photos.filter(photo => photo.id === photoId);
+        return (await hydrateRecoveredProjectUpdatePhotos({ ...update, photos: cited })).photos[0] ?? null;
       },
     });
   }

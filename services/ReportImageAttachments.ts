@@ -86,16 +86,26 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
 }
 
 /**
- * Whether a mail or SMS composer refused an attachment it could not read
- * (expo-mail-composer FileSystemReadPermission/FileSystemNotFound or a file
- * read error; expo-sms SMSFile/SMSUri/SMSMimeType). A send failure after the
- * composer opened is not one of these and must not be retried as text-only.
+ * Error codes with which the iOS composers refuse, before opening, an
+ * attachment they cannot read. Expo turns a Swift exception class into
+ * ERR_SNAKE_CASE; a plain Swift error (Data(contentsOf:) on a missing file)
+ * becomes ERR_UNEXPECTED, which these modules raise only while setting up.
+ * Decided by code only: the message is localized and contains file paths
+ * (review pass 4, 28 Sep 2026). A send failure after the composer opened
+ * (ERR_SENDING_FAILED, ERR_SMS_SENDING) is not retried as text-only.
  */
+const ATTACHMENT_READ_ERROR_CODES = new Set([
+  'ERR_FILE_SYSTEM_READ_PERMISSION',
+  'ERR_FILE_SYSTEM_NOT_FOUND',
+  'ERR_SMS_FILE',
+  'ERR_SMS_URI',
+  'ERR_SMS_MIME_TYPE',
+  'ERR_UNEXPECTED',
+]);
+
 export function isAttachmentReadError(error: unknown): boolean {
-  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
-  const text = `${typeof code === 'string' ? code : ''} ${typeof message === 'string' ? message : ''}`;
-  if (/SENDING|SEND_FAILED|UNAVAILABLE|IN_PROGRESS|PENDING|CANNOT_SEND/i.test(text)) return false;
-  return /FILE|URI|MIME|ATTACH|couldn.t be opened|no such file|read permission/i.test(text);
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && ATTACHMENT_READ_ERROR_CODES.has(code);
 }
 
 function numberList(numbers: readonly number[]): string {

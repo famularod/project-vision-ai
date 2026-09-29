@@ -75,7 +75,8 @@ describe('composer attachment errors', () => {
     { code: 'ERR_SMS_FILE', message: 'Failed to attach file' },
     { code: 'ERR_SMS_URI', message: 'Invalid URI' },
     { code: 'ERR_SMS_MIME_TYPE', message: 'Unknown mime type' },
-    { code: 'ERR_UNEXPECTED', message: 'The file “photo.jpg” couldn’t be opened because there is no such file.' },
+    { code: 'ERR_UNEXPECTED', message: 'Die Datei „photo.jpg“ konnte nicht geöffnet werden.' },
+    { code: 'ERR_FILE_SYSTEM_NOT_FOUND', message: 'FileSystem module not found' },
   ])('treats $code as an attachment read error', error => {
     expect(isAttachmentReadError(error)).toBe(true);
   });
@@ -85,6 +86,9 @@ describe('composer attachment errors', () => {
     { code: 'ERR_SMS_SENDING', message: 'Message failed: the device lost connection' },
     { code: 'ERR_OPERATION_IN_PROGRESS', message: 'Another mail composing is in progress' },
     { code: 'ERR_CANNOT_SEND_MAIL', message: 'Mail services are not available' },
+    { code: 'ERR_SMS_PENDING', message: 'file:///app/Caches/photo.jpg' },
+    { code: 'ERR_MISSING_VIEW_CONTROLLER', message: 'Cannot find the current view controller' },
+    { message: 'The file “photo.jpg” couldn’t be opened' },
     null,
     'odd',
   ])('does not treat %p as an attachment read error', error => {

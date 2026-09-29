@@ -44,7 +44,10 @@ describe('desktop photo analysis status', () => {
     // A request during a running pass is followed by one more pass inside the
     // same task (a new task would hit the guard's 2-run limit; review pass 3).
     expect(app).toContain('queuedHydrationRerunRequested.current = true;');
-    expect(app).toMatch(/do \{\s+queuedHydrationRerunRequested\.current = false;\s+await hydrateQueuedUpdatesPass\(\);\s+\} while \(queuedHydrationRerunRequested\.current\);/);
+    expect(app).toMatch(/do \{\s+queuedHydrationRerunRequested\.current = false;\s+try \{\s+await hydrateQueuedUpdatesPass\(\);/);
+    // A pass that throws still runs a requested rerun (review pass 4).
+    expect(app).toContain('if (!queuedHydrationRerunRequested.current) throw error;');
+    expect(app).toContain('} while (queuedHydrationRerunRequested.current);');
     expect(app).not.toContain("startAutomaticSyncBackgroundTask('late_photo_analysis', hydrateQueuedUpdates);\n      }");
   });
 });
