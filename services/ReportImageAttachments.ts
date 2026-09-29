@@ -85,6 +85,19 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
   return { photos, note: lines.length > 0 ? `\n\n${lines.join('\n')}` : '' };
 }
 
+/**
+ * Whether a mail or SMS composer refused an attachment it could not read
+ * (expo-mail-composer FileSystemReadPermission/FileSystemNotFound or a file
+ * read error; expo-sms SMSFile/SMSUri/SMSMimeType). A send failure after the
+ * composer opened is not one of these and must not be retried as text-only.
+ */
+export function isAttachmentReadError(error: unknown): boolean {
+  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+  const text = `${typeof code === 'string' ? code : ''} ${typeof message === 'string' ? message : ''}`;
+  if (/SENDING|SEND_FAILED|UNAVAILABLE|IN_PROGRESS|PENDING|CANNOT_SEND/i.test(text)) return false;
+  return /FILE|URI|MIME|ATTACH|couldn.t be opened|no such file|read permission/i.test(text);
+}
+
 function numberList(numbers: readonly number[]): string {
   return numbers.length === 1
     ? String(numbers[0])

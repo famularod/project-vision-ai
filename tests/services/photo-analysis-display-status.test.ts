@@ -41,8 +41,10 @@ describe('desktop photo analysis status', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
     expect(app).toContain("if (saved && result.status !== 'analyzing' && (saved.status === 'sent' || saved.status === 'queued')) {");
     expect(app).toContain("upsertSavedUpdateUnlessDeleted({ ...applyToUpdate(saved), status: 'queued' });");
-    // A request during a running pass is followed by one more pass, not dropped.
+    // A request during a running pass is followed by one more pass inside the
+    // same task (a new task would hit the guard's 2-run limit; review pass 3).
     expect(app).toContain('queuedHydrationRerunRequested.current = true;');
-    expect(app).toMatch(/if \(queuedHydrationRerunRequested\.current\) \{\s+queuedHydrationRerunRequested\.current = false;\s+startAutomaticSyncBackgroundTask\('late_photo_analysis', hydrateQueuedUpdates\);/);
+    expect(app).toMatch(/do \{\s+queuedHydrationRerunRequested\.current = false;\s+await hydrateQueuedUpdatesPass\(\);\s+\} while \(queuedHydrationRerunRequested\.current\);/);
+    expect(app).not.toContain("startAutomaticSyncBackgroundTask('late_photo_analysis', hydrateQueuedUpdates);\n      }");
   });
 });
