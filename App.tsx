@@ -10208,9 +10208,28 @@ Note: This update was opened through Outlook because PLZ email security may reje
     return smsComposerOutcome(result);
   }
 
+  // PLZ email security (Mimecast) rejects report email sent from a personal
+  // account: on 29 Sep a report reached Gmail but not the work address.
+  // Outlook sends from the work account, and the Word report carries the
+  // report and its photos; the text is copied for the message body.
+  async function outlookReport(
+    report: PIEReportDraft,
+    drawingReferences: readonly ReportDrawingReference[],
+  ): Promise<ReportCommunicationOutcome> {
+    await Clipboard.setStringAsync(`${report.title}\n\n${report.body}`);
+    const proceed = await askToContinue(
+      'Send from Outlook',
+      'Next, choose Outlook in the share screen and send from your work account. The Word report with its photos is attached, and the report text is copied: paste it into the message.',
+      'Continue',
+    );
+    if (!proceed) return 'canceled';
+    return downloadWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');
+  }
+
   async function downloadWordReport(
     report: PIEReportDraft,
     drawingReferences: readonly ReportDrawingReference[],
+    shareTitle = 'Open or save the Word report',
   ): Promise<ReportCommunicationOutcome> {
     const sharingAvailable = await Sharing.isAvailableAsync();
     if (!sharingAvailable) {
@@ -10297,7 +10316,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         encoding: FileSystem.EncodingType.Base64,
       });
       await Sharing.shareAsync(fileUri, {
-        dialogTitle: 'Open or save the Word report',
+        dialogTitle: shareTitle,
         mimeType:
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         UTI: 'org.openxmlformats.wordprocessingml.document',
@@ -13750,6 +13769,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               onEmailReport={emailReport}
               onTextReport={textReport}
               onDownloadWordReport={downloadWordReport}
+              onOutlookReport={outlookReport}
               onResolveDrawingPreview={resolveReportDrawingPreview}
               onResolvePhotoPreview={resolveReportPhotoPreview}
             />

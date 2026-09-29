@@ -37,6 +37,22 @@ describe('Report Word download visibility contract', () => {
     expect(approvedShareMenuIndex).toBeGreaterThan(permanentDownloadIndex);
   });
 
+  // Field test, 29 Sep 2026: a report emailed from the phone reached Gmail
+  // but not the work address (PLZ email security rejects personal accounts).
+  it('offers Email from Outlook (work) only after approval, through the approval gate', () => {
+    const approvedShareMenuIndex = reportsScreen.indexOf(
+      '{reportApproved && reportApprovalAllowed && shareOpen ? (',
+    );
+    const outlookButtonIndex = reportsScreen.indexOf('label="Email from Outlook (work)" onPress={onOutlookReport}');
+    const menuEnd = reportsScreen.indexOf(') : null}', approvedShareMenuIndex);
+    expect(outlookButtonIndex).toBeGreaterThan(approvedShareMenuIndex);
+    expect(outlookButtonIndex).toBeLessThan(menuEnd);
+    expect(reportsScreen).toMatch(/onOutlookReport=\{\(\) => \{\s+completeCommunication\(report =>\s+onOutlookReport\(report, drawingReferences\)\);/);
+    expect(app).toContain('onOutlookReport={outlookReport}');
+    expect(app).toContain("return downloadWordReport(report, drawingReferences, 'Choose Outlook to send from your work account');");
+    expect(app).toContain("if (!proceed) return 'canceled';");
+  });
+
   it('gives the Daily Brief and its rows the full width of the phone column', () => {
     expect(app).toContain(
       '<View style={styles.overviewDailyBriefCard}>',
