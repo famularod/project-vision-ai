@@ -4,6 +4,7 @@
  * told when an image cannot go with the message.
  */
 import {
+  expoErrorCode,
   isAttachmentReadError,
   reportCitedImages,
   resolveReportImageAttachments,
@@ -72,9 +73,9 @@ describe('report cited images', () => {
 describe('composer attachment errors', () => {
   it.each([
     { code: 'ERR_FILE_SYSTEM_READ_PERMISSION', message: 'Missing read permission for file' },
-    { code: 'ERR_SMS_FILE', message: 'Failed to attach file' },
-    { code: 'ERR_SMS_URI', message: 'Invalid URI' },
-    { code: 'ERR_SMS_MIME_TYPE', message: 'Unknown mime type' },
+    { code: 'ERR_S_MS_FILE', message: 'Failed to attach file' },
+    { code: 'ERR_S_MS_URI', message: 'Invalid URI' },
+    { code: 'ERR_S_MS_MIME_TYPE', message: 'Unknown mime type' },
     { code: 'ERR_UNEXPECTED', message: 'Die Datei „photo.jpg“ konnte nicht geöffnet werden.' },
     { code: 'ERR_FILE_SYSTEM_NOT_FOUND', message: 'FileSystem module not found' },
   ])('treats $code as an attachment read error', error => {
@@ -83,15 +84,60 @@ describe('composer attachment errors', () => {
 
   it.each([
     { code: 'ERR_SENDING_FAILED', message: 'Sending the mail failed' },
-    { code: 'ERR_SMS_SENDING', message: 'Message failed: the device lost connection' },
+    { code: 'ERR_S_MS_SENDING', message: 'Message failed: the device lost connection' },
+    { code: 'ERR_S_MS_UNAVAILABLE', message: 'SMS is not available' },
     { code: 'ERR_OPERATION_IN_PROGRESS', message: 'Another mail composing is in progress' },
     { code: 'ERR_CANNOT_SEND_MAIL', message: 'Mail services are not available' },
-    { code: 'ERR_SMS_PENDING', message: 'file:///app/Caches/photo.jpg' },
+    { code: 'ERR_S_MS_PENDING', message: 'file:///app/Caches/photo.jpg' },
     { code: 'ERR_MISSING_VIEW_CONTROLLER', message: 'Cannot find the current view controller' },
     { message: 'The file “photo.jpg” couldn’t be opened' },
     null,
     'odd',
   ])('does not treat %p as an attachment read error', error => {
     expect(isAttachmentReadError(error)).toBe(false);
+  });
+});
+
+// Review pass 5, 28 Sep 2026: expo-sms codes are ERR_S_MS_*, not ERR_SMS_*.
+describe('Expo error codes', () => {
+  it('follows expo-modules-core errorCodeFromString', () => {
+    expect(expoErrorCode('SMSFileException')).toBe('ERR_S_MS_FILE');
+    expect(expoErrorCode('SMSMimeTypeException')).toBe('ERR_S_MS_MIME_TYPE');
+    expect(expoErrorCode('FileSystemReadPermissionException')).toBe('ERR_FILE_SYSTEM_READ_PERMISSION');
+    expect(expoErrorCode('SendingFailedException')).toBe('ERR_SENDING_FAILED');
+    expect(expoErrorCode('UnknownResultException<MFMailComposeResult>')).toBe('ERR_UNKNOWN_RESULT');
+  });
+
+  it('matches the Swift rule and the exception classes the modules still declare', () => {
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const path = jest.requireActual('path') as typeof import('path');
+    const modules = path.resolve(__dirname, '../../node_modules');
+    const codedError = fs.readFileSync(path.join(modules, 'expo-modules-core/ios/Core/Exceptions/CodedError.swift'), 'utf8');
+    expect(codedError).toContain('#"(Error|Exception)?(<.*>)?$"#');
+    expect(codedError).toContain('pattern: "(.)([A-Z])"');
+    expect(codedError).toContain('withTemplate: "$1_$2"');
+    const sms = fs.readFileSync(path.join(modules, 'expo-sms/ios/SMSExceptions.swift'), 'utf8');
+    for (const name of ['SMSFileException', 'SMSUriException', 'SMSMimeTypeException']) {
+      expect(sms).toContain(`class ${name}`);
+    }
+    const mail = fs.readFileSync(path.join(modules, 'expo-mail-composer/ios/MailComposerExceptions.swift'), 'utf8');
+    for (const name of ['FileSystemReadPermissionException', 'FileSystemNotFoundException']) {
+      expect(mail).toContain(`class ${name}`);
+    }
+  });
+});
+
+describe('attachment size budget', () => {
+  it('stops adding photos when the total would pass the budget, and names the rest', async () => {
+    const sizes: Record<string, number> = { p1: 6, p2: 6, p3: 6, p4: 1 };
+    const attached = await resolveReportImageAttachments({
+      report: report([[['p1', 1], ['p2', 2], ['p3', 3], ['p4', 4]]]),
+      limit: 20,
+      maxTotalBytes: 13,
+      findPhoto: async id => ({ id, uri: `file:///${id}.jpg` }),
+      sizeOf: async photo => sizes[photo.id],
+    });
+    expect(attached.photos.map(photo => photo.id)).toEqual(['p1', 'p2', 'p4']);
+    expect(attached.note).toBe('\n\nImage 3 is not attached, to keep this message a sendable size.');
   });
 });

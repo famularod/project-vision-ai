@@ -631,3 +631,18 @@ describe('owner-facing wording', () => {
     expect(backupPartFileName('stem', 1, 4)).toBe('stem-part-2-of-4.vitruvius-backup');
   });
 });
+
+// Review pass 5, 28 Sep 2026: a failed restore must not leave a progress
+// message such as "Restoring backup part 2 of 5" on the Data Recovery screen.
+it('ends every restore failure path with a final status', () => {
+  const fs = jest.requireActual('fs') as typeof import('fs');
+  const path = jest.requireActual('path') as typeof import('path');
+  const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
+  // From the point progress starts showing (opening the selected parts).
+  const start = app.indexOf('withBackupKeepAwake(() => openSelectedBackup(');
+  const restore = app.slice(start, app.indexOf('async function importReferenceDocument', start));
+  const alerts = restore.match(/Alert\.alert\(\s*(?:preflight\.reason|'Restore failed')/g) ?? [];
+  const statuses = restore.match(/onProgress\?\.\('Restore did not finish\.'\);\s*Alert\.alert\(/g) ?? [];
+  expect(alerts.length).toBeGreaterThanOrEqual(3);
+  expect(statuses.length).toBe(alerts.length);
+});

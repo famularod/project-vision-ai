@@ -12,6 +12,11 @@ import type { PIEReportDraft } from './PIEReporter';
 export type ReportCitedImage = Readonly<{ imageNumber: number; photoId: string }>;
 
 export const REPORT_EMAIL_IMAGE_LIMIT = 20;
+/**
+ * Total bytes of original photos per message. Photos are stored at full
+ * resolution, so 20 of them can exceed common mail limits (review pass 5).
+ */
+export const REPORT_MESSAGE_IMAGE_BYTES = 15 * 1024 * 1024;
 /** Said when the composer refused the attachments and the text went alone. */
 export const REPORT_IMAGES_NOT_ATTACHED =
   'The report images could not be attached on this device; they are in Vitruvius.';
@@ -53,23 +58,33 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
     report: Pick<PIEReportDraft, 'locationGroups'>;
     limit: number;
     findPhoto: (photoId: string) => Promise<TPhoto | null>;
+    /** File size in bytes, or null when unknown (counted as 0). */
+    sizeOf?: (photo: TPhoto) => Promise<number | null>;
+    maxTotalBytes?: number;
   }>,
 ): Promise<ReportImageAttachments<TPhoto>> {
   const cited = reportCitedImages(input.report);
   const photos: TPhoto[] = [];
   const missing: number[] = [];
   const overLimit: number[] = [];
+  let totalBytes = 0;
   for (const image of cited) {
     if (photos.length >= input.limit) {
       overLimit.push(image.imageNumber);
       continue;
     }
     const photo = await input.findPhoto(image.photoId).catch(() => null);
-    if (photo && /^file:/i.test(photo.uri.trim())) {
-      photos.push(photo);
-    } else {
+    if (!photo || !/^file:/i.test(photo.uri.trim())) {
       missing.push(image.imageNumber);
+      continue;
     }
+    const size = input.sizeOf ? (await input.sizeOf(photo).catch(() => null)) ?? 0 : 0;
+    if (input.maxTotalBytes !== undefined && totalBytes + size > input.maxTotalBytes) {
+      overLimit.push(image.imageNumber);
+      continue;
+    }
+    totalBytes += size;
+    photos.push(photo);
   }
   const lines: string[] = [];
   if (missing.length > 0) {
@@ -86,20 +101,35 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
 }
 
 /**
- * Error codes with which the iOS composers refuse, before opening, an
- * attachment they cannot read. Expo turns a Swift exception class into
- * ERR_SNAKE_CASE; a plain Swift error (Data(contentsOf:) on a missing file)
- * becomes ERR_UNEXPECTED, which these modules raise only while setting up.
- * Decided by code only: the message is localized and contains file paths
- * (review pass 4, 28 Sep 2026). A send failure after the composer opened
- * (ERR_SENDING_FAILED, ERR_SMS_SENDING) is not retried as text-only.
+ * The JS error code Expo gives a Swift exception class: expo-modules-core
+ * errorCodeFromString drops a trailing Error/Exception, puts "_" before every
+ * capital that follows a character, and upper-cases, so SMSFileException is
+ * ERR_S_MS_FILE, not ERR_SMS_FILE (review pass 5, 28 Sep 2026). A test checks
+ * the Swift rule has not changed.
+ */
+export function expoErrorCode(swiftExceptionClass: string): string {
+  const name = swiftExceptionClass.replace(/(Error|Exception)?(<.*>)?$/, '');
+  // Non-overlapping, like NSRegularExpression: each match consumes both
+  // characters, so "SMSFile" becomes "S_MS_File".
+  return `ERR_${name.replace(/(.)([A-Z])/g, '$1_$2').toUpperCase()}`;
+}
+
+/**
+ * Codes with which the iOS composers refuse, before opening, an attachment
+ * they cannot read or add. A plain Swift error (Data(contentsOf:) on a missing
+ * file) becomes ERR_UNEXPECTED, which these modules raise only while setting
+ * up. Decided by code only: the message is localized and contains file paths
+ * (review pass 4). A send failure after the composer opened (SendingFailed,
+ * SMSSending) is not retried as text-only.
  */
 const ATTACHMENT_READ_ERROR_CODES = new Set([
-  'ERR_FILE_SYSTEM_READ_PERMISSION',
-  'ERR_FILE_SYSTEM_NOT_FOUND',
-  'ERR_SMS_FILE',
-  'ERR_SMS_URI',
-  'ERR_SMS_MIME_TYPE',
+  ...[
+    'FileSystemReadPermissionException', // expo-mail-composer
+    'FileSystemNotFoundException',
+    'SMSFileException', // expo-sms: iOS refused to add the attachment
+    'SMSUriException',
+    'SMSMimeTypeException',
+  ].map(expoErrorCode),
   'ERR_UNEXPECTED',
 ]);
 

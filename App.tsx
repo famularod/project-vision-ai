@@ -373,7 +373,8 @@ import {
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
 import {
-  isAttachmentReadError, REPORT_EMAIL_IMAGE_LIMIT, REPORT_IMAGES_NOT_ATTACHED, REPORT_TEXT_IMAGE_LIMIT,
+  isAttachmentReadError, REPORT_EMAIL_IMAGE_LIMIT, REPORT_IMAGES_NOT_ATTACHED, REPORT_MESSAGE_IMAGE_BYTES,
+  REPORT_TEXT_IMAGE_LIMIT,
   resolveReportImageAttachments,
 } from './services/ReportImageAttachments';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -10150,9 +10151,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
   }
 
   async function reportImageFiles(report: PIEReportDraft, limit: number) {
-    return resolveReportImageAttachments({
+    return resolveReportImageAttachments<UpdatePhoto>({
       report,
       limit,
+      maxTotalBytes: REPORT_MESSAGE_IMAGE_BYTES,
+      sizeOf: async photo => {
+        const info = await FileSystem.getInfoAsync(photo.uri);
+        return info.exists && 'size' in info && typeof info.size === 'number' ? info.size : null;
+      },
       findPhoto: async photoId => {
         const update = activeSavedUpdates.find(candidate => candidate.photos.some(photo => photo.id === photoId));
         if (!update) return null;
@@ -10736,6 +10742,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const preflight = normalizeBackupData(opened.state);
 
       if (!preflight.ok) {
+        onProgress?.('Restore did not finish.');
         Alert.alert(
           preflight.reason === 'incompatible_version'
             ? 'Incompatible backup'
@@ -10787,6 +10794,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   const normalized = normalizeBackupData(materialized.state);
                   if (!normalized.ok) {
                     await materialized.cleanup();
+                    onProgress?.('Restore did not finish.');
                     Alert.alert('Restore failed', normalized.message);
                     return;
                   }
@@ -10810,6 +10818,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ],
       );
     } catch (error) {
+      onProgress?.('Restore did not finish.');
       Alert.alert(
         'Restore failed',
         error instanceof Error
