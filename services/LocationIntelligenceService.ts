@@ -2,7 +2,7 @@ import { distanceBetweenCoordinatesFeet, findClosestProjectArea, hasSavedAreaLoc
 import { projectAreasForProject } from './DAVEProjectAreaScope';
 import { formatGpsAccuracy, gpsAccuracyFeet } from './GpsPrecision';
 import { namedAreaOrNull } from './DraftAreaPresentation';
-import { DRAFT_FIX_MAX_AGE_MS } from './DraftPhotoGps';
+import { fixIsCurrent } from './DraftPhotoGps';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -319,10 +319,7 @@ function currentFix(update: ProjectUpdate, now: Date): LocationFixEvidence | nul
       ? { lat: photoFix.gpsLatitude, lng: photoFix.gpsLongitude, acc: photoFix.gpsAccuracy, at: photoFix.locationCapturedAt }
       : null;
   if (!source || typeof source.lat !== 'number' || typeof source.lng !== 'number') return null;
-  const fixedAt = Date.parse(source.at ?? '');
-  if (!Number.isFinite(fixedAt)) return null;
-  const age = now.getTime() - fixedAt;
-  if (age < -DRAFT_FIX_CLOCK_SKEW_MS || age > DRAFT_FIX_MAX_AGE_MS) return null;
+  if (!fixIsCurrent(source.at, now.getTime())) return null;
   return {
     latitude: source.lat,
     longitude: source.lng,
@@ -330,9 +327,6 @@ function currentFix(update: ProjectUpdate, now: Date): LocationFixEvidence | nul
     capturedAt: source.at as string,
   };
 }
-
-/** A fix a little ahead of the clock (another device's time) still counts. */
-const DRAFT_FIX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 /** The project's saved area a fix is confidently inside (the draft's and fusion's rule; pass 16). */
 function areaContainingFix(fix: LocationFixEvidence, projectAreas: ProjectArea[]): ProjectArea | null {

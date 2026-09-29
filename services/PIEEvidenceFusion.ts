@@ -36,6 +36,7 @@ import {
 import { gpsAccuracyFeet, isConfidentlyInsideArea } from './GpsPrecision';
 import { projectAreasForProject } from './DAVEProjectAreaScope';
 import { namedAreaOrNull as namedArea } from './DraftAreaPresentation';
+import { fixIsCurrent } from './DraftPhotoGps';
 import {
   classifyDAVEBlocker,
   classifyDAVEIssue,
@@ -181,6 +182,8 @@ export type PIEGPSEvidence = {
   gpsConfirmsRecommendedArea?: boolean;
   /** The update the latest GPS reading belongs to (GPS review pass 19). */
   sourceUpdateId?: string | null;
+  /** When the latest GPS reading was taken (GPS review pass 21). */
+  capturedAt?: string | null;
   correctionStatus: 'accepted' | 'corrected' | 'needs-verification' | 'not-available';
   supportsProjectWalk: boolean;
   confidenceScore: number;
@@ -802,6 +805,7 @@ export function extractGPSEvidence({
     withinMappedArea: latestFix ? insideMappedArea : null,
     gpsConfirmsRecommendedArea: gpsConfirmsArea,
     sourceUpdateId: latest?.updateId ?? null,
+    capturedAt: latest?.capturedAt ?? null,
     correctionStatus,
     supportsProjectWalk: Boolean(recommendedProject || recommendedArea),
     confidenceScore,
@@ -1162,7 +1166,12 @@ export function findEvidenceConflicts(
     ? evidence.userUpdateEvidence[0]
     : evidence.userUpdateEvidence.find(update => update.id === evidence.gpsEvidence.sourceUpdateId);
   const sourceUpdateArea = namedArea(sourceUpdate?.areaName);
-  if (gpsArea && sourceUpdateArea && !sameArea(gpsArea, sourceUpdateArea)) {
+  // The conflict is about the area you are in now, so it is raised only
+  // while the reading is current (pass 21: an update saved two days ago
+  // asked you to "confirm the current project area", and nothing short of
+  // editing that update could clear it).
+  const readingIsCurrent = fixIsCurrent(evidence.gpsEvidence.capturedAt, Date.parse(evidence.generatedAt));
+  if (readingIsCurrent && gpsArea && sourceUpdateArea && !sameArea(gpsArea, sourceUpdateArea)) {
     conflicts.push(conflict({
       evidence,
       id: 'gps-update-area-mismatch',

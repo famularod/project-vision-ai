@@ -392,8 +392,8 @@ describe('GPS wiring in the app', () => {
     expect(app).toContain('if (areaId && !area) return;');
   });
 
-  it('gates home-screen detection on the nearest centre across projects, with a shared fix', () => {
-    expect(app).toMatch(/const suggestion = findProjectAreaSuggestions\(snapshot, projectAreas\)\[0\] \|\| null;\n(?:.*\n){0,24}\s+const decision = homeDetectionDecision\(\{\n\s+nearest: suggestion,/);
+  it('gates home-screen detection on every area by nearest centre across projects, with a shared fix', () => {
+    expect(app).toMatch(/const suggestions = findProjectAreaSuggestions\(snapshot, projectAreas\);\n(?:.*\n){0,24}\s+const decision = homeDetectionDecision\(\{\n\s+suggestions,/);
     expect(app).toContain('setProjectDetectionStatus(decision.status);');
     expect(app).not.toContain('findClosestProjectArea(snapshot, projectAreas)');
     expect(app).toContain('overviewLocationFixRef.current.fresh()');

@@ -55,6 +55,22 @@ export function fixCoversPhoto(
   return Math.abs(takenAt - fixedAt) <= DRAFT_FIX_MAX_AGE_MS;
 }
 
+/** A fix a little ahead of the clock (another device's time) still counts. */
+export const FIX_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * Whether a fix taken at `fixTime` still says where you are at `now`: at
+ * most 30 minutes old, or a little ahead of the clock. The location summary
+ * (pass 15) and the GPS/area conflict (pass 21: a two-day-old update's fix
+ * asked you to confirm the current area) share this rule.
+ */
+export function fixIsCurrent(fixTime: string | null | undefined, now: number): boolean {
+  const fixedAt = Date.parse(fixTime ?? '');
+  if (!Number.isFinite(fixedAt) || !Number.isFinite(now)) return false;
+  const age = now - fixedAt;
+  return age >= -FIX_CLOCK_SKEW_MS && age <= DRAFT_FIX_MAX_AGE_MS;
+}
+
 function hasTime(value: string | null | undefined): boolean {
   return Number.isFinite(Date.parse(value ?? ''));
 }

@@ -22,6 +22,7 @@ import {
   asLibraryPhoto,
   DRAFT_FIX_MAX_AGE_MS,
   fixCoversPhoto,
+  fixIsCurrent,
   newPhotoGps,
   photoGpsOrUpdate,
   withDraftGps,
@@ -551,9 +552,10 @@ describe('GPS evidence against the update’s area', () => {
       scheduleEvidence: [],
       issueEvidence: [],
       photoEvidence: [],
-      gpsEvidence: { recommendedArea: 'North Lot' },
+      gpsEvidence: { recommendedArea: 'North Lot', capturedAt: '2026-09-29T15:00:00Z' },
       userUpdateEvidence: [{ areaName: updateArea }],
       projectName: '2321 Compliance Project',
+      generatedAt: '2026-09-29T15:05:00Z',
     }) as never;
     const ids = (updateArea: string) => findEvidenceConflicts(evidence(updateArea)).map(item => item.id);
     expect(ids(UNASSIGNED_AREA_NAME)).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
@@ -637,8 +639,8 @@ describe('placeholders and GPS evidence', () => {
   it('raises no GPS area conflict with a placeholder on either side', () => {
     const conflicts = (gpsArea: string | null, updateArea: string) => findEvidenceConflicts({
       scheduleReconciliation: { warnings: [] }, scheduleEvidence: [], issueEvidence: [], photoEvidence: [],
-      gpsEvidence: { recommendedArea: gpsArea }, userUpdateEvidence: [{ areaName: updateArea }],
-      projectName: '2321 Compliance Project',
+      gpsEvidence: { recommendedArea: gpsArea, capturedAt: '2026-09-29T15:00:00Z' }, userUpdateEvidence: [{ areaName: updateArea }],
+      projectName: '2321 Compliance Project', generatedAt: '2026-09-29T15:05:00Z',
     } as never).map(item => item.id);
     expect(conflicts('Unassigned area', 'Roof')).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
     expect(conflicts(UNASSIGNED_AREA_NAME, 'Roof')).not.toContain('pie-evidence-conflict-gps-update-area-mismatch');
@@ -993,7 +995,7 @@ describe('home-screen detection', () => {
     const inside = findProjectAreaSuggestions(fix, areas).filter(item => item.withinRadius);
     const projects = [...new Set(inside.map(item => item.area.projectName ?? null))];
     return homeDetectionDecision({
-      nearest: findProjectAreaSuggestions(fix, areas)[0] ?? null,
+      suggestions: findProjectAreaSuggestions(fix, areas),
       clearProjectName: projects.length === 1 ? projects[0] : null,
       ambiguous: projects.length > 1,
       hasCandidates: inside.length > 0,
@@ -1013,6 +1015,61 @@ describe('home-screen detection', () => {
     expect(decide(2_000, [a1, a2])).toEqual({ status: 'unmatched', projectName: null });
     const overlap = area('o2', 0, 175, { name: 'Overlap', projectName: '2375' });
     expect(decide(0, [a1, overlap]).status).toBe('multiple');
+  });
+
+  // Review pass 21: every nearer centre is checked, not only the nearest.
+  it('stays uncertain when another project’s area sits between a same-project area and the area you are in', () => {
+    const small = area('a-small', 50, 30, { name: 'A small', projectName: '2321' });
+    const between = area('b-between', 70, 60, { name: 'B between', projectName: '2375' });
+    const lot = area('a-lot', 120, 250, { name: 'A lot', projectName: '2321' });
+    expect(decide(0, [small, lot])).toEqual({ status: 'detected', projectName: '2321' });
+    expect(decide(0, [between, lot])).toEqual({ status: 'unmatched', projectName: null });
+    expect(decide(0, [small, between, lot])).toEqual({ status: 'unmatched', projectName: null });
+    expect(decide(0, [lot, between, small])).toEqual({ status: 'unmatched', projectName: null });
+    // An area of no known project nearer than the one you are in keeps it uncertain too.
+    const unknown = area('u', 70, 60, { name: 'Whose?' });
+    expect(decide(0, [small, unknown, lot])).toEqual({ status: 'unmatched', projectName: null });
+  });
+});
+
+// Review pass 21: the GPS/area conflict is about the area you are in now.
+describe('the GPS/update area conflict is raised only while the reading is current', () => {
+  const P = '2321 Compliance Project';
+  const northLot = area('north', 0, 175, { name: 'North Lot', projectName: P });
+  const southLot = area('south', 2_000, 175, { name: 'South Lot', projectName: P });
+  const MISMATCH = 'pie-evidence-conflict-gps-update-area-mismatch';
+  const wrong = {
+    id: 'old', projectName: P, date: '2026-09-27', notes: '', photos: [], recipients: { contactIds: [] },
+    selectedAreaName: 'North Lot', selectedAreaId: 'north', locationCapturedAt: '2026-09-27T17:00:00.000Z',
+    gpsLatitude: north(2_000).latitude, gpsLongitude: north(2_000).longitude, gpsAccuracy: 5,
+  };
+  const emptyDraft = {
+    id: 'draft', projectName: P, date: '2026-09-29', notes: '', photos: [], recipients: { contactIds: [] },
+    selectedAreaName: UNASSIGNED_AREA_NAME,
+  };
+  const conflictsAt = (now: string) => buildFusedEvidence({
+    projectName: P, updates: [wrong as never], currentUpdate: emptyDraft as never,
+    projectAreas: [northLot, southLot], now: new Date(now),
+  }).conflicts.map(item => item.id);
+
+  it('is raised minutes after that fix, and not half an hour or two days later', () => {
+    expect(conflictsAt('2026-09-27T17:05:00.000Z')).toContain(MISMATCH);
+    expect(conflictsAt('2026-09-27T17:31:00.000Z')).not.toContain(MISMATCH);
+    expect(conflictsAt('2026-09-29T17:05:00.000Z')).not.toContain(MISMATCH);
+    // The reading's time travels with the GPS evidence.
+    const gps = buildFusedEvidence({ projectName: P, updates: [wrong as never], projectAreas: [northLot, southLot] }).gpsEvidence;
+    expect(gps.capturedAt).toBe('2026-09-27T17:00:00.000Z');
+    expect(gps.sourceUpdateId).toBe('old');
+  });
+
+  it('counts a fix current for 30 minutes, five minutes ahead of the clock, and never without a time', () => {
+    const now = Date.parse('2026-09-29T17:00:00.000Z');
+    expect(fixIsCurrent('2026-09-29T16:30:00.000Z', now)).toBe(true);
+    expect(fixIsCurrent('2026-09-29T16:29:59.000Z', now)).toBe(false);
+    expect(fixIsCurrent('2026-09-29T17:05:00.000Z', now)).toBe(true);
+    expect(fixIsCurrent('2026-09-29T17:05:01.000Z', now)).toBe(false);
+    expect(fixIsCurrent(null, now)).toBe(false);
+    expect(fixIsCurrent('2026-09-29T16:59:00.000Z', Number.NaN)).toBe(false);
   });
 });
 

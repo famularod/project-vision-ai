@@ -6609,9 +6609,9 @@ useEffect(() => {
 
       try {
         const snapshot = recentFix ? recentFix.fix : await overviewLocationFixRef.current.get();
-        // Nearest centre, across every project: a nearer area of another
-        // project keeps this uncertain (review passes 4 and 20).
-        const suggestion = findProjectAreaSuggestions(snapshot, projectAreas)[0] || null;
+        // Every area by nearest centre, across every project: a nearer area
+        // of another project keeps this uncertain (review passes 4, 20, 21).
+        const suggestions = findProjectAreaSuggestions(snapshot, projectAreas);
 
         if (!mounted) return;
 
@@ -6630,7 +6630,7 @@ useEffect(() => {
         );
 
         const decision = homeDetectionDecision({
-          nearest: suggestion,
+          suggestions,
           clearProjectName: gpsCandidates.clearProjectName,
           ambiguous: gpsCandidates.ambiguous,
           hasCandidates: gpsCandidates.topCandidates.length > 0,

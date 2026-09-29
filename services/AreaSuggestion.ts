@@ -95,27 +95,37 @@ export type HomeDetectionStatus = 'unmatched' | 'multiple' | 'detected';
 
 /**
  * Home-screen project detection from one fix, across every project's areas.
- * The clear winner comes from the areas you are confidently inside; a nearer
- * area centre you are not confidently inside keeps the result uncertain only
- * when it belongs to another project (review passes 4 and 20: an adjacent
- * area of the same project made you "unmatched" while you stood in a mapped
- * area).
+ * The clear winner comes from the areas you are confidently inside. Walking
+ * the areas by nearest centre up to the winner's first area you are
+ * confidently inside, an area you are not confidently inside keeps the
+ * result uncertain when it is another project's (or no known project's);
+ * the winner's own adjacent areas do not (review passes 4 and 20: an
+ * adjacent area of the same project made you "unmatched" while you stood in
+ * a mapped area; pass 21: checking only the single nearest centre let one
+ * of them hide another project's area between it and the area you were in).
  */
 export function homeDetectionDecision(input: Readonly<{
-  nearest: AreaSuggestion | null;
+  /** Every area with a saved point, nearest centre first (findProjectAreaSuggestions). */
+  suggestions: readonly AreaSuggestion[];
   clearProjectName: string | null;
   ambiguous: boolean;
   hasCandidates: boolean;
   projectForArea: (area: ProjectArea) => string | null;
 }>): Readonly<{ status: HomeDetectionStatus; projectName: string | null }> {
-  if (!input.hasCandidates || !input.nearest) return { status: 'unmatched', projectName: null };
+  const unmatched = { status: 'unmatched', projectName: null } as const;
+  if (!input.hasCandidates || input.suggestions.length === 0) return unmatched;
   if (input.ambiguous) return { status: 'multiple', projectName: null };
   const projectName = input.clearProjectName;
-  if (!projectName) return { status: 'unmatched', projectName: null };
-  if (!input.nearest.withinRadius && input.projectForArea(input.nearest.area) !== projectName) {
-    return { status: 'unmatched', projectName: null };
+  if (!projectName) return unmatched;
+  for (const suggestion of input.suggestions) {
+    const owner = input.projectForArea(suggestion.area);
+    if (suggestion.withinRadius) {
+      if (owner === projectName) return { status: 'detected', projectName };
+      continue;
+    }
+    if (owner !== projectName) return unmatched;
   }
-  return { status: 'detected', projectName };
+  return unmatched;
 }
 
 /** A suggestion, and the draft whose fix produced it (review pass 3). */
