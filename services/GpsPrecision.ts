@@ -63,6 +63,17 @@ export function overviewFixMaxAgeMs(accuracyMeters: number | null | undefined): 
 
 type AreaPointPrecision = Pick<ProjectArea, 'locationAccuracyMeters' | 'locationAccuracyCapturedAt'>;
 
+export type AreaGpsSaveDecision = 'location-denied' | 'precise-off' | 'imprecise' | 'save';
+
+/** What Save GPS does with a fix (review passes 1 and 11). */
+export function areaGpsSaveDecision(
+  fix: Readonly<{ accuracy: number | null; preciseLocationOff?: boolean }> | null,
+): AreaGpsSaveDecision {
+  if (!fix) return 'location-denied';
+  if (fix.preciseLocationOff) return 'precise-off';
+  return isAreaPointImprecise(fix.accuracy) ? 'imprecise' : 'save';
+}
+
 /** The fields "Save GPS" writes onto an area. */
 export function areaPointFromFix(fix: Readonly<{
   latitude: number;

@@ -256,10 +256,11 @@ function photoLocationCandidate(
   photo: UpdatePhoto,
   update: ProjectUpdate,
 ): LocationCandidate | null {
-  // A library photo says nothing about where you are: added last, it
-  // displaced the update's fix as the latest location (GPS review pass 9).
-  // Without a fix, the update's area still counts (pass 10).
-  if (photo.pickedFromLibrary && hasGpsCoordinates(update)) return null;
+  // A photo without GPS of its own adds nothing to its update's fix: a
+  // library photo, or a camera photo taken after the fix stopped covering
+  // it, added last displaced the fix as the latest location (GPS review
+  // passes 9 and 11). Without a fix, the update's area still counts (pass 10).
+  if (!hasGpsCoordinates(photo) && hasGpsCoordinates(update)) return null;
   const hasArea = Boolean(
     photo.selectedAreaId ||
       photo.selectedAreaName?.trim() ||

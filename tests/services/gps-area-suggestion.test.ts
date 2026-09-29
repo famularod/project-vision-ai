@@ -10,7 +10,8 @@ import {
 } from '../../services/AreaSuggestion';
 import { draftAreaPresentation, UNASSIGNED_AREA_NAME } from '../../services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from '../../services/DraftFixTracker';
-import { applyFixToDraft } from '../../services/DraftFix';
+import { applyFixToDraft, areaChangeLocationFields } from '../../services/DraftFix';
+import { extractGPSEvidence } from '../../services/PIEEvidenceFusion';
 import {
   asLibraryPhoto,
   DRAFT_FIX_MAX_AGE_MS,
@@ -20,7 +21,7 @@ import {
   withDraftGps,
   withDraftLocation,
 } from '../../services/DraftPhotoGps';
-import { overviewFixMaxAgeMs } from '../../services/GpsPrecision';
+import { areaGpsSaveDecision, overviewFixMaxAgeMs } from '../../services/GpsPrecision';
 import { analyzeProjectLocationIntelligence } from '../../services/LocationIntelligenceService';
 import { inferViewpoint } from '../../services/PIEPhotoProgressIntelligence';
 import { createRecentLocationFix } from '../../services/RecentLocationFix';
@@ -410,5 +411,67 @@ describe('photos and the project’s location', () => {
     expect(inferViewpoint({ projectName: '2321' }, 'Canopy', 'North Lot'))
       .toBe(inferViewpoint({ projectName: '2321' }, 'Canopy', 'North Lot'));
     expect(inferViewpoint({ projectName: '2321' }, 'Canopy', 'North Lot')).toMatch(/:no-gps$/);
+  });
+});
+
+// Review pass 11 (the desktop flag test is in dave-web-read-only-repository.test.ts).
+describe('late photos and the project’s location', () => {
+  it('does not let a camera photo taken after the fix stopped covering it lower confidence', () => {
+    const update = {
+      id: 'u1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '',
+      recipients: { contactIds: [] }, selectedAreaName: 'North Lot',
+      gpsLatitude: 37.1, gpsLongitude: -121.9, gpsAccuracy: 5, locationCapturedAt: '2026-09-29T15:00:00.000Z',
+      photos: [{
+        id: 'p1', uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '',
+        actionDueDate: '', actionStatus: 'Open', gpsLatitude: null, gpsLongitude: null,
+        locationCapturedAt: '2026-09-29T15:45:00.000Z',
+      }],
+    };
+    const summary = analyzeProjectLocationIntelligence({
+      projectName: '2321 Compliance Project', updates: [update as never], scheduleItems: [],
+    });
+    expect(summary.gpsStatus).toBe('Captured, accuracy ±16 ft');
+    expect(summary.needsConfirmation).toBe(false);
+  });
+});
+
+describe('evidence fusion’s area match', () => {
+  const base = { projectName: '2321 Compliance Project', updates: [], scheduleEvidence: [] };
+  const gpsUpdate = (accuracy: number) => ({
+    id: 'u1', projectName: '2321 Compliance Project', date: '2026-09-29', notes: '', photos: [],
+    recipients: { contactIds: [] }, selectedAreaName: 'Yard', ...north(150), gpsLatitude: north(150).latitude,
+    gpsLongitude: north(150).longitude, gpsAccuracy: accuracy, locationCapturedAt: '2026-09-29T15:00:00Z',
+  });
+
+  it('needs the fix confidently inside the area, and ignores areas without a saved point', () => {
+    const lot = area('lot', 0, 175, { name: 'North Lot' });
+    const unsaved = area('unsaved', 150, 250, { name: 'Unsaved', locationCapturedAt: null });
+    const sloppy = extractGPSEvidence({ ...base, updates: [gpsUpdate(30) as never], projectAreas: [lot, unsaved] });
+    expect(sloppy.nearestMappedArea).toBe('North Lot');
+    expect(sloppy.withinMappedArea).toBe(false);
+    const precise = extractGPSEvidence({ ...base, updates: [gpsUpdate(3) as never], projectAreas: [lot, unsaved] });
+    expect(precise.withinMappedArea).toBe(true);
+  });
+});
+
+describe('Save GPS and area changes', () => {
+  it('decides what Save GPS does with a fix', () => {
+    expect(areaGpsSaveDecision(null)).toBe('location-denied');
+    expect(areaGpsSaveDecision({ accuracy: 3, preciseLocationOff: true })).toBe('precise-off');
+    expect(areaGpsSaveDecision({ accuracy: 30 })).toBe('imprecise');
+    expect(areaGpsSaveDecision({ accuracy: null })).toBe('imprecise');
+    expect(areaGpsSaveDecision({ accuracy: 5 })).toBe('save');
+  });
+
+  it('measures the draft’s own fix against the new area and keeps its time', () => {
+    const lot = area('lot', 100, 175, { name: 'North Lot' });
+    const draft = { ...ORIGIN, gpsLatitude: ORIGIN.latitude, gpsLongitude: ORIGIN.longitude, gpsAccuracy: 5, locationCapturedAt: '2026-09-29T15:00:00Z' };
+    const fields = areaChangeLocationFields(draft, lot);
+    expect(fields).toMatchObject({ selectedAreaId: 'lot', gpsLatitude: ORIGIN.latitude, locationCapturedAt: '2026-09-29T15:00:00Z' });
+    expect(fields.distanceFromSelectedAreaFeet).toBeCloseTo(100, 0);
+    // Pass 11: an untimed fix is not stamped "now".
+    expect(areaChangeLocationFields({ ...draft, locationCapturedAt: null }, lot).locationCapturedAt).toBeNull();
+    expect(areaChangeLocationFields({}, lot)).toMatchObject({ selectedAreaId: 'lot', gpsLatitude: null, distanceFromSelectedAreaFeet: null });
+    expect(areaChangeLocationFields(draft, null)).toMatchObject({ selectedAreaId: null, selectedAreaName: null });
   });
 });

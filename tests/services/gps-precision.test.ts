@@ -330,7 +330,10 @@ describe('GPS wiring in the app', () => {
     expect(app).not.toContain('Location.Accuracy.Balanced');
     expect(app).toContain('getCurrentLocationSnapshot(Location.Accuracy.Highest)');
     expect(app).toContain("preciseLocationOff: permission.ios?.accuracy === 'reduced'");
-    expect(app).toContain('if (snapshot.preciseLocationOff) {');
+    expect(app).toContain('const decision = areaGpsSaveDecision(snapshot);');
+    expect(app).toContain("if (decision === 'precise-off') {");
+    expect(app).toContain("if (decision === 'save') {");
+    expect(app).toContain('const locationFields = areaChangeLocationFields(prev, area, snapshot);');
   });
 
   it('saves an area point onto the latest copy of the area, one fix per area, only if the area exists', () => {

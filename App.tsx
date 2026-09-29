@@ -240,10 +240,10 @@ import {
   areaPointFromFix,
   areaPointImpreciseMessage,
   areaPointPrecisionLabel,
+  areaGpsSaveDecision,
   areaPointSavedMessage,
   clearWinnerMarginFeet,
   formatGpsAccuracy,
-  isAreaPointImprecise,
   isConfidentlyInsideArea,
   overviewFixMaxAgeMs,
   PRECISE_LOCATION_OFF_MESSAGE,
@@ -251,7 +251,7 @@ import {
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
 import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
-import { applyFixToDraft, draftLocationFields } from './services/DraftFix';
+import { applyFixToDraft, areaChangeLocationFields } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
   distanceBetweenCoordinatesFeet,
@@ -6745,32 +6745,7 @@ useEffect(() => {
     let nextDraftAfterAreaChange: ProjectUpdate | null = null;
 
     setDraft(prev => {
-      const baseSnapshot =
-        snapshot ||
-        (prev.gpsLatitude !== null &&
-        prev.gpsLatitude !== undefined &&
-        prev.gpsLongitude !== null &&
-        prev.gpsLongitude !== undefined
-          ? {
-              latitude: prev.gpsLatitude,
-              longitude: prev.gpsLongitude,
-              accuracy: prev.gpsAccuracy ?? null,
-              capturedAt:
-                prev.locationCapturedAt || new Date().toISOString(),
-            }
-          : null);
-
-      const locationFields = baseSnapshot
-        ? draftLocationFields(baseSnapshot, area)
-        : {
-            selectedAreaId: area?.id || null,
-            selectedAreaName: area?.name || null,
-            gpsLatitude: prev.gpsLatitude ?? null,
-            gpsLongitude: prev.gpsLongitude ?? null,
-            gpsAccuracy: prev.gpsAccuracy ?? null,
-            distanceFromSelectedAreaFeet: null,
-            locationCapturedAt: prev.locationCapturedAt ?? null,
-          };
+      const locationFields = areaChangeLocationFields(prev, area, snapshot);
 
       const next = {
         ...prev,
@@ -9178,7 +9153,8 @@ function addProject(projectName: string) {
     try {
       const snapshot = await getCurrentLocationSnapshot(Location.Accuracy.Highest);
 
-      if (!snapshot) {
+      const decision = areaGpsSaveDecision(snapshot);
+      if (!snapshot || decision === 'location-denied') {
         Alert.alert(
           'Location access needed',
           'Allow location access, or enter/update this area manually later.',
@@ -9186,7 +9162,7 @@ function addProject(projectName: string) {
 
         return;
       }
-      if (snapshot.preciseLocationOff) {
+      if (decision === 'precise-off') {
         Alert.alert(PRECISE_LOCATION_OFF_TITLE, PRECISE_LOCATION_OFF_MESSAGE, [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Open Settings', onPress: () => void Linking.openSettings() },
@@ -9198,7 +9174,7 @@ function addProject(projectName: string) {
         if (!updateProjectArea(areaId, areaPointFromFix(snapshot))) return;
         Alert.alert('Area location saved', areaPointSavedMessage(snapshot.accuracy));
       };
-      if (!isAreaPointImprecise(snapshot.accuracy)) {
+      if (decision === 'save') {
         save();
         return;
       }

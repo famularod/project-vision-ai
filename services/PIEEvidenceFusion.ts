@@ -27,6 +27,7 @@ import {
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { findClosestProjectArea } from './AreaSuggestion';
 import {
   classifyDAVEBlocker,
   classifyDAVEIssue,
@@ -684,9 +685,10 @@ export function extractGPSEvidence({
   const nearest = latest &&
     typeof latest.latitude === 'number' &&
     typeof latest.longitude === 'number'
-    ? nearestArea(
-        latest.latitude,
-        latest.longitude,
+    // Accuracy-aware, and only areas with a saved point (GPS review pass 11:
+    // before, a fix near an edge or the placeholder point raised a conflict).
+    ? findClosestProjectArea(
+        { latitude: latest.latitude, longitude: latest.longitude, accuracy: latest.accuracy ?? null },
         projectAreas,
       )
     : null;
@@ -1619,52 +1621,6 @@ function emptyIntelligentSummary(
     nextAction: 'Capture project evidence',
     evidenceSourceSummary: 'No evidence sources are available.',
   };
-}
-
-function nearestArea(
-  latitude: number,
-  longitude: number,
-  areas: ProjectArea[],
-) {
-  const candidates = areas
-    .map(area => {
-      const distanceFeet = distanceInFeet(
-        latitude,
-        longitude,
-        area.latitude,
-        area.longitude,
-      );
-
-      return {
-        area,
-        distanceFeet,
-        withinRadius: distanceFeet <= area.radiusFeet,
-      };
-    })
-    .sort((left, right) => left.distanceFeet - right.distanceFeet);
-
-  return candidates[0] ?? null;
-}
-
-function distanceInFeet(
-  startLatitude: number,
-  startLongitude: number,
-  endLatitude: number,
-  endLongitude: number,
-) {
-  const earthRadiusFeet = 20925524.9;
-  const deltaLatitude = toRadians(endLatitude - startLatitude);
-  const deltaLongitude = toRadians(endLongitude - startLongitude);
-  const startRadians = toRadians(startLatitude);
-  const endRadians = toRadians(endLatitude);
-  const a =
-    Math.sin(deltaLatitude / 2) ** 2 +
-    Math.cos(startRadians) *
-      Math.cos(endRadians) *
-      Math.sin(deltaLongitude / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return earthRadiusFeet * c;
 }
 
 function matchesDocumentProject(

@@ -503,3 +503,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   setItem: jest.fn(),
   removeItem: jest.fn(),
 }));
+
+// GPS review pass 11: without the flag the desktop placed library photos at
+// the update's GPS, unlike the phone.
+it('keeps the library flag when the desktop loads a photo', () => {
+  expect(normalizeWebPhoto({ id: 'p1', pickedFromLibrary: true })).toMatchObject({ pickedFromLibrary: true });
+  expect(normalizeWebPhoto({ id: 'p2' })).not.toHaveProperty('pickedFromLibrary');
+  expect(normalizeWebPhoto({ id: 'p3', pickedFromLibrary: 'yes' })).not.toHaveProperty('pickedFromLibrary');
+});

@@ -36,6 +36,45 @@ export function draftLocationFields(fix: LocationFix, selectedArea?: ProjectArea
   };
 }
 
+/**
+ * A draft's location fields after its area changes: the given fix, else the
+ * draft's own fix, measured against the new area. The draft's own fix keeps
+ * its own time; one without a time is not stamped "now" (review pass 11:
+ * that let an old fix cover new photos).
+ */
+export function areaChangeLocationFields(
+  draft: Readonly<{
+    gpsLatitude?: number | null;
+    gpsLongitude?: number | null;
+    gpsAccuracy?: number | null;
+    locationCapturedAt?: string | null;
+  }>,
+  area: ProjectArea | null,
+  fix?: LocationFix | null,
+) {
+  if (fix) return draftLocationFields(fix, area);
+  if (typeof draft.gpsLatitude === 'number' && typeof draft.gpsLongitude === 'number') {
+    return {
+      ...draftLocationFields({
+        latitude: draft.gpsLatitude,
+        longitude: draft.gpsLongitude,
+        accuracy: draft.gpsAccuracy ?? null,
+        capturedAt: '',
+      }, area),
+      locationCapturedAt: draft.locationCapturedAt || null,
+    };
+  }
+  return {
+    selectedAreaId: area?.id || null,
+    selectedAreaName: area?.name || null,
+    gpsLatitude: null,
+    gpsLongitude: null,
+    gpsAccuracy: null,
+    distanceFromSelectedAreaFeet: null,
+    locationCapturedAt: draft.locationCapturedAt || null,
+  };
+}
+
 type FixableDraft<TPhoto> = {
   selectedAreaId?: string | null;
   areaStatus?: 'confirmed' | 'suggested' | 'unknown';
