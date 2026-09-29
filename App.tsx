@@ -9685,6 +9685,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     setDraft(prev => applyToUpdate(prev));
     setSavedUpdates(prev => prev.map(applyToUpdate));
+    // A result that arrives after the update already synced would otherwise
+    // stay on this phone, and the desktop would show "Analyzing" for good
+    // (code review 27 Sep 2026). Send the update again; the cloud row is
+    // upserted by id, so this overwrites it.
+    const saved = savedUpdatesRef.current.find(update => update.id === updateId);
+    if (saved?.status === 'sent' && result.status !== 'analyzing') void retryQueuedUpdate(applyToUpdate(saved));
   }
 
   function requestPhotoIntelligenceSignIn(update: ProjectUpdate, photo: UpdatePhoto) {
