@@ -185,4 +185,18 @@ describe('photos uploaded under a legacy project name', () => {
     expect((await uploadLocalPhotoWithDiagnostics(update, update.photos[0])).foundAtPath)
       .toBe('2321-north-side-lot/update-g/photo-1-lot.jpg');
   });
+
+  // Review pass 11, 29 Sep 2026: a failed owner check must not let a photo
+  // marked unavailable sync without its found path; the pass retries later.
+  it('retries later when the owner check itself fails, and skips when the caller is not the owner', async () => {
+    signedUrl.mockResolvedValue(NOT_FOUND);
+    const update = julyUpdate('update-h', '2321-compliance-project/update-h/photo-1-lot.jpg');
+    update.photos[0].cloudRecoveryStatus = 'unavailable';
+
+    ownerCheck.mockResolvedValue({ ok: false, error: 'network' });
+    expect((await uploadLocalPhotoWithDiagnostics(update, update.photos[0])).result).toBe('failed');
+
+    ownerCheck.mockResolvedValue({ ok: true, data: false });
+    expect((await uploadLocalPhotoWithDiagnostics(update, update.photos[0])).result).toBe('skipped');
+  });
 });

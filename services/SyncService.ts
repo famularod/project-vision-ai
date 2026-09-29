@@ -4499,6 +4499,20 @@ export async function uploadLocalPhotoWithDiagnostics(
     const legacyCopy = cloudPhotoLookupConfirmedMissing(cloudCopy, true)
       ? await findPhotoUnderLegacyProjectPath(update, photo, path, 60)
       : null;
+    if (legacyCopy === 'owner_unverified') {
+      return {
+        result: 'failed',
+        message: 'Cloud photo availability could not be verified. Sync will retry without removing the photo record.',
+        diagnostic: {
+          ...diagnosticBase,
+          localFileExists: false,
+          localFileReadable: false,
+          uploadResult: 'failed',
+          failureCategory: 'unknown_storage_error',
+          objectPathCategory: photoObjectPathCategory(path),
+        },
+      };
+    }
     if (legacyCopy) {
       return {
         result: 'skipped',
@@ -4781,13 +4795,16 @@ async function findPhotoUnderLegacyProjectPath(
   photo: UpdatePhoto,
   path: string,
   ttlSeconds: number,
-): Promise<{ path: string; lookup: PhotoSignedUrlLookup } | null> {
+): Promise<{ path: string; lookup: PhotoSignedUrlLookup } | 'owner_unverified' | null> {
   const searchKey = `${update.id}|${photo.id}`;
   if (legacyPhotoPathsSearched.has(searchKey)) return null;
   const known = legacyPhotoPathsFound.get(searchKey);
   const candidates = known ? [known] : legacyProjectPhotoStoragePaths(path);
   if (!known) {
     const owner = await verifyDAVEAppOwner();
+    // A failed check is not an answer: the caller retries later instead of
+    // syncing the record without the path (review pass 11).
+    if (!owner.ok && !owner.stubbed) return 'owner_unverified';
     if (!owner.ok || owner.stubbed || owner.data !== true) return null;
   }
   for (const candidate of candidates) {
@@ -4822,7 +4839,8 @@ export async function locateCloudPhotoCopy(
   if ((lookup.ok && lookup.data && !lookup.stubbed) || !cloudPhotoLookupConfirmedMissing(lookup, true)) {
     return { path, lookup };
   }
-  return (await findPhotoUnderLegacyProjectPath(update, photo, path, ttlSeconds)) ?? { path, lookup };
+  const legacy = await findPhotoUnderLegacyProjectPath(update, photo, path, ttlSeconds);
+  return legacy && legacy !== 'owner_unverified' ? legacy : { path, lookup };
 }
 
 export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends ProjectUpdate>(
