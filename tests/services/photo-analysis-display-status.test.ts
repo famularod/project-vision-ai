@@ -39,8 +39,9 @@ describe('desktop photo analysis status', () => {
     expect(shell).toContain('photoAnalysisDisplayStatus(intelligence).label');
     expect(shell).not.toContain("return 'Analyzing';");
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
-    expect(app).toContain("if (saved && result.status !== 'analyzing' && (saved.status === 'sent' || saved.status === 'queued')) {");
-    expect(app).toContain("const queued: ProjectUpdate = { ...applyToUpdate(saved), status: 'queued' };");
+    // Only when the result changed the saved update (review pass 7).
+    expect(app).toContain('saved && withResult && withResult !== saved && result.status !== \'analyzing\' &&');
+    expect(app).toContain("const queued: ProjectUpdate = { ...withResult, status: 'queued' };");
     // The queue record carries the new revision at once, so a realtime echo or
     // refresh keeps the phone's copy (review pass 6).
     expect(app).toContain('void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);');

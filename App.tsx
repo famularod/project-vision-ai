@@ -9712,9 +9712,17 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // record carries this revision, a realtime echo or a refresh would replace
     // the phone's copy with the older cloud row and lose the result (review
     // pass 6).
+    // Known limit (review pass 7): a result that lands while a pass is staging
+    // this same update can still be overwritten by that pass's older copy; the
+    // queue keeps the last write. Fixing it needs a monotonic local revision in
+    // queue writes (see handoff), a sync-protocol change.
     const saved = savedUpdatesRef.current.find(update => update.id === updateId);
-    if (saved && result.status !== 'analyzing' && (saved.status === 'sent' || saved.status === 'queued')) {
-      const queued: ProjectUpdate = { ...applyToUpdate(saved), status: 'queued' };
+    const withResult = saved ? applyToUpdate(saved) : null;
+    if (
+      saved && withResult && withResult !== saved && result.status !== 'analyzing' &&
+      (saved.status === 'sent' || saved.status === 'queued')
+    ) {
+      const queued: ProjectUpdate = { ...withResult, status: 'queued' };
       upsertSavedUpdateUnlessDeleted(queued);
       void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);
     }
