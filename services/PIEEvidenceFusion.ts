@@ -709,9 +709,12 @@ export function extractGPSEvidence({
     mostCommon(scheduleEvidence.map(item => item.projectName)) ||
     null;
   const gpsAvailable = Boolean(latest);
+  // With a fix, only the area GPS supports counts toward confidence, as for
+  // the recommendation (GPS review pass 15).
+  const supportedArea = latest ? recommendedArea : areaCandidate;
   const confidenceScore = gpsConfidenceScore({
     gpsAvailable,
-    hasSelectedArea: Boolean(areaCandidate),
+    hasSelectedArea: Boolean(supportedArea),
     hasNearestArea: Boolean(nearest),
     withinMappedArea: nearest?.withinRadius ?? false,
     hasScheduleArea: scheduleEvidence.some(item => item.areaName !== 'Unassigned area'),
@@ -722,7 +725,7 @@ export function extractGPSEvidence({
       ? 'not-available'
       : confidenceScore < 70
         ? 'needs-verification'
-        : areaCandidate && nearest && nearest.area.name !== areaCandidate
+        : supportedArea && nearest && nearest.area.name !== supportedArea
           ? 'corrected'
           : 'accepted';
 
@@ -1159,7 +1162,9 @@ export function buildIntelligentSummary(
         ? 'No photo evidence is available.'
         : `${summary.photoCount} photo${summary.photoCount === 1 ? '' : 's'} available; ${summary.captionedPhotoCount} captioned and ${summary.photoActionCount} action-linked.`,
     gpsLocationConfidence: fusedEvidence.gpsEvidence.gpsAvailable
-      ? `GPS supports ${fusedEvidence.gpsEvidence.recommendedArea || 'the current area'} with ${fusedEvidence.gpsEvidence.confidenceScore}% confidence.`
+      ? fusedEvidence.gpsEvidence.recommendedArea
+        ? `GPS supports ${fusedEvidence.gpsEvidence.recommendedArea} with ${fusedEvidence.gpsEvidence.confidenceScore}% confidence.`
+        : 'GPS does not place you in a saved area.'
       : 'GPS is unavailable; project, area, schedule, or last activity context is being used.',
     userUpdateSummary:
       summary.userUpdateCount === 0

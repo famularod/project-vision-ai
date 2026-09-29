@@ -73,6 +73,7 @@ describe('GPS accuracy units', () => {
       projectName: '2321 Compliance Project',
       updates: [update],
       scheduleItems: [],
+      now: new Date('2026-09-29T15:05:00.000Z'),
     });
     expect(summary.gpsStatus).toBe('Captured, accuracy ±33 ft');
   });
