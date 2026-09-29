@@ -253,6 +253,10 @@ includes(sync, 'Schedule task “${item.taskName}” could not sync.', 'full syn
 includes(sync, 'Document “${document.name}” could not sync.', 'full sync errors must identify the document that failed');
 includes(sync, 'Project already synced: ${normalizedName}', 'already-synced projects must still advance full-sync progress');
 includes(sync, 'const cloudCopy = await createPhotoSignedUrl', 'a missing local photo must be checked in cloud storage before full sync reports failure');
+// ...including the legacy project paths an old rename left photos under (field test 28 Sep 2026).
+includes(sync, '? await findPhotoUnderLegacyProjectPath(update, photo, path, 60)', 'a photo on neither this phone nor its own cloud path must be looked for under legacy project paths before it is called missing');
+includes(sync, "if (!owner.ok || owner.stubbed || owner.data !== true) return null;", 'the legacy photo search must run only for the verified owner, so a signed-out not-found is never remembered');
+includes(sync, 'const candidates = known ? [known] : legacyProjectPhotoStoragePaths(path);', 'a photo not found at its own path must be looked for under legacy project paths before it is called missing');
 includes(sync, 'is missing from both this phone and cloud storage', 'photo attention copy must distinguish a truly missing photo from an already-uploaded cloud copy');
 assert(
   sync.indexOf('const cloudCopy = await createPhotoSignedUrl') <

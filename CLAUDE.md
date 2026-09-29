@@ -177,9 +177,15 @@ still read as one considered product, not a patchwork.
    go-ahead.
 3. **Implement on a new branch off `repair/batch-3-reports`.** Never commit
    directly to that branch. (Decided 2026-09-19: the former base branch
-   `v0.8-architecture-refactor` no longer exists on the remote. There is also
-   no `main` on this remote; `origin/HEAD` points at
-   `fix/build191-ios-source-modules`.)
+   `v0.8-architecture-refactor` no longer exists on the remote. Correction
+   2026-09-28: `main` DOES exist and is the GitHub default branch (`gh api
+   repos/famularod/project-vision-ai --jq .default_branch`). `main` carries
+   only production-operations-health.yml; mobile-ci.yml and mobile-e2e.yml
+   live on the working branches, and GitHub runs `schedule:` triggers only from
+   the default branch, so the scheduled e2e run never fires. Pull-request
+   validation does run. Device test builds come from the stacked PR line
+   #67 → #72 → #78 → #79, and PR #80's base `integration/overnight-2026-09-28`
+   combines that line with #73, #75, #76 and #77.)
 4. **Run `npm run qa:release`** before calling release work done. It resolves to
    `npm run ecos:assurance` → `scripts/jarvis-release-gate.js`: **19 layers, 155
    leaf commands, 113 scripts, exactly one Jest invocation.** Facts established

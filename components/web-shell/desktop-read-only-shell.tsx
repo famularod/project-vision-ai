@@ -84,6 +84,7 @@ import {
   type DAVEWebReportRecord,
   type DAVEWebReportSource,
 } from '../../services/DAVEWebOperations';
+import { photoAnalysisDisplayStatus } from '../../services/PhotoAnalysisDisplayStatus';
 import { colors, spacing } from '../../theme';
 import { daysUntilDate } from '../../utils/date';
 import { PRODUCT_BRAND, PRODUCT_RELEASE } from '../../product-brand';
@@ -3311,7 +3312,7 @@ function PhotoDetailsPanel({
         <View style={styles.taskDetailsSection}>
           <View style={styles.photoAnalysisHeading}>
             <Text style={styles.taskDetailsSectionTitle}>Recorded photo analysis</Text>
-            <StatusBadge label={photoAnalysisStatusLabel(intelligence.status)} tone={photoAnalysisStatusTone(intelligence.status)} />
+            <StatusBadge label={photoAnalysisDisplayStatus(intelligence).label} tone={photoAnalysisDisplayStatus(intelligence).tone} />
           </View>
           <Text style={styles.taskDetailsSectionText}>{intelligence.summary}</Text>
           {intelligence.visibleChange?.trim() ? (
@@ -6702,26 +6703,6 @@ function priorComparablePhotoFor(
       return !Number.isNaN(candidateTime) && candidateTime < selectedTime;
     })
     .sort(comparePhotoItemsNewestFirst)[0] ?? null;
-}
-
-function photoAnalysisStatusLabel(
-  status: NonNullable<UpdatePhoto['photoIntelligence']>['status'],
-): string {
-  if (status === 'analysis_complete') return 'Analysis complete';
-  if (status === 'completed_with_limitations') return 'Limited comparison';
-  if (status === 'comparison_unavailable') return 'Comparison unavailable';
-  if (status === 'analysis_failed_retry') return 'Retry needed';
-  if (status === 'no_suitable_prior_photo') return 'Baseline only';
-  return 'Analyzing';
-}
-
-function photoAnalysisStatusTone(
-  status: NonNullable<UpdatePhoto['photoIntelligence']>['status'],
-): 'good' | 'attention' | 'danger' | 'neutral' {
-  if (status === 'analysis_complete') return 'good';
-  if (status === 'analysis_failed_retry') return 'danger';
-  if (status === 'completed_with_limitations' || status === 'comparison_unavailable') return 'attention';
-  return 'neutral';
 }
 
 function compareCloudUpdatesNewestFirst(

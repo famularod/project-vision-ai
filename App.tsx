@@ -373,7 +373,9 @@ import {
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
 import {
-  REPORT_EMAIL_IMAGE_LIMIT, REPORT_TEXT_IMAGE_LIMIT, resolveReportImageAttachments,
+  isAttachmentReadError, REPORT_EMAIL_IMAGE_LIMIT, REPORT_IMAGES_NOT_ATTACHED, REPORT_MESSAGE_IMAGE_BYTES,
+  REPORT_TEXT_IMAGE_LIMIT,
+  resolveReportImageAttachments,
 } from './services/ReportImageAttachments';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
@@ -5334,6 +5336,7 @@ function AppShell() {
   const startupCompletionLogged = useRef(false);
   const photoCleanupRan = useRef(false);
   const queuedHydrationInFlight = useRef(false);
+  const queuedHydrationRerunRequested = useRef(false);
   const fieldUpdateSaveInFlightRef = useRef(false);
   const updateDeletionInFlightRef = useRef(false);
   const backupRestoreInFlightRef = useRef(false);
@@ -8182,89 +8185,103 @@ useEffect(() => {
 
   async function hydrateQueuedUpdates() {
     if (queuedHydrationInFlight.current) return;
+    queuedHydrationInFlight.current = true;
+    try {
+      // A late photo-analysis result that arrives during a pass asks for one
+      // more (requestQueuedUpdateSync). The loop runs it inside this same task:
+      // starting a new task from here would hit the background guard's limit
+      // of 2 consecutive runs and be dropped (review pass 3, 28 Sep 2026).
+      do {
+        queuedHydrationRerunRequested.current = false;
+        try {
+          await hydrateQueuedUpdatesPass();
+        } catch (error) {
+          // A failed pass still owes a requested rerun (review pass 4).
+          if (!queuedHydrationRerunRequested.current) throw error;
+        }
+      } while (queuedHydrationRerunRequested.current);
+    } finally {
+      queuedHydrationInFlight.current = false;
+    }
+  }
 
+  async function hydrateQueuedUpdatesPass() {
     const queuedUpdates = savedUpdatesRef.current.filter(updateNeedsAutomaticSyncRetry);
 
     if (queuedUpdates.length === 0) return;
 
-    queuedHydrationInFlight.current = true;
+    const tokenResult = await getCurrentSessionAccessToken();
+    const tokenLookup = tokenResult.data;
+    const sessionTokenPresent = tokenLookup?.status === 'token_present';
 
-    try {
-      const tokenResult = await getCurrentSessionAccessToken();
-      const tokenLookup = tokenResult.data;
-      const sessionTokenPresent = tokenLookup?.status === 'token_present';
+    const resolvedAt = new Date().toISOString();
 
-      const resolvedAt = new Date().toISOString();
+    if (!sessionTokenPresent) {
+      const failureCategory =
+        tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth';
+      // Field fix 2026-07-18 (cpu_resource / diskwrites_resource kills):
+      // stamping is idempotent. Updates already marked failed for this
+      // same auth condition are NOT re-stamped — re-stamping every 30s
+      // rewrote the full saved-updates store to disk and changed the
+      // authority input each pass, driving a continuous core recompute
+      // until iOS terminated the app for CPU/disk-write exhaustion.
+      const needsStamp = queuedUpdates.filter(update =>
+        lifecycleStatusForUpdate(update) !== 'failed' ||
+        update.syncDiagnostics?.lastSyncFailureCategory !== failureCategory,
+      );
+      if (needsStamp.length === 0) return;
 
-      if (!sessionTokenPresent) {
-        const failureCategory =
-          tokenLookup?.missingReason === 'signed_out' ? 'signed_out' : 'auth';
-        // Field fix 2026-07-18 (cpu_resource / diskwrites_resource kills):
-        // stamping is idempotent. Updates already marked failed for this
-        // same auth condition are NOT re-stamped — re-stamping every 30s
-        // rewrote the full saved-updates store to disk and changed the
-        // authority input each pass, driving a continuous core recompute
-        // until iOS terminated the app for CPU/disk-write exhaustion.
-        const needsStamp = queuedUpdates.filter(update =>
-          lifecycleStatusForUpdate(update) !== 'failed' ||
-          update.syncDiagnostics?.lastSyncFailureCategory !== failureCategory,
-        );
-        if (needsStamp.length === 0) return;
-
-        const syncDiagnostics = buildSkippedSyncDiagnostics(
-          failureCategory,
-          resolvedAt,
-          needsStamp.length,
-          false,
-        );
-        needsStamp.forEach(update => {
-          applyFieldUpdateSyncResultIfCurrent(update, {
-            ...update,
-            status: 'failed',
-            syncDiagnostics,
-            workflowTimestamps: {
-              ...(update.workflowTimestamps || {}),
-              sendResolvedAt:
-                update.workflowTimestamps?.sendResolvedAt || resolvedAt,
-            },
-          });
+      const syncDiagnostics = buildSkippedSyncDiagnostics(
+        failureCategory,
+        resolvedAt,
+        needsStamp.length,
+        false,
+      );
+      needsStamp.forEach(update => {
+        applyFieldUpdateSyncResultIfCurrent(update, {
+          ...update,
+          status: 'failed',
+          syncDiagnostics,
+          workflowTimestamps: {
+            ...(update.workflowTimestamps || {}),
+            sendResolvedAt:
+              update.workflowTimestamps?.sendResolvedAt || resolvedAt,
+          },
         });
-        return;
-      }
-
-      await runAutomaticSyncQueue(queuedUpdates, async update => {
-          const attemptStartedAt = new Date().toISOString();
-          const {
-            syncResult,
-            workAttempt,
-            update: syncReadyUpdate,
-          } = await syncFieldUpdateWithMissingPhotoRepair(update);
-          const syncDiagnostics = buildSyncDiagnosticsFromUpload(
-            syncResult,
-            attemptStartedAt,
-            sessionTokenPresent,
-            workAttempt,
-            update.sendAttempts || null,
-          );
-          const nextUpdate: ProjectUpdate = {
-            ...syncReadyUpdate,
-            status: statusForSyncDiagnostics(syncDiagnostics),
-            syncDiagnostics,
-            workflowTimestamps: {
-              ...(syncReadyUpdate.workflowTimestamps || {}),
-              sendResolvedAt:
-                syncReadyUpdate.workflowTimestamps?.sendResolvedAt || resolvedAt,
-            },
-          };
-          const current = savedUpdatesRef.current.find(item => item.id === update.id);
-          if (current && !shouldPersistAutomaticSyncOutcome(current, nextUpdate)) {
-            return;
-          }
-          applyFieldUpdateSyncResultIfCurrent(syncReadyUpdate, nextUpdate);
       });
-    } finally {
-      queuedHydrationInFlight.current = false;
+      return;
     }
+
+    await runAutomaticSyncQueue(queuedUpdates, async update => {
+        const attemptStartedAt = new Date().toISOString();
+        const {
+          syncResult,
+          workAttempt,
+          update: syncReadyUpdate,
+        } = await syncFieldUpdateWithMissingPhotoRepair(update);
+        const syncDiagnostics = buildSyncDiagnosticsFromUpload(
+          syncResult,
+          attemptStartedAt,
+          sessionTokenPresent,
+          workAttempt,
+          update.sendAttempts || null,
+        );
+        const nextUpdate: ProjectUpdate = {
+          ...syncReadyUpdate,
+          status: statusForSyncDiagnostics(syncDiagnostics),
+          syncDiagnostics,
+          workflowTimestamps: {
+            ...(syncReadyUpdate.workflowTimestamps || {}),
+            sendResolvedAt:
+              syncReadyUpdate.workflowTimestamps?.sendResolvedAt || resolvedAt,
+          },
+        };
+        const current = savedUpdatesRef.current.find(item => item.id === update.id);
+        if (current && !shouldPersistAutomaticSyncOutcome(current, nextUpdate)) {
+          return;
+        }
+        applyFieldUpdateSyncResultIfCurrent(syncReadyUpdate, nextUpdate);
+    });
   }
 
   async function removeMissingSyncPhotos(missingPhotos: MissingSyncPhoto[]) {
@@ -9685,6 +9702,38 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     setDraft(prev => applyToUpdate(prev));
     setSavedUpdates(prev => prev.map(applyToUpdate));
+    // A result that arrives after the update synced, or while it syncs, would
+    // otherwise stay on this phone and the desktop would show "Analyzing" for
+    // good (code review 27 Sep 2026). Queue the update with the result and ask
+    // for a sync pass; one already running is followed by one more, so a
+    // second result a few seconds later is not left behind (review 28 Sep).
+    // Every pass uploads the update's single queue record, so the newest wins.
+    // The queue record is written at once, as a save does: until a queued
+    // record carries this revision, a realtime echo or a refresh would replace
+    // the phone's copy with the older cloud row and lose the result (review
+    // pass 6).
+    // Known limit (review pass 7): a result that lands while a pass is staging
+    // this same update can still be overwritten by that pass's older copy; the
+    // queue keeps the last write. Fixing it needs a monotonic local revision in
+    // queue writes (see handoff), a sync-protocol change.
+    const saved = savedUpdatesRef.current.find(update => update.id === updateId);
+    const withResult = saved ? applyToUpdate(saved) : null;
+    if (
+      saved && withResult && withResult !== saved && result.status !== 'analyzing' &&
+      (saved.status === 'sent' || saved.status === 'queued')
+    ) {
+      const queued: ProjectUpdate = { ...withResult, status: 'queued' };
+      upsertSavedUpdateUnlessDeleted(queued);
+      void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);
+    }
+  }
+
+  function requestQueuedUpdateSync() {
+    if (queuedHydrationInFlight.current) {
+      queuedHydrationRerunRequested.current = true;
+      return;
+    }
+    startAutomaticSyncBackgroundTask('late_photo_analysis', hydrateQueuedUpdates);
   }
 
   function requestPhotoIntelligenceSignIn(update: ProjectUpdate, photo: UpdatePhoto) {
@@ -10099,24 +10148,37 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     // The text cites "See Image N"; the images go with it (review 27 Sep 2026).
     const images = await reportImageFiles(report, REPORT_EMAIL_IMAGE_LIMIT);
-    const result = await MailComposer.composeAsync({
+    const compose = (attachments: string[], note: string) => MailComposer.composeAsync({
       subject: report.subject || report.title,
-      body: report.body + images.note,
-      attachments: images.photos.map(photo => photo.uri),
+      body: report.body + note,
+      attachments,
+    });
+    // An unreadable attachment makes the composer throw before it opens; send
+    // the text alone then. A real send failure is not retried.
+    const attachments = images.photos.map(photo => photo.uri);
+    const result = await compose(attachments, images.note).catch(error => {
+      if (attachments.length === 0 || !isAttachmentReadError(error)) throw error;
+      return compose([], `\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
     });
     return mailComposerOutcome(result.status);
   }
 
   async function reportImageFiles(report: PIEReportDraft, limit: number) {
-    const hydratedByUpdate = new Map<string, Promise<ProjectUpdate>>();
-    return resolveReportImageAttachments({
+    return resolveReportImageAttachments<UpdatePhoto>({
       report,
       limit,
+      maxTotalBytes: REPORT_MESSAGE_IMAGE_BYTES,
+      sizeOf: async photo => {
+        const info = await FileSystem.getInfoAsync(photo.uri);
+        return info.exists && 'size' in info && typeof info.size === 'number' ? info.size : null;
+      },
       findPhoto: async photoId => {
         const update = activeSavedUpdates.find(candidate => candidate.photos.some(photo => photo.id === photoId));
         if (!update) return null;
-        if (!hydratedByUpdate.has(update.id)) hydratedByUpdate.set(update.id, hydrateRecoveredProjectUpdatePhotos(update));
-        return (await hydratedByUpdate.get(update.id)!).photos.find(photo => photo.id === photoId) ?? null;
+        // Only the cited photo is fetched, not every cloud-only photo of its
+        // update (review pass 4).
+        const cited = update.photos.filter(photo => photo.id === photoId);
+        return (await hydrateRecoveredProjectUpdatePhotos({ ...update, photos: cited })).photos[0] ?? null;
       },
     });
   }
@@ -10134,9 +10196,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
 
     const images = await reportImageFiles(report, REPORT_TEXT_IMAGE_LIMIT);
-    const { result } = await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}${images.note}`, {
-      attachments: await buildSmsAttachments(images.photos),
-    });
+    const reportText = `${report.title}\n\n${report.body}`;
+    const textOnly = () => SMS.sendSMSAsync([], `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
+    const attachments = await buildSmsAttachments(images.photos).catch(() => null);
+    const { result } = attachments === null
+      ? await textOnly()
+      : await SMS.sendSMSAsync([], `${reportText}${images.note}`, { attachments }).catch(error => {
+        if (attachments.length === 0 || !isAttachmentReadError(error)) throw error;
+        return textOnly();
+      });
     return smsComposerOutcome(result);
   }
 
@@ -10687,6 +10755,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const preflight = normalizeBackupData(opened.state);
 
       if (!preflight.ok) {
+        onProgress?.('Restore did not finish.');
         Alert.alert(
           preflight.reason === 'incompatible_version'
             ? 'Incompatible backup'
@@ -10738,6 +10807,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                   const normalized = normalizeBackupData(materialized.state);
                   if (!normalized.ok) {
                     await materialized.cleanup();
+                    onProgress?.('Restore did not finish.');
                     Alert.alert('Restore failed', normalized.message);
                     return;
                   }
@@ -10761,6 +10831,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         ],
       );
     } catch (error) {
+      onProgress?.('Restore did not finish.');
       Alert.alert(
         'Restore failed',
         error instanceof Error

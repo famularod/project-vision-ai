@@ -26,6 +26,7 @@ import {
   type SupabaseConfigurationStatus,
 } from './SupabaseService';
 import * as FileSystem from 'expo-file-system/legacy';
+import { LEGACY_WORK_CONTAINER_PROJECT_NAMES } from './ReservedProjectNames';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getStoredJson, setStoredJson } from './StorageService';
 import {
@@ -320,6 +321,8 @@ export type LocalPhotoUploadResult = {
   result: 'uploaded' | 'missing' | 'failed' | 'skipped';
   message: string | null;
   diagnostic: PhotoStorageUploadDiagnostic;
+  /** Set when the photo was found in the cloud under a legacy project path. */
+  foundAtPath?: string;
 };
 
 export type FieldUpdateSyncWorkAttempt = {
@@ -2272,8 +2275,18 @@ export async function stageProjectUpdateForSync(
   const cloudRecoverableUpdate = projectUpdateWithCloudPhotoPaths(update);
   await queueProjectUpdateRecord(cloudRecoverableUpdate, false);
   const photoAttempt = await uploadUpdatePhotosForSync(cloudRecoverableUpdate);
+  // A photo found under a legacy project path keeps that path, so the cloud
+  // record (and the desktop) point at the file that exists.
+  const recordToPersist = Object.keys(photoAttempt.relocatedPhotoPaths).length === 0
+    ? cloudRecoverableUpdate
+    : {
+      ...cloudRecoverableUpdate,
+      photos: cloudRecoverableUpdate.photos.map(photo => photoAttempt.relocatedPhotoPaths[photo.id]
+        ? { ...photo, cloudStoragePath: photoAttempt.relocatedPhotoPaths[photo.id], cloudRecoveryStatus: null }
+        : photo),
+    };
   await persistProjectUpdateRecord(
-    cloudRecoverableUpdate,
+    recordToPersist,
     false,
     photoAttempt.failedPhotoIds,
   );
@@ -4480,6 +4493,40 @@ export async function uploadLocalPhotoWithDiagnostics(
     : { exists: false, readable: false, byteSizeCategory: 'unknown' as const };
 
   if (!fileState.exists) {
+    // Not on this phone and not at its own path: an old rename may have left
+    // it under a legacy project path. Recorded so the cloud record points at
+    // the file (field test 28 Sep 2026).
+    const legacyCopy = cloudPhotoLookupConfirmedMissing(cloudCopy, true)
+      ? await findPhotoUnderLegacyProjectPath(update, photo, path, 60)
+      : null;
+    if (legacyCopy === 'owner_unverified') {
+      return {
+        result: 'failed',
+        message: 'Cloud photo availability could not be verified. Sync will retry without removing the photo record.',
+        diagnostic: {
+          ...diagnosticBase,
+          localFileExists: false,
+          localFileReadable: false,
+          uploadResult: 'failed',
+          failureCategory: 'unknown_storage_error',
+          objectPathCategory: photoObjectPathCategory(path),
+        },
+      };
+    }
+    if (legacyCopy) {
+      return {
+        result: 'skipped',
+        message: null,
+        foundAtPath: legacyCopy.path,
+        diagnostic: {
+          ...diagnosticBase,
+          bucketExists: 'yes',
+          localFileExists: false,
+          localFileReadable: false,
+          objectPathCategory: photoObjectPathCategory(legacyCopy.path),
+        },
+      };
+    }
     if (photo.cloudRecoveryStatus === 'unavailable') {
       return {
         result: 'skipped',
@@ -4709,6 +4756,93 @@ export function projectUpdateWithCloudPhotoPaths<TUpdate extends ProjectUpdate>(
   };
 }
 
+/**
+ * The same photo's path under each project name an earlier app version used.
+ * Cloud paths start with the update's project name, and an old migration
+ * renamed updates (for example "2321 North Side Lot" to "2321 Compliance
+ * Project") without keeping the path its photos were uploaded to. Sync then
+ * pins the new path, and the lookup there reports the photo "missing" (field
+ * test 28 Sep 2026: two July photos). Only the first segment changes; the
+ * update and photo ids stay, so another photo can never be matched.
+ */
+export function legacyProjectPhotoStoragePaths(path: string): string[] {
+  const segments = path.split('/');
+  if (segments.length < 3) return [];
+  const tail = segments.slice(1).join('/');
+  // Only the migrated work-container names: updates were renamed away from
+  // these, while legacy shell names were never renamed.
+  return [...new Set(
+    LEGACY_WORK_CONTAINER_PROJECT_NAMES
+      .map(name => `${sanitizePathSegment(name)}/${tail}`)
+      .filter(candidate => candidate !== path),
+  )];
+}
+
+type PhotoSignedUrlLookup = Awaited<ReturnType<typeof createPhotoSignedUrl>>;
+const legacyPhotoPathsSearched = new Set<string>();
+const legacyPhotoPathsFound = new Map<string, string>();
+
+/**
+ * The photo under a legacy project path, for a photo that is on neither this
+ * phone nor its own cloud path. It runs only for the verified owner: storage
+ * answers "not found" for objects a signed-out caller cannot see, and that
+ * must not be remembered as a real miss. A photo searched in full is not
+ * searched again this session. An inconclusive lookup stops the search and is
+ * not remembered.
+ */
+async function findPhotoUnderLegacyProjectPath(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+  path: string,
+  ttlSeconds: number,
+): Promise<{ path: string; lookup: PhotoSignedUrlLookup } | 'owner_unverified' | null> {
+  const searchKey = `${update.id}|${photo.id}`;
+  if (legacyPhotoPathsSearched.has(searchKey)) return null;
+  const known = legacyPhotoPathsFound.get(searchKey);
+  const candidates = known ? [known] : legacyProjectPhotoStoragePaths(path);
+  if (!known) {
+    const owner = await verifyDAVEAppOwner();
+    // A failed check is not an answer: the caller retries later instead of
+    // syncing the record without the path (review pass 11).
+    if (!owner.ok && !owner.stubbed) return 'owner_unverified';
+    if (!owner.ok || owner.stubbed || owner.data !== true) return null;
+  }
+  for (const candidate of candidates) {
+    const found = await createPhotoSignedUrl(candidate, ttlSeconds, PROJECT_PHOTOS_BUCKET);
+    if (found.ok && found.data && !found.stubbed) {
+      legacyPhotoPathsFound.set(searchKey, candidate);
+      return { path: candidate, lookup: found };
+    }
+    // A path found earlier this session is kept through a bad connection, so
+    // an inconclusive pass cannot write the empty pinned path back.
+    if (!cloudPhotoLookupConfirmedMissing(found, true)) return known ? { path: known, lookup: found } : null;
+  }
+  if (known) {
+    legacyPhotoPathsFound.delete(searchKey);
+    return null;
+  }
+  legacyPhotoPathsSearched.add(searchKey);
+  return null;
+}
+
+/**
+ * A signed URL for a photo that is not on this phone: its own path first,
+ * then the legacy project paths when that is confirmed not found.
+ */
+export async function locateCloudPhotoCopy(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+  ttlSeconds: number,
+): Promise<{ path: string; lookup: PhotoSignedUrlLookup }> {
+  const path = projectUpdatePhotoStoragePath(update, photo);
+  const lookup = await createPhotoSignedUrl(path, ttlSeconds, PROJECT_PHOTOS_BUCKET);
+  if ((lookup.ok && lookup.data && !lookup.stubbed) || !cloudPhotoLookupConfirmedMissing(lookup, true)) {
+    return { path, lookup };
+  }
+  const legacy = await findPhotoUnderLegacyProjectPath(update, photo, path, ttlSeconds);
+  return legacy && legacy !== 'owner_unverified' ? legacy : { path, lookup };
+}
+
 export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends ProjectUpdate>(
   update: TUpdate,
 ): Promise<TUpdate> {
@@ -4716,13 +4850,9 @@ export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends Projec
     if (await hasUsablePhotoUri(photo)) return photo;
     const relocated = await relocateLocalPhotoUri(photo);
     if (relocated) return { ...photo, uri: relocated };
-    const cloudStoragePath =
-      photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
-    const signed = await createPhotoSignedUrl(
-      cloudStoragePath,
-      600,
-      PROJECT_PHOTOS_BUCKET,
-    );
+    const located = await locateCloudPhotoCopy(update, photo, 600);
+    const cloudStoragePath = located.path;
+    const signed = located.lookup;
     if (!signed.ok || !signed.data || signed.stubbed) {
       return {
         ...photo,
@@ -4865,6 +4995,7 @@ async function uploadUpdatePhotosForSync(
   uploadedPhotoCount: number;
   missingPhotos: MissingSyncPhoto[];
   failedPhotoIds: string[];
+  relocatedPhotoPaths: Record<string, string>;
 }> {
   if (update.photos.length === 0) {
     return {
@@ -4886,6 +5017,7 @@ async function uploadUpdatePhotosForSync(
       uploadedPhotoCount: 0,
       missingPhotos: [],
       failedPhotoIds: [],
+      relocatedPhotoPaths: {},
     };
   }
 
@@ -4928,6 +5060,8 @@ async function uploadUpdatePhotosForSync(
         : `Photo “${photo.fileName || photo.id}” could not be synced because ${sanitizeUserFacingSyncMessage(result.message || 'Photo sync could not finish.')}`,
     ),
     uploadedPhotoCount: results.filter(result => result.result === 'uploaded').length,
+    relocatedPhotoPaths: Object.fromEntries(results.flatMap((result, index) =>
+      result.foundAtPath ? [[update.photos[index].id, result.foundAtPath]] : [])),
     missingPhotos: results.flatMap((result, index) =>
       result.result === 'missing'
         ? [{ updateId: update.id, photoId: update.photos[index].id }]
