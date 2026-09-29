@@ -235,6 +235,16 @@ import {
   DEFAULT_PROJECT_AREAS,
   normalizeProjectArea,
 } from './services/ProjectAreaRecord';
+import {
+  areaPointFromFix,
+  areaPointImpreciseMessage,
+  areaPointPrecisionLabel,
+  areaPointSavedMessage,
+  clearWinnerMarginFeet,
+  formatGpsAccuracy,
+  isAreaPointImprecise,
+  isConfidentlyInsideArea,
+} from './services/GpsPrecision';
 import { optionalString, uid } from './services/RecordValues';
 import {
   normalizeProjectItemActivity,
@@ -2374,8 +2384,11 @@ function findProjectAreaSuggestions(
       return {
         area,
         distanceFeet,
-        withinRadius:
-          distanceFeet + Math.max(currentLocation.accuracy || 0, 0) <= area.radiusFeet,
+        withinRadius: isConfidentlyInsideArea({
+          distanceFeet,
+          accuracyMeters: currentLocation.accuracy,
+          radiusFeet: area.radiusFeet,
+        }),
       };
     })
     .sort((a, b) => a.distanceFeet - b.distanceFeet);
@@ -2416,9 +2429,9 @@ function likelyProjectCandidatesFromGps(
   const hasClearWinner =
     Boolean(first) &&
     (!second ||
-      second.distanceFeet - first.distanceFeet >= Math.max(
+      second.distanceFeet - first.distanceFeet >= clearWinnerMarginFeet(
         GPS_CLEAR_WINNER_DISTANCE_FEET,
-        (currentLocation?.accuracy || 0) * 2,
+        currentLocation?.accuracy,
       ));
 
   return {
@@ -2456,15 +2469,17 @@ function locationFieldsFromSnapshot(
   };
 }
 
-async function getCurrentLocationSnapshot(): Promise<LocationSnapshot | null> {
+// High (iOS nearest ten meters), not Balanced (hundred meters): areas are
+// 100-250 ft circles (GPS review, 29 Sep 2026). Saving an area point uses Highest.
+async function getCurrentLocationSnapshot(
+  accuracy: Location.Accuracy = Location.Accuracy.High,
+): Promise<LocationSnapshot | null> {
   const permission =
     await Location.requestForegroundPermissionsAsync();
 
   if (!permission.granted) return null;
 
-  const location = await Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.Balanced,
-  });
+  const location = await Location.getCurrentPositionAsync({ accuracy });
 
   return {
     latitude: location.coords.latitude,
@@ -6846,34 +6861,6 @@ useEffect(() => {
     }
   }
 
-  async function refreshDraftLocation() {
-    if (!GPS_CAPTURE_ENABLED) {
-      Alert.alert(
-        'GPS rebuild needed',
-        'GPS is temporarily disabled so the app will not crash. I added the missing native permissions; rebuild the iPhone app with npx expo run:ios, then GPS can be re-enabled.',
-      );
-
-      return;
-    }
-
-    Alert.alert(
-      'Use GPS location?',
-      'If this installed app was not rebuilt after adding Location, iOS may close it. Rebuild once with npx expo run:ios before using GPS.',
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Use GPS',
-          onPress: () => {
-            draftLocationCaptureRef.current = captureDraftLocation();
-          },
-        },
-      ],
-    );
-  }
-
   async function captureDraftLocation() {
     const generation = draftLocationCaptureGenerationRef.current + 1;
     draftLocationCaptureGenerationRef.current = generation;
@@ -9198,37 +9185,26 @@ function addProject(projectName: string) {
     );
   }
 
-  async function useCurrentLocationForArea(areaId: string) {
-    if (!GPS_CAPTURE_ENABLED) {
-      Alert.alert(
-        'GPS rebuild needed',
-        'GPS is temporarily disabled so the app will not crash. I added the missing native permissions; rebuild the iPhone app with npx expo run:ios, then GPS can be re-enabled.',
-      );
-
+  function useCurrentLocationForArea(areaId: string) {
+    const area = projectAreas.find(item => item.id === areaId);
+    if (!area || !hasSavedAreaLocation(area)) {
+      void saveCurrentLocationForArea(areaId);
       return;
     }
 
     Alert.alert(
-      'Use current GPS?',
-      'If this installed app was not rebuilt after adding Location, iOS may close it. Rebuild once with npx expo run:ios before using GPS.',
+      'Replace saved GPS?',
+      `Stand in ${area.name}. Your current location replaces its saved GPS point.`,
       [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Use GPS',
-          onPress: () => {
-            void saveCurrentLocationForArea(areaId);
-          },
-        },
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Replace GPS', onPress: () => void saveCurrentLocationForArea(areaId) },
       ],
     );
   }
 
   async function saveCurrentLocationForArea(areaId: string) {
     try {
-      const snapshot = await getCurrentLocationSnapshot();
+      const snapshot = await getCurrentLocationSnapshot(Location.Accuracy.Highest);
 
       if (!snapshot) {
         Alert.alert(
@@ -9239,16 +9215,19 @@ function addProject(projectName: string) {
         return;
       }
 
-      updateProjectArea(areaId, {
-        latitude: snapshot.latitude,
-        longitude: snapshot.longitude,
-        locationCapturedAt: snapshot.capturedAt,
-      });
-
-      Alert.alert(
-        'Area location saved',
-        'This project area now uses your current GPS location.',
-      );
+      const save = () => {
+        updateProjectArea(areaId, areaPointFromFix(snapshot));
+        Alert.alert('Area location saved', areaPointSavedMessage(snapshot.accuracy));
+      };
+      if (!isAreaPointImprecise(snapshot.accuracy)) {
+        save();
+        return;
+      }
+      Alert.alert('GPS is not precise here', areaPointImpreciseMessage(snapshot.accuracy), [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save Anyway', onPress: save },
+        { text: 'Try Again', onPress: () => void saveCurrentLocationForArea(areaId) },
+      ]);
     } catch {
       Alert.alert(
         'GPS unavailable',
@@ -17934,9 +17913,7 @@ function DiagnosticsScreen({
               <View style={styles.rowMain}>
                 <Text style={styles.projectName}>{area.name}</Text>
                 <Text style={styles.rowSub}>
-                  {hasSavedAreaLocation(area)
-                    ? `GPS saved | Radius ${formatFeet(area.radiusFeet)}`
-                    : `GPS missing | Radius ${formatFeet(area.radiusFeet)}`}
+                  {`${areaPointPrecisionLabel(area)} | Radius ${formatFeet(area.radiusFeet)}`}
                 </Text>
               </View>
             </View>
@@ -18225,6 +18202,7 @@ function AreaDetailModal({
                 </Text>
                 <Text style={styles.rowSub}>
                   Saved {formatSavedTime(area.locationCapturedAt || null)}
+                  {` · ${formatGpsAccuracy(area.locationAccuracyMeters) ?? 'precision not recorded'}`}
                 </Text>
               </>
             ) : (

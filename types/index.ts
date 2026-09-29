@@ -197,6 +197,8 @@ export type ProjectArea = {
   longitude: number;
   radiusFeet: number;
   locationCapturedAt?: string | null;
+  /** Accuracy of the saved point in meters, as the phone reported it. Older points have none. */
+  locationAccuracyMeters?: number | null;
   /** Last user-authored change to area metadata or GPS. */
   updatedAt?: string | null;
 };

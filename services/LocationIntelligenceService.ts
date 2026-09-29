@@ -1,3 +1,4 @@
+import { formatGpsAccuracy } from './GpsPrecision';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -388,9 +389,9 @@ function gpsStatus({
   currentArea: string | null;
 }) {
   if (gpsCaptured) {
-    return accuracy
-      ? `Captured, accuracy ${Math.round(accuracy).toLocaleString('en-US')} ft`
-      : 'Captured';
+    // accuracy is the fix's, in meters (GPS review, 29 Sep 2026).
+    const precision = formatGpsAccuracy(accuracy);
+    return precision ? `Captured, accuracy ${precision}` : 'Captured';
   }
 
   if (areaHasGps) return 'Area GPS saved';

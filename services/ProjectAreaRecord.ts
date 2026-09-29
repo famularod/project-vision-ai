@@ -103,9 +103,10 @@ export const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
 ];
 
 export function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
+  const { locationAccuracyMeters, ...carried } = value;
   return {
     // Carry through fields this build does not manage; see normalizeUpdate.
-    ...value,
+    ...carried,
     id: typeof value.id === 'string' ? value.id : uid(),
     name:
       typeof value.name === 'string' && value.name.trim()
@@ -134,5 +135,12 @@ export function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
         : 250,
     locationCapturedAt: optionalString(value.locationCapturedAt),
     updatedAt: optionalString(value.updatedAt),
+    // Only points saved with a known precision carry this key, so older
+    // areas keep their stored shape (GPS review, 29 Sep 2026).
+    ...(typeof locationAccuracyMeters === 'number' &&
+    Number.isFinite(locationAccuracyMeters) &&
+    locationAccuracyMeters >= 0
+      ? { locationAccuracyMeters }
+      : {}),
   };
 }
