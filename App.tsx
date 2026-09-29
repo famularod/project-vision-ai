@@ -372,6 +372,9 @@ import {
   type UnavailableBackupDocument, type UnavailableBackupPhoto,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
+import {
+  REPORT_EMAIL_IMAGE_LIMIT, REPORT_TEXT_IMAGE_LIMIT, resolveReportImageAttachments,
+} from './services/ReportImageAttachments';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   assertBackupSerializedFits,
@@ -10094,11 +10097,28 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return 'unknown';
     }
 
+    // The text cites "See Image N"; the images go with it (review 27 Sep 2026).
+    const images = await reportImageFiles(report, REPORT_EMAIL_IMAGE_LIMIT);
     const result = await MailComposer.composeAsync({
       subject: report.subject || report.title,
-      body: report.body,
+      body: report.body + images.note,
+      attachments: images.photos.map(photo => photo.uri),
     });
     return mailComposerOutcome(result.status);
+  }
+
+  async function reportImageFiles(report: PIEReportDraft, limit: number) {
+    const hydratedByUpdate = new Map<string, Promise<ProjectUpdate>>();
+    return resolveReportImageAttachments({
+      report,
+      limit,
+      findPhoto: async photoId => {
+        const update = activeSavedUpdates.find(candidate => candidate.photos.some(photo => photo.id === photoId));
+        if (!update) return null;
+        if (!hydratedByUpdate.has(update.id)) hydratedByUpdate.set(update.id, hydrateRecoveredProjectUpdatePhotos(update));
+        return (await hydratedByUpdate.get(update.id)!).photos.find(photo => photo.id === photoId) ?? null;
+      },
+    });
   }
 
   async function textReport(report: PIEReportDraft): Promise<ReportCommunicationOutcome> {
@@ -10113,7 +10133,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return 'unknown';
     }
 
-    const { result } = await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}`);
+    const images = await reportImageFiles(report, REPORT_TEXT_IMAGE_LIMIT);
+    const { result } = await SMS.sendSMSAsync([], `${report.title}\n\n${report.body}${images.note}`, {
+      attachments: await buildSmsAttachments(images.photos),
+    });
     return smsComposerOutcome(result);
   }
 
