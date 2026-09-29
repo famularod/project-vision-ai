@@ -143,3 +143,17 @@ describe('attachment size budget', () => {
     expect(attached.note).toBe('\n\nImages 3 and 4 are not attached, to keep this message a sendable size.');
   });
 });
+
+// Review pass 9, 28 Sep 2026: a photo whose file:// path points at nothing
+// made the composer refuse every image; it is now named as not on the device.
+it('names a photo whose file is gone instead of attaching it, and keeps the others', async () => {
+  const attached = await resolveReportImageAttachments({
+    report: report([[['p1', 1], ['p2', 2], ['p3', 3]]]),
+    limit: 20,
+    maxTotalBytes: 1_000,
+    findPhoto: async id => ({ id, uri: `file:///${id}.jpg` }),
+    sizeOf: async photo => photo.id === 'p2' ? null : photo.id === 'p3' ? Promise.reject(new Error('io')) : 10,
+  });
+  expect(attached.photos.map(photo => photo.id)).toEqual(['p1']);
+  expect(attached.note).toBe('\n\nImages 2 and 3 could not be attached: their photos are not on this device.');
+});

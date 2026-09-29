@@ -58,7 +58,11 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
     report: Pick<PIEReportDraft, 'locationGroups'>;
     limit: number;
     findPhoto: (photoId: string) => Promise<TPhoto | null>;
-    /** File size in bytes, or null when unknown (counted as 0). */
+    /**
+     * File size in bytes, or null when there is no file at the photo's path.
+     * Such a photo is named as not on this device instead of attached: one
+     * dead path makes the iOS composer refuse every image (review pass 9).
+     */
     sizeOf?: (photo: TPhoto) => Promise<number | null>;
     maxTotalBytes?: number;
   }>,
@@ -81,7 +85,11 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
       missing.push(image.imageNumber);
       continue;
     }
-    const size = input.sizeOf ? (await input.sizeOf(photo).catch(() => null)) ?? 0 : 0;
+    const size = input.sizeOf ? await input.sizeOf(photo).catch(() => null) : 0;
+    if (size === null) {
+      missing.push(image.imageNumber);
+      continue;
+    }
     if (input.maxTotalBytes !== undefined && totalBytes + size > input.maxTotalBytes) {
       overLimit.push(image.imageNumber);
       budgetReached = true;
