@@ -199,6 +199,8 @@ export type ProjectArea = {
   locationCapturedAt?: string | null;
   /** Accuracy of the saved point in meters, as the phone reported it. Older points have none. */
   locationAccuracyMeters?: number | null;
+  /** locationCapturedAt of the point that accuracy belongs to; any other point has no known precision. */
+  locationAccuracyCapturedAt?: string | null;
   /** Last user-authored change to area metadata or GPS. */
   updatedAt?: string | null;
 };

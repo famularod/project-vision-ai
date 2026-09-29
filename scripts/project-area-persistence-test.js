@@ -15,7 +15,7 @@ function sliceBetween(start, end) {
 
 const normalization = sliceBetween(
   'function normalizeProjectAreas',
-  'function resolveReferenceDocumentUri',
+  'function isStartupDeviceDraftEnvelope',
 );
 assert(normalization.includes('if (!Array.isArray(value)) return DEFAULT_PROJECT_AREAS'),
   'Defaults should remain the first-run and corrupt-storage fallback.');
@@ -24,7 +24,7 @@ assert(normalization.includes('return value.map(item => normalizeProjectArea'),
 assert(!normalization.includes('...DEFAULT_PROJECT_AREAS') && !normalization.includes('mergeProjectAreas'),
   'Startup must not recreate deleted default areas.');
 
-const deletion = sliceBetween('function deleteProjectArea', 'async function useCurrentLocationForArea');
+const deletion = sliceBetween('function deleteProjectArea', 'function useCurrentLocationForArea');
 assert(deletion.includes('prev.filter(item => item.id !== areaId)'),
   'Area deletion must remove the selected record.');
 assert(deletion.includes("recordDAVESyncTombstone('project_area', areaId)")

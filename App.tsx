@@ -244,7 +244,10 @@ import {
   formatGpsAccuracy,
   isAreaPointImprecise,
   isConfidentlyInsideArea,
+  PRECISE_LOCATION_OFF_MESSAGE,
+  PRECISE_LOCATION_OFF_TITLE,
 } from './services/GpsPrecision';
+import { createRecentLocationFix } from './services/RecentLocationFix';
 import { optionalString, uid } from './services/RecordValues';
 import {
   normalizeProjectItemActivity,
@@ -842,6 +845,8 @@ type LocationSnapshot = {
   longitude: number;
   accuracy: number | null;
   capturedAt: string;
+  /** iOS Precise Location is off for the app: fixes are only good to 1-3 km. */
+  preciseLocationOff?: boolean;
 };
 type OverviewDetectionStatus =
   | 'checking'
@@ -2486,6 +2491,7 @@ async function getCurrentLocationSnapshot(
     longitude: location.coords.longitude,
     accuracy: location.coords.accuracy,
     capturedAt: new Date().toISOString(),
+    preciseLocationOff: permission.ios?.accuracy === 'reduced',
   };
 }
 
@@ -5174,6 +5180,10 @@ function AppShell() {
   const [scheduleItems, setScheduleItems] =
     useState<ScheduleItem[]>([]);
   const projectAreasCurrentRef = useRef(projectAreas);
+  const areaGpsSaveInFlightRef = useRef(new Set<string>());
+  // One fix serves home-screen detection for a minute, so data changes do
+  // not restart a multi-second fix (review, 29 Sep 2026).
+  const overviewLocationFixRef = useRef(createRecentLocationFix(() => getCurrentLocationSnapshot(), 60_000));
   const referenceDocumentsCurrentRef = useRef(referenceDocuments);
   const currentReferenceActivationIdsRef = useRef(new Set<string>());
   const projectDocumentsCurrentRef = useRef(projectDocuments);
@@ -6670,10 +6680,11 @@ useEffect(() => {
         return;
       }
 
-      setProjectDetectionStatus('checking');
+      const recentFix = overviewLocationFixRef.current.fresh();
+      if (!recentFix) setProjectDetectionStatus('checking');
 
       try {
-        const snapshot = await getCurrentLocationSnapshot();
+        const snapshot = recentFix ? recentFix.fix : await overviewLocationFixRef.current.get();
         const suggestion = findClosestProjectArea(snapshot, projectAreas);
 
         if (!mounted) return;
@@ -6894,7 +6905,9 @@ useEffect(() => {
       setLocationStatus(
         reliableSuggestion
           ? `Suggested area: ${reliableSuggestion.area.name}`
-          : 'GPS saved. Choose an area to confirm the work location.',
+          : snapshot.preciseLocationOff
+            ? `${PRECISE_LOCATION_OFF_TITLE}. Choose Project Area manually.`
+            : 'GPS saved. Choose an area to confirm the work location.',
       );
 
       setDraft(prev => {
@@ -6916,6 +6929,16 @@ useEffect(() => {
         return {
           ...prev,
           ...locationFields,
+          // Photos added before a slow fix landed took the draft's empty GPS
+          // (review, 29 Sep 2026: High fixes can take several seconds).
+          photos: prev.photos.map(photo => typeof photo.gpsLatitude === 'number' ? photo : {
+            ...photo,
+            gpsLatitude: locationFields.gpsLatitude,
+            gpsLongitude: locationFields.gpsLongitude,
+            gpsAccuracy: locationFields.gpsAccuracy,
+            distanceFromSelectedAreaFeet: locationFields.distanceFromSelectedAreaFeet,
+            locationCapturedAt: locationFields.locationCapturedAt,
+          }),
           areaStatus:
             selectedArea
               ? 'confirmed'
@@ -9132,7 +9155,9 @@ function addProject(projectName: string) {
     areaId: string,
     next: Partial<ProjectArea>,
   ) {
-    const current = projectAreas.find(area => area.id === areaId);
+    // The latest copy: Save GPS calls this after a fix that takes seconds
+    // (review, 29 Sep 2026).
+    const current = projectAreasCurrentRef.current.find(area => area.id === areaId);
     if (!current) return;
     const updated = normalizeProjectArea({
       ...current,
@@ -9203,6 +9228,8 @@ function addProject(projectName: string) {
   }
 
   async function saveCurrentLocationForArea(areaId: string) {
+    if (areaGpsSaveInFlightRef.current.has(areaId)) return;
+    areaGpsSaveInFlightRef.current.add(areaId);
     try {
       const snapshot = await getCurrentLocationSnapshot(Location.Accuracy.Highest);
 
@@ -9212,6 +9239,13 @@ function addProject(projectName: string) {
           'Allow location access, or enter/update this area manually later.',
         );
 
+        return;
+      }
+      if (snapshot.preciseLocationOff) {
+        Alert.alert(PRECISE_LOCATION_OFF_TITLE, PRECISE_LOCATION_OFF_MESSAGE, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => void Linking.openSettings() },
+        ]);
         return;
       }
 
@@ -9233,6 +9267,8 @@ function addProject(projectName: string) {
         'GPS unavailable',
         'Current location could not be captured right now.',
       );
+    } finally {
+      areaGpsSaveInFlightRef.current.delete(areaId);
     }
   }
 

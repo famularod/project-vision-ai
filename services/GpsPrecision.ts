@@ -52,20 +52,58 @@ export function isAreaPointImprecise(accuracyMeters: number | null | undefined):
   return feet === null || feet > AREA_POINT_ACCURACY_LIMIT_FEET;
 }
 
+type AreaPointPrecision = Pick<ProjectArea, 'locationAccuracyMeters' | 'locationAccuracyCapturedAt'>;
+
 /** The fields "Save GPS" writes onto an area. */
 export function areaPointFromFix(fix: Readonly<{
   latitude: number;
   longitude: number;
   accuracy: number | null;
   capturedAt: string;
-}>): Pick<ProjectArea, 'latitude' | 'longitude' | 'locationCapturedAt' | 'locationAccuracyMeters'> {
+}>): Pick<ProjectArea, 'latitude' | 'longitude' | 'locationCapturedAt'> & AreaPointPrecision {
+  const known = gpsAccuracyFeet(fix.accuracy) !== null;
   return {
     latitude: fix.latitude,
     longitude: fix.longitude,
     locationCapturedAt: fix.capturedAt,
-    locationAccuracyMeters: gpsAccuracyFeet(fix.accuracy) === null ? null : fix.accuracy,
+    locationAccuracyMeters: known ? fix.accuracy : null,
+    locationAccuracyCapturedAt: known ? fix.capturedAt : null,
   };
 }
+
+/**
+ * The saved point's precision, only while it still belongs to that point.
+ * Review, 29 Sep 2026: an older build that saves a new point keeps the
+ * previous precision fields, and a sync merge can take the point from one
+ * copy and the rest from another. The capture time ties the two together.
+ */
+export function areaPointAccuracyMeters(
+  area: Pick<ProjectArea, 'locationCapturedAt'> & AreaPointPrecision,
+): number | null {
+  const meters = area.locationAccuracyMeters;
+  return typeof meters === 'number' &&
+    Number.isFinite(meters) &&
+    meters >= 0 &&
+    typeof area.locationCapturedAt === 'string' &&
+    area.locationCapturedAt !== '' &&
+    area.locationAccuracyCapturedAt === area.locationCapturedAt
+    ? meters
+    : null;
+}
+
+/** The precision keys to store with an area: both, or neither. */
+export function areaPointPrecisionFields(
+  area: Pick<ProjectArea, 'locationCapturedAt'> & AreaPointPrecision,
+): AreaPointPrecision {
+  const meters = areaPointAccuracyMeters(area);
+  return meters === null
+    ? {}
+    : { locationAccuracyMeters: meters, locationAccuracyCapturedAt: area.locationCapturedAt };
+}
+
+export const PRECISE_LOCATION_OFF_TITLE = 'Precise Location is off';
+export const PRECISE_LOCATION_OFF_MESSAGE =
+  'Vitruvius only gets an approximate location, which cannot place you in a work area. Turn on Precise Location for Vitruvius in Settings, then try again.';
 
 export function areaPointSavedMessage(accuracyMeters: number | null | undefined): string {
   const accuracy = formatGpsAccuracy(accuracyMeters);
@@ -83,9 +121,9 @@ export function areaPointImpreciseMessage(accuracyMeters: number | null | undefi
 
 /** The precision part of an area's line on the Locations list. */
 export function areaPointPrecisionLabel(
-  area: Pick<ProjectArea, 'locationCapturedAt' | 'locationAccuracyMeters'>,
+  area: Pick<ProjectArea, 'locationCapturedAt'> & AreaPointPrecision,
 ): string {
   if (!area.locationCapturedAt) return 'GPS missing';
-  const accuracy = formatGpsAccuracy(area.locationAccuracyMeters);
+  const accuracy = formatGpsAccuracy(areaPointAccuracyMeters(area));
   return accuracy ? `GPS saved ${accuracy}` : 'GPS saved, precision not recorded';
 }

@@ -17,7 +17,9 @@ import {
   isConfidentlyInsideArea,
 } from '../../services/GpsPrecision';
 import { analyzeProjectLocationIntelligence } from '../../services/LocationIntelligenceService';
+import { mergeDAVEProjectAreaRecord } from '../../services/DAVEProjectAreaRecovery';
 import { normalizeProjectArea } from '../../services/ProjectAreaRecord';
+import { createRecentLocationFix } from '../../services/RecentLocationFix';
 import type { ProjectUpdate } from '../../types';
 
 describe('GPS accuracy units', () => {
@@ -94,21 +96,44 @@ describe('saving an area point', () => {
       longitude: -121.9,
       locationCapturedAt: '2026-09-29T15:00:00.000Z',
       locationAccuracyMeters: 4,
+      locationAccuracyCapturedAt: '2026-09-29T15:00:00.000Z',
     });
-    expect(areaPointFromFix({ ...fix, accuracy: null }).locationAccuracyMeters).toBeNull();
+    expect(areaPointFromFix({ ...fix, accuracy: null })).toMatchObject({
+      locationAccuracyMeters: null,
+      locationAccuracyCapturedAt: null,
+    });
   });
 
   it('shows each area’s precision, and says when an older point has none', () => {
     expect(areaPointPrecisionLabel({ locationCapturedAt: null })).toBe('GPS missing');
     expect(areaPointPrecisionLabel({ locationCapturedAt: '2026-07-21T15:57:00Z' }))
       .toBe('GPS saved, precision not recorded');
-    expect(areaPointPrecisionLabel({ locationCapturedAt: '2026-09-29T15:00:00Z', locationAccuracyMeters: 4 }))
-      .toBe('GPS saved ±13 ft');
+    expect(areaPointPrecisionLabel({
+      locationCapturedAt: '2026-09-29T15:00:00Z',
+      locationAccuracyMeters: 4,
+      locationAccuracyCapturedAt: '2026-09-29T15:00:00Z',
+    })).toBe('GPS saved ±13 ft');
+    // Review, 29 Sep 2026: an older build saved a new point and kept the old
+    // precision fields. The precision belongs to the earlier point.
+    expect(areaPointPrecisionLabel({
+      locationCapturedAt: '2026-09-29T16:30:00Z',
+      locationAccuracyMeters: 4,
+      locationAccuracyCapturedAt: '2026-09-29T15:00:00Z',
+    })).toBe('GPS saved, precision not recorded');
   });
 
   it('keeps a valid precision through normalization and leaves older areas’ shape unchanged', () => {
-    const saved = normalizeProjectArea({ id: 'a', name: 'North Lot', locationAccuracyMeters: 4 });
+    const saved = normalizeProjectArea({
+      id: 'a',
+      name: 'North Lot',
+      ...areaPointFromFix({ latitude: 37.1, longitude: -121.9, accuracy: 4, capturedAt: '2026-09-29T15:00:00Z' }),
+    });
     expect(saved.locationAccuracyMeters).toBe(4);
+    expect(saved.locationAccuracyCapturedAt).toBe('2026-09-29T15:00:00Z');
+
+    const movedByOlderBuild = normalizeProjectArea({ ...saved, locationCapturedAt: '2026-09-29T16:30:00Z' });
+    expect(movedByOlderBuild).not.toHaveProperty('locationAccuracyMeters');
+    expect(movedByOlderBuild).not.toHaveProperty('locationAccuracyCapturedAt');
 
     const older = normalizeProjectArea({ id: 'b', name: 'South Lot' });
     expect('locationAccuracyMeters' in older).toBe(false);
@@ -117,8 +142,80 @@ describe('saving an area point', () => {
       latitude: 37.2, longitude: -121.8, accuracy: null, capturedAt: '2026-09-29T16:00:00Z',
     }) });
     expect('locationAccuracyMeters' in replaced).toBe(false);
+    expect('locationAccuracyCapturedAt' in replaced).toBe(false);
     expect(normalizeProjectArea({ id: 'c', name: 'X', locationAccuracyMeters: -3 }))
       .not.toHaveProperty('locationAccuracyMeters');
+  });
+});
+
+// Review, 29 Sep 2026: a sync merge takes the point from the copy with the
+// newest GPS and everything else from the copy with the newest edit.
+describe('area sync merge', () => {
+  const pointA = normalizeProjectArea({
+    id: 'a', name: 'North Lot', radiusFeet: 175, updatedAt: '2026-09-29T17:00:00Z',
+    ...areaPointFromFix({ latitude: 37.1, longitude: -121.9, accuracy: 4, capturedAt: '2026-09-29T17:00:00Z' }),
+  });
+  const renamedOnB = normalizeProjectArea({
+    id: 'a', name: 'North Lot East', radiusFeet: 175, updatedAt: '2026-09-29T17:05:00Z',
+    latitude: 37.2, longitude: -121.8, locationCapturedAt: '2026-07-21T15:57:00Z',
+  });
+
+  it('keeps the precision with the point it belongs to', () => {
+    for (const merged of [mergeDAVEProjectAreaRecord(pointA, renamedOnB), mergeDAVEProjectAreaRecord(renamedOnB, pointA)]) {
+      expect(merged.name).toBe('North Lot East');
+      expect(merged.latitude).toBe(37.1);
+      expect(merged.locationCapturedAt).toBe('2026-09-29T17:00:00Z');
+      expect(merged.locationAccuracyMeters).toBe(4);
+      expect(merged.locationAccuracyCapturedAt).toBe('2026-09-29T17:00:00Z');
+    }
+  });
+
+  it('does not put one copy’s precision on another copy’s point', () => {
+    const olderPointWithPrecision = normalizeProjectArea({
+      ...pointA, updatedAt: '2026-09-29T17:05:00Z',
+      ...areaPointFromFix({ latitude: 37.3, longitude: -121.7, accuracy: 30, capturedAt: '2026-09-29T16:00:00Z' }),
+    });
+    const newerPointNoPrecision = normalizeProjectArea({
+      id: 'a', name: 'North Lot', radiusFeet: 175, updatedAt: '2026-09-29T17:00:00Z',
+      latitude: 37.1, longitude: -121.9, locationCapturedAt: '2026-09-29T17:00:00Z',
+    });
+    const merged = mergeDAVEProjectAreaRecord(newerPointNoPrecision, olderPointWithPrecision);
+    expect(merged.locationCapturedAt).toBe('2026-09-29T17:00:00Z');
+    expect(merged).not.toHaveProperty('locationAccuracyMeters');
+    expect(areaPointPrecisionLabel(merged)).toBe('GPS saved, precision not recorded');
+  });
+});
+
+describe('a recent location fix', () => {
+  it('shares one pending fix, reuses it for its age, then takes a new one', async () => {
+    let clock = 0;
+    const takeFix = jest.fn(async () => ({ at: clock }));
+    const recent = createRecentLocationFix(takeFix, 60_000, () => clock);
+
+    expect(recent.fresh()).toBeNull();
+    const [first, second] = await Promise.all([recent.get(), recent.get()]);
+    expect(first).toBe(second);
+    expect(takeFix).toHaveBeenCalledTimes(1);
+
+    clock = 59_000;
+    expect(recent.fresh()).toEqual({ fix: first });
+    await recent.get();
+    expect(takeFix).toHaveBeenCalledTimes(1);
+
+    clock = 61_000;
+    expect(recent.fresh()).toBeNull();
+    await recent.get();
+    expect(takeFix).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not keep a failed fix', async () => {
+    const takeFix = jest.fn()
+      .mockRejectedValueOnce(new Error('kCLErrorLocationUnknown'))
+      .mockResolvedValueOnce({ at: 1 });
+    const recent = createRecentLocationFix(takeFix, 60_000, () => 0);
+    await expect(recent.get()).rejects.toThrow('kCLErrorLocationUnknown');
+    expect(recent.fresh()).toBeNull();
+    await expect(recent.get()).resolves.toEqual({ at: 1 });
   });
 });
 
@@ -136,6 +233,22 @@ describe('GPS prompts in the app', () => {
     expect(app).toContain('accuracy: Location.Accuracy = Location.Accuracy.High');
     expect(app).not.toContain('Location.Accuracy.Balanced');
     expect(app).toContain('getCurrentLocationSnapshot(Location.Accuracy.Highest)');
+  });
+
+  it('saves an area point onto the latest copy of the area, one fix at a time', () => {
+    expect(app).toContain('const current = projectAreasCurrentRef.current.find(area => area.id === areaId);');
+    expect(app).toContain('if (areaGpsSaveInFlightRef.current.has(areaId)) return;');
+    expect(app).toContain('areaGpsSaveInFlightRef.current.delete(areaId);');
+  });
+
+  it('says when iOS Precise Location is off instead of asking to try again', () => {
+    expect(app).toContain("preciseLocationOff: permission.ios?.accuracy === 'reduced'");
+    expect(app).toContain('if (snapshot.preciseLocationOff) {');
+  });
+
+  it('gives photos added before a slow fix that fix, and shares one fix for home-screen detection', () => {
+    expect(app).toContain("photos: prev.photos.map(photo => typeof photo.gpsLatitude === 'number' ? photo : {");
+    expect(app).toContain('overviewLocationFixRef.current.fresh()');
   });
 
   it('decides an area suggestion with the unit-safe rule', () => {

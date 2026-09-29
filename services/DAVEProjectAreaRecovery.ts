@@ -1,4 +1,5 @@
 import type { ProjectArea } from '../types';
+import { areaPointPrecisionFields } from './GpsPrecision';
 
 /**
  * Combines area records without allowing a default/placeholder coordinate to
@@ -16,8 +17,17 @@ export function mergeDAVEProjectAreaRecord(
     ? candidate
     : current;
 
+  // The point's precision travels with the point, not with the metadata
+  // (GPS review, 29 Sep 2026).
+  const {
+    locationAccuracyMeters: _metadataAccuracy,
+    locationAccuracyCapturedAt: _metadataAccuracyCapturedAt,
+    ...metadata
+  } = metadataWinner;
+  const locationCapturedAt = gpsWinner.locationCapturedAt || null;
+
   return {
-    ...metadataWinner,
+    ...metadata,
     id: current.id,
     projectName:
       normalizeOptionalName(metadataWinner.projectName) ||
@@ -26,7 +36,8 @@ export function mergeDAVEProjectAreaRecord(
       null,
     latitude: gpsWinner.latitude,
     longitude: gpsWinner.longitude,
-    locationCapturedAt: gpsWinner.locationCapturedAt || null,
+    locationCapturedAt,
+    ...areaPointPrecisionFields({ ...gpsWinner, locationCapturedAt }),
     updatedAt: latestTimestamp(current.updatedAt, candidate.updatedAt),
   };
 }

@@ -10,6 +10,7 @@
  * coordinates when a record carries none.
  */
 import type { ProjectArea } from '../types';
+import { areaPointPrecisionFields } from './GpsPrecision';
 import { optionalString, uid } from './RecordValues';
 
 export const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
@@ -103,7 +104,8 @@ export const DEFAULT_PROJECT_AREAS: ProjectArea[] = [
 ];
 
 export function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
-  const { locationAccuracyMeters, ...carried } = value;
+  const { locationAccuracyMeters, locationAccuracyCapturedAt, ...carried } = value;
+  const locationCapturedAt = optionalString(value.locationCapturedAt);
   return {
     // Carry through fields this build does not manage; see normalizeUpdate.
     ...carried,
@@ -133,14 +135,10 @@ export function normalizeProjectArea(value: Partial<ProjectArea>): ProjectArea {
       value.radiusFeet > 0
         ? value.radiusFeet
         : 250,
-    locationCapturedAt: optionalString(value.locationCapturedAt),
+    locationCapturedAt,
     updatedAt: optionalString(value.updatedAt),
-    // Only points saved with a known precision carry this key, so older
+    // Only a point saved with a known precision carries these keys, so older
     // areas keep their stored shape (GPS review, 29 Sep 2026).
-    ...(typeof locationAccuracyMeters === 'number' &&
-    Number.isFinite(locationAccuracyMeters) &&
-    locationAccuracyMeters >= 0
-      ? { locationAccuracyMeters }
-      : {}),
+    ...areaPointPrecisionFields({ locationCapturedAt, locationAccuracyMeters, locationAccuracyCapturedAt }),
   };
 }
