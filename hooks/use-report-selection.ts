@@ -28,19 +28,24 @@ export function resolveReportProjectSelection({
   selectedProjectNames,
   selectedWorkspaceProject,
   reportType,
+  initialProjectName = '',
 }: {
   availableProjectNames: string[];
   selectedProjectNames: string[];
   selectedWorkspaceProject: string;
   reportType: SelectableReportType;
+  initialProjectName?: string;
 }) {
   const availableKeys = new Set(availableProjectNames.map(normalizedProjectKey));
   const validSelections = uniqueProjectNames(
     selectedProjectNames.filter(name => availableKeys.has(normalizedProjectKey(name))),
   );
-  const fallback = availableProjectNames.find(
-    name => normalizedProjectKey(name) === normalizedProjectKey(selectedWorkspaceProject),
-  ) || availableProjectNames[0] || selectedWorkspaceProject;
+  const availableMatch = (candidate: string) => availableProjectNames.find(
+    name => normalizedProjectKey(name) === normalizedProjectKey(candidate),
+  );
+  const fallback = availableMatch(selectedWorkspaceProject) ||
+    (initialProjectName.trim() ? availableMatch(initialProjectName) : undefined) ||
+    availableProjectNames[0] || selectedWorkspaceProject;
   const selections = validSelections.length > 0 ? validSelections : [fallback];
 
   return reportType === 'daily_project_update'
@@ -61,26 +66,29 @@ export function useReportSelection({
     'daily_project_update',
   );
   const [reportFormat, setReportFormat] = useState<ReportFormat>('project_manager');
-  const [selectedProjectNames, setSelectedProjectNames] = useState<string[]>([
-    initialProjectName,
-  ]);
+  // Null until projects are picked on the Reports screen. Until then the report
+  // follows the project being worked in, so opening Reports from one project
+  // never shows another project's report. A picked project list is kept.
+  const [selectedProjectNames, setSelectedProjectNames] = useState<string[] | null>(null);
   const resolvedProjectNames = useMemo(
     () => resolveReportProjectSelection({
       availableProjectNames,
-      selectedProjectNames,
+      selectedProjectNames: selectedProjectNames || [],
       selectedWorkspaceProject,
       reportType,
+      initialProjectName,
     }),
-    [availableProjectNames, reportType, selectedProjectNames, selectedWorkspaceProject],
+    [availableProjectNames, initialProjectName, reportType, selectedProjectNames, selectedWorkspaceProject],
   );
 
   const changeReportType = useCallback((nextType: SelectableReportType) => {
     setReportType(nextType);
-    setSelectedProjectNames(
-      nextType === 'daily_project_update'
+    setSelectedProjectNames(current => {
+      if (current === null) return null;
+      return nextType === 'daily_project_update'
         ? resolvedProjectNames.slice(0, 1)
-        : resolvedProjectNames,
-    );
+        : resolvedProjectNames;
+    });
   }, [resolvedProjectNames]);
 
   const toggleReportProject = useCallback((projectName: string) => {
