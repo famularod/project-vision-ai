@@ -9708,10 +9708,15 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // for a sync pass; one already running is followed by one more, so a
     // second result a few seconds later is not left behind (review 28 Sep).
     // Every pass uploads the update's single queue record, so the newest wins.
+    // The queue record is written at once, as a save does: until a queued
+    // record carries this revision, a realtime echo or a refresh would replace
+    // the phone's copy with the older cloud row and lose the result (review
+    // pass 6).
     const saved = savedUpdatesRef.current.find(update => update.id === updateId);
     if (saved && result.status !== 'analyzing' && (saved.status === 'sent' || saved.status === 'queued')) {
-      upsertSavedUpdateUnlessDeleted({ ...applyToUpdate(saved), status: 'queued' });
-      requestQueuedUpdateSync();
+      const queued: ProjectUpdate = { ...applyToUpdate(saved), status: 'queued' };
+      upsertSavedUpdateUnlessDeleted(queued);
+      void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);
     }
   }
 

@@ -68,8 +68,11 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
   const missing: number[] = [];
   const overLimit: number[] = [];
   let totalBytes = 0;
+  // Once a photo does not fit, the rest are not fetched: fetching a
+  // cloud-only photo downloads its full original (review pass 6).
+  let budgetReached = false;
   for (const image of cited) {
-    if (photos.length >= input.limit) {
+    if (photos.length >= input.limit || budgetReached) {
       overLimit.push(image.imageNumber);
       continue;
     }
@@ -81,6 +84,7 @@ export async function resolveReportImageAttachments<TPhoto extends { uri: string
     const size = input.sizeOf ? (await input.sizeOf(photo).catch(() => null)) ?? 0 : 0;
     if (input.maxTotalBytes !== undefined && totalBytes + size > input.maxTotalBytes) {
       overLimit.push(image.imageNumber);
+      budgetReached = true;
       continue;
     }
     totalBytes += size;

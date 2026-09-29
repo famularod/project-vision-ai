@@ -40,7 +40,10 @@ describe('desktop photo analysis status', () => {
     expect(shell).not.toContain("return 'Analyzing';");
     const app = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
     expect(app).toContain("if (saved && result.status !== 'analyzing' && (saved.status === 'sent' || saved.status === 'queued')) {");
-    expect(app).toContain("upsertSavedUpdateUnlessDeleted({ ...applyToUpdate(saved), status: 'queued' });");
+    expect(app).toContain("const queued: ProjectUpdate = { ...applyToUpdate(saved), status: 'queued' };");
+    // The queue record carries the new revision at once, so a realtime echo or
+    // refresh keeps the phone's copy (review pass 6).
+    expect(app).toContain('void queueProjectUpdateRecord(queued, false).catch(() => undefined).finally(requestQueuedUpdateSync);');
     // A request during a running pass is followed by one more pass inside the
     // same task (a new task would hit the guard's 2-run limit; review pass 3).
     expect(app).toContain('queuedHydrationRerunRequested.current = true;');

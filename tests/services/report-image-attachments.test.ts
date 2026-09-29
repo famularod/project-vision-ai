@@ -128,16 +128,18 @@ describe('Expo error codes', () => {
 });
 
 describe('attachment size budget', () => {
-  it('stops adding photos when the total would pass the budget, and names the rest', async () => {
+  it('stops at the budget, names the rest, and does not fetch photos after it', async () => {
     const sizes: Record<string, number> = { p1: 6, p2: 6, p3: 6, p4: 1 };
+    const findPhoto = jest.fn(async (id: string) => ({ id, uri: `file:///${id}.jpg` }));
     const attached = await resolveReportImageAttachments({
       report: report([[['p1', 1], ['p2', 2], ['p3', 3], ['p4', 4]]]),
       limit: 20,
       maxTotalBytes: 13,
-      findPhoto: async id => ({ id, uri: `file:///${id}.jpg` }),
+      findPhoto,
       sizeOf: async photo => sizes[photo.id],
     });
-    expect(attached.photos.map(photo => photo.id)).toEqual(['p1', 'p2', 'p4']);
-    expect(attached.note).toBe('\n\nImage 3 is not attached, to keep this message a sendable size.');
+    expect(attached.photos.map(photo => photo.id)).toEqual(['p1', 'p2']);
+    expect(findPhoto).toHaveBeenCalledTimes(3);
+    expect(attached.note).toBe('\n\nImages 3 and 4 are not attached, to keep this message a sendable size.');
   });
 });
