@@ -26,6 +26,8 @@ import {
   type SupabaseConfigurationStatus,
 } from './SupabaseService';
 import * as FileSystem from 'expo-file-system/legacy';
+import { LEGACY_WORK_CONTAINER_PROJECT_NAMES } from './ReservedProjectNames';
+import { LEGACY_NON_PROJECT_SHELL_NAMES } from './CrossDeviceVisibility';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getStoredJson, setStoredJson } from './StorageService';
 import {
@@ -4461,7 +4463,8 @@ export async function uploadLocalPhotoWithDiagnostics(
     objectPathCategory: null,
   };
 
-  const cloudCopy = await createPhotoSignedUrl(path, 60, PROJECT_PHOTOS_BUCKET);
+  // The photo may already be in the cloud under a legacy project path.
+  const cloudCopy = (await locateCloudPhotoCopy(update, photo, 60)).lookup;
   if (cloudCopy.ok && !cloudCopy.stubbed && cloudCopy.data) {
     return {
       result: 'skipped',
@@ -4709,6 +4712,55 @@ export function projectUpdateWithCloudPhotoPaths<TUpdate extends ProjectUpdate>(
   };
 }
 
+/**
+ * The same photo's path under each project name an earlier app version used.
+ * Cloud paths start with the update's project name, and an old migration
+ * renamed updates (for example "2321 North Side Lot" to "2321 Compliance
+ * Project") without keeping the path its photos were uploaded to. Sync then
+ * pins the new path, and the lookup there reports the photo "missing" (field
+ * test 28 Sep 2026: two July photos). Only the first segment changes; the
+ * update and photo ids stay, so another photo can never be matched.
+ */
+export function legacyProjectPhotoStoragePaths(path: string): string[] {
+  const segments = path.split('/');
+  if (segments.length < 3) return [];
+  const tail = segments.slice(1).join('/');
+  return [...new Set(
+    [...LEGACY_WORK_CONTAINER_PROJECT_NAMES, ...LEGACY_NON_PROJECT_SHELL_NAMES]
+      .map(name => `${sanitizePathSegment(name)}/${tail}`)
+      .filter(candidate => candidate !== path),
+  )];
+}
+
+const legacyPhotoPathsSearched = new Set<string>();
+
+/**
+ * A signed URL for the photo's cloud copy: its own path first, then, only
+ * when that is confirmed not found, the legacy project paths (once per photo
+ * per session). An inconclusive lookup (network, permission) stops the search
+ * and is returned as is, so nothing is declared missing on a transient error.
+ */
+export async function locateCloudPhotoCopy(
+  update: ProjectUpdate,
+  photo: UpdatePhoto,
+  ttlSeconds: number,
+): Promise<{ path: string; lookup: Awaited<ReturnType<typeof createPhotoSignedUrl>> }> {
+  const path = projectUpdatePhotoStoragePath(update, photo);
+  const lookup = await createPhotoSignedUrl(path, ttlSeconds, PROJECT_PHOTOS_BUCKET);
+  if ((lookup.ok && lookup.data && !lookup.stubbed) || !cloudPhotoLookupConfirmedMissing(lookup, true)) {
+    return { path, lookup };
+  }
+  const searchKey = `${update.id}|${photo.id}`;
+  if (legacyPhotoPathsSearched.has(searchKey)) return { path, lookup };
+  for (const candidate of legacyProjectPhotoStoragePaths(path)) {
+    const found = await createPhotoSignedUrl(candidate, ttlSeconds, PROJECT_PHOTOS_BUCKET);
+    if (found.ok && found.data && !found.stubbed) return { path: candidate, lookup: found };
+    if (!cloudPhotoLookupConfirmedMissing(found, true)) return { path, lookup: found };
+  }
+  legacyPhotoPathsSearched.add(searchKey);
+  return { path, lookup };
+}
+
 export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends ProjectUpdate>(
   update: TUpdate,
 ): Promise<TUpdate> {
@@ -4716,13 +4768,9 @@ export async function hydrateRecoveredProjectUpdatePhotos<TUpdate extends Projec
     if (await hasUsablePhotoUri(photo)) return photo;
     const relocated = await relocateLocalPhotoUri(photo);
     if (relocated) return { ...photo, uri: relocated };
-    const cloudStoragePath =
-      photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
-    const signed = await createPhotoSignedUrl(
-      cloudStoragePath,
-      600,
-      PROJECT_PHOTOS_BUCKET,
-    );
+    const located = await locateCloudPhotoCopy(update, photo, 600);
+    const cloudStoragePath = located.path;
+    const signed = located.lookup;
     if (!signed.ok || !signed.data || signed.stubbed) {
       return {
         ...photo,
