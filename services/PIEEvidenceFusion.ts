@@ -674,8 +674,16 @@ export function extractPhotoEvidence({
 function photoGpsCapturedAt(photo: UpdatePhoto, update: ProjectUpdate): string | null {
   if (typeof photo.gpsLatitude !== 'number' || typeof photo.gpsLongitude !== 'number') return null;
   const tookUpdateFix =
-    photo.gpsLatitude === update.gpsLatitude && photo.gpsLongitude === update.gpsLongitude;
+    sameCoordinate(photo.gpsLatitude, update.gpsLatitude) &&
+    sameCoordinate(photo.gpsLongitude, update.gpsLongitude);
   return (tookUpdateFix ? update.locationCapturedAt : null) || photo.locationCapturedAt || null;
+}
+
+/** About 10 cm: a copied coordinate survives rounding to six decimals (pass 23). */
+const COORDINATE_MATCH_TOLERANCE_DEGREES = 1e-6;
+
+function sameCoordinate(left: number, right: number | null | undefined): boolean {
+  return typeof right === 'number' && Math.abs(left - right) <= COORDINATE_MATCH_TOLERANCE_DEGREES;
 }
 
 export function extractGPSEvidence({

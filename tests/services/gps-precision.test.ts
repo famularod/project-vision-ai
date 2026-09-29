@@ -395,12 +395,15 @@ describe('GPS wiring in the app', () => {
   // Pass 22: the capture path's outcome is shown, not written into an unrendered status.
   it('says on Add Photos why there is no GPS suggestion', () => {
     expect(app).not.toContain('locationStatus');
-    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, kind: 'capturing' });");
-    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, kind: 'denied' });");
-    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, kind: 'failed' });");
-    expect(app).toMatch(/const noticeKind = draftLocationNoticeAfterFix\(\{\n\s+preciseLocationOff: snapshot\.preciseLocationOff,\n\s+reliableSuggestion,\n\s+\}\);\n\s+setDraftLocationNotice\(noticeKind \? \{ draftId: target\.draftId, kind: noticeKind \} : null\);/);
-    expect(app).toContain('locationNotice={draftLocationNotice}');
-    expect(app).toContain('locationNotice: locationNotice?.draftId === update.id ? locationNotice.kind : null,');
+    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'capturing' });");
+    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'denied' });");
+    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'failed' });");
+    // Pass 23: the notice is decided from every area, and belongs to its capture generation.
+    expect(app).toContain('const candidates = findProjectAreaSuggestions(snapshot, targetAreas);');
+    expect(app).toContain('const suggestion = candidates.find(item => item.withinRadius) ?? candidates[0] ?? null;');
+    expect(app).toMatch(/const noticeAfterFix = draftLocationNoticeAfterFix\(\{\n\s+preciseLocationOff: snapshot\.preciseLocationOff,\n\s+accuracyMeters: snapshot\.accuracy,\n\s+suggestions: candidates,\n\s+\}\);\n\s+setDraftLocationNotice\(noticeAfterFix \? \{ draftId: target\.draftId, generation, \.\.\.noticeAfterFix \} : null\);/);
+    expect(app).toMatch(/locationNotice=\{currentDraftLocationNotice\(\{\n\s+notice: draftLocationNotice,\n\s+draftId: draft\.id,\n\s+generation: draftFixTracker\.generation\(\),\n\s+\}\)\}/);
+    expect(app).toMatch(/correctionPenalty: walkCorrectionMemory\?\.correctionPenalty,\n\s+locationNotice,\n\s+\}\);/);
     expect(app).toMatch(/\{areaView\.locationNotice \? \(\n\s+<Text style=\{styles\.locationDetailText\}>\{areaView\.locationNotice\}<\/Text>/);
     expect(app).toContain('{!areaView.locationNotice && areaView.confidenceScore < 60 ? (');
   });

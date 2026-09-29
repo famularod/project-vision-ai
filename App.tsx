@@ -255,12 +255,12 @@ import { applyFixToDraft, areaChangeLocationFields } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
   distanceBetweenCoordinatesFeet,
-  findClosestProjectArea,
   findProjectAreaSuggestions,
   hasSavedAreaLocation,
   homeDetectionDecision,
 } from './services/AreaSuggestion';
 import {
+  currentDraftLocationNotice,
   draftAreaPresentation,
   draftLocationNoticeAfterFix,
   type DraftLocationNotice,
@@ -6798,7 +6798,7 @@ useEffect(() => {
       draftRef.current,
       draftFixTracker.generation(),
     );
-    setDraftLocationNotice({ draftId: target.draftId, kind: 'capturing' });
+    setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'capturing' });
 
     try {
       const snapshot = await getCurrentLocationSnapshot();
@@ -6806,24 +6806,26 @@ useEffect(() => {
 
       if (!snapshot) {
         setDraftAreaSuggestionEntry(null);
-        setDraftLocationNotice({ draftId: target.draftId, kind: 'denied' });
+        setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'denied' });
         return null;
       }
 
-      const suggestion = findClosestProjectArea(
-        snapshot,
-        targetAreas,
-      );
+      // Every area with a saved point, nearest centre first: the suggestion
+      // is the nearest one the fix is confidently inside, else the nearest;
+      // the notice says what GPS can say about the rest (review pass 23).
+      const candidates = findProjectAreaSuggestions(snapshot, targetAreas);
+      const suggestion = candidates.find(item => item.withinRadius) ?? candidates[0] ?? null;
 
       const reliableSuggestion = suggestion?.withinRadius ? suggestion : null;
       setDraftAreaSuggestionEntry(
         reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null,
       );
-      const noticeKind = draftLocationNoticeAfterFix({
+      const noticeAfterFix = draftLocationNoticeAfterFix({
         preciseLocationOff: snapshot.preciseLocationOff,
-        reliableSuggestion,
+        accuracyMeters: snapshot.accuracy,
+        suggestions: candidates,
       });
-      setDraftLocationNotice(noticeKind ? { draftId: target.draftId, kind: noticeKind } : null);
+      setDraftLocationNotice(noticeAfterFix ? { draftId: target.draftId, generation, ...noticeAfterFix } : null);
 
       handedToDraft = true;
       setDraft(prev => {
@@ -6851,7 +6853,7 @@ useEffect(() => {
     } catch {
       if (!targetIsCurrent()) return null;
       setDraftAreaSuggestionEntry(null);
-      setDraftLocationNotice({ draftId: target.draftId, kind: 'failed' });
+      setDraftLocationNotice({ draftId: target.draftId, generation, kind: 'failed' });
       return null;
     } finally {
       if (!handedToDraft) settle();
@@ -13485,7 +13487,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
-              locationNotice={draftLocationNotice}
+              locationNotice={currentDraftLocationNotice({
+                notice: draftLocationNotice,
+                draftId: draft.id,
+                generation: draftFixTracker.generation(),
+              })}
               recipientCount={
                 currentContacts.length
               }
@@ -15110,7 +15116,7 @@ function AddPhotosScreen({
     areaSuggestion,
     hasScheduleRecommendation: Boolean(scheduleRecommendation),
     correctionPenalty: walkCorrectionMemory?.correctionPenalty,
-    locationNotice: locationNotice?.draftId === update.id ? locationNotice.kind : null,
+    locationNotice,
   });
   const { areaName, offeredSuggestion } = areaView;
   const repeatPhotoGuidance =

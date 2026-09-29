@@ -39,6 +39,15 @@ export function isConfidentlyInsideArea(input: Readonly<{
   return input.distanceFeet + (gpsAccuracyFeet(input.accuracyMeters) ?? 0) <= input.radiusFeet;
 }
 
+/** The fix's whole error margin lies outside the area's circle. */
+export function isConfidentlyOutsideArea(input: Readonly<{
+  distanceFeet: number;
+  accuracyMeters: number | null | undefined;
+  radiusFeet: number;
+}>): boolean {
+  return input.distanceFeet - (gpsAccuracyFeet(input.accuracyMeters) ?? 0) > input.radiusFeet;
+}
+
 /** How much nearer the closest project must be to win outright. */
 export function clearWinnerMarginFeet(
   minimumFeet: number,

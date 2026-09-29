@@ -10,6 +10,7 @@ import {
   findProjectAreaSuggestions,
 } from '../../services/AreaSuggestion';
 import {
+  currentDraftLocationNotice,
   draftAreaPresentation,
   draftLocationNoticeAfterFix,
   UNASSIGNED_AREA_NAME,
@@ -85,10 +86,14 @@ describe('the draft’s suggestion as it stands now', () => {
   const entry = { draftId: 'd1', suggestion: { area: lot, distanceFeet: 50, withinRadius: true } };
   const draft = { id: 'd1', gpsLatitude: ORIGIN.latitude, gpsLongitude: ORIGIN.longitude, gpsAccuracy: 5 };
 
-  it('is shown only on the draft that produced it (pass 3)', () => {
+  it('is shown only on the draft that produced it; without an entry the draft’s own fix stands in (passes 3, 23)', () => {
     expect(currentDraftAreaSuggestion({ entry, draft, areas: [lot] })?.area.id).toBe('lot');
-    expect(currentDraftAreaSuggestion({ entry, draft: { ...draft, id: 'd2' }, areas: [lot] })).toBeNull();
-    expect(currentDraftAreaSuggestion({ entry: null, draft, areas: [lot] })).toBeNull();
+    // Another draft's entry is ignored; a draft with no fix has no suggestion.
+    expect(currentDraftAreaSuggestion({ entry, draft: { id: 'd2', gpsLatitude: null, gpsLongitude: null }, areas: [lot] })).toBeNull();
+    expect(currentDraftAreaSuggestion({ entry: null, draft: { ...draft, gpsLatitude: null }, areas: [lot] })).toBeNull();
+    // Relaunched and resumed: the draft still holds its fix, so its suggestion returns.
+    expect(currentDraftAreaSuggestion({ entry: null, draft, areas: [lot] })?.area.id).toBe('lot');
+    expect(currentDraftAreaSuggestion({ entry: null, draft: { ...draft, gpsAccuracy: 65 }, areas: [lot] })).toBeNull();
   });
 
   it('disappears when the area is deleted or loses its point (pass 4)', () => {
@@ -1036,7 +1041,8 @@ describe('home-screen detection', () => {
   });
 });
 
-// Review pass 22: why there is no suggestion is said on the screen.
+// Review passes 22-23: why there is no suggestion is said on the screen,
+// and no more than GPS can say.
 describe('the Add Photos location notice', () => {
   const lot = area('lot', 50, 175, { name: 'North Lot' });
   const suggestion: AreaSuggestion = { area: lot, distanceFeet: 50, withinRadius: true };
@@ -1044,28 +1050,59 @@ describe('the Add Photos location notice', () => {
     hasScheduleRecommendation: false, selectedArea: null, selectedAreaName: UNASSIGNED_AREA_NAME,
     areaStatus: 'unknown', areaSuggestion: null, ...extra,
   } as never);
+  const text = (notice: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    view({ locationNotice: notice, ...extra }).locationNotice;
 
-  it('explains capturing, denied, failed, Precise Location off and "not inside a saved area"', () => {
-    expect(view({ locationNotice: 'capturing' }).locationNotice).toBe('Capturing GPS...');
-    expect(view({ locationNotice: 'denied' }).locationNotice).toBe('Location permission denied. Choose Project Area manually.');
-    expect(view({ locationNotice: 'failed' }).locationNotice).toBe('GPS could not be captured. Choose Project Area manually.');
-    expect(view({ locationNotice: 'precise-off' }).locationNotice).toContain('Precise Location is off');
-    expect(view({ locationNotice: 'no-area' }).locationNotice).toBe('GPS is not inside a saved work area. Choose the project area.');
+  it('explains capturing, denied, failed and Precise Location off', () => {
+    expect(text({ kind: 'capturing' })).toBe('Capturing GPS...');
+    expect(text({ kind: 'denied' })).toBe('Location permission denied. Choose Project Area manually.');
+    expect(text({ kind: 'failed' })).toBe('GPS could not be captured. Choose Project Area manually.');
+    expect(text({ kind: 'precise-off' })).toContain('Precise Location is off');
+    expect(text({ kind: 'precise-off' })).not.toContain('try again');
     expect(view({}).locationNotice).toBeNull();
   });
 
-  it('says nothing once GPS suggests an area, and drops "not inside" once an area is chosen', () => {
-    expect(view({ locationNotice: 'no-area', areaSuggestion: suggestion, areaStatus: 'suggested' }).locationNotice).toBeNull();
-    expect(view({ locationNotice: 'no-area', selectedArea: lot, selectedAreaName: 'North Lot' }).locationNotice).toBeNull();
-    // Denied and Precise Location off explain every update until the setting changes.
-    expect(view({ locationNotice: 'precise-off', selectedArea: lot, selectedAreaName: 'North Lot' }).locationNotice).toContain('Precise Location');
-    expect(view({ locationNotice: 'denied', selectedArea: lot, selectedAreaName: 'North Lot' }).locationNotice).toContain('denied');
+  it('says only what GPS can say about where you are', () => {
+    expect(text({ kind: 'no-mapped-areas' })).toContain('saved GPS point yet');
+    expect(text({ kind: 'unconfirmed', areaName: 'North Lot', accuracyMeters: 60 }))
+      .toBe('GPS (±197 ft) may place you in North Lot but cannot confirm it. Choose the project area.');
+    expect(text({ kind: 'no-area', areaName: 'North Lot', distanceFeet: 320.4, accuracyMeters: 5 }))
+      .toBe('GPS (±16 ft) places you outside every saved work area; the nearest is North Lot, 320 ft away. Choose the project area.');
   });
 
-  it('after a fix: Precise Location off first, nothing with a suggestion, else "not inside"', () => {
-    expect(draftLocationNoticeAfterFix({ preciseLocationOff: true, reliableSuggestion: suggestion })).toBe('precise-off');
-    expect(draftLocationNoticeAfterFix({ preciseLocationOff: false, reliableSuggestion: suggestion })).toBeNull();
-    expect(draftLocationNoticeAfterFix({ reliableSuggestion: null })).toBe('no-area');
+  it('is hidden by a suggestion, and placement notices by a named area (a mapped pick or a task’s location)', () => {
+    expect(text({ kind: 'no-area' }, { areaSuggestion: suggestion, areaStatus: 'suggested' })).toBeNull();
+    expect(text({ kind: 'no-area' }, { selectedArea: lot, selectedAreaName: 'North Lot' })).toBeNull();
+    expect(text({ kind: 'unconfirmed', areaName: 'North Lot' }, { selectedAreaName: 'Room 204', areaStatus: 'confirmed' })).toBeNull();
+    expect(text({ kind: 'no-mapped-areas' }, { selectedAreaName: 'Room 204', areaStatus: 'confirmed' })).toBeNull();
+    // Denied and Precise Location off explain every update until the setting changes.
+    expect(text({ kind: 'precise-off' }, { selectedArea: lot, selectedAreaName: 'North Lot' })).toContain('Precise Location');
+    expect(text({ kind: 'denied' }, { selectedAreaName: 'Room 204', areaStatus: 'confirmed' })).toContain('denied');
+  });
+
+  it('after a fix: Precise Location off; nothing with a containing area; else what the fix allows', () => {
+    const areas = [lot, area('far', 5_000, 175, { name: 'Far Lot' })];
+    const fix = (feetNorth: number, accuracy: number) => findProjectAreaSuggestions({ ...north(feetNorth), accuracy }, areas);
+    expect(draftLocationNoticeAfterFix({ preciseLocationOff: true, accuracyMeters: 5, suggestions: fix(50, 5) })).toEqual({ kind: 'precise-off' });
+    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: fix(50, 5) })).toBeNull();
+    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: [] })).toEqual({ kind: 'no-mapped-areas' });
+    // 10 ft from the centre under a deck at ±60 m: maybe inside, not confirmed.
+    expect(draftLocationNoticeAfterFix({ accuracyMeters: 60, suggestions: fix(40, 60) }))
+      .toMatchObject({ kind: 'unconfirmed', areaName: 'North Lot', accuracyMeters: 60 });
+    // 180 ft from the centre at ±16 ft: near the edge, not ruled out.
+    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: fix(-130, 5) }))
+      .toMatchObject({ kind: 'unconfirmed', areaName: 'North Lot' });
+    // 400 ft away at ±16 ft: confidently outside every area.
+    expect(draftLocationNoticeAfterFix({ accuracyMeters: 5, suggestions: fix(-350, 5) }))
+      .toMatchObject({ kind: 'no-area', areaName: 'North Lot' });
+  });
+
+  it('belongs to its draft and its capture; a later capture or a save supersedes it', () => {
+    const notice = { draftId: 'd1', generation: 3, kind: 'capturing' as const };
+    expect(currentDraftLocationNotice({ notice, draftId: 'd1', generation: 3 })).toBe(notice);
+    expect(currentDraftLocationNotice({ notice, draftId: 'd2', generation: 3 })).toBeNull();
+    expect(currentDraftLocationNotice({ notice, draftId: 'd1', generation: 4 })).toBeNull();
+    expect(currentDraftLocationNotice({ notice: null, draftId: 'd1', generation: 3 })).toBeNull();
   });
 });
 
@@ -1121,6 +1158,9 @@ describe('the GPS/update area conflict is raised only while the reading is curre
     const own = { ...inherited, id: 'o', photos: [photoAt('q', '2026-09-29T08:25:00.000Z', { ...fix, gpsLatitude: north(2_010).latitude })] };
     expect(at([own], '2026-09-29T08:40:00.000Z').gpsEvidence.capturedAt).toBe('2026-09-29T08:25:00.000Z');
     expect(at([own], '2026-09-29T08:40:00.000Z').conflicts.map(item => item.id)).toContain(MISMATCH);
+    // A copied coordinate rounded to six decimals is still the fix (pass 23).
+    const rounded = { ...inherited, id: 'r', photos: [photoAt('s', '2026-09-29T08:25:00.000Z', { ...fix, gpsLatitude: Number(fix.gpsLatitude.toFixed(6)) })] };
+    expect(at([rounded], '2026-09-29T08:40:00.000Z').gpsEvidence.capturedAt).toBe('2026-09-29T08:00:00.000Z');
   });
 
   it('counts a fix current for 30 minutes, five minutes ahead of the clock, and never without a time', () => {
