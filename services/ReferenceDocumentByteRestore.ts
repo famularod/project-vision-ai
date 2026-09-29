@@ -74,9 +74,12 @@ export async function restoreVerifiedReferenceDocumentBytes(
   try {
     downloaded = await dependencies.downloadBytes(bucket, storagePath);
   } catch (error) {
+    // The reason is shown, so a phone-only failure can be told apart from a
+    // missing or unreadable cloud file without a debugger.
+    const reason = error instanceof Error && error.message ? ` (${error.message})` : '';
     throw new ReferenceDocumentByteRestoreError(
       'download_failed',
-      'The reference document could not be downloaded from protected storage.',
+      `The reference document could not be downloaded from protected storage${reason}.`,
       error,
     );
   }

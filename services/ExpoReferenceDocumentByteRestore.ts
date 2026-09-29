@@ -1,5 +1,6 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
+import { blobToBytes } from './BlobBytes';
 import { downloadPhoto } from './SupabaseService';
 import {
   restoreVerifiedReferenceDocumentBytes,
@@ -25,7 +26,7 @@ export function restoreReferenceDocumentBytesFromCloud(
           result.error || result.message || 'Protected document download failed.',
         );
       }
-      return new Uint8Array(await result.data.arrayBuffer());
+      return blobToBytes(result.data);
     },
     createOwnedDestination: async (documentId, originalFileName) => {
       const root = new Directory(Paths.document, RESTORED_REFERENCE_DOCUMENTS_FOLDER);

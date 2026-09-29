@@ -17,6 +17,7 @@ import {
   multiPartBackupNotice,
   openSelectedBackup,
   stagedAssetProvider,
+  unavailableFilesNotice,
   unavailablePhotosNotice,
   type BackupFileIO,
   type MaterializeBackupDependencies,
@@ -301,7 +302,7 @@ describe('photos that are unavailable', () => {
       randomBytes: deterministicRandom(),
       confirmPartCount: async count => { partQuestions.push(count); return true; },
       ...(answer === undefined ? {} : {
-        confirmUnavailablePhotos: async (notice: string) => { asked.push(notice); return answer; },
+        confirmUnavailableFiles: async (notice: string) => { asked.push(notice); return answer; },
       }),
       share: async uri => { shared.push(uri); },
     });
@@ -332,6 +333,45 @@ describe('photos that are unavailable', () => {
     expect(shared).toEqual([]);
   });
 
+  // Field test, 28 Sep 2026 (Build 211): a cloud document that could not be
+  // downloaded then stopped the backup, again without naming it.
+  it('names each unavailable document and its reason, after the photos', () => {
+    const notice = unavailableFilesNotice(
+      [{ projectName: '2321', updateDate: '2026-09-14' }],
+      [{ name: 'MASTER SCHEDULE 8312026', reason: 'The reference document could not be downloaded from protected storage (offline).' }],
+    );
+    expect(notice.indexOf('1 photo is not on this device')).toBe(0);
+    expect(notice).toContain('1 document could not be read on this device, so this backup will leave its file out.');
+    expect(notice).toContain('copies stored in the cloud are not affected');
+    expect(notice).toContain('MASTER SCHEDULE 8312026: The reference document could not be downloaded from protected storage (offline).');
+  });
+
+  it('keeps a long list of documents short', () => {
+    const documents = Array.from({ length: 7 }, (_, index) => ({ name: `Doc ${index + 1}`, reason: 'missing' }));
+    const notice = unavailableFilesNotice([], documents);
+    expect(notice.startsWith('7 documents could not be read')).toBe(true);
+    expect(notice).toContain('Doc 5: missing');
+    expect(notice).not.toContain('Doc 6');
+    expect(notice).toContain('and 2 more');
+  });
+
+  it('asks once about unavailable documents alone, and writes nothing if the owner cancels', async () => {
+    const fs = memoryFileSystem();
+    const sources = await sourcesFor(fs.io, fs.files);
+    const asked: string[] = [];
+    const share = jest.fn();
+    await expect(exportBackupInParts({
+      state: STATE_TEMPLATE(), sources, passphrase: PASSPHRASE, createdAt: '2026-09-28T00:00:00.000Z',
+      backupId: 'backup-1', directory: 'file:///cache/', fileStem: 'stem', partAssetBudgetBytes: 900,
+      unavailableDocuments: [{ name: 'Lookahead', reason: 'offline' }],
+    }, {
+      io: fs.io, randomBytes: deterministicRandom(), confirmPartCount: async () => true, share,
+      confirmUnavailableFiles: async notice => { asked.push(notice); return false; },
+    })).resolves.toEqual({ status: 'cancelled', partCount: 0 });
+    expect(asked).toEqual([expect.stringContaining('Lookahead: offline')]);
+    expect(share).not.toHaveBeenCalled();
+  });
+
   it('restores a left-out photo as a record with no file, next to the photos that were carried', async () => {
     const fs = memoryFileSystem();
     const sources = await sourcesFor(fs.io, fs.files);
@@ -344,7 +384,7 @@ describe('photos that are unavailable', () => {
       unavailablePhotos: [{ projectName: '2321', updateDate: '2026-09-14' }],
     }, {
       io: fs.io, randomBytes: deterministicRandom(), confirmPartCount: async () => true,
-      confirmUnavailablePhotos: async () => true,
+      confirmUnavailableFiles: async () => true,
       share: async uri => { shared.push({ text: await fs.io.readText(uri) }); },
     });
     const picked = await pickShared(shared);

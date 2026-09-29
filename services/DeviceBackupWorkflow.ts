@@ -85,7 +85,11 @@ export async function describeBackupAssetSource(
  */
 export type UnavailableBackupPhoto = Readonly<{ projectName: string; updateDate: string }>;
 
+/** A document whose file could not be read or downloaded now, and why. */
+export type UnavailableBackupDocument = Readonly<{ name: string; reason: string }>;
+
 const NOTICE_DATES_PER_PROJECT = 5;
+const NOTICE_DOCUMENTS = 5;
 
 export function unavailablePhotosNotice(missing: readonly UnavailableBackupPhoto[]): string {
   const byProject = new Map<string, Map<string, number>>();
@@ -111,6 +115,24 @@ export function unavailablePhotosNotice(missing: readonly UnavailableBackupPhoto
     `from the cloud, so this backup will leave ${n === 1 ? 'it' : 'them'} out. ` +
     `The field updates themselves are kept.\n\n${lines.join('\n')}`
   );
+}
+
+export function unavailableFilesNotice(
+  photos: readonly UnavailableBackupPhoto[],
+  documents: readonly UnavailableBackupDocument[],
+): string {
+  const sections = photos.length > 0 ? [unavailablePhotosNotice(photos)] : [];
+  if (documents.length > 0) {
+    const n = documents.length;
+    const shown = documents.slice(0, NOTICE_DOCUMENTS).map(document => `${document.name}: ${document.reason}`);
+    const more = n > NOTICE_DOCUMENTS ? `\nand ${n - NOTICE_DOCUMENTS} more` : '';
+    sections.push(
+      `${n} ${n === 1 ? 'document' : 'documents'} could not be read on this device, so this backup ` +
+      `will leave ${n === 1 ? 'its file' : 'their files'} out. The document records are kept, ` +
+      `and copies stored in the cloud are not affected.\n\n${shown.join('\n')}${more}`,
+    );
+  }
+  return sections.join('\n\n');
 }
 
 export function backupPartFileName(stem: string, partIndex: number, partCount: number): string {
@@ -148,21 +170,22 @@ export async function exportBackupInParts(
     fileStem: string;
     partAssetBudgetBytes?: number;
     unavailablePhotos?: readonly UnavailableBackupPhoto[];
+    unavailableDocuments?: readonly UnavailableBackupDocument[];
   }>,
   dependencies: CompleteBackupArchiveDependencies & Readonly<{
     io: BackupFileIO;
     share: (uri: string, partNumber: number, partCount: number) => Promise<void>;
     confirmPartCount: (partCount: number) => Promise<boolean>;
-    /** Required when any photo is unavailable; it is asked before anything else. */
-    confirmUnavailablePhotos?: (notice: string) => Promise<boolean>;
+    /** Required when any file is unavailable; it is asked before anything else. */
+    confirmUnavailableFiles?: (notice: string) => Promise<boolean>;
   }>,
 ): Promise<BackupPartsExportResult> {
-  const unavailable = input.unavailablePhotos ?? [];
-  if (unavailable.length > 0) {
-    if (!dependencies.confirmUnavailablePhotos) {
-      throw new Error(unavailablePhotosNotice(unavailable));
-    }
-    if (!(await dependencies.confirmUnavailablePhotos(unavailablePhotosNotice(unavailable)))) {
+  const photos = input.unavailablePhotos ?? [];
+  const documents = input.unavailableDocuments ?? [];
+  if (photos.length + documents.length > 0) {
+    const notice = unavailableFilesNotice(photos, documents);
+    if (!dependencies.confirmUnavailableFiles) throw new Error(notice);
+    if (!(await dependencies.confirmUnavailableFiles(notice))) {
       return { status: 'cancelled', partCount: 0 };
     }
   }

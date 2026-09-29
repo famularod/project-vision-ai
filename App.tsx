@@ -366,9 +366,9 @@ import {
 } from './services/CompleteBackupArchive';
 import { type CompleteBackupAssetSource } from './services/CompleteBackupArchiveParts';
 import {
-  decryptedBytesAssetProvider, describeBackupAssetSource, exportBackupInParts, measureBackupAssetSource,
+  decryptedBytesAssetProvider, exportBackupInParts, measureBackupAssetSource,
   materializeCompleteBackupState, multiPartBackupNotice, openSelectedBackup, stagedAssetProvider,
-  type UnavailableBackupPhoto,
+  type UnavailableBackupDocument, type UnavailableBackupPhoto,
 } from './services/DeviceBackupWorkflow';
 import { expoBackupFileIO } from './services/ExpoBackupFileIO';
 import {
@@ -10382,57 +10382,50 @@ Note: This update was opened through Outlook because PLZ email security may reje
           unavailablePhotos,
         ));
       }
+      // A document whose file cannot be read now is kept as a record without
+      // its file, like records-only, and only with the owner's agreement,
+      // which is asked before anything is written.
+      const unavailableDocuments: UnavailableBackupDocument[] = [];
+      const leaveOut = (name: string, error?: unknown) => {
+        unavailableDocuments.push({ name, reason: error instanceof Error && error.message ? error.message : 'Its file could not be found on this device.' });
+        return null;
+      };
       const backupReferenceDocuments = [];
       for (const document of referenceDocuments) {
-        // Records-only does not read or verify file bytes at all, so a
-        // document whose local file is missing cannot fail the export.
-        if (!includeFiles) {
-          backupReferenceDocuments.push({ ...document, uri: '' });
-          continue;
-        }
-        const readable = await ensureVerifiedReferenceDocumentBytes(document);
         const assetId = `reference_document:${document.id}`;
-        sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+        const readable = includeFiles ? await ensureVerifiedReferenceDocumentBytes(document).catch(error => leaveOut(document.name, error)) : null;
+        const source = readable ? await measureBackupAssetSource(expoBackupFileIO, {
           id: assetId,
           kind: 'reference_document',
           relativePath: sanitizeFilename(document.originalFileName),
           uri: readable.uri,
-        }));
-        backupReferenceDocuments.push({
-          ...readable,
-          uri: '',
-          _backupAssetId: assetId,
-        });
+        }) : null;
+        if (!source) {
+          if (readable) leaveOut(document.name);
+          backupReferenceDocuments.push({ ...(readable ?? document), uri: '' });
+          continue;
+        }
+        sources.push(source);
+        backupReferenceDocuments.push({ ...readable, uri: '', _backupAssetId: assetId });
       }
       const backupProjectDocuments = [];
       for (const document of projectDocuments) {
-        if (!includeFiles) {
-          backupProjectDocuments.push({
-            ...document,
-            localUri: null,
-            ownedFileId: null,
-            ownedFileManifest: null,
-          });
-          continue;
-        }
-        const readable = await ensureVerifiedProjectDocumentBytes(document);
-        if (!readable.localUri) {
-          throw new Error(`The document "${document.name}" is unavailable.`);
-        }
         const assetId = `project_document:${document.id}`;
-        sources.push(await describeBackupAssetSource(expoBackupFileIO, {
+        const readable = includeFiles ? await ensureVerifiedProjectDocumentBytes(document).catch(error => leaveOut(document.name, error)) : null;
+        const source = readable?.localUri ? await measureBackupAssetSource(expoBackupFileIO, {
           id: assetId,
           kind: 'project_document',
           relativePath: sanitizeFilename(document.name),
           uri: readable.localUri,
-        }));
-        backupProjectDocuments.push({
-          ...readable,
-          localUri: null,
-          ownedFileId: null,
-          ownedFileManifest: null,
-          _backupAssetId: assetId,
-        });
+        }) : null;
+        const withoutFile = { localUri: null, ownedFileId: null, ownedFileManifest: null };
+        if (!source) {
+          if (readable) leaveOut(document.name);
+          backupProjectDocuments.push({ ...(readable ?? document), ...withoutFile });
+          continue;
+        }
+        sources.push(source);
+        backupProjectDocuments.push({ ...readable, ...withoutFile, _backupAssetId: assetId });
       }
       const backupDraft = hasMeaningfulDraft(draft)
         ? await prepareUpdateForCompleteBackup(
@@ -10505,10 +10498,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
         directory: targetDirectory,
         fileStem,
         unavailablePhotos,
+        unavailableDocuments,
       }, {
         io: expoBackupFileIO,
         randomBytes,
-        confirmUnavailablePhotos: notice => askToContinue('Some photos are unavailable', notice, 'Back up without them'),
+        confirmUnavailableFiles: notice => askToContinue('Some files are unavailable', notice, 'Back up without them'),
         confirmPartCount: partCount => askToContinue(`Backup needs ${partCount} files`, multiPartBackupNotice(partCount), 'Continue'),
         share: (uri, partNumber, partCount) => Sharing.shareAsync(uri, {
           dialogTitle: partCount === 1
@@ -10523,7 +10517,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'Backup share sheet closed',
         `${DEVICE_BACKUP_SCOPE_NOTICE} Confirm that the file was saved in your chosen destination${
           exported.partCount > 1 ? `: all ${exported.partCount} parts, in one place` : ''
-        }.${unavailablePhotos.length ? ` ${unavailablePhotos.length} unavailable photo(s) were left out.` : ''} Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
+        }.${unavailablePhotos.length + unavailableDocuments.length ? ` ${unavailablePhotos.length + unavailableDocuments.length} unavailable file(s) were left out.` : ''} Store the backup and its passphrase separately; Vitruvius cannot recover a forgotten passphrase.`,
       );
     } catch (error) {
       Alert.alert(
@@ -10958,8 +10952,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
         dialogTitle: document.name,
         mimeType: document.mimeType || undefined,
       });
-    } catch {
-      Alert.alert('Open failed', 'This reference document could not be opened right now.');
+    } catch (error) {
+      Alert.alert('Open failed', error instanceof Error && error.message
+        ? error.message
+        : 'This reference document could not be opened right now.');
     }
   }
 
