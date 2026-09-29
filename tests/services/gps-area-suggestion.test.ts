@@ -9,7 +9,11 @@ import {
   findClosestProjectArea,
   findProjectAreaSuggestions,
 } from '../../services/AreaSuggestion';
-import { draftAreaPresentation, UNASSIGNED_AREA_NAME } from '../../services/DraftAreaPresentation';
+import {
+  draftAreaPresentation,
+  draftLocationNoticeAfterFix,
+  UNASSIGNED_AREA_NAME,
+} from '../../services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from '../../services/DraftFixTracker';
 import { applyFixToDraft, areaChangeLocationFields } from '../../services/DraftFix';
 import {
@@ -1032,6 +1036,39 @@ describe('home-screen detection', () => {
   });
 });
 
+// Review pass 22: why there is no suggestion is said on the screen.
+describe('the Add Photos location notice', () => {
+  const lot = area('lot', 50, 175, { name: 'North Lot' });
+  const suggestion: AreaSuggestion = { area: lot, distanceFeet: 50, withinRadius: true };
+  const view = (extra: Record<string, unknown>) => draftAreaPresentation({
+    hasScheduleRecommendation: false, selectedArea: null, selectedAreaName: UNASSIGNED_AREA_NAME,
+    areaStatus: 'unknown', areaSuggestion: null, ...extra,
+  } as never);
+
+  it('explains capturing, denied, failed, Precise Location off and "not inside a saved area"', () => {
+    expect(view({ locationNotice: 'capturing' }).locationNotice).toBe('Capturing GPS...');
+    expect(view({ locationNotice: 'denied' }).locationNotice).toBe('Location permission denied. Choose Project Area manually.');
+    expect(view({ locationNotice: 'failed' }).locationNotice).toBe('GPS could not be captured. Choose Project Area manually.');
+    expect(view({ locationNotice: 'precise-off' }).locationNotice).toContain('Precise Location is off');
+    expect(view({ locationNotice: 'no-area' }).locationNotice).toBe('GPS is not inside a saved work area. Choose the project area.');
+    expect(view({}).locationNotice).toBeNull();
+  });
+
+  it('says nothing once GPS suggests an area, and drops "not inside" once an area is chosen', () => {
+    expect(view({ locationNotice: 'no-area', areaSuggestion: suggestion, areaStatus: 'suggested' }).locationNotice).toBeNull();
+    expect(view({ locationNotice: 'no-area', selectedArea: lot, selectedAreaName: 'North Lot' }).locationNotice).toBeNull();
+    // Denied and Precise Location off explain every update until the setting changes.
+    expect(view({ locationNotice: 'precise-off', selectedArea: lot, selectedAreaName: 'North Lot' }).locationNotice).toContain('Precise Location');
+    expect(view({ locationNotice: 'denied', selectedArea: lot, selectedAreaName: 'North Lot' }).locationNotice).toContain('denied');
+  });
+
+  it('after a fix: Precise Location off first, nothing with a suggestion, else "not inside"', () => {
+    expect(draftLocationNoticeAfterFix({ preciseLocationOff: true, reliableSuggestion: suggestion })).toBe('precise-off');
+    expect(draftLocationNoticeAfterFix({ preciseLocationOff: false, reliableSuggestion: suggestion })).toBeNull();
+    expect(draftLocationNoticeAfterFix({ reliableSuggestion: null })).toBe('no-area');
+  });
+});
+
 // Review pass 21: the GPS/area conflict is about the area you are in now.
 describe('the GPS/update area conflict is raised only while the reading is current', () => {
   const P = '2321 Compliance Project';
@@ -1060,6 +1097,30 @@ describe('the GPS/update area conflict is raised only while the reading is curre
     const gps = buildFusedEvidence({ projectName: P, updates: [wrong as never], projectAreas: [northLot, southLot] }).gpsEvidence;
     expect(gps.capturedAt).toBe('2026-09-27T17:00:00.000Z');
     expect(gps.sourceUpdateId).toBe('old');
+  });
+
+  // Review pass 22: a camera photo takes the fix but keeps its own, later time.
+  it('runs the conflict clock from the fix, not from a photo that took it', () => {
+    const photoAt = (id: string, time: string, gps: Record<string, unknown>) => ({
+      id, uri: '', caption: '', category: 'Update', actionRequired: '', actionOwner: '', actionDueDate: '',
+      actionStatus: 'Open', locationCapturedAt: time, ...gps,
+    });
+    const fix = { gpsLatitude: north(2_000).latitude, gpsLongitude: north(2_000).longitude, gpsAccuracy: 5 };
+    const inherited = {
+      id: 'u', projectName: P, date: '2026-09-29', notes: '', recipients: { contactIds: [] },
+      selectedAreaName: 'North Lot', selectedAreaId: 'north', locationCapturedAt: '2026-09-29T08:00:00.000Z', ...fix,
+      photos: [photoAt('p', '2026-09-29T08:25:00.000Z', fix)],
+    };
+    const at = (updates: unknown[], now: string) => buildFusedEvidence({
+      projectName: P, updates: updates as never, projectAreas: [northLot, southLot], now: new Date(now),
+    });
+    expect(at([inherited], '2026-09-29T08:20:00.000Z').conflicts.map(item => item.id)).toContain(MISMATCH);
+    expect(at([inherited], '2026-09-29T08:40:00.000Z').conflicts.map(item => item.id)).not.toContain(MISMATCH);
+    expect(at([inherited], '2026-09-29T08:40:00.000Z').gpsEvidence.capturedAt).toBe('2026-09-29T08:00:00.000Z');
+    // A photo located on its own was read where and when it was taken.
+    const own = { ...inherited, id: 'o', photos: [photoAt('q', '2026-09-29T08:25:00.000Z', { ...fix, gpsLatitude: north(2_010).latitude })] };
+    expect(at([own], '2026-09-29T08:40:00.000Z').gpsEvidence.capturedAt).toBe('2026-09-29T08:25:00.000Z');
+    expect(at([own], '2026-09-29T08:40:00.000Z').conflicts.map(item => item.id)).toContain(MISMATCH);
   });
 
   it('counts a fix current for 30 minutes, five minutes ahead of the clock, and never without a time', () => {

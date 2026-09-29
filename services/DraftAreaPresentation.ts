@@ -9,6 +9,7 @@
  * accepted; "auto-detected" means the accepted suggestion.
  */
 import type { AreaSuggestion, ProjectArea } from '../types';
+import { PRECISE_LOCATION_OFF_MESSAGE, PRECISE_LOCATION_OFF_TITLE } from './GpsPrecision';
 
 export const UNASSIGNED_AREA_NAME = 'Unassigned / Unknown Area';
 /** The schedule's name for a task without a location (PIEEvidenceFusion). */
@@ -38,6 +39,40 @@ export type DraftAreaLocationSource =
   | 'schedule'
   | 'last-active-area';
 
+/**
+ * Why the draft has no GPS suggestion (GPS review pass 22: the capture path
+ * wrote "Location permission denied" and the like into a status nothing
+ * rendered, and Precise Location off was explained only by Save GPS).
+ */
+export type DraftLocationNoticeKind = 'capturing' | 'denied' | 'failed' | 'precise-off' | 'no-area';
+
+/** The notice, and the draft whose fix produced it. */
+export type DraftLocationNotice = Readonly<{ draftId: string; kind: DraftLocationNoticeKind }>;
+
+/** The notice once a fix has landed: none when it suggests an area. */
+export function draftLocationNoticeAfterFix(input: Readonly<{
+  preciseLocationOff?: boolean;
+  reliableSuggestion: AreaSuggestion | null;
+}>): DraftLocationNoticeKind | null {
+  if (input.preciseLocationOff) return 'precise-off';
+  return input.reliableSuggestion ? null : 'no-area';
+}
+
+export function draftLocationNoticeText(kind: DraftLocationNoticeKind): string {
+  switch (kind) {
+    case 'capturing':
+      return 'Capturing GPS...';
+    case 'denied':
+      return 'Location permission denied. Choose Project Area manually.';
+    case 'failed':
+      return 'GPS could not be captured. Choose Project Area manually.';
+    case 'precise-off':
+      return `${PRECISE_LOCATION_OFF_TITLE}. ${PRECISE_LOCATION_OFF_MESSAGE}`;
+    case 'no-area':
+      return 'GPS is not inside a saved work area. Choose the project area.';
+  }
+}
+
 export type DraftAreaPresentation = Readonly<{
   /** The draft's own area: what Review shows and the save stores. */
   areaName: string;
@@ -50,6 +85,8 @@ export type DraftAreaPresentation = Readonly<{
   locationSource: DraftAreaLocationSource;
   confidenceScore: number;
   reason: string;
+  /** Why there is no GPS suggestion, when that is worth a line; else null. */
+  locationNotice: string | null;
 }>;
 
 export function draftAreaPresentation(input: Readonly<{
@@ -59,11 +96,19 @@ export function draftAreaPresentation(input: Readonly<{
   areaSuggestion: AreaSuggestion | null;
   hasScheduleRecommendation: boolean;
   correctionPenalty?: number;
+  locationNotice?: DraftLocationNoticeKind | null;
 }>): DraftAreaPresentation {
   const { selectedArea, areaSuggestion } = input;
   const areaName = selectedArea?.name || input.selectedAreaName || UNASSIGNED_AREA_NAME;
   const suggestionIsShown = Boolean(areaSuggestion && selectedArea?.id === areaSuggestion.area.id);
   const pendingSuggestion = !selectedArea && areaSuggestion ? areaSuggestion : null;
+  // A suggestion answers the question; "not inside a saved area" matters
+  // only while no area is chosen; denied, failed and Precise Location off
+  // stay, since they explain every update until the setting changes.
+  const noticeKind = input.locationNotice ?? null;
+  const locationNotice = noticeKind && !areaSuggestion && !(noticeKind === 'no-area' && selectedArea)
+    ? draftLocationNoticeText(noticeKind)
+    : null;
   const rowNamesSuggestion = Boolean(
     pendingSuggestion && input.areaStatus === 'suggested' && areaName === UNASSIGNED_AREA_NAME,
   );
@@ -93,6 +138,7 @@ export function draftAreaPresentation(input: Readonly<{
     locationSource,
     confidenceScore: Math.max(0, baseScore - (input.correctionPenalty || 0)),
     reason: locationReason(locationSource, pendingSuggestion),
+    locationNotice,
   };
 }
 

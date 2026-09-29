@@ -260,7 +260,11 @@ import {
   hasSavedAreaLocation,
   homeDetectionDecision,
 } from './services/AreaSuggestion';
-import { draftAreaPresentation } from './services/DraftAreaPresentation';
+import {
+  draftAreaPresentation,
+  draftLocationNoticeAfterFix,
+  type DraftLocationNotice,
+} from './services/DraftAreaPresentation';
 import { createDraftFixTracker, createKeyedInFlight } from './services/DraftFixTracker';
 import { optionalString, uid } from './services/RecordValues';
 import {
@@ -5235,8 +5239,10 @@ function AppShell() {
     useState<{ draftId: string; suggestion: AreaSuggestion } | null>(null);
 
 
-  const [locationStatus, setLocationStatus] =
-    useState<string | null>(null);
+  // Why the draft has no GPS suggestion, shown on Add Photos (GPS review
+  // pass 22: this was a text status nothing rendered).
+  const [draftLocationNotice, setDraftLocationNotice] =
+    useState<DraftLocationNotice | null>(null);
 
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -6792,7 +6798,7 @@ useEffect(() => {
       draftRef.current,
       draftFixTracker.generation(),
     );
-    setLocationStatus('Capturing GPS...');
+    setDraftLocationNotice({ draftId: target.draftId, kind: 'capturing' });
 
     try {
       const snapshot = await getCurrentLocationSnapshot();
@@ -6800,9 +6806,7 @@ useEffect(() => {
 
       if (!snapshot) {
         setDraftAreaSuggestionEntry(null);
-        setLocationStatus(
-          'Location permission denied. Choose Project Area manually.',
-        );
+        setDraftLocationNotice({ draftId: target.draftId, kind: 'denied' });
         return null;
       }
 
@@ -6815,11 +6819,11 @@ useEffect(() => {
       setDraftAreaSuggestionEntry(
         reliableSuggestion ? { draftId: target.draftId, suggestion: reliableSuggestion } : null,
       );
-      setLocationStatus(
-        reliableSuggestion
-          ? `Suggested area: ${reliableSuggestion.area.name}`
-          : 'GPS saved. Choose an area to confirm the work location.',
-      );
+      const noticeKind = draftLocationNoticeAfterFix({
+        preciseLocationOff: snapshot.preciseLocationOff,
+        reliableSuggestion,
+      });
+      setDraftLocationNotice(noticeKind ? { draftId: target.draftId, kind: noticeKind } : null);
 
       handedToDraft = true;
       setDraft(prev => {
@@ -6847,9 +6851,7 @@ useEffect(() => {
     } catch {
       if (!targetIsCurrent()) return null;
       setDraftAreaSuggestionEntry(null);
-      setLocationStatus(
-        'GPS could not be captured. Choose Project Area manually.',
-      );
+      setDraftLocationNotice({ draftId: target.draftId, kind: 'failed' });
       return null;
     } finally {
       if (!handedToDraft) settle();
@@ -6883,11 +6885,6 @@ useEffect(() => {
     if (areaId && !area) return;
 
     applyAreaAndLocationToDraft(area);
-    setLocationStatus(
-      area
-        ? `Project Area set to ${area.name}`
-        : 'Project Area cleared',
-    );
   }
 
   function selectQuickContext(context: QuickContext) {
@@ -13488,6 +13485,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
               projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
+              locationNotice={draftLocationNotice}
               recipientCount={
                 currentContacts.length
               }
@@ -15052,6 +15050,7 @@ function AddPhotosScreen({
   projectAreas,
   selectedArea,
   areaSuggestion,
+  locationNotice,
   recipientCount,
   contacts,
   draftSavedAt,
@@ -15076,6 +15075,7 @@ function AddPhotosScreen({
   projectAreas: ProjectArea[];
   selectedArea: ProjectArea | null;
   areaSuggestion: AreaSuggestion | null;
+  locationNotice: DraftLocationNotice | null;
   recipientCount: number;
   contacts: ProjectContact[];
   draftSavedAt: string | null;
@@ -15110,6 +15110,7 @@ function AddPhotosScreen({
     areaSuggestion,
     hasScheduleRecommendation: Boolean(scheduleRecommendation),
     correctionPenalty: walkCorrectionMemory?.correctionPenalty,
+    locationNotice: locationNotice?.draftId === update.id ? locationNotice.kind : null,
   });
   const { areaName, offeredSuggestion } = areaView;
   const repeatPhotoGuidance =
@@ -15163,7 +15164,10 @@ function AddPhotosScreen({
         <Text style={styles.locationDetailText}>
           Why: {areaView.reason}
         </Text>
-        {areaView.confidenceScore < 60 ? (
+        {areaView.locationNotice ? (
+          <Text style={styles.locationDetailText}>{areaView.locationNotice}</Text>
+        ) : null}
+        {!areaView.locationNotice && areaView.confidenceScore < 60 ? (
           <Text style={styles.locationDetailText}>Location is uncertain. Choose the project area before relying on this recommendation.</Text>
         ) : null}
         {offeredSuggestion ? (

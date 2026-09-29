@@ -392,6 +392,19 @@ describe('GPS wiring in the app', () => {
     expect(app).toContain('if (areaId && !area) return;');
   });
 
+  // Pass 22: the capture path's outcome is shown, not written into an unrendered status.
+  it('says on Add Photos why there is no GPS suggestion', () => {
+    expect(app).not.toContain('locationStatus');
+    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, kind: 'capturing' });");
+    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, kind: 'denied' });");
+    expect(app).toContain("setDraftLocationNotice({ draftId: target.draftId, kind: 'failed' });");
+    expect(app).toMatch(/const noticeKind = draftLocationNoticeAfterFix\(\{\n\s+preciseLocationOff: snapshot\.preciseLocationOff,\n\s+reliableSuggestion,\n\s+\}\);\n\s+setDraftLocationNotice\(noticeKind \? \{ draftId: target\.draftId, kind: noticeKind \} : null\);/);
+    expect(app).toContain('locationNotice={draftLocationNotice}');
+    expect(app).toContain('locationNotice: locationNotice?.draftId === update.id ? locationNotice.kind : null,');
+    expect(app).toMatch(/\{areaView\.locationNotice \? \(\n\s+<Text style=\{styles\.locationDetailText\}>\{areaView\.locationNotice\}<\/Text>/);
+    expect(app).toContain('{!areaView.locationNotice && areaView.confidenceScore < 60 ? (');
+  });
+
   it('gates home-screen detection on every area by nearest centre across projects, with a shared fix', () => {
     expect(app).toMatch(/const suggestions = findProjectAreaSuggestions\(snapshot, projectAreas\);\n(?:.*\n){0,24}\s+const decision = homeDetectionDecision\(\{\n\s+suggestions,/);
     expect(app).toContain('setProjectDetectionStatus(decision.status);');

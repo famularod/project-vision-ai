@@ -158,6 +158,8 @@ export type PIEPhotoEvidence = {
   gpsLatitude: number | null;
   gpsLongitude: number | null;
   gpsAccuracy: number | null;
+  /** When the photo's GPS was taken: the update's fix time when the photo took that fix (GPS review pass 22). */
+  gpsCapturedAt?: string | null;
   hasGps: boolean;
   isIssue: boolean;
   isSafety: boolean;
@@ -182,7 +184,10 @@ export type PIEGPSEvidence = {
   gpsConfirmsRecommendedArea?: boolean;
   /** The update the latest GPS reading belongs to (GPS review pass 19). */
   sourceUpdateId?: string | null;
-  /** When the latest GPS reading was taken (GPS review pass 21). */
+  /**
+   * When the latest GPS reading was taken: the fix's own time, not the time
+   * of the photo that carries it (GPS review passes 21-22).
+   */
   capturedAt?: string | null;
   correctionStatus: 'accepted' | 'corrected' | 'needs-verification' | 'not-available';
   supportsProjectWalk: boolean;
@@ -635,6 +640,7 @@ export function extractPhotoEvidence({
           gpsLatitude: photo.gpsLatitude ?? null,
           gpsLongitude: photo.gpsLongitude ?? null,
           gpsAccuracy: photo.gpsAccuracy ?? null,
+          gpsCapturedAt: photoGpsCapturedAt(photo, update),
           hasGps,
           isIssue,
           isSafety,
@@ -657,6 +663,19 @@ export function extractPhotoEvidence({
         };
       }),
     );
+}
+
+/**
+ * When a photo's GPS was taken: a camera photo takes the draft's fix (the
+ * same coordinates) and keeps its own, later capture time, so the fix's time
+ * is the update's; a photo with GPS of its own was located when it was taken
+ * (GPS review pass 22: the conflict's 30-minute clock ran from the photo).
+ */
+function photoGpsCapturedAt(photo: UpdatePhoto, update: ProjectUpdate): string | null {
+  if (typeof photo.gpsLatitude !== 'number' || typeof photo.gpsLongitude !== 'number') return null;
+  const tookUpdateFix =
+    photo.gpsLatitude === update.gpsLatitude && photo.gpsLongitude === update.gpsLongitude;
+  return (tookUpdateFix ? update.locationCapturedAt : null) || photo.locationCapturedAt || null;
 }
 
 export function extractGPSEvidence({
@@ -682,10 +701,13 @@ export function extractGPSEvidence({
       longitude: update.gpsLongitude ?? null,
       accuracy: update.gpsAccuracy ?? null,
       capturedAt: update.locationCapturedAt || update.date || null,
+      fixCapturedAt: update.locationCapturedAt || null,
       sourceId: update.id,
       updateId: update.id,
       sourceType: 'typed-update' as const,
     }));
+  // Ordered by the activity's time (a late photo orders its update, pass
+  // 12); the reading's currency runs from the fix's time (pass 22).
   const photoGps = photoEvidence.map(photo => ({
     projectName: photo.projectName,
     areaId: photo.areaId ?? null,
@@ -694,6 +716,7 @@ export function extractGPSEvidence({
     longitude: photo.gpsLongitude,
     accuracy: photo.gpsAccuracy,
     capturedAt: photo.timestamp,
+    fixCapturedAt: photo.gpsCapturedAt ?? photo.timestamp,
     sourceId: photo.id,
     updateId: photo.updateId,
     sourceType: 'photo' as const,
@@ -805,7 +828,7 @@ export function extractGPSEvidence({
     withinMappedArea: latestFix ? insideMappedArea : null,
     gpsConfirmsRecommendedArea: gpsConfirmsArea,
     sourceUpdateId: latest?.updateId ?? null,
-    capturedAt: latest?.capturedAt ?? null,
+    capturedAt: latest?.fixCapturedAt ?? null,
     correctionStatus,
     supportsProjectWalk: Boolean(recommendedProject || recommendedArea),
     confidenceScore,
